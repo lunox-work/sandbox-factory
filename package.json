@@ -1,0 +1,42 @@
+{
+  "name": "sandbox-factory",
+  "version": "0.1.0",
+  "description": "One-sentence description of what sandbox-factory does.",
+  "license": "MIT",
+  "author": "feversoul",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/feversoul/sandbox-factory.git"
+  },
+  "homepage": "https://github.com/feversoul/sandbox-factory#readme",
+  "bugs": {
+    "url": "https://github.com/feversoul/sandbox-factory/issues"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "tsc -p tsconfig.test.json && node --test",
+    "lint": "tsc -p tsconfig.test.json --noEmit",
+    "format": "prettier --write ."
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "prettier": "^3.4.0",
+    "typescript": "^5.7.0"
+  },
+  "keywords": []
+}
