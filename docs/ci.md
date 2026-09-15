@@ -166,14 +166,20 @@ always the reason. The fix is to title the PR for its user-facing change.
 
 Configuration lives in [`release-please-config.json`](../release-please-config.json)
 and [`.release-please-manifest.json`](../.release-please-manifest.json). The
-manifest records the last released version (`0.1.0`); the next number comes from
-that plus the Conventional Commit prefixes since it.
+manifest records the last released version; the next number comes from that plus
+the Conventional Commit prefixes since it.
+
+Nothing has been released yet: the manifest sits at `0.0.0`, so the accumulated
+`feat:` commits make the first release `0.1.0`. An earlier `0.1.0` tag and
+GitHub release were created and then deleted — the package was never published
+to npm — which is why the manifest was reset rather than left pointing at a
+version with no tag behind it.
 
 The config briefly carried `"release-as": "0.1.0"` to stop release-please from
-opening the first release as 1.0.0. It was removed once 0.1.0 shipped, because
-`release-as` is unconditional — left in place it pins _every_ release to the same
-number. If you ever need to force a specific version again, add it back and
-remove it in the same cycle.
+opening the first release as 1.0.0. It was removed because `release-as` is
+unconditional — left in place it pins _every_ release to the same number. If you
+ever need to force a specific version again, add it back and remove it in the
+same cycle.
 
 Because the changelog is generated, `CHANGELOG.md` is listed in
 [`.prettierignore`](../.prettierignore); its generated formatting does not match
