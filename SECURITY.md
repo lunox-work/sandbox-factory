@@ -12,7 +12,7 @@
 **Please do not report security vulnerabilities through public GitHub issues.**
 
 Report privately through
-[GitHub Security Advisories](https://github.com/feversoul/sandbox-factory/security/advisories/new),
+[GitHub Security Advisories](https://github.com/lunox-work/sandbox-factory/security/advisories/new),
 or by email to <CONTACT_EMAIL>.
 
 Please include:

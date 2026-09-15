@@ -1,0 +1,41 @@
+name: Auto-merge
+
+on: pull_request_target
+
+# pull_request_target runs with write access to the base repository. This
+# workflow therefore never checks out or executes PR code — it only calls the
+# GitHub API. Keep it that way: checking out the head ref here would let any
+# fork's PR run code with these permissions.
+permissions:
+  contents: read
+
+jobs:
+  auto-merge:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      # Dependabot's update-type is only knowable through this action, so it
+      # runs first and the merge step reads its output.
+      - name: Fetch Dependabot metadata
+        id: meta
+        if: github.actor == 'dependabot[bot]'
+        uses: dependabot/fetch-metadata@v3
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # `--auto` only arms GitHub's merge queue: the merge happens later, and
+      # only once every required status check passes. Nothing here bypasses the
+      # branch ruleset, so CI and the coverage thresholds remain the real gate.
+      - name: Arm auto-merge
+        # Everything merges on green, including release PRs. The one exception
+        # is a Dependabot major — that is where breaking changes live, so it
+        # waits for a human.
+        if: |
+          github.actor != 'dependabot[bot]' ||
+          steps.meta.outputs.update-type != 'version-update:semver-major'
+        run: gh pr merge --auto --squash "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

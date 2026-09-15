@@ -1,8 +1,5 @@
 blank_issues_enabled: false
 contact_links:
-  - name: Question or discussion
-    url: https://github.com/feversoul/sandbox-factory/discussions
-    about: Ask questions and discuss ideas here rather than in issues.
   - name: Report a security vulnerability
-    url: https://github.com/feversoul/sandbox-factory/security/advisories/new
+    url: https://github.com/lunox-work/sandbox-factory/security/advisories/new
     about: Please report vulnerabilities privately, not as a public issue.

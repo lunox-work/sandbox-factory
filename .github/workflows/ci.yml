@@ -21,7 +21,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: [20, 22, 24]
+        node: [22, 24]
     steps:
       - uses: actions/checkout@v7
 
@@ -30,8 +30,10 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
 
+      # --ignore-scripts skips husky's `prepare`, which has nothing to install
+      # on a CI runner and fails outside a git work tree.
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Lint
         run: npm run lint
@@ -42,5 +44,8 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Test
+      # Enforces the coverage thresholds set in the `test` script; the suite
+      # exits non-zero if coverage drops below them. Identical to what the
+      # pre-push hook runs locally via `npm run verify`.
+      - name: Test and coverage
         run: npm test

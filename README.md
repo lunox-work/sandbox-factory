@@ -2,7 +2,7 @@
 
 > One-sentence description of what sandbox-factory does and who it's for.
 
-[![CI](https://github.com/feversoul/sandbox-factory/actions/workflows/ci.yml/badge.svg)](https://github.com/feversoul/sandbox-factory/actions/workflows/ci.yml)
+[![CI](https://github.com/lunox-work/sandbox-factory/actions/workflows/ci.yml/badge.svg)](https://github.com/lunox-work/sandbox-factory/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 
 ## Install
@@ -27,7 +27,7 @@ console.log(hello("world"));
 ## Development
 
 ```bash
-git clone https://github.com/feversoul/sandbox-factory.git
+git clone https://github.com/lunox-work/sandbox-factory.git
 cd sandbox-factory
 npm install
 npm test
@@ -45,6 +45,18 @@ npm test
 Contributions are welcome. See [CONTRIBUTING.md](./CONTRIBUTING.md) for dev
 setup, conventions, and how to open a pull request. By participating you agree
 to the [Code of Conduct](./CODE_OF_CONDUCT.md).
+
+Coding agents should read [AGENTS.md](./AGENTS.md), which covers the same ground
+plus the conventions that the automation depends on.
+
+## Documentation
+
+| Document                                     | Covers                                              |
+| -------------------------------------------- | --------------------------------------------------- |
+| [AGENTS.md](./AGENTS.md)                     | Instructions for coding agents                      |
+| [CONTRIBUTING.md](./CONTRIBUTING.md)         | Dev setup and pull request process                  |
+| [docs/ci.md](./docs/ci.md)                   | Workflows, branch protection, releases              |
+| [docs/github-apps.md](./docs/github-apps.md) | Installed apps and settings that live outside files |
 
 ## Security
 

@@ -19,10 +19,10 @@ Contributions are accepted under the [MIT License](./LICENSE).
 
 ## Development setup
 
-Requires Node.js 20 or newer.
+Requires Node.js 22 or newer.
 
 ```bash
-git clone https://github.com/feversoul/sandbox-factory.git
+git clone https://github.com/lunox-work/sandbox-factory.git
 cd sandbox-factory
 npm install
 npm test
@@ -32,10 +32,13 @@ npm test
 
 1. Branch off `main`: `git checkout -b fix/short-description`
 2. Make the change, with a test that fails before it and passes after.
-3. Run the full check locally — CI runs the same thing:
+3. Run the full check locally — CI runs the same thing, and a `pre-push` hook
+   runs it automatically before any push succeeds:
    ```bash
-   npm run lint && npm test && npm run build
+   npm run verify
    ```
+   This includes an 80% coverage threshold, so new code needs tests in the same
+   change.
 4. Commit using [Conventional Commits](https://www.conventionalcommits.org/):
    `fix: handle empty input`, `feat: add retry option`, `docs: clarify setup`.
 5. Push and open a pull request.

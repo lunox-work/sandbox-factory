@@ -6,11 +6,11 @@
   "author": "feversoul",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/feversoul/sandbox-factory.git"
+    "url": "git+https://github.com/lunox-work/sandbox-factory.git"
   },
-  "homepage": "https://github.com/feversoul/sandbox-factory#readme",
+  "homepage": "https://github.com/lunox-work/sandbox-factory#readme",
   "bugs": {
-    "url": "https://github.com/feversoul/sandbox-factory/issues"
+    "url": "https://github.com/lunox-work/sandbox-factory/issues"
   },
   "type": "module",
   "main": "./dist/index.js",
@@ -25,16 +25,19 @@
     "dist"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "tsc -p tsconfig.test.json && node --test dist-test/test/*.test.js",
+    "test": "tsc -p tsconfig.test.json && node --experimental-test-coverage --test-coverage-lines=80 --test-coverage-branches=80 --test-coverage-functions=80 --test-coverage-exclude=\"dist-test/test/**\" --test dist-test/test/*.test.js",
     "lint": "tsc -p tsconfig.test.json --noEmit",
-    "format": "prettier --write ."
+    "format": "prettier --write .",
+    "verify": "npm run lint && prettier --check . && npm run build && npm test",
+    "prepare": "husky"
   },
   "devDependencies": {
     "@types/node": "^26.5.1",
+    "husky": "^9.1.7",
     "prettier": "^3.4.0",
     "typescript": "^7.0.2"
   },

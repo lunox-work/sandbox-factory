@@ -1,0 +1,8 @@
+# Everything CI will run, run here first — a failure means the code never
+# reaches GitHub. Auto-merge is armed on green, so this is the last point
+# at which a human sees the change before it can land on main.
+#
+# Genuinely need to push past it (WIP branch, debugging CI itself)?
+#   git push --no-verify
+echo "pre-push: running full verification (lint, format, build, test + coverage)..."
+npm run verify

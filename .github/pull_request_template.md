@@ -19,7 +19,7 @@ Closes #
 ## Checklist
 
 - [ ] I have read [CONTRIBUTING.md](../blob/main/CONTRIBUTING.md)
-- [ ] `npm run lint && npm test && npm run build` passes locally
+- [ ] `npm run verify` passes locally (lint, format, build, test + coverage)
 - [ ] I added tests covering this change
 - [ ] I updated the documentation where needed
 - [ ] This PR is one logical change
