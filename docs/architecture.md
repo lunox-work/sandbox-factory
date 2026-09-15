@@ -19,23 +19,29 @@ Dependencies point downward only. Nothing below imports from above.
 
 ```
 apps/api        apps/web        apps/extension
-     │               │                │
-     │               └────────┬───────┘
-     │                        │
-     │              packages/client
-     │                        │
-     └────────────┬───────────┘
-                  │
-          packages/shared
-                  │
-           packages/core
+     │    │          │                │
+     │    │          └────────┬───────┘
+     │    │                   │
+     │    │         packages/client
+     │    │                   │
+     │    └───────┬───────────┘
+     │            │
+     │    packages/shared
+     │            │
+     │            │
+  packages/db ────┴──── packages/core
 ```
+
+`packages/db` sits beside `shared` rather than under it: it depends on `core`
+for the domain type it round-trips, and on nothing else in the repo. Only
+`apps/api` imports it.
 
 | Workspace         | May import       | Must never import           |
 | ----------------- | ---------------- | --------------------------- |
 | `packages/core`   | nothing          | anything at all             |
 | `packages/shared` | `core`, `zod`    | `client`, any app, `node:*` |
 | `packages/client` | `core`, `shared` | any app, `node:*`, `vscode` |
+| `packages/db`     | `core`           | `client`, any app           |
 | `apps/*`          | any package      | another app                 |
 
 Three rules are worth stating plainly, because breaking them is easy and the
@@ -98,19 +104,43 @@ it is not negotiable — the VS Code extension host does not load ES modules.
 
 ## Import extensions differ by workspace, on purpose
 
-Workspaces on `NodeNext` (`core`, `shared`, `client`, `api`) write
+Workspaces on `NodeNext` (`core`, `shared`, `client`, `db`, `api`) write
 `from "./store.js"` even though the file is `store.ts`. Workspaces on `Bundler`
 (`web`, `extension`) write `from "./tree"` with no extension. Both are correct
 for their resolution mode; a file moved between them needs its imports adjusted.
+
+## The database layer
+
+[`packages/db`](../packages/db) holds the Drizzle schema, the migrations, the
+Postgres implementation of `TodoStore`, and an S3 object store.
+
+The store contract and `NotFoundError` live **in this package**, not in
+`apps/api`, because dependencies point downward and a package may not import an
+app. [`apps/api/src/store.ts`](../apps/api/src/store.ts) re-exports both, so
+`routes.ts` and its tests import from `./store.js` exactly as before — swapping
+the in-memory store for Postgres did not touch a single route.
+
+`createInMemoryStore` is still there, but it is now a **test double**, not a
+fallback. The server requires `DATABASE_URL` and will not boot without it: a
+process that silently keeps todos in memory looks healthy and loses them on the
+next restart.
+
+Object storage targets SeaweedFS' S3 gateway, but nothing in the code is
+SeaweedFS-specific — it speaks S3, so the same client works against AWS S3,
+MinIO or R2 by changing the endpoint. Two caveats if you do swap the backend:
+
+- `forcePathStyle` is on, because a self-hosted gateway has no per-bucket DNS.
+- SeaweedFS **creates a bucket on first write**. S3 and MinIO do not; they
+  return `NoSuchBucket`. Anything deployed against a different backend needs
+  its bucket created up front.
+
+Nothing in the API consumes the object store yet. It is wired into config and
+compose and tested, so the feature that needs it adds a call, not a layer.
 
 ## Where the remaining pieces go
 
 Not yet built, but the boundaries are drawn for them:
 
-- **`packages/db`** — Drizzle schema and migrations. `apps/api` swaps its
-  in-memory store for this; [`store.ts`](../apps/api/src/store.ts) already
-  defines the `TodoStore` interface the real one will satisfy, so routes do not
-  change.
 - **`packages/integrations`** — GitHub and Jira clients, depending on `shared`
   only.
 - **Auth** — the client already takes a `getToken` callback; the web app returns

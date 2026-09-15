@@ -119,14 +119,31 @@ refetches; it is as close to hot reload as the extension host gets.
 
 `make ext-package` produces a `.vsix` if you want to install it properly.
 
-### Postgres
+### Postgres and object storage
 
-Postgres starts with either container profile, or on its own with `make db-up`.
-**Nothing needs it yet** — the API keeps todos in memory, so `make dev` works
-with Docker stopped entirely. It is groundwork for `packages/db`.
+`make db-up` starts Postgres and SeaweedFS and waits for both; they also start
+with either container profile.
 
-`make psql` opens a shell against it; `make db-url` prints the connection
-string.
+The API **requires** Postgres — it has no in-memory fallback, so it will not
+boot without `DATABASE_URL`. After starting the services, apply the schema:
+
+```bash
+make migrate
+```
+
+| Command       | What it does                                 |
+| ------------- | -------------------------------------------- |
+| `make psql`   | Open a psql shell against the local database |
+| `make db-url` | Print the `DATABASE_URL`                     |
+| `make s3-url` | Print the S3 endpoint                        |
+| `make reset`  | Stop everything and delete both data volumes |
+
+SeaweedFS provides an S3-compatible gateway on port 8333; its filer browser is
+on 8888 if you want to confirm an upload landed. Credentials in
+`docker-compose.yml` are development values only.
+
+The test suite does **not** need either service: `npm run verify` passes with
+Docker stopped.
 
 ## Using the published package
 

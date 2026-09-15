@@ -22,6 +22,7 @@ and CodeRabbit review. Treat that automation as the thing being maintained — s
 | ------------------ | --------------------------- | ---------- |
 | `packages/core`    | `sandbox-factory`           | **yes**    |
 | `packages/shared`  | `@sandbox-factory/shared`   | no         |
+| `packages/db`      | `@sandbox-factory/db`       | no         |
 | `packages/client`  | `@sandbox-factory/client`   | no         |
 | `apps/api`         | `@sandbox-factory/api`      | no         |
 | `apps/web`         | `@sandbox-factory/web`      | no         |
@@ -119,13 +120,29 @@ script it names. CI calls the npm scripts directly and does not use `make`.
 
 **`docker-compose.yml` has two profiles, and neither is required.** `dev` runs
 the API and web app in containers with the source bind-mounted; `prod` builds
-the real images and serves the web app through nginx. Postgres starts with both
-and is groundwork for `packages/db` — nothing uses it yet.
+the real images and serves the web app through nginx. Postgres and SeaweedFS
+start with both.
 
-Running on the host with `npm run dev` stays the default and the fastest path.
-Do not make a container a hard requirement of `npm run dev` or of the test
-suite: **no test may depend on a running container**, and `npm run verify` has
-to pass on a machine with Docker stopped.
+**The API requires Postgres, but the test suite does not.** `apps/api` will not
+boot without `DATABASE_URL` — there is no in-memory fallback, because a server
+that quietly keeps todos in a process about to restart looks healthy and loses
+data. `createInMemoryStore` still exists in `apps/api/src/store.ts`, but it is
+a **test double**: route tests run against it so they need no container.
+
+That distinction is load-bearing. **No test may depend on a running container**,
+and `npm run verify` has to pass on a machine with Docker stopped. When adding
+tests to `packages/db`, test the mapping and the store against the fake in
+`packages/db/test/fake-db.ts` rather than reaching for a real connection.
+
+`client.ts` and `migrate.ts` in `packages/db` are covered without a database:
+`postgres()` is lazy, so a pool can be built and drained with nothing
+listening, and `runMigrations` takes its two collaborators as optional
+parameters so the close-on-failure path can be tested. What is _not_ covered
+there is whether the SQL applies — verify that with `make migrate` against a
+live database.
+
+Running on the host with `npm run dev` stays the default and the fastest path,
+but it now needs `make db-up && make migrate` first.
 
 Two container details that look odd and are deliberate:
 
@@ -265,6 +282,25 @@ It must be an _include_, not a relative exclude: workspaces sit at different
 depths (`packages/core` vs `apps/api`), so no single `../**` pattern matches the
 siblings from every one of them. Leave that flag alone.
 
+**A file no test imports is invisible to the thresholds, so every workspace
+also runs `assert-all-covered`.** Node's `--test-coverage-*` flags only police
+files the run actually loaded: add a source file that nothing imports and the
+report omits it entirely, reporting 100% and passing. That is backwards for
+catching new untested code, so each `test` script writes the report to
+`dist-test/coverage.txt` and then asserts every compiled source file appears in
+it.
+
+If it fails, add a test that imports the file. Only if the file genuinely
+cannot be loaded by a test — a barrel of re-exports, or a CLI whose module body
+runs on import — add its compiled name as an argument to `assert-all-covered`
+in that workspace's `test` script. Three are listed today: `index.js` and
+`migrate-cli.js` in `packages/db`, and `server.js` in `apps/api`.
+
+**Do not put the test command on the left of a pipe.** npm runs scripts under
+`sh` without `pipefail`, so a pipeline's exit status is its _last_ command's —
+piping a failing test run into anything makes the suite exit 0 and CI go green
+on red tests. That is why the scripts redirect to a file and `&&`-chain instead.
+
 Do not lower the thresholds to make a change pass. They are what keeps untested
 code from auto-merging to `main`; add the test instead. If a threshold genuinely
 needs to move, that is a decision to raise with the maintainer, not a side effect
@@ -291,6 +327,11 @@ than leaving the placeholder to imply coverage that does not exist.
   stops a `node:` import from reaching the browser and the extension bundle. A
   type error there means the import is wrong, not the config.
 - **Do not commit secrets.** `.env` is gitignored, `.env.example` is the template.
+  The credentials in `docker-compose.yml` are local development values and must
+  stay that way — production config comes from the environment.
+- **Do not hand-edit `packages/db/drizzle/`.** drizzle-kit generates it from
+  `src/schema.ts` via `npm run db:generate --workspace @sandbox-factory/db`.
+  It is in `.prettierignore` for the same reason `CHANGELOG.md` is.
 - **Do not weaken the `permissions:` blocks in workflows.** They are
   least-privilege on purpose and OpenSSF Scorecard grades them.
 

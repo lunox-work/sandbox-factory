@@ -15,6 +15,7 @@ WORKDIR /repo
 COPY package.json package-lock.json ./
 COPY tooling/tsconfig/package.json ./tooling/tsconfig/
 COPY packages/core/package.json ./packages/core/
+COPY packages/db/package.json ./packages/db/
 COPY packages/shared/package.json ./packages/shared/
 COPY packages/client/package.json ./packages/client/
 COPY apps/api/package.json ./apps/api/

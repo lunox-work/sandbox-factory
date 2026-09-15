@@ -9,8 +9,10 @@
 #   prod  multi-stage builds, nothing mounted, nginx serving the built web app.
 #         What deployment looks like. Start it with `make up-prod`.
 #
-# Postgres has no profile, so it starts in both — and on its own with
-# `docker compose up -d postgres`, which is all `make db-up` does.
+# Postgres and SeaweedFS have no profile, so they start in both — and on their
+# own with `docker compose up -d postgres seaweedfs`, which is all `make db-up`
+# does. The API requires Postgres: it has no in-memory fallback, so it will not
+# boot without DATABASE_URL.
 #
 # The VS Code extension is deliberately absent. It has no server process: it is
 # a bundle that the editor on your host loads, so a container cannot run it.
@@ -39,6 +41,43 @@ services:
       retries: 10
       start_period: 5s
 
+  seaweedfs:
+    # `server` runs master, volume, filer and the S3 gateway in one process.
+    # That is the right trade for local development and CI; a real deployment
+    # splits them so volumes can scale independently of the gateway.
+    image: chrislusf/seaweedfs:3.80
+    container_name: sandbox-factory-seaweedfs
+    restart: unless-stopped
+    command: >
+      server -dir=/data -s3 -s3.port=8333
+      -master.volumeSizeLimitMB=128 -volume.max=8
+    environment:
+      # SeaweedFS reads S3 credentials from these; the API signs requests with
+      # the matching S3_ACCESS_KEY_ID / S3_SECRET_ACCESS_KEY. Development
+      # values only — production supplies real ones through the environment.
+      AWS_ACCESS_KEY_ID: sandbox
+      AWS_SECRET_ACCESS_KEY: sandboxsecret
+    ports:
+      # 8333 is the S3 gateway — the only port the API talks to.
+      - "${S3_PORT:-8333}:8333"
+      # 8888 is the filer's HTTP browser, handy for confirming an upload
+      # landed. Not used by any code.
+      - "${SEAWEED_FILER_PORT:-8888}:8888"
+    volumes:
+      - seaweedfs-data:/data
+    healthcheck:
+      # The S3 gateway comes up after the master and volume servers, so this
+      # checks the port the API actually uses rather than the master's.
+      #
+      # 127.0.0.1, not localhost: wget resolves localhost to ::1 first and
+      # SeaweedFS does not bind IPv6, so the probe fails against a healthy
+      # gateway. No pipe either — it would mask wget's exit status.
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8333"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
   # ---- dev ----------------------------------------------------------------
 
   api-dev:
@@ -57,9 +96,13 @@ services:
     environment:
       PORT: 4000
       CORS_ORIGINS: http://localhost:5173
-      # Unset on purpose: the API falls back to its in-memory store. Point it
-      # at postgres once packages/db exists.
-      # DATABASE_URL: postgres://postgres:postgres@postgres:5432/sandbox_factory
+      # Required: the API has no in-memory fallback and will not boot without
+      # it. Host and port are the compose service, not localhost.
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/sandbox_factory
+      S3_ENDPOINT: http://seaweedfs:8333
+      S3_BUCKET: sandbox-factory
+      S3_ACCESS_KEY_ID: sandbox
+      S3_SECRET_ACCESS_KEY: sandboxsecret
     ports:
       - "${API_PORT:-4000}:4000"
     volumes:
@@ -70,10 +113,13 @@ services:
       - /repo/node_modules
       - /repo/apps/api/node_modules
       - /repo/packages/core/node_modules
+      - /repo/packages/db/node_modules
       - /repo/packages/shared/node_modules
       - /repo/packages/client/node_modules
     depends_on:
       postgres:
+        condition: service_healthy
+      seaweedfs:
         condition: service_healthy
 
   web-dev:
@@ -120,12 +166,19 @@ services:
       # Same-origin through the web container's nginx proxy, so no cross-origin
       # request is made in this topology.
       CORS_ORIGINS: http://localhost:${WEB_PROD_PORT:-8080}
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/sandbox_factory
+      S3_ENDPOINT: http://seaweedfs:8333
+      S3_BUCKET: sandbox-factory
+      S3_ACCESS_KEY_ID: sandbox
+      S3_SECRET_ACCESS_KEY: sandboxsecret
     expose:
       - "4000"
     ports:
       - "${API_PORT:-4000}:4000"
     depends_on:
       postgres:
+        condition: service_healthy
+      seaweedfs:
         condition: service_healthy
 
   web:
@@ -147,3 +200,5 @@ services:
 volumes:
   postgres-data:
     name: sandbox-factory-postgres-data
+  seaweedfs-data:
+    name: sandbox-factory-seaweedfs-data

@@ -22,7 +22,7 @@ COMPOSE := docker compose
 
 .PHONY: help install build dev test lint format verify \
         up down logs ps up-prod down-prod build-images \
-        db-up db-down reset psql db-url \
+        db-up db-down reset psql db-url migrate s3-url \
         ext ext-deps ext-watch ext-package clean
 
 help: ## Show this help
@@ -94,14 +94,21 @@ down-prod: ## Stop the prod containers, keeping data
 
 ## ---- database -----------------------------------------------------------
 
-db-up: ## Start only Postgres, and wait for it
-	$(COMPOSE) up -d --wait postgres
-	@echo "postgres ready on localhost:$${POSTGRES_PORT:-5432}"
+db-up: ## Start Postgres and SeaweedFS, and wait for them
+	$(COMPOSE) up -d --wait postgres seaweedfs
+	@echo "postgres  ready on localhost:$${POSTGRES_PORT:-5432}"
+	@echo "seaweedfs ready on localhost:$${S3_PORT:-8333}  (s3)"
 
-db-down: ## Stop Postgres, keeping data
-	$(COMPOSE) stop postgres
+db-down: ## Stop Postgres and SeaweedFS, keeping data
+	$(COMPOSE) stop postgres seaweedfs
 
-reset: ## Stop everything and DELETE the database volume
+# Delegates to the workspace script, like every other target here. Needs the
+# database up, so it depends on db-up rather than failing on a closed port.
+migrate: db-up ## Apply pending migrations to the local database
+	DATABASE_URL="postgres://postgres:postgres@localhost:$${POSTGRES_PORT:-5432}/sandbox_factory" \
+		npm run db:migrate --workspace @sandbox-factory/db
+
+reset: ## Stop everything and DELETE the database and object-storage volumes
 	$(COMPOSE) --profile dev --profile prod down -v
 
 psql: ## Open a psql shell in the running container
@@ -109,6 +116,9 @@ psql: ## Open a psql shell in the running container
 
 db-url: ## Print the DATABASE_URL for the local database
 	@echo "postgres://postgres:postgres@localhost:$${POSTGRES_PORT:-5432}/sandbox_factory"
+
+s3-url: ## Print the S3 endpoint for the local SeaweedFS
+	@echo "http://localhost:$${S3_PORT:-8333}"
 
 ## ---- vs code extension (host only) --------------------------------------
 

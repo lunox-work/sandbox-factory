@@ -7,18 +7,20 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "lint": "tsc -p tsconfig.test.json --noEmit",
-    "test": "tsc -p tsconfig.test.json && node --experimental-test-coverage --test-coverage-lines=80 --test-coverage-branches=80 --test-coverage-functions=80 --test-coverage-include=\"dist-test/src/**\" --test-coverage-exclude=\"dist-test/test/**\" --test dist-test/test/*.test.js",
+    "test": "rm -rf dist-test && tsc -p tsconfig.test.json && node --experimental-test-coverage --test-coverage-lines=80 --test-coverage-branches=80 --test-coverage-functions=80 --test-coverage-include=\"dist-test/src/**\" --test-coverage-exclude=\"dist-test/test/**\" --test dist-test/test/*.test.js > dist-test/coverage.txt; status=$?; cat dist-test/coverage.txt; [ $status -eq 0 ] && assert-all-covered dist-test/src dist-test/coverage.txt server.js",
     "dev": "tsc -p tsconfig.json && concurrently -k -n tsc,node -c blue,green \"tsc -p tsconfig.json --watch --preserveWatchOutput\" \"node --watch dist/server.js\"",
     "start": "node dist/server.js"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.7",
+    "@sandbox-factory/db": "*",
     "@sandbox-factory/shared": "*",
     "hono": "^4.6.14",
     "sandbox-factory": "*",
     "zod": "^4.1.12"
   },
   "devDependencies": {
+    "@sandbox-factory/coverage": "*",
     "@sandbox-factory/tsconfig": "*",
     "@types/node": "^26.5.1",
     "concurrently": "^9.1.2",

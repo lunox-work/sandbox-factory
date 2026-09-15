@@ -1,34 +1,29 @@
 /**
- * An in-memory todo store.
+ * The store contract, re-exported.
  *
- * Deliberately not a database: it keeps the scaffold runnable with `npm run
- * dev` and no Docker, and it defines the interface that the real Postgres
- * implementation in packages/db will satisfy. Swapping it out should not
- * require touching routes.ts.
+ * The interface, `NotFoundError`, and the Postgres implementation live in
+ * `@sandbox-factory/db`: dependencies point downward, so a package cannot
+ * import this app, and the contract has to sit where both can reach it.
+ *
+ * This module stays so that `routes.ts` and its tests keep importing from
+ * `./store.js` as they always have — the swap to a real database is not
+ * visible to them.
+ *
+ * `createInMemoryStore` remains for the route tests, which must run with no
+ * container: it is a test double now, not the production path. The server
+ * requires Postgres.
  */
 
 import { normalizeTitle, type Todo } from "sandbox-factory";
 
-export interface TodoPatch {
-  readonly title?: string;
-  readonly done?: boolean;
-}
+import { NotFoundError, type TodoStore } from "@sandbox-factory/db";
 
-export interface TodoStore {
-  list(): Promise<Todo[]>;
-  get(id: string): Promise<Todo | undefined>;
-  create(title: string): Promise<Todo>;
-  update(id: string, patch: TodoPatch): Promise<Todo>;
-  remove(id: string): Promise<void>;
-}
-
-/** Thrown when an id does not exist; routes turn this into a 404. */
-export class NotFoundError extends Error {
-  constructor(id: string) {
-    super(`No todo with id "${id}".`);
-    this.name = "NotFoundError";
-  }
-}
+export {
+  createPostgresStore,
+  NotFoundError,
+  type TodoPatch,
+  type TodoStore,
+} from "@sandbox-factory/db";
 
 export function createInMemoryStore(seed: readonly Todo[] = []): TodoStore {
   const todos = new Map<string, Todo>(seed.map((todo) => [todo.id, todo]));

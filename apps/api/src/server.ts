@@ -4,26 +4,30 @@
  */
 
 import { serve } from "@hono/node-server";
+import { createConnection, createPostgresStore } from "@sandbox-factory/db";
 
 import { parseEnv } from "./env.js";
 import { createApp } from "./routes.js";
-import { createInMemoryStore } from "./store.js";
 
 const env = parseEnv();
 
+const connection = createConnection({ url: env.DATABASE_URL });
+
 const app = createApp({
-  // Seeded so a fresh checkout shows something in the UI immediately.
-  store: createInMemoryStore([
-    {
-      id: "todo_1",
-      title: "Try checking this off",
-      done: false,
-      createdAt: new Date().toISOString(),
-    },
-  ]),
+  store: createPostgresStore(connection.db),
   corsOrigins: env.CORS_ORIGINS,
 });
 
-serve({ fetch: app.fetch, port: env.PORT }, (info) => {
+const server = serve({ fetch: app.fetch, port: env.PORT }, (info) => {
   console.log(`API listening on http://localhost:${info.port}`);
 });
+
+// Drain the pool on shutdown. Without this the process hangs on SIGTERM with
+// connections still open, and the container takes the full stop timeout to die.
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  process.on(signal, () => {
+    server.close(() => {
+      void connection.close().then(() => process.exit(0));
+    });
+  });
+}
