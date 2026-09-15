@@ -29,7 +29,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "tsc -p tsconfig.test.json && node --test",
+    "test": "tsc -p tsconfig.test.json && node --test dist-test/test/*.test.js",
     "lint": "tsc -p tsconfig.test.json --noEmit",
     "format": "prettier --write ."
   },
