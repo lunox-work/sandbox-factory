@@ -16,7 +16,7 @@ jobs:
     steps:
       # Maintains a release PR that accumulates changelog entries from
       # Conventional Commits. Merging it tags the release.
-      - uses: googleapis/release-please-action@v4
+      - uses: googleapis/release-please-action@v5
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
