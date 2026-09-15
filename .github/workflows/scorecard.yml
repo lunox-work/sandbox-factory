@@ -12,6 +12,8 @@ permissions: read-all
 jobs:
   analysis:
     name: Scorecard analysis
+    # Scorecard publishing and SARIF upload require a public repository.
+    if: github.event.repository.private == false
     runs-on: ubuntu-latest
     permissions:
       security-events: write
@@ -21,7 +23,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: ossf/scorecard-action@v2
+      - uses: ossf/scorecard-action@v2.4.4
         with:
           results_file: results.sarif
           results_format: sarif

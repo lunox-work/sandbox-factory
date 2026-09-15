@@ -15,6 +15,8 @@ permissions:
 jobs:
   analyze:
     name: Analyze
+    # Code scanning upload requires Advanced Security (free on public repos).
+    if: github.event.repository.private == false
     runs-on: ubuntu-latest
     permissions:
       actions: read
