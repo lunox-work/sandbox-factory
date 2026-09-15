@@ -34,7 +34,7 @@
     "format": "prettier --write ."
   },
   "devDependencies": {
-    "@types/node": "^22.10.0",
+    "@types/node": "^26.5.1",
     "prettier": "^3.4.0",
     "typescript": "^7.0.2"
   },
