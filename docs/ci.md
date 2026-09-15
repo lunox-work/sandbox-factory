@@ -153,6 +153,17 @@ accumulates changelog entries parsed from Conventional Commit messages. Merging
 that PR writes `CHANGELOG.md`, bumps the version in `package.json`, and tags the
 release.
 
+**Squash merging means the PR title is the commit message.** Because the ruleset
+allows squash merges only, each PR lands on `main` as one commit whose subject is
+the PR title — the branch's own commit subjects survive only as bullets in the
+body, which release-please does not parse for the release type.
+
+So a PR titled `docs:` or `ci:` produces no release even when it contains a
+`fix:` commit. The workflow still runs and still succeeds; the log just says
+`No user facing commits found ... skipping`. If you expected a release and did
+not get one, check the merged commit's subject on `main` first — that is almost
+always the reason. The fix is to title the PR for its user-facing change.
+
 Configuration lives in [`release-please-config.json`](../release-please-config.json)
 and [`.release-please-manifest.json`](../.release-please-manifest.json). The
 manifest records the last released version (`0.1.0`); the next number comes from

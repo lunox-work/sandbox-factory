@@ -77,9 +77,20 @@ is what `noUncheckedIndexedAccess` exists to prevent.
 **Commit messages are Conventional Commits, and they are not cosmetic.**
 release-please parses them to build the changelog and decide the next version.
 `fix:` produces a patch bump, `feat:` a minor, a `!` or `BREAKING CHANGE:`
-footer a major. A change that lands as `chore:` gets no changelog entry at all.
-Pick the prefix based on what the change does for a consumer of the package, not
-on how large it felt to write.
+footer a major. A change that lands as `chore:`, `docs:` or `ci:` is not
+user-facing and gets no release at all. Pick the prefix based on what the change
+does for a consumer of the package, not on how large it felt to write.
+
+**The PR title is the only commit message that survives.** `main` accepts squash
+merges only, so every PR lands as a single commit whose subject is the PR title;
+the individual commit subjects are demoted to bullets in the body, where
+release-please does not look for the release type.
+
+This has a sharp consequence. A PR titled `docs: ...` that contains a `fix:`
+commit produces **no release** — release-please reports "no user facing commits
+found" and skips, and nothing warns you. If a PR contains any user-facing change,
+**the PR title itself must carry the `fix:` or `feat:` prefix**, whatever else is
+in the branch. When a PR mixes a fix with docs or CI work, title it for the fix.
 
 **`CHANGELOG.md` is generated.** release-please owns it. Never hand-edit it, and
 note it is in `.prettierignore` precisely because its generated formatting does
