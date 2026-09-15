@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "display": "Base",
+  "_comment": [
+    "The strictness contract for every workspace in this repo. Extend it;",
+    "do not copy it. Anything here that a package overrides is a deliberate",
+    "exception and should say why in that package's tsconfig.",
+    "",
+    "Path settings (rootDir, outDir, include) deliberately live in the",
+    "extending config: they are per-package, the strictness is not."
+  ],
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "verbatimModuleSyntax": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "exclude": ["node_modules", "dist", "dist-test"]
+}

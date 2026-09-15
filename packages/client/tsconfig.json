@@ -1,0 +1,23 @@
+{
+  "extends": "@sandbox-factory/tsconfig/base.json",
+  "_comment": [
+    "Extends base.json, NOT node.json, and deliberately narrows types:",
+    "",
+    "  types: []   — no @types/node. An accidental `node:fs` import fails to",
+    "                compile here, which is what keeps this package usable",
+    "                from the browser bundle and the VS Code extension host.",
+    "  lib: +DOM   — for the web-standard types only (fetch, Headers,",
+    "                RequestInit). These exist in every target runtime;",
+    "                including them is not a licence to touch `document`.",
+    "",
+    "Both lines are load-bearing. Dropping types: [] removes the guardrail;",
+    "dropping DOM makes fetch untyped."
+  ],
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "lib": ["ES2022", "DOM"],
+    "types": []
+  },
+  "include": ["src"]
+}

@@ -1,0 +1,29 @@
+{
+  "name": "@sandbox-factory/client",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "tsc -p tsconfig.test.json --noEmit",
+    "test": "tsc -p tsconfig.test.json && node --experimental-test-coverage --test-coverage-lines=90 --test-coverage-branches=85 --test-coverage-functions=90 --test-coverage-include=\"dist-test/src/**\" --test-coverage-exclude=\"dist-test/test/**\" --test dist-test/test/*.test.js"
+  },
+  "dependencies": {
+    "@sandbox-factory/shared": "*",
+    "sandbox-factory": "*"
+  },
+  "devDependencies": {
+    "@sandbox-factory/tsconfig": "*",
+    "@types/node": "^26.5.1",
+    "typescript": "^7.0.2"
+  }
+}

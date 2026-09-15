@@ -1,0 +1,4 @@
+{
+  "extends": "@sandbox-factory/tsconfig/extension.json",
+  "include": ["src"]
+}

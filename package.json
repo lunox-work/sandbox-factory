@@ -1,7 +1,8 @@
 {
-  "name": "sandbox-factory",
-  "version": "0.1.0",
-  "description": "One-sentence description of what sandbox-factory does.",
+  "name": "@sandbox-factory/monorepo",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Monorepo root. The published package lives in packages/core; everything here is workspace orchestration.",
   "license": "MIT",
   "author": "feversoul",
   "repository": {
@@ -13,32 +14,29 @@
     "url": "https://github.com/lunox-work/sandbox-factory/issues"
   },
   "type": "module",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
-    }
-  },
-  "files": [
-    "dist"
+  "packageManager": "npm@10.9.2",
+  "workspaces": [
+    "tooling/*",
+    "packages/*",
+    "apps/*"
   ],
   "engines": {
     "node": ">=22"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "test": "tsc -p tsconfig.test.json && node --experimental-test-coverage --test-coverage-lines=80 --test-coverage-branches=80 --test-coverage-functions=80 --test-coverage-exclude=\"dist-test/test/**\" --test dist-test/test/*.test.js",
-    "lint": "tsc -p tsconfig.test.json --noEmit",
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "lint": "turbo run lint",
+    "dev": "turbo run dev --filter=@sandbox-factory/api --filter=@sandbox-factory/web",
     "format": "prettier --write .",
-    "verify": "npm run lint && prettier --check . && npm run build && npm test",
+    "format:check": "prettier --check .",
+    "verify": "npm run lint && npm run format:check && npm run build && npm test",
     "prepare": "husky"
   },
   "devDependencies": {
-    "@types/node": "^26.5.1",
     "husky": "^9.1.7",
     "prettier": "^3.4.0",
+    "turbo": "^2.3.3",
     "typescript": "^7.0.2"
   },
   "keywords": []

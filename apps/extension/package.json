@@ -1,0 +1,139 @@
+{
+  "name": "sandbox-factory-vscode",
+  "displayName": "sandbox-factory",
+  "description": "Manage your todos from VS Code.",
+  "version": "0.0.1",
+  "publisher": "lunox",
+  "license": "MIT",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lunox-work/sandbox-factory.git",
+    "directory": "apps/extension"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "sandbox-factory",
+          "title": "sandbox-factory",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "sandbox-factory": [
+        {
+          "id": "sandboxFactory.todos",
+          "name": "Todos",
+          "contextualTitle": "sandbox-factory"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "sandboxFactory.todos",
+        "contents": "Loading todos\u2026\n[Add todo](command:sandboxFactory.create)\n[Refresh](command:sandboxFactory.refresh)\n[Open settings](command:workbench.action.openSettings?%22sandboxFactory%22)"
+      }
+    ],
+    "commands": [
+      {
+        "command": "sandboxFactory.create",
+        "title": "sandbox-factory: Add Todo",
+        "icon": "$(add)"
+      },
+      {
+        "command": "sandboxFactory.refresh",
+        "title": "sandbox-factory: Refresh Todos",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "sandboxFactory.toggle",
+        "title": "sandbox-factory: Toggle Done",
+        "icon": "$(check)"
+      },
+      {
+        "command": "sandboxFactory.rename",
+        "title": "sandbox-factory: Rename Todo",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "sandboxFactory.delete",
+        "title": "sandbox-factory: Delete Todo",
+        "icon": "$(trash)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "sandboxFactory.create",
+          "when": "view == sandboxFactory.todos",
+          "group": "navigation@1"
+        },
+        {
+          "command": "sandboxFactory.refresh",
+          "when": "view == sandboxFactory.todos",
+          "group": "navigation@2"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "sandboxFactory.toggle",
+          "when": "view == sandboxFactory.todos && viewItem =~ /^todo\\./",
+          "group": "inline@1"
+        },
+        {
+          "command": "sandboxFactory.delete",
+          "when": "view == sandboxFactory.todos && viewItem =~ /^todo\\./",
+          "group": "inline@2"
+        },
+        {
+          "command": "sandboxFactory.rename",
+          "when": "view == sandboxFactory.todos && viewItem =~ /^todo\\./",
+          "group": "1_modify"
+        },
+        {
+          "command": "sandboxFactory.delete",
+          "when": "view == sandboxFactory.todos && viewItem =~ /^todo\\./",
+          "group": "1_modify"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "sandbox-factory",
+      "properties": {
+        "sandboxFactory.apiBaseUrl": {
+          "type": "string",
+          "default": "http://localhost:4000",
+          "description": "Base URL of the sandbox-factory API."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.js --production",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "test": "echo \"No extension tests yet \u2014 add @vscode/test-electron when the first command earns one.\"",
+    "dev": "node esbuild.js --watch",
+    "package": "vsce package --no-dependencies"
+  },
+  "dependencies": {
+    "@sandbox-factory/client": "*",
+    "@sandbox-factory/shared": "*",
+    "sandbox-factory": "*"
+  },
+  "devDependencies": {
+    "@sandbox-factory/tsconfig": "*",
+    "@types/node": "^26.5.1",
+    "@types/vscode": "^1.85.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^7.0.2"
+  }
+}

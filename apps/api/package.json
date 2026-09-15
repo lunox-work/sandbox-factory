@@ -1,0 +1,27 @@
+{
+  "name": "@sandbox-factory/api",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "tsc -p tsconfig.test.json --noEmit",
+    "test": "tsc -p tsconfig.test.json && node --experimental-test-coverage --test-coverage-lines=80 --test-coverage-branches=80 --test-coverage-functions=80 --test-coverage-include=\"dist-test/src/**\" --test-coverage-exclude=\"dist-test/test/**\" --test dist-test/test/*.test.js",
+    "dev": "concurrently -k -n tsc,node -c blue,green \"tsc -p tsconfig.json --watch --preserveWatchOutput\" \"node --watch dist/server.js\"",
+    "start": "node dist/server.js"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.13.7",
+    "@sandbox-factory/shared": "*",
+    "hono": "^4.6.14",
+    "sandbox-factory": "*",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@sandbox-factory/tsconfig": "*",
+    "@types/node": "^26.5.1",
+    "concurrently": "^9.1.2",
+    "typescript": "^7.0.2"
+  }
+}

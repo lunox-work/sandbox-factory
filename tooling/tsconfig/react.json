@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "display": "React (browser)",
+  "_comment": [
+    "Browser code. Two deliberate departures from base.json:",
+    "  - module/moduleResolution are Bundler, not NodeNext, so imports are",
+    "    written without the .js extension that NodeNext requires.",
+    "  - noEmit: Vite does the emitting, tsc only type-checks."
+  ],
+  "extends": "./base.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false
+  }
+}

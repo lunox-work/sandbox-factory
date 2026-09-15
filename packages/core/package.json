@@ -1,0 +1,42 @@
+{
+  "name": "sandbox-factory",
+  "version": "0.1.0",
+  "description": "Core todo domain: the Todo type, title rules, filters, and counts.",
+  "license": "MIT",
+  "author": "feversoul",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lunox-work/sandbox-factory.git",
+    "directory": "packages/core"
+  },
+  "homepage": "https://github.com/lunox-work/sandbox-factory#readme",
+  "bugs": {
+    "url": "https://github.com/lunox-work/sandbox-factory/issues"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "tsc -p tsconfig.test.json --noEmit",
+    "test": "tsc -p tsconfig.test.json && node --experimental-test-coverage --test-coverage-lines=90 --test-coverage-branches=90 --test-coverage-functions=90 --test-coverage-include=\"dist-test/src/**\" --test-coverage-exclude=\"dist-test/test/**\" --test dist-test/test/*.test.js"
+  },
+  "devDependencies": {
+    "@sandbox-factory/tsconfig": "*",
+    "@types/node": "^26.5.1",
+    "typescript": "^7.0.2"
+  },
+  "keywords": []
+}

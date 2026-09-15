@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "display": "VS Code extension",
+  "_comment": [
+    "The VS Code extension host loads CommonJS, not ESM — this is the one",
+    "place in the repo that is not ESM, and it is not negotiable.",
+    "",
+    "moduleResolution is Bundler because esbuild resolves the imports, not",
+    "node: the removed node10 mode is what TypeScript 7 rejects, and Bundler",
+    "is the mode that matches how this code is actually built. It also means",
+    "imports here are written without the .js extension that NodeNext",
+    "requires elsewhere in the repo.",
+    "",
+    "noEmit because esbuild produces the bundle (format: cjs,",
+    "external: ['vscode']); tsc only type-checks."
+  ],
+  "extends": "./base.json",
+  "compilerOptions": {
+    "module": "Preserve",
+    "moduleResolution": "Bundler",
+    "types": ["node"],
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false
+  }
+}
