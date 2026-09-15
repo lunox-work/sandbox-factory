@@ -18,7 +18,5 @@ jobs:
       # Conventional Commits. Merging it tags the release.
       - uses: googleapis/release-please-action@v4
         with:
-          release-type: node
-          # Stay pre-1.0 until the public API is real; 1.0.0 would signal a
-          # stability commitment the placeholder API cannot back.
-          initial-version: 0.1.0
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
