@@ -1,0 +1,24 @@
+# CodeRabbit AI review config. Free on the Open Source plan for public repos.
+# Activates once the CodeRabbit GitHub App is installed on the repository.
+language: en-US
+
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  review_status: true
+  poem: false
+  auto_review:
+    enabled: true
+    drafts: false
+    # Dependabot PRs are already gated by CI and auto-merge.
+    ignore_title_keywords:
+      - "chore(deps)"
+      - "release"
+  path_filters:
+    - "!dist/**"
+    - "!dist-test/**"
+    - "!package-lock.json"
+
+chat:
+  auto_reply: true

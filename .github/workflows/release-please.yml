@@ -1,0 +1,21 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      # Maintains a release PR that accumulates changelog entries from
+      # Conventional Commits. Merging it tags the release.
+      - uses: googleapis/release-please-action@v4
+        with:
+          release-type: node
