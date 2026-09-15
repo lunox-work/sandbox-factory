@@ -25,50 +25,108 @@ todo is.
 See [docs/architecture.md](./docs/architecture.md) for how they depend on each
 other and why the boundaries sit where they do.
 
-## Quickstart
+## Run it
 
-Requires Node.js 22 or newer.
+Needs **Docker** and **Make**. Nothing else — not even Node.
 
 ```bash
 git clone https://github.com/lunox-work/sandbox-factory.git
 cd sandbox-factory
-npm ci
-npm run build
-```
-
-Then start the API and the web app together:
-
-```bash
-npm run dev
+make up
 ```
 
 Open <http://localhost:5173>. Add a todo, check it off, click its title to
-rename it, or delete it with the ×. The web app proxies `/api` to the API on
-port 4000, so both run same-origin in development — the same shape as production.
+rename it, delete it with the ×.
 
-The API ships with an in-memory store seeded with one todo, so there is no
-database to set up and no `.env` to write before it works. Todos reset when the
-API restarts.
+The first `make up` installs dependencies inside the containers, so give it a
+minute. After that it starts in seconds. `make down` stops it.
 
-To run just one of them:
+### Plus the VS Code extension
 
 ```bash
-npm run dev --workspace @sandbox-factory/api   # http://localhost:4000
-npm run dev --workspace @sandbox-factory/web   # http://localhost:5173
+make ext
 ```
 
-Both watch and reload on change. Configuration is optional and per-app — see
-[`apps/api/.env.example`](./apps/api/.env.example) and
-[`apps/web/.env.example`](./apps/web/.env.example).
+Then open this repo in VS Code and press <kbd>F5</kbd>. A second window opens
+with the extension loaded — the sandbox-factory icon is in its activity bar.
 
-### The VS Code extension
+The extension runs on your machine, not in Docker: it is a bundle the editor
+loads, so there is no process for a container to run. `make ext` needs Node 22+
+and installs what it needs on first run.
+
+Both surfaces talk to the same API, so a todo added in one shows in the other.
+
+## Develop it
+
+Needs **Node.js 22+**. Docker optional.
 
 ```bash
-npm run dev --workspace sandbox-factory-vscode
+make dev
 ```
 
-Then press <kbd>F5</kbd> in VS Code to launch an Extension Development Host.
-Point it at a different API with the `sandboxFactory.apiBaseUrl` setting.
+Runs the API and web app directly on your machine — faster reload than the
+containers, and debuggers attach without ceremony. This is what you want day to
+day.
+
+| Command       | What it does                                  |
+| ------------- | --------------------------------------------- |
+| `make dev`    | API on :4000, web on :5173, hot reload        |
+| `make ext`    | Rebuild the extension on save                 |
+| `make verify` | Everything CI runs — the gate before pushing  |
+| `make test`   | Test every workspace with coverage thresholds |
+| `make build`  | Build every workspace, in dependency order    |
+| `make lint`   | Type-check every workspace                    |
+| `make format` | Apply formatting                              |
+
+Run `make` on its own for the full list. Every target delegates to an npm
+script, so `make test` and `npm test` cannot drift apart — use whichever you
+prefer.
+
+Scope a check to one workspace and its dependencies:
+
+```bash
+npx turbo run lint test --filter=@sandbox-factory/api
+```
+
+### Running it in containers instead
+
+```bash
+make up        # dev containers — source mounted, hot reload intact
+make up-prod   # built images behind nginx on :8080, what deployment looks like
+```
+
+`make up-prod` serves everything through nginx on one origin with `/api`
+proxied, matching the dev server's proxy so cookie and CORS behaviour does not
+differ between the two.
+
+| Command             | What it does                                       |
+| ------------------- | -------------------------------------------------- |
+| `make up` / `down`  | Dev containers                                     |
+| `make up-prod`      | Built images behind nginx                          |
+| `make build-images` | Build the production images without starting them  |
+| `make logs` / `ps`  | Follow logs, show status                           |
+| `make reset`        | Stop everything and **delete** the database volume |
+
+Ports are overridable: `API_PORT`, `WEB_PORT`, `WEB_PROD_PORT`, `POSTGRES_PORT`.
+
+### The extension's edit loop
+
+`make ext` rebuilds the bundle on save, and the Extension Development Host
+reloads itself when it changes — [`.vscode/settings.json`](./.vscode/settings.json)
+turns on `debug.extensionHost.autoReload`. That reloads the whole extension
+host rather than hot-swapping a module, so in-memory state is lost and the tree
+refetches; it is as close to hot reload as the extension host gets.
+
+`make ext-package` produces a `.vsix` if you want to install it properly.
+
+### Postgres
+
+Postgres starts with either container profile, or on its own with `make db-up`.
+**Nothing needs it yet** — the API keeps todos in memory, so `make dev` works
+with Docker stopped entirely. It is groundwork for `packages/db`.
+
+`make psql` opens a shell against it; `make db-url` prints the connection
+string.
 
 ## Using the published package
 
@@ -80,29 +138,17 @@ npm install sandbox-factory
 ```
 
 ```ts
-import { nextStatuses, transition } from "sandbox-factory";
+import {
+  countTodos,
+  filterTodos,
+  normalizeTitle,
+  toggle,
+} from "sandbox-factory";
 
-nextStatuses("pending"); // ["provisioning", "failed"]
-transition(
-  { id: "sbx_1", name: "demo", status: "pending", createdAt: "…" },
-  "provisioning",
-);
-```
-
-## Development
-
-| Command          | What it does                                  |
-| ---------------- | --------------------------------------------- |
-| `npm run verify` | Everything CI runs — the gate before pushing  |
-| `npm run build`  | Build every workspace, in dependency order    |
-| `npm test`       | Test every workspace with coverage thresholds |
-| `npm run lint`   | Type-check every workspace                    |
-| `npm run format` | Apply formatting                              |
-
-Scope to one workspace and its dependencies with turbo's filter:
-
-```bash
-npx turbo run lint test --filter=@sandbox-factory/api
+normalizeTitle("  buy milk  "); // "buy milk"
+toggle(todo); // a new todo with `done` flipped
+filterTodos(todos, "active");
+countTodos(todos); // { total, active, completed }
 ```
 
 ## Contributing

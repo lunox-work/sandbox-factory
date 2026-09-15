@@ -1,0 +1,21 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      // Press F5 with this selected to open a second VS Code window with the
+      // extension loaded. It needs the bundle to exist: `make ext-watch`
+      // (or `make ext-package`) builds it, and the preLaunchTask below runs
+      // a one-off build so F5 works even from a clean checkout.
+      //
+      // With `debug.extensionHost.autoReload` on (see settings.json) that
+      // window reloads itself whenever the bundle changes, so `make ext-watch`
+      // plus F5 gives an edit-and-see loop.
+      "name": "Run VS Code Extension",
+      "type": "extensionHost",
+      "request": "launch",
+      "args": ["--extensionDevelopmentPath=${workspaceFolder}/apps/extension"],
+      "outFiles": ["${workspaceFolder}/apps/extension/dist/**/*.js"],
+      "preLaunchTask": "build extension"
+    }
+  ]
+}

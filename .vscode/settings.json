@@ -1,0 +1,10 @@
+{
+  // Reload the Extension Development Host automatically when the bundle
+  // changes, so `make ext-watch` is a real edit-and-see loop rather than
+  // edit, switch window, reload by hand.
+  //
+  // It reloads the whole extension host, not a hot swap: in-memory state is
+  // lost and the tree refetches. That is the right behaviour for this
+  // extension and is as close to hot reload as the extension host gets.
+  "debug.extensionHost.autoReload": true
+}

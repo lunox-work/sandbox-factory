@@ -102,6 +102,53 @@ do not use `git push --no-verify` to get around a failure you have not understoo
 
 ## Conventions that are load-bearing
 
+**Make targets must work from a fresh clone.** `make up` and `make ext` are the
+two commands the README puts in front of a new contributor, and both have to
+succeed with nothing installed. Host targets therefore depend on a
+`node_modules` stamp rule, and the extension targets additionally depend on
+`ext-deps`: esbuild inlines the workspace packages from their `dist/`, so those
+must be built before the bundle can resolve them. Dropping either prerequisite
+breaks the first thing a new contributor types, and it will not show up on a
+machine that already has the repo built — test it in a clean clone.
+
+**The `Makefile` delegates; it never reimplements.** Every app target shells out
+to the matching npm script, so `make test` and `npm test` cannot diverge. Add a
+target when it wraps something that already exists — never put build or test
+logic in the Makefile itself, and never let a target's behaviour drift from the
+script it names. CI calls the npm scripts directly and does not use `make`.
+
+**`docker-compose.yml` has two profiles, and neither is required.** `dev` runs
+the API and web app in containers with the source bind-mounted; `prod` builds
+the real images and serves the web app through nginx. Postgres starts with both
+and is groundwork for `packages/db` — nothing uses it yet.
+
+Running on the host with `npm run dev` stays the default and the fastest path.
+Do not make a container a hard requirement of `npm run dev` or of the test
+suite: **no test may depend on a running container**, and `npm run verify` has
+to pass on a machine with Docker stopped.
+
+Two container details that look odd and are deliberate:
+
+- The dev services bind-mount the repo and then shadow every `node_modules`
+  with an anonymous volume. Without that the container would use the host's
+  tree, which on macOS holds darwin binaries that do not run on linux.
+- Both Dockerfiles build from the **repo root**, not their own directory
+  (`docker build -f apps/api/Dockerfile .`). The apps import workspace packages
+  that live outside `apps/*`, so a narrower context cannot see them. They copy
+  the manifests first and install before copying source, so editing a file does
+  not reinstall dependencies.
+
+**The VS Code extension is not containerized, and that is not an oversight.** It
+has no server process — it is a bundle the editor on the host loads — so there
+is nothing for a container to run. `make ext-watch` and `make ext-package`
+handle it on the host. Do not add an extension service to compose.
+
+Its dev loop is split in two, which is why `ext-watch` only does half the job:
+esbuild rebuilds `dist/extension.js` on save, and VS Code loads it. The second
+half is the editor's, not ours — `debug.extensionHost.autoReload` in
+`.vscode/settings.json` is what makes the Development Host pick up a rebuild.
+Both halves are needed for an edit-and-see loop; neither is sufficient alone.
+
 **Dev servers run compiled output too, not sources.** `apps/api`'s `dev` script
 runs `tsc --watch` and `node --watch dist/server.js` side by side under
 `concurrently`. Do not "simplify" it to `node --experimental-strip-types

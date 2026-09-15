@@ -1,0 +1,15 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      // One-off build so F5 has a bundle to load. For an edit-reload loop use
+      // `make ext-watch` in a terminal instead — it rebuilds on every save.
+      "label": "build extension",
+      "type": "shell",
+      "command": "npm run build --workspace sandbox-factory-vscode",
+      "group": "build",
+      "problemMatcher": "$tsc",
+      "presentation": { "reveal": "silent", "panel": "shared" }
+    }
+  ]
+}

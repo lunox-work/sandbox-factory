@@ -15,6 +15,9 @@ build/
 out/
 *.tsbuildinfo
 
+# Packaged VS Code extension — `make ext-package` output, a build artifact
+*.vsix
+
 # Test / coverage
 coverage/
 .nyc_output/
@@ -51,3 +54,6 @@ Thumbs.db
 .vscode/*
 !.vscode/extensions.json
 !.vscode/settings.json
+# Shared so F5 launches the extension without per-developer setup.
+!.vscode/launch.json
+!.vscode/tasks.json

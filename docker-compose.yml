@@ -1,0 +1,149 @@
+# Local development and production-style services.
+#
+# Two profiles, because the two modes want opposite things:
+#
+#   dev   source bind-mounted, hot reload, node_modules installed in the image
+#         and shadowed by an anonymous volume so host and container never share
+#         a tree. Start it with `make up`.
+#
+#   prod  multi-stage builds, nothing mounted, nginx serving the built web app.
+#         What deployment looks like. Start it with `make up-prod`.
+#
+# Postgres has no profile, so it starts in both — and on its own with
+# `docker compose up -d postgres`, which is all `make db-up` does.
+#
+# The VS Code extension is deliberately absent. It has no server process: it is
+# a bundle that the editor on your host loads, so a container cannot run it.
+# `make ext-watch` and `make ext-package` handle it on the host instead.
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: sandbox-factory-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: sandbox_factory
+    ports:
+      # Overridable so this does not fight an existing local Postgres.
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # Depended on with `condition: service_healthy`, so nothing starts
+      # against a database that is still coming up.
+      test: ["CMD-SHELL", "pg_isready -U postgres -d sandbox_factory"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  # ---- dev ----------------------------------------------------------------
+
+  api-dev:
+    profiles: [dev]
+    image: node:22-alpine
+    container_name: sandbox-factory-api-dev
+    working_dir: /repo
+    # The workspace packages must be built before the API can resolve them:
+    # on a fresh clone packages/*/dist does not exist yet and tsc fails with
+    # "Cannot find module 'sandbox-factory'". `^...` builds exactly this
+    # workspace's dependencies, in order.
+    command: >
+      sh -c "npm ci --ignore-scripts
+      && npx turbo run build --filter=@sandbox-factory/api^...
+      && npm run dev --workspace @sandbox-factory/api"
+    environment:
+      PORT: 4000
+      CORS_ORIGINS: http://localhost:5173
+      # Unset on purpose: the API falls back to its in-memory store. Point it
+      # at postgres once packages/db exists.
+      # DATABASE_URL: postgres://postgres:postgres@postgres:5432/sandbox_factory
+    ports:
+      - "${API_PORT:-4000}:4000"
+    volumes:
+      - .:/repo
+      # Anonymous volumes shadow the bind mount, so the container's own
+      # node_modules are used rather than the host's — the host tree holds
+      # darwin binaries and symlinks that are wrong inside linux.
+      - /repo/node_modules
+      - /repo/apps/api/node_modules
+      - /repo/packages/core/node_modules
+      - /repo/packages/shared/node_modules
+      - /repo/packages/client/node_modules
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  web-dev:
+    profiles: [dev]
+    image: node:22-alpine
+    container_name: sandbox-factory-web-dev
+    working_dir: /repo
+    # Same dependency build as the API, then Vite. --host binds 0.0.0.0;
+    # its default of localhost is unreachable from outside the container.
+    command: >
+      sh -c "npm ci --ignore-scripts
+      && npx turbo run build --filter=@sandbox-factory/web^...
+      && npm run dev --workspace @sandbox-factory/web -- --host 0.0.0.0"
+    environment:
+      # The dev server proxies /api here; inside the network the API is
+      # reachable by service name, not localhost.
+      VITE_API_URL: http://api-dev:4000
+    ports:
+      - "${WEB_PORT:-5173}:5173"
+    volumes:
+      - .:/repo
+      - /repo/node_modules
+      - /repo/apps/web/node_modules
+      - /repo/packages/core/node_modules
+      - /repo/packages/shared/node_modules
+      - /repo/packages/client/node_modules
+    depends_on:
+      - api-dev
+
+  # ---- prod ---------------------------------------------------------------
+
+  api:
+    profiles: [prod]
+    build:
+      # Repo root: the API imports workspace packages that live outside
+      # apps/api, so a narrower context cannot see them.
+      context: .
+      dockerfile: apps/api/Dockerfile
+    image: sandbox-factory-api:local
+    container_name: sandbox-factory-api
+    restart: unless-stopped
+    environment:
+      PORT: 4000
+      # Same-origin through the web container's nginx proxy, so no cross-origin
+      # request is made in this topology.
+      CORS_ORIGINS: http://localhost:${WEB_PROD_PORT:-8080}
+    expose:
+      - "4000"
+    ports:
+      - "${API_PORT:-4000}:4000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  web:
+    profiles: [prod]
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    image: sandbox-factory-web:local
+    container_name: sandbox-factory-web
+    restart: unless-stopped
+    environment:
+      # Substituted into nginx.conf at container start.
+      API_URL: http://api:4000
+    ports:
+      - "${WEB_PROD_PORT:-8080}:80"
+    depends_on:
+      - api
+
+volumes:
+  postgres-data:
+    name: sandbox-factory-postgres-data

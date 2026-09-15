@@ -1,0 +1,38 @@
+# Keeps the build context small and stops host artifacts from leaking into an
+# image. node_modules especially: host-built native modules and symlinks do not
+# transfer, so every stage installs its own.
+
+node_modules
+**/node_modules
+
+dist
+**/dist
+dist-test
+**/dist-test
+*.tsbuildinfo
+.turbo
+**/.turbo
+
+.git
+.github
+.husky
+.vscode
+
+coverage
+**/coverage
+
+.env
+**/.env
+!**/.env.example
+
+*.vsix
+**/out
+
+.DS_Store
+**/.DS_Store
+*.log
+
+Dockerfile
+**/Dockerfile
+docker-compose.yml
+.dockerignore
