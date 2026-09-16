@@ -1,0 +1,89 @@
+name: Security sweep
+
+# Detection already happens on every PR: the CodeQL check is a required status
+# check, so a PR that introduces an alert cannot merge. What that does not do
+# is tell anyone about alerts already sitting on `main` — nothing re-runs, so
+# existing debt stays invisible. This closes that gap.
+#
+# The sweep only ever *proposes*. It opens a stacked PR through CodeRabbit,
+# which then has to pass the same required checks as any other change. A wrong
+# fix to a ReDoS is worse than the ReDoS, because it looks handled and the
+# alert goes green, so the merge decision stays with a person.
+
+on:
+  schedule:
+    # 02:17 UTC daily. Offset from the hour because the whole world schedules
+    # on :00 and GitHub drops runs under load.
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: read
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Find open CodeQL alerts on main
+        id: alerts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # `tool_name` matters: Scorecard also writes to code scanning, and its
+          # repo-hygiene findings are not code defects to open fix PRs for.
+          # --paginate: one page caps at 100 alerts, and a repo past that would
+          # silently drop the rest. It emits one JSON array per page, so slurp
+          # and flatten before projecting.
+          gh api --paginate \
+            "repos/$REPO/code-scanning/alerts?state=open&tool_name=CodeQL&per_page=100" \
+            --jq '.[] | {number, rule: .rule.id, severity: .rule.security_severity_level,
+                         path: .most_recent_instance.location.path,
+                         line: .most_recent_instance.location.start_line}' \
+            | jq -s '.' > alerts.json
+          count=$(jq 'length' alerts.json)
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          echo "Found $count open CodeQL alert(s)."
+          jq -r '.[] | "  #\(.number) \(.severity) \(.rule) \(.path):\(.line)"' alerts.json
+
+      - name: Ask CodeRabbit for a stacked fix PR
+        if: steps.alerts.outputs.count != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # One tracking issue per sweep, not per alert: several alerts usually
+          # share a root cause, and a fix PR that addresses them together is
+          # easier to review than three that conflict with each other.
+          body=$(jq -r '"CodeQL has open alerts on `main`. These did not come through a pull request gate, so they need a fix PR of their own.\n\n" +
+            (map("- **#\(.number)** `\(.rule)` (\(.severity)) — `\(.path):\(.line)`") | join("\n")) +
+            "\n\n@coderabbitai Please open a stacked PR fixing these. Prefer a linear-time rewrite over a regex tweak, keep behaviour identical, and add a regression test that pins the edge case.\n\nThe fix PR must pass the required checks (tests on Node 22 and 24, CodeQL, CodeRabbit) before it can merge."' alerts.json)
+
+          # Reuse today'"'"'s issue if the sweep already ran, so a manual re-run
+          # does not open duplicates.
+          title="Security sweep: open CodeQL alerts on main"
+          existing=$(gh issue list --repo "$REPO" --state open --search "$title in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$REPO" --body "$body"
+          else
+            gh issue create --repo "$REPO" --title "$title" --body "$body" --label security
+          fi
+
+      - name: Close the tracking issue when main is clean
+        if: steps.alerts.outputs.count == '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          title="Security sweep: open CodeQL alerts on main"
+          existing=$(gh issue list --repo "$REPO" --state open --search "$title in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue close "$existing" --repo "$REPO" --comment "No open CodeQL alerts on \`main\`. Closing until the next finding."
+          fi

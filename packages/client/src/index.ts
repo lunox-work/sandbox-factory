@@ -73,6 +73,27 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Strips trailing slashes in linear time.
+ *
+ * The obvious `replace(/\/+$/, "")` is a polynomial ReDoS: on a string with a
+ * long run of slashes that is not at the end, the regex retries the run from
+ * every offset before failing, which is quadratic. Measured on this codebase,
+ * 80k slashes took ~2.3s — unlike most such findings, this one really does
+ * blow up rather than being optimised away by the engine.
+ *
+ * `baseUrl` reaches here from a caller of a published package, so its length
+ * is not ours to bound. Index arithmetic has no such failure mode and the
+ * behaviour is identical, including returning "" for an all-slash string.
+ */
+function trimTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value[end - 1] === "/") {
+    end -= 1;
+  }
+  return value.slice(0, end);
+}
+
 export class TodoClient {
   readonly #baseUrl: string;
   readonly #getToken: () => string | null | PromiseLike<string | null>;
@@ -80,7 +101,7 @@ export class TodoClient {
   readonly #credentials: RequestCredentials;
 
   constructor(options: ClientOptions) {
-    this.#baseUrl = options.baseUrl.replace(/\/+$/, "");
+    this.#baseUrl = trimTrailingSlashes(options.baseUrl);
     this.#getToken = options.getToken ?? (() => null);
     this.#credentials = options.credentials ?? "include";
     // Bound to globalThis: an unbound global fetch throws "Illegal invocation"

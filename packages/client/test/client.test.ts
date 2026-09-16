@@ -47,6 +47,42 @@ test("a trailing slash on baseUrl does not produce a doubled slash", async () =>
   assert.equal(calls[0]?.url, "https://api.test/api/v1/todos");
 });
 
+test("a baseUrl of only slashes trims to empty", async () => {
+  // The trim is hand-rolled index arithmetic rather than `replace(/\/+$/, "")`,
+  // which CodeQL flags as a polynomial ReDoS. Pins the edge case that the
+  // regex handled so the replacement cannot quietly differ from it.
+  const { fetch, calls } = stubFetch({ body: { todos: [] } });
+  const client = new TodoClient({ baseUrl: "///", fetch });
+
+  await client.listTodos();
+  assert.equal(calls[0]?.url, "/api/v1/todos");
+});
+
+test("a long run of slashes mid-url is left alone and returns promptly", async () => {
+  // The quadratic case: a long run of slashes that is NOT at the end is what
+  // made the regex retry from every offset. Measured at ~2.3s for 80k before
+  // the fix, so the time bound is the assertion that matters here.
+  const { fetch, calls } = stubFetch({ body: { todos: [] } });
+  const inner = "/".repeat(80_000);
+
+  // The timer must start before construction: the trim runs in the
+  // constructor, so a clock started afterwards measures none of the work and
+  // the assertion below would pass even against the quadratic regex.
+  const started = Date.now();
+  const client = new TodoClient({
+    baseUrl: `https://api.test${inner}x`,
+    fetch,
+  });
+
+  await client.listTodos();
+
+  assert.ok(
+    Date.now() - started < 1000,
+    "trimming should not be quadratic in the length of a slash run",
+  );
+  assert.equal(calls[0]?.url, `https://api.test${inner}x/api/v1/todos`);
+});
+
 test("the bearer token is attached when getToken returns one", async () => {
   const { fetch, calls } = stubFetch({ body: { todos: [] } });
   const client = new TodoClient({
