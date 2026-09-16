@@ -3,8 +3,11 @@
 ## `ship.sh`
 
 Takes working-tree changes from `main` to merged, unattended. Written for
-coding agents: the agent supplies the branch, title and body up front, and the
-script handles everything after that.
+coding agents: the agent supplies the title up front, and the script handles
+everything after that.
+
+**It does not block.** Once the PR is open it detaches and watches in the
+background, so the terminal — and an agent session — is free immediately.
 
 ```bash
 ./scripts/ship.sh --title "fix: reject blank todo titles" --issue 42 --yes
@@ -20,7 +23,19 @@ That will:
 6. Ask CodeRabbit to resolve its own review threads.
 7. Wait for auto-merge, then return you to an up-to-date `main`.
 
-Exit code 0 means it merged. Anything else leaves the PR open with a reason.
+Steps 1–4 run in the foreground, so a bad title or a failing `verify` is an
+immediate error. From step 5 it detaches:
+
+```
+  ok PR #27 — https://github.com/lunox-work/sandbox-factory/pull/27
+==> Watching in the background (pid 51234)
+      log:    .git/ship/pr-27.log
+      follow: tail -f .git/ship/pr-27.log
+  ok terminal is free — the PR merges on its own once green
+```
+
+Pass `--foreground` to watch inline instead. Exit code 0 means it merged (or
+detached successfully); anything else leaves the PR open with a reason.
 
 ### Flags
 
@@ -33,7 +48,8 @@ Exit code 0 means it merged. Anything else leaves the PR open with a reason.
 | `--issue <n>`      | —                  | Adds `Closes #n`                                            |
 | `--resolve <mode>` | `coderabbit`       | `coderabbit\|manual\|force` — see below                     |
 | `--draft`          | off                | Opens a draft; CodeRabbit and auto-merge both skip drafts   |
-| `--no-wait`        | off                | Open the PR and exit; auto-merge still lands it             |
+| `--no-wait`        | off                | Open the PR and exit; do not watch at all                   |
+| `--foreground`     | off                | Watch inline instead of detaching                           |
 | `--yes` / `-y`     | off                | Skip the confirmation prompt (use this in automation)       |
 
 Timeouts are environment variables: `SHIP_CHECK_TIMEOUT` (1800s),
@@ -68,16 +84,21 @@ to deal with them.
 The two layers also require **different** checks. The ruleset requires
 `Test (Node 22)`, `Test (Node 24)` and `Analyze`; the classic layer additionally
 requires `CodeQL` and `CodeRabbit`. The `CodeRabbit` context has never reported
-a conclusion on any PR in this repo, so anything evaluated against the classic
-layer — notably a direct `PUT /pulls/{n}/merge` API call — blocks forever.
-GitHub's own auto-merge goes through the ruleset, which is why PRs do land. The
-script therefore waits for auto-merge rather than calling the merge API.
+a conclusion on any PR in this repo, so it is permanently pending.
+
+This was confirmed on PR #26: with `CodeRabbit` still pending, a direct
+`PUT /pulls/{n}/merge` was refused, while GitHub's own auto-merge landed the PR
+as soon as the threads were resolved. **Auto-merge evaluates the ruleset; the
+REST merge API evaluates the classic layer.** The script therefore waits for
+auto-merge and never calls the merge API.
 
 `--resolve` controls how:
 
 - **`coderabbit`** (default) — posts `@coderabbitai resolve` and waits for it to
-  resolve its own threads. If they do not clear within `SHIP_REVIEW_TIMEOUT`,
-  the script stops and prints which file and line each one is on.
+  resolve its own threads. This works, but is **slow**: on PR #26 it took about
+  eight minutes to reply "Action performed", which is why
+  `SHIP_REVIEW_TIMEOUT` defaults to 30 minutes. If threads do not clear in that
+  window the script stops and prints which file and line each one is on.
 - **`manual`** — never resolves anything; stops and reports as soon as a thread
   appears.
 - **`force`** — resolves every thread unread. Guarantees a merge, but discards
@@ -105,9 +126,25 @@ they do not have to be rediscovered:
 - **Auto-merge covers every PR except a Dependabot major**, and the workflow
   arms it. The script nudges it only if it is somehow not armed.
 
+### When there is nothing to resolve
+
+Zero unresolved threads is ambiguous: it means either "CodeRabbit reviewed and
+found nothing" or "CodeRabbit has not posted yet". Acting on the second would
+let the script sail past a review that lands moments later.
+
+So the script waits for positive evidence that a review happened — a CodeRabbit
+review, any thread, or the `CodeRabbit` check reporting a conclusion — before
+trusting a zero count.
+
+On a PR with genuinely no findings there may be **no signal at all** (PR #21 is
+one: no review, no threads, and the check never concludes). Nothing can be
+polled for, so after `SHIP_REVIEW_TIMEOUT` the script proceeds anyway. That is
+safe: auto-merge still gates on the required checks, and if threads do arrive
+later they block the merge and the PR simply stays open.
+
 ### Caveat
 
-`@coderabbitai resolve` is CodeRabbit's documented command for resolving its own
-threads, but the script does not assume it worked: it re-checks and falls back
-to reporting if the threads are still open. If CodeRabbit ever stops honouring
-it, `ship.sh` degrades to `--resolve manual` behaviour rather than hanging.
+`@coderabbitai resolve` works but is not instant, and the script does not assume
+it succeeded: it re-checks and falls back to reporting if threads are still
+open. If CodeRabbit ever stops honouring it, `ship.sh` degrades to
+`--resolve manual` behaviour rather than hanging.

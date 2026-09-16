@@ -23,9 +23,10 @@ And a **classic branch protection** (Settings → Branches) which adds:
   above.
 - Two extra required contexts, `CodeQL` and `CodeRabbit`, on top of the
   ruleset's three. **`CodeRabbit` has never reported a conclusion on any PR
-  here**, so it is permanently pending: merging through the REST API, which
-  evaluates this layer, is therefore impossible. GitHub's auto-merge evaluates
-  the ruleset instead, which is why PRs do land normally.
+  here**, so it is permanently pending. Confirmed on PR #26: the REST merge API
+  refused it as "pending", while GitHub's auto-merge landed the same PR as soon
+  as its review threads were resolved. Auto-merge evaluates the ruleset; the
+  REST API evaluates this layer. Anything merging through the API will stall.
 
 `require_extra_approval_for_unattributed_changes` was turned off on the ruleset:
 it demands an approval that a solo maintainer cannot give, because GitHub

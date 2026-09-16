@@ -63,9 +63,11 @@ format: ## Apply formatting
 verify: ## Everything CI runs — the gate before pushing
 	npm run verify
 
+export TITLE
+
 ship: ## Branch, verify, PR and merge the working tree (TITLE="fix: ...")
-	@test -n "$(TITLE)" || { echo 'usage: make ship TITLE="fix: what changed"'; exit 1; }
-	./scripts/ship.sh --title "$(TITLE)" $(SHIP_ARGS)
+	@test -n "$$TITLE" || { echo 'usage: make ship TITLE="fix: what changed"'; exit 1; }
+	@./scripts/ship.sh --title "$$TITLE" $(SHIP_ARGS)
 
 ## ---- docker: dev --------------------------------------------------------
 

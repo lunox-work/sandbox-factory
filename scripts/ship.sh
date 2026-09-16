@@ -20,12 +20,14 @@ REQUIRED_CHECKS=("Test (Node 22)" "Test (Node 24)" "Analyze")
 # --- how long to wait ---------------------------------------------------------
 # Checks take ~2-4 min. CodeRabbit posts a few minutes after that.
 CHECK_TIMEOUT=${SHIP_CHECK_TIMEOUT:-1800}   # 30 min for required checks
-REVIEW_TIMEOUT=${SHIP_REVIEW_TIMEOUT:-900}  # 15 min for CodeRabbit to arrive
+# CodeRabbit's `resolve` took ~8 min on PR #26; allow generous headroom.
+REVIEW_TIMEOUT=${SHIP_REVIEW_TIMEOUT:-1800} # 30 min for CodeRabbit to review+resolve
 MERGE_TIMEOUT=${SHIP_MERGE_TIMEOUT:-600}    # 10 min for auto-merge to fire
 POLL=${SHIP_POLL:-20}
 
 BRANCH="" TITLE="" BODY="" TYPE="" ISSUE=""
 ASSUME_YES=0 NO_WAIT=0 DRAFT=0 RESOLVE_MODE="coderabbit"
+FOREGROUND=0 IS_CHILD=0
 
 die()  { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 info() { printf '\033[36m==>\033[0m %s\n' "$*"; }
@@ -48,7 +50,8 @@ Flags:
                       default) | manual (stop and report) | force (resolve
                       unread — discards feedback).
   --draft             Open as a draft. Skips CodeRabbit and auto-merge.
-  --no-wait           Open the PR and exit without watching it.
+  --no-wait           Open the PR and exit without watching it at all.
+  --foreground        Watch in this terminal instead of detaching.
   --yes, -y           Skip the confirmation prompt.
   -h, --help          This message.
 
@@ -69,6 +72,8 @@ while [[ $# -gt 0 ]]; do
     --resolve) RESOLVE_MODE="${2:-}"; shift 2 ;;
     --draft)   DRAFT=1; shift ;;
     --no-wait) NO_WAIT=1; shift ;;
+    --foreground) FOREGROUND=1; shift ;;
+    --_child) IS_CHILD=1; shift ;;
     -y|--yes)  ASSUME_YES=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown flag: $1 (try --help)" ;;
@@ -102,6 +107,21 @@ if [[ -n "$ISSUE" && ! "$ISSUE" =~ ^[0-9]+$ ]]; then
   die "--issue must be a number (got: $ISSUE)"
 fi
 
+# --- detached child: skip setup, go straight to watching ----------------------
+# The parent already branched, verified, pushed and opened the PR. The child
+# only watches it, so everything above is skipped via SHIP_WATCH_PR.
+
+if [[ "$IS_CHILD" -eq 1 ]]; then
+  [[ -n "${SHIP_WATCH_PR:-}" ]] || die "--_child requires SHIP_WATCH_PR"
+  PR_NUM="$SHIP_WATCH_PR"
+  BRANCH="${SHIP_WATCH_BRANCH:-$(git rev-parse --abbrev-ref HEAD)}"
+  PR_URL="https://github.com/$REPO/pull/$PR_NUM"
+  info "Watching PR #$PR_NUM (detached)"
+  WATCH_ONLY=1
+else
+  WATCH_ONLY=0
+fi
+
 # --- work out the branch ------------------------------------------------------
 
 slugify() {
@@ -112,7 +132,7 @@ slugify() {
     | cut -c1-48 | sed -E 's/-+$//'
 }
 
-if [[ -z "$BRANCH" ]]; then
+if [[ "$WATCH_ONLY" -eq 0 && -z "$BRANCH" ]]; then
   prefix="${TITLE%%:*}"; prefix="${prefix%%(*}"; prefix="${prefix%!}"
   case "$prefix" in
     feat) kind=feat ;; fix) kind=fix ;; docs) kind=docs ;; ci|build) kind=ci ;;
@@ -125,7 +145,18 @@ fi
 
 # --- inspect the working tree -------------------------------------------------
 
+if [[ "$WATCH_ONLY" -eq 0 ]]; then
+
 CURRENT="$(git rev-parse --abbrev-ref HEAD)"
+
+# Branching off a feature branch would sweep its commits into the PR.
+if [[ "$CURRENT" != "main" ]] && ! git diff --quiet --exit-code; then
+  if ! git merge-base --is-ancestor HEAD origin/main 2>/dev/null; then
+    die "on '$CURRENT', which has commits not in main.
+   Creating a branch here would include them in the PR.
+   Switch to main first, or pass --branch to ship this branch as-is."
+  fi
+fi
 git diff --quiet && git diff --cached --quiet && HAS_CHANGES=0 || HAS_CHANGES=1
 UNTRACKED="$(git ls-files --others --exclude-standard)"
 [[ -n "$UNTRACKED" ]] && HAS_CHANGES=1
@@ -203,15 +234,16 @@ fi
 # instead of a hook abort halfway through a push.
 
 info "Running npm run verify (this is the gate — CI runs the same thing)"
-if ! npm run verify >/tmp/ship-verify.$$.log 2>&1; then
+VERIFY_LOG="$(mktemp "${TMPDIR:-/tmp}/ship-verify.XXXXXX")"
+if ! npm run verify >"$VERIFY_LOG" 2>&1; then
   echo
-  tail -30 /tmp/ship-verify.$$.log >&2
+  tail -30 "$VERIFY_LOG" >&2
   echo
-  warn "verify failed — full log: /tmp/ship-verify.$$.log"
+  warn "verify failed — full log: $VERIFY_LOG"
   warn "Changes are committed on $BRANCH. Fix, commit, and re-run."
   exit 2
 fi
-rm -f /tmp/ship-verify.$$.log
+rm -f "$VERIFY_LOG"
 ok "verify passed"
 
 # --- push ---------------------------------------------------------------------
@@ -276,6 +308,8 @@ PR_URL="$(gh pr create "${PR_ARGS[@]}")" || die "gh pr create failed"
 PR_NUM="${PR_URL##*/}"
 ok "PR #$PR_NUM — $PR_URL"
 
+fi  # end WATCH_ONLY==0 setup phase
+
 if [[ "$DRAFT" -eq 1 ]]; then
   echo
   info "Draft PR: CodeRabbit and auto-merge both skip drafts."
@@ -286,6 +320,32 @@ fi
 if [[ "$NO_WAIT" -eq 1 ]]; then
   echo
   info "Not waiting (--no-wait). Auto-merge is armed; it lands on green."
+  exit 0
+fi
+
+# --- detach -------------------------------------------------------------------
+# The PR exists and auto-merge is armed; everything after this is watching.
+# Re-exec ourselves in the background so the terminal (and an agent session)
+# is free immediately. --foreground opts out.
+
+LOG_DIR="$(git rev-parse --git-dir)/ship"
+mkdir -p "$LOG_DIR"
+SHIP_LOG="$LOG_DIR/pr-$PR_NUM.log"
+
+if [[ "$FOREGROUND" -eq 0 && "$IS_CHILD" -eq 0 ]]; then
+  # Hand the child the PR we already opened; it skips straight to watching.
+  SHIP_WATCH_PR="$PR_NUM" SHIP_WATCH_BRANCH="$BRANCH" \
+    nohup "$0" --_child --title "$TITLE" --resolve "$RESOLVE_MODE" --yes \
+    >"$SHIP_LOG" 2>&1 &
+  child=$!
+  disown "$child" 2>/dev/null || true
+  echo
+  info "Watching in the background (pid $child)"
+  info "  log:    $SHIP_LOG"
+  info "  follow: tail -f $SHIP_LOG"
+  info "  status: gh pr view $PR_NUM"
+  echo
+  ok "terminal is free — the PR merges on its own once green"
   exit 0
 fi
 
@@ -316,6 +376,23 @@ for x in t:
     path = x.get("path","?")
     line = x.get("line") or "?"
     print("     {}:{}  ({})".format(path, line, author))' 2>/dev/null
+}
+
+# Zero unresolved threads is ambiguous: it means either "reviewed, nothing to
+# flag" or "has not posted yet". Only the first is safe to act on, so look for
+# positive evidence that a review happened — a review, a thread (resolved or
+# not), or the CodeRabbit check reporting a conclusion.
+review_arrived() {
+  local seen
+  seen="$(gh api graphql -f query="query{repository(owner:\"${REPO%%/*}\",name:\"${REPO##*/}\"){pullRequest(number:$PR_NUM){reviews(first:20){nodes{author{login}}} reviewThreads(first:1){nodes{id}}}}}" \
+    --jq '[(.data.repository.pullRequest.reviews.nodes[]?|select(.author.login=="coderabbitai")),(.data.repository.pullRequest.reviewThreads.nodes[]?)]|length' 2>/dev/null || echo 0)"
+  [[ "${seen:-0}" -gt 0 ]] && return 0
+
+  # Fall back to the check run, which appears even on a no-findings review.
+  local concl
+  concl="$(gh pr view "$PR_NUM" --json statusCheckRollup \
+    --jq '[.statusCheckRollup[]|select((.name//.context)=="CodeRabbit")|.conclusion//empty]|length' 2>/dev/null || echo 0)"
+  [[ "${concl:-0}" -gt 0 ]]
 }
 
 resolve_all_threads() {
@@ -385,8 +462,20 @@ while :; do
   n="$(unresolved_count)"
 
   if [[ "$n" -eq 0 ]]; then
-    ok "no unresolved threads"
-    break
+    # Nothing unresolved — but make sure that is because the review happened,
+    # not because it has not started. Otherwise threads land after we move on.
+    if review_arrived; then
+      ok "review complete, no unresolved threads"
+      break
+    fi
+    if (( $(date +%s) > review_deadline )); then
+      echo
+      warn "no CodeRabbit review after ${REVIEW_TIMEOUT}s"
+      warn "Proceeding anyway — auto-merge still gates on the required checks."
+      break
+    fi
+    sleep "$POLL"
+    continue
   fi
 
   if [[ "$n" -gt 0 ]]; then
