@@ -22,8 +22,7 @@ todo is.
 | [`apps/extension`](./apps/extension)     | VS Code extension                                 |
 | [`tooling/tsconfig`](./tooling/tsconfig) | The shared TypeScript strictness contract         |
 
-See [docs/architecture.md](./docs/architecture.md) for how they depend on each
-other and why the boundaries sit where they do.
+See [docs/architecture.md](./docs/architecture.md) for the dependency rules.
 
 ## Run it
 
@@ -36,17 +35,17 @@ cp .env.example .env    # then fill in the auth section, see below
 make up
 ```
 
-Open <http://localhost:5173>. Sign in with Google or GitHub, then add a todo,
-check it off, click its title to rename it, delete it with the ×.
+Open <http://localhost:5173>. The first `make up` installs dependencies inside
+the containers, so give it a minute; after that it starts in seconds. `make down`
+stops it.
 
 ### The one bit of setup: OAuth credentials
 
-Sign-in is Google and GitHub only — there is no email and password option — so
-the API needs a client from at least one of them before it will boot. Fill in
-the auth section of `.env`:
+Sign-in is Google and GitHub only, so the API needs a client from at least one of
+them before it will boot. Fill in the auth section of `.env`, starting with a
+signing secret of 32+ characters:
 
 ```bash
-# A signing secret for session tokens — any 32+ characters.
 openssl rand -base64 32
 ```
 
@@ -58,14 +57,11 @@ Then register an OAuth client and paste in its id and secret:
 | GitHub   | [github.com/settings/developers](https://github.com/settings/developers) → New OAuth App                          | `http://localhost:4000/api/auth/callback/github` |
 
 The redirect URI has to match exactly — a trailing slash or the wrong port is
-rejected by the provider, not by this app, so the error appears on their page
-rather than in your logs.
+rejected by the provider, so the error appears on their page rather than in your
+logs.
 
 If you only want to look around, `npm run verify` runs the whole test suite and
 needs none of this.
-
-The first `make up` installs dependencies inside the containers, so give it a
-minute. After that it starts in seconds. `make down` stops it.
 
 ### Plus the VS Code extension
 
@@ -76,11 +72,9 @@ make ext
 Then open this repo in VS Code and press <kbd>F5</kbd>. A second window opens
 with the extension loaded — the sandbox-factory icon is in its activity bar.
 
-The extension runs on your machine, not in Docker: it is a bundle the editor
-loads, so there is no process for a container to run. `make ext` needs Node 22+
-and installs what it needs on first run.
-
-Both surfaces talk to the same API, so a todo added in one shows in the other.
+It runs on your machine, not in Docker: it is a bundle the editor loads, so
+`make ext` needs Node 22+. Both surfaces share one API, so a todo added in one
+shows in the other.
 
 ## Develop it
 
@@ -90,9 +84,8 @@ Needs **Node.js 22+**. Docker optional.
 make dev
 ```
 
-Runs the API and web app directly on your machine — faster reload than the
-containers, and debuggers attach without ceremony. This is what you want day to
-day.
+Runs the API and web app directly on your machine — faster than the containers,
+and what you want day to day.
 
 | Command       | What it does                                  |
 | ------------- | --------------------------------------------- |
@@ -104,11 +97,10 @@ day.
 | `make lint`   | Type-check every workspace                    |
 | `make format` | Apply formatting                              |
 
-Run `make` on its own for the full list. Every target delegates to an npm
-script, so `make test` and `npm test` cannot drift apart — use whichever you
-prefer.
+Run `make` on its own for the full list. Every target delegates to an npm script,
+so `make test` and `npm test` cannot drift apart.
 
-Scope a check to one workspace and its dependencies:
+Scope a check to one workspace:
 
 ```bash
 npx turbo run lint test --filter=@sandbox-factory/api
@@ -121,9 +113,8 @@ make up        # dev containers — source mounted, hot reload intact
 make up-prod   # built images behind nginx on :8080, what deployment looks like
 ```
 
-`make up-prod` serves everything through nginx on one origin with `/api`
-proxied, matching the dev server's proxy so cookie and CORS behaviour does not
-differ between the two.
+`make up-prod` serves through nginx on one origin with `/api` proxied, matching
+the dev server so cookie and CORS behaviour does not differ between the two.
 
 | Command             | What it does                                       |
 | ------------------- | -------------------------------------------------- |
@@ -137,22 +128,18 @@ Ports are overridable: `API_PORT`, `WEB_PORT`, `WEB_PROD_PORT`, `POSTGRES_PORT`.
 
 ### The extension's edit loop
 
-`make ext` rebuilds the bundle on save, and the Extension Development Host
-reloads itself when it changes — [`.vscode/settings.json`](./.vscode/settings.json)
-turns on `debug.extensionHost.autoReload`. That reloads the whole extension
-host rather than hot-swapping a module, so in-memory state is lost and the tree
-refetches; it is as close to hot reload as the extension host gets.
+`make ext` rebuilds the bundle on save, and
+[`.vscode/settings.json`](./.vscode/settings.json) sets
+`debug.extensionHost.autoReload` so the Development Host picks it up. The whole
+host reloads, so in-memory state is lost and the tree refetches.
 
-`make ext-package` produces a `.vsix` if you want to install it properly.
+`make ext-package` produces a `.vsix`.
 
 ### Postgres and object storage
 
 `make db-up` starts Postgres and SeaweedFS and waits for both; they also start
-with either container profile.
-
-The API **requires** Postgres — it has no in-memory fallback, so it will not
-boot without `DATABASE_URL`, nor without the auth variables above. After
-starting the services, apply the schema:
+with either container profile. The API **requires** Postgres and will not boot
+without `DATABASE_URL` or the auth variables above. Then apply the schema:
 
 ```bash
 make migrate
@@ -165,17 +152,16 @@ make migrate
 | `make s3-url` | Print the S3 endpoint                        |
 | `make reset`  | Stop everything and delete both data volumes |
 
-SeaweedFS provides an S3-compatible gateway on port 8333; its filer browser is
-on 8888 if you want to confirm an upload landed. Credentials in
-`docker-compose.yml` are development values only.
+SeaweedFS' S3-compatible gateway is on port 8333, its filer browser on 8888.
+Credentials in `docker-compose.yml` are development values only.
 
-The test suite does **not** need either service: `npm run verify` passes with
-Docker stopped.
+The test suite needs neither service: `npm run verify` passes with Docker
+stopped.
 
 ## Using the published package
 
 `packages/core` is published to npm as `sandbox-factory`. It is dependency-free
-and safe to use in a browser, in Node, or inside an editor extension.
+and runs in a browser, in Node, or inside an editor extension.
 
 ```bash
 npm install sandbox-factory
@@ -197,12 +183,10 @@ countTodos(todos); // { total, active, completed }
 
 ## Contributing
 
-Contributions are welcome. See [CONTRIBUTING.md](./CONTRIBUTING.md) for dev
-setup, conventions, and how to open a pull request. By participating you agree
-to the [Code of Conduct](./CODE_OF_CONDUCT.md).
-
-Coding agents should read [AGENTS.md](./AGENTS.md), which covers the same ground
-plus the conventions that the automation depends on.
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for dev setup, conventions, and how to
+open a pull request. By participating you agree to the
+[Code of Conduct](./CODE_OF_CONDUCT.md). Coding agents should read
+[AGENTS.md](./AGENTS.md).
 
 ## Documentation
 
@@ -216,8 +200,8 @@ plus the conventions that the automation depends on.
 
 ## Security
 
-Please report vulnerabilities privately — see [SECURITY.md](./SECURITY.md).
-Do not open a public issue for security problems.
+Please report vulnerabilities privately — see [SECURITY.md](./SECURITY.md). Do
+not open a public issue for security problems.
 
 ## License
 
