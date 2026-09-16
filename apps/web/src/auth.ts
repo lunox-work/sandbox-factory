@@ -21,6 +21,16 @@ export const { useSession, signOut } = authClient;
 export const PROVIDERS = [
   { id: "google", label: "Continue with Google" },
   { id: "github", label: "Continue with GitHub" },
+  /**
+   * Atlassian differs from the other two in one way worth knowing here, even
+   * though nothing on this screen branches on it: the API does not trust it
+   * for implicit linking, because its profile never claims the address is
+   * verified. Signing in with Atlassian on an address that already has an
+   * account is refused rather than merged; the account page's link flow is
+   * the supported way to attach it. See `trustedProviders` in the API's
+   * `auth.ts` for the reasoning.
+   */
+  { id: "atlassian", label: "Continue with Atlassian" },
 ] as const;
 
 export type ProviderId = (typeof PROVIDERS)[number]["id"];

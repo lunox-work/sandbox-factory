@@ -82,10 +82,41 @@ export interface EmailStore {
     userId: string,
     emailId: string,
   ): Promise<"removed" | "not-found" | "is-primary">;
+  /**
+   * The id of the user who currently holds an address, or undefined.
+   *
+   * Exists for the sign-in pre-flight, which has to answer "would creating a
+   * user with this address collide?" *before* the row is written. `record`
+   * answers the same question but only after the fact, which is one step too
+   * late to stop a duplicate account being created.
+   *
+   * Checks both places an address can live. `user.email` and `user_email` are
+   * each unique on their own, but neither constraint sees the other, so an
+   * address free in one can still be taken in the other.
+   */
+  ownerOf(email: string): Promise<string | undefined>;
 }
 
 export function createEmailStore(db: Database): EmailStore {
   return {
+    async ownerOf(email) {
+      const normalized = email.trim().toLowerCase();
+      const [claimed] = await db
+        .select({ userId: userEmail.userId })
+        .from(userEmail)
+        .where(eq(userEmail.email, normalized))
+        .limit(1);
+      if (claimed !== undefined) {
+        return claimed.userId;
+      }
+      const [primary] = await db
+        .select({ id: user.id })
+        .from(user)
+        .where(eq(user.email, normalized))
+        .limit(1);
+      return primary?.id;
+    },
+
     async primaryFor(userId) {
       const [row] = await db
         .select({ email: user.email })

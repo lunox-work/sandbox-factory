@@ -50,6 +50,41 @@
       "when": 1789545535967,
       "tag": "0006_todo_owner",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1789572974487,
+      "tag": "0007_email_single_owner",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1789573277550,
+      "tag": "0008_email_single_owner_gaps",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1789573719782,
+      "tag": "0009_email_owner_race",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1789573720782,
+      "tag": "0010_email_report_existing_conflicts",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1789573721782,
+      "tag": "0011_email_same_table_case",
+      "breakpoints": true
     }
   ]
 }

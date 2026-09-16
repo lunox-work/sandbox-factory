@@ -20,6 +20,8 @@ const required = {
   GOOGLE_CLIENT_SECRET: "google-client-secret",
   GITHUB_CLIENT_ID: "github-client-id",
   GITHUB_CLIENT_SECRET: "github-client-secret",
+  ATLASSIAN_CLIENT_ID: "atlassian-client-id",
+  ATLASSIAN_CLIENT_SECRET: "atlassian-client-secret",
 };
 
 test("parseEnv applies defaults when only the required vars are set", () => {
@@ -82,13 +84,15 @@ test("parseEnv rejects a BETTER_AUTH_URL that is not absolute", () => {
 });
 
 test("parseEnv requires each OAuth credential", () => {
-  // Every one of the four, not just the first: a half-configured provider
+  // Every one of the six, not just the first: a half-configured provider
   // fails at the moment someone tries to sign in with it.
   for (const key of [
     "GOOGLE_CLIENT_ID",
     "GOOGLE_CLIENT_SECRET",
     "GITHUB_CLIENT_ID",
     "GITHUB_CLIENT_SECRET",
+    "ATLASSIAN_CLIENT_ID",
+    "ATLASSIAN_CLIENT_SECRET",
   ] as const) {
     assert.throws(
       () => parseEnv({ ...required, [key]: "" }),

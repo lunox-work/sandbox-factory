@@ -12,7 +12,7 @@ import {
 } from "@sandbox-factory/db";
 
 import { createAuth } from "./auth.js";
-import { parseEnv } from "./env.js";
+import { appUrl, parseEnv } from "./env.js";
 import { createApp } from "./routes.js";
 
 const env = parseEnv();
@@ -28,6 +28,7 @@ const auth = createAuth({
   lookupEmail: (userId) => emails.primaryFor(userId),
   handles: { suggest: (email) => profiles.suggest(email) },
   baseUrl: env.BETTER_AUTH_URL,
+  appUrl: appUrl(env),
   // The web origins are the ones a sign-in may return to. The API's own
   // origin is included because Better Auth compares the callback against this
   // list too, and it is not otherwise in CORS_ORIGINS.
@@ -40,6 +41,10 @@ const auth = createAuth({
   github: {
     clientId: env.GITHUB_CLIENT_ID,
     clientSecret: env.GITHUB_CLIENT_SECRET,
+  },
+  atlassian: {
+    clientId: env.ATLASSIAN_CLIENT_ID,
+    clientSecret: env.ATLASSIAN_CLIENT_SECRET,
   },
   crossSubDomainCookies:
     env.AUTH_COOKIE_DOMAIN === undefined

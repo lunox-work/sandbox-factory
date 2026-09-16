@@ -9,15 +9,15 @@
  * **Email and password sign-in is deliberately off.** `emailAndPassword` is
  * simply not enabled, which is what disables it — Better Auth's default is
  * disabled, so this is the absence of a setting rather than a flag set to
- * false. Google and GitHub are the only ways in. The consequence worth knowing
- * is that `account.password` stays null for every row, and the sign-up,
- * forgot-password and reset-password endpoints return 404 rather than existing
- * and rejecting input.
+ * false. Google, GitHub and Atlassian are the only ways in. The consequence
+ * worth knowing is that `account.password` stays null for every row, and the
+ * sign-up, forgot-password and reset-password endpoints return 404 rather than
+ * existing and rejecting input.
  */
 
 import { defineRequestState } from "@better-auth/core/context";
 import { authSchema, type EmailStore } from "@sandbox-factory/db";
-import { betterAuth } from "better-auth";
+import { APIError, betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { bearer } from "better-auth/plugins";
 
@@ -91,12 +91,25 @@ export interface AuthOptions {
   handles?: { suggest(email: string): Promise<string> } | undefined;
   /** Public origin of the API itself, e.g. `https://api.lunox.work`. */
   baseUrl: string;
+  /**
+   * Public origin of the *web app*, e.g. `https://app.lunox.work`.
+   *
+   * Where a failed sign-in is sent. Without it Better Auth renders its own
+   * error page on the API origin, whose "Go Home" link points at the API —
+   * a dead end for anyone who got there from the web app.
+   */
+  appUrl: string;
   /** Origins allowed to complete a sign-in redirect. */
   trustedOrigins: readonly string[];
   /** Signing secret for session tokens. */
   secret: string;
   google: OAuthCredentials;
   github: OAuthCredentials;
+  /**
+   * Atlassian is configured like the other two but is **not** trusted for
+   * implicit linking; see `trustedProviders` below for why.
+   */
+  atlassian: OAuthCredentials;
   /** Set when the API and web app are on different hosts; see below. */
   crossSubDomainCookies?: { domain: string } | undefined;
 }
@@ -114,10 +127,12 @@ export function createAuth({
   lookupEmail,
   handles,
   baseUrl,
+  appUrl,
   trustedOrigins,
   secret,
   google,
   github,
+  atlassian,
   crossSubDomainCookies,
 }: AuthOptions) {
   // `baseUrl` is validated as an absolute URL by `parseEnv`, so this cannot
@@ -132,6 +147,19 @@ export function createAuth({
     }),
     baseURL: baseUrl,
     secret,
+    /**
+     * Send failed sign-ins back to the web app rather than to Better Auth's
+     * own error page.
+     *
+     * That page is served from the API origin, so its "Go Home" button points
+     * at the API — which serves no UI, leaving the user stranded on :4000 with
+     * no way back. Redirecting instead means the app owns the whole
+     * signed-out experience, and the failure shows up where the person was.
+     *
+     * Better Auth appends `error` and, when present, `error_description` to
+     * this URL; `SignIn.tsx` reads them.
+     */
+    onAPIError: { errorURL: appUrl },
     // Better Auth refuses to redirect anywhere not listed here after a
     // provider callback. That check is what stops an attacker appending
     // `?callbackURL=https://evil.example` and receiving the session.
@@ -144,6 +172,64 @@ export function createAuth({
       github: {
         clientId: github.clientId,
         clientSecret: github.clientSecret,
+      },
+      atlassian: {
+        clientId: atlassian.clientId,
+        clientSecret: atlassian.clientSecret,
+        /**
+         * Sign-in asks for identity and nothing else.
+         *
+         * Better Auth's Atlassian provider defaults to `read:jira-user` and
+         * `offline_access`, and it *appends* `scope` to those rather than
+         * replacing them — hence `disableDefaultScope`, which is the only way
+         * to not request `read:jira-user`.
+         *
+         * Two separate reasons for this list:
+         *
+         * `read:me` is required, not an enrichment. The provider reads the
+         * profile from `https://api.atlassian.com/me`, which only returns an
+         * `email` when the token carries this scope. Without it the profile
+         * comes back with no address and Better Auth refuses the sign-in,
+         * because it cannot create a user without one.
+         *
+         * `read:jira-user` is dropped because it is site-scoped and this is an
+         * authentication flow. It reads *other people's* directory data —
+         * "usernames, email addresses, and avatars" for a whole Jira site —
+         * which is unrelated to identifying the person signing in, and it
+         * drags site selection into the consent screen. It also decides how
+         * much the app's access type actually grants: with no product scope
+         * requested, the "all resources within the customer's account" breadth
+         * that an account-level app would confer has nothing to apply to.
+         * Anything needing Jira data should request it separately rather than
+         * riding in on the login grant.
+         */
+        disableDefaultScope: true,
+        scope: ["read:me", "offline_access"],
+        /**
+         * Asserts that the address `/me` returned is verified.
+         *
+         * Better Auth's Atlassian provider hardcodes `emailVerified: false`,
+         * and that value is not cosmetic: both the sign-in callback and the
+         * authenticated link route gate on
+         * `!trustedProviders.includes(id) && !emailVerified`. With it false and
+         * Atlassian untrusted, *every* path is refused — signing in creates a
+         * duplicate account instead of merging, and pressing Connect on the
+         * account page fails with `unable_to_link_account`. There is no
+         * configuration that unblocks one without this.
+         *
+         * `mapProfileToUser` is spread over the profile after that default, so
+         * this is the supported override rather than a patch.
+         *
+         * **What we are trusting.** Atlassian does not return an
+         * `email_verified` claim, so this asserts something the provider does
+         * not state. The basis is that `read:me` returns the address on the
+         * Atlassian account itself, which Atlassian requires be confirmed
+         * before the account can be used — it is not a field the user can type
+         * freely. That is weaker than Google's explicit claim, and it is the
+         * reason this override is written here with its own comment instead of
+         * living quietly in a config object.
+         */
+        mapProfileToUser: () => ({ emailVerified: true }),
       },
     },
     user: {
@@ -225,9 +311,28 @@ export function createAuth({
          * any address, or that omits `email_verified`, would let whoever
          * controls that provider account reach an existing one here.
          *
+         * **Atlassian is here on a weaker basis than the other two, and that
+         * is a deliberate, reviewed decision.** Google and GitHub both return
+         * an explicit `email_verified` claim. Atlassian returns none, so the
+         * provider config above asserts it via `mapProfileToUser` on the
+         * grounds that `read:me` reports the address on the Atlassian account
+         * itself rather than a free-text field.
+         *
+         * Leaving it off this list was tried first and is not a usable
+         * position: the same guard gates the authenticated link route, so an
+         * untrusted Atlassian cannot be connected from the account page
+         * either. The choice was not "trusted vs link-only" but "trusted vs
+         * unusable".
+         *
+         * The risk accepted is the one stated above, and it is real: whoever
+         * controls an Atlassian account bearing an address can reach the
+         * account already using it. It rests on Atlassian confirming addresses
+         * before an account is usable. If that ever stops being true, this
+         * entry is the thing to remove.
+         *
          * `auth.test.ts` pins this list so widening it cannot pass unnoticed.
          */
-        trustedProviders: ["google", "github"],
+        trustedProviders: ["google", "github", "atlassian"],
         /**
          * Never merge on an address the provider has not verified.
          *
@@ -285,26 +390,37 @@ export function createAuth({
       useSecureCookies: isHttps,
       defaultCookieAttributes: {
         /**
-         * `Strict` where it is free, `Lax` only where it is required.
+         * `Lax`, and it has to be — `Strict` breaks OAuth sign-in outright.
          *
-         * These cookies are pure session bearers — nothing here is read by a
-         * top-level navigation that needs to arrive already authenticated —
-         * so on a same-site deployment `Strict` costs nothing and removes
-         * cross-site sends entirely, including the top-level GET navigations
-         * that `Lax` still permits.
+         * These attributes are spread over *every* auth cookie, not just the
+         * session: Better Auth builds each one as
+         * `{...defaults, ...defaultCookieAttributes}`, so whatever is set here
+         * also lands on the short-lived `state` and `pkce_code_verifier`
+         * cookies that carry an in-progress sign-in.
          *
-         * The cross-subdomain case cannot use it: `Strict` is judged on the
-         * whole site, and the OAuth callback returns from Google or GitHub as
-         * a cross-site navigation, so a `Strict` cookie is withheld on exactly
-         * the request that completes a sign-in. `Lax` is the strongest setting
-         * that still works there, and it is what the upstream default already
-         * was — this only makes the choice explicit and the reasoning visible.
+         * That is what makes `Strict` unusable. The provider returns the user
+         * by a cross-site top-level navigation, and a `Strict` cookie is
+         * withheld on exactly that request. The `state` cookie set before the
+         * redirect therefore does not come back, Better Auth compares the
+         * callback's state against a cookie that is not there, and the sign-in
+         * ends at `/api/auth/error?error=state_mismatch`. The failure is total
+         * rather than partial: it is not a weaker session, it is no session.
          *
-         * Set here rather than left implicit because the whole surface
-         * (SameSite, Secure, HttpOnly) should be readable in one place: a
-         * default that is right by accident is one nobody notices changing.
+         * This is not specific to the cross-subdomain deploy, which is the
+         * distinction an earlier version of this comment drew. A same-origin
+         * localhost setup fails the same way, because SameSite is judged on
+         * the site the *request is going to* versus the one it came from —
+         * here, our own origin versus the provider's. Same-origin says nothing
+         * about a redirect arriving from Atlassian.
+         *
+         * `Lax` is the strongest setting that still permits it, and it is
+         * upstream's own default; this states it explicitly rather than
+         * relying on a default staying put. What `Lax` gives up against
+         * `Strict` is narrow — cross-site top-level GETs still send the
+         * cookie — and CSRF on state-changing requests is covered separately
+         * by the origin check, not by SameSite alone.
          */
-        sameSite: crossSubDomainCookies === undefined ? "strict" : "lax",
+        sameSite: "lax",
         // Never readable from JavaScript. This is what keeps the session out
         // of reach of a script that manages to run on the page, and it is why
         // the web client sends no bearer token.
@@ -324,6 +440,36 @@ export function createAuth({
            * made unique by the store; the person can change it afterwards.
            */
           before: async (createdUser) => {
+            /**
+             * Refuse a signup whose address is already held by someone else.
+             *
+             * This is the pre-flight half of a two-layer guard; the other is a
+             * database trigger (migration 0007). Without it, a refused merge
+             * — the untrusted-provider path — falls through to *creating a new
+             * user*, whose address then cannot be recorded because
+             * `user_email` says another account owns it. The result is an
+             * account that exists, can be signed into, and has no address: the
+             * duplicate-account confusion this is here to stop.
+             *
+             * `user.email` and `user_email.email` are each unique but neither
+             * constraint sees the other, so `ownerOf` checks both. Throwing
+             * rather than returning `false` because a bare `false` aborts with
+             * a null and no code — Better Auth rethrows an `APIError` from
+             * here, so the callback lands on a readable error instead of a
+             * silent failure.
+             */
+            if (emails !== undefined) {
+              const owner = await emails.ownerOf(createdUser.email);
+              if (owner !== undefined) {
+                throw new APIError("UNPROCESSABLE_ENTITY", {
+                  code: "EMAIL_ALREADY_HELD",
+                  message:
+                    "That email address already belongs to another account. " +
+                    "Sign in with a provider you have already connected, then " +
+                    "connect this one from your account page.",
+                });
+              }
+            }
             if (handles === undefined) {
               return;
             }

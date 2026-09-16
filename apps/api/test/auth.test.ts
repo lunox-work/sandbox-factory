@@ -25,11 +25,27 @@ const db = {} as AuthOptions["db"];
 const options: AuthOptions = {
   db,
   baseUrl: "http://localhost:4000",
+  appUrl: "http://localhost:5173",
   trustedOrigins: ["http://localhost:5173"],
   secret: "0123456789abcdef0123456789abcdef",
   google: { clientId: "google-id", clientSecret: "google-secret" },
   github: { clientId: "github-id", clientSecret: "github-secret" },
+  atlassian: { clientId: "atlassian-id", clientSecret: "atlassian-secret" },
 };
+
+test("a failed sign-in is redirected to the web app, not the API", () => {
+  // Better Auth's own error page is served from the API origin, and its "Go
+  // Home" link points there — which serves no UI, so the user lands on :4000
+  // with no way back. Pointing errorURL at the app keeps the failure where the
+  // person actually is.
+  const auth = createAuth(options);
+
+  assert.equal(
+    (auth.options as { onAPIError?: { errorURL?: string } }).onAPIError
+      ?.errorURL,
+    "http://localhost:5173",
+  );
+});
 
 test("createAuth exposes a request handler and a session reader", () => {
   const auth = createAuth(options);
@@ -151,7 +167,7 @@ test("listing linked accounts requires a session", async () => {
  * The hooks are invoked directly rather than through an OAuth callback: doing
  * it for real needs a live provider, which no test here may depend on.
  */
-function recordingEmails(primary?: string) {
+function recordingEmails(primary?: string, ownerOf?: string) {
   const recorded: Array<{
     userId: string;
     email: string;
@@ -161,6 +177,9 @@ function recordingEmails(primary?: string) {
     recorded,
     store: {
       primaryFor: () => Promise.resolve(primary),
+      // Undefined by default: "nobody holds this address", which is the
+      // ordinary signup and keeps the pre-flight out of every other test.
+      ownerOf: () => Promise.resolve(ownerOf),
       list: () => Promise.resolve([]),
       record: (input: {
         userId: string;
@@ -413,6 +432,7 @@ test("a failure to record does not break the sign-in", async () => {
     ...options,
     emails: {
       primaryFor: () => Promise.resolve("first@example.test"),
+      ownerOf: () => Promise.resolve(undefined),
       list: () => Promise.resolve([]),
       record: () => Promise.reject(new Error("database down")),
       revokeProvider: () => Promise.resolve(),
@@ -449,6 +469,7 @@ test("unlinking a provider withdraws its proof", async () => {
     ...options,
     emails: {
       primaryFor: () => Promise.resolve("first@example.test"),
+      ownerOf: () => Promise.resolve(undefined),
       list: () => Promise.resolve([]),
       record: () => Promise.resolve(null),
       revokeProvider: (userId: string, providerId: string) => {
@@ -503,14 +524,67 @@ function accountLinking(auth: ReturnType<typeof createAuth>) {
   ).account?.accountLinking;
 }
 
-test("only Google and GitHub may merge into an existing account", () => {
-  // If this fails because a provider was added, that provider must verify
+test("the trusted-provider list is exactly the reviewed one", () => {
+  // If this fails because a provider was added, that provider must confirm
   // address ownership before reporting an email — otherwise whoever controls
   // an account there reaches the account already using that address.
+  //
+  // Atlassian is on this list on a weaker basis than the other two: it returns
+  // no `email_verified` claim, and the provider config asserts one. See the
+  // comment on `trustedProviders` in auth.ts before widening this further.
   assert.deepEqual(accountLinking(createAuth(options))?.trustedProviders, [
     "google",
     "github",
+    "atlassian",
   ]);
+});
+
+test("Atlassian asserts the verification Better Auth's provider withholds", () => {
+  const auth = createAuth(options);
+  const atlassian = (
+    auth.options as {
+      socialProviders?: {
+        atlassian?: { mapProfileToUser?: () => { emailVerified?: boolean } };
+      };
+    }
+  ).socialProviders?.atlassian;
+
+  assert.ok(atlassian, "Atlassian should be configured");
+
+  // The upstream provider hardcodes `emailVerified: false`, and both the
+  // sign-in callback and the link route gate on
+  // `!trusted && !emailVerified`. Without this override every path is refused:
+  // signing in silently creates a duplicate account and Connect fails with
+  // `unable_to_link_account`. Pinned because dropping it breaks linking in a
+  // way that only shows up at the provider callback.
+  assert.equal(atlassian?.mapProfileToUser?.().emailVerified, true);
+});
+
+test("Atlassian asks for identity and nothing else", () => {
+  const auth = createAuth(options);
+
+  const atlassian = (
+    auth.options as {
+      socialProviders?: {
+        atlassian?: { scope?: string[]; disableDefaultScope?: boolean };
+      };
+    }
+  ).socialProviders?.atlassian;
+
+  // Required: without `read:me` the profile comes back with no address and
+  // Better Auth cannot create a user, so the sign-in fails at the callback
+  // rather than anywhere near this configuration.
+  assert.ok(atlassian?.scope?.includes("read:me"));
+
+  // The provider appends `scope` to its defaults, so dropping the site-scoped
+  // `read:jira-user` takes both of these. Asserted together because setting
+  // the scope list without the flag silently keeps requesting Jira access —
+  // the failure is invisible in config and only shows on the consent screen.
+  assert.equal(atlassian?.disableDefaultScope, true);
+  assert.ok(
+    !atlassian?.scope?.includes("read:jira-user"),
+    "login should not request site-scoped Jira access",
+  );
 });
 
 test("implicit linking is enabled deliberately", () => {
@@ -579,17 +653,22 @@ test("Secure follows the URL scheme, not NODE_ENV", () => {
   );
 });
 
-test("SameSite is Strict on a same-site deployment", () => {
-  // Nothing here needs to arrive authenticated from a cross-site navigation,
-  // so Strict costs nothing and refuses cross-site sends outright.
-  assert.equal(cookieAttributes(createAuth(options))["sameSite"], "strict");
-});
+test("SameSite is Lax on every deployment, because OAuth requires it", () => {
+  // Regression test for a real sign-in failure, so it is worth stating what
+  // breaks rather than just pinning a string.
+  //
+  // These attributes are spread over every auth cookie, including the `state`
+  // cookie that carries an in-progress sign-in. The provider returns the user
+  // by a cross-site top-level navigation, and a Strict cookie is withheld on
+  // exactly that request — so `state` never comes back and the callback dies
+  // at `error=state_mismatch`. Strict here is not a stricter session; it is no
+  // session at all.
+  //
+  // Both deployment shapes are asserted because the same-origin one is the
+  // trap: it looks like it could afford Strict, and it cannot. SameSite is
+  // judged against the provider's origin, which is cross-site either way.
+  assert.equal(cookieAttributes(createAuth(options))["sameSite"], "lax");
 
-test("SameSite relaxes to Lax only for cross-subdomain deploys", () => {
-  // Strict is judged on the whole site, and the OAuth callback returns from
-  // Google or GitHub as a cross-site navigation — so a Strict cookie is
-  // withheld on precisely the request that completes a sign-in. Lax is the
-  // strongest setting that still works there.
   assert.equal(
     cookieAttributes(
       createAuth({
@@ -599,5 +678,50 @@ test("SameSite relaxes to Lax only for cross-subdomain deploys", () => {
       }),
     )["sameSite"],
     "lax",
+  );
+});
+
+// ---- duplicate-account pre-flight ------------------------------------------
+//
+// The application half of a two-layer guard; migration 0007 is the other. Both
+// exist because `user.email` and `user_email.email` are each unique while
+// neither constraint sees the other, so an address free in one table can be
+// taken in the other — and a refused merge used to fall through to creating a
+// user in exactly that unrepresentable state.
+
+test("a signup is refused when the address is already held", async () => {
+  const emails = recordingEmails(undefined, "someone-else");
+  const auth = createAuth({ ...options, emails: emails.store });
+
+  await assert.rejects(
+    () =>
+      userCreateBeforeHook(auth)({
+        id: "user_new",
+        email: "taken@example.test",
+      }),
+    (error: { body?: { code?: string } }) =>
+      error.body?.code === "EMAIL_ALREADY_HELD",
+    "a held address must abort the signup, not create a second account",
+  );
+});
+
+test("a signup proceeds when nobody holds the address", async () => {
+  const emails = recordingEmails();
+  const auth = createAuth({
+    ...options,
+    emails: emails.store,
+    handles: { suggest: () => Promise.resolve("new-handle") },
+  });
+
+  // The ordinary path, asserted so the guard above cannot be satisfied by
+  // refusing everything.
+  const result = await userCreateBeforeHook(auth)({
+    id: "user_new",
+    email: "free@example.test",
+  });
+
+  assert.equal(
+    (result as { data?: { username?: string } })?.data?.username,
+    "new-handle",
   );
 });

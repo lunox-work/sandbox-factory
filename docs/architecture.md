@@ -97,7 +97,7 @@ Nothing in the API consumes the object store yet.
 ## Auth
 
 Better Auth, configured in `apps/api/src/auth.ts` and mounted at `/api/auth/*`.
-Google and GitHub only — `emailAndPassword` is never enabled, so
+Google, GitHub and Atlassian only — `emailAndPassword` is never enabled, so
 `/api/auth/sign-up/email` answers 400.
 
 Its four tables (`user`, `session`, `account`, `verification`) live in
@@ -112,6 +112,23 @@ merges into it. That happens only when the provider is trusted _and_ asserts
 `email_verified`, and the existing account's address is verified. Adding a
 provider to that list is a security decision: it must verify address ownership
 before reporting an email. `apps/api/test/auth.test.ts` pins the list.
+
+**Atlassian is the worked example of the cost of that rule.** It reports no
+`email_verified` claim — Better Auth's provider hardcodes `emailVerified:
+false` — so `apps/api/src/auth.ts` asserts one via `mapProfileToUser` and adds
+it to `trustedProviders`. Leaving it untrusted was tried first and is not a
+usable position: the same guard gates the authenticated link route, so an
+untrusted Atlassian cannot be connected from the account page either. The
+choice is trusted or unusable, and the accepted risk is that whoever controls
+an Atlassian account bearing an address can reach the account using it.
+
+Atlassian also needs an explicit `read:me` scope — its default scopes return a
+profile with no email, which Better Auth cannot create a user from — and sets
+`disableDefaultScope` to drop the site-scoped `read:jira-user` the provider
+would otherwise append. Requesting no product scopes is what lets the Atlassian
+app be registered as resource-level rather than account-level, which in
+Atlassian's console means access to one selected site rather than every site in
+the customer's account.
 
 **Two credentials, one session store:**
 

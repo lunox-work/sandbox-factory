@@ -40,14 +40,28 @@ const envSchema = z.object({
     .string()
     .min(32, "BETTER_AUTH_SECRET must be at least 32 characters."),
   // Public origin of the API. Better Auth builds the provider callback URLs
-  // from this, so it has to match what is registered with Google and GitHub
-  // exactly — a trailing slash or a wrong scheme produces a redirect_uri
+  // from this, so it has to match what is registered with Google, GitHub and
+  // Atlassian exactly — a trailing slash or a wrong scheme produces a redirect_uri
   // mismatch at the provider, not an error here.
   BETTER_AUTH_URL: z.url("BETTER_AUTH_URL must be an absolute URL."),
+  // Public origin of the web app. A failed sign-in is redirected here, so that
+  // the error appears in the app rather than on the API's own error page,
+  // whose "Go Home" link points back at the API and strands the user.
+  //
+  // Defaults to the first CORS origin, which is the web app in every current
+  // deploy shape; set it explicitly when that is not true.
+  APP_URL: z.url("APP_URL must be an absolute URL.").optional(),
   GOOGLE_CLIENT_ID: z.string().min(1, "GOOGLE_CLIENT_ID is required."),
   GOOGLE_CLIENT_SECRET: z.string().min(1, "GOOGLE_CLIENT_SECRET is required."),
   GITHUB_CLIENT_ID: z.string().min(1, "GITHUB_CLIENT_ID is required."),
   GITHUB_CLIENT_SECRET: z.string().min(1, "GITHUB_CLIENT_SECRET is required."),
+  // Required alongside the other two. Atlassian is offered on the sign-in
+  // screen unconditionally, so a deployment missing these would render a
+  // button that fails at the redirect rather than one that is simply absent.
+  ATLASSIAN_CLIENT_ID: z.string().min(1, "ATLASSIAN_CLIENT_ID is required."),
+  ATLASSIAN_CLIENT_SECRET: z
+    .string()
+    .min(1, "ATLASSIAN_CLIENT_SECRET is required."),
   // Set only when the web app and the API sit on different subdomains of one
   // parent (app.lunox.work and api.lunox.work), where the session cookie needs
   // an explicit Domain to be sent at all. Unset for same-origin local dev:
@@ -56,6 +70,18 @@ const envSchema = z.object({
 });
 
 export type Env = z.infer<typeof envSchema>;
+
+/**
+ * Where a failed sign-in is sent.
+ *
+ * `APP_URL` when set, else the first CORS origin — the web app in every
+ * current deploy shape. Falls back to the API's own origin only when nothing
+ * else is configured, which restores Better Auth's default behaviour rather
+ * than crashing over a cosmetic redirect.
+ */
+export function appUrl(env: Env): string {
+  return env.APP_URL ?? env.CORS_ORIGINS[0] ?? env.BETTER_AUTH_URL;
+}
 
 export function parseEnv(source: NodeJS.ProcessEnv = process.env): Env {
   const result = envSchema.safeParse(source);

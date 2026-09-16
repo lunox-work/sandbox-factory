@@ -391,3 +391,51 @@ test("setPrimary refuses when another account holds that address", async () => {
 
   assert.equal(await store.setPrimary("user_1", "email_2"), undefined);
 });
+
+// ---- ownerOf ---------------------------------------------------------------
+//
+// The lookup behind the sign-in pre-flight. It has to consult both tables:
+// `user.email` and `user_email.email` are each unique, but neither constraint
+// sees the other, so an address free in one can be taken in the other. Missing
+// either branch would let the duplicate-account case through.
+
+test("ownerOf finds a holder in user_email", async () => {
+  const fake = createFakeEmailDb({ emails: [row({ userId: "user_1" })] });
+  const store = createEmailStore(fake.db);
+
+  assert.equal(await store.ownerOf("first@example.test"), "user_1");
+});
+
+test("ownerOf finds a holder whose only claim is user.email", async () => {
+  // The branch that matters: no `user_email` row at all, yet the address is
+  // taken. Checking only `user_email` would call this address free and let a
+  // duplicate account be created on it.
+  const fake = createFakeEmailDb({
+    users: [
+      {
+        id: "user_2",
+        email: "primary@example.test",
+        updatedAt: new Date("2026-09-16T00:00:00.000Z"),
+      },
+    ],
+  });
+  const store = createEmailStore(fake.db);
+
+  assert.equal(await store.ownerOf("primary@example.test"), "user_2");
+});
+
+test("ownerOf returns undefined for a free address", async () => {
+  const fake = createFakeEmailDb();
+  const store = createEmailStore(fake.db);
+
+  assert.equal(await store.ownerOf("nobody@example.test"), undefined);
+});
+
+test("ownerOf normalizes the address before looking it up", async () => {
+  // Signup addresses arrive from a provider in whatever case it reports, and
+  // the rows are stored lowercased; without this the pre-flight would miss.
+  const fake = createFakeEmailDb({ emails: [row({ userId: "user_1" })] });
+  const store = createEmailStore(fake.db);
+
+  assert.equal(await store.ownerOf("  FIRST@Example.TEST  "), "user_1");
+});

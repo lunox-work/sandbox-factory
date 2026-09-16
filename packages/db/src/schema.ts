@@ -95,40 +95,57 @@ export type NewTodoRow = typeof todos.$inferInsert;
  * hand would strand live sessions for a user who no longer exists.
  */
 
-export const user = pgTable("user", {
-  id: text("id").primaryKey(),
-  name: text("name").notNull(),
-  /**
-   * The primary email, and the only one Better Auth itself knows about.
-   *
-   * Still unique, but it is no longer *the* identity — `id` is. Every other
-   * address this person has proven belongs to them lives in `userEmail` below,
-   * and this column holds whichever of those is currently primary.
-   */
-  email: text("email").notNull().unique(),
-  emailVerified: boolean("email_verified").notNull().default(false),
-  /**
-   * The public handle, e.g. `feversoul`.
-   *
-   * **Not null**: every account has one from the moment it is created. It is
-   * generated at signup from the provider's email rather than asked for, so
-   * there is no window in which a user exists without a handle and no other
-   * part of the app has to cope with a null one. The person can change it
-   * afterwards.
-   *
-   * Stored lowercase and unique so `@Alice` and `@alice` cannot both exist;
-   * `displayUsername` keeps the casing the person actually typed.
-   */
-  username: text("username").notNull().unique(),
-  displayUsername: text("display_username").notNull(),
-  image: text("image"),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-});
+export const user = pgTable(
+  "user",
+  {
+    id: text("id").primaryKey(),
+    name: text("name").notNull(),
+    /**
+     * The primary email, and the only one Better Auth itself knows about.
+     *
+     * Still unique, but it is no longer *the* identity — `id` is. Every other
+     * address this person has proven belongs to them lives in `userEmail` below,
+     * and this column holds whichever of those is currently primary.
+     *
+     * Uniqueness is a case-insensitive index on `lower(email)` (migration 0011),
+     * not Drizzle's `.unique()`. A byte-exact constraint allowed two separate
+     * accounts on one address differing only in case, each able to sign in. See
+     * `userEmail.email` below for the other half of the rule.
+     */
+    email: text("email").notNull(),
+    emailVerified: boolean("email_verified").notNull().default(false),
+    /**
+     * The public handle, e.g. `feversoul`.
+     *
+     * **Not null**: every account has one from the moment it is created. It is
+     * generated at signup from the provider's email rather than asked for, so
+     * there is no window in which a user exists without a handle and no other
+     * part of the app has to cope with a null one. The person can change it
+     * afterwards.
+     *
+     * Stored lowercase and unique so `@Alice` and `@alice` cannot both exist;
+     * `displayUsername` keeps the casing the person actually typed.
+     */
+    username: text("username").notNull().unique(),
+    displayUsername: text("display_username").notNull(),
+    image: text("image"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    /**
+     * The primary address, unique case-insensitively — see `email` above.
+     *
+     * Over `lower(email)`, which a column-level `.unique()` cannot express.
+     * Created by migration 0011.
+     */
+    uniqueIndex("user_email_lower_unique").on(sql`lower(${table.email})`),
+  ],
+);
 
 /**
  * Every email address a person has proven they control.
@@ -142,8 +159,10 @@ export const user = pgTable("user", {
  * unlinked the proof is gone, so the row goes with it — enforced by the
  * cascade, not by application code that might forget.
  *
- * The unique constraint is global, not per user: an address may prove at most
- * one identity, or two people could both claim the same inbox.
+ * Uniqueness is global, not per user: an address may prove at most one
+ * identity, or two people could both claim the same inbox. It is enforced
+ * case-insensitively and across both this table and `user.email` — see the
+ * `email` column below for how, and why it takes two mechanisms.
  */
 export const userEmail = pgTable(
   "user_email",
@@ -153,22 +172,26 @@ export const userEmail = pgTable(
       .notNull()
       .references(() => user.id, { onDelete: "cascade" }),
     /**
-     * Globally unique: an address proves at most one identity *in this table*.
+     * One address, one account — enforced in the database, in two halves.
      *
-     * The scope of that guarantee is worth being exact about, because it is
-     * narrower than it first reads. `user.email` carries its own unique
-     * constraint, but the two are separate tables and neither sees the other.
-     * Nothing in the database ties them together: there is no constraint
-     * asserting that every `user.email` is also that same user's primary row
-     * here, so an address can in principle sit on one account's `user.email`
-     * while belonging to a different account here.
+     * *Within this table*, by a case-insensitive unique index on
+     * `lower(email)` (migration 0011). Drizzle's `.unique()` is deliberately
+     * **not** used: it generates a byte-exact constraint, which let
+     * `alice@x` and `ALICE@x` both be stored against different users. The
+     * index replaces it rather than joining it.
      *
-     * That gap is closed in application code, not by the schema — the
-     * `otherOwner` checks in `record` and `setPrimary` in `emails.ts` refuse
-     * exactly that case. Those checks are load-bearing and must not be removed
-     * as redundant: this constraint does not cover what they cover.
+     * *Across `user.email` and this column*, by a trigger pair (migrations
+     * 0007-0009). No constraint or index can express uniqueness over the union
+     * of two tables, which is the only reason that half is a trigger. It
+     * compares case-insensitively and takes an advisory lock on the address so
+     * two concurrent sign-ins cannot both pass the check.
+     *
+     * The `otherOwner` checks in `record` and `setPrimary` in `emails.ts` now
+     * duplicate this rather than solely providing it. Keep them anyway: they
+     * turn a would-be constraint violation into the `null` those functions
+     * promise, so callers get a decision to act on instead of a 500.
      */
-    email: text("email").notNull().unique(),
+    email: text("email").notNull(),
     /**
      * Which providers vouched for this address, comma separated.
      *
@@ -201,6 +224,14 @@ export const userEmail = pgTable(
     uniqueIndex("user_email_one_primary")
       .on(table.userId)
       .where(sql`${table.isPrimary}`),
+    /**
+     * One address, one account, case-insensitively — see `email` above.
+     *
+     * Declared here rather than as `.unique()` on the column because the
+     * uniqueness is over `lower(email)`, which a column-level constraint
+     * cannot express. Created by migration 0011.
+     */
+    uniqueIndex("user_email_email_lower_unique").on(sql`lower(${table.email})`),
   ],
 );
 
