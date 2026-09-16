@@ -197,3 +197,27 @@ test("after many collisions it falls back to a random suffix", async () => {
 
   assert.match(suggested, /^dana-[0-9a-f]{6}$/);
 });
+
+test("a local part of only hyphens still yields a valid handle", async () => {
+  // The stem trims to empty here. Worth pinning because the trim is hand-rolled
+  // index arithmetic rather than `replace(/^-+|-+$/g, "")`, which CodeQL flags
+  // as a polynomial ReDoS: the input is a provider-supplied address, and the
+  // truncation to USERNAME_MAX_LENGTH happens after the trim, not before.
+  const fake = createFakeEmailDb({ users: [] });
+  const store = createProfileStore(fake.db);
+
+  const suggested = await store.suggest(`${"-".repeat(200)}@example.test`);
+
+  assert.equal(suggested, "-user");
+  assert.ok(suggested.length >= 3);
+});
+
+test("surrounding hyphens are trimmed but inner ones are kept", async () => {
+  const fake = createFakeEmailDb({ users: [] });
+  const store = createProfileStore(fake.db);
+
+  assert.equal(
+    await store.suggest("--dana--rivers--@example.test"),
+    "dana--rivers",
+  );
+});

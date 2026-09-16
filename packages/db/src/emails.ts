@@ -467,6 +467,31 @@ export function createProfileStore(db: Database): UserProfileStore {
 }
 
 /**
+ * Strips leading and trailing hyphens in linear time.
+ *
+ * The obvious `replace(/^-+|-+$/g, "")` is a polynomial ReDoS: on a local part
+ * that is a long run of hyphens, the `-+$` alternative retries from every
+ * offset before failing, which is quadratic in the length of the run. The
+ * input here is the local part of a provider-supplied address, so it is not
+ * ours to bound — and the truncation to `USERNAME_MAX_LENGTH` happens after
+ * this runs, not before, so it does not cap the work either.
+ *
+ * Index arithmetic has no such failure mode and the behaviour is identical,
+ * including returning "" for an all-hyphen string.
+ */
+function trimHyphens(value: string): string {
+  let start = 0;
+  let end = value.length;
+  while (start < end && value[start] === "-") {
+    start += 1;
+  }
+  while (end > start && value[end - 1] === "-") {
+    end -= 1;
+  }
+  return value.slice(start, end);
+}
+
+/**
  * Turns an email address into a usable handle stem.
  *
  * Only the local part is used — the domain says where someone works, not who
@@ -475,11 +500,9 @@ export function createProfileStore(db: Database): UserProfileStore {
  */
 function toHandleBase(email: string): string {
   const local = email.split("@")[0] ?? "user";
-  const cleaned = local
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, USERNAME_MAX_LENGTH);
+  const cleaned = trimHyphens(
+    local.toLowerCase().replace(/[^a-z0-9_-]+/g, "-"),
+  ).slice(0, USERNAME_MAX_LENGTH);
   // Pad a too-short stem rather than reject it: "jo@example.com" is a real
   // address and must still produce a valid handle.
   return cleaned.length >= USERNAME_MIN_LENGTH ? cleaned : `${cleaned}-user`;
