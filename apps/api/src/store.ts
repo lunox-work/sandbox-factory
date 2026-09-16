@@ -25,34 +25,62 @@ export {
   type TodoStore,
 } from "@sandbox-factory/db";
 
-export function createInMemoryStore(seed: readonly Todo[] = []): TodoStore {
-  const todos = new Map<string, Todo>(seed.map((todo) => [todo.id, todo]));
+/**
+ * A seeded todo. The owner is part of the seed because the store is
+ * owner-scoped: a fixture without one could only be read by a test that
+ * guessed which user it belonged to.
+ */
+export interface SeedTodo extends Todo {
+  readonly userId: string;
+}
+
+export function createInMemoryStore(seed: readonly SeedTodo[] = []): TodoStore {
+  const todos = new Map<string, SeedTodo>(seed.map((todo) => [todo.id, todo]));
   let counter = seed.length;
 
-  function require(id: string): Todo {
+  /**
+   * The owner check, in the one place every mutating method goes through.
+   *
+   * A row owned by someone else throws `NotFoundError` rather than a distinct
+   * "forbidden" error, matching the Postgres store: there, the owner is part
+   * of the WHERE clause and a non-match simply yields no row. The two
+   * implementations have to be indistinguishable to a caller, and that
+   * includes being indistinguishable about another user's ids.
+   */
+  function require(userId: string, id: string): SeedTodo {
     const existing = todos.get(id);
-    if (existing === undefined) {
+    if (existing === undefined || existing.userId !== userId) {
       throw new NotFoundError(id);
     }
     return existing;
   }
 
+  /** Strip the owner: it is storage bookkeeping, not part of the contract. */
+  function toTodo({ userId: _userId, ...todo }: SeedTodo): Todo {
+    return todo;
+  }
+
   return {
-    async list() {
+    async list(userId) {
       // Newest first — the order the UI wants to render.
-      return [...todos.values()].sort((a, b) =>
-        b.createdAt.localeCompare(a.createdAt),
-      );
+      return [...todos.values()]
+        .filter((todo) => todo.userId === userId)
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+        .map(toTodo);
     },
 
-    async get(id) {
-      return todos.get(id);
+    async get(userId, id) {
+      const existing = todos.get(id);
+      return existing === undefined || existing.userId !== userId
+        ? undefined
+        : toTodo(existing);
     },
 
-    async create(title) {
+    async create(userId, title) {
       counter += 1;
-      const todo: Todo = {
+      const todo: SeedTodo = {
         id: `todo_${counter}`,
+        userId,
         // Normalized here as well as at the edge, so a caller reaching the
         // store directly cannot write an untrimmed title.
         title: normalizeTitle(title),
@@ -60,12 +88,12 @@ export function createInMemoryStore(seed: readonly Todo[] = []): TodoStore {
         createdAt: new Date().toISOString(),
       };
       todos.set(todo.id, todo);
-      return todo;
+      return toTodo(todo);
     },
 
-    async update(id, patch) {
-      const existing = require(id);
-      const updated: Todo = {
+    async update(userId, id, patch) {
+      const existing = require(userId, id);
+      const updated: SeedTodo = {
         ...existing,
         ...(patch.title === undefined
           ? {}
@@ -73,11 +101,11 @@ export function createInMemoryStore(seed: readonly Todo[] = []): TodoStore {
         ...(patch.done === undefined ? {} : { done: patch.done }),
       };
       todos.set(id, updated);
-      return updated;
+      return toTodo(updated);
     },
 
-    async remove(id) {
-      require(id);
+    async remove(userId, id) {
+      require(userId, id);
       todos.delete(id);
     },
   };

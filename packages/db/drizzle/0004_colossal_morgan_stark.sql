@@ -1,0 +1,1 @@
+ALTER TABLE "account" ADD CONSTRAINT "account_provider_identity_unique" UNIQUE("provider_id","account_id");

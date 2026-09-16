@@ -137,12 +137,76 @@ MinIO or R2 by changing the endpoint. Two caveats if you do swap the backend:
 Nothing in the API consumes the object store yet. It is wired into config and
 compose and tested, so the feature that needs it adds a call, not a layer.
 
+## Auth
+
+Better Auth, configured in `apps/api/src/auth.ts` and mounted at
+`/api/auth/*`. Google and GitHub are the only ways in: `emailAndPassword` is
+never enabled, so `/api/auth/sign-up/email` answers 400 and no row in `account`
+ever carries a password.
+
+The four tables it needs — `user`, `session`, `account`, `verification` — live
+in `packages/db/src/schema.ts` alongside `todos`, and are bundled for the
+adapter as `authSchema`. Two naming rules there are load-bearing and fail at
+runtime rather than at compile time, because the adapter resolves both by
+string: the exported consts are **singular**, and the column properties are
+**camelCase** even though the columns themselves are snake_case. The comment on
+those tables explains it; do not rename either without reading it.
+
+**Account linking is implicit, and the trusted list is what makes that safe.**
+Signing in with a provider whose verified email already belongs to an account
+merges into it rather than being refused — the ordinary case being one person
+with a Google and a GitHub account on the same inbox. The merge happens only
+when the provider is in `trustedProviders` _and_ asserts `email_verified`, and
+only when the existing account's own address is verified. Adding a provider to
+that list is therefore a security decision, not a configuration one: it must
+verify address ownership before reporting an email, or whoever controls an
+account there reaches the account already using that address.
+`apps/api/test/auth.test.ts` pins the list so widening it cannot pass unnoticed.
+
+**Two credentials, one session store.** The web app and the extension
+authenticate differently because their platforms differ:
+
+| Surface          | Carries                 | Why                                        |
+| ---------------- | ----------------------- | ------------------------------------------ |
+| `apps/web`       | httpOnly cookie         | The browser attaches it; JS cannot read it |
+| `apps/extension` | `Authorization: Bearer` | An extension host has no cookie jar        |
+
+The `bearer()` plugin is what makes the second work, and the guard in
+`routes.ts` hands Better Auth the whole header set rather than picking one, so
+neither path is special-cased. `packages/client` sends `credentials: "include"`
+so the cookie survives the cross-subdomain hop from app.lunox.work to
+api.lunox.work, where fetch's own default would drop it.
+
+**One provider identity, one user.** `account` carries a unique constraint on
+`(provider_id, account_id)`. Better Auth already refuses to link an account
+another user holds — on sign-in, on the OAuth redirect and through the link API,
+all of which look the identity up globally rather than per user. The constraint
+is there because the library assumes that invariant rather than tolerating a
+breach: `findAccountByKey` throws "Multiple accounts match the same accountId"
+when two rows collide, which breaks sign-in for both users at once. The database
+now refuses the write instead of discovering it later.
+
+Everything under `/api/v1` requires a session; `/health` and `/api/auth/*` do
+not — signing in cannot require already being signed in. If `createApp` is
+given no `auth`, it serves 503 on `/api/*` rather than serving todos
+unauthenticated, so a deploy that forgets the auth environment fails closed.
+
+A session answers _who is asking_, which is not the same as _what they may
+read_. `todos.user_id` is what makes the answer differ per asker: every method
+on `TodoStore` takes the owner as its first argument and puts it in the query,
+so there is no call that can read or write across users. That shape is
+deliberate — a store method that merely _accepted_ a filter could be called
+without one, and for a period this API was exactly that, sitting behind a
+session while serving every user the whole table. An id belonging to someone
+else returns 404 rather than 403, matching the email routes: a 403 confirms the
+id exists and lets it be enumerated.
+
 ## Where the remaining pieces go
 
 Not yet built, but the boundaries are drawn for them:
 
 - **`packages/integrations`** — GitHub and Jira clients, depending on `shared`
   only.
-- **Auth** — the client already takes a `getToken` callback; the web app returns
-  the session token and the extension reads VS Code's encrypted secret storage.
-  Neither needs restructuring when real auth lands.
+- **The extension's sign-in** — the client's `getToken` callback is the seam,
+  reading VS Code's encrypted secret storage. The API already accepts the
+  bearer token it would return.

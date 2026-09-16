@@ -192,3 +192,176 @@ button:disabled {
   color: var(--danger);
   border-color: transparent;
 }
+
+/* ---- auth ---------------------------------------------------------------- */
+
+.signin {
+  max-width: 22rem;
+  text-align: center;
+  padding-top: 20vh;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.providers {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 1.5rem;
+}
+
+.provider {
+  padding: 0.6rem 0.75rem;
+  width: 100%;
+}
+
+.provider:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.session {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+/* ---- account settings ---------------------------------------------------- */
+
+.panel {
+  margin-top: 2rem;
+}
+
+.panel h2 {
+  font-size: 1rem;
+  margin: 0 0 0.25rem;
+}
+
+.small {
+  font-size: 0.85rem;
+}
+
+.panel .muted {
+  margin-top: 0;
+}
+
+.badge {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border: 1px solid var(--border);
+  border-radius: 0.25rem;
+  padding: 0.05rem 0.3rem;
+  margin-left: 0.5rem;
+  color: var(--muted);
+  vertical-align: middle;
+}
+
+.linklike {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  padding: 0;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.linklike:hover {
+  color: var(--fg);
+}
+
+.idline {
+  margin-top: 1rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+}
+
+.idline code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8rem;
+  background: var(--border);
+  padding: 0.1rem 0.3rem;
+  border-radius: 0.2rem;
+}
+
+.subhead {
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  margin: 1.75rem 0 0.5rem;
+  font-weight: 600;
+}
+
+/* A quieter button for the secondary action on a row. */
+.ghost {
+  border-color: transparent;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.ghost:hover:not(:disabled) {
+  border-color: var(--border);
+  color: var(--fg);
+}
+
+.ghost:disabled {
+  opacity: 0.5;
+}
+
+/* ---- email blocks -------------------------------------------------------- */
+
+.email {
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  padding: 0.75rem 0.9rem;
+  margin-bottom: 0.6rem;
+  list-style: none;
+}
+
+.email-head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.email-head .title {
+  flex: 1;
+  min-width: 0;
+  /* Long addresses wrap rather than pushing the button off the row. */
+  overflow-wrap: anywhere;
+}
+
+.providers-list {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  border-top: 1px solid var(--border);
+}
+
+.provider-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.35rem 0 0;
+  border: none;
+}
+
+.provider-row .title {
+  /* Providers come from the API lowercase; capitalising is presentation. */
+  text-transform: capitalize;
+}
+
+.ghost {
+  border-color: transparent;
+  color: var(--muted);
+}
+
+.ghost:hover:not(:disabled) {
+  border-color: var(--border);
+  color: var(--fg);
+}

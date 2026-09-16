@@ -123,6 +123,39 @@ the API and web app in containers with the source bind-mounted; `prod` builds
 the real images and serves the web app through nginx. Postgres and SeaweedFS
 start with both.
 
+**The auth table names in `packages/db/src/schema.ts` are matched by string at
+runtime.** Better Auth's Drizzle adapter resolves a model as `schema[modelName]`
+and a column as `table[fieldName]`, so the exported consts must stay **singular**
+(`user`, not `users`) and the column _properties_ must stay **camelCase**
+(`emailVerified`), even though the columns they map to are snake_case. Nothing
+catches a rename at compile time — it surfaces as a failed sign-in against a
+real database. `packages/db/test/auth-schema.test.ts` asserts both rules; if you
+are changing those tables, read the comment above them first.
+
+**Email and password sign-in is off, and that is a decision, not a gap.** It is
+disabled by `emailAndPassword` never being enabled in `apps/api/src/auth.ts`.
+Note that Better Auth still _defines_ `auth.api.signUpEmail` when the feature is
+off, so asserting that the property is absent passes for the wrong reason —
+`apps/api/test/auth.test.ts` asserts on the 400 response instead. Do not "fix"
+that by enabling the feature.
+
+**`createApp` without an `auth` option serves 503, not todos.** That branch is
+what stops a deploy that forgets the auth environment from silently exposing
+every user's data, and it is why `auth` is optional on the factory at all —
+route tests need to build an app without an OAuth client. Adding a route under
+`/api/v1` puts it behind the session guard automatically; adding one outside
+that prefix does not, so think about which you want.
+
+**A session is not an entitlement.** Every `TodoStore` method takes the owner
+as its first argument, and the Postgres store puts it in the `WHERE` clause
+rather than checking it afterwards. Do not add a store method that omits it,
+and do not take the owner from a request body — it comes from
+`c.get("user").id` and nowhere else. This is not hypothetical: the todo routes
+once sat behind the session guard with no `user_id` column at all, which served
+every signed-in user the entire table while looking protected. `createInMemoryStore`
+enforces the same boundary because a laxer test double would hide exactly that
+bug. Another user's id is a 404, never a 403.
+
 **The API requires Postgres, but the test suite does not.** `apps/api` will not
 boot without `DATABASE_URL` — there is no in-memory fallback, because a server
 that quietly keeps todos in a process about to restart looks healthy and loses
@@ -306,9 +339,20 @@ code from auto-merging to `main`; add the test instead. If a threshold genuinely
 needs to move, that is a decision to raise with the maintainer, not a side effect
 of an unrelated PR.
 
-`apps/web` and `apps/extension` currently have placeholder `test` scripts. If you
-add meaningful logic to either, add a real test runner in the same change rather
-than leaving the placeholder to imply coverage that does not exist.
+`apps/web` runs Vitest with Testing Library (`vitest run`, jsdom). It was a
+placeholder that always passed until the account settings page shipped three
+bugs behind a green `npm run verify` — an empty handle field, a provider row
+that claimed "linked" with no address, and an unlink button that sent the wrong
+id. A passing placeholder is worse than no script: it implies coverage that
+does not exist.
+
+Web tests fake the server at the `fetch` and auth-client boundary rather than
+mocking component internals, so they assert what a person sees given a server
+response. When fixing a UI bug, check the test fails before the fix — a test
+written after the fact that never saw red proves nothing.
+
+`apps/extension` still has a placeholder. If you add meaningful logic there,
+add a real runner in the same change.
 
 ## Things not to do
 

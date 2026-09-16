@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "user_email_one_primary" ON "user_email" USING btree ("user_id") WHERE "user_email"."is_primary";

@@ -27,6 +27,32 @@ const envSchema = z.object({
   S3_ACCESS_KEY_ID: z.string().optional(),
   S3_SECRET_ACCESS_KEY: z.string().optional(),
   S3_REGION: z.string().default("us-east-1"),
+
+  // ---- auth ---------------------------------------------------------------
+  //
+  // Required, like DATABASE_URL and for the same reason: an API that boots
+  // without a signing secret or without its OAuth clients looks healthy and
+  // then fails at the one moment a user tries to sign in. Better to not start.
+  //
+  // BETTER_AUTH_SECRET signs session tokens. Rotating it invalidates every
+  // existing session, which is the intended way to sign everyone out.
+  BETTER_AUTH_SECRET: z
+    .string()
+    .min(32, "BETTER_AUTH_SECRET must be at least 32 characters."),
+  // Public origin of the API. Better Auth builds the provider callback URLs
+  // from this, so it has to match what is registered with Google and GitHub
+  // exactly — a trailing slash or a wrong scheme produces a redirect_uri
+  // mismatch at the provider, not an error here.
+  BETTER_AUTH_URL: z.url("BETTER_AUTH_URL must be an absolute URL."),
+  GOOGLE_CLIENT_ID: z.string().min(1, "GOOGLE_CLIENT_ID is required."),
+  GOOGLE_CLIENT_SECRET: z.string().min(1, "GOOGLE_CLIENT_SECRET is required."),
+  GITHUB_CLIENT_ID: z.string().min(1, "GITHUB_CLIENT_ID is required."),
+  GITHUB_CLIENT_SECRET: z.string().min(1, "GITHUB_CLIENT_SECRET is required."),
+  // Set only when the web app and the API sit on different subdomains of one
+  // parent (app.lunox.work and api.lunox.work), where the session cookie needs
+  // an explicit Domain to be sent at all. Unset for same-origin local dev:
+  // a Domain attribute on localhost stops the cookie working entirely.
+  AUTH_COOKIE_DOMAIN: z.string().optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;

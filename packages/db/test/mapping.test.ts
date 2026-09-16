@@ -9,6 +9,7 @@ test("rowToTodo converts the timestamp to an ISO string", () => {
   assert.deepEqual(
     rowToTodo({
       id: "todo_1",
+      userId: "user_1",
       title: "write tests",
       done: false,
       createdAt: new Date("2026-09-16T00:00:00.000Z"),
@@ -25,6 +26,7 @@ test("rowToTodo converts the timestamp to an ISO string", () => {
 test("rowToTodo preserves done", () => {
   const todo = rowToTodo({
     id: "todo_2",
+    userId: "user_1",
     title: "done thing",
     done: true,
     createdAt: new Date("2026-09-16T00:00:00.000Z"),
@@ -32,20 +34,40 @@ test("rowToTodo preserves done", () => {
   assert.equal(todo.done, true);
 });
 
+test("rowToTodo does not leak the owner into the DTO", () => {
+  // `user_id` is storage bookkeeping. The client already knows who it is, and
+  // shipping the column would put one user's id into a payload for no reason.
+  const todo = rowToTodo({
+    id: "todo_1",
+    userId: "user_1",
+    title: "write tests",
+    done: false,
+    createdAt: new Date("2026-09-16T00:00:00.000Z"),
+  });
+  assert.equal("userId" in todo, false);
+});
+
+test("newTodoRow records the owner", () => {
+  assert.equal(newTodoRow("user_1", "buy milk", "todo_1").userId, "user_1");
+});
+
 test("newTodoRow normalizes the title", () => {
-  assert.equal(newTodoRow("  buy milk  ", "todo_1").title, "buy milk");
+  assert.equal(
+    newTodoRow("user_1", "  buy milk  ", "todo_1").title,
+    "buy milk",
+  );
 });
 
 test("newTodoRow starts a todo undone", () => {
-  assert.equal(newTodoRow("buy milk", "todo_1").done, false);
+  assert.equal(newTodoRow("user_1", "buy milk", "todo_1").done, false);
 });
 
 test("newTodoRow rejects a title the domain would reject", () => {
-  assert.throws(() => newTodoRow("   ", "todo_1"), InvalidTitleError);
+  assert.throws(() => newTodoRow("user_1", "   ", "todo_1"), InvalidTitleError);
 });
 
 test("newTodoRow generates an id when none is given", () => {
-  assert.match(String(newTodoRow("buy milk").id), /^todo_/);
+  assert.match(String(newTodoRow("user_1", "buy milk").id), /^todo_/);
 });
 
 test("generateId returns unique prefixed ids", () => {

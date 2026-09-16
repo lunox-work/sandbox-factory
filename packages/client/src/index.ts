@@ -38,6 +38,15 @@ export interface ClientOptions {
   getToken?: () => string | null | PromiseLike<string | null>;
   /** Injectable for tests; defaults to the platform's global fetch. */
   fetch?: typeof globalThis.fetch;
+  /**
+   * Whether to send cookies. Defaults to `"include"`, because the web app
+   * authenticates with a session cookie and the API is a different origin in
+   * production (app.lunox.work calling api.lunox.work) — where fetch's own
+   * default of `"same-origin"` would drop the cookie and turn every call into
+   * a 401. The extension sends a bearer token instead and does not need this,
+   * but including it costs nothing when there is no cookie to send.
+   */
+  credentials?: RequestCredentials;
 }
 
 /** An error carrying the HTTP status, so callers can branch on 401 vs 404. */
@@ -68,10 +77,12 @@ export class TodoClient {
   readonly #baseUrl: string;
   readonly #getToken: () => string | null | PromiseLike<string | null>;
   readonly #fetch: typeof globalThis.fetch;
+  readonly #credentials: RequestCredentials;
 
   constructor(options: ClientOptions) {
     this.#baseUrl = options.baseUrl.replace(/\/+$/, "");
     this.#getToken = options.getToken ?? (() => null);
+    this.#credentials = options.credentials ?? "include";
     // Bound to globalThis: an unbound global fetch throws "Illegal invocation"
     // in browsers.
     this.#fetch = options.fetch ?? globalThis.fetch.bind(globalThis);
@@ -90,6 +101,7 @@ export class TodoClient {
 
     const response = await this.#fetch(`${this.#baseUrl}${path}`, {
       ...init,
+      credentials: this.#credentials,
       headers,
     });
     const text = await response.text();

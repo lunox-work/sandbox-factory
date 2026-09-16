@@ -176,3 +176,28 @@ test("a response of the wrong shape is rejected rather than passed through", asy
 
   await assert.rejects(client.listTodos());
 });
+
+test("requests send cookies by default", async () => {
+  const { fetch, calls } = stubFetch({ body: { todos: [] } });
+  const client = new TodoClient({ baseUrl: "https://api.test", fetch });
+
+  await client.listTodos();
+
+  // Not fetch's own default of "same-origin": the web app calls the API on a
+  // different subdomain in production, where that default would silently drop
+  // the session cookie and make every call a 401.
+  assert.equal(calls[0]?.init?.credentials, "include");
+});
+
+test("credentials can be overridden", async () => {
+  const { fetch, calls } = stubFetch({ body: { todos: [] } });
+  const client = new TodoClient({
+    baseUrl: "https://api.test",
+    fetch,
+    credentials: "omit",
+  });
+
+  await client.listTodos();
+
+  assert.equal(calls[0]?.init?.credentials, "omit");
+});

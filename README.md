@@ -32,11 +32,37 @@ Needs **Docker** and **Make**. Nothing else — not even Node.
 ```bash
 git clone https://github.com/lunox-work/sandbox-factory.git
 cd sandbox-factory
+cp .env.example .env    # then fill in the auth section, see below
 make up
 ```
 
-Open <http://localhost:5173>. Add a todo, check it off, click its title to
-rename it, delete it with the ×.
+Open <http://localhost:5173>. Sign in with Google or GitHub, then add a todo,
+check it off, click its title to rename it, delete it with the ×.
+
+### The one bit of setup: OAuth credentials
+
+Sign-in is Google and GitHub only — there is no email and password option — so
+the API needs a client from at least one of them before it will boot. Fill in
+the auth section of `.env`:
+
+```bash
+# A signing secret for session tokens — any 32+ characters.
+openssl rand -base64 32
+```
+
+Then register an OAuth client and paste in its id and secret:
+
+| Provider | Where                                                                                                             | Redirect URI to register                         |
+| -------- | ----------------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
+| Google   | [console.cloud.google.com](https://console.cloud.google.com/apis/credentials) → OAuth client ID → Web application | `http://localhost:4000/api/auth/callback/google` |
+| GitHub   | [github.com/settings/developers](https://github.com/settings/developers) → New OAuth App                          | `http://localhost:4000/api/auth/callback/github` |
+
+The redirect URI has to match exactly — a trailing slash or the wrong port is
+rejected by the provider, not by this app, so the error appears on their page
+rather than in your logs.
+
+If you only want to look around, `npm run verify` runs the whole test suite and
+needs none of this.
 
 The first `make up` installs dependencies inside the containers, so give it a
 minute. After that it starts in seconds. `make down` stops it.
@@ -125,7 +151,8 @@ refetches; it is as close to hot reload as the extension host gets.
 with either container profile.
 
 The API **requires** Postgres — it has no in-memory fallback, so it will not
-boot without `DATABASE_URL`. After starting the services, apply the schema:
+boot without `DATABASE_URL`, nor without the auth variables above. After
+starting the services, apply the schema:
 
 ```bash
 make migrate

@@ -31,7 +31,14 @@ export function useTodos() {
       const todos = await api.listTodos();
       setState({ todos, error: null, loading: false });
     } catch (error) {
-      setState((s) => ({ ...s, error: describe(error), loading: false }));
+      // A 401 means the session is gone — expired, revoked, or signed out in
+      // another tab. Drop the list rather than leaving the previous user's
+      // todos on screen underneath an error message.
+      setState((s) => ({
+        todos: isUnauthorized(error) ? [] : s.todos,
+        error: describe(error),
+        loading: false,
+      }));
     }
   }, []);
 
@@ -107,6 +114,11 @@ function dropIfGone(state: State, id: string, error: unknown): State {
     };
   }
   return { ...state, error: describe(error) };
+}
+
+/** The session is gone: expired, revoked, or signed out in another tab. */
+function isUnauthorized(error: unknown): boolean {
+  return error instanceof ApiError && error.isUnauthorized;
 }
 
 function describe(error: unknown): string {

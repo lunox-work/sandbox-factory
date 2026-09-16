@@ -8,9 +8,67 @@ import {
 } from "sandbox-factory";
 import { useState, type FormEvent } from "react";
 
+import { Account } from "./Account";
+import { signOut, useSession } from "./auth";
+import { SignIn } from "./SignIn";
 import { useTodos } from "./useTodos";
 
 export function App() {
+  const { data: session, isPending } = useSession();
+
+  // Three states, not two. Rendering the sign-in screen while the session is
+  // still resolving would flash it in front of an already-signed-in user on
+  // every reload, which reads as having been signed out.
+  if (isPending) {
+    return (
+      <main className="app">
+        <p className="muted">Loading…</p>
+      </main>
+    );
+  }
+
+  if (session === null) {
+    return <SignIn />;
+  }
+
+  /**
+   * Keyed by user id, so switching account remounts everything below.
+   *
+   * Without the key, signing out and back in as someone else in the same tab
+   * reuses the mounted tree — including `useTodos`' state, which was populated
+   * for the previous user. The API would never *serve* those rows again, but
+   * they would stay on screen until a refetch replaced them, which reads as
+   * one account showing another's data. Remounting discards that state at the
+   * moment the identity changes rather than racing a fetch against it.
+   */
+  return <Signed key={session.user.id} name={session.user.name} />;
+}
+
+function Signed({ name }: { name: string }) {
+  // A single boolean rather than a router: there are two screens, and adding
+  // a routing dependency for that would be more machinery than it earns.
+  //
+  // Seeded from the query string so that returning from a provider link lands
+  // back on the settings page rather than the todo list, which would look like
+  // the link had been forgotten.
+  const [showAccount, setShowAccount] = useState(
+    () => new URLSearchParams(window.location.search).get("account") === "1",
+  );
+
+  return showAccount ? (
+    <Account
+      onClose={() => {
+        // Drop the marker so a later reload does not reopen settings.
+        window.history.replaceState(null, "", window.location.pathname);
+        setShowAccount(false);
+      }}
+    />
+  ) : (
+    <Todos name={name} onAccount={() => setShowAccount(true)} />
+  );
+}
+
+function Todos({ name, onAccount }: { name: string; onAccount: () => void }) {
   const { todos, error, loading, create, setDone, rename, remove } = useTodos();
   const [title, setTitle] = useState("");
   const [filter, setFilter] = useState<TodoFilter>("all");
@@ -33,9 +91,17 @@ export function App() {
     <main className="app">
       <header className="header">
         <h1>Todos</h1>
-        <span className="counts">
-          {counts.active} active · {counts.completed} done
-        </span>
+        <div className="session">
+          <span className="counts">
+            {counts.active} active · {counts.completed} done
+          </span>
+          <button type="button" className="linklike" onClick={onAccount}>
+            {name}
+          </button>
+          <button type="button" onClick={() => void signOut()}>
+            Sign out
+          </button>
+        </div>
       </header>
 
       <form className="create" onSubmit={onSubmit}>

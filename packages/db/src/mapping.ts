@@ -29,10 +29,11 @@ export function rowToTodo(row: TodoRow): Todo {
  * write an untrimmed or over-long title.
  */
 export function newTodoRow(
+  userId: string,
   title: string,
   id: string = generateId(),
 ): NewTodoRow {
-  return { id, title: normalizeTitle(title), done: false };
+  return { id, userId, title: normalizeTitle(title), done: false };
 }
 
 /**

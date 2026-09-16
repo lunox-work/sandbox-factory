@@ -18,6 +18,18 @@ export interface FakeCall {
   readonly kind: "select" | "insert" | "update" | "delete";
   readonly values?: Record<string, unknown>;
   readonly ordered?: boolean;
+  /**
+   * Whether a `where` clause was applied at all.
+   *
+   * Recorded because owner scoping is the one property that is invisible to a
+   * fake which only sees rows: the store could drop `user_id` from every query
+   * and each assertion about mapping or ordering would still pass. Proving the
+   * predicate exists is the closest this can get to proving it is enforced
+   * without reimplementing SQL — the real guarantee is the `not null` column
+   * and the integration path, but a store that stops filtering entirely is
+   * caught here.
+   */
+  readonly filtered?: boolean;
 }
 
 export interface FakeDb {
@@ -26,10 +38,17 @@ export interface FakeDb {
 }
 
 /** A chain that resolves to `rows` however far it is followed. */
-function chain(rows: readonly unknown[], onOrder?: () => void): unknown {
+function chain(
+  rows: readonly unknown[],
+  onOrder?: () => void,
+  onWhere?: () => void,
+): unknown {
   const result: Record<string, unknown> = {
     from: () => result,
-    where: () => result,
+    where: () => {
+      onWhere?.();
+      return result;
+    },
     returning: () => result,
     set: () => result,
     values: () => result,
@@ -49,13 +68,24 @@ function chain(rows: readonly unknown[], onOrder?: () => void): unknown {
 export function createFakeDb(rows: readonly TodoRow[]): FakeDb {
   const calls: FakeCall[] = [];
 
+  /** Marks the recorded call as having had a `where` applied. */
+  function markFiltered(call: FakeCall): () => void {
+    return () => {
+      Object.assign(call, { filtered: true });
+    };
+  }
+
   const db = {
     select: () => {
-      const call: { kind: "select"; ordered?: boolean } = { kind: "select" };
-      calls.push(call as FakeCall);
-      return chain(rows, () => {
-        Object.assign(call, { ordered: true });
-      });
+      const call: FakeCall = { kind: "select" };
+      calls.push(call);
+      return chain(
+        rows,
+        () => {
+          Object.assign(call, { ordered: true });
+        },
+        markFiltered(call),
+      );
     },
     insert: () => ({
       values: (values: Record<string, unknown>) => {
@@ -65,13 +95,15 @@ export function createFakeDb(rows: readonly TodoRow[]): FakeDb {
     }),
     update: () => ({
       set: (values: Record<string, unknown>) => {
-        calls.push({ kind: "update", values });
-        return chain(rows);
+        const call: FakeCall = { kind: "update", values };
+        calls.push(call);
+        return chain(rows, undefined, markFiltered(call));
       },
     }),
     delete: () => {
-      calls.push({ kind: "delete" });
-      return chain(rows);
+      const call: FakeCall = { kind: "delete" };
+      calls.push(call);
+      return chain(rows, undefined, markFiltered(call));
     },
   };
 
@@ -81,6 +113,7 @@ export function createFakeDb(rows: readonly TodoRow[]): FakeDb {
 export function row(overrides: Partial<TodoRow> = {}): TodoRow {
   return {
     id: "todo_1",
+    userId: "user_1",
     title: "write tests",
     done: false,
     createdAt: new Date("2026-09-16T00:00:00.000Z"),
