@@ -5,22 +5,39 @@ protection on `main`.
 
 ## Branch protection
 
-`main` is governed by a repository ruleset named **main protection**
-(Settings → Rules → Rulesets):
+`main` is protected by **two** layers. Both have to be satisfied, and only the
+first is visible under Settings → Rules.
+
+A repository ruleset named **main protection** (Settings → Rules → Rulesets):
 
 - No deletion, no force-push.
-- Pull request required, squash-merge only. Zero approving reviews, but
-  unattributed changes need an extra approval.
+- Pull request required, squash-merge only. Zero approving reviews.
 - Required status checks: `Test (Node 22)`, `Test (Node 24)`, `Analyze`. Strict
   mode is on, so a branch must be up to date with `main` to merge.
 
-Admins can bypass the ruleset; that exists for release-please and the initial
-scaffold, not routine use.
+And a **classic branch protection** (Settings → Branches) which adds:
 
-`CodeRabbit`, `label`, and `Scorecard analysis` are deliberately **not**
-required — an advisory review and a labeling bot should not be able to wedge the
-repository shut. Since every PR auto-merges on green, the required list is
-exactly the set of things that can stop a bad change.
+- `required_conversation_resolution` — **every review thread must be resolved
+  before the merge**. This is the most common reason a green PR will not merge.
+- `enforce_admins` — so `gh pr merge --admin` does **not** override any of the
+  above.
+- Two extra required contexts, `CodeQL` and `CodeRabbit`, on top of the
+  ruleset's three. **`CodeRabbit` has never reported a conclusion on any PR
+  here**, so it is permanently pending: merging through the REST API, which
+  evaluates this layer, is therefore impossible. GitHub's auto-merge evaluates
+  the ruleset instead, which is why PRs do land normally.
+
+`require_extra_approval_for_unattributed_changes` was turned off on the ruleset:
+it demands an approval that a solo maintainer cannot give, because GitHub
+forbids approving your own pull request. Re-enabling it will deadlock any PR
+whose commits carry a `Co-Authored-By` trailer.
+
+On the ruleset — the layer auto-merge actually evaluates — `CodeRabbit`, `label`
+and `Scorecard analysis` are deliberately **not** required: an advisory review
+and a labeling bot should not be able to wedge the repository shut. The classic
+layer contradicts this by requiring `CodeRabbit` anyway, which is a
+misconfiguration rather than an intent; it is harmless only because auto-merge
+does not consult that layer.
 
 ## CI (`ci.yml`)
 

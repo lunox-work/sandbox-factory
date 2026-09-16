@@ -20,7 +20,7 @@ COMPOSE := docker compose
 
 .DEFAULT_GOAL := help
 
-.PHONY: help install build dev test lint format verify \
+.PHONY: help install build dev test lint format verify ship \
         up down logs ps up-prod down-prod build-images \
         db-up db-down reset psql db-url migrate s3-url \
         ext ext-deps ext-watch ext-package clean
@@ -62,6 +62,10 @@ format: ## Apply formatting
 
 verify: ## Everything CI runs — the gate before pushing
 	npm run verify
+
+ship: ## Branch, verify, PR and merge the working tree (TITLE="fix: ...")
+	@test -n "$(TITLE)" || { echo 'usage: make ship TITLE="fix: what changed"'; exit 1; }
+	./scripts/ship.sh --title "$(TITLE)" $(SHIP_ARGS)
 
 ## ---- docker: dev --------------------------------------------------------
 

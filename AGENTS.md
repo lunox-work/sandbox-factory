@@ -130,8 +130,18 @@ undefined`. Narrow it rather than using `!`.
 
 ### Commits, PRs, and releases
 
+**`./scripts/ship.sh --title "fix: ..." --yes` does all of this for you** —
+branches off `main`, verifies, opens the PR, settles review threads and waits
+for the merge. Prefer it over doing the steps by hand; see
+[scripts/README.md](./scripts/README.md). The rules below are what it encodes.
+
 - Branch off `main` as `fix/...` or `feat/...`. `main` takes squash merges only;
   you cannot push to it.
+- **Unresolved review threads block the merge.** `main` also has a classic
+  branch protection with `required_conversation_resolution` and
+  `enforce_admins`, so a green PR with an open CodeRabbit thread will not land
+  and `--admin` will not force it. Resolve threads with
+  `gh pr comment <n> --body '@coderabbitai resolve'`.
 - Conventional Commits drive the release: `fix:` patch, `feat:` minor,
   `!`/`BREAKING CHANGE:` major. `chore:`/`docs:`/`ci:` produce no release.
 - **The PR title is the only commit message that survives the squash.** A PR
