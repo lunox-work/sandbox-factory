@@ -25,12 +25,14 @@ resource "aws_sns_topic_subscription" "email" {
   endpoint  = var.alarm_email
 }
 
-# The one that matters most: no running task means the site is down, whatever
-# else is green. This replaces the ALB's HealthyHostCount, which no longer
-# exists — ECS is the only thing that knows whether the API is up.
+# Dormant unless Container Insights is switched on, and kept for the day it is:
+# it names the *cause* (no task is running) where the Route53 check at the
+# bottom of this file only sees the symptom (the site stopped answering). Until
+# then the probe is what detects an outage — do not read this one being OK as
+# the platform being up, because it reports OK either way.
 resource "aws_cloudwatch_metric_alarm" "no_running_tasks" {
   alarm_name          = "${local.name}-no-running-tasks"
-  alarm_description   = "No API tasks running. The platform is down."
+  alarm_description   = "No API tasks running. Requires Container Insights; see platform-down for the alarm that always reports."
   namespace           = "ECS/ContainerInsights"
   metric_name         = "RunningTaskCount"
   statistic           = "Minimum"
@@ -103,4 +105,67 @@ variable "billing_alarm_threshold" {
   description = "USD of estimated monthly charges that triggers an alarm. Account-wide, not project-only — your existing domain renewals count toward it."
   type        = number
   default     = 60
+}
+
+# ---- external uptime probe -------------------------------------------------
+#
+# The no-running-tasks alarm above cannot answer "is the site up?" — Container
+# Insights is off, so its metric never reports and missing data is treated as
+# not breaching. It sits permanently OK whatever is happening. This is what
+# actually answers that question.
+#
+# A Route53 health check probes from outside AWS, so unlike an ECS metric it
+# also catches a failure in DNS, CloudFront, the certificate, or the origin
+# routing — every hop between a user and the task, not just the task. That is
+# the better coverage, and it is why this rather than switching Insights on.
+#
+# It probes GET /health, which is safe to hit unauthenticated from anywhere:
+# routes.ts exempts that path from origin verification precisely so probes
+# reaching past the CDN keep working, and the CloudFront behaviour for it uses
+# the managed CachingDisabled policy — so the probe reads live state rather
+# than a cached "ok" from before the outage.
+resource "aws_route53_health_check" "platform" {
+  type              = "HTTPS"
+  fqdn              = var.domain_name
+  port              = 443
+  resource_path     = "/health"
+  request_interval  = 30
+  failure_threshold = 3
+
+  # SNI, required for CloudFront to serve the right certificate.
+  enable_sni = true
+
+  tags = merge(local.tags, {
+    Name = "${local.name}-platform"
+  })
+}
+
+# Health checks publish to us-east-1 regardless of where anything runs, which
+# is why this alarm takes the aliased provider like the CloudFront one above.
+#
+# `treat_missing_data` is "breaching" here, unlike every other alarm in this
+# file. Those guard metrics that legitimately go quiet; this one guards a
+# probe that runs every 30 seconds forever. Silence from it is not "nothing to
+# report", it is the monitoring itself having stopped — the exact condition
+# that left the alarm above useless.
+resource "aws_cloudwatch_metric_alarm" "platform_down" {
+  provider = aws.us_east_1
+
+  alarm_name          = "${local.name}-platform-down"
+  alarm_description   = "platform.lunox.work is not answering /health. The platform is down."
+  namespace           = "AWS/Route53"
+  metric_name         = "HealthCheckStatus"
+  statistic           = "Minimum"
+  period              = 60
+  evaluation_periods  = 2
+  threshold           = 1
+  comparison_operator = "LessThanThreshold"
+  treat_missing_data  = "breaching"
+
+  dimensions = {
+    HealthCheckId = aws_route53_health_check.platform.id
+  }
+
+  alarm_actions = [aws_sns_topic.alarms.arn]
+  ok_actions    = [aws_sns_topic.alarms.arn]
 }

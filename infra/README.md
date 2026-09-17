@@ -51,6 +51,7 @@ About **$15/month**, from live Pricing API rates:
 | Public IPv4 address                         | $3.65   |
 | Neon Postgres (free tier)                   | $0.00   |
 | CloudFront, S3, ECR, Secrets, Route53, logs | ~$4.40  |
+| Route53 health check + 4 alarms             | ~$0.90  |
 
 Three things are deliberately absent, and together they are most of the saving:
 
@@ -60,6 +61,40 @@ Three things are deliberately absent, and together they are most of the saving:
 
 The path back up is short: putting an ALB in front is one file, and moving to
 RDS is a connection string. Do both when traffic justifies them.
+
+## Monitoring
+
+Four alarms, all reporting to the `sandbox-factory-alarms` SNS topic, which
+mails `var.alarm_email`. A new address has to click the confirmation link AWS
+sends before anything reaches it — until then the subscription reads
+`PendingConfirmation` and alarms notify nobody.
+
+| Alarm              | Fires when                                           |
+| ------------------ | ---------------------------------------------------- |
+| `platform-down`    | `/health` stops answering, probed from outside AWS   |
+| `origin-errors`    | CloudFront sees >5% 5xx from the API origin          |
+| `monthly-spend`    | Estimated charges pass `var.billing_alarm_threshold` |
+| `no-running-tasks` | No task is running — **dormant**, see below          |
+
+`platform-down` is the one that answers "is the site up?". It is a Route53
+health check ($0.50/month) hitting `https://platform.lunox.work/health` every
+30 seconds from checkers on several continents, so it catches a failure
+anywhere between a user and the task — DNS, CloudFront, the certificate, the
+origin record — and not only a dead container. Two things make that endpoint
+safe to probe: `routes.ts` exempts `/health` from origin verification, and its
+CloudFront behaviour uses the managed CachingDisabled policy, so the probe
+reads live state rather than a cached `ok`.
+
+It is also the one alarm with `treat_missing_data = "breaching"`. The others
+guard metrics that legitimately go quiet; this one guards a probe that never
+stops, so silence from it means the monitoring broke, which is worth waking up
+for.
+
+**`no-running-tasks` cannot currently fire.** Its metric comes from Container
+Insights, which is off to save ~$2/month, so it reports no data and sits
+permanently OK. It is kept because it names the cause where `platform-down`
+only sees the symptom — switch on `containerInsights` in `ecs.tf` to arm it.
+Do not read it being green as the platform being up.
 
 ## First deploy
 

@@ -104,5 +104,5 @@ variable "log_retention_days" {
 variable "alarm_email" {
   description = "Address for alarm notifications. Empty disables the SNS topic subscription."
   type        = string
-  default     = ""
+  default     = "devops@lunox.work"
 }

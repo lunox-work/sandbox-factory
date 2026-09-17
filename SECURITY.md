@@ -13,7 +13,7 @@
 
 Report privately through
 [GitHub Security Advisories](https://github.com/lunox-work/sandbox-factory/security/advisories/new),
-or by email to <CONTACT_EMAIL>.
+or by email to security@lunox.work.
 
 Please include:
 
