@@ -140,6 +140,12 @@ data "aws_iam_policy_document" "github_deploy" {
     actions = [
       "s3:ListAllMyBuckets",
       "cloudfront:ListDistributions",
+      # The migration step runs a one-off task on the same network as the
+      # service, and finds that network by tag rather than being told it, so it
+      # needs to read the VPC layout it is about to launch into. Both are
+      # describe-only; nothing here can create, modify or delete networking.
+      "ec2:DescribeSubnets",
+      "ec2:DescribeSecurityGroups",
     ]
     resources = ["*"]
   }
