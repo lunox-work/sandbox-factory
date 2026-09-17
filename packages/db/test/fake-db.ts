@@ -1,14 +1,8 @@
 /**
- * A fake standing in for Drizzle's query builder.
- *
- * The repo forbids tests that depend on a container, so the Postgres store is
- * exercised against this instead. Drizzle's builders are thenable chains
- * (`db.select().from(t).where(c)` resolves to rows), so the fake returns
- * objects that are both chainable and awaitable.
- *
- * It records the calls rather than interpreting the SQL: the goal is to prove
- * the store's own logic — which branch it takes, what it maps, when it throws
- * NotFoundError — not to reimplement Postgres.
+ * A fake for Drizzle's query builder, so the Postgres store is tested without
+ * a container. Drizzle's builders are thenable chains, so the fake returns
+ * objects that are both chainable and awaitable. It records calls rather than
+ * interpreting SQL: the target is the store's own logic, not Postgres.
  */
 
 import type { TodoRow } from "../src/schema.js";
@@ -19,15 +13,9 @@ export interface FakeCall {
   readonly values?: Record<string, unknown>;
   readonly ordered?: boolean;
   /**
-   * Whether a `where` clause was applied at all.
-   *
-   * Recorded because owner scoping is the one property that is invisible to a
-   * fake which only sees rows: the store could drop `user_id` from every query
-   * and each assertion about mapping or ordering would still pass. Proving the
-   * predicate exists is the closest this can get to proving it is enforced
-   * without reimplementing SQL — the real guarantee is the `not null` column
-   * and the integration path, but a store that stops filtering entirely is
-   * caught here.
+   * Whether a `where` was applied at all. Owner scoping is otherwise invisible
+   * to a fake that only sees rows; this at least catches a store that stops
+   * filtering entirely.
    */
   readonly filtered?: boolean;
 }
@@ -61,10 +49,7 @@ function chain(
   return result;
 }
 
-/**
- * @param rows what every query resolves to. Pass `[]` to simulate a miss,
- *   which is how the store is told an id does not exist.
- */
+/** @param rows what every query resolves to; pass `[]` to simulate a miss. */
 export function createFakeDb(rows: readonly TodoRow[]): FakeDb {
   const calls: FakeCall[] = [];
 

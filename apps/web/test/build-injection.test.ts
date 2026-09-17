@@ -1,20 +1,15 @@
 /**
  * Does the build record actually reach the app?
  *
- * The other suites stub the value, so they prove the *UI* renders whatever it
- * is given and say nothing about whether the real plumbing delivers it. That
- * gap shipped a bug: `define` substitutes during bundling, the dev server does
- * not bundle, and so `npm run dev` showed "0.0.0" with no sha while every test
- * and the production build were green.
- *
- * These tests drive Vite itself — the real `vite.config.ts` — in both modes,
- * because "works in one mode" was precisely the failure.
+ * The other suites stub the value, so they say nothing about the real
+ * plumbing. That gap shipped a bug: `define` left `npm run dev` showing
+ * "0.0.0" while every test and the production build were green. These tests
+ * drive the real `vite.config.ts` in both modes.
  *
  * @vitest-environment node
  *
- * The environment override is required, not cosmetic: the suite-wide jsdom
- * environment replaces globals that esbuild — which Vite runs underneath —
- * asserts on, and it refuses to start under it.
+ * The override is required: esbuild, which Vite runs underneath, refuses to
+ * start under jsdom's replaced globals.
  */
 
 import { readFile, rm } from "node:fs/promises";
@@ -29,10 +24,8 @@ const TIMEOUT = 120_000;
 const ROOT = join(import.meta.dirname, "..");
 
 /**
- * What the real resolver reports for this checkout.
- *
- * Read through the config rather than restated, so the assertions are about
- * delivery — did the value arrive — and not about any particular sha.
+ * What the real resolver reports for this checkout, so the assertions are
+ * about delivery and not about any particular sha.
  */
 async function expectedSha(): Promise<string> {
   const { resolveBuildInfo } = await import("../../../scripts/build-info.mjs");
@@ -40,12 +33,9 @@ async function expectedSha(): Promise<string> {
 }
 
 /**
- * The regression, asserted on the exact path that broke.
- *
- * `transformRequest` is what the dev server runs to produce the JavaScript a
- * browser receives for a module — not `ssrLoadModule`, which bundles and
- * therefore applied `define` and passed even while the browser was broken.
- * Asserting on the served text is what makes this test able to fail.
+ * The regression, asserted on the path that broke. `transformRequest` produces
+ * what a browser receives. Do not use `ssrLoadModule`: it applies `define` and
+ * passed while the browser was broken.
  */
 test(
   "the dev server serves a module carrying the real commit",
@@ -61,15 +51,12 @@ test(
       const result = await server.transformRequest("/src/build.ts");
       const code = result?.code ?? "";
 
-      // The assertion that would have caught the bug. Before the fix this text
-      // still contained the bare `__BUILD_INFO__` identifier — undeclared in
-      // the browser, so `undefined` at runtime and 0.0.0 in the footer.
+      // The bug: the served text kept the bare identifier, which is undeclared
+      // in the browser.
       expect(code).not.toContain("__BUILD_INFO__");
 
-      // And it must get the record from somewhere, rather than having quietly
-      // fallen back to a literal. The plugin serves it as a module, so the
-      // served text imports it; following that import is left to the build
-      // test below, which checks the value itself end to end.
+      // It must import the record rather than fall back to a literal. The
+      // build test below checks the value itself.
       expect(code).toContain("virtual:build-info");
     } finally {
       await server.close();
@@ -95,8 +82,7 @@ test(
       const asset = /\/assets\/(index-[^"]+\.js)/.exec(html)?.[1];
       expect(asset).toBeDefined();
 
-      // The value itself, not merely the wiring: this is the end-to-end check
-      // that the record reaches the artifact a user loads.
+      // End to end: the value reaches the artifact a user loads.
       const bundle = await readFile(join(outDir, "assets", asset!), "utf8");
       expect(bundle).toContain(await expectedSha());
       expect(bundle).not.toContain("__BUILD_INFO__");

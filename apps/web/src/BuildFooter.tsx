@@ -1,15 +1,10 @@
 /**
- * The version readout at the bottom of every screen.
+ * The version readout at the bottom of every screen. Always visible, because
+ * "which build is this?" comes up in support and bug reports.
  *
- * Small, muted and always present: the question it answers — "which build am I
- * looking at?" — comes up during support and bug reports, and a readout behind
- * a menu is one that has to be explained over the phone before it can be read
- * out.
- *
- * It reports, and does not act. A mismatch between this bundle and the API is
- * shown rather than corrected: during a rolling deploy the two legitimately
- * differ for a few seconds, and a reload prompt on every deploy is one users
- * learn to dismiss without reading.
+ * It reports and does not act: bundle and API legitimately differ for a few
+ * seconds during a rolling deploy, and a reload prompt on every deploy is one
+ * users learn to dismiss.
  */
 
 import {
@@ -27,9 +22,8 @@ export function BuildFooter() {
   const [apiBuild, setApiBuild] = useState<BuildInfoDto | undefined>(undefined);
 
   useEffect(() => {
-    // Guards against setting state after unmount. StrictMode runs this effect
-    // twice in development, and the first run's response arrives after its own
-    // cleanup has already run.
+    // Guards against setting state after unmount; StrictMode runs this effect
+    // twice in development.
     let cancelled = false;
     void fetchApiBuild().then((info) => {
       if (!cancelled) {
@@ -43,21 +37,14 @@ export function BuildFooter() {
 
   const label = formatVersion(webBuild);
 
-  // The commit, always — it is the field that identifies this exact build, and
-  // it resolves for every build there is.
   const href = commitUrl(webBuild);
 
-  // The release, only when this build *is* one. Undefined for the commits
-  // between two releases, which carry the previous version without being it;
-  // see `releaseUrl`. Shown in addition to the commit rather than instead of
-  // it, because they answer different questions — "what code is this?" versus
-  // "what shipped, and what are its signed artifacts?" — and only the first
-  // has an answer for most builds.
+  // Only when this build is a release; see `releaseUrl`. Shown alongside the
+  // commit link, not instead of it.
   const release = releaseUrl(webBuild);
 
-  // Only a definite disagreement is worth showing. An API that did not answer,
-  // or either side reporting an unidentified build, leaves the question
-  // unanswered rather than answered "no" — see `sameBuild`.
+  // Only a definite disagreement is shown. No answer, or an unidentified build
+  // on either side, is not a mismatch; see `sameBuild`.
   const mismatched =
     apiBuild !== undefined &&
     isIdentified(apiBuild) &&
@@ -86,8 +73,8 @@ export function BuildFooter() {
       )}
       {mismatched && (
         <span className="build-mismatch" title={mismatchTitle(apiBuild)}>
-          {/* Not an error: it resolves itself on the next reload. The tooltip
-              carries the detail rather than the footer spelling it out. */}
+          {/* Not an error: it resolves on the next reload. The tooltip
+              carries the detail. */}
           API {formatVersion(apiBuild)}
         </span>
       )}

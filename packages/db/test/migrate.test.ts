@@ -6,10 +6,9 @@ import { type MigrateDeps, runMigrations } from "../src/migrate.js";
 import type { Database } from "../src/store.js";
 
 /**
- * The runner's own logic is: open one connection, run the migrator, and close
- * the connection whichever way that goes. Injecting both collaborators tests
- * exactly that, with no database — the SQL itself is verified by applying it
- * to a real Postgres with `make migrate`.
+ * The runner's logic: open one connection, run the migrator, close whichever
+ * way that goes. Injected collaborators test that with no database; the SQL
+ * itself is verified with `make migrate`.
  */
 function deps(run: MigrateDeps["run"] = async () => {}): {
   deps: MigrateDeps;
@@ -54,8 +53,7 @@ test("runMigrations closes the connection on success", async () => {
 });
 
 test("runMigrations closes the connection when the migration fails", async () => {
-  // The reason the runner uses try/finally: a failed migration that leaks its
-  // connection leaves the process unable to exit.
+  // A failed migration that leaks its connection leaves the process hanging.
   const h = deps(async () => {
     throw new Error("syntax error at or near");
   });

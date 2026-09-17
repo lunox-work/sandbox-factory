@@ -1,8 +1,6 @@
-# S3 bucket holding the built SPA.
-#
-# Never public. CloudFront reads it through an Origin Access Control, and the
-# bucket policy below is what grants that — scoped to this one distribution, so
-# no other CloudFront distribution in any account can read it.
+# S3 bucket holding the built SPA. Never public: CloudFront reads it through an
+# Origin Access Control, and the bucket policy below grants that to this one
+# distribution only.
 
 resource "aws_s3_bucket" "web" {
   bucket = "${local.name}-web-${data.aws_caller_identity.current.account_id}"
@@ -27,8 +25,8 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "web" {
   }
 }
 
-# The SPA is a build artifact, reproducible from any commit, so versioning would
-# store history that git already holds. Off, deliberately.
+# Off deliberately: the SPA is reproducible from any commit, so versioning
+# would store history that git already holds.
 resource "aws_s3_bucket_versioning" "web" {
   bucket = aws_s3_bucket.web.id
 

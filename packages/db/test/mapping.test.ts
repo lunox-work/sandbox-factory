@@ -35,8 +35,7 @@ test("rowToTodo preserves done", () => {
 });
 
 test("rowToTodo does not leak the owner into the DTO", () => {
-  // `user_id` is storage bookkeeping. The client already knows who it is, and
-  // shipping the column would put one user's id into a payload for no reason.
+  // `user_id` is storage bookkeeping; the client already knows who it is.
   const todo = rowToTodo({
     id: "todo_1",
     userId: "user_1",

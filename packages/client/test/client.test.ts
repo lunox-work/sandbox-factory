@@ -23,7 +23,7 @@ function stubFetch(response: {
     const body =
       response.text ??
       (response.body === undefined ? "" : JSON.stringify(response.body));
-    // 204 and 205 must carry a null body; the Response constructor throws otherwise.
+    // 204 and 205 must carry a null body, or the Response constructor throws.
     return new Response(status === 204 || status === 205 ? null : body, {
       status,
     });
@@ -48,9 +48,7 @@ test("a trailing slash on baseUrl does not produce a doubled slash", async () =>
 });
 
 test("a baseUrl of only slashes trims to empty", async () => {
-  // The trim is hand-rolled index arithmetic rather than `replace(/\/+$/, "")`,
-  // which CodeQL flags as a polynomial ReDoS. Pins the edge case that the
-  // regex handled so the replacement cannot quietly differ from it.
+  // Pins an edge case of the hand-rolled trim (see `trimTrailingSlashes`).
   const { fetch, calls } = stubFetch({ body: { todos: [] } });
   const client = new TodoClient({ baseUrl: "///", fetch });
 
@@ -59,15 +57,12 @@ test("a baseUrl of only slashes trims to empty", async () => {
 });
 
 test("a long run of slashes mid-url is left alone and returns promptly", async () => {
-  // The quadratic case: a long run of slashes that is NOT at the end is what
-  // made the regex retry from every offset. Measured at ~2.3s for 80k before
-  // the fix, so the time bound is the assertion that matters here.
+  // The quadratic case for the old regex: a long run of slashes not at the
+  // end, ~2.3s for 80k. The time bound is the assertion that matters.
   const { fetch, calls } = stubFetch({ body: { todos: [] } });
   const inner = "/".repeat(80_000);
 
-  // The timer must start before construction: the trim runs in the
-  // constructor, so a clock started afterwards measures none of the work and
-  // the assertion below would pass even against the quadratic regex.
+  // Start the timer before construction: the trim runs in the constructor.
   const started = Date.now();
   const client = new TodoClient({
     baseUrl: `https://api.test${inner}x`,
@@ -219,9 +214,8 @@ test("requests send cookies by default", async () => {
 
   await client.listTodos();
 
-  // Not fetch's own default of "same-origin": the web app calls the API on a
-  // different subdomain in production, where that default would silently drop
-  // the session cookie and make every call a 401.
+  // Not fetch's default "same-origin", which drops the session cookie
+  // cross-origin in production.
   assert.equal(calls[0]?.init?.credentials, "include");
 });
 

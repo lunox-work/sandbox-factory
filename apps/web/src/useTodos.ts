@@ -1,9 +1,7 @@
 /**
- * Todo list state.
- *
- * Hand-rolled rather than TanStack Query: with one resource it would be more
- * dependency than value. Swap it in when caching, refetching, or optimistic
- * updates across several resources start being written by hand here.
+ * Todo list state. Hand-rolled rather than TanStack Query, which is more
+ * dependency than value for one resource; swap it in when caching or
+ * optimistic updates across several resources start being written by hand.
  */
 
 import { ApiError } from "@sandbox-factory/client";
@@ -31,9 +29,8 @@ export function useTodos() {
       const todos = await api.listTodos();
       setState({ todos, error: null, loading: false });
     } catch (error) {
-      // A 401 means the session is gone — expired, revoked, or signed out in
-      // another tab. Drop the list rather than leaving the previous user's
-      // todos on screen underneath an error message.
+      // On a 401 drop the list, rather than leaving the previous user's todos
+      // on screen under an error message.
       setState((s) => ({
         todos: isUnauthorized(error) ? [] : s.todos,
         error: describe(error),
@@ -101,10 +98,7 @@ export function useTodos() {
   return { ...state, refresh, create, setDone, rename, remove };
 }
 
-/**
- * A 404 means someone else already deleted it. Dropping the row silently is
- * more useful than an error about something the user cannot act on.
- */
+/** A 404 means it was already deleted elsewhere: drop the row silently. */
 function dropIfGone(state: State, id: string, error: unknown): State {
   if (error instanceof ApiError && error.isNotFound) {
     return {

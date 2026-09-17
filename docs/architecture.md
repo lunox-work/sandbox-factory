@@ -30,7 +30,7 @@ apps/api        apps/web        apps/extension
 Three of these are enforced or load-bearing:
 
 - **`packages/core` has zero dependencies.** It is bundled into a browser, a
-  Node server, and an extension host, and is the one package published to npm.
+  Node server, and an extension host, and is the one publishable package.
 - **`packages/client` stays platform-neutral.** `fetch` only.
   [`packages/client/tsconfig.json`](../packages/client/tsconfig.json) sets
   `types: []`, so a `node:*` import fails to compile rather than breaking the
@@ -101,34 +101,29 @@ Google, GitHub and Atlassian only — `emailAndPassword` is never enabled, so
 `/api/auth/sign-up/email` answers 400.
 
 Its four tables (`user`, `session`, `account`, `verification`) live in
-`packages/db/src/schema.ts` and are bundled as `authSchema`. **Two naming rules
-fail at runtime rather than compile time**, because the adapter resolves both by
-string: the exported consts are singular, and the column properties are
-camelCase even though the columns are snake_case.
+`packages/db/src/schema.ts`, bundled as `authSchema`. **Two naming rules fail at
+runtime rather than compile time**, because the adapter resolves both by string:
+the exported consts are singular, and the column properties are camelCase even
+though the columns are snake_case.
 
 **Account linking is implicit, and `trustedProviders` is what makes that safe.**
 Signing in with a provider whose verified email already belongs to an account
-merges into it. That happens only when the provider is trusted _and_ asserts
+merges into it — only when the provider is trusted _and_ asserts
 `email_verified`, and the existing account's address is verified. Adding a
 provider to that list is a security decision: it must verify address ownership
 before reporting an email. `apps/api/test/auth.test.ts` pins the list.
 
-**Atlassian is the worked example of the cost of that rule.** It reports no
-`email_verified` claim — Better Auth's provider hardcodes `emailVerified:
-false` — so `apps/api/src/auth.ts` asserts one via `mapProfileToUser` and adds
-it to `trustedProviders`. Leaving it untrusted was tried first and is not a
-usable position: the same guard gates the authenticated link route, so an
-untrusted Atlassian cannot be connected from the account page either. The
-choice is trusted or unusable, and the accepted risk is that whoever controls
-an Atlassian account bearing an address can reach the account using it.
+**Atlassian is trusted by assertion.** It reports no `email_verified` claim, so
+`auth.ts` asserts one via `mapProfileToUser` and adds it to `trustedProviders`.
+Untrusted is not a usable position — the same guard gates the authenticated
+link route, so an untrusted Atlassian could not be connected from the account
+page either. The accepted risk: whoever controls an Atlassian account bearing an
+address can reach the account using it.
 
 Atlassian also needs an explicit `read:me` scope — its default scopes return a
-profile with no email, which Better Auth cannot create a user from — and sets
-`disableDefaultScope` to drop the site-scoped `read:jira-user` the provider
-would otherwise append. Requesting no product scopes is what lets the Atlassian
-app be registered as resource-level rather than account-level, which in
-Atlassian's console means access to one selected site rather than every site in
-the customer's account.
+profile with no email — and sets `disableDefaultScope` to drop the site-scoped
+`read:jira-user`. Requesting no product scopes lets the Atlassian app be
+registered as resource-level (one selected site) rather than account-level.
 
 **Two credentials, one session store:**
 
@@ -138,26 +133,23 @@ the customer's account.
 | `apps/extension` | `Authorization: Bearer` | An extension host has no cookie jar        |
 
 The `bearer()` plugin enables the second, and the guard in `routes.ts` hands
-Better Auth the whole header set rather than picking one. `packages/client` sends
-`credentials: "include"` so the cookie survives the hop from app.lunox.work to
-api.lunox.work.
+Better Auth the whole header set rather than picking one. `packages/client`
+sends `credentials: "include"` so the cookie survives a cross-subdomain hop.
 
 `account` carries a unique constraint on `(provider_id, account_id)`. Better
-Auth already refuses to link an account another user holds; the constraint is
-there because the library assumes that invariant rather than tolerating a breach
-— `findAccountByKey` throws when two rows collide, breaking sign-in for both
+Auth assumes that invariant rather than tolerating a breach —
+`findAccountByKey` throws when two rows collide, breaking sign-in for both
 users.
 
 Everything under `/api/v1` requires a session; `/health` and `/api/auth/*` do
-not. If `createApp` is given no `auth`, it serves 503 on `/api/*` so a deploy
+not. If `createApp` is given no `auth`, it serves 503 on `/api/*`, so a deploy
 missing the auth environment fails closed.
 
 **A session answers who is asking, not what they may read.** Every `TodoStore`
 method takes the owner as its first argument and puts it in the query — `create`
 records it, `update` and `remove` match on both id and owner — so no call can
-read _or write_ across users. This API once sat behind a session guard while
-serving every user the whole table. An id belonging to someone else returns 404,
-not 403, so ids cannot be enumerated.
+read _or write_ across users. An id belonging to someone else returns 404, not
+403, so ids cannot be enumerated.
 
 ## Not yet built
 

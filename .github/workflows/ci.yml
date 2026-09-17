@@ -16,9 +16,9 @@ concurrency:
 
 jobs:
   # The job name is load-bearing: `Test (Node 22)` and `Test (Node 24)` are the
-  # required status checks named in the branch ruleset. Renaming this job — or
-  # changing the matrix values — silently stops branch protection from
-  # requiring it, and auto-merge will then merge on checks that never ran.
+  # required status checks in the branch ruleset. Renaming this job or changing
+  # the matrix values silently stops branch protection from requiring it, and
+  # auto-merge will then merge on checks that never ran.
   test:
     name: Test (Node ${{ matrix.node }})
     runs-on: ubuntu-latest
@@ -26,11 +26,10 @@ jobs:
       fail-fast: false
       matrix:
         node: [22, 24]
-    # The email single-owner rule is enforced by triggers and functional
-    # indexes (migrations 0007-0011), and SQL only runs against a real server.
-    # `email-single-owner.test.ts` skips when nothing is reachable, so without
-    # this service those tests would quietly not run and the suite would still
-    # be green — which is the failure mode the tests were written to end.
+    # The email single-owner rule lives in triggers and functional indexes
+    # (migrations 0007-0011), which need a real server.
+    # `email-single-owner.test.ts` skips when none is reachable, so without this
+    # service those tests would quietly not run and the suite would stay green.
     services:
       postgres:
         image: postgres:17-alpine
@@ -40,8 +39,8 @@ jobs:
           POSTGRES_DB: postgres
         ports:
           - 5432:5432
-        # Without this the first connection can land before the server is
-        # accepting them, which reads as "not reachable" and skips.
+        # Without the health check the first connection can beat the server,
+        # which reads as "not reachable" and skips.
         options: >-
           --health-cmd "pg_isready -U postgres"
           --health-interval 5s
@@ -60,9 +59,8 @@ jobs:
       - name: Install dependencies
         run: npm ci --ignore-scripts
 
-      # Each step fans out across every workspace via turbo. A new workspace is
-      # covered the moment it declares the matching script — there is no list
-      # here to forget to update.
+      # Each step fans out across every workspace via turbo; a new workspace is
+      # covered as soon as it declares the matching script.
       - name: Lint
         run: npm run lint
 
@@ -72,24 +70,19 @@ jobs:
       - name: Build
         run: npm run build
 
-      # Enforces the per-package coverage thresholds; each workspace sets its
-      # own in its `test` script rather than sharing one global number.
+      # Enforces the coverage thresholds each workspace sets in its own `test`
+      # script.
       - name: Test and coverage
         run: npm test
         env:
-          # The trigger tests create and drop their own scratch database on
-          # this server rather than using the one named here, so nothing they
-          # do touches another test's data.
+          # The trigger tests create and drop their own scratch database on this
+          # server, not the one named here.
           DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
 
-      # The provenance plumbing is four injection sites that all have to agree,
-      # and every one of them fails *quietly*: a bad `define`, an undeclared
-      # turbo env var or a renamed field does not break the build, it just
-      # stamps the artifact "unknown". Nothing else in this suite would notice.
-      #
-      # `npm run build` above ran with no BUILD_* set, which is the local-dev
-      # path — so this rebuilds with an injected sha, which is the deploy path,
-      # and checks it actually arrived.
+      # Provenance injection fails *quietly*: a bad `define`, an undeclared
+      # turbo env var or a renamed field just stamps the artifact "unknown". The
+      # build above ran with no BUILD_* set (the local-dev path), so this
+      # rebuilds with an injected sha (the deploy path) and checks it arrived.
       - name: Confirm the build records its commit
         env:
           BUILD_SHA: ${{ github.sha }}
@@ -102,14 +95,9 @@ jobs:
           fi
           echo "ok: the bundle records $BUILD_SHA"
 
-      # A skipped suite is indistinguishable from a passing one in the summary
-      # above, and this is the suite where that matters: it is the only
-      # coverage migrations 0007-0011 have. If the service were unreachable the
-      # whole file would skip and `npm test` would still be green.
-      #
-      # The assertion is on the number of tests that ran, not on the skip
-      # marker: a skipped suite reports `tests 0`, and so would a suite that
-      # silently stopped containing any. Both are failures worth catching.
+      # A skipped suite looks like a passing one, and this suite is the only
+      # coverage migrations 0007-0011 have. Asserting on the number of tests run
+      # catches both an unreachable Postgres and a suite that lost its tests.
       - name: Confirm the database-backed tests actually ran
         env:
           DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres

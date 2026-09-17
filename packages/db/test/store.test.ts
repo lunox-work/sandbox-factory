@@ -119,13 +119,9 @@ test("remove succeeds when a row matched", async () => {
 });
 
 /**
- * Owner scoping.
- *
- * The fake does not interpret SQL, so these prove the weaker property that a
- * predicate is applied at all on every path that touches a row. That is enough
- * to catch the regression that matters — a query that stops filtering by owner
- * and starts serving the whole table — which is precisely the bug this column
- * was added to fix.
+ * Owner scoping. The fake does not interpret SQL, so these prove only that a
+ * predicate is applied on every path that touches a row — enough to catch a
+ * query that stops filtering by owner.
  */
 test("create records the owner on the new row", async () => {
   const { db, calls } = createFakeDb([row()]);
@@ -158,8 +154,8 @@ test("remove filters by owner", async () => {
 });
 
 test("another user's id is reported as missing, not forbidden", async () => {
-  // No row comes back, which is what Postgres returns when the id exists but
-  // belongs to someone else — the owner is part of the WHERE clause.
+  // No row is what Postgres returns for someone else's id: the owner is part
+  // of the WHERE clause.
   const { db } = createFakeDb([]);
   const store = createPostgresStore(db);
   assert.equal(await store.get("user_2", "todo_1"), undefined);

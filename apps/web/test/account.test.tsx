@@ -1,15 +1,12 @@
 /**
  * Tests for the account settings page.
  *
- * These exist because three bugs shipped past a green `npm run verify`: an
- * empty handle field, a provider row that said "linked" with no address, and
- * an unlink button that sent the wrong id and 400'd. All three were in this
- * component, which had no tests at all — the workspace's `test` script was a
- * placeholder that always passed.
+ * Three bugs shipped here past a green `npm run verify`: an empty handle
+ * field, a provider row that said "linked" with no address, and an unlink
+ * button that sent the wrong id and 400'd.
  *
- * The server is faked at the `fetch` and auth-client boundary rather than
- * mocking the component's internals, so these assert what a person actually
- * sees given a server response.
+ * The server is faked at the `fetch` and auth-client boundary, so these assert
+ * what a person sees given a server response.
  */
 
 import { render, screen, waitFor } from "@testing-library/react";
@@ -33,7 +30,6 @@ vi.mock("../src/auth", () => ({
 
 const { Account } = await import("../src/Account");
 
-/** A signed-in user with both providers linked to one shared address. */
 /** Every request the page made, so a test can assert what it asked for. */
 const calls: string[] = [];
 
@@ -79,8 +75,7 @@ beforeEach(() => {
 
 describe("addresses and connected accounts", () => {
   test("lists the address a provider proved", async () => {
-    // The bug: the row rendered "linked" with no address, so there was no way
-    // to tell which account was attached.
+    // The bug: the row rendered "linked" with no address.
     listAccounts.mockResolvedValue({
       data: [{ id: "row_1", providerId: "google", accountId: "google-123" }],
     });
@@ -98,7 +93,6 @@ describe("addresses and connected accounts", () => {
     render(<Account onClose={() => {}} />);
 
     await waitFor(() => {
-      // Once on the provider row, once in the address list below it.
       expect(screen.getAllByText("dana@example.test").length).toBeGreaterThan(
         0,
       );
@@ -106,8 +100,8 @@ describe("addresses and connected accounts", () => {
   });
 
   test("shows the same address on both providers when both proved it", async () => {
-    // One inbox registered at Google and GitHub is the normal case. Showing it
-    // only on the first is what made GitHub look unlinked.
+    // One inbox at both Google and GitHub is the normal case. Showing it only
+    // on the first made GitHub look unlinked.
     listAccounts.mockResolvedValue({
       data: [
         { id: "row_1", providerId: "google", accountId: "google-123" },
@@ -128,12 +122,10 @@ describe("addresses and connected accounts", () => {
     render(<Account onClose={() => {}} />);
 
     await waitFor(() => {
-      // One entry, however many providers proved it — the address is one
-      // thing, listed once, with its providers named beside it.
+      // One entry, however many providers proved it.
       expect(screen.getAllByText("dana@example.test")).toHaveLength(1);
     });
-    // Each provider gets its own line under the address rather than being
-    // run together inline.
+    // Each provider gets its own line under the address.
     expect(screen.getByText("google")).toBeDefined();
     expect(screen.getByText("github")).toBeDefined();
     // And exactly one "primary" badge, however many providers proved it.
@@ -142,8 +134,8 @@ describe("addresses and connected accounts", () => {
 });
 
 test("does not show an address for a provider that is not linked", async () => {
-  // Exactly what a stale proof looked like: Google unlinked, so its row
-  // offers "Link" — but it still displayed the address it used to prove.
+  // A stale proof: Google is unlinked but once still displayed the address it
+  // used to prove.
   listAccounts.mockResolvedValue({
     data: [{ id: "row_2", providerId: "github", accountId: "329221745" }],
   });
@@ -164,16 +156,15 @@ test("does not show an address for a provider that is not linked", async () => {
   await waitFor(() => {
     expect(screen.getByText(/not connected/)).toBeDefined();
   });
-  // Only GitHub is linked, so the address must appear exactly once.
-  // Only GitHub is linked, so the address shows on that one provider row
-  // and once in the address list below — never on the unlinked Google row.
+  // Only GitHub is linked, so the address appears once and never on the
+  // unlinked Google row.
   expect(screen.getAllByText("dana@example.test")).toHaveLength(1);
 });
 
 describe("unlinking", () => {
   test("sends Better Auth's row id, not the provider's account id", async () => {
-    // The bug that produced a 400: `unlinkAccount` matches on the row id, and
-    // the provider's own id (a GitHub numeric id) never matches it.
+    // The bug that 400'd: `unlinkAccount` matches on the row id, never the
+    // provider's own id.
     const user = (await import("@testing-library/user-event")).default;
     listAccounts.mockResolvedValue({
       data: [
@@ -182,8 +173,8 @@ describe("unlinking", () => {
       ],
     });
     unlinkAccount.mockResolvedValue({ error: null });
-    // The Disconnect control lives on the provider line under an address, so
-    // there has to be an address for it to hang off.
+    // Disconnect lives on the provider line under an address, so one must
+    // exist.
     serverWith({
       emails: [
         {
@@ -209,8 +200,7 @@ describe("unlinking", () => {
   });
 
   test("surfaces the server's reason when unlinking is refused", async () => {
-    // "You can't unlink your last account" is something the person can act on;
-    // a generic failure is not.
+    // "You can't unlink your last account" is something a person can act on.
     const user = (await import("@testing-library/user-event")).default;
     listAccounts.mockResolvedValue({
       data: [
@@ -246,8 +236,7 @@ describe("unlinking", () => {
 
 describe("username", () => {
   test("prefills the field with the current handle", async () => {
-    // The handle is generated at signup, so an empty field means something
-    // failed — it is never the correct state for an existing account.
+    // The handle is generated at signup, so an empty field is never correct.
     listAccounts.mockResolvedValue({ data: [] });
     serverWith({ emails: [], username: "rivers-dana" });
 
@@ -307,8 +296,8 @@ describe("email addresses", () => {
   });
 
   test("the primary address offers no actions", async () => {
-    // It cannot be removed while `user.email` points at it, and promoting it
-    // again is a no-op — so exactly one of each button, for the other address.
+    // Promoting the primary again is a no-op, so the only button is the other
+    // address's.
     listAccounts.mockResolvedValue({ data: [] });
     serverWith({ emails: twoAddresses });
 
@@ -320,16 +309,13 @@ describe("email addresses", () => {
     expect(
       screen.getAllByRole("button", { name: "Make primary" }),
     ).toHaveLength(1);
-    // No "remove address" action anywhere: an address exists because a
-    // connected account proves it, so deleting the row while that account
-    // stays connected would just be undone by the next sign-in.
+    // No "remove address" action; see the next test.
     expect(screen.queryByRole("button", { name: /^Remove / })).toBeNull();
   });
 
   test("offers no way to delete an address directly", async () => {
-    // Releasing an address is done by disconnecting the account that proves
-    // it, not by deleting the row — otherwise the next sign-in re-proves it
-    // and nothing has changed.
+    // An address is released by disconnecting the account that proves it;
+    // deleting the row would be undone by the next sign-in.
     listAccounts.mockResolvedValue({ data: [] });
     serverWith({ emails: twoAddresses });
 
@@ -348,8 +334,7 @@ describe("email addresses", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: string, init?: { method?: string }) => {
-        // The refusal under test. Checked first so it wins over the list route
-        // below, which the same URL would otherwise match.
+        // Checked first, or the list route below would match the same URL.
         if (init?.method === "POST") {
           return new Response(
             JSON.stringify({ error: "That address belongs to someone else." }),

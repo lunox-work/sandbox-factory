@@ -2,33 +2,20 @@
 #
 # Push secret values from a local .env.production into AWS Secrets Manager.
 #
-# This is the other half of the rule that secrets.tf follows: Terraform creates
-# the containers, this fills them. No secret value ever passes through Terraform,
-# so none of them lands in terraform.tfstate or in this public repository.
-#
 #   ./infra/scripts/secrets-push.sh [path-to-env-file] [--only KEY]...
 #
-# --only restricts the push to the named keys, leaving every other secret in
-# Secrets Manager as it is. Repeat it to name several.
-#
-# Defaults to .env.production at the repo root. That filename is covered by the
-# existing `.env.*` rule in .gitignore, so it cannot be committed by accident.
-#
-# Safe to re-run: it overwrites values, which is exactly how you rotate one.
-#
-# DATABASE_URL is in the list: Postgres is Neon, outside AWS, so its connection
-# string is a credential you hold rather than something Terraform assembles. It
-# must include ?sslmode=require — Neon refuses an unencrypted connection.
+# Terraform (secrets.tf) creates the containers; this fills them, so no secret
+# value ever reaches terraform.tfstate. Defaults to the gitignored
+# .env.production at the repo root. Safe to re-run: overwriting is how a value
+# is rotated.
 
 set -euo pipefail
 
 PROJECT="${PROJECT:-sandbox-factory}"
 REGION="${AWS_REGION:-us-east-1}"
-# --only KEY (repeatable) narrows the push to the keys named. Everything else
-# in the file is then left untouched in Secrets Manager, which is what makes a
-# partial rotation safe: a local .env.production can hold a stale value for a
-# key you did not rotate, and pushing all eight regardless would overwrite the
-# live credential with it and break the API at the next task start.
+# --only KEY (repeatable) pushes just the named keys. A local .env.production
+# can hold stale values for the others, and pushing those would overwrite live
+# credentials.
 ONLY_KEYS=()
 ENV_FILE=""
 while [[ $# -gt 0 ]]; do
@@ -47,8 +34,8 @@ while [[ $# -gt 0 ]]; do
 done
 ENV_FILE="${ENV_FILE:-$(git rev-parse --show-toplevel)/.env.production}"
 
-# Exactly the keys secrets.tf creates. A key here with no matching secret is a
-# mistake worth failing on, not silently skipping.
+# Exactly the keys secrets.tf creates; a key with no matching secret fails the
+# push. Keep in step with SECRET_KEYS in scripts/rotate-token.sh.
 KEYS=(
   DATABASE_URL
   BETTER_AUTH_SECRET
@@ -60,8 +47,7 @@ KEYS=(
   ATLASSIAN_CLIENT_SECRET
 )
 
-# Narrow to the requested keys, rejecting an unknown one rather than pushing a
-# subset that quietly omits it.
+# Narrow to the requested keys, rejecting unknown ones.
 if ((${#ONLY_KEYS[@]} > 0)); then
   for want in "${ONLY_KEYS[@]}"; do
     printf '%s\n' "${KEYS[@]}" | grep -qx -- "$want" \
@@ -90,9 +76,8 @@ EOF
   exit 1
 fi
 
-# Read one key's value from the env file without sourcing it. Sourcing would
-# execute whatever the file contains, and a stray backtick in a secret would run
-# as a command.
+# Read one key without sourcing the file, which would execute a stray backtick
+# in a secret.
 read_value() {
   local key="$1"
   # Last occurrence wins, matching how dotenv loaders behave.
@@ -100,7 +85,7 @@ read_value() {
   line="$(grep -E "^${key}=" "$ENV_FILE" | tail -1 || true)"
   [[ -z "$line" ]] && return 1
   local value="${line#*=}"
-  # Strip one layer of matching quotes, if present.
+  # Strip one layer of matching quotes.
   if [[ "$value" =~ ^\"(.*)\"$ ]] || [[ "$value" =~ ^\'(.*)\'$ ]]; then
     value="${BASH_REMATCH[1]}"
   fi
@@ -116,10 +101,8 @@ echo
 missing=()
 pushed=0
 
-# Two passes, deliberately. Writing as we read would leave Secrets Manager
-# half-rotated when a value near the end turns out to be missing — some secrets
-# new, some old, and an API that boots with a mix of both. Validate everything
-# first, then write.
+# Two passes: validate everything, then write. Writing while reading would
+# leave Secrets Manager half-rotated when a later value turns out missing.
 declare -a values=()
 for key in "${KEYS[@]}"; do
   if ! value="$(read_value "$key")" || [[ -z "$value" ]]; then
@@ -151,8 +134,7 @@ for i in "${!KEYS[@]}"; do
   # Mirrors the naming in secrets.tf: BETTER_AUTH_SECRET -> better-auth-secret.
   secret_id="${PROJECT}/$(echo "$key" | tr '[:upper:]_' '[:lower:]-')"
 
-  # --secret-string on stdin via file:///dev/stdin keeps the value out of the
-  # process list, where `ps` would otherwise show it to any user on the machine.
+  # file:///dev/stdin keeps the value out of the process list (`ps`).
   if printf '%s' "$value" | aws secretsmanager put-secret-value \
       --secret-id "$secret_id" \
       --secret-string file:///dev/stdin \

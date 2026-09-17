@@ -1,16 +1,9 @@
 /**
  * The typed API client, shared by the web dashboard and the VS Code extension.
  *
- * Platform-neutral on purpose: it uses `fetch` and nothing else. No `node:`
- * imports, no `window`, no `vscode`. That constraint is enforced by this
- * package's tsconfig (`types: []`) and is what lets one implementation serve a
- * browser bundle and the extension host. The previous generation of this code
- * was copy-pasted per client and the types drifted; this package exists so
- * that cannot happen again.
- *
- * Responses are parsed with the shared zod schemas rather than cast, so a
- * server that returns the wrong shape fails here with a clear message instead
- * of surfacing as `undefined` somewhere in a component.
+ * Platform-neutral: `fetch` only, no `node:`, `window` or `vscode`. The
+ * tsconfig's `types: []` enforces it. Responses are parsed with the shared zod
+ * schemas, not cast, so a wrong shape fails here with a clear message.
  */
 
 import {
@@ -25,26 +18,21 @@ import {
 } from "@sandbox-factory/shared";
 
 export interface ClientOptions {
-  /** Base URL of the API, e.g. `https://api.lunox.work`. Trailing slashes are fine. */
+  /** Base URL, e.g. `https://api.lunox.work`. Trailing slashes are fine. */
   baseUrl: string;
   /**
-   * Returns the bearer token, or null when signed out. A function rather than
-   * a string so the extension can read VS Code's secret storage lazily and the
-   * web app can pick up a refreshed token without rebuilding the client.
-   *
-   * Returns `PromiseLike` rather than `Promise` so VS Code's `Thenable` —
-   * which is what `context.secrets.get` hands back — satisfies it directly.
+   * Returns the bearer token, or null when signed out. A function so the
+   * token is read lazily and can change without rebuilding the client.
+   * `PromiseLike`, not `Promise`, so VS Code's `Thenable` from
+   * `context.secrets.get` satisfies it.
    */
   getToken?: () => string | null | PromiseLike<string | null>;
   /** Injectable for tests; defaults to the platform's global fetch. */
   fetch?: typeof globalThis.fetch;
   /**
-   * Whether to send cookies. Defaults to `"include"`, because the web app
-   * authenticates with a session cookie and the API is a different origin in
-   * production (app.lunox.work calling api.lunox.work) — where fetch's own
-   * default of `"same-origin"` would drop the cookie and turn every call into
-   * a 401. The extension sends a bearer token instead and does not need this,
-   * but including it costs nothing when there is no cookie to send.
+   * Whether to send cookies. Defaults to `"include"`: the web app uses a
+   * session cookie and the API is a different origin in production, where
+   * fetch's default `"same-origin"` would drop it and make every call a 401.
    */
   credentials?: RequestCredentials;
 }
@@ -65,8 +53,8 @@ export class ApiError extends Error {
   }
 
   /**
-   * The todo is gone. Usually means someone else deleted it, so callers
-   * generally want to drop it from their local list rather than show an error.
+   * The todo is gone, usually deleted from another client; callers generally
+   * drop it from their local list rather than show an error.
    */
   get isNotFound(): boolean {
     return this.status === 404;
@@ -74,17 +62,10 @@ export class ApiError extends Error {
 }
 
 /**
- * Strips trailing slashes in linear time.
- *
- * The obvious `replace(/\/+$/, "")` is a polynomial ReDoS: on a string with a
- * long run of slashes that is not at the end, the regex retries the run from
- * every offset before failing, which is quadratic. Measured on this codebase,
- * 80k slashes took ~2.3s — unlike most such findings, this one really does
- * blow up rather than being optimised away by the engine.
- *
- * `baseUrl` reaches here from a caller of a published package, so its length
- * is not ours to bound. Index arithmetic has no such failure mode and the
- * behaviour is identical, including returning "" for an all-slash string.
+ * Strips trailing slashes in linear time. Do not simplify to
+ * `replace(/\/+$/, "")`: that is quadratic on a long run of slashes not at the
+ * end (80k took ~2.3s), and `baseUrl` comes from callers of a published
+ * package. Pinned by the slash tests in client.test.ts.
  */
 function trimTrailingSlashes(value: string): string {
   let end = value.length;
@@ -165,7 +146,7 @@ export class TodoClient {
   }
 
   async createTodo(input: CreateTodoInput): Promise<TodoDto> {
-    // Validated before the request so a bad title is a local error, not a round trip.
+    // Validated first, so a bad title is a local error, not a round trip.
     const body = createTodoSchema.parse(input);
     const payload = await this.#request("/api/v1/todos", {
       method: "POST",

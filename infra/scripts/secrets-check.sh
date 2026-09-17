@@ -4,9 +4,8 @@
 #
 #   ./infra/scripts/secrets-check.sh
 #
-# Checks the same things apps/api/src/env.ts checks at boot, so a mistake is
-# caught here rather than as a crash-looping task ten minutes into a deploy.
-# Prints lengths and shapes, never values.
+# Checks what apps/api/src/env.ts checks at boot, so a mistake is caught here
+# rather than as a crash-looping task. Prints lengths and shapes, never values.
 
 set -euo pipefail
 
@@ -40,8 +39,7 @@ if db="$(read_value DATABASE_URL)" && [[ -n "$db" ]]; then
   if [[ "$db" != postgres://* && "$db" != postgresql://* ]]; then
     note DATABASE_URL "BAD — must start with postgres:// or postgresql://"; fail=1
   elif [[ "$db" != *"sslmode=require"* ]]; then
-    # Neon closes an unencrypted connection, and the resulting error does not
-    # mention TLS, so this is worth catching by hand.
+    # Neon refuses an unencrypted connection, and the error never mentions TLS.
     note DATABASE_URL "BAD — missing ?sslmode=require (Neon will refuse it)"; fail=1
   elif [[ "$db" == *localhost* || "$db" == *127.0.0.1* ]]; then
     note DATABASE_URL "BAD — points at localhost, not Neon"; fail=1

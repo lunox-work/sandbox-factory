@@ -1,9 +1,4 @@
-/**
- * Migration runner.
- *
- * Exposed as a function rather than only a CLI so the API can run migrations
- * at boot if it wants to, and so the CLI stays a thin wrapper.
- */
+/** Migration runner, as a function so the CLI stays a thin wrapper. */
 
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 
@@ -17,13 +12,9 @@ export interface MigrateOptions {
 }
 
 /**
- * The two collaborators, injectable so the close-on-failure contract below can
- * be tested without a database.
- *
- * `run` takes drizzle's `migrate` signature verbatim rather than a simplified
- * one, so the default is the imported function itself. An adapter arrow here
- * would be a line of untestable production code whose only purpose is to
- * reshape arguments — this way there is nothing to leave uncovered.
+ * Injectable so close-on-failure can be tested without a database. `run` has
+ * drizzle's `migrate` signature verbatim, so the default is the import itself
+ * and no adapter is left uncovered.
  */
 export interface MigrateDeps {
   readonly connect: typeof createConnection;
@@ -37,14 +28,13 @@ export async function runMigrations(
   { url, migrationsFolder = "drizzle" }: MigrateOptions,
   { connect = createConnection, run = migrate }: Partial<MigrateDeps> = {},
 ): Promise<void> {
-  // A dedicated single connection: a migration holds locks, and sharing the
-  // API's pool would let an unrelated query wait behind one.
+  // A dedicated connection: a migration holds locks, and on a shared pool an
+  // unrelated query could wait behind one.
   const connection = connect({ url, max: 1 });
   try {
     await run(connection.db, { migrationsFolder });
   } finally {
-    // finally, not a trailing call: a failed migration must still drain the
-    // pool, or the process hangs on exit holding a connection.
+    // A failed migration must still drain the pool, or the process hangs.
     await connection.close();
   }
 }

@@ -1,9 +1,7 @@
 /**
- * VS Code extension entry point.
- *
- * This is the only workspace that may import `vscode`. Everything it knows
- * about the API comes from @sandbox-factory/client — the same client the web
- * dashboard uses — so an endpoint change lands in both surfaces at once.
+ * VS Code extension entry point. The only workspace that may import `vscode`.
+ * It reaches the API through @sandbox-factory/client, the same client the web
+ * app uses, so an endpoint change lands in both at once.
  */
 
 import { ApiError, TodoClient } from "@sandbox-factory/client";
@@ -22,16 +20,14 @@ import { extensionBuild } from "./build";
 import { TodoTreeProvider, type TodoNode } from "./tree";
 
 /**
- * Where the bearer token lives. `context.secrets` is encrypted by VS Code;
- * a setting would put the token in plaintext settings.json, which is why the
- * configuration only exposes the base URL.
+ * Key for the bearer token in `context.secrets`, which VS Code encrypts. A
+ * setting would put it in plaintext settings.json.
  */
 const TOKEN_KEY = "sandboxFactory.token";
 
 export function activate(context: vscode.ExtensionContext): void {
-  // An output channel rather than a notification: this is reference
-  // information, and it needs to still be there when someone goes looking for
-  // it, not three seconds after activation.
+  // An output channel, not a notification: it must still be there when someone
+  // goes looking.
   const output = vscode.window.createOutputChannel("sandbox-factory");
   output.appendLine(buildBanner("sandbox-factory", extensionBuild));
 
@@ -53,8 +49,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("sandboxFactory.create", async () => {
       const title = await vscode.window.showInputBox({
         prompt: "What needs doing?",
-        // Reuses the core rule rather than restating it, so this matches what
-        // the API would accept.
+        // The core rule, so this matches what the API accepts.
         validateInput: (value) =>
           isValidTitle(value)
             ? undefined
@@ -103,7 +98,7 @@ export function activate(context: vscode.ExtensionContext): void {
         if (node === undefined) {
           return;
         }
-        // Modal: deleting is not undoable here, and a tree row is easy to
+        // Modal: deleting is not undoable, and a tree row is easy to
         // right-click by accident.
         const confirmed = await vscode.window.showWarningMessage(
           `Delete "${node.todo.title}"?`,
@@ -120,13 +115,9 @@ export function activate(context: vscode.ExtensionContext): void {
     output,
 
     /**
-     * Reports this build, and the API's.
-     *
-     * Worth showing both here rather than only the extension's own, because
-     * these two drift for a reason the web app's pair does not: the extension
-     * updates when the marketplace ships it and the user accepts it, which can
-     * be days behind the API it is talking to. The web app at least reloads
-     * from the same deploy.
+     * Reports this build and the API's. The two can drift by days: the
+     * extension updates only when the marketplace ships it and the user
+     * accepts it.
      */
     vscode.commands.registerCommand("sandboxFactory.showVersion", async () => {
       const api = await fetchApiBuild();
@@ -177,15 +168,11 @@ export function deactivate(): void {
 }
 
 /**
- * Asks the configured API what it is running.
+ * Asks the configured API what it is running. Undefined on any failure, like
+ * the web app's equivalent.
  *
- * Undefined on any failure, like the web app's equivalent: a version readout
- * is not worth an error dialog, and "did not report a version" is a more
- * honest thing to print than a stack trace.
- *
- * Deliberately not routed through `TodoClient` — /version sits outside /api/v1
- * and needs no session, and adding a method there for it would put an
- * unauthenticated endpoint on a client whose every other call is authenticated.
+ * Not routed through `TodoClient`: /version sits outside /api/v1 and needs no
+ * session, and every other call on that client is authenticated.
  */
 async function fetchApiBuild(): Promise<BuildInfoDto | undefined> {
   try {
@@ -216,7 +203,7 @@ async function run(
     tree.refresh();
   } catch (error) {
     if (error instanceof ApiError && error.isNotFound) {
-      // Someone else deleted it; refreshing is the whole fix.
+      // Already deleted elsewhere; refreshing is the whole fix.
       tree.refresh();
       return;
     }

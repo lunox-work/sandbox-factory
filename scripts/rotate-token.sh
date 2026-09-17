@@ -55,10 +55,9 @@ info() { printf '\033[36m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[33mwarn:\033[0m %s\n' "$*" >&2; }
 ok()   { printf '\033[32m  ok\033[0m %s\n' "$*"; }
 
-# The eight keys secrets.tf creates, in the order .env.production lists them,
-# each with where it is rotated. Kept in step with `local.app_secrets` in
-# infra/secrets.tf and `KEYS` in infra/scripts/secrets-push.sh — a key in one
-# and not the others is a bug in whichever was edited last.
+# The eight app secrets, in .env.production order. Keep in step with
+# `local.app_secrets` in infra/secrets.tf and `KEYS` in
+# infra/scripts/secrets-push.sh.
 SECRET_KEYS=(
   DATABASE_URL
   BETTER_AUTH_SECRET
@@ -138,10 +137,8 @@ if [[ -n "$ONLY_KEY" && "$SECRETS_MODE" -ne 1 ]]; then
   die "--only applies to --secrets"
 fi
 
-# --check promises to change nothing, and the secrets branch below returns
-# before the CHECK_ONLY branch at the end of this script ever runs — so the
-# combination would prompt for values and rewrite .env.production while
-# claiming to be read-only. Refuse it rather than silently picking one meaning.
+# The secrets branch below exits before the CHECK_ONLY branch runs, so the
+# combination would rewrite .env.production while claiming to be read-only.
 if [[ "$CHECK_ONLY" -eq 1 && "$SECRETS_MODE" -eq 1 ]]; then
   die "--check cannot be combined with --secrets: --check changes nothing, and
    rotating secrets is a write. Run them separately."
@@ -162,9 +159,9 @@ if [[ "$SECRETS_MODE" -eq 1 ]]; then
       || die "--only: $ONLY_KEY is not one of the rotatable keys (try --help)"
   fi
 
-  # Read one key without sourcing the file: sourcing executes whatever it
-  # contains, and a stray backtick in a secret would run as a command. Mirrors
-  # read_value in infra/scripts/secrets-push.sh, including last-occurrence-wins.
+  # Read one key without sourcing the file, which would execute a stray
+  # backtick in a secret. Mirrors read_value in infra/scripts/secrets-push.sh,
+  # including last-occurrence-wins.
   read_value() {
     local key="$1" line value
     line="$(grep -E "^${key}=" "$ENV_FILE" | tail -1 || true)"
@@ -176,9 +173,7 @@ if [[ "$SECRETS_MODE" -eq 1 ]]; then
     printf '%s' "$value"
   }
 
-  # Enough of a value to recognise it, never enough to reconstruct it. A rotation
-  # is usually driven by a leak, so printing the thing being replaced would be a
-  # poor way to start.
+  # Enough of a value to recognise it, never enough to reconstruct it.
   redact() {
     local v="$1" n=${#1}
     if   (( n <= 8 ));  then printf '%s' "********"
@@ -214,9 +209,8 @@ EOF
 
     read -r -s -p "  new value (Enter to skip): " newval
     echo
-    # A pasted credential often carries a trailing newline or stray space from
-    # the console it was copied from; storing that produces a value that fails
-    # every call for a reason nothing reports.
+    # Pasted credentials often carry stray whitespace, which would be stored
+    # and then fail every call with no explanation.
     newval="$(printf '%s' "$newval" | tr -d '\r\n' | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')"
 
     if [[ -z "$newval" ]]; then
@@ -245,14 +239,10 @@ EOF
     [[ "$reply" =~ ^[Yy]$ ]] || die "aborted; nothing was changed"
   fi
 
-  # Rewrite in place, replacing only the matched lines, so the file keeps its
-  # comments and section structure — it is meant to stay diffable against
-  # .env.example. Written to a temporary file and moved into place, so an
-  # interrupted run cannot leave a half-written file of credentials.
-  #
-  # The backup is what makes this recoverable: if a rotated value turns out to
-  # be wrong, the previous one is still on disk rather than only in the console
-  # you copied it from.
+  # Replace only the matched lines, so the file keeps its comments and stays
+  # diffable against .env.example. Write to a temp file and move it into place
+  # so an interrupted run cannot leave half-written credentials. The backup
+  # keeps the previous values recoverable.
   BACKUP="$ENV_FILE.bak.$(date +%Y%m%d%H%M%S)"
   cp -p "$ENV_FILE" "$BACKUP"
   chmod 600 "$BACKUP"
@@ -264,9 +254,8 @@ EOF
   for i in "${!changed_keys[@]}"; do
     key="${changed_keys[$i]}"
     val="${changed_vals[$i]}"
-    # awk rather than sed: the value is arbitrary text, and sed would interpret
-    # a `&`, a `/` or a backslash in it. awk takes it as a plain string through
-    # an environment variable, so no character in a credential is special.
+    # awk, not sed: sed would interpret `&`, `/` or a backslash in the value.
+    # awk takes it as a plain string through the environment.
     KEY="$key" VAL="$val" awk '
       BEGIN { key = ENVIRON["KEY"]; val = ENVIRON["VAL"]; done = 0 }
       $0 ~ "^" key "=" { print key "=" val; done = 1; next }
@@ -320,10 +309,8 @@ EOF
   command -v aws >/dev/null || die "aws CLI not found, and the push needs it"
   aws sts get-caller-identity >/dev/null 2>&1 || die "aws CLI is not authenticated for $REGION"
 
-  # Push only what actually changed. The rest of .env.production may hold
-  # values that have drifted from Secrets Manager — pushing those too would
-  # overwrite live credentials that this run never asked about, and the
-  # restart below would then break the API with them.
+  # Push only what changed. Other values in .env.production may have drifted
+  # from Secrets Manager, and pushing them would overwrite live credentials.
   declare -a push_args=()
   for key in "${changed_keys[@]}"; do
     push_args+=(--only "$key")
@@ -336,9 +323,8 @@ EOF
 
   # ---- restart -------------------------------------------------------------
 
-  # Secrets Manager is read by the ECS agent when a task starts, so a running
-  # task keeps the values it booted with. Until a new task starts, the rotation
-  # has happened everywhere except where it matters.
+  # ECS reads Secrets Manager when a task starts, so a running task keeps its
+  # old values until it is replaced.
   echo
   if [[ "$ASSUME_YES" -eq 1 ]]; then
     reply=y
@@ -390,13 +376,10 @@ fi
 command -v gh >/dev/null || die "gh not found. brew install gh"
 gh auth status >/dev/null 2>&1 || die "gh not authenticated. Run: gh auth login"
 
-# Whether a token can do the two things auto-merge.yml needs: read the pull
-# request it is about to merge, and write to the repository. Checked as a pair
-# because a token with one and not the other fails at the merge rather than at
-# arming, which is the failure this script exists to prevent.
-#
-# Prints the identity on success so a rotation onto the wrong account is
-# visible now rather than the next time main fails to deploy.
+# Whether a token can do both things auto-merge.yml needs: read the pull
+# request and write to the repository. A token with only one fails at the
+# merge rather than at arming. Prints the login on success, so a rotation onto
+# the wrong account is visible now; prints the reason on failure.
 validate() {
   local token="$1" login perms
   if ! login="$(GH_TOKEN="$token" gh api user --jq .login 2>/dev/null)"; then
@@ -411,8 +394,8 @@ validate() {
     echo "authenticates as $login but lacks write access — needs Contents: read and write"
     return 1
   fi
-  # The same call the workflow makes before trusting the token. A token scoped
-  # without `pull_requests` passes everything above and fails only here.
+  # The call the workflow makes before trusting the token. A token without
+  # `pull_requests` passes everything above and fails only here.
   if ! GH_TOKEN="$token" gh pr list --repo "$REPO" --limit 1 >/dev/null 2>&1; then
     echo "authenticates as $login but cannot read pull requests — needs Pull requests: read and write"
     return 1
@@ -423,9 +406,9 @@ validate() {
 
 if [[ "$CHECK_ONLY" -eq 1 ]]; then
   info "Checking the stored $SECRET"
-  # GitHub never discloses a secret's value, so the stored token cannot be read
-  # back and tested directly. What is observable is whether the last merge used
-  # it: the fallback branch in auto-merge.yml logs a warning when it did not.
+  # GitHub never discloses a secret's value, so the stored token cannot be
+  # tested directly. Instead, look for the warning auto-merge.yml's fallback
+  # branch logs when the last merge could not use it.
   if ! gh secret list --repo "$REPO" --json name --jq '.[].name' 2>/dev/null | grep -qx "$SECRET"; then
     warn "$SECRET is not set. Merges fall back to the default token and main will not deploy."
     exit 3
@@ -509,9 +492,8 @@ fi
 
 [[ -n "$TOKEN" ]] || die "no token given"
 
-# Trailing newlines survive a pipe from `op read` or a heredoc and would be
-# stored as part of the secret, producing a token that fails every call for a
-# reason nothing reports.
+# A trailing newline survives a pipe from `op read` and would be stored as part
+# of the secret.
 TOKEN="${TOKEN%%[[:space:]]}"
 TOKEN="$(printf '%s' "$TOKEN" | tr -d '\r\n')"
 
@@ -538,8 +520,8 @@ info "Storing $SECRET"
 printf '%s' "$TOKEN" | gh secret set "$SECRET" --repo "$REPO"
 ok "stored"
 
-# Read back what the API reports rather than trusting the write, so a silent
-# failure surfaces here instead of at the next merge.
+# Read the secret's timestamp back, so a silent write failure surfaces here
+# instead of at the next merge.
 stored_at="$(gh secret list --repo "$REPO" --json name,updatedAt --jq ".[]|select(.name==\"$SECRET\")|.updatedAt" 2>/dev/null || true)"
 [[ -n "$stored_at" ]] || die "the secret does not read back — the write did not take effect"
 ok "$SECRET updated at $stored_at"

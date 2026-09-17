@@ -4,17 +4,10 @@
 #
 #   ./infra/scripts/bootstrap-backend.sh
 #
-# The chicken-and-egg step: Terraform needs somewhere to keep state before it
-# can manage anything, and that somewhere cannot itself be managed by the state
-# it holds. Run once, by hand, then `terraform init -backend-config=backend.hcl`.
-#
-# Versioning is on because state is the one file whose loss is unrecoverable —
-# it is the only record of which real resources Terraform believes it owns.
-#
-# No state locking. S3 native locking (`use_lockfile`) needs Terraform 1.10+,
-# and the older alternative is a DynamoDB table — a resource to create and pay
-# for so that a single operator cannot race themselves. The generated
-# backend.hcl says the same, and where to revisit it.
+# Run once, by hand, then `terraform init -backend-config=backend.hcl`: the
+# bucket cannot be managed by the state it holds. Versioning is on because
+# losing state is unrecoverable. No state locking, deliberately; the generated
+# backend.hcl says why and when to revisit it.
 
 set -euo pipefail
 
@@ -31,8 +24,7 @@ echo
 if aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
   echo "Bucket already exists — nothing to do."
 else
-  # us-east-1 is the one region where CreateBucket must NOT be given a location
-  # constraint. Every other region requires it.
+  # us-east-1 alone rejects a location constraint; every other region needs it.
   if [[ "$REGION" == "us-east-1" ]]; then
     aws s3api create-bucket --bucket "$BUCKET" --region "$REGION"
   else
@@ -53,8 +45,7 @@ aws s3api put-bucket-encryption \
   '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
 echo "Encryption enabled"
 
-# State contains resource identifiers and the generated database password. It
-# must never be public.
+# State holds resource ids and a generated secret. It must never be public.
 aws s3api put-public-access-block \
   --bucket "$BUCKET" \
   --public-access-block-configuration \

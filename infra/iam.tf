@@ -1,16 +1,12 @@
-# IAM roles.
-#
-# Two roles for the task, which is an AWS distinction worth keeping straight:
+# IAM roles for the task.
 #
 #   execution role — used by the ECS *agent*, before the container starts, to
 #                    pull the image and resolve secrets into the environment.
-#   task role      — used by the *application*, at runtime, for anything it
-#                    calls the AWS API for.
+#   task role      — used by the *application*, at runtime, for AWS API calls.
 #
-# The task role is deliberately almost empty. The API reads its secrets through
-# the execution role at startup, so the running process needs no AWS permissions
-# at all today. The role exists so that wiring up the S3 object store in
-# packages/db/src/objects.ts is a policy attachment rather than a redesign.
+# The task role has no policies: secrets arrive through the execution role, so
+# the running process needs no AWS permissions today. It exists so that wiring
+# up the S3 object store in packages/db/src/objects.ts is a policy attachment.
 
 data "aws_iam_policy_document" "ecs_assume" {
   statement {
@@ -33,9 +29,7 @@ resource "aws_iam_role_policy_attachment" "task_execution" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
-# Scoped to exactly the secrets this project owns, rather than a wildcard:
-# the execution role should be able to read the API's credentials and nothing
-# else in the account.
+# Only this project's secrets, not a wildcard.
 data "aws_iam_policy_document" "read_secrets" {
   statement {
     actions   = ["secretsmanager:GetSecretValue"]

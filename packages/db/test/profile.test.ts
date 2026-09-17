@@ -15,8 +15,7 @@ function user(over: Partial<UserRowLite> = {}): UserRowLite {
 }
 
 test("a handle is stored lowercase, keeping the typed casing for display", async () => {
-  // Otherwise @Alice and @alice could both exist and mentions would be
-  // ambiguous.
+  // Otherwise @Alice and @alice could both exist.
   const fake = createFakeEmailDb({ users: [user()] });
   const store = createProfileStore(fake.db);
 
@@ -42,7 +41,6 @@ test("a handle already held by someone else is refused", async () => {
 });
 
 test("re-claiming your own handle with different casing is a rename", async () => {
-  // Not a collision: the row that matches is the caller's own.
   const fake = createFakeEmailDb({ users: [user({ username: "feversoul" })] });
   const store = createProfileStore(fake.db);
 
@@ -94,8 +92,7 @@ test("get returns the current handle", async () => {
 });
 
 test("primaryFor reads the user's current address", async () => {
-  // The account-create hook depends on this: the account row carries no email,
-  // and the hook gets no endpoint context to read one from.
+  // The account-create hook depends on this: the account row has no email.
   const fake = createFakeEmailDb({ users: [user()] });
   const store = createProfileStore(fake.db);
 
@@ -146,8 +143,7 @@ test("repeated collisions keep counting", async () => {
 });
 
 test("a very short local part still yields a valid handle", async () => {
-  // "jo@example.com" is a real address and must not produce a handle that the
-  // store's own minimum-length rule would reject.
+  // "jo@example.com" must not yield a handle below the minimum length.
   const fake = createFakeEmailDb();
   const store = createProfileStore(fake.db);
 
@@ -158,8 +154,7 @@ test("a very short local part still yields a valid handle", async () => {
 });
 
 test("a generated handle passes the store's own validation", async () => {
-  // The guarantee that matters: whatever signup generates, a later rename to
-  // the same value must not be rejected as invalid.
+  // A later rename to the generated value must not be rejected.
   const fake = createFakeEmailDb({ users: [user()] });
   const store = createProfileStore(fake.db);
 
@@ -179,9 +174,7 @@ test("a long address is truncated to the maximum length", async () => {
 });
 
 test("after many collisions it falls back to a random suffix", async () => {
-  // Counting upward has to terminate. Past a couple of dozen collisions a
-  // random suffix is likelier to land than continuing to count, and the
-  // person can rename anyway.
+  // Counting upward has to terminate.
   const taken = [
     "dana",
     ...Array.from({ length: 19 }, (_, i) => `dana${i + 2}`),
@@ -199,10 +192,8 @@ test("after many collisions it falls back to a random suffix", async () => {
 });
 
 test("a local part of only hyphens still yields a valid handle", async () => {
-  // The stem trims to empty here. Worth pinning because the trim is hand-rolled
-  // index arithmetic rather than `replace(/^-+|-+$/g, "")`, which CodeQL flags
-  // as a polynomial ReDoS: the input is a provider-supplied address, and the
-  // truncation to USERNAME_MAX_LENGTH happens after the trim, not before.
+  // The stem trims to empty. Pins the hand-rolled `trimHyphens`, which
+  // replaces a regex CodeQL flags as polynomial ReDoS.
   const fake = createFakeEmailDb({ users: [] });
   const store = createProfileStore(fake.db);
 

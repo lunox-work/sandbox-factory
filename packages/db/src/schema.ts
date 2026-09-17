@@ -1,17 +1,8 @@
 /**
- * Drizzle schema.
- *
- * The column types are chosen to round-trip `Todo` from `sandbox-factory`
- * exactly, because the API's `TodoStore` contract is defined in terms of that
- * type and callers must not be able to tell which implementation they hold:
- *
- * - `id` is `text`, not a serial or uuid. The in-memory store hands out
- *   `todo_1`-style ids and the published domain type declares `id: string`;
- *   a numeric key would change the shape of the public API.
- * - `created_at` is `timestamptz`. It is mapped back to an ISO string at the
- *   store boundary rather than stored as text, so the database can sort and
- *   range-query it. Storing an ISO string in a text column would sort
- *   correctly by luck of the format and index badly.
+ * Drizzle schema. `todos` round-trips `Todo` from `sandbox-factory` exactly:
+ * `id` is `text` because the domain type declares `id: string`, and
+ * `created_at` is `timestamptz` (mapped to an ISO string at the store boundary)
+ * so the database can sort and range-query it.
  */
 
 import { desc, sql } from "drizzle-orm";
@@ -30,18 +21,9 @@ export const todos = pgTable(
   {
     id: text("id").primaryKey(),
     /**
-     * The owner. Every read and write in `TodoStore` is filtered on this, and
-     * that filter — not the session check at the HTTP edge — is what makes a
-     * todo private.
-     *
-     * The distinction matters: authenticating a request only proves *who* is
-     * asking. Without this column the routes were behind a session and still
-     * served every user the whole table, which is a worse failure than no auth
-     * at all because it looks protected. `user_id` is the thing that makes the
-     * answer depend on the asker.
-     *
-     * Cascades on delete, like `user_email`: a deleted account leaves no rows
-     * pointing at an id that no longer exists.
+     * The owner. Every `TodoStore` read and write filters on this; that
+     * filter, not the session check at the HTTP edge, is what makes a todo
+     * private. Cascades on user delete.
      */
     userId: text("user_id")
       .notNull()
@@ -53,9 +35,7 @@ export const todos = pgTable(
       .defaultNow(),
   },
   (table) => [
-    // Every query the store issues is `where user_id = $1`, most of them also
-    // ordering by `created_at desc`. The composite index serves both halves,
-    // so the common list read never sorts.
+    // Serves `where user_id = $1 order by created_at desc` without a sort.
     index("todos_user_id_created_at_idx").on(
       table.userId,
       desc(table.createdAt),
@@ -67,32 +47,19 @@ export type TodoRow = typeof todos.$inferSelect;
 export type NewTodoRow = typeof todos.$inferInsert;
 
 /**
- * Better Auth tables.
+ * Better Auth's core tables (user, session, account, verification), shaped
+ * after `getAuthTables()` in `better-auth/db`.
  *
- * These four models — user, session, account, verification — are Better Auth's
- * core schema, not ours to design. The shapes below were taken from
- * `getAuthTables()` in `better-auth/db` rather than from documentation, so they
- * match what the adapter actually queries.
+ * The Drizzle adapter resolves names by string, so two naming rules are
+ * load-bearing; breaking either fails at runtime, not compile time:
  *
- * Two naming rules are load-bearing, and both come from how the Drizzle adapter
- * resolves a model:
+ * - Exported const names are singular (`user`): the adapter looks up
+ *   `schema[model]` by Better Auth's model name.
+ * - Property keys are camelCase (`emailVerified`): the adapter indexes
+ *   `schemaModel[fieldName]`. Renaming the snake_case column string is safe.
  *
- * - **The exported const names are singular** (`user`, not `users`). The adapter
- *   looks up `schema[model]` with Better Auth's own model names, which are
- *   singular unless `usePlural` is set. `todos` above is plural because it is
- *   ours and nothing looks it up by name; these are not.
- * - **The property keys are camelCase** (`emailVerified`, `userId`). The adapter
- *   indexes the table object by field name — `schemaModel[fieldName]` — so the
- *   *property* must be camelCase even though the *column* it maps to is
- *   snake_case. Renaming a property breaks queries at runtime, not at compile
- *   time; renaming the column string inside it is safe.
- *
- * `id` is `text` here for the same reason it is on `todos`: Better Auth
- * generates its own string ids, so a serial or uuid column would reject them.
- *
- * Session and account rows cascade on user delete. Better Auth declares those
- * references with `onDelete: "cascade"`, and leaving them to be cleaned up by
- * hand would strand live sessions for a user who no longer exists.
+ * Ids are `text` because Better Auth generates string ids. Session and account
+ * rows cascade on user delete, as Better Auth declares.
  */
 
 export const user = pgTable(
@@ -101,30 +68,17 @@ export const user = pgTable(
     id: text("id").primaryKey(),
     name: text("name").notNull(),
     /**
-     * The primary email, and the only one Better Auth itself knows about.
-     *
-     * Still unique, but it is no longer *the* identity — `id` is. Every other
-     * address this person has proven belongs to them lives in `userEmail` below,
-     * and this column holds whichever of those is currently primary.
-     *
-     * Uniqueness is a case-insensitive index on `lower(email)` (migration 0011),
-     * not Drizzle's `.unique()`. A byte-exact constraint allowed two separate
-     * accounts on one address differing only in case, each able to sign in. See
-     * `userEmail.email` below for the other half of the rule.
+     * The primary email, and the only one Better Auth knows about. The
+     * identity is `id`; every proven address lives in `userEmail`, and this
+     * holds whichever is primary. Unique on `lower(email)` via the index
+     * below — see `userEmail.email` for the full rule.
      */
     email: text("email").notNull(),
     emailVerified: boolean("email_verified").notNull().default(false),
     /**
-     * The public handle, e.g. `feversoul`.
-     *
-     * **Not null**: every account has one from the moment it is created. It is
-     * generated at signup from the provider's email rather than asked for, so
-     * there is no window in which a user exists without a handle and no other
-     * part of the app has to cope with a null one. The person can change it
-     * afterwards.
-     *
-     * Stored lowercase and unique so `@Alice` and `@alice` cannot both exist;
-     * `displayUsername` keeps the casing the person actually typed.
+     * The public handle. Not null: generated at signup from the provider's
+     * email, so no user ever exists without one. Stored lowercase and unique;
+     * `displayUsername` keeps the casing the person typed.
      */
     username: text("username").notNull().unique(),
     displayUsername: text("display_username").notNull(),
@@ -137,12 +91,8 @@ export const user = pgTable(
       .defaultNow(),
   },
   (table) => [
-    /**
-     * The primary address, unique case-insensitively — see `email` above.
-     *
-     * Over `lower(email)`, which a column-level `.unique()` cannot express.
-     * Created by migration 0011.
-     */
+    // Case-insensitive uniqueness, which `.unique()` cannot express
+    // (migration 0011).
     uniqueIndex("user_email_lower_unique").on(sql`lower(${table.email})`),
   ],
 );
@@ -150,19 +100,11 @@ export const user = pgTable(
 /**
  * Every email address a person has proven they control.
  *
- * **Proof is an OAuth link, not a token in an inbox.** A row appears here only
- * because the person signed in to a provider that reported this address as
- * verified, so the provider has done the verification for us. That is why this
- * table has no token, no expiry, and why the app sends no mail at all.
+ * Proof is an OAuth link, not a token in an inbox: a row exists only because
+ * a provider reported the address as verified. Hence no token, no expiry, and
+ * no mail sent. `provider_id` records which link vouched for it.
  *
- * `provider_id` records which link vouched for the address. If that account is
- * unlinked the proof is gone, so the row goes with it — enforced by the
- * cascade, not by application code that might forget.
- *
- * Uniqueness is global, not per user: an address may prove at most one
- * identity, or two people could both claim the same inbox. It is enforced
- * case-insensitively and across both this table and `user.email` — see the
- * `email` column below for how, and why it takes two mechanisms.
+ * Uniqueness is global, not per user — see `email` below.
  */
 export const userEmail = pgTable(
   "user_email",
@@ -172,73 +114,45 @@ export const userEmail = pgTable(
       .notNull()
       .references(() => user.id, { onDelete: "cascade" }),
     /**
-     * One address, one account — enforced in the database, in two halves.
+     * One address, one account, enforced in the database in two halves:
      *
-     * *Within this table*, by a case-insensitive unique index on
-     * `lower(email)` (migration 0011). Drizzle's `.unique()` is deliberately
-     * **not** used: it generates a byte-exact constraint, which let
-     * `alice@x` and `ALICE@x` both be stored against different users. The
-     * index replaces it rather than joining it.
+     * - Within this table, a unique index on `lower(email)` (migration 0011).
+     *   Do not use `.unique()`: it is byte-exact, so `alice@x` and `ALICE@x`
+     *   could belong to different users.
+     * - Across `user.email` and this column, a trigger pair (migrations
+     *   0007-0009), since no index spans two tables. It compares
+     *   case-insensitively and takes an advisory lock on the address so
+     *   concurrent sign-ins cannot both pass.
      *
-     * *Across `user.email` and this column*, by a trigger pair (migrations
-     * 0007-0009). No constraint or index can express uniqueness over the union
-     * of two tables, which is the only reason that half is a trigger. It
-     * compares case-insensitively and takes an advisory lock on the address so
-     * two concurrent sign-ins cannot both pass the check.
-     *
-     * The `otherOwner` checks in `record` and `setPrimary` in `emails.ts` now
-     * duplicate this rather than solely providing it. Keep them anyway: they
-     * turn a would-be constraint violation into the `null` those functions
-     * promise, so callers get a decision to act on instead of a 500.
+     * The `otherOwner` checks in `emails.ts` duplicate this. Keep them: they
+     * turn a constraint violation into the `null` callers are promised.
      */
     email: text("email").notNull(),
     /**
-     * Which providers vouched for this address, comma separated.
-     *
-     * A list rather than a single value because one inbox is commonly
-     * registered at several providers — a Google account and a GitHub account
-     * on the same address is the normal case, not an edge case. Storing only
-     * the first would make the settings page claim GitHub had proved nothing.
-     *
-     * Comma separated rather than a join table: this is a short display-only
-     * list that is always read whole, never queried across.
+     * Providers that vouched for this address, comma separated. A list
+     * because one inbox at both Google and GitHub is the normal case; not a
+     * join table because it is display-only and always read whole.
      */
     providerId: text("provider_id").notNull(),
-    /**
-     * Mirrors `user.email`. Kept here too so this table alone answers "which is
-     * primary" without a join back to `user`.
-     */
+    /** Mirrors `user.email`, so "which is primary" needs no join. */
     isPrimary: boolean("is_primary").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
   },
   (table) => [
-    /**
-     * The address a user currently presents as primary.
-     *
-     * A partial unique index, not a plain constraint: it applies only to rows
-     * where `is_primary` is true, so a user has at most one primary address
-     * while still holding any number of secondary ones.
-     */
+    // Partial: at most one primary per user, any number of secondaries.
     uniqueIndex("user_email_one_primary")
       .on(table.userId)
       .where(sql`${table.isPrimary}`),
-    /**
-     * One address, one account, case-insensitively — see `email` above.
-     *
-     * Declared here rather than as `.unique()` on the column because the
-     * uniqueness is over `lower(email)`, which a column-level constraint
-     * cannot express. Created by migration 0011.
-     */
+    // See `email` above (migration 0011).
     uniqueIndex("user_email_email_lower_unique").on(sql`lower(${table.email})`),
   ],
 );
 
 export const session = pgTable("session", {
   id: text("id").primaryKey(),
-  // Unique: the token is the session lookup key on every authenticated
-  // request, so a duplicate would make "which session is this" ambiguous.
+  // Unique: the lookup key on every authenticated request.
   token: text("token").notNull().unique(),
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   ipAddress: text("ip_address"),
@@ -258,9 +172,8 @@ export const account = pgTable(
   "account",
   {
     id: text("id").primaryKey(),
-    // The user's id *at the provider*, distinct from `userId` below, which is
-    // ours. Google and GitHub each have their own namespace, so uniqueness is
-    // only meaningful per (providerId, accountId) — see the constraint below.
+    // The user's id at the provider, not ours. Only unique per
+    // (providerId, accountId) — see the constraint below.
     accountId: text("account_id").notNull(),
     providerId: text("provider_id").notNull(),
     userId: text("user_id")
@@ -276,9 +189,8 @@ export const account = pgTable(
       withTimezone: true,
     }),
     scope: text("scope"),
-    // Part of Better Auth's schema and deliberately never written: email and
-    // password sign-in is disabled, so no credential ever reaches this column.
-    // It stays because the adapter expects the field to exist.
+    // Never written (password sign-in is disabled); the adapter expects the
+    // field to exist.
     password: text("password"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
@@ -288,19 +200,10 @@ export const account = pgTable(
       .defaultNow(),
   },
   (table) => [
-    /**
-     * One provider identity belongs to exactly one user.
-     *
-     * Better Auth already refuses to link an account that another user holds,
-     * on all three paths — sign-in, the OAuth redirect, and the link API — so
-     * this is not what stops the normal case. It is here because the library
-     * *assumes* the invariant rather than tolerating a breach: its
-     * `findAccountByKey` throws "Multiple accounts match the same accountId"
-     * when two rows collide, which breaks sign-in for both users at once.
-     *
-     * A bad migration, a manual insert or a future bug could otherwise create
-     * that state silently. With this, the write fails loudly instead.
-     */
+    // One provider identity, one user. Better Auth already refuses the link
+    // on every path, but it assumes the invariant: `findAccountByKey` throws
+    // on a collision and breaks sign-in for both users. This makes a bad
+    // migration or manual insert fail loudly instead.
     unique("account_provider_identity_unique").on(
       table.providerId,
       table.accountId,

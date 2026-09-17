@@ -1,21 +1,15 @@
-# Secrets.
+# Secrets. Terraform creates the containers, never the values: no credential is
+# a Terraform variable, so none reaches terraform.tfstate, a plan output, or
+# this public repository.
 #
-# The rule: Terraform creates the containers, never the values. No credential is
-# a Terraform variable, so none appears in terraform.tfstate, in a plan output,
-# or in this public repository.
-#
-# Values are pushed once by `make secrets-push` (scripts/secrets-push.sh), which
-# reads a local .env.production. Rotating one afterwards is an AWS-side
-# operation that Terraform neither sees nor overwrites.
-#
-# DATABASE_URL is in this list now. Under the RDS design Terraform generated the
-# password and wrote the connection string itself; with Neon the database lives
-# outside AWS, so its connection string is a credential like any other and
-# arrives the same way.
+# `make secrets-push` (scripts/secrets-push.sh) pushes values from a local
+# .env.production. Rotation is an AWS-side operation that Terraform neither
+# sees nor overwrites. DATABASE_URL is included: Neon lives outside AWS, so its
+# connection string is a credential like any other.
 
 locals {
   # Each key becomes one secret, injected into the task as the environment
-  # variable of the same name. Adding a provider later is two lines here.
+  # variable of the same name.
   app_secrets = {
     DATABASE_URL            = "Neon Postgres connection string. Must include ?sslmode=require"
     BETTER_AUTH_SECRET      = "Signing secret for session tokens. openssl rand -base64 32"
@@ -34,30 +28,26 @@ resource "aws_secretsmanager_secret" "app" {
   name        = "${local.name}/${lower(replace(each.key, "_", "-"))}"
   description = each.value
 
-  # Zero would make the name unavailable for reuse after a destroy, turning a
-  # rebuild into a week's wait. Seven days is the shortest window AWS allows.
+  # The shortest recovery window AWS allows; 0 deletes immediately with no
+  # way back. After a destroy the name stays reserved for these seven days.
   recovery_window_in_days = 7
 }
 
-# The placeholder version, written once so the secret is never empty.
-#
-# `ignore_changes` on the value is what lets `make secrets-push` replace it
-# without the next apply reverting the real credential. The lifecycle block also
-# carries `ignore_changes` alone rather than the resource being removed after
-# creation, because removing it would schedule the *secret* for deletion.
+# A placeholder version, written once so the secret is never empty. Keep this
+# resource after creation rather than removing it: removal would schedule the
+# *secret* for deletion.
 resource "aws_secretsmanager_secret_version" "app" {
   for_each = local.app_secrets
 
   secret_id = aws_secretsmanager_secret.app[each.key].id
-  # Deliberately invalid. apps/api/src/env.ts validates every one of these at
-  # boot — DATABASE_URL non-empty, BETTER_AUTH_SECRET at 32+ characters, each
-  # OAuth field non-empty — so the task crash-loops with a readable Zod error
-  # until real values arrive, rather than serving a sign-in that fails later.
+  # Deliberately invalid: apps/api/src/env.ts validates each of these at boot,
+  # so the task crash-loops with a readable Zod error until real values arrive
+  # rather than serving a sign-in that fails later.
   secret_string = "REPLACE_ME"
 
   lifecycle {
-    # The line that makes this work: without it, every apply would reset your
-    # real credentials back to the placeholder above.
+    # Load-bearing: without it every apply would reset the real credentials
+    # to the placeholder above.
     ignore_changes = [secret_string]
   }
 }

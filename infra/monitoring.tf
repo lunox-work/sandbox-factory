@@ -1,17 +1,8 @@
-# Alarms.
+# Alarms. Few on purpose: each matches a way this deployment fails, and a noisy
+# channel gets ignored.
 #
-# Three, chosen because each corresponds to a way this specific deployment
-# fails. CloudWatch bills $0.10 per alarm per month; the real cost of a noisy
-# alarm is that it trains you to ignore the channel, which is why there are
-# three and not twenty.
-#
-# The ALB and RDS alarms an earlier revision carried are gone with those
-# services. What replaces the ALB's HealthyHostCount is the running-task count
-# below: with no load balancer, "is anything serving?" is a question about ECS
-# rather than about a target group.
-#
-# With var.alarm_email empty the topic is still created but has no subscriber;
-# alarms then show in the console without sending mail.
+# With var.alarm_email empty the topic has no subscriber; alarms then show in
+# the console without sending mail.
 
 resource "aws_sns_topic" "alarms" {
   name = "${local.name}-alarms"
@@ -25,11 +16,10 @@ resource "aws_sns_topic_subscription" "email" {
   endpoint  = var.alarm_email
 }
 
-# Dormant unless Container Insights is switched on, and kept for the day it is:
-# it names the *cause* (no task is running) where the Route53 check at the
-# bottom of this file only sees the symptom (the site stopped answering). Until
-# then the probe is what detects an outage — do not read this one being OK as
-# the platform being up, because it reports OK either way.
+# Dormant while Container Insights is off: the metric never reports, so this
+# sits at OK whatever is happening. Do not read it as the platform being up;
+# platform-down below is what detects an outage. Kept because, once armed, it
+# names the cause (no task running) rather than the symptom.
 resource "aws_cloudwatch_metric_alarm" "no_running_tasks" {
   alarm_name          = "${local.name}-no-running-tasks"
   alarm_description   = "No API tasks running. Requires Container Insights; see platform-down for the alarm that always reports."
@@ -40,9 +30,8 @@ resource "aws_cloudwatch_metric_alarm" "no_running_tasks" {
   evaluation_periods  = 3
   threshold           = 1
   comparison_operator = "LessThanThreshold"
-  # Container Insights is disabled to save ~$2/month, so this metric only
-  # reports when it is switched on. Missing data is therefore treated as fine
-  # rather than as an outage — turn on containerInsights in ecs.tf to arm it.
+  # Missing data is the normal state with Container Insights off. Enable
+  # containerInsights in ecs.tf to arm this alarm.
   treat_missing_data = "notBreaching"
 
   dimensions = {
@@ -54,8 +43,8 @@ resource "aws_cloudwatch_metric_alarm" "no_running_tasks" {
   ok_actions    = [aws_sns_topic.alarms.arn]
 }
 
-# CloudFront sees every request, including the ones that never reach a task, so
-# this catches an origin that is unreachable as well as one that is erroring.
+# CloudFront sees every request, so this catches an unreachable origin as well
+# as an erroring one.
 resource "aws_cloudwatch_metric_alarm" "cdn_5xx" {
   provider = aws.us_east_1
 
@@ -78,8 +67,8 @@ resource "aws_cloudwatch_metric_alarm" "cdn_5xx" {
   alarm_actions = [aws_sns_topic.alarms.arn]
 }
 
-# A billing surprise is the failure mode most likely to actually happen here.
-# The metric lives in us-east-1 regardless of where anything runs.
+# A billing surprise is the most likely failure here. The metric lives in
+# us-east-1 regardless of where anything runs.
 resource "aws_cloudwatch_metric_alarm" "billing" {
   provider = aws.us_east_1
 
@@ -109,21 +98,13 @@ variable "billing_alarm_threshold" {
 
 # ---- external uptime probe -------------------------------------------------
 #
-# The no-running-tasks alarm above cannot answer "is the site up?" — Container
-# Insights is off, so its metric never reports and missing data is treated as
-# not breaching. It sits permanently OK whatever is happening. This is what
-# actually answers that question.
+# A Route53 health check probes from outside, so it covers DNS, CloudFront, the
+# certificate and origin routing as well as the task. That is why this exists
+# rather than switching Container Insights on.
 #
-# A Route53 health check probes from outside AWS, so unlike an ECS metric it
-# also catches a failure in DNS, CloudFront, the certificate, or the origin
-# routing — every hop between a user and the task, not just the task. That is
-# the better coverage, and it is why this rather than switching Insights on.
-#
-# It probes GET /health, which is safe to hit unauthenticated from anywhere:
-# routes.ts exempts that path from origin verification precisely so probes
-# reaching past the CDN keep working, and the CloudFront behaviour for it uses
-# the managed CachingDisabled policy — so the probe reads live state rather
-# than a cached "ok" from before the outage.
+# GET /health is unauthenticated (routes.ts exempts it from origin
+# verification) and its CloudFront behaviour is uncached, so the probe reads
+# live state.
 resource "aws_route53_health_check" "platform" {
   type              = "HTTPS"
   fqdn              = var.domain_name
@@ -132,7 +113,7 @@ resource "aws_route53_health_check" "platform" {
   request_interval  = 30
   failure_threshold = 3
 
-  # SNI, required for CloudFront to serve the right certificate.
+  # CloudFront needs SNI to serve the right certificate.
   enable_sni = true
 
   tags = merge(local.tags, {
@@ -140,14 +121,10 @@ resource "aws_route53_health_check" "platform" {
   })
 }
 
-# Health checks publish to us-east-1 regardless of where anything runs, which
-# is why this alarm takes the aliased provider like the CloudFront one above.
+# Health check metrics publish to us-east-1 only, hence the aliased provider.
 #
-# `treat_missing_data` is "breaching" here, unlike every other alarm in this
-# file. Those guard metrics that legitimately go quiet; this one guards a
-# probe that runs every 30 seconds forever. Silence from it is not "nothing to
-# report", it is the monitoring itself having stopped — the exact condition
-# that left the alarm above useless.
+# Missing data is "breaching" here, unlike the other alarms: this probe runs
+# every 30 seconds forever, so silence means the monitoring itself has stopped.
 resource "aws_cloudwatch_metric_alarm" "platform_down" {
   provider = aws.us_east_1
 

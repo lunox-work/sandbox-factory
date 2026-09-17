@@ -4,31 +4,23 @@ import { defineConfig, type Plugin } from "vite";
 import { resolveBuildInfo } from "../../scripts/build-info.mjs";
 
 /**
- * Resolved once, at config load, rather than per module: every chunk of a
- * single build must report the same record, and calling the resolver more than
- * once would stamp them with different timestamps.
+ * Resolved once at config load: resolving per module would stamp chunks of one
+ * build with different timestamps.
  */
 const buildInfo = resolveBuildInfo();
 
 /**
- * Serves the build record as a module.
+ * Serves the build record as a virtual module.
  *
- * A virtual module rather than `define`, which is what this originally used and
- * what the Vite docs point you at first. `define` performs a textual
- * substitution during *bundling*, and the dev server does not bundle — it
- * transforms each module on request and leaves the identifier alone, so
- * `__BUILD_INFO__` stayed a bare undeclared global and the footer read 0.0.0
- * with no sha for the whole of `npm run dev`.
- *
- * A module is resolved the same way in both modes, so dev and production cannot
- * disagree about it. The value is still fixed at config load, so the build-time
- * freezing that makes a stale bundle report itself honestly is unchanged.
+ * Do not switch this to `define`: it substitutes only during bundling, and the
+ * dev server does not bundle, so `__BUILD_INFO__` stayed an undeclared global
+ * and the footer read 0.0.0 under `npm run dev`. A module resolves the same
+ * way in both modes. Pinned by `test/build-injection.test.ts`.
  */
 function buildInfoPlugin(): Plugin {
   const id = "virtual:build-info";
-  // Vite's convention: the resolved id is prefixed with \0 so that other
-  // plugins and the dev server leave it alone rather than trying to read it
-  // from disk.
+  // Vite's convention: a \0 prefix stops other plugins and the dev server
+  // trying to read the id from disk.
   const resolvedId = `\0${id}`;
 
   return {
@@ -48,8 +40,8 @@ export default defineConfig({
   plugins: [react(), buildInfoPlugin()],
   server: {
     port: 5173,
-    // Keeps the dev origin identical to production's same-origin setup, so
-    // cookie and CORS behaviour does not differ between the two.
+    // Same-origin like production (see nginx.conf), so cookie and CORS
+    // behaviour does not differ.
     proxy: {
       "/api": {
         target: process.env["VITE_API_URL"] ?? "http://localhost:4000",

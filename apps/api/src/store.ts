@@ -1,17 +1,7 @@
 /**
- * The store contract, re-exported.
- *
- * The interface, `NotFoundError`, and the Postgres implementation live in
- * `@sandbox-factory/db`: dependencies point downward, so a package cannot
- * import this app, and the contract has to sit where both can reach it.
- *
- * This module stays so that `routes.ts` and its tests keep importing from
- * `./store.js` as they always have — the swap to a real database is not
- * visible to them.
- *
- * `createInMemoryStore` remains for the route tests, which must run with no
- * container: it is a test double now, not the production path. The server
- * requires Postgres.
+ * Re-exports the store contract from `@sandbox-factory/db`, where packages can
+ * reach it too, and adds `createInMemoryStore`: a test double so the route
+ * tests run with no container. Production requires Postgres.
  */
 
 import { normalizeTitle, type Todo } from "sandbox-factory";
@@ -25,11 +15,7 @@ export {
   type TodoStore,
 } from "@sandbox-factory/db";
 
-/**
- * A seeded todo. The owner is part of the seed because the store is
- * owner-scoped: a fixture without one could only be read by a test that
- * guessed which user it belonged to.
- */
+/** A seeded todo. Carries its owner because the store is owner-scoped. */
 export interface SeedTodo extends Todo {
   readonly userId: string;
 }
@@ -39,13 +25,9 @@ export function createInMemoryStore(seed: readonly SeedTodo[] = []): TodoStore {
   let counter = seed.length;
 
   /**
-   * The owner check, in the one place every mutating method goes through.
-   *
-   * A row owned by someone else throws `NotFoundError` rather than a distinct
-   * "forbidden" error, matching the Postgres store: there, the owner is part
-   * of the WHERE clause and a non-match simply yields no row. The two
-   * implementations have to be indistinguishable to a caller, and that
-   * includes being indistinguishable about another user's ids.
+   * The owner check every mutating method goes through. Another user's row
+   * throws `NotFoundError`, not "forbidden", matching the Postgres store, where
+   * the owner is in the WHERE clause — so ids never leak across users.
    */
   function require(userId: string, id: string): SeedTodo {
     const existing = todos.get(id);
@@ -81,8 +63,8 @@ export function createInMemoryStore(seed: readonly SeedTodo[] = []): TodoStore {
       const todo: SeedTodo = {
         id: `todo_${counter}`,
         userId,
-        // Normalized here as well as at the edge, so a caller reaching the
-        // store directly cannot write an untrimmed title.
+        // Normalized here as well as at the edge, for callers that reach the
+        // store directly.
         title: normalizeTitle(title),
         done: false,
         createdAt: new Date().toISOString(),

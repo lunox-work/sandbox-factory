@@ -17,8 +17,7 @@ function row(over: Partial<EmailRow> = {}): EmailRow {
 }
 
 test("the first address a user proves becomes primary", async () => {
-  // Otherwise `user.email` would be backed by no row here, and the settings
-  // page would show an account with no primary address.
+  // Otherwise `user.email` would be backed by no row here.
   const fake = createFakeEmailDb();
   const store = createEmailStore(fake.db);
 
@@ -61,9 +60,7 @@ test("recording the same address and provider twice is idempotent", async () => 
 });
 
 test("a second provider proving the same address is added to it", async () => {
-  // The common case, not an edge case: one inbox registered at both Google
-  // and GitHub. Keeping only the first would make the settings page claim
-  // GitHub had proved nothing.
+  // The common case: one inbox registered at both Google and GitHub.
   const fake = createFakeEmailDb({ emails: [row()] });
   const store = createEmailStore(fake.db);
 
@@ -78,8 +75,8 @@ test("a second provider proving the same address is added to it", async () => {
 });
 
 test("addresses are normalized to lowercase", async () => {
-  // Providers differ on casing, and two rows for one inbox would let the same
-  // address prove two identities.
+  // Providers differ on casing; two rows would let one inbox prove two
+  // identities.
   const fake = createFakeEmailDb();
   const store = createEmailStore(fake.db);
 
@@ -93,8 +90,7 @@ test("addresses are normalized to lowercase", async () => {
 });
 
 test("an address already proven by someone else is refused", async () => {
-  // The security property: one inbox proves at most one identity, so a second
-  // person linking it cannot quietly take it over.
+  // The security property: one inbox proves at most one identity.
   const fake = createFakeEmailDb({
     emails: [row({ userId: "user_other" })],
   });
@@ -111,8 +107,7 @@ test("an address already proven by someone else is refused", async () => {
 });
 
 test("setPrimary moves the flag and mirrors onto user.email", async () => {
-  // The mirror is the point: `user.email` is what Better Auth reads, so a
-  // primary that disagreed with it would be a split brain.
+  // `user.email` is what Better Auth reads, so the two must agree.
   const fake = createFakeEmailDb({
     emails: [
       row(),
@@ -156,8 +151,7 @@ test("remove deletes a secondary address", async () => {
 });
 
 test("remove refuses to delete the primary address", async () => {
-  // `user.email` is not null, so removing the primary would leave the account
-  // with no address to contact.
+  // `user.email` is not null, so the account must keep a primary.
   const fake = createFakeEmailDb({ emails: [row()] });
   const store = createEmailStore(fake.db);
 
@@ -173,8 +167,7 @@ test("remove reports not-found for an unknown id", async () => {
 });
 
 test("list keeps a stable order rather than floating the primary", async () => {
-  // Promoting an address should change its badge, not make the list jump
-  // around under the cursor — so order is by creation, not by primary.
+  // Promoting an address changes its badge, not the list order.
   const fake = createFakeEmailDb({
     emails: [
       row({
@@ -197,8 +190,8 @@ test("list keeps a stable order rather than floating the primary", async () => {
 });
 
 test("primaryFor reads the address the account hook needs", async () => {
-  // The account-create hook has no endpoint context and the account row has no
-  // email, so this lookup is the only way it learns which address to record.
+  // The account-create hook has no endpoint context and the account row no
+  // email, so this is how it learns which address to record.
   const fake = createFakeEmailDb({
     users: [
       {
@@ -223,8 +216,7 @@ test("primaryFor returns undefined for an unknown user", async () => {
 // ---- unlinking ------------------------------------------------------------
 
 test("revokeProvider drops one provider's claim but keeps the address", async () => {
-  // Unlinking Google when GitHub also proved the address: the address is still
-  // proven, just by one fewer provider.
+  // Unlinking Google when GitHub also proved the address.
   const fake = createFakeEmailDb({
     emails: [row({ providerId: "google,github" })],
   });
@@ -237,8 +229,7 @@ test("revokeProvider drops one provider's claim but keeps the address", async ()
 });
 
 test("revokeProvider keeps the primary address even with no proof left", async () => {
-  // `user.email` is not null and points at the primary, so deleting it would
-  // leave the account with no address at all.
+  // `user.email` is not null and points at the primary.
   const fake = createFakeEmailDb({ emails: [row({ providerId: "google" })] });
   const store = createEmailStore(fake.db);
 
@@ -249,7 +240,6 @@ test("revokeProvider keeps the primary address even with no proof left", async (
 });
 
 test("revokeProvider deletes a secondary address that has lost its proof", async () => {
-  // Nothing vouches for it any more and nothing depends on it, so it goes.
   const fake = createFakeEmailDb({
     emails: [
       row(),
@@ -281,9 +271,7 @@ test("revokeProvider leaves addresses that provider never proved", async () => {
 });
 
 test("revokeProvider hands primary to a still-proven address and releases the old one", async () => {
-  // The release path: unlinking the provider that proved the primary address
-  // must not leave that address reserved forever. Another proven address takes
-  // over as primary and the old one is freed for whoever can prove it next.
+  // Unlinking must not leave the old primary address reserved forever.
   const fake = createFakeEmailDb({
     emails: [
       row({ providerId: "google" }),
@@ -320,9 +308,8 @@ test("revokeProvider hands primary to a still-proven address and releases the ol
 });
 
 test("revokeProvider keeps an unprovable primary when nothing can replace it", async () => {
-  // Least-bad fallback: `user.email` is not null and points at this row, and
-  // an account with no sign-in method left is unreachable anyway. The API
-  // refuses to unlink a last provider so this stays unreachable in practice.
+  // Least-bad fallback. The API refuses to unlink a last provider, so this
+  // is unreachable in practice.
   const fake = createFakeEmailDb({
     emails: [row({ providerId: "google" })],
     users: [
@@ -342,10 +329,8 @@ test("revokeProvider keeps an unprovable primary when nothing can replace it", a
 });
 
 test("record refuses an address another account carries as its primary", async () => {
-  // `user.email` is a second place an address can live and the unique
-  // constraint on `user_email` does not see it. Without this check a provider
-  // could prove an address another account already holds, which later fails as
-  // a 500 the moment anything writes it onto `user.email`.
+  // `user.email` is a second place an address can live, with no row in
+  // `user_email`.
   const fake = createFakeEmailDb({
     users: [
       {
@@ -368,8 +353,8 @@ test("record refuses an address another account carries as its primary", async (
 });
 
 test("setPrimary refuses when another account holds that address", async () => {
-  // Returns undefined — a 404 at the route — rather than letting the
-  // `user.email` write throw a constraint violation the caller cannot read.
+  // Returns undefined (a 404 at the route) rather than letting the
+  // `user.email` write throw.
   const fake = createFakeEmailDb({
     emails: [
       row({ id: "email_2", email: "taken@example.test", isPrimary: false }),
@@ -394,10 +379,8 @@ test("setPrimary refuses when another account holds that address", async () => {
 
 // ---- ownerOf ---------------------------------------------------------------
 //
-// The lookup behind the sign-in pre-flight. It has to consult both tables:
-// `user.email` and `user_email.email` are each unique, but neither constraint
-// sees the other, so an address free in one can be taken in the other. Missing
-// either branch would let the duplicate-account case through.
+// The sign-in pre-flight lookup. It must consult both `user_email` and
+// `user.email`; missing either lets a duplicate account through.
 
 test("ownerOf finds a holder in user_email", async () => {
   const fake = createFakeEmailDb({ emails: [row({ userId: "user_1" })] });
@@ -407,9 +390,7 @@ test("ownerOf finds a holder in user_email", async () => {
 });
 
 test("ownerOf finds a holder whose only claim is user.email", async () => {
-  // The branch that matters: no `user_email` row at all, yet the address is
-  // taken. Checking only `user_email` would call this address free and let a
-  // duplicate account be created on it.
+  // No `user_email` row at all, yet the address is taken.
   const fake = createFakeEmailDb({
     users: [
       {
@@ -432,8 +413,7 @@ test("ownerOf returns undefined for a free address", async () => {
 });
 
 test("ownerOf normalizes the address before looking it up", async () => {
-  // Signup addresses arrive from a provider in whatever case it reports, and
-  // the rows are stored lowercased; without this the pre-flight would miss.
+  // Providers report any casing; rows are stored lowercased.
   const fake = createFakeEmailDb({ emails: [row({ userId: "user_1" })] });
   const store = createEmailStore(fake.db);
 

@@ -1,14 +1,11 @@
 /**
  * Tests for the version readout.
  *
- * The property being defended is that the footer reports *this bundle*, and
- * reports the API's disagreement without acting on it. A readout that quietly
- * showed the API's version instead of its own would look right on every screen
- * and be wrong in exactly the case it exists for — a stale bundle talking to a
- * newer API.
+ * The footer must report this bundle, and report the API's disagreement
+ * without acting on it. Showing the API's version instead would be wrong in
+ * exactly the case it exists for: a stale bundle talking to a newer API.
  *
- * The server is faked at `fetch`, as in the other suites here, so what is
- * asserted is what actually reaches the screen.
+ * The server is faked at `fetch`, as in the other suites.
  */
 
 import { render, screen, waitFor } from "@testing-library/react";
@@ -38,8 +35,7 @@ beforeEach(() => {
   versionResponse = () => jsonResponse(TEST_BUILD);
 });
 
-// Guards the duplication between `vitest.config.ts` and `test/build.ts`: a
-// config cannot import from the test graph, so this is what keeps them honest.
+// Keeps `TEST_BUILD` in `vitest.config.ts` and `test/build.ts` in sync.
 test("the injected build matches what the tests assert against", () => {
   expect(webBuild).toEqual(TEST_BUILD);
 });
@@ -55,22 +51,20 @@ test("the version links to the exact commit on GitHub", async () => {
   expect(link.getAttribute("href")).toBe(
     `https://github.com/lunox-work/sandbox-factory/commit/${TEST_BUILD.gitSha}`,
   );
-  // Opening the repository must not navigate away from an app the user may
-  // have unsaved input in.
+  // Must not navigate away from an app that may hold unsaved input.
   expect(link.getAttribute("target")).toBe("_blank");
   expect(link.getAttribute("rel")).toBe("noreferrer");
 });
 
-// The fixture is a build of `main`, which is what almost every build is. A
-// release link here would point at a release this commit is not.
+// The fixture is a build of `main`; a release link would point at a release
+// this commit is not.
 test("no release link on a build that is not a tagged release", async () => {
   render(<BuildFooter />);
   await screen.findByText("1.4.2+7f3a9c1");
   expect(screen.queryByText("release")).toBeNull();
 });
 
-// The tooltip is where the full sha lives, because that is the form provenance
-// verification takes and the short one cannot be pasted into it.
+// The tooltip carries the full sha, the form provenance verification takes.
 test("the link title carries the full sha and build time", async () => {
   render(<BuildFooter />);
   const link = await screen.findByText("1.4.2+7f3a9c1");
@@ -91,8 +85,7 @@ test("a different API commit is surfaced", async () => {
   expect(await screen.findByText("API 1.4.2+b2e881d")).toBeTruthy();
 });
 
-// Reporting, not acting: a rolling deploy makes the two differ for a few
-// seconds, and a reload prompt on every deploy trains people to dismiss it.
+// Reporting, not acting; see `BuildFooter.tsx`.
 test("a mismatch offers no reload button", async () => {
   versionResponse = () => jsonResponse(OTHER_BUILD);
   render(<BuildFooter />);
@@ -114,8 +107,7 @@ test("an API error status is treated as no answer", async () => {
   expect(screen.queryByText(/^API /)).toBeNull();
 });
 
-// A proxy serving an HTML error page is the realistic version of this, and it
-// must not take the footer down with it.
+// Realistically a proxy's HTML error page; it must not take the footer down.
 test("an unparseable body is treated as no answer", async () => {
   versionResponse = () =>
     Promise.resolve(new Response("<html>gateway</html>", { status: 200 }));

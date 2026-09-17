@@ -1,17 +1,9 @@
-# TLS certificate.
+# TLS certificate. One, in us-east-1, the only region CloudFront reads
+# certificates from. The origin has none: CloudFront reaches the task over HTTP
+# (see cloudfront.tf).
 #
-# One, in us-east-1, because that is the only region CloudFront reads a
-# certificate from — a hard service requirement, not a preference. It is free.
-#
-# There is no second certificate for the origin: CloudFront reaches the task
-# over HTTP (see cloudfront.tf), so nothing there terminates TLS. Viewers still
-# get HTTPS, terminated at the edge with this certificate.
-#
-# Validation is DNS, via Route53. The records are added to the existing
-# lunox.work zone — which also carries live Zoho MX and DKIM records, so every
-# record here is an addition and nothing in this file replaces a record set.
-
-# ---- CloudFront certificate (us-east-1) ------------------------------------
+# DNS validation records are added to the lunox.work zone, which also carries
+# live Zoho MX and DKIM records; nothing here replaces an existing record set.
 
 resource "aws_acm_certificate" "cloudfront" {
   provider = aws.us_east_1
@@ -40,8 +32,8 @@ resource "aws_route53_record" "cloudfront_validation" {
   records = [each.value.record]
   ttl     = 60
 
-  # The same validation CNAME satisfies both certificates when the regions
-  # coincide; without this the second apply collides with the first's record.
+  # A replacement certificate for the same name reuses the same validation
+  # CNAME; without this, creating it collides with the existing record.
   allow_overwrite = true
 }
 

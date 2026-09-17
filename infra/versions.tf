@@ -1,10 +1,9 @@
 # Provider and version pinning.
 #
-# Two providers of the same type: `aws` runs in the region that hosts the
-# application, and `aws.us_east_1` is fixed to N. Virginia because CloudFront
-# reads its certificate from there and nowhere else. With var.region set to
-# us-east-1 the two alias the same region, which is harmless — the split exists
-# so that moving the application to another region stays a one-variable change.
+# `aws` runs in the application's region. `aws.us_east_1` is fixed because
+# CloudFront's certificate and the CloudFront, Route53 and billing metrics live
+# only there. Today both are us-east-1; the split keeps moving the application
+# a one-variable change.
 
 terraform {
   required_version = ">= 1.5.0"
@@ -24,9 +23,8 @@ terraform {
     }
   }
 
-  # Remote state is deliberately left to a backend config file rather than
-  # hardcoded here, so a fork can `terraform init` without inheriting this
-  # account's bucket. See infra/README.md for the bootstrap.
+  # Backend settings live in a config file so a fork can `terraform init`
+  # without inheriting this account's bucket. See infra/README.md.
   #
   #   terraform init -backend-config=backend.hcl
   backend "s3" {}

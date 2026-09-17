@@ -4,11 +4,8 @@ import { test } from "node:test";
 import { createConnection } from "../src/client.js";
 
 /**
- * Port 1 has nothing listening, and that is the point: `postgres()` is lazy,
- * so a pool can be built and drained without a server. These tests cover
- * construction and teardown — the parts that do not need a database — and
- * stop there. Whether a query actually round-trips is verified against a real
- * Postgres with `make migrate`, not here: no test may depend on a container.
+ * Nothing listens on port 1: `postgres()` is lazy, so a pool can be built and
+ * drained without a server. Only construction and teardown are covered here.
  */
 const UNUSED_URL = "postgres://user:pass@127.0.0.1:1/nothing";
 
@@ -21,8 +18,7 @@ test("createConnection returns a database handle and a close function", () => {
 
 test("close resolves on a pool that never connected", async () => {
   const connection = createConnection({ url: UNUSED_URL });
-  // Must not hang or throw: the API calls this on SIGTERM, and a rejection
-  // there would stop the process exiting cleanly.
+  // Must not hang or throw: the API calls this on SIGTERM.
   await connection.close();
 });
 
@@ -40,8 +36,7 @@ test("createConnection accepts an explicit pool size", async () => {
 
 test("the handle exposes drizzle's query builder", async () => {
   const connection = createConnection({ url: UNUSED_URL });
-  // `select` is the entry point the store uses; if drizzle were not wired to
-  // the pool this would be undefined.
+  // `select` is the store's entry point; undefined if drizzle is not wired.
   assert.equal(typeof connection.db.select, "function");
   await connection.close();
 });

@@ -30,16 +30,12 @@ One hostname, two origins. The SPA and the API share an origin because
 `apps/web/nginx.conf` and the Vite dev proxy already do — so the session cookie
 stays host-only and no request needs a CORS preflight.
 
-**There is no load balancer.** At the traffic this is sized for, an ALB costs
-$16.43/month to give one task a stable name. Instead an EventBridge rule fires
-on every ECS task state change and a small function
-([`lambda/origin_dns.py`](lambda/origin_dns.py)) writes the running task's
-_public_ IP into `api.platform.lunox.work`, which CloudFront uses as its origin.
-
-ECS Service Discovery was tried first and cannot do this: with `awsvpc`
-networking it registers the task's _private_ IP, which CloudFront cannot reach.
-What you still give up is the ALB's TLS termination — see the trade-offs at the
-bottom of this file.
+**There is no load balancer.** An ALB costs $16.43/month to give one task a
+stable name. Instead an EventBridge rule fires on every ECS task state change
+and a small function ([`lambda/origin_dns.py`](lambda/origin_dns.py)) writes the
+running task's _public_ IP into `api.platform.lunox.work`, which CloudFront uses
+as its origin. ECS Service Discovery cannot do this: with `awsvpc` networking it
+registers the _private_ IP, which CloudFront cannot reach.
 
 ## Cost
 
@@ -55,12 +51,12 @@ About **$15/month**, from live Pricing API rates:
 
 Three things are deliberately absent, and together they are most of the saving:
 
-- **No NAT Gateway** — $32.85/month avoided. See the comment at the top of `vpc.tf`.
-- **No ALB** — $16.43/month avoided. Service Discovery does the addressing.
+- **No NAT Gateway** — $32.85/month avoided. Tasks sit in public subnets.
+- **No ALB** — $16.43/month avoided. The origin DNS function does the addressing.
 - **No RDS** — $13.98/month avoided. Neon's free tier covers this workload.
 
-The path back up is short: putting an ALB in front is one file, and moving to
-RDS is a connection string. Do both when traffic justifies them.
+The path back up is short: an ALB is one file, and RDS is a connection string.
+Do both when traffic justifies them.
 
 ## Monitoring
 
@@ -76,25 +72,18 @@ sends before anything reaches it — until then the subscription reads
 | `monthly-spend`    | Estimated charges pass `var.billing_alarm_threshold` |
 | `no-running-tasks` | No task is running — **dormant**, see below          |
 
-`platform-down` is the one that answers "is the site up?". It is a Route53
-health check ($0.50/month) hitting `https://platform.lunox.work/health` every
-30 seconds from checkers on several continents, so it catches a failure
-anywhere between a user and the task — DNS, CloudFront, the certificate, the
-origin record — and not only a dead container. Two things make that endpoint
-safe to probe: `routes.ts` exempts `/health` from origin verification, and its
-CloudFront behaviour uses the managed CachingDisabled policy, so the probe
-reads live state rather than a cached `ok`.
-
-It is also the one alarm with `treat_missing_data = "breaching"`. The others
-guard metrics that legitimately go quiet; this one guards a probe that never
-stops, so silence from it means the monitoring broke, which is worth waking up
-for.
+`platform-down` answers "is the site up?". A Route53 health check hits
+`https://platform.lunox.work/health` every 30 seconds from several continents,
+so it catches a failure anywhere between a user and the task — DNS, CloudFront,
+the certificate, the origin record — not only a dead container. `/health` is
+exempt from origin verification and served with caching disabled, so the probe
+reads live state. It is the one alarm with `treat_missing_data = "breaching"`:
+the probe never stops, so silence means the monitoring broke.
 
 **`no-running-tasks` cannot currently fire.** Its metric comes from Container
-Insights, which is off to save ~$2/month, so it reports no data and sits
-permanently OK. It is kept because it names the cause where `platform-down`
-only sees the symptom — switch on `containerInsights` in `ecs.tf` to arm it.
-Do not read it being green as the platform being up.
+Insights, which is off to save ~$2/month, so it sits permanently OK. It is kept
+because it names the cause where `platform-down` only sees the symptom — switch
+on `containerInsights` in `ecs.tf` to arm it. Green here does not mean up.
 
 ## First deploy
 
@@ -109,10 +98,8 @@ carry `?sslmode=require`; Neon refuses an unencrypted connection, and the API
 will fail to boot without it.
 
 **Pick a region matching `var.region`.** The API reaches Postgres over the
-public internet now rather than inside a VPC, so the distance between them is
-real latency on every query. A Neon project in `us-east-2` against tasks in
-`us-east-1` adds roughly 10-15 ms per round trip — tolerable, but free to avoid
-by choosing `us-east-1` in Neon, or by setting `var.region = "us-east-2"`.
+public internet, so distance is latency on every query — `us-east-2` against
+tasks in `us-east-1` adds roughly 10–15 ms per round trip.
 
 ### 1. State backend
 
@@ -130,9 +117,9 @@ terraform init -backend-config=backend.hcl
 terraform apply
 ```
 
-Takes roughly 15 minutes; RDS and the CloudFront distribution are the slow
-parts. Certificate validation is automatic because the Route53 zone is in the
-same account.
+Takes roughly 15 minutes; the CloudFront distribution is the slow part.
+Certificate validation is automatic because the Route53 zone is in the same
+account.
 
 On the first apply the ECS service starts with the `bootstrap` image tag, which
 does not exist yet, so the task will fail to start. That is expected — the first
@@ -147,19 +134,17 @@ make secrets-check      # validates it the way the API does at boot
 make secrets-push       # writes the eight values into Secrets Manager
 ```
 
-`secrets-template` copies the six OAuth values from `.env.development` when they
-are present and generates a fresh
-`BETTER_AUTH_SECRET` — deliberately not the local one, since it signs session
-tokens and production should not share a signing key with a dev machine.
+`secrets-template` copies the six OAuth values from `.env.development` when
+present and generates a fresh `BETTER_AUTH_SECRET` — production should not share
+a signing key with a dev machine.
 
-`.env.production` matches the `.env.*` rule in `.gitignore`, so it cannot be
-committed. Values go straight from your machine to Secrets Manager, never
-through Terraform, so never into `terraform.tfstate`. Nothing reads the file at
-runtime; it is the copy you keep, and `make secrets-push` is what publishes it.
+`.env.production` is gitignored. Values go straight from your machine to Secrets
+Manager, never through Terraform, so never into `terraform.tfstate`. Nothing
+reads the file at runtime; it is the copy you keep.
 
 `secrets-push` depends on `secrets-check`, so a malformed connection string or a
 short signing secret is caught before it reaches AWS rather than as a
-crash-looping task mid-deploy.
+crash-looping task.
 
 ### 4. OAuth callbacks
 
@@ -173,20 +158,12 @@ https://platform.lunox.work/api/auth/callback/atlassian
 ```
 
 An exact match is required, with no trailing slash. A mismatch fails at the
-provider with `redirect_uri_mismatch`, not in your logs, which makes it slower
-to diagnose than it should be. The path is fixed by the route in
-`apps/api/src/routes.ts` and is not configurable.
+provider with `redirect_uri_mismatch`, not in your logs.
 
 **Google** and **Atlassian** accept several redirect URIs on one client, so the
-same credentials serve both environments.
-
-**GitHub OAuth Apps accept exactly one callback URL.** Two options: point the
-existing app at production and use a second app for local development (its
-client id and secret go in `.env`, not `.env.production`), or register a new app
-for production and put its credentials in `.env.production`. Either way the two
-environments end up with different GitHub client ids — which is why
-`secrets-template` copies the local values as a starting point rather than a
-final answer.
+same credentials serve both environments. **GitHub OAuth Apps accept exactly
+one**, so production needs its own GitHub app, with its credentials in
+`.env.production` — the values `secrets-template` copied are a starting point.
 
 ### 5. Wire up CD
 
@@ -206,14 +183,14 @@ whether it is serving the commit it just built.
 
 ## Day to day
 
-| Task                 | Command                                                                  |
-| -------------------- | ------------------------------------------------------------------------ |
-| Rotate a secret      | edit `.env.production`, `make secrets-push`, then force a new deployment |
-| Tail API logs        | `aws logs tail /ecs/sandbox-factory-api --follow`                        |
-| What is deployed?    | `curl -s https://platform.lunox.work/version`                            |
-| Roll back            | re-run the Deploy workflow against an older commit SHA                   |
-| Scale up             | `api_desired_count = 2`, then apply                                      |
-| Outgrow the database | `db_instance_class = "db.t4g.small"`, then apply                         |
+| Task                 | Command                                                                               |
+| -------------------- | ------------------------------------------------------------------------------------- |
+| Rotate a secret      | `./scripts/rotate-token.sh --secrets` — see [scripts/README.md](../scripts/README.md) |
+| Tail API logs        | `aws logs tail /ecs/sandbox-factory-api --follow`                                     |
+| What is deployed?    | `curl -s https://platform.lunox.work/version`                                         |
+| Roll back            | re-run the Deploy workflow against an older commit SHA                                |
+| Scale up             | `api_desired_count = 2`, then apply                                                   |
+| Outgrow the database | upgrade the Neon plan, or point `DATABASE_URL` at RDS                                 |
 
 ## Things worth knowing before changing this
 
@@ -221,34 +198,31 @@ whether it is serving the commit it just built.
 updates both directly, and without `ignore_changes` the next `terraform apply`
 would roll production back to whatever image the state remembers.
 
-**Task architecture is ARM64.** CD builds `--platform linux/arm64` to match,
-on a native `ubuntu-24.04-arm` runner — under emulation on an x86 runner the
-same build took minutes and once hung a deploy for two hours.
-A mismatch is not caught at build time — the task starts and dies with
-`exec format error`.
+**Task architecture is ARM64.** CD builds `--platform linux/arm64` to match, on
+a native `ubuntu-24.04-arm` runner — under emulation the build once hung a
+deploy for two hours. A mismatch is not caught at build time; the task starts
+and dies with `exec format error`.
 
 **The origin is reachable from the internet, and the header is what guards it.**
-With no load balancer, the task's port is open: CloudFront publishes no stable
-IP range to pin a security group to. What separates a CDN request from a
-stranger who resolved `api.platform.lunox.work` is the `X-Origin-Verify` header,
+With no load balancer, the task's port is open to everyone. Pinning the security
+group to CloudFront's managed prefix list is the hardening step not yet taken —
+see `security-groups.tf`. What separates a CDN request from a stranger who resolved `api.platform.lunox.work` is the `X-Origin-Verify` header,
 checked by middleware in `apps/api/src/routes.ts`. `/health` is exempt so ECS
 and uptime probes still work. A request without the header gets a 404.
 
 **CloudFront reaches the origin over HTTP.** Viewers always get HTTPS,
-terminated at the edge. The CloudFront-to-task hop is plain HTTP inside AWS,
-because terminating TLS on the task would mean shipping a certificate in the
-container and changing `server.ts` to serve it. That was the trade for leaving
-the application code alone — revisit it if the threat model changes.
+terminated at the edge. Terminating TLS on the task would mean shipping a
+certificate in the container and changing `server.ts` to serve it. Revisit if
+the threat model changes.
 
-**Postgres is Neon, outside AWS.** Two consequences. It suspends after about
-five minutes idle, so the first request after a quiet period waits a few hundred
-milliseconds while it wakes. And your user identity data lives with a third
-party — the thing you are buying for $13.98/month if you move back to RDS.
+**Postgres is Neon, outside AWS.** It suspends after about five minutes idle, so
+the first request after a quiet period waits a few hundred milliseconds. And
+user identity data lives with a third party.
 
-**A deploy has a brief window with two tasks.** `deployment_minimum_healthy_percent = 100`
-starts the new task before removing the old, so for a few seconds the discovery
-record holds both IPs. CloudFront may reach either; both serve the same API.
-The 15-second record TTL bounds how long a removed IP can still be cached.
+**A deploy has a brief window with two tasks.**
+`deployment_minimum_healthy_percent = 100` starts the new task before removing
+the old, so for a few seconds the origin record holds both IPs. Both serve the
+same API, and the 15-second TTL bounds how long a removed IP stays cached.
 
 **Moving back to an ALB.** Recreate `alb.tf`, add a `load_balancer` block to the
 service, point the CloudFront origin at the ALB's DNS name with

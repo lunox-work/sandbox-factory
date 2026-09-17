@@ -1,14 +1,7 @@
 /**
- * Tests for reading the running image digest off the ECS metadata endpoint.
- *
- * The behaviour worth pinning down is the failure handling. This field is the
- * one part of the build record that a provenance check runs against, so it has
- * two obligations that pull in opposite directions: never report a digest that
- * is not the real one, and never prevent the server from booting. Every test
- * below is one of those two.
- *
- * `fetch` is stubbed rather than a server being started. What is under test is
- * the parsing and the fallbacks, not HTTP.
+ * Reading the image digest off the ECS metadata endpoint. Two obligations:
+ * never report a digest that is not the real one, and never prevent boot.
+ * `fetch` is stubbed; the parsing and fallbacks are under test, not HTTP.
  */
 
 import assert from "node:assert/strict";
@@ -46,10 +39,7 @@ test("reports the digest the runtime resolved", async () => {
   );
 });
 
-// Agent version and launch type decide which of the two shapes comes back, so
-// both have to work. The registry host is stripped: it says where the bytes
-// were stored, while the digest is the bytes, and the digest alone is what the
-// attestation is keyed by.
+// The agent reports either shape, depending on version and launch type.
 test("strips a registry reference down to the bare digest", async () => {
   stubFetch(() =>
     metadata(
@@ -62,8 +52,7 @@ test("strips a registry reference down to the bare digest", async () => {
   );
 });
 
-// Local development, tests, docker compose. Not an error: there genuinely is
-// no image digest to report, and the absent field says exactly that.
+// Local development, tests, docker compose: not an error.
 test("reports nothing when there is no metadata endpoint", async () => {
   stubFetch(() => {
     throw new Error("fetch should not be called");
@@ -75,8 +64,8 @@ test("reports nothing when there is no metadata endpoint", async () => {
   );
 });
 
-// The obligation that matters most. A value that is not a digest must never be
-// passed through to somewhere a person will paste it into a verify command.
+// A non-digest must never reach someone who will paste it into a verify
+// command.
 test("rejects anything that is not a well-formed digest", async () => {
   for (const bad of [
     "not-a-digest",
@@ -98,8 +87,7 @@ test("rejects anything that is not a well-formed digest", async () => {
   }
 });
 
-// The other obligation: a wedged or unreachable agent degrades to a missing
-// field, never to a failed boot.
+// A wedged or unreachable agent means a missing field, never a failed boot.
 test("reports nothing rather than throwing when the endpoint misbehaves", async () => {
   const failures: Array<() => unknown> = [
     () => {

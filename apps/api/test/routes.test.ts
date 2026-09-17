@@ -17,16 +17,14 @@ const sessionUser = {
   name: "Signed In",
 };
 
-/** A second account, for the cross-user tests near the bottom of this file. */
+/** A second account, for the cross-user tests. */
 const otherUser = {
   id: "user_2",
   email: "someone-else@example.test",
   name: "Someone Else",
 };
 
-// Owned by `sessionUser`, which is who the fake session below signs in as.
-// Every todo now has an owner, and the store will not return a row to anyone
-// other than the user who owns it.
+// Owned by `sessionUser`, whom the fake session below signs in as.
 const seed = [
   {
     id: "todo_1",
@@ -48,16 +46,10 @@ const build: BuildInfoDto = {
 };
 
 /**
- * A stand-in for Better Auth.
- *
- * Only the two members the routes actually touch are implemented —
- * `api.getSession` and `handler` — because building a real `Auth` here would
- * mean an OAuth client and a database, and no test in this repo may depend on
- * a container.
- *
- * `getSession` reads the request headers exactly as the real one does, so the
- * middleware under test is the real middleware: a request with the header gets
- * a session, one without gets null. The cast is contained to this helper.
+ * A stand-in for Better Auth with only the two members the routes touch. A
+ * real `Auth` would need an OAuth client and a database. `getSession` reads
+ * the request headers, so the middleware under test is the real one: a cookie
+ * gets a session, no cookie gets null.
  */
 function fakeAuth(
   options: { signedIn?: boolean; as?: typeof sessionUser } = {},
@@ -72,8 +64,7 @@ function fakeAuth(
             : null,
         ),
     },
-    // Stands in for the mounted Better Auth handler so the /api/auth/* route
-    // can be asserted on without a provider round trip.
+    // Echoes the path so the /api/auth/* mount can be asserted on.
     handler: (request: Request) =>
       Promise.resolve(
         Response.json({ handled: new URL(request.url).pathname }),
@@ -85,12 +76,8 @@ function fakeAuth(
 const signedIn = { cookie: "better-auth.session_token=test-token" };
 
 /**
- * A signed-in app.
- *
- * `request` injects the session cookie so the tests below stay about todo
- * behaviour rather than repeating auth setup twenty times. Tests that are
- * *about* auth call `createApp` directly, or pass their own headers, which
- * still win because the caller's spread comes last.
+ * A signed-in app: `request` injects the session cookie. Tests about auth call
+ * `createApp` directly or pass their own headers, which win.
  */
 function app(todos = seed) {
   const server = createApp({
@@ -119,8 +106,7 @@ function json(body: unknown) {
 test("GET /health reports ok, with the build it is running", async () => {
   const res = await app().request("/health");
   assert.equal(res.status, 200);
-  // Defaults to the unknown record: `app()` passes no buildInfo, which is the
-  // same situation as a container built without the build args.
+  // `app()` passes no buildInfo, like a container built without build args.
   assert.deepEqual(await res.json(), {
     status: "ok",
     version: "0.0.0",
@@ -151,9 +137,8 @@ test("GET /version returns the build record verbatim", async () => {
   });
   const res = await server.request("/version");
   assert.equal(res.status, 200);
-  // Parsed with the shared schema rather than compared field by field: this is
-  // the contract the web app and the extension read, and a response that no
-  // longer satisfies it is the failure worth catching here.
+  // Parsed with the shared schema: the contract the web app and extension
+  // read.
   assert.deepEqual(buildInfoSchema.parse(await res.json()), build);
 });
 
@@ -163,8 +148,7 @@ test("GET /version falls back to the unknown record", async () => {
   assert.deepEqual(await res.json(), unknownBuildInfo);
 });
 
-// The sign-in screen renders before there is a session, and deploy tooling
-// reads this without credentials — so a session must not be required.
+// The sign-in screen and deploy tooling read this without a session.
 test("GET /version needs no session", async () => {
   const server = createApp({
     store: createInMemoryStore(seed),
@@ -175,8 +159,7 @@ test("GET /version needs no session", async () => {
   assert.equal((await server.request("/version")).status, 200);
 });
 
-// A server that cannot serve data can still say which build it is, which is the
-// first thing worth knowing when diagnosing why it is misconfigured.
+// A misconfigured server can still say which build it is.
 test("GET /version answers even with no auth configured", async () => {
   const server = createApp({
     store: createInMemoryStore(seed),
@@ -350,14 +333,11 @@ test("CORS allows the configured origin", async () => {
 
 // ---- ownership ------------------------------------------------------------
 //
-// Being signed in is not the same as being entitled to a row. These are the
-// regression tests for a period in which the todo routes sat behind a session
-// and still served the whole table to whoever asked: authenticated, and
-// completely unscoped. A 401 test cannot catch that — both users here are
-// signed in — so the boundary needs its own tests at the HTTP layer, not only
-// in the store.
+// Being signed in is not being entitled to a row. Regression tests for todo
+// routes that were authenticated but unscoped; a 401 test cannot catch that,
+// so the boundary is tested at the HTTP layer as well as in the store.
 
-/** A signed-in app where the caller is somebody other than the seed's owner. */
+/** A signed-in app whose caller is `user`. */
 function appAs(user: typeof sessionUser, todos = seed) {
   const server = createApp({
     store: createInMemoryStore(todos),
@@ -382,8 +362,7 @@ test("a signed-in user does not see another user's todos", async () => {
 });
 
 test("reading another user's todo by id is a 404, not a 403", async () => {
-  // 404 deliberately: a 403 would confirm the id exists, which lets someone
-  // enumerate ids they cannot read.
+  // A 403 would confirm the id exists.
   const res = await appAs(otherUser).request("/api/v1/todos/todo_1");
 
   assert.equal(res.status, 404);
@@ -444,8 +423,7 @@ test("a created todo belongs to its creator and nobody else", async () => {
   });
   assert.equal(created.status, 201);
 
-  // The owner comes from the session, so the other user's list stays empty
-  // however the request was shaped.
+  // The owner comes from the session, so this user's list stays empty.
   const mine = await serverFor(sessionUser).request("/api/v1/todos", {
     headers: signedIn,
   });
@@ -453,9 +431,7 @@ test("a created todo belongs to its creator and nobody else", async () => {
 });
 
 test("an owner field in the request body cannot redirect a todo", async () => {
-  // The body is parsed by a schema that has no owner field, and the route
-  // reads the id off the session regardless. This pins that a caller cannot
-  // write into someone else's list by asking.
+  // The schema has no owner field and the route reads the id off the session.
   const store = createInMemoryStore([]);
   const server = createApp({
     store,
@@ -477,8 +453,7 @@ test("an owner field in the request body cannot redirect a todo", async () => {
 // ---- auth -----------------------------------------------------------------
 
 test("an unauthenticated request to a todo route is a 401", async () => {
-  // Uses createApp directly rather than the `app` helper above, because the
-  // helper's whole job is to inject the session this test must not have.
+  // Not the `app` helper, which would inject the session.
   const server = createApp({
     store: createInMemoryStore(seed),
     corsOrigins: ["http://localhost:5173"],
@@ -502,8 +477,7 @@ test("an unauthenticated write is a 401 and does not reach the store", async () 
   const res = await server.request("/api/v1/todos", json({ title: "sneaky" }));
 
   assert.equal(res.status, 401);
-  // The guard has to run before the handler, not alongside it: a 401 that
-  // still wrote the row would be the bug worth catching here.
+  // A 401 that still wrote the row would be the bug.
   assert.deepEqual(
     (await store.list(sessionUser.id)).map((todo) => todo.title),
     ["write tests"],
@@ -522,8 +496,7 @@ test("health stays public when auth is configured", async () => {
 });
 
 test("GET /api/v1/me returns both identifiers", async () => {
-  // `id` is the immutable account; `username` is the mutable handle. Callers
-  // need to be able to tell them apart, so both are returned.
+  // `id` is the immutable account; `username` is the mutable handle.
   const res = await appWithProfiles(fakeProfiles("feversoul")).request(
     "/api/v1/me",
   );
@@ -560,8 +533,7 @@ test("/api/auth/* is handled by Better Auth and needs no session", async () => {
     auth: fakeAuth(),
   });
 
-  // Signing in cannot require already being signed in, so this route must sit
-  // in front of the guard.
+  // Signing in cannot require already being signed in.
   const res = await server.request("/api/auth/sign-in/social");
 
   assert.equal(res.status, 200);
@@ -569,8 +541,8 @@ test("/api/auth/* is handled by Better Auth and needs no session", async () => {
 });
 
 test("a bearer token is accepted where a cookie would be", async () => {
-  // The VS Code extension has no cookie jar. The middleware passes the whole
-  // header set to Better Auth, so this works without a second code path.
+  // For the VS Code extension, which has no cookie jar. The middleware passes
+  // every header to Better Auth, so there is no second code path.
   const server = createApp({
     store: createInMemoryStore(seed),
     corsOrigins: ["http://localhost:5173"],
@@ -595,8 +567,7 @@ test("a bearer token is accepted where a cookie would be", async () => {
 });
 
 test("with no auth configured the todo routes are 503, not open", async () => {
-  // The failure mode this guards against is a deploy that forgets the auth
-  // env: the API must serve no data rather than everyone's.
+  // A deploy that forgets the auth env must serve no data, not everyone's.
   const server = createApp({
     store: createInMemoryStore(seed),
     corsOrigins: ["http://localhost:5173"],
@@ -627,9 +598,8 @@ test("with no auth configured an unknown route is still a JSON 404", async () =>
 // ---- proven emails --------------------------------------------------------
 
 /**
- * A stand-in for the email store. The store's own logic is tested against a
- * fake database in `packages/db`; these tests are about the routes in front of
- * it — status codes, ownership scoping, and the shape that reaches the client.
+ * A stand-in for the email store, whose own logic is tested in `packages/db`.
+ * These tests cover the routes in front of it.
  */
 function fakeEmails(
   seed: Array<{
@@ -721,8 +691,7 @@ test("POST promotes an address to primary", async () => {
 });
 
 test("promoting an unknown address is a 404", async () => {
-  // Scoped to the caller, so another user's id is indistinguishable from a
-  // nonexistent one — the endpoint must not confirm which ids exist.
+  // Another user's id is indistinguishable from a nonexistent one.
   const res = await appWithEmails().request(
     "/api/v1/me/emails/email_nope/primary",
     { method: "POST" },
@@ -839,8 +808,7 @@ test("PUT claims a username", async () => {
 });
 
 test("a taken username is a 409, not a 400", async () => {
-  // The request was well formed; the name is simply someone else's, and the
-  // form wants to tell those two cases apart.
+  // So the form can tell a taken name from a malformed one.
   const res = await appWithProfiles().request("/api/v1/me/username", {
     ...json({ username: "taken" }),
     method: "PUT",
@@ -887,11 +855,9 @@ test("the username routes are absent when no profile store is configured", async
 
 // ---- origin verification ---------------------------------------------------
 //
-// The CloudFront-to-Fargate deployment in `infra/` has no load balancer, so the
-// task's port is open to the internet — CloudFront publishes no stable IP range
-// to pin a security group to. The shared header is what separates a CDN request
-// from a stranger who resolved the origin record, and these tests pin the four
-// behaviours that arrangement depends on.
+// In the CloudFront-to-Fargate deploy the task's port is open to the internet,
+// and the shared header is all that separates a CDN request from a stranger.
+// See `originVerify` in routes.ts.
 
 /** An app with origin verification switched on. */
 function guardedApp(secret = "s3cr3t-from-cloudfront") {
@@ -917,8 +883,7 @@ test("a request without the origin secret is refused", async () => {
   });
 
   // 404 rather than 403: a scanner that finds the origin should learn nothing
-  // about whether it guessed a real host, and an empty answer is the most
-  // boring thing to return.
+  // about whether it guessed a real host.
   assert.equal(response.status, 404);
 });
 
@@ -931,9 +896,8 @@ test("a request with the wrong origin secret is refused", async () => {
 });
 
 test("/health answers without the origin secret", async () => {
-  // The exemption that keeps container and uptime probes working: they reach
-  // the task directly rather than through the CDN, so they never carry the
-  // header. Without this, ECS would see a permanently unhealthy task.
+  // Probes reach the task directly and never carry the header; without this
+  // exemption ECS would see a permanently unhealthy task.
   const response = await guardedApp().request("/health");
 
   assert.equal(response.status, 200);
@@ -941,8 +905,7 @@ test("/health answers without the origin secret", async () => {
 });
 
 test("without originVerify configured no check is installed", async () => {
-  // The local-development and behind-a-load-balancer case: the option is
-  // absent, so an ordinary request is served with no header at all.
+  // The local-development and behind-a-load-balancer case.
   const response = await app().request("/api/v1/todos");
 
   assert.equal(response.status, 200);

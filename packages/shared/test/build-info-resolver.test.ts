@@ -1,15 +1,12 @@
 /**
  * Tests for `scripts/build-info.mjs`, the resolver every build site shares.
  *
- * Tested from this workspace because the script sits outside every workspace —
- * `npm test` runs `turbo run test`, which only visits workspaces, so a test
- * here is the only one that runs in CI. It belongs with `build-info.ts`
- * anyway: that file defines the record's contract and this one produces it.
+ * Lives here because the script sits outside every workspace and
+ * `turbo run test` only visits workspaces, so this is the only place it runs
+ * in CI.
  *
- * The cases that matter are the precedence rules. Environment must beat git, or
- * a container build stamps itself with whatever the host repository happened to
- * be on; and an injected sha must never be reported dirty, or every released
- * version string carries `-dirty`.
+ * The precedence rules are what matter: environment beats git, and an injected
+ * sha is never dirty.
  */
 
 import assert from "node:assert/strict";
@@ -18,12 +15,8 @@ import { test } from "node:test";
 import { buildInfoSchema, isIdentified } from "../src/build-info.js";
 
 /**
- * Imported by URL rather than by relative path.
- *
- * Tests run from compiled output in `dist-test/test/`, which is one directory
- * deeper than the source they were written in, so a relative specifier that
- * looks right here resolves one level short at runtime. Building the URL from
- * this module's own location is depth-independent and survives the compile.
+ * Imported by URL: tests run from `dist-test/test/`, one directory deeper than
+ * this source, so a relative specifier resolves one level short at runtime.
  */
 const {
   isIdentified: resolverIsIdentified,
@@ -35,10 +28,7 @@ const {
 
 const SHA = "7f3a9c1e5b2d8a4f6c0e9b3a1d7f5c2e8a4b6d09";
 
-/**
- * A fully specified environment, so a test that is about one variable does not
- * silently depend on the checkout's real git state.
- */
+/** Fully specified, so no test depends on the checkout's real git state. */
 const injected = {
   BUILD_VERSION: "1.4.2",
   BUILD_SHA: SHA,
@@ -46,12 +36,10 @@ const injected = {
   BUILD_REF: "main",
 };
 
-// The whole point of the shared schema is that what the resolver produces is
-// what the API and the browser can parse. If this drifts, everything else does.
+// What the resolver produces must be what the API and the browser can parse.
 test("the resolver's output satisfies the shared schema", () => {
   assert.doesNotThrow(() => buildInfoSchema.parse(resolveBuildInfo(injected)));
-  // Also for a resolution that had to fall back, which is a different shape of
-  // record and just as much a thing the API will serve.
+  // A fallback resolution is served too.
   assert.doesNotThrow(() => buildInfoSchema.parse(resolveBuildInfo({})));
 });
 
@@ -70,8 +58,7 @@ test("the short sha is the first seven of the full one", () => {
   assert.equal(resolveBuildInfo(injected).gitShortSha, SHA.slice(0, 7));
 });
 
-// A container build has no .git to inspect; the injected value is the only
-// truth available, and reading the host repository would be worse than nothing.
+// A container build has no .git; the injected value is the only truth.
 test("BUILD_SHA beats whatever the local repository says", () => {
   assert.equal(resolveBuildInfo({ BUILD_SHA: SHA }).gitSha, SHA);
 });
@@ -80,8 +67,7 @@ test("GITHUB_SHA is used when BUILD_SHA is absent", () => {
   assert.equal(resolveBuildInfo({ GITHUB_SHA: SHA }).gitSha, SHA);
 });
 
-// BUILD_SHA is the generic escape hatch and has to be able to override Actions'
-// own value, not merely fill in for it.
+// BUILD_SHA must override Actions' own value, not merely fill in for it.
 test("BUILD_SHA wins over GITHUB_SHA", () => {
   assert.equal(
     resolveBuildInfo({ BUILD_SHA: SHA, GITHUB_SHA: "other" }).gitSha,
@@ -96,16 +82,16 @@ test("GITHUB_REF_NAME supplies the ref in CI", () => {
   );
 });
 
-// Only a working tree can be dirty. Were this not so, every artifact built from
-// an injected sha would carry `-dirty` in its version string.
+// Only a working tree can be dirty; otherwise every artifact built from an
+// injected sha would carry `-dirty`.
 test("an injected sha is never reported dirty", () => {
   assert.equal(resolveBuildInfo({ BUILD_SHA: SHA }).dirty, false);
   assert.equal(resolveBuildInfo({ GITHUB_SHA: SHA }).dirty, false);
 });
 
 test("an unset version falls back to the released package version", () => {
-  // Read from packages/core/package.json — kept in step with the root —
-  // rather than from an app, whose version is a permanent 0.0.0.
+  // Read from packages/core/package.json; an app's version is a permanent
+  // 0.0.0.
   assert.match(resolveBuildInfo({ BUILD_SHA: SHA }).version, /^\d+\.\d+\.\d+/);
 });
 
@@ -125,19 +111,14 @@ test("toEnvLines round-trips into a resolvable environment", () => {
         return [line.slice(0, index), line.slice(index + 1)];
       }),
   );
-  // What a later workflow step reads back must be what the first step resolved,
-  // or the artifact and the attestation describe different builds.
+  // Otherwise the artifact and the attestation describe different builds.
   assert.deepEqual(resolveBuildInfo(env), original);
 });
 
 /**
- * Empty is absent.
- *
- * Docker sets an undeclared `ARG` to the empty string rather than leaving it
- * unset, so `env.BUILD_TIME` is `""` for any build arg the caller omitted. A
- * plain `??` chain accepts that as an answer and skips the fallback — which
- * produced an image reporting an empty build time, found by building the web
- * image and reading the record back out of it.
+ * Empty is absent. Docker passes an omitted build arg as `""`, which a plain
+ * `??` chain accepts, skipping the fallback — that once produced an image with
+ * an empty build time.
  */
 test("an empty variable falls back rather than being taken literally", () => {
   const info = resolveBuildInfo({
@@ -149,30 +130,21 @@ test("an empty variable falls back rather than being taken literally", () => {
   assert.notEqual(info.buildTime, "");
   assert.notEqual(info.version, "");
   assert.notEqual(info.gitRef, "");
-  // The one that was actually set still comes through.
   assert.equal(info.gitSha, SHA);
 });
 
 test("an empty sha does not count as an identified build", () => {
   const info = resolveBuildInfo({ BUILD_SHA: "", GITHUB_SHA: "" });
-  // Falls through to git, which in this checkout answers — so the assertion is
-  // about the empty strings not being adopted, not about the fallback's value.
+  // Falls through to git, so assert only that the empty strings are not
+  // adopted, not what the fallback returns.
   assert.notEqual(info.gitSha, "");
   assert.notEqual(info.gitShortSha, "");
 });
 
 /**
- * A repository that cannot be read is worth saying out loud.
- *
- * Falling back is right in a container, which has no repository; it is
- * misleading when one is sitting right there, because the record comes out
- * plausible but empty and the only symptom is a version string that quietly
- * loses its sha. The usual cause is a shell whose PATH has no git — an
- * editor-launched dev server, typically.
- *
- * Asserted through the resolver's real output rather than by capturing the
- * warning, because what matters is that an injected sha stays silent: this
- * repo's own test run has a .git, so a warning on every call would be noise.
+ * The resolver warns when a repository is present but unreadable (usually a
+ * PATH with no git), since the version otherwise quietly loses its sha. An
+ * injected sha must stay silent, or every call in this checkout would warn.
  */
 test("an injected sha does not warn even inside a repository", () => {
   const warnings: unknown[] = [];
@@ -187,13 +159,9 @@ test("an injected sha does not warn even inside a repository", () => {
 });
 
 /**
- * An explicit dirty flag overrides the injected-sha rule.
- *
- * The dev containers mount the repo but run `node:22-alpine`, which has no git
- * binary — so the host resolves the flag and passes it in alongside the sha.
- * Without this precedence the injected sha would force `dirty: false` and a
- * container serving a modified working tree would claim to be clean, which is
- * the one thing the flag exists to prevent.
+ * The dev containers mount the repo but have no git binary, so the host
+ * resolves the flag and passes it with the sha. Without this precedence a
+ * container serving a modified tree would claim to be clean.
  */
 test("BUILD_DIRTY wins over the injected-sha rule", () => {
   assert.equal(
@@ -206,8 +174,7 @@ test("BUILD_DIRTY wins over the injected-sha rule", () => {
   );
 });
 
-// Empty is absent here too: compose substitutes an unset variable as "", and
-// that must fall through to the normal rules rather than reading as false.
+// Empty is absent here too: compose substitutes an unset variable as "".
 test("an empty BUILD_DIRTY falls through to the injected-sha rule", () => {
   assert.equal(
     resolveBuildInfo({ BUILD_SHA: SHA, BUILD_DIRTY: "" }).dirty,

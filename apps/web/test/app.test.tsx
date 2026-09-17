@@ -1,15 +1,12 @@
 /**
  * Tests for the signed-in shell.
  *
- * These are about one property: what a person sees must belong to the account
- * that is currently signed in. The API enforces that — the todo routes are
- * scoped to the session user — but the browser holds a copy of the answer, and
- * a cached list that outlives the session it was fetched for still shows one
- * user another's data even though the server would never serve it again.
+ * One property: what a person sees must belong to the signed-in account. The
+ * API scopes todos to the session user, but a list cached in the browser that
+ * outlives its session still shows one user another's data.
  *
- * As in `account.test.tsx`, the server is faked at the `fetch` and auth-client
- * boundary rather than by mocking component internals, so these assert what
- * actually reaches the screen.
+ * The server is faked at the `fetch` and auth-client boundary, as in
+ * `account.test.tsx`.
  */
 
 import { render, screen, waitFor } from "@testing-library/react";
@@ -34,13 +31,10 @@ let todosByCall: string[][] = [];
 let callCount = 0;
 
 /**
- * Installed before `App` is imported, and never replaced.
- *
- * `TodoClient` binds `globalThis.fetch` in its constructor, and `api.ts`
- * constructs it at module load — so a stub installed in `beforeEach` would
- * arrive too late and the real fetch would run. Stubbing once up front and
- * varying its *behaviour* through the mutable state above keeps the binding
- * valid for every test.
+ * Installed before `App` is imported, and never replaced. `TodoClient` binds
+ * `globalThis.fetch` when `api.ts` constructs it at module load, so a stub
+ * installed in `beforeEach` arrives too late. Tests vary its behaviour through
+ * the mutable state above instead.
  */
 const fetchMock = vi.fn((input: RequestInfo | URL) => {
   const url = String(input);
@@ -102,9 +96,8 @@ test("a signed-in user sees their own todos", async () => {
 });
 
 test("switching account does not leave the previous user's todos on screen", async () => {
-  // The regression: the signed-in tree is keyed by user id. Without that key
-  // React reuses the mounted component — including the fetched list — so the
-  // first user's todos stay visible until a refetch happens to replace them.
+  // The regression: without the user-id key React reuses the mounted tree, so
+  // the first user's todos stay visible until a refetch replaces them.
   todosByCall = [["alice's todo"], ["bob's todo"]];
 
   session({ id: "user_1", name: "Alice" });
@@ -116,8 +109,7 @@ test("switching account does not leave the previous user's todos on screen", asy
   session({ id: "user_2", name: "Bob" });
   rerender(<App />);
 
-  // Alice's row must be gone immediately on the identity change, not merely
-  // replaced once Bob's request resolves.
+  // Gone immediately on the identity change, not once Bob's request resolves.
   expect(screen.queryByText("alice's todo")).toBeNull();
   await waitFor(() => {
     expect(screen.getByText("bob's todo")).toBeTruthy();
@@ -125,9 +117,8 @@ test("switching account does not leave the previous user's todos on screen", asy
 });
 
 test("a 401 clears the list rather than leaving it on screen", async () => {
-  // A session can end while the tab is open — expiry, revocation, a sign-out
-  // in another tab. The rows already rendered were fetched for a session that
-  // no longer exists, so they must not survive the failure.
+  // A session can end while the tab is open. Rows fetched for it must not
+  // survive the failure.
   todosByCall = [["alice's todo"]];
   session({ id: "user_1", name: "Alice" });
   const { rerender } = render(<App />);
@@ -138,9 +129,7 @@ test("a 401 clears the list rather than leaving it on screen", async () => {
   // The session ends server-side while the rows are already on screen.
   unauthorized = true;
 
-  // Force the refetch that would happen on the next interaction or remount.
-  // Keying on a different id is what makes React mount a fresh tree and run
-  // the effect again — the same id would reuse the mounted one and never ask.
+  // Force a refetch: a different id mounts a fresh tree and reruns the effect.
   session({ id: "user_1_resumed", name: "Alice" });
   rerender(<App />);
 

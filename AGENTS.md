@@ -31,9 +31,8 @@ file).
 npm run verify   # lint, format check, build, test — run before declaring done
 ```
 
-`verify` is exactly what CI runs and what the `pre-push` hook runs. It exists
-only at the root. Eligible PRs auto-merge on green (everything except a
-Dependabot major), so this is the gate, not a formality — never
+`verify` is what CI and the `pre-push` hook run, and exists only at the root.
+PRs auto-merge on green, so this is the gate, not a formality — never
 `git push --no-verify` past a failure.
 
 To iterate on one workspace during development (never as the final check):
@@ -61,9 +60,8 @@ npx turbo run lint test --filter=@sandbox-factory/api
   at compile time. `packages/db/test/auth-schema.test.ts` asserts both.
 - **Every `TodoStore` method takes the owner as its first argument, in the
   `WHERE` clause.** The owner comes from `c.get("user").id`, never a request
-  body. A session says who is asking, not what they may read — these routes once
-  sat behind a session guard with no `user_id` column and served every user the
-  whole table. Another user's id is a 404, never a 403.
+  body. A session says who is asking, not what they may read. Another user's id
+  is a 404, never a 403.
 - Email/password sign-in is deliberately off. `apps/api/test/auth.test.ts`
   asserts on the 400 response; do not enable the feature to make it pass.
 - `createApp` without an `auth` option serves 503 on `/api/*`. Routes under
@@ -113,55 +111,46 @@ undefined`. Narrow it rather than using `!`.
 
 Every surface reports the commit it was built from; see
 [docs/versioning.md](./docs/versioning.md). Everything here fails **silently** —
-a broken injection does not break the build, it just stamps the artifact
-`unknown` — so the rules are about keeping the guards intact.
+a broken injection stamps the artifact `unknown` rather than breaking the build
+— so the rules are about keeping the guards intact.
 
 - **The web app gets its record from a `virtual:build-info` module, not
-  `define`.** `define` substitutes during bundling and the dev server does not
-  bundle, so the identifier survives into the served module as an undeclared
-  global — the footer read `0.0.0` through all of `npm run dev` while the
-  production build and the whole test suite stayed green. Do not "simplify" it
-  back to `define`. `apps/web/test/build-injection.test.ts` fails if you do.
-- **`scripts/build-info.mjs` is the only resolver.** Four build sites read it.
-  Do not inline a second copy of this logic: two resolvers that disagreed about
-  short-sha length would report a permanent mismatch between artifacts built
-  from one commit.
-- It stays plain JavaScript. It runs in a Vite config, an esbuild config and
-  `node` in CI, all before the build that would compile TypeScript.
+  `define`.** The dev server does not bundle, so `define` leaves an undeclared
+  global there while the production build and the test suite stay green. Do not
+  "simplify" it back. `apps/web/test/build-injection.test.ts` fails if you do.
+- **`scripts/build-info.mjs` is the only resolver.** Four build sites read it;
+  never inline a second copy.
+- It stays plain JavaScript: it runs in a Vite config, an esbuild config and
+  `node` in CI, all before anything compiles TypeScript.
   `scripts/build-info.d.mts` types it — **the `.d.mts` extension is
-  load-bearing**, a `.d.ts` beside an `.mjs` is silently ignored and the import
-  degrades to `any`.
-- **Leave the `env` block on `build` in `turbo.json` alone.** Turbo runs tasks
-  in a strict environment, so an undeclared var never reaches the task; and
-  these are part of the cache key, or turbo replays a bundle stamped with the
-  wrong commit.
+  load-bearing**; a `.d.ts` beside an `.mjs` is silently ignored.
+- **Leave the `env` block on `build` in `turbo.json` alone.** Turbo's strict
+  environment drops undeclared vars, and these are part of the cache key — or
+  turbo replays a bundle stamped with the wrong commit.
 - The release workflow runs `--require-identified` and CI greps the built bundle
-  for the sha. They catch different failures — the first that the resolver saw a
-  sha, the second that it reached the artifact. Keep both.
+  for the sha. The first proves the resolver saw a sha, the second that it
+  reached the artifact. Keep both.
 - **The API's `BUILD_*` vars are optional on purpose**, unlike `DATABASE_URL`.
-  A missing sha is cosmetic; refusing to boot over it turns a reporting gap into
-  an outage. The guard belongs at build time.
+  A missing sha is cosmetic; refusing to boot over it would be an outage.
 - **The dev containers get their provenance from the Makefile, not from git.**
-  `make up` mounts the repo — `.git` and all — but `node:22-alpine` has no git
-  binary, so the resolver inside reports `unknown`. The `BUILD_*` exports near
-  `up:` are what make the version readout work there; removing them silently
-  drops the sha from `make up` while `make dev` keeps working.
-- Adding a build arg to a Dockerfile means adding it in **both** the build and
-  runtime stages — ARGs do not cross stage boundaries. An undeclared ARG is the
-  empty string, not unset, which is why the resolver treats empty as absent.
+  `node:22-alpine` has no git binary, so the `BUILD_*` exports near `up:` are
+  what make the version readout work under `make up`.
+- A Dockerfile build arg must be declared in **both** the build and runtime
+  stages — ARGs do not cross stages. An undeclared ARG is the empty string, not
+  unset, which is why the resolver treats empty as absent.
 
 ### Build and tooling
 
 - **Make targets must work from a fresh clone.** `make up` and `make ext` are
   what a new contributor types first. Host targets depend on a `node_modules`
-  stamp; extension targets also depend on `ext-deps`. Test in a clean clone.
+  stamp; extension targets also depend on `ext-deps`.
 - The `Makefile` delegates to npm scripts and never reimplements build or test
   logic. CI calls the npm scripts directly.
 - Dev servers run compiled output. Do not replace `apps/api`'s `tsc --watch` +
   `node --watch dist/server.js` with `--experimental-strip-types`.
-- The VS Code extension is not containerized — it has no server process. Do not
-  add an extension service to compose. Its dev loop needs both halves: esbuild
-  rebuilding on save, and `debug.extensionHost.autoReload`.
+- The VS Code extension has no server process, so do not add it to compose. Its
+  dev loop needs both halves: esbuild rebuilding on save, and
+  `debug.extensionHost.autoReload`.
 - Dev containers shadow `node_modules` with anonymous volumes (the host tree
   holds darwin binaries). Both Dockerfiles build from the repo root, because the
   apps import workspace packages from outside their directory.
@@ -169,100 +158,69 @@ a broken injection does not break the build, it just stamps the artifact
 - Do not hand-edit `packages/db/drizzle/` — drizzle-kit generates it via
   `npm run db:generate --workspace @sandbox-factory/db`.
 
+### Shipping a change
+
+**Use `./scripts/ship.sh --title "fix: ..." --yes`.** It branches off `main`,
+verifies, opens the PR, settles review threads and waits for the merge. See
+[scripts/README.md](./scripts/README.md).
+
+- **When it prints the PR URL, you are done.** It returns 0 once the PR is
+  _open_ and watches the merge from a detached child. Do not poll
+  `gh pr checks`, `sleep` and re-check, or tail the log — a ship takes 10–15
+  minutes, nearly all of it waiting on CodeRabbit. Report the URL and stop. If
+  a later turn needs the outcome, check once:
+  `gh pr view <n> --json state --jq .state`.
+- **If `.git/ship/pr-<n>.review.md` exists for your last ship, read it before
+  the next change** and fix what is real in a follow-up PR. ship.sh resolves
+  CodeRabbit's threads unread, but saves them there first.
+- **It leaves you on `main`; start the next change there.** Do not check out
+  the branch you just shipped — that stacks work on an open PR, which `ship.sh`
+  refuses (`has commits not in main`). A follow-up is a new branch off `main`.
+- **Never `git checkout` or `git stash` while a ship is being watched.** The
+  child shares your working tree.
+- Use `--foreground` only when the merge is a precondition for work in the same
+  turn, which is rare.
+
 ### Commits, PRs, and releases
 
-**`./scripts/ship.sh --title "fix: ..." --yes` does all of this for you** —
-branches off `main`, verifies, opens the PR, settles review threads and waits
-for the merge. Prefer it over doing the steps by hand; see
-[scripts/README.md](./scripts/README.md). The rules below are what it encodes.
-
-- **Fire and forget. When it prints the PR URL, ship.sh is done and so are
-  you.** It detaches and watches in the background; it returns 0 once the PR is
-  _open_, not once it merges. The merge, the review threads and the branch
-  cleanup all happen without you.
-
-  Do not then poll `gh pr checks`, `sleep` and re-check, or tail the log to
-  watch it land. A ship takes ten to fifteen minutes, nearly all of it waiting
-  on CodeRabbit, and an agent that watches burns its context on unchanged
-  status output and stalls the session for the user. Report the PR URL and
-  stop. If a later turn genuinely needs to know the outcome, check it _then_,
-  once: `gh pr view <n> --json state --jq .state`.
-
-  ship.sh resolves CodeRabbit's threads without reading them, but saves them
-  first. **If `.git/ship/pr-<n>.review.md` exists for your last ship, read it
-  before starting the next change** and fix what is real in a follow-up PR.
-
-  Use `--foreground` only when the merge result is a precondition for work you
-  are about to do in the same turn, which is rare — the next task almost always
-  starts from `main` regardless.
-
-- **It leaves you on `main`, so start the next change where you are.** The
-  parent switches back and fast-forwards before it detaches; the pushed branch
-  is left behind on purpose. Do not `git checkout` the branch you just shipped
-  to keep working on it — that stacks the next change on an open PR, and
-  `ship.sh` refuses it (`has commits not in main`) only after you have made the
-  edits. A follow-up to something still in review is a new branch off `main`.
-
-- **Never `git checkout` or `git stash` while a ship is being watched.** The
-  detached child is launched from a snapshot under `.git/ship/` precisely
-  because a checkout rewrites the script bytes underneath a running bash, but
-  the working tree is still shared — a stash mid-watch can still surprise a
-  `verify` running in another window. Let it finish; it needs nothing from you.
+The rules `ship.sh` encodes; [docs/ci.md](./docs/ci.md) has the detail.
 
 - Branch off `main` as `fix/...` or `feat/...`. `main` takes squash merges only;
-  you cannot push to it.
-- **Unresolved review threads block the merge.** `main` also has a classic
-  branch protection with `required_conversation_resolution` and
-  `enforce_admins`, so a green PR with an open CodeRabbit thread will not land
-  and `--admin` will not force it. Resolve threads with
-  `gh pr comment <n> --body '@coderabbitai resolve'`.
-- Conventional Commits drive the release: `fix:` patch, `feat:` minor,
-  `!`/`BREAKING CHANGE:` major. `chore:`/`docs:`/`ci:` produce no release.
-- **The PR title is the only commit message that survives the squash.** A PR
-  titled `docs:` containing a `fix:` commit produces no release, silently. Title
-  the PR for its user-facing change.
-- Required checks: `Test (Node 22)`, `Test (Node 24)`, `Analyze`. Branch
-  protection matches them **by job name** — renaming the job or changing the
-  Node matrix values stops the ruleset requiring it, and auto-merge will then
-  merge on checks that never ran. Update the ruleset in the same change.
+  you cannot push to it. One logical change per PR; fill in the template.
 - **Opening a PR is the last decision point.** Auto-merge arms on every PR
-  except a Dependabot major, and nobody clicks anything. If you want a human to
-  look first, open it as a **draft**.
-- One logical change per PR. Fill in the template, link the issue.
-- **Every merge to main that carries a releasable commit becomes a release.**
-  `cd.yml` works out the next version _before_ it builds (so the artifact knows
-  the tag it will become), deploys, verifies against the live site, and only
-  then tags and publishes. A failed deploy cuts no release — a tag means "this
-  ran in production", not "this merged".
-- `scripts/next-version.mjs` decides the bump: `!` or a `BREAKING CHANGE:`
-  footer → major, `feat` → minor, `fix`/`perf`/`revert`/`build`/`refactor` →
-  patch, anything else → **no release**. A chore-only merge still deploys; it
-  just does not cut a version. A **docs-only** merge does not deploy at all —
-  `cd.yml` has `paths-ignore` for `**.md` and `docs/**`, so the workflow never
-  fires. Pinned by `packages/shared/test/next-version.test.ts` — nobody reviews
-  its answer before it becomes a permanent tag.
-- The PR title is the squash commit and therefore the thing that decides the
-  version. `ship.sh` rejects a non-conventional title for exactly this reason.
-- **The tags are the version of record, not `package.json`.** Nothing bumps
-  `package.json` on a release — CD tags the deployed commit directly, so the
-  footer's sha, the release page and the asset names are all one commit. The
-  next version is computed from the last tag. `package.json` is only the floor
-  for a first release; `/version` and the footer say what is live.
-- `CHANGELOG.md` lives at the repository root. Never hand-edit it.
+  except a Dependabot major, and nobody clicks anything. If a human should look
+  first, open it as a **draft**.
+- **The PR title is the squash commit, and the squash commit decides the
+  version.** `scripts/next-version.mjs`: `!`/`BREAKING CHANGE:` → major, `feat`
+  → minor, `fix`/`perf`/`revert`/`build`/`refactor` → patch, anything else → no
+  release. A PR titled `docs:` containing a `fix:` commit releases nothing,
+  silently. Pinned by `packages/shared/test/next-version.test.ts`.
+- **Every deploy that carries a releasable commit becomes a release.** `cd.yml`
+  computes the version, builds, deploys, verifies the live site, and only then
+  tags. A failed deploy cuts no release. A chore-only merge deploys without a
+  version; a docs-only merge does not deploy at all (`paths-ignore`).
+- **Tags are the version of record, not `package.json`**, which nothing bumps.
+- **Unresolved review threads block the merge**, and `enforce_admins` means
+  `--admin` will not force it. Resolve with
+  `gh pr comment <n> --body '@coderabbitai resolve'`.
+- Required checks — `Test (Node 22)`, `Test (Node 24)`, `Analyze` — are matched
+  **by job name**. Renaming a job or changing the Node matrix stops the ruleset
+  requiring it, and auto-merge then merges on checks that never ran. Update the
+  ruleset in the same change.
+- Never hand-edit `CHANGELOG.md`.
 
 ### Do not
 
 - **Edit `.github/workflows/*.yml` casually.** Several run on
-  `pull_request_target`, with write permissions in the base branch's context. In
-  particular, never make one check out or execute PR code — that hands a fork
-  the ability to merge to `main`. Read [docs/ci.md](./docs/ci.md) first.
+  `pull_request_target`, with write permissions in the base branch's context.
+  Never make one check out or execute PR code — that hands a fork the ability to
+  merge to `main`. Read [docs/ci.md](./docs/ci.md) first.
 - Weaken the `permissions:` blocks in workflows.
 - Bump dependencies by hand; Dependabot does it weekly.
 - Add a dependency without saying why, and which workspace, in the PR body.
-  `packages/core` has zero runtime dependencies by design — adding one there
-  needs to be raised.
-- Commit secrets. `.env.development` and `.env.production` are gitignored; `docker-compose.yml` credentials are
-  local development values only.
+  `packages/core` has zero runtime dependencies by design.
+- Commit secrets. `.env.development` and `.env.production` are gitignored;
+  `docker-compose.yml` credentials are local development values only.
 
 ## Two names
 

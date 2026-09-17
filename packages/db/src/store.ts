@@ -1,14 +1,8 @@
 /**
- * The Postgres implementation of `TodoStore`.
- *
- * The interface and `NotFoundError` are defined here rather than in
- * `apps/api`, because dependencies point downward only: a package may not
- * import an app. `apps/api/src/store.ts` re-exports both, so `routes.ts` and
- * its tests keep importing from where they always did.
- *
- * Behaviour matches the in-memory store exactly — same ordering, same
- * normalization, same error on a missing id — so swapping one for the other
- * cannot change what a caller observes.
+ * The Postgres `TodoStore`. The interface and `NotFoundError` live here, not
+ * in `apps/api`, because a package may not import an app; the API re-exports
+ * them. Behaviour matches the API's in-memory store exactly: same ordering,
+ * normalization and missing-id error.
  */
 
 import { and, desc, eq } from "drizzle-orm";
@@ -24,14 +18,10 @@ export interface TodoPatch {
 }
 
 /**
- * The todo store, scoped to one owner on every call.
- *
- * `userId` is a required first argument rather than a filter the caller may
- * remember to apply, and that shape is the point: there is no method here that
- * can read or write across users, so a route cannot leak one user's todos by
- * forgetting a `where` clause. An id that belongs to someone else is reported
- * as `NotFoundError`, exactly as a genuinely missing one is — telling the two
- * apart would confirm which ids exist.
+ * The todo store, scoped to one owner on every call. `userId` is a required
+ * argument, so no method can cross users and a route cannot leak by forgetting
+ * a `where`. Someone else's id is a `NotFoundError`, like a missing one;
+ * telling them apart would confirm which ids exist.
  */
 export interface TodoStore {
   list(userId: string): Promise<Todo[]>;
@@ -54,8 +44,7 @@ export type Database = PostgresJsDatabase<Record<string, never>>;
 export function createPostgresStore(db: Database): TodoStore {
   return {
     async list(userId) {
-      // Newest first — the order the UI wants to render, and the same order
-      // the in-memory store returns.
+      // Newest first, as the in-memory store returns.
       const rows = await db
         .select()
         .from(todos)
@@ -65,8 +54,7 @@ export function createPostgresStore(db: Database): TodoStore {
     },
 
     async get(userId, id) {
-      // Both predicates, always. Matching on `id` alone would return another
-      // user's row to a caller who guessed an id.
+      // Both predicates, always: `id` alone would serve a guessed id.
       const rows = await db
         .select()
         .from(todos)
@@ -82,17 +70,15 @@ export function createPostgresStore(db: Database): TodoStore {
         .returning();
       const row = inserted[0];
       if (row === undefined) {
-        // Unreachable for a single-row insert, but `noUncheckedIndexedAccess`
-        // is on and an assertion here would be exactly what it exists to stop.
+        // Unreachable, but `noUncheckedIndexedAccess` requires the check.
         throw new Error("Insert returned no row.");
       }
       return rowToTodo(row);
     },
 
     async update(userId, id, patch) {
-      // Build the patch rather than spreading `patch` straight in: an
-      // undefined value would otherwise null out a column, and the title
-      // needs normalizing before it is written.
+      // Built field by field, not spread: undefined keys must not reach the
+      // UPDATE, and the title needs normalizing.
       const values: { title?: string; done?: boolean } = {};
       if (patch.title !== undefined) {
         values.title = normalizeTitle(patch.title);
@@ -101,9 +87,8 @@ export function createPostgresStore(db: Database): TodoStore {
         values.done = patch.done;
       }
 
-      // An empty patch is a no-op, not an error — but `update` must still
-      // return the current row, and an UPDATE with no SET clause is invalid
-      // SQL, so read instead.
+      // An empty patch is a no-op, but an UPDATE with no SET is invalid SQL,
+      // so read the current row instead.
       if (Object.keys(values).length === 0) {
         const existing = await this.get(userId, id);
         if (existing === undefined) {
@@ -112,9 +97,8 @@ export function createPostgresStore(db: Database): TodoStore {
         return existing;
       }
 
-      // The owner predicate is part of the UPDATE itself rather than a check
-      // before it: a read-then-write would leave a window in which the row
-      // changed hands, and would cost a round trip to no benefit.
+      // The owner predicate is in the UPDATE itself: a read-then-write would
+      // leave a race window and cost a round trip.
       const updated = await db
         .update(todos)
         .set(values)
@@ -122,8 +106,7 @@ export function createPostgresStore(db: Database): TodoStore {
         .returning();
       const row = updated[0];
       if (row === undefined) {
-        // No row matched: either there is no such id, or it is someone
-        // else's. Both are a 404 to the caller.
+        // No such id, or someone else's: both are a 404.
         throw new NotFoundError(id);
       }
       return rowToTodo(row);

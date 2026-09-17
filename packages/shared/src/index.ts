@@ -1,20 +1,15 @@
 /**
- * The wire contract: what an API response looks like on both sides of the
- * network. The API parses with these schemas on the way out, the client parses
- * with them on the way in, so a shape change breaks the build rather than
- * producing a runtime surprise in one consumer.
+ * The wire contract. The API parses with these schemas on the way out and the
+ * client on the way in, so a shape change breaks the build, not a consumer at
+ * runtime.
  *
- * Runtime dependency on zod only — no HTTP, no database, no DOM, so the
- * extension and the browser can both bundle it.
+ * Depends on zod only, so the extension and the browser can both bundle it.
  */
 
 import { TITLE_MAX_LENGTH, TODO_FILTERS } from "sandbox-factory";
 import { z } from "zod";
 
-/**
- * Derived from the core constants rather than restated, so a cap changed in
- * core takes effect here too — which is the point of keeping both in one repo.
- */
+/** Derived from the core constants, so a cap changed in core applies here. */
 export const titleSchema = z
   .string()
   .trim()
@@ -43,11 +38,8 @@ export const createTodoSchema = z.object({
 });
 
 /**
- * Body for `PATCH /api/v1/todos/:id`.
- *
- * Both fields are optional so one endpoint serves renaming and checking off,
- * but an empty body is a mistake rather than a no-op — it almost always means
- * the caller sent the wrong shape.
+ * Body for `PATCH /api/v1/todos/:id`. Both fields are optional, but an empty
+ * body is rejected: it almost always means the caller sent the wrong shape.
  */
 export const updateTodoSchema = z
   .object({
@@ -68,9 +60,5 @@ export type CreateTodoInput = z.infer<typeof createTodoSchema>;
 export type UpdateTodoInput = z.infer<typeof updateTodoSchema>;
 export type ErrorDto = z.infer<typeof errorSchema>;
 
-/**
- * Build provenance. Re-exported here so consumers import one module, and kept
- * in its own file because it is a different contract from the todo wire types
- * above — it describes the artifact, not the data it serves.
- */
+/** Build provenance: describes the artifact, not the data it serves. */
 export * from "./build-info.js";

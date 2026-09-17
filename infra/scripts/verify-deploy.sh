@@ -4,31 +4,20 @@
 #
 #   ./infra/scripts/verify-deploy.sh <expected-sha> [url] [expected-digest]
 #
-# This is the step that makes the deploy honest. ECS reporting a stable service
-# means containers are running and passing health checks — it does not mean they
-# are running the image you just built. Asking the site itself closes that gap.
+# A stable ECS service means tasks pass health checks, not that they run the
+# image just built, so ask the site itself via the unauthenticated GET /version.
 #
-# Two fields are checked, and they are not equally strong. `gitSha` is a value
-# CD injected into the task definition and the server repeats back, so matching
-# it proves the rollout completed — it cannot prove much more, because both
-# sides of the comparison originate here. `imageDigest` is read by the server
-# from the container runtime's own metadata, so matching it proves the bytes
-# running are the bytes this deploy pushed. The digest is the one an outside
-# party can look the signed provenance statement up by, and check without
-# trusting any of this.
-#
-# It works because of machinery the repo already has: docs/versioning.md
-# describes the BUILD_SHA injection, apps/api/src/env.ts reads it at boot, and
-# GET /version returns it unauthenticated — the route's own comment anticipates
-# deploy tooling reading it without credentials.
+# `gitSha` is injected by CD and echoed back, so a match only proves the
+# rollout completed. `imageDigest` comes from the container runtime's metadata,
+# so a match proves the running bytes are the ones this deploy pushed; it is
+# also the key to the signed provenance attestation. See docs/versioning.md.
 
 set -euo pipefail
 
 EXPECTED_SHA="${1:?usage: verify-deploy.sh <expected-sha> [url] [expected-digest]}"
 URL="${2:-https://platform.lunox.work}"
-# Optional: older deployments and any non-ECS target report no digest. Unset,
-# the digest check is skipped rather than failed — this script has to keep
-# working against an instance predating the field.
+# Optional: older deployments and non-ECS targets report no digest. Unset
+# skips the digest check rather than failing it.
 EXPECTED_DIGEST="${3:-}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-300}"
 INTERVAL=10
@@ -45,10 +34,9 @@ attempt=0
 while (( $(date +%s) < deadline )); do
   attempt=$((attempt + 1))
 
-  # --fail-with-body would be neater but is curl 7.76+; this keeps the script
-  # portable across the runner images.
+  # Not --fail-with-body: it needs curl 7.76+.
   if response="$(curl -fsS --max-time 10 "$URL/version" 2>/dev/null)"; then
-    # Avoids a jq dependency on the runner: the field is a flat string.
+    # sed, not jq: the field is a flat string and the runner may lack jq.
     actual="$(printf '%s' "$response" | sed -n 's/.*"gitSha"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
 
     if [[ "$actual" == "$EXPECTED_SHA" ]]; then
@@ -73,11 +61,9 @@ while (( $(date +%s) < deadline )); do
         exit 0
       fi
 
-      # The sha matches while the digest does not. Worth failing loudly rather
-      # than passing on the weaker of the two checks: it means something is
-      # serving a different image than the one this deploy pushed while still
-      # claiming this commit — a stale task the rollout did not replace, or a
-      # tag pointing at bytes other than the ones built here.
+      # Sha matches but the digest does not: a stale task the rollout did not
+      # replace, or a tag pointing at other bytes. Fail rather than pass on the
+      # weaker check.
       if [[ -n "$actual_digest" ]]; then
         echo >&2
         echo "Verification FAILED: sha matches but the image digest does not." >&2

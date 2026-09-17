@@ -1,15 +1,8 @@
 /**
- * An in-memory stand-in for Drizzle, good enough to exercise `createEmailStore`
- * without a container.
- *
- * Unlike `fake-db.ts`, which returns one fixed row set, this one keeps actual
- * state: the email store's interesting behaviour is *conditional* — is this
- * address already taken, is this the first address, is the target primary —
- * and a fake that cannot answer those questions differently per query proves
- * nothing about it.
- *
- * It models only the shapes `emails.ts` actually issues. It is not a general
- * Drizzle emulator, and a new query shape will need a new branch here.
+ * An in-memory stand-in for Drizzle, to exercise `createEmailStore` without a
+ * container. Unlike `fake-db.ts` it keeps state, because the email store's
+ * behaviour depends on what earlier queries wrote. It models only the query
+ * shapes `emails.ts` issues; a new shape needs a new branch here.
  */
 
 import type { Database } from "../src/store.js";
@@ -38,13 +31,9 @@ interface Condition {
 }
 
 /**
- * Recovers the conditions from a Drizzle `where` clause.
- *
- * `eq`/`ne`/`and` build SQL objects whose `queryChunks` alternate between
- * column references, literal operator fragments (`" = "`, `" <> "`) and bound
- * parameters. Walking that array is enough to learn "column X equals Y", which
- * is all the store's queries express. Parsing this rather than emulating SQL
- * keeps the fake honest about what it does and does not model.
+ * Recovers the conditions from a Drizzle `where` clause. `eq`/`ne`/`and` build
+ * SQL objects whose `queryChunks` alternate between column references,
+ * operator fragments (`" = "`, `" <> "`) and bound parameters.
  */
 function conditions(where: unknown): Condition[] {
   const out: Condition[] = [];
@@ -70,13 +59,13 @@ function collect(node: unknown, out: Condition[]): void {
     }
     const record = chunk as Record<string, unknown>;
 
-    // Nested condition (an `and(...)` operand) — recurse and move on.
+    // A nested condition (an `and(...)` operand).
     if (Array.isArray(record["queryChunks"])) {
       collect(chunk, out);
       continue;
     }
 
-    // A column reference: it carries a name and the table it belongs to.
+    // A column reference: it carries a name and its table.
     if (typeof record["name"] === "string" && "table" in record) {
       column = record["name"];
       continue;
@@ -102,11 +91,8 @@ function collect(node: unknown, out: Condition[]): void {
 }
 
 /**
- * Reads a Drizzle table's name.
- *
- * It lives on a `Symbol(drizzle:Name)` rather than a plain property, so the
- * symbol has to be looked up by description — there is no exported accessor
- * for it and importing Drizzle's internals into a test double would be worse.
+ * Reads a Drizzle table's name. It lives on `Symbol(drizzle:Name)` with no
+ * exported accessor, so the symbol is found by description.
  */
 function tableName(table: unknown): string | undefined {
   if (typeof table !== "object" || table === null) {
@@ -129,12 +115,8 @@ export interface FakeEmailDb {
 }
 
 /**
- * Builds the fake.
- *
- * The filtering is intentionally simple: it matches on whichever of
- * `id`/`user_id`/`email` the condition names. That covers every query the
- * store makes and keeps this file readable, which matters more than
- * generality for a test double.
+ * Builds the fake. Filtering matches only the columns the store's queries
+ * name: `id`, `user_id`, `email` and `username`.
  */
 export function createFakeEmailDb(
   seed: { emails?: EmailRow[]; users?: UserRowLite[] } = {},
@@ -294,11 +276,9 @@ export function createFakeEmailDb(
         return chain;
       },
 
-      // The store wraps `record` and `setPrimary` in transactions; running the
-      // callback against the same fake is the right model, since these tests
-      // are about the store's logic rather than Postgres' isolation
-      // guarantees. The callback's value is returned because `record` resolves
-      // to whatever its transaction produced.
+      // Runs the callback against the same state: these tests cover the
+      // store's logic, not Postgres' isolation. Returns the callback's value,
+      // which `record` resolves to.
       transaction: async (fn: (tx: Database) => Promise<unknown>) =>
         fn(makeDb()),
     };

@@ -1,6 +1,6 @@
-# Keeps the build context small and stops host artifacts from leaking into an
-# image. node_modules especially: host-built native modules and symlinks do not
-# transfer, so every stage installs its own.
+# Keeps the build context small and host artifacts out of images. Host-built
+# node_modules (native modules, symlinks) do not transfer; every stage installs
+# its own.
 
 node_modules
 **/node_modules
@@ -21,9 +21,9 @@ dist-test
 coverage
 **/coverage
 
-# Every env file, under any name — `.env.development` and `.env.production`
-# hold real credentials and must never be copied into an image. The negation
-# keeps the template, which is committed and holds no secret.
+# Every env file: `.env.development` and `.env.production` hold real
+# credentials and must never reach an image. Only the secret-free template
+# stays.
 .env
 .env.*
 **/.env

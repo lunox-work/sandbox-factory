@@ -1,10 +1,8 @@
 /**
  * Account settings: your handle, and the providers you sign in with.
  *
- * There is no separate "email addresses" list. An address exists here only
- * because a provider vouched for it, so showing it *on* the provider row says
- * the same thing without implying emails are managed independently — which
- * they are not, since there is no way to add one except by linking.
+ * There is no separate "email addresses" list: an address exists only because
+ * a provider vouched for it, and linking is the only way to add one.
  */
 
 import { useCallback, useEffect, useState, type FormEvent } from "react";
@@ -21,8 +19,8 @@ interface ProvenEmail {
 
 interface LinkedAccount {
   /**
-   * Better Auth's own row id. This is what `unlinkAccount` matches on, and it
-   * is *not* `accountId` below — passing that one silently 400s.
+   * Better Auth's row id. `unlinkAccount` matches on this, not on `accountId`
+   * below — passing that one 400s.
    */
   id: string;
   providerId: string;
@@ -87,11 +85,8 @@ export function Account({ onClose }: { onClose: () => void }) {
   }
 
   /**
-   * Runs an action on one address and reloads.
-   *
-   * Shared by "make primary" and "remove" because both are a one-shot call
-   * whose only interesting outcome is the refreshed list — or the server's
-   * reason for refusing, which is worth showing verbatim.
+   * Runs an action on one address and reloads, showing the server's reason
+   * verbatim if it refuses.
    */
   async function actOnEmail(path: string, method: string) {
     setBusy(true);
@@ -103,8 +98,7 @@ export function Account({ onClose }: { onClose: () => void }) {
           error?: string;
         } | null;
         // Return rather than refresh: `refresh` clears the error on success,
-        // which would wipe the message that was just set and leave the person
-        // with a silently failed action.
+        // which would wipe the message just set.
         setError(body?.error ?? "That did not work.");
         return;
       }
@@ -120,12 +114,10 @@ export function Account({ onClose }: { onClose: () => void }) {
     setBusy(true);
     setError(null);
     try {
-      // `id` is Better Auth's row id, not the provider's `accountId` — the
-      // endpoint matches on the former and rejects the latter.
+      // `id` is Better Auth's row id; see `LinkedAccount.id`.
       const result = await authClient.unlinkAccount({ accountId: id });
       if (result.error !== null && result.error !== undefined) {
-        // Surface what the server said rather than a generic failure: the
-        // useful cases here ("can't unlink your last account") are ones the
+        // The server's message ("can't unlink your last account") is one the
         // person can act on.
         setError(result.error.message ?? "Could not unlink that account.");
         return;
@@ -173,11 +165,8 @@ export function Account({ onClose }: { onClose: () => void }) {
           {emails.map((entry) => (
             <li key={entry.id} className="email">
               {/*
-                The address heads its own block, and each account that proves
-                it gets a line underneath. Listing the providers inline instead
-                ran them together — "via google, github" followed by two
-                buttons on one row is hard to read, and it is not obvious which
-                button belongs to which provider.
+                The address heads its block and each account proving it gets
+                its own line, so each button sits next to its provider.
               */}
               <div className="email-head">
                 <span className="title">
@@ -185,11 +174,9 @@ export function Account({ onClose }: { onClose: () => void }) {
                   {entry.isPrimary && <span className="badge">primary</span>}
                 </span>
                 {/*
-                  The primary offers no promote action: promoting it again is
-                  a no-op. There is no "remove address" action at all — an
-                  address exists because a connected account proves it, so
-                  deleting the row while that account stays connected would be
-                  undone by the next sign-in. Disconnecting is what releases it.
+                  No "remove address" action: a connected account proves the
+                  address, so the next sign-in would restore it. Disconnecting
+                  the account is what releases it.
                 */}
                 {!entry.isPrimary && (
                   <button
@@ -237,9 +224,8 @@ export function Account({ onClose }: { onClose: () => void }) {
         </ul>
 
         {/*
-          Providers with nothing connected yet. They sit below the addresses
-          rather than in a section of their own, because connecting one is how
-          an address gets added — it is the same story, not a separate one.
+          Providers with nothing connected yet. Listed with the addresses
+          because connecting one is how an address gets added.
         */}
         {PROVIDERS.some((provider) => !linked.has(provider.id)) && (
           <ul className="list">
@@ -290,8 +276,7 @@ function UsernameForm({
   const [message, setMessage] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
 
-  // Seed the field once the current handle arrives; `current` is null until
-  // the first fetch resolves.
+  // Seed the field once the handle arrives; `current` is null until then.
   useEffect(() => {
     setDraft(current ?? "");
   }, [current]);

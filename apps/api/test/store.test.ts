@@ -117,12 +117,9 @@ test("remove on an unknown id throws NotFoundError", async () => {
 });
 
 /**
- * Owner isolation.
- *
- * This store is a test double for the Postgres one, so it has to enforce the
- * same boundary. If it did not, every route test above would be passing
- * against a store more permissive than the one that actually runs — and the
- * cross-user read these assert against would be invisible until production.
+ * Owner isolation. This store is a test double for the Postgres one, so it
+ * must enforce the same boundary, or the route tests would pass against a
+ * store more permissive than the one that runs.
  */
 test("list returns only the caller's todos", async () => {
   const store = createInMemoryStore([
@@ -179,8 +176,7 @@ test("create files the todo under the caller, not a shared list", async () => {
 });
 
 test("the todo returned to a caller carries no owner field", async () => {
-  // `userId` is storage bookkeeping; it must not reach the HTTP layer, which
-  // serializes whatever the store hands back.
+  // The HTTP layer serializes whatever the store hands back.
   const store = createInMemoryStore(seed);
   const todo = await store.get(OWNER, "todo_1");
 

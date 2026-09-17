@@ -1,20 +1,9 @@
 /**
- * Object storage, over the S3 API.
+ * Object storage over the S3 API. Targets SeaweedFS' gateway but works with
+ * any S3 endpoint. Not consumed by the app yet.
  *
- * The target is SeaweedFS' S3 gateway, but nothing here is SeaweedFS-specific:
- * it speaks S3, so the same code runs against AWS S3, MinIO, or R2 by changing
- * the endpoint. Two options matter for a self-hosted gateway:
- *
- * - `forcePathStyle` must be on. The AWS SDK defaults to virtual-hosted style
- *   (`http://bucket.host/key`), which needs per-bucket DNS that a local
- *   SeaweedFS does not have. Path style (`http://host/bucket/key`) is what the
- *   gateway serves.
- * - `region` is required by the SDK's signer even though SeaweedFS ignores it,
- *   hence the default rather than a mandatory field.
- *
- * Nothing in the app consumes this yet — it is the storage layer, wired in
- * when a feature needs it. It is exported and tested so that wiring is a
- * one-liner rather than a rewrite.
+ * `forcePathStyle` must stay on: the SDK's default virtual-hosted style needs
+ * per-bucket DNS that a self-hosted gateway does not have.
  */
 
 import {
@@ -47,10 +36,7 @@ export interface ObjectStore {
   get(key: string): Promise<Uint8Array | undefined>;
   exists(key: string): Promise<boolean>;
   remove(key: string): Promise<void>;
-  /**
-   * A time-limited URL for a direct download, so large payloads never pass
-   * through the API process.
-   */
+  /** A time-limited direct-download URL, so payloads bypass the API. */
   signedUrl(key: string, expiresInSeconds?: number): Promise<string>;
 }
 
@@ -90,9 +76,7 @@ export function createObjectStore(options: ObjectStoreOptions): ObjectStore {
         }
         return await response.Body.transformToByteArray();
       } catch (error) {
-        // A missing key is a normal answer, not a failure: `undefined` lets
-        // the caller branch without a try/catch of its own. Every other error
-        // — auth, network, a bucket that does not exist — still throws.
+        // A missing key is a normal answer; every other error still throws.
         if (isNotFound(error)) {
           return undefined;
         }
@@ -113,8 +97,7 @@ export function createObjectStore(options: ObjectStoreOptions): ObjectStore {
     },
 
     async remove(key) {
-      // S3 deletes are idempotent: removing an absent key succeeds. That
-      // matches what a caller wants from `remove`, so it is not special-cased.
+      // S3 deletes are idempotent: removing an absent key succeeds.
       await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
     },
 
@@ -129,11 +112,8 @@ export function createObjectStore(options: ObjectStoreOptions): ObjectStore {
 }
 
 /**
- * Whether an S3 error means "no such object".
- *
- * The SDK throws typed errors for `GetObject` (`NoSuchKey`) but `HeadObject`
- * has no body to parse, so it surfaces as a bare `NotFound` — and some
- * S3-compatible gateways send neither, only a 404. All three are checked.
+ * Whether an S3 error means "no such object". `GetObject` throws `NoSuchKey`,
+ * `HeadObject` a bare `NotFound`, and some gateways only a 404.
  */
 export function isNotFound(error: unknown): boolean {
   if (error instanceof NoSuchKey || error instanceof NotFound) {

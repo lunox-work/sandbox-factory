@@ -1,14 +1,10 @@
 # syntax=docker/dockerfile:1
 
-# Multi-stage build for the API.
-#
-# Built from the REPO ROOT, not apps/api — the workspace packages it imports
-# live outside that directory, so a narrower context cannot see them:
+# API image. Build from the REPO ROOT so the workspace packages are in context:
 #   docker build -f apps/api/Dockerfile .
 
 # ---- deps ------------------------------------------------------------------
-# Every workspace manifest, and nothing else. Docker caches this layer until a
-# package.json or the lockfile changes, so editing source does not reinstall.
+# Manifests only, so the install layer is cached until a dependency changes.
 FROM node:22-alpine AS deps
 WORKDIR /repo
 
@@ -26,14 +22,9 @@ COPY apps/extension/package.json ./apps/extension/
 RUN npm ci --ignore-scripts
 
 # ---- prod-deps -------------------------------------------------------------
-# The runtime dependency tree, installed from the manifests alone.
-#
-# This used to be an `npm ci --omit=dev` at the end of the runtime stage, after
-# the built sources had been copied in. Every commit changes those sources, so
-# that layer could never be cached and the install ran on every deploy. Here its
-# only inputs are the manifests and the lockfile, so it is rebuilt when a
-# dependency changes and replayed from cache otherwise — the same property the
-# `deps` stage above has.
+# Runtime dependency tree. A separate stage whose only inputs are the manifests,
+# so it caches like `deps`. Do not move it into the runtime stage after the
+# source COPY: it would then reinstall on every commit.
 FROM deps AS prod-deps
 RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 
@@ -46,11 +37,10 @@ COPY packages ./packages
 COPY apps/api ./apps/api
 COPY turbo.json ./
 
-# No build args here: nothing in this stage reads them. The API is a Node
-# process that reads its provenance from the environment at boot, so the values
-# belong in the runtime stage below, not compiled into anything.
+# No build args here: the API reads provenance from the environment at boot, so
+# they belong in the runtime stage.
 
-# Turbo builds packages/core and packages/shared first, in dependency order.
+# Turbo builds the workspace dependencies first, in dependency order.
 RUN npx turbo run build --filter=@sandbox-factory/api
 
 # ---- runtime ---------------------------------------------------------------
@@ -58,18 +48,15 @@ FROM node:22-alpine AS runtime
 WORKDIR /repo
 ENV NODE_ENV=production
 
-# node_modules without devDependencies (typescript, turbo), plus the manifests
-# and the workspace symlinks the API resolves its imports through. Copied first
-# so the layers that change on every commit sit on top of the one that does not.
+# Production node_modules, manifests and workspace symlinks. Copied first so
+# the layers that change on every commit sit on top of the one that does not.
 COPY --from=prod-deps /repo ./
 COPY --from=build /repo/tooling ./tooling
 COPY --from=build /repo/packages ./packages
 COPY --from=build /repo/apps/api ./apps/api
 
-# Unlike the web app, the API reads these at runtime rather than having them
-# compiled in — it is a Node process with an environment, so there is nothing
-# to bake. Redeclared here because ARGs do not cross stage boundaries, and
-# promoted to ENV so the running process can read them.
+# ARGs do not cross stage boundaries, so they are declared here, and promoted
+# to ENV so the running process can read them.
 ARG BUILD_VERSION
 ARG BUILD_SHA
 ARG BUILD_TIME
@@ -83,6 +70,5 @@ ENV BUILD_VERSION=${BUILD_VERSION} \
 USER node
 
 EXPOSE 4000
-# Exec form so the process gets PID 1 and receives SIGTERM directly, letting
-# `docker stop` shut it down cleanly instead of killing it after a timeout.
+# Exec form: node is PID 1 and receives SIGTERM directly, so it stops cleanly.
 CMD ["node", "apps/api/dist/server.js"]

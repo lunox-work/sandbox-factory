@@ -1,13 +1,8 @@
-# Networking.
-#
-# Public subnets only, and no NAT Gateway — that alone would cost $32.85/month
-# plus $0.045/GB, more than everything else in this configuration combined. The
-# tasks need outbound internet for ECR, Neon, and the three OAuth providers, and
-# a public subnet with a public IP gives them that for nothing.
-#
-# The private database subnets that an earlier revision of this file created are
-# gone with RDS: Postgres is Neon now, outside AWS entirely, so there is nothing
-# left in this VPC that must be unreachable from the internet.
+# Networking. Public subnets only and no NAT Gateway, which at $32.85/month
+# plus $0.045/GB would cost more than everything else here combined. A public
+# subnet with a public IP gives the tasks the outbound internet they need (ECR,
+# Neon, the OAuth providers) for nothing. Postgres is Neon, outside AWS, so
+# nothing in this VPC must be unreachable from the internet.
 
 resource "aws_vpc" "main" {
   cidr_block           = var.vpc_cidr

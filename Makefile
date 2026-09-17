@@ -1,25 +1,20 @@
-# Front door for common tasks. Everything here delegates to npm scripts or
-# docker compose — nothing is implemented twice, so `make test` and
-# `npm test` cannot drift apart.
-#
-# Run `make` with no target for the list.
+# Front door for common tasks. Everything delegates to npm scripts or docker
+# compose, so `make test` and `npm test` cannot drift. Run `make` for the list.
 #
 # Three ways to run the app:
-#   make dev        on the host  — fastest reload, what you want day to day
+#   make dev        on the host  — fastest reload, the day-to-day choice
 #   make up         in Docker    — dev containers, source mounted
 #   make up-prod    in Docker    — built images, nginx, what deploys
 #
-# The VS Code extension is not in Docker and cannot be: it has no server
-# process, only a bundle that the editor on your host loads. `make ext-watch`
-# and `make ext-package` handle it here.
+# The VS Code extension has no server process, so it is host-only:
+# `make ext-watch` and `make ext-package`.
 
 SHELL := /bin/bash
 .SHELLFLAGS := -eu -o pipefail -c
 
-# --env-file is explicit because Compose otherwise reads `./.env` by that exact
-# name, and this repo's local file is `.env.development`. Without this, every
-# ${VAR} in docker-compose.yml would substitute empty and the API would start
-# with no OAuth credentials, failing its env validation at boot.
+# Compose only reads `./.env` by default, and this repo's file is
+# `.env.development`. Without --env-file every ${VAR} in docker-compose.yml
+# substitutes empty and the API fails its env validation at boot.
 COMPOSE := docker compose --env-file .env.development
 
 .DEFAULT_GOAL := help
@@ -44,10 +39,9 @@ help: ## Show this help
 
 install: node_modules ## Install dependencies (clean, lockfile-exact)
 
-# Targets that need host dependencies depend on this, so a fresh clone works
-# without a separate install step. The stamp means it runs once rather than on
-# every invocation; npm ci rewrites node_modules wholesale, so the directory's
-# own timestamp is the honest marker.
+# Host targets depend on this, so a fresh clone needs no separate install. The
+# directory's timestamp is the stamp, so npm ci runs only when the lockfile
+# changes.
 node_modules: package-lock.json
 	npm ci
 	@touch node_modules
@@ -78,14 +72,10 @@ ship: ## Branch, verify, PR and merge the working tree (TITLE="fix: ...")
 
 ## ---- docker: dev --------------------------------------------------------
 
-# Build provenance, resolved here rather than in the containers: the repo is
-# mounted into them, but node:22-alpine has no git binary, so the resolver
-# inside would fall back to "unknown" and the version readout would lose its
-# commit. Exported so compose substitutes them into the dev services.
-#
-# `?=` so an already-set value (CI, or a deliberate override) wins, and every
-# assignment tolerates git failing rather than breaking `make up` over a
-# version string.
+# Build provenance, resolved on the host because node:22-alpine has no git
+# binary; exported so compose substitutes it into the dev services. `?=` lets
+# an already-set value (CI, an override) win, and a git failure is tolerated
+# rather than breaking `make up`.
 BUILD_SHA ?= $(shell git rev-parse HEAD 2>/dev/null)
 BUILD_REF ?= $(shell git rev-parse --abbrev-ref HEAD 2>/dev/null)
 BUILD_DIRTY ?= $(shell test -n "$$(git status --porcelain 2>/dev/null)" && echo true || echo false)
@@ -128,8 +118,7 @@ db-up: ## Start Postgres and SeaweedFS, and wait for them
 db-down: ## Stop Postgres and SeaweedFS, keeping data
 	$(COMPOSE) stop postgres seaweedfs
 
-# Delegates to the workspace script, like every other target here. Needs the
-# database up, so it depends on db-up rather than failing on a closed port.
+# Depends on db-up rather than failing on a closed port.
 migrate: db-up ## Apply pending migrations to the local database
 	DATABASE_URL="postgres://postgres:postgres@localhost:$${POSTGRES_PORT:-5432}/sandbox_factory" \
 		npm run db:migrate --workspace @sandbox-factory/db
@@ -150,10 +139,9 @@ s3-url: ## Print the S3 endpoint for the local SeaweedFS
 
 ext: ext-watch ## Alias for ext-watch
 
-# esbuild inlines the workspace packages from their dist/, so those have to be
-# built before it can resolve them — on a fresh clone they do not exist yet and
-# the bundle fails with "Could not resolve". --filter pulls in exactly the
-# dependencies the extension needs, in order.
+# esbuild inlines the workspace packages from their dist/, which does not exist
+# on a fresh clone ("Could not resolve"). `^...` builds exactly the extension's
+# dependencies, in order.
 ext-deps: node_modules
 	npx turbo run build --filter=sandbox-factory-vscode^...
 
@@ -170,12 +158,11 @@ ext-package: ext-deps ## Build a .vsix into apps/extension/
 
 ## ---- infrastructure (aws) -----------------------------------------------
 #
-# Terraform lives in infra/ and is documented there. These targets are the
-# handful of commands worth having at the front door; anything more involved is
-# a direct terraform invocation in that directory.
+# Terraform lives in infra/ and is documented there; anything beyond these
+# targets is a direct terraform invocation in that directory.
 #
-# `tf-apply` is deliberately NOT run by CI. Applying is a decision — it can
-# replace a database — so it stays a local action with a human reading the plan.
+# `tf-apply` is deliberately NOT run by CI: applying stays a local action with
+# a human reading the plan.
 
 TF := terraform -chdir=infra
 
@@ -195,7 +182,7 @@ tf-apply: ## Apply infrastructure changes (prompts before doing anything)
 tf-output: ## Print Terraform outputs
 	$(TF) output
 
-secrets-template: ## Generate .env.production (copies OAuth from .env, makes a fresh signing secret)
+secrets-template: ## Generate .env.production (OAuth from .env.development, fresh signing secret)
 	./infra/scripts/secrets-template.sh
 
 secrets-check: ## Validate .env.production before pushing it

@@ -1,10 +1,8 @@
 name: Terraform
 
-# Validates infrastructure changes on a PR, the same way CI validates code.
-#
-# Plan only — never apply. `terraform apply` stays a deliberate local action, so
-# that no merge can silently replace a database or delete a CloudFront
-# distribution. The plan in the PR is what makes the change reviewable.
+# Validates infrastructure changes on a PR. Plan only — never apply: `terraform
+# apply` stays a deliberate local action, so no merge can silently replace a
+# database or delete a CloudFront distribution.
 
 on:
   pull_request:
@@ -40,8 +38,7 @@ jobs:
       - name: Check formatting
         run: terraform fmt -check -recursive -diff
 
-      # -backend=false so this runs without credentials: syntax and internal
-      # references are checked, no state is touched, and a fork's PR can be
+      # -backend=false: no credentials and no state, so a fork's PR can be
       # validated without being granted access to anything.
       - name: Validate
         run: |
@@ -51,17 +48,12 @@ jobs:
   plan:
     name: Plan
     runs-on: ubuntu-latest
-    # Pull requests from this repository only.
+    # Same-repository pull requests only. Forks cannot (and must not) assume the
+    # plan role; they still get the validate job.
     #
-    # Forks cannot assume the plan role, and should not be able to; their PRs
-    # still get the validate job above.
-    #
-    # Not on a push to main either. That run used to assume the deploy role,
-    # which has no access to the state bucket, so it failed with a 403 on every
-    # infra merge — nine out of nine — and since the check is not required,
-    # nothing surfaced it. It also had nowhere to report: the plan is posted as a
-    # PR comment, and a push has no PR. The plan that matters is the one on the
-    # PR; after the merge, `make tf-plan` is the first half of the apply anyway.
+    # Not on a push to main: the deploy role has no access to the state bucket
+    # (it 403'd on every infra merge), and a push has no PR to comment on. After
+    # a merge, `make tf-plan` is the first half of the apply anyway.
     if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
     defaults:
       run:
@@ -70,10 +62,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # The read-only plan role. A pull request's OIDC token carries
-      # `pull_request` in its `sub` claim rather than a branch ref, which is what
-      # this role trusts — and what keeps pull requests out of the deploy role,
-      # scoped to `refs/heads/main`.
+      # The read-only plan role, which trusts the `pull_request` `sub` claim of
+      # a PR's OIDC token. The deploy role is scoped to `refs/heads/main`, so
+      # pull requests cannot assume it.
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_PLAN_ROLE }}
@@ -86,30 +77,23 @@ jobs:
 
       - name: Plan
         id: plan
-        # pipefail, because the default shell is `bash -e` without it: the
-        # pipeline would return tee's status, so a failing `terraform plan`
-        # would still record outcome=success and the job would pass on a plan
-        # that never completed.
+        # pipefail: without it the pipeline returns tee's status, and a failing
+        # `terraform plan` would record outcome=success.
         shell: bash
         run: |
           set -euo pipefail
           terraform init -backend-config=backend.hcl -input=false
 
           # The plan role is denied secretsmanager:GetSecretValue, so refreshing
-          # aws_secretsmanager_secret_version fails with AccessDenied. That
-          # refresh was never useful: those resources carry ignore_changes on
-          # secret_string, so the value read back is discarded either way.
-          # Dropping them from the state before planning skips it, while every
-          # other resource is still refreshed and genuine drift stays visible.
+          # aws_secretsmanager_secret_version fails with AccessDenied. Those
+          # resources carry ignore_changes on secret_string, so the refresh is
+          # useless anyway; dropping them from the state skips it while every
+          # other resource is still refreshed.
           #
-          # It has to be a *local copy* of the state. With the S3 backend
-          # configured, `terraform state rm` writes the result back to the
-          # bucket, which this read-only role cannot do. The first version of
-          # this step ran it against the backend with `|| true`, so it failed
-          # silently, nothing was dropped, and the plan died on AccessDenied —
-          # on the very PR that introduced it. Hence: pull the state to the
-          # runner, point a local backend at that file through an override, and
-          # edit that. Nothing is swallowed; a failure here fails the step.
+          # It must be a *local copy* of the state: against the S3 backend,
+          # `terraform state rm` writes back to the bucket, which this read-only
+          # role cannot do. Do not add `|| true` here — it once hid exactly that
+          # failure. A failure in this block fails the step.
           state="$RUNNER_TEMP/plan.tfstate"
           terraform state pull > "$state"
           printf 'terraform {\n  backend "local" {\n    path = "%s"\n  }\n}\n' "$state" > backend_override.tf

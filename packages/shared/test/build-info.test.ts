@@ -1,10 +1,6 @@
 /**
- * Tests for the build-provenance contract.
- *
- * The behaviour worth pinning down here is what happens at the edges: an
- * unidentified build, a dirty tree, and two surfaces that disagree. Those are
- * the cases that reach a user — a clean tagged release formats itself the
- * obvious way and needs little defending.
+ * Tests for the build-provenance contract, mostly its edges: an unidentified
+ * build, a dirty tree, and two surfaces that disagree.
  */
 
 import assert from "node:assert/strict";
@@ -67,8 +63,7 @@ test("formatVersion marks a dirty tree", () => {
   );
 });
 
-// `1.4.2+unknown` would read as a commit named "unknown" rather than as an
-// absent one, so the sha is dropped entirely instead.
+// `1.4.2+unknown` would read as a commit named "unknown".
 test("formatVersion omits an unknown sha rather than printing it", () => {
   assert.equal(formatVersion(unknownBuildInfo), "0.0.0");
 });
@@ -92,14 +87,12 @@ test("commitUrl points at the full sha on the org repository", () => {
   );
 });
 
-// A link to /commit/unknown 404s; offering nothing is better than offering that.
+// A link to /commit/unknown 404s.
 test("commitUrl is undefined when the build is unidentified", () => {
   assert.equal(commitUrl(unknownBuildInfo), undefined);
 });
 
-// The prefix is not cosmetic: release.yml matched `v*` and therefore never
-// fired for a single real tag. Pinned here so the two cannot drift
-// apart again silently.
+// Pinned because release.yml once matched `v*` and never fired for a real tag.
 test("releaseTag carries the component prefix the tags use", () => {
   assert.equal(releaseTag("1.0.0"), "sandbox-factory-v1.0.0");
 });
@@ -116,18 +109,14 @@ test("releaseUrl points at the release page for a build of that tag", () => {
   );
 });
 
-// The case that makes this narrower than commitUrl. A commit after a release
-// carries that release's version while not being it, and linking it to that
-// release page would claim it shipped when it did not.
+// A commit after a release carries that release's version without being it.
 test("releaseUrl is undefined for a build that is not the tagged release", () => {
   assert.equal(releaseUrl({ ...identified, version: "1.0.0" }), undefined);
   assert.equal(releaseUrl(unknownBuildInfo), undefined);
 });
 
-// Deliberately `gh api` and not `gh attestation verify`: verify re-hashes the
-// artifact it is handed, which an outside party cannot obtain from a private
-// ECR repository. There is no bare-digest form of verify — asserted here
-// because the first version of this shipped one that does not exist.
+// `gh api`, not `gh attestation verify`; see `verifyCommand`. `verify` has no
+// bare-digest form, hence the `--digest` assertion.
 test("verifyCommand looks the attestation up by digest", () => {
   const digest = `sha256:${"a".repeat(64)}`;
   const command = verifyCommand({ ...identified, imageDigest: digest });
@@ -138,8 +127,7 @@ test("verifyCommand looks the attestation up by digest", () => {
   assert.ok(!command?.includes("--digest"));
 });
 
-// Nothing to verify without a digest, and a command built from a sha would
-// invite running a check that cannot pass.
+// A command built from a sha would invite a check that cannot pass.
 test("verifyCommand is undefined when no digest was resolved", () => {
   assert.equal(verifyCommand(identified), undefined);
 });
@@ -156,8 +144,7 @@ test("sameBuild compares the full sha", () => {
   );
 });
 
-// Two commits between releases share a version, so a version comparison would
-// call these the same build. The sha is what actually distinguishes them.
+// Two commits between releases share a version; only the sha differs.
 test("sameBuild is driven by the sha, not the version", () => {
   assert.equal(
     sameBuild(identified, { ...identified, version: "9.9.9" }),

@@ -1,8 +1,5 @@
-# Input variables.
-#
-# Every default here is the launch configuration described in the hosting plan.
-# Nothing in this file is a secret: secret *values* are never Terraform inputs,
-# only the empty containers that hold them. See secrets.tf.
+# Input variables. Nothing here is a secret: secret *values* are never
+# Terraform inputs, only the containers that hold them. See secrets.tf.
 
 variable "project" {
   description = "Name prefix for every resource. Also the Docker image name."

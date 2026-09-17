@@ -4,13 +4,9 @@
 #
 #   ./infra/scripts/run-migrations.sh <image-tag>
 #
-# Why a separate task rather than running at API boot: runMigrations() takes a
-# dedicated connection and holds locks while it works. On a rolling deploy with
-# more than one task, several would race to apply the same migration, and the
-# losers would block behind locks held by a process still serving traffic.
-#
-# packages/db/src/migrate.ts is written for exactly this — it is a CLI, kept
-# apart from the runner so importing it has no side effect.
+# A separate task, not API boot: on a rolling deploy several API tasks would
+# race to apply the same migration and block behind each other's locks.
+# packages/db/src/migrate.ts is the CLI this runs.
 
 set -euo pipefail
 
@@ -21,9 +17,8 @@ CLUSTER="${CLUSTER:-$PROJECT}"
 
 echo "Running migrations from image tag: $IMAGE_TAG"
 
-# The migration task reuses the API's task definition wholesale — same image,
-# same secrets, same roles — and only overrides the command. That guarantees it
-# migrates with the identical code the new API tasks are about to run.
+# Reuses the API's task definition (same image, secrets, roles) and overrides
+# only the command, so it migrates with the code the new API tasks will run.
 TASK_DEF="${PROJECT}-api"
 
 SUBNETS="${SUBNETS:?SUBNETS must be set (comma-separated subnet ids)}"
@@ -60,8 +55,8 @@ aws ecs wait tasks-stopped \
   --tasks "$task_arn" \
   --region "$REGION"
 
-# A task that stopped is not a task that succeeded. The container's own exit
-# code is the only thing that says whether the migration applied.
+# Stopped is not succeeded: only the container's exit code says whether the
+# migration applied.
 exit_code="$(aws ecs describe-tasks \
   --cluster "$CLUSTER" \
   --tasks "$task_arn" \

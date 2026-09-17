@@ -1,11 +1,7 @@
-# CloudFront.
-#
-# One distribution, one hostname, two origins — which is what makes the whole
-# design work. apps/web/nginx.conf and the Vite dev proxy both put the API under
-# /api on the same origin as the SPA, and the comments there say why: so cookie
-# and CORS behaviour never differ between development and production. Serving
-# both from platform.lunox.work reproduces that shape exactly, with no
-# cross-subdomain cookie and no CORS preflight on any request.
+# CloudFront. One distribution, one hostname, two origins: the SPA from S3 and
+# the API under /api. Same-origin matches apps/web/nginx.conf and the Vite dev
+# proxy, so cookie and CORS behaviour never differs between development and
+# production.
 
 resource "aws_cloudfront_origin_access_control" "web" {
   name                              = "${local.name}-web"
@@ -20,9 +16,8 @@ resource "aws_cloudfront_distribution" "main" {
   comment             = "${local.name} — ${var.domain_name}"
   default_root_object = "index.html"
   aliases             = [var.domain_name]
-  # North America and Europe. PriceClass_All adds South America, Asia-Pacific
-  # and Africa edges at a higher per-GB rate; worth revisiting once traffic
-  # shows where users actually are.
+  # North America and Europe edges only. Revisit once traffic shows where
+  # users are.
   price_class = "PriceClass_100"
 
   # ---- origins -------------------------------------------------------------
@@ -35,30 +30,25 @@ resource "aws_cloudfront_distribution" "main" {
 
   origin {
     origin_id = "alb-api"
-    # Maintained by the origin-dns function in discovery.tf, which points it at
-    # the running task's public IP on every task state change.
+    # The origin id is historical; there is no ALB. The origin-dns function in
+    # discovery.tf keeps this record pointed at the running task's public IP.
     domain_name = local.origin_record
 
     custom_origin_config {
       http_port  = var.api_port
       https_port = 443
-      # HTTP to the origin. Viewers always reach CloudFront over HTTPS — the
-      # viewer_protocol_policy below redirects them — but this hop is plain
-      # HTTP because terminating TLS on the task would mean shipping a
-      # certificate inside the container and changing server.ts to serve it.
-      # The trade is deliberate: it keeps the application code untouched, and
-      # the hop it exposes runs inside AWS between CloudFront and an EC2-hosted
-      # task. Put the ALB back (or move to a Function URL) when this is not an
-      # acceptable trade.
+      # Plain HTTP to the origin, deliberately: terminating TLS on the task
+      # would mean shipping a certificate in the container and changing
+      # server.ts. Viewers always get HTTPS (viewer_protocol_policy below). A
+      # load balancer is the fix when this trade stops being acceptable.
       origin_protocol_policy = "http-only"
       origin_ssl_protocols   = ["TLSv1.2"]
       origin_read_timeout    = 60
     }
 
-    # What actually protects the origin now that no listener rule does. The
-    # task's port is open to the internet because CloudFront publishes no stable
-    # IP range to pin; this header is the thing that distinguishes a CDN request
-    # from a stranger who resolved the discovery record.
+    # What protects the origin. The task's port is open to the internet (see
+    # security-groups.tf); this header is how the API tells a CDN request from
+    # a stranger who resolved the origin record.
     custom_header {
       name  = "X-Origin-Verify"
       value = random_password.origin_verify.result
@@ -75,14 +65,12 @@ resource "aws_cloudfront_distribution" "main" {
     compress               = true
 
     # Managed-CachingOptimized. Vite emits hashed filenames, so assets are
-    # immutable and can be cached hard; index.html is handled by the ordered
-    # behaviour below.
+    # immutable; index.html is handled by the ordered behaviour below.
     cache_policy_id = "658327ea-f89d-4fab-a63d-7e88639e58f6"
   }
 
   # index.html must never be cached at the edge, or a deploy leaves browsers
-  # holding a document that references asset hashes that no longer exist. The
-  # nginx config this replaces made the same distinction with Cache-Control.
+  # holding a document that references asset hashes that no longer exist.
   ordered_cache_behavior {
     path_pattern           = "/index.html"
     target_origin_id       = "s3-web"
@@ -106,19 +94,16 @@ resource "aws_cloudfront_distribution" "main" {
     compress               = true
 
     # Nothing authenticated may be cached, and every header, cookie and query
-    # string has to reach the origin intact — Better Auth reads the session
-    # cookie, and the OAuth callback carries its state in the query string.
+    # string must reach the origin: Better Auth reads the session cookie, and
+    # the OAuth callback carries its state in the query string.
     #
-    # Managed-CachingDisabled + Managed-AllViewerExceptHostHeader. The Host
-    # exception matters: forwarding the viewer's Host would break the ALB's
-    # certificate matching.
+    # Managed-CachingDisabled + Managed-AllViewerExceptHostHeader.
     cache_policy_id          = "4135ea2d-6df8-44a3-9df3-4b5a84be39ad"
     origin_request_policy_id = "b689b0a8-53d0-40ab-baf2-68738e2966ac"
   }
 
-  # /health and /version are unauthenticated and cheap, but CD polls /version
-  # to confirm a deploy landed — a cached answer would report the previous
-  # build and either pass a failed deploy or fail a good one.
+  # /version and /health must never be cached: CD polls /version to confirm a
+  # deploy landed, and the uptime probe in monitoring.tf reads /health.
   ordered_cache_behavior {
     path_pattern           = "/version"
     target_origin_id       = "alb-api"
@@ -145,10 +130,10 @@ resource "aws_cloudfront_distribution" "main" {
 
   # ---- SPA routing ---------------------------------------------------------
   #
-  # try_files $uri $uri/ /index.html, in CloudFront terms. A deep link to
-  # /settings is not an object in the bucket, and S3 answers 403 through an OAC
-  # rather than 404 — so both are rewritten to the app shell, which then routes
-  # client-side. 200, not 302, so the URL the user typed survives.
+  # nginx's `try_files $uri /index.html`, in CloudFront terms. A deep link such
+  # as /settings is not an object in the bucket, and S3 behind an OAC answers
+  # 403 rather than 404, so both are rewritten to the app shell. 200, not 302,
+  # so the typed URL survives.
 
   custom_error_response {
     error_code            = 403
@@ -181,12 +166,9 @@ resource "aws_cloudfront_distribution" "main" {
 
 # ---- DNS -------------------------------------------------------------------
 #
-# The record you asked for. An A-record alias rather than a CNAME, because the
-# zone apex convention aside, an alias costs nothing to resolve and Route53
-# charges for CNAME queries.
-#
-# This ADDS platform.lunox.work to the zone. Nothing here touches the MX, TXT or
-# DKIM records that carry your Zoho mail.
+# Alias records, not a CNAME: Route53 does not charge for alias queries. These
+# add platform.lunox.work to the zone and touch none of the MX, TXT or DKIM
+# records that carry live Zoho mail.
 
 resource "aws_route53_record" "platform_a" {
   zone_id = var.hosted_zone_id

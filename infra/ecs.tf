@@ -1,10 +1,8 @@
 # ECS Fargate service running the API.
 #
-# ARM64, because Graviton is roughly 20% cheaper than x86 for identical work and
-# node:22-alpine is multi-arch — so this costs nothing to adopt. The CD workflow
-# must build with --platform linux/arm64 to match; a mismatch fails at task
-# start with "exec format error", which is the one failure mode worth
-# remembering here.
+# ARM64: Graviton is roughly 20% cheaper than x86 and node:22-alpine is
+# multi-arch. CD must build for linux/arm64 to match; a mismatch fails at task
+# start with "exec format error".
 
 resource "aws_ecs_cluster" "main" {
   name = local.name
@@ -20,10 +18,8 @@ resource "aws_cloudwatch_log_group" "api" {
   retention_in_days = var.log_retention_days
 }
 
-# The image tag is passed in by CD rather than hardcoded. On the very first
-# apply no image exists yet, so this defaults to a placeholder and the service
-# is created with desired_count honouring var.api_desired_count; see the
-# bootstrap note in infra/README.md for the ordering.
+# The default is a placeholder for the first apply, when no image exists yet;
+# see the bootstrap note in infra/README.md for the ordering.
 variable "api_image_tag" {
   description = "ECR image tag to run. CD sets this to the commit SHA."
   type        = string
@@ -54,37 +50,27 @@ resource "aws_ecs_task_definition" "api" {
       protocol      = "tcp"
     }]
 
-    # Non-secret configuration, inline. Every value here is public knowledge:
-    # the hostname is in DNS and the port is behind a security group.
-    #
-    # AUTH_COOKIE_DOMAIN is deliberately absent. The SPA and the API share one
-    # origin through CloudFront, so the session cookie stays host-only — which
-    # .env.example recommends, and which is strictly safer than scoping a
-    # cookie to .lunox.work where other subdomains could read it.
+    # Non-secret configuration. AUTH_COOKIE_DOMAIN is deliberately absent: the
+    # SPA and the API share one origin, so the session cookie stays host-only,
+    # which is safer than scoping it to .lunox.work (see .env.example).
     environment = [
       { name = "PORT", value = tostring(var.api_port) },
       { name = "NODE_ENV", value = "production" },
       { name = "BETTER_AUTH_URL", value = local.api_origin },
       { name = "APP_URL", value = local.api_origin },
       { name = "CORS_ORIGINS", value = local.api_origin },
-      # BUILD_SHA is deliberately absent. CD registers a task definition with
-      # the real commit sha on every deploy, so a copy here would only ever be
-      # the stale one: `api_image_tag` defaults to the bootstrap placeholder,
-      # and any apply that did not pass -var api_image_tag=<sha> would revert
-      # a correctly-reported build back to "bootstrap". The service ignores
-      # task_definition changes, so CD's revision is what actually runs.
+      # BUILD_SHA is deliberately absent, do not add it: CD sets the real sha
+      # on every deploy, and a copy here would revert to "bootstrap" on any
+      # apply that did not pass -var api_image_tag=<sha>.
       #
-      # Checked by the middleware in apps/api/src/routes.ts. Not a secret worth
-      # a Secrets Manager entry: it is already visible in the CloudFront
-      # distribution's origin config, and its only job is to distinguish CDN
-      # traffic from a stranger who resolved the origin record.
+      # ORIGIN_VERIFY is checked by the middleware in apps/api/src/routes.ts.
+      # Not worth a Secrets Manager entry: it is already visible in the
+      # CloudFront distribution's origin config.
       { name = "ORIGIN_VERIFY", value = random_password.origin_verify.result },
     ]
 
     # Resolved by the ECS agent before the container starts, so the values never
     # appear in the task definition, the console, or `describe-tasks` output.
-    # DATABASE_URL is in this map now too: with Neon the connection string is a
-    # credential pushed like any other, not something Terraform assembles.
     secrets = [for k, s in aws_secretsmanager_secret.app : {
       name      = k
       valueFrom = s.arn
@@ -99,17 +85,14 @@ resource "aws_ecs_task_definition" "api" {
       }
     }
 
-    # Defence in depth against a container that finds itself writing to disk.
     readonlyRootFilesystem = false
 
-    # Without a load balancer, nothing else asks the API whether it can serve —
-    # ECS would otherwise call a deployment stable because the process is alive,
-    # stop the old task, and leave a running-but-broken one in production. This
-    # is the check the ALB's target group used to perform.
+    # With no load balancer, this is the only check that the API can serve.
+    # Without it ECS calls a deployment stable once the process is alive, stops
+    # the old task, and leaves a running-but-broken one in production.
     #
-    # node rather than curl or wget: the runtime image is node:22-alpine, which
-    # ships neither. A non-2xx status exits non-zero, so a process that is up
-    # but failing its own health route is reported unhealthy.
+    # node rather than curl: node:22-alpine has no curl. A non-2xx status exits
+    # non-zero.
     healthCheck = {
       command = [
         "CMD-SHELL",
@@ -138,14 +121,12 @@ resource "aws_ecs_service" "api" {
     security_groups  = [aws_security_group.tasks.id]
   }
 
-  # No load_balancer and no service_registries. Service Discovery cannot
-  # publish a public IP for an awsvpc task, so the origin record is maintained
-  # by the function in discovery.tf instead, driven by task state changes.
+  # No load_balancer or service_registries: the function in discovery.tf
+  # maintains the origin record instead, and explains why.
 
-  # 100/200: a new task starts and registers before the old one is removed.
-  # With one task that means two run briefly during a deploy, and for a few
-  # seconds the discovery record holds both IPs — CloudFront may reach either,
-  # which is fine because both serve the same API.
+  # 100/200: the new task starts before the old one stops. With one task, two
+  # run briefly during a deploy and the origin record holds both IPs; either
+  # serves.
   deployment_minimum_healthy_percent = 100
   deployment_maximum_percent         = 200
 
@@ -155,11 +136,9 @@ resource "aws_ecs_service" "api" {
   }
 
   # health_check_grace_period_seconds is not set: it applies only to load
-  # balancer health checks, and there is no load balancer. ECS falls back to the
-  # container's own health, which is whether the process is running.
+  # balancer health checks. The container healthCheck's startPeriod covers boot.
 
-  # Rolls a deploy forward without Terraform: CD updates the service directly,
-  # and the next plan should not try to undo it.
+  # CD updates the service directly; the next plan must not undo it.
   lifecycle {
     ignore_changes = [task_definition, desired_count]
   }

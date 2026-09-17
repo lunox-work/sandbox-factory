@@ -1,14 +1,10 @@
 /**
  * The web app's Better Auth client.
  *
- * Same-origin in both dev and production — Vite proxies /api to the API in dev
- * — so there is no base URL to configure and the session cookie is sent
- * automatically. That is the whole reason the web app never touches a token:
- * the browser holds an httpOnly cookie it cannot read, which is what makes it
- * safe from a script that manages to run on the page.
- *
- * The VS Code extension is the case that cannot work this way, and it uses the
- * bearer token the API's `bearer()` plugin accepts instead.
+ * Same-origin in dev and production (Vite proxies /api in dev), so there is no
+ * base URL and the httpOnly session cookie is sent automatically. The app never
+ * touches a token, which keeps the session out of reach of injected scripts.
+ * The VS Code extension cannot work this way and uses a bearer token instead.
  */
 
 import { createAuthClient } from "better-auth/react";
@@ -22,13 +18,9 @@ export const PROVIDERS = [
   { id: "google", label: "Continue with Google" },
   { id: "github", label: "Continue with GitHub" },
   /**
-   * Atlassian differs from the other two in one way worth knowing here, even
-   * though nothing on this screen branches on it: the API does not trust it
-   * for implicit linking, because its profile never claims the address is
-   * verified. Signing in with Atlassian on an address that already has an
-   * account is refused rather than merged; the account page's link flow is
-   * the supported way to attach it. See `trustedProviders` in the API's
-   * `auth.ts` for the reasoning.
+   * Trusted for implicit linking on a weaker basis than the other two: its
+   * profile carries no verified-email claim, so the API asserts one. See
+   * `trustedProviders` in the API's `auth.ts`.
    */
   { id: "atlassian", label: "Continue with Atlassian" },
 ] as const;
@@ -36,12 +28,9 @@ export const PROVIDERS = [
 export type ProviderId = (typeof PROVIDERS)[number]["id"];
 
 /**
- * Starts a provider redirect.
- *
- * `callbackURL` is where the provider returns to after a successful sign-in.
- * It must be listed in the API's trusted origins, or Better Auth refuses the
- * redirect — that check is what stops a crafted callback handing someone
- * else's session to another site.
+ * Starts a provider redirect. `callbackURL` must be in the API's trusted
+ * origins or Better Auth refuses it, which stops a crafted callback handing a
+ * session to another site.
  */
 export async function signInWith(provider: ProviderId): Promise<void> {
   await authClient.signIn.social({

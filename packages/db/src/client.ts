@@ -1,9 +1,6 @@
 /**
- * Connection construction and teardown.
- *
- * Kept apart from the store so that a caller holding a `TodoStore` has no way
- * to reach the socket underneath it, and so tests can build a store over any
- * driver-shaped object without opening a connection.
+ * Connection construction and teardown. Apart from the store so a `TodoStore`
+ * holder cannot reach the socket, and tests need no connection.
  */
 
 import { drizzle } from "drizzle-orm/postgres-js";
@@ -15,9 +12,8 @@ export interface ConnectionOptions {
   /** Postgres connection string, e.g. `postgres://user:pass@host:5432/db`. */
   readonly url: string;
   /**
-   * Pool size. The default of 10 suits a single API process; raise it only
-   * alongside Postgres' own `max_connections`, which is what actually runs
-   * out first.
+   * Pool size, default 10. Raise it only alongside Postgres'
+   * `max_connections`, which runs out first.
    */
   readonly max?: number;
 }

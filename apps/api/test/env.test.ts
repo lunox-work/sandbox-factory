@@ -3,15 +3,10 @@ import { test } from "node:test";
 
 import { buildInfo, objectStoreConfig, parseEnv } from "../src/env.js";
 
-/**
- * DATABASE_URL and the auth vars are required, so every case that is not about
- * one of them has to supply all of them. Kept as a constant rather than
- * repeated so the tests below read as being about the field they actually
- * exercise.
- */
 const DATABASE_URL = "postgres://postgres:postgres@localhost:5432/test";
-/** Long enough to clear the 32-character minimum on the signing secret. */
+/** Exactly the 32-character minimum. */
 const SECRET = "0123456789abcdef0123456789abcdef";
+/** Every required var, so each test reads as being about the field it sets. */
 const required = {
   DATABASE_URL,
   BETTER_AUTH_SECRET: SECRET,
@@ -52,8 +47,7 @@ test("parseEnv splits and trims CORS_ORIGINS", () => {
 });
 
 test("parseEnv rejects a missing DATABASE_URL", () => {
-  // The server has no in-memory fallback, so an unset DATABASE_URL must fail
-  // at boot rather than starting a process that cannot serve a request.
+  // There is no in-memory fallback, so this must fail at boot.
   const { DATABASE_URL: _omitted, ...rest } = required;
   assert.throws(() => parseEnv(rest), /DATABASE_URL/);
 });
@@ -66,8 +60,7 @@ test("parseEnv rejects an empty DATABASE_URL", () => {
 });
 
 test("parseEnv rejects a signing secret shorter than 32 characters", () => {
-  // A short secret is the kind of thing that works fine in dev and is a real
-  // weakness in production, so it fails at boot rather than never at all.
+  // A short secret works fine in dev and is a real weakness in production.
   assert.throws(
     () => parseEnv({ ...required, BETTER_AUTH_SECRET: "too-short" }),
     /BETTER_AUTH_SECRET/,
@@ -75,8 +68,8 @@ test("parseEnv rejects a signing secret shorter than 32 characters", () => {
 });
 
 test("parseEnv rejects a BETTER_AUTH_URL that is not absolute", () => {
-  // Better Auth builds provider callback URLs from this; a relative value
-  // produces a redirect_uri mismatch at Google rather than an error here.
+  // Provider callback URLs are built from this; a relative value would only
+  // surface as a redirect_uri mismatch at the provider.
   assert.throws(
     () => parseEnv({ ...required, BETTER_AUTH_URL: "/api/auth" }),
     /BETTER_AUTH_URL/,
@@ -84,8 +77,7 @@ test("parseEnv rejects a BETTER_AUTH_URL that is not absolute", () => {
 });
 
 test("parseEnv requires each OAuth credential", () => {
-  // Every one of the six, not just the first: a half-configured provider
-  // fails at the moment someone tries to sign in with it.
+  // All six: a half-configured provider fails only when someone signs in.
   for (const key of [
     "GOOGLE_CLIENT_ID",
     "GOOGLE_CLIENT_SECRET",
@@ -103,8 +95,7 @@ test("parseEnv requires each OAuth credential", () => {
 });
 
 test("parseEnv leaves AUTH_COOKIE_DOMAIN unset by default", () => {
-  // Unset is correct for same-origin local dev: a Domain attribute on
-  // localhost stops the session cookie working entirely.
+  // A Domain attribute on localhost breaks the session cookie.
   assert.equal(parseEnv(required).AUTH_COOKIE_DOMAIN, undefined);
 });
 
@@ -158,12 +149,8 @@ test("objectStoreConfig returns the config when S3 is fully configured", () => {
 });
 
 /**
- * Build provenance.
- *
- * The property worth holding onto: an unset build var degrades the report but
- * never fails the boot. These vars describe the artifact, not what it needs to
- * run, so the server must start without them — the guard against an
- * unidentified *release* lives in the release workflow, not here.
+ * Build provenance. An unset build var degrades the report but never fails
+ * boot; the release workflow guards against an unidentified release.
  */
 test("parseEnv accepts an environment with no build vars at all", () => {
   const env = parseEnv(required);
@@ -200,15 +187,13 @@ test("buildInfo reads an injected build", () => {
   });
 });
 
-// Derived rather than injected, so it cannot disagree with the sha it
-// abbreviates.
+// Derived, so it cannot disagree with the sha it abbreviates.
 test("buildInfo derives the short sha from the full one", () => {
   const env = parseEnv({ ...required, BUILD_SHA: "abcdef1234567890" });
   assert.equal(buildInfo(env).gitShortSha, "abcdef1");
 });
 
-// Each field falls back on its own: a build that recorded a sha but no
-// timestamp should still report the sha, which is the identifying field.
+// A build with a sha but no timestamp must still report the sha.
 test("buildInfo falls back per field, not as a whole record", () => {
   const info = buildInfo(parseEnv({ ...required, BUILD_SHA: "abcdef1234567" }));
   assert.equal(info.gitSha, "abcdef1234567");

@@ -1,21 +1,16 @@
 /**
- * The todo domain: what a todo is, and the rules about what may be done to one.
+ * The todo domain: what a todo is and what may be done to one. The API, web
+ * app and extension all import these rules rather than restating them.
  *
- * This package is the one place those rules live. The API enforces them on
- * write, the web app and the extension use them to decide what to render and
- * what to disable, and all three import this module rather than restating it —
- * a rule changed here changes everywhere without a second edit.
- *
- * It deliberately has no dependencies: no database, no HTTP, no validation
- * library. That is what lets the extension bundle it for the VS Code host and
- * the browser bundle it for the dashboard.
+ * Deliberately dependency-free, so it bundles for both the browser and the
+ * VS Code host.
  */
 
 export interface Todo {
   readonly id: string;
   readonly title: string;
   readonly done: boolean;
-  /** ISO-8601. String rather than Date so it survives JSON transport unchanged. */
+  /** ISO-8601. A string, not a Date, so it survives JSON transport. */
   readonly createdAt: string;
 }
 
@@ -41,12 +36,9 @@ export class InvalidTitleError extends Error {
 }
 
 /**
- * Trim a title and confirm it is usable, or throw.
- *
- * Titles are trimmed rather than rejected for surrounding whitespace: a user
- * who types a trailing space means the same todo, and silently fixing it is
- * kinder than an error. Empty-after-trimming is a real error, though — it would
- * produce an invisible row.
+ * Trims a title and confirms it is usable, or throws. Surrounding whitespace
+ * is fixed silently; empty after trimming is an error, since it would produce
+ * an invisible row.
  */
 export function normalizeTitle(raw: string): string {
   const title = raw.trim();
@@ -67,12 +59,12 @@ export function isValidTitle(raw: string): boolean {
   return title !== "" && title.length <= TITLE_MAX_LENGTH;
 }
 
-/** Return `todo` with `done` flipped. Does not mutate the input. */
+/** Returns `todo` with `done` flipped. Does not mutate the input. */
 export function toggle(todo: Todo): Todo {
   return { ...todo, done: !todo.done };
 }
 
-/** Return `todo` with a new title, normalized. Does not mutate the input. */
+/** Returns `todo` with a new, normalized title. Does not mutate the input. */
 export function rename(todo: Todo, title: string): Todo {
   return { ...todo, title: normalizeTitle(title) };
 }

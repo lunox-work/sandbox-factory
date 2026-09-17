@@ -2,10 +2,10 @@ name: Auto-merge
 
 on: pull_request_target
 
-# pull_request_target runs with write access to the base repository. This
-# workflow therefore never checks out or executes PR code — it only calls the
-# GitHub API. Keep it that way: checking out the head ref here would let any
-# fork's PR run code with these permissions.
+# pull_request_target runs with write access to the base repository, so this
+# workflow never checks out or executes PR code — it only calls the GitHub API.
+# Keep it that way: checking out the head ref here would let any fork's PR run
+# code with these permissions.
 permissions:
   contents: read
 
@@ -16,8 +16,7 @@ jobs:
       contents: write
       pull-requests: write
     steps:
-      # Dependabot's update-type is only knowable through this action, so it
-      # runs first and the merge step reads its output.
+      # The only source of Dependabot's update-type; the merge step reads it.
       - name: Fetch Dependabot metadata
         id: meta
         if: github.actor == 'dependabot[bot]'
@@ -25,49 +24,31 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      # `--auto` only arms GitHub's merge queue: the merge happens later, and
-      # only once every required status check passes. Nothing here bypasses the
-      # branch ruleset, so CI and the coverage thresholds remain the real gate.
+      # `--auto` only arms the merge: it happens later, once every required
+      # status check passes. Nothing here bypasses the branch ruleset.
       #
-      # AUTO_MERGE_TOKEN, not GITHUB_TOKEN, and that distinction is the whole
-      # point of this step. GitHub does not raise events for pushes made with
-      # the default GITHUB_TOKEN — a deliberate guard against a workflow
-      # retriggering itself forever. The squash-merge this arms is such a push,
-      # so with the default token it lands on main and nothing observes it:
-      # ci.yml and cd.yml both trigger on `push: branches: [main]`, and neither
-      # has ever run from a merge. Every green check this repository has shown
-      # came from the `pull_request` event instead, and production has only ever
-      # been deployed by hand.
+      # AUTO_MERGE_TOKEN, not GITHUB_TOKEN: GitHub raises no events for pushes
+      # made with the default token, so a squash-merge armed with it lands on
+      # main without triggering ci.yml or cd.yml, and nothing deploys. A token
+      # from another identity makes the merge an ordinary push.
       #
-      # A token belonging to an identity other than the workflow itself does
-      # raise those events, so the merge lands as an ordinary push and CD picks
-      # it up as its comment already describes.
-      #
-      # Falls back to GITHUB_TOKEN when the secret is absent, which keeps
-      # auto-merge working — silently without the cascade, exactly as before —
-      # rather than failing every PR the moment the token expires.
+      # Falls back to GITHUB_TOKEN when the secret is absent or unusable, so PRs
+      # keep merging (without the cascade) rather than all failing the moment
+      # the token expires. deploy-watchdog.yml catches that state.
       - name: Arm auto-merge
-        # Everything merges on green, including release PRs. The one exception
-        # is a Dependabot major — that is where breaking changes live, so it
-        # waits for a human.
+        # Everything merges on green except a Dependabot major — that is where
+        # breaking changes live, so it waits for a human.
         if: |
           github.actor != 'dependabot[bot]' ||
           steps.meta.outputs.update-type != 'version-update:semver-major'
         run: |
-          # Whether AUTO_MERGE_TOKEN can actually arm the merge, established
-          # before using it rather than inferred from a failure afterwards.
+          # Probe the token before using it. An expired, revoked or under-scoped
+          # token is still a non-empty string, and handing it to `gh pr merge`
+          # would fail the step and stop every PR merging.
           #
-          # Presence is not usability: an expired, revoked or under-scoped token
-          # is still a non-empty string, so testing for emptiness alone would
-          # hand a dead credential to `gh pr merge`, which fails the step and
-          # stops every PR merging — the silent breakage this workflow exists to
-          # avoid, in a worse form than the one it replaced.
-          #
-          # Checked with a read that needs the same `pull_requests` access the
-          # merge does, so a token scoped too narrowly fails here rather than at
-          # the merge. Reading the failure out of `gh pr merge` instead is not
-          # reliable: it exits 0 on an already-merged PR, so a retry on nonzero
-          # would miss that case while a retry on any failure could re-merge.
+          # The probe is a read needing the same `pull_requests` access as the
+          # merge. Do not infer failure from `gh pr merge` instead: it exits 0
+          # on an already-merged PR, and retrying on any failure could re-merge.
           if [ -n "${GH_TOKEN:-}" ] && ! gh pr view "$PR_URL" --json number >/dev/null 2>&1; then
             echo "::warning::AUTO_MERGE_TOKEN is set but cannot read this pull request — it is expired, revoked or under-scoped. Falling back to the default token; CI and CD will not run on main until it is replaced."
             GH_TOKEN=""

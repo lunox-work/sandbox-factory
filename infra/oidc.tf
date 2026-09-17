@@ -1,14 +1,6 @@
-# GitHub Actions deploy identity.
-#
-# OIDC, not an access key. This matters more than usual for a public repository:
-# a static key in repository secrets is one misconfigured workflow away from
-# exposure, and the repo already demonstrates awareness of that class of risk —
-# auto-merge.yml refuses to check out PR code precisely because it runs with
-# write permissions.
-#
-# The token GitHub mints here is short-lived and bound by its `sub` claim to one
-# repository and one branch, so it cannot be replayed from a fork, from a pull
-# request, or from any other branch.
+# GitHub Actions deploy identity: OIDC, no access keys. The token is short-lived
+# and its `sub` claim pins one repository and one branch, so it cannot be
+# replayed from a fork, a pull request, or another branch.
 
 data "aws_iam_openid_connect_provider" "github" {
   count = var.create_oidc_provider ? 0 : 1
@@ -20,9 +12,8 @@ resource "aws_iam_openid_connect_provider" "github" {
 
   url            = "https://token.actions.githubusercontent.com"
   client_id_list = ["sts.amazonaws.com"]
-  # AWS validates the provider's certificate chain against its own trust store
-  # for this issuer, so this thumbprint is no longer load-bearing; it remains a
-  # required field.
+  # Required field, but not load-bearing: AWS validates this issuer against
+  # its own trust store.
   thumbprint_list = ["6938fd4d98bab03faadb97b34396831e3780aea1"]
 }
 
@@ -36,13 +27,9 @@ locals {
   oidc_provider_arn = var.create_oidc_provider ? aws_iam_openid_connect_provider.github[0].arn : data.aws_iam_openid_connect_provider.github[0].arn
 }
 
-# This repository has GitHub's *immutable* subject claims enabled, so the `sub`
-# in an OIDC token is not `repo:owner/name:...` but
-# `repo:owner@<org id>/name@<repo id>:...` — the numeric ids pin the claim to
-# this exact repository even if it is renamed or transferred, which is the
-# point of the feature and also why the plain-name form never matches.
-#
-# Read it back with:
+# The repository has GitHub's immutable subject claims enabled, so `sub` is
+# `repo:owner@<org id>/name@<repo id>:...` and the plain `repo:owner/name` form
+# never matches. Read it back with:
 #   gh api repos/<owner>/<repo>/actions/oidc/customization/sub
 variable "github_sub_prefix" {
   description = "Immutable OIDC subject prefix for this repository. From `gh api repos/OWNER/REPO/actions/oidc/customization/sub`."
@@ -65,20 +52,14 @@ data "aws_iam_policy_document" "github_assume" {
       values   = ["sts.amazonaws.com"]
     }
 
-    # The load-bearing condition. A pull request carries `:pull_request` in its
-    # sub and so cannot assume this role, which is what keeps a fork's PR out of
-    # AWS entirely.
+    # The load-bearing condition: a pull request's sub ends `:pull_request`, so
+    # a fork's PR cannot assume this role.
     #
-    # Both forms are listed because a job that declares `environment:` gets a
-    # *different* sub: GitHub substitutes `:environment:<name>` for the branch
-    # ref. cd.yml declares `environment: production` so it can carry a
-    # deployment URL and, later, a required reviewer — so without the second
-    # value here, every CD run fails at the credentials step with "Not
-    # authorized to perform sts:AssumeRoleWithWebIdentity".
-    #
-    # Listing both keeps the workflow free to use an environment or not. It does
-    # not widen the trust: each value still pins the repository and either the
-    # main branch or the production environment, both of which are protected.
+    # Two values because a job that declares `environment:` gets
+    # `:environment:<name>` in place of the branch ref, and cd.yml declares
+    # `environment: production`. Without the second value every CD run fails
+    # with "Not authorized to perform sts:AssumeRoleWithWebIdentity". The branch
+    # and the environment are both protected, so this does not widen the trust.
     condition {
       test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
@@ -96,10 +77,9 @@ resource "aws_iam_role" "github_deploy" {
   assume_role_policy = data.aws_iam_policy_document.github_assume.json
 }
 
-# Scoped to the resources this project owns. Broad enough to deploy, narrow
-# enough that a compromised workflow cannot reach the rest of the account.
+# Scoped to this project's resources, so a compromised workflow cannot reach
+# the rest of the account.
 data "aws_iam_policy_document" "github_deploy" {
-  # Push images.
   statement {
     sid       = "EcrAuth"
     actions   = ["ecr:GetAuthorizationToken"]
@@ -122,41 +102,26 @@ data "aws_iam_policy_document" "github_deploy" {
     resources = [aws_ecr_repository.api.arn]
   }
 
-  # Find the resources before acting on them.
-  #
-  # cd.yml reads the registry URI, the bucket name and the distribution id out
-  # of the live account rather than having them duplicated in the workflow, so
-  # that renaming one in Terraform cannot leave CD pointing at something that
-  # no longer exists. That design needs the discovery calls as well as the
-  # actions above: permission to push an image is not permission to learn where
-  # to push it.
-  #
-  # Both calls here are account-wide list operations that take no resource, so
-  # AWS requires the wildcard; cd.yml filters the results by name. They leak
-  # the names of buckets and distributions in this account and nothing else —
-  # no contents, no configuration. `ecr:DescribeRepositories` does take a
-  # resource, so it stays pinned to this project's repository above.
+  # cd.yml looks up the registry, bucket and distribution in the live account
+  # rather than duplicating their names, so a rename in Terraform cannot strand
+  # it. These list calls take no resource, so AWS requires the wildcard; cd.yml
+  # filters by name. They expose bucket and distribution names, nothing else.
   statement {
     sid = "DiscoverInfrastructure"
     actions = [
       "s3:ListAllMyBuckets",
       "cloudfront:ListDistributions",
-      # The migration step runs a one-off task on the same network as the
-      # service, and finds that network by tag rather than being told it, so it
-      # needs to read the VPC layout it is about to launch into. Both are
-      # describe-only; nothing here can create, modify or delete networking.
+      # The migration step finds the service's subnets and security group by
+      # tag before running its one-off task. Describe-only.
       "ec2:DescribeSubnets",
       "ec2:DescribeSecurityGroups",
     ]
     resources = ["*"]
   }
 
-  # Register a new task definition and roll the service.
-  # Split in two, because these ECS calls disagree about whether they take a
-  # resource. RegisterTaskDefinition and the Describe/List calls do not — AWS
-  # requires "*" for them — while the calls that act on a running service do,
-  # and are pinned to this project's cluster so a compromised workflow cannot
-  # touch another one in the same account.
+  # Split in two: RegisterTaskDefinition and the Describe/List calls take no
+  # resource, so AWS requires "*". The calls that act on a running service do,
+  # and are pinned to this project's cluster.
   statement {
     sid = "EcsRead"
     actions = [
@@ -187,8 +152,8 @@ data "aws_iam_policy_document" "github_deploy" {
     }
   }
 
-  # Hand the task roles to ECS. Restricted to the two roles this project owns,
-  # so the workflow cannot start a task as an arbitrary, more privileged role.
+  # Only the two roles this project owns, so the workflow cannot start a task
+  # as a more privileged role.
   statement {
     sid     = "PassTaskRoles"
     actions = ["iam:PassRole"]
@@ -204,7 +169,6 @@ data "aws_iam_policy_document" "github_deploy" {
     }
   }
 
-  # Publish the SPA.
   statement {
     sid       = "S3Publish"
     actions   = ["s3:PutObject", "s3:DeleteObject", "s3:ListBucket", "s3:GetObject"]
@@ -218,7 +182,7 @@ data "aws_iam_policy_document" "github_deploy" {
     resources = [aws_cloudfront_distribution.main.arn]
   }
 
-  # Read logs when a deploy fails, so CD can report why rather than just that.
+  # So CD can report why a deploy failed, not just that it did.
   statement {
     sid       = "ReadLogs"
     actions   = ["logs:GetLogEvents", "logs:DescribeLogStreams"]
@@ -234,15 +198,9 @@ resource "aws_iam_role_policy" "github_deploy" {
 
 # ---- plan role (pull requests, read-only) ----------------------------------
 #
-# A second identity, because the deploy role above is deliberately scoped to
-# `ref:refs/heads/main` and a pull request's token carries
-# `pull_request` in its `sub` instead. That scoping is correct — it is what
-# stops a fork's PR from reaching AWS — but it also means `terraform plan`
-# cannot run on the PR that proposes the change, which is where a plan is
-# actually useful.
-#
-# This role closes that gap without widening the deploy role: it is trusted for
-# pull requests from THIS repository only, and it can read but never write.
+# The deploy role rejects pull-request tokens, so `terraform plan` on a PR
+# needs its own identity: trusted for pull requests from this repository only,
+# and read-only.
 
 data "aws_iam_policy_document" "github_plan_assume" {
   statement {
@@ -259,9 +217,8 @@ data "aws_iam_policy_document" "github_plan_assume" {
       values   = ["sts.amazonaws.com"]
     }
 
-    # `repo:owner/name:pull_request` is the sub GitHub mints for a pull request
-    # workflow. A fork's PR carries its own repository in that claim, so this
-    # matches only PRs raised from a branch of this repository.
+    # A fork's PR carries the fork's repository in its sub, so this matches
+    # only PRs raised from a branch of this repository.
     condition {
       test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
@@ -276,47 +233,31 @@ resource "aws_iam_role" "github_plan" {
   assume_role_policy = data.aws_iam_policy_document.github_plan_assume.json
 }
 
-# ReadOnlyAccess rather than an enumerated list: `terraform plan` refreshes
-# every resource in the state, so it touches most of the services this project
-# uses, and a hand-written list would fail opaquely each time the stack gains a
-# resource type. The role cannot mutate anything, which is the property that
-# matters.
+# ReadOnlyAccess, not an enumerated list: plan refreshes every resource in
+# state, and a hand-written list fails opaquely whenever the stack gains a
+# resource type.
 resource "aws_iam_role_policy_attachment" "github_plan_readonly" {
   role       = aws_iam_role.github_plan.name
   policy_arn = "arn:aws:iam::aws:policy/ReadOnlyAccess"
 }
 
-# Reading secret *values* is deliberately NOT granted.
-#
-# This role previously carried `secretsmanager:GetSecretValue` on all eight
-# project secrets, so any pull request in this repository could print production
-# credentials by adding one step to the workflow. That was documented as the
-# price of `terraform plan` refreshing `aws_secretsmanager_secret_version`.
-#
-# It was not a real price. Those versions carry `ignore_changes =
-# [secret_string]` (see secrets.tf), so a refreshed value is compared against
-# nothing and discarded — plan cannot report drift on a field it is instructed
-# to ignore. The permission bought no signal and cost a standing credential
-# exposure, so the workflow now targets these resources instead: the plan
-# refreshes everything else normally, and genuine drift stays visible.
-#
-# The secret *containers* are still fully planned; only their values are out of
-# reach. ReadOnlyAccess already covers DescribeSecret, which is what the
-# container's own attributes need.
+# Secret *values* are deliberately out of reach: with GetSecretValue, any PR
+# could print production credentials by adding a workflow step. Plan loses
+# nothing, because the secret versions carry `ignore_changes = [secret_string]`
+# (secrets.tf) and a refreshed value would be discarded. The secret containers
+# are still planned; ReadOnlyAccess covers DescribeSecret.
 
-# Terraform addresses of the resources the plan role may not refresh. The plan
-# workflow drops them from a local copy of the state before planning (never the
-# bucket, which this role cannot write) — `terraform plan
-# -exclude` would say this directly but postdates the pinned 1.9.8; see
+# Addresses the plan role may not refresh. The plan workflow drops them from a
+# local copy of the state before planning (never the bucket, which this role
+# cannot write). `terraform plan -exclude` postdates the pinned 1.9.8; see
 # .github/workflows/terraform.yml.
 output "plan_unrefreshable_resources" {
   description = "Resources the read-only plan role cannot refresh, because it is denied their values. The plan workflow excludes them explicitly."
   value       = ["aws_secretsmanager_secret_version.app"]
 }
 
-# Defence in depth: an explicit deny means that even if a future policy
-# attachment grants GetSecretValue account-wide, this role still cannot read
-# these eight values. An explicit deny cannot be overridden by any allow.
+# Defence in depth: an explicit deny overrides any allow a future policy
+# attachment might grant.
 data "aws_iam_policy_document" "github_plan_deny_secret_values" {
   statement {
     sid       = "DenyReadingProjectSecretValues"
@@ -332,7 +273,5 @@ resource "aws_iam_role_policy" "github_plan_deny_secret_values" {
   policy = data.aws_iam_policy_document.github_plan_deny_secret_values.json
 }
 
-# ReadOnlyAccess does not include reading secret *values*, and plan does not
-# need them — but it does need to read the state file, which lives in S3 and is
-# covered above. Locking is not configured (see backend.hcl), so no write to
-# the bucket is required either.
+# ReadOnlyAccess covers reading the state file in S3. Locking is not
+# configured (see backend.hcl), so plan needs no write to the bucket.

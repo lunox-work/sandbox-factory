@@ -20,15 +20,9 @@ import { createApp } from "./routes.js";
 
 const env = parseEnv();
 
-// Asked of the container runtime, not of the build args, which is what makes it
-// worth reporting — see image-digest.ts. Awaited at module scope so the record
-// is complete before the first request can read it: resolving it in the
-// background would make `GET /version` answer differently depending on how
-// quickly it was called after boot, and a field that is sometimes there is
-// worse than one that never is.
-//
-// Safe to block on. It is bounded by its own timeout and resolves to undefined
-// on every failure, so the worst case is a second added to boot.
+// Awaited before serving so `GET /version` never answers without a digest it
+// would report a moment later. Safe to block on: it never throws and is bounded
+// by a one-second timeout. See image-digest.ts.
 const build = { ...buildInfo(env), imageDigest: await resolveImageDigest() };
 
 const connection = createConnection({ url: env.DATABASE_URL });
@@ -43,9 +37,8 @@ const auth = createAuth({
   handles: { suggest: (email) => profiles.suggest(email) },
   baseUrl: env.BETTER_AUTH_URL,
   appUrl: appUrl(env),
-  // The web origins are the ones a sign-in may return to. The API's own
-  // origin is included because Better Auth compares the callback against this
-  // list too, and it is not otherwise in CORS_ORIGINS.
+  // The API's own origin is included because Better Auth checks the callback
+  // against this list too, and it is not in CORS_ORIGINS.
   trustedOrigins: [...env.CORS_ORIGINS, env.BETTER_AUTH_URL],
   secret: env.BETTER_AUTH_SECRET,
   google: {
@@ -77,17 +70,14 @@ const app = createApp({
 });
 
 const server = serve({ fetch: app.fetch, port: env.PORT }, (info) => {
-  // Logged on every boot, before anything can go wrong, so the first line in a
-  // container's logs says which build produced everything below it. This is the
-  // line to quote when reporting what a deployed instance was running — log
-  // retention outlives the deployment that wrote it, while `GET /version` only
-  // ever answers for the process running right now.
+  // First log line names the build. Logs outlive the deployment, whereas
+  // `GET /version` only answers for the process running now.
   console.log(buildBanner("sandbox-factory API", build));
   console.log(`API listening on http://localhost:${info.port}`);
 });
 
-// Drain the pool on shutdown. Without this the process hangs on SIGTERM with
-// connections still open, and the container takes the full stop timeout to die.
+// Drain the pool on shutdown; otherwise open connections keep the process
+// alive until the container's stop timeout.
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.on(signal, () => {
     server.close(() => {

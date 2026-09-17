@@ -6,20 +6,13 @@ import { runWithRequestState } from "@better-auth/core/context";
 import { createAuth, type AuthOptions } from "../src/auth.js";
 
 /**
- * These tests build a real Better Auth instance and inspect what it exposes.
- *
- * No database is touched: `createAuth` only *configures* the adapter, and the
- * assertions below are about which endpoints exist and which do not, which is
- * decided at construction. That is deliberate — it keeps the suite runnable
- * with Docker stopped, as this repo requires — and it does mean these tests
- * prove configuration, not a working sign-in. The provider round trip is
- * verified by hand against a live database.
+ * These build a real Better Auth instance and inspect its configuration. No
+ * database is touched, so the suite runs with Docker stopped. They prove
+ * configuration, not a working sign-in; the provider round trip is verified by
+ * hand.
  */
 
-/**
- * A stand-in for the Drizzle handle. `createAuth` passes it straight to the
- * adapter and nothing in these tests issues a query, so it is never called.
- */
+/** A stand-in for the Drizzle handle; nothing here issues a query. */
 const db = {} as AuthOptions["db"];
 
 const options: AuthOptions = {
@@ -34,10 +27,7 @@ const options: AuthOptions = {
 };
 
 test("a failed sign-in is redirected to the web app, not the API", () => {
-  // Better Auth's own error page is served from the API origin, and its "Go
-  // Home" link points there — which serves no UI, so the user lands on :4000
-  // with no way back. Pointing errorURL at the app keeps the failure where the
-  // person actually is.
+  // Better Auth's own error page would strand the user on the API origin.
   const auth = createAuth(options);
 
   assert.equal(
@@ -50,8 +40,7 @@ test("a failed sign-in is redirected to the web app, not the API", () => {
 test("createAuth exposes a request handler and a session reader", () => {
   const auth = createAuth(options);
 
-  // The two members routes.ts depends on. If either disappears in an upgrade,
-  // the mount and the guard break together, so assert them explicitly.
+  // The two members routes.ts depends on, pinned against an upgrade.
   assert.equal(typeof auth.handler, "function");
   assert.equal(typeof auth.api.getSession, "function");
 });
@@ -65,11 +54,8 @@ test("createAuth enables social sign-in", () => {
 test("email and password sign-up is rejected", async () => {
   const auth = createAuth(options);
 
-  // Worth asserting on the response rather than on the shape of `auth.api`:
-  // Better Auth still *defines* `signUpEmail` when the feature is off, so
-  // checking that the property is missing passes for the wrong reason and
-  // would keep passing if the feature were switched on. What matters is that
-  // a real request cannot create an account.
+  // Assert on the response, not the shape of `auth.api`: Better Auth defines
+  // `signUpEmail` even when the feature is off.
   const res = await auth.handler(
     new Request("http://localhost:4000/api/auth/sign-up/email", {
       method: "POST",
@@ -111,8 +97,7 @@ test("email and password sign-in is rejected", async () => {
 });
 
 test("createAuth accepts a cookie domain for cross-subdomain deploys", () => {
-  // Exercises the branch that builds the advanced.crossSubDomainCookies block;
-  // the same call with it omitted is covered by every other test here.
+  // Exercises the branch that builds `advanced.crossSubDomainCookies`.
   const auth = createAuth({
     ...options,
     crossSubDomainCookies: { domain: ".lunox.work" },
@@ -124,8 +109,8 @@ test("createAuth accepts a cookie domain for cross-subdomain deploys", () => {
 test("an unauthenticated getSession returns null rather than throwing", async () => {
   const auth = createAuth(options);
 
-  // The guard in routes.ts branches on null. A throw instead would surface as
-  // a 500 on every signed-out request rather than a 401.
+  // The guard in routes.ts branches on null; a throw would turn every
+  // signed-out request into a 500 instead of a 401.
   const session = await auth.api.getSession({ headers: new Headers() });
 
   assert.equal(session, null);
@@ -136,8 +121,7 @@ test("an unauthenticated getSession returns null rather than throwing", async ()
 test("linking requires a session", async () => {
   const auth = createAuth(options);
 
-  // The heart of the takeover fix: linking is only reachable once you have
-  // proven you hold the account you are attaching a provider to.
+  // Linking is reachable only after proving you hold the account.
   const res = await auth.handler(
     new Request("http://localhost:4000/api/auth/link-social", {
       method: "POST",
@@ -162,10 +146,8 @@ test("listing linked accounts requires a session", async () => {
 // ---- proven-email recording ----------------------------------------------
 
 /**
- * Captures what the hooks record.
- *
- * The hooks are invoked directly rather than through an OAuth callback: doing
- * it for real needs a live provider, which no test here may depend on.
+ * Captures what the hooks record. The hooks are invoked directly, because an
+ * OAuth callback would need a live provider.
  */
 function recordingEmails(primary?: string, ownerOf?: string) {
   const recorded: Array<{
@@ -177,8 +159,7 @@ function recordingEmails(primary?: string, ownerOf?: string) {
     recorded,
     store: {
       primaryFor: () => Promise.resolve(primary),
-      // Undefined by default: "nobody holds this address", which is the
-      // ordinary signup and keeps the pre-flight out of every other test.
+      // Undefined means nobody holds the address: the ordinary signup.
       ownerOf: () => Promise.resolve(ownerOf),
       list: () => Promise.resolve([]),
       record: (input: {
@@ -216,13 +197,9 @@ function userCreateBeforeHook(auth: ReturnType<typeof createAuth>) {
 }
 
 /**
- * Runs `fn` inside a fresh request context.
- *
- * Better Auth wraps every endpoint in one of these, and the email handoff
- * between `validateUserInfo` and the account-create hook is scoped to it. The
- * hooks are called directly here rather than through an OAuth callback — that
- * would need a live provider — so the context has to be established by hand,
- * and each call gets its own, exactly as two real requests would.
+ * Runs `fn` inside a fresh request context, as Better Auth does for every
+ * endpoint. The email handoff between `validateUserInfo` and the
+ * account-create hook is scoped to it.
  */
 async function inRequest<T>(fn: () => Promise<T>): Promise<T> {
   return await runWithRequestState(new WeakMap(), fn);
@@ -256,8 +233,6 @@ function accountCreateHook(auth: ReturnType<typeof createAuth>) {
 }
 
 test("a new account is given a generated handle", async () => {
-  // Generated rather than asked for, so no part of the app has to cope with a
-  // user that has no handle.
   const auth = createAuth({
     ...options,
     handles: { suggest: () => Promise.resolve("dana") },
@@ -272,9 +247,8 @@ test("a new account is given a generated handle", async () => {
 });
 
 test("each provider's own address is recorded, not the account's", async () => {
-  // The bug this covers: reading `user.email` returns whatever the *first*
-  // provider proved, so a second link recorded a duplicate and GitHub's own
-  // address never appeared.
+  // Regression: reading `user.email` returns what the first provider proved,
+  // so a second link never recorded its own address.
   const emails = recordingEmails("first@example.test");
   const auth = createAuth({
     ...options,
@@ -282,8 +256,6 @@ test("each provider's own address is recorded, not the account's", async () => {
     lookupEmail: emails.store.primaryFor,
   });
 
-  // Inside one request context, because that is where the handoff between the
-  // two hooks lives — see `inRequest` for why that matters.
   await inRequest(async () => {
     // What Better Auth does on a GitHub link: it asserts GitHub's address.
     await validateUserInfoHook(auth)({
@@ -299,11 +271,8 @@ test("each provider's own address is recorded, not the account's", async () => {
 });
 
 test("two concurrent sign-ins do not cross their addresses", async () => {
-  // The regression this pins: the handoff used to be a module-level Map keyed
-  // by provider id, shared by every request. Two people completing a Google
-  // sign-in at once overwrote each other, and whichever hook read first won —
-  // so one user's address was silently dropped and the other's was recorded
-  // twice. Request-scoped state makes the two runs invisible to each other.
+  // Regression: a module-level Map keyed by provider id let two simultaneous
+  // Google sign-ins overwrite each other. See `provenEmails` in auth.ts.
   const emails = recordingEmails();
   const auth = createAuth({ ...options, emails: emails.store });
 
@@ -313,9 +282,8 @@ test("two concurrent sign-ins do not cross their addresses", async () => {
         user: { email },
         source: { method: "oauth", oauth: { providerId: "google" } },
       });
-      // Yield between the two halves, so the interleaving this guards against
-      // is the one that actually happens: both requests capture, then both
-      // record. A sequential test would pass even with the shared map.
+      // Yield so both requests capture before either records. Without it
+      // the test would pass even with a shared map.
       await new Promise((resolve) => setImmediate(resolve));
       await accountCreateHook(auth)({ userId, providerId: "google" });
     });
@@ -326,7 +294,7 @@ test("two concurrent sign-ins do not cross their addresses", async () => {
     signIn("user_2", "bob@example.test"),
   ]);
 
-  // Each user got their own address, not whichever one was captured last.
+  // Each user gets their own address, not whichever was captured last.
   assert.deepEqual(
     [...emails.recorded].sort((a, b) => a.userId.localeCompare(b.userId)),
     [
@@ -337,9 +305,8 @@ test("two concurrent sign-ins do not cross their addresses", async () => {
 });
 
 test("the account hook survives running outside a request context", async () => {
-  // `provenEmails.get()` throws when there is no context. This hook runs after
-  // a sign-in has already succeeded, so a throw here would turn bookkeeping
-  // into a failed sign-in. It must fall back to `lookupEmail` instead.
+  // `provenEmails.get()` throws with no context. The hook must fall back to
+  // `lookupEmail` rather than fail a sign-in that already succeeded.
   const emails = recordingEmails("fallback@example.test");
   const auth = createAuth({
     ...options,
@@ -355,9 +322,8 @@ test("the account hook survives running outside a request context", async () => 
 });
 
 test("the handle columns are registered with Better Auth", () => {
-  // Without `additionalFields` the adapter silently drops them: it only
-  // iterates the fields it knows, so a username set by the create hook never
-  // reaches the insert and the column stays null. No error, just a gap.
+  // Without `additionalFields` the adapter silently drops them and the
+  // column stays null, with no error.
   const auth = createAuth(options);
   const fields = (
     auth.options as {
@@ -370,10 +336,9 @@ test("the handle columns are registered with Better Auth", () => {
 });
 
 test("signing up records the address against the provider that proved it", async () => {
-  // Hooked on account creation, not user creation: only that payload carries
-  // `providerId`, and the settings page shows which provider vouched for
-  // which address. Better Auth creates the account in the same transaction as
-  // the user, so this covers a brand new signup too.
+  // Hooked on account creation because only that payload carries
+  // `providerId`. A new signup creates its account in the same transaction,
+  // so this covers it too.
   const emails = recordingEmails("first@example.test");
   const auth = createAuth({
     ...options,
@@ -426,8 +391,7 @@ test("the account hook is a no-op without a lookup", async () => {
 });
 
 test("a failure to record does not break the sign-in", async () => {
-  // Recording an address is bookkeeping. If it fails the person is still
-  // legitimately signed in and must not be shown an error.
+  // Recording is bookkeeping; the person is still legitimately signed in.
   const auth = createAuth({
     ...options,
     emails: {
@@ -462,8 +426,7 @@ test("the hooks are no-ops when nothing is configured", async () => {
 });
 
 test("unlinking a provider withdraws its proof", async () => {
-  // Without this the address keeps claiming that provider vouched for it, and
-  // the settings page renders a row for a provider that is no longer linked.
+  // Otherwise the settings page keeps showing a provider no longer linked.
   const revoked: Array<{ userId: string; providerId: string }> = [];
   const auth = createAuth({
     ...options,
@@ -497,16 +460,9 @@ test("unlinking a provider withdraws its proof", async () => {
 // ---- linking policy -------------------------------------------------------
 
 /**
- * These pin the account-linking policy.
- *
- * Implicit linking is on, which means a provider on the trusted list can merge
- * into an existing account on sign-in. That is a deliberate trade: it serves
- * the ordinary case of one person holding a Google and a GitHub account on the
- * same inbox. It is safe only because the trusted list is short and every
- * provider on it verifies address ownership.
- *
- * So the list is the security boundary, and these tests exist to make widening
- * it a conscious act rather than a quiet one.
+ * These pin the account-linking policy. Implicit linking is on, so the trusted
+ * list is the security boundary; widening it must be a conscious act. See
+ * `trustedProviders` in auth.ts.
  */
 
 function accountLinking(auth: ReturnType<typeof createAuth>) {
@@ -525,13 +481,10 @@ function accountLinking(auth: ReturnType<typeof createAuth>) {
 }
 
 test("the trusted-provider list is exactly the reviewed one", () => {
-  // If this fails because a provider was added, that provider must confirm
-  // address ownership before reporting an email — otherwise whoever controls
-  // an account there reaches the account already using that address.
-  //
-  // Atlassian is on this list on a weaker basis than the other two: it returns
-  // no `email_verified` claim, and the provider config asserts one. See the
-  // comment on `trustedProviders` in auth.ts before widening this further.
+  // If this fails because a provider was added: it must confirm address
+  // ownership before reporting an email, or whoever controls an account there
+  // reaches the account already using that address. Read the comment on
+  // `trustedProviders` in auth.ts before widening this.
   assert.deepEqual(accountLinking(createAuth(options))?.trustedProviders, [
     "google",
     "github",
@@ -551,12 +504,9 @@ test("Atlassian asserts the verification Better Auth's provider withholds", () =
 
   assert.ok(atlassian, "Atlassian should be configured");
 
-  // The upstream provider hardcodes `emailVerified: false`, and both the
-  // sign-in callback and the link route gate on
-  // `!trusted && !emailVerified`. Without this override every path is refused:
-  // signing in silently creates a duplicate account and Connect fails with
-  // `unable_to_link_account`. Pinned because dropping it breaks linking in a
-  // way that only shows up at the provider callback.
+  // Upstream hardcodes `emailVerified: false`, and the sign-in callback and
+  // link route both gate on it. Pinned because dropping the override only
+  // shows up at the provider callback.
   assert.equal(atlassian?.mapProfileToUser?.().emailVerified, true);
 });
 
@@ -571,15 +521,12 @@ test("Atlassian asks for identity and nothing else", () => {
     }
   ).socialProviders?.atlassian;
 
-  // Required: without `read:me` the profile comes back with no address and
-  // Better Auth cannot create a user, so the sign-in fails at the callback
-  // rather than anywhere near this configuration.
+  // Without `read:me` the profile has no address and the sign-in fails at
+  // the callback.
   assert.ok(atlassian?.scope?.includes("read:me"));
 
-  // The provider appends `scope` to its defaults, so dropping the site-scoped
-  // `read:jira-user` takes both of these. Asserted together because setting
-  // the scope list without the flag silently keeps requesting Jira access —
-  // the failure is invisible in config and only shows on the consent screen.
+  // The provider appends `scope` to its defaults, so without the flag it
+  // silently keeps requesting Jira access, visible only on the consent screen.
   assert.equal(atlassian?.disableDefaultScope, true);
   assert.ok(
     !atlassian?.scope?.includes("read:jira-user"),
@@ -588,9 +535,8 @@ test("Atlassian asks for identity and nothing else", () => {
 });
 
 test("implicit linking is enabled deliberately", () => {
-  // On by choice, not by default: a trusted provider asserting a verified
-  // address merges rather than being refused. Turning this off is a UX
-  // decision; turning it on without a vetted trusted list is a security bug.
+  // Turning this off is a UX decision; having it on without a vetted trusted
+  // list is a security bug.
   assert.equal(
     accountLinking(createAuth(options))?.disableImplicitLinking,
     false,
@@ -608,9 +554,8 @@ test("a merge still requires the local address to be verified", () => {
 
 // ---- session cookie -------------------------------------------------------
 //
-// The session cookie is the credential for every authenticated browser
-// request, so its attributes are a security decision rather than a default
-// worth inheriting quietly. These pin all three.
+// The cookie is the credential for every browser request, so its three
+// attributes are pinned rather than inherited.
 
 function cookieAttributes(
   auth: ReturnType<typeof createAuth>,
@@ -630,17 +575,12 @@ function cookieAttributes(
 }
 
 test("the session cookie is never readable from JavaScript", () => {
-  // What keeps the session out of reach of a script running on the page, and
-  // why the web client sends no bearer token of its own.
   assert.equal(cookieAttributes(createAuth(options))["httpOnly"], true);
 });
 
 test("Secure follows the URL scheme, not NODE_ENV", () => {
-  // Better Auth's own default falls back to `isProduction` when the base URL
-  // is not https, so a container that forgets NODE_ENV would serve the session
-  // cookie without `Secure`. Deriving it from the configured scheme removes
-  // that failure mode — and keeps it off on http localhost, where `Secure`
-  // would stop the cookie working at all.
+  // Better Auth's default follows NODE_ENV, so a container that forgets it
+  // would drop `Secure`. Off on http localhost, where it breaks the cookie.
   assert.equal(
     cookieAttributes(createAuth(options))["useSecureCookies"],
     false,
@@ -654,19 +594,10 @@ test("Secure follows the URL scheme, not NODE_ENV", () => {
 });
 
 test("SameSite is Lax on every deployment, because OAuth requires it", () => {
-  // Regression test for a real sign-in failure, so it is worth stating what
-  // breaks rather than just pinning a string.
-  //
-  // These attributes are spread over every auth cookie, including the `state`
-  // cookie that carries an in-progress sign-in. The provider returns the user
-  // by a cross-site top-level navigation, and a Strict cookie is withheld on
-  // exactly that request — so `state` never comes back and the callback dies
-  // at `error=state_mismatch`. Strict here is not a stricter session; it is no
-  // session at all.
-  //
-  // Both deployment shapes are asserted because the same-origin one is the
-  // trap: it looks like it could afford Strict, and it cannot. SameSite is
-  // judged against the provider's origin, which is cross-site either way.
+  // Regression: `Strict` withholds the `state` cookie on the provider's
+  // cross-site return, so every sign-in dies at `state_mismatch`. See the
+  // comment on `sameSite` in auth.ts. Both deploy shapes are asserted because
+  // same-origin looks like it could afford Strict, and it cannot.
   assert.equal(cookieAttributes(createAuth(options))["sameSite"], "lax");
 
   assert.equal(
@@ -683,11 +614,8 @@ test("SameSite is Lax on every deployment, because OAuth requires it", () => {
 
 // ---- duplicate-account pre-flight ------------------------------------------
 //
-// The application half of a two-layer guard; migration 0007 is the other. Both
-// exist because `user.email` and `user_email.email` are each unique while
-// neither constraint sees the other, so an address free in one table can be
-// taken in the other — and a refused merge used to fall through to creating a
-// user in exactly that unrepresentable state.
+// The application half of a two-layer guard; migration 0007 is the other. See
+// the user create hook in auth.ts.
 
 test("a signup is refused when the address is already held", async () => {
   const emails = recordingEmails(undefined, "someone-else");
@@ -713,8 +641,7 @@ test("a signup proceeds when nobody holds the address", async () => {
     handles: { suggest: () => Promise.resolve("new-handle") },
   });
 
-  // The ordinary path, asserted so the guard above cannot be satisfied by
-  // refusing everything.
+  // So the guard above cannot be satisfied by refusing everything.
   const result = await userCreateBeforeHook(auth)({
     id: "user_new",
     email: "free@example.test",

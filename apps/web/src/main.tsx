@@ -5,8 +5,7 @@ import { App } from "./App";
 import { logBuild } from "./build";
 import "./index.css";
 
-// Before rendering, so the build is the first thing in the console even if
-// something below this line throws.
+// Before rendering, so the build is logged even if something below throws.
 logBuild();
 
 const root = document.getElementById("root");

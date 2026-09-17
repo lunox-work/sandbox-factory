@@ -1,23 +1,17 @@
 /**
- * Test config for the web app.
- *
- * Separate from `vite.config.ts` because the dev server config there — the
- * `/api` proxy in particular — is irrelevant to tests and its `server.port`
- * would make two test runs collide.
+ * Test config for the web app. Separate from `vite.config.ts`, whose dev
+ * server settings are irrelevant to tests and whose `server.port` would make
+ * two test runs collide.
  */
 
 import react from "@vitejs/plugin-react";
 import { defineConfig, type Plugin } from "vitest/config";
 
 /**
- * A fixed build record, rather than the real resolver `vite.config.ts` uses.
+ * A fixed build record instead of the real resolver, so assertions on the
+ * rendered version do not depend on the checkout's sha or a dirty tree.
  *
- * The tests assert on the rendered version string, and against the live
- * resolver those assertions would depend on the checkout's current sha and on
- * whether the working tree happened to be dirty — so they would pass on a clean
- * CI runner and fail for whoever was mid-edit.
- *
- * `test/build.ts` restates these values for the assertions; the first test in
+ * `test/build.ts` restates these values; the first test in
  * `build-footer.test.tsx` fails if the two drift.
  */
 const TEST_BUILD = {
@@ -30,11 +24,8 @@ const TEST_BUILD = {
 };
 
 /**
- * Stands in for the plugin of the same name in `vite.config.ts`.
- *
- * `src/build.ts` imports `virtual:build-info`, which nothing resolves under
- * Vitest unless something provides it — so without this every test that touches
- * the footer fails to resolve its imports.
+ * Stands in for `buildInfoPlugin` in `vite.config.ts`. Without it nothing
+ * resolves the `virtual:build-info` import in `src/build.ts` under Vitest.
  */
 function buildInfoPlugin(): Plugin {
   const id = "virtual:build-info";
@@ -56,7 +47,6 @@ function buildInfoPlugin(): Plugin {
 export default defineConfig({
   plugins: [react(), buildInfoPlugin()],
   test: {
-    // The components under test render DOM, so they need a DOM.
     environment: "jsdom",
     globals: true,
     setupFiles: ["./test/setup.ts"],

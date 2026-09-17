@@ -19,9 +19,8 @@ reviews:
     - "!dist/**"
     - "!dist-test/**"
     - "!package-lock.json"
-  # Agentic fixes. Free on the OSS plan (public repos get Team-tier features).
-  # Trigger with `@coderabbitai autofix` (commits to the PR branch) or
-  # `@coderabbitai autofix stacked pr` (opens a separate PR to review first).
+  # Agentic fixes. Trigger with `@coderabbitai autofix` (commits to the PR
+  # branch) or `@coderabbitai autofix stacked pr` (opens a separate PR).
   finishing_touches:
     autofix:
       enabled: true

@@ -2,26 +2,19 @@ name: Deploy watchdog
 
 # Catches the silent failure: main moves, production does not.
 #
-# The failure this exists for is AUTO_MERGE_TOKEN expiring. auto-merge.yml
-# deliberately falls back to GITHUB_TOKEN so that PRs keep merging when the
-# secret lapses — but GitHub raises no push event for a merge made with the
-# default token, so cd.yml never fires. Everything stays green: PRs merge, checks
-# pass, and nothing deploys. There is no error anywhere to notice.
+# The main cause is AUTO_MERGE_TOKEN expiring. auto-merge.yml then falls back to
+# GITHUB_TOKEN, GitHub raises no push event for that merge, and cd.yml never
+# fires — PRs merge, checks pass, nothing deploys, nothing errors.
 #
-# So this asks the only question that detects it: is the commit serving
-# production the one at the head of main? It is deliberately independent of the
-# deploy path — it reads the live site rather than trusting workflow history, so
-# it also catches a rolled-back deploy, a stalled service and a CD run that
-# reported success without taking effect.
-#
-# Not an alarm in CloudWatch, because the gap is between GitHub and AWS and
-# CloudWatch can only see one side of it.
+# So this compares the commit production serves with the head of main. It reads
+# the live site rather than workflow history, so it also catches a rolled-back
+# deploy, a stalled service and a CD run that reported success without taking
+# effect. CloudWatch cannot do this: it sees only the AWS side.
 
 on:
   schedule:
-    # 09:00 UTC daily. A deploy lag is not an outage — the site is up and
-    # serving the previous commit — so this wants a working-hours signal, not a
-    # page at 3am.
+    # 09:00 UTC daily. A deploy lag is not an outage, so this wants a
+    # working-hours signal, not a page at 3am.
     - cron: "0 9 * * *"
   workflow_dispatch:
 
@@ -82,10 +75,9 @@ jobs:
             exit 0
           fi
 
-          # A deployed instance being behind HEAD is normal and healthy — HEAD is
-          # whatever merged most recently, not what anyone decided to ship. Only
-          # a *deployable* commit that never shipped is a problem, so docs-only
-          # commits are excluded exactly as cd.yml's paths-ignore excludes them.
+          # Only a *deployable* commit that never shipped is a problem, so
+          # docs-only commits are excluded exactly as cd.yml's paths-ignore
+          # excludes them.
           if ! git cat-file -e "$live^{commit}" 2>/dev/null; then
             echo "stale=false" >> "$GITHUB_OUTPUT"
             echo "::warning::Production reports $live, which is not a commit in this repository."

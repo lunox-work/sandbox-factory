@@ -17,9 +17,8 @@ import { useTodos } from "./useTodos";
 export function App() {
   const { data: session, isPending } = useSession();
 
-  // Three states, not two. Rendering the sign-in screen while the session is
-  // still resolving would flash it in front of an already-signed-in user on
-  // every reload, which reads as having been signed out.
+  // Three states, not two: rendering sign-in while the session resolves would
+  // flash it at a signed-in user on every reload.
   if (isPending) {
     return (
       <main className="app">
@@ -34,25 +33,16 @@ export function App() {
   }
 
   /**
-   * Keyed by user id, so switching account remounts everything below.
-   *
-   * Without the key, signing out and back in as someone else in the same tab
-   * reuses the mounted tree — including `useTodos`' state, which was populated
-   * for the previous user. The API would never *serve* those rows again, but
-   * they would stay on screen until a refetch replaced them, which reads as
-   * one account showing another's data. Remounting discards that state at the
-   * moment the identity changes rather than racing a fetch against it.
+   * Keyed by user id, so switching account remounts everything below. Without
+   * the key, `useTodos` keeps the previous user's rows on screen until a
+   * refetch replaces them, which reads as one account showing another's data.
    */
   return <Signed key={session.user.id} name={session.user.name} />;
 }
 
 function Signed({ name }: { name: string }) {
-  // A single boolean rather than a router: there are two screens, and adding
-  // a routing dependency for that would be more machinery than it earns.
-  //
-  // Seeded from the query string so that returning from a provider link lands
-  // back on the settings page rather than the todo list, which would look like
-  // the link had been forgotten.
+  // A boolean rather than a router: there are two screens. Seeded from the
+  // query string so returning from a provider link lands back on settings.
   const [showAccount, setShowAccount] = useState(
     () => new URLSearchParams(window.location.search).get("account") === "1",
   );
@@ -75,8 +65,8 @@ function Todos({ name, onAccount }: { name: string; onAccount: () => void }) {
   const [title, setTitle] = useState("");
   const [filter, setFilter] = useState<TodoFilter>("all");
 
-  // Both from packages/core — the same functions the extension uses, so the
-  // two surfaces cannot disagree about what "active" means.
+  // Both from packages/core, shared with the extension, so the two surfaces
+  // cannot disagree about what "active" means.
   const visible = filterTodos(todos, filter);
   const counts = countTodos(todos);
 
@@ -179,8 +169,7 @@ function TodoRow({
 
   function commit() {
     setEditing(false);
-    // An unchanged or unusable draft is a cancel, not an error: the user
-    // clicked away, which is not a request to save something invalid.
+    // An unchanged or unusable draft is a cancel, not an error.
     if (draft !== todo.title && isValidTitle(draft)) {
       onRename(todo.id, draft);
     } else {

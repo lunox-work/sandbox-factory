@@ -1,11 +1,9 @@
 /**
- * The build record the test config injects as `__BUILD_INFO__`.
+ * The build record the test config serves as `virtual:build-info`.
  *
- * Restated here so tests can assert against named values instead of repeating
- * literals. It must stay in step with `TEST_BUILD` in `vitest.config.ts` —
- * a config cannot import from a test file without being pulled into the test
- * graph, so the two are kept in sync by the first assertion in
- * `build-footer.test.tsx`, which fails loudly if they drift.
+ * Must match `TEST_BUILD` in `vitest.config.ts`. A config cannot import from a
+ * test file, so the first assertion in `build-footer.test.tsx` fails if the
+ * two drift.
  */
 
 import type { BuildInfoDto } from "@sandbox-factory/shared";

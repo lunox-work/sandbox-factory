@@ -13,9 +13,8 @@ const options = {
 };
 
 /**
- * Replace the client's `send` for one test. The store builds its own client,
- * so the seam is the prototype — patched and restored per test rather than
- * reaching into the store's internals.
+ * Replaces the client's `send` for one test. The store builds its own client,
+ * so the seam is the prototype, patched and restored per test.
  */
 function stubSend(impl: (command: unknown) => Promise<unknown>): () => void {
   const original = S3Client.prototype.send;

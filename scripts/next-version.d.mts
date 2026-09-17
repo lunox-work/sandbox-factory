@@ -1,9 +1,7 @@
 /**
- * Types for `next-version.mjs`.
- *
- * Plain JavaScript for the same reason as `build-info.mjs`: it runs from `node`
- * directly in CI, before anything is built. See that file's declaration for why
- * the `.d.mts` extension is load-bearing.
+ * Types for `next-version.mjs`, plain JavaScript because CI runs it before
+ * anything is built. See `build-info.d.mts` for why the `.d.mts` extension is
+ * load-bearing.
  */
 
 export interface ParsedSubject {

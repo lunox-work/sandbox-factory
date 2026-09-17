@@ -4,16 +4,12 @@
 #
 #   ./infra/scripts/secrets-template.sh [--force]
 #
-# Copies the six OAuth values from .env.development when they are present, and
-# generates a fresh BETTER_AUTH_SECRET rather than reusing the local one: it
-# signs session tokens, so a dev machine and production must never share one.
+# Copies the six OAuth values from .env.development when present (blank
+# otherwise, to fill in by hand) and generates a fresh BETTER_AUTH_SECRET: dev
+# and production must never share a session-signing key.
 #
-# Those six are currently empty in .env.development — the apps they belonged to
-# now serve production. So this leaves them blank and you paste in the values,
-# rather than the script silently writing empties over working credentials.
-#
-# Refuses to overwrite an existing file without --force. That file may hold the
-# only copy of a rotated credential.
+# Refuses to overwrite an existing file without --force; it may hold the only
+# copy of a rotated credential.
 
 set -euo pipefail
 
@@ -37,9 +33,8 @@ value_of() {
   printf '%s' "$v"
 }
 
-# Absent OAuth values are expected now, not an error: they live in
-# .env.production and were removed from local development. `make secrets-check`
-# is what refuses to push an incomplete file.
+# Absent OAuth values are expected, not an error. `make secrets-check` is what
+# refuses an incomplete file.
 for k in GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET GITHUB_CLIENT_ID \
          GITHUB_CLIENT_SECRET ATLASSIAN_CLIENT_ID ATLASSIAN_CLIENT_SECRET; do
   value_of "$k" >/dev/null || echo "note: $k is empty in $SRC — fill it in $OUT by hand" >&2
@@ -48,12 +43,9 @@ done
 SECRET="$(openssl rand -base64 32)"
 
 # umask before creation, so the file is never briefly world-readable.
-# umask before creation, so the file is never briefly world-readable.
 #
-# The body mirrors .env.example section for section, key for key, in the same
-# order — keys this environment does not set are present but commented, with
-# the reason. That is what keeps the three files diffable against each other
-# when the template gains something.
+# The body mirrors .env.example key for key, in order, with unset keys
+# commented out, so the env files stay diffable against each other.
 ( umask 077; cat > "$OUT" <<EOF
 # Production configuration for platform.lunox.work.
 #

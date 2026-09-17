@@ -1,6 +1,4 @@
-/**
- * The Todos tree view.
- */
+/** The Todos tree view. */
 
 import type { TodoClient } from "@sandbox-factory/client";
 import type { TodoDto } from "@sandbox-factory/shared";
@@ -9,22 +7,21 @@ import * as vscode from "vscode";
 export class TodoNode extends vscode.TreeItem {
   constructor(readonly todo: TodoDto) {
     super(todo.title, vscode.TreeItemCollapsibleState.None);
-    // Distinct context values let package.json show "Mark done" and "Mark not
-    // done" on the right rows without either command checking state itself.
+    // Lets package.json show "Mark done" or "Mark not done" per row.
     this.contextValue = todo.done ? "todo.done" : "todo.active";
     this.tooltip = `${todo.title}\n${todo.done ? "Done" : "Active"}\nCreated: ${todo.createdAt}`;
     this.iconPath = new vscode.ThemeIcon(
       todo.done ? "pass-filled" : "circle-large-outline",
     );
     if (todo.done) {
-      // strikethrough is not available on a TreeItem label, so the dimmed
-      // description carries the completed signal instead.
+      // A TreeItem label cannot be struck through, so the description carries
+      // the signal.
       this.description = "done";
     }
   }
 }
 
-/** A placeholder row used to surface load failures inside the tree itself. */
+/** A placeholder row that surfaces load failures inside the tree. */
 class MessageNode extends vscode.TreeItem {
   constructor(message: string) {
     super(message, vscode.TreeItemCollapsibleState.None);
@@ -55,8 +52,8 @@ export class TodoTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem
       const todos = await this.client.listTodos();
       return todos.map((todo) => new TodoNode(todo));
     } catch (error) {
-      // Rendered in the tree rather than thrown: an unhandled rejection here
-      // leaves the view stuck on its loading message with no explanation.
+      // Rendered rather than thrown: a rejection here leaves the view stuck on
+      // its loading message.
       return [
         new MessageNode(
           error instanceof Error ? error.message : "Failed to load.",

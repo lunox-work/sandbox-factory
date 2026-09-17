@@ -48,8 +48,7 @@ BRANCH="" TITLE="" BODY="" TYPE="" ISSUE=""
 ASSUME_YES=0 NO_WAIT=0 DRAFT=0 RESOLVE_MODE="coderabbit"
 FOREGROUND=0 IS_CHILD=0
 
-# Optional co-author credit. Empty means none, which is the default — the
-# trailer only appears when a caller asks for it.
+# Optional Co-Authored-By trailer; empty (the default) adds none.
 COAUTHOR="${SHIP_COAUTHOR:-}"
 
 die()  { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -58,8 +57,8 @@ warn() { printf '\033[33mwarn:\033[0m %s\n' "$*" >&2; }
 ok()   { printf '\033[32m  ok\033[0m %s\n' "$*"; }
 
 usage() {
-  # Through the fire-and-forget note, which is the thing a caller most needs to
-  # read. Keep this range in step with the header above.
+  # Prints the header through the fire-and-forget note. Keep the range in step
+  # with the header above.
   sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'
   cat <<'EOF'
 
@@ -122,9 +121,7 @@ case "$RESOLVE_MODE" in
   *) die "--resolve must be coderabbit, manual or force (got: $RESOLVE_MODE)" ;;
 esac
 
-# git only honours a trailer in the "Name <email>" shape; anything else is
-# silently dropped from the commit, so reject it here rather than ship a PR
-# that quietly lost the credit.
+# git silently drops a trailer that is not "Name <email>", so reject it here.
 if [[ -n "$COAUTHOR" && ! "$COAUTHOR" =~ ^.+\ \<[^\ ]+@[^\ ]+\>$ ]]; then
   die "--coauthor must look like \"Name <email>\" (got: $COAUTHOR)"
 fi
@@ -133,9 +130,8 @@ cd "$(git rev-parse --show-toplevel)" || die "not inside a git repository"
 
 [[ -n "$TITLE" ]] || die "--title is required. It becomes the squash commit on main."
 
-# The PR title IS the commit message here (squash-only), and
-# scripts/next-version.mjs parses it to decide the bump. A non-conventional
-# title silently produces no release.
+# Squash-only: the PR title is the commit message, and scripts/next-version.mjs
+# parses it for the bump. A non-conventional title silently releases nothing.
 if ! [[ "$TITLE" =~ ^(feat|fix|docs|ci|chore|refactor|test|perf|build|style|revert)(\([a-z0-9._/-]+\))?!?:\ .+ ]]; then
   die "title must be a Conventional Commit, e.g. 'fix: ...' or 'feat(api)!: ...'
    got: $TITLE
@@ -147,8 +143,8 @@ if [[ -n "$ISSUE" && ! "$ISSUE" =~ ^[0-9]+$ ]]; then
 fi
 
 # --- detached child: skip setup, go straight to watching ----------------------
-# The parent already branched, verified, pushed and opened the PR. The child
-# only watches it, so everything above is skipped via SHIP_WATCH_PR.
+# The parent already branched, verified, pushed and opened the PR; the child
+# (SHIP_WATCH_PR set) only watches it.
 
 if [[ "$IS_CHILD" -eq 1 ]]; then
   [[ -n "${SHIP_WATCH_PR:-}" ]] || die "--_child requires SHIP_WATCH_PR"
@@ -188,26 +184,12 @@ if [[ "$WATCH_ONLY" -eq 0 ]]; then
 
 CURRENT="$(git rev-parse --abbrev-ref HEAD)"
 
-# Start a new change from an up-to-date `main`, without being asked.
-#
-# The common case after a ship: the PR merged, the child deleted the branch,
-# but the terminal is still standing on a stale leftover branch — or on a
-# merged one whose commits are now on main under a different (squash) sha.
-# Starting a feature there stacks it on top of that, which the guard below
-# then refuses *after* the edits have been made.
-#
-# Only safe when there is genuinely nothing to lose, so it demands all three:
-#   - a clean tree (no uncommitted work to drag across or leave behind)
-#   - no commits of its own that are not already on main
-#   - not a branch with an open PR (that is the --branch re-ship path)
-#
-# The middle condition is the subtle one. Squash-merge means a merged branch's
-# commits are never ancestors of main, so `merge-base --is-ancestor` reports
-# unmerged for work that did land. Ask GitHub instead, exactly as the sweep
-# does: a MERGED PR means the commits are on main and the branch is disposable.
-#
-# Anything else is left alone and falls through to the existing logic, which
-# either ships the branch as-is or stops with an explanation.
+# Switch to an up-to-date `main` when the current branch is disposable: a clean
+# tree, and either no commits of its own or a MERGED PR (an open PR is the
+# --branch re-ship path and is left alone). Squash-merge means a merged branch
+# is never an ancestor of main, so `merge-base --is-ancestor` misreports landed
+# work; ask GitHub, as the sweep does. Without this the next change stacks on a
+# stale branch and the guard below refuses it after the edits are made.
 if [[ "$CURRENT" != "main" && "${SHIP_NO_AUTO_MAIN:-0}" != "1" ]] \
    && git diff --quiet && git diff --cached --quiet \
    && [[ -z "$(git ls-files --others --exclude-standard)" ]]; then
@@ -227,8 +209,7 @@ if [[ "$CURRENT" != "main" && "${SHIP_NO_AUTO_MAIN:-0}" != "1" ]] \
     if git checkout main >/dev/null 2>&1; then
       git pull --ff-only --quiet >/dev/null 2>&1 || true
       ok "switched from $CURRENT to an up-to-date main"
-      # The leftover branch is merged or empty; the sweep on the next merge
-      # clears it, so nothing is deleted here.
+      # The sweep on the next merge deletes the leftover branch.
       CURRENT="main"
     fi
   fi
@@ -266,8 +247,8 @@ fi
 
 # --- confirm ------------------------------------------------------------------
 
-# Everything in the working tree goes into the commit, so show what that is.
-# A stray untracked file would otherwise ride along into the PR unnoticed.
+# Everything in the tree gets committed; show it so a stray untracked file
+# does not ride along unnoticed.
 if [[ "$MODE" == "new" ]]; then
   echo
   echo "  Files to be committed:"
@@ -297,14 +278,12 @@ if [[ "$MODE" == "new" ]]; then
   if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
     die "branch $BRANCH already exists. Pass a different --branch."
   fi
-  # Uncommitted changes follow an ordinary checkout -b across, so `main` is
-  # left untouched — no stash dance, nothing to lose if a later step fails.
+  # Uncommitted changes follow `checkout -b` across, leaving `main` untouched.
   git checkout -b "$BRANCH" >/dev/null 2>&1 || die "could not create $BRANCH"
   ok "created $BRANCH"
 
   git add -A
-  # Each -m becomes its own paragraph, so the trailer stays in a block of its
-  # own — git only recognises it as a trailer when nothing else shares it.
+  # Separate -m paragraphs: git only recognises a trailer in its own block.
   COMMIT_ARGS=(-m "$TITLE")
   [[ -n "$ISSUE" ]]    && COMMIT_ARGS+=(-m "Closes #$ISSUE")
   [[ -n "$COAUTHOR" ]] && COMMIT_ARGS+=(-m "Co-Authored-By: $COAUTHOR")
@@ -314,15 +293,10 @@ if [[ "$MODE" == "new" ]]; then
 fi
 
 # --- start from the real main -------------------------------------------------
-# Local `main` is only as fresh as the last pull, and nothing above fetches when
-# the ship starts on main. A branch cut from a stale main opens BEHIND, and the
-# ruleset is strict, so auto-merge sits blocked until something updates it —
-# which then re-runs every check. PR #49 lost six minutes and a second CI run
-# to exactly that.
-#
-# Only for a branch this run just created: it has never been pushed, so
-# rewriting it is free. An existing branch may already be on the remote, and
-# the watch loop updates those through GitHub instead.
+# Local `main` may be stale. A branch cut from it opens BEHIND, and the strict
+# ruleset blocks auto-merge until an update re-runs every check (PR #49).
+# Only for a branch this run just created: it is unpushed, so rewriting it is
+# free. The watch loop updates existing branches through GitHub instead.
 if [[ "$MODE" == "new" ]]; then
   if git fetch origin main --quiet >/dev/null 2>&1; then
     if ! git merge-base --is-ancestor origin/main HEAD 2>/dev/null; then
@@ -340,8 +314,8 @@ if [[ "$MODE" == "new" ]]; then
 fi
 
 # --- verify before pushing ----------------------------------------------------
-# The pre-push hook runs this too, but failing here gives a clean error
-# instead of a hook abort halfway through a push.
+# The pre-push hook runs this too; failing here gives a clean error instead of
+# a hook abort mid-push.
 
 info "Running npm run verify (this is the gate — CI runs the same thing)"
 VERIFY_LOG="$(mktemp "${TMPDIR:-/tmp}/ship-verify.XXXXXX")"
@@ -384,9 +358,8 @@ CLOSES=""
 
 Closes #$ISSUE"
 
-# GitHub builds the squash commit from the PR body, not the branch commit, so
-# a trailer that only lives on the branch is lost at merge. Repeating it here
-# is what actually puts it on main.
+# GitHub builds the squash commit from the PR body, so a trailer only on the
+# branch commit is lost at merge.
 CREDIT=""
 [[ -n "$COAUTHOR" ]] && CREDIT="
 
@@ -442,25 +415,18 @@ if [[ "$NO_WAIT" -eq 1 ]]; then
 fi
 
 # --- detach -------------------------------------------------------------------
-# The PR exists and auto-merge is armed; everything after this is watching.
-# Re-exec ourselves in the background so the terminal (and an agent session)
-# is free immediately. --foreground opts out.
+# The PR is open and auto-merge armed; the rest is watching. Re-exec in the
+# background so the terminal is free. --foreground opts out.
 
 LOG_DIR="$(git rev-parse --git-dir)/ship"
 mkdir -p "$LOG_DIR"
 SHIP_LOG="$LOG_DIR/pr-$PR_NUM.log"
 
 if [[ "$FOREGROUND" -eq 0 && "$IS_CHILD" -eq 0 ]]; then
-  # Run the child from a copy outside the working tree, not from "$0".
-  #
-  # bash reads a script lazily, by byte offset, while it runs. `$0` is a
-  # tracked file, so any later checkout — including the switch back to main
-  # immediately below — rewrites those bytes underneath the running child, and
-  # it resumes at the same offset in different text. Observed on PR #30: the
-  # child logged nothing after that point, never saw the merge and never
-  # cleaned up, while still sitting in its poll loop.
-  #
-  # Under .git/ so it is neither tracked nor ever checked out.
+  # Run the child from a copy under .git/ (untracked, never checked out), not
+  # "$0". bash reads a script lazily by byte offset, so the checkout below
+  # would rewrite a tracked "$0" underneath the running child. On PR #30 the
+  # child went silent, never saw the merge and never cleaned up.
   CHILD_COPY="$LOG_DIR/ship-$PR_NUM.sh"
   cp "$0" "$CHILD_COPY" && chmod +x "$CHILD_COPY" || CHILD_COPY="$0"
 
@@ -471,23 +437,16 @@ if [[ "$FOREGROUND" -eq 0 && "$IS_CHILD" -eq 0 ]]; then
   child=$!
   disown "$child" 2>/dev/null || true
 
-  # Return the working tree to main before handing it back.
-  #
-  # Otherwise the caller is left standing on a branch whose PR is still open,
-  # and the next change starts on top of unmerged work — which ship.sh then
-  # refuses ("has commits not in main"), after the edits have been made. The
-  # detached child cannot do this: it shares this working tree, and switching
-  # branches underneath an interactive session is its own hazard.
-  #
-  # Safe because the branch is already committed and pushed; the PR is the
-  # record of it. `--ff-only` so a diverged local main is left alone rather
-  # than quietly merged.
+  # Return the tree to main, or the next change starts on unmerged work and
+  # ship.sh refuses it after the edits are made. The child cannot do this: it
+  # shares the working tree with an interactive session. Safe because the
+  # branch is pushed; `--ff-only` leaves a diverged local main alone.
   if git checkout main >/dev/null 2>&1; then
     git pull --ff-only --quiet >/dev/null 2>&1 || true
     RETURNED_TO_MAIN=1
   else
-    # Only reachable if something in the tree blocks the switch. The PR is open
-    # and watched either way, so this is a warning, not a failure.
+    # Something in the tree blocked the switch. The PR is open and watched
+    # either way, so warn rather than fail.
     RETURNED_TO_MAIN=0
     warn "could not switch back to main — still on $BRANCH"
   fi
@@ -512,13 +471,10 @@ threads_json() {
     --jq '.data.repository.pullRequest.reviewThreads.nodes' 2>/dev/null || echo "[]"
 }
 
-# Bring the PR branch up to date when main has moved past it.
-#
-# Asked of the compare API rather than read off `mergeStateStatus`, which only
-# says BEHIND once nothing else is blocking — while checks are pending it says
-# BLOCKED, so the branch used to be updated only in the final loop, after the
-# whole review wait, and the checks then ran a second time from the start.
-# Called from every loop so the re-run overlaps the waiting instead.
+# Bring the PR branch up to date when main has moved past it. Uses the compare
+# API, not `mergeStateStatus`, which reads BLOCKED rather than BEHIND while
+# checks are pending. Called from every loop so the check re-run overlaps the
+# waiting.
 update_if_behind() {
   local behind
   behind="$(gh api "repos/$REPO/compare/main...$BRANCH" --jq '.behind_by' 2>/dev/null || echo 0)"
@@ -529,12 +485,9 @@ update_if_behind() {
   return 0
 }
 
-# Write the unresolved review comments to a file before anything resolves them.
-#
-# `--resolve coderabbit` and `--resolve force` both close threads nobody has
-# read: that is what keeps a ship unattended, and it is also how a review gets
-# thrown away. The threads stay on the PR, but nothing ever goes back to a
-# merged PR. A file next to the ship log is where the caller will look.
+# Save unresolved review comments next to the ship log before resolving them.
+# `--resolve coderabbit|force` close threads nobody has read, and nobody
+# revisits a merged PR.
 save_review_feedback() {
   local out="$LOG_DIR/pr-$PR_NUM.review.md"
   gh api graphql -f query="query{repository(owner:\"${REPO%%/*}\",name:\"${REPO##*/}\"){pullRequest(number:$PR_NUM){reviewThreads(first:100){nodes{isResolved path line comments(first:1){nodes{author{login} body url}}}}}}}" \
@@ -578,10 +531,9 @@ for x in t:
     print("     {}:{}  ({})".format(path, line, author))' 2>/dev/null
 }
 
-# Zero unresolved threads is ambiguous: it means either "reviewed, nothing to
-# flag" or "has not posted yet". Only the first is safe to act on, so look for
-# positive evidence that a review happened — a review, a thread (resolved or
-# not), or the CodeRabbit check reporting a conclusion.
+# Zero unresolved threads means either "reviewed, nothing to flag" or "not
+# posted yet". Require positive evidence of a review: a CodeRabbit review, any
+# thread, or the CodeRabbit check reporting a conclusion.
 review_arrived() {
   local seen
   seen="$(gh api graphql -f query="query{repository(owner:\"${REPO%%/*}\",name:\"${REPO##*/}\"){pullRequest(number:$PR_NUM){reviews(first:20){nodes{author{login}}} reviewThreads(first:1){nodes{id}}}}}" \
@@ -595,40 +547,11 @@ review_arrived() {
   [[ "${concl:-0}" -gt 0 ]]
 }
 
-# Everything that has to happen once the PR is merged, in one place.
-#
-# There are three exits that observe a merge — the check loop, the review loop
-# and the auto-merge loop — because the merge can land while any of them is
-# polling. Only the last one used to clean up, so a PR that merged during the
-# review wait (the common case: auto-merge fires the moment CodeRabbit resolves
-# its threads) left the branch checked out locally and alive on the remote.
-# Every exit calls this instead.
-#
-# The remote delete is not redundant with the repository's
-# `delete_branch_on_merge` setting: that setting does not reliably fire for a
-# merge performed by auto-merge under the Actions token, which is how every PR
-# here lands. Branches from previous runs were still on the remote with the
-# setting enabled.
-#
-# Sweep up branches left behind by *earlier* ships.
-#
-# cleanup_merged below deletes the branch this run shipped, but that only helps
-# from the moment it lands. Branches from runs that exited early — a failed
-# check, a timeout, a --no-wait — or from PRs merged in the web UI stay behind,
-# and they accumulate: six were still here (three of them on the remote, with
-# `delete_branch_on_merge` enabled) before this sweep existed.
-#
-# Merged-ness cannot be read from the commit graph here. Squash-merge gives
-# main a brand-new commit, so the branch tip is never an ancestor of it and
-# `git branch --merged` lists nothing. GitHub is the only thing that knows, so
-# ask it: delete a branch only when its PR reports MERGED.
-#
-# Deliberately conservative — it skips anything it cannot positively confirm:
-#   - main, and the branch this run is on
-#   - release-please branches (it manages and reuses its own)
-#   - any branch with no PR, or whose PR is OPEN or CLOSED-unmerged
-# A branch with unpushed local commits is left alone too: those commits exist
-# nowhere else, and no PR ever saw them.
+# Sweep up branches left by earlier ships: runs that exited early, --no-wait,
+# or PRs merged in the web UI. Squash-merge makes `git branch --merged` useless
+# (the tip is never an ancestor of main), so delete a branch only when GitHub
+# reports its PR as MERGED. Skips main, the current and shipped branches,
+# release-please branches, and any branch with unpushed commits.
 sweep_merged_branches() {
   command -v gh >/dev/null || return 0
 
@@ -640,9 +563,8 @@ sweep_merged_branches() {
     [[ "$b" == "main" || "$b" == "$current" || "$b" == "$BRANCH" ]] && continue
     [[ "$b" == release-please--* ]] && continue
 
-    # Unpushed commits mean GitHub never saw this work — never delete it.
-    # When the remote branch is already gone (the usual state after a merge),
-    # there is nothing to compare against, and the PR check below decides.
+    # Unpushed commits exist nowhere else: never delete. If the remote branch
+    # is already gone (usual after a merge), the PR check below decides.
     if git rev-parse --verify --quiet "refs/remotes/origin/$b" >/dev/null; then
       ahead="$(git rev-list --count "origin/$b..$b" 2>/dev/null || echo 1)"
       [[ "${ahead:-1}" -ne 0 ]] && continue
@@ -660,37 +582,35 @@ sweep_merged_branches() {
   return 0
 }
 
-# Nothing here is fatal. The PR is merged either way, and failing the script
-# over tidy-up would report a successful ship as an error.
+# Post-merge cleanup, called from all three wait loops because the merge can
+# land while any of them polls (usually the review loop). Nothing here is
+# fatal: failing over tidy-up would report a successful ship as an error.
+#
+# The remote delete is not redundant: `delete_branch_on_merge` does not
+# reliably fire for merges performed by auto-merge, which is how every PR
+# lands here.
 cleanup_merged() {
-  # A detached child shares the working tree with whatever the user is doing in
-  # it, minutes after handing the terminal back. It must not check anything out
-  # underneath them — by now they are on main, probably mid-edit. The parent
-  # already returned the tree to main before exiting, so there is nothing here
-  # for the child to do locally.
-  #
-  # `git branch -D` is safe from either, though: it moves no files, and by this
-  # point the branch is merged and the parent is no longer standing on it.
+  # A detached child shares the working tree with the user, who is probably
+  # mid-edit on main, so it must not check anything out; the parent already
+  # returned the tree to main. `git branch -D` moves no files, so it is safe
+  # from either.
   if [[ "$IS_CHILD" -eq 0 ]]; then
     git checkout main >/dev/null 2>&1 && git pull --quiet >/dev/null 2>&1 || true
   fi
-  # -D, not -d: the squash commit on main is a different object, so git does
-  # not consider the branch merged and -d refuses it.
+  # -D, not -d: the squash commit is a different object, so -d refuses.
   git branch -D "$BRANCH" >/dev/null 2>&1 || true
 
   git push origin --delete "$BRANCH" >/dev/null 2>&1 \
     && ok "deleted branch $BRANCH" \
     || true
 
-  # Also clear out anything earlier runs left behind. Opt out with
-  # SHIP_NO_SWEEP=1 if a stale branch is being kept on purpose.
+  # SHIP_NO_SWEEP=1 opts out, to keep a stale branch on purpose.
   [[ "${SHIP_NO_SWEEP:-0}" == "1" ]] || sweep_merged_branches
 
   git fetch origin --prune >/dev/null 2>&1 || true
 
-  # The child's own copy of this script, from the detach block. Removing it
-  # while executing it is fine: the file stays readable to this process until
-  # it exits, and bash has read it all by now.
+  # The child's script copy from the detach block. Removing it mid-run is
+  # fine: bash has read it all by now.
   [[ -n "${CHILD_COPY:-}" ]] && rm -f "$CHILD_COPY"
   [[ "$IS_CHILD" -eq 1 ]] && rm -f "$LOG_DIR/ship-$PR_NUM.sh"
   return 0
@@ -727,9 +647,8 @@ while :; do
     exit 5
   fi
 
-  # An update pushes a merge commit and the checks start over on it. Give
-  # GitHub one poll to register them, or the rollup below still shows the old
-  # commit's green results.
+  # An update restarts the checks on a new merge commit. Give GitHub one poll
+  # to register them, or the rollup still shows the old commit's green results.
   if update_if_behind; then
     (( $(date +%s) > deadline )) && { warn "timed out waiting for checks"; warn "$PR_URL"; exit 4; }
     sleep "$POLL"
@@ -766,13 +685,11 @@ print(f"{p} {f}")' "${REQUIRED_CHECKS[@]}" 2>/dev/null || echo "1 0")"
 done
 
 # --- settle review threads ----------------------------------------------------
-# `required_conversation_resolution` is ON for main, so ANY unresolved thread
-# blocks the merge even though the CodeRabbit check itself is not required.
-#
-# It is set on the *classic* branch protection, not the ruleset — the ruleset
-# reports `required_review_thread_resolution: false`, so reading only
-# `gh api repos/.../rulesets` says threads do not block, which is wrong. Both
-# layers apply. See docs/ci.md, "Branch protection".
+# `required_conversation_resolution` is ON for main, so any unresolved thread
+# blocks the merge even though the CodeRabbit check is not required. It lives
+# in the classic branch protection, not the ruleset (which misleadingly reports
+# `required_review_thread_resolution: false`); both layers apply. See
+# docs/ci.md, "Branch protection".
 
 info "Waiting for review threads to settle"
 review_deadline=$(( $(date +%s) + REVIEW_TIMEOUT ))
@@ -780,8 +697,7 @@ asked_resolve=0
 
 while :; do
   state="$(pr_json state '.state')"
-  # The usual finish: auto-merge fires the moment CodeRabbit resolves its
-  # threads, so the merge lands here rather than in the auto-merge loop below.
+  # The usual finish: auto-merge fires once CodeRabbit resolves its threads.
   [[ "$state" == "MERGED" ]] && { ok "merged"; cleanup_merged; echo; info "$PR_URL"; exit 0; }
 
   update_if_behind || true
@@ -789,8 +705,7 @@ while :; do
   n="$(unresolved_count)"
 
   if [[ "$n" -eq 0 ]]; then
-    # Nothing unresolved — but make sure that is because the review happened,
-    # not because it has not started. Otherwise threads land after we move on.
+    # Zero can also mean the review has not started; see review_arrived.
     if review_arrived; then
       ok "review complete, no unresolved threads"
       break

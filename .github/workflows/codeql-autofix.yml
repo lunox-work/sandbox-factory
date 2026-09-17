@@ -2,12 +2,9 @@ name: CodeQL autofix
 
 # When a PR's CodeQL check fails, ask CodeRabbit to push a fix to that branch.
 #
-# This is the one piece of this setup that writes code without being asked, so
-# it is deliberately narrow: it fires only on a *failed CodeQL check* for an
-# open PR, and it comments rather than committing anything itself. The fix
-# lands on the PR branch, where the required checks still gate the merge — so
-# the worst case is a bad suggestion that a human declines, not a bad fix that
-# reaches `main`.
+# Deliberately narrow: it fires only on a *failed CodeQL check* for an open PR,
+# and it comments rather than committing. The fix lands on the PR branch, where
+# the required checks still gate the merge.
 
 on:
   check_run:
@@ -40,8 +37,8 @@ jobs:
             exit 0
           fi
 
-          # CodeQL re-runs on every push, so without this guard a PR that takes
-          # three pushes to get green collects three identical comments.
+          # CodeQL re-runs on every push; the marker keeps this to one comment
+          # per PR.
           marker="<!-- codeql-autofix-requested -->"
           if gh pr view "$PR" --repo "$REPO" --json comments \
                --jq '.comments[].body' | grep -qF "$marker"; then
@@ -49,8 +46,8 @@ jobs:
             exit 0
           fi
 
-          # printf rather than a heredoc: a heredoc body inside a YAML block
-          # scalar has to sit at column 0 to terminate, which breaks the YAML.
+          # printf rather than a heredoc, whose terminator must sit at column 0
+          # and would break the YAML block scalar.
           printf '%s\n' \
             "$marker" \
             "CodeQL failed on this pull request, so it cannot merge until the alert is resolved." \

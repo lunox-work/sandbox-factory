@@ -1,8 +1,5 @@
-# Outputs.
-#
-# The values CD and the operator need. Nothing secret: `make secrets-push` reads
-# secret ARNs from the Secrets Manager API by name, so no secret value or ARN is
-# printed here.
+# Outputs for the operator. No secret value or ARN: `make secrets-push` finds
+# secrets by name.
 
 output "url" {
   description = "The platform."
@@ -69,8 +66,9 @@ output "public_subnet_ids" {
   value       = aws_subnet.public[*].id
 }
 
-# Everything CD needs, in one blob, so the workflow reads a single output
-# instead of eleven. Written to $GITHUB_ENV by the deploy job.
+# Everything a deploy needs, in one blob. cd.yml does not read it: it looks
+# the same values up in the live account (see DiscoverInfrastructure in
+# oidc.tf).
 output "cd_config" {
   description = "Consolidated configuration for the CD workflow."
   value = jsonencode({

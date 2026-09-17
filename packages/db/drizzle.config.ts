@@ -1,7 +1,7 @@
 /**
- * drizzle-kit config, used only by `npm run db:generate` to diff the schema
- * and emit SQL into `drizzle/`. Not loaded at runtime, and deliberately not
- * part of the tsconfig `include` — it is tooling config, not shipped code.
+ * drizzle-kit config, used only by `npm run db:generate` to emit SQL into
+ * `drizzle/`. Tooling, not shipped code: deliberately outside the tsconfig
+ * `include`.
  */
 
 import { defineConfig } from "drizzle-kit";
