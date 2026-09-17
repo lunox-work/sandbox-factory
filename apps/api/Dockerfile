@@ -25,6 +25,18 @@ COPY apps/extension/package.json ./apps/extension/
 # --ignore-scripts skips husky's `prepare`, which fails outside a git work tree.
 RUN npm ci --ignore-scripts
 
+# ---- prod-deps -------------------------------------------------------------
+# The runtime dependency tree, installed from the manifests alone.
+#
+# This used to be an `npm ci --omit=dev` at the end of the runtime stage, after
+# the built sources had been copied in. Every commit changes those sources, so
+# that layer could never be cached and the install ran on every deploy. Here its
+# only inputs are the manifests and the lockfile, so it is rebuilt when a
+# dependency changes and replayed from cache otherwise — the same property the
+# `deps` stage above has.
+FROM deps AS prod-deps
+RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
+
 # ---- build -----------------------------------------------------------------
 FROM deps AS build
 WORKDIR /repo
@@ -46,13 +58,13 @@ FROM node:22-alpine AS runtime
 WORKDIR /repo
 ENV NODE_ENV=production
 
-# Drops devDependencies (typescript, turbo) from the shipped image while
-# keeping the workspace symlinks the API resolves its imports through.
-COPY --from=build /repo/package.json /repo/package-lock.json ./
+# node_modules without devDependencies (typescript, turbo), plus the manifests
+# and the workspace symlinks the API resolves its imports through. Copied first
+# so the layers that change on every commit sit on top of the one that does not.
+COPY --from=prod-deps /repo ./
 COPY --from=build /repo/tooling ./tooling
 COPY --from=build /repo/packages ./packages
 COPY --from=build /repo/apps/api ./apps/api
-RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 
 # Unlike the web app, the API reads these at runtime rather than having them
 # compiled in — it is a Node process with an environment, so there is nothing

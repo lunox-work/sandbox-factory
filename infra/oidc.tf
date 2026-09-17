@@ -305,7 +305,8 @@ resource "aws_iam_role_policy_attachment" "github_plan_readonly" {
 # container's own attributes need.
 
 # Terraform addresses of the resources the plan role may not refresh. The plan
-# workflow drops them from its local state before planning — `terraform plan
+# workflow drops them from a local copy of the state before planning (never the
+# bucket, which this role cannot write) — `terraform plan
 # -exclude` would say this directly but postdates the pinned 1.9.8; see
 # .github/workflows/terraform.yml.
 output "plan_unrefreshable_resources" {

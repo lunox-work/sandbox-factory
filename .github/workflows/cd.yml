@@ -59,7 +59,19 @@ env:
 jobs:
   deploy:
     name: Deploy to production
-    runs-on: ubuntu-latest
+    # A native arm64 runner, because the image below is built for arm64 to
+    # match Fargate. On an x86 runner every `RUN` in the Dockerfile executes
+    # under QEMU emulation: the two `npm ci` layers took about a minute each,
+    # and run 35239958825 hung inside the build for almost two hours. Native,
+    # the same build takes seconds and that failure class does not exist.
+    # Free for public repositories.
+    runs-on: ubuntu-24.04-arm
+    # A healthy deploy is 4-7 minutes, most of it ECS draining the old task.
+    # Without this the limit is GitHub's default of six hours — and because the
+    # concurrency group above queues rather than cancels, one hung run holds
+    # every later deploy behind it for that long. That is how three merges sat
+    # undeployed on 2026-09-17 with nothing reporting a failure.
+    timeout-minutes: 20
     # Attach a GitHub Environment to require manual approval before this job
     # runs. Left unprotected at launch, which is the continuous deployment that
     # was asked for; adding a required reviewer later is a settings change, not
@@ -242,6 +254,9 @@ jobs:
 
       # ARM64 to match the Fargate runtime platform. A mismatch is not caught at
       # build time — it surfaces as "exec format error" when the task starts.
+      # `platforms:` stays explicit below even though the runner is arm64 too:
+      # it keeps the image correct if the runner ever changes, at the price of
+      # falling back to emulation rather than shipping the wrong architecture.
       # Whether this commit's image is already in the registry.
       #
       # The repository is IMMUTABLE, so pushing a tag that exists is an error
@@ -546,6 +561,7 @@ jobs:
     name: Tag the release
     needs: deploy
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     # A push to main that carried something releasable.
     #
     # workflow_dispatch is excluded: a redeploy of an older commit must not tag,
@@ -555,6 +571,8 @@ jobs:
     if: github.event_name == 'push' && needs.deploy.outputs.releasable == 'true'
     permissions:
       contents: write
+      # To dispatch release.yml for the tag — see the end of the tagging step.
+      actions: write
 
     steps:
       - uses: actions/checkout@v7
@@ -603,6 +621,15 @@ jobs:
           # version — the tags do, and the deploy job reads the base version back
           # from the last tag. That is what stops dropping the bump from making
           # the next run recompute the same number.
+          #
+          # An annotated tag records a tagger, and a runner has no git identity,
+          # so without these two lines `git tag -a` dies with "empty ident name".
+          # This step was written in #48 and first ran on 2026-09-17, when it
+          # failed exactly that way: production reported 1.1.0 and the newest
+          # tag was still 1.0.0. The identity is the one GitHub itself uses for
+          # commits made by Actions.
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "$tag" -m "sandbox-factory $NEXT" "$DEPLOYED"
           git push origin "$tag"
 
@@ -629,6 +656,16 @@ jobs:
             --title "sandbox-factory: v$NEXT" \
             --target "$DEPLOYED" \
             --notes "$body"
+
+          # Start release.yml by hand, because the tag push above will not.
+          #
+          # GitHub raises no workflow events for anything done with the default
+          # GITHUB_TOKEN — the same rule auto-merge.yml works around with
+          # AUTO_MERGE_TOKEN — so release.yml's `push: tags` trigger never sees
+          # a tag cut here, and the release would sit without its signed
+          # artifacts. `workflow_dispatch` is one of the two exceptions to that
+          # rule, and release.yml already takes the tag as an input for it.
+          gh workflow run release.yml -f tag="$tag"
 
           {
             echo "### Released \`$tag\`"

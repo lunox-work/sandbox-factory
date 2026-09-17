@@ -221,7 +221,9 @@ whether it is serving the commit it just built.
 updates both directly, and without `ignore_changes` the next `terraform apply`
 would roll production back to whatever image the state remembers.
 
-**Task architecture is ARM64.** CD builds `--platform linux/arm64` to match.
+**Task architecture is ARM64.** CD builds `--platform linux/arm64` to match,
+on a native `ubuntu-24.04-arm` runner — under emulation on an x86 runner the
+same build took minutes and once hung a deploy for two hours.
 A mismatch is not caught at build time — the task starts and dies with
 `exec format error`.
 

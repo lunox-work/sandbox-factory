@@ -51,9 +51,18 @@ jobs:
   plan:
     name: Plan
     runs-on: ubuntu-latest
-    # Forks cannot assume the deploy role, and should not be able to. Their PRs
+    # Pull requests from this repository only.
+    #
+    # Forks cannot assume the plan role, and should not be able to; their PRs
     # still get the validate job above.
-    if: github.event.pull_request.head.repo.full_name == github.repository || github.event_name == 'push'
+    #
+    # Not on a push to main either. That run used to assume the deploy role,
+    # which has no access to the state bucket, so it failed with a 403 on every
+    # infra merge — nine out of nine — and since the check is not required,
+    # nothing surfaced it. It also had nowhere to report: the plan is posted as a
+    # PR comment, and a push has no PR. The plan that matters is the one on the
+    # PR; after the merge, `make tf-plan` is the first half of the apply anyway.
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
     defaults:
       run:
         working-directory: infra
@@ -61,15 +70,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # Two roles, picked by trigger. A pull request's OIDC token carries
-      # `pull_request` in its `sub` claim, not a branch ref, so it cannot assume
-      # the deploy role — that role is scoped to `refs/heads/main` precisely to
-      # keep pull requests out of AWS. The plan role is the read-only identity
-      # trusted for pull requests from this repository, so the diff still
-      # appears on the PR that proposes it.
+      # The read-only plan role. A pull request's OIDC token carries
+      # `pull_request` in its `sub` claim rather than a branch ref, which is what
+      # this role trusts — and what keeps pull requests out of the deploy role,
+      # scoped to `refs/heads/main`.
       - uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ github.event_name == 'pull_request' && vars.AWS_PLAN_ROLE || vars.AWS_DEPLOY_ROLE }}
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE }}
           aws-region: us-east-1
           role-session-name: terraform-plan
 
@@ -92,24 +99,28 @@ jobs:
           # aws_secretsmanager_secret_version fails with AccessDenied. That
           # refresh was never useful: those resources carry ignore_changes on
           # secret_string, so the value read back is discarded either way.
+          # Dropping them from the state before planning skips it, while every
+          # other resource is still refreshed and genuine drift stays visible.
           #
-          # `terraform plan -exclude` would be the direct expression of this,
-          # but it landed well after the 1.9.8 pinned above. Dropping the eight
-          # versions from state before planning achieves the same thing: `state
-          # rm` edits only this runner's local copy of the state — the plan role
-          # cannot write to the state bucket, and a plan never persists state —
-          # so nothing downstream sees it. They are absent from the plan rather
-          # than shown as needing creation, which is why the summary below says
-          # so explicitly instead of leaving a reviewer to wonder.
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            for key in DATABASE_URL BETTER_AUTH_SECRET \
-                       GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET \
-                       GITHUB_CLIENT_ID GITHUB_CLIENT_SECRET \
-                       ATLASSIAN_CLIENT_ID ATLASSIAN_CLIENT_SECRET; do
-              terraform state rm "aws_secretsmanager_secret_version.app[\"$key\"]" >/dev/null 2>&1 || true
-            done
-            echo "Secret versions dropped from the local state: not refreshed, not planned." >&2
-          fi
+          # It has to be a *local copy* of the state. With the S3 backend
+          # configured, `terraform state rm` writes the result back to the
+          # bucket, which this read-only role cannot do. The first version of
+          # this step ran it against the backend with `|| true`, so it failed
+          # silently, nothing was dropped, and the plan died on AccessDenied —
+          # on the very PR that introduced it. Hence: pull the state to the
+          # runner, point a local backend at that file through an override, and
+          # edit that. Nothing is swallowed; a failure here fails the step.
+          state="$RUNNER_TEMP/plan.tfstate"
+          terraform state pull > "$state"
+          printf 'terraform {\n  backend "local" {\n    path = "%s"\n  }\n}\n' "$state" > backend_override.tf
+          terraform init -reconfigure -input=false
+
+          terraform state list \
+            | { grep '^aws_secretsmanager_secret_version\.' || true; } > "$RUNNER_TEMP/excluded.txt"
+          while read -r addr; do
+            terraform state rm "$addr" >/dev/null </dev/null
+          done < "$RUNNER_TEMP/excluded.txt"
+          echo "Dropped $(wc -l < "$RUNNER_TEMP/excluded.txt" | tr -d ' ') secret version(s) from the local state copy." >&2
 
           terraform plan -input=false -no-color -out=tfplan | tee plan.txt
         continue-on-error: true
@@ -130,7 +141,7 @@ jobs:
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: `#### Terraform plan \`${{ steps.plan.outcome }}\`\n\n> \`aws_secretsmanager_secret_version.app\` is excluded from this plan: the read-only plan role cannot read secret values. Those resources carry \`ignore_changes\` on \`secret_string\`, so no drift is hidden — but a change to the secret *containers* would still appear above.\n\n<details><summary>Show plan</summary>\n\n\`\`\`terraform\n${plan}\n\`\`\`\n\n</details>`,
+              body: `#### Terraform plan \`${{ steps.plan.outcome }}\`\n\n> Every \`aws_secretsmanager_secret_version.app[...]\` below reads **will be created**, and they are counted in the \`to add\` total. Ignore both: the read-only plan role cannot read secret values, so those resources are dropped from a local copy of the state before planning, and an apply would not recreate them. They carry \`ignore_changes\` on \`secret_string\`, so no drift is hidden — and a change to the secret *containers* still appears normally.\n\n<details><summary>Show plan</summary>\n\n\`\`\`terraform\n${plan}\n\`\`\`\n\n</details>`,
             });
 
       - name: Fail if the plan failed

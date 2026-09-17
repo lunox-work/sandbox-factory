@@ -313,6 +313,32 @@ if [[ "$MODE" == "new" ]]; then
   ok "committed"
 fi
 
+# --- start from the real main -------------------------------------------------
+# Local `main` is only as fresh as the last pull, and nothing above fetches when
+# the ship starts on main. A branch cut from a stale main opens BEHIND, and the
+# ruleset is strict, so auto-merge sits blocked until something updates it —
+# which then re-runs every check. PR #49 lost six minutes and a second CI run
+# to exactly that.
+#
+# Only for a branch this run just created: it has never been pushed, so
+# rewriting it is free. An existing branch may already be on the remote, and
+# the watch loop updates those through GitHub instead.
+if [[ "$MODE" == "new" ]]; then
+  if git fetch origin main --quiet >/dev/null 2>&1; then
+    if ! git merge-base --is-ancestor origin/main HEAD 2>/dev/null; then
+      if git rebase origin/main >/dev/null 2>&1; then
+        ok "rebased onto origin/main (local main was behind)"
+      else
+        git rebase --abort >/dev/null 2>&1 || true
+        warn "could not rebase onto origin/main cleanly — shipping as-is;"
+        warn "GitHub will report the conflict on the PR"
+      fi
+    fi
+  else
+    warn "could not fetch origin/main — shipping from local main as-is"
+  fi
+fi
+
 # --- verify before pushing ----------------------------------------------------
 # The pre-push hook runs this too, but failing here gives a clean error
 # instead of a hook abort halfway through a push.
@@ -486,6 +512,52 @@ threads_json() {
     --jq '.data.repository.pullRequest.reviewThreads.nodes' 2>/dev/null || echo "[]"
 }
 
+# Bring the PR branch up to date when main has moved past it.
+#
+# Asked of the compare API rather than read off `mergeStateStatus`, which only
+# says BEHIND once nothing else is blocking — while checks are pending it says
+# BLOCKED, so the branch used to be updated only in the final loop, after the
+# whole review wait, and the checks then ran a second time from the start.
+# Called from every loop so the re-run overlaps the waiting instead.
+update_if_behind() {
+  local behind
+  behind="$(gh api "repos/$REPO/compare/main...$BRANCH" --jq '.behind_by' 2>/dev/null || echo 0)"
+  [[ "${behind:-0}" =~ ^[0-9]+$ ]] || behind=0
+  [[ "$behind" -gt 0 ]] || return 1
+  info "branch is $behind commit(s) behind main; updating (checks re-run)"
+  gh pr update-branch "$PR_NUM" >/dev/null 2>&1 || warn "could not update the branch"
+  return 0
+}
+
+# Write the unresolved review comments to a file before anything resolves them.
+#
+# `--resolve coderabbit` and `--resolve force` both close threads nobody has
+# read: that is what keeps a ship unattended, and it is also how a review gets
+# thrown away. The threads stay on the PR, but nothing ever goes back to a
+# merged PR. A file next to the ship log is where the caller will look.
+save_review_feedback() {
+  local out="$LOG_DIR/pr-$PR_NUM.review.md"
+  gh api graphql -f query="query{repository(owner:\"${REPO%%/*}\",name:\"${REPO##*/}\"){pullRequest(number:$PR_NUM){reviewThreads(first:100){nodes{isResolved path line comments(first:1){nodes{author{login} body url}}}}}}}" \
+    --jq '.data.repository.pullRequest.reviewThreads.nodes' 2>/dev/null \
+  | python3 -c 'import sys,json
+try: t=json.load(sys.stdin)
+except Exception: raise SystemExit(1)
+t=[x for x in t if not x.get("isResolved")]
+if not t: raise SystemExit(1)
+print("# Review feedback on PR #{} — resolved unread by ship.sh\n".format(sys.argv[1]))
+print("Read this before the next change. Fix what is real in a follow-up PR.\n")
+for x in t:
+    c=(x.get("comments",{}).get("nodes") or [{}])[0]
+    print("## {}:{} ({})\n".format(x.get("path","?"), x.get("line") or "?", (c.get("author") or {}).get("login","?")))
+    print(c.get("url",""))
+    print()
+    print(c.get("body","").strip())
+    print()' "$PR_NUM" >"$out" 2>/dev/null \
+    && info "review feedback saved: $out" \
+    || rm -f "$out"
+  return 0
+}
+
 unresolved_count() {
   threads_json | python3 -c 'import sys,json
 try: t=json.load(sys.stdin)
@@ -647,6 +719,23 @@ while :; do
   [[ "$state" == "MERGED" ]] && { ok "merged while waiting"; cleanup_merged; echo; info "$PR_URL"; exit 0; }
   [[ "$state" == "CLOSED" ]] && die "PR was closed"
 
+  # Checks never start on a PR that conflicts with main, so waiting here would
+  # only run out the clock.
+  if [[ "$(pr_json mergeStateStatus '.mergeStateStatus')" == "DIRTY" ]]; then
+    warn "merge conflict with main — rebase required"
+    warn "$PR_URL"
+    exit 5
+  fi
+
+  # An update pushes a merge commit and the checks start over on it. Give
+  # GitHub one poll to register them, or the rollup below still shows the old
+  # commit's green results.
+  if update_if_behind; then
+    (( $(date +%s) > deadline )) && { warn "timed out waiting for checks"; warn "$PR_URL"; exit 4; }
+    sleep "$POLL"
+    continue
+  fi
+
   rollup="$(gh pr view "$PR_NUM" --json statusCheckRollup --jq '.statusCheckRollup' 2>/dev/null || echo "[]")"
   # Required check names are passed as argv, not interpolated into the source.
   read -r pending failed <<<"$(printf '%s' "$rollup" | python3 -c '
@@ -695,6 +784,8 @@ while :; do
   # threads, so the merge lands here rather than in the auto-merge loop below.
   [[ "$state" == "MERGED" ]] && { ok "merged"; cleanup_merged; echo; info "$PR_URL"; exit 0; }
 
+  update_if_behind || true
+
   n="$(unresolved_count)"
 
   if [[ "$n" -eq 0 ]]; then
@@ -718,6 +809,7 @@ while :; do
     case "$RESOLVE_MODE" in
       force)
         warn "$n unresolved thread(s) — resolving unread (--resolve force)"
+        save_review_feedback
         resolve_all_threads
         sleep 5
         continue
@@ -734,6 +826,7 @@ while :; do
       coderabbit)
         if [[ "$asked_resolve" -eq 0 ]]; then
           info "$n unresolved thread(s) — asking CodeRabbit to resolve its own"
+          save_review_feedback
           gh pr comment "$PR_NUM" --body "@coderabbitai resolve" >/dev/null 2>&1 \
             || warn "could not post the resolve comment"
           asked_resolve=1
@@ -794,10 +887,7 @@ while :; do
     warn "$PR_URL"
     exit 5
   fi
-  if [[ "$ms" == "BEHIND" ]]; then
-    info "branch behind main; updating"
-    gh pr update-branch "$PR_NUM" >/dev/null 2>&1 || true
-  fi
+  update_if_behind || true
 
   if (( $(date +%s) > merge_deadline )); then
     echo

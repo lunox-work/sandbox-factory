@@ -18,11 +18,15 @@ That will:
 0. Return you to an up-to-date `main` first, if you are on a stale branch and
    have nothing uncommitted.
 1. Move the changes off `main` onto a new branch (`main` is push-protected).
-2. Commit them with the title as the subject.
+2. Commit them with the title as the subject, then rebase that commit onto
+   `origin/main` if local `main` was behind — the ruleset is strict, so a
+   branch cut from a stale `main` cannot merge until it is updated, and
+   updating it re-runs every check.
 3. Run `npm run verify` — the same gate CI runs.
 4. Push and open a PR with the template filled in.
 5. Wait for `Test (Node 22)`, `Test (Node 24)`, and `Analyze`.
-6. Ask CodeRabbit to resolve its own review threads.
+6. Save any CodeRabbit feedback to `.git/ship/pr-<n>.review.md`, then ask
+   CodeRabbit to resolve its own review threads.
 7. Return you to an up-to-date `main`, then watch for auto-merge and delete the
    branch, locally and on the remote.
 
@@ -258,6 +262,18 @@ consequences shape this script:
 
 Prefer the default. Reach for `force` only when you have already read the
 feedback and decided it does not apply.
+
+Both `coderabbit` and `force` close threads that nobody has read, so before
+either does, the unresolved comments are written to
+`.git/ship/pr-<n>.review.md` — file, line, link and the comment itself. Read it
+before the next change and fix what is real in a follow-up. No file means there
+was nothing unresolved to save.
+
+While it waits, the script also keeps the branch current: if `main` moves past
+the PR, it calls `gh pr update-branch` straight away, in whichever loop it is
+in, so the re-run of the checks overlaps the review wait instead of following
+it. A PR that conflicts with `main` stops with exit code 5 at once — checks
+never start on a conflicted PR, so there is nothing to wait for.
 
 ### Rules this encodes
 

@@ -188,6 +188,10 @@ for the merge. Prefer it over doing the steps by hand; see
   stop. If a later turn genuinely needs to know the outcome, check it _then_,
   once: `gh pr view <n> --json state --jq .state`.
 
+  ship.sh resolves CodeRabbit's threads without reading them, but saves them
+  first. **If `.git/ship/pr-<n>.review.md` exists for your last ship, read it
+  before starting the next change** and fix what is real in a follow-up PR.
+
   Use `--foreground` only when the merge result is a precondition for work you
   are about to do in the same turn, which is rare — the next task almost always
   starts from `main` regardless.

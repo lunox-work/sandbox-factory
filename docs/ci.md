@@ -1,13 +1,14 @@
 # CI and automation
 
-Ten workflows in [`.github/workflows/`](../.github/workflows/), plus branch
+Eleven workflows in [`.github/workflows/`](../.github/workflows/), plus branch
 protection on `main`.
 
 The ones with a section below are the ones you interact with. The rest run
 unattended and are named here so nothing is a surprise: `cd.yml` (deploy and
 release — see [versioning.md](./versioning.md)), `release.yml` (signs and
-attaches artifacts when a tag appears), `terraform.yml` (validates infra, plans
-on PRs), `security-sweep.yml` (nightly), `codeql-autofix.yml` (asks CodeQL for
+attaches artifacts when a tag appears), `terraform.yml` (validates infra on
+PRs and on `main`; plans on PRs only, with the read-only plan role),
+`deploy-watchdog.yml` (daily: is production at `main`'s head?), `security-sweep.yml` (nightly), `codeql-autofix.yml` (asks CodeQL for
 a fix on its own findings).
 
 ## Branch protection
@@ -196,8 +197,11 @@ version — the tags do. The next version is computed from the last tag rather
 than from the file. Treat `package.json` as the floor for a first release, not
 as a record of what is live; `/version` and the footer answer that.
 
-Tagging the release fires [`release.yml`](../.github/workflows/release.yml),
-which builds, signs and attaches the artifacts. See
+The release job then dispatches
+[`release.yml`](../.github/workflows/release.yml), which builds, signs and
+attaches the artifacts. It has to be dispatched: the tag is pushed with the
+default `GITHUB_TOKEN`, and GitHub raises no `push` event for that, so
+`release.yml`'s own tag trigger only fires for a tag pushed by a person. See
 [versioning.md](./versioning.md) for what the footer does with all of this.
 
 Until 2026-09-17 this was release-please, which maintained an open release PR.
@@ -209,6 +213,23 @@ PR would bump to a version CD had already tagged.
 came from release-please and does not match Prettier's. Nothing generates it
 now; GitHub's release notes are the changelog, so the file is a historical
 record frozen at 1.0.0.
+
+### When a deploy goes wrong
+
+Deploys queue rather than cancel (`concurrency: deploy-production`), so they
+run in merge order and one stuck run holds up every later one. The deploy job
+has `timeout-minutes: 20` for that reason — a healthy deploy is four to seven
+minutes. GitHub keeps only one run waiting per group: a newer merge replaces
+the one already queued, which is fine, because deploying the newer commit
+includes the older.
+
+A failed or cancelled deploy cuts no tag, and the next successful one picks the
+version up: it counts commits since the last tag, so nothing is skipped. On
+2026-09-17 production reported `1.1.0` while the newest tag was `1.0.0` for
+exactly this reason — the deploy that would have tagged it hung.
+
+To retry by hand: `gh workflow run cd.yml`. A dispatched run deploys but never
+tags; only a push to `main` does.
 
 ## Publishing
 
