@@ -146,15 +146,18 @@ app in its footer, the API at `GET /version`, the extension through its **Show
 Version** command.
 
 That string identifies a build but proves nothing — the running code only
-repeats what the build stamped into it. Release artifacts also carry a signed
-provenance attestation, which anyone can check:
+repeats what the build stamped into it. What proves something is the
+signature: every deployment attests the image it runs and every file it
+publishes, so anyone can check that the live site serves code built from this
+repository, without trusting us:
 
 ```bash
-gh attestation verify sandbox-factory-web-7f3a9c1.tar.gz \
-  --repo lunox-work/sandbox-factory
+./scripts/verify-production.sh
 ```
 
-See [docs/versioning.md](./docs/versioning.md).
+See [docs/versioning.md](./docs/versioning.md) for how this is wired, what it
+deliberately does **not** prove, and why the commit sha rather than the version
+is the real identifier.
 
 ## Documentation
 

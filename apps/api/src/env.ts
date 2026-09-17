@@ -82,6 +82,14 @@ const envSchema = z.object({
 export type Env = z.infer<typeof envSchema>;
 
 /**
+ * Every variable the API reads. The environment is the one input to a running
+ * task that the image attestation does not cover, so the list is pinned by
+ * `test/env-surface.test.ts`: adding a variable is a reviewed change to what an
+ * operator can alter without changing the audited image.
+ */
+export const envKeys: readonly string[] = Object.keys(envSchema.shape);
+
+/**
  * Where a failed sign-in is sent: `APP_URL`, else the first CORS origin (the
  * web app in every current deploy), else the API's own origin, which is Better
  * Auth's default behaviour.

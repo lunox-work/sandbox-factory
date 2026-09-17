@@ -48,6 +48,10 @@ FROM node:22-alpine AS runtime
 WORKDIR /repo
 ENV NODE_ENV=production
 
+# Links the public GHCR mirror of this image (see cd.yml) to the repository,
+# so the package page points back at the source it was built from.
+LABEL org.opencontainers.image.source="https://github.com/lunox-work/sandbox-factory"
+
 # Production node_modules, manifests and workspace symlinks. Copied first so
 # the layers that change on every commit sit on top of the one that does not.
 COPY --from=prod-deps /repo ./

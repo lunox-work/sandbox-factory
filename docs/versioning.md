@@ -17,14 +17,18 @@ Release artifacts and every deployed image carry a **signed provenance
 attestation**, which is the part that is actually verifiable:
 
 ```bash
-# A release artifact, by file — full signature verification, no credentials
-gh attestation verify sandbox-factory-web-7f3a9c1.tar.gz \
-  --repo lunox-work/sandbox-factory
+# Everything the live site is serving, checked end to end
+./scripts/verify-production.sh
 
-# What production is running right now — fetch the signed statement by digest
-gh api "/repos/lunox-work/sandbox-factory/attestations/$(
+# The running API image, by digest — pulled from the public mirror and re-hashed
+gh attestation verify "oci://ghcr.io/lunox-work/sandbox-factory-api@$(
   curl -s https://platform.lunox.work/version | jq -r .imageDigest)" \
-  --jq '.attestations[0].bundle.dsseEnvelope.payload' | base64 -d | jq .
+  --repo lunox-work/sandbox-factory \
+  --signer-workflow lunox-work/sandbox-factory/.github/workflows/cd.yml
+
+# Any file the CDN served you
+curl -sO https://platform.lunox.work/index.html
+gh attestation verify index.html --repo lunox-work/sandbox-factory
 ```
 
 ## Identification is not proof
@@ -63,25 +67,99 @@ boot by `apps/api/src/image-digest.ts` from `ECS_CONTAINER_METADATA_URI_V4`, an
 endpoint served by the ECS agent describing the container as the _host_ sees
 it. It names the bytes actually executing, and no build step gets to choose it.
 
-| Step                           | What it proves                           |
-| ------------------------------ | ---------------------------------------- |
-| `GET /version` → `gitSha`      | a claim                                  |
-| `GET /version` → `imageDigest` | the bytes this process is running        |
-| attestation lookup by digest   | which workflow and commit produced them  |
-| verifying that bundle          | the statement is genuinely GitHub-signed |
+| Step                                   | What it proves                          |
+| -------------------------------------- | --------------------------------------- |
+| `GET /version` → `gitSha`              | a claim                                 |
+| `GET /version` → `imageDigest`         | the bytes this process is running       |
+| `gh attestation verify oci://…`        | which workflow and commit produced them |
+| `gh attestation verify <file>`         | the same, for each file the CDN served  |
+| `ecs:DescribeTasks` via the audit role | the running digest, according to AWS    |
 
-**Why `gh api` and not `gh attestation verify` for the image.** `verify`
-re-hashes the artifact, so it needs a local file or a pullable `oci://`
-reference. The image lives in a private ECR repository, so an outsider has
-neither. The tradeoff: `gh api` retrieves the signed statement without checking
-the Sigstore signature. For proof rather than strong indication, verify the
-returned bundle with a Sigstore verifier, or — with registry access — run
-`gh attestation verify oci://<uri>@<digest>`.
+`scripts/verify-production.sh` walks all of it against the live site.
 
-Two limits remain. The digest is reported by the server whose identity is in
-question, so this catches a stale or mismatched deployment, not a fully replaced
-server — for that, read the digest from ECS directly. And it covers the API
-only: the SPA is files on a CDN with no single digest.
+**The image is public.** Production runs it from a private ECR repository, and
+cd.yml pushes the same build to `ghcr.io/lunox-work/sandbox-factory-api` in the
+same step, so both registries hold one manifest with one digest. The mirror
+exists only so an outsider has something to pull — `verify` re-hashes what it
+pulls, and `gh api` alone would hand back the signed statement without checking
+its signature. A deploy fails if the mirror's digest is not what is about to
+run.
+
+```bash
+gh attestation verify "oci://ghcr.io/lunox-work/sandbox-factory-api@sha256:..." \
+  --repo lunox-work/sandbox-factory \
+  --signer-workflow lunox-work/sandbox-factory/.github/workflows/cd.yml \
+  --source-ref refs/heads/main
+```
+
+Both flags matter. Without them, an attestation from any workflow on any branch
+of this repository would satisfy the check.
+
+**The SPA is verified per file.** cd.yml hands `attest-build-provenance` a
+checksum list covering every file in `dist`, so each is a subject of one signed
+statement and anyone can check what they were actually served:
+
+```bash
+curl -sO https://platform.lunox.work/index.html
+gh attestation verify index.html --repo lunox-work/sandbox-factory
+```
+
+The script verifies `index.html`, reads the file list out of the statement it
+just verified, then downloads each file and compares hashes — so a file the CDN
+omits is noticed too. Subresource integrity was considered and rejected: SRI
+attributes live in `index.html`, served from the same bucket as the assets, so
+whoever can alter an asset can alter the attribute vouching for it.
+
+### Asking AWS instead
+
+The weak link is the first row: `imageDigest` is reported by the server whose
+identity is in question. That catches a stale or mismatched deployment, which is
+the realistic failure, but a server replaced wholesale could report an honest
+digest.
+
+`infra/audit.tf` defines a role **any AWS account may assume** to read the
+running digest from the ECS control plane, so the answer comes from AWS and this
+project is out of the chain:
+
+```bash
+AUDIT_ROLE_ARN=arn:aws:iam::…:role/sandbox-factory-public-audit \
+  ./scripts/verify-production.sh --aws
+```
+
+Three read-only calls — `ecs:ListTasks` and `ecs:DescribeTasks` on this one
+cluster, `ecr:DescribeImages` on the one repository — with an explicit deny on
+everything else. `ecs:DescribeTaskDefinition` is excluded deliberately: the task
+definition carries `ORIGIN_VERIFY` in plain text. It is off by default
+(`audit_role_public = false`), since a role with a `*` principal is not
+something to enable by accident; the ARN belongs in `SECURITY.md` once it is on.
+
+### What the environment can change
+
+The attestation covers the image, not the environment it was started with.
+`apps/api/src/env.ts` lists every variable the API reads and
+`apps/api/test/env-surface.test.ts` pins that list, so widening it is a reviewed
+change. None of them enables request logging or alters what is collected or
+stored — there is no log-level or debug variable to set, and adding one means
+updating that test.
+
+### Limits worth stating plainly
+
+- **Builds are not reproducible.** The link from source to digest rests on
+  trusting GitHub Actions and Sigstore. `cache-from: type=gha` rules
+  reproducibility out on its own: a shared mutable cache and byte-identical
+  rebuilds are incompatible.
+- **A targeted `index.html` is not detectable by its target alone.** We serve
+  the document, so one specific visitor could be handed something else. They
+  would find out only by running the verification above; nothing warns them.
+  This is why Signal ships no web app.
+- **Operations are not attested.** The code shows what enters the database. It
+  cannot show who queried it afterwards, or where a backup went. That is what a
+  DPA and an outside auditor are for, not a signature.
+- **A rollback ships an unsigned SPA.** A `workflow_dispatch` with a `sha`
+  builds a commit the attestation would name wrongly, so cd.yml signs nothing in
+  that run: the API reuses the image attested when that commit first deployed,
+  and the web files go up unsigned. Verification then fails loudly rather than
+  passing on a false statement. Deploy forward to restore it.
 
 ## Why the sha and not the version
 

@@ -550,11 +550,13 @@ jobs:
             echo "| Image | \`${{ steps.commit.outputs.sha }}\` |"
             echo "| Digest | \`${{ steps.digest.outputs.value }}\` |"
             echo
-            echo "Fetch this deployment's signed provenance, without trusting this run:"
+            echo "Verify this deployment's signed provenance, without trusting this run:"
             echo
             echo '```'
-            echo "gh api /repos/${{ github.repository }}/attestations/${{ steps.digest.outputs.value }}"
+            echo "gh attestation verify oci://${{ steps.mirror.outputs.repo }}@${{ steps.digest.outputs.value }} --repo ${{ github.repository }}"
             echo '```'
+            echo
+            echo "Or check the whole live site: \`./scripts/verify-production.sh\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ---- tag what just shipped ---------------------------------------------
