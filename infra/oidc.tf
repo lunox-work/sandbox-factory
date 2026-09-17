@@ -112,12 +112,36 @@ data "aws_iam_policy_document" "github_deploy" {
       "ecr:BatchCheckLayerAvailability",
       "ecr:BatchGetImage",
       "ecr:CompleteLayerUpload",
+      "ecr:DescribeRepositories",
       "ecr:GetDownloadUrlForLayer",
       "ecr:InitiateLayerUpload",
       "ecr:PutImage",
       "ecr:UploadLayerPart",
     ]
     resources = [aws_ecr_repository.api.arn]
+  }
+
+  # Find the resources before acting on them.
+  #
+  # cd.yml reads the registry URI, the bucket name and the distribution id out
+  # of the live account rather than having them duplicated in the workflow, so
+  # that renaming one in Terraform cannot leave CD pointing at something that
+  # no longer exists. That design needs the discovery calls as well as the
+  # actions above: permission to push an image is not permission to learn where
+  # to push it.
+  #
+  # Both calls here are account-wide list operations that take no resource, so
+  # AWS requires the wildcard; cd.yml filters the results by name. They leak
+  # the names of buckets and distributions in this account and nothing else —
+  # no contents, no configuration. `ecr:DescribeRepositories` does take a
+  # resource, so it stays pinned to this project's repository above.
+  statement {
+    sid = "DiscoverInfrastructure"
+    actions = [
+      "s3:ListAllMyBuckets",
+      "cloudfront:ListDistributions",
+    ]
+    resources = ["*"]
   }
 
   # Register a new task definition and roll the service.

@@ -144,14 +144,51 @@ fi
 if [[ -z "$TOKEN" ]]; then
   cat <<EOF
 
-Mint the replacement first, in a browser:
+Mint the replacement first, in a browser. GitHub has no API for issuing a
+token, so this part cannot be scripted.
 
   $NEW_TOKEN_URL
 
-  Resource owner        lunox-work        (the org, not your personal account)
-  Repository access     Only select repositories -> ${REPO#*/}
-  Permissions           Contents            Read and write
-                        Pull requests       Read and write
+1. Token name          anything; "auto-merge" is the obvious choice.
+
+2. Resource owner      lunox-work
+
+   A dropdown, and it defaults to your personal account. Pick the
+   organisation. A token owned by the wrong account authenticates fine and
+   then cannot see this repository at all.
+
+3. Repository access   "Only select repositories" -> ${REPO#*/}
+
+   Not "All repositories". This token merges to main; it has no business
+   anywhere else.
+
+4. Permissions         Repository permissions -> set two, leave the rest
+
+   Contents            Access: Read and write
+   Pull requests       Access: Read and write
+
+   Each is a dropdown next to its name, defaulting to "No access". Both must
+   read "Read and write" before the token will work:
+
+     Contents       lets auto-merge.yml push the squash commit to main. This
+                    is the permission that makes CI and CD run at all.
+     Pull requests  lets it read and merge the PR. A token with Contents but
+                    not this one passes a naive check and then fails at the
+                    merge, which is why this script tests both.
+
+   "Metadata: Read-only" switches itself on and cannot be removed. Expected.
+
+5. Expiration          90 days is the sensible maximum.
+
+   When it lapses, merges keep working and silently stop deploying. Put the
+   expiry in a calendar now; \`$(basename "$0") --check\` is how you confirm
+   later.
+
+6. Generate token, then copy it. GitHub shows it once.
+
+If the organisation requires approval for fine-grained tokens, it stays inert
+until an owner approves it under the org's settings. This script reports that
+case as "cannot see the repo".
 
 Revoke the old one on that same settings page once this finishes.
 
