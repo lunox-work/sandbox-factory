@@ -160,11 +160,23 @@ jobs:
         with:
           name: release-artifacts
 
-      # The tag the artifacts were built from, which is not always the ref this
-      # run is on: a dispatch runs from the default branch and carries the tag
-      # in its input instead.
+      # TAG: the tag the artifacts were built from, which is not always the ref
+      # this run is on — a dispatch runs from the default branch and carries the
+      # tag in its input instead.
+      #
+      # GH_REPO: this job never checks the repository out, it only downloads the
+      # artifacts, so there is no `.git` for gh to infer the repository from and
+      # it exits with "fatal: not a git repository". Naming the repo explicitly
+      # is the documented way to run gh outside a checkout, and it avoids adding
+      # a checkout purely to satisfy an inference step.
+      #
+      # This was never a dispatch-only problem: the job has never had a
+      # checkout, so it would have failed identically on a tag push. It had
+      # simply never run, because the trigger pattern never matched until
+      # 2026-09-17.
       - env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           gh release upload "$TAG" \
