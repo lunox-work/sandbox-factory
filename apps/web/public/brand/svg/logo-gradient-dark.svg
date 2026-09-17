@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none" stroke-width="56" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="Lunox code mark">
+  <title>Lunox code mark</title>
+  <defs><linearGradient id="sides" x1="0" y1="140" x2="0" y2="370" gradientUnits="userSpaceOnUse"><stop offset="0%" stop-color="#66D7FF"/><stop offset="25%" stop-color="#389EFF"/><stop offset="50%" stop-color="#4385FF"/><stop offset="75%" stop-color="#718FFF"/><stop offset="100%" stop-color="#B0A0FF"/></linearGradient><linearGradient id="slash" x1="0" y1="90" x2="0" y2="422" gradientUnits="userSpaceOnUse"><stop offset="0%" stop-color="#66D7FF"/><stop offset="25%" stop-color="#389EFF"/><stop offset="50%" stop-color="#4385FF"/><stop offset="75%" stop-color="#718FFF"/><stop offset="100%" stop-color="#B0A0FF"/></linearGradient></defs>
+  
+  <g><path d="M48 168 148 256 48 342" stroke="url(#sides)"/><path d="M300 118 230 394" stroke="url(#slash)"/><path d="M464 168 364 256 464 342" stroke="url(#sides)"/></g>
+</svg>

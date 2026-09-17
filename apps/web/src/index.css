@@ -195,10 +195,119 @@ button:disabled {
 
 /* ---- auth ---------------------------------------------------------------- */
 
+/* The signed-out screen. Everything here is scoped under .signin, so the
+   signed-in screens keep the plain surface they had. */
 .signin {
-  max-width: 22rem;
+  position: relative;
+  box-sizing: border-box;
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 2rem 1rem 1.25rem;
+  /* The glow is wider than a phone screen; without this it adds a horizontal
+     scrollbar instead of bleeding off the edges. */
+  overflow: hidden;
+}
+
+/* The logo's own gradient, blurred into the background behind it. The one
+   piece of atmosphere on the page — kept faint enough that the mark, not the
+   glow, is what reads as colour. */
+.signin::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 44rem;
+  height: 30rem;
+  transform: translate(-50%, -78%);
+  background: radial-gradient(
+    closest-side,
+    color-mix(in srgb, #1684fc 22%, transparent),
+    color-mix(in srgb, #9985ff 10%, transparent) 55%,
+    transparent
+  );
+  filter: blur(24px);
+  pointer-events: none;
+  animation: signin-glow 1.2s ease-out both;
+}
+
+.signin-body {
+  position: relative;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  width: 100%;
+  max-width: 21rem;
   text-align: center;
-  padding-top: 20vh;
+}
+
+/* One entrance, staggered by source order: each piece rises into place a
+   beat after the one above it, so the eye is led down to the buttons. */
+.signin-body > * {
+  animation: signin-rise 0.5s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+
+.signin-body > :nth-child(1) {
+  animation-delay: 0.05s;
+}
+.signin-body > :nth-child(2) {
+  animation-delay: 0.12s;
+}
+.signin-body > :nth-child(3) {
+  animation-delay: 0.19s;
+}
+.signin-body > :nth-child(n + 4) {
+  animation-delay: 0.28s;
+}
+
+@keyframes signin-rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+}
+
+@keyframes signin-glow {
+  from {
+    opacity: 0;
+  }
+}
+
+.signin-logo {
+  display: block;
+  width: 4.5rem;
+  height: 4.5rem;
+}
+
+.signin-brand {
+  margin: 1.1rem 0 0;
+  font-size: clamp(2.5rem, 9vw, 3.25rem);
+  font-weight: 650;
+  line-height: 1;
+  letter-spacing: -0.04em;
+}
+
+.signin-tagline {
+  margin: 0.75rem 0 0;
+  font-size: 1.05rem;
+  color: var(--muted);
+  letter-spacing: -0.005em;
+}
+
+.signin .error {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 1.75rem 0 0;
+  font-size: 0.875rem;
+  line-height: 1.45;
+  text-align: left;
+  border-radius: 0.75rem;
+  border-color: color-mix(in srgb, var(--danger) 35%, transparent);
+  background: color-mix(in srgb, var(--danger) 7%, transparent);
 }
 
 .muted {
@@ -208,18 +317,118 @@ button:disabled {
 .providers {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
-  margin-top: 1.5rem;
+  gap: 0.625rem;
+  width: 100%;
+  margin-top: 2.25rem;
 }
 
+.signin .error + .providers {
+  margin-top: 1rem;
+}
+
+/* Icon, label, and an empty third column the same width as the icon, so the
+   label is centred on the button rather than on the space beside the icon. */
 .provider {
-  padding: 0.6rem 0.75rem;
+  display: grid;
+  grid-template-columns: 1.25rem 1fr 1.25rem;
+  align-items: center;
+  gap: 0.5rem;
   width: 100%;
+  padding: 0.75rem 1rem;
+  border-radius: 0.75rem;
+  font-weight: 500;
+  font-size: 0.95rem;
+  background: color-mix(in srgb, var(--bg) 70%, transparent);
+  backdrop-filter: blur(8px);
+  transition:
+    transform 0.15s ease,
+    border-color 0.15s ease,
+    background-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+/* Overrides the global button hover, which turns the text accent-blue: on
+   these that would recolour GitHub's mark and fight Google's four colours. */
+.provider:hover:not(:disabled) {
+  color: var(--fg);
+  border-color: color-mix(in srgb, var(--fg) 30%, var(--border));
+  background: color-mix(in srgb, var(--fg) 4%, var(--bg));
+  transform: translateY(-1px);
+  box-shadow: 0 4px 14px -6px color-mix(in srgb, var(--fg) 25%, transparent);
+}
+
+.provider:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow: none;
+}
+
+.provider:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .provider:disabled {
-  opacity: 0.6;
+  opacity: 0.55;
   cursor: default;
+}
+
+.provider-icon {
+  display: grid;
+  place-items: center;
+  width: 1.25rem;
+  height: 1.25rem;
+}
+
+.provider-icon svg {
+  width: 100%;
+  height: 100%;
+}
+
+.spinner {
+  width: 1rem;
+  height: 1rem;
+  box-sizing: border-box;
+  border: 2px solid color-mix(in srgb, var(--fg) 25%, transparent);
+  border-top-color: var(--fg);
+  border-radius: 50%;
+  animation: signin-spin 0.7s linear infinite;
+}
+
+@keyframes signin-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Pinned to the bottom of the viewport and centred: here the footer is page
+   chrome, not the end of a column of content, so the rule above it goes. */
+.signin .build {
+  position: relative;
+  justify-content: center;
+  margin-top: 1.5rem;
+  padding-top: 0;
+  border-top: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .signin::before,
+  .signin-body > * {
+    animation: none;
+  }
+
+  .provider {
+    transition: none;
+  }
+
+  .provider:hover:not(:disabled) {
+    transform: none;
+  }
+
+  /* The spinner keeps turning, slowly: it is the only signal that the click
+     registered, and a frozen ring reads as a hang. */
+  .spinner {
+    animation-duration: 2s;
+  }
 }
 
 .session {

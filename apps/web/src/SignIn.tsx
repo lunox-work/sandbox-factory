@@ -1,7 +1,7 @@
 /**
- * The signed-out screen.
+ * The signed-out screen: the brand, and the provider buttons.
  *
- * Deliberately just the provider buttons: email and password is disabled on
+ * Deliberately no form: email and password is disabled on
  * the API, so offering a form here would produce a 400 from the server and no
  * account. The only thing this screen validates is the `?error=` the API
  * redirects back with — the providers own the whole credential flow.
@@ -11,6 +11,7 @@ import { useEffect, useState } from "react";
 
 import { PROVIDERS, signInWith, type ProviderId } from "./auth";
 import { BuildFooter } from "./BuildFooter";
+import { ProviderIcon } from "./ProviderIcon";
 
 /**
  * The failures worth explaining, by Better Auth's error code.
@@ -81,28 +82,57 @@ export function SignIn() {
   }
 
   return (
-    <main className="app signin">
-      <h1>Todos</h1>
-      <p className="muted">Sign in to see your todos.</p>
+    <main className="signin">
+      <div className="signin-body">
+        {/* Decorative: the heading below already says the name, so an alt
+            here would have a screen reader announce "Lunox" twice. The dark
+            variant is the same mark with a brighter gradient, which the
+            primary one loses against a dark background. */}
+        <picture>
+          <source
+            srcSet="/brand/svg/logo-gradient-dark.svg"
+            media="(prefers-color-scheme: dark)"
+          />
+          <img
+            className="signin-logo"
+            src="/brand/svg/logo-gradient.svg"
+            alt=""
+            width={72}
+            height={72}
+          />
+        </picture>
 
-      {error !== null && (
-        <p className="error" role="alert">
-          {error}
-        </p>
-      )}
+        <h1 className="signin-brand">Lunox</h1>
+        <p className="signin-tagline">See less, Build more</p>
 
-      <div className="providers">
-        {PROVIDERS.map((provider) => (
-          <button
-            key={provider.id}
-            type="button"
-            className="provider"
-            disabled={pending !== null}
-            onClick={() => void start(provider.id)}
-          >
-            {pending === provider.id ? "Redirecting…" : provider.label}
-          </button>
-        ))}
+        {error !== null && (
+          <p className="error" role="alert">
+            {error}
+          </p>
+        )}
+
+        <div className="providers">
+          {PROVIDERS.map((provider) => (
+            <button
+              key={provider.id}
+              type="button"
+              className="provider"
+              disabled={pending !== null}
+              onClick={() => void start(provider.id)}
+            >
+              <span className="provider-icon">
+                {pending === provider.id ? (
+                  <span className="spinner" aria-hidden="true" />
+                ) : (
+                  <ProviderIcon provider={provider.id} />
+                )}
+              </span>
+              <span className="provider-label">
+                {pending === provider.id ? "Redirecting…" : provider.label}
+              </span>
+            </button>
+          ))}
+        </div>
       </div>
 
       <BuildFooter />
