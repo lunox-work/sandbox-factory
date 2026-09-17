@@ -1,6 +1,6 @@
 {
   "name": "sandbox-factory",
-  "version": "0.0.0",
+  "version": "1.0.0",
   "description": "Core todo domain: the Todo type, title rules, filters, and counts.",
   "license": "MIT",
   "author": "feversoul",
