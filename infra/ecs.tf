@@ -67,7 +67,13 @@ resource "aws_ecs_task_definition" "api" {
       { name = "BETTER_AUTH_URL", value = local.api_origin },
       { name = "APP_URL", value = local.api_origin },
       { name = "CORS_ORIGINS", value = local.api_origin },
-      { name = "BUILD_SHA", value = var.api_image_tag },
+      # BUILD_SHA is deliberately absent. CD registers a task definition with
+      # the real commit sha on every deploy, so a copy here would only ever be
+      # the stale one: `api_image_tag` defaults to the bootstrap placeholder,
+      # and any apply that did not pass -var api_image_tag=<sha> would revert
+      # a correctly-reported build back to "bootstrap". The service ignores
+      # task_definition changes, so CD's revision is what actually runs.
+      #
       # Checked by the middleware in apps/api/src/routes.ts. Not a secret worth
       # a Secrets Manager entry: it is already visible in the CloudFront
       # distribution's origin config, and its only job is to distinguish CDN
