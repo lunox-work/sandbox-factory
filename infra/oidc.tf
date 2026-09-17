@@ -286,29 +286,49 @@ resource "aws_iam_role_policy_attachment" "github_plan_readonly" {
   policy_arn = "arn:aws:iam::aws:policy/ReadOnlyAccess"
 }
 
-# The one permission ReadOnlyAccess deliberately withholds, and the one `plan`
-# cannot do without: refreshing `aws_secretsmanager_secret_version` reads the
-# value back. Scoped to this project's secrets, so the role can read the eight
-# it is already responsible for planning and nothing else in the account.
+# Reading secret *values* is deliberately NOT granted.
 #
-# Worth being explicit about the trade: a workflow running with this role can
-# read these production credentials. It is already trusted to plan against the
-# account, it cannot write anything, and it is assumable only by pull requests
-# from this repository — a fork's PR carries its own repository in the subject
-# claim and is rejected. The alternative is `-refresh=false` on the plan, which
-# would hide genuine drift and is a worse trade.
-data "aws_iam_policy_document" "github_plan_secrets" {
+# This role previously carried `secretsmanager:GetSecretValue` on all eight
+# project secrets, so any pull request in this repository could print production
+# credentials by adding one step to the workflow. That was documented as the
+# price of `terraform plan` refreshing `aws_secretsmanager_secret_version`.
+#
+# It was not a real price. Those versions carry `ignore_changes =
+# [secret_string]` (see secrets.tf), so a refreshed value is compared against
+# nothing and discarded — plan cannot report drift on a field it is instructed
+# to ignore. The permission bought no signal and cost a standing credential
+# exposure, so the workflow now targets these resources instead: the plan
+# refreshes everything else normally, and genuine drift stays visible.
+#
+# The secret *containers* are still fully planned; only their values are out of
+# reach. ReadOnlyAccess already covers DescribeSecret, which is what the
+# container's own attributes need.
+
+# Terraform addresses of the resources the plan role may not refresh. The plan
+# workflow drops them from its local state before planning — `terraform plan
+# -exclude` would say this directly but postdates the pinned 1.9.8; see
+# .github/workflows/terraform.yml.
+output "plan_unrefreshable_resources" {
+  description = "Resources the read-only plan role cannot refresh, because it is denied their values. The plan workflow excludes them explicitly."
+  value       = ["aws_secretsmanager_secret_version.app"]
+}
+
+# Defence in depth: an explicit deny means that even if a future policy
+# attachment grants GetSecretValue account-wide, this role still cannot read
+# these eight values. An explicit deny cannot be overridden by any allow.
+data "aws_iam_policy_document" "github_plan_deny_secret_values" {
   statement {
-    sid       = "ReadProjectSecrets"
+    sid       = "DenyReadingProjectSecretValues"
+    effect    = "Deny"
     actions   = ["secretsmanager:GetSecretValue"]
-    resources = [for s in aws_secretsmanager_secret.app : s.arn]
+    resources = ["*"]
   }
 }
 
-resource "aws_iam_role_policy" "github_plan_secrets" {
-  name   = "read-project-secrets"
+resource "aws_iam_role_policy" "github_plan_deny_secret_values" {
+  name   = "deny-secret-values"
   role   = aws_iam_role.github_plan.id
-  policy = data.aws_iam_policy_document.github_plan_secrets.json
+  policy = data.aws_iam_policy_document.github_plan_deny_secret_values.json
 }
 
 # ReadOnlyAccess does not include reading secret *values*, and plan does not

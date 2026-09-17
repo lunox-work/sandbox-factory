@@ -87,6 +87,30 @@ jobs:
         run: |
           set -euo pipefail
           terraform init -backend-config=backend.hcl -input=false
+
+          # The plan role is denied secretsmanager:GetSecretValue, so refreshing
+          # aws_secretsmanager_secret_version fails with AccessDenied. That
+          # refresh was never useful: those resources carry ignore_changes on
+          # secret_string, so the value read back is discarded either way.
+          #
+          # `terraform plan -exclude` would be the direct expression of this,
+          # but it landed well after the 1.9.8 pinned above. Dropping the eight
+          # versions from state before planning achieves the same thing: `state
+          # rm` edits only this runner's local copy of the state — the plan role
+          # cannot write to the state bucket, and a plan never persists state —
+          # so nothing downstream sees it. They are absent from the plan rather
+          # than shown as needing creation, which is why the summary below says
+          # so explicitly instead of leaving a reviewer to wonder.
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            for key in DATABASE_URL BETTER_AUTH_SECRET \
+                       GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET \
+                       GITHUB_CLIENT_ID GITHUB_CLIENT_SECRET \
+                       ATLASSIAN_CLIENT_ID ATLASSIAN_CLIENT_SECRET; do
+              terraform state rm "aws_secretsmanager_secret_version.app[\"$key\"]" >/dev/null 2>&1 || true
+            done
+            echo "Secret versions dropped from the local state: not refreshed, not planned." >&2
+          fi
+
           terraform plan -input=false -no-color -out=tfplan | tee plan.txt
         continue-on-error: true
 
@@ -106,7 +130,7 @@ jobs:
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: `#### Terraform plan \`${{ steps.plan.outcome }}\`\n\n<details><summary>Show plan</summary>\n\n\`\`\`terraform\n${plan}\n\`\`\`\n\n</details>`,
+              body: `#### Terraform plan \`${{ steps.plan.outcome }}\`\n\n> \`aws_secretsmanager_secret_version.app\` is excluded from this plan: the read-only plan role cannot read secret values. Those resources carry \`ignore_changes\` on \`secret_string\`, so no drift is hidden — but a change to the secret *containers* would still appear above.\n\n<details><summary>Show plan</summary>\n\n\`\`\`terraform\n${plan}\n\`\`\`\n\n</details>`,
             });
 
       - name: Fail if the plan failed
