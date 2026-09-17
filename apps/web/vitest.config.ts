@@ -7,10 +7,54 @@
  */
 
 import react from "@vitejs/plugin-react";
-import { defineConfig } from "vitest/config";
+import { defineConfig, type Plugin } from "vitest/config";
+
+/**
+ * A fixed build record, rather than the real resolver `vite.config.ts` uses.
+ *
+ * The tests assert on the rendered version string, and against the live
+ * resolver those assertions would depend on the checkout's current sha and on
+ * whether the working tree happened to be dirty — so they would pass on a clean
+ * CI runner and fail for whoever was mid-edit.
+ *
+ * `test/build.ts` restates these values for the assertions; the first test in
+ * `build-footer.test.tsx` fails if the two drift.
+ */
+const TEST_BUILD = {
+  version: "1.4.2",
+  gitSha: "7f3a9c1e5b2d8a4f6c0e9b3a1d7f5c2e8a4b6d09",
+  gitShortSha: "7f3a9c1",
+  buildTime: "2026-09-17T09:14:00.000Z",
+  gitRef: "main",
+  dirty: false,
+};
+
+/**
+ * Stands in for the plugin of the same name in `vite.config.ts`.
+ *
+ * `src/build.ts` imports `virtual:build-info`, which nothing resolves under
+ * Vitest unless something provides it — so without this every test that touches
+ * the footer fails to resolve its imports.
+ */
+function buildInfoPlugin(): Plugin {
+  const id = "virtual:build-info";
+  const resolvedId = `\0${id}`;
+
+  return {
+    name: "sandbox-factory:build-info-test",
+    resolveId(source) {
+      return source === id ? resolvedId : undefined;
+    },
+    load(loadedId) {
+      return loadedId === resolvedId
+        ? `export default ${JSON.stringify(TEST_BUILD)};`
+        : undefined;
+    },
+  };
+}
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), buildInfoPlugin()],
   test: {
     // The components under test render DOM, so they need a DOM.
     environment: "jsdom",

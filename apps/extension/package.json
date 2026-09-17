@@ -68,6 +68,10 @@
         "command": "sandboxFactory.delete",
         "title": "sandbox-factory: Delete Todo",
         "icon": "$(trash)"
+      },
+      {
+        "command": "sandboxFactory.showVersion",
+        "title": "sandbox-factory: Show Version"
       }
     ],
     "menus": {

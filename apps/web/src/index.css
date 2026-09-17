@@ -365,3 +365,38 @@ button:disabled {
   border-color: var(--border);
   color: var(--fg);
 }
+
+/* The version readout. Present on every screen, and quiet enough on all of
+   them that it reads as chrome rather than as content. */
+.build {
+  margin-top: 2.5rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  font-size: 0.75rem;
+  color: var(--muted);
+  /* Tabular figures so a sha does not shift the line as digits change. */
+  font-variant-numeric: tabular-nums;
+}
+
+.build a {
+  color: inherit;
+  /* Underlined on hover only: a permanent link underline down here competes
+     with the content above it, but the sha has to look clickable once reached. */
+  text-decoration: none;
+}
+
+.build a:hover {
+  color: var(--fg);
+  text-decoration: underline;
+}
+
+/* A disagreement between this bundle and the API. Muted rather than red — it
+   is usually a deploy in flight, which resolves itself. */
+.build-mismatch::before {
+  content: "·";
+  margin-right: 0.5rem;
+}

@@ -34,6 +34,10 @@ COPY packages ./packages
 COPY apps/api ./apps/api
 COPY turbo.json ./
 
+# No build args here: nothing in this stage reads them. The API is a Node
+# process that reads its provenance from the environment at boot, so the values
+# belong in the runtime stage below, not compiled into anything.
+
 # Turbo builds packages/core and packages/shared first, in dependency order.
 RUN npx turbo run build --filter=@sandbox-factory/api
 
@@ -49,6 +53,19 @@ COPY --from=build /repo/tooling ./tooling
 COPY --from=build /repo/packages ./packages
 COPY --from=build /repo/apps/api ./apps/api
 RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
+
+# Unlike the web app, the API reads these at runtime rather than having them
+# compiled in — it is a Node process with an environment, so there is nothing
+# to bake. Redeclared here because ARGs do not cross stage boundaries, and
+# promoted to ENV so the running process can read them.
+ARG BUILD_VERSION
+ARG BUILD_SHA
+ARG BUILD_TIME
+ARG BUILD_REF
+ENV BUILD_VERSION=${BUILD_VERSION} \
+    BUILD_SHA=${BUILD_SHA} \
+    BUILD_TIME=${BUILD_TIME} \
+    BUILD_REF=${BUILD_REF}
 
 # node:alpine ships an unprivileged `node` user; root is never needed here.
 USER node

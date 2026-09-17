@@ -10,6 +10,7 @@ import { useState, type FormEvent } from "react";
 
 import { Account } from "./Account";
 import { signOut, useSession } from "./auth";
+import { BuildFooter } from "./BuildFooter";
 import { SignIn } from "./SignIn";
 import { useTodos } from "./useTodos";
 
@@ -23,6 +24,7 @@ export function App() {
     return (
       <main className="app">
         <p className="muted">Loading…</p>
+        <BuildFooter />
       </main>
     );
   }
@@ -155,6 +157,8 @@ function Todos({ name, onAccount }: { name: string; onAccount: () => void }) {
           ))}
         </ul>
       )}
+
+      <BuildFooter />
     </main>
   );
 }

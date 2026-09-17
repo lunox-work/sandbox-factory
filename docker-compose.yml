@@ -156,6 +156,20 @@ services:
       # The dev server proxies /api here; inside the network the API is
       # reachable by service name, not localhost.
       VITE_API_URL: http://api-dev:4000
+      # Build provenance, resolved on the host and passed in.
+      #
+      # `.git` is mounted with the rest of the repo, but `node:22-alpine` ships
+      # no git binary — so the resolver inside the container cannot read it and
+      # falls back to "unknown", which shows up as a version readout with no
+      # commit and no -dirty marker. Installing git into the dev image would
+      # cost a package install on every container start for one string.
+      #
+      # `make up` exports these; a bare `docker compose up` leaves them empty,
+      # which the resolver treats as absent and reports as unknown — correct,
+      # and the same thing that happened before.
+      BUILD_SHA: ${BUILD_SHA:-}
+      BUILD_REF: ${BUILD_REF:-}
+      BUILD_DIRTY: ${BUILD_DIRTY:-}
     ports:
       - "${WEB_PORT:-5173}:5173"
     volumes:

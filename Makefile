@@ -71,6 +71,19 @@ ship: ## Branch, verify, PR and merge the working tree (TITLE="fix: ...")
 
 ## ---- docker: dev --------------------------------------------------------
 
+# Build provenance, resolved here rather than in the containers: the repo is
+# mounted into them, but node:22-alpine has no git binary, so the resolver
+# inside would fall back to "unknown" and the version readout would lose its
+# commit. Exported so compose substitutes them into the dev services.
+#
+# `?=` so an already-set value (CI, or a deliberate override) wins, and every
+# assignment tolerates git failing rather than breaking `make up` over a
+# version string.
+BUILD_SHA ?= $(shell git rev-parse HEAD 2>/dev/null)
+BUILD_REF ?= $(shell git rev-parse --abbrev-ref HEAD 2>/dev/null)
+BUILD_DIRTY ?= $(shell test -n "$$(git status --porcelain 2>/dev/null)" && echo true || echo false)
+export BUILD_SHA BUILD_REF BUILD_DIRTY
+
 up: ## Start Postgres + API + web in containers (source mounted)
 	$(COMPOSE) --profile dev up -d
 	@echo "api  http://localhost:$${API_PORT:-4000}"

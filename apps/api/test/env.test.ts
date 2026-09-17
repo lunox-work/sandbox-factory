@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { objectStoreConfig, parseEnv } from "../src/env.js";
+import { buildInfo, objectStoreConfig, parseEnv } from "../src/env.js";
 
 /**
  * DATABASE_URL and the auth vars are required, so every case that is not about
@@ -154,5 +154,82 @@ test("objectStoreConfig returns the config when S3 is fully configured", () => {
       secretAccessKey: "secret",
       region: "us-east-1",
     },
+  );
+});
+
+/**
+ * Build provenance.
+ *
+ * The property worth holding onto: an unset build var degrades the report but
+ * never fails the boot. These vars describe the artifact, not what it needs to
+ * run, so the server must start without them — the guard against an
+ * unidentified *release* lives in the release workflow, not here.
+ */
+test("parseEnv accepts an environment with no build vars at all", () => {
+  const env = parseEnv(required);
+  assert.equal(env.BUILD_SHA, undefined);
+  assert.equal(env.BUILD_DIRTY, false);
+});
+
+test("buildInfo reports the unknown record when nothing is injected", () => {
+  assert.deepEqual(buildInfo(parseEnv(required)), {
+    version: "0.0.0",
+    gitSha: "unknown",
+    gitShortSha: "unknown",
+    buildTime: "unknown",
+    gitRef: "unknown",
+    dirty: false,
+  });
+});
+
+test("buildInfo reads an injected build", () => {
+  const env = parseEnv({
+    ...required,
+    BUILD_VERSION: "1.4.2",
+    BUILD_SHA: "7f3a9c1e5b2d8a4f6c0e9b3a1d7f5c2e8a4b6d09",
+    BUILD_TIME: "2026-09-17T09:14:00.000Z",
+    BUILD_REF: "main",
+  });
+  assert.deepEqual(buildInfo(env), {
+    version: "1.4.2",
+    gitSha: "7f3a9c1e5b2d8a4f6c0e9b3a1d7f5c2e8a4b6d09",
+    gitShortSha: "7f3a9c1",
+    buildTime: "2026-09-17T09:14:00.000Z",
+    gitRef: "main",
+    dirty: false,
+  });
+});
+
+// Derived rather than injected, so it cannot disagree with the sha it
+// abbreviates.
+test("buildInfo derives the short sha from the full one", () => {
+  const env = parseEnv({ ...required, BUILD_SHA: "abcdef1234567890" });
+  assert.equal(buildInfo(env).gitShortSha, "abcdef1");
+});
+
+// Each field falls back on its own: a build that recorded a sha but no
+// timestamp should still report the sha, which is the identifying field.
+test("buildInfo falls back per field, not as a whole record", () => {
+  const info = buildInfo(parseEnv({ ...required, BUILD_SHA: "abcdef1234567" }));
+  assert.equal(info.gitSha, "abcdef1234567");
+  assert.equal(info.buildTime, "unknown");
+  assert.equal(info.version, "0.0.0");
+});
+
+test("buildInfo reads the dirty flag as a boolean", () => {
+  assert.equal(
+    buildInfo(parseEnv({ ...required, BUILD_DIRTY: "true" })).dirty,
+    true,
+  );
+  assert.equal(
+    buildInfo(parseEnv({ ...required, BUILD_DIRTY: "false" })).dirty,
+    false,
+  );
+});
+
+test("parseEnv rejects a BUILD_DIRTY that is neither true nor false", () => {
+  assert.throws(
+    () => parseEnv({ ...required, BUILD_DIRTY: "yes" }),
+    /BUILD_DIRTY/,
   );
 });

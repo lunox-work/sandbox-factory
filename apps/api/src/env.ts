@@ -3,6 +3,7 @@
  * rather than at the first request with a confusing one.
  */
 
+import { unknownBuildInfo, type BuildInfoDto } from "@sandbox-factory/shared";
 import { z } from "zod";
 
 const envSchema = z.object({
@@ -67,6 +68,27 @@ const envSchema = z.object({
   // an explicit Domain to be sent at all. Unset for same-origin local dev:
   // a Domain attribute on localhost stops the cookie working entirely.
   AUTH_COOKIE_DOMAIN: z.string().optional(),
+
+  // ---- build provenance ---------------------------------------------------
+  //
+  // Injected at image build time by `scripts/build-info.mjs`; see
+  // docs/versioning.md.
+  //
+  // All optional, which is the opposite of the rule the secrets above follow,
+  // and deliberately so. A missing DATABASE_URL means the server cannot do its
+  // job; a missing BUILD_SHA means it cannot say which commit it is — real, but
+  // cosmetic, and refusing to boot over it would turn a reporting gap into an
+  // outage. The guard belongs earlier, at the point of building a release
+  // artifact, where it fails a pipeline instead of a deployment: the release
+  // workflow runs `build-info.mjs --require-identified` for exactly that.
+  BUILD_VERSION: z.string().optional(),
+  BUILD_SHA: z.string().optional(),
+  BUILD_TIME: z.string().optional(),
+  BUILD_REF: z.string().optional(),
+  BUILD_DIRTY: z
+    .enum(["true", "false"])
+    .optional()
+    .transform((value) => value === "true"),
 });
 
 export type Env = z.infer<typeof envSchema>;
@@ -81,6 +103,31 @@ export type Env = z.infer<typeof envSchema>;
  */
 export function appUrl(env: Env): string {
   return env.APP_URL ?? env.CORS_ORIGINS[0] ?? env.BETTER_AUTH_URL;
+}
+
+/**
+ * The build record this process reports, assembled from the environment.
+ *
+ * Each field falls back independently rather than the record falling back as a
+ * whole: a build that recorded a sha but no timestamp should still report the
+ * sha, since the sha is the field that identifies it.
+ *
+ * The short sha is derived here rather than injected, so it cannot disagree
+ * with the full one it is supposed to abbreviate.
+ */
+export function buildInfo(env: Env): BuildInfoDto {
+  const sha = env.BUILD_SHA ?? unknownBuildInfo.gitSha;
+  return {
+    version: env.BUILD_VERSION ?? unknownBuildInfo.version,
+    gitSha: sha,
+    gitShortSha:
+      sha === unknownBuildInfo.gitSha
+        ? unknownBuildInfo.gitShortSha
+        : sha.slice(0, 7),
+    buildTime: env.BUILD_TIME ?? unknownBuildInfo.buildTime,
+    gitRef: env.BUILD_REF ?? unknownBuildInfo.gitRef,
+    dirty: env.BUILD_DIRTY,
+  };
 }
 
 export function parseEnv(source: NodeJS.ProcessEnv = process.env): Env {

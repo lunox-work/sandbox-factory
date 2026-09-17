@@ -4,7 +4,30 @@
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
-      "outputs": ["dist/**"]
+      "outputs": ["dist/**"],
+      // The build-provenance vars, declared for two separate reasons.
+      //
+      // Turbo runs tasks in a strict environment, so an undeclared var is not
+      // merely uncached — it never reaches the task at all, and the bundle
+      // silently reports "unknown" while CI stays green.
+      //
+      // And they belong in the cache key. A bundle has the sha baked into it,
+      // so two builds of identical sources at different commits are genuinely
+      // different outputs. Without these, Turbo would replay the first and
+      // ship an artifact stamped with the wrong commit — exactly the failure
+      // this mechanism exists to rule out.
+      "env": [
+        "BUILD_VERSION",
+        "BUILD_SHA",
+        "BUILD_TIME",
+        "BUILD_REF",
+        "BUILD_DIRTY",
+        "GITHUB_SHA",
+        "GITHUB_REF_NAME"
+      ],
+      // The resolver lives outside every workspace, so a change to it would
+      // not otherwise invalidate anything.
+      "inputs": ["$TURBO_DEFAULT$", "../../scripts/build-info.mjs"]
     },
     "lint": {
       "dependsOn": ["^build"],

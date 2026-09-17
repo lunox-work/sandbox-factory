@@ -14,6 +14,11 @@ const production = process.argv.includes("--production");
 const watch = process.argv.includes("--watch");
 
 async function main() {
+  // Dynamic import because this file is CommonJS (the extension host requires
+  // it) and the resolver is ESM, shared with the Vite config so all three
+  // surfaces report provenance the same way.
+  const { resolveBuildInfo } = await import("../../scripts/build-info.mjs");
+
   const ctx = await esbuild.context({
     entryPoints: ["src/extension.ts"],
     bundle: true,
@@ -22,6 +27,12 @@ async function main() {
     target: "node20",
     outfile: "dist/extension.js",
     external: ["vscode"],
+    // Compile-time substitution: the extension host has no build environment
+    // to read, so the record has to be baked into the bundle. Declared for
+    // TypeScript in src/build.ts.
+    define: {
+      __BUILD_INFO__: JSON.stringify(resolveBuildInfo()),
+    },
     minify: production,
     sourcemap: !production,
     sourcesContent: false,

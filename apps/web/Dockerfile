@@ -28,6 +28,25 @@ COPY tooling ./tooling
 COPY packages ./packages
 COPY apps/web ./apps/web
 COPY turbo.json ./
+# Both files: `build` runs `tsc` before `vite`, and tsc resolves the import
+# through the .d.mts declaration. Copying only the .mjs fails the type-check.
+COPY scripts/build-info.mjs scripts/build-info.d.mts ./scripts/
+
+# Build provenance. Unlike the API, these are consumed at *build* time: a
+# browser has no environment to read, so Vite compiles the values into the
+# bundle and they cannot be changed afterwards without rebuilding. That is the
+# intended property — a cached bundle keeps reporting the build it actually is.
+#
+#   docker build -f apps/web/Dockerfile \
+#     --build-arg BUILD_SHA="$(git rev-parse HEAD)" .
+ARG BUILD_VERSION
+ARG BUILD_SHA
+ARG BUILD_TIME
+ARG BUILD_REF
+ENV BUILD_VERSION=${BUILD_VERSION} \
+    BUILD_SHA=${BUILD_SHA} \
+    BUILD_TIME=${BUILD_TIME} \
+    BUILD_REF=${BUILD_REF}
 
 RUN npx turbo run build --filter=@sandbox-factory/web
 

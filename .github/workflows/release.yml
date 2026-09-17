@@ -1,0 +1,155 @@
+name: Release artifacts
+
+# Runs when release-please publishes a tag — not on every push to main.
+#
+# Release-please accumulates commits into a release PR and tags only when that
+# PR is merged, so a tag is the repository's own statement that a specific
+# commit is a release. Building on every push instead would attest to commits
+# nobody decided to ship.
+on:
+  push:
+    tags: ["v*"]
+  # Manual runs, for re-attesting an existing tag after a workflow fix.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build (defaults to the current ref)"
+        required: false
+        type: string
+
+permissions: read-all
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  attest:
+    name: Build and attest
+    runs-on: ubuntu-latest
+    permissions:
+      # The three that signing needs, and nothing else.
+      #
+      # `id-token: write` is the load-bearing one: it mints the short-lived
+      # OIDC token that Sigstore exchanges for a signing certificate, which is
+      # what ties the signature to this workflow in this repository rather than
+      # to a key someone could copy. `attestations: write` stores the result.
+      # `contents: read` checks the tag out.
+      #
+      # Note this job cannot write to the release — uploading is a separate job
+      # below, so the job holding the signing identity never holds write access
+      # to the repository's contents.
+      contents: read
+      id-token: write
+      attestations: write
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      # Resolved once, into the environment, so every artifact below is stamped
+      # with one identical record. Resolving per-build would give each a
+      # different buildTime and make two artifacts of one release look like two
+      # different builds.
+      #
+      # --require-identified fails the job rather than shipping a release that
+      # cannot say which commit it came from. That is the whole point of the
+      # exercise, and without the guard it degrades silently to "unknown" — the
+      # API still boots, the footer still renders, and nothing is verifiable.
+      - name: Resolve build provenance
+        run: |
+          node scripts/build-info.mjs --require-identified --env >> "$GITHUB_ENV"
+          echo "--- build provenance ---"
+          node scripts/build-info.mjs --require-identified
+
+      - name: Build
+        run: npm run build
+
+      # Belt and braces: the guard above proves the *resolver* saw a sha, this
+      # proves the sha reached the artifact. They are different failures — a
+      # misconfigured `define`, or a turbo cache replaying an older bundle,
+      # would pass the first and fail this one.
+      - name: Confirm the commit reached the bundle
+        run: |
+          if ! grep -qF "$BUILD_SHA" apps/web/dist/assets/*.js; then
+            echo "::error::built bundle does not contain $BUILD_SHA — the build ran, but the provenance never made it in"
+            exit 1
+          fi
+          echo "ok: $BUILD_SHA is present in the web bundle"
+
+      - name: Package the web app
+        run: tar -czf sandbox-factory-web-${{ env.BUILD_SHORT_SHA }}.tar.gz -C apps/web/dist .
+
+      # `vsce` is not a dependency of this repo — the extension is packaged by
+      # hand when it is published, and adding the tool to the tree just to
+      # attest it would be a dependency added for CI's benefit. Fetched here
+      # instead, pinned, so the release still carries a signed .vsix.
+      - name: Package the extension
+        run: |
+          npx --yes @vscode/vsce@3.6.0 package --no-dependencies \
+            --out "../../sandbox-factory-vscode-${BUILD_SHORT_SHA}.vsix"
+        working-directory: apps/extension
+
+      # What turns a version string into a verifiable claim.
+      #
+      # Signs a SLSA provenance statement — this artifact, built by this
+      # workflow, from this commit — via Sigstore, and records it in a public
+      # transparency log. Anyone can then check it without trusting us:
+      #
+      #   gh attestation verify sandbox-factory-web-<sha>.tar.gz \
+      #     --repo lunox-work/sandbox-factory
+      #
+      # The signature covers the artifact's digest, so a modified artifact fails
+      # verification even though the version string inside it still reads right.
+      # That is the difference between this and the footer.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: |
+            sandbox-factory-web-*.tar.gz
+            sandbox-factory-vscode-*.vsix
+
+      # Handed to the upload job rather than uploaded here, so that this job
+      # keeps `contents: read`.
+      - uses: actions/upload-artifact@v5
+        with:
+          name: release-artifacts
+          path: |
+            sandbox-factory-web-*.tar.gz
+            sandbox-factory-vscode-*.vsix
+          if-no-files-found: error
+
+  upload:
+    name: Attach to release
+    needs: attest
+    # Only a real tag has a release to attach to; a manual re-attestation run
+    # stops after signing.
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      # The one write this job needs, and it is deliberately not combined with
+      # the signing job above: `id-token: write` and `contents: write` in one
+      # job means a single compromised step could both forge an attestation and
+      # publish what it attests to.
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v6
+        with:
+          name: release-artifacts
+
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${GITHUB_REF_NAME}" \
+            sandbox-factory-web-*.tar.gz \
+            sandbox-factory-vscode-*.vsix \
+            --clobber

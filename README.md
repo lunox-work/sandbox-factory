@@ -196,7 +196,28 @@ open a pull request. By participating you agree to the
 | [docs/architecture.md](./docs/architecture.md) | Workspace layout and dependency rules               |
 | [CONTRIBUTING.md](./CONTRIBUTING.md)           | Dev setup and pull request process                  |
 | [docs/ci.md](./docs/ci.md)                     | Workflows, branch protection, releases              |
+| [docs/versioning.md](./docs/versioning.md)     | Build provenance, and verifying a release           |
 | [docs/github-apps.md](./docs/github-apps.md)   | Installed apps and settings that live outside files |
+
+## Which version am I running?
+
+Every surface reports `<version>+<short sha>` — `1.4.2+7f3a9c1`. The web app
+shows it in the footer and logs it to the console, the API serves it at
+`GET /version`, and the extension has a **Show Version** command.
+
+That string identifies a build; it does not prove anything, since the running
+code is only repeating what the build stamped into it. Release artifacts also
+carry a signed provenance attestation, which anyone can check without trusting
+us:
+
+```bash
+gh attestation verify sandbox-factory-web-7f3a9c1.tar.gz \
+  --repo lunox-work/sandbox-factory
+```
+
+See [docs/versioning.md](./docs/versioning.md) for how this is wired, why the
+commit sha rather than the version is the real identifier, and why a deployed
+instance is usually — and healthily — not at `main`'s HEAD.
 
 ## Security
 

@@ -10,6 +10,7 @@
 import { useEffect, useState } from "react";
 
 import { PROVIDERS, signInWith, type ProviderId } from "./auth";
+import { BuildFooter } from "./BuildFooter";
 
 /**
  * The failures worth explaining, by Better Auth's error code.
@@ -103,6 +104,8 @@ export function SignIn() {
           </button>
         ))}
       </div>
+
+      <BuildFooter />
     </main>
   );
 }

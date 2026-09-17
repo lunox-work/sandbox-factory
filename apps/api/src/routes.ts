@@ -15,7 +15,12 @@
  * See `requireSession` below for how that is enforced.
  */
 
-import { createTodoSchema, updateTodoSchema } from "@sandbox-factory/shared";
+import {
+  createTodoSchema,
+  unknownBuildInfo,
+  updateTodoSchema,
+  type BuildInfoDto,
+} from "@sandbox-factory/shared";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import type { ErrorHandler } from "hono";
@@ -43,6 +48,17 @@ export interface AppOptions {
   emails?: EmailStore | undefined;
   /** Username reads and writes. Optional for the same reason as `emails`. */
   profiles?: UserProfileStore | undefined;
+  /**
+   * What this build reports about its own provenance.
+   *
+   * Passed in rather than read from the environment here, like every other
+   * option on this factory: the routes stay testable without a build step, and
+   * `server.ts` remains the one place that turns environment into config.
+   *
+   * Defaults to the unknown record so a test that does not care about versions
+   * does not have to supply one.
+   */
+  buildInfo?: BuildInfoDto | undefined;
 }
 
 /** What the session middleware puts on the context for the routes behind it. */
@@ -64,6 +80,7 @@ export function createApp({
   auth,
   emails,
   profiles,
+  buildInfo = unknownBuildInfo,
 }: AppOptions): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
 
@@ -80,10 +97,33 @@ export function createApp({
   );
 
   // Unauthenticated: used by containers and uptime checks.
-  app.get("/health", (c) => c.json({ status: "ok" }));
+  //
+  // Carries the version too, so a rollout can be watched from the same probe
+  // that says whether the process is up — "healthy" and "healthy *and running
+  // what I just deployed*" are different questions, and the second one is the
+  // one being asked during a deploy.
+  app.get("/health", (c) =>
+    c.json({ status: "ok", version: buildInfo.version, sha: buildInfo.gitSha }),
+  );
+
+  /**
+   * What this API was built from.
+   *
+   * Unauthenticated on purpose, and it is worth being deliberate about that:
+   * it publishes a commit sha for a public repository, which is not a secret —
+   * the same sha is on GitHub. It has to be reachable without a session
+   * because the sign-in screen renders before there is one, and because
+   * deploy tooling and provenance verification read it without credentials.
+   *
+   * The response is the build record verbatim, so the web app can compare it
+   * field for field against its own without either side reshaping it.
+   */
+  app.get("/version", (c) => c.json(buildInfo));
 
   if (auth === undefined) {
-    // No auth configured: serve health only. Returning 503 rather than 404
+    // No auth configured: serve health and version only — both are registered
+    // above, so a misconfigured server can still say which build it is, which
+    // is the first thing worth knowing about one. Returning 503 rather than 404
     // says "this server is misconfigured", not "you asked for the wrong URL".
     app.all("/api/*", (c) =>
       c.json({ error: "Authentication is not configured." }, 503),

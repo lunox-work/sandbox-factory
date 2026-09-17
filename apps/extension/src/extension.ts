@@ -7,9 +7,18 @@
  */
 
 import { ApiError, TodoClient } from "@sandbox-factory/client";
+import {
+  buildBanner,
+  buildInfoSchema,
+  commitUrl,
+  formatVersion,
+  sameBuild,
+  type BuildInfoDto,
+} from "@sandbox-factory/shared";
 import { isValidTitle } from "sandbox-factory";
 import * as vscode from "vscode";
 
+import { extensionBuild } from "./build";
 import { TodoTreeProvider, type TodoNode } from "./tree";
 
 /**
@@ -20,6 +29,12 @@ import { TodoTreeProvider, type TodoNode } from "./tree";
 const TOKEN_KEY = "sandboxFactory.token";
 
 export function activate(context: vscode.ExtensionContext): void {
+  // An output channel rather than a notification: this is reference
+  // information, and it needs to still be there when someone goes looking for
+  // it, not three seconds after activation.
+  const output = vscode.window.createOutputChannel("sandbox-factory");
+  output.appendLine(buildBanner("sandbox-factory", extensionBuild));
+
   const client = new TodoClient({
     baseUrl: baseUrl(),
     getToken: () =>
@@ -102,6 +117,41 @@ export function activate(context: vscode.ExtensionContext): void {
       },
     ),
 
+    output,
+
+    /**
+     * Reports this build, and the API's.
+     *
+     * Worth showing both here rather than only the extension's own, because
+     * these two drift for a reason the web app's pair does not: the extension
+     * updates when the marketplace ships it and the user accepts it, which can
+     * be days behind the API it is talking to. The web app at least reloads
+     * from the same deploy.
+     */
+    vscode.commands.registerCommand("sandboxFactory.showVersion", async () => {
+      const api = await fetchApiBuild();
+      output.appendLine(buildBanner("sandbox-factory", extensionBuild));
+      output.appendLine(
+        api === undefined
+          ? `API at ${baseUrl()} did not report a version.`
+          : buildBanner("API", api),
+      );
+      output.show(true);
+
+      const link = commitUrl(extensionBuild);
+      const detail =
+        api !== undefined && !sameBuild(extensionBuild, api)
+          ? ` · API ${formatVersion(api)}`
+          : "";
+      const choice = await vscode.window.showInformationMessage(
+        `sandbox-factory ${formatVersion(extensionBuild)}${detail}`,
+        ...(link === undefined ? [] : ["View commit"]),
+      );
+      if (choice === "View commit" && link !== undefined) {
+        await vscode.env.openExternal(vscode.Uri.parse(link));
+      }
+    }),
+
     // A changed base URL needs a new client, which means a reload.
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (event.affectsConfiguration("sandboxFactory.apiBaseUrl")) {
@@ -124,6 +174,30 @@ export function activate(context: vscode.ExtensionContext): void {
 
 export function deactivate(): void {
   // Nothing to tear down: every disposable is registered on the context.
+}
+
+/**
+ * Asks the configured API what it is running.
+ *
+ * Undefined on any failure, like the web app's equivalent: a version readout
+ * is not worth an error dialog, and "did not report a version" is a more
+ * honest thing to print than a stack trace.
+ *
+ * Deliberately not routed through `TodoClient` — /version sits outside /api/v1
+ * and needs no session, and adding a method there for it would put an
+ * unauthenticated endpoint on a client whose every other call is authenticated.
+ */
+async function fetchApiBuild(): Promise<BuildInfoDto | undefined> {
+  try {
+    const response = await fetch(new URL("/version", baseUrl()));
+    if (!response.ok) {
+      return undefined;
+    }
+    const parsed = buildInfoSchema.safeParse(await response.json());
+    return parsed.success ? parsed.data : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function baseUrl(): string {

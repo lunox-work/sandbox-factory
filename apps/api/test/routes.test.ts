@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import {
+  buildInfoSchema,
+  unknownBuildInfo,
+  type BuildInfoDto,
+} from "@sandbox-factory/shared";
+
 import type { Auth } from "../src/auth.js";
 import { createApp } from "../src/routes.js";
 import { createInMemoryStore } from "../src/store.js";
@@ -30,6 +36,16 @@ const seed = [
     createdAt: "2026-09-16T00:00:00.000Z",
   },
 ];
+
+/** A build record with every field populated, for the version routes below. */
+const build: BuildInfoDto = {
+  version: "1.4.2",
+  gitSha: "7f3a9c1e5b2d8a4f6c0e9b3a1d7f5c2e8a4b6d09",
+  gitShortSha: "7f3a9c1",
+  buildTime: "2026-09-17T09:14:00.000Z",
+  gitRef: "main",
+  dirty: false,
+};
 
 /**
  * A stand-in for Better Auth.
@@ -100,10 +116,76 @@ function json(body: unknown) {
   };
 }
 
-test("GET /health reports ok", async () => {
+test("GET /health reports ok, with the build it is running", async () => {
   const res = await app().request("/health");
   assert.equal(res.status, 200);
-  assert.deepEqual(await res.json(), { status: "ok" });
+  // Defaults to the unknown record: `app()` passes no buildInfo, which is the
+  // same situation as a container built without the build args.
+  assert.deepEqual(await res.json(), {
+    status: "ok",
+    version: "0.0.0",
+    sha: "unknown",
+  });
+});
+
+test("GET /health carries the injected build", async () => {
+  const server = createApp({
+    store: createInMemoryStore(seed),
+    corsOrigins: ["http://localhost:5173"],
+    auth: fakeAuth(),
+    buildInfo: build,
+  });
+  assert.deepEqual(await (await server.request("/health")).json(), {
+    status: "ok",
+    version: build.version,
+    sha: build.gitSha,
+  });
+});
+
+test("GET /version returns the build record verbatim", async () => {
+  const server = createApp({
+    store: createInMemoryStore(seed),
+    corsOrigins: ["http://localhost:5173"],
+    auth: fakeAuth(),
+    buildInfo: build,
+  });
+  const res = await server.request("/version");
+  assert.equal(res.status, 200);
+  // Parsed with the shared schema rather than compared field by field: this is
+  // the contract the web app and the extension read, and a response that no
+  // longer satisfies it is the failure worth catching here.
+  assert.deepEqual(buildInfoSchema.parse(await res.json()), build);
+});
+
+test("GET /version falls back to the unknown record", async () => {
+  const res = await app().request("/version");
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), unknownBuildInfo);
+});
+
+// The sign-in screen renders before there is a session, and deploy tooling
+// reads this without credentials — so a session must not be required.
+test("GET /version needs no session", async () => {
+  const server = createApp({
+    store: createInMemoryStore(seed),
+    corsOrigins: ["http://localhost:5173"],
+    auth: fakeAuth({ signedIn: false }),
+    buildInfo: build,
+  });
+  assert.equal((await server.request("/version")).status, 200);
+});
+
+// A server that cannot serve data can still say which build it is, which is the
+// first thing worth knowing when diagnosing why it is misconfigured.
+test("GET /version answers even with no auth configured", async () => {
+  const server = createApp({
+    store: createInMemoryStore(seed),
+    corsOrigins: ["http://localhost:5173"],
+    buildInfo: build,
+  });
+  const res = await server.request("/version");
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), build);
 });
 
 test("GET /api/v1/todos returns the seeded todos", async () => {

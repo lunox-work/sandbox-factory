@@ -67,3 +67,10 @@ export type TodoListDto = z.infer<typeof todoListSchema>;
 export type CreateTodoInput = z.infer<typeof createTodoSchema>;
 export type UpdateTodoInput = z.infer<typeof updateTodoSchema>;
 export type ErrorDto = z.infer<typeof errorSchema>;
+
+/**
+ * Build provenance. Re-exported here so consumers import one module, and kept
+ * in its own file because it is a different contract from the todo wire types
+ * above — it describes the artifact, not the data it serves.
+ */
+export * from "./build-info.js";

@@ -1,4 +1,9 @@
 {
   "extends": "@sandbox-factory/tsconfig/react.json",
-  "include": ["src", "vite.config.ts"]
+  "include": [
+    "src",
+    "vite.config.ts",
+    "vitest.config.ts",
+    "../../scripts/build-info.d.mts"
+  ]
 }

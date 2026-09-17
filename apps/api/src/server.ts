@@ -11,11 +11,14 @@ import {
   createProfileStore,
 } from "@sandbox-factory/db";
 
+import { buildBanner } from "@sandbox-factory/shared";
+
 import { createAuth } from "./auth.js";
-import { appUrl, parseEnv } from "./env.js";
+import { appUrl, buildInfo, parseEnv } from "./env.js";
 import { createApp } from "./routes.js";
 
 const env = parseEnv();
+const build = buildInfo(env);
 
 const connection = createConnection({ url: env.DATABASE_URL });
 
@@ -58,9 +61,16 @@ const app = createApp({
   auth,
   emails,
   profiles,
+  buildInfo: build,
 });
 
 const server = serve({ fetch: app.fetch, port: env.PORT }, (info) => {
+  // Logged on every boot, before anything can go wrong, so the first line in a
+  // container's logs says which build produced everything below it. This is the
+  // line to quote when reporting what a deployed instance was running — log
+  // retention outlives the deployment that wrote it, while `GET /version` only
+  // ever answers for the process running right now.
+  console.log(buildBanner("sandbox-factory API", build));
   console.log(`API listening on http://localhost:${info.port}`);
 });
 

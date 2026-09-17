@@ -82,6 +82,26 @@ jobs:
           # do touches another test's data.
           DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
 
+      # The provenance plumbing is four injection sites that all have to agree,
+      # and every one of them fails *quietly*: a bad `define`, an undeclared
+      # turbo env var or a renamed field does not break the build, it just
+      # stamps the artifact "unknown". Nothing else in this suite would notice.
+      #
+      # `npm run build` above ran with no BUILD_* set, which is the local-dev
+      # path — so this rebuilds with an injected sha, which is the deploy path,
+      # and checks it actually arrived.
+      - name: Confirm the build records its commit
+        env:
+          BUILD_SHA: ${{ github.sha }}
+          BUILD_REF: ${{ github.ref_name }}
+        run: |
+          npx turbo run build --filter=@sandbox-factory/web --force
+          if ! grep -qF "$BUILD_SHA" apps/web/dist/assets/*.js; then
+            echo "::error::the web bundle does not contain $BUILD_SHA — build provenance is not reaching the artifact (see docs/versioning.md)"
+            exit 1
+          fi
+          echo "ok: the bundle records $BUILD_SHA"
+
       # A skipped suite is indistinguishable from a passing one in the summary
       # above, and this is the suite where that matters: it is the only
       # coverage migrations 0007-0011 have. If the service were unreachable the

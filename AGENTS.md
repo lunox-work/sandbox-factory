@@ -109,6 +109,47 @@ undefined`. Narrow it rather than using `!`.
 - Do not add `@types/node` to `packages/client` — its `types: []` is what keeps
   `node:` imports out of the browser and extension bundles.
 
+### Build provenance
+
+Every surface reports the commit it was built from; see
+[docs/versioning.md](./docs/versioning.md). Everything here fails **silently** —
+a broken injection does not break the build, it just stamps the artifact
+`unknown` — so the rules are about keeping the guards intact.
+
+- **The web app gets its record from a `virtual:build-info` module, not
+  `define`.** `define` substitutes during bundling and the dev server does not
+  bundle, so the identifier survives into the served module as an undeclared
+  global — the footer read `0.0.0` through all of `npm run dev` while the
+  production build and the whole test suite stayed green. Do not "simplify" it
+  back to `define`. `apps/web/test/build-injection.test.ts` fails if you do.
+- **`scripts/build-info.mjs` is the only resolver.** Four build sites read it.
+  Do not inline a second copy of this logic: two resolvers that disagreed about
+  short-sha length would report a permanent mismatch between artifacts built
+  from one commit.
+- It stays plain JavaScript. It runs in a Vite config, an esbuild config and
+  `node` in CI, all before the build that would compile TypeScript.
+  `scripts/build-info.d.mts` types it — **the `.d.mts` extension is
+  load-bearing**, a `.d.ts` beside an `.mjs` is silently ignored and the import
+  degrades to `any`.
+- **Leave the `env` block on `build` in `turbo.json` alone.** Turbo runs tasks
+  in a strict environment, so an undeclared var never reaches the task; and
+  these are part of the cache key, or turbo replays a bundle stamped with the
+  wrong commit.
+- The release workflow runs `--require-identified` and CI greps the built bundle
+  for the sha. They catch different failures — the first that the resolver saw a
+  sha, the second that it reached the artifact. Keep both.
+- **The API's `BUILD_*` vars are optional on purpose**, unlike `DATABASE_URL`.
+  A missing sha is cosmetic; refusing to boot over it turns a reporting gap into
+  an outage. The guard belongs at build time.
+- **The dev containers get their provenance from the Makefile, not from git.**
+  `make up` mounts the repo — `.git` and all — but `node:22-alpine` has no git
+  binary, so the resolver inside reports `unknown`. The `BUILD_*` exports near
+  `up:` are what make the version readout work there; removing them silently
+  drops the sha from `make up` while `make dev` keeps working.
+- Adding a build arg to a Dockerfile means adding it in **both** the build and
+  runtime stages — ARGs do not cross stage boundaries. An undeclared ARG is the
+  empty string, not unset, which is why the resolver treats empty as absent.
+
 ### Build and tooling
 
 - **Make targets must work from a fresh clone.** `make up` and `make ext` are
