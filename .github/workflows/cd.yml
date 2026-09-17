@@ -86,11 +86,32 @@ jobs:
           # Every value CD needs comes from the live infrastructure rather than
           # being duplicated here, so renaming a resource in Terraform cannot
           # leave this workflow pointing at something that no longer exists.
-          {
-            echo "ecr=$(aws ecr describe-repositories --repository-names "$PROJECT-api" --query 'repositories[0].repositoryUri' --output text)"
-            echo "bucket=$(aws s3api list-buckets --query "Buckets[?starts_with(Name, '$PROJECT-web-')].Name | [0]" --output text)"
-            echo "distribution=$(aws cloudfront list-distributions --query "DistributionList.Items[?Aliases.Items && contains(Aliases.Items, 'platform.lunox.work')].Id | [0]" --output text)"
-          } >> "$GITHUB_OUTPUT"
+          #
+          # Each lookup is checked before it is written. A failed query and a
+          # query that matched nothing both yield an empty string or the literal
+          # "None", and neither aborts the step on its own — the failure then
+          # surfaces much later as a malformed argument built from the blank,
+          # such as `docker buildx --tag :<sha>` rejecting an "invalid reference
+          # format". Naming the missing resource here costs one line and points
+          # at the actual problem, which is that the infrastructure is not there.
+          resolve() {
+            local name="$1" value
+            shift
+            value="$("$@")" || value=""
+            if [ -z "$value" ] || [ "$value" = "None" ]; then
+              echo "::error::could not resolve $name — is the infrastructure applied in $AWS_REGION?"
+              exit 1
+            fi
+            echo "$name=$value" >> "$GITHUB_OUTPUT"
+          }
+
+          resolve ecr aws ecr describe-repositories \
+            --repository-names "$PROJECT-api" \
+            --query 'repositories[0].repositoryUri' --output text
+          resolve bucket aws s3api list-buckets \
+            --query "Buckets[?starts_with(Name, '$PROJECT-web-')].Name | [0]" --output text
+          resolve distribution aws cloudfront list-distributions \
+            --query "DistributionList.Items[?Aliases.Items && contains(Aliases.Items, 'platform.lunox.work')].Id | [0]" --output text
 
       - uses: actions/setup-node@v7
         with:
@@ -100,16 +121,32 @@ jobs:
       - name: Install dependencies
         run: npm ci --ignore-scripts
 
+      # The released version, from the one workspace release-please owns. The
+      # web build resolves this itself through scripts/build-info.mjs, but the
+      # API reads BUILD_VERSION from its environment at runtime and has no
+      # repository to fall back to, so the value has to be passed into the image.
+      - name: Resolve the released version
+        id: version
+        run: |
+          version="$(node -p "require('./packages/core/package.json').version")"
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+          echo "Building version $version"
+
       # ---- build the SPA ---------------------------------------------------
 
       # BUILD_SHA is not cosmetic here. apps/web/vite.config.ts compiles it into
       # the bundle, and the verification step at the end reads it back off the
       # live site to prove this exact build is serving.
+      #
+      # BUILD_VERSION is deliberately not set. scripts/build-info.mjs falls back
+      # to the version in packages/core/package.json, which is the number a
+      # release actually refers to; overriding it with the short sha made the
+      # sha appear twice, since formatVersion appends it again as semver build
+      # metadata — `cd09b15+cd09b15` rather than `0.0.0+cd09b15`.
       - name: Build the web app
         env:
           BUILD_SHA: ${{ steps.commit.outputs.sha }}
           BUILD_REF: ${{ github.ref_name }}
-          BUILD_VERSION: ${{ steps.commit.outputs.short }}
         run: |
           npx turbo run build --filter=@sandbox-factory/web
           if ! grep -qF "$BUILD_SHA" apps/web/dist/assets/*.js; then
@@ -136,7 +173,7 @@ jobs:
           push: true
           tags: ${{ steps.infra.outputs.ecr }}:${{ steps.commit.outputs.sha }}
           build-args: |
-            BUILD_VERSION=${{ steps.commit.outputs.short }}
+            BUILD_VERSION=${{ steps.version.outputs.value }}
             BUILD_SHA=${{ steps.commit.outputs.sha }}
             BUILD_REF=${{ github.ref_name }}
           cache-from: type=gha
