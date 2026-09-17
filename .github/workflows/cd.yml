@@ -169,7 +169,31 @@ jobs:
 
       # ARM64 to match the Fargate runtime platform. A mismatch is not caught at
       # build time — it surfaces as "exec format error" when the task starts.
+      # Whether this commit's image is already in the registry.
+      #
+      # The repository is IMMUTABLE, so pushing a tag that exists is an error
+      # rather than a no-op. That is the right setting — it means a deployed sha
+      # always names the exact bytes that were deployed — but it makes re-running
+      # a deploy for the same commit fail on a step that already succeeded, which
+      # is exactly what a `workflow_dispatch` retry does after a later step
+      # failed. Skipping the build in that case makes a redeploy idempotent
+      # without weakening the guarantee: the image for this sha exists, and no
+      # other image could have that tag.
+      - name: Check whether the image already exists
+        id: image
+        run: |
+          if aws ecr describe-images \
+               --repository-name "$PROJECT-api" \
+               --image-ids "imageTag=${{ steps.commit.outputs.sha }}" \
+               >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "image for ${{ steps.commit.outputs.sha }} is already in ECR; skipping the build"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build and push the API image
+        if: steps.image.outputs.exists != 'true'
         uses: docker/build-push-action@v6
         with:
           context: .
