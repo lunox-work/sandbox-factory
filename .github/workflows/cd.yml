@@ -11,6 +11,11 @@ name: Deploy
 # A `push` trigger rather than `workflow_run` after CI: a push to main has by
 # definition already satisfied the ruleset, and workflow_run chaining is a known
 # source of double-deploys and confusing reruns.
+#
+# That trigger only fires if the merge is made with a token other than the
+# default GITHUB_TOKEN, which GitHub refuses to raise events for. See the note
+# on the arming step in auto-merge.yml; without AUTO_MERGE_TOKEN configured,
+# this workflow runs only when dispatched by hand.
 
 on:
   push:
