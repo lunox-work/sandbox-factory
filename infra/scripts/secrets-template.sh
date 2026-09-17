@@ -1,0 +1,174 @@
+#!/usr/bin/env bash
+#
+# Generate .env.production, ready for the Neon connection string.
+#
+#   ./infra/scripts/secrets-template.sh [--force]
+#
+# Copies the six OAuth values from .env.development when they are present, and
+# generates a fresh BETTER_AUTH_SECRET rather than reusing the local one: it
+# signs session tokens, so a dev machine and production must never share one.
+#
+# Those six are currently empty in .env.development — the apps they belonged to
+# now serve production. So this leaves them blank and you paste in the values,
+# rather than the script silently writing empties over working credentials.
+#
+# Refuses to overwrite an existing file without --force. That file may hold the
+# only copy of a rotated credential.
+
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+SRC="$ROOT/.env.development"
+OUT="$ROOT/.env.production"
+
+[[ "${1:-}" == "--force" ]] || if [[ -f "$OUT" ]]; then
+  echo "$OUT already exists." >&2
+  echo "Re-generating would discard what is in it. Pass --force if that is what you want." >&2
+  exit 1
+fi
+
+[[ -f "$SRC" ]] || { echo "No $SRC to copy OAuth values from." >&2; exit 1; }
+
+value_of() {
+  local line; line="$(grep -E "^$1=" "$SRC" | tail -1 || true)"
+  [[ -z "$line" ]] && return 1
+  local v="${line#*=}"
+  if [[ "$v" =~ ^\"(.*)\"$ ]] || [[ "$v" =~ ^\'(.*)\'$ ]]; then v="${BASH_REMATCH[1]}"; fi
+  printf '%s' "$v"
+}
+
+# Absent OAuth values are expected now, not an error: they live in
+# .env.production and were removed from local development. `make secrets-check`
+# is what refuses to push an incomplete file.
+for k in GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET GITHUB_CLIENT_ID \
+         GITHUB_CLIENT_SECRET ATLASSIAN_CLIENT_ID ATLASSIAN_CLIENT_SECRET; do
+  value_of "$k" >/dev/null || echo "note: $k is empty in $SRC — fill it in $OUT by hand" >&2
+done
+
+SECRET="$(openssl rand -base64 32)"
+
+# umask before creation, so the file is never briefly world-readable.
+# umask before creation, so the file is never briefly world-readable.
+#
+# The body mirrors .env.example section for section, key for key, in the same
+# order — keys this environment does not set are present but commented, with
+# the reason. That is what keeps the three files diffable against each other
+# when the template gains something.
+( umask 077; cat > "$OUT" <<EOF
+# Production configuration for platform.lunox.work.
+#
+#   make secrets-template   regenerates this file
+#   make secrets-check      validates it the way the API does at boot
+#   make secrets-push       writes the active values to AWS Secrets Manager
+#
+# Gitignored, like .env.development. Nothing reads it at runtime — Secrets
+# Manager does.
+# It follows the shape of .env.example section for section, so the two diff
+# cleanly; keys this environment does not set are commented with the reason.
+
+# ---- api ------------------------------------------------------------------
+
+# Set by the ECS task definition (infra/ecs.tf), not from here.
+# PORT=4000
+# CORS_ORIGINS=https://platform.lunox.work
+
+# Required. Neon, not RDS — so this is a credential you hold rather than one
+# Terraform assembles. Must carry ?sslmode=require or Neon refuses the
+# connection. Prefer the pooled endpoint (host contains \`-pooler\`).
+DATABASE_URL=
+
+# ---- auth -----------------------------------------------------------------
+#
+# All of these are required; the API will not boot without them.
+#
+# Signing secret for session tokens. Generated fresh for production rather than
+# copied from .env.development — a dev machine and production must not share a
+# signing key.
+# Rotating it signs everyone out, which is the intended way to do that.
+BETTER_AUTH_SECRET=$SECRET
+
+# Public origin of the API. Set by the ECS task definition, which derives it
+# from var.domain_name so the two cannot drift apart.
+# BETTER_AUTH_URL=https://platform.lunox.work
+
+# Public origin of the web app. Same origin as the API here, because CloudFront
+# serves the SPA and /api/* from one hostname. Set by the task definition.
+# APP_URL=https://platform.lunox.work
+
+# Google: https://console.cloud.google.com/apis/credentials
+# Add this redirect URI alongside the localhost one — Google accepts several:
+#   https://platform.lunox.work/api/auth/callback/google
+GOOGLE_CLIENT_ID=$(value_of GOOGLE_CLIENT_ID)
+GOOGLE_CLIENT_SECRET=$(value_of GOOGLE_CLIENT_SECRET)
+
+# GitHub: https://github.com/settings/developers
+# A GitHub OAuth App accepts exactly ONE callback URL, unlike the other two.
+# Copied from .env.development when present; empty otherwise —
+# production needs either that app repointed at the URL below, or a second app
+# whose values replace these:
+#   https://platform.lunox.work/api/auth/callback/github
+GITHUB_CLIENT_ID=$(value_of GITHUB_CLIENT_ID)
+GITHUB_CLIENT_SECRET=$(value_of GITHUB_CLIENT_SECRET)
+
+# Atlassian: https://developer.atlassian.com/console/myapps/
+# Under Authorization > OAuth 2.0 (3LO) > Configure, add this callback URL
+# alongside the localhost one:
+#   https://platform.lunox.work/api/auth/callback/atlassian
+#
+# The scope requirements are unchanged from local: "User Identity API" with
+# \`read:me\`, and no site-scoped Jira or Confluence APIs. See .env.example for
+# why, and apps/api/src/auth.ts for the trustedProviders consequence.
+ATLASSIAN_CLIENT_ID=$(value_of ATLASSIAN_CLIENT_ID)
+ATLASSIAN_CLIENT_SECRET=$(value_of ATLASSIAN_CLIENT_SECRET)
+
+# Left unset deliberately. The SPA and the API share one origin through
+# CloudFront, so the session cookie stays host-only — which is stricter than
+# scoping it to .lunox.work, where any other subdomain could read it.
+# AUTH_COOKIE_DOMAIN=.lunox.work
+
+# ---- origin verification --------------------------------------------------
+#
+# Terraform generates this (random_password.origin_verify in infra/discovery.tf)
+# and injects it into both the task definition and the CloudFront origin config,
+# so the two always agree. Setting it here would have no effect and would risk
+# the two drifting apart.
+#
+# It matters in this deployment: there is no load balancer, so the task's port
+# is open to the internet and this header is what separates a CDN request from
+# a stranger who resolved the origin record.
+# ORIGIN_VERIFY=
+
+# ---- object storage (SeaweedFS S3 gateway) --------------------------------
+#
+# Unset in production, and correctly so: nothing in the API consumes object
+# storage yet (packages/db/src/objects.ts is written and tested but has no
+# caller), and env.ts treats the whole group as optional.
+#
+# When a feature needs it, the target is an S3 bucket rather than SeaweedFS —
+# the code is not SeaweedFS-specific — and these move to Secrets Manager
+# alongside the rest, with S3_ENDPOINT left unset so the SDK uses AWS directly.
+
+# S3_ENDPOINT=
+# S3_BUCKET=sandbox-factory
+# S3_ACCESS_KEY_ID=
+# S3_SECRET_ACCESS_KEY=
+# S3_REGION=us-east-1
+
+# ---- compose port overrides -----------------------------------------------
+# Local-only. Docker Compose does not run in production; the ECS task listens
+# on the port the task definition gives it.
+
+# POSTGRES_PORT=5432
+# S3_PORT=8333
+# SEAWEED_FILER_PORT=8888
+# API_PORT=4000
+# WEB_PORT=5173
+# WEB_PROD_PORT=8080
+EOF
+)
+
+chmod 600 "$OUT"
+echo "Wrote $OUT (mode 600)"
+echo
+echo "Next: paste your Neon connection string into DATABASE_URL, then"
+echo "  make secrets-check"

@@ -1,0 +1,114 @@
+name: Terraform
+
+# Validates infrastructure changes on a PR, the same way CI validates code.
+#
+# Plan only — never apply. `terraform apply` stays a deliberate local action, so
+# that no merge can silently replace a database or delete a CloudFront
+# distribution. The plan in the PR is what makes the change reviewable.
+
+on:
+  pull_request:
+    paths: ["infra/**", ".github/workflows/terraform.yml"]
+  push:
+    branches: [main]
+    paths: ["infra/**"]
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
+
+concurrency:
+  group: terraform-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+
+      - name: Check formatting
+        run: terraform fmt -check -recursive -diff
+
+      # -backend=false so this runs without credentials: syntax and internal
+      # references are checked, no state is touched, and a fork's PR can be
+      # validated without being granted access to anything.
+      - name: Validate
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate
+
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+    # Forks cannot assume the deploy role, and should not be able to. Their PRs
+    # still get the validate job above.
+    if: github.event.pull_request.head.repo.full_name == github.repository || github.event_name == 'push'
+    defaults:
+      run:
+        working-directory: infra
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # Two roles, picked by trigger. A pull request's OIDC token carries
+      # `pull_request` in its `sub` claim, not a branch ref, so it cannot assume
+      # the deploy role — that role is scoped to `refs/heads/main` precisely to
+      # keep pull requests out of AWS. The plan role is the read-only identity
+      # trusted for pull requests from this repository, so the diff still
+      # appears on the PR that proposes it.
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ github.event_name == 'pull_request' && vars.AWS_PLAN_ROLE || vars.AWS_DEPLOY_ROLE }}
+          aws-region: us-east-1
+          role-session-name: terraform-plan
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+
+      - name: Plan
+        id: plan
+        # pipefail, because the default shell is `bash -e` without it: the
+        # pipeline would return tee's status, so a failing `terraform plan`
+        # would still record outcome=success and the job would pass on a plan
+        # that never completed.
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform init -backend-config=backend.hcl -input=false
+          terraform plan -input=false -no-color -out=tfplan | tee plan.txt
+        continue-on-error: true
+
+      - name: Comment the plan on the PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let plan = fs.readFileSync('infra/plan.txt', 'utf8');
+            // GitHub rejects comments over 65,536 characters.
+            const limit = 60000;
+            if (plan.length > limit) {
+              plan = plan.slice(0, limit) + '\n\n... truncated. See the job log for the full plan.';
+            }
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `#### Terraform plan \`${{ steps.plan.outcome }}\`\n\n<details><summary>Show plan</summary>\n\n\`\`\`terraform\n${plan}\n\`\`\`\n\n</details>`,
+            });
+
+      - name: Fail if the plan failed
+        if: steps.plan.outcome == 'failure'
+        run: exit 1

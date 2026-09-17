@@ -31,7 +31,7 @@ Needs **Docker** and **Make**. Nothing else — not even Node.
 ```bash
 git clone https://github.com/lunox-work/sandbox-factory.git
 cd sandbox-factory
-cp .env.example .env    # then fill in the auth section, see below
+cp .env.example .env.development    # then fill in the auth section, see below
 make up
 ```
 
@@ -42,7 +42,7 @@ stops it.
 ### The one bit of setup: OAuth credentials
 
 Sign-in is Google and GitHub only, so the API needs a client from at least one of
-them before it will boot. Fill in the auth section of `.env`, starting with a
+them before it will boot. Fill in the auth section of `.env.development`, starting with a
 signing secret of 32+ characters:
 
 ```bash

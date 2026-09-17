@@ -105,7 +105,8 @@ services:
       S3_SECRET_ACCESS_KEY: sandboxsecret
       # Auth. Unlike the S3 credentials above, these are *not* development
       # values with defaults — they are real OAuth secrets, so they come from
-      # the host environment (or a gitignored .env) and are never written here.
+      # the host environment (or a gitignored .env.development, which the Makefile
+      # passes with --env-file) and are never written here.
       #
       # Passed through empty rather than with compose's `:?` guard: that guard
       # is evaluated for the whole file, so it would also break `make db-up`,

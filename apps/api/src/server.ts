@@ -62,6 +62,7 @@ const app = createApp({
   emails,
   profiles,
   buildInfo: build,
+  originVerify: env.ORIGIN_VERIFY,
 });
 
 const server = serve({ fetch: app.fetch, port: env.PORT }, (info) => {

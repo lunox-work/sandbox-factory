@@ -16,14 +16,21 @@
 SHELL := /bin/bash
 .SHELLFLAGS := -eu -o pipefail -c
 
-COMPOSE := docker compose
+# --env-file is explicit because Compose otherwise reads `./.env` by that exact
+# name, and this repo's local file is `.env.development`. Without this, every
+# ${VAR} in docker-compose.yml would substitute empty and the API would start
+# with no OAuth credentials, failing its env validation at boot.
+COMPOSE := docker compose --env-file .env.development
 
 .DEFAULT_GOAL := help
 
 .PHONY: help install build dev test lint format verify ship \
         up down logs ps up-prod down-prod build-images \
         db-up db-down reset psql db-url migrate s3-url \
-        ext ext-deps ext-watch ext-package clean
+        ext ext-deps ext-watch ext-package clean \
+        tf-init tf-plan tf-apply tf-output \
+        secrets-template secrets-check secrets-push \
+        deploy-status deploy-logs deploy-version
 
 help: ## Show this help
 	@echo "sandbox-factory"
@@ -160,6 +167,57 @@ ext-package: ext-deps ## Build a .vsix into apps/extension/
 	npm run build --workspace sandbox-factory-vscode
 	cd apps/extension && npx --yes @vscode/vsce package --no-dependencies
 	@echo "packaged:"; ls -1 apps/extension/*.vsix
+
+## ---- infrastructure (aws) -----------------------------------------------
+#
+# Terraform lives in infra/ and is documented there. These targets are the
+# handful of commands worth having at the front door; anything more involved is
+# a direct terraform invocation in that directory.
+#
+# `tf-apply` is deliberately NOT run by CI. Applying is a decision — it can
+# replace a database — so it stays a local action with a human reading the plan.
+
+TF := terraform -chdir=infra
+
+tf-init: ## Initialise Terraform against the remote state backend
+	@test -f infra/backend.hcl || { \
+	  echo "No infra/backend.hcl. Run ./infra/scripts/bootstrap-backend.sh first."; \
+	  exit 1; \
+	}
+	$(TF) init -backend-config=backend.hcl
+
+tf-plan: ## Show what Terraform would change
+	$(TF) plan
+
+tf-apply: ## Apply infrastructure changes (prompts before doing anything)
+	$(TF) apply
+
+tf-output: ## Print Terraform outputs
+	$(TF) output
+
+secrets-template: ## Generate .env.production (copies OAuth from .env, makes a fresh signing secret)
+	./infra/scripts/secrets-template.sh
+
+secrets-check: ## Validate .env.production before pushing it
+	./infra/scripts/secrets-check.sh
+
+secrets-push: secrets-check ## Push .env.production values into AWS Secrets Manager
+	./infra/scripts/secrets-push.sh
+
+## ---- deployment ---------------------------------------------------------
+
+deploy-status: ## Show what the ECS service is currently running
+	@aws ecs describe-services \
+	  --cluster sandbox-factory \
+	  --services sandbox-factory-api \
+	  --query 'services[0].{running:runningCount,desired:desiredCount,status:status,taskDef:taskDefinition}' \
+	  --output table
+
+deploy-logs: ## Tail the production API logs
+	aws logs tail /ecs/sandbox-factory-api --follow
+
+deploy-version: ## Ask the live site which commit it is serving
+	@curl -fsS https://platform.lunox.work/version && echo
 
 ## ---- housekeeping -------------------------------------------------------
 

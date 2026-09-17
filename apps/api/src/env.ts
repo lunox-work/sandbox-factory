@@ -69,6 +69,14 @@ const envSchema = z.object({
   // a Domain attribute on localhost stops the cookie working entirely.
   AUTH_COOKIE_DOMAIN: z.string().optional(),
 
+  // Shared secret the CDN sends on every origin request, checked by the
+  // middleware in routes.ts. Optional: unset, the check is not installed, which
+  // is correct locally and anywhere a load balancer already filters on it.
+  //
+  // Set in the CloudFront-to-Fargate deployment in `infra/`, where the task is
+  // reachable from the internet and nothing upstream can filter for it.
+  ORIGIN_VERIFY: z.string().optional(),
+
   // ---- build provenance ---------------------------------------------------
   //
   // Injected at image build time by `scripts/build-info.mjs`; see

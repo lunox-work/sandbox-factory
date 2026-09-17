@@ -242,7 +242,7 @@ for the merge. Prefer it over doing the steps by hand; see
 - Add a dependency without saying why, and which workspace, in the PR body.
   `packages/core` has zero runtime dependencies by design — adding one there
   needs to be raised.
-- Commit secrets. `.env` is gitignored; `docker-compose.yml` credentials are
+- Commit secrets. `.env.development` and `.env.production` are gitignored; `docker-compose.yml` credentials are
   local development values only.
 
 ## Two names

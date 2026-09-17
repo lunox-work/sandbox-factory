@@ -884,3 +884,66 @@ test("the username routes require a session", async () => {
 test("the username routes are absent when no profile store is configured", async () => {
   assert.equal((await app().request("/api/v1/me/username")).status, 404);
 });
+
+// ---- origin verification ---------------------------------------------------
+//
+// The CloudFront-to-Fargate deployment in `infra/` has no load balancer, so the
+// task's port is open to the internet — CloudFront publishes no stable IP range
+// to pin a security group to. The shared header is what separates a CDN request
+// from a stranger who resolved the origin record, and these tests pin the four
+// behaviours that arrangement depends on.
+
+/** An app with origin verification switched on. */
+function guardedApp(secret = "s3cr3t-from-cloudfront") {
+  return createApp({
+    store: createInMemoryStore(seed),
+    corsOrigins: ["http://localhost:5173"],
+    auth: fakeAuth(),
+    originVerify: secret,
+  });
+}
+
+test("a request carrying the origin secret is served", async () => {
+  const response = await guardedApp().request("/api/v1/todos", {
+    headers: { ...signedIn, "x-origin-verify": "s3cr3t-from-cloudfront" },
+  });
+
+  assert.equal(response.status, 200);
+});
+
+test("a request without the origin secret is refused", async () => {
+  const response = await guardedApp().request("/api/v1/todos", {
+    headers: signedIn,
+  });
+
+  // 404 rather than 403: a scanner that finds the origin should learn nothing
+  // about whether it guessed a real host, and an empty answer is the most
+  // boring thing to return.
+  assert.equal(response.status, 404);
+});
+
+test("a request with the wrong origin secret is refused", async () => {
+  const response = await guardedApp().request("/api/v1/todos", {
+    headers: { ...signedIn, "x-origin-verify": "wrong" },
+  });
+
+  assert.equal(response.status, 404);
+});
+
+test("/health answers without the origin secret", async () => {
+  // The exemption that keeps container and uptime probes working: they reach
+  // the task directly rather than through the CDN, so they never carry the
+  // header. Without this, ECS would see a permanently unhealthy task.
+  const response = await guardedApp().request("/health");
+
+  assert.equal(response.status, 200);
+  assert.equal(((await response.json()) as { status: string }).status, "ok");
+});
+
+test("without originVerify configured no check is installed", async () => {
+  // The local-development and behind-a-load-balancer case: the option is
+  // absent, so an ordinary request is served with no header at all.
+  const response = await app().request("/api/v1/todos");
+
+  assert.equal(response.status, 200);
+});

@@ -43,7 +43,7 @@ That starts the API on port 4000 and the dashboard on port 5173, both watching
 for changes. Open <http://localhost:5173>.
 
 The API ships with an in-memory store, so there is no database to set up and no
-`.env` to write.
+`.env.development` to write. The API requires `DATABASE_URL` and will not boot without it — `make db-up` starts the local Postgres and `make db-url` prints the string.
 
 ### Finding your way around
 

@@ -1,0 +1,302 @@
+name: Deploy
+
+# Continuous deployment: production tracks main.
+#
+# Triggered by the push that auto-merge.yml produces when it merges a PR on
+# green. That ordering is the whole design — CI is the gate, and it has already
+# run by the time this starts, so nothing here re-tests. The required checks
+# named in the branch ruleset (`Test (Node 22)`, `Test (Node 24)`) remain the
+# only thing standing between a PR and production.
+#
+# A `push` trigger rather than `workflow_run` after CI: a push to main has by
+# definition already satisfied the ruleset, and workflow_run chaining is a known
+# source of double-deploys and confusing reruns.
+
+on:
+  push:
+    branches: [main]
+    # Documentation-only changes do not need a deploy. The SPA and API are
+    # unaffected by them, and skipping saves both minutes and an invalidation.
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - ".github/ISSUE_TEMPLATE/**"
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Commit SHA to deploy (defaults to current HEAD)"
+        required: false
+        type: string
+
+# OIDC needs id-token: write to mint the token AWS exchanges for credentials.
+# Nothing here needs write access to the repository.
+permissions:
+  contents: read
+  id-token: write
+
+# Never cancel a deploy in flight: cancelling between the migration step and the
+# service update would leave the schema ahead of the code. Two merges land as
+# two sequential deploys instead.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  PROJECT: sandbox-factory
+
+jobs:
+  deploy:
+    name: Deploy to production
+    runs-on: ubuntu-latest
+    # Attach a GitHub Environment to require manual approval before this job
+    # runs. Left unprotected at launch, which is the continuous deployment that
+    # was asked for; adding a required reviewer later is a settings change, not
+    # a workflow change.
+    environment:
+      name: production
+      url: https://platform.lunox.work
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.sha || github.sha }}
+
+      - name: Resolve the commit being deployed
+        id: commit
+        run: |
+          sha="$(git rev-parse HEAD)"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "short=${sha:0:7}" >> "$GITHUB_OUTPUT"
+          echo "Deploying $sha"
+
+      # No access key anywhere. The role's trust policy is scoped by `sub` to
+      # this repository's main branch, so a fork or a pull request cannot assume
+      # it even though they run the same workflow file.
+      - name: Assume the deploy role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: deploy-${{ steps.commit.outputs.short }}
+
+      - name: Read infrastructure configuration
+        id: infra
+        run: |
+          # Every value CD needs comes from the live infrastructure rather than
+          # being duplicated here, so renaming a resource in Terraform cannot
+          # leave this workflow pointing at something that no longer exists.
+          {
+            echo "ecr=$(aws ecr describe-repositories --repository-names "$PROJECT-api" --query 'repositories[0].repositoryUri' --output text)"
+            echo "bucket=$(aws s3api list-buckets --query "Buckets[?starts_with(Name, '$PROJECT-web-')].Name | [0]" --output text)"
+            echo "distribution=$(aws cloudfront list-distributions --query "DistributionList.Items[?Aliases.Items && contains(Aliases.Items, 'platform.lunox.work')].Id | [0]" --output text)"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      # ---- build the SPA ---------------------------------------------------
+
+      # BUILD_SHA is not cosmetic here. apps/web/vite.config.ts compiles it into
+      # the bundle, and the verification step at the end reads it back off the
+      # live site to prove this exact build is serving.
+      - name: Build the web app
+        env:
+          BUILD_SHA: ${{ steps.commit.outputs.sha }}
+          BUILD_REF: ${{ github.ref_name }}
+          BUILD_VERSION: ${{ steps.commit.outputs.short }}
+        run: |
+          npx turbo run build --filter=@sandbox-factory/web
+          if ! grep -qF "$BUILD_SHA" apps/web/dist/assets/*.js; then
+            echo "::error::the bundle does not contain $BUILD_SHA — provenance is not reaching the artifact"
+            exit 1
+          fi
+          echo "ok: the bundle records $BUILD_SHA"
+
+      # ---- build and push the API image ------------------------------------
+
+      - uses: aws-actions/amazon-ecr-login@v2
+        id: ecr
+
+      - uses: docker/setup-buildx-action@v3
+
+      # ARM64 to match the Fargate runtime platform. A mismatch is not caught at
+      # build time — it surfaces as "exec format error" when the task starts.
+      - name: Build and push the API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/api/Dockerfile
+          platforms: linux/arm64
+          push: true
+          tags: ${{ steps.infra.outputs.ecr }}:${{ steps.commit.outputs.sha }}
+          build-args: |
+            BUILD_VERSION=${{ steps.commit.outputs.short }}
+            BUILD_SHA=${{ steps.commit.outputs.sha }}
+            BUILD_REF=${{ github.ref_name }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ---- migrate, then deploy --------------------------------------------
+
+      # Order matters and is not arbitrary. Migrations run first, so a new task
+      # never starts against a schema older than the code expects. This assumes
+      # backward-compatible migrations — expand then contract — which the
+      # existing trigger-based ones already follow.
+      - name: Register the task definition
+        id: taskdef
+        run: |
+          current="$(aws ecs describe-task-definition \
+            --task-definition "$PROJECT-api" \
+            --query 'taskDefinition' --output json)"
+
+          # Swap the image and BUILD_SHA, drop the read-only fields AWS returns
+          # but rejects on register, and keep everything else as Terraform set it.
+          echo "$current" | jq \
+            --arg img "${{ steps.infra.outputs.ecr }}:${{ steps.commit.outputs.sha }}" \
+            --arg sha "${{ steps.commit.outputs.sha }}" '
+              .containerDefinitions[0].image = $img
+              | .containerDefinitions[0].environment =
+                  ((.containerDefinitions[0].environment // [])
+                   | map(select(.name != "BUILD_SHA"))
+                   + [{name: "BUILD_SHA", value: $sha}])
+              | del(.taskDefinitionArn, .revision, .status, .requiresAttributes,
+                    .compatibilities, .registeredAt, .registeredBy, .deregisteredAt)
+            ' > taskdef.json
+
+          arn="$(aws ecs register-task-definition \
+            --cli-input-json file://taskdef.json \
+            --query 'taskDefinition.taskDefinitionArn' --output text)"
+          echo "arn=$arn" >> "$GITHUB_OUTPUT"
+          echo "Registered $arn"
+
+      # Against Neon, over the public internet, from a task in a public subnet.
+      # Neon suspends after ~5 minutes idle, so the first connection may wait a
+      # few hundred milliseconds while it wakes — the migration runner's own
+      # timeout covers that.
+      - name: Run database migrations
+        run: |
+          subnets="$(aws ec2 describe-subnets \
+            --filters "Name=tag:Name,Values=$PROJECT-public-*" \
+            --query 'Subnets[].SubnetId' --output text | tr '\t' ',')"
+          sg="$(aws ec2 describe-security-groups \
+            --filters "Name=group-name,Values=$PROJECT-tasks" \
+            --query 'SecurityGroups[0].GroupId' --output text)"
+
+          SUBNETS="$subnets" SECURITY_GROUP="$sg" \
+            ./infra/scripts/run-migrations.sh "${{ steps.commit.outputs.sha }}"
+
+      - name: Update the ECS service
+        run: |
+          aws ecs update-service \
+            --cluster "$PROJECT" \
+            --service "$PROJECT-api" \
+            --task-definition "${{ steps.taskdef.outputs.arn }}" \
+            --query 'service.serviceName' --output text
+
+          echo "Waiting for the service to stabilise..."
+          # The deployment circuit breaker rolls back automatically if the new
+          # tasks fail to start, so a timeout here means the rollback already
+          # happened. With no load balancer there is no target-group draining to
+          # wait on: ECS deregisters the old task from Service Discovery and the
+          # 15-second record TTL carries the rest.
+          aws ecs wait services-stable \
+            --cluster "$PROJECT" \
+            --services "$PROJECT-api"
+
+      # ---- publish the SPA -------------------------------------------------
+
+      # After the API, so the browser never receives a bundle that calls an
+      # endpoint which is not deployed yet.
+      - name: Publish the web app
+        run: |
+          # New assets first, and deliberately WITHOUT --delete. The previous
+          # index.html is still the document being served at this moment, and
+          # it references the previous hashes; deleting them here would 404
+          # every asset for anyone who loads the old document in the seconds
+          # before the new one goes up. Hashed filenames make adding safe —
+          # nothing collides.
+          aws s3 sync apps/web/dist "s3://${{ steps.infra.outputs.bucket }}" \
+            --exclude "index.html" \
+            --cache-control "public, max-age=31536000, immutable"
+
+          # Then flip the document. Uncached, so the next request gets the new
+          # one, which points at the assets uploaded above.
+          aws s3 cp apps/web/dist/index.html "s3://${{ steps.infra.outputs.bucket }}/index.html" \
+            --cache-control "no-cache, must-revalidate"
+
+          # Prune assets that no recent build produced — with a grace period,
+          # because flipping index.html does not retire the documents already
+          # open in people's browsers. A tab holding the previous index.html
+          # can still request a lazy-loaded chunk hours later, and deleting
+          # immediately would 404 it.
+          #
+          # Two earlier attempts were wrong in opposite directions. A lifecycle
+          # rule expiring assets/ by age would eventually delete the *live*
+          # bundle during a quiet month. Deleting everything not in this build
+          # broke the tabs above. This deletes only objects that are both
+          # absent from the current build and older than the grace period, so
+          # the live set is never a candidate and a stale tab has a day to
+          # finish what it is doing.
+          GRACE_HOURS=24
+          cutoff_epoch="$(( $(date -u +%s) - GRACE_HOURS * 3600 ))"
+
+          # Age is compared here rather than in a --query filter. JMESPath
+          # defines its ordering operators for numbers only, so `LastModified
+          # <= '<string>'` is specified to evaluate to null and drop every
+          # element — silently, which would turn this whole step into a no-op
+          # that prunes nothing and reports success. Some CLI builds are more
+          # forgiving than the spec; relying on that is not worth it when the
+          # failure mode is invisible.
+          keep="$(cd apps/web/dist && find assets -type f | sort)"
+
+          aws s3api list-objects-v2 \
+            --bucket "${{ steps.infra.outputs.bucket }}" \
+            --prefix assets/ \
+            --query 'Contents[].[Key,LastModified]' \
+            --output text \
+          | while read -r key modified; do
+              [ -z "$key" ] || [ "$key" = "None" ] && continue
+              # date(1) differs between GNU and BSD; the runner is Linux, and
+              # this is the GNU form.
+              age_epoch="$(date -u -d "$modified" +%s 2>/dev/null)" || continue
+              [ "$age_epoch" -le "$cutoff_epoch" ] && echo "$key"
+            done | sort > /tmp/old-assets.txt
+
+          comm -13 <(echo "$keep") /tmp/old-assets.txt | while read -r stale; do
+            [ -z "$stale" ] && continue
+            echo "pruning $stale (absent from this build, older than ${GRACE_HOURS}h)"
+            aws s3 rm "s3://${{ steps.infra.outputs.bucket }}/$stale"
+          done
+
+      - name: Invalidate the CDN
+        run: |
+          # Only index.html needs invalidating; every other file has a new name.
+          # Invalidating /* would be slower and, past 1,000 paths a month, billed.
+          aws cloudfront create-invalidation \
+            --distribution-id "${{ steps.infra.outputs.distribution }}" \
+            --paths "/index.html" "/" \
+            --query 'Invalidation.Id' --output text
+
+      # ---- prove it ---------------------------------------------------------
+
+      - name: Verify the deployment
+        run: ./infra/scripts/verify-deploy.sh "${{ steps.commit.outputs.sha }}" "https://platform.lunox.work"
+
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            echo "### Deployment ${{ job.status }}"
+            echo
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| Commit | \`${{ steps.commit.outputs.short }}\` |"
+            echo "| URL | https://platform.lunox.work |"
+            echo "| Image | \`${{ steps.commit.outputs.sha }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"

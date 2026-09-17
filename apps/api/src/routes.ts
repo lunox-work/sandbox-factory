@@ -49,6 +49,22 @@ export interface AppOptions {
   /** Username reads and writes. Optional for the same reason as `emails`. */
   profiles?: UserProfileStore | undefined;
   /**
+   * Shared secret the CDN sends on every origin request.
+   *
+   * Set only where the API is exposed directly to the internet with no load
+   * balancer in front to filter on it — the CloudFront-to-Fargate deployment in
+   * `infra/` is the case this exists for. There, the task's port is open
+   * because CloudFront publishes no stable IP range to pin a security group to,
+   * and this header is what separates a CDN request from a stranger who
+   * resolved the origin record.
+   *
+   * Left undefined the check is not installed at all, which is correct for
+   * local development and for any topology where something upstream already
+   * enforces it.
+   */
+  originVerify?: string | undefined;
+
+  /**
    * What this build reports about its own provenance.
    *
    * Passed in rather than read from the environment here, like every other
@@ -81,8 +97,25 @@ export function createApp({
   emails,
   profiles,
   buildInfo = unknownBuildInfo,
+  originVerify,
 }: AppOptions): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
+
+  // Origin verification, when configured. First in the chain deliberately: a
+  // request that did not come through the CDN should not reach CORS, the auth
+  // handler, or the database — it should cost one string comparison and stop.
+  //
+  // `/health` is exempt below so that container and uptime probes, which reach
+  // the task directly rather than through the CDN, keep working.
+  if (originVerify !== undefined) {
+    app.use("*", async (c, next) => {
+      if (c.req.path === "/health") return next();
+      if (c.req.header("x-origin-verify") !== originVerify) {
+        return c.json({ error: "Not found" }, 404);
+      }
+      return next();
+    });
+  }
 
   app.use(
     "/api/*",

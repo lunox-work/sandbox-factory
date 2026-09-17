@@ -57,3 +57,18 @@ Thumbs.db
 # Shared so F5 launches the extension without per-developer setup.
 !.vscode/launch.json
 !.vscode/tasks.json
+
+# Terraform — state holds resource ids and the generated database password, and
+# .terraform/ holds downloaded provider binaries. backend.hcl IS committed: it
+# names a private bucket, not a credential.
+infra/.terraform/
+infra/*.tfstate
+infra/*.tfstate.*
+infra/*.tfplan
+infra/tfplan
+infra/plan.txt
+infra/.terraform.tfstate.lock.info
+# Never commit variable files — a fork would inherit this account's settings,
+# and a careless one could hold a secret.
+infra/*.auto.tfvars
+infra/terraform.tfvars
