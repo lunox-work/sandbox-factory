@@ -48,6 +48,10 @@ BRANCH="" TITLE="" BODY="" TYPE="" ISSUE=""
 ASSUME_YES=0 NO_WAIT=0 DRAFT=0 RESOLVE_MODE="coderabbit"
 FOREGROUND=0 IS_CHILD=0
 
+# Optional co-author credit. Empty means none, which is the default — the
+# trailer only appears when a caller asks for it.
+COAUTHOR="${SHIP_COAUTHOR:-}"
+
 die()  { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 info() { printf '\033[36m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[33mwarn:\033[0m %s\n' "$*" >&2; }
@@ -67,6 +71,11 @@ Flags:
   --type <t>          Template checkbox: bug|feature|breaking|docs|internal.
                       Default: inferred from the title prefix.
   --issue <n>         Issue number for "Closes #n".
+  --coauthor <who>    Add a Co-Authored-By trailer, as "Name <email>". Also
+                      settable via SHIP_COAUTHOR. Default: none. The trailer
+                      goes in both the commit and the PR body, because the
+                      squash commit on main is built from the PR, not from
+                      the branch commit.
   --resolve <mode>    Review threads: coderabbit (ask it to resolve its own,
                       default) | manual (stop and report) | force (resolve
                       unread — discards feedback).
@@ -90,6 +99,7 @@ while [[ $# -gt 0 ]]; do
     --body)    BODY="${2:-}"; shift 2 ;;
     --type)    TYPE="${2:-}"; shift 2 ;;
     --issue)   ISSUE="${2:-}"; shift 2 ;;
+    --coauthor) COAUTHOR="${2:-}"; shift 2 ;;
     --resolve) RESOLVE_MODE="${2:-}"; shift 2 ;;
     --draft)   DRAFT=1; shift ;;
     --no-wait) NO_WAIT=1; shift ;;
@@ -112,16 +122,24 @@ case "$RESOLVE_MODE" in
   *) die "--resolve must be coderabbit, manual or force (got: $RESOLVE_MODE)" ;;
 esac
 
+# git only honours a trailer in the "Name <email>" shape; anything else is
+# silently dropped from the commit, so reject it here rather than ship a PR
+# that quietly lost the credit.
+if [[ -n "$COAUTHOR" && ! "$COAUTHOR" =~ ^.+\ \<[^\ ]+@[^\ ]+\>$ ]]; then
+  die "--coauthor must look like \"Name <email>\" (got: $COAUTHOR)"
+fi
+
 cd "$(git rev-parse --show-toplevel)" || die "not inside a git repository"
 
 [[ -n "$TITLE" ]] || die "--title is required. It becomes the squash commit on main."
 
-# The PR title IS the commit message here (squash-only), and release-please
-# parses it. A non-conventional title silently produces no release.
+# The PR title IS the commit message here (squash-only), and
+# scripts/next-version.mjs parses it to decide the bump. A non-conventional
+# title silently produces no release.
 if ! [[ "$TITLE" =~ ^(feat|fix|docs|ci|chore|refactor|test|perf|build|style|revert)(\([a-z0-9._/-]+\))?!?:\ .+ ]]; then
   die "title must be a Conventional Commit, e.g. 'fix: ...' or 'feat(api)!: ...'
    got: $TITLE
-   Squash-merge means this title is the commit message release-please reads."
+   Squash-merge means this title is the commit message CD reads to version."
 fi
 
 if [[ -n "$ISSUE" && ! "$ISSUE" =~ ^[0-9]+$ ]]; then
@@ -169,6 +187,52 @@ fi
 if [[ "$WATCH_ONLY" -eq 0 ]]; then
 
 CURRENT="$(git rev-parse --abbrev-ref HEAD)"
+
+# Start a new change from an up-to-date `main`, without being asked.
+#
+# The common case after a ship: the PR merged, the child deleted the branch,
+# but the terminal is still standing on a stale leftover branch — or on a
+# merged one whose commits are now on main under a different (squash) sha.
+# Starting a feature there stacks it on top of that, which the guard below
+# then refuses *after* the edits have been made.
+#
+# Only safe when there is genuinely nothing to lose, so it demands all three:
+#   - a clean tree (no uncommitted work to drag across or leave behind)
+#   - no commits of its own that are not already on main
+#   - not a branch with an open PR (that is the --branch re-ship path)
+#
+# The middle condition is the subtle one. Squash-merge means a merged branch's
+# commits are never ancestors of main, so `merge-base --is-ancestor` reports
+# unmerged for work that did land. Ask GitHub instead, exactly as the sweep
+# does: a MERGED PR means the commits are on main and the branch is disposable.
+#
+# Anything else is left alone and falls through to the existing logic, which
+# either ships the branch as-is or stops with an explanation.
+if [[ "$CURRENT" != "main" && "${SHIP_NO_AUTO_MAIN:-0}" != "1" ]] \
+   && git diff --quiet && git diff --cached --quiet \
+   && [[ -z "$(git ls-files --others --exclude-standard)" ]]; then
+
+  git fetch origin --quiet >/dev/null 2>&1 || true
+
+  disposable=0
+  if git merge-base --is-ancestor HEAD origin/main 2>/dev/null; then
+    disposable=1   # no commits of its own
+  else
+    pr_state="$(gh pr list --head "$CURRENT" --state all --limit 1 \
+      --json state --jq '.[0].state // empty' 2>/dev/null || echo "")"
+    [[ "$pr_state" == "MERGED" ]] && disposable=1
+  fi
+
+  if [[ "$disposable" -eq 1 ]]; then
+    if git checkout main >/dev/null 2>&1; then
+      git pull --ff-only --quiet >/dev/null 2>&1 || true
+      ok "switched from $CURRENT to an up-to-date main"
+      # The leftover branch is merged or empty; the sweep on the next merge
+      # clears it, so nothing is deleted here.
+      CURRENT="main"
+    fi
+  fi
+fi
 
 # Branching off a feature branch would sweep its commits into the PR.
 if [[ "$CURRENT" != "main" ]] && ! git diff --quiet --exit-code; then
@@ -239,14 +303,13 @@ if [[ "$MODE" == "new" ]]; then
   ok "created $BRANCH"
 
   git add -A
-  COMMIT_BODY=""
-  [[ -n "$ISSUE" ]] && COMMIT_BODY="Closes #$ISSUE"
+  # Each -m becomes its own paragraph, so the trailer stays in a block of its
+  # own — git only recognises it as a trailer when nothing else shares it.
+  COMMIT_ARGS=(-m "$TITLE")
+  [[ -n "$ISSUE" ]]    && COMMIT_ARGS+=(-m "Closes #$ISSUE")
+  [[ -n "$COAUTHOR" ]] && COMMIT_ARGS+=(-m "Co-Authored-By: $COAUTHOR")
 
-  if [[ -n "$COMMIT_BODY" ]]; then
-    git commit -q -m "$TITLE" -m "$COMMIT_BODY" || die "commit failed"
-  else
-    git commit -q -m "$TITLE" || die "commit failed"
-  fi
+  git commit -q "${COMMIT_ARGS[@]}" || die "commit failed"
   ok "committed"
 fi
 
@@ -295,6 +358,14 @@ CLOSES=""
 
 Closes #$ISSUE"
 
+# GitHub builds the squash commit from the PR body, not the branch commit, so
+# a trailer that only lives on the branch is lost at merge. Repeating it here
+# is what actually puts it on main.
+CREDIT=""
+[[ -n "$COAUTHOR" ]] && CREDIT="
+
+Co-Authored-By: $COAUTHOR"
+
 PR_BODY="## What does this change?
 
 ${BODY}${CLOSES}
@@ -317,7 +388,7 @@ ${BODY}${CLOSES}
 - [x] \`npm run verify\` passes locally
 - [x] This PR is one logical change
 
-🤖 Opened by scripts/ship.sh"
+🤖 Opened by scripts/ship.sh${CREDIT}"
 
 # --- open the PR --------------------------------------------------------------
 
@@ -606,8 +677,13 @@ print(f"{p} {f}")' "${REQUIRED_CHECKS[@]}" 2>/dev/null || echo "1 0")"
 done
 
 # --- settle review threads ----------------------------------------------------
-# required_conversation_resolution is ON for main, so ANY unresolved thread
+# `required_conversation_resolution` is ON for main, so ANY unresolved thread
 # blocks the merge even though the CodeRabbit check itself is not required.
+#
+# It is set on the *classic* branch protection, not the ruleset — the ruleset
+# reports `required_review_thread_resolution: false`, so reading only
+# `gh api repos/.../rulesets` says threads do not block, which is wrong. Both
+# layers apply. See docs/ci.md, "Branch protection".
 
 info "Waiting for review threads to settle"
 review_deadline=$(( $(date +%s) + REVIEW_TIMEOUT ))

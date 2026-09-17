@@ -144,17 +144,24 @@ Two, and they answer different questions:
 - **The release** (`/releases/tag/sandbox-factory-v1.0.0`) — only when this
   build _is_ a tagged release.
 
-Since CD began cutting a release per deploy, that second link resolves for most
-production builds rather than almost none. It still resolves for none of the
-builds that matter to get right — a local build, a PR build, a deploy that
-shipped nothing releasable — because the gate is `gitRef == releaseTag(version)`
-and only a build made as that release satisfies it.
+Since CD began cutting a release per deploy, that second link resolves for every
+releasable production build. The gate is `gitRef == releaseTag(version)`, and CD
+compiles the tag it is about to cut into the artifact, so a deploy that releases
+satisfies it. The builds where it stays absent are the ones that genuinely are
+not releases: a local build, a PR build, a deploy that shipped nothing
+releasable.
 
-The release page does show its commit, so it reaches the same place in one
-more click. It is still the wrong thing to link _instead_: a build that carries
-a version without being that release would then claim it shipped when it did
-not, and for an untagged build there is no release page to link at all. The
-commit stays primary; the release is offered alongside it when it exists.
+**One release is one sha.** The tag is cut on the deployed commit itself, so the
+`1.2.3+abc1234` in the footer, the commit the release page names, and the sha in
+the asset filenames and the provenance attestation are all the same commit. The
+release body repeats it as `Deployed commit:`. Clicking `release` therefore
+lands on a page describing the build you clicked from — which was not true while
+the tag sat on a separate version-bump commit one above the deploy.
+
+The commit link stays primary regardless: a build that carries a version without
+being that release would otherwise claim it shipped when it did not, and an
+untagged build has no release page at all. The release is offered alongside the
+commit, never instead of it.
 
 Note the tag shape: `sandbox-factory-v1.0.0`, never `v1.0.0`. The prefix is
 inherited from release-please, which named `packages/core` as a component;

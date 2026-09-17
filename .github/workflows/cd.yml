@@ -164,9 +164,27 @@ jobs:
       - name: Work out the version being released
         id: version
         run: |
-          current="$(node -p "require('./package.json').version")"
+          # The base version comes from the last tag, not package.json.
+          #
+          # The tag is cut on the deployed commit, so nothing bumps package.json
+          # as part of a release any more. That makes package.json a record of
+          # the last manual version change rather than the released one — using
+          # it as the base would recompute the same number every deploy and try
+          # to create a tag that already exists.
+          #
+          # The tags are the release history, so they are the source of truth.
+          # `--sort=-v:refname` orders them semantically: v1.10.0 above v1.9.0.
           last="$(git tag -l 'sandbox-factory-v*' --sort=-v:refname | head -1)"
           echo "last release: ${last:-<none>}"
+
+          # Strip the component prefix back to a bare semver. With no tags at
+          # all, fall back to package.json — a first release has no history.
+          if [[ -n "$last" ]]; then
+            current="${last#sandbox-factory-v}"
+          else
+            current="$(node -p "require('./package.json').version")"
+          fi
+          echo "base version: $current"
 
           # Exit 1 means nothing in the range warrants a release — a docs-only
           # or chore-only merge. The deploy still happens; it just ships as the
@@ -189,13 +207,12 @@ jobs:
       # the bundle, and the verification step at the end reads it back off the
       # live site to prove this exact build is serving.
       #
-      # BUILD_VERSION is now set explicitly, to the version this deploy is being
+      # BUILD_VERSION is set explicitly, to the version this deploy is being
       # released as. It used to be left unset so the resolver would fall back to
-      # packages/core/package.json — correct while the tag was cut separately
-      # and the working tree already carried the released number. It is not
-      # correct here: the bump has not been written yet at build time, so the
-      # fallback would report the *previous* version for a build that is about
-      # to become the next one.
+      # packages/core/package.json — correct only while a separate step wrote
+      # the released number into the tree. Nothing writes it now, so the
+      # fallback would report the version of the *last manual* bump for a build
+      # that is about to become a new release.
       #
       # Passing the short sha here was a different bug, fixed earlier: it made
       # the sha appear twice, since formatVersion appends it as semver build
@@ -560,63 +577,8 @@ jobs:
             echo "free=true" >> "$GITHUB_OUTPUT"
           fi
 
-      # The version files are bumped on main in their own commit, so the
-      # repository keeps matching the tag cut from it. Without this the next
-      # run would compute its bump from a stale base and reuse a number.
-      #
-      # This push must not start another deploy, and the guard is the token
-      # rather than the commit message. GitHub refuses to raise push events for
-      # anything pushed with the default GITHUB_TOKEN — the loop-breaker
-      # auto-merge.yml documents from the other side, where it is an obstacle.
-      # Here it is exactly what is wanted: the bump lands on main and cd.yml
-      # does not observe it, so one merge stays one deploy.
-      #
-      # `paths-ignore` could not do this job: it does not cover package.json,
-      # and adding it would also silence deploys for a real dependency change.
-      - name: Record the version on main
-        id: record
-        if: steps.free.outputs.free == 'true'
-        env:
-          NEXT: ${{ needs.deploy.outputs.version }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          node -e '
-            const fs = require("node:fs");
-            const next = process.env.NEXT;
-            for (const p of ["package.json", "packages/core/package.json"]) {
-              const j = JSON.parse(fs.readFileSync(p, "utf8"));
-              j.version = next;
-              fs.writeFileSync(p, JSON.stringify(j, null, 2) + "\n");
-            }
-            const lock = JSON.parse(fs.readFileSync("package-lock.json", "utf8"));
-            lock.version = next;
-            lock.packages[""].version = next;
-            fs.writeFileSync("package-lock.json", JSON.stringify(lock, null, 2) + "\n");
-          '
-
-          git add package.json packages/core/package.json package-lock.json
-          git commit -m "chore(release): sandbox-factory $NEXT"
-
-          # Push the bump to main before tagging, so the tag points at a commit
-          # that is on the branch.
-          #
-          # The outcome is an output rather than an exit code. A failed push
-          # must not fail the workflow — the deploy already succeeded and is
-          # live — but it must stop the tag, and `exit 0` would do the opposite:
-          # it ends this step successfully and lets the next one tag a commit
-          # that is not on main. Rejected means main moved while we deployed,
-          # and the next merge's run computes the version afresh.
-          if git push origin "HEAD:main"; then
-            echo "pushed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "pushed=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::main moved while deploying; skipping the tag for $NEXT"
-          fi
-
       - name: Tag and publish the release
-        if: steps.record.outputs.pushed == 'true'
+        if: steps.free.outputs.free == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           NEXT: ${{ needs.deploy.outputs.version }}
@@ -624,17 +586,49 @@ jobs:
         run: |
           tag="sandbox-factory-v$NEXT"
 
-          # The tag names the bump commit, so package.json at the tag reports
-          # this version. The deployed commit is recorded in the release notes
-          # rather than tagged directly — they are one commit apart, and the
-          # artifact carries the sha itself.
-          git tag -a "$tag" -m "sandbox-factory $NEXT"
+          # The tag names the commit that was built and deployed — the same sha
+          # the footer reports, the same sha release.yml stamps into the asset
+          # names and the provenance attestation.
+          #
+          # This used to bump package.json on main in a `chore(release):` commit
+          # and tag that instead, one above the deployed commit. That kept
+          # package.json-at-the-tag correct, at the cost of three shas for one
+          # release: the footer quoted the deployed commit while the release
+          # page and every asset named the bump. Someone clicking `release` in
+          # the footer landed on a page naming a commit they had never seen, and
+          # verifying provenance against the footer's sha found an attestation
+          # for a different one.
+          #
+          # Nothing bumps package.json now, so it no longer tracks the released
+          # version — the tags do, and the deploy job reads the base version back
+          # from the last tag. That is what stops dropping the bump from making
+          # the next run recompute the same number.
+          git tag -a "$tag" -m "sandbox-factory $NEXT" "$DEPLOYED"
           git push origin "$tag"
+
+          # The deployed sha goes in the release body, not only the run summary.
+          # The body is the page the footer link lands on, and the point of this
+          # change is that the sha quoted there is the one the reader arrived
+          # with.
+          #
+          # Notes are generated through the API and the sha prepended, rather
+          # than passing --generate-notes and --notes together: gh honours one
+          # and drops the other, costing either the changelog or the sha.
+          prev="$(git tag -l 'sandbox-factory-v*' --sort=-v:refname | sed -n 2p)"
+          generated="$(gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
+            -f tag_name="$tag" \
+            -f target_commitish="$DEPLOYED" \
+            ${prev:+-f previous_tag_name="$prev"} \
+            --jq .body)"
+
+          # printf, because a literal blank line inside this YAML block scalar
+          # would end the script.
+          body="$(printf 'Deployed commit: `%s`\n\n%s\n' "$DEPLOYED" "$generated")"
 
           gh release create "$tag" \
             --title "sandbox-factory: v$NEXT" \
-            --generate-notes \
-            --notes-start-tag "$(git tag -l 'sandbox-factory-v*' --sort=-v:refname | sed -n 2p)"
+            --target "$DEPLOYED" \
+            --notes "$body"
 
           {
             echo "### Released \`$tag\`"

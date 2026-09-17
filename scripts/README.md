@@ -15,6 +15,8 @@ background, so the terminal — and an agent session — is free immediately.
 
 That will:
 
+0. Return you to an up-to-date `main` first, if you are on a stale branch and
+   have nothing uncommitted.
 1. Move the changes off `main` onto a new branch (`main` is push-protected).
 2. Commit them with the title as the subject.
 3. Run `npm run verify` — the same gate CI runs.
@@ -73,6 +75,14 @@ whatever you are doing in it, minutes after handing the terminal back. It
 deletes the merged branch, deletes the remote branch and prunes, all of which
 move no files.
 
+It then sweeps up branches left behind by earlier runs — the ones from a ship
+that timed out, ran with `--no-wait`, or from a PR merged in the web UI.
+Merged-ness cannot be read from the commit graph under squash-merge, so the
+sweep asks GitHub and deletes a branch only when its PR reports `MERGED`. It
+leaves alone anything it cannot confirm: `main`, the current branch,
+`release-please--*`, branches with no PR or an open one, and any branch holding
+commits that were never pushed. Set `SHIP_NO_SWEEP=1` to keep a stale branch.
+
 ### You are left on `main`
 
 Before it detaches, the parent switches the working tree back to `main` and
@@ -86,6 +96,29 @@ edits have already been made.
 
 If something in the tree blocks the switch, it warns and leaves you where you
 are; the PR is open and watched either way.
+
+### It also returns to `main` on the way in
+
+The switch above covers the normal path, but you can still end up on a stale
+branch — an earlier ship that timed out, a PR merged in the web UI, a branch
+checked out by hand. Starting a feature there stacks it on that branch, which
+`ship.sh` then refuses after the edits are made.
+
+So at startup it moves you to an up-to-date `main` first. It does this only
+when there is nothing to lose, and requires all three:
+
+- a clean tree — no uncommitted or untracked work
+- no commits of its own that are not already on `main`
+- not a branch whose PR is still open
+
+The second one cannot be read from the commit graph. Squash-merge gives `main`
+a new commit, so a merged branch's commits are never ancestors of it; asked
+that way, work that _did_ land looks unmerged. It asks GitHub instead, and
+treats a `MERGED` PR as proof the commits are on `main`.
+
+Anything else is left alone: a branch with real unmerged commits, or any dirty
+tree, falls through to the normal logic, which either ships it as-is or stops
+and says why. Set `SHIP_NO_AUTO_MAIN=1` to skip the switch entirely.
 
 ### The child runs from a copy
 
@@ -109,6 +142,7 @@ removes it on exit.
 | `--body <text>`    | diffstat           | PR description                                              |
 | `--type <t>`       | inferred           | `bug\|feature\|breaking\|docs\|internal`                    |
 | `--issue <n>`      | —                  | Adds `Closes #n`                                            |
+| `--coauthor <who>` | —                  | `Co-Authored-By` trailer as `Name <email>` — see below      |
 | `--resolve <mode>` | `coderabbit`       | `coderabbit\|manual\|force` — see below                     |
 | `--draft`          | off                | Opens a draft; CodeRabbit and auto-merge both skip drafts   |
 | `--no-wait`        | off                | Open the PR and exit; do not watch at all                   |
@@ -116,19 +150,30 @@ removes it on exit.
 | `--yes` / `-y`     | off                | Skip the confirmation prompt (use this in automation)       |
 
 Timeouts are environment variables: `SHIP_CHECK_TIMEOUT` (1800s),
-`SHIP_REVIEW_TIMEOUT` (900s), `SHIP_MERGE_TIMEOUT` (600s), `SHIP_POLL` (20s).
+`SHIP_REVIEW_TIMEOUT` (1800s), `SHIP_MERGE_TIMEOUT` (600s), `SHIP_POLL` (20s).
 
-### Branch cleanup
+### Co-author credit
 
-On merge the script deletes the branch it shipped, locally and on the remote,
-then sweeps up branches left behind by earlier runs — the ones from a ship that
-timed out, ran with `--no-wait`, or from a PR merged in the web UI.
+Off by default. Pass `--coauthor "Name <email>"`, or set `SHIP_COAUTHOR` once
+in your environment to credit every ship:
 
-Squash-merge means merged-ness cannot be read from the commit graph, so the
-sweep asks GitHub and deletes a branch only when its PR reports `MERGED`. It
-leaves alone anything it cannot confirm: `main`, the current branch,
-`release-please--*`, branches with no PR or an open one, and any branch holding
-commits that were never pushed. Set `SHIP_NO_SWEEP=1` to keep a stale branch.
+```bash
+export SHIP_COAUTHOR="Claude Opus 5 (1M context) <noreply@anthropic.com>"
+```
+
+The trailer is written twice — into the branch commit and into the PR body.
+Both are needed. This repo merges with `--squash`, and GitHub builds the squash
+commit on `main` from the **PR title and body**, discarding the branch commit's
+message. A trailer placed only on the commit disappears at merge; the PR body
+copy is the one that survives.
+
+Note that GitHub only renders a co-author avatar when the email belongs to a
+real account. `noreply@anthropic.com` does not, so the trailer is present in
+`git log` but the commit list still shows one author.
+
+Two more switch off behaviour rather than timing: `SHIP_NO_AUTO_MAIN=1` keeps
+you on the current branch instead of returning to `main` at startup, and
+`SHIP_NO_SWEEP=1` leaves merged branches in place after a ship.
 
 ### Rotating the application secrets
 
@@ -185,29 +230,18 @@ That is the point when rotating after a leak, and a surprise otherwise.
 
 ### Why review threads matter here
 
-`main` has **two** protection layers, and only one is documented in
-[docs/ci.md](../docs/ci.md):
+`main` has two protection layers and both apply; see
+[docs/ci.md](../docs/ci.md#branch-protection) for what each one requires. Two
+consequences shape this script:
 
-- the `main protection` **ruleset** — required checks, squash-only, no
-  force-push;
-- a **classic branch protection** with `required_conversation_resolution: true`
-  and `enforce_admins: true`.
-
-The second one is the one that bites, in two ways. Any unresolved review thread
-blocks the merge, and because `enforce_admins` is on, `--admin` does not
-override it. CodeRabbit leaves threads on most PRs, so an unattended script has
-to deal with them.
-
-The two layers also require **different** checks. The ruleset requires
-`Test (Node 22)`, `Test (Node 24)` and `Analyze`; the classic layer additionally
-requires `CodeQL` and `CodeRabbit`. The `CodeRabbit` context has never reported
-a conclusion on any PR in this repo, so it is permanently pending.
-
-This was confirmed on PR #26: with `CodeRabbit` still pending, a direct
-`PUT /pulls/{n}/merge` was refused, while GitHub's own auto-merge landed the PR
-as soon as the threads were resolved. **Auto-merge evaluates the ruleset; the
-REST merge API evaluates the classic layer.** The script therefore waits for
-auto-merge and never calls the merge API.
+- **Unresolved threads block the merge**, and `enforce_admins` means `--admin`
+  does not override it. CodeRabbit leaves threads on most PRs, so an unattended
+  script has to settle them — hence the wait loop and `--resolve`.
+- **Auto-merge evaluates the ruleset; the REST merge API evaluates the classic
+  layer**, which additionally requires the permanently-pending `CodeRabbit`
+  context. Confirmed on PR #26, where `PUT /pulls/{n}/merge` was refused while
+  auto-merge landed the same PR. The script therefore waits for auto-merge and
+  never calls the merge API.
 
 `--resolve` controls how:
 

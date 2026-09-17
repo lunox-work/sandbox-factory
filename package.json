@@ -2,7 +2,7 @@
   "name": "@sandbox-factory/monorepo",
   "version": "1.0.0",
   "private": true,
-  "description": "Monorepo root. Carries the version CD tags on release; the published package lives in packages/core.",
+  "description": "Monorepo root. The publishable package lives in packages/core; releases are identified by git tag.",
   "license": "MIT",
   "author": "feversoul",
   "repository": {

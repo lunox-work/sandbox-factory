@@ -53,11 +53,13 @@ function git(...args) {
 /**
  * The version the artifact reports.
  *
- * Read from `packages/core/package.json` because that is the workspace
- * CD bumps on release — its version is the one that gets tagged, changelogged
- * and published, so it is the number a release actually refers to. The apps are
- * all `0.0.0` and private; reading a version from one of those would report a
+ * Read from `packages/core/package.json` because that is the publishable
+ * workspace — its number is the one a release refers to. The apps are all
+ * `0.0.0` and private; reading a version from one of those would report a
  * number that never changes.
+ *
+ * This is the floor, not the record: CD passes the version it is releasing in
+ * explicitly, and the tags are what say which versions exist.
  */
 function packageVersion() {
   try {

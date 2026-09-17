@@ -1,7 +1,14 @@
 # CI and automation
 
-Six workflows in [`.github/workflows/`](../.github/workflows/), plus branch
+Ten workflows in [`.github/workflows/`](../.github/workflows/), plus branch
 protection on `main`.
+
+The ones with a section below are the ones you interact with. The rest run
+unattended and are named here so nothing is a surprise: `cd.yml` (deploy and
+release — see [versioning.md](./versioning.md)), `release.yml` (signs and
+attaches artifacts when a tag appears), `terraform.yml` (validates infra, plans
+on PRs), `security-sweep.yml` (nightly), `codeql-autofix.yml` (asks CodeQL for
+a fix on its own findings).
 
 ## Branch protection
 
@@ -48,10 +55,15 @@ Runs on pushes to `main` and on pull requests. Matrix over Node 22 and 24 with
 Node 20 was dropped because the coverage threshold flags do not exist there. It
 reached end-of-life in April 2026.
 
-Each job runs `npm ci --ignore-scripts` → `npm run lint` → `npx prettier
---check .` → `npm run build` → `npm test` — the same sequence as
-`npm run verify`, which the pre-push hook runs. The two are kept identical so a
-green local run means a green CI run.
+Each job runs `npm ci --ignore-scripts` → `npm run lint` → `npm run format:check`
+→ `npm run build` → `npm test` — the same sequence as `npm run verify`, which
+the pre-push hook runs. Keep them identical: `verify` is the gate you can run
+locally, and a failure there is a failure here.
+
+CI then does three things `verify` does not, so a green `verify` is necessary
+but not sufficient: it runs against a **Postgres service container**, and it
+asserts afterwards that the build recorded its commit and that the
+database-backed tests actually ran rather than silently skipping.
 
 - **Format is a separate gate from lint.** `npm run lint` is `tsc --noEmit` and
   has no opinion about formatting. Unformatted Markdown fails CI as hard as
@@ -59,14 +71,16 @@ green local run means a green CI run.
 - **`npm test` tests compiled output**, via `tsconfig.test.json` into
   `dist-test/`, catching module-resolution and emit problems a TypeScript-native
   runner would paper over.
-- **`npm test` enforces coverage** at 80% lines, branches, and functions. Node
-  exits non-zero below any of them, failing a required check.
+- **`npm test` enforces coverage.** Node exits non-zero below any threshold,
+  failing a required check.
 - **`--ignore-scripts`** skips husky's `prepare`, which fails outside a git work
   tree.
 
-Thresholds live in the `test` script in [`package.json`](../package.json); the
-hook and CI both inherit them. Lowering them to make a PR pass is almost always
-wrong — add the test.
+Thresholds are **per workspace**, set in each workspace's own `package.json`
+`test` script — not the root one, which is only `turbo run test`. They are 90%
+for the packages, 80% for `apps/api`, and `apps/web` runs Vitest without
+thresholds. Lowering one to make a PR pass is almost always wrong — add the
+test.
 
 ## CodeQL (`codeql.yml`)
 
@@ -97,8 +111,17 @@ grouped into one PR.
 ## Auto-merge
 
 [`auto-merge.yml`](../.github/workflows/auto-merge.yml) arms GitHub's auto-merge
-on every PR, release PRs included. The one exception is a **Dependabot major**,
-which waits for a human.
+on every PR. The one exception is a **Dependabot major**, which waits for a
+human.
+
+It merges with the **`AUTO_MERGE_TOKEN`** secret, not the default
+`GITHUB_TOKEN`, and that is the single most load-bearing fact about this
+workflow. GitHub does not raise events for pushes made with the default token —
+a guard against a workflow retriggering itself — so a merge performed with it
+produces a `main` that CI and CD never observe. Deploys would then have to be
+dispatched by hand. If the secret expires the workflow falls back to the default
+token and says so in its log; rotate it with
+[`scripts/rotate-token.sh`](../scripts/rotate-token.sh).
 
 Two things make this safe:
 
@@ -128,14 +151,14 @@ them.
 
 ## Release (`cd.yml`, the `release` job)
 
-**Every merge to `main` that carries a releasable commit becomes a release.**
-There is no release PR and no separate tagging step to remember.
+**Every merge to `main` that deploys and carries a releasable commit becomes a
+release.** There is no release PR and no separate tagging step to remember.
 
 The ordering is the design. `cd.yml` works out the next version _before_ it
 builds, because the version and the tag are compiled into the artifact; deploys;
-verifies against the live site; and only then bumps the version on `main`, tags,
-and publishes the GitHub release. A failed deploy cuts no release, so a tag
-means "this ran in production and answered for itself", not "this merged".
+verifies against the live site; and only then tags the deployed commit and
+publishes the GitHub release. A failed deploy cuts no release, so a tag means
+"this ran in production and answered for itself", not "this merged".
 
 [`scripts/next-version.mjs`](../scripts/next-version.mjs) decides the bump from
 the commit subjects since the last tag:
@@ -147,8 +170,13 @@ the commit subjects since the last tag:
 | `fix`, `perf`, `revert`, `build`, `refactor`           | patch          |
 | anything else (`docs`, `chore`, `ci`, `test`, `style`) | **no release** |
 
-A docs-only or chore-only merge still deploys; it just does not cut a version,
-because a number that increments for a README fix stops meaning anything.
+A chore-only merge still deploys; it just does not cut a version, because a
+number that increments for a README fix stops meaning anything.
+
+A **docs-only** merge does not even deploy: `cd.yml` has `paths-ignore` for
+`**.md`, `docs/**` and `.github/ISSUE_TEMPLATE/**`, so the workflow never
+fires. Editing only those paths produces no deploy and no release — which is
+also why a docs fix cannot be used to force a redeploy.
 
 **Squash merging means the PR title is the commit message**, and therefore the
 thing that decides the version. Branch commit subjects survive only as body
@@ -157,9 +185,16 @@ contains a `fix:` commit. `ship.sh` rejects a non-conventional title up front fo
 this reason. If you expected a release and did not get one, check the merged
 commit's subject on `main` first.
 
-The version bump lands on `main` as a `chore(release):` commit pushed with the
-default `GITHUB_TOKEN`. GitHub refuses to raise push events for that token, so
-the bump does not trigger a second deploy — one merge stays one deploy.
+The tag is cut on the commit that was deployed, and nothing is pushed to `main`.
+One release is therefore one sha: the footer's `1.2.3+abc1234`, the commit the
+release page names, and the sha in the asset filenames and the provenance
+attestation all agree, so a link from the footer lands on a page describing the
+build the reader came from.
+
+Nothing bumps `package.json`, which means it does not track the released
+version — the tags do. The next version is computed from the last tag rather
+than from the file. Treat `package.json` as the floor for a first release, not
+as a record of what is live; `/version` and the footer answer that.
 
 Tagging the release fires [`release.yml`](../.github/workflows/release.yml),
 which builds, signs and attaches the artifacts. See
@@ -170,8 +205,10 @@ It was removed along with `release-please-config.json` and
 `.release-please-manifest.json`: with CD cutting a release per deploy, a release
 PR would bump to a version CD had already tagged.
 
-`CHANGELOG.md` is in [`.prettierignore`](../.prettierignore) because its
-generated formatting does not match Prettier's.
+`CHANGELOG.md` is in [`.prettierignore`](../.prettierignore) — its formatting
+came from release-please and does not match Prettier's. Nothing generates it
+now; GitHub's release notes are the changelog, so the file is a historical
+record frozen at 1.0.0.
 
 ## Publishing
 

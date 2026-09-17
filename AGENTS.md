@@ -6,7 +6,7 @@ Instructions for coding agents. Humans: see [CONTRIBUTING.md](./CONTRIBUTING.md)
 
 | Workspace          | Name                        | Published? |
 | ------------------ | --------------------------- | ---------- |
-| `packages/core`    | `sandbox-factory`           | **yes**    |
+| `packages/core`    | `sandbox-factory`           | not yet    |
 | `packages/shared`  | `@sandbox-factory/shared`   | no         |
 | `packages/db`      | `@sandbox-factory/db`       | no         |
 | `packages/client`  | `@sandbox-factory/client`   | no         |
@@ -232,23 +232,18 @@ for the merge. Prefer it over doing the steps by hand; see
   ran in production", not "this merged".
 - `scripts/next-version.mjs` decides the bump: `!` or a `BREAKING CHANGE:`
   footer → major, `feat` → minor, `fix`/`perf`/`revert`/`build`/`refactor` →
-  patch, anything else → **no release**. A docs-only or chore-only merge still
-  deploys; it just does not cut a version. Pinned by
-  `packages/shared/test/next-version.test.ts` — nobody reviews its answer before
-  it becomes a permanent tag.
+  patch, anything else → **no release**. A chore-only merge still deploys; it
+  just does not cut a version. A **docs-only** merge does not deploy at all —
+  `cd.yml` has `paths-ignore` for `**.md` and `docs/**`, so the workflow never
+  fires. Pinned by `packages/shared/test/next-version.test.ts` — nobody reviews
+  its answer before it becomes a permanent tag.
 - The PR title is the squash commit and therefore the thing that decides the
   version. `ship.sh` rejects a non-conventional title for exactly this reason.
-- The version of record is the root `package.json`, bumped on main by CD in a
-  `chore(release):` commit pushed with the default `GITHUB_TOKEN` — which
-  GitHub refuses to raise events for, so it does not trigger a second deploy.
-  `packages/core/package.json` is kept in step because CD,
-  `scripts/build-info.mjs` and the build-info tests all read the version there.
-- `release-please-config.json` is rooted at `.`, not `packages/core`. It watched
-  `packages/core` alone until 2026-09-17, so a commit touching only `apps/`,
-  `packages/shared/`, `.github/` or `docs/` was split to a path with no package
-  and silently dropped: `No commits for path: packages/core, skipping`, exit 0.
-  Four commits accumulated on main behind v1.0.0 with no release PR and nothing
-  reported it.
+- **The tags are the version of record, not `package.json`.** Nothing bumps
+  `package.json` on a release — CD tags the deployed commit directly, so the
+  footer's sha, the release page and the asset names are all one commit. The
+  next version is computed from the last tag. `package.json` is only the floor
+  for a first release; `/version` and the footer say what is live.
 - `CHANGELOG.md` lives at the repository root. Never hand-edit it.
 
 ### Do not

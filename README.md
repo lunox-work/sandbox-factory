@@ -158,14 +158,15 @@ Credentials in `docker-compose.yml` are development values only.
 The test suite needs neither service: `npm run verify` passes with Docker
 stopped.
 
-## Using the published package
+## Using `packages/core`
 
-`packages/core` is published to npm as `sandbox-factory`. It is dependency-free
-and runs in a browser, in Node, or inside an editor extension.
+`packages/core` is the publishable workspace — dependency-free, and runs in a
+browser, in Node, or inside an editor extension.
 
-```bash
-npm install sandbox-factory
-```
+It is **not on npm yet**: nothing in CI publishes, and `sandbox-factory` is
+unregistered. Consume it through the workspace, or from the tarball attached to
+a [release](https://github.com/lunox-work/sandbox-factory/releases). The import
+below is what publishing would enable, not what works today.
 
 ```ts
 import {

@@ -10,8 +10,13 @@ level with `repository_selection: selected`, so adding another repository means
 adding it to the existing installation, not installing the app again.
 
 It reviews eligible PRs — non-draft, and not titled `chore(deps)` or `release`.
-Its `CodeRabbit` check is **not** required, so an unhappy review never blocks a
-merge. Note that unresolved review threads _do_ block merging.
+
+Its `CodeRabbit` check is not required by the ruleset that auto-merge evaluates,
+so an unhappy review does not block the merge auto-merge performs. The classic
+layer does require it, which is why anything merging through the REST API
+stalls instead. Unresolved review threads block either way. See
+[ci.md](./ci.md#branch-protection) — that section is the source of truth for
+what blocks a merge.
 
 Behavior is configured in [`.coderabbit.yaml`](../.coderabbit.yaml):
 
