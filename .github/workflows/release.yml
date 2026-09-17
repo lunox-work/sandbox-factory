@@ -140,9 +140,14 @@ jobs:
   upload:
     name: Attach to release
     needs: attest
-    # Only a real tag has a release to attach to; a manual re-attestation run
-    # stops after signing.
-    if: startsWith(github.ref, 'refs/tags/')
+    # A tag push, or a manual run that named a tag.
+    #
+    # `github.ref` is `refs/heads/main` for a workflow_dispatch however it was
+    # invoked, so gating on it alone meant a dispatch run signed both artifacts
+    # and then dropped them — which is precisely the case the `tag` input
+    # exists for. Observed on run 35219963548: "Attestation created for 2
+    # subjects", release assets still empty.
+    if: startsWith(github.ref, 'refs/tags/') || inputs.tag != ''
     runs-on: ubuntu-latest
     permissions:
       # The one write this job needs, and it is deliberately not combined with
@@ -155,10 +160,14 @@ jobs:
         with:
           name: release-artifacts
 
+      # The tag the artifacts were built from, which is not always the ref this
+      # run is on: a dispatch runs from the default branch and carries the tag
+      # in its input instead.
       - env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
-          gh release upload "${GITHUB_REF_NAME}" \
+          gh release upload "$TAG" \
             sandbox-factory-web-*.tar.gz \
             sandbox-factory-vscode-*.vsix \
             --clobber
