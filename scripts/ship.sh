@@ -547,15 +547,33 @@ review_arrived() {
   [[ "${concl:-0}" -gt 0 ]]
 }
 
+# Path of the worktree holding $1 checked out, empty if none. Worktrees are
+# not ship.sh's own — agent sessions make them — but one pins its branch
+# against deletion, so the sweep and cleanup both have to see it. Reads the
+# porcelain stanzas: a `worktree <path>` line opens each, `branch <ref>` names
+# what it holds, and the main worktree is skipped since the caller's own
+# checkout is already excluded by name.
+worktree_holding() {
+  local want="refs/heads/$1" path=""
+  while read -r key value; do
+    case "$key" in
+      worktree) path="$value" ;;
+      branch)   [[ "$value" == "$want" ]] && { printf '%s' "$path"; return 0; } ;;
+    esac
+  done < <(git worktree list --porcelain 2>/dev/null)
+  return 0
+}
+
 # Sweep up branches left by earlier ships: runs that exited early, --no-wait,
 # or PRs merged in the web UI. Squash-merge makes `git branch --merged` useless
 # (the tip is never an ancestor of main), so delete a branch only when GitHub
 # reports its PR as MERGED. Skips main, the current and shipped branches,
-# release-please branches, and any branch with unpushed commits.
+# release-please branches, branches held by another worktree, and any branch
+# carrying commits that exist nowhere else.
 sweep_merged_branches() {
   command -v gh >/dev/null || return 0
 
-  local current b pr_state ahead
+  local current b pr_state extra wt
   current="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)"
 
   while read -r b; do
@@ -563,16 +581,31 @@ sweep_merged_branches() {
     [[ "$b" == "main" || "$b" == "$current" || "$b" == "$BRANCH" ]] && continue
     [[ "$b" == release-please--* ]] && continue
 
-    # Unpushed commits exist nowhere else: never delete. If the remote branch
-    # is already gone (usual after a merge), the PR check below decides.
+    # Commits that exist nowhere else: never delete. Measured against the
+    # remote branch while it survives, and against origin/main once the merge
+    # has deleted it — a squashed branch is fully contained in main, so
+    # anything still unique here (work committed on top after the merge) has
+    # never been pushed. Skipping this check when the remote ref is gone would
+    # sweep that work away silently.
     if git rev-parse --verify --quiet "refs/remotes/origin/$b" >/dev/null; then
-      ahead="$(git rev-list --count "origin/$b..$b" 2>/dev/null || echo 1)"
-      [[ "${ahead:-1}" -ne 0 ]] && continue
+      extra="$(git rev-list --count "origin/$b..$b" 2>/dev/null || echo 1)"
+    else
+      extra="$(git cherry origin/main "$b" 2>/dev/null | grep -c '^+' || true)"
     fi
+    [[ "${extra:-1}" -ne 0 ]] && continue
 
     pr_state="$(gh pr list --head "$b" --state all --limit 1 \
       --json state --jq '.[0].state // empty' 2>/dev/null || echo "")"
     [[ "$pr_state" == "MERGED" ]] || continue
+
+    # A branch checked out in another worktree cannot be deleted, and the
+    # failure is swallowed below, so every later sweep would retry it in
+    # silence. Say so once instead: the worktree is the thing to remove.
+    wt="$(worktree_holding "$b")"
+    if [[ -n "$wt" ]]; then
+      warn "branch $b is merged but held by worktree $wt — not swept"
+      continue
+    fi
 
     git branch -D "$b" >/dev/null 2>&1 \
       && ok "swept merged branch $b" || true
@@ -597,8 +630,16 @@ cleanup_merged() {
   if [[ "$IS_CHILD" -eq 0 ]]; then
     git checkout main >/dev/null 2>&1 && git pull --quiet >/dev/null 2>&1 || true
   fi
-  # -D, not -d: the squash commit is a different object, so -d refuses.
-  git branch -D "$BRANCH" >/dev/null 2>&1 || true
+  # -D, not -d: the squash commit is a different object, so -d refuses. A
+  # worktree holding the branch makes that impossible, and the error is
+  # swallowed here, so name it rather than leave a silently undeleted branch.
+  local wt
+  wt="$(worktree_holding "$BRANCH")"
+  if [[ -n "$wt" ]]; then
+    warn "branch $BRANCH is merged but held by worktree $wt — not deleted"
+  else
+    git branch -D "$BRANCH" >/dev/null 2>&1 || true
+  fi
 
   git push origin --delete "$BRANCH" >/dev/null 2>&1 \
     && ok "deleted branch $BRANCH" \
