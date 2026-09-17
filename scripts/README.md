@@ -211,3 +211,76 @@ later they block the merge and the PR simply stays open.
 it succeeded: it re-checks and falls back to reporting if threads are still
 open. If CodeRabbit ever stops honouring it, `ship.sh` degrades to
 `--resolve manual` behaviour rather than hanging.
+
+## `rotate-token.sh`
+
+Replaces `AUTO_MERGE_TOKEN`, validating the new token before storing it and
+confirming the write afterwards.
+
+```bash
+./scripts/rotate-token.sh            # prompts; nothing reaches shell history
+./scripts/rotate-token.sh --check    # is the stored token still working?
+```
+
+### Why this secret exists
+
+`auto-merge.yml` squash-merges with `AUTO_MERGE_TOKEN` rather than the default
+`GITHUB_TOKEN`, because GitHub deliberately raises no events for pushes made
+with the default token — a guard against a workflow retriggering itself. Both
+`ci.yml` and `cd.yml` trigger on `push: branches: [main]`, so a merge performed
+with the default token lands and **nothing observes it**.
+
+That was the state of this repository until #35: every green check came from
+the `pull_request` event, which made PRs look fully gated — and they were — while
+no deploy ever ran. Production was only ever updated by hand.
+
+So a dead token here does not fail loudly. It silently returns the repository to
+having no continuous deployment, which is why `--check` exists and why the
+workflow logs a warning on every fallback.
+
+### Required permissions
+
+A fine-grained PAT scoped to this repository:
+
+| Permission    | Access         |
+| ------------- | -------------- |
+| Contents      | Read and write |
+| Pull requests | Read and write |
+
+Resource owner must be **lunox-work**, not a personal account. If the org
+enforces PAT approval the token stays inert until an owner approves it, and
+`rotate-token.sh` reports that as "cannot see the repo".
+
+### Prefer a GitHub App
+
+A personal token ties every automatic deploy to one account and expires on a
+schedule someone has to remember. A GitHub App installation token does neither.
+The script warns when it detects a personal token; the warning is advice, not
+an error, and the token works either way.
+
+### Minting is a browser step
+
+GitHub has no API for issuing a PAT, so the script cannot create one. It covers
+everything either side: checking what is stored, validating what you minted,
+storing it, and verifying the result.
+
+### Do not pass the token as an argument
+
+It is accepted, because a caller that already holds the value should not be
+forced through a prompt. But it lands in shell history and in `ps` output, so
+the script warns whenever it is used from a terminal. Use no argument (prompts
+with echo off) or `-` to read stdin:
+
+```bash
+op read "op://Private/gh-auto-merge/token" | ./scripts/rotate-token.sh -
+```
+
+### Exit codes
+
+```
+0  rotated, or --check passed        2  the new token is unusable
+1  usage/precondition error          3  --check: stored token is bad
+```
+
+A non-zero exit from validation means nothing was changed — the previous token
+is still in place.
