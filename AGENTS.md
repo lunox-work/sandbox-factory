@@ -176,6 +176,22 @@ branches off `main`, verifies, opens the PR, settles review threads and waits
 for the merge. Prefer it over doing the steps by hand; see
 [scripts/README.md](./scripts/README.md). The rules below are what it encodes.
 
+- **Fire and forget. When it prints the PR URL, ship.sh is done and so are
+  you.** It detaches and watches in the background; it returns 0 once the PR is
+  _open_, not once it merges. The merge, the review threads and the branch
+  cleanup all happen without you.
+
+  Do not then poll `gh pr checks`, `sleep` and re-check, or tail the log to
+  watch it land. A ship takes ten to fifteen minutes, nearly all of it waiting
+  on CodeRabbit, and an agent that watches burns its context on unchanged
+  status output and stalls the session for the user. Report the PR URL and
+  stop. If a later turn genuinely needs to know the outcome, check it _then_,
+  once: `gh pr view <n> --json state --jq .state`.
+
+  Use `--foreground` only when the merge result is a precondition for work you
+  are about to do in the same turn, which is rare — the next task almost always
+  starts from `main` regardless.
+
 - Branch off `main` as `fix/...` or `feat/...`. `main` takes squash merges only;
   you cannot push to it.
 - **Unresolved review threads block the merge.** `main` also has a classic

@@ -10,6 +10,21 @@
 #                     --body "Closes #42" \
 #                     --type fix
 #
+# FIRE AND FORGET — this is the part agents get wrong.
+#
+# The script returns 0 as soon as the PR is *open*, having detached a child to
+# watch it merge. The PR URL on stdout is the finish line: the merge, the
+# review threads and the branch cleanup all complete without the caller.
+#
+# So do not poll afterwards — no `gh pr checks` loop, no `sleep` and re-check,
+# no tailing the log. A ship takes 10-15 minutes, nearly all of it waiting on
+# CodeRabbit, and an agent that watches burns its context on unchanged status
+# output while the user waits. Print the URL and move on. To learn the outcome
+# in a later turn, ask once: `gh pr view <n> --json state --jq .state`.
+#
+# --foreground opts back in, for the rare case where the merge is a
+# precondition for the very next thing you do.
+#
 # See scripts/README.md for the full flag list and the repo rules this encodes.
 
 set -euo pipefail
@@ -35,7 +50,9 @@ warn() { printf '\033[33mwarn:\033[0m %s\n' "$*" >&2; }
 ok()   { printf '\033[32m  ok\033[0m %s\n' "$*"; }
 
 usage() {
-  sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
+  # Through the fire-and-forget note, which is the thing a caller most needs to
+  # read. Keep this range in step with the header above.
+  sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'
   cat <<'EOF'
 
 Flags:
@@ -395,6 +412,42 @@ review_arrived() {
   [[ "${concl:-0}" -gt 0 ]]
 }
 
+# Everything that has to happen once the PR is merged, in one place.
+#
+# There are three exits that observe a merge — the check loop, the review loop
+# and the auto-merge loop — because the merge can land while any of them is
+# polling. Only the last one used to clean up, so a PR that merged during the
+# review wait (the common case: auto-merge fires the moment CodeRabbit resolves
+# its threads) left the branch checked out locally and alive on the remote.
+# Every exit calls this instead.
+#
+# The remote delete is not redundant with the repository's
+# `delete_branch_on_merge` setting: that setting does not reliably fire for a
+# merge performed by auto-merge under the Actions token, which is how every PR
+# here lands. Branches from previous runs were still on the remote with the
+# setting enabled.
+#
+# Nothing here is fatal. The PR is merged either way, and failing the script
+# over tidy-up would report a successful ship as an error.
+cleanup_merged() {
+  # A detached child holds no terminal, but it shares the working tree with
+  # whatever the user is doing in it. Switching branches underneath an
+  # interactive session is worse than leaving a merged branch behind, so the
+  # child cleans up the remote only.
+  if [[ "$IS_CHILD" -eq 0 ]]; then
+    # Leave main checked out and current, ready for the next task.
+    git checkout main >/dev/null 2>&1 && git pull --quiet >/dev/null 2>&1 || true
+    # -D, not -d: the squash commit on main is a different object, so git does
+    # not consider the branch merged and -d refuses it.
+    git branch -D "$BRANCH" >/dev/null 2>&1 || true
+  fi
+
+  git push origin --delete "$BRANCH" >/dev/null 2>&1 \
+    && ok "deleted branch $BRANCH" \
+    || true
+  git fetch origin --prune >/dev/null 2>&1 || true
+}
+
 resolve_all_threads() {
   local ids
   ids="$(threads_json | python3 -c 'import sys,json
@@ -415,7 +468,7 @@ info "Waiting for required checks (timeout ${CHECK_TIMEOUT}s)"
 deadline=$(( $(date +%s) + CHECK_TIMEOUT ))
 while :; do
   state="$(pr_json state '.state')"
-  [[ "$state" == "MERGED" ]] && { ok "merged while waiting"; echo; info "$PR_URL"; exit 0; }
+  [[ "$state" == "MERGED" ]] && { ok "merged while waiting"; cleanup_merged; echo; info "$PR_URL"; exit 0; }
   [[ "$state" == "CLOSED" ]] && die "PR was closed"
 
   rollup="$(gh pr view "$PR_NUM" --json statusCheckRollup --jq '.statusCheckRollup' 2>/dev/null || echo "[]")"
@@ -457,7 +510,9 @@ asked_resolve=0
 
 while :; do
   state="$(pr_json state '.state')"
-  [[ "$state" == "MERGED" ]] && { ok "merged"; echo; info "$PR_URL"; exit 0; }
+  # The usual finish: auto-merge fires the moment CodeRabbit resolves its
+  # threads, so the merge lands here rather than in the auto-merge loop below.
+  [[ "$state" == "MERGED" ]] && { ok "merged"; cleanup_merged; echo; info "$PR_URL"; exit 0; }
 
   n="$(unresolved_count)"
 
@@ -537,9 +592,7 @@ while :; do
     echo
     ok "merged to main"
     info "$PR_URL"
-    # Leave main checked out and current, ready for the next task.
-    git checkout main >/dev/null 2>&1 && git pull --quiet >/dev/null 2>&1 || true
-    git branch -d "$BRANCH" >/dev/null 2>&1 || true
+    cleanup_merged
     exit 0
   fi
   [[ "$state" == "CLOSED" ]] && die "PR was closed without merging"

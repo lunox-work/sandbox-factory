@@ -21,7 +21,8 @@ That will:
 4. Push and open a PR with the template filled in.
 5. Wait for `Test (Node 22)`, `Test (Node 24)`, and `Analyze`.
 6. Ask CodeRabbit to resolve its own review threads.
-7. Wait for auto-merge, then return you to an up-to-date `main`.
+7. Wait for auto-merge, then return you to an up-to-date `main` and delete the
+   branch, locally and on the remote.
 
 Steps 1–4 run in the foreground, so a bad title or a failing `verify` is an
 immediate error. From step 5 it detaches:
@@ -36,6 +37,40 @@ immediate error. From step 5 it detaches:
 
 Pass `--foreground` to watch inline instead. Exit code 0 means it merged (or
 detached successfully); anything else leaves the PR open with a reason.
+
+### For agents: the PR URL is the finish line
+
+`ship.sh` returns 0 once the PR is **open**, not once it merges. Everything
+after that — checks, review threads, the merge, deleting the branch — happens
+in the detached child.
+
+So do not poll afterwards. No `gh pr checks` loop, no `sleep` and re-check, no
+tailing the log. A ship takes 10–15 minutes, nearly all of it waiting on
+CodeRabbit, and an agent that watches spends its context on unchanged status
+output while the user waits on a session that looks stuck. Report the URL and
+stop.
+
+If a later turn needs the outcome, ask once:
+
+```bash
+gh pr view 27 --json state --jq .state
+```
+
+`--foreground` is for the rare case where the merge is a precondition for work
+in the same turn. The next task usually starts from `main` either way.
+
+### Branch cleanup
+
+On merge the branch is deleted locally and on the remote. The remote delete is
+deliberate rather than left to the repository's `delete_branch_on_merge`
+setting: that setting does not reliably fire for a merge performed by
+auto-merge under the Actions token, which is how every PR here lands, and
+branches from earlier runs accumulated on the remote with it enabled.
+
+A detached child skips the _local_ half — it shares a working tree with
+whatever you are doing in it, and switching branches underneath an interactive
+session is worse than leaving a merged branch behind. It still deletes the
+remote branch and prunes.
 
 ### Flags
 
