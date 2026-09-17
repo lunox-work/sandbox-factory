@@ -21,7 +21,7 @@ That will:
 4. Push and open a PR with the template filled in.
 5. Wait for `Test (Node 22)`, `Test (Node 24)`, and `Analyze`.
 6. Ask CodeRabbit to resolve its own review threads.
-7. Wait for auto-merge, then return you to an up-to-date `main` and delete the
+7. Return you to an up-to-date `main`, then watch for auto-merge and delete the
    branch, locally and on the remote.
 
 Steps 1–4 run in the foreground, so a bad title or a failing `verify` is an
@@ -33,6 +33,7 @@ immediate error. From step 5 it detaches:
       log:    .git/ship/pr-27.log
       follow: tail -f .git/ship/pr-27.log
   ok terminal is free — the PR merges on its own once green
+  ok back on main — start the next change here
 ```
 
 Pass `--foreground` to watch inline instead. Exit code 0 means it merged (or
@@ -67,10 +68,37 @@ setting: that setting does not reliably fire for a merge performed by
 auto-merge under the Actions token, which is how every PR here lands, and
 branches from earlier runs accumulated on the remote with it enabled.
 
-A detached child skips the _local_ half — it shares a working tree with
-whatever you are doing in it, and switching branches underneath an interactive
-session is worse than leaving a merged branch behind. It still deletes the
-remote branch and prunes.
+A detached child never checks anything out — it shares a working tree with
+whatever you are doing in it, minutes after handing the terminal back. It
+deletes the merged branch, deletes the remote branch and prunes, all of which
+move no files.
+
+### You are left on `main`
+
+Before it detaches, the parent switches the working tree back to `main` and
+fast-forwards it. The branch it just pushed is left behind deliberately: the
+commit is on the remote and the PR is the record of it.
+
+This is what lets the next change start cleanly. Otherwise you are standing on
+a branch whose PR is still open, and the next change stacks on unmerged
+work — which `ship.sh` then refuses (`has commits not in main`), after the
+edits have already been made.
+
+If something in the tree blocks the switch, it warns and leaves you where you
+are; the PR is open and watched either way.
+
+### The child runs from a copy
+
+The detached child is launched from a snapshot of the script under
+`.git/ship/`, not from `scripts/ship.sh`.
+
+bash reads a script lazily, by byte offset, as it runs. `scripts/ship.sh` is a
+tracked file, so any checkout — including the switch back to `main` above —
+rewrites those bytes underneath the running child, which then resumes at the
+same offset in different text. On PR #30 the child logged nothing after that
+point, never saw the merge and never cleaned up, while still sitting in its
+poll loop. `.git/` is never checked out, so a copy there is immune. The child
+removes it on exit.
 
 ### Flags
 

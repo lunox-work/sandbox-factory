@@ -16,6 +16,10 @@
 # watch it merge. The PR URL on stdout is the finish line: the merge, the
 # review threads and the branch cleanup all complete without the caller.
 #
+# It leaves you on an up-to-date `main`, so the next change starts there. Do
+# not check the shipped branch back out to keep working on it — that stacks the
+# next change on an open PR, which this script then refuses.
+#
 # So do not poll afterwards — no `gh pr checks` loop, no `sleep` and re-check,
 # no tailing the log. A ship takes 10-15 minutes, nearly all of it waiting on
 # CodeRabbit, and an agent that watches burns its context on unchanged status
@@ -52,7 +56,7 @@ ok()   { printf '\033[32m  ok\033[0m %s\n' "$*"; }
 usage() {
   # Through the fire-and-forget note, which is the thing a caller most needs to
   # read. Keep this range in step with the header above.
-  sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'
   cat <<'EOF'
 
 Flags:
@@ -350,12 +354,47 @@ mkdir -p "$LOG_DIR"
 SHIP_LOG="$LOG_DIR/pr-$PR_NUM.log"
 
 if [[ "$FOREGROUND" -eq 0 && "$IS_CHILD" -eq 0 ]]; then
+  # Run the child from a copy outside the working tree, not from "$0".
+  #
+  # bash reads a script lazily, by byte offset, while it runs. `$0` is a
+  # tracked file, so any later checkout — including the switch back to main
+  # immediately below — rewrites those bytes underneath the running child, and
+  # it resumes at the same offset in different text. Observed on PR #30: the
+  # child logged nothing after that point, never saw the merge and never
+  # cleaned up, while still sitting in its poll loop.
+  #
+  # Under .git/ so it is neither tracked nor ever checked out.
+  CHILD_COPY="$LOG_DIR/ship-$PR_NUM.sh"
+  cp "$0" "$CHILD_COPY" && chmod +x "$CHILD_COPY" || CHILD_COPY="$0"
+
   # Hand the child the PR we already opened; it skips straight to watching.
   SHIP_WATCH_PR="$PR_NUM" SHIP_WATCH_BRANCH="$BRANCH" \
-    nohup "$0" --_child --title "$TITLE" --resolve "$RESOLVE_MODE" --yes \
+    nohup "$CHILD_COPY" --_child --title "$TITLE" --resolve "$RESOLVE_MODE" --yes \
     >"$SHIP_LOG" 2>&1 &
   child=$!
   disown "$child" 2>/dev/null || true
+
+  # Return the working tree to main before handing it back.
+  #
+  # Otherwise the caller is left standing on a branch whose PR is still open,
+  # and the next change starts on top of unmerged work — which ship.sh then
+  # refuses ("has commits not in main"), after the edits have been made. The
+  # detached child cannot do this: it shares this working tree, and switching
+  # branches underneath an interactive session is its own hazard.
+  #
+  # Safe because the branch is already committed and pushed; the PR is the
+  # record of it. `--ff-only` so a diverged local main is left alone rather
+  # than quietly merged.
+  if git checkout main >/dev/null 2>&1; then
+    git pull --ff-only --quiet >/dev/null 2>&1 || true
+    RETURNED_TO_MAIN=1
+  else
+    # Only reachable if something in the tree blocks the switch. The PR is open
+    # and watched either way, so this is a warning, not a failure.
+    RETURNED_TO_MAIN=0
+    warn "could not switch back to main — still on $BRANCH"
+  fi
+
   echo
   info "Watching in the background (pid $child)"
   info "  log:    $SHIP_LOG"
@@ -363,6 +402,7 @@ if [[ "$FOREGROUND" -eq 0 && "$IS_CHILD" -eq 0 ]]; then
   info "  status: gh pr view $PR_NUM"
   echo
   ok "terminal is free — the PR merges on its own once green"
+  [[ "$RETURNED_TO_MAIN" -eq 1 ]] && ok "back on main — start the next change here"
   exit 0
 fi
 
@@ -430,22 +470,32 @@ review_arrived() {
 # Nothing here is fatal. The PR is merged either way, and failing the script
 # over tidy-up would report a successful ship as an error.
 cleanup_merged() {
-  # A detached child holds no terminal, but it shares the working tree with
-  # whatever the user is doing in it. Switching branches underneath an
-  # interactive session is worse than leaving a merged branch behind, so the
-  # child cleans up the remote only.
+  # A detached child shares the working tree with whatever the user is doing in
+  # it, minutes after handing the terminal back. It must not check anything out
+  # underneath them — by now they are on main, probably mid-edit. The parent
+  # already returned the tree to main before exiting, so there is nothing here
+  # for the child to do locally.
+  #
+  # `git branch -D` is safe from either, though: it moves no files, and by this
+  # point the branch is merged and the parent is no longer standing on it.
   if [[ "$IS_CHILD" -eq 0 ]]; then
-    # Leave main checked out and current, ready for the next task.
     git checkout main >/dev/null 2>&1 && git pull --quiet >/dev/null 2>&1 || true
-    # -D, not -d: the squash commit on main is a different object, so git does
-    # not consider the branch merged and -d refuses it.
-    git branch -D "$BRANCH" >/dev/null 2>&1 || true
   fi
+  # -D, not -d: the squash commit on main is a different object, so git does
+  # not consider the branch merged and -d refuses it.
+  git branch -D "$BRANCH" >/dev/null 2>&1 || true
 
   git push origin --delete "$BRANCH" >/dev/null 2>&1 \
     && ok "deleted branch $BRANCH" \
     || true
   git fetch origin --prune >/dev/null 2>&1 || true
+
+  # The child's own copy of this script, from the detach block. Removing it
+  # while executing it is fine: the file stays readable to this process until
+  # it exits, and bash has read it all by now.
+  [[ -n "${CHILD_COPY:-}" ]] && rm -f "$CHILD_COPY"
+  [[ "$IS_CHILD" -eq 1 ]] && rm -f "$LOG_DIR/ship-$PR_NUM.sh"
+  return 0
 }
 
 resolve_all_threads() {

@@ -192,6 +192,19 @@ for the merge. Prefer it over doing the steps by hand; see
   are about to do in the same turn, which is rare — the next task almost always
   starts from `main` regardless.
 
+- **It leaves you on `main`, so start the next change where you are.** The
+  parent switches back and fast-forwards before it detaches; the pushed branch
+  is left behind on purpose. Do not `git checkout` the branch you just shipped
+  to keep working on it — that stacks the next change on an open PR, and
+  `ship.sh` refuses it (`has commits not in main`) only after you have made the
+  edits. A follow-up to something still in review is a new branch off `main`.
+
+- **Never `git checkout` or `git stash` while a ship is being watched.** The
+  detached child is launched from a snapshot under `.git/ship/` precisely
+  because a checkout rewrites the script bytes underneath a running bash, but
+  the working tree is still shared — a stash mid-watch can still surprise a
+  `verify` running in another window. Let it finish; it needs nothing from you.
+
 - Branch off `main` as `fix/...` or `feat/...`. `main` takes squash merges only;
   you cannot push to it.
 - **Unresolved review threads block the merge.** `main` also has a classic
