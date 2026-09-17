@@ -54,7 +54,7 @@ function git(...args) {
  * The version the artifact reports.
  *
  * Read from `packages/core/package.json` because that is the workspace
- * release-please owns — its version is the one that gets tagged, changelogged
+ * CD bumps on release — its version is the one that gets tagged, changelogged
  * and published, so it is the number a release actually refers to. The apps are
  * all `0.0.0` and private; reading a version from one of those would report a
  * number that never changes.

@@ -104,7 +104,7 @@ test("an injected sha is never reported dirty", () => {
 });
 
 test("an unset version falls back to the released package version", () => {
-  // Read from packages/core/package.json — the workspace release-please owns —
+  // Read from packages/core/package.json — kept in step with the root —
   // rather than from an app, whose version is a permanent 0.0.0.
   assert.match(resolveBuildInfo({ BUILD_SHA: SHA }).version, /^\d+\.\d+\.\d+/);
 });

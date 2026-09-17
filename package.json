@@ -1,8 +1,8 @@
 {
   "name": "@sandbox-factory/monorepo",
-  "version": "0.0.0",
+  "version": "1.0.0",
   "private": true,
-  "description": "Monorepo root. The published package lives in packages/core; everything here is workspace orchestration.",
+  "description": "Monorepo root. Carries the version CD tags on release; the published package lives in packages/core.",
   "license": "MIT",
   "author": "feversoul",
   "repository": {

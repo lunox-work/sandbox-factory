@@ -1,22 +1,23 @@
 name: Release artifacts
 
-# Runs when release-please publishes a tag — not on every push to main.
+# Runs when a release tag is published — not on every push to main.
 #
-# Release-please accumulates commits into a release PR and tags only when that
-# PR is merged, so a tag is the repository's own statement that a specific
-# commit is a release. Building on every push instead would attest to commits
-# nobody decided to ship.
+# cd.yml creates a tag only after a deploy has verified itself against the live
+# site, so a tag is the repository's statement that a specific commit reached
+# production. Building on every push instead would attest to commits that never
+# shipped.
 on:
   push:
     # `sandbox-factory-v1.2.3`, not `v1.2.3`.
     #
-    # release-please-config.json configures packages/core as a named package in
-    # a manifest-driven monorepo, where `include-component-in-tag` defaults to
-    # true, so every tag it creates carries the component prefix. This pattern
-    # matched `v*` until 2026-09-17 and therefore matched nothing release-please
-    # had ever produced — the workflow was green because it never ran. Nothing
-    # reports a trigger that does not fire, which is why it survived: the only
-    # visible symptom was releases with no attached artifacts.
+    # The prefix comes from release-please, which configured packages/core as a
+    # named package in a manifest-driven monorepo. release-please is gone and
+    # cd.yml cuts the tags now, but the shape is kept — see releaseTag() in
+    # packages/shared. This pattern matched `v*` until 2026-09-17 and therefore
+    # matched nothing that had ever been produced — the workflow was green
+    # because it never ran. Nothing reports a trigger that does not fire, which
+    # is why it survived: the only visible symptom was releases with no
+    # attached artifacts.
     tags: ["sandbox-factory-v*"]
   # Manual runs, for re-attesting an existing tag after a workflow fix.
   workflow_dispatch:
@@ -53,9 +54,14 @@ jobs:
       attestations: write
 
     steps:
+      # Full history, because the provenance step below names the checkout with
+      # `git describe --exact-match`, and the default shallow fetch brings down
+      # no tags at all — describe would fail and quietly degrade the ref to a
+      # branch name, which is the failure this whole step exists to prevent.
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
 
       - uses: actions/setup-node@v7
         with:
@@ -74,8 +80,25 @@ jobs:
       # cannot say which commit it came from. That is the whole point of the
       # exercise, and without the guard it degrades silently to "unknown" — the
       # API still boots, the footer still renders, and nothing is verifiable.
+      #
+      # BUILD_SHA and BUILD_REF are read off the checkout rather than left to
+      # the resolver's own precedence, which prefers GITHUB_SHA over
+      # `git rev-parse HEAD`. That preference is right for a tag push, where the
+      # two agree, and wrong for a workflow_dispatch: GITHUB_SHA then describes
+      # the ref the run was dispatched from — the default branch — while the
+      # checkout above is at `inputs.tag`. Run 35227079381 built 7456ae4 and
+      # stamped every artifact `80d1860`, then passed both guards below, because
+      # the sha was present and the bundle did contain the value that had been
+      # injected. Neither check can catch this: they prove the resolver and the
+      # bundle agree, not that either matches what was checked out.
       - name: Resolve build provenance
         run: |
+          # The checkout, not the event. For a tag push these equal the event's
+          # own values; for a dispatch they are the tag that was asked for.
+          BUILD_SHA="$(git rev-parse HEAD)"
+          BUILD_REF="$(git describe --tags --exact-match HEAD 2>/dev/null || git rev-parse --abbrev-ref HEAD)"
+          export BUILD_SHA BUILD_REF
+          echo "resolved from the checkout: $BUILD_SHA ($BUILD_REF)"
           node scripts/build-info.mjs --require-identified --env >> "$GITHUB_ENV"
           echo "--- build provenance ---"
           node scripts/build-info.mjs --require-identified

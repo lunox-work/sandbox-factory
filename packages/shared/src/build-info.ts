@@ -129,13 +129,15 @@ export function commitUrl(info: BuildInfoDto): string | undefined {
 }
 
 /**
- * The tag release-please creates for a release, e.g. `sandbox-factory-v1.0.0`.
+ * The tag a release is cut at, e.g. `sandbox-factory-v1.0.0`.
  *
- * The component prefix is not decoration. `release-please-config.json`
- * configures `packages/core` as a named package in a manifest-driven monorepo,
- * where `include-component-in-tag` defaults to true — so the tags that exist
- * are `sandbox-factory-v1.0.0`, never `v1.0.0`. Anything matching on tags has
- * to match this shape or it silently never fires.
+ * The component prefix is not decoration. It originates with release-please,
+ * which configured `packages/core` as a named package in a manifest-driven
+ * monorepo, where `include-component-in-tag` defaults to true. release-please
+ * is gone — `cd.yml` cuts the tags now — but the published tags keep that
+ * shape, because changing it would orphan every release that exists and break
+ * `release.yml`'s trigger. Anything matching on tags has to match this shape or
+ * it silently never fires.
  */
 export function releaseTag(version: string): string {
   return `sandbox-factory-v${version}`;

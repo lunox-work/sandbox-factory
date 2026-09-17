@@ -98,9 +98,9 @@ test("commitUrl is undefined when the build is unidentified", () => {
 });
 
 // The prefix is not cosmetic: release.yml matched `v*` and therefore never
-// fired for a single release-please tag. Pinned here so the two cannot drift
+// fired for a single real tag. Pinned here so the two cannot drift
 // apart again silently.
-test("releaseTag carries the component prefix release-please uses", () => {
+test("releaseTag carries the component prefix the tags use", () => {
   assert.equal(releaseTag("1.0.0"), "sandbox-factory-v1.0.0");
 });
 

@@ -118,6 +118,18 @@ removes it on exit.
 Timeouts are environment variables: `SHIP_CHECK_TIMEOUT` (1800s),
 `SHIP_REVIEW_TIMEOUT` (900s), `SHIP_MERGE_TIMEOUT` (600s), `SHIP_POLL` (20s).
 
+### Branch cleanup
+
+On merge the script deletes the branch it shipped, locally and on the remote,
+then sweeps up branches left behind by earlier runs — the ones from a ship that
+timed out, ran with `--no-wait`, or from a PR merged in the web UI.
+
+Squash-merge means merged-ness cannot be read from the commit graph, so the
+sweep asks GitHub and deletes a branch only when its PR reports `MERGED`. It
+leaves alone anything it cannot confirm: `main`, the current branch,
+`release-please--*`, branches with no PR or an open one, and any branch holding
+commits that were never pushed. Set `SHIP_NO_SWEEP=1` to keep a stale branch.
+
 ### Rotating the application secrets
 
 `--secrets` rotates the eight values in `.env.production` — the credentials the
@@ -222,7 +234,7 @@ they do not have to be rediscovered:
   first. An ordinary `checkout -b` carries uncommitted work across, leaving
   `main` untouched.
 - **The PR title is the only commit message that survives** the squash, and
-  release-please parses it. A non-conventional title is rejected up front
+  next-version.mjs parses it. A non-conventional title is rejected up front
   rather than silently producing no release.
 - **`npm run verify` is the real gate** — it runs before the push, so a failure
   is a clean error rather than a `pre-push` hook abort.

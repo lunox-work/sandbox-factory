@@ -59,7 +59,7 @@ time — a link to a disabled tab 404s.
 
 Beyond the defaults: `dependencies`, `github_actions`, `javascript` (from
 Dependabot), `ci` (labeler), `accessibility`, and `autorelease: pending`
-(release-please).
+(CD, which cuts the release tags).
 
 The labeler also references `tests` and `source`, which do not exist yet. The
 workflow only has `pull-requests: write`, not the `issues: write` that creating

@@ -120,10 +120,17 @@ tier stays at tier 2.
 
 Version alone cannot identify a build:
 
-- Release-please tags only when a release PR merges, so **every commit between
-  two releases reports the same version**. A dozen different builds, one number.
+- A version names a release, not a build. The same version is reported by the
+  deployed artifact, the signed tarball, the `.vsix` and any local build of that
+  tag — and, when a deploy ships nothing releasable (a docs-only merge), by the
+  commit after it too.
 - Conversely, during a rolling deploy two artifacts from the same commit can
   briefly report different versions.
+
+This used to be starker. Until 2026-09-17 release-please tagged only when a
+release PR merged, so every commit between two releases reported the previous
+release's number — a dozen different builds behind one version. CD now cuts a
+release per deploy, which narrows the gap without closing it.
 
 The commit sha is the only field that identifies one build, which is why it is
 what `sameBuild()` compares and what the attestation binds to.
@@ -135,21 +142,29 @@ Two, and they answer different questions:
 - **The commit** (`/commit/<sha>`) — always present. It is the field that
   identifies this exact build, and it resolves for every build there is.
 - **The release** (`/releases/tag/sandbox-factory-v1.0.0`) — only when this
-  build _is_ a tagged release, which most builds are not.
+  build _is_ a tagged release.
+
+Since CD began cutting a release per deploy, that second link resolves for most
+production builds rather than almost none. It still resolves for none of the
+builds that matter to get right — a local build, a PR build, a deploy that
+shipped nothing releasable — because the gate is `gitRef == releaseTag(version)`
+and only a build made as that release satisfies it.
 
 The release page does show its commit, so it reaches the same place in one
-more click. It is still the wrong thing to link _instead_: every commit between
-two releases carries the previous release's version while not being that
-release, so linking it to that release page would claim it shipped when it did
-not — and for an untagged build there is no release page to link at all. The
+more click. It is still the wrong thing to link _instead_: a build that carries
+a version without being that release would then claim it shipped when it did
+not, and for an untagged build there is no release page to link at all. The
 commit stays primary; the release is offered alongside it when it exists.
 
-Note the tag shape. `release-please-config.json` names `packages/core` as a
-component, so tags are `sandbox-factory-v1.0.0`, never `v1.0.0`. This is not
-cosmetic: `release.yml` triggered on `v*` until 2026-09-17 and therefore never
-fired for a single release-please tag — `sandbox-factory-v1.0.0` was published
-with no artifacts and no attestation, and nothing reported an error, because a
-trigger that does not match simply does not run. `releaseTag()` in
+Note the tag shape: `sandbox-factory-v1.0.0`, never `v1.0.0`. The prefix is
+inherited from release-please, which named `packages/core` as a component;
+release-please has since been removed, but the shape is kept because changing it
+would orphan every release that exists.
+
+This is not cosmetic. `release.yml` triggered on `v*` until 2026-09-17 and
+therefore never fired for a single real tag — `sandbox-factory-v1.0.0` was
+published with no artifacts and no attestation, and nothing reported an error,
+because a trigger that does not match simply does not run. `releaseTag()` in
 `packages/shared/src/build-info.ts` is the one definition, with a test pinning
 it.
 

@@ -126,36 +126,57 @@ missing label requires — so a label in `labeler.yml` that does not exist on th
 repository is not created automatically. Pre-create labels before referencing
 them.
 
-## Release (`release-please.yml`)
+## Release (`cd.yml`, the `release` job)
 
-On every push to `main`, release-please maintains an open release PR
-accumulating changelog entries from Conventional Commit messages. Merging it
-writes `CHANGELOG.md`, bumps the version, and tags the release.
+**Every merge to `main` that carries a releasable commit becomes a release.**
+There is no release PR and no separate tagging step to remember.
 
-**Squash merging means the PR title is the commit message.** Branch commit
-subjects survive only as body bullets, which release-please does not parse. So a
-PR titled `docs:` or `ci:` produces no release even when it contains a `fix:`
-commit — the workflow succeeds and logs `No user facing commits found ...
-skipping`. If you expected a release and did not get one, check the merged
+The ordering is the design. `cd.yml` works out the next version _before_ it
+builds, because the version and the tag are compiled into the artifact; deploys;
+verifies against the live site; and only then bumps the version on `main`, tags,
+and publishes the GitHub release. A failed deploy cuts no release, so a tag
+means "this ran in production and answered for itself", not "this merged".
+
+[`scripts/next-version.mjs`](../scripts/next-version.mjs) decides the bump from
+the commit subjects since the last tag:
+
+| Commit                                                 | Bump           |
+| ------------------------------------------------------ | -------------- |
+| `!` suffix, or a `BREAKING CHANGE:` footer             | major          |
+| `feat`                                                 | minor          |
+| `fix`, `perf`, `revert`, `build`, `refactor`           | patch          |
+| anything else (`docs`, `chore`, `ci`, `test`, `style`) | **no release** |
+
+A docs-only or chore-only merge still deploys; it just does not cut a version,
+because a number that increments for a README fix stops meaning anything.
+
+**Squash merging means the PR title is the commit message**, and therefore the
+thing that decides the version. Branch commit subjects survive only as body
+bullets and are not parsed. A PR titled `docs:` produces no release even when it
+contains a `fix:` commit. `ship.sh` rejects a non-conventional title up front for
+this reason. If you expected a release and did not get one, check the merged
 commit's subject on `main` first.
 
-Configuration lives in
-[`release-please-config.json`](../release-please-config.json) and
-[`.release-please-manifest.json`](../.release-please-manifest.json). The manifest
-records the last released version and sits at `0.0.0`, so the accumulated `feat:`
-commits make the first release `0.1.0`.
+The version bump lands on `main` as a `chore(release):` commit pushed with the
+default `GITHUB_TOKEN`. GitHub refuses to raise push events for that token, so
+the bump does not trigger a second deploy — one merge stays one deploy.
 
-`"release-as"` is unconditional — left in the config it pins _every_ release to
-the same number. If you need to force a version, add it and remove it in the
-same cycle.
+Tagging the release fires [`release.yml`](../.github/workflows/release.yml),
+which builds, signs and attaches the artifacts. See
+[versioning.md](./versioning.md) for what the footer does with all of this.
+
+Until 2026-09-17 this was release-please, which maintained an open release PR.
+It was removed along with `release-please-config.json` and
+`.release-please-manifest.json`: with CD cutting a release per deploy, a release
+PR would bump to a version CD had already tagged.
 
 `CHANGELOG.md` is in [`.prettierignore`](../.prettierignore) because its
 generated formatting does not match Prettier's.
 
 ## Publishing
 
-There is no npm publish workflow. release-please tags releases and writes the
-changelog; nothing pushes to a registry. Publishing would need a new workflow
+There is no npm publish workflow. CD tags releases and GitHub generates the
+notes; nothing pushes to a registry. Publishing would need a new workflow
 triggered on release, using a scoped npm token or trusted publishing.
 
 ## Running the CI checks locally

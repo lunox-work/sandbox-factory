@@ -467,6 +467,56 @@ review_arrived() {
 # here lands. Branches from previous runs were still on the remote with the
 # setting enabled.
 #
+# Sweep up branches left behind by *earlier* ships.
+#
+# cleanup_merged below deletes the branch this run shipped, but that only helps
+# from the moment it lands. Branches from runs that exited early — a failed
+# check, a timeout, a --no-wait — or from PRs merged in the web UI stay behind,
+# and they accumulate: six were still here (three of them on the remote, with
+# `delete_branch_on_merge` enabled) before this sweep existed.
+#
+# Merged-ness cannot be read from the commit graph here. Squash-merge gives
+# main a brand-new commit, so the branch tip is never an ancestor of it and
+# `git branch --merged` lists nothing. GitHub is the only thing that knows, so
+# ask it: delete a branch only when its PR reports MERGED.
+#
+# Deliberately conservative — it skips anything it cannot positively confirm:
+#   - main, and the branch this run is on
+#   - release-please branches (it manages and reuses its own)
+#   - any branch with no PR, or whose PR is OPEN or CLOSED-unmerged
+# A branch with unpushed local commits is left alone too: those commits exist
+# nowhere else, and no PR ever saw them.
+sweep_merged_branches() {
+  command -v gh >/dev/null || return 0
+
+  local current b pr_state ahead
+  current="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)"
+
+  while read -r b; do
+    [[ -z "$b" ]] && continue
+    [[ "$b" == "main" || "$b" == "$current" || "$b" == "$BRANCH" ]] && continue
+    [[ "$b" == release-please--* ]] && continue
+
+    # Unpushed commits mean GitHub never saw this work — never delete it.
+    # When the remote branch is already gone (the usual state after a merge),
+    # there is nothing to compare against, and the PR check below decides.
+    if git rev-parse --verify --quiet "refs/remotes/origin/$b" >/dev/null; then
+      ahead="$(git rev-list --count "origin/$b..$b" 2>/dev/null || echo 1)"
+      [[ "${ahead:-1}" -ne 0 ]] && continue
+    fi
+
+    pr_state="$(gh pr list --head "$b" --state all --limit 1 \
+      --json state --jq '.[0].state // empty' 2>/dev/null || echo "")"
+    [[ "$pr_state" == "MERGED" ]] || continue
+
+    git branch -D "$b" >/dev/null 2>&1 \
+      && ok "swept merged branch $b" || true
+    git push origin --delete "$b" >/dev/null 2>&1 || true
+  done < <(git for-each-ref --format='%(refname:short)' refs/heads/)
+
+  return 0
+}
+
 # Nothing here is fatal. The PR is merged either way, and failing the script
 # over tidy-up would report a successful ship as an error.
 cleanup_merged() {
@@ -488,6 +538,11 @@ cleanup_merged() {
   git push origin --delete "$BRANCH" >/dev/null 2>&1 \
     && ok "deleted branch $BRANCH" \
     || true
+
+  # Also clear out anything earlier runs left behind. Opt out with
+  # SHIP_NO_SWEEP=1 if a stale branch is being kept on purpose.
+  [[ "${SHIP_NO_SWEEP:-0}" == "1" ]] || sweep_merged_branches
+
   git fetch origin --prune >/dev/null 2>&1 || true
 
   # The child's own copy of this script, from the detach block. Removing it

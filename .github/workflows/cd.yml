@@ -68,10 +68,21 @@ jobs:
       name: production
       url: https://platform.lunox.work
 
+    # Consumed by the `release` job below, which tags what this job verified.
+    # The version is decided here, before the build, so the tag it cuts is the
+    # one already compiled into the artifact that is now live.
+    outputs:
+      sha: ${{ steps.commit.outputs.sha }}
+      version: ${{ steps.version.outputs.value }}
+      releasable: ${{ steps.version.outputs.releasable }}
+
     steps:
+      # Full history and tags: the version this deploy will be released as is
+      # computed from the commits since the last tag, below.
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.sha || github.sha }}
+          fetch-depth: 0
 
       - name: Resolve the commit being deployed
         id: commit
@@ -132,16 +143,45 @@ jobs:
       - name: Install dependencies
         run: npm ci --ignore-scripts
 
-      # The released version, from the one workspace release-please owns. The
-      # web build resolves this itself through scripts/build-info.mjs, but the
-      # API reads BUILD_VERSION from its environment at runtime and has no
-      # repository to fall back to, so the value has to be passed into the image.
-      - name: Resolve the released version
+      # The version this deploy will be released as — computed BEFORE the build,
+      # not after it.
+      #
+      # Every merge to main that carries a releasable commit becomes a release,
+      # and the `release` job below cuts the tag once this deploy has verified
+      # itself against the live site. That ordering is deliberate: a tag means
+      # "this ran in production", so it cannot be created first.
+      #
+      # But the artifact has to *know* the version and tag it is about to become,
+      # because both are compiled into the bundle. Resolving them afterwards
+      # would ship a bundle reporting the previous version and a `main` ref,
+      # and releaseUrl() in packages/shared would then return undefined for a
+      # build that genuinely is a release — the footer would link to the commit
+      # and not to the release page that exists for it.
+      #
+      # So the version is decided here and the tag is a promise kept below. If
+      # the deploy fails, no tag is created and the bundle carrying that version
+      # was never published, so nothing outside this run ever saw the claim.
+      - name: Work out the version being released
         id: version
         run: |
-          version="$(node -p "require('./packages/core/package.json').version")"
-          echo "value=$version" >> "$GITHUB_OUTPUT"
-          echo "Building version $version"
+          current="$(node -p "require('./package.json').version")"
+          last="$(git tag -l 'sandbox-factory-v*' --sort=-v:refname | head -1)"
+          echo "last release: ${last:-<none>}"
+
+          # Exit 1 means nothing in the range warrants a release — a docs-only
+          # or chore-only merge. The deploy still happens; it just ships as the
+          # current version and the `release` job below cuts no tag.
+          if next="$(node scripts/next-version.mjs --from "$last" --to HEAD --current "$current")"; then
+            echo "value=$next" >> "$GITHUB_OUTPUT"
+            echo "ref=sandbox-factory-v$next" >> "$GITHUB_OUTPUT"
+            echo "releasable=true" >> "$GITHUB_OUTPUT"
+            echo "this deploy releases $current -> $next"
+          else
+            echo "value=$current" >> "$GITHUB_OUTPUT"
+            echo "ref=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+            echo "releasable=false" >> "$GITHUB_OUTPUT"
+            echo "nothing releasable; deploying as $current without a tag"
+          fi
 
       # ---- build the SPA ---------------------------------------------------
 
@@ -149,15 +189,25 @@ jobs:
       # the bundle, and the verification step at the end reads it back off the
       # live site to prove this exact build is serving.
       #
-      # BUILD_VERSION is deliberately not set. scripts/build-info.mjs falls back
-      # to the version in packages/core/package.json, which is the number a
-      # release actually refers to; overriding it with the short sha made the
-      # sha appear twice, since formatVersion appends it again as semver build
-      # metadata — `cd09b15+cd09b15` rather than `0.0.0+cd09b15`.
+      # BUILD_VERSION is now set explicitly, to the version this deploy is being
+      # released as. It used to be left unset so the resolver would fall back to
+      # packages/core/package.json — correct while the tag was cut separately
+      # and the working tree already carried the released number. It is not
+      # correct here: the bump has not been written yet at build time, so the
+      # fallback would report the *previous* version for a build that is about
+      # to become the next one.
+      #
+      # Passing the short sha here was a different bug, fixed earlier: it made
+      # the sha appear twice, since formatVersion appends it as semver build
+      # metadata (`cd09b15+cd09b15`). A semver version is the right value.
+      #
+      # BUILD_REF carries the tag rather than `main` when this deploy releases,
+      # which is what releaseUrl() matches on to offer the release link.
       - name: Build the web app
         env:
           BUILD_SHA: ${{ steps.commit.outputs.sha }}
-          BUILD_REF: ${{ github.ref_name }}
+          BUILD_REF: ${{ steps.version.outputs.ref }}
+          BUILD_VERSION: ${{ steps.version.outputs.value }}
         run: |
           npx turbo run build --filter=@sandbox-factory/web
           if ! grep -qF "$BUILD_SHA" apps/web/dist/assets/*.js; then
@@ -208,10 +258,13 @@ jobs:
           platforms: linux/arm64
           push: true
           tags: ${{ steps.infra.outputs.ecr }}:${{ steps.commit.outputs.sha }}
+          # The same three values the web bundle was built with, so /version and
+          # the footer report one build rather than two that disagree about
+          # which ref they came from.
           build-args: |
             BUILD_VERSION=${{ steps.version.outputs.value }}
             BUILD_SHA=${{ steps.commit.outputs.sha }}
-            BUILD_REF=${{ github.ref_name }}
+            BUILD_REF=${{ steps.version.outputs.ref }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -452,4 +505,139 @@ jobs:
             echo '```'
             echo "gh api /repos/${{ github.repository }}/attestations/${{ steps.digest.outputs.value }}"
             echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---- tag what just shipped ---------------------------------------------
+  #
+  # Runs only after the deploy verified against the live site, so a tag means
+  # "this ran in production and answered for itself", not "this merged". A
+  # failed deploy leaves no release, which is the whole point of the ordering:
+  # the release page and the running site cannot disagree.
+  #
+  # The version is not recomputed here — it is the one `deploy` decided before
+  # it built, and therefore the one compiled into the bundle now serving.
+  # Recomputing would risk a different answer (a tag created meanwhile, a race
+  # with another merge) and the tag would then name a version no artifact
+  # reports.
+  #
+  # Separate from `deploy` because it needs `contents: write` to create the tag,
+  # and the deploy job holds AWS credentials. Keeping them apart means the job
+  # that can write to the repository cannot touch production, and the job that
+  # can touch production cannot rewrite history — the same split release.yml
+  # makes between signing and uploading.
+  release:
+    name: Tag the release
+    needs: deploy
+    runs-on: ubuntu-latest
+    # A push to main that carried something releasable.
+    #
+    # workflow_dispatch is excluded: a redeploy of an older commit must not tag,
+    # because the version was computed against the previous tag and main has
+    # already moved past it — the release would sit behind HEAD while claiming
+    # to be the latest.
+    if: github.event_name == 'push' && needs.deploy.outputs.releasable == 'true'
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.deploy.outputs.sha }}
+          fetch-depth: 0
+
+      # A re-run of this workflow for a commit that already released should be a
+      # no-op, not an error.
+      - name: Check the tag is free
+        id: free
+        env:
+          NEXT: ${{ needs.deploy.outputs.version }}
+        run: |
+          tag="sandbox-factory-v$NEXT"
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "free=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::$tag already exists; nothing to do"
+          else
+            echo "free=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The version files are bumped on main in their own commit, so the
+      # repository keeps matching the tag cut from it. Without this the next
+      # run would compute its bump from a stale base and reuse a number.
+      #
+      # This push must not start another deploy, and the guard is the token
+      # rather than the commit message. GitHub refuses to raise push events for
+      # anything pushed with the default GITHUB_TOKEN — the loop-breaker
+      # auto-merge.yml documents from the other side, where it is an obstacle.
+      # Here it is exactly what is wanted: the bump lands on main and cd.yml
+      # does not observe it, so one merge stays one deploy.
+      #
+      # `paths-ignore` could not do this job: it does not cover package.json,
+      # and adding it would also silence deploys for a real dependency change.
+      - name: Record the version on main
+        id: record
+        if: steps.free.outputs.free == 'true'
+        env:
+          NEXT: ${{ needs.deploy.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          node -e '
+            const fs = require("node:fs");
+            const next = process.env.NEXT;
+            for (const p of ["package.json", "packages/core/package.json"]) {
+              const j = JSON.parse(fs.readFileSync(p, "utf8"));
+              j.version = next;
+              fs.writeFileSync(p, JSON.stringify(j, null, 2) + "\n");
+            }
+            const lock = JSON.parse(fs.readFileSync("package-lock.json", "utf8"));
+            lock.version = next;
+            lock.packages[""].version = next;
+            fs.writeFileSync("package-lock.json", JSON.stringify(lock, null, 2) + "\n");
+          '
+
+          git add package.json packages/core/package.json package-lock.json
+          git commit -m "chore(release): sandbox-factory $NEXT"
+
+          # Push the bump to main before tagging, so the tag points at a commit
+          # that is on the branch.
+          #
+          # The outcome is an output rather than an exit code. A failed push
+          # must not fail the workflow — the deploy already succeeded and is
+          # live — but it must stop the tag, and `exit 0` would do the opposite:
+          # it ends this step successfully and lets the next one tag a commit
+          # that is not on main. Rejected means main moved while we deployed,
+          # and the next merge's run computes the version afresh.
+          if git push origin "HEAD:main"; then
+            echo "pushed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "pushed=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::main moved while deploying; skipping the tag for $NEXT"
+          fi
+
+      - name: Tag and publish the release
+        if: steps.record.outputs.pushed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEXT: ${{ needs.deploy.outputs.version }}
+          DEPLOYED: ${{ needs.deploy.outputs.sha }}
+        run: |
+          tag="sandbox-factory-v$NEXT"
+
+          # The tag names the bump commit, so package.json at the tag reports
+          # this version. The deployed commit is recorded in the release notes
+          # rather than tagged directly — they are one commit apart, and the
+          # artifact carries the sha itself.
+          git tag -a "$tag" -m "sandbox-factory $NEXT"
+          git push origin "$tag"
+
+          gh release create "$tag" \
+            --title "sandbox-factory: v$NEXT" \
+            --generate-notes \
+            --notes-start-tag "$(git tag -l 'sandbox-factory-v*' --sort=-v:refname | sed -n 2p)"
+
+          {
+            echo "### Released \`$tag\`"
+            echo
+            echo "Deployed commit: \`$DEPLOYED\`"
           } >> "$GITHUB_STEP_SUMMARY"
