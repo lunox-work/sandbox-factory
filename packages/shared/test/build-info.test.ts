@@ -17,8 +17,11 @@ import {
   commitUrl,
   formatVersion,
   isIdentified,
+  releaseTag,
+  releaseUrl,
   sameBuild,
   unknownBuildInfo,
+  verifyCommand,
   type BuildInfoDto,
 } from "../src/build-info.js";
 
@@ -92,6 +95,46 @@ test("commitUrl points at the full sha on the org repository", () => {
 // A link to /commit/unknown 404s; offering nothing is better than offering that.
 test("commitUrl is undefined when the build is unidentified", () => {
   assert.equal(commitUrl(unknownBuildInfo), undefined);
+});
+
+// The prefix is not cosmetic: release.yml matched `v*` and therefore never
+// fired for a single release-please tag. Pinned here so the two cannot drift
+// apart again silently.
+test("releaseTag carries the component prefix release-please uses", () => {
+  assert.equal(releaseTag("1.0.0"), "sandbox-factory-v1.0.0");
+});
+
+test("releaseUrl points at the release page for a build of that tag", () => {
+  const released: BuildInfoDto = {
+    ...identified,
+    version: "1.0.0",
+    gitRef: "sandbox-factory-v1.0.0",
+  };
+  assert.equal(
+    releaseUrl(released),
+    "https://github.com/lunox-work/sandbox-factory/releases/tag/sandbox-factory-v1.0.0",
+  );
+});
+
+// The case that makes this narrower than commitUrl. A commit after a release
+// carries that release's version while not being it, and linking it to that
+// release page would claim it shipped when it did not.
+test("releaseUrl is undefined for a build that is not the tagged release", () => {
+  assert.equal(releaseUrl({ ...identified, version: "1.0.0" }), undefined);
+  assert.equal(releaseUrl(unknownBuildInfo), undefined);
+});
+
+test("verifyCommand takes the digest, which needs no registry access", () => {
+  const digest = `sha256:${"a".repeat(64)}`;
+  const command = verifyCommand({ ...identified, imageDigest: digest });
+  assert.ok(command?.includes(`--digest ${digest}`));
+  assert.ok(command?.includes("--repo lunox-work/sandbox-factory"));
+});
+
+// Nothing to verify without a digest, and a command built from a sha would
+// invite running a check that cannot pass.
+test("verifyCommand is undefined when no digest was resolved", () => {
+  assert.equal(verifyCommand(identified), undefined);
 });
 
 test("sameBuild compares the full sha", () => {

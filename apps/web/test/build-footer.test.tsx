@@ -61,6 +61,14 @@ test("the version links to the exact commit on GitHub", async () => {
   expect(link.getAttribute("rel")).toBe("noreferrer");
 });
 
+// The fixture is a build of `main`, which is what almost every build is. A
+// release link here would point at a release this commit is not.
+test("no release link on a build that is not a tagged release", async () => {
+  render(<BuildFooter />);
+  await screen.findByText("1.4.2+7f3a9c1");
+  expect(screen.queryByText("release")).toBeNull();
+});
+
 // The tooltip is where the full sha lives, because that is the form provenance
 // verification takes and the short one cannot be pasted into it.
 test("the link title carries the full sha and build time", async () => {

@@ -16,6 +16,7 @@ import {
   commitUrl,
   formatVersion,
   isIdentified,
+  releaseUrl,
 } from "@sandbox-factory/shared";
 import type { BuildInfoDto } from "@sandbox-factory/shared";
 import { useEffect, useState } from "react";
@@ -41,7 +42,18 @@ export function BuildFooter() {
   }, []);
 
   const label = formatVersion(webBuild);
+
+  // The commit, always — it is the field that identifies this exact build, and
+  // it resolves for every build there is.
   const href = commitUrl(webBuild);
+
+  // The release, only when this build *is* one. Undefined for the commits
+  // between two releases, which carry the previous version without being it;
+  // see `releaseUrl`. Shown in addition to the commit rather than instead of
+  // it, because they answer different questions — "what code is this?" versus
+  // "what shipped, and what are its signed artifacts?" — and only the first
+  // has an answer for most builds.
+  const release = releaseUrl(webBuild);
 
   // Only a definite disagreement is worth showing. An API that did not answer,
   // or either side reporting an unidentified build, leaves the question
@@ -59,6 +71,17 @@ export function BuildFooter() {
       ) : (
         <a href={href} target="_blank" rel="noreferrer" title={buildTitle()}>
           {label}
+        </a>
+      )}
+      {release !== undefined && (
+        <a
+          className="build-release"
+          href={release}
+          target="_blank"
+          rel="noreferrer"
+          title="Release notes and signed artifacts for this version."
+        >
+          release
         </a>
       )}
       {mismatched && (

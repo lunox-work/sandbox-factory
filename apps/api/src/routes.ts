@@ -150,6 +150,12 @@ export function createApp({
    *
    * The response is the build record verbatim, so the web app can compare it
    * field for field against its own without either side reshaping it.
+   *
+   * Most of that record is a claim: values injected at build time and repeated
+   * back. `imageDigest` is the exception — it is read from the container
+   * runtime at boot and names the bytes actually executing, so it is the field
+   * to hand to `gh attestation verify --digest`, which answers which workflow
+   * and commit produced them without trusting anything this response says.
    */
   app.get("/version", (c) => c.json(buildInfo));
 

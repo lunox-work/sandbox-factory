@@ -8,7 +8,16 @@ name: Release artifacts
 # nobody decided to ship.
 on:
   push:
-    tags: ["v*"]
+    # `sandbox-factory-v1.2.3`, not `v1.2.3`.
+    #
+    # release-please-config.json configures packages/core as a named package in
+    # a manifest-driven monorepo, where `include-component-in-tag` defaults to
+    # true, so every tag it creates carries the component prefix. This pattern
+    # matched `v*` until 2026-09-17 and therefore matched nothing release-please
+    # had ever produced — the workflow was green because it never ran. Nothing
+    # reports a trigger that does not fire, which is why it survived: the only
+    # visible symptom was releases with no attached artifacts.
+    tags: ["sandbox-factory-v*"]
   # Manual runs, for re-attesting an existing tag after a workflow fix.
   workflow_dispatch:
     inputs:

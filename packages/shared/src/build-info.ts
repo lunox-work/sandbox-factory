@@ -50,6 +50,24 @@ export const buildInfoSchema = z.object({
    * says the sha does not fully describe this artifact.
    */
   dirty: z.boolean(),
+  /**
+   * Digest of the container image this process is running, `sha256:...`.
+   *
+   * The one field here that is not a claim the build made about itself. The
+   * others are injected at build time and repeated back; this one is read at
+   * runtime from the container runtime's own metadata, so it says what is
+   * actually executing rather than what a build argument said should be.
+   *
+   * That is what makes it verifiable. Given the digest, anyone can run
+   * `gh attestation verify --digest <digest> --repo lunox-work/sandbox-factory`
+   * and get back the workflow and commit that produced those exact bytes,
+   * without trusting this response. See docs/versioning.md.
+   *
+   * Optional because only the API runs as a container: the web bundle is a set
+   * of files on a CDN with no single digest, and a local `npm run dev` has no
+   * image at all.
+   */
+  imageDigest: z.string().min(1).optional(),
 });
 
 export type BuildInfoDto = z.infer<typeof buildInfoSchema>;
@@ -108,6 +126,63 @@ export function commitUrl(info: BuildInfoDto): string | undefined {
   return isIdentified(info)
     ? `${REPOSITORY_URL}/commit/${info.gitSha}`
     : undefined;
+}
+
+/**
+ * The tag release-please creates for a release, e.g. `sandbox-factory-v1.0.0`.
+ *
+ * The component prefix is not decoration. `release-please-config.json`
+ * configures `packages/core` as a named package in a manifest-driven monorepo,
+ * where `include-component-in-tag` defaults to true — so the tags that exist
+ * are `sandbox-factory-v1.0.0`, never `v1.0.0`. Anything matching on tags has
+ * to match this shape or it silently never fires.
+ */
+export function releaseTag(version: string): string {
+  return `sandbox-factory-v${version}`;
+}
+
+/**
+ * Link to the GitHub release a build corresponds to — the changelog, the
+ * signed artifacts — or undefined when this build is not a released one.
+ *
+ * Deliberately narrower than `commitUrl`, which resolves for every build. Only
+ * the commit a release was tagged at has a release page; every commit between
+ * two releases carries the previous release's version while not being it, and
+ * linking those to that release page would claim they are something they are
+ * not. `gitRef` is the discriminator: CD sets it to the branch (`main`), while
+ * the release workflow builds a tag, so a ref matching the tag for this
+ * version is the artifact's own statement that it was built as that release.
+ */
+export function releaseUrl(info: BuildInfoDto): string | undefined {
+  if (!isIdentified(info)) {
+    return undefined;
+  }
+  const tag = releaseTag(info.version);
+  return info.gitRef === tag
+    ? `${REPOSITORY_URL}/releases/tag/${tag}`
+    : undefined;
+}
+
+/**
+ * The command that checks this build's provenance, for the person who wants to
+ * verify rather than trust.
+ *
+ * Only offered when there is a digest to verify, because the digest is the only
+ * thing here that a signature is bound to. Handing someone a command built from
+ * a sha would invite them to run a check that cannot pass — the attestation
+ * covers artifact bytes, not commits.
+ *
+ * Takes the digest alone rather than an image reference. The image lives in a
+ * private ECR registry that the person verifying almost certainly cannot pull
+ * from, but `--digest` needs no registry access at all: it queries the public
+ * transparency log for attestations bound to those bytes. Printing an
+ * `oci://` reference here would send people to a 403 and make a verifiable
+ * build look unverifiable.
+ */
+export function verifyCommand(info: BuildInfoDto): string | undefined {
+  return info.imageDigest === undefined
+    ? undefined
+    : `gh attestation verify --digest ${info.imageDigest} --repo lunox-work/sandbox-factory`;
 }
 
 /**

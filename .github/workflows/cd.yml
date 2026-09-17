@@ -34,10 +34,16 @@ on:
         type: string
 
 # OIDC needs id-token: write to mint the token AWS exchanges for credentials.
-# Nothing here needs write access to the repository.
+# The same token type is what Sigstore exchanges for a signing certificate, so
+# one grant serves both; they are different audiences of the same mechanism.
+#
+# `attestations: write` stores the signed provenance statement. Note this is
+# the only write against the repository here — `contents` stays read, so this
+# workflow can attest what it builds but cannot alter what it built from.
 permissions:
   contents: read
   id-token: write
+  attestations: write
 
 # Never cancel a deploy in flight: cancelling between the migration step and the
 # service update would leave the schema ahead of the code. Two merges land as
@@ -193,6 +199,7 @@ jobs:
           fi
 
       - name: Build and push the API image
+        id: build
         if: steps.image.outputs.exists != 'true'
         uses: docker/build-push-action@v6
         with:
@@ -207,6 +214,74 @@ jobs:
             BUILD_REF=${{ github.ref_name }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # The digest of what is about to run in production, however we got here.
+      #
+      # This depends on the build being single-platform. `platforms:
+      # linux/arm64` above produces one image manifest, so the digest pushed to
+      # ECR is the digest the runtime resolves and reports back as `ImageID` —
+      # which is what makes the check at the end of this workflow, and
+      # `gh attestation verify --digest`, line up. Adding a second platform
+      # would push a manifest *list* whose digest is not the digest of either
+      # image inside it, and the verification would start failing against a
+      # perfectly good deployment. Attest the per-platform digest if that day
+      # comes.
+      #
+      # Two paths reach this point: a fresh build, which reports its digest as a
+      # step output, and a redeploy of a commit whose image is already in ECR,
+      # which skipped the build entirely. The second still needs the digest —
+      # it is what the deployment is verified against below — so it is read back
+      # from the registry. Taking it from `docker/build-push-action` only would
+      # leave every redeploy unable to verify itself.
+      - name: Resolve the image digest
+        id: digest
+        run: |
+          digest="${{ steps.build.outputs.digest }}"
+          if [ -z "$digest" ]; then
+            digest="$(aws ecr describe-images \
+              --repository-name "$PROJECT-api" \
+              --image-ids "imageTag=${{ steps.commit.outputs.sha }}" \
+              --query 'imageDetails[0].imageDigest' --output text)"
+          fi
+          if [ -z "$digest" ] || [ "$digest" = "None" ]; then
+            echo "::error::could not determine the image digest for ${{ steps.commit.outputs.sha }}"
+            exit 1
+          fi
+          echo "value=$digest" >> "$GITHUB_OUTPUT"
+          echo "Image digest: $digest"
+
+      # What makes a deployed image verifiable rather than merely labelled.
+      #
+      # Until now only tagged releases were attested, by release.yml — and those
+      # artifacts are not what runs in production. This signs the actual
+      # deployed image: this digest, built by this workflow, from this commit,
+      # recorded in a public transparency log. Anyone holding the digest can
+      # then check it without trusting us or this pipeline:
+      #
+      #   gh attestation verify --digest sha256:... \
+      #     --repo lunox-work/sandbox-factory
+      #
+      # The API publishes that digest at GET /version, read from the container
+      # runtime rather than from a build argument, which is what closes the loop
+      # from "the server claims a commit" to "these bytes provably came from
+      # that commit". See apps/api/src/image-digest.ts and docs/versioning.md.
+      #
+      # Skipped on a redeploy: the attestation is bound to the digest, and the
+      # digest has not changed, so the existing one still verifies. Re-signing
+      # would add a second attestation for identical bytes and prove nothing new.
+      - name: Attest the deployed image
+        if: steps.image.outputs.exists != 'true'
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-name: ${{ steps.infra.outputs.ecr }}
+          subject-digest: ${{ steps.digest.outputs.value }}
+          # Stored in the repository's attestation store rather than pushed to
+          # ECR. `push-to-registry` would need the referrers API and an extra
+          # ECR write on this role, and buys nothing here: `gh attestation
+          # verify --digest` resolves through the transparency log, so a
+          # verifier needs no access to a private registry they cannot pull
+          # from anyway.
+          push-to-registry: false
 
       # ---- migrate, then deploy --------------------------------------------
 
@@ -351,8 +426,15 @@ jobs:
 
       # ---- prove it ---------------------------------------------------------
 
+      # The digest is passed as well as the sha, so this checks the bytes running
+      # and not only the label they carry. See the header of verify-deploy.sh
+      # for why those are different claims.
       - name: Verify the deployment
-        run: ./infra/scripts/verify-deploy.sh "${{ steps.commit.outputs.sha }}" "https://platform.lunox.work"
+        run: |
+          ./infra/scripts/verify-deploy.sh \
+            "${{ steps.commit.outputs.sha }}" \
+            "https://platform.lunox.work" \
+            "${{ steps.digest.outputs.value }}"
 
       - name: Summarise
         if: always()
@@ -365,4 +447,12 @@ jobs:
             echo "| Commit | \`${{ steps.commit.outputs.short }}\` |"
             echo "| URL | https://platform.lunox.work |"
             echo "| Image | \`${{ steps.commit.outputs.sha }}\` |"
+            echo "| Digest | \`${{ steps.digest.outputs.value }}\` |"
+            echo
+            echo "Verify this deployment's provenance, without trusting this run:"
+            echo
+            echo '```'
+            echo "gh attestation verify --digest ${{ steps.digest.outputs.value }} \\"
+            echo "  --repo ${{ github.repository }}"
+            echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

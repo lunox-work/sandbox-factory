@@ -394,6 +394,17 @@ button:disabled {
   text-decoration: underline;
 }
 
+/* Present only on a build that is a tagged release, so the separator belongs
+   to the link rather than sitting in the footer waiting for one. */
+.build-release::before {
+  content: "·";
+  margin-right: 0.5rem;
+  /* The dot is punctuation between two links, not part of either. Without
+     this it inherits the underline on hover and reads as a third link. */
+  text-decoration: none;
+  display: inline-block;
+}
+
 /* A disagreement between this bundle and the API. Muted rather than red — it
    is usually a deploy in flight, which resolves itself. */
 .build-mismatch::before {

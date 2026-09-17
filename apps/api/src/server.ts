@@ -15,10 +15,21 @@ import { buildBanner } from "@sandbox-factory/shared";
 
 import { createAuth } from "./auth.js";
 import { appUrl, buildInfo, parseEnv } from "./env.js";
+import { resolveImageDigest } from "./image-digest.js";
 import { createApp } from "./routes.js";
 
 const env = parseEnv();
-const build = buildInfo(env);
+
+// Asked of the container runtime, not of the build args, which is what makes it
+// worth reporting — see image-digest.ts. Awaited at module scope so the record
+// is complete before the first request can read it: resolving it in the
+// background would make `GET /version` answer differently depending on how
+// quickly it was called after boot, and a field that is sometimes there is
+// worse than one that never is.
+//
+// Safe to block on. It is bounded by its own timeout and resolves to undefined
+// on every failure, so the worst case is a second added to boot.
+const build = { ...buildInfo(env), imageDigest: await resolveImageDigest() };
 
 const connection = createConnection({ url: env.DATABASE_URL });
 
