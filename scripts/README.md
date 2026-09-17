@@ -118,6 +118,48 @@ removes it on exit.
 Timeouts are environment variables: `SHIP_CHECK_TIMEOUT` (1800s),
 `SHIP_REVIEW_TIMEOUT` (900s), `SHIP_MERGE_TIMEOUT` (600s), `SHIP_POLL` (20s).
 
+### Rotating the application secrets
+
+`--secrets` rotates the eight values in `.env.production` — the credentials the
+API reads through AWS Secrets Manager.
+
+```bash
+./scripts/rotate-token.sh --secrets                        # ask about all eight
+./scripts/rotate-token.sh --secrets --only DATABASE_URL    # ask about one
+```
+
+It asks for each key in turn and **skips any you leave blank**, so rotating one
+credential does not mean re-pasting the other seven. For each key it shows a
+redacted version of the current value and where in that provider's console the
+replacement is minted.
+
+Then, in order and each behind its own prompt:
+
+1. **Rewrites `.env.production` in place.** Comments and section structure are
+   preserved, so the file still diffs cleanly against `.env.example`. The
+   previous file is kept as `.env.production.bak.<timestamp>` — covered by the
+   existing `.env.*` rule in `.gitignore`, and worth deleting once the rotation
+   is confirmed, because it holds live credentials.
+2. **Validates** with `secrets-check.sh`, the same check the API applies at
+   boot. A file that fails is never pushed.
+3. **Pushes** to AWS Secrets Manager via `secrets-push.sh`, naming only the
+   keys this run actually changed. The values you skipped are left alone in
+   Secrets Manager rather than overwritten from your local file — which is what
+   makes a partial rotation safe if `.env.production` has drifted from
+   production for a key you did not touch.
+4. **Restarts the API** with `--force-new-deployment`.
+
+Step 4 is not optional busywork. The ECS agent reads Secrets Manager when a task
+_starts_, so a running task keeps the values it booted with — until it restarts,
+the rotation has happened everywhere except where it matters.
+
+Answering no at any step stops there and prints the command to finish by hand.
+
+### Rotating `BETTER_AUTH_SECRET` signs everyone out
+
+It signs session tokens, so replacing it invalidates every existing session.
+That is the point when rotating after a leak, and a surprise otherwise.
+
 ### Exit codes
 
 | Code | Meaning                                                      |
@@ -221,6 +263,9 @@ confirming the write afterwards.
 ./scripts/rotate-token.sh            # prompts; nothing reaches shell history
 ./scripts/rotate-token.sh --check    # is the stored token still working?
 ```
+
+`--check` changes nothing, so it cannot be combined with `--secrets`, which is
+a write. The script rejects that pair rather than quietly honouring one of them.
 
 ### Why this secret exists
 

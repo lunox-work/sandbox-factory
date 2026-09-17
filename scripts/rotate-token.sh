@@ -1,17 +1,31 @@
 #!/usr/bin/env bash
 #
-# rotate-token.sh — replace AUTO_MERGE_TOKEN, verifying before and after.
+# rotate-token.sh — rotate the credentials this project runs on.
 #
-# AUTO_MERGE_TOKEN is what auto-merge.yml squash-merges with. It exists because
-# GitHub raises no events for pushes made with the default GITHUB_TOKEN, so a
-# merge performed with that token never triggers ci.yml or cd.yml — see the note
-# on the arming step in .github/workflows/auto-merge.yml. A dead token here
-# means main stops deploying, quietly.
+# Two sets, kept separate because they live in different places and fail in
+# different ways.
 #
-#   ./scripts/rotate-token.sh                    # prompts, nothing hits history
+#   AUTO_MERGE_TOKEN   a GitHub Actions secret. auto-merge.yml squash-merges
+#                      with it, because GitHub raises no events for pushes made
+#                      with the default GITHUB_TOKEN — so a merge performed with
+#                      that token never triggers ci.yml or cd.yml. A dead token
+#                      here stops main deploying, quietly.
+#
+#   .env.production    the eight application secrets, which reach the API
+#                      through AWS Secrets Manager. A dead one here crash-loops
+#                      the task on its next boot, loudly.
+#
+#   ./scripts/rotate-token.sh                    # the GitHub token; prompts
 #   ./scripts/rotate-token.sh --check            # is the stored one still good?
+#   ./scripts/rotate-token.sh --secrets          # the eight app secrets
+#   ./scripts/rotate-token.sh --secrets --only DATABASE_URL
 #   ./scripts/rotate-token.sh <token>            # inline; see the warning below
 #   op read "op://Private/gh-auto-merge/token" | ./scripts/rotate-token.sh -
+#
+# --secrets asks for each key in turn and SKIPS ANY YOU LEAVE BLANK, so rotating
+# one credential does not mean re-pasting the other seven. It rewrites
+# .env.production in place, then offers to push the changed keys to AWS and to
+# restart the API so they take effect. Both are prompts, not automatic.
 #
 # PASSING A TOKEN AS AN ARGUMENT LEAKS IT. It lands in ~/.zsh_history, in `ps`
 # output while this runs, and in the scrollback of whatever opened the terminal.
@@ -20,11 +34,10 @@
 # tells you to rotate again if the shell was interactive. Prefer no argument
 # (prompts, silently) or `-` (reads stdin, for a password manager).
 #
-# Minting the replacement is a browser step — GitHub has no API for issuing a
-# PAT. This script covers everything either side of it: checking what you have,
-# validating what you minted, storing it, and confirming the result.
+# Minting a replacement is always a browser step — no provider here has an API
+# for issuing credentials. This script covers everything either side of it.
 #
-# See scripts/README.md for the token's required permissions.
+# See scripts/README.md for each credential's console location.
 
 set -euo pipefail
 
@@ -32,15 +45,52 @@ REPO="lunox-work/sandbox-factory"
 SECRET="AUTO_MERGE_TOKEN"
 NEW_TOKEN_URL="https://github.com/settings/personal-access-tokens/new"
 
-CHECK_ONLY=0 ASSUME_YES=0 TOKEN=""
+PROJECT="${PROJECT:-sandbox-factory}"
+REGION="${AWS_REGION:-us-east-1}"
+
+CHECK_ONLY=0 ASSUME_YES=0 TOKEN="" SECRETS_MODE=0 ONLY_KEY=""
 
 die()  { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 info() { printf '\033[36m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[33mwarn:\033[0m %s\n' "$*" >&2; }
 ok()   { printf '\033[32m  ok\033[0m %s\n' "$*"; }
 
+# The eight keys secrets.tf creates, in the order .env.production lists them,
+# each with where it is rotated. Kept in step with `local.app_secrets` in
+# infra/secrets.tf and `KEYS` in infra/scripts/secrets-push.sh — a key in one
+# and not the others is a bug in whichever was edited last.
+SECRET_KEYS=(
+  DATABASE_URL
+  BETTER_AUTH_SECRET
+  GOOGLE_CLIENT_ID
+  GOOGLE_CLIENT_SECRET
+  GITHUB_CLIENT_ID
+  GITHUB_CLIENT_SECRET
+  ATLASSIAN_CLIENT_ID
+  ATLASSIAN_CLIENT_SECRET
+)
+
+secret_hint() {
+  case "$1" in
+    DATABASE_URL)
+      echo "Neon console -> Project -> Connection string. Reset the password to rotate.
+       Must end ?sslmode=require, and prefer the pooled host (contains -pooler)." ;;
+    BETTER_AUTH_SECRET)
+      echo "Generate locally: openssl rand -base64 32
+       Rotating this invalidates every existing session — everyone signs in again." ;;
+    GOOGLE_CLIENT_ID|GOOGLE_CLIENT_SECRET)
+      echo "console.cloud.google.com -> APIs & Services -> Credentials -> OAuth client.
+       The secret can be rotated without touching the ID." ;;
+    GITHUB_CLIENT_ID|GITHUB_CLIENT_SECRET)
+      echo "github.com/settings/developers -> OAuth Apps -> the app -> Generate a new
+       client secret. The ID never changes." ;;
+    ATLASSIAN_CLIENT_ID|ATLASSIAN_CLIENT_SECRET)
+      echo "developer.atlassian.com -> Console -> your app -> Settings -> Authentication." ;;
+  esac
+}
+
 usage() {
-  sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,39p' "$0" | sed 's/^# \{0,1\}//'
   cat <<'EOF'
 
 Arguments:
@@ -49,12 +99,16 @@ Arguments:
   (none)              Prompt for it with echo off.
 
 Flags:
+  --secrets           Rotate .env.production values instead of the GitHub
+                      token. Asks for each key; blank input keeps the current
+                      value.
+  --only <KEY>        With --secrets, ask about this one key only.
   --check             Validate the stored token and exit. Changes nothing.
-  --yes, -y           Skip the confirmation prompt.
+  --yes, -y           Skip confirmation prompts.
   -h, --help          This message.
 
 Exit codes:
-  0 rotated (or --check passed)      2 the new token is unusable
+  0 rotated, or --check passed       2 the new token is unusable
   1 usage/precondition error         3 --check: stored token is bad
 EOF
 }
@@ -62,6 +116,8 @@ EOF
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --check)   CHECK_ONLY=1; shift ;;
+    --secrets) SECRETS_MODE=1; shift ;;
+    --only)    ONLY_KEY="${2:-}"; shift 2 ;;
     -y|--yes)  ASSUME_YES=1; shift ;;
     -h|--help) usage; exit 0 ;;
     -)         TOKEN="$(cat)"; shift ;;
@@ -77,6 +133,259 @@ while [[ $# -gt 0 ]]; do
       shift ;;
   esac
 done
+
+if [[ -n "$ONLY_KEY" && "$SECRETS_MODE" -ne 1 ]]; then
+  die "--only applies to --secrets"
+fi
+
+# --check promises to change nothing, and the secrets branch below returns
+# before the CHECK_ONLY branch at the end of this script ever runs — so the
+# combination would prompt for values and rewrite .env.production while
+# claiming to be read-only. Refuse it rather than silently picking one meaning.
+if [[ "$CHECK_ONLY" -eq 1 && "$SECRETS_MODE" -eq 1 ]]; then
+  die "--check cannot be combined with --secrets: --check changes nothing, and
+   rotating secrets is a write. Run them separately."
+fi
+
+# ---- .env.production ---------------------------------------------------------
+
+if [[ "$SECRETS_MODE" -eq 1 ]]; then
+  ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || die "not inside a git repository"
+  ENV_FILE="$ROOT/.env.production"
+  PUSH_SCRIPT="$ROOT/infra/scripts/secrets-push.sh"
+
+  [[ -f "$ENV_FILE" ]] || die "no .env.production at $ENV_FILE
+   Create one first: make secrets-template"
+
+  if [[ -n "$ONLY_KEY" ]]; then
+    printf '%s\n' "${SECRET_KEYS[@]}" | grep -qx -- "$ONLY_KEY" \
+      || die "--only: $ONLY_KEY is not one of the rotatable keys (try --help)"
+  fi
+
+  # Read one key without sourcing the file: sourcing executes whatever it
+  # contains, and a stray backtick in a secret would run as a command. Mirrors
+  # read_value in infra/scripts/secrets-push.sh, including last-occurrence-wins.
+  read_value() {
+    local key="$1" line value
+    line="$(grep -E "^${key}=" "$ENV_FILE" | tail -1 || true)"
+    [[ -z "$line" ]] && return 1
+    value="${line#*=}"
+    if [[ "$value" =~ ^\"(.*)\"$ ]] || [[ "$value" =~ ^\'(.*)\'$ ]]; then
+      value="${BASH_REMATCH[1]}"
+    fi
+    printf '%s' "$value"
+  }
+
+  # Enough of a value to recognise it, never enough to reconstruct it. A rotation
+  # is usually driven by a leak, so printing the thing being replaced would be a
+  # poor way to start.
+  redact() {
+    local v="$1" n=${#1}
+    if   (( n <= 8 ));  then printf '%s' "********"
+    elif (( n <= 24 )); then printf '%.2s…%s' "$v" "$(printf '%*s' 6 '' | tr ' ' '*')"
+    else printf '%.4s…%.4s (%d chars)' "$v" "${v: -4}" "$n"
+    fi
+  }
+
+  cat <<EOF
+
+Rotating application secrets in .env.production.
+
+Each key is asked in turn. Press Enter to keep the current value — only the
+ones you paste are changed. Input is hidden.
+
+These reach the API through AWS Secrets Manager, not from this file directly,
+so nothing takes effect until the push step at the end.
+
+EOF
+
+  declare -a changed_keys=() changed_vals=()
+  for key in "${SECRET_KEYS[@]}"; do
+    [[ -n "$ONLY_KEY" && "$key" != "$ONLY_KEY" ]] && continue
+
+    current="$(read_value "$key" || true)"
+    printf '\033[1m%s\033[0m\n' "$key"
+    if [[ -z "$current" || "$current" == "REPLACE_ME" || "$current" == replace-me* ]]; then
+      printf '  current: \033[33mnot set\033[0m\n'
+    else
+      printf '  current: %s\n' "$(redact "$current")"
+    fi
+    printf '  where:   %s\n' "$(secret_hint "$key")"
+
+    read -r -s -p "  new value (Enter to skip): " newval
+    echo
+    # A pasted credential often carries a trailing newline or stray space from
+    # the console it was copied from; storing that produces a value that fails
+    # every call for a reason nothing reports.
+    newval="$(printf '%s' "$newval" | tr -d '\r\n' | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')"
+
+    if [[ -z "$newval" ]]; then
+      printf '  \033[2mkept\033[0m\n\n'
+      continue
+    fi
+    if [[ "$newval" == "$current" ]]; then
+      warn "identical to the current value — treating as unchanged"
+      printf '\n'
+      continue
+    fi
+    changed_keys+=("$key")
+    changed_vals+=("$newval")
+    printf '  \033[32mwill change\033[0m\n\n'
+  done
+
+  if [[ ${#changed_keys[@]} -eq 0 ]]; then
+    info "nothing entered — no changes made"
+    exit 0
+  fi
+
+  info "${#changed_keys[@]} key(s) to rotate: ${changed_keys[*]}"
+  if [[ "$ASSUME_YES" -ne 1 ]]; then
+    printf 'Rewrite .env.production with these? [y/N] '
+    read -r reply
+    [[ "$reply" =~ ^[Yy]$ ]] || die "aborted; nothing was changed"
+  fi
+
+  # Rewrite in place, replacing only the matched lines, so the file keeps its
+  # comments and section structure — it is meant to stay diffable against
+  # .env.example. Written to a temporary file and moved into place, so an
+  # interrupted run cannot leave a half-written file of credentials.
+  #
+  # The backup is what makes this recoverable: if a rotated value turns out to
+  # be wrong, the previous one is still on disk rather than only in the console
+  # you copied it from.
+  BACKUP="$ENV_FILE.bak.$(date +%Y%m%d%H%M%S)"
+  cp -p "$ENV_FILE" "$BACKUP"
+  chmod 600 "$BACKUP"
+
+  TMP="$(mktemp "${TMPDIR:-/tmp}/rotate.XXXXXX")"
+  chmod 600 "$TMP"
+  cp -p "$ENV_FILE" "$TMP"
+
+  for i in "${!changed_keys[@]}"; do
+    key="${changed_keys[$i]}"
+    val="${changed_vals[$i]}"
+    # awk rather than sed: the value is arbitrary text, and sed would interpret
+    # a `&`, a `/` or a backslash in it. awk takes it as a plain string through
+    # an environment variable, so no character in a credential is special.
+    KEY="$key" VAL="$val" awk '
+      BEGIN { key = ENVIRON["KEY"]; val = ENVIRON["VAL"]; done = 0 }
+      $0 ~ "^" key "=" { print key "=" val; done = 1; next }
+      { print }
+      END { if (!done) print key "=" val }
+    ' "$TMP" > "$TMP.new" && mv "$TMP.new" "$TMP"
+  done
+
+  mv "$TMP" "$ENV_FILE"
+  chmod 600 "$ENV_FILE"
+  ok "rewrote .env.production (previous copy: ${BACKUP##*/})"
+
+  # Validate the way the API does at boot, before anything reaches production.
+  if [[ -x "$ROOT/infra/scripts/secrets-check.sh" ]]; then
+    info "Validating the file"
+    if ! "$ROOT/infra/scripts/secrets-check.sh" >/dev/null 2>&1; then
+      warn "secrets-check reports a problem — running it again to show you:"
+      "$ROOT/infra/scripts/secrets-check.sh" || true
+      warn "the previous values are in ${BACKUP##*/}"
+      die "not pushing a file that fails validation"
+    fi
+    ok "valid"
+  fi
+
+  # ---- push --------------------------------------------------------------
+
+  if [[ ! -x "$PUSH_SCRIPT" ]]; then
+    warn "no secrets-push.sh found; push manually with: make secrets-push"
+    exit 0
+  fi
+
+  echo
+  if [[ "$ASSUME_YES" -eq 1 ]]; then
+    reply=y
+  else
+    printf 'Push to AWS Secrets Manager now? [y/N] '
+    read -r reply
+  fi
+
+  if [[ ! "$reply" =~ ^[Yy]$ ]]; then
+    cat <<EOF
+
+Stopped before pushing. The new values are in .env.production and nowhere else.
+
+  make secrets-push     when you are ready
+
+EOF
+    exit 0
+  fi
+
+  command -v aws >/dev/null || die "aws CLI not found, and the push needs it"
+  aws sts get-caller-identity >/dev/null 2>&1 || die "aws CLI is not authenticated for $REGION"
+
+  # Push only what actually changed. The rest of .env.production may hold
+  # values that have drifted from Secrets Manager — pushing those too would
+  # overwrite live credentials that this run never asked about, and the
+  # restart below would then break the API with them.
+  declare -a push_args=()
+  for key in "${changed_keys[@]}"; do
+    push_args+=(--only "$key")
+  done
+
+  info "Pushing to AWS Secrets Manager: ${changed_keys[*]}"
+  "$PUSH_SCRIPT" "${push_args[@]}" \
+    || die "push failed; .env.production still holds the new values"
+  ok "pushed"
+
+  # ---- restart -------------------------------------------------------------
+
+  # Secrets Manager is read by the ECS agent when a task starts, so a running
+  # task keeps the values it booted with. Until a new task starts, the rotation
+  # has happened everywhere except where it matters.
+  echo
+  if [[ "$ASSUME_YES" -eq 1 ]]; then
+    reply=y
+  else
+    printf 'Restart the API so the new values take effect? [y/N] '
+    read -r reply
+  fi
+
+  if [[ ! "$reply" =~ ^[Yy]$ ]]; then
+    cat <<EOF
+
+Pushed, but the running task still holds the old values. It picks them up on
+its next start — the next deploy, or:
+
+  aws ecs update-service --cluster $PROJECT --service $PROJECT-api \\
+    --force-new-deployment --region $REGION
+
+EOF
+    exit 0
+  fi
+
+  info "Forcing a new deployment"
+  aws ecs update-service \
+    --cluster "$PROJECT" \
+    --service "$PROJECT-api" \
+    --force-new-deployment \
+    --region "$REGION" \
+    --query 'service.deployments[0].{status:rolloutState,desired:desiredCount}' \
+    --output table \
+    || die "could not restart the service; the values are pushed, so a deploy will apply them"
+
+  cat <<EOF
+
+$(ok "rotation complete")
+
+The new task takes a minute or two to become healthy. If a rotated value is
+wrong the task crash-loops rather than serving errors — watch it with:
+
+  aws logs tail /ecs/$PROJECT-api --follow --region $REGION
+
+Rolling back means putting the old value from ${BACKUP##*/} back and
+re-running this. Then delete that backup: it holds live credentials.
+EOF
+  exit 0
+fi
+
+# ---- AUTO_MERGE_TOKEN --------------------------------------------------------
 
 command -v gh >/dev/null || die "gh not found. brew install gh"
 gh auth status >/dev/null 2>&1 || die "gh not authenticated. Run: gh auth login"
