@@ -14,8 +14,8 @@
 # sides of the comparison originate here. `imageDigest` is read by the server
 # from the container runtime's own metadata, so matching it proves the bytes
 # running are the bytes this deploy pushed. The digest is the one an outside
-# party can take to `gh attestation verify --digest` and check without trusting
-# any of this.
+# party can look the signed provenance statement up by, and check without
+# trusting any of this.
 #
 # It works because of machinery the repo already has: docs/versioning.md
 # describes the BUILD_SHA injection, apps/api/src/env.ts reads it at boot, and
@@ -68,8 +68,7 @@ while (( $(date +%s) < deadline )); do
         echo "Verified: running image digest matches what this deploy pushed"
         echo
         echo "  Anyone can check where those bytes came from, without trusting us:"
-        echo "    gh attestation verify --digest $actual_digest \\"
-        echo "      --repo lunox-work/sandbox-factory"
+        echo "    gh api /repos/lunox-work/sandbox-factory/attestations/$actual_digest"
         printf '%s\n' "$response"
         exit 0
       fi

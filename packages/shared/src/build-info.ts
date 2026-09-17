@@ -59,9 +59,9 @@ export const buildInfoSchema = z.object({
    * actually executing rather than what a build argument said should be.
    *
    * That is what makes it verifiable. Given the digest, anyone can run
-   * `gh attestation verify --digest <digest> --repo lunox-work/sandbox-factory`
-   * and get back the workflow and commit that produced those exact bytes,
-   * without trusting this response. See docs/versioning.md.
+   * `gh api /repos/lunox-work/sandbox-factory/attestations/<digest>` and get
+   * back the signed statement naming the workflow and commit that produced
+   * those exact bytes, without trusting this response. See docs/versioning.md.
    *
    * Optional because only the API runs as a container: the web bundle is a set
    * of files on a CDN with no single digest, and a local `npm run dev` has no
@@ -164,25 +164,31 @@ export function releaseUrl(info: BuildInfoDto): string | undefined {
 }
 
 /**
- * The command that checks this build's provenance, for the person who wants to
- * verify rather than trust.
+ * The command that fetches this build's provenance, for the person who wants to
+ * check rather than trust.
  *
- * Only offered when there is a digest to verify, because the digest is the only
- * thing here that a signature is bound to. Handing someone a command built from
- * a sha would invite them to run a check that cannot pass — the attestation
- * covers artifact bytes, not commits.
+ * Only offered when there is a digest, because the digest is the only thing
+ * here a signature is bound to. A command built from a sha would invite a check
+ * that cannot pass — the attestation covers artifact bytes, not commits.
  *
- * Takes the digest alone rather than an image reference. The image lives in a
- * private ECR registry that the person verifying almost certainly cannot pull
- * from, but `--digest` needs no registry access at all: it queries the public
- * transparency log for attestations bound to those bytes. Printing an
- * `oci://` reference here would send people to a 403 and make a verifiable
- * build look unverifiable.
+ * This is `gh api`, not `gh attestation verify`, and the distinction is not a
+ * detail. `verify` re-hashes the artifact it is given, so it needs the artifact
+ * — a local file, or an `oci://` reference it can pull. Our image lives in a
+ * private ECR repository, so an outside verifier can do neither, and an
+ * `oci://` command printed here would just hang on an auth failure and make a
+ * verifiable build look unverifiable.
+ *
+ * What this returns instead is the signed statement itself, looked up by
+ * digest. The caller decodes the DSSE payload and reads which workflow, repo
+ * and commit produced those bytes. That is a weaker operation than `verify` —
+ * it does not by itself check the Sigstore signature — so anyone treating this
+ * as proof should verify the bundle with a Sigstore verifier, or pull the image
+ * and use `gh attestation verify oci://...` if they have registry access.
  */
 export function verifyCommand(info: BuildInfoDto): string | undefined {
   return info.imageDigest === undefined
     ? undefined
-    : `gh attestation verify --digest ${info.imageDigest} --repo lunox-work/sandbox-factory`;
+    : `gh api /repos/lunox-work/sandbox-factory/attestations/${info.imageDigest}`;
 }
 
 /**

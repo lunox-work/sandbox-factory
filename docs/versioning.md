@@ -17,13 +17,13 @@ Both release artifacts and every deployed image carry a **signed provenance
 attestation**, which is the part that is actually verifiable:
 
 ```bash
-# A release artifact, by file
+# A release artifact, by file — full signature verification
 gh attestation verify sandbox-factory-web-7f3a9c1.tar.gz \
   --repo lunox-work/sandbox-factory
 
-# What production is running right now, by digest
-gh attestation verify --digest "$(curl -s https://platform.lunox.work/version \
-  | jq -r .imageDigest)" --repo lunox-work/sandbox-factory
+# What production is running right now — fetch the signed statement by digest
+gh api "/repos/lunox-work/sandbox-factory/attestations/$(
+  curl -s https://platform.lunox.work/version | jq -r .imageDigest)"
 ```
 
 ## What is a version, and what is proof
@@ -81,18 +81,33 @@ actually executing rather than the bytes a build argument said should be.
 That makes it checkable by someone who trusts none of this:
 
 ```bash
-gh attestation verify --digest sha256:... --repo lunox-work/sandbox-factory
+gh api "/repos/lunox-work/sandbox-factory/attestations/sha256:..." \
+  --jq '.attestations[0].bundle.dsseEnvelope.payload' | base64 -d | jq .
 ```
 
-`--digest` resolves through the public transparency log and needs no access to
-the registry — which matters, because the image lives in a private ECR
-repository that an outside verifier cannot pull from. The chain that results:
+The decoded payload names the subject digest, the workflow that built it, and
+the commit it was built from.
 
-| Step                           | What it proves                          |
-| ------------------------------ | --------------------------------------- |
-| `GET /version` → `gitSha`      | a claim                                 |
-| `GET /version` → `imageDigest` | the bytes this process is running       |
-| `gh attestation verify`        | which workflow and commit produced them |
+**Why `gh api` and not `gh attestation verify`.** `verify` re-hashes the
+artifact it is given, so it needs the artifact itself — a local file, or an
+`oci://` reference it can pull. There is no bare-digest form. Our image lives
+in a private ECR repository, so an outside verifier can do neither, and an
+`oci://` command would simply hang on an auth failure.
+
+The tradeoff is real and worth stating: `gh api` retrieves the signed statement
+but does not itself check the Sigstore signature. Anyone treating this as proof
+rather than as a strong indication should verify the returned bundle with a
+Sigstore verifier, or — with registry access — pull the image and run
+`gh attestation verify oci://<uri>@<digest>`, which does the full check.
+
+The chain that results:
+
+| Step                           | What it proves                           |
+| ------------------------------ | ---------------------------------------- |
+| `GET /version` → `gitSha`      | a claim                                  |
+| `GET /version` → `imageDigest` | the bytes this process is running        |
+| attestation lookup by digest   | which workflow and commit produced them  |
+| verifying that bundle          | the statement is genuinely GitHub-signed |
 
 Two honest limits remain. The digest is reported by the same server whose
 identity is in question, so this defends against a stale or mismatched

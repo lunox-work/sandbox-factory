@@ -48,8 +48,8 @@ test("reports the digest the runtime resolved", async () => {
 
 // Agent version and launch type decide which of the two shapes comes back, so
 // both have to work. The registry host is stripped: it says where the bytes
-// were stored, while the digest is the bytes, and only the digest is what
-// `gh attestation verify --digest` takes.
+// were stored, while the digest is the bytes, and the digest alone is what the
+// attestation is keyed by.
 test("strips a registry reference down to the bare digest", async () => {
   stubFetch(() =>
     metadata(

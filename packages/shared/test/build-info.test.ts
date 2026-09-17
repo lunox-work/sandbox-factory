@@ -124,11 +124,18 @@ test("releaseUrl is undefined for a build that is not the tagged release", () =>
   assert.equal(releaseUrl(unknownBuildInfo), undefined);
 });
 
-test("verifyCommand takes the digest, which needs no registry access", () => {
+// Deliberately `gh api` and not `gh attestation verify`: verify re-hashes the
+// artifact it is handed, which an outside party cannot obtain from a private
+// ECR repository. There is no bare-digest form of verify — asserted here
+// because the first version of this shipped one that does not exist.
+test("verifyCommand looks the attestation up by digest", () => {
   const digest = `sha256:${"a".repeat(64)}`;
   const command = verifyCommand({ ...identified, imageDigest: digest });
-  assert.ok(command?.includes(`--digest ${digest}`));
-  assert.ok(command?.includes("--repo lunox-work/sandbox-factory"));
+  assert.ok(command?.includes(digest));
+  assert.ok(
+    command?.includes("/repos/lunox-work/sandbox-factory/attestations/"),
+  );
+  assert.ok(!command?.includes("--digest"));
 });
 
 // Nothing to verify without a digest, and a command built from a sha would

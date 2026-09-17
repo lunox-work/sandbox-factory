@@ -12,11 +12,16 @@
  *
  * That is the field a provenance check can be run against:
  *
- *   gh attestation verify --digest sha256:... --repo lunox-work/sandbox-factory
+ *   gh api /repos/lunox-work/sandbox-factory/attestations/sha256:...
  *
- * The signature is bound to the digest, so that command answers "which
- * workflow built these exact bytes, from which commit?" without trusting this
- * server's own account of itself. See docs/versioning.md.
+ * The signature is bound to the digest, so that returns the signed statement
+ * naming which workflow built these exact bytes, and from which commit,
+ * without trusting this server's own account of itself.
+ *
+ * Note it is `gh api` rather than `gh attestation verify`: verify re-hashes the
+ * artifact it is handed, so it needs the image itself, which lives in a private
+ * ECR repository an outside party cannot pull from. There is no bare-digest
+ * form of verify. See docs/versioning.md.
  */
 
 /**
@@ -85,7 +90,7 @@ export async function resolveImageDigest(
  * (`123456789012.dkr.ecr.us-east-1.amazonaws.com/sandbox-factory-api@sha256:...`).
  * Only the digest is wanted — the registry host is an implementation detail of
  * where the bytes were stored, while the digest is the bytes themselves, and
- * it is the digest alone that `gh attestation verify --digest` takes.
+ * the digest alone is what the attestation is keyed by.
  *
  * Anything that does not end in a well-formed digest is dropped rather than
  * passed through. A caller is going to paste this into a verification command,

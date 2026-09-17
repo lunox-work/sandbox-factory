@@ -154,8 +154,9 @@ export function createApp({
    * Most of that record is a claim: values injected at build time and repeated
    * back. `imageDigest` is the exception — it is read from the container
    * runtime at boot and names the bytes actually executing, so it is the field
-   * to hand to `gh attestation verify --digest`, which answers which workflow
-   * and commit produced them without trusting anything this response says.
+   * that looks up the signed provenance statement — which names the workflow
+   * and commit that produced them, without trusting anything this response
+   * says. See docs/versioning.md for the lookup.
    */
   app.get("/version", (c) => c.json(buildInfo));
 

@@ -221,11 +221,10 @@ jobs:
       # linux/arm64` above produces one image manifest, so the digest pushed to
       # ECR is the digest the runtime resolves and reports back as `ImageID` —
       # which is what makes the check at the end of this workflow, and
-      # `gh attestation verify --digest`, line up. Adding a second platform
+      # the attestation lookup by digest, line up. Adding a second platform
       # would push a manifest *list* whose digest is not the digest of either
-      # image inside it, and the verification would start failing against a
-      # perfectly good deployment. Attest the per-platform digest if that day
-      # comes.
+      # image inside it, and the lookup would start missing against a perfectly
+      # good deployment. Attest the per-platform digest if that day comes.
       #
       # Two paths reach this point: a fresh build, which reports its digest as a
       # step output, and a redeploy of a commit whose image is already in ECR,
@@ -258,8 +257,7 @@ jobs:
       # recorded in a public transparency log. Anyone holding the digest can
       # then check it without trusting us or this pipeline:
       #
-      #   gh attestation verify --digest sha256:... \
-      #     --repo lunox-work/sandbox-factory
+      #   gh api /repos/lunox-work/sandbox-factory/attestations/sha256:...
       #
       # The API publishes that digest at GET /version, read from the container
       # runtime rather than from a build argument, which is what closes the loop
@@ -277,9 +275,9 @@ jobs:
           subject-digest: ${{ steps.digest.outputs.value }}
           # Stored in the repository's attestation store rather than pushed to
           # ECR. `push-to-registry` would need the referrers API and an extra
-          # ECR write on this role, and buys nothing here: `gh attestation
-          # verify --digest` resolves through the transparency log, so a
-          # verifier needs no access to a private registry they cannot pull
+          # ECR write on this role, and buys nothing here: the statement is
+          # fetchable by digest from the repository's attestation endpoint, so
+          # a verifier needs no access to a private registry they cannot pull
           # from anyway.
           push-to-registry: false
 
@@ -449,10 +447,9 @@ jobs:
             echo "| Image | \`${{ steps.commit.outputs.sha }}\` |"
             echo "| Digest | \`${{ steps.digest.outputs.value }}\` |"
             echo
-            echo "Verify this deployment's provenance, without trusting this run:"
+            echo "Fetch this deployment's signed provenance, without trusting this run:"
             echo
             echo '```'
-            echo "gh attestation verify --digest ${{ steps.digest.outputs.value }} \\"
-            echo "  --repo ${{ github.repository }}"
+            echo "gh api /repos/${{ github.repository }}/attestations/${{ steps.digest.outputs.value }}"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
