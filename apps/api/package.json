@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@better-auth/core": "^1.7.5",
-    "@hono/node-server": "^1.13.7",
+    "@hono/node-server": "^2.1.1",
     "@sandbox-factory/db": "*",
     "@sandbox-factory/shared": "*",
     "better-auth": "^1.7.5",
