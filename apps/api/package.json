@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@better-auth/core": "^1.7.5",
-    "@hono/node-server": "^1.13.7",
+    "@hono/node-server": "^2.1.1",
     "@sandbox-factory/db": "*",
     "@sandbox-factory/shared": "*",
     "better-auth": "^1.7.5",
@@ -25,7 +25,7 @@
     "@sandbox-factory/coverage": "*",
     "@sandbox-factory/tsconfig": "*",
     "@types/node": "^26.5.1",
-    "concurrently": "^9.1.2",
+    "concurrently": "^10.0.5",
     "typescript": "^7.0.2"
   }
 }
