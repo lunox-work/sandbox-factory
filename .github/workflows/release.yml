@@ -120,7 +120,7 @@ jobs:
 
       # Handed to the upload job rather than uploaded here, so that this job
       # keeps `contents: read`.
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: release-artifacts
           path: |
