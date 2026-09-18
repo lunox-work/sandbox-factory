@@ -275,7 +275,7 @@ jobs:
       # GHCR holds a public copy of every deployed image. ECR is private, so
       # without it a verifier can look up the attestation for a digest but
       # never see the bytes it describes.
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
