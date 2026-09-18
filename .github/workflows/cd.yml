@@ -114,7 +114,7 @@ jobs:
       # this repository's main branch, so a fork or a pull request cannot
       # assume it.
       - name: Assume the deploy role
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE }}
           aws-region: ${{ env.AWS_REGION }}
@@ -240,7 +240,7 @@ jobs:
 
       - name: Attest the web app
         if: steps.provenance.outputs.attestable == 'true'
-        uses: actions/attest-build-provenance@v3
+        uses: actions/attest-build-provenance@v4
         with:
           subject-checksums: ${{ runner.temp }}/web-checksums.txt
 
@@ -292,7 +292,7 @@ jobs:
       - name: Build and push the API image
         id: build
         if: steps.image.outputs.exists != 'true'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: apps/api/Dockerfile
@@ -392,7 +392,7 @@ jobs:
       # attestation still verifies.
       - name: Attest the deployed image
         if: steps.image.outputs.exists != 'true'
-        uses: actions/attest-build-provenance@v3
+        uses: actions/attest-build-provenance@v4
         with:
           # Named for the mirror, where a verifier can find these bytes.
           # Verification matches on the digest, which both registries share:
