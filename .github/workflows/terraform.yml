@@ -65,7 +65,7 @@ jobs:
       # The read-only plan role, which trusts the `pull_request` `sub` claim of
       # a PR's OIDC token. The deploy role is scoped to `refs/heads/main`, so
       # pull requests cannot assume it.
-      - uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ vars.AWS_PLAN_ROLE }}
           aws-region: us-east-1
