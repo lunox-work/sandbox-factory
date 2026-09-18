@@ -112,7 +112,7 @@ jobs:
       # The signature covers the artifact's digest, so a modified artifact fails
       # even though the version string inside it still reads right.
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@v3
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: |
             sandbox-factory-web-*.tar.gz
