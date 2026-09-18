@@ -1,202 +1,197 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+/*
+ * Design tokens, in shadcn's vocabulary so its generated components work
+ * unmodified. Zinc neutrals with the brand blue as the primary, which is the
+ * same accent the sign-in screen and the rail already used.
+ *
+ * `oklch` rather than hex: lightness is perceptual, so the dark theme is
+ * mostly the same hues at different L values rather than a second palette
+ * picked by eye.
+ */
 :root {
-  color-scheme: light dark;
-  --bg: #ffffff;
-  --fg: #18181b;
-  --muted: #71717a;
-  --border: #e4e4e7;
-  --accent: #2563eb;
-  --danger: #dc2626;
-  font-family:
-    ui-sans-serif,
-    system-ui,
-    -apple-system,
-    "Segoe UI",
-    sans-serif;
+  --radius: 0.75rem;
+
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.141 0.005 285.823);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.141 0.005 285.823);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.141 0.005 285.823);
+
+  /* The brand blue. `--primary-foreground` is near-white because every use is
+     text or an icon sitting on top of the blue. */
+  --primary: oklch(0.546 0.215 262.881);
+  --primary-foreground: oklch(0.985 0 0);
+
+  --secondary: oklch(0.967 0.001 286.375);
+  --secondary-foreground: oklch(0.21 0.006 285.885);
+  --muted: oklch(0.967 0.001 286.375);
+  --muted-foreground: oklch(0.552 0.016 285.938);
+  --accent: oklch(0.967 0.001 286.375);
+  --accent-foreground: oklch(0.21 0.006 285.885);
+
+  --destructive: oklch(0.577 0.245 27.325);
+  --destructive-foreground: oklch(0.985 0 0);
+
+  --border: oklch(0.92 0.004 286.32);
+  --input: oklch(0.92 0.004 286.32);
+  --ring: oklch(0.546 0.215 262.881);
+
+  /* The rail reads as chrome rather than as page: a step off the background,
+     in the same direction the theme's own depth runs — darker on light,
+     lighter on dark. */
+  --sidebar: oklch(0.985 0 0);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #09090b;
-    --fg: #fafafa;
-    --muted: #a1a1aa;
-    --border: #27272a;
-    --accent: #60a5fa;
-    --danger: #f87171;
+.dark {
+  --background: oklch(0.141 0.005 285.823);
+  --foreground: oklch(0.985 0 0);
+  /* Cards and popovers sit one step lighter than the page, which is what gives
+     the dark theme depth without borrowing a shadow it cannot show. */
+  --card: oklch(0.21 0.006 285.885);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.21 0.006 285.885);
+  --popover-foreground: oklch(0.985 0 0);
+
+  /* Lifted and desaturated against the dark page: the light theme's blue is
+     too dark here to read as the accent. */
+  --primary: oklch(0.707 0.165 254.624);
+  --primary-foreground: oklch(0.21 0.006 285.885);
+
+  --secondary: oklch(0.274 0.006 286.033);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.274 0.006 286.033);
+  --muted-foreground: oklch(0.705 0.015 286.067);
+  --accent: oklch(0.274 0.006 286.033);
+  --accent-foreground: oklch(0.985 0 0);
+
+  --destructive: oklch(0.704 0.191 22.216);
+  --destructive-foreground: oklch(0.985 0 0);
+
+  /* Borders as translucent white rather than a flat grey, so a border over a
+     card reads correctly against both the card and the page behind it. */
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.707 0.165 254.624);
+  --sidebar: oklch(0.21 0.006 285.885);
+}
+
+/*
+ * Tailwind v4 is configured here, not in a JS file. This block is what makes
+ * `bg-background`, `text-muted-foreground`, `rounded-lg` and the rest resolve
+ * to the tokens above.
+ */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/*
+ * Dark mode follows the OS, as it did before, and a `.dark` class forces it —
+ * so a future theme toggle only has to set a class, and tests and screenshots
+ * can pin a theme.
+ *
+ * The `@custom-variant` is what keeps those two in step. Tailwind v4's `dark:`
+ * variant compiles to the media query alone by default, so without it a class
+ * toggle would move the tokens below but leave every `dark:` utility following
+ * the OS — the theme would come out half-applied.
+ */
+@custom-variant dark {
+  @media (prefers-color-scheme: dark) {
+    &:where(:not(.light *, .light)) {
+      @slot;
+    }
+  }
+
+  &:where(.dark, .dark *) {
+    @slot;
   }
 }
 
-body {
-  margin: 0;
-  background: var(--bg);
-  color: var(--fg);
+@media (prefers-color-scheme: dark) {
+  :root:not(.light) {
+    --background: oklch(0.141 0.005 285.823);
+    --foreground: oklch(0.985 0 0);
+    --card: oklch(0.21 0.006 285.885);
+    --card-foreground: oklch(0.985 0 0);
+    --popover: oklch(0.21 0.006 285.885);
+    --popover-foreground: oklch(0.985 0 0);
+    --primary: oklch(0.707 0.165 254.624);
+    --primary-foreground: oklch(0.21 0.006 285.885);
+    --secondary: oklch(0.274 0.006 286.033);
+    --secondary-foreground: oklch(0.985 0 0);
+    --muted: oklch(0.274 0.006 286.033);
+    --muted-foreground: oklch(0.705 0.015 286.067);
+    --accent: oklch(0.274 0.006 286.033);
+    --accent-foreground: oklch(0.985 0 0);
+    --destructive: oklch(0.704 0.191 22.216);
+    --destructive-foreground: oklch(0.985 0 0);
+    --border: oklch(1 0 0 / 10%);
+    --input: oklch(1 0 0 / 15%);
+    --ring: oklch(0.707 0.165 254.624);
+    --sidebar: oklch(0.21 0.006 285.885);
+  }
 }
 
-.app {
-  max-width: 44rem;
-  margin: 0 auto;
-  padding: 2rem 1rem;
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    /* Was set by hand before Tailwind's preflight took over the reset. */
+    margin: 0;
+  }
+
+  /* One focus treatment for the whole app, rather than per component. Keyboard
+     users get a visible ring; pointer users do not, which is what
+     `:focus-visible` buys over `:focus`. */
+  :focus-visible {
+    @apply outline-ring outline-2 outline-offset-2;
+  }
 }
 
-.header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
-}
+/* ---- sign-in ------------------------------------------------------------- */
 
-h1 {
-  font-size: 1.5rem;
-  margin: 0;
-}
-
-button {
-  font: inherit;
-  padding: 0.4rem 0.75rem;
-  border: 1px solid var(--border);
-  border-radius: 0.375rem;
-  background: transparent;
-  color: var(--fg);
-  cursor: pointer;
-}
-
-button:hover:not(:disabled) {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.create {
-  display: flex;
-  gap: 0.5rem;
-  margin: 1.5rem 0 1rem;
-}
-
-.create input {
-  font: inherit;
-  flex: 1;
-  padding: 0.4rem 0.6rem;
-  border: 1px solid var(--border);
-  border-radius: 0.375rem;
-  background: transparent;
-  color: var(--fg);
-}
-
-.filters {
-  display: flex;
-  gap: 0.4rem;
-  margin-bottom: 1rem;
-}
-
-.filters button {
-  text-transform: capitalize;
-  font-size: 0.85rem;
-  padding: 0.25rem 0.6rem;
-}
-
-.filters button.active {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
-.counts {
-  font-size: 0.85rem;
-  color: var(--muted);
-}
-
-.error {
-  color: var(--danger);
-  border: 1px solid currentColor;
-  border-radius: 0.375rem;
-  padding: 0.6rem 0.75rem;
-}
-
-.empty {
-  color: var(--muted);
-}
-
-.list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-}
-
-.row {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  padding: 0.6rem 0.75rem;
-  border: 1px solid var(--border);
-  border-radius: 0.5rem;
-}
-
-.row input[type="checkbox"] {
-  width: 1.05rem;
-  height: 1.05rem;
-  accent-color: var(--accent);
-  cursor: pointer;
-  flex-shrink: 0;
-}
-
-/* A button so rename is keyboard-reachable, styled to read as plain text. */
-.title {
-  flex: 1;
-  text-align: left;
-  border: none;
-  background: transparent;
-  padding: 0.15rem 0.25rem;
-  color: inherit;
-  font: inherit;
-  border-radius: 0.25rem;
-  cursor: text;
-}
-
-.title:hover {
-  background: color-mix(in srgb, var(--fg) 7%, transparent);
-  border-color: transparent;
-  color: inherit;
-}
-
-.row.done .title {
-  text-decoration: line-through;
-  color: var(--muted);
-}
-
-.edit {
-  flex: 1;
-  font: inherit;
-  padding: 0.15rem 0.25rem;
-  border: 1px solid var(--accent);
-  border-radius: 0.25rem;
-  background: transparent;
-  color: var(--fg);
-}
-
-.delete {
-  border: none;
-  background: transparent;
-  color: var(--muted);
-  font-size: 1.3rem;
-  line-height: 1;
-  padding: 0 0.35rem;
-  flex-shrink: 0;
-}
-
-.delete:hover {
-  color: var(--danger);
-  border-color: transparent;
-}
-
-/* ---- auth ---------------------------------------------------------------- */
-
-/* The signed-out screen. Everything here is scoped under .signin, so the
-   signed-in screens keep the plain surface they had. */
+/*
+ * The signed-out screen keeps its hand-written CSS. It is one bespoke
+ * composition — a centred column over a blurred brand-gradient glow, with a
+ * staggered entrance — and expressing that in utilities would be longer and
+ * less legible than the rules it replaced. Everything here stays scoped under
+ * `.signin`.
+ *
+ * The tokens it reads are Tailwind's now, so `var(--muted-foreground)` rather
+ * than the old `var(--muted)`.
+ */
 .signin {
   position: relative;
   box-sizing: border-box;
@@ -294,24 +289,22 @@ button:disabled {
 .signin-tagline {
   margin: 0.75rem 0 0;
   font-size: 1.05rem;
-  color: var(--muted);
+  color: var(--muted-foreground);
   letter-spacing: -0.005em;
 }
 
-.signin .error {
+.signin-error {
   width: 100%;
   box-sizing: border-box;
   margin: 1.75rem 0 0;
+  padding: 0.6rem 0.75rem;
   font-size: 0.875rem;
   line-height: 1.45;
   text-align: left;
+  color: var(--destructive);
+  border: 1px solid color-mix(in srgb, var(--destructive) 35%, transparent);
   border-radius: 0.75rem;
-  border-color: color-mix(in srgb, var(--danger) 35%, transparent);
-  background: color-mix(in srgb, var(--danger) 7%, transparent);
-}
-
-.muted {
-  color: var(--muted);
+  background: color-mix(in srgb, var(--destructive) 7%, transparent);
 }
 
 .providers {
@@ -322,7 +315,7 @@ button:disabled {
   margin-top: 2.25rem;
 }
 
-.signin .error + .providers {
+.signin-error + .providers {
   margin-top: 1rem;
 }
 
@@ -335,10 +328,14 @@ button:disabled {
   gap: 0.5rem;
   width: 100%;
   padding: 0.75rem 1rem;
-  border-radius: 0.75rem;
+  font: inherit;
   font-weight: 500;
   font-size: 0.95rem;
-  background: color-mix(in srgb, var(--bg) 70%, transparent);
+  color: var(--foreground);
+  cursor: pointer;
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  background: color-mix(in srgb, var(--background) 70%, transparent);
   backdrop-filter: blur(8px);
   transition:
     transform 0.15s ease,
@@ -347,24 +344,17 @@ button:disabled {
     box-shadow 0.15s ease;
 }
 
-/* Overrides the global button hover, which turns the text accent-blue: on
-   these that would recolour GitHub's mark and fight Google's four colours. */
 .provider:hover:not(:disabled) {
-  color: var(--fg);
-  border-color: color-mix(in srgb, var(--fg) 30%, var(--border));
-  background: color-mix(in srgb, var(--fg) 4%, var(--bg));
+  border-color: color-mix(in srgb, var(--foreground) 30%, var(--border));
+  background: color-mix(in srgb, var(--foreground) 4%, var(--background));
   transform: translateY(-1px);
-  box-shadow: 0 4px 14px -6px color-mix(in srgb, var(--fg) 25%, transparent);
+  box-shadow: 0 4px 14px -6px
+    color-mix(in srgb, var(--foreground) 25%, transparent);
 }
 
 .provider:active:not(:disabled) {
   transform: translateY(0);
   box-shadow: none;
-}
-
-.provider:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
 }
 
 .provider:disabled {
@@ -388,8 +378,8 @@ button:disabled {
   width: 1rem;
   height: 1rem;
   box-sizing: border-box;
-  border: 2px solid color-mix(in srgb, var(--fg) 25%, transparent);
-  border-top-color: var(--fg);
+  border: 2px solid color-mix(in srgb, var(--foreground) 25%, transparent);
+  border-top-color: var(--foreground);
   border-radius: 50%;
   animation: signin-spin 0.7s linear infinite;
 }
@@ -398,16 +388,6 @@ button:disabled {
   to {
     transform: rotate(360deg);
   }
-}
-
-/* Pinned to the bottom of the viewport and centred: here the footer is page
-   chrome, not the end of a column of content, so the rule above it goes. */
-.signin .build {
-  position: relative;
-  justify-content: center;
-  margin-top: 1.5rem;
-  padding-top: 0;
-  border-top: none;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -429,194 +409,4 @@ button:disabled {
   .spinner {
     animation-duration: 2s;
   }
-}
-
-.session {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-}
-
-/* ---- account settings ---------------------------------------------------- */
-
-.panel {
-  margin-top: 2rem;
-}
-
-.panel h2 {
-  font-size: 1rem;
-  margin: 0 0 0.25rem;
-}
-
-.small {
-  font-size: 0.85rem;
-}
-
-.panel .muted {
-  margin-top: 0;
-}
-
-.badge {
-  font-size: 0.7rem;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  border: 1px solid var(--border);
-  border-radius: 0.25rem;
-  padding: 0.05rem 0.3rem;
-  margin-left: 0.5rem;
-  color: var(--muted);
-  vertical-align: middle;
-}
-
-.linklike {
-  border: none;
-  background: transparent;
-  color: var(--muted);
-  padding: 0;
-  text-decoration: underline;
-  text-underline-offset: 2px;
-}
-
-.linklike:hover {
-  color: var(--fg);
-}
-
-.idline {
-  margin-top: 1rem;
-  padding-top: 0.75rem;
-  border-top: 1px solid var(--border);
-}
-
-.idline code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.8rem;
-  background: var(--border);
-  padding: 0.1rem 0.3rem;
-  border-radius: 0.2rem;
-}
-
-.subhead {
-  font-size: 0.85rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--muted);
-  margin: 1.75rem 0 0.5rem;
-  font-weight: 600;
-}
-
-/* A quieter button for the secondary action on a row. */
-.ghost {
-  border-color: transparent;
-  color: var(--muted);
-  font-size: 0.85rem;
-}
-
-.ghost:hover:not(:disabled) {
-  border-color: var(--border);
-  color: var(--fg);
-}
-
-.ghost:disabled {
-  opacity: 0.5;
-}
-
-/* ---- email blocks -------------------------------------------------------- */
-
-.email {
-  border: 1px solid var(--border);
-  border-radius: 0.5rem;
-  padding: 0.75rem 0.9rem;
-  margin-bottom: 0.6rem;
-  list-style: none;
-}
-
-.email-head {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  flex-wrap: wrap;
-}
-
-.email-head .title {
-  flex: 1;
-  min-width: 0;
-  /* Long addresses wrap rather than pushing the button off the row. */
-  overflow-wrap: anywhere;
-}
-
-.providers-list {
-  list-style: none;
-  margin: 0.5rem 0 0;
-  padding: 0;
-  border-top: 1px solid var(--border);
-}
-
-.provider-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  padding: 0.35rem 0 0;
-  border: none;
-}
-
-.provider-row .title {
-  /* Providers come from the API lowercase; capitalising is presentation. */
-  text-transform: capitalize;
-}
-
-.ghost {
-  border-color: transparent;
-  color: var(--muted);
-}
-
-.ghost:hover:not(:disabled) {
-  border-color: var(--border);
-  color: var(--fg);
-}
-
-/* The version readout. Present on every screen, and quiet enough on all of
-   them that it reads as chrome rather than as content. */
-.build {
-  margin-top: 2.5rem;
-  padding-top: 0.75rem;
-  border-top: 1px solid var(--border);
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  flex-wrap: wrap;
-  font-size: 0.75rem;
-  color: var(--muted);
-  /* Tabular figures so a sha does not shift the line as digits change. */
-  font-variant-numeric: tabular-nums;
-}
-
-.build a {
-  color: inherit;
-  /* Underlined on hover only: a permanent link underline down here competes
-     with the content above it, but the sha has to look clickable once reached. */
-  text-decoration: none;
-}
-
-.build a:hover {
-  color: var(--fg);
-  text-decoration: underline;
-}
-
-/* Present only on a build that is a tagged release, so the separator belongs
-   to the link rather than sitting in the footer waiting for one. */
-.build-release::before {
-  content: "·";
-  margin-right: 0.5rem;
-  /* The dot is punctuation between two links, not part of either. Without
-     this it inherits the underline on hover and reads as a third link. */
-  text-decoration: none;
-  display: inline-block;
-}
-
-/* A disagreement between this bundle and the API. Muted rather than red — it
-   is usually a deploy in flight, which resolves itself. */
-.build-mismatch::before {
-  content: "·";
-  margin-right: 0.5rem;
 }

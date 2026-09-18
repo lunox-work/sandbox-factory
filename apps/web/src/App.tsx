@@ -1,16 +1,20 @@
 import type { TodoDto } from "@sandbox-factory/shared";
+import { Check, Plus, Trash2 } from "lucide-react";
 import {
   TODO_FILTERS,
-  countTodos,
   filterTodos,
   isValidTitle,
   type TodoFilter,
 } from "sandbox-factory";
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
+
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
 
 import { Account } from "./Account";
 import { signOut, useSession } from "./auth";
-import { BuildFooter } from "./BuildFooter";
+import { SideNav, type Screen } from "./SideNav";
 import { SignIn } from "./SignIn";
 import { useTodos } from "./useTodos";
 
@@ -21,9 +25,8 @@ export function App() {
   // flash it at a signed-in user on every reload.
   if (isPending) {
     return (
-      <main className="app">
-        <p className="muted">Loading…</p>
-        <BuildFooter />
+      <main className="grid min-h-dvh place-items-center">
+        <p className="text-muted-foreground text-sm">Loading…</p>
       </main>
     );
   }
@@ -37,38 +40,108 @@ export function App() {
    * the key, `useTodos` keeps the previous user's rows on screen until a
    * refetch replaces them, which reads as one account showing another's data.
    */
-  return <Signed key={session.user.id} name={session.user.name} />;
-}
-
-function Signed({ name }: { name: string }) {
-  // A boolean rather than a router: there are two screens. Seeded from the
-  // query string so returning from a provider link lands back on settings.
-  const [showAccount, setShowAccount] = useState(
-    () => new URLSearchParams(window.location.search).get("account") === "1",
-  );
-
-  return showAccount ? (
-    <Account
-      onClose={() => {
-        // Drop the marker so a later reload does not reopen settings.
-        window.history.replaceState(null, "", window.location.pathname);
-        setShowAccount(false);
-      }}
+  return (
+    <Signed
+      key={session.user.id}
+      name={session.user.name}
+      email={session.user.email}
+      image={session.user.image}
     />
-  ) : (
-    <Todos name={name} onAccount={() => setShowAccount(true)} />
   );
 }
 
-function Todos({ name, onAccount }: { name: string; onAccount: () => void }) {
+function Signed({
+  name,
+  email,
+  image,
+}: {
+  name: string;
+  email?: string | undefined;
+  image?: string | null;
+}) {
+  // A value rather than a router: there are two screens, each with a path.
+  // Read from the path so a reload, a bookmark, or the return from a provider
+  // link all land on the screen the URL names.
+  const [screen, setScreen] = useState<Screen>(() =>
+    screenForPath(window.location.pathname),
+  );
+
+  /*
+   * The Back button. `pushState` below adds an entry per navigation, so the
+   * browser offers to go back — and this is what makes it do something:
+   * without it the URL would change while the screen stayed put.
+   */
+  useEffect(() => {
+    function onPopState() {
+      setScreen(screenForPath(window.location.pathname));
+    }
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+
+  function navigate(next: Screen) {
+    if (next === screen) {
+      return;
+    }
+    // `pushState`, so each navigation is its own history entry and Back
+    // returns to the previous screen rather than leaving the app.
+    window.history.pushState(null, "", pathForScreen(next));
+    setScreen(next);
+  }
+
+  return (
+    /*
+      A flex row, as in the reference: the rail is a static sibling of the
+      content rather than laid over it, and the content scrolls in its own box
+      so the rail cannot scroll away.
+
+      On a phone the rail is a fixed bottom bar instead, so the row collapses
+      and the padding keeps the last row clear of it.
+    */
+    <div className="flex min-h-dvh flex-col sm:h-dvh sm:flex-row sm:overflow-hidden">
+      <SideNav
+        screen={screen}
+        name={name}
+        email={email}
+        image={image}
+        onNavigate={navigate}
+        onSignOut={() => void signOut()}
+      />
+      <div className="min-w-0 flex-1 pb-16 sm:overflow-y-auto sm:pb-0">
+        {screen === "account" ? <Account /> : <Todos />}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The path each screen lives at, and the screen each path names.
+ *
+ * One pair of functions rather than a router: with two screens a table would
+ * be more machinery than mapping. Anything unrecognised is the todo list, so a
+ * stale bookmark or a typo lands somewhere useful instead of on a blank page —
+ * which is also what nginx's `try_files` and the dev server's history
+ * fallback already assume by serving `index.html` for any path.
+ */
+const ACCOUNT_PATH = "/account";
+
+function screenForPath(pathname: string): Screen {
+  // Trailing slashes are equivalent: `/account/` is the same screen.
+  return pathname.replace(/\/+$/, "") === ACCOUNT_PATH ? "account" : "todos";
+}
+
+function pathForScreen(screen: Screen): string {
+  return screen === "account" ? ACCOUNT_PATH : "/";
+}
+
+function Todos() {
   const { todos, error, loading, create, setDone, rename, remove } = useTodos();
   const [title, setTitle] = useState("");
   const [filter, setFilter] = useState<TodoFilter>("all");
 
-  // Both from packages/core, shared with the extension, so the two surfaces
-  // cannot disagree about what "active" means.
+  // From packages/core, shared with the extension, so the two surfaces cannot
+  // disagree about what "active" means.
   const visible = filterTodos(todos, filter);
-  const counts = countTodos(todos);
 
   function onSubmit(event: FormEvent) {
     event.preventDefault();
@@ -80,62 +153,60 @@ function Todos({ name, onAccount }: { name: string; onAccount: () => void }) {
   }
 
   return (
-    <main className="app">
-      <header className="header">
-        <h1>Todos</h1>
-        <div className="session">
-          <span className="counts">
-            {counts.active} active · {counts.completed} done
-          </span>
-          <button type="button" className="linklike" onClick={onAccount}>
-            {name}
-          </button>
-          <button type="button" onClick={() => void signOut()}>
-            Sign out
-          </button>
-        </div>
-      </header>
+    <main className="mx-auto w-full max-w-2xl px-4 py-10 sm:px-6 sm:py-14">
+      {/*
+        Just the title. The counts, the signed-in name and sign out all used to
+        crowd this line; none of them is part of writing a todo, and the first
+        two are answered by the list itself and by the avatar in the rail.
+      */}
+      <h1 className="text-2xl font-semibold tracking-tight">Todos</h1>
 
-      <form className="create" onSubmit={onSubmit}>
-        <input
+      <form onSubmit={onSubmit} className="mt-6 flex gap-2">
+        <Input
           aria-label="Todo title"
           placeholder="What needs doing?"
           value={title}
           onChange={(event) => setTitle(event.target.value)}
         />
-        <button type="submit" disabled={!isValidTitle(title)}>
+        <Button type="submit" disabled={!isValidTitle(title)}>
+          <Plus />
           Add
-        </button>
+        </Button>
       </form>
 
-      <nav className="filters">
+      <nav className="mt-6 flex gap-1" aria-label="Filter todos">
         {TODO_FILTERS.map((option) => (
-          <button
+          <Button
             key={option}
             type="button"
-            className={option === filter ? "active" : ""}
+            variant={option === filter ? "secondary" : "ghost"}
+            size="sm"
             aria-pressed={option === filter}
             onClick={() => setFilter(option)}
+            className="capitalize"
           >
             {option}
-          </button>
+          </Button>
         ))}
       </nav>
 
       {error !== null && (
-        <p className="error" role="alert">
+        <p
+          role="alert"
+          className="text-destructive border-destructive/35 bg-destructive/7 mt-6 rounded-lg border px-3 py-2.5 text-sm"
+        >
           {error}
         </p>
       )}
 
       {visible.length === 0 && !loading ? (
-        <p className="empty">
+        <p className="text-muted-foreground mt-10 text-center text-sm">
           {todos.length === 0
             ? "Nothing here yet. Add something above."
             : `No ${filter} todos.`}
         </p>
       ) : (
-        <ul className="list">
+        <ul className="mt-6 flex flex-col gap-2">
           {visible.map((todo) => (
             <TodoRow
               key={todo.id}
@@ -147,8 +218,6 @@ function Todos({ name, onAccount }: { name: string; onAccount: () => void }) {
           ))}
         </ul>
       )}
-
-      <BuildFooter />
     </main>
   );
 }
@@ -178,17 +247,40 @@ function TodoRow({
   }
 
   return (
-    <li className={todo.done ? "row done" : "row"}>
-      <input
-        type="checkbox"
-        checked={todo.done}
-        aria-label={`Mark "${todo.title}" as ${todo.done ? "not done" : "done"}`}
-        onChange={(event) => onToggle(todo.id, event.target.checked)}
-      />
+    <li
+      className={cn(
+        "group bg-card flex items-center gap-3 rounded-xl border px-3 py-2.5 shadow-xs transition-colors",
+        "hover:border-foreground/15",
+      )}
+    >
+      {/*
+        A real checkbox, restyled: `appearance-none` drops the native control
+        but keeps the semantics and the keyboard behaviour that a div with a
+        click handler would have to reimplement.
+      */}
+      <label className="relative grid shrink-0 place-items-center">
+        <input
+          type="checkbox"
+          checked={todo.done}
+          aria-label={`Mark "${todo.title}" as ${todo.done ? "not done" : "done"}`}
+          onChange={(event) => onToggle(todo.id, event.target.checked)}
+          className={cn(
+            "peer border-input size-[1.15rem] cursor-pointer appearance-none rounded-[0.35rem] border transition-colors",
+            "checked:bg-primary checked:border-primary",
+            "focus-visible:ring-ring/50 focus-visible:border-ring focus-visible:ring-[3px] focus-visible:outline-none",
+          )}
+        />
+        {/* The tick is drawn over the input rather than by it, since an
+            appearance-none checkbox has no mark of its own. */}
+        <Check
+          aria-hidden="true"
+          className="text-primary-foreground pointer-events-none absolute size-3.5 opacity-0 peer-checked:opacity-100"
+          strokeWidth={3}
+        />
+      </label>
 
       {editing ? (
-        <input
-          className="edit"
+        <Input
           aria-label="Edit title"
           value={draft}
           autoFocus
@@ -202,26 +294,43 @@ function TodoRow({
               setEditing(false);
             }
           }}
+          className="h-7 flex-1"
         />
       ) : (
+        // A button so rename is keyboard-reachable, styled to read as plain
+        // text.
         <button
           type="button"
-          className="title"
           title="Click to rename"
           onClick={() => setEditing(true)}
+          className={cn(
+            "flex-1 cursor-text rounded px-1 py-0.5 text-left text-sm transition-colors",
+            "hover:bg-accent focus-visible:ring-ring/50 focus-visible:ring-2 focus-visible:outline-none",
+            todo.done && "text-muted-foreground line-through",
+          )}
         >
           {todo.title}
         </button>
       )}
 
-      <button
+      {/*
+        Revealed on hover, but always present for keyboard and touch: hiding it
+        with `hidden` would take it out of the tab order, and on a touch screen
+        there is no hover to reveal it at all.
+      */}
+      <Button
         type="button"
-        className="delete"
+        variant="ghost"
+        size="icon"
         aria-label={`Delete "${todo.title}"`}
         onClick={() => onRemove(todo.id)}
+        className={cn(
+          "text-muted-foreground hover:text-destructive hover:bg-destructive/10 size-7 shrink-0",
+          "opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100 sm:focus-visible:opacity-100",
+        )}
       >
-        ×
-      </button>
+        <Trash2 />
+      </Button>
     </li>
   );
 }

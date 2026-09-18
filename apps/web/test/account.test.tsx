@@ -90,7 +90,7 @@ describe("addresses and connected accounts", () => {
       ],
     });
 
-    render(<Account onClose={() => {}} />);
+    render(<Account />);
 
     await waitFor(() => {
       expect(screen.getAllByText("dana@example.test").length).toBeGreaterThan(
@@ -119,7 +119,7 @@ describe("addresses and connected accounts", () => {
       ],
     });
 
-    render(<Account onClose={() => {}} />);
+    render(<Account />);
 
     await waitFor(() => {
       // One entry, however many providers proved it.
@@ -128,8 +128,8 @@ describe("addresses and connected accounts", () => {
     // Each provider gets its own line under the address.
     expect(screen.getByText("google")).toBeDefined();
     expect(screen.getByText("github")).toBeDefined();
-    // And exactly one "primary" badge, however many providers proved it.
-    expect(screen.getAllByText("primary")).toHaveLength(1);
+    // And exactly one primary badge, however many providers proved it.
+    expect(screen.getAllByText("Primary")).toHaveLength(1);
   });
 });
 
@@ -151,11 +151,22 @@ test("does not show an address for a provider that is not linked", async () => {
     ],
   });
 
-  render(<Account onClose={() => {}} />);
+  render(<Account />);
 
+  /*
+   * An unlinked provider is offered under "Connect another account" rather
+   * than listed against the address it used to prove.
+   *
+   * The wait is on the settled count, not on the card title. Until
+   * `listAccounts` resolves nothing is known to be linked, so the card renders
+   * with a row for every provider and narrows to Google once the answer
+   * arrives. The title is there in both states, so waiting on it can hand back
+   * a page mid-load with two Connect buttons and an ambiguous query.
+   */
   await waitFor(() => {
-    expect(screen.getByText(/not connected/)).toBeDefined();
+    expect(screen.getAllByRole("button", { name: /Connect/ })).toHaveLength(1);
   });
+  expect(screen.getByText("Connect another account")).toBeDefined();
   // Only GitHub is linked, so the address appears once and never on the
   // unlinked Google row.
   expect(screen.getAllByText("dana@example.test")).toHaveLength(1);
@@ -186,7 +197,7 @@ describe("unlinking", () => {
       ],
     });
 
-    render(<Account onClose={() => {}} />);
+    render(<Account />);
 
     await user.click(await screen.findByRole("button", { name: "Disconnect" }));
 
@@ -222,7 +233,7 @@ describe("unlinking", () => {
       ],
     });
 
-    render(<Account onClose={() => {}} />);
+    render(<Account />);
 
     await user.click(await screen.findByRole("button", { name: "Disconnect" }));
 
@@ -240,7 +251,7 @@ describe("username", () => {
     listAccounts.mockResolvedValue({ data: [] });
     serverWith({ emails: [], username: "rivers-dana" });
 
-    render(<Account onClose={() => {}} />);
+    render(<Account />);
 
     await waitFor(() => {
       const field = screen.getByLabelText("Username") as HTMLInputElement;
@@ -269,7 +280,7 @@ describe("email addresses", () => {
     listAccounts.mockResolvedValue({ data: [] });
     serverWith({ emails: twoAddresses });
 
-    render(<Account onClose={() => {}} />);
+    render(<Account />);
 
     await waitFor(() => {
       expect(screen.getByText("second@example.test")).toBeDefined();
@@ -283,7 +294,7 @@ describe("email addresses", () => {
     listAccounts.mockResolvedValue({ data: [] });
     serverWith({ emails: twoAddresses });
 
-    render(<Account onClose={() => {}} />);
+    render(<Account />);
 
     const promote = await screen.findByRole("button", {
       name: "Make primary",
@@ -301,7 +312,7 @@ describe("email addresses", () => {
     listAccounts.mockResolvedValue({ data: [] });
     serverWith({ emails: twoAddresses });
 
-    render(<Account onClose={() => {}} />);
+    render(<Account />);
 
     await waitFor(() => {
       expect(screen.getByText("first@example.test")).toBeDefined();
@@ -319,7 +330,7 @@ describe("email addresses", () => {
     listAccounts.mockResolvedValue({ data: [] });
     serverWith({ emails: twoAddresses });
 
-    render(<Account onClose={() => {}} />);
+    render(<Account />);
 
     await waitFor(() => {
       expect(screen.getByText("second@example.test")).toBeDefined();
@@ -355,7 +366,7 @@ describe("email addresses", () => {
       }),
     );
 
-    render(<Account onClose={() => {}} />);
+    render(<Account />);
 
     const promote = await screen.findByRole("button", {
       name: "Make primary",
@@ -368,4 +379,32 @@ describe("email addresses", () => {
       ).toBeDefined();
     });
   });
+});
+
+/*
+ * Regression guard for the section headings.
+ *
+ * `CardTitle` renders a plain `div`, so without an explicit role these read as
+ * ordinary text and the page offers a screen reader nothing to navigate by
+ * between the page title and the fields. Level two sits them under the
+ * page's own `h1`.
+ */
+test("each account section is a level-two heading", async () => {
+  listAccounts.mockResolvedValue({ data: [] });
+  serverWith({ emails: [] });
+
+  render(<Account />);
+
+  await waitFor(() => {
+    expect(
+      screen.getByRole("heading", { name: "Email addresses", level: 2 }),
+    ).toBeDefined();
+  });
+  expect(
+    screen.getByRole("heading", { name: "Username", level: 2 }),
+  ).toBeDefined();
+  // The page's own title stays the only level one.
+  expect(
+    screen.getByRole("heading", { name: "Account", level: 1 }),
+  ).toBeDefined();
 });

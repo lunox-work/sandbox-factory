@@ -1,4 +1,6 @@
+import tailwind from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
+import { fileURLToPath } from "node:url";
 import { defineConfig, type Plugin } from "vite";
 
 import { resolveBuildInfo } from "../../scripts/build-info.mjs";
@@ -37,7 +39,18 @@ function buildInfoPlugin(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [react(), buildInfoPlugin()],
+  // Tailwind v4 is configured in CSS, not in a config file: the theme lives in
+  // `@theme` in index.css, which is why there is no tailwind.config.js here.
+  plugins: [tailwind(), react(), buildInfoPlugin()],
+  resolve: {
+    alias: {
+      // The import prefix shadcn's generated components use. Mirrored in
+      // tsconfig `paths` and in vitest.config.ts — three places, because the
+      // type-checker, the bundler and the test runner each resolve modules
+      // themselves.
+      "@": fileURLToPath(new URL("./src", import.meta.url)),
+    },
+  },
   server: {
     port: 5173,
     // Same-origin like production (see nginx.conf), so cookie and CORS

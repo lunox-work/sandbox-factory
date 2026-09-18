@@ -5,6 +5,7 @@
  */
 
 import react from "@vitejs/plugin-react";
+import { fileURLToPath } from "node:url";
 import { defineConfig, type Plugin } from "vitest/config";
 
 /**
@@ -12,7 +13,7 @@ import { defineConfig, type Plugin } from "vitest/config";
  * rendered version do not depend on the checkout's sha or a dirty tree.
  *
  * `test/build.ts` restates these values; the first test in
- * `build-footer.test.tsx` fails if the two drift.
+ * `build-details.test.tsx` fails if the two drift.
  */
 const TEST_BUILD = {
   version: "1.4.2",
@@ -46,10 +47,28 @@ function buildInfoPlugin(): Plugin {
 
 export default defineConfig({
   plugins: [react(), buildInfoPlugin()],
+  // Tailwind is deliberately absent: jsdom does not lay out or cascade, so
+  // generating the stylesheet would cost build time and change no assertion.
+  // The `@` alias is not optional though — without it the components under
+  // test cannot resolve their own imports.
+  resolve: {
+    alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) },
+  },
   test: {
     environment: "jsdom",
     globals: true,
     setupFiles: ["./test/setup.ts"],
     include: ["test/**/*.test.tsx", "test/**/*.test.ts"],
+    /*
+     * Above the 5s default because opening a Radix menu costs ~2s in jsdom,
+     * which has no layout engine: the positioning and collision work that
+     * takes one frame in a browser resolves through polled retries here. A
+     * bare `DropdownMenu` with a single item shows the same cost, so this is
+     * the library meeting jsdom rather than anything in `UserMenu`.
+     *
+     * Kept generous rather than tuned to the current number, so an added menu
+     * item does not start failing the suite on timing alone.
+     */
+    testTimeout: 30_000,
   },
 });

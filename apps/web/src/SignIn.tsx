@@ -10,7 +10,7 @@
 import { useEffect, useState } from "react";
 
 import { PROVIDERS, signInWith, type ProviderId } from "./auth";
-import { BuildFooter } from "./BuildFooter";
+import { webBuild } from "./build";
 import { ProviderIcon } from "./ProviderIcon";
 
 /**
@@ -106,7 +106,7 @@ export function SignIn() {
         <p className="signin-tagline">See less, Build more</p>
 
         {error !== null && (
-          <p className="error" role="alert">
+          <p className="signin-error" role="alert">
             {error}
           </p>
         )}
@@ -135,7 +135,15 @@ export function SignIn() {
         </div>
       </div>
 
-      <BuildFooter />
+      {/*
+        The version, kept on this screen alone. Everywhere else it lives in the
+        avatar menu, and there is no avatar until someone signs in — but "which
+        build is this?" is asked of a broken sign-in more than of anything
+        else, so the one screen that cannot reach the menu keeps the readout.
+      */}
+      <p className="text-muted-foreground relative mt-6 text-xs tabular-nums">
+        v{webBuild.version}
+      </p>
     </main>
   );
 }
