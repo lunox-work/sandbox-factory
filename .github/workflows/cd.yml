@@ -114,7 +114,7 @@ jobs:
       # this repository's main branch, so a fork or a pull request cannot
       # assume it.
       - name: Assume the deploy role
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE }}
           aws-region: ${{ env.AWS_REGION }}
