@@ -34,7 +34,7 @@ locals {
 variable "github_sub_prefix" {
   description = "Immutable OIDC subject prefix for this repository. From `gh api repos/OWNER/REPO/actions/oidc/customization/sub`."
   type        = string
-  default     = "repo:lunox-work@329222439/sandbox-factory@1370804029"
+  default     = "repo:lunox-work@329222439/sandbox-factory@1375970928"
 }
 
 data "aws_iam_policy_document" "github_assume" {
