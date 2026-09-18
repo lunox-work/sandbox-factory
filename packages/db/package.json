@@ -20,8 +20,8 @@
     "db:migrate": "node dist/migrate-cli.js"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.716.0",
-    "@aws-sdk/s3-request-presigner": "^3.716.0",
+    "@aws-sdk/client-s3": "^3.1133.0",
+    "@aws-sdk/s3-request-presigner": "^3.1133.0",
     "drizzle-orm": "^0.45.2",
     "postgres": "^3.4.5",
     "sandbox-factory": "*"
@@ -29,7 +29,7 @@
   "devDependencies": {
     "@sandbox-factory/coverage": "*",
     "@sandbox-factory/tsconfig": "*",
-    "@types/node": "^26.5.1",
+    "@types/node": "^26.6.1",
     "drizzle-kit": "^0.31.10",
     "typescript": "^7.0.2"
   }
