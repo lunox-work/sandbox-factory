@@ -8,9 +8,12 @@
  * into a second, competing redirect.
  */
 
+import { releaseTag } from "@sandbox-factory/shared";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+
+import { TEST_BUILD } from "./build";
 
 const signInWith = vi.fn();
 
@@ -93,4 +96,70 @@ test("a sign-in that fails to start shows an alert and gives the buttons back", 
   for (const button of screen.getAllByRole("button")) {
     expect((button as HTMLButtonElement).disabled).toBe(false);
   }
+});
+
+/*
+ * The build readout, which this screen showed only the version of.
+ *
+ * This is the one screen that cannot reach the avatar menu — there is no
+ * avatar until someone signs in — and it is the screen where "which build is
+ * this?" gets asked, because a broken sign-in is what prompts the question. So
+ * it carries the same facts the menu does, not a subset.
+ */
+test("the screen shows the commit this bundle was built from, not just the version", () => {
+  render(<SignIn />);
+
+  expect(screen.getByText("v1.4.2")).toBeTruthy();
+  const link = screen.getByText("7f3a9c1") as HTMLAnchorElement;
+  expect(link.getAttribute("href")).toBe(
+    `https://github.com/lunox-work/sandbox-factory/commit/${TEST_BUILD.gitSha}`,
+  );
+  // The full sha, the form a bug report or a provenance check needs.
+  expect(link.getAttribute("title") ?? "").toContain(TEST_BUILD.gitSha);
+});
+
+/*
+ * There is no menu here, so the links must be reachable as plain anchors.
+ *
+ * Wrapping them as `DropdownMenuItem`s — the menu's own arrangement — throws
+ * outside a Radix `Menu`, so this pins that the wrapper stays opt-in.
+ */
+test("the commit link is a plain anchor, reachable without a menu around it", () => {
+  render(<SignIn />);
+
+  const link = screen.getByText("7f3a9c1");
+  expect(link.tagName).toBe("A");
+  expect(link.getAttribute("role")).toBeNull();
+});
+
+// The fixture is a build of `main`, which is not a release.
+test("no release notes link on a build that is not a tagged release", () => {
+  render(<SignIn />);
+  expect(screen.queryByText("Release notes")).toBeNull();
+});
+
+test("a tagged release build offers the release notes link", async () => {
+  vi.resetModules();
+  vi.doMock("../src/build", () => ({
+    webBuild: { ...TEST_BUILD, gitRef: releaseTag(TEST_BUILD.version) },
+    fetchApiBuild: () => Promise.resolve(undefined),
+    logBuild: vi.fn(),
+  }));
+
+  const { SignIn: Released } = await import("../src/SignIn");
+  render(<Released />);
+
+  const link = (await screen.findByText("Release notes")).closest(
+    "a",
+  ) as HTMLAnchorElement;
+  expect(link.getAttribute("href")).toBe(
+    `https://github.com/lunox-work/sandbox-factory/releases/tag/${releaseTag(
+      TEST_BUILD.version,
+    )}`,
+  );
+  // Alongside the commit link, not instead of it.
+  expect(screen.getByText("7f3a9c1")).toBeTruthy();
+
+  vi.doUnmock("../src/build");
+  vi.resetModules();
 });

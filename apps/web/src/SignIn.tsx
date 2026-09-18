@@ -10,7 +10,7 @@
 import { useEffect, useState } from "react";
 
 import { PROVIDERS, signInWith, type ProviderId } from "./auth";
-import { webBuild } from "./build";
+import { BuildReadout } from "./BuildReadout";
 import { ProviderIcon } from "./ProviderIcon";
 
 /**
@@ -136,14 +136,16 @@ export function SignIn() {
       </div>
 
       {/*
-        The version, kept on this screen alone. Everywhere else it lives in the
-        avatar menu, and there is no avatar until someone signs in — but "which
-        build is this?" is asked of a broken sign-in more than of anything
-        else, so the one screen that cannot reach the menu keeps the readout.
+        The build readout, kept on this screen alone. Everywhere else it lives
+        in the avatar menu, and there is no avatar until someone signs in — but
+        "which build is this?" is asked of a broken sign-in more than of
+        anything else, so the one screen that cannot reach the menu shows the
+        same readout: the commit and the release notes, not just the version.
+
+        No link wrapper: there is no menu here, so the anchors are already
+        reachable as themselves.
       */}
-      <p className="text-muted-foreground relative mt-6 text-xs tabular-nums">
-        v{webBuild.version}
-      </p>
+      <BuildReadout className="relative mt-6 text-center" />
     </main>
   );
 }

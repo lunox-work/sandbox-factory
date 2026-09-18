@@ -11,10 +11,7 @@
  * are the facts a bug report needs. See `BuildDetails`.
  */
 
-import { commitUrl, isIdentified, releaseUrl } from "@sandbox-factory/shared";
-import type { BuildInfoDto } from "@sandbox-factory/shared";
-import { ExternalLink, LogOut, Settings, User } from "lucide-react";
-import { useEffect, useState } from "react";
+import { LogOut, Settings, User } from "lucide-react";
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
@@ -26,7 +23,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
-import { fetchApiBuild, webBuild } from "./build";
+import { BuildReadout, type LinkWrapper } from "./BuildReadout";
 
 export function UserMenu({
   name,
@@ -159,13 +156,16 @@ function initials(name: string): React.ReactNode {
 }
 
 /**
- * The build readout, moved here from the page footer.
+ * The build readout as it appears in this menu.
  *
- * The text is plain: facts to read, not commands, so none of it is a
- * `DropdownMenuItem`. The links are, via `asChild`, because Radix moves focus
- * with the arrow keys over the items it knows about and its focus scope holds
- * Tab inside the open menu — a link that is neither is one no keyboard can
- * reach. `asChild` renders the anchor itself, so it stays a link.
+ * The facts, and the markup that shows them, live in `BuildReadout` — the
+ * signed-out screen shows the same readout and there is no avatar there. All
+ * this adds is the one thing that is specific to being inside a menu: the
+ * links are wrapped as `DropdownMenuItem`s.
+ *
+ * Radix walks the arrow keys over the items it knows about and its focus scope
+ * holds Tab inside the open menu, so a link that is neither is one no keyboard
+ * can reach. `asChild` renders the anchor itself, so it stays a link.
  *
  * `onSelect` is left to its default, which closes the menu: following a link
  * navigates away, and a menu left open over the new page is the surprise.
@@ -177,120 +177,15 @@ function initials(name: string): React.ReactNode {
  * around it. `nav.test.tsx` is what pins the readout to the avatar's menu.
  */
 export function BuildDetails() {
-  const [apiBuild, setApiBuild] = useState<BuildInfoDto | undefined>(undefined);
-
-  useEffect(() => {
-    // Guards against setting state after unmount; StrictMode runs this effect
-    // twice in development.
-    let cancelled = false;
-    void fetchApiBuild().then((info) => {
-      if (!cancelled) {
-        setApiBuild(info);
-      }
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const href = commitUrl(webBuild);
-  // Only when this build is a release; see `releaseUrl`.
-  const release = releaseUrl(webBuild);
-
-  // Only a definite disagreement is shown. No answer, or an unidentified build
-  // on either side, is not a mismatch.
-  const mismatched =
-    apiBuild !== undefined &&
-    isIdentified(apiBuild) &&
-    isIdentified(webBuild) &&
-    apiBuild.gitSha !== webBuild.gitSha;
-
-  return (
-    <div className="text-muted-foreground px-2 py-1.5 text-xs tabular-nums">
-      <div className="flex items-center gap-1.5">
-        <span className="text-foreground/70 font-medium">
-          v{webBuild.version}
-        </span>
-
-        {isIdentified(webBuild) &&
-          (href === undefined ? (
-            <span className="font-mono">{webBuild.gitShortSha}</span>
-          ) : (
-            <DropdownMenuItem
-              asChild
-              // The row is laid out by the flex parent; the item only needs to
-              // carry focus, so it keeps none of the default item padding.
-              className="h-auto p-0 focus:bg-transparent"
-            >
-              <a
-                className="hover:text-foreground focus-visible:text-foreground font-mono underline decoration-current/30 underline-offset-2 transition-colors"
-                href={href}
-                target="_blank"
-                rel="noreferrer"
-                title={buildTitle()}
-              >
-                {webBuild.gitShortSha}
-              </a>
-            </DropdownMenuItem>
-          ))}
-
-        {/* "dirty" is build-tooling vocabulary, and it is the state every local
-            build is in. Said plainly, and only ever seen in development. */}
-        {webBuild.dirty && (
-          <span
-            className="bg-foreground/8 rounded px-1.5 py-0.5 text-[0.68rem] leading-tight"
-            title="Built from a working tree with uncommitted changes."
-          >
-            uncommitted
-          </span>
-        )}
-      </div>
-
-      {release !== undefined && (
-        <DropdownMenuItem
-          asChild
-          className="mt-1.5 h-auto p-0 focus:bg-transparent"
-        >
-          <a
-            className="hover:text-foreground focus-visible:text-foreground inline-flex items-center gap-1 underline decoration-current/30 underline-offset-2 transition-colors"
-            href={release}
-            target="_blank"
-            rel="noreferrer"
-            title="Release notes and signed artifacts for this version."
-          >
-            Release notes
-            <ExternalLink className="size-3" />
-          </a>
-        </DropdownMenuItem>
-      )}
-
-      {mismatched && (
-        <p
-          // Amber, not red: a rolling deploy is not a failure and it resolves
-          // itself on the next reload. The one thing here that reports
-          // something in flight, so the one thing given a colour.
-          className="mt-1.5 rounded bg-amber-500/12 px-1.5 py-1 font-mono text-[0.68rem] text-amber-700 dark:text-amber-400"
-          title={mismatchTitle(apiBuild)}
-        >
-          API on {apiBuild.gitShortSha}
-        </p>
-      )}
-    </div>
-  );
+  return <BuildReadout wrapLink={asMenuItem} className="px-2 py-1.5" />;
 }
 
-/** The full sha and build time, for the person who needs to quote them. */
-function buildTitle(): string {
-  if (!isIdentified(webBuild)) {
-    return "This build did not record the commit it came from.";
-  }
-  return `commit ${webBuild.gitSha}\nbuilt ${webBuild.buildTime}\nbranch ${webBuild.gitRef}`;
-}
-
-function mismatchTitle(apiBuild: BuildInfoDto): string {
-  return (
-    `This page was built from ${webBuild.gitShortSha}, ` +
-    `the API is running ${apiBuild.gitShortSha}.\n` +
-    "Usually a deploy in progress — reload to catch up."
-  );
-}
+/**
+ * Wraps a link as a menu item, keeping none of the default item padding: the
+ * readout lays its own rows out, and the item is only here to carry focus.
+ */
+const asMenuItem: LinkWrapper = (link) => (
+  <DropdownMenuItem asChild className="h-auto p-0 focus:bg-transparent">
+    {link}
+  </DropdownMenuItem>
+);
