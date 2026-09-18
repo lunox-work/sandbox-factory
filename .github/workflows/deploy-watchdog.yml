@@ -106,7 +106,7 @@ jobs:
 
       - name: Open or update an issue
         if: steps.drift.outputs.stale == 'true' && steps.drift.outputs.age_days >= 1
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         env:
           LIVE: ${{ steps.drift.outputs.live }}
           HEAD_SHA: ${{ steps.drift.outputs.head }}
@@ -159,7 +159,7 @@ jobs:
 
       - name: Close the issue once production catches up
         if: steps.drift.outputs.stale != 'true' && steps.live.outputs.unreachable != 'true'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const existing = await github.rest.issues.listForRepo({
