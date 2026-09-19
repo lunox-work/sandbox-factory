@@ -7,14 +7,14 @@
 //
 //   breaking (`!` or a `BREAKING CHANGE:` footer) → major
 //   feat                                          → minor
-//   anything else that is a release type          → patch
-//   nothing releasable                            → no output, exit 1
+//   any other conventional commit                 → patch
+//   no conventional commits at all                → no output, exit 1
 //
 //   node scripts/next-version.mjs --from sandbox-factory-v1.0.0 --to HEAD
 //
-// Exit 1 with no output means "nothing to release" (a docs- or chore-only
-// range); CD treats that as success and skips tagging. Not a changelog tool:
-// GitHub generates the release notes.
+// Exit 1 with no output means the range held no conventional commit at all —
+// an empty range, or merges only; CD treats that as success and skips tagging.
+// Not a changelog tool: GitHub generates the release notes.
 
 import { execFileSync } from "node:child_process";
 
@@ -28,9 +28,9 @@ const from = flag("--from", "");
 const to = flag("--to", "HEAD");
 const current = flag("--current", "");
 
-// The release types. Anything else (`chore`, `docs`, `test`, …) does not cut a
-// version on its own.
-const PATCH_TYPES = new Set(["fix", "perf", "revert", "build", "refactor"]);
+// `feat` is the only type that lifts the bump on its own; a breaking marker
+// escalates to major from any type. Everything else — `fix`, `perf`, `chore`,
+// `docs`, … — is a patch, so every deploy carries a version that names it.
 const MINOR_TYPES = new Set(["feat"]);
 
 /** `type(scope)!: subject` → {type, breaking}. Null when it is not conventional. */
@@ -60,7 +60,7 @@ export function bumpFor(commits) {
       bump = "minor";
       continue;
     }
-    if (PATCH_TYPES.has(parsed.type) && bump === null) {
+    if (bump === null) {
       bump = "patch";
     }
   }

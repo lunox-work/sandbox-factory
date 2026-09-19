@@ -88,11 +88,23 @@ test("the strongest bump in the range wins, regardless of order", () => {
   );
 });
 
-// A docs-or-chore-only range is not releasable. CD reads null as "deploy, do
-// not tag".
-test("a range with nothing releasable yields null", () => {
+// Every deploy carries a version that names it, so a chore- or docs-only range
+// is a patch rather than nothing. `null` is reserved for a range holding no
+// conventional commit at all, which CD reads as "deploy, do not tag".
+test("a chore- or docs-only range is a patch", () => {
   assert.equal(
     bumpFor([{ subject: "docs: tidy the readme" }, { subject: "chore: bump" }]),
+    "patch",
+  );
+  assert.equal(bumpFor([{ subject: "chore(deps): bump vite" }]), "patch");
+  assert.equal(bumpFor([{ subject: "test: cover the parser" }]), "patch");
+});
+
+// A merge-only range still yields null: nothing in it parses, so there is
+// nothing to name.
+test("a range with no conventional commit yields null", () => {
+  assert.equal(
+    bumpFor([{ subject: "Merge branch 'main'" }, { subject: "update stuff" }]),
     null,
   );
 });
