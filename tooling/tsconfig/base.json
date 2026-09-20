@@ -7,7 +7,13 @@
     "exception and should say why in that package's tsconfig.",
     "",
     "Path settings (rootDir, outDir, include) deliberately live in the",
-    "extending config: they are per-package, the strictness is not."
+    "extending config: they are per-package, the strictness is not.",
+    "",
+    "noUnusedLocals/noUnusedParameters are here rather than in a linter",
+    "because CodeQL flags unused symbols on the PR, and a finding there",
+    "blocks the merge on the conversation-resolution rule. tsc already runs",
+    "as `lint` in every workspace, so catching it locally costs nothing.",
+    "Prefix a parameter that must stay in a signature with _ to exempt it."
   ],
   "compilerOptions": {
     "target": "ES2022",
@@ -19,6 +25,8 @@
     "sourceMap": true,
     "strict": true,
     "noUncheckedIndexedAccess": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
     "noImplicitOverride": true,
     "verbatimModuleSyntax": true,
     "skipLibCheck": true,
