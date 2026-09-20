@@ -69,14 +69,35 @@ try {
   process.exit(2);
 }
 
+/**
+ * Whether the report mentions this file.
+ *
+ * The reporter does **not** print a path for a file in a subdirectory: it
+ * renders a tree, with the directory on its own row and the bare basename
+ * indented beneath it.
+ *
+ *     #   schema            |        |          |         |
+ *     #    auth.js          | 100.00 |   100.00 |   85.71 |
+ *
+ * So `schema/auth.js` never appears as a substring, and a plain
+ * `report.includes(name)` reported every nested file as untested — including
+ * files sitting at 100%. Each path segment is checked instead, which is what
+ * the tree actually contains. A basename shared by two directories can only
+ * make this lenient, never a false alarm, and the coverage thresholds still
+ * police whatever it lets through.
+ */
+function mentioned(report, name) {
+  return name.split("/").every((segment) => report.includes(segment));
+}
+
 // Normalized to posix separators so the comparison works on Windows too.
 const skip = new Set(excluded.map((path) => path.split(sep).join("/")));
 const missing = files
   .map((file) => relative(dir, file).split(sep).join("/"))
   .filter((name) => !skip.has(name))
-  // The reporter prints each covered file's path; a file the run never loaded
-  // appears nowhere in it.
-  .filter((name) => !report.includes(name));
+  // The reporter prints each covered file; a file the run never loaded appears
+  // nowhere in it.
+  .filter((name) => !mentioned(report, name));
 
 if (missing.length > 0) {
   console.error(
