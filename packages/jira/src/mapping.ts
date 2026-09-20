@@ -19,6 +19,8 @@ import type {
   JiraStatusCategory,
 } from "@sandbox-factory/shared";
 
+import { stripTrailingSlashes } from "./url.js";
+
 /** The four categories Jira guarantees, whatever a project calls its statuses. */
 const STATUS_CATEGORIES = ["new", "indeterminate", "done"] as const;
 
@@ -73,7 +75,7 @@ export function toIssueDto(
     url:
       siteUrl === undefined
         ? null
-        : `${siteUrl.replace(/\/+$/, "")}/browse/${issue.key}`,
+        : `${stripTrailingSlashes(siteUrl)}/browse/${issue.key}`,
   };
 }
 

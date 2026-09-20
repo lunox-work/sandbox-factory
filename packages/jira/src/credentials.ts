@@ -21,6 +21,7 @@
  */
 
 import { refreshTokens, type TokenPair } from "./oauth.js";
+import { stripTrailingSlashes } from "./url.js";
 
 /** What every request needs, whichever credential produced it. */
 export interface Credential {
@@ -204,7 +205,7 @@ export class ApiTokenCredential implements Credential {
         return globalThis.btoa(value);
       });
     this.#header = `Basic ${encode(`${email}:${apiToken}`)}`;
-    this.#baseUrl = siteUrl.replace(/\/+$/, "");
+    this.#baseUrl = stripTrailingSlashes(siteUrl);
   }
 
   authorize(): Promise<string> {
