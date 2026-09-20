@@ -15,7 +15,8 @@ export type {
   UserProfileStore,
 } from "./emails.js";
 export type { Connection, ConnectionOptions } from "./client.js";
-export { generateId, newTodoRow, rowToTodo } from "./mapping.js";
+export { generateId, ID_PREFIXES, newTodoRow, rowToTodo } from "./mapping.js";
+export type { IdPrefix } from "./mapping.js";
 export { runMigrations } from "./migrate.js";
 export type { MigrateOptions } from "./migrate.js";
 export { createOrganizationStore } from "./organizations.js";

@@ -30,9 +30,34 @@ export function newTodoRow(
 }
 
 /**
+ * The id prefixes in use, one per table that generates ids.
+ *
+ * Prefixed ids are worth the few bytes: an id that leaks into a log, a URL or
+ * a support conversation says what it is, and passing a board id where an
+ * issue id belongs is visible rather than a silent 404. The set is declared
+ * here, rather than each caller passing a string, so that a typo is a compile
+ * error and the full list is readable in one place.
+ */
+export const ID_PREFIXES = [
+  "todo",
+  /** Jira: connection, board, issue. */
+  "jrc",
+  "jrb",
+  "jri",
+  /** Commercials: bounty run, bounty proposal. */
+  "brn",
+  "bpr",
+] as const;
+
+export type IdPrefix = (typeof ID_PREFIXES)[number];
+
+/**
  * Generated in the application, not by a sequence: `create` stays one round
  * trip and ids stay collision-free across replicas.
+ *
+ * Defaults to `todo` so the existing callers are unchanged; every new table
+ * passes its own prefix.
  */
-export function generateId(): string {
-  return `todo_${crypto.randomUUID()}`;
+export function generateId(prefix: IdPrefix = "todo"): string {
+  return `${prefix}_${crypto.randomUUID()}`;
 }
