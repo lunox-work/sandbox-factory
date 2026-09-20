@@ -100,8 +100,9 @@ Better Auth, configured in `apps/api/src/auth.ts` and mounted at `/api/auth/*`.
 Google, GitHub and Atlassian only — `emailAndPassword` is never enabled, so
 `/api/auth/sign-up/email` answers 400.
 
-Its four tables (`user`, `session`, `account`, `verification`) live in
-`packages/db/src/schema.ts`, bundled as `authSchema`. **Two naming rules fail at
+Its four core tables (`user`, `session`, `account`, `verification`) live in
+`packages/db/src/schema.ts`, bundled as `authSchema` together with the
+organization plugin's three (see [Organizations](#organizations)). **Two naming rules fail at
 runtime rather than compile time**, because the adapter resolves both by string:
 the exported consts are singular, and the column properties are camelCase even
 though the columns are snake_case.
@@ -150,6 +151,83 @@ method takes the owner as its first argument and puts it in the query — `creat
 records it, `update` and `remove` match on both id and owner — so no call can
 read _or write_ across users. An id belonging to someone else returns 404, not
 403, so ids cannot be enumerated.
+
+## Organizations
+
+The second principal. Better Auth's `organization` plugin owns the tables
+(`organization`, `member`, `invitation`) and every write to them, served under
+`/api/auth/organization/*`. `packages/db/src/organizations.ts` covers the reads
+it does not offer, and `apps/api/src/routes.ts` mounts them under
+`/api/v1/orgs`.
+
+**Two names, as a user has.** `organization.id` is permanent and is what
+anything durable references; `organization.slug` is the public handle, unique
+but renameable. The pair mirrors `user.id` and `user.username` deliberately, so
+neither principal invites the mistake of storing a name as a key.
+
+**The handle rules live in `packages/core`.** `packages/core/src/handle.ts` is
+the single definition, shared by the profile store, the plugin hooks, the wire
+schemas and both browser forms — the only package all four can import. Users
+and organizations have **separate** handle namespaces: `dana` can be both.
+Sharing one would need cross-table uniqueness, which the email work showed
+costs a trigger pair plus an advisory lock (migrations 0007 to 0011), and
+nothing needs a bare `/{handle}` URL. Prefixed paths (`/u/`, `/o/`) keep them
+apart.
+
+**The plugin leaves two gaps, closed by hooks in `auth.ts`.** It accepts any
+non-empty string as a slug, so `beforeCreateOrganization` and
+`beforeUpdateOrganization` validate and lowercase it. And its own "already
+taken" check runs on the **raw** body before those hooks normalise it, so
+`MyOrg` while `myorg` exists would pass it and fail on the unique constraint as
+a 500; the hooks repeat the check case-insensitively, excluding the
+organization's own id so a re-cased rename is not a collision.
+
+**`session.activeOrganizationId` is a preference, never an authorisation
+input.** One value is shared by every tab and by the extension's bearer
+session, and the five-minute session cookie cache means a change in one lags in
+another. Organization-scoped routes take the id from the path and check
+membership against the `member` table; a non-member gets 404, not 403, exactly
+as another user's todo does.
+
+**Invitations are in-app.** `sendInvitationEmail` is left unset because this
+codebase sends no mail: an invitation is a row the invitee finds on their
+account page. It is addressed to their **primary** address, since that is what
+Better Auth compares against the session on accept. The server-only `addMember`
+endpoint is not used — joining changes what a session can reach, so the person
+accepts it.
+
+**Every organization keeps at least one owner.** The plugin refuses to let the
+last one leave, be removed or be demoted; the settings page disables those
+controls rather than letting the click fail.
+
+**There is no organization switcher.** Nothing the app renders is owned by an
+organization yet — todos are personal — so a control that changed the "active"
+one moved a tick and nothing else, which reads as broken. The avatar menu has
+one **Organizations** item opening a list page; a row leads to that
+organization's settings. `useOrganizations` keeps `select` and `clear`, both
+tested, for the change that first renders organization-owned data.
+`session.activeOrganizationId` is written by those and by nothing else.
+
+### Open questions
+
+Neither blocks anything; both are cheap if a need appears.
+
+- **Invitations match the primary address only.** One sent to an address
+  someone has proven but not made primary stays invisible to them. The fix is
+  a `beforeAcceptInvitation` hook accepting any of the caller's proven
+  addresses (`EmailStore.list`), not a schema change.
+- **Handles are not reserved.** Words like `admin`, `api`, `o` and `u` can be
+  claimed by a user or an organization. Once prefixed URLs (`/u/`, `/o/`)
+  carry real pages, add a short reserved list to
+  `packages/core/src/handle.ts`, applied to both principals.
+
+### Deliberately not built
+
+Teams; per-organization custom roles (`dynamicAccessControl`); an email
+transport, at which point `sendInvitationEmail` is one function and the in-app
+flow stays as the fallback; organization avatars in object storage (`logo`
+holds a URL for now); moving `todos` to organization ownership; a shared handle
+namespace via a registry table, if a bare `/{handle}` URL is ever wanted.
 
 ## Not yet built
 

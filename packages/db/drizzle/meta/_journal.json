@@ -85,6 +85,13 @@
       "when": 1789573721782,
       "tag": "0011_email_same_table_case",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1789817023844,
+      "tag": "0012_majestic_vanisher",
+      "breakpoints": true
     }
   ]
 }

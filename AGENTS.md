@@ -57,11 +57,25 @@ npx turbo run lint test --filter=@sandbox-factory/api
 - **`packages/db/src/schema.ts` auth table consts stay singular (`user`) and
   column properties stay camelCase (`emailVerified`).** Better Auth's Drizzle
   adapter resolves both by string at runtime, so a rename fails at sign-in, not
-  at compile time. `packages/db/test/auth-schema.test.ts` asserts both.
-- **Every `TodoStore` method takes the owner as its first argument, in the
-  `WHERE` clause.** The owner comes from `c.get("user").id`, never a request
-  body. A session says who is asking, not what they may read. Another user's id
-  is a 404, never a 403.
+  at compile time. This covers the organization plugin's three tables
+  (`organization`, `member`, `invitation`) as well as the four core ones; all
+  seven are in `authSchema`, and `packages/db/test/auth-schema.test.ts` asserts
+  the list and the naming.
+- **Handle rules live in `packages/core/src/handle.ts`**, shared by usernames
+  and organization slugs. Do not restate the length or character set anywhere
+  else; the profile store, the plugin hooks, the zod schemas and both browser
+  forms all call the same functions.
+- **Organization-scoped routes take the id from the path, never from
+  `session.activeOrganizationId`.** That value is a UI preference shared by
+  every tab and by the extension's bearer session, and the session cookie cache
+  makes it stale. `requireMembership` in `routes.ts` reads the `member` table;
+  a non-member is a 404.
+- **Every store method takes the owner as its first argument, in the `WHERE`
+  clause.** For `TodoStore` the owner is the user; for an organization-owned
+  table it is the organization id. It comes from `c.get("user").id` or the path
+  segment the membership guard has already checked, never from a request body.
+  A session says who is asking, not what they may read. Another owner's id is a
+  404, never a 403.
 - Email/password sign-in is deliberately off. `apps/api/test/auth.test.ts`
   asserts on the 400 response; do not enable the feature to make it pass.
 - `createApp` without an `auth` option serves 503 on `/api/*`. Routes under

@@ -9,16 +9,22 @@
 
 import {
   createTodoSchema,
+  inviteMemberSchema,
   unknownBuildInfo,
   updateTodoSchema,
   type BuildInfoDto,
+  type OrganizationRole,
 } from "@sandbox-factory/shared";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import type { ErrorHandler } from "hono";
 import { InvalidTitleError } from "sandbox-factory";
 
-import type { EmailStore, UserProfileStore } from "@sandbox-factory/db";
+import type {
+  EmailStore,
+  OrganizationStore,
+  UserProfileStore,
+} from "@sandbox-factory/db";
 
 import type { Auth } from "./auth.js";
 import { NotFoundError, type TodoStore } from "./store.js";
@@ -36,6 +42,11 @@ export interface AppOptions {
   /** Username reads and writes. Optional for the same reason as `emails`. */
   profiles?: UserProfileStore | undefined;
   /**
+   * Organization reads. Optional for the same reason as `emails`: without it
+   * the organization routes are not mounted, so a test needs no database.
+   */
+  organizations?: OrganizationStore | undefined;
+  /**
    * Shared secret the CDN sends on every origin request. Set where the task is
    * internet-reachable with nothing upstream to filter (the CloudFront-to-
    * Fargate deploy in `infra/`): this header is all that separates a CDN
@@ -52,6 +63,43 @@ export interface AppOptions {
 export interface AuthVariables {
   user: { id: string; email: string; name: string };
   sessionId: string;
+  /**
+   * The caller's standing in the organization named by the path, set by
+   * `requireMembership` on `/api/v1/orgs/:orgId/*`. Absent elsewhere.
+   */
+  member: { organizationId: string; role: string };
+}
+
+/**
+ * Roles from least to most powerful, as the plugin defines them. Used only to
+ * compare two roles; the plugin itself decides what each may do.
+ */
+const ROLE_RANK: Record<string, number> = {
+  member: 0,
+  admin: 1,
+  owner: 2,
+};
+
+/**
+ * Whether `held` is at least `required`.
+ *
+ * A member may hold several comma-separated roles — the plugin splits on `,`
+ * when it checks permissions — so the strongest one counts. An unknown role
+ * ranks lowest rather than throwing: a role added to the plugin's config but
+ * not here must not silently pass a check.
+ *
+ * Exported for its tests. Nothing calls it yet: every route the membership
+ * guard covers is readable by any member, and the plugin checks the role
+ * itself on the writes that need one. It is here, and pinned, for the first
+ * route that needs a floor — an untested comparison that grants access is
+ * exactly the thing that should not be written under time pressure later.
+ */
+export function rankAtLeast(held: string, required: OrganizationRole): boolean {
+  const strongest = held
+    .split(",")
+    .map((entry) => ROLE_RANK[entry.trim()] ?? -1)
+    .reduce((best, rank) => Math.max(best, rank), -1);
+  return strongest >= (ROLE_RANK[required] ?? 0);
 }
 
 /** Shared by the app, the error handler and the factory's return type. */
@@ -63,6 +111,7 @@ export function createApp({
   auth,
   emails,
   profiles,
+  organizations,
   buildInfo = unknownBuildInfo,
   originVerify,
 }: AppOptions): Hono<AppEnv> {
@@ -232,6 +281,137 @@ export function createApp({
         );
       }
       return c.body(null, 204);
+    });
+  }
+
+  if (organizations !== undefined) {
+    /**
+     * The caller's organizations, with the role held in each. What the
+     * sidebar switcher reads; a list, so it is its own call rather than a
+     * field on `/api/v1/me`.
+     */
+    app.get("/api/v1/me/orgs", async (c) => {
+      return c.json({
+        organizations: await organizations.listForUser(c.get("user").id),
+      });
+    });
+
+    /**
+     * Invitations addressed to the caller, which is how someone joins an
+     * organization: nothing is emailed, so this list is the delivery.
+     *
+     * Matched against the primary address only, because that is what Better
+     * Auth compares on accept. An invitation sent to a proven secondary is
+     * invisible until that address is made primary; the account page says so.
+     */
+    app.get("/api/v1/me/invitations", async (c) => {
+      const pending = await organizations.pendingFor(c.get("user").email);
+      return c.json({
+        invitations: pending.map((entry) => ({
+          ...entry,
+          expiresAt: entry.expiresAt.toISOString(),
+        })),
+      });
+    });
+
+    /**
+     * One organization by its public handle, for a signed-out reader.
+     *
+     * Deliberately outside the membership guard and deliberately thin: two
+     * names and nothing else. Mounted before `/:orgId` so the literal segment
+     * wins over the parameter.
+     */
+    app.get("/api/v1/orgs/by-handle/:slug", async (c) => {
+      const found = await organizations.findBySlug(c.req.param("slug"));
+      if (found === undefined) {
+        throw new NotFoundError(c.req.param("slug"));
+      }
+      return c.json(found);
+    });
+
+    /**
+     * Everything below is scoped to one organization, named in the path.
+     *
+     * The id comes from the URL, never from `session.activeOrganizationId`:
+     * that is one value shared by every tab and by the extension's bearer
+     * session, and the five-minute session cookie cache means a change in one
+     * lags in another. A session says who is asking, not what they may read.
+     *
+     * A non-member gets 404, not 403, exactly as another user's todo does:
+     * 403 would confirm the organization exists.
+     */
+    app.use("/api/v1/orgs/:orgId/*", async (c, next) => {
+      const organizationId = c.req.param("orgId");
+      const role = await organizations.roleOf(c.get("user").id, organizationId);
+      if (role === undefined) {
+        throw new NotFoundError(organizationId);
+      }
+      c.set("member", { organizationId, role });
+      await next();
+      return;
+    });
+
+    /** The organization, plus the caller's role in it. Members only. */
+    app.get("/api/v1/orgs/:orgId", async (c) => {
+      const { organizationId, role } = c.get("member");
+      const found = await organizations.get(organizationId);
+      if (found === undefined) {
+        // Unreachable while the membership row exists, since `member`
+        // cascades with its organization. Answering 404 rather than throwing
+        // keeps a torn state from becoming a 500.
+        throw new NotFoundError(organizationId);
+      }
+      return c.json({ organization: found, role });
+    });
+
+    /** Members, with the handle each person is known by. */
+    app.get("/api/v1/orgs/:orgId/members", async (c) => {
+      return c.json({
+        members: await organizations.listMembers(
+          c.get("member").organizationId,
+        ),
+      });
+    });
+
+    /**
+     * Invite someone by handle or by address.
+     *
+     * By handle is the common case inside the product, and is resolved to
+     * that user's primary address here because an invitation is addressed to
+     * an email: the plugin matches it against the session's address on
+     * accept. By address reaches someone with no account yet.
+     *
+     * The invitation itself is the plugin's to create, so the permission
+     * check is its own: admins and owners may invite, members may not.
+     */
+    app.post("/api/v1/orgs/:orgId/invitations", async (c) => {
+      const parsed = inviteMemberSchema.safeParse(
+        await c.req.json().catch(() => null),
+      );
+      if (!parsed.success) {
+        return c.json({ error: firstIssue(parsed.error) }, 400);
+      }
+
+      let email = parsed.data.email;
+      if (email === undefined) {
+        const handle = parsed.data.handle ?? "";
+        const invitee = await organizations.findUserByHandle(handle);
+        if (invitee === undefined) {
+          // The same 404 shape as any other unknown id.
+          return c.json({ error: `Nobody holds the handle ${handle}.` }, 404);
+        }
+        email = invitee.email;
+      }
+
+      const created = await auth.api.createInvitation({
+        body: {
+          email,
+          role: parsed.data.role,
+          organizationId: c.get("member").organizationId,
+        },
+        headers: c.req.raw.headers,
+      });
+      return c.json({ invitation: created }, 201);
     });
   }
 

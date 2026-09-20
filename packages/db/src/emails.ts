@@ -5,6 +5,12 @@
  */
 
 import { and, eq, ne } from "drizzle-orm";
+import {
+  HANDLE_MAX_LENGTH,
+  HANDLE_MIN_LENGTH,
+  handleStemFromEmail,
+  normalizeHandle,
+} from "sandbox-factory";
 
 import { user, userEmail } from "./schema.js";
 import type { Database } from "./store.js";
@@ -316,12 +322,12 @@ function toProvenEmail(row: {
 }
 
 /**
- * Username rules. Deliberately narrow (lowercase letters, digits, hyphen,
- * underscore) so a handle works in a URL, mention or slug without escaping.
+ * Username rules. The definition lives in `packages/core` as the handle
+ * rules, shared with organization slugs so the two principals cannot drift
+ * apart; these aliases keep the existing import sites working.
  */
-export const USERNAME_MIN_LENGTH = 3;
-export const USERNAME_MAX_LENGTH = 30;
-const USERNAME_PATTERN = /^[a-z0-9_-]+$/;
+export const USERNAME_MIN_LENGTH = HANDLE_MIN_LENGTH;
+export const USERNAME_MAX_LENGTH = HANDLE_MAX_LENGTH;
 
 export type UsernameResult =
   | { status: "ok"; username: string; displayUsername: string }
@@ -355,7 +361,7 @@ export function createProfileStore(db: Database): UserProfileStore {
 
   return {
     async suggest(email) {
-      const base = toHandleBase(email);
+      const base = handleStemFromEmail(email);
       if (!(await isTaken(base))) {
         return base;
       }
@@ -382,25 +388,16 @@ export function createProfileStore(db: Database): UserProfileStore {
     },
 
     async setUsername(userId, raw) {
-      const displayUsername = raw.trim();
-      const username = displayUsername.toLowerCase();
-
-      if (
-        username.length < USERNAME_MIN_LENGTH ||
-        username.length > USERNAME_MAX_LENGTH
-      ) {
+      const normalized = normalizeHandle(raw);
+      if (normalized.status === "invalid") {
+        // Core's wording is subject-free ("Must be between…"), so the subject
+        // is added here; the organization hooks add their own.
         return {
           status: "invalid",
-          reason: `Username must be between ${USERNAME_MIN_LENGTH} and ${USERNAME_MAX_LENGTH} characters.`,
+          reason: `Username ${lowerFirst(normalized.reason)}`,
         };
       }
-      if (!USERNAME_PATTERN.test(username)) {
-        return {
-          status: "invalid",
-          reason:
-            "Username can use letters, numbers, hyphens and underscores only.",
-        };
-      }
+      const { handle: username, display: displayUsername } = normalized;
 
       const [existing] = await db
         .select({ id: user.id })
@@ -423,32 +420,9 @@ export function createProfileStore(db: Database): UserProfileStore {
 }
 
 /**
- * Strips leading and trailing hyphens in linear time. Do not simplify to
- * `replace(/^-+|-+$/g, "")`: that is quadratic on a long run of hyphens, and
- * the input is a provider-supplied local part that is truncated only after
- * this runs.
+ * Lowercases the first letter, so core's subject-free wording can be given a
+ * subject: "Must be between…" becomes "Username must be between…".
  */
-function trimHyphens(value: string): string {
-  let start = 0;
-  let end = value.length;
-  while (start < end && value[start] === "-") {
-    start += 1;
-  }
-  while (end > start && value[end - 1] === "-") {
-    end -= 1;
-  }
-  return value.slice(start, end);
-}
-
-/**
- * Turns an email address into a handle stem. Uses only the local part, and
- * replaces disallowed characters with hyphens so the result is always valid.
- */
-function toHandleBase(email: string): string {
-  const local = email.split("@")[0] ?? "user";
-  const cleaned = trimHyphens(
-    local.toLowerCase().replace(/[^a-z0-9_-]+/g, "-"),
-  ).slice(0, USERNAME_MAX_LENGTH);
-  // Pad a too-short stem: "jo@example.com" must still produce a valid handle.
-  return cleaned.length >= USERNAME_MIN_LENGTH ? cleaned : `${cleaned}-user`;
+function lowerFirst(value: string): string {
+  return value.charAt(0).toLowerCase() + value.slice(1);
 }

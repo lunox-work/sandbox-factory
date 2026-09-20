@@ -7,9 +7,20 @@
  * The VS Code extension cannot work this way and uses a bearer token instead.
  */
 
+import { organizationClient } from "better-auth/client/plugins";
 import { createAuthClient } from "better-auth/react";
 
-export const authClient = createAuthClient();
+/**
+ * `organizationClient` mirrors the server's plugin: it adds
+ * `authClient.organization.*` (create, update, setActive, inviteMember,
+ * acceptInvitation, removeMember, leave and the rest), which is how every
+ * organization *write* is made. Reads that need our own data — the
+ * membership list, members with their handles, pending invitations — go
+ * through `/api/v1` instead; see `useOrganizations`.
+ */
+export const authClient = createAuthClient({
+  plugins: [organizationClient()],
+});
 
 export const { useSession, signOut } = authClient;
 

@@ -6,6 +6,7 @@
  */
 
 import { Check, Link2, Unlink } from "lucide-react";
+import type { PendingInvitationDto } from "@sandbox-factory/shared";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -41,8 +42,14 @@ interface LinkedAccount {
   accountId: string;
 }
 
-export function Account() {
+export function Account({
+  /** Called after an invitation is accepted, so the switcher picks it up. */
+  onJoined,
+}: {
+  onJoined?: (() => void) | undefined;
+} = {}) {
   const [emails, setEmails] = useState<ProvenEmail[]>([]);
+  const [invitations, setInvitations] = useState<PendingInvitationDto[]>([]);
   const [accounts, setAccounts] = useState<LinkedAccount[]>([]);
   const [username, setUsername] = useState<string | null>(null);
   const [accountId, setAccountId] = useState<string | null>(null);
@@ -51,15 +58,17 @@ export function Account() {
 
   const refresh = useCallback(async () => {
     try {
-      const [emailRes, meRes, accountRes] = await Promise.all([
+      const [emailRes, meRes, accountRes, inviteRes] = await Promise.all([
         fetch("/api/v1/me/emails", { credentials: "include" }),
         fetch("/api/v1/me", { credentials: "include" }),
         authClient.listAccounts(),
+        fetch("/api/v1/me/invitations", { credentials: "include" }),
       ]);
       if (emailRes.ok) {
-        setEmails(
-          ((await emailRes.json()) as { emails: ProvenEmail[] }).emails,
-        );
+        const body = (await emailRes.json()) as {
+          emails?: ProvenEmail[];
+        } | null;
+        setEmails(body?.emails ?? []);
       }
       if (meRes.ok) {
         const body = (await meRes.json()) as {
@@ -67,6 +76,14 @@ export function Account() {
         };
         setUsername(body.user.username);
         setAccountId(body.user.id);
+      }
+      if (inviteRes.ok) {
+        const body = (await inviteRes.json()) as {
+          invitations?: PendingInvitationDto[];
+        } | null;
+        // Defaulted, not trusted: a 200 carrying the wrong shape should show
+        // no invitations rather than break the whole settings page.
+        setInvitations(body?.invitations ?? []);
       }
       setAccounts((accountRes.data ?? []) as unknown as LinkedAccount[]);
       setError(null);
@@ -146,6 +163,36 @@ export function Account() {
     }
   }
 
+  /**
+   * Accepts or declines an invitation. Both go through the plugin, which
+   * checks that the caller is the address it was sent to.
+   */
+  async function answerInvitation(
+    invitationId: string,
+    action: "accept" | "reject",
+  ) {
+    setBusy(true);
+    setError(null);
+    try {
+      const result =
+        action === "accept"
+          ? await authClient.organization.acceptInvitation({ invitationId })
+          : await authClient.organization.rejectInvitation({ invitationId });
+      if (result.error !== null && result.error !== undefined) {
+        setError(result.error.message ?? "Could not answer that invitation.");
+        return;
+      }
+      await refresh();
+      if (action === "accept") {
+        onJoined?.();
+      }
+    } catch {
+      setError("Could not answer that invitation.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const unconnected = PROVIDERS.filter((provider) => !linked.has(provider.id));
 
   return (
@@ -174,6 +221,57 @@ export function Account() {
           onSaved={(next) => setUsername(next)}
           onBusy={setBusy}
         />
+
+        {invitations.length > 0 && (
+          <Card>
+            <CardHeader>
+              <CardTitle role="heading" aria-level={2}>
+                Invitations
+              </CardTitle>
+              <CardDescription>
+                Organizations that have invited you. Accepting gives you access
+                to everything they own.
+              </CardDescription>
+            </CardHeader>
+
+            <CardContent className="flex flex-col gap-2">
+              {invitations.map((invitation) => (
+                <div
+                  key={invitation.id}
+                  className="bg-muted/35 flex flex-wrap items-center gap-2 rounded-lg border px-3.5 py-3"
+                >
+                  <span className="flex-1 text-sm font-medium">
+                    {invitation.organization.name}
+                    <span className="text-muted-foreground ml-1.5 font-normal">
+                      as {invitation.role}
+                    </span>
+                  </span>
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={busy}
+                    onClick={() =>
+                      void answerInvitation(invitation.id, "accept")
+                    }
+                  >
+                    Accept
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    disabled={busy}
+                    onClick={() =>
+                      void answerInvitation(invitation.id, "reject")
+                    }
+                  >
+                    Decline
+                  </Button>
+                </div>
+              ))}
+            </CardContent>
+          </Card>
+        )}
 
         <Card>
           <CardHeader>

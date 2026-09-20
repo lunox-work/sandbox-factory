@@ -9,10 +9,12 @@
  * what a person sees given a server response.
  */
 
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
 const listAccounts = vi.fn();
+const acceptInvitation = vi.fn();
+const rejectInvitation = vi.fn();
 const unlinkAccount = vi.fn();
 const linkSocial = vi.fn();
 
@@ -21,6 +23,10 @@ vi.mock("../src/auth", () => ({
     listAccounts: () => listAccounts(),
     unlinkAccount: (input: { accountId: string }) => unlinkAccount(input),
     linkSocial: (input: unknown) => linkSocial(input),
+    organization: {
+      acceptInvitation: (input: unknown) => acceptInvitation(input),
+      rejectInvitation: (input: unknown) => rejectInvitation(input),
+    },
   },
   PROVIDERS: [
     { id: "google", label: "Continue with Google" },
@@ -41,14 +47,24 @@ function serverWith(options: {
     isPrimary: boolean;
   }>;
   username?: string | null;
+  invitations?: Array<{
+    id: string;
+    organization: { id: string; name: string; slug: string };
+    role: string;
+    expiresAt: string;
+  }>;
 }) {
   const emails = options.emails ?? [];
+  const invitations = options.invitations ?? [];
   vi.stubGlobal(
     "fetch",
     vi.fn(async (url: string, init?: { method?: string }) => {
       calls.push(`${init?.method ?? "GET"} ${String(url)}`);
       if (String(url).includes("/api/v1/me/emails")) {
         return new Response(JSON.stringify({ emails }));
+      }
+      if (String(url).includes("/api/v1/me/invitations")) {
+        return new Response(JSON.stringify({ invitations }));
       }
       if (String(url).endsWith("/api/v1/me")) {
         return new Response(
@@ -71,6 +87,8 @@ beforeEach(() => {
   calls.length = 0;
   vi.clearAllMocks();
   listAccounts.mockResolvedValue({ data: [] });
+  acceptInvitation.mockResolvedValue({ data: {}, error: null });
+  rejectInvitation.mockResolvedValue({ data: {}, error: null });
 });
 
 describe("addresses and connected accounts", () => {
@@ -407,4 +425,96 @@ test("each account section is a level-two heading", async () => {
   expect(
     screen.getByRole("heading", { name: "Account", level: 1 }),
   ).toBeDefined();
+});
+
+describe("organization invitations", () => {
+  const invitation = {
+    id: "inv_1",
+    organization: { id: "org_1", name: "Acme", slug: "acme" },
+    role: "member",
+    expiresAt: "2099-01-01T00:00:00.000Z",
+  };
+
+  test("a pending invitation is shown with the organization and role", async () => {
+    // Nothing is emailed, so this card *is* the delivery. If it does not
+    // render, an invitation is unreachable.
+    serverWith({ invitations: [invitation] });
+
+    render(<Account />);
+
+    expect(await screen.findByText("Acme")).toBeDefined();
+    expect(screen.getByText(/as member/i)).toBeDefined();
+  });
+
+  test("no card at all when there is nothing pending", async () => {
+    // An empty "Invitations" heading on every account page would be noise.
+    serverWith({ invitations: [] });
+
+    render(<Account />);
+
+    await screen.findByText("Email addresses");
+    expect(screen.queryByText("Invitations")).toBeNull();
+  });
+
+  test("accepting calls accept, not decline", async () => {
+    serverWith({ invitations: [invitation] });
+    render(<Account />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Accept" }));
+
+    await waitFor(() =>
+      expect(acceptInvitation).toHaveBeenCalledWith({ invitationId: "inv_1" }),
+    );
+    expect(rejectInvitation).not.toHaveBeenCalled();
+  });
+
+  test("declining calls decline, not accept", async () => {
+    // The pair that matters: one of these joining an organization the person
+    // meant to refuse is silent and hard to undo.
+    serverWith({ invitations: [invitation] });
+    render(<Account />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Decline" }));
+
+    await waitFor(() =>
+      expect(rejectInvitation).toHaveBeenCalledWith({ invitationId: "inv_1" }),
+    );
+    expect(acceptInvitation).not.toHaveBeenCalled();
+  });
+
+  test("accepting tells the app to reload its organizations", async () => {
+    // Otherwise the switcher does not show what was just joined.
+    const onJoined = vi.fn();
+    serverWith({ invitations: [invitation] });
+    render(<Account onJoined={onJoined} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Accept" }));
+
+    await waitFor(() => expect(onJoined).toHaveBeenCalled());
+  });
+
+  test("declining does not claim you joined", async () => {
+    const onJoined = vi.fn();
+    serverWith({ invitations: [invitation] });
+    render(<Account onJoined={onJoined} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Decline" }));
+
+    await waitFor(() => expect(rejectInvitation).toHaveBeenCalled());
+    expect(onJoined).not.toHaveBeenCalled();
+  });
+
+  test("the server's reason for refusing is shown", async () => {
+    // An expired or already-answered invitation explains itself.
+    acceptInvitation.mockResolvedValue({
+      data: null,
+      error: { message: "This invitation has expired." },
+    });
+    serverWith({ invitations: [invitation] });
+    render(<Account />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Accept" }));
+
+    expect(await screen.findByText(/has expired/i)).toBeDefined();
+  });
 });

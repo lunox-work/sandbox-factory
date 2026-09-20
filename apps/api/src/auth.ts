@@ -8,10 +8,15 @@
  */
 
 import { defineRequestState } from "@better-auth/core/context";
-import { authSchema, type EmailStore } from "@sandbox-factory/db";
+import {
+  authSchema,
+  type EmailStore,
+  type OrganizationStore,
+} from "@sandbox-factory/db";
 import { APIError, betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
-import { bearer } from "better-auth/plugins";
+import { bearer, organization } from "better-auth/plugins";
+import { normalizeHandle } from "sandbox-factory";
 
 /**
  * The address a provider asserted during this request, keyed by provider id.
@@ -52,6 +57,13 @@ export interface AuthOptions {
   lookupEmail?: ((userId: string) => Promise<string | undefined>) | undefined;
   /** Proposes a free handle for a new account. Optional for tests. */
   handles?: { suggest(email: string): Promise<string> } | undefined;
+  /**
+   * Organization reads, for the plugin hooks below. Optional for tests:
+   * without it a handle is still validated and lowercased, only the
+   * case-insensitive "already taken" check is skipped, which the database's
+   * unique constraint then catches.
+   */
+  organizations?: OrganizationStore | undefined;
   /** Public origin of the API itself, e.g. `https://api.lunox.work`. */
   baseUrl: string;
   /**
@@ -83,6 +95,7 @@ export function createAuth({
   emails,
   lookupEmail,
   handles,
+  organizations,
   baseUrl,
   appUrl,
   trustedOrigins,
@@ -94,6 +107,37 @@ export function createAuth({
 }: AuthOptions) {
   // `parseEnv` has already validated `baseUrl` as an absolute URL.
   const isHttps = new URL(baseUrl).protocol === "https:";
+
+  /**
+   * The stored form of an organization handle, or an `APIError` naming the
+   * reason. The one place the core handle rules become an HTTP response, so
+   * create and rename cannot disagree about what a handle is.
+   *
+   * `exceptId` is the organization being renamed, which must not collide
+   * with itself.
+   */
+  async function requireFreeHandle(
+    raw: string | undefined,
+    exceptId: string | undefined,
+  ): Promise<string> {
+    const normalized = normalizeHandle(raw ?? "");
+    if (normalized.status === "invalid") {
+      throw new APIError("BAD_REQUEST", {
+        code: "INVALID_ORGANIZATION_SLUG",
+        message: `Organization handle: ${normalized.reason}`,
+      });
+    }
+    if (organizations !== undefined) {
+      const owner = await organizations.slugOwner(normalized.handle, exceptId);
+      if (owner !== undefined) {
+        throw new APIError("BAD_REQUEST", {
+          code: "ORGANIZATION_SLUG_ALREADY_TAKEN",
+          message: "That organization handle is taken.",
+        });
+      }
+    }
+    return normalized.handle;
+  }
 
   return betterAuth({
     database: drizzleAdapter(db, {
@@ -377,6 +421,99 @@ export function createAuth({
       // Accepts `Authorization: Bearer <token>` in place of the cookie, for
       // the VS Code extension, which has no cookie jar.
       bearer(),
+      /**
+       * Organizations: the second principal. The plugin owns every write to
+       * `organization`, `member` and `invitation`, and serves them under
+       * `/api/auth/organization/*`; `OrganizationStore` covers the reads it
+       * does not offer.
+       */
+      organization({
+        /** Stated rather than left to the default, since the tests pin it. */
+        creatorRole: "owner",
+        /**
+         * Anyone signed in may create an organization.
+         *
+         * This is Better Auth's default, stated so it is a decision rather
+         * than an omission: onboarding is self-serve, and a client who signs
+         * up makes their own workspace without anyone provisioning it. The
+         * cap below is what bounds the cost of that.
+         *
+         * Gating it later — to an allowlist, a plan, or an invitation — means
+         * replacing this with a function of the user; the web app's create
+         * action should then be hidden in the same change, or it offers
+         * something the server refuses.
+         */
+        allowUserToCreateOrganization: true,
+        /**
+         * Counts the user's memberships, not what they created, which is the
+         * intent: twenty workspaces is already well past normal use, and the
+         * cap exists to bound an automated signup rather than to price a
+         * plan.
+         */
+        organizationLimit: 20,
+        organizationHooks: {
+          /**
+           * A handle is validated and lowercased before it is stored, because
+           * the plugin accepts any non-empty string. Without this, `MyOrg`
+           * and `myorg` would be two organizations, and `Acme Corp` would be
+           * a handle no URL could carry.
+           */
+          beforeCreateOrganization: async ({ organization: incoming }) => {
+            const slug = await requireFreeHandle(incoming.slug, undefined);
+            return { data: { ...incoming, slug } };
+          },
+          /**
+           * The same rules on rename.
+           *
+           * The taken check is repeated here rather than left to the plugin,
+           * which runs its own on the **raw** body before this hook
+           * lowercases it: `MyOrg` while `myorg` exists passes the plugin's
+           * byte-exact lookup and would then fail on the unique constraint as
+           * a 500. Excluding the organization's own id keeps re-saving your
+           * handle in another casing a rename, as `setUsername` does.
+           */
+          beforeUpdateOrganization: async ({
+            organization: incoming,
+            member,
+          }) => {
+            if (incoming.slug === undefined) {
+              return;
+            }
+            const slug = await requireFreeHandle(
+              incoming.slug,
+              member.organizationId,
+            );
+            return { data: { ...incoming, slug } };
+          },
+          /**
+           * `updatedAt` is ours: 1.7.5 declares one only for the plugin's
+           * team and role tables, so without this a renamed organization
+           * would report its creation time forever.
+           */
+          afterUpdateOrganization: async ({ organization: updated }) => {
+            if (organizations === undefined || updated === null) {
+              return;
+            }
+            try {
+              await organizations.touch(updated.id);
+            } catch (error) {
+              // Bookkeeping must not fail a rename that already succeeded.
+              console.error("Failed to stamp organization updatedAt", error);
+            }
+          },
+          /**
+           * Addresses are stored lowercase, as `user_email` does. The plugin
+           * compares case-insensitively on accept, so this only keeps the
+           * stored data consistent with the rest of the schema.
+           */
+          beforeCreateInvitation: async ({ invitation: incoming }) => ({
+            data: {
+              ...incoming,
+              email: incoming.email.trim().toLowerCase(),
+            },
+          }),
+        },
+      }),
     ],
   });
 }
