@@ -11,15 +11,7 @@
  * are the facts a bug report needs. See `BuildDetails`.
  */
 
-import {
-  Building2,
-  Check,
-  LogOut,
-  Plus,
-  Settings,
-  Settings2,
-  User,
-} from "lucide-react";
+import { Building2, LogOut, Settings, User } from "lucide-react";
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
