@@ -63,6 +63,21 @@ else
   note BETTER_AUTH_SECRET "EMPTY — openssl rand -base64 32"; fail=1
 fi
 
+# --- TOKEN_ENCRYPTION_KEY: must decode to exactly 32 bytes -----------------
+# Checked here and not only at boot: a wrong-length key fails the API's own
+# validation on start, which in production means a deploy that will not come
+# up rather than a message at the moment the value is set.
+if k="$(read_value TOKEN_ENCRYPTION_KEY)" && [[ -n "$k" ]]; then
+  bytes="$(printf %s "$k" | base64 -d 2>/dev/null | wc -c | tr -d ' ')"
+  if [[ "$bytes" != 32 ]]; then
+    note TOKEN_ENCRYPTION_KEY "BAD — decodes to ${bytes:-0} bytes, needs 32"; fail=1
+  else
+    note TOKEN_ENCRYPTION_KEY "ok (32 bytes)"
+  fi
+else
+  note TOKEN_ENCRYPTION_KEY "EMPTY — openssl rand -base64 32"; fail=1
+fi
+
 # --- OAuth: presence only; only the provider can say if they are right -----
 for k in GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET \
          GITHUB_CLIENT_ID GITHUB_CLIENT_SECRET \

@@ -19,6 +19,10 @@ locals {
     GITHUB_CLIENT_SECRET    = "GitHub OAuth client secret"
     ATLASSIAN_CLIENT_ID     = "Atlassian OAuth client ID"
     ATLASSIAN_CLIENT_SECRET = "Atlassian OAuth client secret"
+    # Encrypts the Jira tokens in `jira_connection`. Rotating it means
+    # re-encrypting those rows, not just replacing the value: the `key_id`
+    # column records which key wrote each row so both can be readable at once.
+    TOKEN_ENCRYPTION_KEY = "AES-256 key for stored Jira tokens. openssl rand -base64 32"
   }
 }
 

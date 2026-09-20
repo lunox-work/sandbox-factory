@@ -15,10 +15,19 @@ export type {
   UserProfileStore,
 } from "./emails.js";
 export type { Connection, ConnectionOptions } from "./client.js";
+export { createTokenCipher, sameKeyId, TokenCipherError } from "./cipher.js";
+export type { TokenCipher } from "./cipher.js";
 export { generateId, ID_PREFIXES, newTodoRow, rowToTodo } from "./mapping.js";
 export type { IdPrefix } from "./mapping.js";
 export { runMigrations } from "./migrate.js";
 export type { MigrateOptions } from "./migrate.js";
+export { createJiraConnectionStore } from "./jira-connections.js";
+export type {
+  JiraConnectionInput,
+  JiraConnectionStore,
+  JiraConnectionSummary,
+  JiraConnectionTokens,
+} from "./jira-connections.js";
 export { createOrganizationStore } from "./organizations.js";
 export type {
   Membership,

@@ -47,6 +47,10 @@ test("the API reads exactly the documented environment variables", () => {
       "GITHUB_CLIENT_SECRET",
       "ATLASSIAN_CLIENT_ID",
       "ATLASSIAN_CLIENT_SECRET",
+      // Encrypts the stored Jira tokens. Unlike the values above it is not a
+      // credential for another service: it is the only thing standing between
+      // a leaked `jira_connection` row and a live grant on a client's Jira.
+      "TOKEN_ENCRYPTION_KEY",
       // Reporting only.
       "BUILD_VERSION",
       "BUILD_SHA",

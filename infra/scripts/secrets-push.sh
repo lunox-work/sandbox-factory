@@ -45,6 +45,7 @@ KEYS=(
   GITHUB_CLIENT_SECRET
   ATLASSIAN_CLIENT_ID
   ATLASSIAN_CLIENT_SECRET
+  TOKEN_ENCRYPTION_KEY
 )
 
 # Narrow to the requested keys, rejecting unknown ones.
