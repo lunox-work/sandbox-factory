@@ -40,6 +40,7 @@ function chain(
     returning: () => result,
     set: () => result,
     values: () => result,
+    onConflictDoUpdate: () => result,
     orderBy: () => {
       onOrder?.();
       return result;
@@ -49,8 +50,14 @@ function chain(
   return result;
 }
 
-/** @param rows what every query resolves to; pass `[]` to simulate a miss. */
-export function createFakeDb(rows: readonly TodoRow[]): FakeDb {
+/**
+ * @param rows what every query resolves to; pass `[]` to simulate a miss.
+ *
+ * Deliberately `readonly unknown[]` rather than one table's row type: the fake
+ * never inspects a row, it only hands it back, and typing it to `TodoRow`
+ * would mean a second copy of this file for every table added.
+ */
+export function createFakeDb(rows: readonly unknown[]): FakeDb {
   const calls: FakeCall[] = [];
 
   /** Marks the recorded call as having had a `where` applied. */
@@ -74,8 +81,9 @@ export function createFakeDb(rows: readonly TodoRow[]): FakeDb {
     },
     insert: () => ({
       values: (values: Record<string, unknown>) => {
-        calls.push({ kind: "insert", values });
-        return chain(rows);
+        const call: FakeCall = { kind: "insert", values };
+        calls.push(call);
+        return chain(rows, undefined, markFiltered(call));
       },
     }),
     update: () => ({

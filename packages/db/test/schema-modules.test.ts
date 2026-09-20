@@ -18,6 +18,7 @@ import type { PgTable } from "drizzle-orm/pg-core";
 
 import * as schema from "../src/schema.js";
 import * as authSchema from "../src/schema/auth.js";
+import * as jiraSchema from "../src/schema/jira.js";
 import * as organizationSchema from "../src/schema/organizations.js";
 import * as todoSchema from "../src/schema/todos.js";
 
@@ -29,7 +30,12 @@ function tableName(table: PgTable): string {
 test("the barrel re-exports every table each module declares", () => {
   // Not a hand-written list: a new table in a module is picked up here, so
   // this keeps holding as the schema grows rather than going stale.
-  for (const module of [authSchema, organizationSchema, todoSchema]) {
+  for (const module of [
+    authSchema,
+    organizationSchema,
+    jiraSchema,
+    todoSchema,
+  ]) {
     for (const [name, value] of Object.entries(module)) {
       assert.equal(
         (schema as Record<string, unknown>)[name],
@@ -85,4 +91,50 @@ test("foreign keys across the auth/organization cycle resolve", () => {
     .foreignKeys.map((key) => key.reference())
     .find((reference) => reference.foreignTable === authSchema.user);
   assert.ok(todoToUser, "todos does not reference user");
+});
+
+test("jira_connection is owned by an organization and indexed for it", () => {
+  // The ownership column every store method filters on. A cascade, so
+  // deleting an organization takes its connections — and their tokens — with
+  // it rather than orphaning live credentials.
+  const config = getTableConfig(jiraSchema.jiraConnection);
+
+  const toOrganization = config.foreignKeys
+    .map((key) => key.reference())
+    .find(
+      (reference) => reference.foreignTable === organizationSchema.organization,
+    );
+  assert.ok(toOrganization, "jira_connection does not reference organization");
+  assert.equal(
+    config.foreignKeys[0]?.onDelete,
+    "cascade",
+    "an organization delete must not orphan stored tokens",
+  );
+
+  // One connection per organization per site, so reconnecting updates in
+  // place rather than accumulating rows with stale tokens.
+  assert.ok(
+    config.uniqueConstraints.some(
+      (constraint) =>
+        constraint.name === "jira_connection_organization_site_unique",
+    ),
+  );
+  assert.ok(
+    config.indexes.some(
+      (index) => index.config.name === "jira_connection_organization_id_idx",
+    ),
+  );
+});
+
+test("no token column is named in a way that invites logging it", () => {
+  // Both token columns end in `_enc`, which is the signal to a reader that
+  // the value is ciphertext and the plain one lives nowhere.
+  const columns = getTableConfig(jiraSchema.jiraConnection).columns.map(
+    (column) => column.name,
+  );
+
+  assert.ok(columns.includes("access_token_enc"));
+  assert.ok(columns.includes("refresh_token_enc"));
+  assert.ok(!columns.includes("access_token"));
+  assert.ok(!columns.includes("refresh_token"));
 });

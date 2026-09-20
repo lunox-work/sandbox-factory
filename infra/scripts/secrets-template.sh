@@ -41,6 +41,10 @@ for k in GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET GITHUB_CLIENT_ID \
 done
 
 SECRET="$(openssl rand -base64 32)"
+# Same reasoning as the signing key: generated fresh, never copied from a dev
+# machine. Unlike it, losing this one makes the stored Jira tokens unreadable,
+# so every connection has to be made again.
+TOKEN_KEY="$(openssl rand -base64 32)"
 
 # umask before creation, so the file is never briefly world-readable.
 #
@@ -79,6 +83,12 @@ DATABASE_URL=
 # Rotating it signs everyone out, which is the intended way to do that.
 BETTER_AUTH_SECRET=$SECRET
 
+# Encrypts the Jira tokens in `jira_connection` (AES-256-GCM). The API refuses
+# to start without it, so that no token is ever written unencrypted.
+# Rotating it means re-encrypting those rows: `key_id` records which key wrote
+# each one, so both keys can be readable while that runs.
+TOKEN_ENCRYPTION_KEY=$TOKEN_KEY
+
 # Public origin of the API. Set by the ECS task definition, which derives it
 # from var.domain_name so the two cannot drift apart.
 # BETTER_AUTH_URL=https://platform.lunox.work
@@ -107,9 +117,12 @@ GITHUB_CLIENT_SECRET=$(value_of GITHUB_CLIENT_SECRET)
 # alongside the localhost one:
 #   https://platform.lunox.work/api/auth/callback/atlassian
 #
-# The scope requirements are unchanged from local: "User Identity API" with
-# \`read:me\`, and no site-scoped Jira or Confluence APIs. See .env.example for
-# why, and apps/api/src/auth.ts for the trustedProviders consequence.
+# Sign-in uses the "User Identity API" with \`read:me\` only. Connecting a Jira
+# site is a separate grant from the same app, which does request the Jira
+# scopes in READ_SCOPES (packages/jira/src/oauth.ts) — so the app needs the
+# Jira platform and software APIs enabled, and the sign-in grant still must
+# not ask for them. See apps/api/src/auth.ts for the trustedProviders
+# consequence.
 ATLASSIAN_CLIENT_ID=$(value_of ATLASSIAN_CLIENT_ID)
 ATLASSIAN_CLIENT_SECRET=$(value_of ATLASSIAN_CLIENT_SECRET)
 

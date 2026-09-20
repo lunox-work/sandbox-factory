@@ -17,6 +17,8 @@ const required = {
   GITHUB_CLIENT_SECRET: "github-client-secret",
   ATLASSIAN_CLIENT_ID: "atlassian-client-id",
   ATLASSIAN_CLIENT_SECRET: "atlassian-client-secret",
+  // Must decode to exactly 32 bytes; see the TOKEN_ENCRYPTION_KEY tests below.
+  TOKEN_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString("base64"),
 };
 
 test("parseEnv applies defaults when only the required vars are set", () => {
@@ -92,6 +94,40 @@ test("parseEnv requires each OAuth credential", () => {
       `expected an empty ${key} to be rejected`,
     );
   }
+});
+
+test("TOKEN_ENCRYPTION_KEY is required", () => {
+  // Required rather than optional on purpose: an API that boots without it
+  // would write Jira tokens the cipher cannot protect, and nothing downstream
+  // would notice until a row leaked.
+  const { TOKEN_ENCRYPTION_KEY: _omitted, ...withoutKey } = required;
+
+  assert.throws(() => parseEnv(withoutKey), /TOKEN_ENCRYPTION_KEY/);
+});
+
+test("TOKEN_ENCRYPTION_KEY must decode to exactly 32 bytes", () => {
+  // A 31-byte key is base64 of almost the same length as a 32-byte one, so
+  // this catches the typo that a length check on the string would not.
+  for (const bytes of [16, 31, 33]) {
+    assert.throws(
+      () =>
+        parseEnv({
+          ...required,
+          TOKEN_ENCRYPTION_KEY: Buffer.alloc(bytes, 1).toString("base64"),
+        }),
+      /TOKEN_ENCRYPTION_KEY/,
+      `expected a ${bytes}-byte key to be rejected`,
+    );
+  }
+
+  // And the right length is accepted.
+  assert.equal(
+    parseEnv({
+      ...required,
+      TOKEN_ENCRYPTION_KEY: Buffer.alloc(32, 9).toString("base64"),
+    }).TOKEN_ENCRYPTION_KEY,
+    Buffer.alloc(32, 9).toString("base64"),
+  );
 });
 
 test("parseEnv leaves AUTH_COOKIE_DOMAIN unset by default", () => {

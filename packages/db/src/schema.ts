@@ -13,6 +13,7 @@
  *
  * - `schema/auth.ts` — Better Auth's four tables, plus `user_email`.
  * - `schema/organizations.ts` — the second principal and its membership.
+ * - `schema/jira.ts` — connections to a client's Atlassian site.
  * - `schema/todos.ts` — the reference surface.
  *
  * `auth.ts` and `organizations.ts` import each other; see the note in
@@ -43,6 +44,9 @@ export type {
   NewOrganizationRow,
   OrganizationRow,
 } from "./schema/organizations.js";
+
+export { jiraConnection } from "./schema/jira.js";
+export type { JiraConnectionRow, NewJiraConnectionRow } from "./schema/jira.js";
 
 export { todos } from "./schema/todos.js";
 export type { NewTodoRow, TodoRow } from "./schema/todos.js";

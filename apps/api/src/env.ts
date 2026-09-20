@@ -52,6 +52,24 @@ const envSchema = z.object({
   ATLASSIAN_CLIENT_SECRET: z
     .string()
     .min(1, "ATLASSIAN_CLIENT_SECRET is required."),
+  /**
+   * Encrypts the Jira tokens in `jira_connection`. `openssl rand -base64 32`.
+   *
+   * Required, and for a stronger reason than the rest of this block: an
+   * optional key would mean the API boots without one and writes tokens the
+   * cipher cannot protect. Refusing to start is the only behaviour that
+   * cannot silently produce an unencrypted row.
+   *
+   * Rotating it is not just replacing the value — the rows encrypted under the
+   * old key must be re-encrypted, which `key_id` exists to make possible.
+   */
+  TOKEN_ENCRYPTION_KEY: z
+    .string()
+    .min(1, "TOKEN_ENCRYPTION_KEY is required.")
+    .refine(
+      (value) => Buffer.from(value, "base64").length === 32,
+      "TOKEN_ENCRYPTION_KEY must be 32 bytes, base64 encoded (openssl rand -base64 32).",
+    ),
   // Set only when the web app and the API are on different subdomains of one
   // parent (app.lunox.work, api.lunox.work), where the session cookie needs an
   // explicit Domain. Leave unset locally: a Domain on localhost breaks the
