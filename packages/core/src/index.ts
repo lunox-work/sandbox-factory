@@ -101,3 +101,10 @@ export function countTodos(todos: readonly Todo[]): TodoCounts {
     completed,
   };
 }
+
+/**
+ * Public handles, shared by user names and organization slugs. Their own
+ * module because they are a second domain in this package, not part of the
+ * todo rules above.
+ */
+export * from "./handle.js";

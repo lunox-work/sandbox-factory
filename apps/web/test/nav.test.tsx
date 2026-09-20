@@ -22,6 +22,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 const useSession = vi.fn();
 const signOut = vi.fn();
+const setActive = vi.fn(() => Promise.resolve({ data: {}, error: null }));
 
 vi.mock("../src/auth", () => ({
   useSession: () => useSession(),
@@ -30,6 +31,11 @@ vi.mock("../src/auth", () => ({
     listAccounts: () => Promise.resolve({ data: [] }),
     unlinkAccount: vi.fn(),
     linkSocial: vi.fn(),
+    organization: {
+      setActive: (input: unknown) => setActive(input),
+      acceptInvitation: vi.fn(),
+      rejectInvitation: vi.fn(),
+    },
   },
   PROVIDERS: [{ id: "google", label: "Continue with Google" }],
   signInWith: vi.fn(),
@@ -44,6 +50,26 @@ vi.stubGlobal(
     }
     if (url.includes("/api/v1/me/emails")) {
       return Promise.resolve(Response.json({ emails: [] }));
+    }
+    if (url.includes("/api/v1/me/invitations")) {
+      return Promise.resolve(Response.json({ invitations: [] }));
+    }
+    // One organization, so the switcher and the `/o/:slug` route have
+    // something real to resolve against.
+    if (url.includes("/api/v1/me/orgs")) {
+      return Promise.resolve(
+        Response.json({
+          organizations: [
+            { id: "org_1", name: "Acme", slug: "acme", role: "owner" },
+            // A second one, so a test that opens it can tell "the clicked
+            // organization" apart from "the first in the list".
+            { id: "org_2", name: "Globex", slug: "globex", role: "member" },
+          ],
+        }),
+      );
+    }
+    if (url.includes("/members")) {
+      return Promise.resolve(Response.json({ members: [] }));
     }
     if (url.includes("/api/v1/me")) {
       return Promise.resolve(
@@ -138,6 +164,7 @@ async function openMenu() {
 beforeEach(() => {
   signedIn();
   signOut.mockClear();
+  setActive.mockClear();
   // Each test owns the path it renders under; `Signed` reads it once on mount
   // to decide the starting screen.
   window.history.replaceState(null, "", "/");
@@ -334,4 +361,120 @@ test("an account with no picture falls back to its initials", async () => {
     expect(trigger.textContent).toBe("AA");
   });
   expect(trigger.querySelector("img")).toBeNull();
+});
+
+// ---- organization screens -------------------------------------------------
+
+test("/o/:slug/settings opens that organization directly", async () => {
+  // A shared link, or the return from a rename. Without this the path falls
+  // through to the todo list and the link looks broken.
+  window.history.replaceState(null, "", "/o/acme/settings");
+  render(<App />);
+
+  expect(
+    await screen.findByRole("heading", { name: "Acme", level: 1 }),
+  ).toBeTruthy();
+  await waitFor(() => {
+    expect(screen.getByLabelText("Organization handle")).toHaveProperty(
+      "value",
+      "acme",
+    );
+  });
+});
+
+test("a trailing slash names the same organization screen", async () => {
+  window.history.replaceState(null, "", "/o/acme/settings/");
+  render(<App />);
+
+  expect(
+    await screen.findByRole("heading", { name: "Acme", level: 1 }),
+  ).toBeTruthy();
+});
+
+test("only /o/... names an organization, not any two-segment path", async () => {
+  // The parser requires the literal `o` in the first segment. Without that
+  // check *every* unrecognised two-segment path — `/settings/profile`,
+  // `/todos/archive` — reads as an organization handle, and the stale-link
+  // fallback to the todo list stops working for all of them.
+  window.history.replaceState(null, "", "/settings/profile");
+  render(<App />);
+
+  expect(screen.getByRole("heading", { name: "Todos" })).toBeTruthy();
+  expect(screen.queryByLabelText("Organization handle")).toBeNull();
+});
+
+test("/organizations/new opens the create form", async () => {
+  window.history.replaceState(null, "", "/organizations/new");
+  render(<App />);
+
+  expect(
+    await screen.findByRole("heading", { name: "New organization" }),
+  ).toBeTruthy();
+});
+
+test("the account menu reaches the organizations page", async () => {
+  // One item, not a switcher: the list is a page because it carries names,
+  // handles and roles, and the actions on a row need room beside them.
+  render(<App />);
+
+  await openMenu();
+  fireEvent.click(screen.getByRole("menuitem", { name: /Organizations/ }));
+
+  expect(
+    await screen.findByRole("heading", { name: "Organizations", level: 1 }),
+  ).toBeTruthy();
+  expect(window.location.pathname).toBe("/organizations");
+});
+
+test("the menu no longer switches organization", async () => {
+  // Switching is deliberately absent while nothing the app renders belongs to
+  // an organization: a control that only moved a tick read as broken.
+  render(<App />);
+
+  await openMenu();
+
+  expect(screen.queryByRole("menuitem", { name: /^Acme/ })).toBeNull();
+  expect(screen.queryByRole("menuitem", { name: /Personal/ })).toBeNull();
+  expect(
+    screen.queryByRole("menuitem", { name: /New organization/ }),
+  ).toBeNull();
+});
+
+test("the organizations page lists what you belong to, with your role", async () => {
+  window.history.replaceState(null, "", "/organizations");
+  render(<App />);
+
+  expect(await screen.findByText("Acme")).toBeTruthy();
+  expect(screen.getByText("@acme")).toBeTruthy();
+  expect(screen.getByText("owner")).toBeTruthy();
+});
+
+test("a row opens that organization's settings", async () => {
+  // Deliberately the *second* row: opening the first would pass even if the
+  // path were built from whichever organization happened to be active, which
+  // is the bug — `select` has not re-rendered when `navigate` runs.
+  window.history.replaceState(null, "", "/organizations");
+  render(<App />);
+
+  fireEvent.click(await screen.findByRole("button", { name: /Globex/ }));
+
+  expect(
+    await screen.findByRole("heading", { name: "Globex", level: 1 }),
+  ).toBeTruthy();
+  // The URL names the organization, so the link is shareable and a reload
+  // lands back on it.
+  expect(window.location.pathname).toBe("/o/globex/settings");
+});
+
+test("the organizations page reaches the create form", async () => {
+  window.history.replaceState(null, "", "/organizations");
+  render(<App />);
+
+  fireEvent.click(
+    await screen.findByRole("button", { name: /New organization/ }),
+  );
+
+  expect(
+    await screen.findByRole("heading", { name: "New organization" }),
+  ).toBeTruthy();
 });

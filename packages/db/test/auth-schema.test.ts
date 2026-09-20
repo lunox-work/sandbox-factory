@@ -13,8 +13,13 @@ import { authSchema } from "../src/auth-schema.js";
 
 test("authSchema is keyed by Better Auth's singular model names", () => {
   // The adapter resolves `schema[modelName]`; `users` would not be found.
+  // The last three belong to the organization plugin, which resolves its
+  // models the same way.
   assert.deepEqual(Object.keys(authSchema).sort(), [
     "account",
+    "invitation",
+    "member",
+    "organization",
     "session",
     "user",
     "verification",
@@ -51,9 +56,69 @@ test("every auth table has a text primary key", () => {
 test("sessions and accounts cascade when their user is deleted", () => {
   // Otherwise a deleted user's sessions stay live.
   for (const table of [authSchema.session, authSchema.account]) {
-    const [reference] = getTableConfig(table).foreignKeys;
+    const userReference = getTableConfig(table).foreignKeys.find(
+      (key) => key.reference().foreignTable === authSchema.user,
+    );
+    assert.equal(userReference?.onDelete, "cascade");
+  }
+});
+
+test("memberships and invitations cascade with their organization", () => {
+  // A deleted organization must not leave rows naming an id that is gone;
+  // the plugin deletes them itself, and this is the second layer.
+  for (const table of [authSchema.member, authSchema.invitation]) {
+    const reference = getTableConfig(table).foreignKeys.find(
+      (key) => key.reference().foreignTable === authSchema.organization,
+    );
     assert.equal(reference?.onDelete, "cascade");
   }
+});
+
+test("a session survives the organization it was pointing at", () => {
+  // `activeOrganizationId` is a preference. Cascading would sign people out
+  // of the whole product because one of their organizations was deleted.
+  const reference = getTableConfig(authSchema.session).foreignKeys.find(
+    (key) => key.reference().foreignTable === authSchema.organization,
+  );
+  assert.equal(reference?.onDelete, "set null");
+});
+
+test("one person holds at most one membership per organization", () => {
+  // The plugin checks before inserting but then assumes the invariant: a
+  // duplicate shows up as a member who cannot be removed.
+  const { uniqueConstraints } = getTableConfig(authSchema.member);
+  const membership = uniqueConstraints.find(
+    (constraint) => constraint.name === "member_organization_user_unique",
+  );
+
+  assert.notEqual(membership, undefined, "expected the membership constraint");
+  assert.deepEqual(membership?.columns.map((column) => column.name).sort(), [
+    "organization_id",
+    "user_id",
+  ]);
+});
+
+test("an organization handle is unique", () => {
+  // Two organizations on one handle would make `/o/{slug}` ambiguous.
+  const slug = getTableConfig(authSchema.organization).columns.find(
+    (column) => column.name === "slug",
+  );
+  assert.equal(slug?.isUnique, true);
+  assert.equal(slug?.notNull, true);
+});
+
+test("an organization's two names are both text and independently shaped", () => {
+  // `id` is permanent and `slug` is renameable; conflating them is the bug
+  // this pins against.
+  const columns = getTableConfig(authSchema.organization).columns;
+  const id = columns.find((column) => column.name === "id");
+  const slug = columns.find((column) => column.name === "slug");
+
+  assert.equal(id?.primary, true);
+  // The handle is unique but is not the key: a rename must not rewrite every
+  // row that references the organization.
+  assert.notEqual(slug?.primary, true);
+  assert.equal(slug?.isUnique, true);
 });
 
 test("the session token is unique", () => {

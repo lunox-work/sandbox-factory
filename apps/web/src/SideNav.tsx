@@ -29,7 +29,8 @@ import { cn } from "@/lib/utils";
 
 import { UserMenu } from "./UserMenu";
 
-export type Screen = "todos" | "account";
+export type Screen =
+  "todos" | "account" | "organizations" | "org-settings" | "create-org";
 
 export function SideNav({
   screen,
@@ -127,6 +128,7 @@ export function SideNav({
           name={name}
           email={email}
           image={image}
+          onNavigate={onNavigate}
           onAccount={() => onNavigate("account")}
           onSignOut={onSignOut}
         />

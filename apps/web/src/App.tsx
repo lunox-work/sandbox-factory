@@ -14,8 +14,11 @@ import { cn } from "@/lib/utils";
 
 import { Account } from "./Account";
 import { signOut, useSession } from "./auth";
+import { CreateOrganization, Organization } from "./Organization";
+import { Organizations } from "./Organizations";
 import { SideNav, type Screen } from "./SideNav";
 import { SignIn } from "./SignIn";
+import { useOrganizations } from "./useOrganizations";
 import { useTodos } from "./useTodos";
 
 export function App() {
@@ -59,12 +62,19 @@ function Signed({
   email?: string | undefined;
   image?: string | null;
 }) {
-  // A value rather than a router: there are two screens, each with a path.
+  // A value rather than a router: a handful of screens, each with a path.
   // Read from the path so a reload, a bookmark, or the return from a provider
   // link all land on the screen the URL names.
   const [screen, setScreen] = useState<Screen>(() =>
     screenForPath(window.location.pathname),
   );
+
+  /**
+   * The organization the app is showing. The handle in the URL wins over the
+   * remembered choice, so `/o/acme/settings` opens Acme even when another was
+   * active last.
+   */
+  const organizations = useOrganizations(slugForPath(window.location.pathname));
 
   /*
    * The Back button. `pushState` below adds an entry per navigation, so the
@@ -79,13 +89,23 @@ function Signed({
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
 
-  function navigate(next: Screen) {
-    if (next === screen) {
+  /**
+   * `slug` names the organization a path should carry, for the rows on the
+   * organizations page: `select` has not re-rendered yet when this runs, so
+   * reading the active one here would write the *previous* organization's
+   * handle into the URL.
+   */
+  function navigate(next: Screen, slug?: string) {
+    if (next === screen && slug === undefined) {
       return;
     }
     // `pushState`, so each navigation is its own history entry and Back
     // returns to the previous screen rather than leaving the app.
-    window.history.pushState(null, "", pathForScreen(next));
+    window.history.pushState(
+      null,
+      "",
+      pathForScreen(next, slug ?? organizations.active?.slug),
+    );
     setScreen(next);
   }
 
@@ -108,7 +128,57 @@ function Signed({
         onSignOut={() => void signOut()}
       />
       <div className="min-w-0 flex-1 pb-16 sm:overflow-y-auto sm:pb-0">
-        {screen === "account" ? <Account /> : <Todos />}
+        {screen === "account" ? (
+          <Account onJoined={() => void organizations.refresh()} />
+        ) : screen === "organizations" ? (
+          <Organizations
+            organizations={organizations.organizations}
+            loading={organizations.loading}
+            error={organizations.error}
+            onOpen={(organization) => {
+              // Selecting here is what makes `org-settings` show this one:
+              // the settings screen reads the active organization.
+              organizations.select(organization.id);
+              navigate("org-settings", organization.slug);
+            }}
+            onCreate={() => navigate("create-org")}
+          />
+        ) : screen === "create-org" ? (
+          <CreateOrganization
+            onCreated={(id) => {
+              void organizations.refresh();
+              organizations.select(id);
+              navigate("todos");
+            }}
+            onCancel={() => navigate("todos")}
+          />
+        ) : screen === "org-settings" ? (
+          organizations.active === null ? (
+            // Either the list has not arrived or the person is in none. Both
+            // read the same from here, and both are transient.
+            <main className="mx-auto w-full max-w-2xl px-4 py-10">
+              <p className="text-muted-foreground text-sm">
+                {organizations.loading
+                  ? "Loading…"
+                  : "You are not in an organization yet."}
+              </p>
+            </main>
+          ) : (
+            <Organization
+              // Keyed by id so switching organization remounts the forms
+              // rather than leaving the previous one's handle in the field.
+              key={organizations.active.id}
+              organization={organizations.active}
+              onChanged={() => void organizations.refresh()}
+              onLeft={() => {
+                void organizations.refresh();
+                navigate("todos");
+              }}
+            />
+          )
+        ) : (
+          <Todos />
+        )}
       </div>
     </div>
   );
@@ -124,14 +194,55 @@ function Signed({
  * fallback already assume by serving `index.html` for any path.
  */
 const ACCOUNT_PATH = "/account";
+const ORGANIZATIONS_PATH = "/organizations";
+const NEW_ORG_PATH = "/organizations/new";
+
+/**
+ * The organization handle a path names, for `/o/{slug}/...`. Undefined
+ * elsewhere, which leaves the remembered choice in charge.
+ */
+function slugForPath(pathname: string): string | undefined {
+  // Not a regex: `[1]` on a split is enough, and a handle is already
+  // constrained by the core rules.
+  const parts = pathname.replace(/\/+$/, "").split("/");
+  return parts[1] === "o" && parts[2] !== undefined && parts[2] !== ""
+    ? parts[2]
+    : undefined;
+}
 
 function screenForPath(pathname: string): Screen {
   // Trailing slashes are equivalent: `/account/` is the same screen.
-  return pathname.replace(/\/+$/, "") === ACCOUNT_PATH ? "account" : "todos";
+  const path = pathname.replace(/\/+$/, "");
+  if (path === ACCOUNT_PATH) {
+    return "account";
+  }
+  if (path === NEW_ORG_PATH) {
+    return "create-org";
+  }
+  if (path === ORGANIZATIONS_PATH) {
+    return "organizations";
+  }
+  if (slugForPath(pathname) !== undefined) {
+    return "org-settings";
+  }
+  return "todos";
 }
 
-function pathForScreen(screen: Screen): string {
-  return screen === "account" ? ACCOUNT_PATH : "/";
+function pathForScreen(screen: Screen, slug?: string | undefined): string {
+  switch (screen) {
+    case "account":
+      return ACCOUNT_PATH;
+    case "organizations":
+      return ORGANIZATIONS_PATH;
+    case "create-org":
+      return NEW_ORG_PATH;
+    case "org-settings":
+      // Without an organization there is nothing to name, so fall back to the
+      // list rather than inventing a handle.
+      return slug === undefined ? ORGANIZATIONS_PATH : `/o/${slug}/settings`;
+    case "todos":
+      return "/";
+  }
 }
 
 function Todos() {

@@ -11,7 +11,15 @@
  * are the facts a bug report needs. See `BuildDetails`.
  */
 
-import { LogOut, Settings, User } from "lucide-react";
+import {
+  Building2,
+  Check,
+  LogOut,
+  Plus,
+  Settings,
+  Settings2,
+  User,
+} from "lucide-react";
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
@@ -22,6 +30,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import type { Screen } from "./SideNav";
 
 import { BuildReadout, type LinkWrapper } from "./BuildReadout";
 
@@ -29,12 +38,14 @@ export function UserMenu({
   name,
   email,
   image,
+  onNavigate,
   onAccount,
   onSignOut,
 }: {
   name: string;
   email?: string | undefined;
   image?: string | null;
+  onNavigate?: ((screen: Screen) => void) | undefined;
   onAccount: () => void;
   onSignOut: () => void;
 }) {
@@ -87,6 +98,19 @@ export function UserMenu({
           <Settings />
           Account settings
         </DropdownMenuItem>
+
+        {/*
+          One item, not a switcher. Which organizations you are in is a list
+          worth a page — it carries names, roles and the actions on each — and
+          a menu that tried to hold all that competed with the account items
+          around it. See `Organizations.tsx`.
+        */}
+        <DropdownMenuItem onSelect={() => onNavigate?.("organizations")}>
+          <Building2 />
+          Organizations
+        </DropdownMenuItem>
+
+        <DropdownMenuSeparator />
 
         {/* Destructive styling, but no confirmation: signing out costs one
             click to undo, so a dialog would be in the way rather than a

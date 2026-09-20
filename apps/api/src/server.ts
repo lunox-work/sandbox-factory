@@ -7,6 +7,7 @@ import { serve } from "@hono/node-server";
 import {
   createConnection,
   createEmailStore,
+  createOrganizationStore,
   createPostgresStore,
   createProfileStore,
 } from "@sandbox-factory/db";
@@ -29,12 +30,14 @@ const connection = createConnection({ url: env.DATABASE_URL });
 
 const emails = createEmailStore(connection.db);
 const profiles = createProfileStore(connection.db);
+const organizations = createOrganizationStore(connection.db);
 
 const auth = createAuth({
   db: connection.db,
   emails,
   lookupEmail: (userId) => emails.primaryFor(userId),
   handles: { suggest: (email) => profiles.suggest(email) },
+  organizations,
   baseUrl: env.BETTER_AUTH_URL,
   appUrl: appUrl(env),
   // The API's own origin is included because Better Auth checks the callback
@@ -65,6 +68,7 @@ const app = createApp({
   auth,
   emails,
   profiles,
+  organizations,
   buildInfo: build,
   originVerify: env.ORIGIN_VERIFY,
 });

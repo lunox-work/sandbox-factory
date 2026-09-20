@@ -652,3 +652,304 @@ test("a signup proceeds when nobody holds the address", async () => {
     "new-handle",
   );
 });
+
+// ---- organizations ---------------------------------------------------------
+//
+// The plugin owns every write to `organization`, `member` and `invitation`.
+// What is pinned here is the configuration it runs under, and the hooks that
+// close the two gaps it leaves: a slug it would accept in any shape, and a
+// byte-exact "already taken" check.
+
+/** A store that answers a handle lookup, for the hooks under test. */
+function fakeOrganizations(held: Record<string, string> = {}) {
+  const store = {
+    listForUser: () => Promise.resolve([]),
+    roleOf: () => Promise.resolve(undefined),
+    get: () => Promise.resolve(undefined),
+    findBySlug: () => Promise.resolve(undefined),
+    slugOwner: (slug: string, exceptId?: string) => {
+      const owner = held[slug];
+      return Promise.resolve(owner === exceptId ? undefined : owner);
+    },
+    listMembers: () => Promise.resolve([]),
+    pendingFor: () => Promise.resolve([]),
+    findUserByHandle: () => Promise.resolve(undefined),
+    touched: [] as string[],
+    touch(id: string) {
+      store.touched.push(id);
+      return Promise.resolve();
+    },
+  };
+  return store;
+}
+
+/** The organization plugin's options, as configured. */
+function orgOptions(auth: ReturnType<typeof createAuth>) {
+  const plugins = (auth.options as { plugins?: Array<{ id?: string }> })
+    .plugins;
+  const plugin = plugins?.find((candidate) => candidate.id === "organization");
+  assert.notEqual(plugin, undefined, "expected the organization plugin");
+  return (plugin as { options?: Record<string, unknown> }).options ?? {};
+}
+
+type OrganizationHooks = {
+  beforeCreateOrganization?: (data: {
+    organization: { slug?: string; name?: string };
+  }) => Promise<{ data: { slug: string } } | void>;
+  beforeUpdateOrganization?: (data: {
+    organization: { slug?: string };
+    member: { organizationId: string };
+  }) => Promise<{ data: { slug: string } } | void>;
+  afterUpdateOrganization?: (data: {
+    organization: { id: string } | null;
+  }) => Promise<void>;
+  beforeCreateInvitation?: (data: {
+    invitation: { email: string };
+  }) => Promise<{ data: { email: string } }>;
+};
+
+function orgHooks(auth: ReturnType<typeof createAuth>): OrganizationHooks {
+  return (orgOptions(auth)["organizationHooks"] ?? {}) as OrganizationHooks;
+}
+
+test("the organization plugin is mounted", () => {
+  // Without it nothing under /api/auth/organization/* exists.
+  const auth = createAuth(options);
+
+  assert.equal(typeof orgOptions(auth), "object");
+});
+
+test("the creator of an organization is its owner", () => {
+  // Every organization must have an owner from the moment it exists.
+  assert.equal(orgOptions(createAuth(options))["creatorRole"], "owner");
+});
+
+test("no invitation email is sent", () => {
+  // This codebase has no mailer. Invitations are delivered in-app, on the
+  // account page; setting this would silently start requiring one.
+  assert.equal(
+    orgOptions(createAuth(options))["sendInvitationEmail"],
+    undefined,
+  );
+});
+
+test("organization deletion stays enabled for owners", () => {
+  assert.notEqual(
+    orgOptions(createAuth(options))["disableOrganizationDeletion"],
+    true,
+  );
+});
+
+test("a new organization's handle is stored lowercase", async () => {
+  // The plugin accepts any non-empty string, so `MyOrg` and `myorg` would
+  // otherwise be two organizations.
+  const auth = createAuth({ ...options, organizations: fakeOrganizations() });
+
+  const result = await orgHooks(auth).beforeCreateOrganization?.({
+    organization: { slug: "  MyOrg  ", name: "My Org" },
+  });
+
+  assert.equal(result?.data.slug, "myorg");
+});
+
+test("a handle that would break a URL is refused", async () => {
+  const auth = createAuth({ ...options, organizations: fakeOrganizations() });
+
+  await assert.rejects(
+    () =>
+      Promise.resolve(
+        orgHooks(auth).beforeCreateOrganization?.({
+          organization: { slug: "my org", name: "My Org" },
+        }),
+      ).then((value) => value),
+    (error: { body?: { code?: string } }) =>
+      error.body?.code === "INVALID_ORGANIZATION_SLUG",
+  );
+});
+
+test("a handle that is too short is refused", async () => {
+  const auth = createAuth({ ...options, organizations: fakeOrganizations() });
+
+  await assert.rejects(
+    async () =>
+      orgHooks(auth).beforeCreateOrganization?.({
+        organization: { slug: "no" },
+      }),
+    (error: { body?: { message?: string } }) =>
+      /between 3 and 30 characters/.test(error.body?.message ?? ""),
+  );
+});
+
+test("a handle another organization holds is refused", async () => {
+  const auth = createAuth({
+    ...options,
+    organizations: fakeOrganizations({ acme: "org_1" }),
+  });
+
+  await assert.rejects(
+    async () =>
+      orgHooks(auth).beforeCreateOrganization?.({
+        organization: { slug: "acme" },
+      }),
+    (error: { body?: { code?: string } }) =>
+      error.body?.code === "ORGANIZATION_SLUG_ALREADY_TAKEN",
+  );
+});
+
+test("a taken handle is caught whatever case it is typed in", async () => {
+  // The plugin's own check runs on the raw body, before this hook lowercases
+  // it: `ACME` while `acme` exists passes it and would hit the unique
+  // constraint as a 500.
+  const auth = createAuth({
+    ...options,
+    organizations: fakeOrganizations({ acme: "org_1" }),
+  });
+
+  await assert.rejects(
+    async () =>
+      orgHooks(auth).beforeCreateOrganization?.({
+        organization: { slug: "ACME" },
+      }),
+    (error: { body?: { code?: string } }) =>
+      error.body?.code === "ORGANIZATION_SLUG_ALREADY_TAKEN",
+  );
+});
+
+test("renaming to your own handle in another case is allowed", async () => {
+  // A rename, not a collision — the rule `setUsername` applies to a user.
+  const auth = createAuth({
+    ...options,
+    organizations: fakeOrganizations({ acme: "org_1" }),
+  });
+
+  const result = await orgHooks(auth).beforeUpdateOrganization?.({
+    organization: { slug: "ACME" },
+    member: { organizationId: "org_1" },
+  });
+
+  assert.equal(result?.data.slug, "acme");
+});
+
+test("renaming to a handle someone else holds is refused", async () => {
+  const auth = createAuth({
+    ...options,
+    organizations: fakeOrganizations({ acme: "org_1" }),
+  });
+
+  await assert.rejects(
+    async () =>
+      orgHooks(auth).beforeUpdateOrganization?.({
+        organization: { slug: "acme" },
+        member: { organizationId: "org_2" },
+      }),
+    (error: { body?: { code?: string } }) =>
+      error.body?.code === "ORGANIZATION_SLUG_ALREADY_TAKEN",
+  );
+});
+
+test("an update that does not touch the handle passes through", async () => {
+  // Renaming the display name must not require a slug.
+  const auth = createAuth({ ...options, organizations: fakeOrganizations() });
+
+  const result = await orgHooks(auth).beforeUpdateOrganization?.({
+    organization: {},
+    member: { organizationId: "org_1" },
+  });
+
+  assert.equal(result, undefined);
+});
+
+test("a renamed organization is stamped as updated", async () => {
+  // 1.7.5 declares no `updatedAt` on `organization`, so without this it
+  // would report its creation time forever.
+  const organizations = fakeOrganizations();
+  const auth = createAuth({ ...options, organizations });
+
+  await orgHooks(auth).afterUpdateOrganization?.({
+    organization: { id: "org_1" },
+  });
+
+  assert.deepEqual(organizations.touched, ["org_1"]);
+});
+
+test("a stamp that fails does not fail the rename", async () => {
+  // The rename already succeeded; bookkeeping must not undo it.
+  const organizations = {
+    ...fakeOrganizations(),
+    touch: () => Promise.reject(new Error("database down")),
+  };
+  const auth = createAuth({ ...options, organizations });
+
+  await assert.doesNotReject(async () =>
+    orgHooks(auth).afterUpdateOrganization?.({
+      organization: { id: "org_1" },
+    }),
+  );
+});
+
+test("an invitation address is stored lowercase", async () => {
+  // As `user_email` does, so the stored data is consistent.
+  const auth = createAuth(options);
+
+  const result = await orgHooks(auth).beforeCreateInvitation?.({
+    invitation: { email: "  Dana@Example.TEST " },
+  });
+
+  assert.equal(result?.data.email, "dana@example.test");
+});
+
+test("organization membership is capped", () => {
+  // Bounds an automated signup rather than pricing a plan.
+  assert.equal(orgOptions(createAuth(options))["organizationLimit"], 20);
+});
+
+test("a handle is still validated when no store is configured", async () => {
+  // `organizations` is optional, as `emails` is, so a test can build an auth
+  // instance with no database. That must weaken only the uniqueness check —
+  // the shape rules are local and have no excuse to be skipped, or a deploy
+  // that forgot the wiring would accept `my org` as a handle.
+  const auth = createAuth(options);
+
+  await assert.rejects(
+    async () =>
+      orgHooks(auth).beforeCreateOrganization?.({
+        organization: { slug: "my org" },
+      }),
+    (error: { body?: { code?: string } }) =>
+      error.body?.code === "INVALID_ORGANIZATION_SLUG",
+  );
+});
+
+test("a valid handle is accepted when no store is configured", async () => {
+  // So the test above cannot pass by refusing everything.
+  const auth = createAuth(options);
+
+  const result = await orgHooks(auth).beforeCreateOrganization?.({
+    organization: { slug: "MyOrg" },
+  });
+
+  assert.equal(result?.data.slug, "myorg");
+});
+
+test("a missing handle is refused rather than stored empty", async () => {
+  // The plugin's own body schema requires a slug, but the hook must not be
+  // the thing that turns a missing one into `""`.
+  const auth = createAuth({ ...options, organizations: fakeOrganizations() });
+
+  await assert.rejects(
+    async () => orgHooks(auth).beforeCreateOrganization?.({ organization: {} }),
+    (error: { body?: { code?: string } }) =>
+      error.body?.code === "INVALID_ORGANIZATION_SLUG",
+  );
+});
+
+test("any signed-in user may create an organization", () => {
+  // Onboarding is self-serve: a client who signs up makes their own workspace
+  // without anyone provisioning it. Gating this means replacing the option
+  // with a function of the user *and* hiding the web app's create action, so
+  // the two cannot drift into offering what the server refuses.
+  assert.equal(
+    orgOptions(createAuth(options))["allowUserToCreateOrganization"],
+    true,
+  );
+});
