@@ -1,0 +1,24 @@
+{
+  "extends": "@sandbox-factory/tsconfig/base.json",
+  "_comment": [
+    "Extends base.json, NOT node.json, and narrows types — the same guardrail",
+    "packages/client uses, for the same reason:",
+    "",
+    "  types: []   — no @types/node. An accidental `node:crypto` or",
+    "                `node:buffer` import fails to compile here, which is what",
+    "                keeps this package usable from the browser bundle, the",
+    "                VS Code extension host and the API alike.",
+    "  lib: +DOM   — for the web-standard types only (fetch, Response,",
+    "                URLSearchParams, btoa). Present in every target runtime.",
+    "",
+    "This is why ApiTokenCredential reaches for `globalThis.btoa` with an",
+    "injectable encoder rather than `Buffer.from(...).toString('base64')`."
+  ],
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "lib": ["ES2022", "DOM"],
+    "types": []
+  },
+  "include": ["src"]
+}

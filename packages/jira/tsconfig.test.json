@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.json",
+  "_comment": [
+    "Tests run on Node, so they get @types/node back — `node:test` and",
+    "`node:assert/strict` need it. src/ is still compiled under the same",
+    "narrowed lib, so this does not weaken the guardrail above: a `node:`",
+    "import in src/ still fails `npm run build`."
+  ],
+  "compilerOptions": {
+    "rootDir": ".",
+    "outDir": "dist-test",
+    "declaration": false,
+    "declarationMap": false,
+    "types": ["node"]
+  },
+  "include": ["src", "test"]
+}
