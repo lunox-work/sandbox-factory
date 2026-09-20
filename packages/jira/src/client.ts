@@ -35,6 +35,7 @@ import {
   toIssueDto,
   toSprintDto,
 } from "./mapping.js";
+import { type JiraIssueSpec, SPEC_FIELDS, toIssueSpec } from "./spec.js";
 
 /** A non-2xx from Jira, with the status kept so callers can branch on it. */
 export class JiraApiError extends Error {
@@ -242,6 +243,27 @@ export class JiraClient {
     return toIssueDto(jiraIssueResponseSchema.parse(payload), {
       siteUrl: this.#siteUrl,
     });
+  }
+
+  /**
+   * One issue's **spec**: its summary and description, flattened to text, with
+   * a hash of the pair.
+   *
+   * Separate from `issue()` because this is the only call in the package that
+   * reads a ticket's description. `ISSUE_FIELDS` deliberately omits it, so a
+   * board or backlog read cannot pull ticket text even by accident; a caller
+   * that wants the words has to ask for them one ticket at a time, by name.
+   *
+   * The platform stores the returned `specHash` and not the text. Re-reading a
+   * ticket later and comparing hashes is how a proposal is known to be stale.
+   */
+  async issueSpec(keyOrId: string): Promise<JiraIssueSpec> {
+    const query = new URLSearchParams({ fields: SPEC_FIELDS.join(",") });
+    const payload = await this.#get(
+      `/rest/api/3/issue/${encodeURIComponent(keyOrId)}?${query}`,
+    );
+    const issue = jiraIssueResponseSchema.parse(payload);
+    return toIssueSpec(issue.key, issue.fields ?? {});
   }
 
   /** Shared by the three Agile issue endpoints, which paginate identically. */

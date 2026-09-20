@@ -445,3 +445,55 @@ test("a trailing slash on the site URL does not double up in a browse link", () 
 
   assert.equal(issue.url, "https://acme.atlassian.net/browse/ACME-1");
 });
+
+test("issueSpec reads the description and hashes what it read", async () => {
+  const { client: jira, urls } = client([
+    {
+      body: {
+        id: "10001",
+        key: "ACME-1",
+        fields: {
+          summary: "Add export",
+          description: {
+            type: "doc",
+            content: [
+              {
+                type: "paragraph",
+                content: [{ type: "text", text: "Adds CSV." }],
+              },
+            ],
+          },
+          issuetype: { name: "Story" },
+          updated: "2026-09-20T00:00:00.000Z",
+        },
+      },
+    },
+  ]);
+
+  const spec = await jira.issueSpec("ACME-1");
+
+  assert.equal(spec.summary, "Add export");
+  assert.equal(spec.descriptionText, "Adds CSV.");
+  assert.equal(spec.issueType, "Story");
+  assert.match(spec.specHash, /^[0-9a-f]{64}$/);
+  // The one call that asks Jira for `description`.
+  assert.match(urls[0] ?? "", /fields=summary%2Cdescription/);
+});
+
+test("the list reads never ask Jira for a description", async () => {
+  // The guarantee behind storing no ticket text: a board or backlog read
+  // cannot pull it even by accident, so only `issueSpec` ever sees it.
+  const { client: jira, urls } = client([
+    { body: { issues: [] } },
+    { body: { issues: [] } },
+    { body: { values: [] } },
+  ]);
+
+  await jira.boardIssues(42);
+  await jira.backlogIssues(42);
+  await jira.search("project = ACME");
+
+  for (const url of urls) {
+    assert.ok(!url.includes("description"), `${url} requested a description`);
+  }
+});
