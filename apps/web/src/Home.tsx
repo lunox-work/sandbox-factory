@@ -188,10 +188,10 @@ export function Home({
   const visible = groups.filter(hasSomethingToShow);
 
   return (
-    <main className="mx-auto flex w-full max-w-2xl flex-col gap-6 p-6">
+    <main className="mx-auto flex w-full max-w-2xl flex-col gap-6 px-4 py-10 sm:px-6 sm:py-14">
       <header>
         <h1 className="text-2xl font-semibold tracking-tight">Connections</h1>
-        <p className="text-muted-foreground text-sm">
+        <p className="text-muted-foreground mt-1.5 text-sm">
           Jira sites you and your organizations can read boards from.
         </p>
       </header>

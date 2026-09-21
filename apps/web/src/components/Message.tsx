@@ -1,13 +1,17 @@
 /**
- * The two ways a page speaks back: a banner when something failed, and a line
- * under a form when something was saved.
+ * The three ways a page speaks back: a banner when something failed, a line
+ * under a form when something was saved, and a line while something is still
+ * being read.
  *
- * Both markups existed already, repeated verbatim — the banner at the top of
- * four screens, the line under two forms. Extracted rather than replaced with
+ * All three markups existed already, repeated verbatim — the banner at the top
+ * of four screens, the saved line under two forms, the loading line in nine
+ * places and in three different shapes. Extracted rather than replaced with
  * shadcn's `Alert`, which carries a title, a description and an icon slot that
  * none of these callers fill: the styling here is what the app already looks
  * like.
  */
+
+import { Loader2 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
@@ -34,6 +38,40 @@ export function ErrorBanner({
         className,
       )}
     >
+      {children}
+    </p>
+  );
+}
+
+/**
+ * A read that has not answered yet.
+ *
+ * One shape everywhere, because the app had three: a bare "Loading…", a
+ * spinner beside the word, and — on the members list — nothing at all, so an
+ * organization looked briefly as though it had no members. A moving spinner is
+ * what distinguishes "still working" from "finished, and this is the answer".
+ *
+ * `role="status"` rather than `alert`: a screen reader should mention it when
+ * the reader is idle, not interrupt to say a list is still arriving. The
+ * spinner is `aria-hidden`, or it would be announced as an image beside the
+ * word it illustrates.
+ */
+export function LoadingLine({
+  children = "Loading…",
+  className,
+}: {
+  children?: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <p
+      role="status"
+      className={cn(
+        "text-muted-foreground flex items-center gap-2 text-sm",
+        className,
+      )}
+    >
+      <Loader2 className="size-4 shrink-0 animate-spin" aria-hidden="true" />
       {children}
     </p>
   );

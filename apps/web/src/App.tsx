@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 
+import { LoadingLine } from "@/components/Message";
+
 import { Account } from "./Account";
 import { signOut, useSession } from "./auth";
 import { Breadcrumbs } from "./Breadcrumbs";
@@ -234,13 +236,7 @@ function Signed({
           organizations.active === null ||
           connectionId === undefined ||
           boardId === undefined ? (
-            <main className="mx-auto w-full max-w-2xl px-4 py-10">
-              <p className="text-muted-foreground text-sm">
-                {organizations.loading
-                  ? "Loading…"
-                  : "You are not in an organization yet."}
-              </p>
-            </main>
+            <NoOrganization loading={organizations.loading} />
           ) : (
             <JiraBoard
               // Keyed by the board, so moving between two boards remounts
@@ -257,13 +253,7 @@ function Signed({
           )
         ) : screen === "org-jira-site" ? (
           organizations.active === null || connectionId === undefined ? (
-            <main className="mx-auto w-full max-w-2xl px-4 py-10">
-              <p className="text-muted-foreground text-sm">
-                {organizations.loading
-                  ? "Loading…"
-                  : "You are not in an organization yet."}
-              </p>
-            </main>
+            <NoOrganization loading={organizations.loading} />
           ) : (
             <JiraSite
               // Keyed by both, so moving between two sites remounts rather
@@ -293,13 +283,7 @@ function Signed({
           )
         ) : screen === "org-jira" ? (
           organizations.active === null ? (
-            <main className="mx-auto w-full max-w-2xl px-4 py-10">
-              <p className="text-muted-foreground text-sm">
-                {organizations.loading
-                  ? "Loading…"
-                  : "You are not in an organization yet."}
-              </p>
-            </main>
+            <NoOrganization loading={organizations.loading} />
           ) : (
             <Jira
               // Keyed by id for the same reason as the settings page: the
@@ -319,15 +303,7 @@ function Signed({
           )
         ) : screen === "org-settings" ? (
           organizations.active === null ? (
-            // Either the list has not arrived or the person is in none. Both
-            // read the same from here, and both are transient.
-            <main className="mx-auto w-full max-w-2xl px-4 py-10">
-              <p className="text-muted-foreground text-sm">
-                {organizations.loading
-                  ? "Loading…"
-                  : "You are not in an organization yet."}
-              </p>
-            </main>
+            <NoOrganization loading={organizations.loading} />
           ) : (
             <Organization
               // Keyed by id so switching organization remounts the forms
@@ -358,6 +334,32 @@ function Signed({
         )}
       </div>
     </div>
+  );
+}
+
+/**
+ * What an organization-owned screen shows when there is no organization to
+ * show it for.
+ *
+ * Either the list has not arrived or the person is in none. Both read the same
+ * from here, and both are transient — which is why this is a line rather than
+ * an empty state offering to create one.
+ *
+ * One component rather than the four copies the four screens used to carry:
+ * they were the same block, and three of them had drifted to padding no page
+ * uses, so the line moved when the organization arrived.
+ */
+function NoOrganization({ loading }: { loading: boolean }) {
+  return (
+    <main className="mx-auto w-full max-w-2xl px-4 py-10 sm:px-6 sm:py-14">
+      {loading ? (
+        <LoadingLine />
+      ) : (
+        <p className="text-muted-foreground text-sm">
+          You are not in an organization yet.
+        </p>
+      )}
+    </main>
   );
 }
 

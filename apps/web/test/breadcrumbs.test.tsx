@@ -438,3 +438,49 @@ test("the trail is a second landmark, named apart from the rail", async () => {
     expect(screen.getByRole("navigation", { name: "Breadcrumb" })).toBeTruthy();
   });
 });
+
+// ---- the trail shares the page's column -----------------------------------
+//
+// The pages cap a padded `main` at `max-w-2xl`; the trail used to cap an `ol`
+// inside a padded `nav`, which made its column 48px wider — the crumbs began
+// where the padding did, one step left of every heading below them. Capping
+// the same element as the pages is what aligns the two.
+
+test("the trail is capped and padded on the same element as the page", async () => {
+  window.history.replaceState(null, "", "/o/acme/settings");
+  render(<App />);
+
+  await waitFor(() => {
+    expect(labels()).toEqual(["Home", "Organizations", "Acme"]);
+  });
+
+  const nav = screen.getByRole("navigation", { name: "Breadcrumb" });
+  expect(nav.className).toContain("max-w-2xl");
+  expect(nav.className).toContain("px-4");
+  expect(nav.className).toContain("sm:px-6");
+  // The list inside no longer carries a column of its own, or the two would
+  // compound and the crumbs would sit inside the page's text.
+  expect(nav.querySelector("ol")?.className).not.toContain("max-w-2xl");
+});
+
+test("a board's trail is as wide as the board page under it", async () => {
+  // The board is the one `max-w-5xl` page. A `max-w-2xl` trail above it is
+  // misaligned the other way — the crumbs sit ~150px right of the content.
+  window.history.replaceState(null, "", "/o/acme/jira/jrc_1/jrb_1");
+  render(<App />);
+
+  await waitFor(() => {
+    expect(labels()).toEqual([
+      "Home",
+      "Organizations",
+      "Acme",
+      "Jira",
+      "lunox-work",
+      "Sprint Board",
+    ]);
+  });
+
+  const nav = screen.getByRole("navigation", { name: "Breadcrumb" });
+  expect(nav.className).toContain("max-w-5xl");
+  expect(nav.className).not.toContain("max-w-2xl");
+});

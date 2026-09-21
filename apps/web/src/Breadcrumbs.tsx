@@ -21,6 +21,8 @@
 
 import { ChevronRight } from "lucide-react";
 
+import { cn } from "@/lib/utils";
+
 import type { Screen } from "./SideNav";
 
 /**
@@ -213,18 +215,32 @@ export function Breadcrumbs({
       announce the position in it. The separators sit outside the links and are
       hidden, or every crumb would be read with a chevron glued to it.
 
-      Aligned to the same `max-w-2xl` column the pages use, and with only top
-      padding: the page below opens with its own, which becomes the gap between
-      the trail and the heading. Bottom padding here would double it, and the
-      negative margin trims what is left to one header block rather than two
-      stacked ones — a constant here instead of a change to five pages, none of
-      which should have to know whether a trail sits above it.
+      The column is capped and padded on this one element, exactly as each page
+      caps and pads its own `main`. Splitting the two — padding here, the cap
+      on the `ol` inside — is what used to misalign the trail: the padding
+      applied outside the capped box, so the crumbs began 24px left of every
+      heading below them.
+
+      Only top padding, because the page below opens with its own, which
+      becomes the gap between the trail and the heading. Bottom padding here
+      would double it, and the negative margin trims what is left to one header
+      block rather than two stacked ones — a constant here instead of a change
+      to five pages, none of which should have to know whether a trail sits
+      above it.
     */
     <nav
       aria-label="Breadcrumb"
-      className="-mb-6 px-4 pt-5 sm:-mb-8 sm:px-6 sm:pt-7"
+      className={cn(
+        "mx-auto -mb-6 w-full px-4 pt-5 sm:-mb-8 sm:px-6 sm:pt-7",
+        // The board is the one wide page, so a trail capped at the narrow
+        // column would be misaligned the other way — the crumbs sitting well
+        // right of the content. Read from the screen rather than taken as a
+        // prop: which pages are wide is the trail's own business, and the
+        // shell already tells it where it is.
+        screen === "org-jira-board" ? "max-w-5xl" : "max-w-2xl",
+      )}
     >
-      <ol className="text-muted-foreground mx-auto flex w-full max-w-2xl flex-wrap items-center gap-1.5 text-sm">
+      <ol className="text-muted-foreground flex flex-wrap items-center gap-1.5 text-sm">
         {crumbs.map((crumb, index) => {
           /*
             The last crumb is the page you are on, so it is text whatever it

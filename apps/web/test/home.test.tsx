@@ -422,3 +422,28 @@ test("with organizations but no connections, each is offered to connect", async 
   await userEvent.click(screen.getByRole("button", { name: /Personal/ }));
   expect(onOpen).toHaveBeenCalledWith(personal);
 });
+
+// ---- the page opens like every other one ----------------------------------
+
+test("home has the same top padding as the other pages", async () => {
+  // It used `p-6`, which put its heading 48px higher than every other page's
+  // — a jump on each navigation. The trail above also pulls its bottom margin
+  // back by `-mb-6 sm:-mb-8`, which needs the page's own padding to exceed it.
+  byOrganization = { org_acme: [connection({ id: "jrc_1", siteName: "C" })] };
+
+  const { container } = render(
+    <Home
+      organizations={[acme]}
+      organizationsLoading={false}
+      onOpen={vi.fn()}
+    />,
+  );
+
+  await waitFor(() => {
+    expect(screen.getByText("Connections")).toBeTruthy();
+  });
+
+  const main = container.querySelector("main");
+  expect(main?.className).toContain("py-10");
+  expect(main?.className).toContain("sm:py-14");
+});
