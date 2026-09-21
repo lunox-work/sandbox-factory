@@ -44,7 +44,7 @@ These will **not** come along if you copy the files into a new repository:
 | Default branch            | `main`                        | Settings → Branches         |
 | Delete branch on merge    | Enabled                       | Settings → General          |
 | Ruleset "main protection" | Active — see [ci.md](./ci.md) | Settings → Rules → Rulesets |
-| Classic branch protection | Active — see [ci.md](./ci.md) | Settings → Branches         |
+| Classic branch protection | Removed after ruleset rollout | Settings → Branches         |
 | `AUTO_MERGE_TOKEN` secret | Fine-grained PAT              | Settings → Secrets          |
 | Discussions               | **Disabled**                  | Settings → General          |
 

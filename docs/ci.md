@@ -78,9 +78,12 @@ repair limits. Forks require manual maintainer handling.
 
 ### Rollout
 
-1. Open the bootstrap change as a draft so the old auto-merge cannot race review.
-2. Ensure auto-merge remains disabled for that PR while reviewing and testing it.
-3. Merge the reviewed bootstrap using existing protection; do not forge gate results.
+1. Before opening the bootstrap PR, strengthen native protection with required
+   `CodeRabbit` and `CodeQL` contexts, one approving review, stale-approval
+   dismissal, resolved threads and no bypass actors. Keep classic protection.
+2. Ship the bootstrap under those native checks. CodeRabbit must complete its
+   review and approve before it can merge; no custom gate is fabricated.
+3. After bootstrap merges, the trusted controller becomes available on main.
 4. Apply the checked-in ruleset, preserving unrelated rulesets. Verify its active
    checks, conversation resolution and empty bypass list before removing classic protection.
 5. Confirm a normal PR stays blocked before CodeRabbit completes, repair commits
@@ -118,8 +121,9 @@ advisories against unchanged code.
 
 Both it and `scorecard.yml` are gated on the repository being public, since
 uploading results requires Advanced Security. **If the repository goes private
-the job skips, and GitHub reports a skipped required check as successful** — PRs
-would merge with no scan at all. Revisit the ruleset if visibility changes.
+the job skips, and GitHub reports a skipped required check as successful**.
+Our custom gate additionally rejects skipped checks, so this blocks rather than
+silently merging. Revisit CodeQL licensing and policy if visibility changes.
 
 ## Dependabot
 
