@@ -149,7 +149,7 @@ function Group({
               <button
                 type="button"
                 onClick={() => onOpen(organization)}
-                className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 mt-3 flex cursor-pointer items-center gap-2 rounded text-sm transition-colors focus-visible:ring-2 focus-visible:outline-none"
+                className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 mt-3 flex cursor-pointer items-center gap-2 rounded text-sm transition-colors focus-visible:ring-[3px] focus-visible:outline-none"
               >
                 <TriangleAlert className="text-destructive size-3.5 shrink-0" />
                 {broken === 1

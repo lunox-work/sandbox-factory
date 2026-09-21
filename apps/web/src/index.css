@@ -50,6 +50,14 @@
 
   --destructive: oklch(0.577 0.245 27.325);
   --destructive-foreground: oklch(0.985 0 0);
+  /*
+   * Airbnb's red (#FF5A5F), for deleting an organization only. Deliberately
+   * not `--destructive`: that one also paints error banners and the remove and
+   * disconnect controls, where a brand red would read as decoration on a
+   * message rather than as a warning. One colour, one meaning.
+   */
+  --danger: oklch(0.689 0.2 22.4);
+  --danger-foreground: oklch(0.985 0 0);
 
   --border: oklch(0.92 0.004 286.32);
   --input: oklch(0.92 0.004 286.32);
@@ -120,6 +128,8 @@
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
   --color-destructive-foreground: var(--destructive-foreground);
+  --color-danger: var(--danger);
+  --color-danger-foreground: var(--danger-foreground);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);

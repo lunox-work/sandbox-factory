@@ -7,7 +7,8 @@
 
 import { Building2, Check, Link2, Unlink } from "lucide-react";
 import type { PendingInvitationDto } from "@sandbox-factory/shared";
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { isValidHandle } from "sandbox-factory";
+import { useCallback, useEffect, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -19,7 +20,8 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { AvatarField, UPLOAD_COMING_SOON } from "@/components/AvatarField";
-import { Input } from "@/components/ui/input";
+import { EditableField } from "@/components/EditableField";
+import { ErrorBanner, FormStatus } from "@/components/Message";
 
 import { PROVIDERS, authClient, useSession, type ProviderId } from "./auth";
 import { ProviderIcon } from "./ProviderIcon";
@@ -46,10 +48,17 @@ interface LinkedAccount {
 export function Account({
   /** Called after an invitation is accepted, so the switcher picks it up. */
   onJoined,
+  /**
+   * Called after a rename. The server also renames the caller's personal
+   * organization, so the switcher and the rail are both a name behind until
+   * they reload.
+   */
+  onRenamed,
   organizationCount,
   onOpenOrganizations,
 }: {
   onJoined?: (() => void) | undefined;
+  onRenamed?: (() => void) | undefined;
   /**
    * How many organizations you belong to. Undefined while the list is still
    * loading, which reads differently from zero — everybody has at least their
@@ -62,6 +71,12 @@ export function Account({
   const [invitations, setInvitations] = useState<PendingInvitationDto[]>([]);
   const [accounts, setAccounts] = useState<LinkedAccount[]>([]);
   const [username, setUsername] = useState<string | null>(null);
+  /*
+   * Held here rather than read straight from the session: saving updates the
+   * row, but the session this screen already has is a cached copy, so the
+   * field would otherwise snap back to the old name on the next render.
+   */
+  const [name, setName] = useState("");
   const [accountId, setAccountId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -111,6 +126,14 @@ export function Account({
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // Seeded from the session, which is where the name lives until it is saved.
+  const sessionName = session?.user.name;
+  useEffect(() => {
+    if (sessionName !== undefined) {
+      setName(sessionName);
+    }
+  }, [sessionName]);
 
   const linked = new Map(
     accounts.map((account) => [account.providerId, account] as const),
@@ -220,24 +243,22 @@ export function Account({
         Your handle, and the accounts you sign in with.
       </p>
 
-      {error !== null && (
-        <p
-          role="alert"
-          className="text-destructive border-destructive/35 bg-destructive/7 mt-6 rounded-lg border px-3 py-2.5 text-sm"
-        >
-          {error}
-        </p>
-      )}
+      {error !== null && <ErrorBanner>{error}</ErrorBanner>}
 
       <div className="mt-8 flex flex-col gap-6">
         <UsernameForm
           current={username}
+          currentName={name}
           accountId={accountId}
           image={session?.user.image}
           organizationCount={organizationCount}
           onOpenOrganizations={onOpenOrganizations}
           busy={busy}
           onSaved={(next) => setUsername(next)}
+          onNameSaved={(next) => {
+            setName(next);
+            onRenamed?.();
+          }}
           onBusy={setBusy}
         />
 
@@ -295,12 +316,10 @@ export function Account({
         <Card>
           <CardHeader>
             <CardTitle role="heading" aria-level={2}>
-              Email addresses
+              Connected Accounts
             </CardTitle>
             <CardDescription>
-              Each address is proved by an account you connected. The primary
-              one is how we reach you. Disconnecting an account releases the
-              address it proved, freeing it for someone else.
+              Each address is proved by an account you connected.
             </CardDescription>
           </CardHeader>
 
@@ -382,53 +401,45 @@ export function Account({
                 </ul>
               </div>
             ))}
+
+            {/*
+              Providers with nothing connected yet, under a rule in the same
+              card: connecting is a different action from managing what is
+              already connected, but it is the same subject.
+            */}
+            {unconnected.length > 0 && (
+              <div className="mt-1 flex flex-col gap-2 border-t pt-4">
+                <p className="text-muted-foreground text-sm">
+                  Connecting an account adds its email address and gives you
+                  another way to sign in.
+                </p>
+                {unconnected.map((provider) => (
+                  <div
+                    key={provider.id}
+                    className="flex items-center justify-between gap-3 rounded-lg border px-3.5 py-2.5"
+                  >
+                    <span className="flex items-center gap-2.5 text-sm font-medium">
+                      <span className="grid size-4 place-items-center">
+                        <ProviderIcon provider={provider.id} />
+                      </span>
+                      {provider.label.replace("Continue with ", "")}
+                    </span>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={busy}
+                      onClick={() => void link(provider.id)}
+                    >
+                      <Link2 />
+                      Connect
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            )}
           </CardContent>
         </Card>
-
-        {/*
-          Providers with nothing connected yet. Its own card rather than a
-          second list inside the one above: connecting is a different action
-          from managing what is already connected.
-        */}
-        {unconnected.length > 0 && (
-          <Card>
-            <CardHeader>
-              <CardTitle role="heading" aria-level={2}>
-                Connect another account
-              </CardTitle>
-              <CardDescription>
-                Connecting an account adds its email address and gives you
-                another way to sign in.
-              </CardDescription>
-            </CardHeader>
-
-            <CardContent className="flex flex-col gap-2">
-              {unconnected.map((provider) => (
-                <div
-                  key={provider.id}
-                  className="flex items-center justify-between gap-3 rounded-lg border px-3.5 py-2.5"
-                >
-                  <span className="flex items-center gap-2.5 text-sm font-medium">
-                    <span className="grid size-4 place-items-center">
-                      <ProviderIcon provider={provider.id} />
-                    </span>
-                    {provider.label.replace("Continue with ", "")}
-                  </span>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    disabled={busy}
-                    onClick={() => void link(provider.id)}
-                  >
-                    <Link2 />
-                    Connect
-                  </Button>
-                </div>
-              ))}
-            </CardContent>
-          </Card>
-        )}
       </div>
     </main>
   );
@@ -455,43 +466,77 @@ function ProviderBadgeIcon({ providerId }: { providerId: string }) {
 
 function UsernameForm({
   current,
+  currentName,
   accountId,
   image,
   organizationCount,
   onOpenOrganizations,
   busy,
   onSaved,
+  onNameSaved,
   onBusy,
 }: {
   organizationCount?: number | undefined;
   onOpenOrganizations?: (() => void) | undefined;
   current: string | null;
+  /** The display name, which the session carries on every screen. */
+  currentName: string;
   accountId: string | null;
   /** The provider's picture, if there is one; the identicon stands in if not. */
   image?: string | null;
   busy: boolean;
   onSaved: (username: string) => void;
+  onNameSaved: (name: string) => void;
   onBusy: (busy: boolean) => void;
 }) {
-  const [draft, setDraft] = useState("");
+  /** The avatar's "not yet" notice. The fields report their own outcomes. */
   const [message, setMessage] = useState<string | null>(null);
-  const [failed, setFailed] = useState(false);
 
-  // Seed the field once the handle arrives; `current` is null until then.
-  useEffect(() => {
-    setDraft(current ?? "");
-  }, [current]);
-
-  async function submit(event: FormEvent) {
-    event.preventDefault();
+  /**
+   * Saves the display name.
+   *
+   * The server also renames the caller's personal organization, which carries
+   * a copy of this taken at signup — see the route. Nothing here has to know
+   * about that beyond refreshing what the page shows.
+   */
+  /*
+   * Both return the server's reason on a refusal and nothing on success. The
+   * field shows it against the text that was refused; success needs no words
+   * here, because the value on screen is now the new one.
+   */
+  async function saveName(next: string): Promise<string | void> {
     onBusy(true);
-    setMessage(null);
+    try {
+      const res = await fetch("/api/v1/me/name", {
+        method: "PUT",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: next }),
+      });
+      const body = (await res.json().catch(() => null)) as {
+        name?: string;
+        error?: string;
+      } | null;
+      if (res.ok && body?.name !== undefined) {
+        onNameSaved(body.name);
+        return;
+      }
+      return body?.error ?? "Could not save that name.";
+    } catch {
+      return "Could not save that name.";
+    } finally {
+      onBusy(false);
+    }
+  }
+
+  async function saveUsername(next: string): Promise<string | void> {
+    onBusy(true);
     try {
       const res = await fetch("/api/v1/me/username", {
         method: "PUT",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username: draft }),
+        body: JSON.stringify({ username: next }),
       });
       const body = (await res.json().catch(() => null)) as {
         username?: string;
@@ -499,15 +544,11 @@ function UsernameForm({
       } | null;
       if (res.ok && body?.username !== undefined) {
         onSaved(body.username);
-        setFailed(false);
-        setMessage("Saved.");
-      } else {
-        setFailed(true);
-        setMessage(body?.error ?? "Could not save that username.");
+        return;
       }
+      return body?.error ?? "Could not save that username.";
     } catch {
-      setFailed(true);
-      setMessage("Could not save that username.");
+      return "Could not save that username.";
     } finally {
       onBusy(false);
     }
@@ -517,28 +558,20 @@ function UsernameForm({
     <Card>
       <CardHeader>
         <CardTitle role="heading" aria-level={2}>
-          Username
+          Profile
         </CardTitle>
         <CardDescription>
-          Your public handle. You can change it whenever you like, as long as it
-          is not taken.
+          What people read, and the handle they find you by.
         </CardDescription>
       </CardHeader>
 
       <CardContent>
         {/*
-          The picture beside the name, not above it: they are the same fact.
-          `items-start` keeps the avatar aligned with the input rather than
-          centred against the message that appears under it on save.
+          The picture beside the name: a face and what to call it are the
+          same fact, and the two read as one line. Everything else about the
+          person stacks underneath, at the card's own left edge.
         */}
-        {/*
-          The picture, then the handle with what it belongs to under it. The
-          right-hand column is sized to the avatar rather than the other way
-          round: `min-h-16` with the content spread over it puts the input
-          level with the top of the picture and the organizations line level
-          with its foot, so the row is exactly as tall as the avatar.
-        */}
-        <div className="flex items-start gap-4">
+        <div className="flex items-center gap-4">
           {/*
             `accountId` is null until `/api/v1/me` answers. The slot is held
             open at the avatar's size rather than collapsed, or the input jumps
@@ -552,84 +585,75 @@ function UsernameForm({
               image={image}
               shape="circle"
               label="your"
-              // Reuses the line that reports a rename, rather than a toast or
-              // a popover: one sentence does not earn a layer or a dependency.
-              onEdit={() => {
-                setFailed(false);
-                setMessage(UPLOAD_COMING_SOON);
-              }}
+              // One sentence under the row, rather than a toast or a popover:
+              // it does not earn a layer or a dependency.
+              onEdit={() => setMessage(UPLOAD_COMING_SOON)}
             />
           )}
 
-          <div className="flex min-h-16 flex-1 flex-col justify-between gap-2">
-            <form
-              onSubmit={(event) => void submit(event)}
-              className="flex gap-2"
-            >
-              <Input
-                aria-label="Username"
-                placeholder="your-handle"
-                value={draft}
-                onChange={(event) => {
-                  setDraft(event.target.value);
-                  setMessage(null);
-                }}
-              />
-              <Button type="submit" disabled={busy || draft.trim() === ""}>
-                Save
-              </Button>
-            </form>
-
-            {/*
-              Where the handle leads, not a statistic: the count is the label
-              on the way to the list. Hidden until it is known, so it does not
-              flash "0 organizations" at somebody who has one.
-            */}
-            {organizationCount !== undefined && (
-              <button
-                type="button"
-                onClick={onOpenOrganizations}
-                className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 group/orgs flex w-fit cursor-pointer items-center gap-1.5 rounded-sm text-sm transition-colors focus-visible:ring-[3px] focus-visible:outline-none"
-              >
-                {/* The mark the avatar menu's own "Organizations" item uses,
-                    so the two ways to this page read as the same destination.
-                    Sized here, where it sits inline with text, rather than by
-                    the menu's own item styling. */}
-                <Building2 className="size-4" strokeWidth={1.6} />
-                {/* The underline is on the words, not the button: through the
-                    button it would run under the icon too. */}
-                <span className="underline-offset-4 group-hover/orgs:underline">
-                  {organizationCount}{" "}
-                  {organizationCount === 1 ? "organization" : "organizations"}
-                </span>
-              </button>
-            )}
-          </div>
+          {/*
+            The display name beside the picture: it is what the rail, the
+            menu and every member list show, so it is the label on the face.
+          */}
+          <EditableField
+            className="min-w-0 flex-1"
+            label="Name"
+            value={currentName}
+            placeholder="Your name"
+            busy={busy}
+            onSave={(next) => saveName(next)}
+          />
         </div>
 
-        {message !== null && (
-          <p
-            role="status"
-            className={
-              failed
-                ? "text-destructive mt-2 text-sm"
-                : "text-muted-foreground mt-2 text-sm"
-            }
+        {/*
+          The handle below the row rather than stacked beside the picture: it
+          is how somebody is addressed rather than what they are called, and
+          at full width it has room for a long one without crowding the face.
+        */}
+        <EditableField
+          className="mt-4"
+          label="Username"
+          value={current ?? ""}
+          placeholder="your-handle"
+          prefix="@"
+          busy={busy}
+          // The same rules the server applies, so a name it would refuse
+          // cannot be submitted.
+          validate={(next) => isValidHandle(next)}
+          onSave={(next) => saveUsername(next)}
+        />
+
+        {/*
+          Where the handle leads, not a statistic: the count is the label on
+          the way to the list. Hidden until it is known, so it does not flash
+          "0 organizations" at somebody who has one.
+
+          Under the whole row rather than inside the name column: sitting
+          directly beneath the username it read as a fact about the username,
+          which is the one thing it is not. The rule separates it from the two
+          fields above without making it a second card.
+        */}
+        {organizationCount !== undefined && (
+          <button
+            type="button"
+            onClick={onOpenOrganizations}
+            className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 group/orgs mt-5 flex w-fit cursor-pointer items-center gap-1.5 rounded-sm text-sm transition-colors focus-visible:ring-[3px] focus-visible:outline-none"
           >
-            {message}
-          </p>
+            {/* The mark the avatar menu's own "Organizations" item uses, so
+                the two ways to this page read as the same destination. Sized
+                here, where it sits inline with text, rather than by the
+                menu's own item styling. */}
+            <Building2 className="size-4" strokeWidth={1.6} />
+            {/* The underline is on the words, not the button: through the
+                button it would run under the icon too. */}
+            <span className="underline-offset-4 group-hover/orgs:underline">
+              {organizationCount}{" "}
+              {organizationCount === 1 ? "organization" : "organizations"}
+            </span>
+          </button>
         )}
 
-        {accountId !== null && (
-          <p className="text-muted-foreground mt-4 border-t pt-3 text-xs">
-            Account ID{" "}
-            <code className="bg-muted rounded px-1.5 py-0.5 font-mono text-[0.72rem]">
-              {accountId}
-            </code>
-            <br />
-            This never changes, even when you rename your handle.
-          </p>
-        )}
+        {message !== null && <FormStatus failed={false}>{message}</FormStatus>}
       </CardContent>
     </Card>
   );

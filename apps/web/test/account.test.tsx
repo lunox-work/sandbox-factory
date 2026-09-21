@@ -35,13 +35,29 @@ vi.mock("../src/auth", () => ({
   // The page reads the picture from the session, as the rail does. These tests
   // are about the handle and the providers, so it stands in as signed in with
   // no picture — the case that falls through to the generated one.
-  useSession: () => ({ data: { user: { id: "user_1", image: null } } }),
+  useSession: () => ({
+    data: { user: { id: "user_1", image: null, name: "charlie ang" } },
+  }),
 }));
 
 const { Account } = await import("../src/Account");
 
 /** Every request the page made, so a test can assert what it asked for. */
 const calls: string[] = [];
+
+/**
+ * Clicks a value open and hands back its input.
+ *
+ * The three names on these screens read as text until asked: a test that
+ * queries the input straight away finds nothing, because at rest there is no
+ * input to find.
+ */
+async function openField(label: string): Promise<HTMLInputElement> {
+  fireEvent.click(
+    await screen.findByRole("button", { name: `Edit ${label.toLowerCase()}` }),
+  );
+  return (await screen.findByLabelText(label)) as HTMLInputElement;
+}
 
 function serverWith(options: {
   emails?: Array<{
@@ -69,6 +85,17 @@ function serverWith(options: {
       }
       if (String(url).includes("/api/v1/me/invitations")) {
         return new Response(JSON.stringify({ invitations }));
+      }
+      if (String(url).includes("/api/v1/me/name")) {
+        const body = JSON.parse(
+          (init as { body?: string } | undefined)?.body ?? "{}",
+        ) as { name?: string };
+        const name = (body.name ?? "").trim();
+        return name === ""
+          ? new Response(JSON.stringify({ error: "Name cannot be empty." }), {
+              status: 400,
+            })
+          : new Response(JSON.stringify({ name }));
       }
       if (String(url).endsWith("/api/v1/me")) {
         return new Response(
@@ -176,8 +203,8 @@ test("does not show an address for a provider that is not linked", async () => {
   render(<Account />);
 
   /*
-   * An unlinked provider is offered under "Connect another account" rather
-   * than listed against the address it used to prove.
+   * An unlinked provider is offered in the "Connect another account" section
+   * rather than listed against the address it used to prove.
    *
    * The wait is on the settled count, not on the card title. Until
    * `listAccounts` resolves nothing is known to be linked, so the card renders
@@ -188,7 +215,7 @@ test("does not show an address for a provider that is not linked", async () => {
   await waitFor(() => {
     expect(screen.getAllByRole("button", { name: /Connect/ })).toHaveLength(1);
   });
-  expect(screen.getByText("Connect another account")).toBeDefined();
+  expect(screen.getByText(/Connecting an account adds/)).toBeDefined();
   // Only GitHub is linked, so the address appears once and never on the
   // unlinked Google row.
   expect(screen.getAllByText("dana@example.test")).toHaveLength(1);
@@ -275,10 +302,9 @@ describe("username", () => {
 
     render(<Account />);
 
-    await waitFor(() => {
-      const field = screen.getByLabelText("Username") as HTMLInputElement;
-      expect(field.value).toBe("rivers-dana");
-    });
+    // Shown as text, prefixed; opening it seeds the input from the same value.
+    expect(await screen.findByText("@rivers-dana")).toBeDefined();
+    expect((await openField("Username")).value).toBe("rivers-dana");
   });
 });
 
@@ -419,11 +445,11 @@ test("each account section is a level-two heading", async () => {
 
   await waitFor(() => {
     expect(
-      screen.getByRole("heading", { name: "Email addresses", level: 2 }),
+      screen.getByRole("heading", { name: "Connected Accounts", level: 2 }),
     ).toBeDefined();
   });
   expect(
-    screen.getByRole("heading", { name: "Username", level: 2 }),
+    screen.getByRole("heading", { name: "Profile", level: 2 }),
   ).toBeDefined();
   // The page's own title stays the only level one.
   expect(
@@ -456,7 +482,7 @@ describe("organization invitations", () => {
 
     render(<Account />);
 
-    await screen.findByText("Email addresses");
+    await screen.findByText("Connected Accounts");
     expect(screen.queryByText("Invitations")).toBeNull();
   });
 
@@ -557,9 +583,7 @@ test("the count is absent until it is known", async () => {
    */
   render(<Account />);
 
-  await waitFor(() => {
-    expect(screen.getByLabelText("Username")).toBeTruthy();
-  });
+  await screen.findByRole("button", { name: "Edit username" });
   expect(screen.queryByText(/organizations?$/)).toBeNull();
 });
 
@@ -581,4 +605,64 @@ test("clicking your picture says why it cannot be changed yet", async () => {
   expect(notice.textContent).toContain("coming soon");
   // Not an error: nothing failed, this is not built yet.
   expect(notice.className).not.toContain("destructive");
+});
+
+// ---- the display name -----------------------------------------------------
+
+test("the name field seeds from the session", async () => {
+  // It is the session that carries the display name, so the field shows what
+  // the rail and the menu already show.
+  serverWith({});
+  render(<Account />);
+
+  // The value reads as text; opening it seeds the input from the same value.
+  expect(await screen.findByText("charlie ang")).toBeDefined();
+  expect((await openField("Name")).value).toBe("charlie ang");
+});
+
+test("saving the name sends it to the name route", async () => {
+  serverWith({});
+  render(<Account />);
+
+  fireEvent.change(await openField("Name"), {
+    target: { value: "Charlie Ang" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Save name" }));
+
+  await waitFor(() => expect(calls).toContain("PUT /api/v1/me/name"));
+  const body = JSON.parse(
+    (vi.mocked(fetch).mock.calls.at(-1)?.[1] as { body: string }).body,
+  ) as Record<string, string>;
+  expect(body).toEqual({ name: "Charlie Ang" });
+});
+
+test("an empty name is refused and says so", async () => {
+  serverWith({});
+  render(<Account />);
+
+  const field = await openField("Name");
+  fireEvent.change(field, { target: { value: "Dana" } });
+  fireEvent.change(field, { target: { value: "   " } });
+
+  // Nothing to save: the tick guards it before the round trip.
+  expect(
+    (
+      screen.getByRole("button", { name: "Save name" }) as HTMLButtonElement
+    ).disabled,
+  ).toBe(true);
+});
+
+test("the handle and the name save separately", async () => {
+  // Two fields, two buttons: renaming yourself should not also rewrite the
+  // handle somebody may have just typed, or the other way round.
+  serverWith({});
+  render(<Account />);
+
+  fireEvent.change(await openField("Name"), {
+    target: { value: "Charlie Ang" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Save name" }));
+
+  await waitFor(() => expect(calls).toContain("PUT /api/v1/me/name"));
+  expect(calls).not.toContain("PUT /api/v1/me/username");
 });

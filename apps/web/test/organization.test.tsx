@@ -114,6 +114,19 @@ beforeEach(() => {
   serverWith([owner]);
 });
 
+/**
+ * Clicks a value open and hands back its input.
+ *
+ * The handle reads as text until asked, so a test that queries the input
+ * straight away finds nothing — at rest there is no input to find.
+ */
+async function openField(label: string): Promise<HTMLInputElement> {
+  fireEvent.click(
+    await screen.findByRole("button", { name: `Edit ${label.toLowerCase()}` }),
+  );
+  return (await screen.findByLabelText(label)) as HTMLInputElement;
+}
+
 function showSettings(organization = acme) {
   return render(
     <Organization
@@ -124,19 +137,37 @@ function showSettings(organization = acme) {
   );
 }
 
+/**
+ * Switches to one of the settings tabs and waits for its panel.
+ *
+ * A team's settings page is three tabs, and only the open one is mounted —
+ * Radix drops the others from the DOM entirely — so a test about members or
+ * about leaving has to open that tab before it can see anything. Overview is
+ * open already and needs no call.
+ */
+async function openTab(name: "Members" | "Settings") {
+  const tab = await screen.findByRole("tab", { name });
+  // `mouseDown`, not `click`: Radix's tab trigger activates on the press,
+  // and a bare `click` in jsdom leaves every tab inactive — which reads as an
+  // empty page rather than as a click that did nothing.
+  fireEvent.mouseDown(tab, { button: 0 });
+  // Waited on *this* tab being selected, not on any `tabpanel`: the panel
+  // that was already open matches too, so the looser wait returns before the
+  // switch and hands the test the previous tab's markup.
+  await waitFor(() => expect(tab.getAttribute("aria-selected")).toBe("true"));
+}
+
 // ---- the two names --------------------------------------------------------
 
-test("the settings page shows the handle and the permanent id", async () => {
-  // The whole point of the pair: the id never changes, the handle may. A page
-  // that showed only one of them would hide which is safe to store.
+test("the settings page shows the handle, and not the internal id", async () => {
+  // The handle is the organization's public name and the field seeds from it.
+  // The id is real but deliberately not surfaced here: it is an internal
+  // identifier, and showing it taught nobody anything they could act on.
   showSettings();
 
-  expect(
-    ((await screen.findByLabelText("Organization handle")) as HTMLInputElement)
-      .value,
-  ).toBe("acme");
-  expect(screen.getByText("org_1")).toBeDefined();
-  expect(screen.getByText(/never changes/i)).toBeDefined();
+  expect(await screen.findByText("acme")).toBeDefined();
+  expect((await openField("Organization handle")).value).toBe("acme");
+  expect(screen.queryByText("org_1")).toBeNull();
 });
 
 test("renaming names the organization explicitly", async () => {
@@ -144,9 +175,11 @@ test("renaming names the organization explicitly", async () => {
   // so a rename could otherwise land on the wrong organization.
   showSettings();
 
-  const field = await screen.findByLabelText("Organization handle");
+  const field = await openField("Organization handle");
   fireEvent.change(field, { target: { value: "acme-robotics" } });
-  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  fireEvent.click(
+    screen.getByRole("button", { name: "Save organization handle" }),
+  );
 
   await waitFor(() =>
     expect(update).toHaveBeenCalledWith({
@@ -161,12 +194,15 @@ test("a handle the rules refuse cannot be submitted", async () => {
   // bad name costs no round trip.
   showSettings();
 
-  const field = await screen.findByLabelText("Organization handle");
+  const field = await openField("Organization handle");
   fireEvent.change(field, { target: { value: "not a handle" } });
 
   expect(
-    (screen.getByRole("button", { name: "Save" }) as HTMLButtonElement)
-      .disabled,
+    (
+      screen.getByRole("button", {
+        name: "Save organization handle",
+      }) as HTMLButtonElement
+    ).disabled,
   ).toBe(true);
 });
 
@@ -177,9 +213,11 @@ test("the server's reason for refusing a rename is shown", async () => {
   });
   showSettings();
 
-  const field = await screen.findByLabelText("Organization handle");
+  const field = await openField("Organization handle");
   fireEvent.change(field, { target: { value: "globex" } });
-  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  fireEvent.click(
+    screen.getByRole("button", { name: "Save organization handle" }),
+  );
 
   expect(await screen.findByText(/handle is taken/i)).toBeDefined();
 });
@@ -190,17 +228,22 @@ test("a member cannot rename the organization", async () => {
   // The server refuses it too; this says so before the click.
   showSettings({ ...acme, role: "member" });
 
+  expect(await screen.findByText("acme")).toBeDefined();
+  // No way in at all, rather than an input that refuses to take anything.
   expect(
-    ((await screen.findByLabelText("Organization handle")) as HTMLInputElement)
-      .disabled,
-  ).toBe(true);
+    screen.queryByRole("button", { name: "Edit organization handle" }),
+  ).toBeNull();
   expect(screen.getByText(/only an owner or an admin/i)).toBeDefined();
 });
 
 test("a member is not offered the invite form", async () => {
   showSettings({ ...acme, role: "member" });
 
-  await screen.findByLabelText("Organization handle");
+  // In the Members tab, where the form would be: querying from the Overview
+  // tab would pass because the panel is unmounted, not because the form is
+  // withheld.
+  await openTab("Members");
+  expect(screen.getByText("Dana")).toBeDefined();
   expect(screen.queryByLabelText("Handle or email address")).toBeNull();
 });
 
@@ -208,16 +251,20 @@ test("an admin can invite and rename", async () => {
   showSettings({ ...acme, role: "admin" });
 
   expect(
-    ((await screen.findByLabelText("Organization handle")) as HTMLInputElement)
-      .disabled,
-  ).toBe(false);
+    await screen.findByRole("button", { name: "Edit organization handle" }),
+  ).toBeDefined();
+  await openTab("Members");
   expect(screen.getByLabelText("Handle or email address")).toBeDefined();
 });
 
 test("only an owner is offered deletion", async () => {
   showSettings({ ...acme, role: "admin" });
 
-  await screen.findByLabelText("Organization handle");
+  // In the Settings tab, where it would be: see the invite-form test above.
+  await openTab("Settings");
+  expect(
+    screen.getByRole("button", { name: /Leave organization/ }),
+  ).toBeDefined();
   expect(
     screen.queryByRole("button", { name: /delete organization/i }),
   ).toBeNull();
@@ -228,6 +275,7 @@ test("only an owner is offered deletion", async () => {
 test("members are listed with their handle and role", async () => {
   serverWith([owner, plainMember]);
   showSettings();
+  await openTab("Members");
 
   expect(await screen.findByText("Dana")).toBeDefined();
   expect(screen.getByText("@sam")).toBeDefined();
@@ -239,6 +287,7 @@ test("the last owner cannot be removed", async () => {
   // rather than after a failed click.
   serverWith([owner, plainMember]);
   showSettings();
+  await openTab("Members");
 
   await screen.findByText("Dana");
   const removeOwner = screen.getAllByRole("button", {
@@ -253,6 +302,7 @@ test("the last owner cannot be removed", async () => {
 test("an owner can be removed once there are two", async () => {
   serverWith([owner, { ...plainMember, role: "owner" }]);
   showSettings();
+  await openTab("Members");
 
   await screen.findByText("Dana");
   for (const button of screen.getAllByRole("button", { name: "Remove" })) {
@@ -265,6 +315,7 @@ test("removing a member names the organization and the membership row", async ()
   // wrong one 400s.
   serverWith([owner, plainMember]);
   showSettings();
+  await openTab("Members");
 
   await screen.findByText("Sam");
   const buttons = screen.getAllByRole("button", { name: "Remove" });
@@ -282,6 +333,7 @@ test("removing a member names the organization and the membership row", async ()
 
 test("inviting by handle posts a handle", async () => {
   showSettings();
+  await openTab("Members");
 
   const field = await screen.findByLabelText("Handle or email address");
   fireEvent.change(field, { target: { value: "sam" } });
@@ -298,6 +350,7 @@ test("inviting by handle posts a handle", async () => {
 
 test("inviting by address posts an address", async () => {
   showSettings();
+  await openTab("Members");
 
   const field = await screen.findByLabelText("Handle or email address");
   fireEvent.change(field, { target: { value: "sam@example.test" } });
@@ -314,6 +367,7 @@ test("the invite form says the invitation is not emailed", async () => {
   // A person who expects an email would otherwise wait for one that never
   // arrives.
   showSettings();
+  await openTab("Members");
 
   expect(await screen.findByText(/waits on their account page/i)).toBeDefined();
 });
@@ -322,6 +376,7 @@ test("the invite form says the invitation is not emailed", async () => {
 
 test("leaving names the organization", async () => {
   showSettings();
+  await openTab("Settings");
 
   fireEvent.click(
     await screen.findByRole("button", { name: /leave organization/i }),
@@ -338,6 +393,7 @@ test("the server's reason for refusing a leave is shown", async () => {
     error: { message: "You cannot leave as the only owner." },
   });
   showSettings();
+  await openTab("Settings");
 
   fireEvent.click(
     await screen.findByRole("button", { name: /leave organization/i }),
@@ -350,6 +406,7 @@ test("deleting asks for the handle to be typed", async () => {
   // It cannot be undone and takes every member's access with it, so one
   // click is not enough.
   showSettings();
+  await openTab("Settings");
 
   fireEvent.click(
     await screen.findByRole("button", { name: /delete organization/i }),
@@ -373,6 +430,7 @@ test("deleting asks for the handle to be typed", async () => {
 
 test("the wrong handle does not enable deletion", async () => {
   showSettings();
+  await openTab("Settings");
 
   fireEvent.click(
     await screen.findByRole("button", { name: /delete organization/i }),
@@ -390,39 +448,40 @@ test("the wrong handle does not enable deletion", async () => {
 
 // ---- creating -------------------------------------------------------------
 
-test("the handle is proposed from the name", async () => {
-  // Typing a name and then a handle twice is busywork; the proposal uses the
-  // same normaliser the server applies.
+test("only a name is asked for", async () => {
+  // The handle is derived and editable later, so asking for it up front made
+  // somebody decide something they had no basis to decide.
   render(<CreateOrganization onCreated={vi.fn()} onCancel={vi.fn()} />);
+
+  expect(screen.getByLabelText("Organization name")).toBeDefined();
+  expect(screen.queryByLabelText("Organization handle")).toBeNull();
+});
+
+test("creating derives the handle from the name", async () => {
+  const onCreated = vi.fn();
+  render(<CreateOrganization onCreated={onCreated} onCancel={vi.fn()} />);
 
   fireEvent.change(screen.getByLabelText("Organization name"), {
     target: { value: "Acme Robotics, Inc." },
   });
+  fireEvent.click(screen.getByRole("button", { name: /create organization/i }));
 
-  expect(
-    (screen.getByLabelText("Organization handle") as HTMLInputElement).value,
-  ).toBe("acme-robotics-inc");
+  // The same normaliser the server applies, so the handle it stores is the
+  // one that was sent.
+  await waitFor(() =>
+    expect(create).toHaveBeenCalledWith({
+      name: "Acme Robotics, Inc.",
+      slug: "acme-robotics-inc",
+    }),
+  );
 });
 
-test("an edited handle stops following the name", async () => {
-  render(<CreateOrganization onCreated={vi.fn()} onCancel={vi.fn()} />);
-
-  fireEvent.change(screen.getByLabelText("Organization name"), {
-    target: { value: "Acme" },
+test("creating hands back the id and the handle the server stored", async () => {
+  // The caller navigates by the slug, and the server is what decides it.
+  create.mockResolvedValue({
+    data: { id: "org_new", slug: "acme-2" },
+    error: null,
   });
-  fireEvent.change(screen.getByLabelText("Organization handle"), {
-    target: { value: "my-own" },
-  });
-  fireEvent.change(screen.getByLabelText("Organization name"), {
-    target: { value: "Acme Robotics" },
-  });
-
-  expect(
-    (screen.getByLabelText("Organization handle") as HTMLInputElement).value,
-  ).toBe("my-own");
-});
-
-test("creating passes the name and the handle", async () => {
   const onCreated = vi.fn();
   render(<CreateOrganization onCreated={onCreated} onCancel={vi.fn()} />);
 
@@ -432,20 +491,64 @@ test("creating passes the name and the handle", async () => {
   fireEvent.click(screen.getByRole("button", { name: /create organization/i }));
 
   await waitFor(() =>
-    expect(create).toHaveBeenCalledWith({ name: "Acme", slug: "acme" }),
+    expect(onCreated).toHaveBeenCalledWith("org_new", "acme-2"),
   );
-  await waitFor(() => expect(onCreated).toHaveBeenCalledWith("org_new"));
 });
 
-test("a name whose handle would be invalid cannot be submitted", async () => {
-  render(<CreateOrganization onCreated={vi.fn()} onCancel={vi.fn()} />);
+test("a taken handle is retried with a suffix, not reported", async () => {
+  /*
+   * Nobody chose the handle, so a collision is not the person's problem to
+   * solve — and with no handle field there is nothing they could do about it.
+   */
+  create
+    .mockResolvedValueOnce({
+      data: null,
+      error: {
+        code: "ORGANIZATION_SLUG_ALREADY_TAKEN",
+        message: "That organization handle is taken.",
+      },
+    })
+    .mockResolvedValueOnce({
+      data: { id: "org_new", slug: "acme-2" },
+      error: null,
+    });
+  const onCreated = vi.fn();
+  render(<CreateOrganization onCreated={onCreated} onCancel={vi.fn()} />);
 
   fireEvent.change(screen.getByLabelText("Organization name"), {
     target: { value: "Acme" },
   });
-  fireEvent.change(screen.getByLabelText("Organization handle"), {
-    target: { value: "no" },
+  fireEvent.click(screen.getByRole("button", { name: /create organization/i }));
+
+  await waitFor(() =>
+    expect(onCreated).toHaveBeenCalledWith("org_new", "acme-2"),
+  );
+  expect(create).toHaveBeenNthCalledWith(1, { name: "Acme", slug: "acme" });
+  expect(create).toHaveBeenNthCalledWith(2, { name: "Acme", slug: "acme-2" });
+  // Nothing about a handle reaches the person.
+  expect(screen.queryByText(/handle is taken/i)).toBeNull();
+});
+
+test("a name that normalises to nothing still yields a valid handle", async () => {
+  // `toHandleStem` substitutes a stem rather than returning an empty string,
+  // so a name of pure punctuation is still creatable.
+  render(<CreateOrganization onCreated={vi.fn()} onCancel={vi.fn()} />);
+
+  fireEvent.change(screen.getByLabelText("Organization name"), {
+    target: { value: "!!!" },
   });
+
+  expect(
+    (
+      screen.getByRole("button", {
+        name: /create organization/i,
+      }) as HTMLButtonElement
+    ).disabled,
+  ).toBe(false);
+});
+
+test("an empty name cannot be submitted", async () => {
+  render(<CreateOrganization onCreated={vi.fn()} onCancel={vi.fn()} />);
 
   expect(
     (
@@ -457,9 +560,11 @@ test("a name whose handle would be invalid cannot be submitted", async () => {
 });
 
 test("the server's reason for refusing a create is shown", async () => {
+  // Something other than a taken handle: that one is retried rather than
+  // reported, which the test above pins.
   create.mockResolvedValue({
     data: null,
-    error: { message: "That organization handle is taken." },
+    error: { message: "You already have too many organizations." },
   });
   render(<CreateOrganization onCreated={vi.fn()} onCancel={vi.fn()} />);
 
@@ -468,7 +573,7 @@ test("the server's reason for refusing a create is shown", async () => {
   });
   fireEvent.click(screen.getByRole("button", { name: /create organization/i }));
 
-  expect(await screen.findByText(/handle is taken/i)).toBeDefined();
+  expect(await screen.findByText(/too many organizations/i)).toBeDefined();
 });
 
 // ---- personal organizations -----------------------------------------------
@@ -499,7 +604,9 @@ test("a personal organization shows no members section", async () => {
   );
 
   await waitFor(() => {
-    expect(screen.getByLabelText("Organization handle")).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Edit organization handle" }),
+    ).toBeTruthy();
   });
   expect(screen.queryByRole("heading", { name: "Members" })).toBeNull();
 });
@@ -516,7 +623,9 @@ test("a personal organization offers no way to invite anyone", async () => {
   );
 
   await waitFor(() => {
-    expect(screen.getByLabelText("Organization handle")).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Edit organization handle" }),
+    ).toBeTruthy();
   });
   expect(screen.queryByLabelText(/handle or email/i)).toBeNull();
 });
@@ -535,7 +644,9 @@ test("a personal organization cannot be left or deleted", async () => {
   );
 
   await waitFor(() => {
-    expect(screen.getByLabelText("Organization handle")).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Edit organization handle" }),
+    ).toBeTruthy();
   });
   expect(screen.queryByRole("heading", { name: "Leaving" })).toBeNull();
   expect(
@@ -560,7 +671,19 @@ test("a team organization still shows all three", async () => {
     <Organization organization={acme} onChanged={vi.fn()} onLeft={vi.fn()} />,
   );
 
-  expect(await screen.findByRole("heading", { name: "Members" })).toBeTruthy();
+  // All three tabs are offered...
+  expect(await screen.findByRole("tab", { name: "Overview" })).toBeTruthy();
+  expect(screen.getByRole("tab", { name: "Members" })).toBeTruthy();
+  expect(screen.getByRole("tab", { name: "Settings" })).toBeTruthy();
+
+  // ...and each carries its section. Only the open tab is mounted, so this
+  // has to walk them rather than query the page once.
+  expect(screen.getByRole("heading", { name: "Handle" })).toBeTruthy();
+
+  await openTab("Members");
+  expect(screen.getByRole("heading", { name: "Members" })).toBeTruthy();
+
+  await openTab("Settings");
   expect(screen.getByRole("heading", { name: "Leaving" })).toBeTruthy();
   expect(
     screen.getByRole("button", { name: /Leave organization/ }),
@@ -579,27 +702,25 @@ const USER_1_D =
 /**
  * The faces in the member list, in order.
  *
- * The rows are the `div`s that carry an avatar and a role badge; the handle
- * form's own avatar sits outside them, so a query over the whole page would
- * return the organization's face first.
+ * Every avatar in the tree, which is exactly the member rows: the handle
+ * form's own avatar sits in the Overview tab, and only the open tab is
+ * mounted, so with Members open nothing else can match.
  */
 function memberFaces(container: HTMLElement): Array<string | undefined> {
-  return [...container.querySelectorAll('[data-slot="card"]')]
-    .filter((card) => card.textContent?.includes("Members") === true)
-    .flatMap((card) => [...card.querySelectorAll('[data-slot="avatar"]')])
-    .map((avatar) => avatar.querySelector("path")?.getAttribute("d"));
+  return [...container.querySelectorAll('[data-slot="avatar"]')].map((avatar) =>
+    avatar.querySelector("path")?.getAttribute("d"),
+  );
 }
 
 test("a member row carries the face generated for that person", async () => {
   serverWith([owner, plainMember]);
   const { container } = showSettings();
+  await openTab("Members");
 
   await waitFor(() => {
     expect(screen.getByText("Dana")).toBeTruthy();
   });
 
-  // Scoped to the member rows: the handle form above carries the
-  // organization's own avatar, which is the first on the page.
   const faces = memberFaces(container);
 
   // Dana is `user_1`, and two people do not share a face.
@@ -617,6 +738,7 @@ test("a member's face follows the person, not the membership", async () => {
    */
   serverWith([{ ...owner, id: "mem_somewhere_else" }]);
   const { container } = showSettings();
+  await openTab("Members");
 
   await waitFor(() => {
     expect(screen.getByText("Dana")).toBeTruthy();
@@ -636,4 +758,176 @@ test("clicking the organization picture says why it cannot be changed yet", asyn
   const notice = await screen.findByRole("status");
   expect(notice.textContent).toContain("coming soon");
   expect(notice.className).not.toContain("destructive");
+});
+
+// ---- the connections card -------------------------------------------------
+
+/**
+ * The card names every tool the organization can connect, including the two
+ * that are not built yet.
+ *
+ * `onOpenJira` is what gates the whole card, so these pass it: without it the
+ * component renders no connections at all, which is what the settings page
+ * does when it has no router to open.
+ */
+function showConnections(connections: Array<{ healthy: boolean }> = []) {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url: string) => {
+      if (String(url).includes("/jira/connections")) {
+        return new Response(JSON.stringify({ connections }));
+      }
+      if (String(url).includes("/members")) {
+        return new Response(JSON.stringify({ members: [owner] }));
+      }
+      return new Response("{}", { status: 404 });
+    }),
+  );
+  return render(
+    <Organization
+      organization={acme}
+      onChanged={vi.fn()}
+      onLeft={vi.fn()}
+      onOpenJira={vi.fn()}
+    />,
+  );
+}
+
+test("the connections card counts only healthy Jira connections", async () => {
+  // An unhealthy connection is one the organization cannot actually read, so
+  // counting it would overstate what is working.
+  showConnections([{ healthy: true }, { healthy: true }, { healthy: false }]);
+
+  expect(await screen.findByText("2 active connections")).toBeDefined();
+});
+
+test("the connections card is headed Connections, not Jira", async () => {
+  // It names every tool now, so heading it after one of them would be wrong.
+  showConnections();
+
+  expect(
+    await screen.findByRole("heading", { name: "Connections", level: 2 }),
+  ).toBeDefined();
+  expect(screen.queryByRole("heading", { name: "Jira" })).toBeNull();
+});
+
+test("GitHub and Slack are named but cannot be opened yet", async () => {
+  // Named rather than left out: the card is about which tools this
+  // organization connects, and "not yet" is still an answer.
+  showConnections();
+
+  for (const label of ["GitHub", "Slack"]) {
+    const button = await screen.findByRole("button", {
+      name: `Manage ${label} connections`,
+    });
+    expect((button as HTMLButtonElement).disabled).toBe(true);
+  }
+  expect(screen.getAllByText("Coming soon")).toHaveLength(2);
+});
+
+test("the Jira row stays clickable", async () => {
+  // The one real connection: everything else on the card is disabled, so a
+  // regression that disabled this one too would look intentional.
+  showConnections();
+
+  const button = await screen.findByRole("button", {
+    name: "Manage Jira connections",
+  });
+  expect((button as HTMLButtonElement).disabled).toBe(false);
+});
+
+test("one connection reads in the singular", async () => {
+  // "1 active connections" is the kind of wrong that looks unfinished.
+  showConnections([{ healthy: true }]);
+
+  expect(await screen.findByText("1 active connection")).toBeDefined();
+});
+
+test("a personal organization is not split into tabs", async () => {
+  // Two of the three tabs would be empty: a personal organization has no
+  // members to list and cannot be left. It keeps the stacked layout, so the
+  // handle and the connections are both on screen at once.
+  serverWith([]);
+  render(
+    <Organization
+      organization={personal}
+      onChanged={vi.fn()}
+      onLeft={vi.fn()}
+      onOpenJira={vi.fn()}
+    />,
+  );
+
+  await screen.findByRole("button", { name: "Edit organization handle" });
+  expect(screen.queryByRole("tab")).toBeNull();
+  expect(screen.getByRole("heading", { name: "Connections" })).toBeDefined();
+});
+
+// ---- the member count -----------------------------------------------------
+
+test("the handle card says how many members there are", async () => {
+  // The same line the account page carries under its handle, about the other
+  // principal: a count that is the way to the list, not a statistic.
+  serverWith([owner, plainMember]);
+  showSettings();
+
+  expect(await screen.findByText("2 members")).toBeDefined();
+});
+
+test("one member reads in the singular", async () => {
+  serverWith([owner]);
+  showSettings();
+
+  expect(await screen.findByText("1 member")).toBeDefined();
+});
+
+test("no count is shown before the members arrive", async () => {
+  // "0 members" is never true — an organization always has its owner — so a
+  // count that has not loaded shows nothing rather than zero.
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(
+      () =>
+        // Never settles, so the page stays in its loading state.
+        new Promise(() => {
+          /* pending */
+        }),
+    ),
+  );
+  showSettings();
+
+  await screen.findByRole("button", { name: "Edit organization handle" });
+  expect(screen.queryByText(/\d+ members?$/)).toBeNull();
+});
+
+test("the member count opens the Members tab", async () => {
+  serverWith([owner, plainMember]);
+  showSettings();
+
+  fireEvent.click(await screen.findByText("2 members"));
+
+  // The tab it names, now showing the list itself.
+  await waitFor(() =>
+    expect(
+      screen
+        .getByRole("tab", { name: "Members" })
+        .getAttribute("aria-selected"),
+    ).toBe("true"),
+  );
+  expect(screen.getByRole("heading", { name: "Members" })).toBeDefined();
+});
+
+test("a personal organization names itself instead of counting members", async () => {
+  // It has exactly one member and cannot gain another, so "1 member" would
+  // invite a question whose answer is "never".
+  serverWith([owner]);
+  render(
+    <Organization
+      organization={personal}
+      onChanged={vi.fn()}
+      onLeft={vi.fn()}
+    />,
+  );
+
+  expect(await screen.findByText("Personal organization")).toBeDefined();
+  expect(screen.queryByText(/\d+ members?$/)).toBeNull();
 });

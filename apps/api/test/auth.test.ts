@@ -682,6 +682,7 @@ function fakeOrganizations(held: Record<string, string> = {}) {
         slug: "dana",
         kind: "personal" as const,
       }),
+    renamePersonal: () => Promise.resolve(),
     listForUser: () => Promise.resolve([]),
     roleOf: () => Promise.resolve(undefined),
     get: () => Promise.resolve(undefined),

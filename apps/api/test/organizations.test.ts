@@ -74,6 +74,8 @@ interface Recorded {
   readonly roleOf: Array<[string, string]>;
   readonly listMembers: string[];
   readonly pendingFor: string[];
+  /** `[userId, name]` per rename, for the display-name route. */
+  readonly renamePersonal: Array<[string, string]>;
 }
 
 function fakeStore(
@@ -91,12 +93,21 @@ function fakeStore(
 ): { store: OrganizationStore; calls: Recorded } {
   const roles = options.roles ?? { [`${dana.id}:${acme.id}`]: "owner" };
   const organizations = options.organizations ?? [acme];
-  const calls: Recorded = { roleOf: [], listMembers: [], pendingFor: [] };
+  const calls: Recorded = {
+    roleOf: [],
+    listMembers: [],
+    pendingFor: [],
+    renamePersonal: [],
+  };
 
   const store: OrganizationStore = {
     // Never called by a route: the signup hook is the only caller, and its
     // own behaviour is covered in `packages/db`.
     createPersonal: () => Promise.reject(new Error("not used in these tests")),
+    renamePersonal: (userId, name) => {
+      calls.renamePersonal.push([userId, name]);
+      return Promise.resolve();
+    },
     listForUser: (userId) =>
       Promise.resolve(
         organizations
@@ -536,4 +547,92 @@ test("an unrecognised role grants nothing", () => {
   assert.equal(rankAtLeast("", "member"), false);
   // Even beside a real one, the unknown must not lift the result.
   assert.equal(rankAtLeast("superuser,member", "admin"), false);
+});
+
+// ---- renaming yourself renames your personal organization -----------------
+
+/*
+ * `organization.name` on a personal organization is a copy of `user.name`
+ * taken at signup, and no surface edits it directly. If the rename route did
+ * not write both, that heading would keep a name its owner had abandoned —
+ * with nothing anywhere to correct it.
+ */
+
+function appWithNameRoute(store: OrganizationStore) {
+  const server = createApp({
+    corsOrigins: ["http://localhost:5173"],
+    auth: fakeAuth(),
+    organizations: store,
+    profiles: {
+      get: () => Promise.resolve({ username: "dana" }),
+      setName: (_userId: string, raw: string) =>
+        Promise.resolve({ status: "ok" as const, name: raw.trim() }),
+    } as unknown as Parameters<typeof createApp>[0]["profiles"],
+  });
+  return {
+    request: (path: string, init?: RequestInit) =>
+      server.request(path, {
+        ...init,
+        headers: { ...signedIn, ...init?.headers },
+      }),
+  };
+}
+
+test("renaming yourself renames your personal organization too", async () => {
+  const { store, calls } = fakeStore();
+
+  const res = await appWithNameRoute(store).request("/api/v1/me/name", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: "Charlie Ang" }),
+  });
+
+  assert.equal(res.status, 200);
+  // The caller's own id, from the session — never one from the body.
+  assert.deepEqual(calls.renamePersonal, [[dana.id, "Charlie Ang"]]);
+});
+
+test("a refused name renames nothing", async () => {
+  const { store, calls } = fakeStore();
+  const server = createApp({
+    corsOrigins: ["http://localhost:5173"],
+    auth: fakeAuth(),
+    organizations: store,
+    profiles: {
+      get: () => Promise.resolve({ username: "dana" }),
+      setName: () =>
+        Promise.resolve({
+          status: "invalid" as const,
+          reason: "Name cannot be empty.",
+        }),
+    } as unknown as Parameters<typeof createApp>[0]["profiles"],
+  });
+
+  const res = await server.request("/api/v1/me/name", {
+    method: "PUT",
+    headers: { ...signedIn, "Content-Type": "application/json" },
+    body: JSON.stringify({ name: "   " }),
+  });
+
+  assert.equal(res.status, 400);
+  assert.deepEqual(calls.renamePersonal, []);
+});
+
+test("a failed organization rename still saves the name", async () => {
+  // Best-effort on purpose: failing the request would report a rename that
+  // did in fact happen.
+  const { store } = fakeStore();
+  const failing: OrganizationStore = {
+    ...store,
+    renamePersonal: () => Promise.reject(new Error("database is down")),
+  };
+
+  const res = await appWithNameRoute(failing).request("/api/v1/me/name", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: "Charlie Ang" }),
+  });
+
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { name: "Charlie Ang" });
 });

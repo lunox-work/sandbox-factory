@@ -17,6 +17,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
@@ -136,6 +137,23 @@ const { App } = await import("../src/App");
 
 /** The rail's controls, by the accessible name each one carries. */
 const HOME = "Home";
+
+/**
+ * The rail's Home button specifically.
+ *
+ * Scoped to the "Main" landmark because the breadcrumb trail offers a Home
+ * step of its own on every screen below home, and these tests are about the
+ * rail — which one is marked current, and where its click lands. Two controls
+ * named Home is not an ambiguity to a screen reader either, as long as they
+ * sit in landmarks that are named apart; that is what `aria-label` on each
+ * `nav` is for.
+ */
+function railHome(): HTMLElement {
+  return within(screen.getByRole("navigation", { name: "Main" })).getByRole(
+    "button",
+    { name: HOME },
+  );
+}
 const AVATAR = /Account and settings/;
 
 function signedIn(image?: string | null) {
@@ -190,7 +208,7 @@ test("the rail offers home and the account avatar, with the logo above them", ()
 
   const rail = screen.getByRole("navigation", { name: "Main" });
   expect(rail.querySelector("img[src*='logo-gradient']")).toBeTruthy();
-  expect(screen.getByRole("button", { name: HOME })).toBeTruthy();
+  expect(railHome()).toBeTruthy();
   expect(screen.getByRole("button", { name: AVATAR })).toBeTruthy();
 });
 
@@ -226,7 +244,7 @@ test("the menu opens the account screen, and home comes back", async () => {
 
   // The account screen has no back button of its own, so this click is the
   // only way out. If it stops working, the screen is a dead end.
-  fireEvent.click(screen.getByRole("button", { name: HOME }));
+  fireEvent.click(railHome());
   await waitFor(() => {
     expect(screen.getByRole("heading", { name: "Connections" })).toBeTruthy();
   });
@@ -257,10 +275,7 @@ test("the menu offers account and sign out, but not a second way home", async ()
 test("the rail marks the screen you are on", async () => {
   render(<App />);
 
-  expect(screen.getByRole("button", { name: HOME })).toHaveProperty(
-    "ariaCurrent",
-    "page",
-  );
+  expect(railHome()).toHaveProperty("ariaCurrent", "page");
 
   await openMenu();
   fireEvent.click(screen.getByRole("menuitem", { name: /Account settings/ }));
@@ -269,7 +284,7 @@ test("the rail marks the screen you are on", async () => {
     expect(screen.getByRole("heading", { name: "Account" })).toBeTruthy();
   });
   // Home is no longer current once the account screen is showing.
-  expect(screen.getByRole("button", { name: HOME }).ariaCurrent).toBeNull();
+  expect(railHome().ariaCurrent).toBeNull();
 });
 
 test("/account opens the account screen directly", async () => {
@@ -283,7 +298,7 @@ test("/account opens the account screen directly", async () => {
   // `Account` loads itself on mount. Awaited so its state lands inside the
   // test rather than after it, which React reports as an act() warning.
   await waitFor(() => {
-    expect(screen.getByLabelText("Username")).toHaveProperty("value", "alice");
+    expect(screen.getByText("@alice")).toBeTruthy();
   });
 });
 
@@ -312,7 +327,7 @@ test("navigating writes the path, so a reload stays put", async () => {
 
   await waitFor(() => expect(window.location.pathname).toBe("/account"));
 
-  fireEvent.click(screen.getByRole("button", { name: HOME }));
+  fireEvent.click(railHome());
   expect(window.location.pathname).toBe("/");
 });
 
@@ -401,10 +416,7 @@ test("/o/:slug/settings opens that organization directly", async () => {
     await screen.findByRole("heading", { name: "Acme", level: 1 }),
   ).toBeTruthy();
   await waitFor(() => {
-    expect(screen.getByLabelText("Organization handle")).toHaveProperty(
-      "value",
-      "acme",
-    );
+    expect(screen.getByText("acme")).toBeTruthy();
   });
 });
 
@@ -426,7 +438,9 @@ test("only /o/... names an organization, not any two-segment path", async () => 
   render(<App />);
 
   expect(screen.getByRole("heading", { name: "Connections" })).toBeTruthy();
-  expect(screen.queryByLabelText("Organization handle")).toBeNull();
+  expect(
+    screen.queryByRole("button", { name: "Edit organization handle" }),
+  ).toBeNull();
 });
 
 test("/organizations/new opens the create form", async () => {

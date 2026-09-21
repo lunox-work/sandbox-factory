@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 import { Account } from "./Account";
 import { signOut, useSession } from "./auth";
+import { Breadcrumbs } from "./Breadcrumbs";
 import { Home } from "./Home";
 import { CreateOrganization, Organization } from "./Organization";
 import { Organizations } from "./Organizations";
@@ -123,9 +124,36 @@ function Signed({
         onSignOut={() => void signOut()}
       />
       <div className="min-w-0 flex-1 pb-16 sm:overflow-y-auto sm:pb-0">
+        {/*
+          Above the page rather than inside it, so every screen gets the same
+          trail in the same place. The organization is passed only once it has
+          loaded — see `trailFor`, which drops the crumb rather than showing a
+          placeholder that shifts the row when the name arrives.
+
+          The pages open with their own top padding, sized for a page that
+          starts at the top of the column. With a trail above them that reads
+          as a gap, so the wrapper pulls the first child's padding back rather
+          than editing it on all five pages — each of which would then have to
+          know whether a trail is above it.
+        */}
+        <Breadcrumbs
+          screen={screen}
+          organization={
+            organizations.active === null
+              ? undefined
+              : {
+                  name: organizations.active.name,
+                  slug: organizations.active.slug,
+                }
+          }
+          onNavigate={navigate}
+        />
         {screen === "account" ? (
           <Account
             onJoined={() => void organizations.refresh()}
+            // The rename also renamed the personal organization, so the
+            // switcher would otherwise keep showing the previous name.
+            onRenamed={() => void organizations.refresh()}
             organizationCount={organizations.organizations.length}
             onOpenOrganizations={() => navigate("organizations")}
           />
@@ -145,10 +173,13 @@ function Signed({
           />
         ) : screen === "create-org" ? (
           <CreateOrganization
-            onCreated={(id) => {
+            onCreated={(id, slug) => {
               void organizations.refresh();
               organizations.select(id);
-              navigate("home");
+              // Into the new organization, not home: creating one is the start
+              // of setting it up. The slug is passed because `select` has not
+              // re-rendered yet — see `navigate`.
+              navigate("org-settings", slug);
             }}
             onCancel={() => navigate("home")}
           />

@@ -63,3 +63,69 @@ const ICONS: Record<ProviderId, ReactElement> = {
 export function ProviderIcon({ provider }: { provider: ProviderId }) {
   return ICONS[provider];
 }
+
+/**
+ * Jira's own mark, which is not Atlassian's.
+ *
+ * The distinction is the point of keeping both: signing in goes through
+ * Atlassian the account provider, so the sign-in screen and the account page
+ * show the Atlassian mark. The Connections card names the *product* whose
+ * boards get read, which is Jira. Same company, two different things being
+ * named, so `ICONS.atlassian` stays where it is.
+ */
+export function JiraIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      {/*
+        Three nested chevrons, each offset from the last. The coordinates are
+        Atlassian's own, shifted up by 2.7 so the third one ends at 24 rather
+        than running past the viewBox and clipping.
+      */}
+      <path
+        fill="#2684FF"
+        d="M11.08 0a5.32 5.32 0 0 0 5.32 5.32h2.2v2.12a5.32 5.32 0 0 0 4.95 5.3V.78A.78.78 0 0 0 22.77 0z"
+      />
+      <path
+        fill="#2684FF"
+        d="M5.54 5.57a5.32 5.32 0 0 0 5.32 5.32h2.19v2.12a5.32 5.32 0 0 0 5.32 5.32V6.35a.78.78 0 0 0-.78-.78z"
+        opacity=".75"
+      />
+      <path
+        fill="#2684FF"
+        d="M0 11.14a5.32 5.32 0 0 0 5.32 5.32h2.19v2.12a5.32 5.32 0 0 0 5.32 5.32V11.92a.78.78 0 0 0-.78-.78z"
+        opacity=".5"
+      />
+    </svg>
+  );
+}
+
+/**
+ * Slack's mark, kept out of `ICONS` because Slack is not a sign-in provider.
+ *
+ * `ProviderId` is the union of what the sign-in screen offers, and widening it
+ * to carry an icon would let `signInWith("slack")` type-check against a
+ * provider the API has never heard of. The Connections card names tools, not
+ * ways in, so it reaches for this directly.
+ */
+export function SlackIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path
+        fill="#E01E5A"
+        d="M5.042 15.165a2.528 2.528 0 0 1-2.52 2.523A2.528 2.528 0 0 1 0 15.165a2.527 2.527 0 0 1 2.522-2.52h2.52v2.52zM6.313 15.165a2.527 2.527 0 0 1 2.521-2.52 2.527 2.527 0 0 1 2.521 2.52v6.313A2.528 2.528 0 0 1 8.834 24a2.528 2.528 0 0 1-2.521-2.522v-6.313z"
+      />
+      <path
+        fill="#36C5F0"
+        d="M8.834 5.042a2.528 2.528 0 0 1-2.521-2.52A2.528 2.528 0 0 1 8.834 0a2.528 2.528 0 0 1 2.521 2.522v2.52H8.834zM8.834 6.313a2.528 2.528 0 0 1 2.521 2.521 2.528 2.528 0 0 1-2.521 2.521H2.522A2.528 2.528 0 0 1 0 8.834a2.528 2.528 0 0 1 2.522-2.521h6.312z"
+      />
+      <path
+        fill="#2EB67D"
+        d="M18.956 8.834a2.528 2.528 0 0 1 2.522-2.521A2.528 2.528 0 0 1 24 8.834a2.528 2.528 0 0 1-2.522 2.521h-2.522V8.834zM17.688 8.834a2.528 2.528 0 0 1-2.523 2.521 2.527 2.527 0 0 1-2.52-2.521V2.522A2.527 2.527 0 0 1 15.165 0a2.528 2.528 0 0 1 2.523 2.522v6.312z"
+      />
+      <path
+        fill="#ECB22E"
+        d="M15.165 18.956a2.528 2.528 0 0 1 2.523 2.522A2.528 2.528 0 0 1 15.165 24a2.527 2.527 0 0 1-2.52-2.522v-2.522h2.52zM15.165 17.688a2.527 2.527 0 0 1-2.52-2.523 2.526 2.526 0 0 1 2.52-2.52h6.313A2.527 2.527 0 0 1 24 15.165a2.528 2.528 0 0 1-2.522 2.523h-6.313z"
+      />
+    </svg>
+  );
+}
