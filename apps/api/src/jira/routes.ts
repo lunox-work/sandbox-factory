@@ -557,10 +557,12 @@ function failureResponse(
 /**
  * A failed Jira call, as a response.
  *
- * Three outcomes, because they need three different things of the user: a
- * revoked grant means reconnect, a 4xx from Jira means the request was wrong
- * and is reported as it stands, and anything else is ours to fix and is
- * re-thrown for the error handler.
+ * Four outcomes, because each asks something different of the reader. A
+ * revoked grant means reconnect. A **scope mismatch means the Atlassian app
+ * is misconfigured** and no action by this user can fix it — telling them to
+ * reconnect would send them round a loop that ends where it started, so it
+ * says what is actually missing. Any other 4xx from Jira is reported as it
+ * stands, and anything else is ours and is re-thrown for the error handler.
  */
 async function jiraFailure(
   c: { json: (body: unknown, status: 404 | 409 | 502) => Response },
@@ -568,8 +570,19 @@ async function jiraFailure(
   connectionId: string,
   error: unknown,
 ): Promise<Response> {
-  if (await noteAuthFailure(connections, connectionId, error)) {
+  const kind = await noteAuthFailure(connections, connectionId, error);
+  if (kind === "reconnect") {
     return failureResponse(c, { reason: "reconnect" });
+  }
+  if (kind === "scope") {
+    return c.json(
+      {
+        error:
+          "This Atlassian app is not authorised for Jira's Agile API. Its scope list needs the Jira Software scopes, and the site must then be connected again.",
+        code: "scope",
+      },
+      502,
+    );
   }
   if (error instanceof JiraApiError) {
     // Jira's own message is not forwarded: it can carry site detail, and the

@@ -152,37 +152,70 @@ export async function jiraClientFor(
 }
 
 /**
- * Marks a connection unhealthy when Atlassian has refused the grant, and says
- * whether that is what happened.
+ * Atlassian's phrase for "the token is valid, but this app was never granted
+ * the scope this endpoint needs".
+ *
+ * It arrives as a **401**, which is the trap: every other 401 from the REST
+ * API means the credential is finished, and this one means the opposite — the
+ * grant is live and reconnecting changes nothing, because the missing scope is
+ * absent from the *app's* configuration rather than from the user's consent.
+ *
+ * Matched on the message because the status cannot distinguish it. Atlassian
+ * sends no `WWW-Authenticate` header and no error code here; the body is
+ * `{"code":401,"message":"Unauthorized; scope does not match"}` and that string
+ * is the only signal there is.
+ */
+function isScopeMismatch(error: JiraApiError): boolean {
+  return /scope does not match/i.test(error.message);
+}
+
+/**
+ * How a failed Jira call should be reported.
+ *
+ * Three outcomes rather than two, because "reconnect" is useless advice for
+ * two of them and the difference is invisible in the status code.
+ */
+export type JiraFailureKind = "reconnect" | "scope" | "other";
+
+/**
+ * Classifies a failed Jira call, and flags the connection when — and only
+ * when — the grant is genuinely finished.
  *
  * Called from the catch of every route that uses a client. A revoked grant is
  * a state the UI has to show, not a 500: nothing is broken, and the remedy is
  * a fresh consent.
  *
- * **Two error types, because a grant can die at either end.** `JiraAuthError`
- * comes from the token endpoint — a refresh that Atlassian refused, which is
- * the case that hits after an access token has already expired.
- * `JiraApiError` with a 401 comes from the REST API, and is what a grant
- * revoked *while a live access token was still valid* looks like: the refresh
- * never runs, because there was nothing to refresh. Checking only the first
- * leaves that connection reported as a bad request forever, and the UI never
- * says "reconnect".
+ * **A grant can die at either end.** `JiraAuthError` comes from the token
+ * endpoint — a refresh Atlassian refused, which is what happens once the
+ * access token has expired. A REST 401 is what a grant revoked *while a live
+ * access token was still valid* looks like, because no refresh ever runs.
  *
- * A 403 is deliberately not included. That is a missing scope, which survives
- * a reconnect unless the user consents to more — a different remedy, and
- * flagging the connection unhealthy would mislabel a working grant.
+ * **But not every REST 401 is a revocation**, and treating them alike is how
+ * a healthy connection gets permanently flagged. `scope does not match` is a
+ * 401 whose cause is the Atlassian app's own scope list: the token works
+ * against every endpoint the app *was* granted, and consenting again produces
+ * an identical token. Marking that unhealthy tells the user to perform a fix
+ * that cannot work, and hides a live connection behind a dead-end message.
+ *
+ * A 403 is likewise excluded: that is a permission the *user* lacks, which a
+ * reconnect does not change either.
  */
 export async function noteAuthFailure(
   connections: JiraConnectionStore,
   connectionId: string,
   error: unknown,
-): Promise<boolean> {
-  const revoked =
-    (error instanceof JiraAuthError && error.needsReconnect) ||
-    (error instanceof JiraApiError && error.isUnauthorized);
-  if (!revoked) {
-    return false;
+): Promise<JiraFailureKind> {
+  if (error instanceof JiraApiError && error.isUnauthorized) {
+    if (isScopeMismatch(error)) {
+      // Deliberately no `markUnhealthy`: the grant is fine.
+      return "scope";
+    }
+    await connections.markUnhealthy(connectionId);
+    return "reconnect";
   }
-  await connections.markUnhealthy(connectionId);
-  return true;
+  if (error instanceof JiraAuthError && error.needsReconnect) {
+    await connections.markUnhealthy(connectionId);
+    return "reconnect";
+  }
+  return "other";
 }

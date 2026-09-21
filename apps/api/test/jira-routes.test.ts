@@ -218,6 +218,8 @@ function fakeJiraApi(
     boards?: unknown[];
     issues?: unknown[];
     status?: number;
+    /** Atlassian's body, for the 401s that mean different things. */
+    errorBody?: unknown;
   } = {},
 ): typeof globalThis.fetch & { urls: string[] } {
   const urls: string[] = [];
@@ -225,9 +227,10 @@ function fakeJiraApi(
     const href = String(url);
     urls.push(href);
     if (options.status !== undefined && options.status >= 400) {
-      return new Response(JSON.stringify({ errorMessages: ["nope"] }), {
-        status: options.status,
-      });
+      return new Response(
+        JSON.stringify(options.errorBody ?? { errorMessages: ["nope"] }),
+        { status: options.status },
+      );
     }
     if (href.includes("/rest/agile/1.0/board?")) {
       return new Response(
@@ -1154,6 +1157,49 @@ test("a revoked grant marks the connection unhealthy", async () => {
   assert.equal(response.status, 409);
   // So the next page load says "reconnect" without spending a round trip.
   assert.deepEqual(connections.unhealthy, ["jrc_1"]);
+});
+
+test("a scope mismatch is not treated as a revoked grant", async () => {
+  // Atlassian answers 401 "scope does not match" when the *app* was never
+  // granted a scope the endpoint needs. The token is live and consenting
+  // again mints an identical one, so flagging the row would tell the user to
+  // perform a fix that cannot work — and hide a working connection behind it.
+  const connections = fakeConnections();
+  const { app } = appWith({
+    connections,
+    fetch: fakeJiraApi({
+      status: 401,
+      errorBody: { code: 401, message: "Unauthorized; scope does not match" },
+    }),
+  });
+
+  const response = await app.request(
+    "/api/v1/orgs/org_1/jira/boards/jrb_1/backlog-preview",
+    { headers: signedIn },
+  );
+
+  assert.equal(response.status, 502);
+  assert.equal(((await response.json()) as { code: string }).code, "scope");
+  assert.deepEqual(connections.unhealthy, []);
+});
+
+test("a scope mismatch names the app, not the connection", async () => {
+  // The remedy is in the Atlassian console, so the message has to say so
+  // rather than sending the user round the consent loop again.
+  const { app } = appWith({
+    fetch: fakeJiraApi({
+      status: 401,
+      errorBody: { code: 401, message: "Unauthorized; scope does not match" },
+    }),
+  });
+
+  const response = await app.request(
+    "/api/v1/orgs/org_1/jira/connections/jrc_1/boards",
+    { headers: signedIn },
+  );
+
+  const body = (await response.json()) as { error: string };
+  assert.match(body.error, /scope list/i);
 });
 
 test("a missing scope does not mark the connection unhealthy", async () => {

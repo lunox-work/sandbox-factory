@@ -249,7 +249,15 @@ export interface BacklogPreview {
  * so the page offers to reconnect rather than a "try again" that cannot work.
  */
 export type JiraFetchError =
-  { kind: "reconnect" } | { kind: "jira" } | { kind: "other"; message: string };
+  | { kind: "reconnect" }
+  /**
+   * The Atlassian app itself lacks a scope the endpoint needs. Distinct from
+   * `reconnect` because no action by this user fixes it: the token is live,
+   * and consenting again produces an identical one.
+   */
+  | { kind: "scope"; message: string }
+  | { kind: "jira" }
+  | { kind: "other"; message: string };
 
 /** Turns a failed response into the error the page renders. */
 async function toFetchError(res: Response): Promise<JiraFetchError> {
@@ -259,6 +267,14 @@ async function toFetchError(res: Response): Promise<JiraFetchError> {
   } | null;
   if (body?.code === "reconnect") {
     return { kind: "reconnect" };
+  }
+  if (body?.code === "scope") {
+    // The server's wording is used as it stands: it names what is missing and
+    // where, which a generic string here would lose.
+    return {
+      kind: "scope",
+      message: body.error ?? "This Atlassian app is missing a Jira scope.",
+    };
   }
   if (body?.code === "jira") {
     return { kind: "jira" };

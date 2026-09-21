@@ -283,6 +283,42 @@ test("Jira's own error messages are surfaced", async () => {
   assert.deepEqual(error.errors, ["The JQL is invalid."]);
 });
 
+test("the gateway's own error message is surfaced", async () => {
+  // `api.atlassian.com` sits in front of Jira and reports its own refusals as
+  // `{ code, message }` rather than Jira's `errorMessages` list. Reading only
+  // the list leaves every gateway rejection wearing the generic 401 text —
+  // and discards "scope does not match", which is the only thing separating an
+  // app that was never granted a scope from a grant the user revoked.
+  const { client: jira } = client([
+    {
+      status: 401,
+      body: { code: 401, message: "Unauthorized; scope does not match" },
+    },
+  ]);
+
+  const error = await jira.boards().catch((caught: unknown) => caught);
+
+  assert.ok(error instanceof JiraApiError);
+  assert.equal(error.message, "Unauthorized; scope does not match");
+});
+
+test("Jira's own messages win over the gateway's summary", async () => {
+  // Both shapes at once: the specific list is the more useful of the two.
+  const { client: jira } = client([
+    {
+      status: 400,
+      body: { errorMessages: ["The JQL is invalid."], message: "Bad Request" },
+    },
+  ]);
+
+  const error = await jira
+    .search("nonsense")
+    .catch((caught: unknown) => caught);
+
+  assert.ok(error instanceof JiraApiError);
+  assert.equal(error.message, "The JQL is invalid.");
+});
+
 test("a 404 is not reported as deleted", async () => {
   const { client: jira } = client([{ status: 404, body: {} }]);
 

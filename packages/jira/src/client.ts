@@ -348,16 +348,33 @@ function retryDelayMs(response: Response, attempt: number): number {
   return 500 * 2 ** attempt;
 }
 
-/** Turns a failed response into a `JiraApiError`, reading Jira's error body. */
+/**
+ * Turns a failed response into a `JiraApiError`, reading Jira's error body.
+ *
+ * **Two body shapes, because two different services answer these URLs.** Jira
+ * itself sends `{ errorMessages: [...] }`. The `api.atlassian.com` gateway in
+ * front of it sends `{ code, message }` — and that is the one that carries
+ * "Unauthorized; scope does not match", the only signal distinguishing an app
+ * that was never granted a scope from a grant the user revoked. Reading only
+ * `errorMessages` throws that away and leaves every gateway rejection wearing
+ * the generic text below.
+ */
 async function toApiError(response: Response): Promise<JiraApiError> {
   let messages: string[] = [];
   try {
-    const body: unknown = await response.json();
-    const errors = (body as { errorMessages?: unknown } | null)?.errorMessages;
-    if (Array.isArray(errors)) {
-      messages = errors.filter(
+    const body = (await response.json()) as {
+      errorMessages?: unknown;
+      message?: unknown;
+    } | null;
+    if (Array.isArray(body?.errorMessages)) {
+      messages = body.errorMessages.filter(
         (item): item is string => typeof item === "string",
       );
+    }
+    // The gateway's single `message`, used only when Jira sent no list of its
+    // own, so a Jira error is never displaced by a wrapper's summary.
+    if (messages.length === 0 && typeof body?.message === "string") {
+      messages = [body.message];
     }
   } catch {
     // A non-JSON error body (an HTML gateway page, usually) tells us nothing

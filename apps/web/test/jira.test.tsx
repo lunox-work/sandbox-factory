@@ -515,3 +515,30 @@ test("a plain member sees boards but cannot add one", async () => {
   // Previewing is a read of tickets the organization already has a grant for.
   expect(screen.getByRole("button", { name: /preview/i })).toBeDefined();
 });
+
+test("a scope mismatch is not reported as an expired connection", async () => {
+  // The failure that prompted this: a live grant, refused by the Agile API
+  // because the Atlassian app was never given the Jira Software scopes.
+  // "Reconnect" is a loop that ends where it started.
+  vi.stubGlobal(
+    "fetch",
+    routedFetch({
+      preview: {
+        status: 502,
+        body: {
+          code: "scope",
+          error:
+            "This Atlassian app is not authorised for Jira's Agile API. Its scope list needs the Jira Software scopes, and the site must then be connected again.",
+        },
+      },
+    }),
+  );
+  renderPage();
+  await screen.findByText("Acme Board");
+
+  await userEvent.click(screen.getByRole("button", { name: /preview/i }));
+
+  expect(await screen.findByTestId("jira-scope-error")).toBeDefined();
+  expect(screen.getByText(/scope list/i)).toBeDefined();
+  expect(screen.queryByText(/expired or been revoked/i)).toBeNull();
+});

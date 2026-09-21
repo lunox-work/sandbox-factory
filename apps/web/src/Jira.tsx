@@ -219,6 +219,13 @@ function BoardsError({ error }: { error: JiraFetchError }) {
       </p>
     );
   }
+  if (error.kind === "scope") {
+    return (
+      <p className="text-sm text-destructive" data-testid="jira-scope-error">
+        {error.message}
+      </p>
+    );
+  }
   if (error.kind === "jira") {
     return (
       <p className="text-sm text-destructive">
