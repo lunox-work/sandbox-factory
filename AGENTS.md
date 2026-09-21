@@ -168,6 +168,15 @@ a broken injection stamps the artifact `unknown` rather than breaking the build
   logic. CI calls the npm scripts directly.
 - Dev servers run compiled output. Do not replace `apps/api`'s `tsc --watch` +
   `node --watch dist/server.js` with `--experimental-strip-types`.
+- **`apps/api`'s `dev` script watches `dist/`, not just `dist/server.js`, and
+  the first `tsc` is followed by `;` rather than `&&`.** Both guard the same
+  failure: a compile error empties `dist/`, `node --watch` dies with
+  `MODULE_NOT_FOUND`, and it drops the watch on a _file_ that no longer exists
+  — so fixing the error never revives it and every `/api/*` call 502s through
+  Vite until someone restarts the container. `--watch-path=dist` watches the
+  directory, which survives the file going away. The `;` keeps the watchers
+  starting when the tree is already broken at `make up` time, instead of
+  short-circuiting into a container that exits.
 - The VS Code extension has no server process, so do not add it to compose. Its
   dev loop needs both halves: esbuild rebuilding on save, and
   `debug.extensionHost.autoReload`.

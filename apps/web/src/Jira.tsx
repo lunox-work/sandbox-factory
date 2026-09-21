@@ -11,7 +11,7 @@
  * hiding a control the API would refuse is courtesy, not security.
  */
 
-import { Link2, Loader2, Trash2, TriangleAlert } from "lucide-react";
+import { Link2, Loader2, Trash2, TriangleAlert, X } from "lucide-react";
 import { useCallback } from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -134,17 +134,24 @@ export function OutcomeBanner({
         : "border-destructive/40";
 
   return (
-    <Card className={border} data-testid="jira-outcome">
-      <CardHeader>
-        <CardTitle className="text-base">{title}</CardTitle>
-        <CardDescription>{detail}</CardDescription>
-      </CardHeader>
-      <CardContent>
-        <Button variant="ghost" size="sm" onClick={onDismiss}>
-          Dismiss
-        </Button>
-      </CardContent>
-    </Card>
+    <div
+      className={`flex items-center gap-2 rounded-md border ${border} px-3 py-2 text-sm`}
+      data-testid="jira-outcome"
+    >
+      <span className="font-medium">{title}</span>
+      <span className="min-w-0 flex-1 truncate text-muted-foreground">
+        {detail}
+      </span>
+      <Button
+        variant="ghost"
+        size="icon"
+        className="-mr-1 size-6 shrink-0"
+        aria-label="Dismiss"
+        onClick={onDismiss}
+      >
+        <X className="size-4" />
+      </Button>
+    </div>
   );
 }
 
