@@ -26,9 +26,9 @@ test("authSchema is keyed by Better Auth's singular model names", () => {
   ]);
 });
 
-test("authSchema excludes the todos table", () => {
+test("authSchema excludes this product's own tables", () => {
   // The adapter treats every key it is given as a model it may own.
-  assert.equal("todos" in authSchema, false);
+  assert.equal("jiraConnection" in authSchema, false);
 });
 
 test("auth table properties are camelCase, and map to snake_case columns", () => {

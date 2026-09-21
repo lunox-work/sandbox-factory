@@ -2,8 +2,8 @@
  * Tests for the signed-in shell.
  *
  * One property: what a person sees must belong to the signed-in account. The
- * API scopes todos to the session user, but a list cached in the browser that
- * outlives its session still shows one user another's data.
+ * API scopes every read to the session's memberships, but a list cached in the
+ * browser that outlives its session still shows one user another's data.
  *
  * The server is faked at the `fetch` and auth-client boundary, as in
  * `account.test.tsx`.
@@ -21,46 +21,68 @@ vi.mock("../src/auth", () => ({
     listAccounts: () => Promise.resolve({ data: [] }),
     unlinkAccount: vi.fn(),
     linkSocial: vi.fn(),
+    organization: { setActive: () => Promise.resolve({}) },
   },
   PROVIDERS: [{ id: "google", label: "Continue with Google" }],
   signInWith: vi.fn(),
 }));
 
-/** Titles the API will return for the next list request, per call. */
-let todosByCall: string[][] = [];
-let callCount = 0;
-
 /**
- * Installed before `App` is imported, and never replaced. `TodoClient` binds
- * `globalThis.fetch` when `api.ts` constructs it at module load, so a stub
- * installed in `beforeEach` arrives too late. Tests vary its behaviour through
- * the mutable state above instead.
+ * Site names the API will return for the next connections request, per call.
+ * Each entry is one call, so a remount reads the next one.
  */
+let sitesByCall: string[][] = [];
+let callCount = 0;
+let unauthorized = false;
+
+/** One organization, so there is a group for the connections to hang off. */
+const organizations = [
+  {
+    id: "org_1",
+    name: "Acme",
+    slug: "acme",
+    kind: "team" as const,
+    role: "owner",
+  },
+];
+
 const fetchMock = vi.fn((input: RequestInfo | URL) => {
   const url = String(input);
-  if (url.includes("/api/v1/todos")) {
+
+  if (url.includes("/api/v1/me/orgs")) {
+    return Promise.resolve(
+      unauthorized
+        ? Response.json({ error: "Authentication required." }, { status: 401 })
+        : Response.json({ organizations }),
+    );
+  }
+
+  if (url.includes("/jira/connections")) {
     if (unauthorized) {
       return Promise.resolve(
         Response.json({ error: "Authentication required." }, { status: 401 }),
       );
     }
-    const titles = todosByCall[callCount] ?? [];
+    const names = sitesByCall[callCount] ?? [];
     callCount += 1;
     return Promise.resolve(
       Response.json({
-        todos: titles.map((title, index) => ({
-          id: `todo_${index}`,
-          title,
-          done: false,
+        connections: names.map((siteName, index) => ({
+          id: `jrc_${index}`,
+          cloudId: `cloud_${index}`,
+          siteName,
+          siteUrl: `https://${siteName}.atlassian.net`,
+          email: null,
+          healthy: true,
+          scopes: [],
           createdAt: "2026-09-16T00:00:00.000Z",
         })),
       }),
     );
   }
+
   return Promise.resolve(Response.json({}));
 });
-
-let unauthorized = false;
 
 vi.stubGlobal("fetch", fetchMock);
 
@@ -72,7 +94,7 @@ function session(user: { id: string; name: string } | null) {
 
 beforeEach(() => {
   callCount = 0;
-  todosByCall = [];
+  sitesByCall = [];
   unauthorized = false;
   fetchMock.mockClear();
 });
@@ -82,48 +104,48 @@ test("a signed-out visitor sees the sign-in screen, not a list", () => {
   render(<App />);
 
   expect(screen.getByText("Continue with Google")).toBeTruthy();
-  expect(screen.queryByLabelText("Todo title")).toBeNull();
+  expect(screen.queryByRole("heading", { name: "Connections" })).toBeNull();
 });
 
-test("a signed-in user sees their own todos", async () => {
-  todosByCall = [["alice's todo"]];
+test("a signed-in user sees the connections they can reach", async () => {
+  sitesByCall = [["alice-site"]];
   session({ id: "user_1", name: "Alice" });
   render(<App />);
 
   await waitFor(() => {
-    expect(screen.getByText("alice's todo")).toBeTruthy();
+    expect(screen.getByText("alice-site")).toBeTruthy();
   });
 });
 
-test("switching account does not leave the previous user's todos on screen", async () => {
+test("switching account does not leave the previous user's connections on screen", async () => {
   // The regression: without the user-id key React reuses the mounted tree, so
-  // the first user's todos stay visible until a refetch replaces them.
-  todosByCall = [["alice's todo"], ["bob's todo"]];
+  // the first user's rows stay visible until a refetch replaces them.
+  sitesByCall = [["alice-site"], ["bob-site"]];
 
   session({ id: "user_1", name: "Alice" });
   const { rerender } = render(<App />);
   await waitFor(() => {
-    expect(screen.getByText("alice's todo")).toBeTruthy();
+    expect(screen.getByText("alice-site")).toBeTruthy();
   });
 
   session({ id: "user_2", name: "Bob" });
   rerender(<App />);
 
   // Gone immediately on the identity change, not once Bob's request resolves.
-  expect(screen.queryByText("alice's todo")).toBeNull();
+  expect(screen.queryByText("alice-site")).toBeNull();
   await waitFor(() => {
-    expect(screen.getByText("bob's todo")).toBeTruthy();
+    expect(screen.getByText("bob-site")).toBeTruthy();
   });
 });
 
 test("a 401 clears the list rather than leaving it on screen", async () => {
   // A session can end while the tab is open. Rows fetched for it must not
   // survive the failure.
-  todosByCall = [["alice's todo"]];
+  sitesByCall = [["alice-site"]];
   session({ id: "user_1", name: "Alice" });
   const { rerender } = render(<App />);
   await waitFor(() => {
-    expect(screen.getByText("alice's todo")).toBeTruthy();
+    expect(screen.getByText("alice-site")).toBeTruthy();
   });
 
   // The session ends server-side while the rows are already on screen.
@@ -134,8 +156,6 @@ test("a 401 clears the list rather than leaving it on screen", async () => {
   rerender(<App />);
 
   await waitFor(() => {
-    expect(screen.getByRole("alert")).toBeTruthy();
+    expect(screen.queryByText("alice-site")).toBeNull();
   });
-  // The error is shown *and* the stale rows are gone, not one or the other.
-  expect(screen.queryByText("alice's todo")).toBeNull();
 });

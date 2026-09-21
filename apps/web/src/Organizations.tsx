@@ -6,6 +6,11 @@
  * — names, handles, roles — and the actions on a row (open, settings) need
  * room to sit beside it. The avatar menu holds one item that lands here.
  *
+ * The personal organization is listed first, under the person's own name:
+ * it is the one everybody has, and it is theirs rather than shared. Its row is
+ * otherwise identical — nothing below the API boundary distinguishes the two,
+ * and neither should this page beyond saying which is which.
+ *
  * Switching which organization is "active" is deliberately absent. Nothing
  * the app renders is owned by an organization yet, so a switcher changed a
  * tick and nothing else, which reads as a broken control. When
@@ -14,7 +19,7 @@
  */
 
 import type { MembershipDto } from "@sandbox-factory/shared";
-import { Building2, ChevronRight, Plus } from "lucide-react";
+import { Building2, ChevronRight, Plus, User } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -25,6 +30,19 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+
+/**
+ * Personal first, then teams by name.
+ *
+ * Sorted here rather than by the API, which returns them oldest-membership
+ * first so the list does not reshuffle when a role changes; that order is
+ * still what decides the teams' relative places.
+ */
+function order(organizations: MembershipDto[]): MembershipDto[] {
+  return [...organizations].sort(
+    (a, b) => Number(b.kind === "personal") - Number(a.kind === "personal"),
+  );
+}
 
 export function Organizations({
   organizations,
@@ -94,7 +112,7 @@ export function Organizations({
           </Card>
         ) : (
           <ul className="flex flex-col gap-2">
-            {organizations.map((organization) => (
+            {order(organizations).map((organization) => (
               <li key={organization.id}>
                 {/*
                   The whole row is the control, so the target is the size of
@@ -107,13 +125,23 @@ export function Organizations({
                   onClick={() => onOpen(organization)}
                   className="bg-card hover:border-foreground/15 focus-visible:ring-ring/50 flex w-full cursor-pointer items-center gap-3 rounded-xl border px-3.5 py-3 text-left shadow-xs transition-colors focus-visible:ring-[3px] focus-visible:outline-none"
                 >
+                  {/* A person, not a building, for the one that is theirs. */}
                   <span className="bg-muted text-muted-foreground grid size-9 shrink-0 place-items-center rounded-lg">
-                    <Building2 className="size-4" strokeWidth={1.6} />
+                    {organization.kind === "personal" ? (
+                      <User className="size-4" strokeWidth={1.6} />
+                    ) : (
+                      <Building2 className="size-4" strokeWidth={1.6} />
+                    )}
                   </span>
 
                   <span className="min-w-0 flex-1">
-                    <span className="block truncate text-sm font-medium">
-                      {organization.name}
+                    <span className="flex items-center gap-2">
+                      <span className="truncate text-sm font-medium">
+                        {organization.name}
+                      </span>
+                      {organization.kind === "personal" && (
+                        <Badge variant="secondary">Personal</Badge>
+                      )}
                     </span>
                     {/* The handle, which is what a URL and an invitation use.
                         Quieter than the name: it identifies, it does not

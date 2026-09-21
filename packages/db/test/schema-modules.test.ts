@@ -20,7 +20,6 @@ import * as schema from "../src/schema.js";
 import * as authSchema from "../src/schema/auth.js";
 import * as jiraSchema from "../src/schema/jira.js";
 import * as organizationSchema from "../src/schema/organizations.js";
-import * as todoSchema from "../src/schema/todos.js";
 
 /** The table name Postgres knows, which is what a foreign key resolves to. */
 function tableName(table: PgTable): string {
@@ -30,12 +29,7 @@ function tableName(table: PgTable): string {
 test("the barrel re-exports every table each module declares", () => {
   // Not a hand-written list: a new table in a module is picked up here, so
   // this keeps holding as the schema grows rather than going stale.
-  for (const module of [
-    authSchema,
-    organizationSchema,
-    jiraSchema,
-    todoSchema,
-  ]) {
+  for (const module of [authSchema, organizationSchema, jiraSchema]) {
     for (const [name, value] of Object.entries(module)) {
       assert.equal(
         (schema as Record<string, unknown>)[name],
@@ -63,8 +57,8 @@ test("every table in the barrel is a distinct Postgres table", () => {
     .filter((name) => name !== "");
 
   assert.ok(
-    names.length >= 8,
-    `expected the eight tables, saw ${names.length}`,
+    names.length >= 7,
+    `expected the seven tables, saw ${names.length}`,
   );
   // A copy-paste that reused a table name would otherwise surface as a
   // confusing migration diff.
@@ -86,11 +80,6 @@ test("foreign keys across the auth/organization cycle resolve", () => {
     .foreignKeys.map((key) => key.reference())
     .find((reference) => reference.foreignTable === authSchema.user);
   assert.ok(memberToUser, "member does not reference user");
-
-  const todoToUser = getTableConfig(todoSchema.todos)
-    .foreignKeys.map((key) => key.reference())
-    .find((reference) => reference.foreignTable === authSchema.user);
-  assert.ok(todoToUser, "todos does not reference user");
 });
 
 test("jira_connection is owned by an organization and indexed for it", () => {

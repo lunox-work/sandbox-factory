@@ -2,9 +2,17 @@
  * VS Code extension entry point. The only workspace that may import `vscode`.
  * It reaches the API through @sandbox-factory/client, the same client the web
  * app uses, so an endpoint change lands in both at once.
+ *
+ * **This is a shell.** The todo tree and its commands were removed with the
+ * todo domain; what remains is everything a feature needs and would otherwise
+ * have to rebuild — activation, the output channel, the secret-backed token,
+ * a configured client, the version command and the reload-on-config-change
+ * handler. `Show Version` is deliberately kept as a working command: it proves
+ * the extension activates and can reach the API, which is the first thing to
+ * check when the next feature does not.
  */
 
-import { ApiError, TodoClient } from "@sandbox-factory/client";
+import { ApiClient, ApiError } from "@sandbox-factory/client";
 import {
   buildBanner,
   buildInfoSchema,
@@ -13,11 +21,9 @@ import {
   sameBuild,
   type BuildInfoDto,
 } from "@sandbox-factory/shared";
-import { isValidTitle } from "sandbox-factory";
 import * as vscode from "vscode";
 
 import { extensionBuild } from "./build";
-import { TodoTreeProvider, type TodoNode } from "./tree";
 
 /**
  * Key for the bearer token in `context.secrets`, which VS Code encrypts. A
@@ -31,87 +37,21 @@ export function activate(context: vscode.ExtensionContext): void {
   const output = vscode.window.createOutputChannel("sandbox-factory");
   output.appendLine(buildBanner("sandbox-factory", extensionBuild));
 
-  const client = new TodoClient({
+  /**
+   * The API client, ready for the first feature to call.
+   *
+   * Built here rather than where it is first needed so the token and base URL
+   * are read in one place. `void` marks it as deliberately unused for now —
+   * removing it would mean rebuilding the auth wiring from scratch.
+   */
+  const client = new ApiClient({
     baseUrl: baseUrl(),
     getToken: () =>
       context.secrets.get(TOKEN_KEY).then((token) => token ?? null),
   });
-
-  const tree = new TodoTreeProvider(client);
+  void client;
 
   context.subscriptions.push(
-    vscode.window.registerTreeDataProvider("sandboxFactory.todos", tree),
-
-    vscode.commands.registerCommand("sandboxFactory.refresh", () =>
-      tree.refresh(),
-    ),
-
-    vscode.commands.registerCommand("sandboxFactory.create", async () => {
-      const title = await vscode.window.showInputBox({
-        prompt: "What needs doing?",
-        // The core rule, so this matches what the API accepts.
-        validateInput: (value) =>
-          isValidTitle(value)
-            ? undefined
-            : "A todo needs a title of 200 characters or fewer.",
-      });
-      if (title === undefined) {
-        return;
-      }
-      await run(tree, () => client.createTodo({ title }));
-    }),
-
-    vscode.commands.registerCommand(
-      "sandboxFactory.toggle",
-      async (node?: TodoNode) => {
-        if (node === undefined) {
-          return;
-        }
-        await run(tree, () => client.setDone(node.todo.id, !node.todo.done));
-      },
-    ),
-
-    vscode.commands.registerCommand(
-      "sandboxFactory.rename",
-      async (node?: TodoNode) => {
-        if (node === undefined) {
-          return;
-        }
-        const title = await vscode.window.showInputBox({
-          prompt: "Rename todo",
-          value: node.todo.title,
-          validateInput: (value) =>
-            isValidTitle(value)
-              ? undefined
-              : "A todo needs a title of 200 characters or fewer.",
-        });
-        if (title === undefined || title === node.todo.title) {
-          return;
-        }
-        await run(tree, () => client.updateTodo(node.todo.id, { title }));
-      },
-    ),
-
-    vscode.commands.registerCommand(
-      "sandboxFactory.delete",
-      async (node?: TodoNode) => {
-        if (node === undefined) {
-          return;
-        }
-        // Modal: deleting is not undoable, and a tree row is easy to
-        // right-click by accident.
-        const confirmed = await vscode.window.showWarningMessage(
-          `Delete "${node.todo.title}"?`,
-          { modal: true },
-          "Delete",
-        );
-        if (confirmed !== "Delete") {
-          return;
-        }
-        await run(tree, () => client.deleteTodo(node.todo.id));
-      },
-    ),
-
     output,
 
     /**
@@ -143,6 +83,37 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     }),
 
+    /**
+     * Stores the bearer token the API issues, which is how this extension
+     * authenticates: it has no cookie jar, so the session the web app keeps in
+     * a cookie reaches here as a token the user pastes in.
+     *
+     * Kept with no feature calling it yet because it writes to `secrets`, and
+     * the wrong storage for a credential is the kind of shortcut that gets
+     * taken when a feature is mid-flight.
+     */
+    vscode.commands.registerCommand("sandboxFactory.signIn", async () => {
+      const token = await vscode.window.showInputBox({
+        prompt: "Paste an API token",
+        password: true,
+        ignoreFocusOut: true,
+      });
+      if (token === undefined) {
+        return;
+      }
+      if (token === "") {
+        await context.secrets.delete(TOKEN_KEY);
+        void vscode.window.showInformationMessage(
+          "sandbox-factory: token cleared.",
+        );
+        return;
+      }
+      await context.secrets.store(TOKEN_KEY, token);
+      void vscode.window.showInformationMessage(
+        "sandbox-factory: token saved.",
+      );
+    }),
+
     // A changed base URL needs a new client, which means a reload.
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (event.affectsConfiguration("sandboxFactory.apiBaseUrl")) {
@@ -171,8 +142,8 @@ export function deactivate(): void {
  * Asks the configured API what it is running. Undefined on any failure, like
  * the web app's equivalent.
  *
- * Not routed through `TodoClient`: /version sits outside /api/v1 and needs no
- * session, and every other call on that client is authenticated.
+ * Not routed through `ApiClient`: /version sits outside /api/v1 and needs no
+ * session, and that client sends credentials on every call.
  */
 async function fetchApiBuild(): Promise<BuildInfoDto | undefined> {
   try {
@@ -193,18 +164,25 @@ function baseUrl(): string {
     .get<string>("apiBaseUrl", "http://localhost:4000");
 }
 
-/** Runs an API call, refreshing on success and reporting failure readably. */
-async function run(
-  tree: TodoTreeProvider,
+/**
+ * Runs an API call and reports failure readably.
+ *
+ * Unused while the shell has no data commands, but kept and exported: it
+ * encodes the two cases every call has to handle — a 401 means the token is
+ * stale, a 404 means someone else already changed it — and rediscovering that
+ * per command is how inconsistent error messages happen.
+ */
+export async function run(
   action: () => Promise<unknown>,
+  onDone?: () => void,
 ): Promise<void> {
   try {
     await action();
-    tree.refresh();
+    onDone?.();
   } catch (error) {
     if (error instanceof ApiError && error.isNotFound) {
-      // Already deleted elsewhere; refreshing is the whole fix.
-      tree.refresh();
+      // Already gone elsewhere; refreshing is the whole fix.
+      onDone?.();
       return;
     }
     const message =

@@ -9,7 +9,6 @@ import {
   createEmailStore,
   createJiraConnectionStore,
   createOrganizationStore,
-  createPostgresStore,
   createProfileStore,
   createTokenCipher,
 } from "@sandbox-factory/db";
@@ -92,7 +91,6 @@ const jira =
       };
 
 const app = createApp({
-  store: createPostgresStore(connection.db),
   corsOrigins: env.CORS_ORIGINS,
   auth,
   emails,

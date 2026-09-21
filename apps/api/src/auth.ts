@@ -139,10 +139,56 @@ export function createAuth({
     return normalized.handle;
   }
 
+  /** The one message these refusals share, and the remedy with it. */
+  const NOT_SHAREABLE =
+    "A personal organization cannot have other members. " +
+    "Create a team organization to share with someone.";
+
+  /** Raised by the two guards below. */
+  function personalRefusal(message: string): APIError {
+    return new APIError("FORBIDDEN", {
+      code: "PERSONAL_ORGANIZATION",
+      message,
+    });
+  }
+
+  /**
+   * Whether an organization is somebody's personal one, read from the row the
+   * hook was handed.
+   *
+   * The plugin types its own fields and widens the rest to `any`, so `kind`
+   * arrives untyped and is compared as a string rather than asserted.
+   */
+  function isPersonal(candidate: Record<string, unknown> | null): boolean {
+    return candidate?.["kind"] === "personal";
+  }
+
+  /**
+   * The same question when only an id is in hand, which is the invitation
+   * hook's case.
+   *
+   * A no-op without the store, like the handle checks above: tests construct
+   * an auth with no organization store, and failing closed instead would
+   * refuse every organization write in them.
+   */
+  async function refusePersonalById(
+    organizationId: string,
+    message: string,
+  ): Promise<void> {
+    if (organizations === undefined) {
+      return;
+    }
+    const found = await organizations.get(organizationId);
+    if (found?.kind === "personal") {
+      throw personalRefusal(message);
+    }
+  }
+
   return betterAuth({
     database: drizzleAdapter(db, {
       provider: "pg",
-      // The four auth models only; the adapter has no business with `todos`.
+      // The auth models only; the adapter has no business with this
+      // product's own tables.
       schema: authSchema,
     }),
     baseURL: baseUrl,
@@ -349,6 +395,49 @@ export function createAuth({
               },
             };
           },
+          /**
+           * Gives every new account its personal organization.
+           *
+           * This is what lets everything ownable take a single non-null
+           * `organization_id` rather than a nullable user/organization pair:
+           * "my own account" is a real organization row with one `owner`
+           * member. Users who predate this hook were given theirs by
+           * migration 0015.
+           *
+           * `after`, not `before`: the membership references `user.id`, which
+           * does not exist until the row is written.
+           *
+           * A failure here is logged rather than thrown. Throwing would abort
+           * a signup whose user row is already committed, leaving an account
+           * that cannot be created again because its address is taken;
+           * `createPersonal` is idempotent, so the next sign-in repairs it.
+           */
+          after: async (createdUser) => {
+            if (organizations === undefined) {
+              return;
+            }
+            try {
+              await organizations.createPersonal({
+                userId: createdUser.id,
+                // Their own name, which is what the switcher shows for it.
+                name: createdUser.name,
+                // The handle `before` just assigned. Better Auth types the
+                // additional fields as `{}`, so it is narrowed here rather
+                // than asserted. Users and organizations share one namespace,
+                // so this may already name a team; the store suffixes it.
+                preferredSlug:
+                  typeof createdUser.username === "string" &&
+                  createdUser.username !== ""
+                    ? createdUser.username
+                    : createdUser.id,
+              });
+            } catch (error) {
+              console.error(
+                "Failed to create the personal organization",
+                error,
+              );
+            }
+          },
         },
       },
       account: {
@@ -506,12 +595,40 @@ export function createAuth({
            * compares case-insensitively on accept, so this only keeps the
            * stored data consistent with the rest of the schema.
            */
-          beforeCreateInvitation: async ({ invitation: incoming }) => ({
-            data: {
-              ...incoming,
-              email: incoming.email.trim().toLowerCase(),
-            },
-          }),
+          beforeCreateInvitation: async ({ invitation: incoming }) => {
+            // Only an id here, so this one asks the store.
+            await refusePersonalById(incoming.organizationId, NOT_SHAREABLE);
+            return {
+              data: {
+                ...incoming,
+                email: incoming.email.trim().toLowerCase(),
+              },
+            };
+          },
+          /**
+           * A personal organization is not the user's to delete: it is minted
+           * at signup and every account is expected to have one, so removing
+           * it would leave them owning nothing with no way to get it back. It
+           * goes when the user does, by the cascade on `personal_user_id`.
+           */
+          beforeDeleteOrganization: async ({ organization: target }) => {
+            if (isPersonal(target)) {
+              throw personalRefusal(
+                "Your personal organization cannot be deleted. " +
+                  "It is removed with your account.",
+              );
+            }
+          },
+          /**
+           * Adding a member directly, which bypasses the invitation above.
+           * Refused for the same reason: "personal" has to stay a claim about
+           * the organization, not a label on a two-person one.
+           */
+          beforeAddMember: async ({ organization: target }) => {
+            if (isPersonal(target)) {
+              throw personalRefusal(NOT_SHAREABLE);
+            }
+          },
         },
       }),
     ],

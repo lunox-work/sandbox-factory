@@ -5,8 +5,7 @@
  * interpreting SQL: the target is the store's own logic, not Postgres.
  */
 
-import type { TodoRow } from "../src/schema.js";
-import type { Database } from "../src/store.js";
+import type { Database } from "../src/errors.js";
 
 export interface FakeCall {
   readonly kind: "select" | "insert" | "update" | "delete";
@@ -56,8 +55,8 @@ function chain(
  * @param rows what every query resolves to; pass `[]` to simulate a miss.
  *
  * Deliberately `readonly unknown[]` rather than one table's row type: the fake
- * never inspects a row, it only hands it back, and typing it to `TodoRow`
- * would mean a second copy of this file for every table added.
+ * never inspects a row, it only hands it back, and typing it to a single
+ * table's row would mean a second copy of this file for every table added.
  */
 export function createFakeDb(rows: readonly unknown[]): FakeDb {
   const calls: FakeCall[] = [];
@@ -103,15 +102,4 @@ export function createFakeDb(rows: readonly unknown[]): FakeDb {
   };
 
   return { db: db as unknown as Database, calls };
-}
-
-export function row(overrides: Partial<TodoRow> = {}): TodoRow {
-  return {
-    id: "todo_1",
-    userId: "user_1",
-    title: "write tests",
-    done: false,
-    createdAt: new Date("2026-09-16T00:00:00.000Z"),
-    ...overrides,
-  };
 }

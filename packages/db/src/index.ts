@@ -17,7 +17,7 @@ export type {
 export type { Connection, ConnectionOptions } from "./client.js";
 export { createTokenCipher, sameKeyId, TokenCipherError } from "./cipher.js";
 export type { TokenCipher } from "./cipher.js";
-export { generateId, ID_PREFIXES, newTodoRow, rowToTodo } from "./mapping.js";
+export { generateId, ID_PREFIXES } from "./mapping.js";
 export type { IdPrefix } from "./mapping.js";
 export { runMigrations } from "./migrate.js";
 export type { MigrateOptions } from "./migrate.js";
@@ -51,8 +51,8 @@ export {
   invitation,
   member,
   organization,
+  ORGANIZATION_KINDS,
   session,
-  todos,
   user,
   userEmail,
   verification,
@@ -60,17 +60,16 @@ export {
 export type {
   AccountRow,
   InvitationRow,
+  OrganizationKind,
   MemberRow,
   NewMemberRow,
   NewOrganizationRow,
-  NewTodoRow,
   NewUserEmailRow,
   OrganizationRow,
   SessionRow,
-  TodoRow,
   UserEmailRow,
   UserRow,
   VerificationRow,
 } from "./schema.js";
-export { createPostgresStore, NotFoundError } from "./store.js";
-export type { Database, TodoPatch, TodoStore } from "./store.js";
+export { NotFoundError } from "./errors.js";
+export type { Database } from "./errors.js";

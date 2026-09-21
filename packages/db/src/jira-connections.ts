@@ -19,7 +19,7 @@ import type { TokenCipher } from "./cipher.js";
 import { generateId } from "./mapping.js";
 import { jiraConnection } from "./schema.js";
 import type { JiraConnectionRow } from "./schema.js";
-import type { Database } from "./store.js";
+import type { Database } from "./errors.js";
 
 /** A connection as the UI lists it. Carries no token material. */
 export interface JiraConnectionSummary {

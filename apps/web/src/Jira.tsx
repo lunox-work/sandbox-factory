@@ -109,7 +109,14 @@ function describeOutcome(
   }
 }
 
-function OutcomeBanner({
+/**
+ * The result of a just-finished OAuth round trip.
+ *
+ * Exported because the flow can return to either surface: `returnTo` carries
+ * the path it started from, so a connection begun on the home screen reports
+ * there, and one begun here reports here.
+ */
+export function OutcomeBanner({
   outcome,
   missingScopes,
   onDismiss,

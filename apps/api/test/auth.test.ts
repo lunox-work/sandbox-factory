@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { runWithRequestState } from "@better-auth/core/context";
+import type { OrganizationStore } from "@sandbox-factory/db";
 
 import { createAuth, type AuthOptions } from "../src/auth.js";
 
@@ -194,6 +195,17 @@ function userCreateBeforeHook(auth: ReturnType<typeof createAuth>) {
     id: string;
     email: string;
   }) => Promise<{ data: { username?: string } } | void>;
+}
+
+function userCreateAfterHook(auth: ReturnType<typeof createAuth>) {
+  const after = (hooks(auth).user?.create as { after?: unknown } | undefined)
+    ?.after;
+  assert.equal(typeof after, "function", "expected a user create after hook");
+  return after as (user: {
+    id: string;
+    name: string;
+    username?: string;
+  }) => Promise<void>;
 }
 
 /**
@@ -663,6 +675,13 @@ test("a signup proceeds when nobody holds the address", async () => {
 /** A store that answers a handle lookup, for the hooks under test. */
 function fakeOrganizations(held: Record<string, string> = {}) {
   const store = {
+    createPersonal: () =>
+      Promise.resolve({
+        id: "org_personal",
+        name: "Dana",
+        slug: "dana",
+        kind: "personal" as const,
+      }),
     listForUser: () => Promise.resolve([]),
     roleOf: () => Promise.resolve(undefined),
     get: () => Promise.resolve(undefined),
@@ -704,8 +723,14 @@ type OrganizationHooks = {
     organization: { id: string } | null;
   }) => Promise<void>;
   beforeCreateInvitation?: (data: {
-    invitation: { email: string };
+    invitation: { email: string; organizationId?: string };
   }) => Promise<{ data: { email: string } }>;
+  beforeDeleteOrganization?: (data: {
+    organization: Record<string, unknown>;
+  }) => Promise<void>;
+  beforeAddMember?: (data: {
+    organization: Record<string, unknown>;
+  }) => Promise<void>;
 };
 
 function orgHooks(auth: ReturnType<typeof createAuth>): OrganizationHooks {
@@ -951,5 +976,220 @@ test("any signed-in user may create an organization", () => {
   assert.equal(
     orgOptions(createAuth(options))["allowUserToCreateOrganization"],
     true,
+  );
+});
+
+// ---- personal organizations -----------------------------------------------
+//
+// Every account gets one at signup, which is the invariant that lets anything
+// ownable take a single non-null `organization_id`. If this hook stops firing,
+// nothing fails loudly — new users simply own nothing — so it is pinned here.
+
+/** Records what `createPersonal` was asked for. */
+function recordingOrganizations(onCreate?: () => Promise<never>): {
+  store: OrganizationStore;
+  created: Array<{ userId: string; name: string; preferredSlug: string }>;
+} {
+  const created: Array<{
+    userId: string;
+    name: string;
+    preferredSlug: string;
+  }> = [];
+  const store = {
+    ...fakeOrganizations(),
+    createPersonal: (input: {
+      userId: string;
+      name: string;
+      preferredSlug: string;
+    }) => {
+      created.push(input);
+      if (onCreate !== undefined) {
+        return onCreate();
+      }
+      return Promise.resolve({
+        id: "org_personal",
+        name: input.name,
+        slug: input.preferredSlug,
+        kind: "personal" as const,
+      });
+    },
+  };
+  return { store, created };
+}
+
+test("a new user gets a personal organization named after them", async () => {
+  const { store, created } = recordingOrganizations();
+  const auth = createAuth({ ...options, organizations: store });
+
+  await userCreateAfterHook(auth)({
+    id: "user_1",
+    name: "Dana",
+    username: "dana",
+  });
+
+  assert.deepEqual(created, [
+    { userId: "user_1", name: "Dana", preferredSlug: "dana" },
+  ]);
+});
+
+test("the personal organization takes the handle assigned at signup", async () => {
+  // `before` assigns the handle; this runs after, so it is already set.
+  const { store, created } = recordingOrganizations();
+  const auth = createAuth({ ...options, organizations: store });
+
+  await userCreateAfterHook(auth)({
+    id: "user_2",
+    name: "Sam Smith",
+    username: "sam",
+  });
+
+  assert.equal(created[0]?.preferredSlug, "sam");
+});
+
+test("a user with no handle falls back to their id", async () => {
+  // Not reachable while `before` always assigns one, but a slug is required
+  // and an empty one would make an unreachable URL.
+  const { store, created } = recordingOrganizations();
+  const auth = createAuth({ ...options, organizations: store });
+
+  await userCreateAfterHook(auth)({ id: "user_3", name: "Nameless" });
+
+  assert.equal(created[0]?.preferredSlug, "user_3");
+});
+
+test("a failure to create the personal organization does not fail the signup", async () => {
+  // The user row is already committed when this runs. Throwing would abort a
+  // signup that cannot be retried, because the address is now taken.
+  const { store } = recordingOrganizations(() =>
+    Promise.reject(new Error("database is down")),
+  );
+  const auth = createAuth({ ...options, organizations: store });
+
+  await assert.doesNotReject(() =>
+    userCreateAfterHook(auth)({
+      id: "user_4",
+      name: "Dana",
+      username: "dana",
+    }),
+  );
+});
+
+test("without an organization store the hook is a no-op", async () => {
+  // Tests construct an auth with no organization store; it must not throw.
+  const auth = createAuth({ ...options });
+
+  await assert.doesNotReject(() =>
+    userCreateAfterHook(auth)({
+      id: "user_5",
+      name: "Dana",
+      username: "dana",
+    }),
+  );
+});
+
+// ---- personal organizations are not shareable -----------------------------
+//
+// "Personal" has to stay a claim about the organization rather than a label on
+// a two-person one, and it must not be deletable: it is minted at signup and
+// every account is expected to have one. The three ways in are guarded here.
+
+/** A store reporting one organization of the given kind. */
+function organizationsOfKind(kind: "personal" | "team"): OrganizationStore {
+  return {
+    ...fakeOrganizations(),
+    get: () =>
+      Promise.resolve({
+        id: "org_1",
+        name: "Dana",
+        slug: "dana",
+        kind,
+      }),
+  };
+}
+
+test("inviting someone to a personal organization is refused", async () => {
+  const auth = createAuth({
+    ...options,
+    organizations: organizationsOfKind("personal"),
+  });
+
+  await assert.rejects(
+    () =>
+      orgHooks(auth).beforeCreateInvitation?.({
+        invitation: { email: "sam@example.test", organizationId: "org_1" },
+      }) ?? Promise.resolve(),
+    (error: unknown) => {
+      assert.match(String(error), /cannot have other members/);
+      return true;
+    },
+  );
+});
+
+test("inviting someone to a team organization still works", async () => {
+  // The guard must be specific: this is the ordinary case it sits in front of.
+  const auth = createAuth({
+    ...options,
+    organizations: organizationsOfKind("team"),
+  });
+
+  const result = await orgHooks(auth).beforeCreateInvitation?.({
+    invitation: { email: "  Sam@Example.test  ", organizationId: "org_1" },
+  });
+
+  assert.equal(result?.data.email, "sam@example.test");
+});
+
+test("deleting a personal organization is refused", async () => {
+  // It goes with the account, by the cascade on `personal_user_id`. Deleting
+  // it directly would leave someone owning nothing and no way back.
+  const auth = createAuth({ ...options, organizations: fakeOrganizations() });
+
+  await assert.rejects(
+    () =>
+      orgHooks(auth).beforeDeleteOrganization?.({
+        organization: { id: "org_1", kind: "personal" },
+      }) ?? Promise.resolve(),
+    (error: unknown) => {
+      assert.match(String(error), /cannot be deleted/);
+      return true;
+    },
+  );
+});
+
+test("deleting a team organization is allowed", async () => {
+  const auth = createAuth({ ...options, organizations: fakeOrganizations() });
+
+  await assert.doesNotReject(
+    () =>
+      orgHooks(auth).beforeDeleteOrganization?.({
+        organization: { id: "org_1", kind: "team" },
+      }) ?? Promise.resolve(),
+  );
+});
+
+test("adding a member to a personal organization is refused", async () => {
+  // The invitation hook is not the only way in: `addMember` bypasses it.
+  const auth = createAuth({ ...options, organizations: fakeOrganizations() });
+
+  await assert.rejects(
+    () =>
+      orgHooks(auth).beforeAddMember?.({
+        organization: { id: "org_1", kind: "personal" },
+      }) ?? Promise.resolve(),
+    (error: unknown) => {
+      assert.match(String(error), /cannot have other members/);
+      return true;
+    },
+  );
+});
+
+test("adding a member to a team organization is allowed", async () => {
+  const auth = createAuth({ ...options, organizations: fakeOrganizations() });
+
+  await assert.doesNotReject(
+    () =>
+      orgHooks(auth).beforeAddMember?.({
+        organization: { id: "org_1", kind: "team" },
+      }) ?? Promise.resolve(),
   );
 });

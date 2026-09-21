@@ -14,8 +14,16 @@ import {
  * caller never receives another organization's.
  */
 
-const acme = { id: "org_1", name: "Acme", slug: "acme" };
-const globex = { id: "org_2", name: "Globex", slug: "globex" };
+const acme = { id: "org_1", name: "Acme", slug: "acme", kind: "team" };
+const globex = { id: "org_2", name: "Globex", slug: "globex", kind: "team" };
+
+/** What `acme` looks like once the store has narrowed `kind`. */
+const acmeSummary = {
+  id: "org_1",
+  name: "Acme",
+  slug: "acme",
+  kind: "team" as const,
+};
 
 function member(over: Partial<MemberRowLite> = {}): MemberRowLite {
   return {
@@ -59,9 +67,7 @@ test("listForUser returns only the organizations the user is in", () => {
   return createOrganizationStore(fake.db)
     .listForUser("user_1")
     .then((found) => {
-      assert.deepEqual(found, [
-        { id: "org_1", name: "Acme", slug: "acme", role: "owner" },
-      ]);
+      assert.deepEqual(found, [{ ...acmeSummary, role: "owner" }]);
     });
 });
 
@@ -216,7 +222,10 @@ test("slugOwner still refuses a handle another organization holds", async () => 
 test("get reads one organization by its permanent id", async () => {
   const fake = createFakeOrganizationDb({ organizations: [acme] });
 
-  assert.deepEqual(await createOrganizationStore(fake.db).get("org_1"), acme);
+  assert.deepEqual(
+    await createOrganizationStore(fake.db).get("org_1"),
+    acmeSummary,
+  );
 });
 
 test("get is undefined for an unknown id", async () => {
@@ -311,7 +320,7 @@ test("pendingFor finds invitations addressed to the caller", async () => {
 
   assert.equal(found.length, 1);
   assert.equal(found[0]?.id, "inv_1");
-  assert.deepEqual(found[0]?.organization, acme);
+  assert.deepEqual(found[0]?.organization, acmeSummary);
   assert.equal(found[0]?.role, "member");
 });
 
@@ -479,4 +488,134 @@ test("findUserByHandle is undefined when nobody holds the handle", async () => {
     await createOrganizationStore(fake.db).findUserByHandle("ghost"),
     undefined,
   );
+});
+
+// ---- personal organizations -----------------------------------------------
+//
+// Every user gets one at signup, which is what lets everything ownable take a
+// single non-null `organization_id` instead of a nullable user/organization
+// pair. These pin the three things that invariant depends on: it is created,
+// it carries the sole owner membership, and asking twice does not make two.
+
+test("createPersonal creates the organization and marks it personal", async () => {
+  const fake = createFakeOrganizationDb({});
+
+  const created = await createOrganizationStore(fake.db).createPersonal({
+    userId: "user_1",
+    name: "Dana",
+    preferredSlug: "dana",
+  });
+
+  assert.equal(created.slug, "dana");
+  assert.equal(created.kind, "personal");
+  assert.equal(created.name, "Dana");
+  // Named by the user it belongs to, so "find my personal organization" is a
+  // foreign key rather than a handle lookup.
+  assert.equal(fake.organizations[0]?.personalUserId, "user_1");
+});
+
+test("createPersonal makes the user its sole owner", async () => {
+  // Without the membership the organization exists but `listForUser` cannot
+  // see it, so the user would appear to be in none.
+  const fake = createFakeOrganizationDb({});
+
+  await createOrganizationStore(fake.db).createPersonal({
+    userId: "user_1",
+    name: "Dana",
+    preferredSlug: "dana",
+  });
+
+  assert.equal(fake.members.length, 1);
+  assert.equal(fake.members[0]?.userId, "user_1");
+  assert.equal(fake.members[0]?.role, "owner");
+});
+
+test("createPersonal returns the existing organization rather than a second", async () => {
+  // The signup hook can run again for the same user — a retried signup — and
+  // the unique constraint would raise rather than be caught here.
+  const fake = createFakeOrganizationDb({
+    organizations: [
+      {
+        id: "org_existing",
+        name: "Dana",
+        slug: "dana",
+        kind: "personal",
+        personalUserId: "user_1",
+      },
+    ],
+  });
+
+  const found = await createOrganizationStore(fake.db).createPersonal({
+    userId: "user_1",
+    name: "Dana",
+    preferredSlug: "dana",
+  });
+
+  assert.equal(found.id, "org_existing");
+  assert.equal(fake.organizations.length, 1);
+});
+
+test("createPersonal suffixes a handle a team already holds", async () => {
+  // Users and organizations draw handles from one namespace, so the handle a
+  // user holds may already name a team.
+  const fake = createFakeOrganizationDb({
+    organizations: [
+      { id: "org_team", name: "Dana Corp", slug: "dana", kind: "team" },
+    ],
+  });
+
+  const created = await createOrganizationStore(fake.db).createPersonal({
+    userId: "user_1",
+    name: "Dana",
+    preferredSlug: "dana",
+  });
+
+  assert.equal(created.slug, "dana-2");
+});
+
+test("createPersonal keeps suffixing past a taken suffix", async () => {
+  const fake = createFakeOrganizationDb({
+    organizations: [
+      { id: "org_a", name: "One", slug: "dana", kind: "team" },
+      { id: "org_b", name: "Two", slug: "dana-2", kind: "team" },
+    ],
+  });
+
+  const created = await createOrganizationStore(fake.db).createPersonal({
+    userId: "user_1",
+    name: "Dana",
+    preferredSlug: "dana",
+  });
+
+  assert.equal(created.slug, "dana-3");
+});
+
+test("createPersonal lowercases the handle it is given", async () => {
+  // Handles are stored lowercase; `displayUsername` keeps the typed casing.
+  const fake = createFakeOrganizationDb({});
+
+  const created = await createOrganizationStore(fake.db).createPersonal({
+    userId: "user_1",
+    name: "Dana",
+    preferredSlug: "Dana",
+  });
+
+  assert.equal(created.slug, "dana");
+});
+
+test("a personal organization is listed like any other", async () => {
+  // Nothing below the API boundary branches on `kind`: the membership is what
+  // grants access, whichever kind the organization is.
+  const fake = createFakeOrganizationDb({});
+  const store = createOrganizationStore(fake.db);
+
+  const created = await store.createPersonal({
+    userId: "user_1",
+    name: "Dana",
+    preferredSlug: "dana",
+  });
+
+  const listed = await store.listForUser("user_1");
+  assert.deepEqual(listed, [{ ...created, role: "owner" }]);
+  assert.equal(await store.roleOf("user_1", created.id), "owner");
 });

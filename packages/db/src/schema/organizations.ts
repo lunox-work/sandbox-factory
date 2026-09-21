@@ -22,6 +22,19 @@ import { index, pgTable, text, timestamp, unique } from "drizzle-orm/pg-core";
 
 import { user } from "./auth.js";
 
+/**
+ * What an organization is: one person's own account, or a team.
+ *
+ * `personal` exists so that everything ownable has a single non-null
+ * `organization_id` rather than a nullable user/organization pair. A personal
+ * organization is a real row with one `owner` member, minted at signup — what
+ * GitHub and Vercel do. Nothing below the API boundary branches on this: a
+ * store method takes an organization id and does not care which kind it is.
+ */
+export const ORGANIZATION_KINDS = ["personal", "team"] as const;
+
+export type OrganizationKind = (typeof ORGANIZATION_KINDS)[number];
+
 export const organization = pgTable("organization", {
   id: text("id").primaryKey(),
   /** Display name. Free text, unlike the handle. */
@@ -38,6 +51,23 @@ export const organization = pgTable("organization", {
   logo: text("logo"),
   /** JSON as a string; the plugin declares this field as `string`. */
   metadata: text("metadata"),
+  /**
+   * `personal` or `team`. Defaults to `team`: the plugin's own create
+   * endpoint writes no `kind`, and self-serve creation is always a team.
+   * Only the signup hook writes `personal`.
+   */
+  kind: text("kind").notNull().default("team"),
+  /**
+   * The user whose personal organization this is, and null for every team.
+   *
+   * Unique, so one user cannot end up with two — which a handle lookup could
+   * not prevent, since handles are renameable. It gives "find my personal
+   * organization" a foreign key rather than a guess, and cascades so deleting
+   * a user takes their personal organization with it.
+   */
+  personalUserId: text("personal_user_id")
+    .unique()
+    .references(() => user.id, { onDelete: "cascade" }),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),

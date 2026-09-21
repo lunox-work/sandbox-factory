@@ -12,12 +12,15 @@
  * needs a new branch here.
  */
 
-import type { Database } from "../src/store.js";
+import type { Database } from "../src/errors.js";
 
 export interface OrganizationRowLite {
   id: string;
   name: string;
   slug: string;
+  /** `personal` or `team`; defaults to `team`, as the column does. */
+  kind?: string;
+  personalUserId?: string | null;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -176,6 +179,8 @@ export function createFakeOrganizationDb(
           id: row.id,
           name: row.name,
           slug: row.slug,
+          kind: row.kind ?? "team",
+          personal_user_id: row.personalUserId ?? null,
           created_at: row.createdAt ?? new Date(0),
           updated_at: row.updatedAt ?? new Date(0),
         }));
@@ -324,6 +329,73 @@ export function createFakeOrganizationDb(
 
   const db: Record<string, unknown> = {
     select: (projection: Record<string, unknown>) => selectChain(projection),
+
+    /**
+     * `createPersonal` is the one write this store makes, so the fake models
+     * just enough of it: the row is appended to the seeded array, and
+     * `returning` answers with the projection the store asked for.
+     *
+     * `onConflictDoNothing` is modelled on the member table's real unique
+     * constraint — a second membership for the same pair is dropped, which is
+     * what makes the hook safe to run twice.
+     */
+    insert: (table: unknown) => {
+      const name = tableName(table) ?? "";
+      let inserted: Columns = {};
+      const chain: Record<string, unknown> = {
+        values: (value: Columns) => {
+          inserted = value;
+          if (name === "organization") {
+            organizations.push({
+              id: String(value["id"]),
+              name: String(value["name"]),
+              slug: String(value["slug"]),
+              kind:
+                value["kind"] === undefined ? "team" : String(value["kind"]),
+              personalUserId:
+                value["personalUserId"] === undefined
+                  ? null
+                  : String(value["personalUserId"]),
+            });
+          } else if (name === "member") {
+            const duplicate = members.some(
+              (row) =>
+                row.organizationId === value["organizationId"] &&
+                row.userId === value["userId"],
+            );
+            if (!duplicate) {
+              members.push({
+                id: String(value["id"]),
+                organizationId: String(value["organizationId"]),
+                userId: String(value["userId"]),
+                role: String(value["role"]),
+                createdAt: new Date(0),
+              });
+            }
+          }
+          return chain;
+        },
+        onConflictDoNothing: () => chain,
+        returning: (projection?: Record<string, unknown>) => {
+          const row =
+            projection === undefined
+              ? inserted
+              : Object.fromEntries(
+                  Object.keys(projection).map((alias) => [
+                    alias,
+                    // The values are passed in Drizzle's camelCase property
+                    // names, which is also how the store reads them back.
+                    inserted[alias] ?? (alias === "kind" ? "team" : undefined),
+                  ]),
+                );
+          return {
+            then: (resolve: (value: unknown) => unknown) => resolve([row]),
+          };
+        },
+        then: (resolve: (value: unknown) => unknown) => resolve([inserted]),
+      };
+      return chain;
+    },
 
     update: (table: unknown) => {
       const name = tableName(table) ?? "";

@@ -4,18 +4,16 @@
  * Platform-neutral: `fetch` only, no `node:`, `window` or `vscode`. The
  * tsconfig's `types: []` enforces it. Responses are parsed with the shared zod
  * schemas, not cast, so a wrong shape fails here with a clear message.
+ *
+ * `ApiClient` carries the transport and nothing else today: authentication,
+ * JSON handling and the error contract, with `#request` exposed as the
+ * protected `request` so a feature adds endpoints as methods rather than
+ * restating any of it. The todo methods it used to carry went with the todo
+ * domain; the seam is kept because the extension is a second consumer that
+ * cannot share the web app's cookie.
  */
 
-import {
-  createTodoSchema,
-  errorSchema,
-  todoListSchema,
-  todoSchema,
-  updateTodoSchema,
-  type CreateTodoInput,
-  type TodoDto,
-  type UpdateTodoInput,
-} from "@sandbox-factory/shared";
+import { errorSchema } from "@sandbox-factory/shared";
 
 export interface ClientOptions {
   /** Base URL, e.g. `https://api.lunox.work`. Trailing slashes are fine. */
@@ -53,8 +51,8 @@ export class ApiError extends Error {
   }
 
   /**
-   * The todo is gone, usually deleted from another client; callers generally
-   * drop it from their local list rather than show an error.
+   * The resource is gone, usually removed from another client; callers
+   * generally drop it from their local list rather than show an error.
    */
   get isNotFound(): boolean {
     return this.status === 404;
@@ -75,7 +73,7 @@ function trimTrailingSlashes(value: string): string {
   return value.slice(0, end);
 }
 
-export class TodoClient {
+export class ApiClient {
   readonly #baseUrl: string;
   readonly #getToken: () => string | null | PromiseLike<string | null>;
   readonly #fetch: typeof globalThis.fetch;
@@ -90,7 +88,12 @@ export class TodoClient {
     this.#fetch = options.fetch ?? globalThis.fetch.bind(globalThis);
   }
 
-  async #request(path: string, init?: RequestInit): Promise<unknown> {
+  /**
+   * One request, authenticated and parsed. `protected` rather than private:
+   * this is the seam a subclass builds endpoints on, and the reason the
+   * transport lives in a package rather than in each surface.
+   */
+  protected async request(path: string, init?: RequestInit): Promise<unknown> {
     const token = await this.#getToken();
     const headers = new Headers(init?.headers);
     headers.set("Accept", "application/json");
@@ -131,51 +134,5 @@ export class TodoClient {
     }
 
     return payload;
-  }
-
-  async listTodos(): Promise<TodoDto[]> {
-    const payload = await this.#request("/api/v1/todos");
-    return todoListSchema.parse(payload).todos;
-  }
-
-  async getTodo(id: string): Promise<TodoDto> {
-    const payload = await this.#request(
-      `/api/v1/todos/${encodeURIComponent(id)}`,
-    );
-    return todoSchema.parse(payload);
-  }
-
-  async createTodo(input: CreateTodoInput): Promise<TodoDto> {
-    // Validated first, so a bad title is a local error, not a round trip.
-    const body = createTodoSchema.parse(input);
-    const payload = await this.#request("/api/v1/todos", {
-      method: "POST",
-      body: JSON.stringify(body),
-    });
-    return todoSchema.parse(payload);
-  }
-
-  async updateTodo(id: string, input: UpdateTodoInput): Promise<TodoDto> {
-    const body = updateTodoSchema.parse(input);
-    const payload = await this.#request(
-      `/api/v1/todos/${encodeURIComponent(id)}`,
-      {
-        method: "PATCH",
-        body: JSON.stringify(body),
-      },
-    );
-    return todoSchema.parse(payload);
-  }
-
-  /** Convenience wrapper over {@link updateTodo} for the common case. */
-  async setDone(id: string, done: boolean): Promise<TodoDto> {
-    return this.updateTodo(id, { done });
-  }
-
-  /** Resolves on success; a missing todo raises an ApiError with status 404. */
-  async deleteTodo(id: string): Promise<void> {
-    await this.#request(`/api/v1/todos/${encodeURIComponent(id)}`, {
-      method: "DELETE",
-    });
   }
 }

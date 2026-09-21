@@ -81,6 +81,11 @@ export function Organization({
   }, [refresh]);
 
   const manage = canManage(organization.role);
+  /**
+   * Someone's own account rather than a team. It has one member and cannot
+   * gain another, so the sections about membership do not apply to it.
+   */
+  const personal = organization.kind === "personal";
   const owners = members.filter((entry) => entry.role === "owner");
 
   /** Runs a plugin call, showing its own reason when it refuses. */
@@ -112,7 +117,9 @@ export function Organization({
         {organization.name}
       </h1>
       <p className="text-muted-foreground mt-1.5 text-sm">
-        Your organization&rsquo;s handle, and who belongs to it.
+        {personal
+          ? "Your personal account\u2019s handle and connections."
+          : "Your organization\u2019s handle, and who belongs to it."}
       </p>
 
       {error !== null && (
@@ -152,78 +159,86 @@ export function Organization({
           </Card>
         )}
 
-        <Card>
-          <CardHeader>
-            <CardTitle role="heading" aria-level={2}>
-              Members
-            </CardTitle>
-            <CardDescription>
-              Everyone who can see this organization. An owner can do anything
-              here; an admin can manage members but cannot delete the
-              organization.
-            </CardDescription>
-          </CardHeader>
+        {/*
+          A personal organization has exactly one member — its owner — and
+          cannot gain another, so the members list, the invite form and
+          leaving are all hidden rather than shown as controls the API would
+          refuse. See `refusePersonal` in `apps/api/src/auth.ts`.
+        */}
+        {!personal && (
+          <Card>
+            <CardHeader>
+              <CardTitle role="heading" aria-level={2}>
+                Members
+              </CardTitle>
+              <CardDescription>
+                Everyone who can see this organization. An owner can do anything
+                here; an admin can manage members but cannot delete the
+                organization.
+              </CardDescription>
+            </CardHeader>
 
-          <CardContent className="flex flex-col gap-2">
-            {members.map((entry) => {
-              // The last owner cannot be removed or demoted; the plugin
-              // refuses it, and disabling the control says so before the
-              // click rather than after.
-              const lastOwner = entry.role === "owner" && owners.length < 2;
-              return (
-                <div
-                  key={entry.id}
-                  className="bg-muted/35 flex flex-wrap items-center gap-2 rounded-lg border px-3.5 py-3"
-                >
-                  <span className="flex-1 text-sm font-medium">
-                    {entry.name}
-                    {entry.username !== null && (
-                      <span className="text-muted-foreground ml-1.5 font-normal">
-                        @{entry.username}
-                      </span>
-                    )}
-                  </span>
-
-                  <Badge
-                    variant={entry.role === "owner" ? "default" : "secondary"}
+            <CardContent className="flex flex-col gap-2">
+              {members.map((entry) => {
+                // The last owner cannot be removed or demoted; the plugin
+                // refuses it, and disabling the control says so before the
+                // click rather than after.
+                const lastOwner = entry.role === "owner" && owners.length < 2;
+                return (
+                  <div
+                    key={entry.id}
+                    className="bg-muted/35 flex flex-wrap items-center gap-2 rounded-lg border px-3.5 py-3"
                   >
-                    {entry.role === "owner" && <Check />}
-                    <span className="capitalize">{entry.role}</span>
-                  </Badge>
+                    <span className="flex-1 text-sm font-medium">
+                      {entry.name}
+                      {entry.username !== null && (
+                        <span className="text-muted-foreground ml-1.5 font-normal">
+                          @{entry.username}
+                        </span>
+                      )}
+                    </span>
 
-                  {manage && (
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      className="text-muted-foreground hover:text-destructive"
-                      disabled={busy || lastOwner}
-                      title={
-                        lastOwner
-                          ? "An organization must keep at least one owner."
-                          : undefined
-                      }
-                      onClick={() =>
-                        void run(
-                          () =>
-                            authClient.organization.removeMember({
-                              memberIdOrEmail: entry.id,
-                              organizationId: organization.id,
-                            }),
-                          refresh,
-                        )
-                      }
+                    <Badge
+                      variant={entry.role === "owner" ? "default" : "secondary"}
                     >
-                      Remove
-                    </Button>
-                  )}
-                </div>
-              );
-            })}
-          </CardContent>
-        </Card>
+                      {entry.role === "owner" && <Check />}
+                      <span className="capitalize">{entry.role}</span>
+                    </Badge>
 
-        {manage && (
+                    {manage && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="text-muted-foreground hover:text-destructive"
+                        disabled={busy || lastOwner}
+                        title={
+                          lastOwner
+                            ? "An organization must keep at least one owner."
+                            : undefined
+                        }
+                        onClick={() =>
+                          void run(
+                            () =>
+                              authClient.organization.removeMember({
+                                memberIdOrEmail: entry.id,
+                                organizationId: organization.id,
+                              }),
+                            refresh,
+                          )
+                        }
+                      >
+                        Remove
+                      </Button>
+                    )}
+                  </div>
+                );
+              })}
+            </CardContent>
+          </Card>
+        )}
+
+        {!personal && manage && (
           <InviteForm
             organizationId={organization.id}
             busy={busy}
@@ -232,55 +247,57 @@ export function Organization({
           />
         )}
 
-        <Card>
-          <CardHeader>
-            <CardTitle role="heading" aria-level={2}>
-              Leaving
-            </CardTitle>
-            <CardDescription>
-              Leaving gives up your access to everything this organization owns.
-              An organization must always keep one owner, so the last one cannot
-              leave.
-            </CardDescription>
-          </CardHeader>
+        {!personal && (
+          <Card>
+            <CardHeader>
+              <CardTitle role="heading" aria-level={2}>
+                Leaving
+              </CardTitle>
+              <CardDescription>
+                Leaving gives up your access to everything this organization
+                owns. An organization must always keep one owner, so the last
+                one cannot leave.
+              </CardDescription>
+            </CardHeader>
 
-          <CardContent className="flex flex-wrap gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={busy}
-              onClick={() =>
-                void run(
-                  () =>
-                    authClient.organization.leave({
-                      organizationId: organization.id,
-                    }),
-                  onLeft,
-                )
-              }
-            >
-              <LogOut />
-              Leave organization
-            </Button>
-
-            {organization.role === "owner" && (
-              <DeleteOrganization
-                organization={organization}
-                busy={busy}
-                onDelete={() =>
+            <CardContent className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={busy}
+                onClick={() =>
                   void run(
                     () =>
-                      authClient.organization.delete({
+                      authClient.organization.leave({
                         organizationId: organization.id,
                       }),
                     onLeft,
                   )
                 }
-              />
-            )}
-          </CardContent>
-        </Card>
+              >
+                <LogOut />
+                Leave organization
+              </Button>
+
+              {organization.role === "owner" && (
+                <DeleteOrganization
+                  organization={organization}
+                  busy={busy}
+                  onDelete={() =>
+                    void run(
+                      () =>
+                        authClient.organization.delete({
+                          organizationId: organization.id,
+                        }),
+                      onLeft,
+                    )
+                  }
+                />
+              )}
+            </CardContent>
+          </Card>
+        )}
       </div>
     </main>
   );

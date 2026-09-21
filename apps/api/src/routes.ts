@@ -1,6 +1,6 @@
 /**
  * HTTP routes, built by a factory that takes its dependencies so tests run
- * against an in-memory store without binding a port.
+ * against fakes without binding a port or a database.
  *
  * Domain errors become status codes in one place, `errorHandler`. `auth` is
  * optional only for tests: without it every `/api/*` route answers 503, so
@@ -8,18 +8,16 @@
  */
 
 import {
-  createTodoSchema,
   inviteMemberSchema,
   unknownBuildInfo,
-  updateTodoSchema,
   type BuildInfoDto,
   type OrganizationRole,
 } from "@sandbox-factory/shared";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import type { ErrorHandler } from "hono";
-import { InvalidTitleError } from "sandbox-factory";
 
+import { NotFoundError } from "@sandbox-factory/db";
 import type {
   EmailStore,
   OrganizationStore,
@@ -28,10 +26,8 @@ import type {
 
 import type { Auth } from "./auth.js";
 import { mountJiraRoutes, type JiraRouteOptions } from "./jira/routes.js";
-import { NotFoundError, type TodoStore } from "./store.js";
 
 export interface AppOptions {
-  store: TodoStore;
   corsOrigins: readonly string[];
   /** Omit only in tests. Without it no data route is mounted. */
   auth?: Auth | undefined;
@@ -115,7 +111,6 @@ export function rankAtLeast(held: string, required: OrganizationRole): boolean {
 type AppEnv = { Variables: AuthVariables };
 
 export function createApp({
-  store,
   corsOrigins,
   auth,
   emails,
@@ -347,7 +342,7 @@ export function createApp({
      * session, and the five-minute session cookie cache means a change in one
      * lags in another. A session says who is asking, not what they may read.
      *
-     * A non-member gets 404, not 403, exactly as another user's todo does:
+     * A non-member gets 404, not 403, exactly as another user's row does:
      * 403 would confirm the organization exists.
      */
     app.use("/api/v1/orgs/:orgId/*", async (c, next) => {
@@ -449,51 +444,6 @@ export function createApp({
     }
   }
 
-  /**
-   * Todos, scoped to the caller: every route passes the session's user id to
-   * the store, which makes it part of the query. Another user's id is a 404,
-   * as on the email routes.
-   */
-  app.get("/api/v1/todos", async (c) => {
-    return c.json({ todos: await store.list(c.get("user").id) });
-  });
-
-  app.get("/api/v1/todos/:id", async (c) => {
-    const todo = await store.get(c.get("user").id, c.req.param("id"));
-    if (todo === undefined) {
-      throw new NotFoundError(c.req.param("id"));
-    }
-    return c.json(todo);
-  });
-
-  app.post("/api/v1/todos", async (c) => {
-    const parsed = createTodoSchema.safeParse(
-      await c.req.json().catch(() => null),
-    );
-    if (!parsed.success) {
-      return c.json({ error: firstIssue(parsed.error) }, 400);
-    }
-    // The owner comes from the session, never from the body.
-    return c.json(await store.create(c.get("user").id, parsed.data.title), 201);
-  });
-
-  app.patch("/api/v1/todos/:id", async (c) => {
-    const parsed = updateTodoSchema.safeParse(
-      await c.req.json().catch(() => null),
-    );
-    if (!parsed.success) {
-      return c.json({ error: firstIssue(parsed.error) }, 400);
-    }
-    return c.json(
-      await store.update(c.get("user").id, c.req.param("id"), parsed.data),
-    );
-  });
-
-  app.delete("/api/v1/todos/:id", async (c) => {
-    await store.remove(c.get("user").id, c.req.param("id"));
-    return c.body(null, 204);
-  });
-
   app.notFound((c) => c.json({ error: "Not found." }, 404));
 
   app.onError(errorHandler);
@@ -508,9 +458,6 @@ export function createApp({
 const errorHandler: ErrorHandler<AppEnv> = (error, c) => {
   if (error instanceof NotFoundError) {
     return c.json({ error: error.message }, 404);
-  }
-  if (error instanceof InvalidTitleError) {
-    return c.json({ error: error.message }, 400);
   }
   // Unexpected: log it, but do not leak internals to the caller.
   console.error(error);

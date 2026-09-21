@@ -3,47 +3,12 @@ import { test } from "node:test";
 
 import { getTableConfig } from "drizzle-orm/pg-core";
 
-import { invitation, member, todos, userEmail } from "../src/schema.js";
+import { invitation, member, userEmail } from "../src/schema.js";
 
 /**
  * Schema invariants nothing else in the build would catch: a missing index
- * degrades silently, and a nullable owner would let an unowned todo exist.
+ * degrades silently, and a nullable owner would let an unowned row exist.
  */
-
-test("todos.user_id is not nullable", () => {
-  // A nullable owner would allow rows that belong to nobody.
-  const { columns } = getTableConfig(todos);
-  const userId = columns.find((column) => column.name === "user_id");
-  assert.equal(userId?.notNull, true);
-});
-
-test("todos.user_id cascades on delete", () => {
-  // A deleted account must not leave rows pointing at an id that is gone.
-  const { foreignKeys } = getTableConfig(todos);
-  assert.equal(foreignKeys.length, 1);
-  assert.equal(foreignKeys[0]?.onDelete, "cascade");
-});
-
-test("todos is indexed by owner and recency", () => {
-  // Without it the list read is a sequential scan plus a sort.
-  const { indexes } = getTableConfig(todos);
-  const index = indexes.find(
-    (candidate) => candidate.config.name === "todos_user_id_created_at_idx",
-  );
-  assert.notEqual(index, undefined);
-
-  // Owner first: a composite index only serves the `where` when the filtered
-  // column leads. `desc(created_at)` is an SQL expression with no `name`, so
-  // only its presence is asserted.
-  const columns = index?.config.columns ?? [];
-  assert.equal(columns.length, 2);
-  assert.equal(
-    columns[0] !== undefined && "name" in columns[0]
-      ? columns[0].name
-      : undefined,
-    "user_id",
-  );
-});
 
 test("a user has at most one primary address", () => {
   // Two primaries would make `user.email` ambiguous about which it mirrors.

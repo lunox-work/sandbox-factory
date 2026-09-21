@@ -1,33 +1,7 @@
 /**
- * Row <-> domain mapping. Pure and separate from the store, so timestamp
- * conversion and id generation are testable without Postgres.
+ * Id generation. Pure and separate from the stores, so it is testable without
+ * Postgres.
  */
-
-import { normalizeTitle, type Todo } from "sandbox-factory";
-
-import type { NewTodoRow, TodoRow } from "./schema.js";
-
-/** Turns a database row into the domain `Todo`. */
-export function rowToTodo(row: TodoRow): Todo {
-  return {
-    id: row.id,
-    title: row.title,
-    done: row.done,
-    createdAt: row.createdAt.toISOString(),
-  };
-}
-
-/**
- * Builds the row for a new todo. Normalizes the title here as well as at the
- * HTTP edge, so a direct store caller cannot write an invalid one.
- */
-export function newTodoRow(
-  userId: string,
-  title: string,
-  id: string = generateId(),
-): NewTodoRow {
-  return { id, userId, title: normalizeTitle(title), done: false };
-}
 
 /**
  * The id prefixes in use, one per table that generates ids.
@@ -37,9 +11,17 @@ export function newTodoRow(
  * issue id belongs is visible rather than a silent 404. The set is declared
  * here, rather than each caller passing a string, so that a typo is a compile
  * error and the full list is readable in one place.
+ *
+ * Most of Better Auth's tables are absent on purpose: the plugin generates
+ * ids for `user`, `session`, `account`, `invitation` and for organizations it
+ * creates itself. `org` and `mbr` are here because `createPersonal` writes
+ * those two rows directly from the signup hook, which is the one write to
+ * them the plugin does not own.
  */
 export const ID_PREFIXES = [
-  "todo",
+  /** The personal organization minted at signup, and its sole membership. */
+  "org",
+  "mbr",
   /** Jira: connection, board, issue. */
   "jrc",
   "jrb",
@@ -55,9 +37,9 @@ export type IdPrefix = (typeof ID_PREFIXES)[number];
  * Generated in the application, not by a sequence: `create` stays one round
  * trip and ids stay collision-free across replicas.
  *
- * Defaults to `todo` so the existing callers are unchanged; every new table
- * passes its own prefix.
+ * The prefix is required. It used to default to `todo`, which was convenient
+ * while one table generated ids and wrong the moment a second did.
  */
-export function generateId(prefix: IdPrefix = "todo"): string {
+export function generateId(prefix: IdPrefix): string {
   return `${prefix}_${crypto.randomUUID()}`;
 }

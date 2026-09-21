@@ -13,8 +13,8 @@
  * arrow-key movement and `aria` wiring that the reference's version does not
  * have.
  *
- * Destinations are a closed set of two screens, so this takes the active one
- * as a discriminated value instead of reading a route. The day a third screen
+ * Destinations are a closed set, so this takes the active one as a
+ * discriminated value instead of reading a route. The day another screen
  * arrives, `Screen` grows a member and the compiler names every place that
  * needs updating.
  *
@@ -30,7 +30,7 @@ import { cn } from "@/lib/utils";
 import { UserMenu } from "./UserMenu";
 
 export type Screen =
-  | "todos"
+  | "home"
   | "account"
   | "organizations"
   | "org-settings"
@@ -62,8 +62,8 @@ export function SideNav({
   return (
     /*
       `nav` for the destinations and `aria-label` to name it: "Main" is what
-      distinguishes this landmark from the filter `nav` inside the todo list,
-      which is a second navigation on the same page.
+      distinguishes this landmark from any navigation a page renders inside
+      its own content.
     */
     <nav
       aria-label="Main"
@@ -86,7 +86,7 @@ export function SideNav({
         type="button"
         aria-label="Lunox home"
         title="Lunox"
-        onClick={() => onNavigate("todos")}
+        onClick={() => onNavigate("home")}
         className="hidden shrink-0 cursor-pointer sm:block"
       >
         <picture>
@@ -107,8 +107,8 @@ export function SideNav({
       <div className="flex sm:mt-5 sm:w-full sm:flex-col">
         <RailButton
           label="Home"
-          current={screen === "todos"}
-          onClick={() => onNavigate("todos")}
+          current={screen === "home"}
+          onClick={() => onNavigate("home")}
         >
           {/* Sized by CSS, not by lucide's `size` prop, so the rail's tiles
               stay the same size from one place. Lucide's default `stroke` is

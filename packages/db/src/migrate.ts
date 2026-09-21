@@ -3,7 +3,7 @@
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 
 import { createConnection } from "./client.js";
-import type { Database } from "./store.js";
+import type { Database } from "./errors.js";
 
 export interface MigrateOptions {
   readonly url: string;

@@ -1,14 +1,29 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { ApiError, TodoClient } from "../src/index.js";
+import { ApiClient, ApiError } from "../src/index.js";
 
-const todo = {
-  id: "todo_1",
-  title: "write tests",
-  done: false,
-  createdAt: "2026-09-16T00:00:00.000Z",
-};
+/**
+ * A probe over the transport.
+ *
+ * `request` is protected, so the tests reach it the way a real feature will:
+ * by subclassing. That keeps these tests pinned to the seam the extension and
+ * the web app actually build on, rather than to a method that happens to
+ * exist today.
+ */
+class ProbeClient extends ApiClient {
+  get(path: string): Promise<unknown> {
+    return this.request(path);
+  }
+
+  post(path: string, body: unknown): Promise<unknown> {
+    return this.request(path, { method: "POST", body: JSON.stringify(body) });
+  }
+
+  del(path: string): Promise<unknown> {
+    return this.request(path, { method: "DELETE" });
+  }
+}
 
 /** A fetch stub that records what it was called with. */
 function stubFetch(response: {
@@ -31,62 +46,62 @@ function stubFetch(response: {
   return { fetch, calls };
 }
 
-test("listTodos unwraps the envelope", async () => {
-  const { fetch, calls } = stubFetch({ body: { todos: [todo] } });
-  const client = new TodoClient({ baseUrl: "https://api.test", fetch });
+test("a parsed body is returned to the caller", async () => {
+  const { fetch, calls } = stubFetch({ body: { ok: true } });
+  const client = new ProbeClient({ baseUrl: "https://api.test", fetch });
 
-  assert.deepEqual(await client.listTodos(), [todo]);
-  assert.equal(calls[0]?.url, "https://api.test/api/v1/todos");
+  assert.deepEqual(await client.get("/api/v1/me"), { ok: true });
+  assert.equal(calls[0]?.url, "https://api.test/api/v1/me");
 });
 
 test("a trailing slash on baseUrl does not produce a doubled slash", async () => {
-  const { fetch, calls } = stubFetch({ body: { todos: [] } });
-  const client = new TodoClient({ baseUrl: "https://api.test///", fetch });
+  const { fetch, calls } = stubFetch({ body: {} });
+  const client = new ProbeClient({ baseUrl: "https://api.test///", fetch });
 
-  await client.listTodos();
-  assert.equal(calls[0]?.url, "https://api.test/api/v1/todos");
+  await client.get("/api/v1/me");
+  assert.equal(calls[0]?.url, "https://api.test/api/v1/me");
 });
 
 test("a baseUrl of only slashes trims to empty", async () => {
   // Pins an edge case of the hand-rolled trim (see `trimTrailingSlashes`).
-  const { fetch, calls } = stubFetch({ body: { todos: [] } });
-  const client = new TodoClient({ baseUrl: "///", fetch });
+  const { fetch, calls } = stubFetch({ body: {} });
+  const client = new ProbeClient({ baseUrl: "///", fetch });
 
-  await client.listTodos();
-  assert.equal(calls[0]?.url, "/api/v1/todos");
+  await client.get("/api/v1/me");
+  assert.equal(calls[0]?.url, "/api/v1/me");
 });
 
 test("a long run of slashes mid-url is left alone and returns promptly", async () => {
   // The quadratic case for the old regex: a long run of slashes not at the
   // end, ~2.3s for 80k. The time bound is the assertion that matters.
-  const { fetch, calls } = stubFetch({ body: { todos: [] } });
+  const { fetch, calls } = stubFetch({ body: {} });
   const inner = "/".repeat(80_000);
 
   // Start the timer before construction: the trim runs in the constructor.
   const started = Date.now();
-  const client = new TodoClient({
+  const client = new ProbeClient({
     baseUrl: `https://api.test${inner}x`,
     fetch,
   });
 
-  await client.listTodos();
+  await client.get("/api/v1/me");
 
   assert.ok(
     Date.now() - started < 1000,
     "trimming should not be quadratic in the length of a slash run",
   );
-  assert.equal(calls[0]?.url, `https://api.test${inner}x/api/v1/todos`);
+  assert.equal(calls[0]?.url, `https://api.test${inner}x/api/v1/me`);
 });
 
 test("the bearer token is attached when getToken returns one", async () => {
-  const { fetch, calls } = stubFetch({ body: { todos: [] } });
-  const client = new TodoClient({
+  const { fetch, calls } = stubFetch({ body: {} });
+  const client = new ProbeClient({
     baseUrl: "https://api.test",
     fetch,
     getToken: () => Promise.resolve("tok_123"),
   });
 
-  await client.listTodos();
+  await client.get("/api/v1/me");
   assert.equal(
     new Headers(calls[0]?.init?.headers).get("Authorization"),
     "Bearer tok_123",
@@ -94,84 +109,56 @@ test("the bearer token is attached when getToken returns one", async () => {
 });
 
 test("no Authorization header is sent when signed out", async () => {
-  const { fetch, calls } = stubFetch({ body: { todos: [] } });
-  const client = new TodoClient({ baseUrl: "https://api.test", fetch });
+  const { fetch, calls } = stubFetch({ body: {} });
+  const client = new ProbeClient({ baseUrl: "https://api.test", fetch });
 
-  await client.listTodos();
+  await client.get("/api/v1/me");
   assert.equal(new Headers(calls[0]?.init?.headers).get("Authorization"), null);
 });
 
-test("ids are URL-encoded so a slash cannot escape the path", async () => {
-  const { fetch, calls } = stubFetch({ body: todo });
-  const client = new TodoClient({ baseUrl: "https://api.test", fetch });
+test("a body is sent as JSON with the matching content type", async () => {
+  const { fetch, calls } = stubFetch({ body: {} });
+  const client = new ProbeClient({ baseUrl: "https://api.test", fetch });
 
-  await client.getTodo("a/../../admin");
-  assert.equal(
-    calls[0]?.url,
-    "https://api.test/api/v1/todos/a%2F..%2F..%2Fadmin",
-  );
-});
+  await client.post("/api/v1/orgs", { name: "Acme" });
 
-test("createTodo posts JSON with the trimmed title", async () => {
-  const { fetch, calls } = stubFetch({ body: todo });
-  const client = new TodoClient({ baseUrl: "https://api.test", fetch });
-
-  await client.createTodo({ title: "  write tests  " });
   assert.equal(calls[0]?.init?.method, "POST");
+  assert.equal(calls[0]?.init?.body, JSON.stringify({ name: "Acme" }));
   assert.equal(
     new Headers(calls[0]?.init?.headers).get("Content-Type"),
     "application/json",
   );
-  assert.equal(calls[0]?.init?.body, JSON.stringify({ title: "write tests" }));
 });
 
-test("createTodo validates the title before making a request", async () => {
-  const { fetch, calls } = stubFetch({ body: todo });
-  const client = new TodoClient({ baseUrl: "https://api.test", fetch });
+test("no content type is set on a request without a body", async () => {
+  // A GET with `Content-Type` makes some proxies expect one.
+  const { fetch, calls } = stubFetch({ body: {} });
+  const client = new ProbeClient({ baseUrl: "https://api.test", fetch });
 
-  await assert.rejects(client.createTodo({ title: "   " }));
-  assert.equal(calls.length, 0, "an invalid title must not reach the network");
+  await client.get("/api/v1/me");
+  assert.equal(new Headers(calls[0]?.init?.headers).get("Content-Type"), null);
 });
 
-test("setDone patches only the done flag", async () => {
-  const { fetch, calls } = stubFetch({ body: { ...todo, done: true } });
-  const client = new TodoClient({ baseUrl: "https://api.test", fetch });
+test("an empty body resolves rather than failing to parse", async () => {
+  // What a 204 looks like to a caller: no payload, no error.
+  const { fetch } = stubFetch({ status: 204 });
+  const client = new ProbeClient({ baseUrl: "https://api.test", fetch });
 
-  const updated = await client.setDone("todo_1", true);
-  assert.equal(calls[0]?.init?.method, "PATCH");
-  assert.equal(calls[0]?.init?.body, JSON.stringify({ done: true }));
-  assert.equal(updated.done, true);
-});
-
-test("updateTodo rejects an empty patch before making a request", async () => {
-  const { fetch, calls } = stubFetch({ body: todo });
-  const client = new TodoClient({ baseUrl: "https://api.test", fetch });
-
-  await assert.rejects(client.updateTodo("todo_1", {}));
-  assert.equal(calls.length, 0);
-});
-
-test("deleteTodo issues a DELETE and tolerates an empty body", async () => {
-  const { fetch, calls } = stubFetch({ status: 204 });
-  const client = new TodoClient({ baseUrl: "https://api.test", fetch });
-
-  await client.deleteTodo("todo_1");
-  assert.equal(calls[0]?.init?.method, "DELETE");
-  assert.equal(calls[0]?.url, "https://api.test/api/v1/todos/todo_1");
+  assert.equal(await client.del("/api/v1/orgs/org_1"), undefined);
 });
 
 test("a 404 is flagged as not found", async () => {
   const { fetch } = stubFetch({
     status: 404,
-    body: { error: 'No todo with id "nope".' },
+    body: { error: "Not found." },
   });
-  const client = new TodoClient({ baseUrl: "https://api.test", fetch });
+  const client = new ProbeClient({ baseUrl: "https://api.test", fetch });
 
-  await assert.rejects(client.deleteTodo("nope"), (error: unknown) => {
+  await assert.rejects(client.del("/api/v1/orgs/nope"), (error: unknown) => {
     assert.ok(error instanceof ApiError);
     assert.ok(error.isNotFound);
     assert.equal(error.isUnauthorized, false);
-    assert.match(error.message, /No todo/);
+    assert.match(error.message, /Not found/);
     return true;
   });
 });
@@ -181,9 +168,9 @@ test("a 401 is flagged as unauthorized", async () => {
     status: 401,
     body: { error: "Sign in first." },
   });
-  const client = new TodoClient({ baseUrl: "https://api.test", fetch });
+  const client = new ProbeClient({ baseUrl: "https://api.test", fetch });
 
-  await assert.rejects(client.listTodos(), (error: unknown) => {
+  await assert.rejects(client.get("/api/v1/me"), (error: unknown) => {
     assert.ok(error instanceof ApiError);
     assert.ok(error.isUnauthorized);
     return true;
@@ -192,27 +179,34 @@ test("a 401 is flagged as unauthorized", async () => {
 
 test("a non-JSON body produces a readable error, not a parse crash", async () => {
   const { fetch } = stubFetch({ status: 502, text: "<html>gateway</html>" });
-  const client = new TodoClient({ baseUrl: "https://api.test", fetch });
+  const client = new ProbeClient({ baseUrl: "https://api.test", fetch });
 
-  await assert.rejects(client.listTodos(), (error: unknown) => {
+  await assert.rejects(client.get("/api/v1/me"), (error: unknown) => {
     assert.ok(error instanceof ApiError);
     assert.match(error.message, /Expected JSON/);
     return true;
   });
 });
 
-test("a response of the wrong shape is rejected rather than passed through", async () => {
-  const { fetch } = stubFetch({ body: { todos: [{ id: "todo_1" }] } });
-  const client = new TodoClient({ baseUrl: "https://api.test", fetch });
+test("an error body of the wrong shape still reports the status", async () => {
+  // The error envelope is parsed, not assumed: a proxy's own JSON must not
+  // become an unreadable message.
+  const { fetch } = stubFetch({ status: 500, body: { unexpected: true } });
+  const client = new ProbeClient({ baseUrl: "https://api.test", fetch });
 
-  await assert.rejects(client.listTodos());
+  await assert.rejects(client.get("/api/v1/me"), (error: unknown) => {
+    assert.ok(error instanceof ApiError);
+    assert.equal(error.status, 500);
+    assert.match(error.message, /HTTP 500/);
+    return true;
+  });
 });
 
 test("requests send cookies by default", async () => {
-  const { fetch, calls } = stubFetch({ body: { todos: [] } });
-  const client = new TodoClient({ baseUrl: "https://api.test", fetch });
+  const { fetch, calls } = stubFetch({ body: {} });
+  const client = new ProbeClient({ baseUrl: "https://api.test", fetch });
 
-  await client.listTodos();
+  await client.get("/api/v1/me");
 
   // Not fetch's default "same-origin", which drops the session cookie
   // cross-origin in production.
@@ -220,14 +214,14 @@ test("requests send cookies by default", async () => {
 });
 
 test("credentials can be overridden", async () => {
-  const { fetch, calls } = stubFetch({ body: { todos: [] } });
-  const client = new TodoClient({
+  const { fetch, calls } = stubFetch({ body: {} });
+  const client = new ProbeClient({
     baseUrl: "https://api.test",
     fetch,
     credentials: "omit",
   });
 
-  await client.listTodos();
+  await client.get("/api/v1/me");
 
   assert.equal(calls[0]?.init?.credentials, "omit");
 });

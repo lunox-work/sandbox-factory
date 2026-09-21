@@ -45,8 +45,8 @@ vi.stubGlobal(
   "fetch",
   vi.fn((input: RequestInfo | URL) => {
     const url = String(input);
-    if (url.includes("/api/v1/todos")) {
-      return Promise.resolve(Response.json({ todos: [] }));
+    if (url.includes("/jira/connections")) {
+      return Promise.resolve(Response.json({ connections: [] }));
     }
     if (url.includes("/api/v1/me/emails")) {
       return Promise.resolve(Response.json({ emails: [] }));
@@ -183,14 +183,13 @@ test("the rail offers home and the account avatar, with the logo above them", ()
   expect(screen.getByRole("button", { name: AVATAR })).toBeTruthy();
 });
 
-test("the todo header carries no counts, name or sign out", () => {
+test("the home header carries no name or sign out", () => {
   render(<App />);
 
-  // All three moved: the counts are answered by the list, and the other two
-  // live in the avatar menu. This is the header the screenshot asked for.
-  expect(screen.queryByText(/active ·/)).toBeNull();
+  // Both moved into the avatar menu; neither is part of the work the page is
+  // for. This is the header the screenshot asked for.
   expect(screen.queryByRole("button", { name: "Sign out" })).toBeNull();
-  expect(screen.getByRole("heading", { name: "Todos" })).toBeTruthy();
+  expect(screen.getByRole("heading", { name: "Connections" })).toBeTruthy();
 });
 
 test("the version readout is in the menu, not on the page", async () => {
@@ -205,7 +204,7 @@ test("the version readout is in the menu, not on the page", async () => {
 
 test("the menu opens the account screen, and home comes back", async () => {
   render(<App />);
-  expect(screen.getByRole("heading", { name: "Todos" })).toBeTruthy();
+  expect(screen.getByRole("heading", { name: "Connections" })).toBeTruthy();
 
   await openMenu();
   fireEvent.click(screen.getByRole("menuitem", { name: /Account settings/ }));
@@ -218,7 +217,7 @@ test("the menu opens the account screen, and home comes back", async () => {
   // only way out. If it stops working, the screen is a dead end.
   fireEvent.click(screen.getByRole("button", { name: HOME }));
   await waitFor(() => {
-    expect(screen.getByRole("heading", { name: "Todos" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Connections" })).toBeTruthy();
   });
 });
 
@@ -241,7 +240,7 @@ test("the menu offers account and sign out, but not a second way home", async ()
   expect(screen.getByRole("menuitem", { name: /Sign out/ })).toBeTruthy();
   // Home lives in the rail. Two affordances for one screen invite the wrong
   // one, so the menu does not repeat it.
-  expect(screen.queryByRole("menuitem", { name: /Todos/ })).toBeNull();
+  expect(screen.queryByRole("menuitem", { name: /Home/ })).toBeNull();
 });
 
 test("the rail marks the screen you are on", async () => {
@@ -284,13 +283,13 @@ test("a trailing slash names the same screen", () => {
   expect(screen.getByRole("heading", { name: "Account" })).toBeTruthy();
 });
 
-test("an unknown path falls back to the todo list", () => {
+test("an unknown path falls back to the home screen", () => {
   // Rather than a blank screen: the server serves index.html for any path, so
   // the app has to decide what a stale link means.
   window.history.replaceState(null, "", "/nope");
   render(<App />);
 
-  expect(screen.getByRole("heading", { name: "Todos" })).toBeTruthy();
+  expect(screen.getByRole("heading", { name: "Connections" })).toBeTruthy();
 });
 
 test("navigating writes the path, so a reload stays put", async () => {
@@ -325,7 +324,7 @@ test("the Back button returns to the previous screen", async () => {
   window.dispatchEvent(new PopStateEvent("popstate"));
 
   await waitFor(() => {
-    expect(screen.getByRole("heading", { name: "Todos" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Connections" })).toBeTruthy();
   });
 });
 
@@ -367,7 +366,7 @@ test("an account with no picture falls back to its initials", async () => {
 
 test("/o/:slug/settings opens that organization directly", async () => {
   // A shared link, or the return from a rename. Without this the path falls
-  // through to the todo list and the link looks broken.
+  // through to the home screen and the link looks broken.
   window.history.replaceState(null, "", "/o/acme/settings");
   render(<App />);
 
@@ -394,12 +393,12 @@ test("a trailing slash names the same organization screen", async () => {
 test("only /o/... names an organization, not any two-segment path", async () => {
   // The parser requires the literal `o` in the first segment. Without that
   // check *every* unrecognised two-segment path — `/settings/profile`,
-  // `/todos/archive` — reads as an organization handle, and the stale-link
-  // fallback to the todo list stops working for all of them.
+  // `/reports/weekly` — reads as an organization handle, and the stale-link
+  // fallback to the home screen stops working for all of them.
   window.history.replaceState(null, "", "/settings/profile");
   render(<App />);
 
-  expect(screen.getByRole("heading", { name: "Todos" })).toBeTruthy();
+  expect(screen.getByRole("heading", { name: "Connections" })).toBeTruthy();
   expect(screen.queryByLabelText("Organization handle")).toBeNull();
 });
 

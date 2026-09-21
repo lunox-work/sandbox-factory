@@ -6,24 +6,8 @@
  * Depends on zod only, so the extension and the browser can both bundle it.
  */
 
-import {
-  TITLE_MAX_LENGTH,
-  TODO_FILTERS,
-  normalizeHandle,
-} from "sandbox-factory";
+import { normalizeHandle } from "sandbox-factory";
 import { z } from "zod";
-
-/** Derived from the core constants, so a cap changed in core applies here. */
-export const titleSchema = z
-  .string()
-  .trim()
-  .min(1, "A todo needs a title.")
-  .max(
-    TITLE_MAX_LENGTH,
-    `Titles are capped at ${TITLE_MAX_LENGTH} characters.`,
-  );
-
-export const todoFilterSchema = z.enum(TODO_FILTERS);
 
 /**
  * A public handle: a username or an organization slug. Refines rather than
@@ -47,35 +31,6 @@ export const handleSchema = z
   // narrow without an assertion.
   .transform((result) => (result.status === "ok" ? result.handle : ""));
 
-export const todoSchema = z.object({
-  id: z.string().min(1),
-  title: z.string().min(1),
-  done: z.boolean(),
-  createdAt: z.iso.datetime(),
-});
-
-export const todoListSchema = z.object({
-  todos: z.array(todoSchema),
-});
-
-/** Body for `POST /api/v1/todos`. */
-export const createTodoSchema = z.object({
-  title: titleSchema,
-});
-
-/**
- * Body for `PATCH /api/v1/todos/:id`. Both fields are optional, but an empty
- * body is rejected: it almost always means the caller sent the wrong shape.
- */
-export const updateTodoSchema = z
-  .object({
-    title: titleSchema.optional(),
-    done: z.boolean().optional(),
-  })
-  .refine((body) => body.title !== undefined || body.done !== undefined, {
-    message: "Provide a title, a done flag, or both.",
-  });
-
 /**
  * Organizations. The membership shape the sidebar and the account page read;
  * `role` is the plugin's, one of owner, admin or member.
@@ -84,12 +39,29 @@ export const ORGANIZATION_ROLES = ["owner", "admin", "member"] as const;
 
 export const organizationRoleSchema = z.enum(ORGANIZATION_ROLES);
 
+/**
+ * What an organization is: one person's own account, or a team.
+ *
+ * A personal organization is a real row with one `owner` member, minted at
+ * signup, so that everything ownable takes a single non-null organization id.
+ * Surfaces present it as someone's own account; the API treats it like any
+ * other organization.
+ */
+export const ORGANIZATION_KINDS = ["personal", "team"] as const;
+
+export const organizationKindSchema = z.enum(ORGANIZATION_KINDS);
+
 export const organizationSummarySchema = z.object({
   /** Permanent. What anything durable references. */
   id: z.string().min(1),
   name: z.string().min(1),
   /** The public handle. Unique but renameable: never a foreign key. */
   slug: z.string().min(1),
+  /**
+   * Defaulted rather than required: a response from an API that predates
+   * personal organizations parses as a team, which is what it is.
+   */
+  kind: organizationKindSchema.default("team"),
 });
 
 export const membershipSchema = organizationSummarySchema.extend({
@@ -147,12 +119,9 @@ export const errorSchema = z.object({
   error: z.string(),
 });
 
-export type TodoDto = z.infer<typeof todoSchema>;
-export type TodoListDto = z.infer<typeof todoListSchema>;
-export type CreateTodoInput = z.infer<typeof createTodoSchema>;
-export type UpdateTodoInput = z.infer<typeof updateTodoSchema>;
 export type ErrorDto = z.infer<typeof errorSchema>;
 export type OrganizationRole = z.infer<typeof organizationRoleSchema>;
+export type OrganizationKind = z.infer<typeof organizationKindSchema>;
 export type OrganizationSummaryDto = z.infer<typeof organizationSummarySchema>;
 export type MembershipDto = z.infer<typeof membershipSchema>;
 export type MembershipListDto = z.infer<typeof membershipListSchema>;

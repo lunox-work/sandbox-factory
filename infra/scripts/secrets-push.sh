@@ -71,8 +71,8 @@ Create one from the template and fill in production values:
 
   cp .env.example .env.production
 
-It needs the eight keys below. Everything else in .env.example is set by the
-task definition (PORT, CORS_ORIGINS, BETTER_AUTH_URL, ORIGIN_VERIFY):
+It needs the keys below. Everything else in .env.example is set by the task
+definition (PORT, CORS_ORIGINS, BETTER_AUTH_URL, ORIGIN_VERIFY):
 
 $(printf '  %s\n' "${KEYS[@]}")
 EOF
@@ -125,8 +125,11 @@ if ((${#missing[@]} > 0)); then
   echo "Incomplete — nothing was written:" >&2
   printf '  %s\n' "${missing[@]}" >&2
   echo >&2
-  echo "The API validates every one of these at boot and will not start without them." >&2
-  echo "Generate a signing secret with: openssl rand -base64 32" >&2
+  echo "Every key named in a push must have a value; nothing empty is written." >&2
+  echo "Generate a signing or encryption key with: openssl rand -base64 32" >&2
+  echo >&2
+  echo "JIRA_CLIENT_ID/_SECRET are optional — if you have no Jira app yet, drop" >&2
+  echo "them from --only rather than pushing a blank over a live value." >&2
   exit 1
 fi
 
