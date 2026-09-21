@@ -81,14 +81,41 @@ fi
 # --- OAuth: presence only; only the provider can say if they are right -----
 for k in GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET \
          GITHUB_CLIENT_ID GITHUB_CLIENT_SECRET \
-         ATLASSIAN_CLIENT_ID ATLASSIAN_CLIENT_SECRET \
-         JIRA_CLIENT_ID JIRA_CLIENT_SECRET; do
+         ATLASSIAN_CLIENT_ID ATLASSIAN_CLIENT_SECRET; do
   if v="$(read_value "$k")" && [[ -n "$v" && "$v" != REPLACE_ME ]]; then
     note "$k" "ok (${#v} chars)"
   else
     note "$k" "EMPTY"; fail=1
   fi
 done
+
+# --- The Jira app: optional, and both halves or neither --------------------
+#
+# `JIRA_CLIENT_ID`/`_SECRET` are `.optional()` in apps/api/src/env.ts: with
+# them unset the API boots and `jiraOAuthConfig` returns undefined, which
+# leaves the Jira connect routes unmounted. Failing the push over them would
+# say the API cannot start, which is untrue.
+#
+# One without the other is still a mistake — `jiraOAuthConfig` needs both, so a
+# half-filled pair reads as "Jira configured" to a human and as "not
+# configured" to the API.
+jira_id="$(read_value JIRA_CLIENT_ID || true)"
+jira_secret="$(read_value JIRA_CLIENT_SECRET || true)"
+[[ "$jira_id" == REPLACE_ME ]] && jira_id=""
+[[ "$jira_secret" == REPLACE_ME ]] && jira_secret=""
+
+if [[ -n "$jira_id" && -n "$jira_secret" ]]; then
+  note JIRA_CLIENT_ID "ok (${#jira_id} chars)"
+  note JIRA_CLIENT_SECRET "ok (${#jira_secret} chars)"
+elif [[ -z "$jira_id" && -z "$jira_secret" ]]; then
+  note JIRA_CLIENT_ID "unset — Jira connect routes stay unmounted (optional)"
+  note JIRA_CLIENT_SECRET "unset"
+else
+  note JIRA_CLIENT_ID "$([[ -n "$jira_id" ]] && echo "set (${#jira_id} chars)" || echo EMPTY)"
+  note JIRA_CLIENT_SECRET "$([[ -n "$jira_secret" ]] && echo "set (${#jira_secret} chars)" || echo EMPTY)"
+  echo "  -> set both or neither: jiraOAuthConfig needs the pair." >&2
+  fail=1
+fi
 
 echo
 if (( fail )); then
