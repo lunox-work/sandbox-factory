@@ -169,3 +169,41 @@ test("rotate-token can rotate each secret individually", () => {
     assert.ok(rotate.includes(key), `--only ${key} would be rejected`);
   }
 });
+
+/**
+ * Every `@sandbox-factory/*` package the API imports is declared as a
+ * dependency of this workspace.
+ *
+ * npm hoists workspace packages into the root `node_modules`, so an undeclared
+ * one resolves perfectly well on a developer's machine and fails only in CI,
+ * where the install is clean — TS2307, from a file the change never touched.
+ * It also makes the build order wrong: turbo's `dependsOn: ["^build"]` walks
+ * *declared* dependencies, so an undeclared package's declarations may not
+ * exist when this workspace type-checks.
+ */
+test("every workspace package the API imports is declared as a dependency", () => {
+  const manifest = JSON.parse(
+    readFileSync(join(root, "apps/api/package.json"), "utf8"),
+  ) as { dependencies?: Record<string, string> };
+  const declared = new Set(Object.keys(manifest.dependencies ?? {}));
+
+  const imported = new Set<string>();
+  for (const file of sourceFiles(join(root, "apps/api/src"))) {
+    for (const match of readFileSync(file, "utf8").matchAll(
+      /from\s+"(@sandbox-factory\/[a-z-]+)"/g,
+    )) {
+      imported.add(match[1] ?? "");
+    }
+  }
+
+  // Sanity: if this finds nothing, the regex has drifted and the test is
+  // vacuous rather than passing.
+  assert.ok(imported.size >= 2, `only found ${imported.size} imports`);
+
+  for (const name of imported) {
+    assert.ok(
+      declared.has(name),
+      `apps/api imports ${name} but does not declare it — it will fail a clean install`,
+    );
+  }
+});
