@@ -54,7 +54,7 @@ export interface AppOptions {
    * everything else. Requires `organizations`, since the routes sit behind
    * that block's membership guard.
    */
-  jira?: JiraRouteOptions | undefined;
+  jira?: Omit<JiraRouteOptions, "roleOf"> | undefined;
   /**
    * Shared secret the CDN sends on every origin request. Set where the task is
    * internet-reachable with nothing upstream to filter (the CloudFront-to-
@@ -438,7 +438,14 @@ export function createApp({
      * rather than refusing to start.
      */
     if (jira !== undefined) {
-      mountJiraRoutes(app, jira);
+      mountJiraRoutes(app, {
+        ...jira,
+        // Supplied here rather than by the caller: the callback re-reads
+        // membership, and this is the store that already answers that
+        // question for the guard above.
+        roleOf: (userId, organizationId) =>
+          organizations.roleOf(userId, organizationId),
+      });
     }
   }
 

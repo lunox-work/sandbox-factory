@@ -129,6 +129,8 @@ function fakeAtlassian(
 function appWith(
   options: {
     role?: string;
+    /** Read on every membership check, so a test can demote mid-flow. */
+    roleNow?: () => string | undefined;
     user?: typeof dana;
     fetch?: typeof globalThis.fetch;
     connections?: ReturnType<typeof fakeConnections>;
@@ -140,10 +142,19 @@ function appWith(
     corsOrigins: ["https://app.test"],
     auth: fakeAuth(options.user ?? dana),
     organizations: {
-      roleOf: (_userId: string, organizationId: string) =>
-        Promise.resolve(
-          organizationId === "org_1" ? (options.role ?? "owner") : undefined,
-        ),
+      roleOf: (_userId: string, organizationId: string) => {
+        if (organizationId !== "org_1") {
+          return Promise.resolve(undefined);
+        }
+        // `roleNow` wins outright when supplied, including when it answers
+        // `undefined` — that is "removed from the organization", not "unset",
+        // and a `??` chain here would swallow exactly the case under test.
+        return Promise.resolve(
+          options.roleNow !== undefined
+            ? options.roleNow()
+            : (options.role ?? "owner"),
+        );
+      },
       get: () => Promise.resolve({ id: "org_1", name: "Acme", slug: "acme" }),
       listForUser: () => Promise.resolve([]),
       listMembers: () => Promise.resolve([]),
@@ -631,4 +642,112 @@ test("an unexpected failure is not swallowed as a failed connection", async () =
   );
 
   assert.equal(response.status, 500);
+});
+
+/*
+ * The callback re-checks membership. The signed state proves which
+ * organization was chosen and who chose it, never that they are still
+ * entitled to — and the window is ten minutes.
+ */
+
+test("a user demoted mid-flow cannot finish the connection", async () => {
+  // Start as an owner, be demoted to member while on Atlassian's consent
+  // screen, then return. Without the re-check the signature alone would carry
+  // them through, which is an authorization bypass however narrow the window.
+  let role: string | undefined = "owner";
+  const { app, connections } = appWith({
+    fetch: fakeAtlassian(),
+    roleNow: () => role,
+  });
+  const state = signState(SECRET, {
+    organizationId: "org_1",
+    userId: dana.id,
+    returnTo: "/settings/jira",
+  });
+  role = "member";
+
+  const response = await app.request(
+    `/api/v1/jira/callback?code=c&state=${encodeURIComponent(state)}`,
+    { headers: signedIn },
+  );
+
+  assert.equal(
+    new URL(response.headers.get("location") ?? "").searchParams.get("jira"),
+    "forbidden",
+  );
+  assert.equal(connections.upserts.length, 0);
+});
+
+test("a user removed from the organization mid-flow is refused", async () => {
+  let role: string | undefined = "owner";
+  const { app, connections } = appWith({
+    fetch: fakeAtlassian(),
+    roleNow: () => role,
+  });
+  const state = signState(SECRET, {
+    organizationId: "org_1",
+    userId: dana.id,
+    returnTo: "/settings/jira",
+  });
+  role = undefined;
+
+  const response = await app.request(
+    `/api/v1/jira/callback?code=c&state=${encodeURIComponent(state)}`,
+    { headers: signedIn },
+  );
+
+  assert.equal(
+    new URL(response.headers.get("location") ?? "").searchParams.get("jira"),
+    "forbidden",
+  );
+  assert.equal(connections.upserts.length, 0);
+});
+
+test("the refusal happens before the authorization code is spent", async () => {
+  // A code exchanged and then discarded would be wasted, and a token briefly
+  // held for a connection that is never stored.
+  const requested: string[] = [];
+  const { app } = appWith({
+    role: "member",
+    fetch: (async (url: string | URL | Request) => {
+      requested.push(String(url));
+      return new Response("{}", { status: 200 });
+    }) as typeof globalThis.fetch,
+  });
+  const state = signState(SECRET, {
+    organizationId: "org_1",
+    userId: dana.id,
+    returnTo: "/settings/jira",
+  });
+
+  await app.request(
+    `/api/v1/jira/callback?code=c&state=${encodeURIComponent(state)}`,
+    { headers: signedIn },
+  );
+
+  assert.deepEqual(requested, []);
+});
+
+test("an admin who kept their role still completes the flow", async () => {
+  // The re-check must not refuse the ordinary case.
+  const { app, connections } = appWith({
+    role: "admin",
+    fetch: fakeAtlassian(),
+  });
+  const state = signState(SECRET, {
+    organizationId: "org_1",
+    userId: dana.id,
+    returnTo: "/settings/jira",
+  });
+
+  const response = await app.request(
+    `/api/v1/jira/callback?code=c&state=${encodeURIComponent(state)}`,
+    { headers: signedIn },
+  );
+
+  assert.equal(
+    new URL(response.headers.get("location") ?? "").searchParams.get("jira"),
+    "connected",
+  );
+  assert.equal(connections.upserts.length, 1);
 });
