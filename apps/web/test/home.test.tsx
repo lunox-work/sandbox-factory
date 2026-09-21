@@ -194,9 +194,9 @@ test("Manage opens that organization", async () => {
   );
 
   await waitFor(() => {
-    expect(screen.getByRole("button", { name: /Manage/ })).toBeTruthy();
+    expect(screen.getByRole("link", { name: /Manage/ })).toBeTruthy();
   });
-  await userEvent.click(screen.getByRole("button", { name: /Manage/ }));
+  await userEvent.click(screen.getByRole("link", { name: /Manage/ }));
 
   expect(onOpen).toHaveBeenCalledWith(acme);
 });
@@ -500,9 +500,9 @@ test("Manage still opens the organization, not the site", async () => {
   );
 
   await waitFor(() => {
-    expect(screen.getByRole("button", { name: /Manage/ })).toBeTruthy();
+    expect(screen.getByRole("link", { name: /Manage/ })).toBeTruthy();
   });
-  await userEvent.click(screen.getByRole("button", { name: /Manage/ }));
+  await userEvent.click(screen.getByRole("link", { name: /Manage/ }));
 
   expect(onOpen).toHaveBeenCalledWith(acme);
   expect(onOpenSite).not.toHaveBeenCalled();

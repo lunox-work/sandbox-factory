@@ -7,7 +7,7 @@
 
 import { Building2, Check, Link2, Unlink } from "lucide-react";
 import type { PendingInvitationDto } from "@sandbox-factory/shared";
-import { isValidHandle } from "sandbox-factory";
+import { normalizeHandle } from "sandbox-factory";
 import { useCallback, useEffect, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -19,9 +19,9 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { AvatarField, UPLOAD_COMING_SOON } from "@/components/AvatarField";
+import { AvatarField } from "@/components/AvatarField";
 import { EditableField } from "@/components/EditableField";
-import { ErrorBanner, FormStatus } from "@/components/Message";
+import { ErrorBanner } from "@/components/Message";
 
 import { PROVIDERS, authClient, useSession, type ProviderId } from "./auth";
 import { ProviderIcon } from "./ProviderIcon";
@@ -386,22 +386,32 @@ export function Account({
                           <span className="capitalize">{providerId}</span>
                         </span>
                         {account !== undefined && (
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            className="text-muted-foreground hover:text-destructive"
-                            disabled={busy || accounts.length < 2}
-                            title={
-                              accounts.length < 2
-                                ? "This is your only way to sign in."
-                                : undefined
-                            }
-                            onClick={() => void unlink(account.id)}
-                          >
-                            <Unlink />
-                            Disconnect
-                          </Button>
+                          <span className="flex flex-col items-end gap-0.5">
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="text-muted-foreground hover:text-destructive"
+                              disabled={busy || accounts.length < 2}
+                              aria-describedby={
+                                accounts.length < 2
+                                  ? `provider-${account.id}-reason`
+                                  : undefined
+                              }
+                              onClick={() => void unlink(account.id)}
+                            >
+                              <Unlink />
+                              Disconnect
+                            </Button>
+                            {accounts.length < 2 && (
+                              <span
+                                id={`provider-${account.id}-reason`}
+                                className="text-muted-foreground text-xs"
+                              >
+                                Your only sign-in method
+                              </span>
+                            )}
+                          </span>
                         )}
                       </li>
                     );
@@ -497,9 +507,6 @@ function UsernameForm({
   onNameSaved: (name: string) => void;
   onBusy: (busy: boolean) => void;
 }) {
-  /** The avatar's "not yet" notice. The fields report their own outcomes. */
-  const [message, setMessage] = useState<string | null>(null);
-
   /**
    * Saves the display name.
    *
@@ -588,15 +595,7 @@ function UsernameForm({
           {accountId === null ? (
             <div className="size-16 shrink-0" />
           ) : (
-            <AvatarField
-              id={accountId}
-              image={image}
-              shape="circle"
-              label="your"
-              // One sentence under the row, rather than a toast or a popover:
-              // it does not earn a layer or a dependency.
-              onEdit={() => setMessage(UPLOAD_COMING_SOON)}
-            />
+            <AvatarField id={accountId} image={image} shape="circle" />
           )}
 
           {/*
@@ -627,7 +626,10 @@ function UsernameForm({
           busy={busy}
           // The same rules the server applies, so a name it would refuse
           // cannot be submitted.
-          validate={(next) => isValidHandle(next)}
+          validate={(next) => {
+            const checked = normalizeHandle(next);
+            return checked.status === "ok" ? true : checked.reason;
+          }}
           onSave={(next) => saveUsername(next)}
         />
 
@@ -660,8 +662,6 @@ function UsernameForm({
             </span>
           </button>
         )}
-
-        {message !== null && <FormStatus failed={false}>{message}</FormStatus>}
       </CardContent>
     </Card>
   );

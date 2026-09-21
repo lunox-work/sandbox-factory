@@ -32,6 +32,7 @@ import { Building2, House } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 import { UserMenu } from "./UserMenu";
+import { isPlainLeftClick } from "./routes";
 
 export type Screen =
   | "home"
@@ -88,7 +89,7 @@ export function SideNav({
         "bg-sidebar flex shrink-0",
         // Phone: a bottom bar, its controls centred, floating over the page.
         // Fixed only here, where the alternative is a bar that scrolls away.
-        "fixed inset-x-0 bottom-0 z-10 h-16 flex-row items-center justify-center gap-6 border-t pb-[env(safe-area-inset-bottom)]",
+        "fixed inset-x-0 bottom-0 z-10 h-[calc(4rem+env(safe-area-inset-bottom))] flex-row items-start justify-center gap-6 border-t pt-3 pb-[env(safe-area-inset-bottom)]",
         // Tablet up: the rail proper, a flex item beside the content rather
         // than laid over it.
         "sm:static sm:h-dvh sm:w-14 sm:flex-col sm:items-center sm:gap-0 sm:border-t-0 sm:border-r sm:py-3 sm:pb-3",
@@ -98,11 +99,16 @@ export function SideNav({
           buttons below already label everything actionable here. The dark
           variant is the same mark with a brighter gradient, which the primary
           one loses against a dark background. */}
-      <button
-        type="button"
+      <a
+        href="/"
         aria-label="Lunox home"
         title="Lunox"
-        onClick={() => onNavigate("home")}
+        onClick={(event) => {
+          if (isPlainLeftClick(event)) {
+            event.preventDefault();
+            onNavigate("home");
+          }
+        }}
         // It goes home like the destination below it, so it answers the
         // cursor like one. Opacity rather than a fill: the mark is a gradient
         // and a background behind it would fight the colour.
@@ -121,11 +127,12 @@ export function SideNav({
             className="size-7"
           />
         </picture>
-      </button>
+      </a>
 
       <div className="flex sm:mt-5 sm:w-full sm:flex-col">
         <RailButton
           label="Home"
+          href="/"
           current={screen === "home"}
           onClick={() => onNavigate("home")}
         >
@@ -147,6 +154,7 @@ export function SideNav({
         */}
         <RailButton
           label="Organizations"
+          href="/organizations"
           current={
             screen === "organizations" ||
             screen === "create-org" ||
@@ -198,22 +206,29 @@ export function SideNav({
  */
 function RailButton({
   label,
+  href,
   current,
   onClick,
   children,
 }: {
   label: string;
+  href: string;
   current: boolean;
   onClick: () => void;
   children: React.ReactNode;
 }) {
   return (
-    <button
-      type="button"
+    <a
+      href={href}
       aria-current={current ? "page" : undefined}
       aria-label={label}
       title={label}
-      onClick={onClick}
+      onClick={(event) => {
+        if (isPlainLeftClick(event)) {
+          event.preventDefault();
+          onClick();
+        }
+      }}
       className={cn(
         "grid place-items-center transition-colors",
         "[&_svg]:size-5 [&_svg]:shrink-0",
@@ -232,6 +247,6 @@ function RailButton({
       )}
     >
       {children}
-    </button>
+    </a>
   );
 }

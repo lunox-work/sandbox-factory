@@ -32,6 +32,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { isPlainLeftClick, pathForScreen } from "./routes";
 
 /**
  * Personal first, then teams by name.
@@ -81,9 +82,19 @@ export function Organizations({
         {/* Beside the heading rather than under the list: creating is not the
             last item of the list, and it stays reachable when the list is
             long. */}
-        <Button type="button" onClick={onCreate}>
-          <Plus />
-          New organization
+        <Button asChild>
+          <a
+            href={pathForScreen("create-org")}
+            onClick={(event) => {
+              if (isPlainLeftClick(event)) {
+                event.preventDefault();
+                onCreate();
+              }
+            }}
+          >
+            <Plus />
+            New organization
+          </a>
         </Button>
       </div>
 
@@ -106,9 +117,19 @@ export function Organizations({
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <Button type="button" onClick={onCreate}>
-                <Plus />
-                New organization
+              <Button asChild>
+                <a
+                  href={pathForScreen("create-org")}
+                  onClick={(event) => {
+                    if (isPlainLeftClick(event)) {
+                      event.preventDefault();
+                      onCreate();
+                    }
+                  }}
+                >
+                  <Plus />
+                  New organization
+                </a>
               </Button>
             </CardContent>
           </Card>
@@ -122,9 +143,14 @@ export function Organizations({
                   with a handler, so it is reachable by keyboard and announces
                   itself.
                 */}
-                <button
-                  type="button"
-                  onClick={() => onOpen(organization)}
+                <a
+                  href={pathForScreen("org-settings", organization.slug)}
+                  onClick={(event) => {
+                    if (isPlainLeftClick(event)) {
+                      event.preventDefault();
+                      onOpen(organization);
+                    }
+                  }}
                   // A fill as well as the border: the border alone moved to
                   // 15% of the foreground, which at a glance is no change at
                   // all on a row the size of this one.
@@ -181,7 +207,7 @@ export function Organizations({
                     aria-hidden="true"
                     className="text-muted-foreground size-4 shrink-0"
                   />
-                </button>
+                </a>
               </li>
             ))}
           </ul>

@@ -44,6 +44,7 @@ import {
 import { useConnections, type ConnectionGroup } from "./useConnections";
 import { useJiraOutcome } from "./useJira";
 import { ConnectionRow, OutcomeBanner } from "./Jira";
+import { isPlainLeftClick, pathForScreen } from "./routes";
 import type { JiraConnection } from "./useJira";
 
 /** Whether a group has anything worth a card. */
@@ -105,14 +106,19 @@ function Group({
             {organization.slug}
           </CardDescription>
         </div>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="shrink-0 gap-1"
-          onClick={() => onOpen(organization)}
-        >
-          Manage
-          <ArrowRight className="size-4" />
+        <Button variant="ghost" size="sm" className="shrink-0 gap-1" asChild>
+          <a
+            href={pathForScreen("org-jira", organization.slug)}
+            onClick={(event) => {
+              if (isPlainLeftClick(event)) {
+                event.preventDefault();
+                onOpen(organization);
+              }
+            }}
+          >
+            Manage
+            <ArrowRight className="size-4" />
+          </a>
         </Button>
       </CardHeader>
       <CardContent>
@@ -134,6 +140,11 @@ function Group({
                   <ConnectionRow
                     key={connection.id}
                     connection={connection}
+                    href={pathForScreen(
+                      "org-jira-site",
+                      organization.slug,
+                      connection.id,
+                    )}
                     // The organization travels with the site: a URL names
                     // both, and a connection does not carry its owner.
                     onOpen={() => onOpenSite?.(organization, connection)}
@@ -142,16 +153,21 @@ function Group({
               </ul>
             )}
             {broken > 0 && (
-              <button
-                type="button"
-                onClick={() => onOpen(organization)}
+              <a
+                href={pathForScreen("org-jira", organization.slug)}
+                onClick={(event) => {
+                  if (isPlainLeftClick(event)) {
+                    event.preventDefault();
+                    onOpen(organization);
+                  }
+                }}
                 className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 mt-3 flex items-center gap-2 rounded text-sm transition-colors focus-visible:ring-[3px] focus-visible:outline-none"
               >
                 <TriangleAlert className="text-destructive size-3.5 shrink-0" />
                 {broken === 1
                   ? "1 site needs reconnecting"
                   : `${broken} sites need reconnecting`}
-              </button>
+              </a>
             )}
           </>
         )}

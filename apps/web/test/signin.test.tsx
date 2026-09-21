@@ -45,6 +45,7 @@ test("the screen is branded Lunox, with the tagline, and no longer says Todos", 
 
   expect(screen.getByRole("heading", { name: "Lunox" })).toBeTruthy();
   expect(screen.getByText("See less, Build more")).toBeTruthy();
+  expect(screen.getByText("Sign in to Lunox.")).toBeTruthy();
   expect(screen.queryByText(/todos/i)).toBeNull();
 });
 

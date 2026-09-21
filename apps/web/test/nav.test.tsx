@@ -177,7 +177,7 @@ const HOME = "Home";
  */
 function railHome(): HTMLElement {
   return within(screen.getByRole("navigation", { name: "Main" })).getByRole(
-    "button",
+    "link",
     { name: HOME },
   );
 }
@@ -457,6 +457,32 @@ test("a trailing slash names the same organization screen", async () => {
   ).toBeTruthy();
 });
 
+test("an unavailable organization route stays unavailable and links to the list", async () => {
+  window.history.replaceState(null, "", "/o/missing/settings");
+  render(<App />);
+
+  expect(
+    await screen.findByRole("heading", { name: "Organization unavailable" }),
+  ).toBeTruthy();
+  const destination = screen.getByRole("link", {
+    name: "View your organizations",
+  });
+  expect(destination.getAttribute("href")).toBe("/organizations");
+
+  fireEvent.click(destination);
+  expect(window.location.pathname).toBe("/organizations");
+});
+
+test("the document title follows the current page", async () => {
+  render(<App />);
+  expect(document.title).toBe("Home · Lunox");
+
+  await openMenu();
+  fireEvent.click(screen.getByRole("menuitem", { name: /Account settings/ }));
+
+  await waitFor(() => expect(document.title).toBe("Account · Lunox"));
+});
+
 test("only /o/... names an organization, not any two-segment path", async () => {
   // The parser requires the literal `o` in the first segment. Without that
   // check *every* unrecognised two-segment path — `/settings/profile`,
@@ -524,7 +550,7 @@ test("a row opens that organization's settings", async () => {
   window.history.replaceState(null, "", "/organizations");
   render(<App />);
 
-  fireEvent.click(await screen.findByRole("button", { name: /Globex/ }));
+  fireEvent.click(await screen.findByRole("link", { name: /Globex/ }));
 
   expect(
     await screen.findByRole("heading", { name: "Globex", level: 1 }),
@@ -539,7 +565,7 @@ test("the organizations page reaches the create form", async () => {
   render(<App />);
 
   fireEvent.click(
-    await screen.findByRole("button", { name: /New organization/ }),
+    await screen.findByRole("link", { name: /New organization/ }),
   );
 
   expect(
@@ -558,7 +584,7 @@ test("an inactive destination lights up under the cursor", async () => {
   // Scoped to the rail: the trail above the page carries a "Home" crumb too,
   // and on this screen both are on the page at once.
   const rail = await screen.findByRole("navigation", { name: "Main" });
-  const home = within(rail).getByRole("button", { name: "Home" });
+  const home = within(rail).getByRole("link", { name: "Home" });
   expect(home.className).toContain("hover:bg-accent");
   expect(home.className).not.toContain("sm:hover:bg-transparent");
 });
@@ -567,7 +593,7 @@ test("the logo answers the cursor too", async () => {
   window.history.replaceState(null, "", "/");
   render(<App />);
 
-  const logo = await screen.findByRole("button", { name: "Lunox home" });
+  const logo = await screen.findByRole("link", { name: "Lunox home" });
   expect(logo.className).toContain("hover:opacity-80");
 });
 
@@ -608,7 +634,7 @@ test("the rail offers organizations as a destination", async () => {
   render(<App />);
 
   const rail = screen.getByRole("navigation", { name: "Main" });
-  const button = within(rail).getByRole("button", { name: "Organizations" });
+  const button = within(rail).getByRole("link", { name: "Organizations" });
   fireEvent.click(button);
 
   await waitFor(() => {
@@ -626,7 +652,7 @@ test("the rail marks organizations while you are inside one", async () => {
   await waitFor(() => {
     expect(
       within(rail)
-        .getByRole("button", { name: "Organizations" })
+        .getByRole("link", { name: "Organizations" })
         .getAttribute("aria-current"),
     ).toBe("page");
   });

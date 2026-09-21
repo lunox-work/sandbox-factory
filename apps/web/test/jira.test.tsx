@@ -83,6 +83,7 @@ function renderPage(role = "owner") {
   return render(
     <Jira
       organizationId="org_1"
+      organizationSlug="acme"
       organizationName="Acme"
       role={role}
       onOpenSite={(site) => opened.push(site.id)}
@@ -140,7 +141,7 @@ test("a site row opens that site rather than carrying its own controls", async (
   renderPage();
   await screen.findByText("Acme");
 
-  await userEvent.click(screen.getByRole("button", { name: /acme/i }));
+  await userEvent.click(screen.getByRole("link", { name: /acme/i }));
 
   expect(opened).toEqual(["jrc_1"]);
   // Not on the list: pressing the wrong bin in a column of similar names is
@@ -152,7 +153,7 @@ test("a member can open a site even though they cannot connect one", async () =>
   renderPage("member");
   await screen.findByText("Acme");
 
-  await userEvent.click(screen.getByRole("button", { name: /acme/i }));
+  await userEvent.click(screen.getByRole("link", { name: /acme/i }));
 
   expect(opened).toEqual(["jrc_1"]);
 });
@@ -461,6 +462,7 @@ function renderSite(role = "owner", connectionId = "jrc_1") {
   return render(
     <JiraSite
       organizationId="org_1"
+      organizationSlug="acme"
       connectionId={connectionId}
       role={role}
       onDisconnected={() => {
@@ -490,7 +492,7 @@ test("a board row opens the board rather than previewing it in place", async () 
 
   expect(screen.queryByRole("button", { name: /preview/i })).toBeNull();
 
-  await userEvent.click(screen.getByRole("button", { name: /acme board/i }));
+  await userEvent.click(screen.getByRole("link", { name: /acme board/i }));
 
   expect(openedBoards).toEqual(["jrb_1"]);
 });
@@ -521,10 +523,10 @@ test("a board carries the mark of the kind of board it is", async () => {
   await screen.findByText("Acme Board");
 
   const scrum = screen
-    .getByRole("button", { name: /acme board/i })
+    .getByRole("link", { name: /acme board/i })
     .querySelector("svg");
   const kanban = screen
-    .getByRole("button", { name: /flow/i })
+    .getByRole("link", { name: /flow/i })
     .querySelector("svg");
 
   expect(scrum).not.toBeNull();
@@ -732,6 +734,74 @@ test("an empty backlog is explained rather than shown as a blank table", async (
   expect(await screen.findByText(/no tickets match/i)).toBeDefined();
 });
 
+test("the preview states its result count and active filters", async () => {
+  vi.stubGlobal(
+    "fetch",
+    routedFetch({
+      preview: {
+        body: {
+          boardId: "jrb_1",
+          source: "backlog",
+          jql: "",
+          total: 17,
+          selection: {
+            maxTickets: 10,
+            excludeAssigned: true,
+            issueTypes: ["Story", "Bug"],
+            minAgeDays: 30,
+            minSpecChars: 0,
+          },
+          issues: [issue(1, "2020-01-01T00:00:00.000Z")],
+        },
+      },
+    }),
+  );
+  renderBoard();
+
+  expect(await screen.findByText("Showing 1 oldest ticket")).toBeDefined();
+  const filters = screen.getByLabelText("Active filters");
+  expect(within(filters).getByText("Filters")).toBeDefined();
+  expect(within(filters).getByText("Unassigned only")).toBeDefined();
+  expect(within(filters).getByText("30+ days old")).toBeDefined();
+  expect(within(filters).getByText("Types: Story, Bug")).toBeDefined();
+});
+
+test("a failed ticket read stays in its panel with a retry", async () => {
+  vi.stubGlobal(
+    "fetch",
+    routedFetch({ detail: { status: 502, body: { error: "upstream" } } }),
+  );
+  renderBoard();
+  await screen.findByTestId("backlog-preview");
+
+  await userEvent.click(screen.getByText("Ticket 1"));
+  const panel = await screen.findByTestId("issue-panel");
+  expect(
+    await within(panel).findByText(/could not load this ticket from Jira/i),
+  ).toBeDefined();
+  expect(
+    within(panel).getByRole("button", { name: /try again/i }),
+  ).toBeDefined();
+});
+
+test("a ticket can be opened directly from the issue query", async () => {
+  Object.defineProperty(window, "location", {
+    configurable: true,
+    value: {
+      pathname: "/o/acme/jira/jrc_1/jrb_1",
+      search: "?issue=NOX-1",
+      href: "http://localhost/o/acme/jira/jrc_1/jrb_1?issue=NOX-1",
+    },
+  });
+  vi.stubGlobal("fetch", routedFetch());
+  renderBoard();
+
+  expect(await screen.findByTestId("issue-detail")).toBeDefined();
+  expect(screen.getByRole("dialog").getAttribute("data-testid")).toBe(
+    "issue-panel",
+  );
+});
+
 test("a revoked grant asks for a reconnect rather than a retry", async () => {
   // 409 with `reconnect` is the one failure a retry cannot fix.
   vi.stubGlobal(
@@ -853,7 +923,7 @@ test("a plain member sees boards and may open them", async () => {
   expect(await screen.findByText("Acme Board")).toBeDefined();
   // Reading a board's tickets is a read the organization already has a grant
   // for, so the row is open to anyone in it.
-  expect(screen.getByRole("button", { name: /acme board/i })).toBeDefined();
+  expect(screen.getByRole("link", { name: /acme board/i })).toBeDefined();
   // Disconnecting is not.
   expect(screen.queryByRole("button", { name: /^disconnect/i })).toBeNull();
 });
@@ -868,7 +938,7 @@ test("disconnecting lives on the site, and leaves it when done", async () => {
     screen.getByRole("button", { name: /disconnect acme/i }),
   );
   // Behind a question now: it takes the boards and the grant with it.
-  const dialog = await screen.findByRole("dialog");
+  const dialog = await screen.findByRole("alertdialog");
   await userEvent.click(
     within(dialog).getByRole("button", { name: "Disconnect" }),
   );
@@ -1123,7 +1193,7 @@ test("disconnecting asks before it disconnects", async () => {
     screen.getByRole("button", { name: /disconnect acme/i }),
   );
 
-  const dialog = await screen.findByRole("dialog");
+  const dialog = await screen.findByRole("alertdialog");
   expect(within(dialog).getByText(/Disconnect acme\?/i)).toBeDefined();
   expect(
     fetchMock.mock.calls.some(

@@ -332,13 +332,11 @@ test("the page you are on is text, and every step above it is a button", async (
   expect(current?.textContent).toBe("Acme");
   expect(current?.tagName).toBe("SPAN");
   // Not a button: a click would navigate to the screen already showing.
-  expect(screen.queryByRole("button", { name: "Acme" })).toBeNull();
+  expect(screen.queryByRole("link", { name: "Acme" })).toBeNull();
   // The steps above it are, or the trail is decoration. Scoped to the trail:
   // the rail carries an Organizations destination of its own, and the two
   // landmarks are named apart precisely so both may use the word.
-  expect(
-    within(nav).getByRole("button", { name: "Organizations" }),
-  ).toBeTruthy();
+  expect(within(nav).getByRole("link", { name: "Organizations" })).toBeTruthy();
 });
 
 test("a deep link renders the whole trail", async () => {
@@ -376,10 +374,10 @@ test("the Jira crumb on a site goes back to the list of sites", async () => {
   // the middle crumb while it loads — so clicking on its appearance races the
   // load, and a crumb clicked without a slug falls back to /organizations.
   await waitFor(() => {
-    expect(screen.getByRole("button", { name: "Acme" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Acme" })).toBeTruthy();
   });
 
-  fireEvent.click(screen.getByRole("button", { name: "Jira" }));
+  fireEvent.click(screen.getByRole("link", { name: "Jira" }));
 
   await waitFor(() => {
     expect(window.location.pathname).toBe("/o/acme/jira");
@@ -409,10 +407,10 @@ test("the site crumb on a board goes back to that site, not the list", async () 
   render(<App />);
 
   await waitFor(() => {
-    expect(screen.getByRole("button", { name: "lunox-work" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "lunox-work" })).toBeTruthy();
   });
 
-  fireEvent.click(screen.getByRole("button", { name: "lunox-work" }));
+  fireEvent.click(screen.getByRole("link", { name: "lunox-work" }));
 
   await waitFor(() => {
     expect(window.location.pathname).toBe("/o/acme/jira/jrc_1");
@@ -424,12 +422,12 @@ test("a crumb navigates up to the screen it names", async () => {
   render(<App />);
 
   await waitFor(() => {
-    expect(screen.getByRole("button", { name: "Acme" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Acme" })).toBeTruthy();
   });
 
   // Up one level, to the organization the crumb names — not back through
   // history, which a bookmarked arrival does not have.
-  fireEvent.click(screen.getByRole("button", { name: "Acme" }));
+  fireEvent.click(screen.getByRole("link", { name: "Acme" }));
 
   await waitFor(() => {
     expect(window.location.pathname).toBe("/o/acme/settings");

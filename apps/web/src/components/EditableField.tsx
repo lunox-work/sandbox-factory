@@ -17,7 +17,7 @@
  * to correct.
  */
 
-import { Check, Pencil, X } from "lucide-react";
+import { Check, Loader2, Pencil, X } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -57,7 +57,7 @@ export function EditableField({
    * Whether a draft may be submitted. Defaults to "not blank"; the handle
    * fields pass the shared rules from `packages/core`.
    */
-  validate?: (draft: string) => boolean;
+  validate?: (draft: string) => boolean | string;
   /**
    * Saves, and says what happened. Returning a string reports a refusal — the
    * field stays open holding the rejected text, so it can be fixed rather
@@ -71,9 +71,13 @@ export function EditableField({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
   const [error, setError] = useState<string | null>(null);
+  const [touched, setTouched] = useState(false);
+  const [saving, setSaving] = useState(false);
   /** Set briefly after a save, for the tick beside the value. */
   const [justSaved, setJustSaved] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const editButtonRef = useRef<HTMLButtonElement>(null);
+  const restoreFocusRef = useRef(false);
 
   /*
    * Re-seed from the stored value. This runs on the way into editing and
@@ -89,10 +93,22 @@ export function EditableField({
     if (editing) {
       inputRef.current?.focus();
       inputRef.current?.select();
+    } else if (restoreFocusRef.current) {
+      restoreFocusRef.current = false;
+      editButtonRef.current?.focus();
     }
   }, [editing]);
 
-  const valid = validate === undefined ? draft.trim() !== "" : validate(draft);
+  const validation =
+    validate === undefined
+      ? draft.trim() === ""
+        ? "This value cannot be blank."
+        : true
+      : validate(draft);
+  const valid = validation === true;
+  const validationMessage =
+    touched && typeof validation === "string" ? validation : null;
+  const messageId = `field-${label}-message`;
 
   /*
    * Clear the tick a moment after it appears. It confirms something the
@@ -108,14 +124,20 @@ export function EditableField({
   }, [justSaved]);
 
   function cancel() {
+    if (saving || busy) {
+      return;
+    }
     setDraft(value);
     setError(null);
+    setTouched(false);
+    restoreFocusRef.current = true;
     setEditing(false);
   }
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (!valid) {
+    setTouched(true);
+    if (!valid || saving || busy) {
       return;
     }
     const next = draft.trim();
@@ -123,18 +145,24 @@ export function EditableField({
     // Nothing changed: closing without a round trip is the honest outcome,
     // and a tick for a save that never happened would be a small lie.
     if (next === value) {
+      restoreFocusRef.current = true;
       setEditing(false);
       return;
     }
-    const failure = await onSave(next);
-    if (typeof failure === "string") {
-      // Held open, holding what was typed: the refusal is about this text, so
-      // this is the only place it can be acted on.
-      setError(failure);
-      return;
+    setSaving(true);
+    try {
+      const failure = await onSave(next);
+      if (typeof failure === "string") {
+        setError(failure);
+        inputRef.current?.focus();
+        return;
+      }
+      restoreFocusRef.current = true;
+      setEditing(false);
+      setJustSaved(true);
+    } finally {
+      setSaving(false);
     }
-    setEditing(false);
-    setJustSaved(true);
   }
 
   if (!editing) {
@@ -161,8 +189,12 @@ export function EditableField({
            * easier to hit and gives the keyboard a single stop.
            */
           <button
+            ref={editButtonRef}
             type="button"
-            onClick={() => setEditing(true)}
+            onClick={() => {
+              setTouched(false);
+              setEditing(true);
+            }}
             disabled={busy}
             aria-label={`Edit ${label.toLowerCase()}`}
             className="group/edit focus-visible:ring-ring/50 hover:bg-accent -mx-1.5 flex w-fit max-w-full items-center gap-1.5 rounded-md px-1.5 py-0.5 text-left transition-colors focus-visible:ring-[3px] focus-visible:outline-none disabled:cursor-default"
@@ -244,10 +276,15 @@ export function EditableField({
           id={`field-${label}`}
           ref={inputRef}
           aria-label={label}
+          aria-invalid={validationMessage !== null || error !== null}
+          aria-describedby={
+            validationMessage !== null || error !== null ? messageId : undefined
+          }
           placeholder={placeholder}
           value={draft}
           onChange={(event) => {
             setDraft(event.target.value);
+            setTouched(true);
             // The refusal was about what was there a moment ago; leaving it
             // up while somebody fixes it makes the fix look rejected too.
             setError(null);
@@ -256,29 +293,30 @@ export function EditableField({
           // Escape leaves without saving, which is what every other text field
           // in a browser does.
           onKeyDown={(event) => {
-            if (event.key === "Escape") {
+            if (event.key === "Escape" && !saving && !busy) {
               event.preventDefault();
               cancel();
             }
           }}
           className="h-8"
+          disabled={saving || busy}
         />
         <Button
           type="submit"
           size="icon"
           variant="ghost"
           className="size-8 shrink-0"
-          disabled={busy || !valid}
+          disabled={busy || saving || !valid}
           aria-label={`Save ${label.toLowerCase()}`}
         >
-          <Check />
+          {saving ? <Loader2 className="animate-spin" /> : <Check />}
         </Button>
         <Button
           type="button"
           size="icon"
           variant="ghost"
           className="text-muted-foreground size-8 shrink-0"
-          disabled={busy}
+          disabled={busy || saving}
           onClick={cancel}
           aria-label={`Cancel editing ${label.toLowerCase()}`}
         >
@@ -290,9 +328,13 @@ export function EditableField({
         Under the input it belongs to, not at the foot of the card: a refusal
         names this value, and the text it refuses is still on screen here.
       */}
-      {error !== null && (
-        <p role="alert" className="text-destructive mt-1 text-xs">
-          {error}
+      {(validationMessage !== null || error !== null) && (
+        <p
+          id={messageId}
+          role="alert"
+          className="text-destructive mt-1 text-xs"
+        >
+          {error ?? validationMessage}
         </p>
       )}
     </form>

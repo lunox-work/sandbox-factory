@@ -289,20 +289,20 @@ test("members are listed with their handle and role", async () => {
 });
 
 test("the last owner cannot be removed", async () => {
-  // The plugin refuses it; disabling the control explains why in advance
-  // rather than after a failed click.
+  // The plugin refuses it; the row states why without advertising a disabled
+  // action that can never succeed.
   serverWith([owner, plainMember]);
   showSettings();
   await openTab("Members");
 
   await screen.findByText("Dana");
-  const removeOwner = screen.getAllByRole("button", {
-    name: "Remove",
-  })[0] as HTMLButtonElement;
-  expect(removeOwner.disabled).toBe(true);
-  expect(removeOwner.getAttribute("title")).toBe(
-    "An organization must keep at least one owner.",
-  );
+  expect(
+    screen.getByLabelText(
+      "This member is the only owner and cannot be removed",
+    ),
+  ).toBeDefined();
+  // The ordinary member still has the one available Remove action.
+  expect(screen.getAllByRole("button", { name: "Remove" })).toHaveLength(1);
 });
 
 test("an owner can be removed once there are two", async () => {
@@ -325,10 +325,9 @@ test("removing a member names the organization and the membership row", async ()
 
   await screen.findByText("Sam");
   // Two clicks now: the row's button asks, the dialog's button acts.
-  const buttons = screen.getAllByRole("button", { name: "Remove" });
-  fireEvent.click(buttons[1] as HTMLElement);
+  fireEvent.click(screen.getByRole("button", { name: "Remove" }));
 
-  const dialog = await screen.findByRole("dialog");
+  const dialog = await screen.findByRole("alertdialog");
   fireEvent.click(within(dialog).getByRole("button", { name: "Remove" }));
 
   await waitFor(() =>
@@ -358,6 +357,23 @@ test("inviting by handle posts a handle", async () => {
   expect(body).toEqual({ handle: "sam" });
 });
 
+test("a pasted @handle is posted as a handle", async () => {
+  showSettings();
+  await openTab("Members");
+
+  const field = await screen.findByLabelText("Handle or email address");
+  fireEvent.change(field, { target: { value: "@sam" } });
+  fireEvent.click(screen.getByRole("button", { name: /invite/i }));
+
+  await waitFor(() =>
+    expect(calls).toContain("POST /api/v1/orgs/org_1/invitations"),
+  );
+  const body = JSON.parse(
+    (vi.mocked(fetch).mock.calls.at(-1)?.[1] as { body: string }).body,
+  ) as Record<string, string>;
+  expect(body).toEqual({ handle: "sam" });
+});
+
 test("inviting by address posts an address", async () => {
   showSettings();
   await openTab("Members");
@@ -371,6 +387,25 @@ test("inviting by address posts an address", async () => {
     (vi.mocked(fetch).mock.calls.at(-1)?.[1] as { body: string }).body,
   ) as Record<string, string>;
   expect(body).toEqual({ email: "sam@example.test" });
+});
+
+test("an incomplete email is explained before anything is sent", async () => {
+  showSettings();
+  await openTab("Members");
+  const requestsBefore = calls.filter((call) =>
+    call.includes("invitations"),
+  ).length;
+
+  const field = await screen.findByLabelText("Handle or email address");
+  fireEvent.change(field, { target: { value: "sam@" } });
+  fireEvent.click(screen.getByRole("button", { name: /invite/i }));
+
+  expect((await screen.findByRole("alert")).textContent).toContain(
+    "Enter a complete email address",
+  );
+  expect(calls.filter((call) => call.includes("invitations"))).toHaveLength(
+    requestsBefore,
+  );
 });
 
 test("the invite form says the invitation is not emailed", async () => {
@@ -391,7 +426,7 @@ test("leaving names the organization", async () => {
   fireEvent.click(
     await screen.findByRole("button", { name: /leave organization/i }),
   );
-  const dialog = await screen.findByRole("dialog");
+  const dialog = await screen.findByRole("alertdialog");
   fireEvent.click(within(dialog).getByRole("button", { name: "Leave" }));
 
   await waitFor(() =>
@@ -410,12 +445,11 @@ test("the server's reason for refusing a leave is shown", async () => {
   fireEvent.click(
     await screen.findByRole("button", { name: /leave organization/i }),
   );
-  const dialog = await screen.findByRole("dialog");
+  const dialog = await screen.findByRole("alertdialog");
   fireEvent.click(within(dialog).getByRole("button", { name: "Leave" }));
 
-  // Reported on the page behind the dialog, which has closed by then: the
-  // refusal is about the organization, not about the question.
-  expect(await screen.findByText(/only owner/i)).toBeDefined();
+  expect(await within(dialog).findByText(/only owner/i)).toBeDefined();
+  expect(screen.getByRole("alertdialog")).toBeDefined();
 });
 
 test("deleting asks for the handle to be typed", async () => {
@@ -428,7 +462,7 @@ test("deleting asks for the handle to be typed", async () => {
     await screen.findByRole("button", { name: /delete organization/i }),
   );
 
-  const dialog = await screen.findByRole("dialog");
+  const dialog = await screen.findByRole("alertdialog");
   const confirm = within(dialog).getByRole("button", {
     name: "Delete",
   }) as HTMLButtonElement;
@@ -452,7 +486,7 @@ test("the wrong handle does not enable deletion", async () => {
   fireEvent.click(
     await screen.findByRole("button", { name: /delete organization/i }),
   );
-  const dialog = await screen.findByRole("dialog");
+  const dialog = await screen.findByRole("alertdialog");
   fireEvent.change(screen.getByLabelText(/type the handle/i), {
     target: { value: "acmee" },
   });
@@ -768,17 +802,13 @@ test("a member's face follows the person, not the membership", async () => {
   expect(memberFaces(container)[0]).toBe(USER_1_D);
 });
 
-test("clicking the organization picture says why it cannot be changed yet", async () => {
+test("the organization picture does not offer an unavailable upload", async () => {
   showSettings();
 
-  const picture = await screen.findByRole("button", {
-    name: "Change organization picture",
-  });
-  fireEvent.click(picture);
-
-  const notice = await screen.findByRole("status");
-  expect(notice.textContent).toContain("coming soon");
-  expect(notice.className).not.toContain("destructive");
+  await screen.findByRole("button", { name: "Edit organization handle" });
+  expect(
+    screen.queryByRole("button", { name: "Change organization picture" }),
+  ).toBeNull();
 });
 
 // ---- the connections card -------------------------------------------------
@@ -838,31 +868,27 @@ test("GitHub and Slack are named but cannot be opened yet", async () => {
   showConnections();
 
   for (const label of ["GitHub", "Slack"]) {
-    const button = await screen.findByRole("button", {
-      name: `Manage ${label} connections`,
+    const status = await screen.findByRole("group", {
+      name: `${label}: Coming soon`,
     });
-    expect((button as HTMLButtonElement).disabled).toBe(true);
+    expect(status).toBeDefined();
+    expect(within(status).queryByRole("button")).toBeNull();
   }
   expect(screen.getAllByText("Coming soon")).toHaveLength(2);
 });
 
-test("the three tools are equal tiles, not a stacked list", async () => {
-  // One of them is built and two are not, which is a fact about today rather
-  // than a ranking. Stacked rows made the first read as the heading of a list
-  // the others belonged to.
+test("available and future tools use distinct component types", async () => {
   showConnections();
 
-  await screen.findByRole("button", { name: "Manage Jira connections" });
-  const tiles = ["Jira", "GitHub", "Slack"].map((label) =>
-    screen.getByRole("button", { name: `Manage ${label} connections` }),
-  );
-
-  // Every tool gets the same tile, and they share one grid container — which
-  // is what makes them the same size as each other.
-  expect(tiles.every((tile) => tile.className.includes("min-h-36"))).toBe(true);
-  const grid = tiles[0]?.parentElement;
-  expect(grid?.className).toContain("grid");
-  expect(tiles.every((tile) => tile.parentElement === grid)).toBe(true);
+  expect(
+    await screen.findByRole("link", { name: "Manage Jira connections" }),
+  ).toBeDefined();
+  expect(
+    screen.getByRole("group", { name: "GitHub: Coming soon" }),
+  ).toBeDefined();
+  expect(
+    screen.getByRole("group", { name: "Slack: Coming soon" }),
+  ).toBeDefined();
 });
 
 test("the whole tile is the target, not just the word Manage", async () => {
@@ -885,16 +911,13 @@ test("the whole tile is the target, not just the word Manage", async () => {
     />,
   );
 
-  const tile = await screen.findByRole("button", {
+  const tile = await screen.findByRole("link", {
     name: "Manage Jira connections",
   });
   // The tile itself is the button, so there is no second one nested inside —
   // a button within a button is invalid, and one of the two is dropped from
   // the accessibility tree.
   expect(tile.querySelector("button")).toBeNull();
-  // A floor rather than a square: at this column's width `aspect-square`
-  // made a 186px box for three short lines.
-  expect(tile.className).toContain("min-h-36");
   // And it lights up under the cursor, which is what says it is pressable.
   expect(tile.className).toContain("hover:bg-muted/50");
 
@@ -907,10 +930,10 @@ test("the Jira row stays clickable", async () => {
   // regression that disabled this one too would look intentional.
   showConnections();
 
-  const button = await screen.findByRole("button", {
+  const button = await screen.findByRole("link", {
     name: "Manage Jira connections",
   });
-  expect((button as HTMLButtonElement).disabled).toBe(false);
+  expect(button.getAttribute("href")).toBe("/o/acme/jira");
 });
 
 test("one connection reads in the singular", async () => {
@@ -1022,11 +1045,9 @@ test("removing a member asks before it removes", async () => {
   await openTab("Members");
 
   await screen.findByText("Sam");
-  fireEvent.click(
-    screen.getAllByRole("button", { name: "Remove" })[1] as HTMLElement,
-  );
+  fireEvent.click(screen.getByRole("button", { name: "Remove" }));
 
-  expect(await screen.findByRole("dialog")).toBeDefined();
+  expect(await screen.findByRole("alertdialog")).toBeDefined();
   expect(remove).not.toHaveBeenCalled();
 });
 
@@ -1036,14 +1057,12 @@ test("cancelling the question removes nobody", async () => {
   await openTab("Members");
 
   await screen.findByText("Sam");
-  fireEvent.click(
-    screen.getAllByRole("button", { name: "Remove" })[1] as HTMLElement,
-  );
-  const dialog = await screen.findByRole("dialog");
+  fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+  const dialog = await screen.findByRole("alertdialog");
   fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
 
   await waitFor(() => {
-    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByRole("alertdialog")).toBeNull();
   });
   expect(remove).not.toHaveBeenCalled();
 });
@@ -1056,7 +1075,7 @@ test("leaving asks before it leaves", async () => {
     await screen.findByRole("button", { name: /leave organization/i }),
   );
 
-  expect(await screen.findByRole("dialog")).toBeDefined();
+  expect(await screen.findByRole("alertdialog")).toBeDefined();
   expect(leave).not.toHaveBeenCalled();
 });
 
@@ -1070,7 +1089,7 @@ test("the question names what it is about", async () => {
     await screen.findByRole("button", { name: /delete organization/i }),
   );
 
-  const dialog = await screen.findByRole("dialog");
+  const dialog = await screen.findByRole("alertdialog");
   expect(within(dialog).getByText(/Delete Acme\?/)).toBeDefined();
 });
 
@@ -1082,8 +1101,8 @@ test("the unbuilt tools carry a badge, not a Manage button", async () => {
   // has to say.
   showConnections();
 
-  const slack = await screen.findByRole("button", {
-    name: "Manage Slack connections",
+  const slack = await screen.findByRole("group", {
+    name: "Slack: Coming soon",
   });
   // The word appears once, as the accessible name — not a second time as a
   // control drawn inside the tile.
@@ -1091,7 +1110,7 @@ test("the unbuilt tools carry a badge, not a Manage button", async () => {
   expect(within(slack).getByText("Coming soon")).toBeDefined();
 
   // The one that is real keeps its affordance.
-  const jira = screen.getByRole("button", { name: "Manage Jira connections" });
+  const jira = screen.getByRole("link", { name: "Manage Jira connections" });
   expect(within(jira).getByText("Manage")).toBeDefined();
 });
 
@@ -1138,6 +1157,7 @@ test("a members read that fails says so", async () => {
   );
 
   showSettings();
+  await openTab("Members");
 
   expect(
     await screen.findByText(/could not load this organization/i),
@@ -1187,23 +1207,13 @@ test("the name field takes the focus", () => {
   );
 });
 
-test("every tile's foot is the same height, so the three line up", async () => {
-  // A badge is 22px and the Manage affordance 34px. Left alone the badge sat
-  // at the foot of its tile, 12px below the button beside it, which read as
-  // the unbuilt tiles sagging. jsdom has no layout, so the height is the
-  // contract.
+test("connection rows share compact spacing", async () => {
   showConnections();
 
-  const feet = ["Jira", "GitHub", "Slack"].map(
-    (label) =>
-      screen.getByRole("button", { name: `Manage ${label} connections` })
-        .lastElementChild,
-  );
-
-  expect(feet.every((foot) => foot !== null)).toBe(true);
-  for (const foot of feet.slice(1)) {
-    expect(foot?.className).toContain("h-[34px]");
-  }
-  // And the built one keeps the height the others are matching.
-  expect(feet[0]?.className).toContain("py-1.5");
+  const jira = await screen.findByRole("link", {
+    name: "Manage Jira connections",
+  });
+  const github = screen.getByRole("group", { name: "GitHub: Coming soon" });
+  expect(jira.className).toContain("py-3");
+  expect(github.className).toContain("py-2.5");
 });
