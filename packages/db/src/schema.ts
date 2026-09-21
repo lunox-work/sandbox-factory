@@ -45,8 +45,13 @@ export type {
   OrganizationRow,
 } from "./schema/organizations.js";
 
-export { jiraConnection } from "./schema/jira.js";
-export type { JiraConnectionRow, NewJiraConnectionRow } from "./schema/jira.js";
+export { jiraBoard, jiraConnection } from "./schema/jira.js";
+export type {
+  JiraBoardRow,
+  JiraConnectionRow,
+  NewJiraBoardRow,
+  NewJiraConnectionRow,
+} from "./schema/jira.js";
 
 export { todos } from "./schema/todos.js";
 export type { NewTodoRow, TodoRow } from "./schema/todos.js";
