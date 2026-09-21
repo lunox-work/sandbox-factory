@@ -20,6 +20,8 @@ import { Check, LogOut, Trash2, UserPlus } from "lucide-react";
 import { isValidHandle, toHandleStem } from "sandbox-factory";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 
+import { AvatarField, UPLOAD_COMING_SOON } from "@/components/AvatarField";
+import { EntityAvatar } from "@/components/Avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -189,6 +191,16 @@ export function Organization({
                     key={entry.id}
                     className="bg-muted/35 flex flex-wrap items-center gap-2 rounded-lg border px-3.5 py-3"
                   >
+                    {/* Seeded by `userId`, not the row's `id`: that one is
+                        the membership, so seeding from it would give one
+                        person a different face in every organization. */}
+                    <EntityAvatar
+                      id={entry.userId}
+                      image={entry.image}
+                      shape="circle"
+                      className="size-7"
+                    />
+
                     <span className="flex-1 text-sm font-medium">
                       {entry.name}
                       {entry.username !== null && (
@@ -370,24 +382,49 @@ function HandleForm({
       </CardHeader>
 
       <CardContent>
-        <form onSubmit={(event) => void submit(event)} className="flex gap-2">
-          <Input
-            aria-label="Organization handle"
-            placeholder="your-org"
-            value={draft}
-            disabled={!canRename}
-            onChange={(event) => {
-              setDraft(event.target.value);
-              setMessage(null);
+        {/*
+          The picture beside the name, not above it: they are the same fact.
+          `items-start` keeps the avatar aligned with the input rather than
+          centred against the message that appears under it on save.
+        */}
+        <div className="flex items-start gap-4">
+          <AvatarField
+            id={organization.id}
+            shape="square"
+            label="organization"
+            // Reuses the line that reports a rename, rather than a toast or a
+            // popover: one sentence does not earn a layer or a dependency.
+            onEdit={() => {
+              setFailed(false);
+              setMessage(UPLOAD_COMING_SOON);
             }}
           />
-          <Button
-            type="submit"
-            disabled={busy || !canRename || !isValidHandle(draft)}
+
+          {/* Centred against the avatar rather than pinned to its top: there
+              is nothing under the field here, so the row would otherwise be
+              the avatar's height with the input floating at the top of it. */}
+          <form
+            onSubmit={(event) => void submit(event)}
+            className="flex min-h-16 flex-1 items-center gap-2"
           >
-            Save
-          </Button>
-        </form>
+            <Input
+              aria-label="Organization handle"
+              placeholder="your-org"
+              value={draft}
+              disabled={!canRename}
+              onChange={(event) => {
+                setDraft(event.target.value);
+                setMessage(null);
+              }}
+            />
+            <Button
+              type="submit"
+              disabled={busy || !canRename || !isValidHandle(draft)}
+            >
+              Save
+            </Button>
+          </form>
+        </div>
 
         {!canRename && (
           <p className="text-muted-foreground mt-2 text-sm">

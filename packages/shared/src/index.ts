@@ -134,3 +134,6 @@ export * from "./build-info.js";
 
 /** The Jira wire contract, for `packages/jira` and the routes that use it. */
 export * from "./jira.js";
+
+/** Default avatars, computed from an account id rather than stored. */
+export * from "./identicon.js";

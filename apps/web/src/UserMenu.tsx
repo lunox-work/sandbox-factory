@@ -11,9 +11,9 @@
  * are the facts a bug report needs. See `BuildDetails`.
  */
 
-import { Building2, LogOut, Settings, User } from "lucide-react";
+import { Building2, LogOut, Settings } from "lucide-react";
 
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { EntityAvatar } from "@/components/Avatar";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -27,6 +27,7 @@ import type { Screen } from "./SideNav";
 import { BuildReadout, type LinkWrapper } from "./BuildReadout";
 
 export function UserMenu({
+  userId,
   name,
   email,
   image,
@@ -34,6 +35,8 @@ export function UserMenu({
   onAccount,
   onSignOut,
 }: {
+  /** Seeds the generated avatar when there is no picture. */
+  userId: string;
   name: string;
   email?: string | undefined;
   image?: string | null;
@@ -50,7 +53,12 @@ export function UserMenu({
         {/* 24px in the rail, matching the reference: small enough to read as
             chrome rather than as content. The copy inside the menu is the
             larger one, where it identifies the account. */}
-        <UserAvatar name={name} image={image} className="size-6 text-[10px]" />
+        <EntityAvatar
+          id={userId}
+          image={image}
+          shape="circle"
+          className="size-6"
+        />
       </DropdownMenuTrigger>
 
       {/*
@@ -118,57 +126,6 @@ export function UserMenu({
       </DropdownMenuContent>
     </DropdownMenu>
   );
-}
-
-/** The avatar itself, used both as the trigger and inside the menu header. */
-function UserAvatar({
-  name,
-  image,
-  className,
-}: {
-  name: string;
-  image?: string | null;
-  className?: string;
-}) {
-  return (
-    <Avatar className={className}>
-      {/*
-        Radix renders the fallback until the image loads and keeps it if the
-        image errors, which is the case that matters: providers hand out avatar
-        URLs that later 404.
-
-        `image` is null for an account with no picture, and `AvatarImage`
-        expects a string, so it is omitted entirely rather than passed as null.
-      */}
-      {image !== null && image !== undefined && image !== "" && (
-        <AvatarImage
-          src={image}
-          alt=""
-          // The provider's CDN does not need to know who is using this app.
-          referrerPolicy="no-referrer"
-        />
-      )}
-      <AvatarFallback>{initials(name)}</AvatarFallback>
-    </Avatar>
-  );
-}
-
-/**
- * Up to two initials, from the first and last word of the name.
- *
- * "ada lovelace" gives "AL"; a single word gives one letter. A name that is
- * only punctuation or whitespace would give an empty circle, so it falls back
- * to a person glyph.
- */
-function initials(name: string): React.ReactNode {
-  const words = name.trim().split(/\s+/).filter(Boolean);
-  const letters = (
-    words.length > 1
-      ? `${words[0]?.[0] ?? ""}${words.at(-1)?.[0] ?? ""}`
-      : (words[0]?.[0] ?? "")
-  ).toUpperCase();
-
-  return letters === "" ? <User className="size-4" /> : letters;
 }
 
 /**
