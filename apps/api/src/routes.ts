@@ -221,6 +221,45 @@ export function createApp({
     });
 
     /**
+     * Changes the display name.
+     *
+     * Writes it in two places on purpose. `organization.name` on the caller's
+     * personal organization is a copy of `user.name` taken at signup, and
+     * nothing else edits it — so without the second write a rename would
+     * leave that organization headed by the name the person just abandoned.
+     * Only their own personal organization is touched; `renamePersonal`
+     * matches on `personal_user_id`, so no team can be reached from here.
+     *
+     * The organization write is best-effort: the name itself is saved, and
+     * failing the whole request over the copy would report a rename that in
+     * fact happened.
+     */
+    app.put("/api/v1/me/name", async (c) => {
+      const body = (await c.req.json().catch(() => null)) as {
+        name?: unknown;
+      } | null;
+      if (typeof body?.name !== "string") {
+        return c.json({ error: "Provide a name." }, 400);
+      }
+
+      const userId = c.get("user").id;
+      const result = await profiles.setName(userId, body.name);
+      if (result.status === "invalid") {
+        return c.json({ error: result.reason }, 400);
+      }
+
+      if (organizations !== undefined) {
+        try {
+          await organizations.renamePersonal(userId, result.name);
+        } catch (error) {
+          console.error("Failed to rename the personal organization", error);
+        }
+      }
+
+      return c.json({ name: result.name });
+    });
+
+    /**
      * Claims or changes the handle. A taken name is 409, not 400, so the form
      * can tell it from a malformed one.
      */

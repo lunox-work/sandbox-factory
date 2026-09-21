@@ -16,12 +16,24 @@ import type {
   MembershipDto,
   OrganizationMemberDto,
 } from "@sandbox-factory/shared";
-import { Check, LogOut, Trash2, UserPlus } from "lucide-react";
-import { isValidHandle, toHandleStem } from "sandbox-factory";
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { Check, LogOut, Trash2, UserPlus, Users } from "lucide-react";
+import {
+  HANDLE_MAX_LENGTH,
+  isValidHandle,
+  toHandleStem,
+} from "sandbox-factory";
+import {
+  useCallback,
+  useEffect,
+  useState,
+  type FormEvent,
+  type ReactNode,
+} from "react";
 
 import { AvatarField, UPLOAD_COMING_SOON } from "@/components/AvatarField";
+import { EditableField } from "@/components/EditableField";
 import { EntityAvatar } from "@/components/Avatar";
+import { ErrorBanner, FormStatus } from "@/components/Message";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -32,8 +44,23 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 import { authClient } from "./auth";
+import { JiraIcon, ProviderIcon, SlackIcon } from "./ProviderIcon";
+import { useJira } from "./useJira";
+
+/**
+ * The three groups the settings page is split into, in tab order.
+ *
+ * Overview is first because it is the one every organization has: the other
+ * two are about a team, and a personal organization shows neither.
+ */
+const TABS = [
+  { value: "overview", label: "Overview" },
+  { value: "members", label: "Members" },
+  { value: "settings", label: "Settings" },
+] as const;
 
 /** Roles that may manage members and invitations. */
 function canManage(role: string): boolean {
@@ -59,8 +86,15 @@ export function Organization({
   onOpenJira?: (() => void) | undefined;
 }) {
   const [members, setMembers] = useState<OrganizationMemberDto[]>([]);
+  /** False until the members request has answered once; see `memberCount`. */
+  const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /*
+   * Controlled rather than `defaultValue`, so the member count in the handle
+   * card can open the Members tab.
+   */
+  const [tab, setTab] = useState<string>("overview");
 
   const refresh = useCallback(async () => {
     try {
@@ -71,6 +105,7 @@ export function Organization({
         setMembers(
           ((await res.json()) as { members: OrganizationMemberDto[] }).members,
         );
+        setLoaded(true);
       }
       setError(null);
     } catch {
@@ -124,201 +159,394 @@ export function Organization({
           : "Your organization\u2019s handle, and who belongs to it."}
       </p>
 
-      {error !== null && (
-        <p
-          role="alert"
-          className="text-destructive border-destructive/35 bg-destructive/7 mt-6 rounded-lg border px-3 py-2.5 text-sm"
-        >
-          {error}
-        </p>
-      )}
+      {error !== null && <ErrorBanner>{error}</ErrorBanner>}
 
-      <div className="mt-8 flex flex-col gap-6">
-        <HandleForm
-          organization={organization}
-          canRename={manage}
-          busy={busy}
-          onBusy={setBusy}
-          onSaved={onChanged}
-        />
-
-        {onOpenJira !== undefined && (
-          <Card>
-            <CardHeader>
-              <CardTitle role="heading" aria-level={2}>
-                Jira
-              </CardTitle>
-              <CardDescription>
-                Connect a Jira site to read its boards and price the oldest
-                tickets in their backlog.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <Button variant="outline" onClick={onOpenJira}>
-                Manage Jira connections
-              </Button>
-            </CardContent>
-          </Card>
-        )}
-
-        {/*
-          A personal organization has exactly one member — its owner — and
-          cannot gain another, so the members list, the invite form and
-          leaving are all hidden rather than shown as controls the API would
-          refuse. See `refusePersonal` in `apps/api/src/auth.ts`.
-        */}
-        {!personal && (
-          <Card>
-            <CardHeader>
-              <CardTitle role="heading" aria-level={2}>
-                Members
-              </CardTitle>
-              <CardDescription>
-                Everyone who can see this organization. An owner can do anything
-                here; an admin can manage members but cannot delete the
-                organization.
-              </CardDescription>
-            </CardHeader>
-
-            <CardContent className="flex flex-col gap-2">
-              {members.map((entry) => {
-                // The last owner cannot be removed or demoted; the plugin
-                // refuses it, and disabling the control says so before the
-                // click rather than after.
-                const lastOwner = entry.role === "owner" && owners.length < 2;
-                return (
-                  <div
-                    key={entry.id}
-                    className="bg-muted/35 flex flex-wrap items-center gap-2 rounded-lg border px-3.5 py-3"
-                  >
-                    {/* Seeded by `userId`, not the row's `id`: that one is
-                        the membership, so seeding from it would give one
-                        person a different face in every organization. */}
-                    <EntityAvatar
-                      id={entry.userId}
-                      image={entry.image}
-                      shape="circle"
-                      className="size-7"
-                    />
-
-                    <span className="flex-1 text-sm font-medium">
-                      {entry.name}
-                      {entry.username !== null && (
-                        <span className="text-muted-foreground ml-1.5 font-normal">
-                          @{entry.username}
-                        </span>
-                      )}
-                    </span>
-
-                    <Badge
-                      variant={entry.role === "owner" ? "default" : "secondary"}
-                    >
-                      {entry.role === "owner" && <Check />}
-                      <span className="capitalize">{entry.role}</span>
-                    </Badge>
-
-                    {manage && (
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        className="text-muted-foreground hover:text-destructive"
-                        disabled={busy || lastOwner}
-                        title={
-                          lastOwner
-                            ? "An organization must keep at least one owner."
-                            : undefined
-                        }
-                        onClick={() =>
-                          void run(
-                            () =>
-                              authClient.organization.removeMember({
-                                memberIdOrEmail: entry.id,
-                                organizationId: organization.id,
-                              }),
-                            refresh,
-                          )
-                        }
-                      >
-                        Remove
-                      </Button>
-                    )}
-                  </div>
-                );
-              })}
-            </CardContent>
-          </Card>
-        )}
-
-        {!personal && manage && (
-          <InviteForm
-            organizationId={organization.id}
+      {/*
+        Three tabs rather than one long column, and only for a team: a
+        personal organization has no members and cannot be left, so two of
+        the three would be empty. It keeps the stacked layout instead.
+      */}
+      {personal ? (
+        <div className="mt-8 flex flex-col gap-6">
+          <HandleForm
+            organization={organization}
+            canRename={manage}
             busy={busy}
             onBusy={setBusy}
-            onError={setError}
+            onSaved={onChanged}
+            personal
           />
-        )}
 
-        {!personal && (
-          <Card>
-            <CardHeader>
-              <CardTitle role="heading" aria-level={2}>
-                Leaving
-              </CardTitle>
-              <CardDescription>
-                Leaving gives up your access to everything this organization
-                owns. An organization must always keep one owner, so the last
-                one cannot leave.
-              </CardDescription>
-            </CardHeader>
+          {onOpenJira !== undefined && (
+            <Card>
+              <CardHeader>
+                <CardTitle role="heading" aria-level={2}>
+                  Connections
+                </CardTitle>
+                <CardDescription>
+                  Connect the tools this organization already works in, so their
+                  work can be read and priced here.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="flex flex-col gap-2">
+                <JiraConnectionRow
+                  organizationId={organization.id}
+                  onOpenJira={onOpenJira}
+                />
 
-            <CardContent className="flex flex-wrap gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                disabled={busy}
-                onClick={() =>
-                  void run(
-                    () =>
-                      authClient.organization.leave({
-                        organizationId: organization.id,
-                      }),
-                    onLeft,
-                  )
-                }
-              >
-                <LogOut />
-                Leave organization
-              </Button>
+                {/*
+                Not built yet, but named here rather than left out: the card
+                is about which tools this organization connects, and an empty
+                answer for the other two is still an answer.
+              */}
+                {COMING_SOON.map((provider) => (
+                  <ConnectionRow
+                    key={provider.key}
+                    icon={provider.icon}
+                    label={provider.label}
+                    status="Coming soon"
+                    action={
+                      // The visible word is just "Manage"; the label names the
+                      // tool, or a screen reader hears three identical buttons.
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled
+                        aria-label={`Manage ${provider.label} connections`}
+                      >
+                        Manage
+                      </Button>
+                    }
+                  />
+                ))}
+              </CardContent>
+            </Card>
+          )}
+        </div>
+      ) : (
+        <Tabs value={tab} onValueChange={setTab} className="mt-8 gap-6">
+          <TabsList className="w-full">
+            {TABS.map((tab) => (
+              <TabsTrigger key={tab.value} value={tab.value}>
+                {tab.label}
+              </TabsTrigger>
+            ))}
+          </TabsList>
 
-              {organization.role === "owner" && (
-                <DeleteOrganization
-                  organization={organization}
-                  busy={busy}
-                  onDelete={() =>
+          <TabsContent value="overview" className="flex flex-col gap-6">
+            <HandleForm
+              organization={organization}
+              canRename={manage}
+              busy={busy}
+              onBusy={setBusy}
+              onSaved={onChanged}
+              // Undefined until the list arrives, which reads differently from
+              // zero — every organization has at least its owner.
+              memberCount={loaded ? members.length : undefined}
+              onOpenMembers={() => setTab("members")}
+            />
+
+            {onOpenJira !== undefined && (
+              <Card>
+                <CardHeader>
+                  <CardTitle role="heading" aria-level={2}>
+                    Connections
+                  </CardTitle>
+                  <CardDescription>
+                    Connect the tools this organization already works in, so
+                    their work can be read and priced here.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="flex flex-col gap-2">
+                  <JiraConnectionRow
+                    organizationId={organization.id}
+                    onOpenJira={onOpenJira}
+                  />
+
+                  {/*
+                  Not built yet, but named here rather than left out: the card
+                  is about which tools this organization connects, and an empty
+                  answer for the other two is still an answer.
+                */}
+                  {COMING_SOON.map((provider) => (
+                    <ConnectionRow
+                      key={provider.key}
+                      icon={provider.icon}
+                      label={provider.label}
+                      status="Coming soon"
+                      action={
+                        // The visible word is just "Manage"; the label names the
+                        // tool, or a screen reader hears three identical buttons.
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled
+                          aria-label={`Manage ${provider.label} connections`}
+                        >
+                          Manage
+                        </Button>
+                      }
+                    />
+                  ))}
+                </CardContent>
+              </Card>
+            )}
+          </TabsContent>
+
+          <TabsContent value="members">
+            <Card>
+              <CardHeader>
+                <CardTitle role="heading" aria-level={2}>
+                  Members
+                </CardTitle>
+                <CardDescription>
+                  Everyone who can see this organization. An owner can do
+                  anything here; an admin can manage members but cannot delete
+                  the organization.
+                </CardDescription>
+              </CardHeader>
+
+              <CardContent className="flex flex-col gap-2">
+                {members.map((entry) => {
+                  // The last owner cannot be removed or demoted; the plugin
+                  // refuses it, and disabling the control says so before the
+                  // click rather than after.
+                  const lastOwner = entry.role === "owner" && owners.length < 2;
+                  return (
+                    <div
+                      key={entry.id}
+                      className="bg-muted/35 flex items-center gap-3 rounded-lg border px-3.5 py-3"
+                    >
+                      {/* Seeded by `userId`, not the row's `id`: that one is
+                        the membership, so seeding from it would give one
+                        person a different face in every organization. */}
+                      <EntityAvatar
+                        id={entry.userId}
+                        image={entry.image}
+                        shape="circle"
+                        className="size-7"
+                      />
+
+                      {/* Name over handle, matching the connection rows: the
+                        handle is what identifies the person, but the name is
+                        what is read first. A non-breaking space holds the
+                        second line's height for somebody with no handle, so
+                        rows in one list stay the same height. */}
+                      <span className="flex-1">
+                        <span className="block text-sm font-medium">
+                          {entry.name}
+                        </span>
+                        <span className="text-muted-foreground block text-xs">
+                          {entry.username !== null ? `@${entry.username}` : " "}
+                        </span>
+                      </span>
+
+                      <Badge
+                        variant={
+                          entry.role === "owner" ? "default" : "secondary"
+                        }
+                      >
+                        {entry.role === "owner" && <Check />}
+                        <span className="capitalize">{entry.role}</span>
+                      </Badge>
+
+                      {manage && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="text-muted-foreground hover:text-destructive"
+                          disabled={busy || lastOwner}
+                          title={
+                            lastOwner
+                              ? "An organization must keep at least one owner."
+                              : undefined
+                          }
+                          onClick={() =>
+                            void run(
+                              () =>
+                                authClient.organization.removeMember({
+                                  memberIdOrEmail: entry.id,
+                                  organizationId: organization.id,
+                                }),
+                              refresh,
+                            )
+                          }
+                        >
+                          Remove
+                        </Button>
+                      )}
+                    </div>
+                  );
+                })}
+
+                {/*
+                Inviting under a rule in the same card: it is how this list
+                grows, so it belongs to the list rather than beside it. Only
+                for those who may do it — the plugin refuses the rest.
+              */}
+                {manage && (
+                  <InviteForm
+                    organizationId={organization.id}
+                    busy={busy}
+                    onBusy={setBusy}
+                    onError={setError}
+                  />
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="settings">
+            <Card>
+              <CardHeader>
+                <CardTitle role="heading" aria-level={2}>
+                  Leaving
+                </CardTitle>
+                <CardDescription>
+                  Leaving gives up your access to everything this organization
+                  owns. An organization must always keep one owner, so the last
+                  one cannot leave.
+                </CardDescription>
+              </CardHeader>
+
+              <CardContent className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={busy}
+                  onClick={() =>
                     void run(
                       () =>
-                        authClient.organization.delete({
+                        authClient.organization.leave({
                           organizationId: organization.id,
                         }),
                       onLeft,
                     )
                   }
-                />
-              )}
-            </CardContent>
-          </Card>
-        )}
-      </div>
+                >
+                  <LogOut />
+                  Leave organization
+                </Button>
+
+                {organization.role === "owner" && (
+                  <DeleteOrganization
+                    organization={organization}
+                    busy={busy}
+                    onDelete={() =>
+                      void run(
+                        () =>
+                          authClient.organization.delete({
+                            organizationId: organization.id,
+                          }),
+                        onLeft,
+                      )
+                    }
+                  />
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+        </Tabs>
+      )}
     </main>
   );
 }
 
 /**
- * The handle form. The counterpart of `UsernameForm` in `Account.tsx`, down to
- * the footnote: the point both make is that the id is permanent and the
- * handle is not.
+ * The tools named on the Connections card but not yet built.
+ *
+ * Each carries its own mark rather than a provider id: Slack is not a sign-in
+ * provider, so it has no `ProviderId` to look one up by.
+ */
+const COMING_SOON: { key: string; label: string; icon: ReactNode }[] = [
+  { key: "github", label: "GitHub", icon: <ProviderIcon provider="github" /> },
+  { key: "slack", label: "Slack", icon: <SlackIcon /> },
+];
+
+/**
+ * One row on the Connections card: the provider's mark and name, what is
+ * connected, and the way in.
+ *
+ * The count sits to the right of the button rather than under the name,
+ * because it is the outcome of the action beside it.
+ */
+function ConnectionRow({
+  icon,
+  label,
+  status,
+  action,
+}: {
+  icon: ReactNode;
+  label: string;
+  status: string;
+  action: ReactNode;
+}) {
+  return (
+    <div className="flex items-center gap-3 rounded-lg border px-3.5 py-2.5">
+      {/* `mt-0.5` optically centres the mark against the two stacked lines,
+          which sit higher than a single one would. */}
+      <span className="mt-0.5 grid size-4 shrink-0 place-items-center">
+        {icon}
+      </span>
+      <span className="flex-1">
+        <span className="block text-sm font-medium">{label}</span>
+        <span className="text-muted-foreground block text-xs">{status}</span>
+      </span>
+      {action}
+    </div>
+  );
+}
+
+/**
+ * The Jira row, which is the only one that is real.
+ *
+ * It reads the organization's own connections rather than taking a count from
+ * the page: `useJira` is already the per-organization read, and the home
+ * screen's `useConnections` fans out over every membership, which is a
+ * different question from the one this card asks.
+ */
+function JiraConnectionRow({
+  organizationId,
+  onOpenJira,
+}: {
+  organizationId: string;
+  onOpenJira: () => void;
+}) {
+  const { connections, loading } = useJira(organizationId);
+  // Healthy ones only, matching what the home screen counts: a connection
+  // that cannot be read is not one the organization can use.
+  const active = connections.filter((entry) => entry.healthy).length;
+
+  return (
+    <ConnectionRow
+      // Jira's mark, not Atlassian's: this row names the product, where the
+      // sign-in screen and the account page name the account provider.
+      icon={<JiraIcon />}
+      label="Jira"
+      // A non-breaking space rather than "0 active connections" while the
+      // answer is unknown: the row does not claim none and then correct
+      // itself, and the line still holds its height so nothing shifts.
+      status={
+        loading ? " " : `${active} active connection${active === 1 ? "" : "s"}`
+      }
+      action={
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={onOpenJira}
+          aria-label="Manage Jira connections"
+        >
+          Manage
+        </Button>
+      }
+    />
+  );
+}
+
+/**
+ * The handle form. The counterpart of `UsernameForm` in `Account.tsx`.
  */
 function HandleForm({
   organization,
@@ -326,44 +554,54 @@ function HandleForm({
   busy,
   onBusy,
   onSaved,
+  personal = false,
+  memberCount,
+  onOpenMembers,
 }: {
   organization: MembershipDto;
   canRename: boolean;
   busy: boolean;
   onBusy: (busy: boolean) => void;
   onSaved: () => void;
+  /** Somebody's own account, which names itself rather than counting. */
+  personal?: boolean | undefined;
+  /**
+   * How many people are in it. Undefined while the list is still loading,
+   * which reads differently from zero — an organization always has its owner,
+   * so zero is never a settled truth. Ignored when `personal`.
+   */
+  memberCount?: number | undefined;
+  onOpenMembers?: (() => void) | undefined;
 }) {
-  const [draft, setDraft] = useState(organization.slug);
+  /** The avatar's "not yet" notice. The handle reports its own outcome. */
   const [message, setMessage] = useState<string | null>(null);
-  const [failed, setFailed] = useState(false);
 
-  // Re-seed when the organization changes, or the field would keep the
-  // previous one's handle after a switch.
+  // `EditableField` re-seeds its own draft from the handle; this clears the
+  // line under it, which would otherwise report the previous organization's
+  // save after a switch.
   useEffect(() => {
-    setDraft(organization.slug);
     setMessage(null);
   }, [organization.slug]);
 
-  async function submit(event: FormEvent) {
-    event.preventDefault();
+  /*
+   * Returns the server's reason on a refusal and nothing on success. The
+   * field shows it against the handle that was refused — "that handle is
+   * taken" is only actionable next to the one that was typed.
+   */
+  async function save(next: string): Promise<string | void> {
     onBusy(true);
-    setMessage(null);
     try {
       const result = await authClient.organization.update({
         organizationId: organization.id,
-        data: { slug: draft },
+        data: { slug: next },
       });
       if (result.error !== null && result.error !== undefined) {
-        setFailed(true);
-        setMessage(result.error.message ?? "Could not save that handle.");
-        return;
+        return result.error.message ?? "Could not save that handle.";
       }
-      setFailed(false);
-      setMessage("Saved.");
       onSaved();
+      return;
     } catch {
-      setFailed(true);
-      setMessage("Could not save that handle.");
+      return "Could not save that handle.";
     } finally {
       onBusy(false);
     }
@@ -375,19 +613,17 @@ function HandleForm({
         <CardTitle role="heading" aria-level={2}>
           Handle
         </CardTitle>
-        <CardDescription>
-          The organization&rsquo;s public name. You can change it whenever you
-          like, as long as it is not taken.
-        </CardDescription>
+        <CardDescription>The organization&rsquo;s public name.</CardDescription>
       </CardHeader>
 
       <CardContent>
         {/*
-          The picture beside the name, not above it: they are the same fact.
-          `items-start` keeps the avatar aligned with the input rather than
-          centred against the message that appears under it on save.
+          The picture beside the handle, which are the same fact about the
+          same organization. Centred rather than pinned to the top, matching
+          the account page: the handle is now one line of text at rest, so a
+          top-aligned avatar would sit against nothing.
         */}
-        <div className="flex items-start gap-4">
+        <div className="flex items-center gap-4">
           <AvatarField
             id={organization.id}
             shape="square"
@@ -395,64 +631,64 @@ function HandleForm({
             // Reuses the line that reports a rename, rather than a toast or a
             // popover: one sentence does not earn a layer or a dependency.
             onEdit={() => {
-              setFailed(false);
               setMessage(UPLOAD_COMING_SOON);
             }}
           />
 
-          {/* Centred against the avatar rather than pinned to its top: there
-              is nothing under the field here, so the row would otherwise be
-              the avatar's height with the input floating at the top of it. */}
-          <form
-            onSubmit={(event) => void submit(event)}
-            className="flex min-h-16 flex-1 items-center gap-2"
-          >
-            <Input
-              aria-label="Organization handle"
-              placeholder="your-org"
-              value={draft}
-              disabled={!canRename}
-              onChange={(event) => {
-                setDraft(event.target.value);
-                setMessage(null);
-              }}
-            />
-            <Button
-              type="submit"
-              disabled={busy || !canRename || !isValidHandle(draft)}
-            >
-              Save
-            </Button>
-          </form>
+          <EditableField
+            className="min-w-0 flex-1"
+            label="Organization handle"
+            value={organization.slug}
+            placeholder="your-org"
+            busy={busy}
+            canEdit={canRename}
+            readOnlyReason="Only an owner or an admin can rename an organization."
+            // The same rules the server applies, so a handle it would refuse
+            // cannot be submitted.
+            validate={(next) => isValidHandle(next)}
+            onSave={(next) => save(next)}
+          />
         </div>
 
-        {!canRename && (
-          <p className="text-muted-foreground mt-2 text-sm">
-            Only an owner or an admin can rename an organization.
+        {/*
+          Where the members are, not a statistic: the count is the label on
+          the way to the tab, as the account page's count is the way to its
+          organizations. Hidden until known, so it never flashes "0 members"
+          at an organization that has one.
+
+          Under the whole row rather than inside the handle column, matching
+          the account page: beneath the handle it read as a fact about the
+          handle.
+
+          A personal organization says what it is instead. It has exactly one
+          member and cannot gain another, so "1 member" would invite a
+          question the answer to which is "never" — and there is no Members
+          tab to send anyone to, which is why that case is text rather than a
+          button.
+        */}
+        {personal ? (
+          <p className="text-muted-foreground mt-5 flex w-fit items-center gap-1.5 text-sm">
+            <Users className="size-4" strokeWidth={1.6} />
+            Personal organization
           </p>
+        ) : (
+          memberCount !== undefined && (
+            <button
+              type="button"
+              onClick={onOpenMembers}
+              className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 group/members mt-5 flex w-fit cursor-pointer items-center gap-1.5 rounded-sm text-sm transition-colors focus-visible:ring-[3px] focus-visible:outline-none"
+            >
+              <Users className="size-4" strokeWidth={1.6} />
+              {/* The underline is on the words, not the button: through the
+                  button it would run under the icon too. */}
+              <span className="underline-offset-4 group-hover/members:underline">
+                {memberCount} {memberCount === 1 ? "member" : "members"}
+              </span>
+            </button>
+          )
         )}
 
-        {message !== null && (
-          <p
-            role="status"
-            className={
-              failed
-                ? "text-destructive mt-2 text-sm"
-                : "text-muted-foreground mt-2 text-sm"
-            }
-          >
-            {message}
-          </p>
-        )}
-
-        <p className="text-muted-foreground mt-4 border-t pt-3 text-xs">
-          Organization ID{" "}
-          <code className="bg-muted rounded px-1.5 py-0.5 font-mono text-[0.72rem]">
-            {organization.id}
-          </code>
-          <br />
-          This never changes, even when you rename the handle.
-        </p>
+        {message !== null && <FormStatus failed={false}>{message}</FormStatus>}
       </CardContent>
     </Card>
   );
@@ -512,42 +748,41 @@ function InviteForm({
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle role="heading" aria-level={2}>
-          Invite someone
-        </CardTitle>
-        <CardDescription>
-          By handle, or by the email address they sign in with. Nothing is
-          emailed: the invitation waits on their account page. An address they
-          have connected but not made primary will not find them.
-        </CardDescription>
-      </CardHeader>
+    <div className="mt-1 flex flex-col gap-2 border-t pt-4">
+      {/*
+        A level-three heading, not a level two: this sits inside the Members
+        card now, so the same level would read as a sibling section rather
+        than part of one.
+      */}
+      <h3 className="text-sm font-medium">Invite someone</h3>
+      <p className="text-muted-foreground text-sm">
+        By handle, or by the email address they sign in with. Nothing is
+        emailed: the invitation waits on their account page. An address they
+        have connected but not made primary will not find them.
+      </p>
 
-      <CardContent>
-        <form onSubmit={(event) => void submit(event)} className="flex gap-2">
-          <Input
-            aria-label="Handle or email address"
-            placeholder="their-handle"
-            value={draft}
-            onChange={(event) => {
-              setDraft(event.target.value);
-              setMessage(null);
-            }}
-          />
-          <Button type="submit" disabled={busy || draft.trim() === ""}>
-            <UserPlus />
-            Invite
-          </Button>
-        </form>
+      <form onSubmit={(event) => void submit(event)} className="flex gap-2">
+        <Input
+          aria-label="Handle or email address"
+          placeholder="their-handle"
+          value={draft}
+          onChange={(event) => {
+            setDraft(event.target.value);
+            setMessage(null);
+          }}
+        />
+        <Button type="submit" disabled={busy || draft.trim() === ""}>
+          <UserPlus />
+          Invite
+        </Button>
+      </form>
 
-        {message !== null && (
-          <p role="status" className="text-muted-foreground mt-2 text-sm">
-            {message}
-          </p>
-        )}
-      </CardContent>
-    </Card>
+      {message !== null && (
+        <p role="status" className="text-muted-foreground text-sm">
+          {message}
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -575,7 +810,7 @@ function DeleteOrganization({
         type="button"
         variant="ghost"
         size="sm"
-        className="text-muted-foreground hover:text-destructive"
+        className="text-muted-foreground hover:text-danger"
         disabled={busy}
         onClick={() => setConfirming(true)}
       >
@@ -597,9 +832,15 @@ function DeleteOrganization({
           value={typed}
           onChange={(event) => setTyped(event.target.value)}
         />
+        {/*
+          `variant="destructive"` for the shape and the focus ring, repainted
+          in the brand red. `focus-visible:ring-danger/20` too, or the ring
+          would stay the old red against the new fill.
+        */}
         <Button
           type="button"
           variant="destructive"
+          className="bg-danger text-danger-foreground hover:bg-danger/90 focus-visible:ring-danger/20"
           disabled={busy || typed.trim() !== organization.slug}
           onClick={onDelete}
         >
@@ -622,43 +863,106 @@ function DeleteOrganization({
 }
 
 /**
+ * How many handles a create may try before giving up and reporting the
+ * refusal. Collisions are rare and the suffix grows each time, so a handful is
+ * plenty; the bound exists so a misread error cannot loop.
+ */
+const CREATE_ATTEMPTS = 5;
+
+/**
+ * Whether a create failed because the handle was already somebody else's.
+ *
+ * Checked on `code` and on the message, because where the client puts the
+ * server's `code` is the client's business: `ORGANIZATION_SLUG_ALREADY_TAKEN`
+ * is what `apps/api/src/auth.ts` throws, and the sentence is what it throws
+ * with. Reading only the code would silently stop retrying if it moved, and
+ * the collision would surface as an error about a handle nobody chose.
+ */
+function isHandleTaken(failure: { code?: string; message?: string }): boolean {
+  return (
+    failure.code === "ORGANIZATION_SLUG_ALREADY_TAKEN" ||
+    (failure.message ?? "").toLowerCase().includes("handle is taken")
+  );
+}
+
+/**
+ * `acme` at attempt 2 becomes `acme-2`.
+ *
+ * Truncated so the result still fits `HANDLE_MAX_LENGTH` — a 30-character stem
+ * with a suffix appended would be refused as too long, and the retry would
+ * fail for a different reason than the one it is handling.
+ */
+function suffixHandle(stem: string, attempt: number): string {
+  const suffix = `-${attempt}`;
+  return `${stem.slice(0, HANDLE_MAX_LENGTH - suffix.length)}${suffix}`;
+}
+
+/**
  * The create form, shown on its own screen.
  *
- * The handle is proposed from the name as it is typed, using the same core
- * normaliser the server applies, and stops following once it has been edited
- * by hand.
+ * Only the name is asked for. The handle is derived from it with the same core
+ * normaliser the server applies, and is editable afterwards on the settings
+ * page — so the one decision here is what to call the thing, and the handle it
+ * gets is a detail nobody has to weigh up front.
  */
 export function CreateOrganization({
   onCreated,
   onCancel,
 }: {
-  onCreated: (organizationId: string) => void;
+  onCreated: (organizationId: string, slug: string) => void;
   onCancel: () => void;
 }) {
   const [name, setName] = useState("");
-  const [slug, setSlug] = useState("");
-  const [edited, setEdited] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const proposed = edited ? slug : name.trim() === "" ? "" : toHandleStem(name);
+  /*
+   * `toHandleStem` pads a stem that would be too short and substitutes one for
+   * a name that normalises to nothing, so any non-empty name yields a valid
+   * handle. The submit button still checks, because that guarantee lives in
+   * `packages/core` rather than here.
+   */
+  const slug = name.trim() === "" ? "" : toHandleStem(name);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
     setBusy(true);
     setError(null);
     try {
-      const result = await authClient.organization.create({
-        name: name.trim(),
-        slug: proposed,
-      });
-      if (result.error !== null && result.error !== undefined) {
-        setError(result.error.message ?? "Could not create that organization.");
+      const trimmed = name.trim();
+      /*
+       * Nobody chose this handle, so a collision is not something to report:
+       * the first free `acme`, `acme-2`, `acme-3`… is taken instead. The
+       * server refuses a taken handle rather than suffixing one itself, which
+       * is why this asks again rather than sending once.
+       *
+       * Bounded, and the last attempt's refusal is shown: an unbounded retry
+       * would hammer the API if the failure were something else that happened
+       * to carry the same code.
+       */
+      for (let attempt = 1; attempt <= CREATE_ATTEMPTS; attempt += 1) {
+        const candidate = attempt === 1 ? slug : suffixHandle(slug, attempt);
+        const result = await authClient.organization.create({
+          name: trimmed,
+          slug: candidate,
+        });
+        const failure = result.error;
+        if (failure !== null && failure !== undefined) {
+          if (isHandleTaken(failure) && attempt < CREATE_ATTEMPTS) {
+            continue;
+          }
+          setError(failure.message ?? "Could not create that organization.");
+          return;
+        }
+        /*
+         * The slug comes back from the server rather than being assumed, so
+         * the caller navigates to what was actually stored.
+         */
+        const created = result.data as { id?: string; slug?: string } | null;
+        if (created?.id !== undefined) {
+          onCreated(created.id, created.slug ?? candidate);
+        }
         return;
-      }
-      const created = result.data as { id?: string } | null;
-      if (created?.id !== undefined) {
-        onCreated(created.id);
       }
     } catch {
       setError("Could not create that organization.");
@@ -676,22 +980,15 @@ export function CreateOrganization({
         A shared workspace. You will be its owner.
       </p>
 
-      {error !== null && (
-        <p
-          role="alert"
-          className="text-destructive border-destructive/35 bg-destructive/7 mt-6 rounded-lg border px-3 py-2.5 text-sm"
-        >
-          {error}
-        </p>
-      )}
+      {error !== null && <ErrorBanner>{error}</ErrorBanner>}
 
       <Card className="mt-8">
         <CardHeader>
           <CardTitle role="heading" aria-level={2}>
-            Name and handle
+            Name
           </CardTitle>
           <CardDescription>
-            The name is what people read. The handle is the public one, and can
+            What people will read. A public handle is made from it, and both can
             be changed later.
           </CardDescription>
         </CardHeader>
@@ -710,23 +1007,11 @@ export function CreateOrganization({
                 setError(null);
               }}
             />
-            <Input
-              aria-label="Organization handle"
-              placeholder="acme-robotics"
-              value={proposed}
-              onChange={(event) => {
-                setEdited(true);
-                setSlug(event.target.value);
-                setError(null);
-              }}
-            />
 
             <div className="flex gap-2">
               <Button
                 type="submit"
-                disabled={
-                  busy || name.trim() === "" || !isValidHandle(proposed)
-                }
+                disabled={busy || name.trim() === "" || !isValidHandle(slug)}
               >
                 Create organization
               </Button>

@@ -619,3 +619,62 @@ test("a personal organization is listed like any other", async () => {
   assert.deepEqual(listed, [{ ...created, role: "owner" }]);
   assert.equal(await store.roleOf("user_1", created.id), "owner");
 });
+
+// ---- renaming a personal organization -------------------------------------
+
+/*
+ * Its name is a copy of `user.name` taken at signup, and nothing else edits
+ * it, so the rename route writes here too. What matters is the scope: this
+ * must never be able to reach a team.
+ */
+
+test("renamePersonal renames the caller's personal organization", async () => {
+  const fake = createFakeOrganizationDb({});
+  const store = createOrganizationStore(fake.db);
+  await store.createPersonal({
+    userId: "user_1",
+    name: "charlie ang",
+    preferredSlug: "charlie",
+  });
+
+  await store.renamePersonal("user_1", "Charlie Ang");
+
+  assert.equal(fake.organizations[0]?.name, "Charlie Ang");
+});
+
+test("renamePersonal matches on the personal user, not the organization", async () => {
+  /*
+   * The scope that makes this safe to expose on a route taking only a name:
+   * the row is found by `personal_user_id`, so a team the caller owns cannot
+   * be renamed through it however the request is shaped.
+   */
+  const fake = createFakeOrganizationDb({});
+  const store = createOrganizationStore(fake.db);
+  // Two people, each with their own. One renaming must not touch the other —
+  // with a single row on the table, a rename scoped to nothing at all would
+  // look exactly like a correct one.
+  await store.createPersonal({
+    userId: "user_1",
+    name: "Dana",
+    preferredSlug: "dana",
+  });
+  await store.createPersonal({
+    userId: "user_2",
+    name: "Sam",
+    preferredSlug: "sam",
+  });
+
+  await store.renamePersonal("user_1", "Renamed");
+
+  const byUser = new Map(
+    fake.organizations.map((row) => [row.personalUserId, row.name]),
+  );
+  assert.equal(byUser.get("user_1"), "Renamed");
+  assert.equal(byUser.get("user_2"), "Sam");
+
+  assert.equal(fake.updates.length, 1);
+  assert.equal(fake.updates[0]?.table, "organization");
+  // Only the name: a rename must not disturb the handle, the kind, or the
+  // link to the user the organization belongs to.
+  assert.deepEqual(fake.updates[0]?.patch, { name: "Renamed" });
+});

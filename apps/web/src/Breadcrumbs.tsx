@@ -1,0 +1,193 @@
+/**
+ * The trail above each page: where you are, and every step back up.
+ *
+ * The rail names only Home, because a rail of icons has room for destinations
+ * and not for a hierarchy. But most screens here sit under something — an
+ * organization's Jira page is two levels down — and the only ways back up
+ * were the browser's Back button and whichever link the page happened to
+ * carry. Back is history, not hierarchy: arriving at `/o/acme/jira` from a
+ * bookmark leaves it pointing out of the app.
+ *
+ * Rendered by the shell rather than by each page, so the trail cannot drift
+ * between screens and a new screen gets one by describing itself in `trailFor`
+ * instead of by remembering to render a component. Pages keep their own `h1`:
+ * the last crumb says where you are in the hierarchy, the heading says what
+ * the page is, and collapsing the two would leave the trail ending in a link
+ * to itself.
+ *
+ * Home has no trail. A single crumb reading "Home" on the home screen is a
+ * row of chrome that tells you what the rail already marks.
+ */
+
+import { ChevronRight } from "lucide-react";
+
+import type { Screen } from "./SideNav";
+
+/**
+ * One step. `screen` is absent on the last crumb — the page you are on is
+ * text, not a link, and giving it one would offer a click that does nothing.
+ *
+ * `slug` travels with the crumb rather than being read at click time for the
+ * same reason `navigate` takes one: the organization a crumb names is the one
+ * it was built from, not whichever is active by the time it is clicked.
+ */
+export interface Crumb {
+  label: string;
+  screen?: Screen;
+  slug?: string | undefined;
+}
+
+/**
+ * The organization a trail needs to name itself. Undefined while the list is
+ * still loading, or when the person belongs to none.
+ */
+export interface TrailOrganization {
+  name: string;
+  slug: string;
+}
+
+const HOME: Crumb = { label: "Home", screen: "home" };
+const ORGANIZATIONS: Crumb = {
+  label: "Organizations",
+  screen: "organizations",
+};
+
+/**
+ * The trail for a screen, root first.
+ *
+ * Exported for the tests, which assert the shape of each trail directly rather
+ * than by driving the whole shell to every screen.
+ *
+ * The organization screens name the organization they are showing. Until it
+ * arrives the crumb is dropped rather than filled with a placeholder: a trail
+ * that reads "Organizations / Loading… / Jira" shifts under the cursor the
+ * moment the name lands, and the remaining crumbs still lead back up.
+ */
+export function trailFor(
+  screen: Screen,
+  organization?: TrailOrganization | undefined,
+): Crumb[] {
+  switch (screen) {
+    case "home":
+      return [];
+    case "account":
+      return [HOME, { label: "Account" }];
+    case "organizations":
+      return [HOME, { label: "Organizations" }];
+    case "create-org":
+      return [HOME, ORGANIZATIONS, { label: "New organization" }];
+    case "org-settings":
+      /*
+        The organization is what this screen is, so until its name arrives
+        there is no last crumb to write. Ending the trail at "Organizations"
+        instead would mark the list as the current page while an organization
+        is on screen — and the page below is showing "Loading…" anyway. The
+        trail appears with the name, rather than rearranging under the cursor.
+      */
+      return organization === undefined
+        ? []
+        : [HOME, ORGANIZATIONS, { label: organization.name }];
+    case "org-jira":
+      // Jira names itself, so this trail stands without the organization —
+      // the middle crumb is the only one missing, and the steps that remain
+      // still lead back up.
+      return organization === undefined
+        ? [HOME, ORGANIZATIONS, { label: "Jira" }]
+        : [
+            HOME,
+            ORGANIZATIONS,
+            {
+              label: organization.name,
+              screen: "org-settings",
+              slug: organization.slug,
+            },
+            { label: "Jira" },
+          ];
+  }
+}
+
+export function Breadcrumbs({
+  screen,
+  organization,
+  onNavigate,
+}: {
+  screen: Screen;
+  organization?: TrailOrganization | undefined;
+  onNavigate: (screen: Screen, slug?: string) => void;
+}) {
+  const crumbs = trailFor(screen, organization);
+
+  // Nothing to show on home, and a bare trail of one crumb is chrome rather
+  // than navigation — it names where you are without offering a way up.
+  if (crumbs.length < 2) {
+    return null;
+  }
+
+  return (
+    /*
+      `nav` with a name, because this is a second navigation landmark on the
+      page and "Breadcrumb" is what distinguishes it from the rail's "Main".
+      That pair of names is also what keeps two controls called Home — one
+      here, one in the rail — from being an ambiguity.
+
+      An ordered list, since the steps are a sequence and screen readers
+      announce the position in it. The separators sit outside the links and are
+      hidden, or every crumb would be read with a chevron glued to it.
+
+      Aligned to the same `max-w-2xl` column the pages use, and with only top
+      padding: the page below opens with its own, which becomes the gap between
+      the trail and the heading. Bottom padding here would double it, and the
+      negative margin trims what is left to one header block rather than two
+      stacked ones — a constant here instead of a change to five pages, none of
+      which should have to know whether a trail sits above it.
+    */
+    <nav
+      aria-label="Breadcrumb"
+      className="-mb-6 px-4 pt-5 sm:-mb-8 sm:px-6 sm:pt-7"
+    >
+      <ol className="text-muted-foreground mx-auto flex w-full max-w-2xl flex-wrap items-center gap-1.5 text-sm">
+        {crumbs.map((crumb, index) => {
+          /*
+            The last crumb is the page you are on, so it is text whatever it
+            carries. `trailFor` already omits `screen` there; this makes the
+            component right on its own rather than by agreement with it, since
+            the same organization crumb is a link mid-trail and the end of the
+            trail one screen over.
+          */
+          const target = index === crumbs.length - 1 ? undefined : crumb.screen;
+          return (
+            <li key={crumb.label} className="flex items-center gap-1.5">
+              {index > 0 && (
+                <ChevronRight
+                  aria-hidden="true"
+                  className="size-3.5 shrink-0 opacity-60"
+                />
+              )}
+              {target === undefined ? (
+                /*
+                  The page you are on. `aria-current="page"` is what tells a
+                  screen reader which of these is the destination rather than a
+                  step, and it is the same marker the rail uses.
+                */
+                <span
+                  aria-current="page"
+                  className="text-foreground font-medium"
+                >
+                  {crumb.label}
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => onNavigate(target, crumb.slug)}
+                  className="hover:text-foreground focus-visible:ring-ring/50 cursor-pointer rounded-sm underline-offset-4 transition-colors hover:underline focus-visible:ring-[3px] focus-visible:outline-none"
+                >
+                  {crumb.label}
+                </button>
+              )}
+            </li>
+          );
+        })}
+      </ol>
+    </nav>
+  );
+}

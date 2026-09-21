@@ -410,12 +410,33 @@ export function createFakeOrganizationDb(
           if (name === "organization") {
             const found = conditions(value);
             for (const row of organizations) {
-              const matches = found.every(
-                (condition) =>
-                  condition.column !== "id" || row.id === condition.value,
-              );
-              if (matches && patch["updatedAt"] instanceof Date) {
+              /*
+               * Every condition naming a column this fake holds must match.
+               * Matching only on `id` would let a `where` scoped to
+               * `personal_user_id` rewrite every row here, so a store method
+               * that forgot its scope would still pass.
+               *
+               * Drizzle reports the database name, which is snake_case, while
+               * the rows here are camelCase — hence the conversion. Without
+               * it every lookup misses, reads as "this fake does not hold
+               * that column", and the condition is skipped.
+               */
+              const matches = found.every((condition) => {
+                const property = condition.column.replace(
+                  /_([a-z])/g,
+                  (_whole, letter: string) => letter.toUpperCase(),
+                );
+                const current = (row as unknown as Columns)[property];
+                return current === undefined || current === condition.value;
+              });
+              if (!matches) {
+                continue;
+              }
+              if (patch["updatedAt"] instanceof Date) {
                 row.updatedAt = patch["updatedAt"];
+              }
+              if (typeof patch["name"] === "string") {
+                row.name = patch["name"];
               }
             }
           }

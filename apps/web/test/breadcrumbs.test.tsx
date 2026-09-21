@@ -1,0 +1,260 @@
+/**
+ * Tests for the trail above each page.
+ *
+ * Two properties. The trail must describe the hierarchy rather than the
+ * history: arriving at `/o/acme/jira` from a bookmark must still offer every
+ * step up, because Back would leave the app. And the last crumb must not be a
+ * link — a step that navigates to the page you are already on reads as a
+ * broken control, and is the mistake this component is easiest to regress
+ * into.
+ *
+ * `trailFor` is tested directly for the shapes, since driving the shell to
+ * every screen to assert five lists would test the navigation twice over. The
+ * rendering and the click-through are then tested through the real shell, with
+ * the server faked at the `fetch` and auth-client boundary as in
+ * `nav.test.tsx`.
+ */
+
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
+
+import { trailFor } from "../src/Breadcrumbs";
+
+const useSession = vi.fn();
+
+vi.mock("../src/auth", () => ({
+  useSession: () => useSession(),
+  signOut: vi.fn(),
+  authClient: {
+    listAccounts: () => Promise.resolve({ data: [] }),
+    unlinkAccount: vi.fn(),
+    linkSocial: vi.fn(),
+    organization: {
+      setActive: () => Promise.resolve({ data: {}, error: null }),
+      acceptInvitation: vi.fn(),
+      rejectInvitation: vi.fn(),
+    },
+  },
+  PROVIDERS: [{ id: "google", label: "Continue with Google" }],
+  signInWith: vi.fn(),
+}));
+
+vi.stubGlobal(
+  "fetch",
+  vi.fn((input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes("/jira/connections")) {
+      return Promise.resolve(Response.json({ connections: [] }));
+    }
+    if (url.includes("/api/v1/me/emails")) {
+      return Promise.resolve(Response.json({ emails: [] }));
+    }
+    if (url.includes("/api/v1/me/invitations")) {
+      return Promise.resolve(Response.json({ invitations: [] }));
+    }
+    if (url.includes("/api/v1/me/orgs")) {
+      return Promise.resolve(
+        Response.json({
+          organizations: [
+            {
+              id: "org_1",
+              name: "Acme",
+              slug: "acme",
+              kind: "team",
+              role: "owner",
+            },
+          ],
+        }),
+      );
+    }
+    if (url.includes("/members")) {
+      return Promise.resolve(Response.json({ members: [] }));
+    }
+    if (url.includes("/api/v1/me")) {
+      return Promise.resolve(
+        Response.json({ user: { id: "user_1", username: "alice" } }),
+      );
+    }
+    return Promise.resolve(Response.json({}));
+  }),
+);
+
+/*
+ * Radix's avatar constructs `new window.Image()` and waits for a load that
+ * jsdom never performs. The rail renders one on every screen, so without this
+ * the fallback never settles — see `nav.test.tsx`, where the same stub is
+ * explained in full.
+ */
+vi.stubGlobal("Image", function FakeImage() {
+  const element = document.createElement("img");
+  Object.defineProperty(element, "complete", { value: true });
+  Object.defineProperty(element, "naturalWidth", { value: 1 });
+  let source = "";
+  Object.defineProperty(element, "src", {
+    get: () => source,
+    set: (value: string) => {
+      source = value;
+      element.setAttribute("src", value);
+      setTimeout(() => element.dispatchEvent(new Event("load")), 0);
+    },
+  });
+  return element;
+} as unknown as typeof Image);
+
+const { App } = await import("../src/App");
+
+const ACME = { name: "Acme", slug: "acme" };
+
+/** The trail as it reads on screen, so a test names labels and not nodes. */
+function labels(): string[] {
+  const trail = screen.getByRole("navigation", { name: "Breadcrumb" });
+  return [...trail.querySelectorAll("li")].map((li) =>
+    (li.textContent ?? "").trim(),
+  );
+}
+
+beforeEach(() => {
+  useSession.mockReturnValue({
+    data: {
+      user: {
+        id: "user_1",
+        name: "Alice Ang",
+        email: "alice@example.test",
+        image: null,
+      },
+    },
+  });
+  // Each test owns the path it renders under; the shell reads it once on
+  // mount to decide the starting screen.
+  window.history.replaceState(null, "", "/");
+});
+
+afterEach(() => {
+  window.history.replaceState(null, "", "/");
+});
+
+test("home has no trail", () => {
+  // A lone crumb reading "Home" on the home screen is chrome, not navigation.
+  expect(trailFor("home")).toEqual([]);
+});
+
+test("each screen's trail names every step above it", () => {
+  expect(trailFor("account").map((c) => c.label)).toEqual(["Home", "Account"]);
+  expect(trailFor("organizations").map((c) => c.label)).toEqual([
+    "Home",
+    "Organizations",
+  ]);
+  expect(trailFor("create-org").map((c) => c.label)).toEqual([
+    "Home",
+    "Organizations",
+    "New organization",
+  ]);
+  expect(trailFor("org-settings", ACME).map((c) => c.label)).toEqual([
+    "Home",
+    "Organizations",
+    "Acme",
+  ]);
+  // The deepest screen, and the one Back serves worst: two levels down, and
+  // reachable directly by URL.
+  expect(trailFor("org-jira", ACME).map((c) => c.label)).toEqual([
+    "Home",
+    "Organizations",
+    "Acme",
+    "Jira",
+  ]);
+});
+
+test("an organization still loading is left out rather than guessed at", () => {
+  /*
+   * A crumb reading "Loading…" shifts the row under the cursor when the name
+   * lands. The settings screen is the organization, so it has no trail to
+   * show until the name arrives — ending it at "Organizations" would mark the
+   * list as the current page while an organization is on screen. Jira names
+   * itself, so only its middle crumb goes missing.
+   */
+  expect(trailFor("org-settings")).toEqual([]);
+  expect(trailFor("org-jira").map((c) => c.label)).toEqual([
+    "Home",
+    "Organizations",
+    "Jira",
+  ]);
+});
+
+test("no trail ends in a step that goes nowhere", () => {
+  /*
+   * The regression this guards: the organization crumb is a link in the Jira
+   * trail and the end of the settings trail, so it is the one place a screen
+   * could be left on a terminal crumb — which renders a button that navigates
+   * to the page already on screen.
+   */
+  const screens = [
+    trailFor("account"),
+    trailFor("organizations"),
+    trailFor("create-org"),
+    trailFor("org-settings", ACME),
+    trailFor("org-jira", ACME),
+    trailFor("org-settings"),
+    trailFor("org-jira"),
+  ];
+
+  for (const trail of screens) {
+    expect(trail[trail.length - 1]?.screen).toBeUndefined();
+  }
+});
+
+test("the page you are on is text, and every step above it is a button", async () => {
+  window.history.replaceState(null, "", "/o/acme/settings");
+  render(<App />);
+
+  await waitFor(() => {
+    expect(labels()).toEqual(["Home", "Organizations", "Acme"]);
+  });
+
+  const nav = screen.getByRole("navigation", { name: "Breadcrumb" });
+  const current = nav.querySelector("[aria-current='page']");
+  expect(current?.textContent).toBe("Acme");
+  expect(current?.tagName).toBe("SPAN");
+  // Not a button: a click would navigate to the screen already showing.
+  expect(screen.queryByRole("button", { name: "Acme" })).toBeNull();
+  // The steps above it are, or the trail is decoration.
+  expect(screen.getByRole("button", { name: "Organizations" })).toBeTruthy();
+});
+
+test("a deep link renders the whole trail", async () => {
+  window.history.replaceState(null, "", "/o/acme/jira");
+  render(<App />);
+
+  await waitFor(() => {
+    expect(labels()).toEqual(["Home", "Organizations", "Acme", "Jira"]);
+  });
+});
+
+test("a crumb navigates up to the screen it names", async () => {
+  window.history.replaceState(null, "", "/o/acme/jira");
+  render(<App />);
+
+  await waitFor(() => {
+    expect(screen.getByRole("button", { name: "Acme" })).toBeTruthy();
+  });
+
+  // Up one level, to the organization the crumb names — not back through
+  // history, which a bookmarked arrival does not have.
+  fireEvent.click(screen.getByRole("button", { name: "Acme" }));
+
+  await waitFor(() => {
+    expect(window.location.pathname).toBe("/o/acme/settings");
+    expect(labels()).toEqual(["Home", "Organizations", "Acme"]);
+  });
+});
+
+test("the trail is a second landmark, named apart from the rail", async () => {
+  window.history.replaceState(null, "", "/organizations");
+  render(<App />);
+
+  // Two navigation landmarks on one page have to be told apart by name, or a
+  // screen reader announces "navigation" twice with no way to choose.
+  await waitFor(() => {
+    expect(screen.getByRole("navigation", { name: "Main" })).toBeTruthy();
+    expect(screen.getByRole("navigation", { name: "Breadcrumb" })).toBeTruthy();
+  });
+});

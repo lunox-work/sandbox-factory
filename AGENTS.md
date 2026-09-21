@@ -183,6 +183,14 @@ a broken injection stamps the artifact `unknown` rather than breaking the build
 - Dev containers shadow `node_modules` with anonymous volumes (the host tree
   holds darwin binaries). Both Dockerfiles build from the repo root, because the
   apps import workspace packages from outside their directory.
+- **Adding a dependency needs `make relink`, not `make up`.** The `npm ci` in
+  `web-dev`/`api-dev`'s command installs into anonymous volumes that
+  `docker compose up` reuses, so a package installed on the host never appears
+  inside and Vite fails with `Failed to resolve import` however many times you
+  restart. `relink` removes those two containers with their volumes so the next
+  start repopulates them. Do not reach for `down -v`: `postgres` and
+  `seaweedfs` declare no `profiles:`, so they belong to every profile and a
+  profile-scoped `down -v` deletes the database and the object store too.
 - `dist/` and `dist-test/` are gitignored build output.
 - Do not hand-edit `packages/db/drizzle/` — drizzle-kit generates it via
   `npm run db:generate --workspace @sandbox-factory/db`.

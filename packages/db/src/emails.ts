@@ -334,6 +334,16 @@ export type UsernameResult =
   | { status: "invalid"; reason: string }
   | { status: "taken" };
 
+/**
+ * How long a display name may be. Generous, because it is prose rather than
+ * an identifier — but bounded, so nothing downstream has to render an essay.
+ */
+export const NAME_MAX_LENGTH = 100;
+
+/** No `taken`: display names are not unique. */
+export type NameResult =
+  { status: "ok"; name: string } | { status: "invalid"; reason: string };
+
 export interface UserProfileStore {
   /** The handle. The column is `not null`, so undefined means no such user. */
   get(userId: string): Promise<{ username: string } | undefined>;
@@ -347,6 +357,15 @@ export interface UserProfileStore {
    * `displayUsername` keeps the casing the person typed.
    */
   setUsername(userId: string, raw: string): Promise<UsernameResult>;
+  /**
+   * Changes the display name — what people read, as opposed to the handle
+   * they are addressed by.
+   *
+   * Unlike a handle this is not unique and not normalised: two people may
+   * share a name, and the casing and spacing are theirs. Only the emptiness
+   * and the length are checked.
+   */
+  setName(userId: string, raw: string): Promise<NameResult>;
 }
 
 export function createProfileStore(db: Database): UserProfileStore {
@@ -385,6 +404,26 @@ export function createProfileStore(db: Database): UserProfileStore {
         .where(eq(user.id, userId))
         .limit(1);
       return row;
+    },
+
+    async setName(userId, raw) {
+      const name = raw.trim();
+      if (name === "") {
+        return { status: "invalid", reason: "Name cannot be empty." };
+      }
+      if (name.length > NAME_MAX_LENGTH) {
+        return {
+          status: "invalid",
+          reason: `Name must be ${NAME_MAX_LENGTH} characters or fewer.`,
+        };
+      }
+
+      await db
+        .update(user)
+        .set({ name, updatedAt: new Date() })
+        .where(eq(user.id, userId));
+
+      return { status: "ok", name };
     },
 
     async setUsername(userId, raw) {

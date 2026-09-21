@@ -21,7 +21,7 @@ COMPOSE := docker compose --env-file .env.development
 
 .PHONY: help install build dev test lint format verify ship \
         up down logs ps up-prod down-prod build-images \
-        db-up db-down reset psql db-url migrate s3-url \
+        db-up db-down reset relink psql db-url migrate s3-url \
         ext ext-deps ext-watch ext-package clean \
         tf-init tf-plan tf-apply tf-output \
         secrets-template secrets-check secrets-push \
@@ -125,6 +125,21 @@ migrate: db-up ## Apply pending migrations to the local database
 
 reset: ## Stop everything and DELETE the database and object-storage volumes
 	$(COMPOSE) --profile dev --profile prod down -v
+
+# After adding or removing a dependency. The containers install into anonymous
+# volumes that `up` reuses, so a package added on the host is invisible inside
+# until those volumes go — which looks like Vite failing to resolve an import
+# that plainly exists.
+#
+# `rm -v` on the two node containers, not `down -v`: `postgres` and `seaweedfs`
+# declare no `profiles:`, so they belong to every profile and a profile-scoped
+# `down -v` deletes the database and the object store with them. Both node
+# containers are named so neither is left holding a stale tree; they keep
+# separate volumes, so recreating one says nothing about the other.
+relink: ## Recreate the dev containers' node_modules after a dependency change
+	$(COMPOSE) --profile dev rm -fsv web-dev api-dev
+	$(COMPOSE) --profile dev up -d
+	@echo "dependencies are reinstalling inside the containers — give it a minute"
 
 psql: ## Open a psql shell in the running container
 	$(COMPOSE) exec postgres psql -U postgres -d sandbox_factory

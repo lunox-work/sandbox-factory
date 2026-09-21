@@ -22,6 +22,7 @@ import type { MembershipDto } from "@sandbox-factory/shared";
 import { ChevronRight, Plus } from "lucide-react";
 
 import { EntityAvatar } from "@/components/Avatar";
+import { ErrorBanner } from "@/components/Message";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -86,14 +87,7 @@ export function Organizations({
         </Button>
       </div>
 
-      {error !== null && (
-        <p
-          role="alert"
-          className="text-destructive border-destructive/35 bg-destructive/7 mt-6 rounded-lg border px-3 py-2.5 text-sm"
-        >
-          {error}
-        </p>
-      )}
+      {error !== null && <ErrorBanner>{error}</ErrorBanner>}
 
       <div className="mt-8">
         {loading ? (

@@ -451,6 +451,16 @@ function fakeProfiles(initial: string | null = null) {
   let username = initial;
   return {
     get: () => Promise.resolve({ username }),
+    setName: (_userId: string, raw: string) => {
+      const name = raw.trim();
+      if (name === "") {
+        return Promise.resolve({
+          status: "invalid" as const,
+          reason: "Name cannot be empty.",
+        });
+      }
+      return Promise.resolve({ status: "ok" as const, name });
+    },
     setUsername: (_userId: string, raw: string) => {
       const next = raw.trim().toLowerCase();
       if (next.length < 3) {
@@ -609,4 +619,37 @@ test("without originVerify configured no check is installed", async () => {
   const response = await app().request("/api/v1/me");
 
   assert.equal(response.status, 200);
+});
+
+// ---- the display name -----------------------------------------------------
+
+test("PUT /api/v1/me/name saves a trimmed name", async () => {
+  const res = await appWithProfiles().request("/api/v1/me/name", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: "  Charlie Ang  " }),
+  });
+
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { name: "Charlie Ang" });
+});
+
+test("PUT /api/v1/me/name refuses an empty name", async () => {
+  const res = await appWithProfiles().request("/api/v1/me/name", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: "   " }),
+  });
+
+  assert.equal(res.status, 400);
+});
+
+test("PUT /api/v1/me/name refuses a body without a name", async () => {
+  const res = await appWithProfiles().request("/api/v1/me/name", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ nickname: "Charlie" }),
+  });
+
+  assert.equal(res.status, 400);
 });

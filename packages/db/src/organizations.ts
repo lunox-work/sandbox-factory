@@ -85,6 +85,20 @@ export interface OrganizationStore {
     preferredSlug: string;
   }): Promise<OrganizationSummary>;
   /**
+   * Renames the caller's personal organization, so it keeps reading as the
+   * person it belongs to.
+   *
+   * Its name is a copy of `user.name`, taken at signup — there is no separate
+   * place to edit it, so without this a renamed user would be left with a
+   * personal organization still headed by the name they abandoned. Scoped to
+   * `personal_user_id`, so it can only ever touch the caller's own and never
+   * a team.
+   *
+   * A no-op when the user has none, which is possible: the signup hook logs
+   * and continues rather than failing the account.
+   */
+  renamePersonal(userId: string, name: string): Promise<void>;
+  /**
    * The caller's role in one organization, or undefined when they are not a
    * member. The membership check every organization-scoped route makes; a
    * miss becomes a 404, never a 403.
@@ -219,6 +233,24 @@ export function createOrganizationStore(db: Database): OrganizationStore {
         .onConflictDoNothing();
 
       return toSummary(created);
+    },
+
+    async renamePersonal(userId, name) {
+      /*
+       * Matched on `personal_user_id`, which only a personal organization
+       * carries: a team the caller owns cannot be reached from here, however
+       * the argument arrives. The `kind` check is belt and braces on the same
+       * point.
+       */
+      await db
+        .update(organization)
+        .set({ name })
+        .where(
+          and(
+            eq(organization.personalUserId, userId),
+            eq(organization.kind, "personal"),
+          ),
+        );
     },
 
     async roleOf(userId, organizationId) {
