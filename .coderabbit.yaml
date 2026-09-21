@@ -4,17 +4,20 @@ language: en-US
 
 reviews:
   profile: chill
-  request_changes_workflow: false
+  request_changes_workflow: true
+  # Stable legacy status surface, consumed by our SHA-bound Review gate.
+  review_progress: false
+  commit_status: true
+  fail_commit_status: true
   high_level_summary: true
   review_status: true
   poem: false
   auto_review:
     enabled: true
     drafts: false
-    # Dependabot PRs are already gated by CI and auto-merge.
-    ignore_title_keywords:
-      - "chore(deps)"
-      - "release"
+    auto_incremental_review: true
+    auto_pause_after_reviewed_commits: 0
+    ignore_title_keywords: []
   path_filters:
     - "!dist/**"
     - "!dist-test/**"
@@ -23,6 +26,8 @@ reviews:
   # branch) or `@coderabbitai autofix stacked pr` (opens a separate PR).
   finishing_touches:
     autofix:
+      enabled: true
+    fix_ci:
       enabled: true
 
 chat:

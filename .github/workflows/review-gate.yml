@@ -1,0 +1,63 @@
+name: Review gate controller
+
+on:
+  pull_request_target:
+    types:
+      [
+        opened,
+        reopened,
+        synchronize,
+        ready_for_review,
+        converted_to_draft,
+        edited,
+      ]
+    branches: [main]
+  issue_comment:
+    types: [created]
+  check_run:
+    types: [completed]
+  status:
+  workflow_run:
+    workflows: [CI, CodeQL]
+    types: [completed]
+  schedule:
+    # Recovery for dropped/coalesced events and review/thread-only changes.
+    - cron: "3-58/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  checks: read
+  statuses: write
+  pull-requests: write
+  issues: write
+
+# One writer for repair markers across all event types. Scheduled reconciliation
+# also recovers events GitHub coalesces while a run is in progress.
+concurrency:
+  group: review-gate-controller
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    if: >-
+      (github.event_name != 'status' || github.event.context == 'CodeRabbit') &&
+      (github.event_name != 'issue_comment' || github.event.issue.pull_request != null)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Only trusted default-branch code, never the event's PR/merge ref.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: trusted-controller
+          persist-credentials: false
+          sparse-checkout: scripts/review-gate.cjs
+          sparse-checkout-cone-mode: false
+      - uses: actions/github-script@v9
+        env:
+          UPDATE_BRANCH_TOKEN: ${{ secrets.AUTO_MERGE_TOKEN }}
+        with:
+          script: |
+            const { reconcile } = require('./trusted-controller/scripts/review-gate.cjs');
+            await reconcile({ github, context, core, updateToken: process.env.UPDATE_BRANCH_TOKEN });

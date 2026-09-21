@@ -25,7 +25,7 @@
   },
   "scripts": {
     "build": "turbo run build",
-    "test": "turbo run test",
+    "test": "node --test scripts/test/*.test.cjs && turbo run test",
     "lint": "turbo run lint",
     "dev": "turbo run dev --filter=@sandbox-factory/api --filter=@sandbox-factory/web",
     "format": "prettier --write .",

@@ -197,26 +197,18 @@ a broken injection stamps the artifact `unknown` rather than breaking the build
 
 ### Shipping a change
 
-**Use `./scripts/ship.sh --title "fix: ..." --yes`.** It branches off `main`,
-verifies, opens the PR, settles review threads and waits for the merge. See
-[scripts/README.md](./scripts/README.md).
+**Use `./scripts/ship.sh --title "fix: ..." --yes`.** It verifies, pushes, opens
+the PR and returns to local main. GitHub owns CI, CodeRabbit repairs, re-review
+and auto-merge. See [scripts/README.md](./scripts/README.md).
 
-- **When it prints the PR URL, you are done.** It returns 0 once the PR is
-  _open_ and watches the merge from a detached child. Do not poll
-  `gh pr checks`, `sleep` and re-check, or tail the log — a ship takes 10–15
-  minutes, nearly all of it waiting on CodeRabbit. Report the URL and stop. If
-  a later turn needs the outcome, check once:
-  `gh pr view <n> --json state --jq .state`.
-- **If `.git/ship/pr-<n>.review.md` exists for your last ship, read it before
-  the next change** and fix what is real in a follow-up PR. ship.sh resolves
-  CodeRabbit's threads unread, but saves them there first.
-- **It leaves you on `main`; start the next change there.** Do not check out
-  the branch you just shipped — that stacks work on an open PR, which `ship.sh`
-  refuses (`has commits not in main`). A follow-up is a new branch off `main`.
-- **Never `git checkout` or `git stash` while a ship is being watched.** The
-  child shares your working tree.
-- Use `--foreground` only when the merge is a precondition for work in the same
-  turn, which is rare.
+- Exit 0 means PR open, not merged or deployed. Report its URL; no local watcher.
+- Local main is refreshed on return, not after the eventual merge. Pull before
+  starting the next change. GitHub deletes merged remote branches, not local ones.
+- Never automatically resolve threads, dismiss reviews, post CodeRabbit approval
+  overrides, fabricate passing statuses or use admin bypass to unblock shipping.
+- Policy-sensitive changes require the human maintainer to acknowledge the exact
+  SHA in the PR. Agents must not impersonate that acknowledgement.
+- Use a draft for changes that should not enter the automatic pipeline yet.
 
 ### Commits, PRs, and releases
 
@@ -224,9 +216,10 @@ The rules `ship.sh` encodes; [docs/ci.md](./docs/ci.md) has the detail.
 
 - Branch off `main` as `fix/...` or `feat/...`. `main` takes squash merges only;
   you cannot push to it. One logical change per PR; fill in the template.
-- **Opening a PR is the last decision point.** Auto-merge arms on every PR
-  except a Dependabot major, and nobody clicks anything. If a human should look
-  first, open it as a **draft**.
+- **Ready PRs enter the automatic pipeline.** Eligible same-repository PRs
+  auto-merge after checks and current-head review, except Dependabot majors.
+  Policy changes also need explicit maintainer acknowledgement. Use a **draft**
+  when a change should be held for inspection.
 - **The PR title is the squash commit, and the squash commit decides the
   version.** `scripts/next-version.mjs`: `!`/`BREAKING CHANGE:` → major, `feat`
   → minor, `fix`/`perf`/`revert`/`build`/`refactor` → patch, anything else → no
@@ -237,13 +230,11 @@ The rules `ship.sh` encodes; [docs/ci.md](./docs/ci.md) has the detail.
   tags. A failed deploy cuts no release. A chore-only merge deploys without a
   version; a docs-only merge does not deploy at all (`paths-ignore`).
 - **Tags are the version of record, not `package.json`**, which nothing bumps.
-- **Unresolved review threads block the merge**, and `enforce_admins` means
-  `--admin` will not force it. Resolve with
-  `gh pr comment <n> --body '@coderabbitai resolve'`.
-- Required checks — `Test (Node 22)`, `Test (Node 24)`, `Analyze` — are matched
-  **by job name**. Renaming a job or changing the Node matrix stops the ruleset
-  requiring it, and auto-merge then merges on checks that never ran. Update the
-  ruleset in the same change.
+- **Unresolved review threads block the merge.** CodeRabbit must verify the
+  fixes and approve the latest head; do not issue resolve/approve overrides.
+- Required contexts: `Test (Node 22)`, `Test (Node 24)`, `Analyze`, `CodeQL`,
+  `Review gate`. Renaming a required context blocks merging until protection is
+  updated. See `.github/main-ruleset.json` and the rollout notes in `docs/ci.md`.
 - Never hand-edit `CHANGELOG.md`.
 
 ### Do not
