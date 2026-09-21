@@ -417,7 +417,10 @@ function BoardPickerDialog({
           </p>
         ) : (
           <ul
-            className="-mx-2 max-h-80 divide-y overflow-y-auto"
+            // A bordered card with rules between rows, rather than bare list
+            // items: the rows are the choice being made, and an unbounded
+            // list reads as continuous with the dialog's own text.
+            className="max-h-80 divide-y overflow-y-auto rounded-md border"
             data-testid="board-picker"
           >
             {boards.map((board) => {
@@ -426,7 +429,7 @@ function BoardPickerDialog({
               return (
                 <li
                   key={board.id}
-                  className="flex items-center justify-between gap-3 px-2 py-2.5"
+                  className="flex items-center justify-between gap-3 px-3 py-3"
                 >
                   <span className="min-w-0">
                     <span className="block truncate text-sm font-medium">
