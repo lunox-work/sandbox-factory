@@ -101,3 +101,71 @@ test("nothing the server runs reads process.env behind env.ts's back", () => {
 function stripComments(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
 }
+
+/**
+ * Four files list the secrets that reach production, and nothing but a comment
+ * keeps them in step:
+ *
+ *   infra/secrets.tf              creates them in AWS Secrets Manager
+ *   infra/scripts/secrets-push.sh writes values to them
+ *   scripts/rotate-token.sh       rotates one or all of them
+ *   apps/api/src/env.ts           reads them
+ *
+ * Drift is silent and asymmetric, which is what makes it worth a test. A key
+ * missing from `secrets-push.sh` is never pushed, so the task boots with the
+ * placeholder. One missing from `rotate-token.sh` cannot be rotated and
+ * `--only KEY` rejects it as unknown. Neither fails anything until the moment
+ * it matters.
+ *
+ * **These read files outside this workspace, which turbo does not hash.** An
+ * edit to `infra/` alone therefore replays a cached pass locally; CI starts
+ * cold so it runs for real. If you change one of those files and want the
+ * check now, `npx turbo run test --filter=@sandbox-factory/api --force`.
+ */
+function bashArray(file: string, name: string): string[] {
+  const source = readFileSync(join(root, file), "utf8");
+  // Anchored to the start of a line: `secrets-push.sh` declares `ONLY_KEYS=()`
+  // above `KEYS=(`, and an unanchored search for `KEYS=(` finds that empty one
+  // first and silently reports no keys at all.
+  const match = new RegExp(`^${name}=\\(([^)]*)\\)`, "m").exec(source);
+  assert.ok(match, `${file}: no ${name}=( ... ) array`);
+  return (match[1] ?? "")
+    .split("\n")
+    .map((line) => line.replace(/#.*$/, "").trim())
+    .filter((line) => /^[A-Z][A-Z0-9_]*$/.test(line));
+}
+
+test("every file that lists the production secrets lists the same ones", () => {
+  const terraform = [
+    ...readFileSync(join(root, "infra/secrets.tf"), "utf8").matchAll(
+      /^\s{4}([A-Z][A-Z0-9_]*)\s*=/gm,
+    ),
+  ].map((match) => match[1] ?? "");
+
+  const push = bashArray("infra/scripts/secrets-push.sh", "KEYS");
+  const rotate = bashArray("scripts/rotate-token.sh", "SECRET_KEYS");
+
+  assert.ok(
+    terraform.length >= 8,
+    `parsed ${terraform.length} from secrets.tf`,
+  );
+  assert.deepEqual([...push].sort(), [...terraform].sort());
+  assert.deepEqual([...rotate].sort(), [...terraform].sort());
+
+  // And each one is a variable the API actually reads, so a secret cannot be
+  // created, pushed and rotated while the process ignores it.
+  for (const key of terraform) {
+    assert.ok(envKeys.includes(key), `${key} is pushed but never read`);
+  }
+});
+
+test("rotate-token can rotate each secret individually", () => {
+  // `--only KEY` validates against SECRET_KEYS, so a key absent from that
+  // array is rejected as unknown — the failure mode is "I cannot rotate this
+  // credential", discovered while trying to rotate a leaked one.
+  const rotate = bashArray("scripts/rotate-token.sh", "SECRET_KEYS");
+
+  for (const key of ["TOKEN_ENCRYPTION_KEY", "JIRA_CLIENT_SECRET"]) {
+    assert.ok(rotate.includes(key), `--only ${key} would be rejected`);
+  }
+});

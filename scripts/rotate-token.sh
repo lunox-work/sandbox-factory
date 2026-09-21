@@ -11,19 +11,19 @@
 #                      that token never triggers ci.yml or cd.yml. A dead token
 #                      here stops main deploying, quietly.
 #
-#   .env.production    the eight application secrets, which reach the API
+#   .env.production    the eleven application secrets, which reach the API
 #                      through AWS Secrets Manager. A dead one here crash-loops
 #                      the task on its next boot, loudly.
 #
 #   ./scripts/rotate-token.sh                    # the GitHub token; prompts
 #   ./scripts/rotate-token.sh --check            # is the stored one still good?
-#   ./scripts/rotate-token.sh --secrets          # the eight app secrets
+#   ./scripts/rotate-token.sh --secrets          # the eleven app secrets
 #   ./scripts/rotate-token.sh --secrets --only DATABASE_URL
 #   ./scripts/rotate-token.sh <token>            # inline; see the warning below
 #   op read "op://Private/gh-auto-merge/token" | ./scripts/rotate-token.sh -
 #
 # --secrets asks for each key in turn and SKIPS ANY YOU LEAVE BLANK, so rotating
-# one credential does not mean re-pasting the other seven. It rewrites
+# one credential does not mean re-pasting the other ten. It rewrites
 # .env.production in place, then offers to push the changed keys to AWS and to
 # restart the API so they take effect. Both are prompts, not automatic.
 #
@@ -55,7 +55,7 @@ info() { printf '\033[36m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[33mwarn:\033[0m %s\n' "$*" >&2; }
 ok()   { printf '\033[32m  ok\033[0m %s\n' "$*"; }
 
-# The eight app secrets, in .env.production order. Keep in step with
+# The eleven app secrets, in .env.production order. Keep in step with
 # `local.app_secrets` in infra/secrets.tf and `KEYS` in
 # infra/scripts/secrets-push.sh.
 SECRET_KEYS=(
@@ -67,6 +67,9 @@ SECRET_KEYS=(
   GITHUB_CLIENT_SECRET
   ATLASSIAN_CLIENT_ID
   ATLASSIAN_CLIENT_SECRET
+  JIRA_CLIENT_ID
+  JIRA_CLIENT_SECRET
+  TOKEN_ENCRYPTION_KEY
 )
 
 secret_hint() {
@@ -84,7 +87,19 @@ secret_hint() {
       echo "github.com/settings/developers -> OAuth Apps -> the app -> Generate a new
        client secret. The ID never changes." ;;
     ATLASSIAN_CLIENT_ID|ATLASSIAN_CLIENT_SECRET)
-      echo "developer.atlassian.com -> Console -> your app -> Settings -> Authentication." ;;
+      echo "developer.atlassian.com -> Console -> the SIGN-IN app -> Settings.
+       Identity only (read:me); the Jira scopes belong to the other app." ;;
+    JIRA_CLIENT_ID|JIRA_CLIENT_SECRET)
+      echo "developer.atlassian.com -> Console -> the JIRA CONNECTION app -> Settings.
+       A second app on purpose: an Atlassian grant is per app and a new grant
+       overwrites the old one's scopes, so sharing one with sign-in would make
+       the two flows break each other." ;;
+    TOKEN_ENCRYPTION_KEY)
+      echo "Generate locally: openssl rand -base64 32
+       NOT a drop-in rotation: it decrypts the tokens in jira_connection, so
+       replacing it alone leaves every stored Jira token unreadable and every
+       connection has to be made again. Re-encrypt those rows first — key_id
+       records which key wrote each one so both can be readable while you do." ;;
   esac
 }
 
