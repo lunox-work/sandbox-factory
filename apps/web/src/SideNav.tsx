@@ -35,6 +35,8 @@ export type Screen =
   | "organizations"
   | "org-settings"
   | "org-jira"
+  /** One connected site, under the Jira screen. Carries a connection id. */
+  | "org-jira-site"
   | "create-org";
 
 export function SideNav({

@@ -8,6 +8,7 @@ import type {
   JiraConnectionStore,
   JiraConnectionSummary,
   RegisterBoardInput,
+  SyncBoardInput,
 } from "@sandbox-factory/db";
 
 import { READ_SCOPES } from "@sandbox-factory/jira";
@@ -104,6 +105,13 @@ function fakeAtlassian(
     tokenBody?: unknown;
     sites?: unknown;
     scope?: string;
+    /**
+     * What the Agile board list answers. The callback reads it to register a
+     * site's boards, so a test that leaves it out is testing a connection
+     * whose boards could not be read — which is a real case, and why the
+     * default is a refusal rather than an empty list.
+     */
+    boards?: { status?: number; body?: unknown };
   } = {},
 ): typeof globalThis.fetch {
   return (async (url: string | URL | Request) => {
@@ -125,6 +133,40 @@ function fakeAtlassian(
           ],
         ),
         { status: 200 },
+      );
+    }
+    if (href.includes("/rest/agile/1.0/board")) {
+      const spec = options.boards;
+      if (spec === undefined) {
+        // No Agile scope, which is the shape of the failure the callback has
+        // to survive: a granted site whose boards cannot be listed is still a
+        // connected site.
+        return new Response(
+          JSON.stringify({ code: 401, message: "Unauthorized" }),
+          { status: 401 },
+        );
+      }
+      return new Response(
+        JSON.stringify(
+          spec.body ?? {
+            isLast: true,
+            values: [
+              {
+                id: 42,
+                name: "Acme Board",
+                type: "scrum",
+                location: { projectKey: "ACME" },
+              },
+              {
+                id: 43,
+                name: "Other Board",
+                type: "kanban",
+                location: { projectKey: "OTH" },
+              },
+            ],
+          },
+        ),
+        { status: spec.status ?? 200 },
       );
     }
     if (href.endsWith("/oauth/token")) {
@@ -152,9 +194,11 @@ function fakeBoards(
   overrides: Partial<JiraBoardSummary> = {},
 ): JiraBoardStore & {
   registered: RegisterBoardInput[];
+  synced: SyncBoardInput[];
   updates: unknown[];
 } {
   const registered: RegisterBoardInput[] = [];
+  const synced: SyncBoardInput[] = [];
   const updates: unknown[] = [];
   const board: JiraBoardSummary = {
     id: "jrb_1",
@@ -176,6 +220,7 @@ function fakeBoards(
   };
   return {
     registered,
+    synced,
     updates,
     list: () => Promise.resolve([board]),
     get: (_organizationId, id) =>
@@ -187,6 +232,10 @@ function fakeBoards(
         ...input,
         externalId: input.externalId,
       });
+    },
+    sync: (_organizationId, input) => {
+      synced.push(input);
+      return Promise.resolve({ ...board, ...input });
     },
     update: (_organizationId, id, input) => {
       if (id !== board.id) {
@@ -504,6 +553,58 @@ test("the callback stores a connection and reports success", async () => {
   assert.equal(recorded?.organizationId, "org_1");
   assert.equal(recorded?.input.cloudId, "cloud-1");
   assert.equal(recorded?.input.refreshToken, "refresh-1");
+});
+
+test("connecting a site registers every board on it", async () => {
+  // Connecting is the decision. Asking again, board by board, was asking the
+  // person to repeat a choice they had already made.
+  const { app, boards } = appWith({ fetch: fakeAtlassian({ boards: {} }) });
+  const state = signState(SECRET, {
+    organizationId: "org_1",
+    userId: dana.id,
+    returnTo: "/settings/jira",
+  });
+
+  const response = await app.request(
+    `/api/v1/jira/callback?code=c&state=${encodeURIComponent(state)}`,
+    { headers: signedIn },
+  );
+
+  assert.equal(
+    new URL(response.headers.get("location") ?? "").searchParams.get("jira"),
+    "connected",
+  );
+  assert.deepEqual(
+    boards.synced.map((input) => input.externalId),
+    ["42", "43"],
+  );
+  // Recorded, not registered: a sync must not write settings over a board
+  // this organization had configured before.
+  assert.equal(boards.registered.length, 0);
+});
+
+test("a site whose boards cannot be read is still connected", async () => {
+  // The Atlassian app without the Agile scopes. The grant is real and the
+  // site is usable for everything else; refusing the connection over it would
+  // lose the grant as well as the boards.
+  const { app, connections, boards } = appWith({ fetch: fakeAtlassian() });
+  const state = signState(SECRET, {
+    organizationId: "org_1",
+    userId: dana.id,
+    returnTo: "/settings/jira",
+  });
+
+  const response = await app.request(
+    `/api/v1/jira/callback?code=c&state=${encodeURIComponent(state)}`,
+    { headers: signedIn },
+  );
+
+  assert.equal(
+    new URL(response.headers.get("location") ?? "").searchParams.get("jira"),
+    "connected",
+  );
+  assert.equal(connections.upserts.length, 1);
+  assert.equal(boards.synced.length, 0);
 });
 
 test("the callback takes the organization from the state, not the query", async () => {
@@ -1002,6 +1103,98 @@ test("an unhealthy connection asks for a reconnect rather than retrying", async 
   assert.equal(((await response.json()) as { code: string }).code, "reconnect");
   // The point of the check: no round trip is spent to learn what the row says.
   assert.deepEqual(jira.urls, []);
+});
+
+test("syncing a site records every board on it, settings untouched", async () => {
+  // What the site's page calls when it opens. A board created in Jira since
+  // the site was connected has to appear without anyone pressing anything.
+  const { app, boards } = appWith({
+    fetch: fakeJiraApi({
+      boards: [
+        {
+          id: 42,
+          name: "Acme Board",
+          type: "scrum",
+          location: { projectKey: "ACME" },
+        },
+        {
+          id: 43,
+          name: "Made Yesterday",
+          type: "kanban",
+          location: { projectKey: "NEW" },
+        },
+      ],
+    }),
+  });
+
+  const response = await app.request(
+    "/api/v1/orgs/org_1/jira/connections/jrc_1/sync",
+    { method: "POST", headers: signedIn },
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(
+    boards.synced.map((input) => input.externalId),
+    ["42", "43"],
+  );
+  // `sync`, not `register`: the second would write default settings over a
+  // board this organization had already configured.
+  assert.equal(boards.registered.length, 0);
+});
+
+test("a plain member may sync, because it records pointers and nothing else", async () => {
+  // It reads no ticket and changes no setting on a site the organization
+  // already holds a grant for.
+  const { app, boards } = appWith({
+    fetch: fakeJiraApi(),
+    role: "member",
+  });
+
+  const response = await app.request(
+    "/api/v1/orgs/org_1/jira/connections/jrc_1/sync",
+    { method: "POST", headers: signedIn },
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(boards.synced.length, 1);
+});
+
+test("syncing a dead connection asks for a reconnect", async () => {
+  const jira = fakeJiraApi();
+  const { app, boards } = appWith({
+    connections: fakeConnections({ healthy: false }),
+    fetch: jira,
+  });
+
+  const response = await app.request(
+    "/api/v1/orgs/org_1/jira/connections/jrc_1/sync",
+    { method: "POST", headers: signedIn },
+  );
+
+  assert.equal(response.status, 409);
+  assert.equal(((await response.json()) as { code: string }).code, "reconnect");
+  assert.equal(boards.synced.length, 0);
+  // No round trip spent to learn what the row already says.
+  assert.deepEqual(jira.urls, []);
+});
+
+test("syncing when the app lacks the Agile scopes says so, not reconnect", async () => {
+  // "Reconnect" is a loop that ends where it started: the grant is live, and
+  // the missing scope is the Atlassian app's own.
+  const { app } = appWith({
+    fetch: fakeJiraApi({
+      status: 401,
+      errorBody: { code: 401, message: "Unauthorized; scope does not match" },
+    }),
+  });
+
+  const response = await app.request(
+    "/api/v1/orgs/org_1/jira/connections/jrc_1/sync",
+    { method: "POST", headers: signedIn },
+  );
+
+  assert.equal(response.status, 502);
+  assert.equal(((await response.json()) as { code: string }).code, "scope");
 });
 
 test("registering a board takes its name and type from Jira, not the body", async () => {

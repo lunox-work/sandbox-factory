@@ -44,7 +44,25 @@ vi.stubGlobal(
   vi.fn((input: RequestInfo | URL) => {
     const url = String(input);
     if (url.includes("/jira/connections")) {
-      return Promise.resolve(Response.json({ connections: [] }));
+      return Promise.resolve(
+        Response.json({
+          connections: [
+            {
+              id: "jrc_1",
+              cloudId: "cloud-1",
+              siteUrl: "https://acme.atlassian.net",
+              siteName: "lunox-work",
+              email: null,
+              healthy: true,
+              scopes: [],
+              createdAt: "2026-09-21T00:00:00.000Z",
+            },
+          ],
+        }),
+      );
+    }
+    if (url.includes("/jira/boards")) {
+      return Promise.resolve(Response.json({ boards: [] }));
     }
     if (url.includes("/api/v1/me/emails")) {
       return Promise.resolve(Response.json({ emails: [] }));
@@ -162,6 +180,31 @@ test("each screen's trail names every step above it", () => {
     "Acme",
     "Jira",
   ]);
+  // One deeper still: a connected site, under Jira.
+  expect(
+    trailFor("org-jira-site", ACME, "lunox-work").map((c) => c.label),
+  ).toEqual(["Home", "Organizations", "Acme", "Jira", "lunox-work"]);
+});
+
+test("the Jira crumb becomes a link on a site, which is the way back up", () => {
+  // The site page carries no other way back to the list of sites.
+  const trail = trailFor("org-jira-site", ACME, "lunox-work");
+  const jira = trail.find((crumb) => crumb.label === "Jira");
+
+  expect(jira?.screen).toBe("org-jira");
+  expect(jira?.slug).toBe("acme");
+});
+
+test("a site whose name has not arrived keeps its place in the trail", () => {
+  // Dropping the last crumb would mark Jira as the current page while a site
+  // is on screen.
+  expect(trailFor("org-jira-site", ACME).map((c) => c.label)).toEqual([
+    "Home",
+    "Organizations",
+    "Acme",
+    "Jira",
+    "Site",
+  ]);
 });
 
 test("an organization still loading is left out rather than guessed at", () => {
@@ -195,6 +238,8 @@ test("no trail ends in a step that goes nowhere", () => {
     trailFor("org-jira", ACME),
     trailFor("org-settings"),
     trailFor("org-jira"),
+    trailFor("org-jira-site", ACME, "lunox-work"),
+    trailFor("org-jira-site"),
   ];
 
   for (const trail of screens) {
@@ -225,6 +270,39 @@ test("a deep link renders the whole trail", async () => {
   render(<App />);
 
   await waitFor(() => {
+    expect(labels()).toEqual(["Home", "Organizations", "Acme", "Jira"]);
+  });
+});
+
+test("a deep link to one site resolves, and the trail names it", async () => {
+  // `/o/:slug/jira/:id` is its own screen, so a bookmark or a reload lands on
+  // the site rather than on the list above it.
+  window.history.replaceState(null, "", "/o/acme/jira/jrc_1");
+  render(<App />);
+
+  await waitFor(() => {
+    expect(labels()).toEqual([
+      "Home",
+      "Organizations",
+      "Acme",
+      "Jira",
+      "lunox-work",
+    ]);
+  });
+});
+
+test("the Jira crumb on a site goes back to the list of sites", async () => {
+  window.history.replaceState(null, "", "/o/acme/jira/jrc_1");
+  render(<App />);
+
+  await waitFor(() => {
+    expect(screen.getByRole("button", { name: "Jira" })).toBeTruthy();
+  });
+
+  fireEvent.click(screen.getByRole("button", { name: "Jira" }));
+
+  await waitFor(() => {
+    expect(window.location.pathname).toBe("/o/acme/jira");
     expect(labels()).toEqual(["Home", "Organizations", "Acme", "Jira"]);
   });
 });

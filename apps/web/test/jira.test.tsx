@@ -14,7 +14,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
-import { Jira } from "../src/Jira";
+import { Jira, JiraSite } from "../src/Jira";
 
 const connection = {
   id: "jrc_1",
@@ -75,9 +75,18 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+/** The list of sites. `opened` records which one a row navigated to. */
+let opened: string[] = [];
+
 function renderPage(role = "owner") {
+  opened = [];
   return render(
-    <Jira organizationId="org_1" organizationName="Acme" role={role} />,
+    <Jira
+      organizationId="org_1"
+      organizationName="Acme"
+      role={role}
+      onOpenSite={(site) => opened.push(site.id)}
+    />,
   );
 }
 
@@ -102,14 +111,36 @@ test("connect navigates to the API rather than fetching it", async () => {
   expect(assigned[0]).toContain("returnTo=");
 });
 
-test("a plain member gets no connect or disconnect control", async () => {
+test("a plain member gets no connect control", async () => {
   // Courtesy, not security: the API checks the role again on every write.
   renderPage("member");
 
   expect(await screen.findByText("Acme")).toBeDefined();
   expect(screen.queryByRole("button", { name: /^connect/i })).toBeNull();
-  expect(screen.queryByRole("button", { name: /^disconnect/i })).toBeNull();
   expect(screen.getByText(/only an owner or admin/i)).toBeDefined();
+});
+
+test("a site row opens that site rather than carrying its own controls", async () => {
+  // There is one destination per row and nothing else to press, so the whole
+  // row is the target and what can be done to a site lives inside it.
+  renderPage();
+  await screen.findByText("Acme");
+
+  await userEvent.click(screen.getByRole("button", { name: /acme/i }));
+
+  expect(opened).toEqual(["jrc_1"]);
+  // Not on the list: pressing the wrong bin in a column of similar names is
+  // how a site gets disconnected by accident.
+  expect(screen.queryByRole("button", { name: /disconnect/i })).toBeNull();
+});
+
+test("a member can open a site even though they cannot connect one", async () => {
+  renderPage("member");
+  await screen.findByText("Acme");
+
+  await userEvent.click(screen.getByRole("button", { name: /acme/i }));
+
+  expect(opened).toEqual(["jrc_1"]);
 });
 
 test("an admin may manage connections", async () => {
@@ -272,45 +303,6 @@ test("no banner is shown without an outcome in the URL", async () => {
   expect(replaced).toHaveLength(0);
 });
 
-test("disconnecting asks the API and reloads the list", async () => {
-  const calls: { url: string; method: string }[] = [];
-  vi.stubGlobal(
-    "fetch",
-    vi.fn((url: string, init?: RequestInit) => {
-      calls.push({ url: String(url), method: init?.method ?? "GET" });
-      return Promise.resolve(
-        init?.method === "DELETE"
-          ? new Response(null, { status: 204 })
-          : new Response(JSON.stringify({ connections: [connection] }), {
-              status: 200,
-              headers: { "content-type": "application/json" },
-            }),
-      );
-    }),
-  );
-
-  renderPage();
-  await screen.findByText("Acme");
-
-  await userEvent.click(
-    screen.getByRole("button", { name: /disconnect acme/i }),
-  );
-
-  await waitFor(() => {
-    expect(calls.some((call) => call.method === "DELETE")).toBe(true);
-  });
-  // The list is re-read afterwards, so a failed delete cannot leave a stale row.
-  // Counted by route rather than by verb: the page also lists boards on load,
-  // and a bare GET count would pass or fail on an unrelated call.
-  await waitFor(() => {
-    expect(
-      calls.filter(
-        (call) => call.method === "GET" && call.url.endsWith("/connections"),
-      ),
-    ).toHaveLength(2);
-  });
-});
-
 /* -------------------------------------------------------------------------- */
 /* Boards and the backlog preview                                             */
 /* -------------------------------------------------------------------------- */
@@ -345,13 +337,14 @@ function issue(n: number, created: string) {
 /**
  * The server, faked per route rather than as one blanket response.
  *
- * The page now makes three different calls, and answering them all with the
+ * The page makes several different calls, and answering them all with the
  * same body is how a test passes while the page is broken.
  */
 function routedFetch(
   overrides: {
     boards?: { status?: number; body?: unknown };
-    remote?: { status?: number; body?: unknown };
+    sync?: { status?: number; body?: unknown };
+    connections?: { status?: number; body?: unknown };
     preview?: { status?: number; body?: unknown };
     detail?: { status?: number; body?: unknown };
   } = {},
@@ -410,30 +403,46 @@ function routedFetch(
         spec?.status ?? 200,
       );
     }
-    if (url.includes("/connections/") && url.endsWith("/boards")) {
-      const spec = overrides.remote;
-      return json(
-        spec?.body ?? {
-          boards: [
-            { id: 42, name: "Acme Board", type: "scrum", projectKey: "ACME" },
-            { id: 43, name: "Other Board", type: "kanban", projectKey: "OTH" },
-          ],
-        },
-        spec?.status ?? 200,
-      );
+    if (url.endsWith("/sync")) {
+      const spec = overrides.sync;
+      return json(spec?.body ?? { boards: [board] }, spec?.status ?? 200);
     }
     if (url.endsWith("/jira/boards")) {
       const spec = overrides.boards;
       return json(spec?.body ?? { boards: [board] }, spec?.status ?? 200);
     }
-    return json({ connections: [connection] });
+    const spec = overrides.connections;
+    return json(
+      spec?.body ?? { connections: [connection] },
+      spec?.status ?? 200,
+    );
   });
+}
+
+/** The one-site page: boards, the preview, and disconnecting. */
+let disconnected = 0;
+let reportedName: (string | undefined)[] = [];
+
+function renderSite(role = "owner", connectionId = "jrc_1") {
+  disconnected = 0;
+  reportedName = [];
+  return render(
+    <JiraSite
+      organizationId="org_1"
+      connectionId={connectionId}
+      role={role}
+      onDisconnected={() => {
+        disconnected += 1;
+      }}
+      onSiteName={(name) => reportedName.push(name)}
+    />,
+  );
 }
 
 test("a registered board is listed with its type and project", async () => {
   vi.stubGlobal("fetch", routedFetch());
 
-  renderPage();
+  renderSite();
 
   expect(await screen.findByText("Acme Board")).toBeDefined();
   expect(screen.getByText(/scrum · ACME/i)).toBeDefined();
@@ -441,7 +450,7 @@ test("a registered board is listed with its type and project", async () => {
 
 test("previewing a board shows its oldest tickets in a dialog", async () => {
   vi.stubGlobal("fetch", routedFetch());
-  renderPage();
+  renderSite();
   await screen.findByText("Acme Board");
 
   expect(screen.queryByRole("dialog")).toBeNull();
@@ -459,7 +468,7 @@ test("previewing a board shows its oldest tickets in a dialog", async () => {
 
 test("a ticket opens its full detail in the same dialog", async () => {
   vi.stubGlobal("fetch", routedFetch());
-  renderPage();
+  renderSite();
   await screen.findByText("Acme Board");
   await userEvent.click(screen.getByRole("button", { name: /preview/i }));
   const dialog = await screen.findByRole("dialog");
@@ -485,7 +494,7 @@ test("a ticket opens its full detail in the same dialog", async () => {
 
 test("going back returns to the ticket list", async () => {
   vi.stubGlobal("fetch", routedFetch());
-  renderPage();
+  renderSite();
   await screen.findByText("Acme Board");
   await userEvent.click(screen.getByRole("button", { name: /preview/i }));
   const dialog = await screen.findByRole("dialog");
@@ -532,7 +541,7 @@ test("a field Jira did not send renders no row", async () => {
       },
     }),
   );
-  renderPage();
+  renderSite();
   await screen.findByText("Acme Board");
   await userEvent.click(screen.getByRole("button", { name: /preview/i }));
   const dialog = await screen.findByRole("dialog");
@@ -552,7 +561,7 @@ test("a field Jira did not send renders no row", async () => {
 test("the preview says nothing was stored", async () => {
   // The promise the page makes: looking at a board is not pricing it.
   vi.stubGlobal("fetch", routedFetch());
-  renderPage();
+  renderSite();
   await screen.findByText("Acme Board");
 
   await userEvent.click(screen.getByRole("button", { name: /preview/i }));
@@ -570,7 +579,7 @@ test("an empty backlog is explained rather than shown as a blank table", async (
       },
     }),
   );
-  renderPage();
+  renderSite();
   await screen.findByText("Acme Board");
 
   await userEvent.click(screen.getByRole("button", { name: /preview/i }));
@@ -586,7 +595,7 @@ test("a revoked grant asks for a reconnect rather than a retry", async () => {
       preview: { status: 409, body: { error: "gone", code: "reconnect" } },
     }),
   );
-  renderPage();
+  renderSite();
   await screen.findByText("Acme Board");
 
   await userEvent.click(screen.getByRole("button", { name: /preview/i }));
@@ -594,82 +603,124 @@ test("a revoked grant asks for a reconnect rather than a retry", async () => {
   expect(await screen.findByText(/expired or been revoked/i)).toBeDefined();
 });
 
-test("the board picker opens in a dialog", async () => {
-  // A choice to make and dismiss, not part of the page's own content.
-  vi.stubGlobal("fetch", routedFetch());
-  renderPage();
-  await screen.findByText("Acme Board");
-
-  expect(screen.queryByRole("dialog")).toBeNull();
-
-  await userEvent.click(screen.getByRole("button", { name: /add a board/i }));
-
-  const dialog = await screen.findByRole("dialog");
-  expect(within(dialog).getByText(/Other Board/)).toBeDefined();
-});
-
-test("adding a board registers it against the site it was listed from", async () => {
-  // Reading the connection from the list instead would attach the board to
-  // whichever site happened to be first.
+test("opening a site re-reads its boards, so one made since shows up", async () => {
+  // A client creates a board in Jira and nothing tells us. Nobody is asked
+  // to press anything: the list is refreshed where somebody is looking at it.
   const fetchMock = routedFetch();
   vi.stubGlobal("fetch", fetchMock);
-  renderPage();
+  renderSite();
   await screen.findByText("Acme Board");
-
-  await userEvent.click(screen.getByRole("button", { name: /add a board/i }));
-  const dialog = await screen.findByRole("dialog");
-  const rows = within(dialog).getAllByRole("button", { name: /^add$/i });
-  await userEvent.click(rows[rows.length - 1] as HTMLElement);
-
-  const post = fetchMock.mock.calls.find(
-    ([, init]) => (init as RequestInit | undefined)?.method === "POST",
-  );
-  expect(post).toBeDefined();
-  expect(JSON.parse(String((post?.[1] as RequestInit).body))).toEqual({
-    connectionId: "jrc_1",
-    externalId: "43",
-  });
-});
-
-test("the dialog closes once a board has been added", async () => {
-  // Leaving it open invites adding the same board twice.
-  vi.stubGlobal("fetch", routedFetch());
-  renderPage();
-  await screen.findByText("Acme Board");
-
-  await userEvent.click(screen.getByRole("button", { name: /add a board/i }));
-  const dialog = await screen.findByRole("dialog");
-  const rows = within(dialog).getAllByRole("button", { name: /^add$/i });
-  await userEvent.click(rows[rows.length - 1] as HTMLElement);
 
   await waitFor(() => {
-    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(
+      fetchMock.mock.calls.filter(
+        ([url, init]) =>
+          String(url).endsWith("/connections/jrc_1/sync") &&
+          (init as RequestInit | undefined)?.method === "POST",
+      ),
+    ).toHaveLength(1);
   });
 });
 
-test("a board already registered cannot be added twice", async () => {
+test("there is no way to add a board, because there is nothing to add", async () => {
+  // Connecting the site is the decision. Asking again, board by board, was
+  // asking the person to repeat a choice they had already made.
   vi.stubGlobal("fetch", routedFetch());
-  renderPage();
+  renderSite();
   await screen.findByText("Acme Board");
 
-  await userEvent.click(screen.getByRole("button", { name: /add a board/i }));
-  const dialog = await screen.findByRole("dialog");
-
-  // 42 is already registered, so its control reads "Added" and is disabled.
-  const added = within(dialog).getByRole("button", { name: /^added$/i });
-  expect(added).toBeDefined();
-  expect((added as HTMLButtonElement).disabled).toBe(true);
+  expect(screen.queryByRole("button", { name: /add a board/i })).toBeNull();
 });
 
-test("a plain member sees boards but cannot add one", async () => {
-  vi.stubGlobal("fetch", routedFetch());
+test("a dead connection is not re-read, because the sync would fail too", async () => {
+  // The reconnect notice is already on screen; a failed sync would add a
+  // second message about the same thing.
+  const fetchMock = routedFetch({
+    connections: { body: { connections: [{ ...connection, healthy: false }] } },
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  renderSite();
+  await screen.findByText("Reconnect");
 
-  renderPage("member");
+  expect(
+    fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/sync")),
+  ).toHaveLength(0);
+});
+
+test("only this site's boards are listed", async () => {
+  // The hook holds the organization's boards, because that is what the API
+  // answers with. The page is about one site.
+  vi.stubGlobal(
+    "fetch",
+    routedFetch({
+      boards: {
+        body: {
+          boards: [
+            board,
+            { ...board, id: "jrb_2", connectionId: "jrc_2", name: "Other Co" },
+          ],
+        },
+      },
+    }),
+  );
+  renderSite();
 
   expect(await screen.findByText("Acme Board")).toBeDefined();
-  expect(screen.queryByRole("button", { name: /add a board/i })).toBeNull();
+  expect(screen.queryByText("Other Co")).toBeNull();
+});
+
+test("a plain member sees boards and may preview them", async () => {
+  vi.stubGlobal("fetch", routedFetch());
+
+  renderSite("member");
+
+  expect(await screen.findByText("Acme Board")).toBeDefined();
   // Previewing is a read of tickets the organization already has a grant for.
   expect(screen.getByRole("button", { name: /preview/i })).toBeDefined();
+  // Disconnecting is not.
+  expect(screen.queryByRole("button", { name: /^disconnect/i })).toBeNull();
+});
+
+test("disconnecting lives on the site, and leaves it when done", async () => {
+  const fetchMock = routedFetch();
+  vi.stubGlobal("fetch", fetchMock);
+  renderSite();
+  await screen.findByText("Acme Board");
+
+  await userEvent.click(
+    screen.getByRole("button", { name: /disconnect acme/i }),
+  );
+
+  await waitFor(() => {
+    expect(
+      fetchMock.mock.calls.some(
+        ([, init]) => (init as RequestInit | undefined)?.method === "DELETE",
+      ),
+    ).toBe(true);
+  });
+  // Back to the list: the site this page is about no longer exists.
+  await waitFor(() => {
+    expect(disconnected).toBe(1);
+  });
+});
+
+test("a site the URL names but the list does not is a miss", async () => {
+  // A stale bookmark, or a site somebody else disconnected.
+  vi.stubGlobal("fetch", routedFetch());
+  renderSite("owner", "jrc_gone");
+
+  expect(await screen.findByText(/not connected/i)).toBeDefined();
+});
+
+test("the site's name is reported up, for the trail above the page", async () => {
+  // The shell renders the trail and has no other way to learn the name.
+  vi.stubGlobal("fetch", routedFetch());
+  renderSite();
+  await screen.findByText("Acme Board");
+
+  await waitFor(() => {
+    expect(reportedName).toContain("Acme");
+  });
 });
 
 test("a scope mismatch is not reported as an expired connection", async () => {
@@ -689,7 +740,7 @@ test("a scope mismatch is not reported as an expired connection", async () => {
       },
     }),
   );
-  renderPage();
+  renderSite();
   await screen.findByText("Acme Board");
 
   await userEvent.click(screen.getByRole("button", { name: /preview/i }));
@@ -703,7 +754,7 @@ test("the description renders as markdown, not as literal hashes", async () => {
   // `adfToText` hands over Markdown; showing it raw makes a spec a wall of
   // `#` and `|`, which is exactly what a reviewer cannot read.
   vi.stubGlobal("fetch", routedFetch());
-  renderPage();
+  renderSite();
   await screen.findByText("Acme Board");
   await userEvent.click(screen.getByRole("button", { name: /preview/i }));
   const dialog = await screen.findByRole("dialog");
@@ -751,7 +802,7 @@ test("a table in the description renders as a table", async () => {
       },
     }),
   );
-  renderPage();
+  renderSite();
   await screen.findByText("Acme Board");
   await userEvent.click(screen.getByRole("button", { name: /preview/i }));
   const dialog = await screen.findByRole("dialog");
@@ -771,7 +822,7 @@ test("the page keeps enough top padding for the breadcrumb's negative margin", a
   // smaller than that pull has its heading dragged up into the trail, which
   // is what `p-6` did here.
   vi.stubGlobal("fetch", routedFetch());
-  const { container } = renderPage();
+  const { container } = renderSite();
   await screen.findByText("Acme Board");
 
   const main = container.querySelector("main");

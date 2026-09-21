@@ -92,6 +92,64 @@ test("a board with no settings gets an empty object, not null", async () => {
   assert.deepEqual((calls[0]?.values ?? {})["selection"], {});
 });
 
+test("sync leaves the settings of a board already registered alone", async () => {
+  // The whole point of it being a separate method. Every board on a site is
+  // re-read whenever the site's page opens, so this runs against boards
+  // somebody has configured — and a sync that reset `selection` would quietly
+  // undo their choices on every visit.
+  const { store: boards, calls } = store([boardRow()]);
+
+  await boards.sync("org_1", {
+    connectionId: "jrc_1",
+    externalId: "42",
+    name: "Acme board, renamed",
+    boardType: "scrum",
+    projectKey: "ACME",
+  });
+
+  const conflict = calls[0]?.conflictSet ?? {};
+  // Jira's own facts are refreshed.
+  assert.equal(conflict["name"], "Acme board, renamed");
+  assert.equal(conflict["projectKey"], "ACME");
+  // Ours are not touched at all.
+  assert.equal("selection" in conflict, false);
+  assert.equal("writebackEnabled" in conflict, false);
+});
+
+test("a board seen for the first time by sync still gets a row", async () => {
+  const { store: boards, calls } = store([boardRow()]);
+
+  await boards.sync("org_1", {
+    connectionId: "jrc_1",
+    externalId: "43",
+    name: "New board",
+    boardType: "kanban",
+  });
+
+  const values = calls[0]?.values ?? {};
+  assert.match(String(values["id"]), /^jrb_/);
+  assert.equal(values["organizationId"], "org_1");
+  assert.equal(values["externalId"], "43");
+  // Empty rather than absent, so the column is never null and the route's
+  // schema fills in the defaults on read.
+  assert.deepEqual(values["selection"], {});
+});
+
+test("sync refuses to report success when no row came back", async () => {
+  const { store: boards } = store([]);
+
+  await assert.rejects(
+    () =>
+      boards.sync("org_1", {
+        connectionId: "jrc_1",
+        externalId: "42",
+        name: "B",
+        boardType: "scrum",
+      }),
+    /Failed to record the Jira board/,
+  );
+});
+
 test("a selection update is merged, not replaced", async () => {
   // The bug this prevents: editing `maxTickets` alone resetting
   // `excludeAssigned`, which would quietly start pricing assigned tickets.

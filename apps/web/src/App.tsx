@@ -6,7 +6,7 @@ import { Breadcrumbs } from "./Breadcrumbs";
 import { Home } from "./Home";
 import { CreateOrganization, Organization } from "./Organization";
 import { Organizations } from "./Organizations";
-import { Jira } from "./Jira";
+import { Jira, JiraSite } from "./Jira";
 import { SideNav, type Screen } from "./SideNav";
 import { SignIn } from "./SignIn";
 import { useOrganizations } from "./useOrganizations";
@@ -71,6 +71,25 @@ function Signed({
    */
   const organizations = useOrganizations(slugForPath(window.location.pathname));
 
+  /**
+   * The connected site `org-jira-site` is showing, from the URL.
+   *
+   * Held in state beside the screen rather than read from `window.location`
+   * at render time, for the same reason the screen is: a `popstate` has to
+   * change both together, and a value read during render would not re-render
+   * when the URL changed under it.
+   */
+  const [connectionId, setConnectionId] = useState<string | undefined>(() =>
+    connectionForPath(window.location.pathname),
+  );
+
+  /**
+   * The name of the site on screen, reported up by `JiraSite` so the trail
+   * can name it. The shell renders the trail and the page owns the list the
+   * name comes from, and this is the seam between the two.
+   */
+  const [siteName, setSiteName] = useState<string | undefined>(undefined);
+
   /*
    * The Back button. `pushState` below adds an entry per navigation, so the
    * browser offers to go back — and this is what makes it do something:
@@ -79,6 +98,7 @@ function Signed({
   useEffect(() => {
     function onPopState() {
       setScreen(screenForPath(window.location.pathname));
+      setConnectionId(connectionForPath(window.location.pathname));
     }
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
@@ -89,9 +109,13 @@ function Signed({
    * organizations page: `select` has not re-rendered yet when this runs, so
    * reading the active one here would write the *previous* organization's
    * handle into the URL.
+   *
+   * `id` is the connected site `org-jira-site` names. It is part of what a
+   * navigation is, not a detail the target screen looks up afterwards — two
+   * sites are the same screen at different URLs.
    */
-  function navigate(next: Screen, slug?: string) {
-    if (next === screen && slug === undefined) {
+  function navigate(next: Screen, slug?: string, id?: string) {
+    if (next === screen && slug === undefined && id === connectionId) {
       return;
     }
     // `pushState`, so each navigation is its own history entry and Back
@@ -99,9 +123,10 @@ function Signed({
     window.history.pushState(
       null,
       "",
-      pathForScreen(next, slug ?? organizations.active?.slug),
+      pathForScreen(next, slug ?? organizations.active?.slug, id),
     );
     setScreen(next);
+    setConnectionId(id);
   }
 
   return (
@@ -146,6 +171,7 @@ function Signed({
                   slug: organizations.active.slug,
                 }
           }
+          siteName={screen === "org-jira-site" ? siteName : undefined}
           onNavigate={navigate}
         />
         {screen === "account" ? (
@@ -183,6 +209,30 @@ function Signed({
             }}
             onCancel={() => navigate("home")}
           />
+        ) : screen === "org-jira-site" ? (
+          organizations.active === null || connectionId === undefined ? (
+            <main className="mx-auto w-full max-w-2xl px-4 py-10">
+              <p className="text-muted-foreground text-sm">
+                {organizations.loading
+                  ? "Loading…"
+                  : "You are not in an organization yet."}
+              </p>
+            </main>
+          ) : (
+            <JiraSite
+              // Keyed by both, so moving between two sites remounts rather
+              // than leaving the previous site's boards on screen while the
+              // new ones load.
+              key={`${organizations.active.id}:${connectionId}`}
+              organizationId={organizations.active.id}
+              connectionId={connectionId}
+              role={organizations.active.role}
+              onDisconnected={() => {
+                navigate("org-jira", organizations.active?.slug);
+              }}
+              onSiteName={setSiteName}
+            />
+          )
         ) : screen === "org-jira" ? (
           organizations.active === null ? (
             <main className="mx-auto w-full max-w-2xl px-4 py-10">
@@ -200,6 +250,13 @@ function Signed({
               organizationId={organizations.active.id}
               organizationName={organizations.active.name}
               role={organizations.active.role}
+              onOpenSite={(connection) => {
+                navigate(
+                  "org-jira-site",
+                  organizations.active?.slug,
+                  connection.id,
+                );
+              }}
             />
           )
         ) : screen === "org-settings" ? (
@@ -273,6 +330,22 @@ function slugForPath(pathname: string): string | undefined {
     : undefined;
 }
 
+/**
+ * The connected site a path names, for `/o/{slug}/jira/{id}`.
+ *
+ * Undefined everywhere else, including on the Jira list itself — a screen
+ * without a site is what that page is.
+ */
+function connectionForPath(pathname: string): string | undefined {
+  const parts = pathname.replace(/\/+$/, "").split("/");
+  return parts[1] === "o" &&
+    parts[3] === "jira" &&
+    parts[4] !== undefined &&
+    parts[4] !== ""
+    ? parts[4]
+    : undefined;
+}
+
 function screenForPath(pathname: string): Screen {
   // Trailing slashes are equivalent: `/account/` is the same screen.
   const path = pathname.replace(/\/+$/, "");
@@ -286,13 +359,20 @@ function screenForPath(pathname: string): Screen {
     return "organizations";
   }
   if (slugForPath(pathname) !== undefined) {
+    if (connectionForPath(pathname) !== undefined) {
+      return "org-jira-site";
+    }
     // `/o/:slug/jira` and `/o/:slug/settings` differ only in the last segment.
     return path.endsWith("/jira") ? "org-jira" : "org-settings";
   }
   return "home";
 }
 
-function pathForScreen(screen: Screen, slug?: string | undefined): string {
+function pathForScreen(
+  screen: Screen,
+  slug?: string | undefined,
+  connectionId?: string | undefined,
+): string {
   switch (screen) {
     case "account":
       return ACCOUNT_PATH;
@@ -306,6 +386,15 @@ function pathForScreen(screen: Screen, slug?: string | undefined): string {
       return slug === undefined ? ORGANIZATIONS_PATH : `/o/${slug}/settings`;
     case "org-jira":
       return slug === undefined ? ORGANIZATIONS_PATH : `/o/${slug}/jira`;
+    case "org-jira-site":
+      // Without either half there is no site to name, so this falls back to
+      // the list it came from rather than inventing a URL that resolves to a
+      // different screen.
+      return slug === undefined || connectionId === undefined
+        ? slug === undefined
+          ? ORGANIZATIONS_PATH
+          : `/o/${slug}/jira`
+        : `/o/${slug}/jira/${encodeURIComponent(connectionId)}`;
     case "home":
       return "/";
   }

@@ -18,12 +18,11 @@ import {
   Eye,
   Link2,
   Loader2,
-  Plus,
   Trash2,
   TriangleAlert,
   X,
 } from "lucide-react";
-import { useCallback, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -45,6 +44,8 @@ import {
 } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
+import { JiraIcon } from "./ProviderIcon";
+
 import {
   useJira,
   useJiraBoards,
@@ -55,7 +56,6 @@ import {
   type JiraFetchError,
   type JiraIssueDetail,
   type JiraOutcome,
-  type JiraRemoteBoard,
 } from "./useJira";
 
 /** Roles that may connect or disconnect, matching the API's own floor. */
@@ -182,43 +182,52 @@ export function OutcomeBanner({
   );
 }
 
+/**
+ * One connected site, as a way into it.
+ *
+ * The whole row is the target rather than a link on the name: there is one
+ * destination per row and nothing else to press, so anything less than the
+ * full row is a miss the layout invented. The chevron says so — the mark that
+ * a row goes somewhere, which a row of plain text does not.
+ *
+ * The Jira mark rather than Atlassian's, because what is being named is the
+ * product whose boards get read. Signing in is the other one.
+ */
 function ConnectionRow({
   connection,
-  manageable,
-  onDisconnect,
+  onOpen,
 }: {
   connection: JiraConnection;
-  manageable: boolean;
-  onDisconnect: (id: string) => void;
+  onOpen: (connection: JiraConnection) => void;
 }) {
   return (
-    <li className="flex items-center justify-between gap-4 py-3">
-      <div className="min-w-0">
-        <div className="flex items-center gap-2">
-          <span className="truncate font-medium">{connection.siteName}</span>
-          {!connection.healthy && (
-            <Badge variant="destructive" className="gap-1">
-              <TriangleAlert className="size-3" />
-              Reconnect
-            </Badge>
-          )}
-        </div>
-        <p className="truncate text-sm text-muted-foreground">
-          {connection.siteUrl}
-        </p>
-      </div>
-      {manageable && (
-        <Button
-          variant="ghost"
-          size="sm"
-          aria-label={`Disconnect ${connection.siteName}`}
-          onClick={() => {
-            onDisconnect(connection.id);
-          }}
-        >
-          <Trash2 className="size-4" />
-        </Button>
-      )}
+    <li>
+      <button
+        type="button"
+        className="flex w-full items-center gap-3 rounded-md px-1 py-3 text-left hover:bg-muted/50"
+        onClick={() => {
+          onOpen(connection);
+        }}
+      >
+        <span className="size-5 shrink-0">
+          <JiraIcon />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="flex items-center gap-2">
+            <span className="truncate font-medium">{connection.siteName}</span>
+            {!connection.healthy && (
+              <Badge variant="destructive" className="gap-1">
+                <TriangleAlert className="size-3" />
+                Reconnect
+              </Badge>
+            )}
+          </span>
+          <span className="block truncate text-sm text-muted-foreground">
+            {connection.siteUrl}
+          </span>
+        </span>
+        <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
+      </button>
     </li>
   );
 }
@@ -702,143 +711,27 @@ function BoardRow({
 }
 
 /**
- * Registered boards, and adding one.
+ * One site's boards, and the tickets behind them.
  *
- * The site's own boards are fetched only when the user asks to add one: each
- * call reaches Jira, and a page that listed every board of every connected
- * site on load would spend a round trip per site to show a list nobody asked
- * for.
+ * Every board on a connected site is already registered — connecting is the
+ * decision, and a board row is a pointer that reads nothing until somebody
+ * previews it. So this card never offers to add one. What it does instead is
+ * re-read the site when it opens, which is what picks up a board created in
+ * Jira since the site was connected.
+ *
+ * Scoped to one connection: the page it sits on is about one site, and
+ * showing every organization's boards here would undo that.
  */
-/**
- * Choosing a board to register, from one site.
- *
- * A dialog rather than a list grown inline under the button: the site's
- * boards are a choice to make and dismiss, not part of the page's own
- * content, and on a site with many boards the inline list pushed everything
- * below it off the screen with no way to put it back.
- *
- * Open state is owned by the caller, because the fetch that fills it starts
- * before the dialog appears — the boards are already being read while the
- * spinner shows.
- */
-function BoardPickerDialog({
-  open,
-  onOpenChange,
-  siteName,
-  boards,
-  loading,
-  registeredExternalIds,
-  busyBoardId,
-  onPick,
-}: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  siteName: string;
-  boards: JiraRemoteBoard[];
-  loading: boolean;
-  registeredExternalIds: Set<string>;
-  busyBoardId: string | null;
-  onPick: (externalId: string) => void;
-}) {
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg">
-        <DialogHeader>
-          <DialogTitle>Add a board</DialogTitle>
-          <DialogDescription>
-            Boards on {siteName}. Adding one records a pointer to it — no
-            tickets are read until you preview or run it.
-          </DialogDescription>
-        </DialogHeader>
-
-        {loading ? (
-          <p className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
-            <Loader2 className="size-4 animate-spin" />
-            Reading boards from Jira…
-          </p>
-        ) : boards.length === 0 ? (
-          <p className="py-6 text-sm text-muted-foreground">
-            No boards on this site are visible to the connected account.
-          </p>
-        ) : (
-          <ul
-            // A bordered card with rules between rows, rather than bare list
-            // items: the rows are the choice being made, and an unbounded
-            // list reads as continuous with the dialog's own text.
-            className="max-h-80 divide-y overflow-y-auto rounded-md border"
-            data-testid="board-picker"
-          >
-            {boards.map((board) => {
-              const externalId = String(board.id);
-              const already = registeredExternalIds.has(externalId);
-              return (
-                <li
-                  key={board.id}
-                  className="flex items-center justify-between gap-3 px-3 py-3"
-                >
-                  <span className="min-w-0">
-                    <span className="block truncate text-sm font-medium">
-                      {board.name}
-                    </span>
-                    <span className="block truncate text-xs text-muted-foreground">
-                      {board.type}
-                      {board.projectKey === null
-                        ? ""
-                        : ` · ${board.projectKey}`}
-                    </span>
-                  </span>
-                  <Button
-                    size="sm"
-                    variant={already ? "ghost" : "outline"}
-                    className="shrink-0"
-                    disabled={already || busyBoardId === externalId}
-                    onClick={() => {
-                      onPick(externalId);
-                    }}
-                  >
-                    {busyBoardId === externalId && (
-                      <Loader2 className="size-4 animate-spin" />
-                    )}
-                    {already ? "Added" : "Add"}
-                  </Button>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </DialogContent>
-    </Dialog>
-  );
-}
-
 function BoardsCard({
   organizationId,
-  connections,
-  manageable,
+  connection,
 }: {
   organizationId: string;
-  connections: JiraConnection[];
-  manageable: boolean;
+  connection: JiraConnection;
 }) {
-  const { boards, loading, error, listRemote, register, preview, issue } =
+  const { boards, loading, error, sync, preview, issue } =
     useJiraBoards(organizationId);
 
-  /**
-   * The open picker: which site it is reading, and what it found.
-   *
-   * The connection id is held here rather than read back from the list when a
-   * board is picked. Registering needs the site the board was *listed* from,
-   * and taking it from anywhere else would attach the board to whichever site
-   * happened to be first.
-   */
-  const [picker, setPicker] = useState<{
-    connectionId: string;
-    siteName: string;
-    boards: JiraRemoteBoard[];
-    loading: boolean;
-  } | null>(null);
-  const [registering, setRegistering] = useState<string | null>(null);
-  const [busyBoard, setBusyBoard] = useState<string | null>(null);
   /**
    * The open preview: which board, its tickets, and the one being read.
    *
@@ -854,43 +747,33 @@ function BoardsCard({
     issue: JiraIssueDetail | null;
   } | null>(null);
   const [openingKey, setOpeningKey] = useState<string | null>(null);
+  const [busyBoard, setBusyBoard] = useState<string | null>(null);
+  const [syncing, setSyncing] = useState(true);
 
-  const onAdd = useCallback(
-    (connection: JiraConnection) => {
-      // Opened before the fetch resolves, so the dialog carries its own
-      // spinner instead of the page appearing to do nothing.
-      setPicker({
-        connectionId: connection.id,
-        siteName: connection.siteName,
-        boards: [],
-        loading: true,
-      });
-      void listRemote(connection.id).then((found) => {
-        setPicker((current) =>
-          current === null || current.connectionId !== connection.id
-            ? current
-            : { ...current, boards: found, loading: false },
-        );
-      });
-    },
-    [listRemote],
-  );
+  /*
+    Re-read on open, rather than on a timer or a button.
 
-  const onPick = useCallback(
-    (externalId: string) => {
-      if (picker === null) {
-        return;
+    A client creates boards in Jira and nothing tells us, so the registered
+    list goes stale. Refreshing it here spends one round trip exactly when
+    somebody is looking at the list, which is the only moment the staleness
+    matters. A dead connection is left alone: the sync would fail, and the
+    reconnect notice is already on screen.
+  */
+  useEffect(() => {
+    if (!connection.healthy) {
+      setSyncing(false);
+      return;
+    }
+    let live = true;
+    void sync(connection.id).finally(() => {
+      if (live) {
+        setSyncing(false);
       }
-      setRegistering(externalId);
-      void register(picker.connectionId, externalId).then(() => {
-        setRegistering(null);
-        // Closed on success: the board is now in the list behind the dialog,
-        // and leaving it open invites adding the same board twice.
-        setPicker(null);
-      });
-    },
-    [picker, register],
-  );
+    });
+    return () => {
+      live = false;
+    };
+  }, [connection.healthy, connection.id, sync]);
 
   const onPreview = useCallback(
     (board: JiraBoard) => {
@@ -939,34 +822,39 @@ function BoardsCard({
     );
   }, []);
 
-  const registered = new Set(boards.map((board) => board.externalId));
+  // This site's boards. The hook holds the organization's, because that is
+  // what the API answers with, and the page is about one site.
+  const siteBoards = boards.filter(
+    (board) => board.connectionId === connection.id,
+  );
+  const busy = loading || syncing;
 
   return (
     <Card>
       <CardHeader>
         <CardTitle className="text-base">Boards</CardTitle>
         <CardDescription>
-          A board&rsquo;s oldest unassigned backlog tickets are the ones a run
-          prices. Preview them here first — it reads Jira live and stores
+          Every board on this site, read when it was connected and again just
+          now. A board&rsquo;s oldest unassigned backlog tickets are the ones a
+          run prices — preview them here first, which reads Jira live and stores
           nothing.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
         {error !== null && <BoardsError error={error} />}
 
-        {loading ? (
+        {busy && siteBoards.length === 0 ? (
           <p className="flex items-center gap-2 text-sm text-muted-foreground">
             <Loader2 className="size-4 animate-spin" />
-            Loading…
+            Reading this site&rsquo;s boards…
           </p>
-        ) : boards.length === 0 ? (
+        ) : siteBoards.length === 0 ? (
           <p className="text-sm text-muted-foreground">
-            No boards yet.
-            {connections.length === 0 && " Connect a site first."}
+            No boards on this site are visible to the connected account.
           </p>
         ) : (
           <ul className="divide-y">
-            {boards.map((board) => (
+            {siteBoards.map((board) => (
               <BoardRow
                 key={board.id}
                 board={board}
@@ -975,26 +863,6 @@ function BoardsCard({
               />
             ))}
           </ul>
-        )}
-
-        {manageable && connections.length > 0 && (
-          <div className="flex flex-wrap gap-2">
-            {connections.map((connection) => (
-              <Button
-                key={connection.id}
-                variant="outline"
-                size="sm"
-                className="gap-2"
-                disabled={!connection.healthy}
-                onClick={() => {
-                  onAdd(connection);
-                }}
-              >
-                <Plus className="size-4" />
-                Add a board from {connection.siteName}
-              </Button>
-            ))}
-          </div>
         )}
       </CardContent>
 
@@ -1013,45 +881,33 @@ function BoardsCard({
         onOpenIssue={onOpenIssue}
         onBack={onBack}
       />
-
-      <BoardPickerDialog
-        open={picker !== null}
-        onOpenChange={(next) => {
-          if (!next) {
-            setPicker(null);
-          }
-        }}
-        siteName={picker?.siteName ?? ""}
-        boards={picker?.boards ?? []}
-        loading={picker?.loading ?? false}
-        registeredExternalIds={registered}
-        busyBoardId={registering}
-        onPick={onPick}
-      />
     </Card>
   );
 }
 
+/**
+ * The connected sites.
+ *
+ * Each row is a link into the site rather than a row with controls on it.
+ * What there is to do with a site — read its boards, preview a backlog,
+ * disconnect it — belongs to that one site, and a list that carried all of it
+ * inline grew a column of buttons whose target was ambiguous the moment there
+ * was more than one row.
+ */
 export function Jira({
   organizationId,
   organizationName,
   role,
+  onOpenSite,
 }: {
   organizationId: string;
   organizationName: string;
   role: string;
+  onOpenSite: (connection: JiraConnection) => void;
 }) {
-  const { connections, loading, error, connect, disconnect } =
-    useJira(organizationId);
+  const { connections, loading, error, connect } = useJira(organizationId);
   const { outcome, missingScopes, dismiss } = useJiraOutcome();
   const manageable = canManage(role);
-
-  const onDisconnect = useCallback(
-    (id: string) => {
-      void disconnect(id);
-    },
-    [disconnect],
-  );
 
   return (
     /*
@@ -1083,8 +939,8 @@ export function Jira({
           <CardTitle className="text-base">Connected sites</CardTitle>
           <CardDescription>
             Connecting lets us read the boards, backlogs and ticket text on a
-            site. We never store ticket contents — they are read when a run
-            needs them.
+            site. Every board on it is registered at once — we never store
+            ticket contents, which are read when a run needs them.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -1105,8 +961,7 @@ export function Jira({
                 <ConnectionRow
                   key={connection.id}
                   connection={connection}
-                  manageable={manageable}
-                  onDisconnect={onDisconnect}
+                  onOpen={onOpenSite}
                 />
               ))}
             </ul>
@@ -1126,12 +981,137 @@ export function Jira({
           )}
         </CardContent>
       </Card>
+    </main>
+  );
+}
+
+/**
+ * One connected site: its boards, and the control that disconnects it.
+ *
+ * Disconnecting lives here rather than on the list for the same reason the
+ * boards do. It is the most consequential thing there is to do with a site —
+ * it takes the boards and the grant with it — and a row of bins beside a list
+ * of similar names is how the wrong one gets pressed.
+ *
+ * The site is found in the organization's connection list rather than fetched
+ * by id: the list is one request the app already makes, it is what the page
+ * before this one was showing, and an endpoint for a single site would exist
+ * only to save a lookup over a handful of rows. A URL naming a site that is
+ * not in it — a stale bookmark, a site somebody else disconnected — is a
+ * miss, which is the same answer the API would give.
+ */
+export function JiraSite({
+  organizationId,
+  connectionId,
+  role,
+  onDisconnected,
+  onSiteName,
+}: {
+  organizationId: string;
+  connectionId: string;
+  role: string;
+  onDisconnected: () => void;
+  /**
+   * Reports the site's name up to the shell, which renders the trail above
+   * this page and has no other way to learn it. Called with undefined while
+   * the list is still arriving, so the crumb falls back rather than keeping
+   * the previous site's name.
+   */
+  onSiteName: (name: string | undefined) => void;
+}) {
+  const { connections, loading, disconnect } = useJira(organizationId);
+  const [disconnecting, setDisconnecting] = useState(false);
+  const manageable = canManage(role);
+
+  const connection =
+    connections.find((candidate) => candidate.id === connectionId) ?? null;
+
+  // In an effect rather than during render: this sets state in the parent,
+  // and doing that while rendering a child is the React warning about
+  // updating a component from inside another one.
+  useEffect(() => {
+    onSiteName(connection?.siteName);
+  }, [connection?.siteName, onSiteName]);
+
+  if (connection === null) {
+    return (
+      <main className="mx-auto w-full max-w-2xl px-4 py-10 sm:px-6 sm:py-14">
+        <p className="text-muted-foreground text-sm">
+          {loading ? "Loading…" : "That site is not connected."}
+        </p>
+      </main>
+    );
+  }
+
+  return (
+    <main className="mx-auto flex w-full max-w-2xl flex-col gap-6 px-4 py-10 sm:px-6 sm:py-14">
+      <header>
+        <div className="flex items-center gap-3">
+          <span className="size-6 shrink-0">
+            <JiraIcon />
+          </span>
+          <h1 className="min-w-0 truncate text-2xl font-semibold tracking-tight">
+            {connection.siteName}
+          </h1>
+          {!connection.healthy && (
+            <Badge variant="destructive" className="gap-1">
+              <TriangleAlert className="size-3" />
+              Reconnect
+            </Badge>
+          )}
+        </div>
+        <a
+          href={connection.siteUrl}
+          target="_blank"
+          rel="noreferrer noopener"
+          className="text-muted-foreground mt-1.5 inline-flex items-center gap-1 text-sm hover:underline"
+        >
+          {connection.siteUrl}
+          <ExternalLink className="size-3" />
+        </a>
+      </header>
 
       <BoardsCard
         organizationId={organizationId}
-        connections={connections}
-        manageable={manageable}
+        connection={connection}
+        key={connection.id}
       />
+
+      {manageable && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Disconnect this site</CardTitle>
+            <CardDescription>
+              Removes our access and every board registered from it. Atlassian
+              keeps its own record of the grant until you revoke it in your
+              account settings.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Button
+              variant="destructive"
+              className="gap-2"
+              disabled={disconnecting}
+              onClick={() => {
+                setDisconnecting(true);
+                void disconnect(connection.id).then(() => {
+                  // Back to the list whatever happened: on success the site
+                  // is gone, and on failure the list is where the error is
+                  // reported.
+                  onDisconnected();
+                });
+              }}
+            >
+              {disconnecting ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <Trash2 className="size-4" />
+              )}
+              Disconnect {connection.siteName}
+            </Button>
+          </CardContent>
+        </Card>
+      )}
     </main>
   );
 }

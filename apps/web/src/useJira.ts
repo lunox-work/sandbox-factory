@@ -191,15 +191,6 @@ export function useJiraOutcome(): {
 /* Boards and the backlog preview                                             */
 /* -------------------------------------------------------------------------- */
 
-/** A board on a connected site, as Jira reports it. Not yet registered. */
-export interface JiraRemoteBoard {
-  id: number;
-  name: string;
-  type: string;
-  projectKey: string | null;
-  projectName: string | null;
-}
-
 /** A board this organization has registered, with its settings. */
 export interface JiraBoard {
   id: string;
@@ -308,9 +299,15 @@ export interface JiraBoards {
   boards: JiraBoard[];
   loading: boolean;
   error: JiraFetchError | null;
-  /** Boards on a site, fetched on demand because each call reaches Jira. */
-  listRemote: (connectionId: string) => Promise<JiraRemoteBoard[]>;
-  register: (connectionId: string, externalId: string) => Promise<void>;
+  /**
+   * Re-reads a site's boards from Jira and records any that are new.
+   *
+   * There is no "add a board": every board on a connected site is registered
+   * when the site is connected, and this is how boards created since get
+   * picked up — called when a site's page opens, where somebody is actually
+   * looking at the list.
+   */
+  sync: (connectionId: string) => Promise<void>;
   preview: (boardId: string) => Promise<BacklogPreview | null>;
   /** One ticket in full. Read live, stored nowhere. */
   issue: (boardId: string, issueKey: string) => Promise<JiraIssueDetail | null>;
@@ -320,10 +317,10 @@ export interface JiraBoards {
 /**
  * Registered boards, and the two live reads that go through them.
  *
- * `listRemote` and `preview` return rather than storing into state: both reach
- * Jira, both are slow enough to need their own spinner, and only one board is
- * ever being looked at. Holding every board's preview in one hook would make
- * the page re-render on a read the user is no longer waiting for.
+ * `preview` returns rather than storing into state: it reaches Jira, it is
+ * slow enough to need its own spinner, and only one board is ever being
+ * looked at. Holding every board's preview in one hook would make the page
+ * re-render on a read the user is no longer waiting for.
  */
 export function useJiraBoards(organizationId: string | undefined): JiraBoards {
   const [boards, setBoards] = useState<JiraBoard[]>([]);
@@ -364,37 +361,16 @@ export function useJiraBoards(organizationId: string | undefined): JiraBoards {
     void refresh();
   }, [refresh]);
 
-  const listRemote = useCallback(
+  const sync = useCallback(
     async (connectionId: string) => {
-      if (base === undefined) {
-        return [];
-      }
-      const res = await fetch(
-        `${base}/connections/${encodeURIComponent(connectionId)}/boards`,
-        { credentials: "include" },
-      );
-      if (!res.ok) {
-        setError(await toFetchError(res));
-        return [];
-      }
-      setError(null);
-      const body = (await res.json()) as { boards?: JiraRemoteBoard[] } | null;
-      return body?.boards ?? [];
-    },
-    [base],
-  );
-
-  const register = useCallback(
-    async (connectionId: string, externalId: string) => {
       if (base === undefined) {
         return;
       }
-      const res = await fetch(`${base}/boards`, {
-        method: "POST",
-        credentials: "include",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ connectionId, externalId }),
-      });
+      // A POST because it writes rows, though the page means it as a read.
+      const res = await fetch(
+        `${base}/connections/${encodeURIComponent(connectionId)}/sync`,
+        { method: "POST", credentials: "include" },
+      );
       if (!res.ok) {
         setError(await toFetchError(res));
         return;
@@ -448,8 +424,7 @@ export function useJiraBoards(organizationId: string | undefined): JiraBoards {
     boards,
     loading,
     error,
-    listRemote,
-    register,
+    sync,
     preview,
     issue,
     refresh,

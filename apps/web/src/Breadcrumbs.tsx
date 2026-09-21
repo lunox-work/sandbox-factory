@@ -66,6 +66,16 @@ const ORGANIZATIONS: Crumb = {
 export function trailFor(
   screen: Screen,
   organization?: TrailOrganization | undefined,
+  /**
+   * The connected site the last crumb names, on `org-jira-site`.
+   *
+   * Passed in rather than looked up, because the trail is rendered by the
+   * shell and the site's name lives in a list only the page below has. Until
+   * it arrives the crumb reads "Site" — the trail is one step deeper than
+   * Jira whether or not the name has loaded, and dropping the last crumb
+   * would mark Jira as the current page while a site is on screen.
+   */
+  siteName?: string | undefined,
 ): Crumb[] {
   switch (screen) {
     case "home":
@@ -103,19 +113,44 @@ export function trailFor(
             },
             { label: "Jira" },
           ];
+    case "org-jira-site": {
+      // The Jira crumb becomes a link here, which is the way back to the list
+      // of sites — and the only one, since this screen carries no other.
+      const jira: Crumb = {
+        label: "Jira",
+        screen: "org-jira",
+        slug: organization?.slug,
+      };
+      return organization === undefined
+        ? [HOME, ORGANIZATIONS, jira, { label: siteName ?? "Site" }]
+        : [
+            HOME,
+            ORGANIZATIONS,
+            {
+              label: organization.name,
+              screen: "org-settings",
+              slug: organization.slug,
+            },
+            jira,
+            { label: siteName ?? "Site" },
+          ];
+    }
   }
 }
 
 export function Breadcrumbs({
   screen,
   organization,
+  siteName,
   onNavigate,
 }: {
   screen: Screen;
   organization?: TrailOrganization | undefined;
+  /** The connected site `org-jira-site` is showing; see `trailFor`. */
+  siteName?: string | undefined;
   onNavigate: (screen: Screen, slug?: string) => void;
 }) {
-  const crumbs = trailFor(screen, organization);
+  const crumbs = trailFor(screen, organization, siteName);
 
   // Nothing to show on home, and a bare trail of one crumb is chrome rather
   // than navigation — it names where you are without offering a way up.
