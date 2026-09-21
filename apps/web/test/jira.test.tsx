@@ -941,3 +941,77 @@ test("the page keeps enough top padding for the breadcrumb's negative margin", a
   expect(main?.className).toContain("py-10");
   expect(main?.className).toContain("sm:py-14");
 });
+
+// ---- the open ticket stays in view ----------------------------------------
+//
+// The panel renders in the right-hand column, which starts at the top of the
+// grid. Open a ticket from the foot of a long list and the panel was drawn
+// entirely above the viewport — measured 400px up, with nothing on screen to
+// show the click had done anything but highlight a row.
+
+test("the panel is pinned in view rather than drawn at the top of the column", async () => {
+  vi.stubGlobal("fetch", routedFetch());
+  renderBoard();
+  await screen.findByTestId("backlog-preview");
+
+  await userEvent.click(screen.getByText("Ticket 1"));
+  const panel = await screen.findByTestId("issue-panel");
+
+  // jsdom has no layout, so the class contract carries the behaviour, as it
+  // does for the `hidden md:block` column beside it.
+  expect(panel.className).toContain("md:sticky");
+  expect(panel.className).toContain("md:top-6");
+  // And it scrolls within itself, so a long ticket does not push its own foot
+  // past the bottom of a pinned panel.
+  expect(panel.className).toContain("md:overflow-y-auto");
+});
+
+test("the placeholder half is pinned too, so the panel does not jump into place", async () => {
+  // The empty half and the panel that replaces it must sit at the same height,
+  // or the first ticket opened appears to move the column.
+  vi.stubGlobal("fetch", routedFetch());
+  renderBoard();
+  await screen.findByTestId("backlog-preview");
+
+  const placeholder = screen.getByText(/Pick a ticket to read it here/);
+  expect(placeholder.className).toContain("md:sticky");
+  expect(placeholder.className).toContain("md:top-6");
+});
+
+test("the spec no longer scrolls inside the scrolling panel", async () => {
+  // A scroll area inside a scroll area: the spec had its own 26rem box, so a
+  // long ticket gave the reader two scrollbars for one document.
+  vi.stubGlobal("fetch", routedFetch());
+  renderBoard();
+  await screen.findByTestId("backlog-preview");
+
+  await userEvent.click(screen.getByText("Ticket 1"));
+  const spec = await screen.findByTestId("issue-spec");
+
+  expect(spec.className).not.toContain("max-h-");
+  expect(spec.className).not.toContain("overflow-y-auto");
+});
+
+test("opening a ticket brings the panel into view where it covers the list", async () => {
+  // Below `md` the panel replaces the list, but the page keeps the scroll
+  // position the list had — so a ticket opened from the foot of a long list
+  // lands mid-spec. jsdom implements no layout and no `scrollIntoView`, so
+  // this asserts the call rather than the result.
+  const scrollIntoView = vi.fn();
+  vi.stubGlobal("fetch", routedFetch());
+  const original = Element.prototype.scrollIntoView;
+  Element.prototype.scrollIntoView = scrollIntoView;
+  try {
+    renderBoard();
+    await screen.findByTestId("backlog-preview");
+
+    await userEvent.click(screen.getByText("Ticket 1"));
+    await screen.findByTestId("issue-panel");
+
+    await waitFor(() => {
+      expect(scrollIntoView).toHaveBeenCalled();
+    });
+  } finally {
+    Element.prototype.scrollIntoView = original;
+  }
+});

@@ -24,7 +24,13 @@ import {
   TriangleAlert,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -461,10 +467,13 @@ function IssueDetail({ issue }: { issue: JiraIssueDetail }) {
               against.
             </p>
           ) : (
-            <div
-              className="max-h-[26rem] overflow-y-auto rounded-md border p-4"
-              data-testid="issue-spec"
-            >
+            /*
+              No scroll box of its own. The panel around this one is what
+              scrolls now, and a 26rem window inside it gave the reader two
+              scrollbars for one document — the outer one moving the ticket,
+              the inner one moving the spec within it.
+            */
+            <div className="rounded-md border p-4" data-testid="issue-spec">
               <Markdown>{issue.descriptionText}</Markdown>
             </div>
           )}
@@ -800,6 +809,7 @@ export function JiraBoard({
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<JiraIssueDetail | null>(null);
   const [openingKey, setOpeningKey] = useState<string | null>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
 
   const board = boards.find((candidate) => candidate.id === boardId) ?? null;
   // The name passed in wins while the list is still arriving, so arriving
@@ -844,6 +854,27 @@ export function JiraBoard({
     [boardId, issue],
   );
 
+  /*
+    Below `md` the panel replaces the list rather than sitting beside it, but
+    the page keeps whatever scroll position the list had — so a ticket opened
+    from the foot of a long backlog opens somewhere in the middle of its own
+    spec. Bringing the panel to the top is what the reader expects from a
+    control that swaps the view.
+
+    Keyed on the ticket, so moving between two of them re-anchors rather than
+    leaving the second one scrolled to wherever the first was read. Harmless
+    at `md` and up, where the panel is pinned in view already.
+
+    The second `?.` is not defensive noise: jsdom implements no layout and no
+    `scrollIntoView`, so without it every test that opens a ticket throws.
+  */
+  const selectedKey = selected?.key;
+  useEffect(() => {
+    if (selectedKey !== undefined) {
+      panelRef.current?.scrollIntoView?.({ block: "start" });
+    }
+  }, [selectedKey]);
+
   return (
     <main className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-4 py-10 sm:px-6 sm:py-14">
       <header>
@@ -877,7 +908,9 @@ export function JiraBoard({
 
           `items-start` so each side is as tall as its own content: without it
           the grid stretches both to the taller one, and a short list grows a
-          long empty border beside a long ticket.
+          long empty border beside a long ticket. It is also what gives the
+          pinned panel room to travel — a stretched grid item has no slack to
+          stick within.
         */
         <div className="grid items-start gap-4 md:grid-cols-2">
           <div
@@ -895,12 +928,33 @@ export function JiraBoard({
 
           {selected === null ? (
             // The empty half, on wide screens only: a placeholder under the
-            // list on a phone would be a second thing to scroll past.
-            <p className="text-muted-foreground hidden rounded-md border p-6 text-sm md:block">
+            // list on a phone would be a second thing to scroll past. Pinned
+            // exactly as the panel that replaces it, or the first ticket
+            // opened would appear to move the column.
+            <p className="text-muted-foreground hidden rounded-md border p-6 text-sm md:sticky md:top-6 md:block">
               Pick a ticket to read it here.
             </p>
           ) : (
-            <div className="rounded-md border p-4" data-testid="issue-panel">
+            /*
+              Pinned to the top of the column while the list scrolls past it.
+
+              Without this the panel is drawn at the top of the grid, which is
+              wherever the list began — so opening a ticket from the foot of a
+              long backlog rendered it several hundred pixels above the
+              viewport, and the only thing that appeared to happen was the row
+              lighting up. `items-start` on the grid is what leaves it room to
+              travel; the shell's content column is the scroller it resolves
+              against.
+
+              Its own `overflow-y-auto` bounded by the viewport, because a
+              ticket longer than the screen would otherwise extend past the
+              bottom of a panel that cannot scroll away.
+            */
+            <div
+              ref={panelRef}
+              className="rounded-md border p-4 md:sticky md:top-6 md:max-h-[calc(100dvh-3rem)] md:overflow-y-auto"
+              data-testid="issue-panel"
+            >
               {/*
                 The way back, on narrow screens where the panel covers the
                 list. On a wide one the list is still there, so a control to
