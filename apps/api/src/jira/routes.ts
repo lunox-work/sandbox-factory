@@ -14,10 +14,12 @@
  *   GET  /api/v1/jira/callback   signed state proves that check still applies
  *
  * The callback deliberately carries no organization id of its own. It takes it
- * from the signed state, so the membership decision made at the start of the
- * flow is the one that holds at the end; a callback that read an id from its
- * query string would let anyone attach a site to an organization they were
- * never authorised for.
+ * from the signed state, because one read from the query string would let
+ * anyone attach a site to an organization they were never authorised for.
+ *
+ * But the signature proves only *which* organization was chosen and *who*
+ * chose it — never that they are still entitled to. Membership is therefore
+ * checked again when the callback lands, not merely when the flow starts.
  */
 
 import type { JiraConnectionStore } from "@sandbox-factory/db";
@@ -35,6 +37,14 @@ import { signState, verifyState } from "./state.js";
 /** What the routes need. Supplied by `createApp`, faked in tests. */
 export interface JiraRouteOptions {
   connections: JiraConnectionStore;
+  /**
+   * The caller's current role in an organization, or undefined if they are not
+   * a member. Read again in the callback — see the comment there.
+   */
+  roleOf: (
+    userId: string,
+    organizationId: string,
+  ) => Promise<string | undefined>;
   /** The second Atlassian app's credentials. */
   clientId: string;
   clientSecret: string;
@@ -94,6 +104,7 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
 ): void {
   const {
     connections,
+    roleOf,
     clientId,
     clientSecret,
     secret,
@@ -182,6 +193,25 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
       );
     }
     const { organizationId, returnTo } = verified.state;
+
+    /**
+     * Membership, re-read rather than inferred from the state.
+     *
+     * The state is signed, so `organizationId` is the one chosen at the start
+     * and the membership guard passed then. It does not follow that it passes
+     * now: the window is ten minutes, and a person can be demoted or removed
+     * inside it. Checking only the signature would let a former admin finish a
+     * flow they were no longer entitled to, which is an authorization bypass
+     * however narrow the window.
+     *
+     * Before the exchange, so a code that cannot be used is never spent.
+     */
+    const role = await roleOf(c.get("user").id, organizationId);
+    if (role === undefined || !isAtLeastAdmin(role)) {
+      return c.redirect(
+        redirectTarget(appUrl, returnTo, { jira: "forbidden" }),
+      );
+    }
 
     const code = c.req.query("code");
     if (code === undefined || code === "") {
