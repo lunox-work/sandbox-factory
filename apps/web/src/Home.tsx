@@ -42,7 +42,7 @@ import {
 
 import { useConnections, type ConnectionGroup } from "./useConnections";
 import { useJiraOutcome } from "./useJira";
-import { OutcomeBanner } from "./Jira";
+import { ConnectionRow, OutcomeBanner } from "./Jira";
 import type { JiraConnection } from "./useJira";
 
 /** Whether a group has anything worth a card. */
@@ -72,27 +72,16 @@ function groupLabel(organization: MembershipDto): string {
   return organization.kind === "personal" ? "Personal" : organization.name;
 }
 
-function ConnectionLine({ connection }: { connection: JiraConnection }) {
-  return (
-    <li className="flex items-center justify-between gap-4 py-2.5">
-      <div className="min-w-0">
-        <span className="truncate text-sm font-medium">
-          {connection.siteName}
-        </span>
-        <p className="text-muted-foreground truncate text-sm">
-          {connection.siteUrl}
-        </p>
-      </div>
-    </li>
-  );
-}
-
 function Group({
   group,
   onOpen,
+  onOpenSite,
 }: {
   group: ConnectionGroup;
   onOpen: (organization: MembershipDto) => void;
+  onOpenSite?:
+    | ((organization: MembershipDto, connection: JiraConnection) => void)
+    | undefined;
 }) {
   const { organization, connections, failed } = group;
 
@@ -141,7 +130,13 @@ function Group({
             {healthy.length > 0 && (
               <ul className="divide-y">
                 {healthy.map((connection) => (
-                  <ConnectionLine key={connection.id} connection={connection} />
+                  <ConnectionRow
+                    key={connection.id}
+                    connection={connection}
+                    // The organization travels with the site: a URL names
+                    // both, and a connection does not carry its owner.
+                    onOpen={() => onOpenSite?.(organization, connection)}
+                  />
                 ))}
               </ul>
             )}
@@ -168,10 +163,19 @@ export function Home({
   organizations,
   organizationsLoading,
   onOpen,
+  onOpenSite,
 }: {
   organizations: MembershipDto[];
   organizationsLoading: boolean;
+  /** Opens the organization's own Jira page: the list, and the way to add. */
   onOpen: (organization: MembershipDto) => void;
+  /**
+   * Opens one connected site. Optional so this page can be rendered in a test
+   * without the shell's navigation, as `onOpen` already is elsewhere.
+   */
+  onOpenSite?:
+    | ((organization: MembershipDto, connection: JiraConnection) => void)
+    | undefined;
 }) {
   const { groups, loading, error, total } = useConnections(
     organizations,
@@ -247,7 +251,12 @@ export function Home({
             </p>
           )}
           {order(visible).map((group) => (
-            <Group key={group.organization.id} group={group} onOpen={onOpen} />
+            <Group
+              key={group.organization.id}
+              group={group}
+              onOpen={onOpen}
+              onOpenSite={onOpenSite}
+            />
           ))}
         </>
       )}

@@ -447,3 +447,63 @@ test("home has the same top padding as the other pages", async () => {
   expect(main?.className).toContain("py-10");
   expect(main?.className).toContain("sm:py-14");
 });
+
+// ---- a listed site is a way into it ---------------------------------------
+//
+// The sites on this page were inert text. The only control was a ghost
+// "Manage" leading to the organization's Jira list — one step short of the
+// site the reader was already looking at.
+
+test("a listed site opens that site", async () => {
+  byOrganization = {
+    org_acme: [connection({ id: "jrc_1", siteName: "Client" })],
+  };
+  const onOpenSite = vi.fn();
+
+  render(
+    <Home
+      organizations={[acme]}
+      organizationsLoading={false}
+      onOpen={vi.fn()}
+      onOpenSite={onOpenSite}
+    />,
+  );
+
+  await waitFor(() => {
+    expect(screen.getByText("Client")).toBeTruthy();
+  });
+  await userEvent.click(screen.getByText("Client"));
+
+  // Both halves: which site, and which organization owns it — the second is
+  // what the URL needs, and it is not on the connection.
+  expect(onOpenSite).toHaveBeenCalledTimes(1);
+  expect(onOpenSite.mock.calls[0]?.[0]).toEqual(acme);
+  expect(onOpenSite.mock.calls[0]?.[1]).toMatchObject({ id: "jrc_1" });
+});
+
+test("Manage still opens the organization, not the site", async () => {
+  // The two destinations are different: one site, or the list and the way to
+  // connect another.
+  byOrganization = {
+    org_acme: [connection({ id: "jrc_1", siteName: "Client" })],
+  };
+  const onOpen = vi.fn();
+  const onOpenSite = vi.fn();
+
+  render(
+    <Home
+      organizations={[acme]}
+      organizationsLoading={false}
+      onOpen={onOpen}
+      onOpenSite={onOpenSite}
+    />,
+  );
+
+  await waitFor(() => {
+    expect(screen.getByRole("button", { name: /Manage/ })).toBeTruthy();
+  });
+  await userEvent.click(screen.getByRole("button", { name: /Manage/ }));
+
+  expect(onOpen).toHaveBeenCalledWith(acme);
+  expect(onOpenSite).not.toHaveBeenCalled();
+});

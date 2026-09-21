@@ -231,8 +231,12 @@ export function OutcomeBanner({
  *
  * The Jira mark rather than Atlassian's, because what is being named is the
  * product whose boards get read. Signing in is the other one.
+ *
+ * Exported because the home screen lists the same sites, grouped by owner,
+ * and listed them as inert text — a row that named a site without being a way
+ * into it. One row rather than two that drift apart.
  */
-function ConnectionRow({
+export function ConnectionRow({
   connection,
   onOpen,
 }: {

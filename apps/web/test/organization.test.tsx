@@ -846,7 +846,7 @@ test("GitHub and Slack are named but cannot be opened yet", async () => {
   expect(screen.getAllByText("Coming soon")).toHaveLength(2);
 });
 
-test("the three tools are equal squares, not a stacked list", async () => {
+test("the three tools are equal tiles, not a stacked list", async () => {
   // One of them is built and two are not, which is a fact about today rather
   // than a ranking. Stacked rows made the first read as the heading of a list
   // the others belonged to.
@@ -857,11 +857,9 @@ test("the three tools are equal squares, not a stacked list", async () => {
     screen.getByRole("button", { name: `Manage ${label} connections` }),
   );
 
-  // Every tool is a square tile, and they share one grid container — which is
-  // what makes them the same size as each other.
-  expect(tiles.every((tile) => tile.className.includes("aspect-square"))).toBe(
-    true,
-  );
+  // Every tool gets the same tile, and they share one grid container — which
+  // is what makes them the same size as each other.
+  expect(tiles.every((tile) => tile.className.includes("min-h-36"))).toBe(true);
   const grid = tiles[0]?.parentElement;
   expect(grid?.className).toContain("grid");
   expect(tiles.every((tile) => tile.parentElement === grid)).toBe(true);
@@ -894,7 +892,9 @@ test("the whole tile is the target, not just the word Manage", async () => {
   // a button within a button is invalid, and one of the two is dropped from
   // the accessibility tree.
   expect(tile.querySelector("button")).toBeNull();
-  expect(tile.className).toContain("aspect-square");
+  // A floor rather than a square: at this column's width `aspect-square`
+  // made a 186px box for three short lines.
+  expect(tile.className).toContain("min-h-36");
   // And it lights up under the cursor, which is what says it is pressable.
   expect(tile.className).toContain("hover:bg-muted/50");
 
@@ -1072,4 +1072,25 @@ test("the question names what it is about", async () => {
 
   const dialog = await screen.findByRole("dialog");
   expect(within(dialog).getByText(/Delete Acme\?/)).toBeDefined();
+});
+
+// ---- a tool that is not built does not offer to manage it ------------------
+
+test("the unbuilt tools carry a badge, not a Manage button", async () => {
+  // A disabled button drawn on a tile that cannot be opened is an affordance
+  // for something that does not exist. The status says everything the tile
+  // has to say.
+  showConnections();
+
+  const slack = await screen.findByRole("button", {
+    name: "Manage Slack connections",
+  });
+  // The word appears once, as the accessible name — not a second time as a
+  // control drawn inside the tile.
+  expect(within(slack).queryByText("Manage")).toBeNull();
+  expect(within(slack).getByText("Coming soon")).toBeDefined();
+
+  // The one that is real keeps its affordance.
+  const jira = screen.getByRole("button", { name: "Manage Jira connections" });
+  expect(within(jira).getByText("Manage")).toBeDefined();
 });

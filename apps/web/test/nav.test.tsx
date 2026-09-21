@@ -47,7 +47,27 @@ vi.stubGlobal(
   vi.fn((input: RequestInfo | URL) => {
     const url = String(input);
     if (url.includes("/jira/connections")) {
-      return Promise.resolve(Response.json({ connections: [] }));
+      // One site, on the first organization only, so the home screen has a
+      // row that leads somewhere and the test can tell which owner it
+      // carried.
+      return Promise.resolve(
+        Response.json({
+          connections: url.includes("org_1")
+            ? [
+                {
+                  id: "jrc_1",
+                  cloudId: "cloud-1",
+                  siteUrl: "https://acme.atlassian.net",
+                  siteName: "lunox-work",
+                  email: null,
+                  healthy: true,
+                  scopes: [],
+                  createdAt: "2026-09-21T00:00:00.000Z",
+                },
+              ]
+            : [],
+        }),
+      );
     }
     if (url.includes("/api/v1/me/emails")) {
       return Promise.resolve(Response.json({ emails: [] }));
@@ -541,4 +561,20 @@ test("the logo answers the cursor too", async () => {
 
   const logo = await screen.findByRole("button", { name: "Lunox home" });
   expect(logo.className).toContain("hover:opacity-80");
+});
+
+test("a site on the home screen opens that site's page", async () => {
+  // End to end through the shell: the row names a site, so the URL it leads
+  // to names that site rather than the list it sits in.
+  window.history.replaceState(null, "", "/");
+  render(<App />);
+
+  await waitFor(() => {
+    expect(screen.getByText("lunox-work")).toBeTruthy();
+  });
+  fireEvent.click(screen.getByText("lunox-work"));
+
+  await waitFor(() => {
+    expect(window.location.pathname).toBe("/o/acme/jira/jrc_1");
+  });
 });

@@ -330,6 +330,14 @@ function Signed({
               organizations.select(organization.id);
               navigate("org-jira", organization.slug);
             }}
+            onOpenSite={(organization, connection) => {
+              // Straight to the site, rather than to the list it is in: the
+              // row named one, and stopping a level short of it would make
+              // the reader find it again. The slug is passed because `select`
+              // has not re-rendered yet — see `navigate`.
+              organizations.select(organization.id);
+              navigate("org-jira-site", organization.slug, connection.id);
+            }}
           />
         )}
       </div>

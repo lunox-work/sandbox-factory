@@ -525,16 +525,19 @@ const COMING_SOON: { key: string; label: string; icon: ReactNode }[] = [
  * One tool on the Connections card: its mark, its name, what is connected,
  * and the way in.
  *
- * A square tile rather than a full-width row. The three tools are siblings —
- * one of them happens to be built and the other two are not, but that is a
- * fact about today rather than a ranking — and stacked rows made the first
- * one read as the heading of a list the others belonged to. Equal squares say
- * what the card means: three tools, same standing.
+ * A tile rather than a full-width row. The three tools are siblings — one of
+ * them happens to be built and the other two are not, but that is a fact about
+ * today rather than a ranking — and stacked rows made the first one read as
+ * the heading of a list the others belonged to. Equal tiles say what the card
+ * means: three tools, same standing.
  *
- * `aspect-square` rather than a fixed height, so the tiles stay square as the
- * column they sit in changes width, and `justify-between` pins the stack to
- * the middle and the Manage affordance to the foot however tall that turns
- * out to be.
+ * `min-h-36` rather than `aspect-square`, which at the width of this column
+ * made a 186px box for three short lines and a badge — mostly empty, and tall
+ * enough to push the card's own content off a laptop screen. A floor keeps
+ * them equal without letting the width dictate the height.
+ *
+ * `justify-between` pins the stack to the middle and the affordance to the
+ * foot however tall the tile turns out to be.
  *
  * **The tile is the button.** There is one thing to do with a tool and the
  * whole square is the target, so a person aiming at a word inside a large
@@ -576,7 +579,7 @@ function ConnectionTile({
         own to inherit. `disabled:` rather than omitting the handler: a tool
         that is not built should look unavailable, not merely do nothing.
       */
-      className="group flex aspect-square flex-col items-center justify-between rounded-lg border p-3.5 text-center transition-colors hover:bg-muted/50 focus-visible:ring-ring/50 focus-visible:ring-[3px] focus-visible:outline-none disabled:pointer-events-none disabled:opacity-60"
+      className="group hover:bg-muted/50 focus-visible:ring-ring/50 flex min-h-36 flex-col items-center justify-between gap-3 rounded-lg border p-3.5 text-center transition-colors focus-visible:ring-[3px] focus-visible:outline-none disabled:pointer-events-none disabled:opacity-60"
     >
       {/*
         The mark, the name and the status as one centred stack. `flex-1` with
@@ -587,19 +590,36 @@ function ConnectionTile({
       <span className="flex flex-1 flex-col items-center justify-center">
         <span className="grid size-8 place-items-center">{icon}</span>
         <span className="mt-2.5 block text-sm font-medium">{label}</span>
-        <span className="text-muted-foreground block text-xs">{status}</span>
+        {/* A tool that is not built has nothing to count, so its status is
+            the badge at the foot instead — saying it twice would leave the
+            tile repeating itself. */}
+        {!disabled && (
+          <span className="text-muted-foreground block text-xs">{status}</span>
+        )}
       </span>
       {/*
-        Drawn like an outline button, and lit by the tile's hover rather than
-        its own. `aria-hidden`, because the tile is already announced by
-        `actionLabel` and this would otherwise repeat the word "Manage".
+        What the foot of the tile says depends on whether there is anything to
+        do. A tool that is built gets an affordance drawn like an outline
+        button — lit by the tile's hover rather than its own, since it is a
+        `span` and has none. One that is not built gets a badge: a disabled
+        button on a tile that cannot be opened is an affordance for something
+        that does not exist, and the reader has to hover it to find that out.
+
+        `aria-hidden` either way, because the tile is already announced by
+        `actionLabel` and this would otherwise repeat it.
       */}
-      <span
-        aria-hidden="true"
-        className="bg-background group-hover:bg-accent group-hover:text-accent-foreground w-full rounded-md border px-3 py-1.5 text-sm font-medium transition-colors"
-      >
-        Manage
-      </span>
+      {disabled ? (
+        <Badge aria-hidden="true" variant="secondary">
+          {status}
+        </Badge>
+      ) : (
+        <span
+          aria-hidden="true"
+          className="bg-background group-hover:bg-accent group-hover:text-accent-foreground w-full rounded-md border px-3 py-1.5 text-sm font-medium transition-colors"
+        >
+          Manage
+        </span>
+      )}
     </button>
   );
 }
