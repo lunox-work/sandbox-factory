@@ -69,6 +69,11 @@ services:
     image: node:22-alpine
     container_name: sandbox-factory-api-dev
     working_dir: /repo
+    # `node --watch` exits 0 if tsc rewrites dist/server.js while it is booting,
+    # and `concurrently -k` then tears the container down. A clean exit would
+    # otherwise leave the container down for good and every /api call proxying
+    # through Vite returns 502.
+    restart: unless-stopped
     # On a fresh clone packages/*/dist does not exist and tsc fails with
     # "Cannot find module 'sandbox-factory'". `^...` builds exactly this
     # workspace's dependencies, in order.
