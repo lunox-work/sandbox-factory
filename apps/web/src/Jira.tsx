@@ -990,13 +990,22 @@ export function JiraBoard({
               travel; the shell's content column is the scroller it resolves
               against.
 
-              Its own `overflow-y-auto` bounded by the viewport, because a
-              ticket longer than the screen would otherwise extend past the
-              bottom of a panel that cannot scroll away.
+              No scroller of its own, deliberately. A panel with
+              `overflow-y-auto` is a second scrolling region, and the wheel
+              belongs to whichever one the cursor is over — so reading a
+              ticket meant moving the pointer into the panel first, and
+              scrolling with it over the list moved the page underneath
+              instead. One scroller, the page column, and the wheel does the
+              same thing wherever the cursor is.
+
+              A ticket taller than the viewport therefore makes the page
+              longer rather than scrolling inside a fixed box. Sticky stops
+              having anything to do once the panel outgrows the screen, which
+              is the right outcome: there is nothing to pin it against.
             */
             <div
               ref={panelRef}
-              className="rounded-md border p-4 md:sticky md:top-6 md:max-h-[calc(100dvh-3rem)] md:overflow-y-auto"
+              className="rounded-md border p-4 md:sticky md:top-6"
               data-testid="issue-panel"
             >
               {/*

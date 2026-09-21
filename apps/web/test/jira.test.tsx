@@ -966,9 +966,30 @@ test("the panel is pinned in view rather than drawn at the top of the column", a
   // does for the `hidden md:block` column beside it.
   expect(panel.className).toContain("md:sticky");
   expect(panel.className).toContain("md:top-6");
-  // And it scrolls within itself, so a long ticket does not push its own foot
-  // past the bottom of a pinned panel.
-  expect(panel.className).toContain("md:overflow-y-auto");
+});
+
+test("the panel is not a second scrolling region", async () => {
+  /*
+    The page column is the only scroller. A panel with its own
+    `overflow-y-auto` captures the wheel whenever the cursor is inside it and
+    leaves it to the page everywhere else, so reading a ticket meant moving
+    the pointer into the panel first — and scrolling with the cursor over the
+    list moved the page underneath instead of the ticket.
+
+    jsdom has no layout and no wheel, so the class contract is what carries
+    this; the behaviour itself is checked in a browser.
+  */
+  vi.stubGlobal("fetch", routedFetch());
+  renderBoard();
+  await screen.findByTestId("backlog-preview");
+
+  await userEvent.click(screen.getByText("Ticket 1"));
+  const panel = await screen.findByTestId("issue-panel");
+
+  expect(panel.className).not.toContain("overflow-y-auto");
+  expect(panel.className).not.toContain("overflow-y-scroll");
+  // And no viewport cap, which is what made a long ticket need one.
+  expect(panel.className).not.toContain("max-h-");
 });
 
 test("the placeholder half is pinned too, so the panel does not jump into place", async () => {
