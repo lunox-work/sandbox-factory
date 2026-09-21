@@ -124,7 +124,11 @@ function Signed({
       />
       <div className="min-w-0 flex-1 pb-16 sm:overflow-y-auto sm:pb-0">
         {screen === "account" ? (
-          <Account onJoined={() => void organizations.refresh()} />
+          <Account
+            onJoined={() => void organizations.refresh()}
+            organizationCount={organizations.organizations.length}
+            onOpenOrganizations={() => navigate("organizations")}
+          />
         ) : screen === "organizations" ? (
           <Organizations
             organizations={organizations.organizations}

@@ -32,6 +32,10 @@ vi.mock("../src/auth", () => ({
     { id: "google", label: "Continue with Google" },
     { id: "github", label: "Continue with GitHub" },
   ],
+  // The page reads the picture from the session, as the rail does. These tests
+  // are about the handle and the providers, so it stands in as signed in with
+  // no picture — the case that falls through to the generated one.
+  useSession: () => ({ data: { user: { id: "user_1", image: null } } }),
 }));
 
 const { Account } = await import("../src/Account");
@@ -517,4 +521,39 @@ describe("organization invitations", () => {
 
     expect(await screen.findByText(/has expired/i)).toBeDefined();
   });
+});
+
+test("the page links to the organizations you belong to", async () => {
+  const onOpenOrganizations = vi.fn();
+  render(
+    <Account organizationCount={3} onOpenOrganizations={onOpenOrganizations} />,
+  );
+
+  const link = await screen.findByRole("button", { name: "3 organizations" });
+  fireEvent.click(link);
+
+  expect(onOpenOrganizations).toHaveBeenCalledTimes(1);
+});
+
+test("one organization is not 'organizations'", async () => {
+  // Everybody has at least their personal one, so the singular is the case a
+  // brand new account sees.
+  render(<Account organizationCount={1} onOpenOrganizations={vi.fn()} />);
+
+  expect(
+    await screen.findByRole("button", { name: "1 organization" }),
+  ).toBeTruthy();
+});
+
+test("the count is absent until it is known", async () => {
+  /*
+   * Undefined while the list loads, which is not the same as zero: rendering
+   * the line early would flash "0 organizations" at somebody who has one.
+   */
+  render(<Account />);
+
+  await waitFor(() => {
+    expect(screen.getByLabelText("Username")).toBeTruthy();
+  });
+  expect(screen.queryByText(/organizations?$/)).toBeNull();
 });

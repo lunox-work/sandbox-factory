@@ -18,9 +18,10 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { AvatarField } from "@/components/AvatarField";
 import { Input } from "@/components/ui/input";
 
-import { PROVIDERS, authClient, type ProviderId } from "./auth";
+import { PROVIDERS, authClient, useSession, type ProviderId } from "./auth";
 import { ProviderIcon } from "./ProviderIcon";
 
 interface ProvenEmail {
@@ -45,8 +46,17 @@ interface LinkedAccount {
 export function Account({
   /** Called after an invitation is accepted, so the switcher picks it up. */
   onJoined,
+  organizationCount,
+  onOpenOrganizations,
 }: {
   onJoined?: (() => void) | undefined;
+  /**
+   * How many organizations you belong to. Undefined while the list is still
+   * loading, which reads differently from zero — everybody has at least their
+   * personal one, so zero is only ever a momentary truth.
+   */
+  organizationCount?: number | undefined;
+  onOpenOrganizations?: (() => void) | undefined;
 } = {}) {
   const [emails, setEmails] = useState<ProvenEmail[]>([]);
   const [invitations, setInvitations] = useState<PendingInvitationDto[]>([]);
@@ -55,6 +65,12 @@ export function Account({
   const [accountId, setAccountId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /*
+   * The picture, from the same place the rail reads it. `/api/v1/me` does not
+   * carry one, and adding it there would be a wire change for a value the
+   * session already holds on every screen.
+   */
+  const { data: session } = useSession();
 
   const refresh = useCallback(async () => {
     try {
@@ -217,6 +233,9 @@ export function Account({
         <UsernameForm
           current={username}
           accountId={accountId}
+          image={session?.user.image}
+          organizationCount={organizationCount}
+          onOpenOrganizations={onOpenOrganizations}
           busy={busy}
           onSaved={(next) => setUsername(next)}
           onBusy={setBusy}
@@ -437,12 +456,19 @@ function ProviderBadgeIcon({ providerId }: { providerId: string }) {
 function UsernameForm({
   current,
   accountId,
+  image,
+  organizationCount,
+  onOpenOrganizations,
   busy,
   onSaved,
   onBusy,
 }: {
+  organizationCount?: number | undefined;
+  onOpenOrganizations?: (() => void) | undefined;
   current: string | null;
   accountId: string | null;
+  /** The provider's picture, if there is one; the identicon stands in if not. */
+  image?: string | null;
   busy: boolean;
   onSaved: (username: string) => void;
   onBusy: (busy: boolean) => void;
@@ -500,20 +526,71 @@ function UsernameForm({
       </CardHeader>
 
       <CardContent>
-        <form onSubmit={(event) => void submit(event)} className="flex gap-2">
-          <Input
-            aria-label="Username"
-            placeholder="your-handle"
-            value={draft}
-            onChange={(event) => {
-              setDraft(event.target.value);
-              setMessage(null);
-            }}
-          />
-          <Button type="submit" disabled={busy || draft.trim() === ""}>
-            Save
-          </Button>
-        </form>
+        {/*
+          The picture beside the name, not above it: they are the same fact.
+          `items-start` keeps the avatar aligned with the input rather than
+          centred against the message that appears under it on save.
+        */}
+        {/*
+          The picture, then the handle with what it belongs to under it. The
+          right-hand column is sized to the avatar rather than the other way
+          round: `min-h-16` with the content spread over it puts the input
+          level with the top of the picture and the organizations line level
+          with its foot, so the row is exactly as tall as the avatar.
+        */}
+        <div className="flex items-start gap-4">
+          {/*
+            `accountId` is null until `/api/v1/me` answers. The slot is held
+            open at the avatar's size rather than collapsed, or the input jumps
+            left when the id lands.
+          */}
+          {accountId === null ? (
+            <div className="size-16 shrink-0" />
+          ) : (
+            <AvatarField
+              id={accountId}
+              image={image}
+              shape="circle"
+              label="your"
+            />
+          )}
+
+          <div className="flex min-h-16 flex-1 flex-col justify-between gap-2">
+            <form
+              onSubmit={(event) => void submit(event)}
+              className="flex gap-2"
+            >
+              <Input
+                aria-label="Username"
+                placeholder="your-handle"
+                value={draft}
+                onChange={(event) => {
+                  setDraft(event.target.value);
+                  setMessage(null);
+                }}
+              />
+              <Button type="submit" disabled={busy || draft.trim() === ""}>
+                Save
+              </Button>
+            </form>
+
+            {/*
+              Where the handle leads, not a statistic: the count is the label
+              on the way to the list. Hidden until it is known, so it does not
+              flash "0 organizations" at somebody who has one.
+            */}
+            {organizationCount !== undefined && (
+              <button
+                type="button"
+                onClick={onOpenOrganizations}
+                className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 w-fit cursor-pointer rounded-sm text-sm underline-offset-4 transition-colors hover:underline focus-visible:ring-[3px] focus-visible:outline-none"
+              >
+                {organizationCount}{" "}
+                {organizationCount === 1 ? "organization" : "organizations"}
+              </button>
+            )}
+          </div>
+        </div>
 
         {message !== null && (
           <p

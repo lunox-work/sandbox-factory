@@ -576,6 +576,20 @@ const USER_1_D =
   "M3 2h1v1h-1zM0 3h1v1h-1zM1 3h1v1h-1zM2 3h1v1h-1zM3 3h1v1h-1z" +
   "M4 3h1v1h-1zM0 4h1v1h-1zM2 4h1v1h-1zM4 4h1v1h-1z";
 
+/**
+ * The faces in the member list, in order.
+ *
+ * The rows are the `div`s that carry an avatar and a role badge; the handle
+ * form's own avatar sits outside them, so a query over the whole page would
+ * return the organization's face first.
+ */
+function memberFaces(container: HTMLElement): Array<string | undefined> {
+  return [...container.querySelectorAll('[data-slot="card"]')]
+    .filter((card) => card.textContent?.includes("Members") === true)
+    .flatMap((card) => [...card.querySelectorAll('[data-slot="avatar"]')])
+    .map((avatar) => avatar.querySelector("path")?.getAttribute("d"));
+}
+
 test("a member row carries the face generated for that person", async () => {
   serverWith([owner, plainMember]);
   const { container } = showSettings();
@@ -584,9 +598,9 @@ test("a member row carries the face generated for that person", async () => {
     expect(screen.getByText("Dana")).toBeTruthy();
   });
 
-  const faces = [...container.querySelectorAll('[data-slot="avatar"]')].map(
-    (avatar) => avatar.querySelector("path")?.getAttribute("d"),
-  );
+  // Scoped to the member rows: the handle form above carries the
+  // organization's own avatar, which is the first on the page.
+  const faces = memberFaces(container);
 
   // Dana is `user_1`, and two people do not share a face.
   expect(faces[0]).toBe(USER_1_D);
@@ -608,10 +622,5 @@ test("a member's face follows the person, not the membership", async () => {
     expect(screen.getByText("Dana")).toBeTruthy();
   });
 
-  expect(
-    container
-      .querySelector('[data-slot="avatar"]')
-      ?.querySelector("path")
-      ?.getAttribute("d"),
-  ).toBe(USER_1_D);
+  expect(memberFaces(container)[0]).toBe(USER_1_D);
 });

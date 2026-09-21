@@ -13,6 +13,7 @@ import { render, waitFor } from "@testing-library/react";
 import { expect, test, vi } from "vitest";
 
 import { EntityAvatar } from "../src/components/Avatar";
+import { AvatarField } from "../src/components/AvatarField";
 import { Identicon } from "../src/components/Identicon";
 
 /*
@@ -24,7 +25,7 @@ import { Identicon } from "../src/components/Identicon";
  * A real jsdom `img` with the fetch faked, as `nav.test.tsx` does it: setting
  * `src` dispatches `load` on the next tick and reports a decoded 1x1.
  */
-vi.stubGlobal("Image", function FakeImage() {
+function LoadingImage(this: unknown) {
   const element = document.createElement("img");
 
   Object.defineProperty(element, "complete", { value: true });
@@ -41,7 +42,9 @@ vi.stubGlobal("Image", function FakeImage() {
   });
 
   return element;
-});
+}
+
+vi.stubGlobal("Image", LoadingImage);
 
 /** As `packages/shared/test/identicon.test.ts` pins it for this seed. */
 const USER_1_D =
@@ -175,7 +178,9 @@ test("the identicon does not flash while a picture is still loading", async () =
 
     expect(container.querySelector("path")).toBeNull();
   } finally {
-    vi.unstubAllGlobals();
+    // Back to the stub that loads: `unstubAllGlobals` would drop it too, and
+    // every later test that needs a picture would hang on jsdom's own Image.
+    vi.stubGlobal("Image", LoadingImage);
   }
 });
 
@@ -224,4 +229,102 @@ test("a circular avatar leaves the shape to the default", () => {
   const root = container.querySelector('[data-slot="avatar"]');
   expect(root?.className).toContain("rounded-full");
   expect(root?.className).not.toContain("rounded-lg");
+});
+
+test("the settings avatar is itself the control for replacing it", () => {
+  /*
+   * The picture is the target rather than a labelled button beside it: a
+   * button there would sit between the avatar and the field it belongs to.
+   * Disabled because there is no upload endpoint behind it — not a server that
+   * would refuse, which is the case this codebase normally hides a control
+   * for.
+   */
+  const { container } = render(
+    <AvatarField id="user_1" shape="circle" label="your" />,
+  );
+
+  const button = container.querySelector("button");
+  expect(button?.disabled).toBe(true);
+  // The reason, where the control is: a disabled control with no explanation
+  // reads as a bug.
+  expect(button?.getAttribute("title")).toBe(
+    "Uploading a picture is not available yet.",
+  );
+  // Named for what it changes: the picture itself is decorative, so without
+  // this the control announces nothing.
+  expect(button?.getAttribute("aria-label")).toBe("Change your picture");
+  // The avatar is inside the control, not beside it.
+  expect(button?.querySelector('[data-slot="avatar"]')).not.toBeNull();
+});
+
+test("the edit overlay is hidden until the control is hovered or focused", () => {
+  const { container } = render(
+    <AvatarField id="user_1" shape="circle" label="your" />,
+  );
+
+  const overlay = container.querySelector("span[aria-hidden='true']");
+  expect(overlay?.className).toContain("opacity-0");
+  expect(overlay?.className).toContain("group-hover:opacity-100");
+  // Keyboard users get it too; hover alone would hide it from them.
+  expect(overlay?.className).toContain("group-focus-visible:opacity-100");
+  // Decorative: the control around it already says what it does.
+  expect(overlay?.querySelector("svg")).not.toBeNull();
+});
+
+test("the overlay follows the avatar's shape, not the default circle", () => {
+  /*
+   * The scrim inherits its radius from the control, so the control has to
+   * carry the shape. Left as `rounded-full`, a square organization avatar gets
+   * a circular scrim over a rounded square.
+   */
+  const { container } = render(
+    <AvatarField id="org_globex" shape="square" label="organization" />,
+  );
+
+  const button = container.querySelector("button");
+  expect(button?.className).toContain("rounded-lg");
+  expect(button?.className).not.toContain("rounded-full");
+  expect(
+    container.querySelector("span[aria-hidden='true']")?.className,
+  ).toContain("rounded-[inherit]");
+});
+
+test("the settings avatar shows the generated face at a readable size", () => {
+  const { container } = render(
+    <AvatarField id="user_1" shape="circle" label="your" />,
+  );
+
+  // Larger than the rail's 24px: here the picture is the subject, and a 5x5
+  // grid reads as texture when it is small.
+  const avatar = container.querySelector('[data-slot="avatar"]');
+  expect(avatar?.className).toContain("size-16");
+  expect(avatar?.querySelector("path")?.getAttribute("d")).toBe(USER_1_D);
+});
+
+test("the settings avatar prefers a real picture over the generated one", async () => {
+  const { container } = render(
+    <AvatarField
+      id="user_1"
+      image="https://example.test/alice.png"
+      shape="circle"
+      label="your"
+    />,
+  );
+
+  await waitFor(() => {
+    expect(container.querySelector("img")).not.toBeNull();
+  });
+  expect(container.querySelector("img")?.getAttribute("src")).toBe(
+    "https://example.test/alice.png",
+  );
+});
+
+test("an organization's settings avatar is a rounded square", () => {
+  const { container } = render(
+    <AvatarField id="org_globex" shape="square" label="organization" />,
+  );
+
+  expect(container.querySelector('[data-slot="avatar"]')?.className).toContain(
+    "rounded-lg",
+  );
 });
