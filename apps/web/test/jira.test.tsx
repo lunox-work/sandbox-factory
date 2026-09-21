@@ -1132,3 +1132,138 @@ test("disconnecting asks before it disconnects", async () => {
   ).toBe(false);
   expect(disconnected).toBe(0);
 });
+
+// ---- the wait has a shape -------------------------------------------------
+//
+// Opening waited for Jira before showing anything, so a click's only answer
+// was a small spinner in the row — on a slow read the page looked unchanged,
+// which invites a second click. The peek opens on the click instead, with the
+// ticket's own shape sketched inside it.
+
+/**
+ * A fetch whose ticket detail is held open until it is released.
+ *
+ * Everything else answers at once, so the board still renders; only the read
+ * behind the peek is suspended, which is the moment being tested.
+ */
+function pendingDetailFetch() {
+  let release: () => void = () => {};
+  const base = routedFetch();
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const fetchMock = vi.fn((input: string) =>
+    String(input).includes("/issues/")
+      ? gate.then(() => base(input) as Promise<Response>)
+      : (base(input) as Promise<Response>),
+  );
+  return { fetchMock, release: () => release() };
+}
+
+test("clicking a ticket opens the peek before the ticket has arrived", async () => {
+  const { fetchMock, release } = pendingDetailFetch();
+  vi.stubGlobal("fetch", fetchMock);
+  renderBoard();
+  await screen.findByTestId("backlog-preview");
+
+  await userEvent.click(screen.getByText("Ticket 1"));
+
+  // Open, and holding the ticket's shape rather than the ticket.
+  expect(await screen.findByTestId("issue-panel")).toBeDefined();
+  expect(screen.getByTestId("issue-skeleton")).toBeDefined();
+  expect(screen.queryByTestId("issue-detail")).toBeNull();
+
+  release();
+
+  // And the real thing replaces it in the panel that was already open.
+  await waitFor(() => {
+    expect(screen.getByTestId("issue-detail")).toBeDefined();
+  });
+  expect(screen.queryByTestId("issue-skeleton")).toBeNull();
+});
+
+test("the skeleton says what it is standing in for", async () => {
+  // The bars are `aria-hidden`; a screen reader should hear one sentence, not
+  // a tree of empty boxes.
+  const { fetchMock, release } = pendingDetailFetch();
+  vi.stubGlobal("fetch", fetchMock);
+  renderBoard();
+  await screen.findByTestId("backlog-preview");
+
+  await userEvent.click(screen.getByText("Ticket 1"));
+  const skeleton = await screen.findByTestId("issue-skeleton");
+
+  expect(within(skeleton).getByRole("status").textContent).toMatch(/loading/i);
+  release();
+  await waitFor(() => {
+    expect(screen.getByTestId("issue-detail")).toBeDefined();
+  });
+});
+
+test("the row being opened is marked from the click, not from the response", async () => {
+  // Or the list shows nothing selected for as long as the read takes, while
+  // a panel about that very ticket is open beside it.
+  const { fetchMock, release } = pendingDetailFetch();
+  vi.stubGlobal("fetch", fetchMock);
+  renderBoard();
+  await screen.findByTestId("backlog-preview");
+
+  const list = screen.getByTestId("backlog-preview");
+  const row = within(list).getByText("Ticket 1").closest("button");
+  await userEvent.click(row as HTMLElement);
+  await screen.findByTestId("issue-skeleton");
+
+  expect(row?.getAttribute("aria-current")).toBe("true");
+  release();
+  await waitFor(() => {
+    expect(screen.getByTestId("issue-detail")).toBeDefined();
+  });
+});
+
+test("closing while the ticket is still loading does not reopen it", async () => {
+  // The response is in flight when the reader gives up on it. Landing it
+  // afterwards would push a panel back over a page they had returned to.
+  const { fetchMock, release } = pendingDetailFetch();
+  vi.stubGlobal("fetch", fetchMock);
+  renderBoard();
+  await screen.findByTestId("backlog-preview");
+
+  await userEvent.click(screen.getByText("Ticket 1"));
+  await screen.findByTestId("issue-skeleton");
+
+  await userEvent.keyboard("{Escape}");
+  await waitFor(() => {
+    expect(screen.queryByTestId("issue-panel")).toBeNull();
+  });
+
+  release();
+
+  // Still closed, a tick later.
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(screen.queryByTestId("issue-panel")).toBeNull();
+});
+
+test("the way out to Jira sits on the tab row, not in the status line", async () => {
+  /*
+    Two separate things. The line under the heading states what the ticket is
+    — status, then the type qualifying it — and carries no controls. The way
+    out to Jira is a control, so it joins the tabs, pinned to the right edge
+    where this app puts the action a surface offers.
+  */
+  vi.stubGlobal("fetch", routedFetch());
+  renderBoard();
+  await screen.findByTestId("backlog-preview");
+
+  await userEvent.click(screen.getByText("Ticket 1"));
+  await screen.findByTestId("issue-detail");
+
+  const link = screen.getByRole("link", { name: /open in jira/i });
+  // A peer of the tabs: same row, and the row pins it to the far edge.
+  const row = link.parentElement;
+  expect(row?.className).toContain("justify-between");
+  expect(within(row as HTMLElement).getByRole("tablist")).toBeDefined();
+
+  // Opens Jira in its own tab, without handing it this page's opener.
+  expect(link.getAttribute("target")).toBe("_blank");
+  expect(link.getAttribute("rel")).toContain("noopener");
+});

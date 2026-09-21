@@ -25,7 +25,13 @@ import {
   TriangleAlert,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -469,35 +475,133 @@ function asDate(value: string | null): string | null {
  * Fields Jira did not send render nothing at all, because a site can omit
  * almost any of them and a column of empty labels is worse than a short list.
  */
+/**
+ * The ticket's shape, while the ticket itself is still being read.
+ *
+ * The peek opens on the click rather than when the response lands, so the
+ * click has an immediate answer — a panel that is on its way to holding
+ * something — instead of a spinner on the row and a page that looks
+ * unchanged for as long as Jira takes.
+ *
+ * It mirrors `IssueDetail` block for block: a heading, the badge row under
+ * it, the two tabs, and a bordered body of text lines. That is what keeps the
+ * swap quiet — the real ticket lands into a layout the same shape, so nothing
+ * jumps when it arrives.
+ *
+ * The lines are deliberately uneven. A stack of identical bars reads as a
+ * loading graphic; varied widths read as text that has not arrived, which is
+ * what is actually true.
+ *
+ * `aria-hidden`, with the announcement left to the status line below it: a
+ * screen reader should hear "Loading the ticket" once, not a tree of empty
+ * boxes.
+ */
+function IssueDetailSkeleton() {
+  return (
+    <div className="flex flex-col gap-4" data-testid="issue-skeleton">
+      <div aria-hidden="true">
+        {/* The heading, at two lines: most summaries on this board wrap. */}
+        <div className="skeleton h-5 w-4/5 rounded-md" />
+        <div className="skeleton mt-1.5 h-5 w-1/3 rounded-md" />
+
+        {/* Status and type, the row under the heading. */}
+        <div className="mt-2.5 flex items-center gap-2">
+          <div className="skeleton h-5 w-16 rounded-full" />
+          <div className="skeleton h-3 w-12 rounded" />
+        </div>
+      </div>
+
+      {/* The tab strip and the link out, which share a row and are the same
+          size whatever the ticket turns out to say. */}
+      <div
+        aria-hidden="true"
+        className="flex items-center justify-between gap-3"
+      >
+        <div className="skeleton h-9 w-[13rem] rounded-lg" />
+        <div className="skeleton h-8 w-28 rounded-md" />
+      </div>
+
+      {/* The spec, in the bordered box the real one gets. The border is real
+          rather than a skeleton: it is chrome that does not depend on the
+          response, so drawing it straight away is one less thing that moves. */}
+      <div
+        aria-hidden="true"
+        className="flex flex-col gap-2.5 rounded-md border p-4"
+      >
+        <div className="skeleton h-4 w-24 rounded" />
+        <div className="skeleton h-3 w-full rounded" />
+        <div className="skeleton h-3 w-11/12 rounded" />
+        <div className="skeleton h-3 w-4/5 rounded" />
+        <div className="skeleton mt-2 h-3 w-2/3 rounded" />
+        <div className="skeleton h-3 w-full rounded" />
+        <div className="skeleton h-3 w-3/4 rounded" />
+      </div>
+
+      {/* What the skeleton above is silently standing in for. */}
+      <p role="status" className="sr-only">
+        Loading the ticket…
+      </p>
+    </div>
+  );
+}
+
 function IssueDetail({ issue }: { issue: JiraIssueDetail }) {
   return (
     <div className="flex flex-col gap-4" data-testid="issue-detail">
       <div>
         <h3 className="text-base font-semibold">{issue.summary}</h3>
-        <div className="mt-1 flex flex-wrap items-center gap-2">
+        {/*
+          Status and type on one line under the heading, the type after the
+          badge rather than beside it in the same breath: the badge is what
+          the eye lands on, and the type qualifies it — a To Do *Story*.
+          The link out used to sit here too, which put a control in a row that
+          is otherwise a statement of fact.
+        */}
+        <div className="mt-1.5 flex flex-wrap items-center gap-2">
           <Badge variant="secondary">{issue.status}</Badge>
-          <span className="text-xs text-muted-foreground">
+          <span className="text-muted-foreground text-xs">
             {issue.issueType}
           </span>
-          {issue.url !== null && (
-            <a
-              href={issue.url}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:underline"
-            >
-              Open in Jira
-              <ExternalLink className="size-3" />
-            </a>
-          )}
         </div>
       </div>
 
+      {/*
+        The tab strip and the way out to Jira share a row: both are controls
+        on this ticket, and the right edge is where this app puts the action a
+        surface offers. `justify-between` rather than a margin, so the link
+        stays pinned as the strip's own width changes.
+      */}
       <Tabs defaultValue="spec">
-        <TabsList>
-          <TabsTrigger value="spec">Spec</TabsTrigger>
-          <TabsTrigger value="fields">Fields</TabsTrigger>
-        </TabsList>
+        <div className="flex items-center justify-between gap-3">
+          <TabsList>
+            <TabsTrigger value="spec">Spec</TabsTrigger>
+            <TabsTrigger value="fields">Fields</TabsTrigger>
+          </TabsList>
+
+          {issue.url !== null && (
+            /*
+              A button rather than a bare link, so it reads as the peer of the
+              tabs beside it, and carrying Jira's own mark — the destination
+              is Jira, and the mark says so faster than the words do. The
+              arrow stays as well: the mark names where it goes, the arrow
+              says it leaves this page.
+            */
+            <Button
+              variant="outline"
+              size="sm"
+              className="shrink-0 gap-1.5"
+              asChild
+            >
+              <a href={issue.url} target="_blank" rel="noreferrer noopener">
+                <span className="size-3.5 shrink-0">
+                  <JiraIcon />
+                </span>
+                Open in Jira
+                <ExternalLink className="size-3" />
+              </a>
+            </Button>
+          )}
+        </div>
 
         <TabsContent value="spec">
           {issue.descriptionText === "" ? (
@@ -619,11 +723,23 @@ function PreviewList({
         <li key={issue.id}>
           {/* The whole row opens the ticket: a link-sized target is a
               needless miss, and there is nothing else to click. */}
+          {/*
+            Marked from the click, not from the response: the row the peek is
+            about is the one that was pressed, whether or not Jira has
+            answered yet. `openingKey` and `selectedKey` are the same ticket
+            at two moments of the same open.
+          */}
           <button
             type="button"
-            aria-current={selectedKey === issue.key ? "true" : undefined}
+            aria-current={
+              selectedKey === issue.key || openingKey === issue.key
+                ? "true"
+                : undefined
+            }
             className={`hover:bg-muted/50 flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors ${
-              selectedKey === issue.key ? "bg-muted" : ""
+              selectedKey === issue.key || openingKey === issue.key
+                ? "bg-muted"
+                : ""
             }`}
             onClick={() => {
               onOpenIssue(issue.key);
@@ -638,11 +754,13 @@ function PreviewList({
             <span className="text-muted-foreground shrink-0 text-xs">
               {ageInDays(issue.created)}
             </span>
-            {openingKey === issue.key ? (
-              <Loader2 className="size-4 shrink-0 animate-spin" />
-            ) : (
-              <ChevronRight className="text-muted-foreground size-4 shrink-0" />
-            )}
+            {/*
+              The chevron stays put while the ticket loads. A spinner here was
+              the only answer a click had before the peek opened on it; now
+              the panel is the answer, and swapping the mark would be a second
+              thing moving for the same event.
+            */}
+            <ChevronRight className="text-muted-foreground size-4 shrink-0" />
           </button>
         </li>
       ))}
@@ -850,6 +968,13 @@ export function JiraBoard({
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<JiraIssueDetail | null>(null);
   const [openingKey, setOpeningKey] = useState<string | null>(null);
+  /**
+   * The ticket the reader last asked for, read when a response resolves so a
+   * superseded one can be dropped. A ref rather than state: the check happens
+   * inside a closure that captured the old state, and this must be current.
+   * Cleared on close, so a response arriving after that does not reopen it.
+   */
+  const wantedKey = useRef<string | null>(null);
 
   const board = boards.find((candidate) => candidate.id === boardId) ?? null;
   // The name passed in wins while the list is still arriving, so arriving
@@ -881,10 +1006,38 @@ export function JiraBoard({
     };
   }, [boardId, preview]);
 
+  /*
+    The peek opens on the click, not on the response.
+
+    Waiting for Jira before opening anything left the click with no visible
+    answer but a small spinner in the row — on a slow read the page looked
+    unchanged, and the natural response is to click again. Opening
+    immediately turns the wait into something with a shape: the panel is
+    there, and what it will hold is sketched inside it.
+
+    `openingKey` is what holds it open until the detail arrives, which is why
+    it also drives the skeleton. A read that fails clears it and the panel
+    closes again — the error belongs on the page, not inside a panel about
+    one ticket.
+  */
   const onOpenIssue = useCallback(
     (issueKey: string) => {
       setOpeningKey(issueKey);
+      // The previous ticket goes now rather than when the next one lands, or
+      // the panel shows the last ticket while a different row is marked.
+      setSelected(null);
+      /*
+        Which ticket the panel is for. Clicking a second row while the first
+        is still in flight must not let the slower response land on top of
+        the faster one, and neither `openingKey` nor `selected` can be read
+        inside this closure to tell — both are stale by then. A ref is read at
+        resolve time, so the check is against what the reader last asked for.
+      */
+      wantedKey.current = issueKey;
       void issue(boardId, issueKey).then((detail) => {
+        if (wantedKey.current !== issueKey) {
+          return;
+        }
         setOpeningKey(null);
         if (detail !== null) {
           setSelected(detail);
@@ -939,17 +1092,27 @@ export function JiraBoard({
         panel would otherwise empty itself mid-flight.
       */}
       <PeekPanel
-        open={selected !== null}
+        // Open from the click, through the read, until it is closed: the
+        // panel is what answers the click, and the ticket arrives into it.
+        open={selected !== null || openingKey !== null}
         onOpenChange={(next: boolean) => {
           if (!next) {
             setSelected(null);
+            setOpeningKey(null);
+            // So a response still in flight does not reopen the panel over a
+            // reader who has already closed it.
+            wantedKey.current = null;
           }
         }}
-        title={selected?.summary ?? "Ticket"}
+        title={selected?.summary ?? openingKey ?? "Ticket"}
         description="Read live from Jira. Nothing here has been priced."
         data-testid="issue-panel"
       >
-        {selected !== null && <IssueDetail issue={selected} />}
+        {selected === null ? (
+          <IssueDetailSkeleton />
+        ) : (
+          <IssueDetail issue={selected} />
+        )}
       </PeekPanel>
     </main>
   );
