@@ -16,7 +16,7 @@ import type {
   MembershipDto,
   OrganizationMemberDto,
 } from "@sandbox-factory/shared";
-import { Check, LogOut, Trash2, UserPlus, Users } from "lucide-react";
+import { LogOut, Trash2, UserPlus, Users } from "lucide-react";
 import {
   HANDLE_MAX_LENGTH,
   isValidHandle,
@@ -34,7 +34,7 @@ import { AvatarField, UPLOAD_COMING_SOON } from "@/components/AvatarField";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { EditableField } from "@/components/EditableField";
 import { EntityAvatar } from "@/components/Avatar";
-import { ErrorBanner, FormStatus } from "@/components/Message";
+import { ErrorBanner, FormStatus, LoadingLine } from "@/components/Message";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -102,12 +102,17 @@ export function Organization({
       const res = await fetch(`/api/v1/orgs/${organization.id}/members`, {
         credentials: "include",
       });
-      if (res.ok) {
-        setMembers(
-          ((await res.json()) as { members: OrganizationMemberDto[] }).members,
-        );
-        setLoaded(true);
+      if (!res.ok) {
+        // It used to ignore this entirely, so a 500 left an empty member list
+        // and no reason for it — an organization that looked as though it had
+        // lost everybody.
+        setError("Could not load this organization.");
+        return;
       }
+      setMembers(
+        ((await res.json()) as { members: OrganizationMemberDto[] }).members,
+      );
+      setLoaded(true);
       setError(null);
     } catch {
       setError("Could not load this organization.");
@@ -295,6 +300,11 @@ export function Organization({
               </CardHeader>
 
               <CardContent className="flex flex-col gap-2">
+                {/* Until the list has answered once. It rendered an empty
+                    card before, so an organization briefly looked as though
+                    it had no members — which it never can. */}
+                {!loaded && <LoadingLine />}
+
                 {members.map((entry) => {
                   // The last owner cannot be removed or demoted; the plugin
                   // refuses it, and disabling the control says so before the
@@ -320,11 +330,11 @@ export function Organization({
                         what is read first. A non-breaking space holds the
                         second line's height for somebody with no handle, so
                         rows in one list stay the same height. */}
-                      <span className="flex-1">
-                        <span className="block text-sm font-medium">
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm font-medium">
                           {entry.name}
                         </span>
-                        <span className="text-muted-foreground block text-xs">
+                        <span className="text-muted-foreground block truncate text-xs">
                           {entry.username !== null ? `@${entry.username}` : " "}
                         </span>
                       </span>
@@ -334,7 +344,9 @@ export function Organization({
                           entry.role === "owner" ? "default" : "secondary"
                         }
                       >
-                        {entry.role === "owner" && <Check />}
+                        {/* No tick: the organizations list draws the same
+                            badge without one, and a filled badge already
+                            says which role this is. */}
                         <span className="capitalize">{entry.role}</span>
                       </Badge>
 
@@ -1079,11 +1091,29 @@ export function CreateOrganization({
               aria-label="Organization name"
               placeholder="Acme Robotics"
               value={name}
+              // The only field on the page, and the page exists to fill it in.
+              autoFocus
               onChange={(event) => {
                 setName(event.target.value);
                 setError(null);
               }}
             />
+
+            {/*
+              The handle this name will get. It was derived and sent but never
+              shown, so the one thing the form decides on your behalf was
+              invisible until the settings page afterwards.
+
+              `aria-live` because it changes as the name is typed, and the slot
+              is held open so the buttons below do not jump when the first
+              character arrives.
+            */}
+            <p
+              aria-live="polite"
+              className="text-muted-foreground min-h-4 text-xs"
+            >
+              {slug === "" ? "\u00a0" : `Handle: @${slug}`}
+            </p>
 
             <div className="flex gap-2">
               <Button

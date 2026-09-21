@@ -37,6 +37,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { ErrorBanner, LoadingLine } from "@/components/Message";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -282,28 +283,28 @@ export function ConnectionRow({
 function BoardsError({ error }: { error: JiraFetchError }) {
   if (error.kind === "reconnect") {
     return (
-      <p className="text-sm text-destructive">
+      <ErrorBanner className="mt-0">
         That site&rsquo;s connection has expired or been revoked. Reconnect it
         above to read its boards again.
-      </p>
+      </ErrorBanner>
     );
   }
   if (error.kind === "scope") {
     return (
-      <p className="text-sm text-destructive" data-testid="jira-scope-error">
+      <ErrorBanner className="mt-0" data-testid="jira-scope-error">
         {error.message}
-      </p>
+      </ErrorBanner>
     );
   }
   if (error.kind === "jira") {
     return (
-      <p className="text-sm text-destructive">
+      <ErrorBanner className="mt-0">
         Jira refused that request. If the site was connected without the board
         permissions, reconnect it and grant them.
-      </p>
+      </ErrorBanner>
     );
   }
-  return <p className="text-sm text-destructive">{error.message}</p>;
+  return <ErrorBanner className="mt-0">{error.message}</ErrorBanner>;
 }
 
 /** How old a ticket is, which is the whole basis of the selection. */
@@ -780,7 +781,7 @@ function BoardsCard({
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-base">Boards</CardTitle>
+        <CardTitle>Boards</CardTitle>
         <CardDescription>
           Every board on this site, read when it was connected and again just
           now. Open one to see the tickets a run would price — read live from
@@ -941,10 +942,7 @@ export function JiraBoard({
       {error !== null && <BoardsError error={error} />}
 
       {loading ? (
-        <p className="text-muted-foreground flex items-center gap-2 text-sm">
-          <Loader2 className="size-4 animate-spin" />
-          Reading the backlog from Jira…
-        </p>
+        <LoadingLine>Reading the backlog from Jira…</LoadingLine>
       ) : backlog === null ? null : (
         /*
           The split. `md:grid-cols-2` is the half-and-half the panel asks for;
@@ -1077,7 +1075,7 @@ export function Jira({
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Connected sites</CardTitle>
+          <CardTitle>Connected sites</CardTitle>
           <CardDescription>
             Connecting lets us read the boards, backlogs and ticket text on a
             site. Every board on it is registered at once — we never store
@@ -1086,12 +1084,9 @@ export function Jira({
         </CardHeader>
         <CardContent>
           {loading ? (
-            <p className="flex items-center gap-2 text-sm text-muted-foreground">
-              <Loader2 className="size-4 animate-spin" />
-              Loading…
-            </p>
+            <LoadingLine />
           ) : error !== null ? (
-            <p className="text-sm text-destructive">{error}</p>
+            <ErrorBanner className="mt-0">{error}</ErrorBanner>
           ) : connections.length === 0 ? (
             <p className="text-sm text-muted-foreground">
               No sites connected yet.
@@ -1190,9 +1185,13 @@ export function JiraSite({
   if (connection === null) {
     return (
       <main className="mx-auto w-full max-w-2xl px-4 py-10 sm:px-6 sm:py-14">
-        <p className="text-muted-foreground text-sm">
-          {loading ? "Loading…" : "That site is not connected."}
-        </p>
+        {loading ? (
+          <LoadingLine />
+        ) : (
+          <p className="text-muted-foreground text-sm">
+            That site is not connected.
+          </p>
+        )}
       </main>
     );
   }
@@ -1235,7 +1234,7 @@ export function JiraSite({
       {manageable && (
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">Disconnect this site</CardTitle>
+            <CardTitle>Disconnect this site</CardTitle>
             <CardDescription>
               Removes our access and every board registered from it. Atlassian
               keeps its own record of the grant until you revoke it in your

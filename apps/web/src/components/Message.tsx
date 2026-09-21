@@ -26,10 +26,15 @@ import { cn } from "@/lib/utils";
 export function ErrorBanner({
   children,
   className,
+  ...rest
 }: {
   children: React.ReactNode;
   className?: string;
-}) {
+  /**
+   * The rest reaches the element, so a caller can keep the `data-testid` its
+   * own tests already look it up by.
+   */
+} & React.ComponentProps<"p">) {
   return (
     <p
       role="alert"
@@ -37,6 +42,7 @@ export function ErrorBanner({
         "text-destructive border-destructive/35 bg-destructive/7 mt-6 rounded-lg border px-3 py-2.5 text-sm",
         className,
       )}
+      {...rest}
     >
       {children}
     </p>

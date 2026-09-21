@@ -27,9 +27,10 @@
  * still shown: both are something to act on rather than nothing.
  */
 
-import { ArrowRight, Link2, Loader2, TriangleAlert } from "lucide-react";
+import { ArrowRight, Link2, TriangleAlert } from "lucide-react";
 import type { MembershipDto } from "@sandbox-factory/shared";
 
+import { ErrorBanner, LoadingLine } from "@/components/Message";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -94,7 +95,7 @@ function Group({
     <Card>
       <CardHeader className="flex-row items-start justify-between gap-4 space-y-0">
         <div className="min-w-0">
-          <CardTitle className="flex items-center gap-2 text-base">
+          <CardTitle className="flex items-center gap-2">
             <span className="truncate">{groupLabel(organization)}</span>
             {organization.kind === "personal" && (
               <Badge variant="secondary">Your account</Badge>
@@ -118,9 +119,9 @@ function Group({
         {failed ? (
           // One organization failing must not empty the others; it says so
           // here and the rest of the page still works.
-          <p className="text-destructive text-sm">
+          <ErrorBanner className="mt-0">
             Could not load these connections.
-          </p>
+          </ErrorBanner>
         ) : healthy.length === 0 && broken === 0 ? (
           <p className="text-muted-foreground text-sm">
             No sites connected yet.
@@ -209,16 +210,13 @@ export function Home({
       )}
 
       {loading ? (
-        <p className="text-muted-foreground flex items-center gap-2 text-sm">
-          <Loader2 className="size-4 animate-spin" />
-          Loading…
-        </p>
+        <LoadingLine />
       ) : error !== null ? (
-        <p className="text-destructive text-sm">{error}</p>
+        <ErrorBanner className="mt-0">{error}</ErrorBanner>
       ) : visible.length === 0 ? (
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">No sites connected yet</CardTitle>
+            <CardTitle>No sites connected yet</CardTitle>
             <CardDescription>
               {groups.length === 0
                 ? "You are not in an organization yet, so there is nowhere to connect a site."

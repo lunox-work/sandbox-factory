@@ -280,7 +280,7 @@ export function Account({
                   key={invitation.id}
                   className="bg-muted/35 flex flex-wrap items-center gap-2 rounded-lg border px-3.5 py-3"
                 >
-                  <span className="flex-1 text-sm font-medium">
+                  <span className="min-w-0 flex-1 truncate text-sm font-medium">
                     {invitation.organization.name}
                     <span className="text-muted-foreground ml-1.5 font-normal">
                       as {invitation.role}
@@ -316,7 +316,7 @@ export function Account({
         <Card>
           <CardHeader>
             <CardTitle role="heading" aria-level={2}>
-              Connected Accounts
+              Connected accounts
             </CardTitle>
             <CardDescription>
               Each address is proved by an account you connected.

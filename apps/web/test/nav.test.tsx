@@ -578,3 +578,16 @@ test("a site on the home screen opens that site's page", async () => {
     expect(window.location.pathname).toBe("/o/acme/jira/jrc_1");
   });
 });
+
+test("cancelling a new organization goes back to the list, not home", async () => {
+  // The trail says Organizations is the parent, and it is where the button
+  // that opens this form lives.
+  window.history.replaceState(null, "", "/organizations/new");
+  render(<App />);
+
+  fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
+
+  await waitFor(() => {
+    expect(window.location.pathname).toBe("/organizations");
+  });
+});

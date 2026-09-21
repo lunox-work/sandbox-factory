@@ -21,7 +21,7 @@ export function App() {
   if (isPending) {
     return (
       <main className="grid min-h-dvh place-items-center">
-        <p className="text-muted-foreground text-sm">Loading…</p>
+        <LoadingLine />
       </main>
     );
   }
@@ -230,7 +230,9 @@ function Signed({
               // re-rendered yet — see `navigate`.
               navigate("org-settings", slug);
             }}
-            onCancel={() => navigate("home")}
+            // Back to the list this form was opened from, which the trail
+            // also names as its parent — not home, one level past it.
+            onCancel={() => navigate("organizations")}
           />
         ) : screen === "org-jira-board" ? (
           organizations.active === null ||

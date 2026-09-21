@@ -22,7 +22,7 @@ import type { MembershipDto } from "@sandbox-factory/shared";
 import { ChevronRight, Plus } from "lucide-react";
 
 import { EntityAvatar } from "@/components/Avatar";
-import { ErrorBanner } from "@/components/Message";
+import { ErrorBanner, LoadingLine } from "@/components/Message";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -91,7 +91,7 @@ export function Organizations({
 
       <div className="mt-8">
         {loading ? (
-          <p className="text-muted-foreground text-sm">Loading…</p>
+          <LoadingLine />
         ) : organizations.length === 0 ? (
           // An empty state that says what an organization is for, since
           // someone seeing this has never made one.

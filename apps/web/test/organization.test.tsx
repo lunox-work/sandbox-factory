@@ -1094,3 +1094,95 @@ test("the unbuilt tools carry a badge, not a Manage button", async () => {
   const jira = screen.getByRole("button", { name: "Manage Jira connections" });
   expect(within(jira).getByText("Manage")).toBeDefined();
 });
+
+// ---- the page says what it is doing ---------------------------------------
+
+test("the members list says it is loading rather than looking empty", async () => {
+  // It rendered an empty list until the request answered, so an organization
+  // briefly looked as though it had no members — which it never can.
+  let release: (value: unknown) => void = () => {};
+  const pending = new Promise((resolve) => {
+    release = resolve;
+  });
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) =>
+      String(input).includes("/members")
+        ? pending.then(() => Response.json({ members: [owner] }))
+        : Promise.resolve(Response.json({})),
+    ),
+  );
+
+  showSettings();
+  await openTab("Members");
+
+  expect(await screen.findByRole("status")).toBeDefined();
+
+  release(null);
+  await waitFor(() => {
+    expect(screen.getByText("Dana")).toBeTruthy();
+  });
+});
+
+test("a members read that fails says so", async () => {
+  // It ignored `!res.ok` entirely, so a 500 left an empty list and no reason.
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) =>
+      Promise.resolve(
+        String(input).includes("/members")
+          ? Response.json({ error: "boom" }, { status: 500 })
+          : Response.json({}),
+      ),
+    ),
+  );
+
+  showSettings();
+
+  expect(
+    await screen.findByText(/could not load this organization/i),
+  ).toBeDefined();
+});
+
+test("a long member name does not grow the row", async () => {
+  serverWith([
+    owner,
+    {
+      id: "mem_2",
+      userId: "user_2",
+      role: "member",
+      name: "Grace Hopper With A Remarkably Long Display Name That Goes On",
+      username: "grace",
+      image: null,
+    },
+  ]);
+  showSettings();
+  await openTab("Members");
+
+  const name = await screen.findByText(/Grace Hopper With A Remarkably/);
+  // jsdom has no layout, so truncation is the class contract.
+  expect(name.className).toContain("truncate");
+});
+
+// ---- creating: the handle it will get, and the way back -------------------
+
+test("the derived handle is shown before it is created", async () => {
+  // It was computed and sent but never displayed, so the one thing the form
+  // decides on your behalf was invisible until the settings page afterwards.
+  render(<CreateOrganization onCreated={vi.fn()} onCancel={vi.fn()} />);
+
+  fireEvent.change(screen.getByLabelText("Organization name"), {
+    target: { value: "Acme Robotics" },
+  });
+
+  expect(await screen.findByText(/@acme-robotics/)).toBeDefined();
+});
+
+test("the name field takes the focus", () => {
+  // It is the only field, and the page exists to fill it in.
+  render(<CreateOrganization onCreated={vi.fn()} onCancel={vi.fn()} />);
+
+  expect(document.activeElement).toBe(
+    screen.getByLabelText("Organization name"),
+  );
+});
