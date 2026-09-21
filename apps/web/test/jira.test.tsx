@@ -10,7 +10,7 @@
  * The server is faked at the `fetch` boundary, as elsewhere in this suite.
  */
 
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
@@ -300,7 +300,218 @@ test("disconnecting asks the API and reloads the list", async () => {
     expect(calls.some((call) => call.method === "DELETE")).toBe(true);
   });
   // The list is re-read afterwards, so a failed delete cannot leave a stale row.
+  // Counted by route rather than by verb: the page also lists boards on load,
+  // and a bare GET count would pass or fail on an unrelated call.
   await waitFor(() => {
-    expect(calls.filter((call) => call.method === "GET")).toHaveLength(2);
+    expect(
+      calls.filter(
+        (call) => call.method === "GET" && call.url.endsWith("/connections"),
+      ),
+    ).toHaveLength(2);
   });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Boards and the backlog preview                                             */
+/* -------------------------------------------------------------------------- */
+
+const board = {
+  id: "jrb_1",
+  connectionId: "jrc_1",
+  externalId: "42",
+  name: "Acme Board",
+  boardType: "scrum",
+  projectKey: "ACME",
+  selection: { maxTickets: 10, excludeAssigned: true },
+  writebackEnabled: false,
+  createdAt: "2026-09-21T00:00:00.000Z",
+};
+
+function issue(n: number, created: string) {
+  return {
+    id: String(1000 + n),
+    key: `ACME-${n}`,
+    summary: `Ticket ${n}`,
+    status: "To Do",
+    statusCategory: "new",
+    assignee: null,
+    issueType: "Task",
+    created,
+    updated: created,
+    url: `https://acme.atlassian.net/browse/ACME-${n}`,
+  };
+}
+
+/**
+ * The server, faked per route rather than as one blanket response.
+ *
+ * The page now makes three different calls, and answering them all with the
+ * same body is how a test passes while the page is broken.
+ */
+function routedFetch(
+  overrides: {
+    boards?: { status?: number; body?: unknown };
+    remote?: { status?: number; body?: unknown };
+    preview?: { status?: number; body?: unknown };
+  } = {},
+) {
+  return vi.fn((input: string) => {
+    const url = String(input);
+    const json = (body: unknown, status = 200) =>
+      Promise.resolve(
+        new Response(status === 204 ? null : JSON.stringify(body), {
+          status,
+          headers: { "content-type": "application/json" },
+        }),
+      );
+
+    if (url.includes("backlog-preview")) {
+      const spec = overrides.preview;
+      return json(
+        spec?.body ?? {
+          boardId: "jrb_1",
+          source: "backlog",
+          jql: "ORDER BY created ASC",
+          issues: [
+            issue(1, "2020-01-01T00:00:00.000Z"),
+            issue(2, "2021-01-01T00:00:00.000Z"),
+          ],
+        },
+        spec?.status ?? 200,
+      );
+    }
+    if (url.includes("/connections/") && url.endsWith("/boards")) {
+      const spec = overrides.remote;
+      return json(
+        spec?.body ?? {
+          boards: [
+            { id: 42, name: "Acme Board", type: "scrum", projectKey: "ACME" },
+            { id: 43, name: "Other Board", type: "kanban", projectKey: "OTH" },
+          ],
+        },
+        spec?.status ?? 200,
+      );
+    }
+    if (url.endsWith("/jira/boards")) {
+      const spec = overrides.boards;
+      return json(spec?.body ?? { boards: [board] }, spec?.status ?? 200);
+    }
+    return json({ connections: [connection] });
+  });
+}
+
+test("a registered board is listed with the settings a run would use", async () => {
+  vi.stubGlobal("fetch", routedFetch());
+
+  renderPage();
+
+  expect(await screen.findByText("Acme Board")).toBeDefined();
+  expect(screen.getByText(/oldest 10/i)).toBeDefined();
+});
+
+test("previewing a board shows its oldest tickets, newest last", async () => {
+  vi.stubGlobal("fetch", routedFetch());
+  renderPage();
+  await screen.findByText("Acme Board");
+
+  await userEvent.click(screen.getByRole("button", { name: /preview/i }));
+
+  const preview = await screen.findByTestId("backlog-preview");
+  expect(preview).toBeDefined();
+  // The ordering is the product's claim about which work is worth a bounty.
+  const keys = within(preview)
+    .getAllByText(/^ACME-\d+$/)
+    .map((node) => node.textContent);
+  expect(keys).toEqual(["ACME-1", "ACME-2"]);
+  expect(screen.getByText("Ticket 1")).toBeDefined();
+});
+
+test("the preview says nothing was stored", async () => {
+  // The promise the page makes: looking at a board is not pricing it.
+  vi.stubGlobal("fetch", routedFetch());
+  renderPage();
+  await screen.findByText("Acme Board");
+
+  await userEvent.click(screen.getByRole("button", { name: /preview/i }));
+
+  expect(await screen.findByText(/nothing was stored/i)).toBeDefined();
+});
+
+test("an empty backlog is explained rather than shown as a blank table", async () => {
+  vi.stubGlobal(
+    "fetch",
+    routedFetch({
+      preview: {
+        body: { boardId: "jrb_1", source: "backlog", jql: "", issues: [] },
+      },
+    }),
+  );
+  renderPage();
+  await screen.findByText("Acme Board");
+
+  await userEvent.click(screen.getByRole("button", { name: /preview/i }));
+
+  expect(await screen.findByText(/no tickets match/i)).toBeDefined();
+});
+
+test("a revoked grant asks for a reconnect rather than a retry", async () => {
+  // 409 with `reconnect` is the one failure a retry cannot fix.
+  vi.stubGlobal(
+    "fetch",
+    routedFetch({
+      preview: { status: 409, body: { error: "gone", code: "reconnect" } },
+    }),
+  );
+  renderPage();
+  await screen.findByText("Acme Board");
+
+  await userEvent.click(screen.getByRole("button", { name: /preview/i }));
+
+  expect(await screen.findByText(/expired or been revoked/i)).toBeDefined();
+});
+
+test("adding a board registers it against the site it was listed from", async () => {
+  // Reading the connection from the list instead would attach the board to
+  // whichever site happened to be first.
+  const fetchMock = routedFetch();
+  vi.stubGlobal("fetch", fetchMock);
+  renderPage();
+  await screen.findByText("Acme Board");
+
+  await userEvent.click(screen.getByRole("button", { name: /add a board/i }));
+  await screen.findByText(/Other Board/);
+  const rows = screen.getAllByRole("button", { name: /^add$/i });
+  await userEvent.click(rows[rows.length - 1] as HTMLElement);
+
+  const post = fetchMock.mock.calls.find(
+    ([, init]) => (init as RequestInit | undefined)?.method === "POST",
+  );
+  expect(post).toBeDefined();
+  expect(JSON.parse(String((post?.[1] as RequestInit).body))).toEqual({
+    connectionId: "jrc_1",
+    externalId: "43",
+  });
+});
+
+test("a board already registered cannot be added twice", async () => {
+  vi.stubGlobal("fetch", routedFetch());
+  renderPage();
+  await screen.findByText("Acme Board");
+
+  await userEvent.click(screen.getByRole("button", { name: /add a board/i }));
+  await screen.findByText(/Other Board/);
+
+  // 42 is already registered, so its control reads "Added" and is disabled.
+  expect(screen.getByRole("button", { name: /^added$/i })).toBeDefined();
+});
+
+test("a plain member sees boards but cannot add one", async () => {
+  vi.stubGlobal("fetch", routedFetch());
+
+  renderPage("member");
+
+  expect(await screen.findByText("Acme Board")).toBeDefined();
+  expect(screen.queryByRole("button", { name: /add a board/i })).toBeNull();
+  // Previewing is a read of tickets the organization already has a grant for.
+  expect(screen.getByRole("button", { name: /preview/i })).toBeDefined();
 });

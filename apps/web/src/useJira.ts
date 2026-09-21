@@ -186,3 +186,204 @@ export function useJiraOutcome(): {
     }, []),
   };
 }
+
+/* -------------------------------------------------------------------------- */
+/* Boards and the backlog preview                                             */
+/* -------------------------------------------------------------------------- */
+
+/** A board on a connected site, as Jira reports it. Not yet registered. */
+export interface JiraRemoteBoard {
+  id: number;
+  name: string;
+  type: string;
+  projectKey: string | null;
+  projectName: string | null;
+}
+
+/** A board this organization has registered, with its settings. */
+export interface JiraBoard {
+  id: string;
+  connectionId: string;
+  externalId: string;
+  name: string;
+  boardType: string;
+  projectKey: string | null;
+  selection: {
+    maxTickets?: number;
+    excludeAssigned?: boolean;
+    minAgeDays?: number;
+    maxAgeDays?: number | null;
+    minSpecChars?: number;
+  };
+  writebackEnabled: boolean;
+  createdAt: string;
+}
+
+/** A ticket in the preview. The same DTO a run will price. */
+export interface JiraPreviewIssue {
+  id: string;
+  key: string;
+  summary: string;
+  status: string;
+  statusCategory: string;
+  assignee: string | null;
+  issueType: string;
+  created: string | null;
+  updated: string | null;
+  url: string | null;
+}
+
+export interface BacklogPreview {
+  boardId: string;
+  /** Which endpoint answered: a Kanban board has no backlog of its own. */
+  source: "backlog" | "board-issues";
+  jql: string;
+  issues: JiraPreviewIssue[];
+  total?: number;
+}
+
+/**
+ * Why a Jira read failed, in the terms the page acts on.
+ *
+ * `reconnect` is the one that matters: the grant is gone and no retry helps,
+ * so the page offers to reconnect rather than a "try again" that cannot work.
+ */
+export type JiraFetchError =
+  { kind: "reconnect" } | { kind: "jira" } | { kind: "other"; message: string };
+
+/** Turns a failed response into the error the page renders. */
+async function toFetchError(res: Response): Promise<JiraFetchError> {
+  const body = (await res.json().catch(() => null)) as {
+    code?: string;
+    error?: string;
+  } | null;
+  if (body?.code === "reconnect") {
+    return { kind: "reconnect" };
+  }
+  if (body?.code === "jira") {
+    return { kind: "jira" };
+  }
+  return { kind: "other", message: body?.error ?? "Something went wrong." };
+}
+
+export interface JiraBoards {
+  /** Registered boards. */
+  boards: JiraBoard[];
+  loading: boolean;
+  error: JiraFetchError | null;
+  /** Boards on a site, fetched on demand because each call reaches Jira. */
+  listRemote: (connectionId: string) => Promise<JiraRemoteBoard[]>;
+  register: (connectionId: string, externalId: string) => Promise<void>;
+  preview: (boardId: string) => Promise<BacklogPreview | null>;
+  refresh: () => Promise<void>;
+}
+
+/**
+ * Registered boards, and the two live reads that go through them.
+ *
+ * `listRemote` and `preview` return rather than storing into state: both reach
+ * Jira, both are slow enough to need their own spinner, and only one board is
+ * ever being looked at. Holding every board's preview in one hook would make
+ * the page re-render on a read the user is no longer waiting for.
+ */
+export function useJiraBoards(organizationId: string | undefined): JiraBoards {
+  const [boards, setBoards] = useState<JiraBoard[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<JiraFetchError | null>(null);
+
+  const base =
+    organizationId === undefined
+      ? undefined
+      : `/api/v1/orgs/${encodeURIComponent(organizationId)}/jira`;
+
+  const refresh = useCallback(async () => {
+    if (base === undefined) {
+      setBoards([]);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    try {
+      const res = await fetch(`${base}/boards`, { credentials: "include" });
+      if (!res.ok) {
+        setError(await toFetchError(res));
+        setBoards([]);
+        setLoading(false);
+        return;
+      }
+      const body = (await res.json()) as { boards?: JiraBoard[] } | null;
+      setBoards(body?.boards ?? []);
+      setError(null);
+    } catch {
+      setError({ kind: "other", message: "Could not reach the server." });
+      setBoards([]);
+    }
+    setLoading(false);
+  }, [base]);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  const listRemote = useCallback(
+    async (connectionId: string) => {
+      if (base === undefined) {
+        return [];
+      }
+      const res = await fetch(
+        `${base}/connections/${encodeURIComponent(connectionId)}/boards`,
+        { credentials: "include" },
+      );
+      if (!res.ok) {
+        setError(await toFetchError(res));
+        return [];
+      }
+      setError(null);
+      const body = (await res.json()) as { boards?: JiraRemoteBoard[] } | null;
+      return body?.boards ?? [];
+    },
+    [base],
+  );
+
+  const register = useCallback(
+    async (connectionId: string, externalId: string) => {
+      if (base === undefined) {
+        return;
+      }
+      const res = await fetch(`${base}/boards`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ connectionId, externalId }),
+      });
+      if (!res.ok) {
+        setError(await toFetchError(res));
+        return;
+      }
+      setError(null);
+      await refresh();
+    },
+    [base, refresh],
+  );
+
+  const preview = useCallback(
+    async (boardId: string) => {
+      if (base === undefined) {
+        return null;
+      }
+      const res = await fetch(
+        `${base}/boards/${encodeURIComponent(boardId)}/backlog-preview`,
+        { credentials: "include" },
+      );
+      if (!res.ok) {
+        setError(await toFetchError(res));
+        return null;
+      }
+      setError(null);
+      return (await res.json()) as BacklogPreview;
+    },
+    [base],
+  );
+
+  return { boards, loading, error, listRemote, register, preview, refresh };
+}

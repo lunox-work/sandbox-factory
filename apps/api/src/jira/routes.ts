@@ -22,21 +22,31 @@
  * checked again when the callback lands, not merely when the flow starts.
  */
 
-import type { JiraConnectionStore } from "@sandbox-factory/db";
+import type { JiraBoardStore, JiraConnectionStore } from "@sandbox-factory/db";
 import {
   accessibleSites,
+  backlogJql,
+  backlogSource,
   exchangeCode,
+  JiraApiError,
   JiraAuthError,
   READ_SCOPES,
   stripTrailingSlashes,
 } from "@sandbox-factory/jira";
+import {
+  boardSelectionSchema,
+  registerBoardSchema,
+  updateBoardSchema,
+} from "@sandbox-factory/shared";
 import type { Hono } from "hono";
 
+import { jiraClientFor, noteAuthFailure } from "./credential.js";
 import { signState, verifyState } from "./state.js";
 
 /** What the routes need. Supplied by `createApp`, faked in tests. */
 export interface JiraRouteOptions {
   connections: JiraConnectionStore;
+  boards: JiraBoardStore;
   /**
    * The caller's current role in an organization, or undefined if they are not
    * a member. Read again in the callback — see the comment there.
@@ -104,6 +114,7 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
 ): void {
   const {
     connections,
+    boards,
     roleOf,
     clientId,
     clientSecret,
@@ -113,6 +124,15 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
     fetch: fetchImpl,
     now,
   } = options;
+
+  /** What `jiraClientFor` needs, assembled once rather than per route. */
+  const clientOptions = {
+    connections,
+    clientId,
+    clientSecret,
+    ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }),
+    ...(now === undefined ? {} : { now }),
+  };
 
   // `stripTrailingSlashes`, not `replace(/\/+$/, "")`: that pattern is the one
   // CodeQL flagged as a ReDoS on PR #25, and `apiUrl` is configuration rather
@@ -303,6 +323,260 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
     }
     return c.body(null, 204);
   });
+
+  /**
+   * The boards a connection can see, live from Jira.
+   *
+   * Not stored: a site's boards change without telling us, and a stale list is
+   * worse than a round trip here. Registering one is what creates a row.
+   */
+  app.get("/api/v1/orgs/:orgId/jira/connections/:id/boards", async (c) => {
+    const { organizationId } = c.get("member");
+    const connectionId = c.req.param("id");
+
+    const result = await jiraClientFor(
+      clientOptions,
+      organizationId,
+      connectionId,
+    );
+    if (!result.ok) {
+      return failureResponse(c, result.failure);
+    }
+
+    try {
+      return c.json({ boards: await result.client.boards() });
+    } catch (error) {
+      return await jiraFailure(c, connections, connectionId, error);
+    }
+  });
+
+  /** The boards this organization has registered. Local rows, no Jira call. */
+  app.get("/api/v1/orgs/:orgId/jira/boards", async (c) => {
+    return c.json({
+      boards: await boards.list(c.get("member").organizationId),
+    });
+  });
+
+  /**
+   * Register a board, or re-register it to change its settings.
+   *
+   * The name, type and project key are read from Jira rather than taken from
+   * the body: they are Jira's to state, and a client that sent its own could
+   * register a board under a name the site does not use.
+   *
+   * Owners and admins only, matching who may connect a site. Registering a
+   * board is what decides which of a client's tickets get priced.
+   */
+  app.post("/api/v1/orgs/:orgId/jira/boards", async (c) => {
+    const { organizationId, role } = c.get("member");
+    if (!isAtLeastAdmin(role)) {
+      return c.json({ error: "Only an owner or admin may add a board." }, 403);
+    }
+
+    const parsed = registerBoardSchema.safeParse(await c.req.json());
+    if (!parsed.success) {
+      return c.json({ error: "Provide a connection and a board." }, 400);
+    }
+
+    const result = await jiraClientFor(
+      clientOptions,
+      organizationId,
+      parsed.data.connectionId,
+    );
+    if (!result.ok) {
+      return failureResponse(c, result.failure);
+    }
+
+    let board;
+    try {
+      // Read through the board list rather than by id: the Agile endpoint for
+      // a single board answers 404 for one the grant cannot see, which is
+      // indistinguishable from one that does not exist.
+      const visible = await result.client.boards();
+      board = visible.find(
+        (candidate) => String(candidate.id) === parsed.data.externalId,
+      );
+    } catch (error) {
+      return await jiraFailure(c, connections, parsed.data.connectionId, error);
+    }
+
+    if (board === undefined) {
+      return c.json({ error: "That board is not on this Jira site." }, 404);
+    }
+
+    return c.json(
+      {
+        board: await boards.register(organizationId, {
+          connectionId: parsed.data.connectionId,
+          externalId: String(board.id),
+          name: board.name,
+          boardType: board.type,
+          projectKey: board.projectKey,
+          // Defaults filled in here, so a row always holds a complete set and
+          // the preview does not have to re-derive them.
+          selection: boardSelectionSchema.parse(parsed.data.selection ?? {}),
+        }),
+      },
+      201,
+    );
+  });
+
+  /** Edit a board's settings. The selection is merged; see the store. */
+  app.patch("/api/v1/orgs/:orgId/jira/boards/:id", async (c) => {
+    const { organizationId, role } = c.get("member");
+    if (!isAtLeastAdmin(role)) {
+      return c.json({ error: "Only an owner or admin may edit a board." }, 403);
+    }
+
+    const parsed = updateBoardSchema.safeParse(await c.req.json());
+    if (!parsed.success) {
+      return c.json(
+        { error: "Provide selection settings, a write-back flag, or both." },
+        400,
+      );
+    }
+
+    const updated = await boards.update(organizationId, c.req.param("id"), {
+      ...(parsed.data.selection === undefined
+        ? {}
+        : {
+            selection: Object.fromEntries(
+              // `maxAgeDays: null` clears the bound, and the store merges, so
+              // an undefined-stripping spread would drop the clear. Nulls are
+              // kept; only genuinely absent keys are removed.
+              Object.entries(parsed.data.selection).filter(
+                ([, value]) => value !== undefined,
+              ),
+            ),
+          }),
+      ...(parsed.data.writebackEnabled === undefined
+        ? {}
+        : { writebackEnabled: parsed.data.writebackEnabled }),
+    });
+
+    if (updated === null) {
+      return c.json({ error: "Not found" }, 404);
+    }
+    return c.json({ board: updated });
+  });
+
+  /**
+   * The tickets a run would price, read live and priced by nobody.
+   *
+   * The point of the route: a client can see exactly which tickets their
+   * settings select before spending a model call on any of them. It stores
+   * nothing — no `jira_issue` row, no run — so pressing it twice is free and
+   * looking at a board stays distinguishable from pricing it.
+   *
+   * Any member may call it. It reads tickets the organization already has a
+   * grant for and reveals nothing a board's own backlog view would not.
+   */
+  app.get("/api/v1/orgs/:orgId/jira/boards/:id/backlog-preview", async (c) => {
+    const { organizationId } = c.get("member");
+
+    const registered = await boards.forRun(organizationId, c.req.param("id"));
+    if (registered === null) {
+      return c.json({ error: "Not found" }, 404);
+    }
+    const { board, connectionId } = registered;
+
+    const result = await jiraClientFor(
+      clientOptions,
+      organizationId,
+      connectionId,
+    );
+    if (!result.ok) {
+      return failureResponse(c, result.failure);
+    }
+
+    // Parsed rather than cast: a row written before a setting existed holds
+    // none of its defaults, and the JQL builder reads every field.
+    const selection = boardSelectionSchema.parse(board.selection);
+    const source = backlogSource(board.boardType);
+    const jql = backlogJql(selection, {
+      projectKey: board.projectKey ?? undefined,
+      source,
+      ...(now === undefined ? {} : { now: new Date(now()) }),
+    });
+
+    const boardId = Number(board.externalId);
+    if (!Number.isInteger(boardId)) {
+      // Jira's board ids are numeric; a row holding anything else predates a
+      // check or was written by hand, and the Agile URL would 404 opaquely.
+      return c.json({ error: "That board has an unusable id." }, 422);
+    }
+
+    try {
+      const page =
+        source === "backlog"
+          ? await result.client.backlogIssues(boardId, {
+              jql,
+              maxResults: selection.maxTickets,
+            })
+          : await result.client.boardIssues(boardId, {
+              jql,
+              maxResults: selection.maxTickets,
+            });
+
+      return c.json({
+        boardId: board.id,
+        source,
+        jql,
+        selection,
+        issues: page.issues,
+        ...(page.total === undefined ? {} : { total: page.total }),
+      });
+    } catch (error) {
+      return await jiraFailure(c, connections, connectionId, error);
+    }
+  });
+}
+
+/**
+ * A connection that cannot produce a client, as a response.
+ *
+ * `not-found` is a 404 rather than a 403 for the reason every owner-scoped
+ * read here is: another organization's connection id must look exactly like
+ * one that does not exist.
+ */
+function failureResponse(
+  c: { json: (body: unknown, status: 404 | 409) => Response },
+  failure: { reason: "not-found" | "reconnect" },
+): Response {
+  if (failure.reason === "reconnect") {
+    // 409 rather than 401: the caller's own session is fine, and answering 401
+    // would invite the browser to re-authenticate the wrong thing.
+    return c.json(
+      { error: "This Jira connection needs reconnecting.", code: "reconnect" },
+      409,
+    );
+  }
+  return c.json({ error: "Not found" }, 404);
+}
+
+/**
+ * A failed Jira call, as a response.
+ *
+ * Three outcomes, because they need three different things of the user: a
+ * revoked grant means reconnect, a 4xx from Jira means the request was wrong
+ * and is reported as it stands, and anything else is ours to fix and is
+ * re-thrown for the error handler.
+ */
+async function jiraFailure(
+  c: { json: (body: unknown, status: 404 | 409 | 502) => Response },
+  connections: JiraConnectionStore,
+  connectionId: string,
+  error: unknown,
+): Promise<Response> {
+  if (await noteAuthFailure(connections, connectionId, error)) {
+    return failureResponse(c, { reason: "reconnect" });
+  }
+  if (error instanceof JiraApiError) {
+    // Jira's own message is not forwarded: it can carry site detail, and the
+    // status is what the UI acts on.
+    return c.json({ error: "Jira refused that request.", code: "jira" }, 502);
+  }
+  throw error;
 }
 
 /**

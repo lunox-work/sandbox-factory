@@ -7,6 +7,7 @@ import { serve } from "@hono/node-server";
 import {
   createConnection,
   createEmailStore,
+  createJiraBoardStore,
   createJiraConnectionStore,
   createOrganizationStore,
   createProfileStore,
@@ -81,6 +82,7 @@ const jira =
           connection.db,
           createTokenCipher(env.TOKEN_ENCRYPTION_KEY),
         ),
+        boards: createJiraBoardStore(connection.db),
         clientId: jiraOAuth.clientId,
         clientSecret: jiraOAuth.clientSecret,
         // The same secret Better Auth signs sessions with. A forged `state`
