@@ -546,9 +546,10 @@ test("the board page lists its oldest tickets", async () => {
   expect(within(list).getByText("Ticket 1")).toBeDefined();
 });
 
-test("a ticket opens beside the list, not over it", async () => {
-  // The whole point of the split: reading one ticket must not cost the place
-  // in the list, or comparing two means opening each in turn from memory.
+test("a ticket opens over the list, which keeps its place", async () => {
+  // The property the split existed for, and the peek keeps: reading one
+  // ticket must not cost the place in the list, or comparing two means
+  // opening each in turn from memory.
   vi.stubGlobal("fetch", routedFetch());
   renderBoard();
   await screen.findByTestId("backlog-preview");
@@ -559,20 +560,37 @@ test("a ticket opens beside the list, not over it", async () => {
   expect(
     within(panel).getByText(/Establish the canonical data model/),
   ).toBeDefined();
-  // The list is still there, which a dialog took away.
-  const list = screen.getByTestId("backlog-preview");
-  expect(list).toBeDefined();
 
   /*
-    And still *visible* beside the panel, not merely present in the DOM.
-    jsdom has no viewport, so `hidden md:block` and a plain `hidden` are
-    indistinguishable to a visibility check — the class contract is what
-    carries the behaviour, so that is what is asserted. The wrapper hides the
-    list only below `md`, where the panel covers it instead.
+    The list is still mounted behind the peek, holding its scroll position
+    and its selection. `hidden: true` because the panel is a modal, so
+    everything outside it is `aria-hidden` and the default queries skip it —
+    which is the point: it is there, and it is not what the reader is in.
   */
-  const column = list.parentElement;
-  expect(column?.className).toContain("hidden");
-  expect(column?.className).toContain("md:block");
+  const list = screen.getByTestId("backlog-preview", { hidden: true });
+  expect(list).toBeDefined();
+  expect(within(list).getAllByRole("button", { hidden: true })).toHaveLength(2);
+});
+
+test("the peek is a dialog, so Escape and a click outside close it", async () => {
+  // What a peek buys over a column: the focus trap, the return of focus to
+  // the row, and one obvious way out that does not need a bespoke control.
+  vi.stubGlobal("fetch", routedFetch());
+  renderBoard();
+  await screen.findByTestId("backlog-preview");
+
+  await userEvent.click(screen.getByText("Ticket 1"));
+  await screen.findByTestId("issue-panel");
+
+  expect(screen.getByRole("dialog")).toBeDefined();
+
+  await userEvent.keyboard("{Escape}");
+
+  await waitFor(() => {
+    expect(screen.queryByTestId("issue-panel")).toBeNull();
+  });
+  // And the list is the reader's again.
+  expect(screen.getByTestId("backlog-preview")).toBeDefined();
 });
 
 test("the ticket being read is marked in the list", async () => {
@@ -585,14 +603,19 @@ test("the ticket being read is marked in the list", async () => {
   await userEvent.click(screen.getByText("Ticket 1"));
   await screen.findByTestId("issue-panel");
 
-  // Scoped to the list: the panel's own heading repeats the summary.
-  const list = screen.getByTestId("backlog-preview");
+  /*
+    Scoped to the list, and `hidden: true` because the peek is a modal that
+    marks everything behind it `aria-hidden`. The mark matters more with a
+    peek than it did with the split: the list is what the reader comes back
+    to when the panel closes.
+  */
+  const list = screen.getByTestId("backlog-preview", { hidden: true });
   const row = within(list).getByText("Ticket 1").closest("button");
   expect(row?.getAttribute("aria-current")).toBe("true");
   // And only that one.
   expect(
     within(list)
-      .getAllByRole("button")
+      .getAllByRole("button", { hidden: true })
       .filter((node) => node.getAttribute("aria-current") === "true"),
   ).toHaveLength(1);
 });
@@ -604,13 +627,25 @@ test("picking another ticket swaps the panel, without leaving the list", async (
 
   const list = screen.getByTestId("backlog-preview");
   await userEvent.click(within(list).getByText("Ticket 1"));
-  await screen.findByTestId("issue-panel");
-  await userEvent.click(within(list).getByText("Ticket 2"));
+  const panel = await screen.findByTestId("issue-panel");
+  // The peek names the ticket it is showing. Scoped, because the panel's own
+  // `sr-only` title carries the same summary as the heading inside it.
+  expect(within(panel).getAllByText("Ticket 1").length).toBeGreaterThan(0);
 
+  // Closing and opening the next one, which is what a peek makes the reader
+  // do — and the list it returns to is still there to do it from.
+  await userEvent.keyboard("{Escape}");
   await waitFor(() => {
-    expect(screen.getByTestId("backlog-preview")).toBeDefined();
+    expect(screen.queryByTestId("issue-panel")).toBeNull();
+  });
+
+  await userEvent.click(
+    within(screen.getByTestId("backlog-preview")).getByText("Ticket 2"),
+  );
+  await waitFor(() => {
     expect(screen.getByTestId("issue-panel")).toBeDefined();
   });
+  expect(screen.getByTestId("backlog-preview", { hidden: true })).toBeDefined();
 });
 
 test("the panel shows the fields the list DTO does not carry", async () => {
@@ -954,30 +989,16 @@ test("the page keeps enough top padding for the breadcrumb's negative margin", a
 // entirely above the viewport — measured 400px up, with nothing on screen to
 // show the click had done anything but highlight a row.
 
-test("the panel is pinned in view rather than drawn at the top of the column", async () => {
-  vi.stubGlobal("fetch", routedFetch());
-  renderBoard();
-  await screen.findByTestId("backlog-preview");
-
-  await userEvent.click(screen.getByText("Ticket 1"));
-  const panel = await screen.findByTestId("issue-panel");
-
-  // jsdom has no layout, so the class contract carries the behaviour, as it
-  // does for the `hidden md:block` column beside it.
-  expect(panel.className).toContain("md:sticky");
-  expect(panel.className).toContain("md:top-6");
-});
-
-test("the panel is not a second scrolling region", async () => {
+test("the peek is its own scrolling region, and the only one", async () => {
   /*
-    The page column is the only scroller. A panel with its own
-    `overflow-y-auto` captures the wheel whenever the cursor is inside it and
-    leaves it to the page everywhere else, so reading a ticket meant moving
-    the pointer into the panel first — and scrolling with the cursor over the
-    list moved the page underneath instead of the ticket.
+    The whole reason a peek settles the scrolling question. The split pinned
+    the panel inside the page's own scroller, so either the panel captured
+    the wheel when the cursor was inside it, or a long ticket stretched the
+    page. A peek scrolls itself and Radix locks the page behind it, so the
+    wheel has one destination wherever the cursor is.
 
-    jsdom has no layout and no wheel, so the class contract is what carries
-    this; the behaviour itself is checked in a browser.
+    jsdom has no layout and no wheel, so the class contract carries this; the
+    behaviour itself is checked in a browser.
   */
   vi.stubGlobal("fetch", routedFetch());
   renderBoard();
@@ -986,22 +1007,28 @@ test("the panel is not a second scrolling region", async () => {
   await userEvent.click(screen.getByText("Ticket 1"));
   const panel = await screen.findByTestId("issue-panel");
 
+  const scroller = panel.querySelector(".overflow-y-auto");
+  expect(scroller).not.toBeNull();
+  // `overscroll-contain`, or reaching the end of the ticket starts scrolling
+  // the page behind the panel.
+  expect(scroller?.className).toContain("overscroll-contain");
+  // And the panel itself is not a second one.
   expect(panel.className).not.toContain("overflow-y-auto");
-  expect(panel.className).not.toContain("overflow-y-scroll");
-  // And no viewport cap, which is what made a long ticket need one.
-  expect(panel.className).not.toContain("max-h-");
 });
 
-test("the placeholder half is pinned too, so the panel does not jump into place", async () => {
-  // The empty half and the panel that replaces it must sit at the same height,
-  // or the first ticket opened appears to move the column.
+test("the peek comes in from the edge it is attached to", async () => {
+  // Where it came from and where closing it puts it back. Without the
+  // direction it reads as a dialog that happens to be against one side.
   vi.stubGlobal("fetch", routedFetch());
   renderBoard();
   await screen.findByTestId("backlog-preview");
 
-  const placeholder = screen.getByText(/Pick a ticket to read it here/);
-  expect(placeholder.className).toContain("md:sticky");
-  expect(placeholder.className).toContain("md:top-6");
+  await userEvent.click(screen.getByText("Ticket 1"));
+  const panel = await screen.findByTestId("issue-panel");
+
+  expect(panel.className).toContain("slide-in-from-right");
+  expect(panel.className).toContain("inset-y-0");
+  expect(panel.className).toContain("right-0");
 });
 
 test("the spec no longer scrolls inside the scrolling panel", async () => {
@@ -1018,28 +1045,29 @@ test("the spec no longer scrolls inside the scrolling panel", async () => {
   expect(spec.className).not.toContain("overflow-y-auto");
 });
 
-test("opening a ticket brings the panel into view where it covers the list", async () => {
-  // Below `md` the panel replaces the list, but the page keeps the scroll
-  // position the list had — so a ticket opened from the foot of a long list
-  // lands mid-spec. jsdom implements no layout and no `scrollIntoView`, so
-  // this asserts the call rather than the result.
-  const scrollIntoView = vi.fn();
+test("the peek returns focus to the row it was opened from", async () => {
+  /*
+    What replaces the old scroll-into-view dance. The split had to bring the
+    panel to the top by hand, because it rendered wherever the grid happened
+    to start. A peek is a focus trap: Radix moves focus into it on open and
+    hands it back to the trigger on close, so the reader lands on the row
+    they were reading and can carry on down the list.
+  */
   vi.stubGlobal("fetch", routedFetch());
-  const original = Element.prototype.scrollIntoView;
-  Element.prototype.scrollIntoView = scrollIntoView;
-  try {
-    renderBoard();
-    await screen.findByTestId("backlog-preview");
+  renderBoard();
+  await screen.findByTestId("backlog-preview");
 
-    await userEvent.click(screen.getByText("Ticket 1"));
-    await screen.findByTestId("issue-panel");
+  const row = within(screen.getByTestId("backlog-preview"))
+    .getByText("Ticket 1")
+    .closest("button");
+  await userEvent.click(row as HTMLElement);
+  await screen.findByTestId("issue-panel");
 
-    await waitFor(() => {
-      expect(scrollIntoView).toHaveBeenCalled();
-    });
-  } finally {
-    Element.prototype.scrollIntoView = original;
-  }
+  await userEvent.keyboard("{Escape}");
+
+  await waitFor(() => {
+    expect(document.activeElement).toBe(row);
+  });
 });
 
 // ---- the banner says its whole message ------------------------------------

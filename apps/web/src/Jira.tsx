@@ -12,7 +12,6 @@
  */
 
 import {
-  ChevronLeft,
   ChevronRight,
   CircleCheck,
   CircleX,
@@ -26,17 +25,12 @@ import {
   TriangleAlert,
   X,
 } from "lucide-react";
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { PeekPanel } from "@/components/PeekPanel";
 import { ErrorBanner, LoadingLine } from "@/components/Message";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -856,7 +850,6 @@ export function JiraBoard({
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<JiraIssueDetail | null>(null);
   const [openingKey, setOpeningKey] = useState<string | null>(null);
-  const panelRef = useRef<HTMLDivElement>(null);
 
   const board = boards.find((candidate) => candidate.id === boardId) ?? null;
   // The name passed in wins while the list is still arriving, so arriving
@@ -901,27 +894,6 @@ export function JiraBoard({
     [boardId, issue],
   );
 
-  /*
-    Below `md` the panel replaces the list rather than sitting beside it, but
-    the page keeps whatever scroll position the list had — so a ticket opened
-    from the foot of a long backlog opens somewhere in the middle of its own
-    spec. Bringing the panel to the top is what the reader expects from a
-    control that swaps the view.
-
-    Keyed on the ticket, so moving between two of them re-anchors rather than
-    leaving the second one scrolled to wherever the first was read. Harmless
-    at `md` and up, where the panel is pinned in view already.
-
-    The second `?.` is not defensive noise: jsdom implements no layout and no
-    `scrollIntoView`, so without it every test that opens a ticket throws.
-  */
-  const selectedKey = selected?.key;
-  useEffect(() => {
-    if (selectedKey !== undefined) {
-      panelRef.current?.scrollIntoView?.({ block: "start" });
-    }
-  }, [selectedKey]);
-
   return (
     <main className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-4 py-10 sm:px-6 sm:py-14">
       <header>
@@ -945,90 +917,40 @@ export function JiraBoard({
         <LoadingLine>Reading the backlog from Jira…</LoadingLine>
       ) : backlog === null ? null : (
         /*
-          The split. `md:grid-cols-2` is the half-and-half the panel asks for;
-          below that the two stack in one column and only one of them renders,
-          which is what makes the panel cover the list rather than squeeze
-          beside it.
-
-          `items-start` so each side is as tall as its own content: without it
-          the grid stretches both to the taller one, and a short list grows a
-          long empty border beside a long ticket. It is also what gives the
-          pinned panel room to travel — a stretched grid item has no slack to
-          stick within.
+          The list at full width, with the ticket opening over it rather than
+          beside it. See `PeekPanel` for why: half a column was not enough for
+          a spec with a table in it, and the other half was thirty rows of
+          truncated summaries nobody reads while reading a ticket.
         */
-        <div className="grid items-start gap-4 md:grid-cols-2">
-          <div
-            className={`overflow-hidden rounded-md border ${
-              selected === null ? "" : "hidden md:block"
-            }`}
-          >
-            <PreviewList
-              preview={backlog}
-              onOpenIssue={onOpenIssue}
-              openingKey={openingKey}
-              selectedKey={selected?.key ?? null}
-            />
-          </div>
-
-          {selected === null ? (
-            // The empty half, on wide screens only: a placeholder under the
-            // list on a phone would be a second thing to scroll past. Pinned
-            // exactly as the panel that replaces it, or the first ticket
-            // opened would appear to move the column.
-            <p className="text-muted-foreground hidden rounded-md border p-6 text-sm md:sticky md:top-6 md:block">
-              Pick a ticket to read it here.
-            </p>
-          ) : (
-            /*
-              Pinned to the top of the column while the list scrolls past it.
-
-              Without this the panel is drawn at the top of the grid, which is
-              wherever the list began — so opening a ticket from the foot of a
-              long backlog rendered it several hundred pixels above the
-              viewport, and the only thing that appeared to happen was the row
-              lighting up. `items-start` on the grid is what leaves it room to
-              travel; the shell's content column is the scroller it resolves
-              against.
-
-              No scroller of its own, deliberately. A panel with
-              `overflow-y-auto` is a second scrolling region, and the wheel
-              belongs to whichever one the cursor is over — so reading a
-              ticket meant moving the pointer into the panel first, and
-              scrolling with it over the list moved the page underneath
-              instead. One scroller, the page column, and the wheel does the
-              same thing wherever the cursor is.
-
-              A ticket taller than the viewport therefore makes the page
-              longer rather than scrolling inside a fixed box. Sticky stops
-              having anything to do once the panel outgrows the screen, which
-              is the right outcome: there is nothing to pin it against.
-            */
-            <div
-              ref={panelRef}
-              className="rounded-md border p-4 md:sticky md:top-6"
-              data-testid="issue-panel"
-            >
-              {/*
-                The way back, on narrow screens where the panel covers the
-                list. On a wide one the list is still there, so a control to
-                return to it would point at something already on screen.
-              */}
-              <Button
-                variant="ghost"
-                size="sm"
-                className="mb-2 -ml-2 gap-1 md:hidden"
-                onClick={() => {
-                  setSelected(null);
-                }}
-              >
-                <ChevronLeft className="size-4" />
-                All tickets
-              </Button>
-              <IssueDetail issue={selected} />
-            </div>
-          )}
+        <div className="overflow-hidden rounded-md border">
+          <PreviewList
+            preview={backlog}
+            onOpenIssue={onOpenIssue}
+            openingKey={openingKey}
+            selectedKey={selected?.key ?? null}
+          />
         </div>
       )}
+
+      {/*
+        Mounted whether or not a ticket is open, so Radix can animate it out
+        on close: unmounting on `selected === null` would make it vanish.
+        `selected` is held until the close finishes for the same reason — the
+        panel would otherwise empty itself mid-flight.
+      */}
+      <PeekPanel
+        open={selected !== null}
+        onOpenChange={(next: boolean) => {
+          if (!next) {
+            setSelected(null);
+          }
+        }}
+        title={selected?.summary ?? "Ticket"}
+        description="Read live from Jira. Nothing here has been priced."
+        data-testid="issue-panel"
+      >
+        {selected !== null && <IssueDetail issue={selected} />}
+      </PeekPanel>
     </main>
   );
 }
