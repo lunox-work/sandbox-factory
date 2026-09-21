@@ -233,6 +233,27 @@ export interface JiraPreviewIssue {
   url: string | null;
 }
 
+/** One ticket in full, as the detail view shows it. */
+export interface JiraIssueDetail extends JiraPreviewIssue {
+  descriptionText: string;
+  reporter: string | null;
+  creator: string | null;
+  resolution: string | null;
+  resolutionDate: string | null;
+  labels: string[];
+  priority: string | null;
+  parentKey: string | null;
+  projectKey: string | null;
+  dueDate: string | null;
+  components: string[];
+  fixVersions: string[];
+  originalEstimateSeconds: number | null;
+  remainingEstimateSeconds: number | null;
+  votes: number | null;
+  watchers: number | null;
+  environment: string | null;
+}
+
 export interface BacklogPreview {
   boardId: string;
   /** Which endpoint answered: a Kanban board has no backlog of its own. */
@@ -291,6 +312,8 @@ export interface JiraBoards {
   listRemote: (connectionId: string) => Promise<JiraRemoteBoard[]>;
   register: (connectionId: string, externalId: string) => Promise<void>;
   preview: (boardId: string) => Promise<BacklogPreview | null>;
+  /** One ticket in full. Read live, stored nowhere. */
+  issue: (boardId: string, issueKey: string) => Promise<JiraIssueDetail | null>;
   refresh: () => Promise<void>;
 }
 
@@ -401,5 +424,34 @@ export function useJiraBoards(organizationId: string | undefined): JiraBoards {
     [base],
   );
 
-  return { boards, loading, error, listRemote, register, preview, refresh };
+  const issue = useCallback(
+    async (boardId: string, issueKey: string) => {
+      if (base === undefined) {
+        return null;
+      }
+      const res = await fetch(
+        `${base}/boards/${encodeURIComponent(boardId)}/issues/${encodeURIComponent(issueKey)}`,
+        { credentials: "include" },
+      );
+      if (!res.ok) {
+        setError(await toFetchError(res));
+        return null;
+      }
+      setError(null);
+      const body = (await res.json()) as { issue?: JiraIssueDetail } | null;
+      return body?.issue ?? null;
+    },
+    [base],
+  );
+
+  return {
+    boards,
+    loading,
+    error,
+    listRemote,
+    register,
+    preview,
+    issue,
+    refresh,
+  };
 }

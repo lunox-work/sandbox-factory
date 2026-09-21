@@ -353,6 +353,7 @@ function routedFetch(
     boards?: { status?: number; body?: unknown };
     remote?: { status?: number; body?: unknown };
     preview?: { status?: number; body?: unknown };
+    detail?: { status?: number; body?: unknown };
   } = {},
 ) {
   return vi.fn((input: string) => {
@@ -365,6 +366,35 @@ function routedFetch(
         }),
       );
 
+    if (url.includes("/issues/")) {
+      const spec = overrides.detail;
+      return json(
+        spec?.body ?? {
+          issue: {
+            ...issue(1, "2020-01-01T00:00:00.000Z"),
+            descriptionText:
+              "## Objective\nEstablish the canonical data model.\n\n## Scope\n- Canonical entities\n- Multi-tenant isolation",
+            reporter: "charlie angriawan",
+            creator: "charlie angriawan",
+            resolution: null,
+            resolutionDate: null,
+            labels: ["foundation", "platform"],
+            priority: "Highest",
+            parentKey: null,
+            projectKey: "NOX",
+            dueDate: "2026-12-19",
+            components: [],
+            fixVersions: [],
+            originalEstimateSeconds: null,
+            remainingEstimateSeconds: null,
+            votes: 0,
+            watchers: 1,
+            environment: null,
+          },
+        },
+        spec?.status ?? 200,
+      );
+    }
     if (url.includes("backlog-preview")) {
       const spec = overrides.preview;
       return json(
@@ -409,21 +439,106 @@ test("a registered board is listed with its type and project", async () => {
   expect(screen.getByText(/scrum · ACME/i)).toBeDefined();
 });
 
-test("previewing a board shows its oldest tickets, newest last", async () => {
+test("previewing a board shows its oldest tickets in a dialog", async () => {
   vi.stubGlobal("fetch", routedFetch());
   renderPage();
   await screen.findByText("Acme Board");
 
+  expect(screen.queryByRole("dialog")).toBeNull();
   await userEvent.click(screen.getByRole("button", { name: /preview/i }));
 
-  const preview = await screen.findByTestId("backlog-preview");
-  expect(preview).toBeDefined();
+  const dialog = await screen.findByRole("dialog");
+  const preview = within(dialog).getByTestId("backlog-preview");
   // The ordering is the product's claim about which work is worth a bounty.
   const keys = within(preview)
     .getAllByText(/^ACME-\d+$/)
     .map((node) => node.textContent);
   expect(keys).toEqual(["ACME-1", "ACME-2"]);
-  expect(screen.getByText("Ticket 1")).toBeDefined();
+  expect(within(dialog).getByText("Ticket 1")).toBeDefined();
+});
+
+test("a ticket opens its full detail in the same dialog", async () => {
+  vi.stubGlobal("fetch", routedFetch());
+  renderPage();
+  await screen.findByText("Acme Board");
+  await userEvent.click(screen.getByRole("button", { name: /preview/i }));
+  const dialog = await screen.findByRole("dialog");
+
+  await userEvent.click(within(dialog).getByText("Ticket 1"));
+
+  const detail = await screen.findByTestId("issue-detail");
+  // Fields the list DTO does not carry, which is the point of the detail read.
+  expect(
+    within(detail).getByText(/Establish the canonical data model/),
+  ).toBeDefined();
+  expect(within(detail).getByText("charlie angriawan")).toBeDefined();
+  expect(within(detail).getByText("Highest")).toBeDefined();
+  expect(within(detail).getByText("foundation")).toBeDefined();
+  // One dialog, two views: the list is gone rather than stacked behind.
+  expect(screen.queryByTestId("backlog-preview")).toBeNull();
+});
+
+test("going back returns to the ticket list", async () => {
+  vi.stubGlobal("fetch", routedFetch());
+  renderPage();
+  await screen.findByText("Acme Board");
+  await userEvent.click(screen.getByRole("button", { name: /preview/i }));
+  const dialog = await screen.findByRole("dialog");
+  await userEvent.click(within(dialog).getByText("Ticket 1"));
+  await screen.findByTestId("issue-detail");
+
+  await userEvent.click(
+    screen.getByRole("button", { name: /back to the ticket list/i }),
+  );
+
+  expect(await screen.findByTestId("backlog-preview")).toBeDefined();
+  expect(screen.queryByTestId("issue-detail")).toBeNull();
+});
+
+test("a field Jira did not send renders no row", async () => {
+  // A site can omit almost any field; a column of empty labels is worse than
+  // a short list.
+  vi.stubGlobal(
+    "fetch",
+    routedFetch({
+      detail: {
+        body: {
+          issue: {
+            ...issue(1, "2020-01-01T00:00:00.000Z"),
+            descriptionText: "",
+            reporter: null,
+            creator: null,
+            resolution: null,
+            resolutionDate: null,
+            labels: [],
+            priority: null,
+            parentKey: null,
+            projectKey: null,
+            dueDate: null,
+            components: [],
+            fixVersions: [],
+            originalEstimateSeconds: null,
+            remainingEstimateSeconds: null,
+            votes: null,
+            watchers: null,
+            environment: null,
+          },
+        },
+      },
+    }),
+  );
+  renderPage();
+  await screen.findByText("Acme Board");
+  await userEvent.click(screen.getByRole("button", { name: /preview/i }));
+  const dialog = await screen.findByRole("dialog");
+  await userEvent.click(within(dialog).getByText("Ticket 1"));
+
+  const detail = await screen.findByTestId("issue-detail");
+  expect(within(detail).queryByText("Reporter")).toBeNull();
+  expect(within(detail).queryByText("Resolution")).toBeNull();
+  expect(within(detail).queryByText("Labels")).toBeNull();
+  // Assignee still shows, because "Unassigned" is information.
+  expect(within(detail).getByText("Unassigned")).toBeDefined();
 });
 
 test("the preview says nothing was stored", async () => {
@@ -434,7 +549,8 @@ test("the preview says nothing was stored", async () => {
 
   await userEvent.click(screen.getByRole("button", { name: /preview/i }));
 
-  expect(await screen.findByText(/nothing was stored/i)).toBeDefined();
+  const dialog = await screen.findByRole("dialog");
+  expect(within(dialog).getByText(/nothing was stored/i)).toBeDefined();
 });
 
 test("an empty backlog is explained rather than shown as a blank table", async () => {

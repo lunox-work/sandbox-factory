@@ -251,6 +251,37 @@ function fakeJiraApi(
         { status: 200 },
       );
     }
+    if (href.includes("/rest/api/3/issue/")) {
+      return new Response(
+        JSON.stringify({
+          id: "1001",
+          key: "ACME-1",
+          fields: {
+            summary: "Ticket 1",
+            status: { name: "To Do", statusCategory: { key: "new" } },
+            issuetype: { name: "Task" },
+            labels: ["foundation"],
+            project: { key: "ACME" },
+            created: "2023-01-01T00:00:00.000+0000",
+            updated: "2024-01-01T00:00:00.000+0000",
+            description: {
+              type: "doc",
+              content: [
+                {
+                  type: "paragraph",
+                  content: [{ type: "text", text: "The objective." }],
+                },
+              ],
+            },
+            reporter: { displayName: "Dana" },
+            priority: { name: "Highest" },
+            watches: { watchCount: 3 },
+            votes: { votes: 0 },
+          },
+        }),
+        { status: 200 },
+      );
+    }
     if (href.includes("/backlog") || href.includes("/board/42/issue")) {
       return new Response(
         JSON.stringify({
@@ -1222,4 +1253,65 @@ test("a missing scope does not mark the connection unhealthy", async () => {
 
   assert.equal(response.status, 502);
   assert.deepEqual(connections.unhealthy, []);
+});
+
+test("a ticket's full detail is read live, including its description", async () => {
+  // The one route that returns ticket text, for one ticket asked for by name.
+  const { app } = appWith({ fetch: fakeJiraApi() });
+
+  const response = await app.request(
+    "/api/v1/orgs/org_1/jira/boards/jrb_1/issues/ACME-1",
+    { headers: signedIn },
+  );
+
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as {
+    issue: {
+      key: string;
+      descriptionText: string;
+      reporter: string | null;
+      watchers: number | null;
+    };
+  };
+  assert.equal(body.issue.key, "ACME-1");
+  assert.equal(body.issue.descriptionText, "The objective.");
+  assert.equal(body.issue.reporter, "Dana");
+  assert.equal(body.issue.watchers, 3);
+});
+
+test("a ticket is scoped through the board, not a bare connection", async () => {
+  // Otherwise a board the caller can see would be a way to read a ticket on
+  // a site they cannot.
+  const { app } = appWith({ fetch: fakeJiraApi() });
+
+  const response = await app.request(
+    "/api/v1/orgs/org_1/jira/boards/jrb_other/issues/ACME-1",
+    { headers: signedIn },
+  );
+
+  assert.equal(response.status, 404);
+});
+
+test("an ordinary member may read a ticket", async () => {
+  const { app } = appWith({ role: "member", fetch: fakeJiraApi() });
+
+  const response = await app.request(
+    "/api/v1/orgs/org_1/jira/boards/jrb_1/issues/ACME-1",
+    { headers: signedIn },
+  );
+
+  assert.equal(response.status, 200);
+});
+
+test("a ticket Jira will not show is a 404, not a 502", async () => {
+  // Jira conflates "no such ticket" with "not visible to this grant", and so
+  // does this: reporting it as deleted would be a guess.
+  const { app } = appWith({ fetch: fakeJiraApi({ status: 404 }) });
+
+  const response = await app.request(
+    "/api/v1/orgs/org_1/jira/boards/jrb_1/issues/ACME-9",
+    { headers: signedIn },
+  );
+
+  assert.equal(response.status, 404);
 });

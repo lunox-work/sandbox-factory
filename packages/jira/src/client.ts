@@ -20,6 +20,7 @@
 import {
   jiraBoardPageResponseSchema,
   type JiraBoardDto,
+  type JiraIssueDetailDto,
   type JiraIssueDto,
   type JiraIssuePageDto,
   jiraIssuePageResponseSchema,
@@ -30,8 +31,10 @@ import {
 
 import type { Credential } from "./credentials.js";
 import {
+  DETAIL_FIELDS,
   ISSUE_FIELDS,
   toBoardDto,
+  toIssueDetailDto,
   toIssueDto,
   toSprintDto,
 } from "./mapping.js";
@@ -241,6 +244,25 @@ export class JiraClient {
       `/rest/api/3/issue/${encodeURIComponent(keyOrId)}?${query}`,
     );
     return toIssueDto(jiraIssueResponseSchema.parse(payload), {
+      siteUrl: this.#siteUrl,
+    });
+  }
+
+  /**
+   * One issue in full, for showing a person the ticket they clicked on.
+   *
+   * The second of the two calls that read a description — `issueSpec` is the
+   * other — and like it, one ticket at a time, by name. `ISSUE_FIELDS` still
+   * omits `description`, so the board and backlog reads that feed every list
+   * cannot pull ticket text; this is the call that exists so they do not have
+   * to. Nothing it returns is stored.
+   */
+  async issueDetail(keyOrId: string): Promise<JiraIssueDetailDto> {
+    const query = new URLSearchParams({ fields: DETAIL_FIELDS.join(",") });
+    const payload = await this.#get(
+      `/rest/api/3/issue/${encodeURIComponent(keyOrId)}?${query}`,
+    );
+    return toIssueDetailDto(jiraIssueResponseSchema.parse(payload), {
       siteUrl: this.#siteUrl,
     });
   }

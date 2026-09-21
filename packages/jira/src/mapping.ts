@@ -12,6 +12,7 @@
 import type {
   JiraBoardDto,
   JiraBoardResponse,
+  JiraIssueDetailDto,
   JiraIssueDto,
   JiraIssueResponse,
   JiraSprintDto,
@@ -19,6 +20,7 @@ import type {
   JiraStatusCategory,
 } from "@sandbox-factory/shared";
 
+import { adfToText } from "./adf.js";
 import { stripTrailingSlashes } from "./url.js";
 
 /** The four categories Jira guarantees, whatever a project calls its statuses. */
@@ -79,6 +81,57 @@ export function toIssueDto(
   };
 }
 
+/**
+ * One issue in full, for display.
+ *
+ * Built on `toIssueDto` so the two can never disagree about a shared field,
+ * with the description flattened and the display-only fields resolved to
+ * strings. Everything Jira may omit lands as null rather than undefined, so
+ * the UI tests one thing.
+ */
+export function toIssueDetailDto(
+  issue: JiraIssueResponse,
+  options: IssueMappingOptions = {},
+): JiraIssueDetailDto {
+  const fields = (issue.fields ?? {}) as Record<string, unknown>;
+  const named = (value: unknown): string | null => {
+    const name = (value as { name?: unknown } | null)?.name;
+    return typeof name === "string" ? name : null;
+  };
+  const people = (value: unknown): string | null => {
+    const display = (value as { displayName?: unknown } | null)?.displayName;
+    return typeof display === "string" ? display : null;
+  };
+  const seconds = (value: unknown): number | null =>
+    typeof value === "number" ? value : null;
+  const names = (value: unknown): string[] =>
+    Array.isArray(value)
+      ? value
+          .map((entry) => named(entry))
+          .filter((name): name is string => name !== null)
+      : [];
+
+  return {
+    ...toIssueDto(issue, options),
+    descriptionText: adfToText(fields.description),
+    reporter: people(fields.reporter),
+    creator: people(fields.creator),
+    resolution: named(fields.resolution),
+    resolutionDate:
+      typeof fields.resolutiondate === "string" ? fields.resolutiondate : null,
+    components: names(fields.components),
+    fixVersions: names(fields.fixVersions),
+    originalEstimateSeconds: seconds(fields.timeoriginalestimate),
+    remainingEstimateSeconds: seconds(fields.timeestimate),
+    votes: seconds((fields.votes as { votes?: unknown } | null)?.votes),
+    watchers: seconds(
+      (fields.watches as { watchCount?: unknown } | null)?.watchCount,
+    ),
+    environment:
+      typeof fields.environment === "string" ? fields.environment : null,
+  };
+}
+
 export function toBoardDto(board: JiraBoardResponse): JiraBoardDto {
   return {
     id: board.id,
@@ -121,4 +174,28 @@ export const ISSUE_FIELDS: readonly string[] = [
   "duedate",
   "parent",
   "project",
+];
+
+/**
+ * The fields a single-ticket detail read asks for.
+ *
+ * Distinct from `ISSUE_FIELDS`, and deliberately a superset of it: this is the
+ * only list in the package besides `SPEC_FIELDS` that names `description`, and
+ * it is used by exactly one call, for one ticket, that a person asked for. A
+ * board or backlog read still cannot pull ticket text — see `client.ts`.
+ */
+export const DETAIL_FIELDS: readonly string[] = [
+  ...ISSUE_FIELDS,
+  "description",
+  "reporter",
+  "creator",
+  "resolution",
+  "resolutiondate",
+  "components",
+  "fixVersions",
+  "timeoriginalestimate",
+  "timeestimate",
+  "votes",
+  "watches",
+  "environment",
 ];

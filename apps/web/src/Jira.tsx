@@ -12,6 +12,9 @@
  */
 
 import {
+  ChevronLeft,
+  ChevronRight,
+  ExternalLink,
   Eye,
   Link2,
   Loader2,
@@ -20,7 +23,7 @@ import {
   TriangleAlert,
   X,
 } from "lucide-react";
-import { useCallback, useState } from "react";
+import { useCallback, useState, type ReactNode } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -47,6 +50,7 @@ import {
   type JiraBoard,
   type JiraConnection,
   type JiraFetchError,
+  type JiraIssueDetail,
   type JiraOutcome,
   type JiraRemoteBoard,
 } from "./useJira";
@@ -260,17 +264,149 @@ function ageInDays(created: string | null): string {
     : `${Math.floor(days / 365)}y ${Math.floor((days % 365) / 30)}m`;
 }
 
+/** A labelled row in the detail view. Renders nothing when Jira sent no value. */
+function Field({ label, children }: { label: string; children: ReactNode }) {
+  if (children === null || children === undefined || children === "") {
+    return null;
+  }
+  return (
+    <div className="flex gap-3 py-1.5 text-sm">
+      <span className="w-32 shrink-0 text-muted-foreground">{label}</span>
+      <span className="min-w-0 flex-1">{children}</span>
+    </div>
+  );
+}
+
+/** Jira's seconds as the hours a person reads. */
+function hours(seconds: number | null): string | null {
+  if (seconds === null) {
+    return null;
+  }
+  const value = seconds / 3600;
+  return `${Number.isInteger(value) ? value : value.toFixed(1)}h`;
+}
+
+/** An ISO timestamp as a plain date. Jira sends several shapes; all parse. */
+function asDate(value: string | null): string | null {
+  if (value === null) {
+    return null;
+  }
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? null
+    : date.toLocaleDateString(undefined, {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+      });
+}
+
 /**
- * The tickets a run would price.
+ * One ticket in full.
  *
- * Ordered oldest first, and the age column says so: that ordering is the
- * product's claim about which work is worth a bounty, and seeing it is the
- * point of previewing before spending a model call.
+ * The description arrives as text already — `adfToText` flattens Atlassian
+ * Document Format on the server, keeping headings, lists and checkboxes as
+ * Markdown-ish lines. It is rendered pre-wrapped rather than parsed: the
+ * structure survives, and a ticket cannot inject markup into this page.
+ *
+ * Fields Jira did not send render nothing at all, because a site can omit
+ * almost any of them and a column of empty labels is worse than a short list.
  */
-function PreviewTable({ preview }: { preview: BacklogPreview }) {
+function IssueDetail({ issue }: { issue: JiraIssueDetail }) {
+  return (
+    <div className="flex flex-col gap-4" data-testid="issue-detail">
+      <div>
+        <h3 className="text-base font-semibold">{issue.summary}</h3>
+        <div className="mt-1 flex flex-wrap items-center gap-2">
+          <Badge variant="secondary">{issue.status}</Badge>
+          <span className="text-xs text-muted-foreground">
+            {issue.issueType}
+          </span>
+          {issue.url !== null && (
+            <a
+              href={issue.url}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:underline"
+            >
+              Open in Jira
+              <ExternalLink className="size-3" />
+            </a>
+          )}
+        </div>
+      </div>
+
+      {issue.descriptionText !== "" && (
+        <div className="rounded-md border bg-muted/40 p-3">
+          <p className="mb-1 text-xs font-medium text-muted-foreground">
+            Description
+          </p>
+          <pre className="max-h-64 overflow-y-auto font-sans text-sm whitespace-pre-wrap">
+            {issue.descriptionText}
+          </pre>
+        </div>
+      )}
+
+      <div className="divide-y rounded-md border px-3">
+        <Field label="Assignee">{issue.assignee ?? "Unassigned"}</Field>
+        <Field label="Reporter">{issue.reporter}</Field>
+        <Field label="Creator">
+          {issue.creator === issue.reporter ? null : issue.creator}
+        </Field>
+        <Field label="Priority">{issue.priority}</Field>
+        <Field label="Resolution">{issue.resolution}</Field>
+        <Field label="Resolved">{asDate(issue.resolutionDate)}</Field>
+        <Field label="Created">{asDate(issue.created)}</Field>
+        <Field label="Updated">{asDate(issue.updated)}</Field>
+        <Field label="Due">{asDate(issue.dueDate)}</Field>
+        <Field label="Project">{issue.projectKey}</Field>
+        <Field label="Parent">{issue.parentKey}</Field>
+        <Field label="Components">
+          {issue.components.length === 0 ? null : issue.components.join(", ")}
+        </Field>
+        <Field label="Fix versions">
+          {issue.fixVersions.length === 0 ? null : issue.fixVersions.join(", ")}
+        </Field>
+        <Field label="Estimate">{hours(issue.originalEstimateSeconds)}</Field>
+        <Field label="Remaining">{hours(issue.remainingEstimateSeconds)}</Field>
+        <Field label="Environment">{issue.environment}</Field>
+        <Field label="Votes">
+          {issue.votes === null || issue.votes === 0 ? null : issue.votes}
+        </Field>
+        <Field label="Watchers">
+          {issue.watchers === null || issue.watchers === 0
+            ? null
+            : issue.watchers}
+        </Field>
+        <Field label="Labels">
+          {issue.labels.length === 0 ? null : (
+            <span className="flex flex-wrap gap-1">
+              {issue.labels.map((label) => (
+                <Badge key={label} variant="outline" className="font-normal">
+                  {label}
+                </Badge>
+              ))}
+            </span>
+          )}
+        </Field>
+      </div>
+    </div>
+  );
+}
+
+/** The ticket list: what a run would price, oldest first. */
+function PreviewList({
+  preview,
+  onOpenIssue,
+  openingKey,
+}: {
+  preview: BacklogPreview;
+  onOpenIssue: (issueKey: string) => void;
+  openingKey: string | null;
+}) {
   if (preview.issues.length === 0) {
     return (
-      <p className="text-sm text-muted-foreground">
+      <p className="py-6 text-sm text-muted-foreground">
         No tickets match these settings. The backlog may be empty, or every
         ticket in it is assigned.
       </p>
@@ -279,29 +415,33 @@ function PreviewTable({ preview }: { preview: BacklogPreview }) {
 
   return (
     <div className="flex flex-col gap-2" data-testid="backlog-preview">
-      <ul className="divide-y rounded-md border">
+      <ul className="max-h-96 divide-y overflow-y-auto rounded-md border">
         {preview.issues.map((issue) => (
-          <li key={issue.id} className="flex items-baseline gap-3 px-3 py-2">
-            <span className="w-24 shrink-0 font-mono text-xs text-muted-foreground">
-              {issue.key}
-            </span>
-            <span className="min-w-0 flex-1 truncate text-sm">
-              {issue.url === null ? (
-                issue.summary
+          <li key={issue.id}>
+            {/* The whole row opens the ticket: a link-sized target inside a
+                dialog is a needless miss, and there is nothing else to click. */}
+            <button
+              type="button"
+              className="flex w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-muted/50"
+              onClick={() => {
+                onOpenIssue(issue.key);
+              }}
+            >
+              <span className="w-20 shrink-0 font-mono text-xs text-muted-foreground">
+                {issue.key}
+              </span>
+              <span className="min-w-0 flex-1 truncate text-sm">
+                {issue.summary}
+              </span>
+              <span className="shrink-0 text-xs text-muted-foreground">
+                {ageInDays(issue.created)}
+              </span>
+              {openingKey === issue.key ? (
+                <Loader2 className="size-4 shrink-0 animate-spin" />
               ) : (
-                <a
-                  href={issue.url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="hover:underline"
-                >
-                  {issue.summary}
-                </a>
+                <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
               )}
-            </span>
-            <span className="shrink-0 text-xs text-muted-foreground">
-              {ageInDays(issue.created)}
-            </span>
+            </button>
           </li>
         ))}
       </ul>
@@ -312,46 +452,114 @@ function PreviewTable({ preview }: { preview: BacklogPreview }) {
   );
 }
 
+/**
+ * The preview, and the ticket you clicked on.
+ *
+ * One dialog with two views rather than two stacked dialogs: stacking two
+ * overlays on a dark theme reads as mud, and Escape stops meaning one clear
+ * thing. Going into a ticket swaps the content and offers a way back to the
+ * list, which is the only navigation there is to get wrong.
+ */
+function PreviewDialog({
+  open,
+  onOpenChange,
+  boardName,
+  preview,
+  loading,
+  issue,
+  openingKey,
+  onOpenIssue,
+  onBack,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  boardName: string;
+  preview: BacklogPreview | null;
+  loading: boolean;
+  issue: JiraIssueDetail | null;
+  openingKey: string | null;
+  onOpenIssue: (issueKey: string) => void;
+  onBack: () => void;
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-2xl">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            {issue !== null && (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="-ml-2 size-7"
+                aria-label="Back to the ticket list"
+                onClick={onBack}
+              >
+                <ChevronLeft className="size-4" />
+              </Button>
+            )}
+            {issue === null ? "Backlog preview" : issue.key}
+          </DialogTitle>
+          <DialogDescription>
+            {issue === null
+              ? `The tickets a run would price on ${boardName}, oldest first. Read live from Jira — nothing is stored.`
+              : `On ${boardName}. Read live from Jira; nothing here is stored.`}
+          </DialogDescription>
+        </DialogHeader>
+
+        {loading ? (
+          <p className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
+            <Loader2 className="size-4 animate-spin" />
+            Reading the backlog from Jira…
+          </p>
+        ) : issue !== null ? (
+          <IssueDetail issue={issue} />
+        ) : preview !== null ? (
+          <PreviewList
+            preview={preview}
+            onOpenIssue={onOpenIssue}
+            openingKey={openingKey}
+          />
+        ) : null}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 /** One registered board, with the control that previews it. */
 function BoardRow({
   board,
   onPreview,
   previewing,
-  preview,
 }: {
   board: JiraBoard;
-  onPreview: (boardId: string) => void;
+  onPreview: (board: JiraBoard) => void;
   previewing: boolean;
-  preview: BacklogPreview | null;
 }) {
   return (
-    <li className="flex flex-col gap-3 py-3">
-      <div className="flex items-center justify-between gap-4">
-        <div className="min-w-0">
-          <span className="truncate font-medium">{board.name}</span>
-          <p className="truncate text-sm text-muted-foreground">
-            {board.boardType}
-            {board.projectKey === null ? "" : ` · ${board.projectKey}`}
-          </p>
-        </div>
-        <Button
-          variant="outline"
-          size="sm"
-          className="shrink-0 gap-2"
-          disabled={previewing}
-          onClick={() => {
-            onPreview(board.id);
-          }}
-        >
-          {previewing ? (
-            <Loader2 className="size-4 animate-spin" />
-          ) : (
-            <Eye className="size-4" />
-          )}
-          Preview
-        </Button>
+    <li className="flex items-center justify-between gap-4 py-3">
+      <div className="min-w-0">
+        <span className="truncate font-medium">{board.name}</span>
+        <p className="truncate text-sm text-muted-foreground">
+          {board.boardType}
+          {board.projectKey === null ? "" : ` · ${board.projectKey}`}
+        </p>
       </div>
-      {preview !== null && <PreviewTable preview={preview} />}
+      <Button
+        variant="outline"
+        size="sm"
+        className="shrink-0 gap-2"
+        disabled={previewing}
+        onClick={() => {
+          onPreview(board);
+        }}
+      >
+        {previewing ? (
+          <Loader2 className="size-4 animate-spin" />
+        ) : (
+          <Eye className="size-4" />
+        )}
+        Preview
+      </Button>
     </li>
   );
 }
@@ -475,7 +683,7 @@ function BoardsCard({
   connections: JiraConnection[];
   manageable: boolean;
 }) {
-  const { boards, loading, error, listRemote, register, preview } =
+  const { boards, loading, error, listRemote, register, preview, issue } =
     useJiraBoards(organizationId);
 
   /**
@@ -494,7 +702,21 @@ function BoardsCard({
   } | null>(null);
   const [registering, setRegistering] = useState<string | null>(null);
   const [busyBoard, setBusyBoard] = useState<string | null>(null);
-  const [previews, setPreviews] = useState<Record<string, BacklogPreview>>({});
+  /**
+   * The open preview: which board, its tickets, and the one being read.
+   *
+   * `issue` non-null is what switches the dialog to the detail view, so
+   * going back is clearing it rather than a separate mode flag that could
+   * disagree with what is loaded.
+   */
+  const [viewer, setViewer] = useState<{
+    boardName: string;
+    boardId: string;
+    preview: BacklogPreview | null;
+    loading: boolean;
+    issue: JiraIssueDetail | null;
+  } | null>(null);
+  const [openingKey, setOpeningKey] = useState<string | null>(null);
 
   const onAdd = useCallback(
     (connection: JiraConnection) => {
@@ -534,17 +756,51 @@ function BoardsCard({
   );
 
   const onPreview = useCallback(
-    (boardId: string) => {
-      setBusyBoard(boardId);
-      void preview(boardId).then((result) => {
+    (board: JiraBoard) => {
+      setBusyBoard(board.id);
+      // The dialog opens once there is something to show. A preview can fail
+      // outright — a revoked grant, a missing scope — and opening first would
+      // mean flashing an empty dialog before closing it again to show the
+      // error the card renders.
+      void preview(board.id).then((result) => {
         setBusyBoard(null);
         if (result !== null) {
-          setPreviews((current) => ({ ...current, [boardId]: result }));
+          setViewer({
+            boardName: board.name,
+            boardId: board.id,
+            preview: result,
+            loading: false,
+            issue: null,
+          });
         }
       });
     },
     [preview],
   );
+
+  const onOpenIssue = useCallback(
+    (issueKey: string) => {
+      if (viewer === null) {
+        return;
+      }
+      setOpeningKey(issueKey);
+      void issue(viewer.boardId, issueKey).then((detail) => {
+        setOpeningKey(null);
+        if (detail !== null) {
+          setViewer((current) =>
+            current === null ? current : { ...current, issue: detail },
+          );
+        }
+      });
+    },
+    [issue, viewer],
+  );
+
+  const onBack = useCallback(() => {
+    setViewer((current) =>
+      current === null ? current : { ...current, issue: null },
+    );
+  }, []);
 
   const registered = new Set(boards.map((board) => board.externalId));
 
@@ -579,7 +835,6 @@ function BoardsCard({
                 board={board}
                 onPreview={onPreview}
                 previewing={busyBoard === board.id}
-                preview={previews[board.id] ?? null}
               />
             ))}
           </ul>
@@ -605,6 +860,22 @@ function BoardsCard({
           </div>
         )}
       </CardContent>
+
+      <PreviewDialog
+        open={viewer !== null}
+        onOpenChange={(next) => {
+          if (!next) {
+            setViewer(null);
+          }
+        }}
+        boardName={viewer?.boardName ?? ""}
+        preview={viewer?.preview ?? null}
+        loading={viewer?.loading ?? false}
+        issue={viewer?.issue ?? null}
+        openingKey={openingKey}
+        onOpenIssue={onOpenIssue}
+        onBack={onBack}
+      />
 
       <BoardPickerDialog
         open={picker !== null}

@@ -461,6 +461,52 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
   });
 
   /**
+   * One ticket in full, read live.
+   *
+   * **The only route that returns a ticket's description**, and it returns it
+   * to a person who asked for that ticket by name. The board and backlog
+   * reads still carry no ticket text, and nothing here is written down — the
+   * guarantee the integration makes is about lists and about storage, not
+   * about showing someone the ticket they clicked on.
+   *
+   * Any member may read it, matching the preview: both read tickets the
+   * organization already holds a grant for.
+   *
+   * Scoped through the board rather than taking a connection id, so a caller
+   * cannot use a board they can see to read a ticket on a site they cannot.
+   */
+  app.get("/api/v1/orgs/:orgId/jira/boards/:id/issues/:issueKey", async (c) => {
+    const { organizationId } = c.get("member");
+
+    const registered = await boards.forRun(organizationId, c.req.param("id"));
+    if (registered === null) {
+      return c.json({ error: "Not found" }, 404);
+    }
+
+    const result = await jiraClientFor(
+      clientOptions,
+      organizationId,
+      registered.connectionId,
+    );
+    if (!result.ok) {
+      return failureResponse(c, result.failure);
+    }
+
+    try {
+      return c.json({
+        issue: await result.client.issueDetail(c.req.param("issueKey")),
+      });
+    } catch (error) {
+      if (error instanceof JiraApiError && error.isNotFound) {
+        // Jira conflates "no such ticket" with "not visible to this grant",
+        // and so does this: reporting it as deleted would be a guess.
+        return c.json({ error: "Not found" }, 404);
+      }
+      return await jiraFailure(c, connections, registered.connectionId, error);
+    }
+  });
+
+  /**
    * The tickets a run would price, read live and priced by nobody.
    *
    * The point of the route: a client can see exactly which tickets their
