@@ -190,7 +190,7 @@ Two jobs: the GitHub token auto-merge uses, and the production app secrets.
 ```bash
 ./scripts/rotate-token.sh            # rotate AUTO_MERGE_TOKEN; prompts, echo off
 ./scripts/rotate-token.sh --check    # is the stored token still working?
-./scripts/rotate-token.sh --secrets                        # app secrets, all eight
+./scripts/rotate-token.sh --secrets                        # app secrets, all eleven
 ./scripts/rotate-token.sh --secrets --only DATABASE_URL    # just one
 ```
 
@@ -223,7 +223,7 @@ owner approves it, which the script reports as "cannot see the repo".
 
 ### `--secrets`: the production app secrets
 
-Rotates the eight values in `.env.production` — what the API reads through AWS
+Rotates the eleven values in `.env.production` — what the API reads through AWS
 Secrets Manager. It asks for each key in turn and **skips any you leave blank**,
 showing a redacted current value and where that provider mints the replacement.
 
