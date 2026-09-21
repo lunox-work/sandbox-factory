@@ -7,15 +7,17 @@ import { serve } from "@hono/node-server";
 import {
   createConnection,
   createEmailStore,
+  createJiraConnectionStore,
   createOrganizationStore,
   createPostgresStore,
   createProfileStore,
+  createTokenCipher,
 } from "@sandbox-factory/db";
 
 import { buildBanner } from "@sandbox-factory/shared";
 
 import { createAuth } from "./auth.js";
-import { appUrl, buildInfo, parseEnv } from "./env.js";
+import { appUrl, buildInfo, jiraOAuthConfig, parseEnv } from "./env.js";
 import { resolveImageDigest } from "./image-digest.js";
 import { createApp } from "./routes.js";
 
@@ -62,6 +64,33 @@ const auth = createAuth({
       : { domain: env.AUTH_COOKIE_DOMAIN },
 });
 
+/**
+ * Jira connections, if the second Atlassian app is configured.
+ *
+ * Undefined leaves the routes unmounted rather than stopping the process: a
+ * deployment without those credentials should still serve everything else.
+ * The cipher is built unconditionally, because `TOKEN_ENCRYPTION_KEY` is
+ * required — an API that could boot without it would be one that could write
+ * a token in the clear.
+ */
+const jiraOAuth = jiraOAuthConfig(env);
+const jira =
+  jiraOAuth === undefined
+    ? undefined
+    : {
+        connections: createJiraConnectionStore(
+          connection.db,
+          createTokenCipher(env.TOKEN_ENCRYPTION_KEY),
+        ),
+        clientId: jiraOAuth.clientId,
+        clientSecret: jiraOAuth.clientSecret,
+        // The same secret Better Auth signs sessions with. A forged `state`
+        // needs it, and it is already required to be 32 characters.
+        secret: env.BETTER_AUTH_SECRET,
+        apiUrl: env.BETTER_AUTH_URL,
+        appUrl: appUrl(env),
+      };
+
 const app = createApp({
   store: createPostgresStore(connection.db),
   corsOrigins: env.CORS_ORIGINS,
@@ -69,6 +98,7 @@ const app = createApp({
   emails,
   profiles,
   organizations,
+  jira,
   buildInfo: build,
   originVerify: env.ORIGIN_VERIFY,
 });

@@ -27,6 +27,7 @@ import type {
 } from "@sandbox-factory/db";
 
 import type { Auth } from "./auth.js";
+import { mountJiraRoutes, type JiraRouteOptions } from "./jira/routes.js";
 import { NotFoundError, type TodoStore } from "./store.js";
 
 export interface AppOptions {
@@ -46,6 +47,14 @@ export interface AppOptions {
    * the organization routes are not mounted, so a test needs no database.
    */
   organizations?: OrganizationStore | undefined;
+  /**
+   * Jira connection routes. Optional for the same reason as `emails`, plus
+   * one of its own: the second Atlassian app is a separate credential that a
+   * deployment may not have, and its absence must not stop the API serving
+   * everything else. Requires `organizations`, since the routes sit behind
+   * that block's membership guard.
+   */
+  jira?: JiraRouteOptions | undefined;
   /**
    * Shared secret the CDN sends on every origin request. Set where the task is
    * internet-reachable with nothing upstream to filter (the CloudFront-to-
@@ -112,6 +121,7 @@ export function createApp({
   emails,
   profiles,
   organizations,
+  jira,
   buildInfo = unknownBuildInfo,
   originVerify,
 }: AppOptions): Hono<AppEnv> {
@@ -413,6 +423,23 @@ export function createApp({
       });
       return c.json({ invitation: created }, 201);
     });
+
+    /**
+     * Connecting a client's Jira site.
+     *
+     * Mounted inside this block because the connect, list and disconnect
+     * routes sit under `/api/v1/orgs/:orgId/*` and so are covered by the
+     * membership guard above. The callback is not — it has no organization id
+     * in its path, by design — but it is still behind the session guard, and
+     * `mountJiraRoutes` explains why that is the right boundary.
+     *
+     * Not mounted without `jira`, like every other optional dependency here:
+     * an API with no second Atlassian app configured serves everything else
+     * rather than refusing to start.
+     */
+    if (jira !== undefined) {
+      mountJiraRoutes(app, jira);
+    }
   }
 
   /**
