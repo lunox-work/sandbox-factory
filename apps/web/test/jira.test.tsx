@@ -1015,3 +1015,45 @@ test("opening a ticket brings the panel into view where it covers the list", asy
     Element.prototype.scrollIntoView = original;
   }
 });
+
+// ---- the banner says its whole message ------------------------------------
+//
+// Title and detail sat on one line with the detail truncated, so even the
+// short sentences were clipped at 1280px. The one that matters most is
+// `partial-scopes`, which names the scopes to grant and where to find them —
+// instructions, cut off mid-word.
+
+test("the detail wraps instead of being truncated", async () => {
+  withOutcome(
+    "?jira=partial-scopes&missing=read%3Aboard-scope%3Ajira-software%2Cread%3Asprint%3Ajira-software",
+  );
+
+  renderPage();
+
+  const banner = await screen.findByTestId("jira-outcome");
+  const detail = within(banner).getByTestId("jira-outcome-detail");
+  // jsdom has no layout, so `truncate` is the contract that carried the clip.
+  expect(detail.className).not.toContain("truncate");
+  expect(banner.className).not.toContain("truncate");
+  // The whole sentence, not a prefix of it.
+  expect(detail.textContent).toContain("Granular scopes");
+  expect(detail.textContent).toContain("read:sprint:jira-software");
+});
+
+test("each tone is announced as urgently as it deserves", async () => {
+  // A failure interrupts; a success waits until the reader is idle. Both were
+  // silent before, being neither `alert` nor `status`.
+  withOutcome("?jira=denied");
+  renderPage();
+
+  const banner = await screen.findByTestId("jira-outcome");
+  expect(banner.getAttribute("role")).toBe("alert");
+});
+
+test("an outcome that is not a failure is announced politely", async () => {
+  withOutcome("?jira=connected");
+  renderPage();
+
+  const banner = await screen.findByTestId("jira-outcome");
+  expect(banner.getAttribute("role")).toBe("status");
+});

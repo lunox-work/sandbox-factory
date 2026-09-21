@@ -14,6 +14,8 @@
 import {
   ChevronLeft,
   ChevronRight,
+  CircleCheck,
+  CircleX,
   Columns3,
   ExternalLink,
   LayoutGrid,
@@ -154,26 +156,61 @@ export function OutcomeBanner({
   onDismiss: () => void;
 }) {
   const { tone, title, detail } = describeOutcome(outcome, missingScopes);
-  const border =
+  /*
+    Border and a faint wash of the same colour, matching `ErrorBanner`: the
+    border alone was thin enough that the banner read as a stray input rather
+    than as the page answering a round trip through Atlassian.
+  */
+  const skin =
     tone === "ok"
-      ? "border-emerald-500/40"
+      ? "border-emerald-500/40 bg-emerald-500/7"
       : tone === "warn"
-        ? "border-amber-500/40"
-        : "border-destructive/40";
+        ? "border-amber-500/40 bg-amber-500/7"
+        : "border-destructive/40 bg-destructive/7";
+  const Icon =
+    tone === "ok" ? CircleCheck : tone === "warn" ? TriangleAlert : CircleX;
+  const iconTone =
+    tone === "ok"
+      ? "text-emerald-600 dark:text-emerald-500"
+      : tone === "warn"
+        ? "text-amber-600 dark:text-amber-500"
+        : "text-destructive";
 
   return (
+    /*
+      Title over detail, and the detail free to wrap.
+
+      On one line with `truncate` it was clipped even for the shortest of
+      these sentences. The worst case is `partial-scopes`, whose detail names
+      the two scopes to grant and the tab they hide behind — instructions,
+      cut off mid-word, for the one outcome a person has to act on.
+
+      `alert` for a failure, which should interrupt, and `status` for the rest,
+      which should wait until the reader is idle. It had neither, so a screen
+      reader said nothing at all when the flow came back.
+    */
     <div
-      className={`flex items-center gap-2 rounded-md border ${border} px-3 py-2 text-sm`}
+      role={tone === "error" ? "alert" : "status"}
+      className={`flex items-start gap-2.5 rounded-lg border ${skin} px-3 py-2.5 text-sm`}
       data-testid="jira-outcome"
     >
-      <span className="font-medium">{title}</span>
-      <span className="min-w-0 flex-1 truncate text-muted-foreground">
-        {detail}
-      </span>
+      <Icon
+        className={`mt-0.5 size-4 shrink-0 ${iconTone}`}
+        aria-hidden="true"
+      />
+      <div className="min-w-0 flex-1">
+        <p className="font-medium">{title}</p>
+        <p
+          className="text-muted-foreground mt-0.5"
+          data-testid="jira-outcome-detail"
+        >
+          {detail}
+        </p>
+      </div>
       <Button
         variant="ghost"
         size="icon"
-        className="-mr-1 size-6 shrink-0"
+        className="-mt-0.5 -mr-1 size-6 shrink-0"
         aria-label="Dismiss"
         onClick={onDismiss}
       >
