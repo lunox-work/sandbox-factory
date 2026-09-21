@@ -5,7 +5,7 @@
  * a provider vouched for it, and linking is the only way to add one.
  */
 
-import { Check, Link2, Unlink } from "lucide-react";
+import { Building2, Check, Link2, Unlink } from "lucide-react";
 import type { PendingInvitationDto } from "@sandbox-factory/shared";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 
@@ -583,10 +583,19 @@ function UsernameForm({
               <button
                 type="button"
                 onClick={onOpenOrganizations}
-                className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 w-fit cursor-pointer rounded-sm text-sm underline-offset-4 transition-colors hover:underline focus-visible:ring-[3px] focus-visible:outline-none"
+                className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 group/orgs flex w-fit cursor-pointer items-center gap-1.5 rounded-sm text-sm transition-colors focus-visible:ring-[3px] focus-visible:outline-none"
               >
-                {organizationCount}{" "}
-                {organizationCount === 1 ? "organization" : "organizations"}
+                {/* The mark the avatar menu's own "Organizations" item uses,
+                    so the two ways to this page read as the same destination.
+                    Sized here, where it sits inline with text, rather than by
+                    the menu's own item styling. */}
+                <Building2 className="size-4" strokeWidth={1.6} />
+                {/* The underline is on the words, not the button: through the
+                    button it would run under the icon too. */}
+                <span className="underline-offset-4 group-hover/orgs:underline">
+                  {organizationCount}{" "}
+                  {organizationCount === 1 ? "organization" : "organizations"}
+                </span>
               </button>
             )}
           </div>
