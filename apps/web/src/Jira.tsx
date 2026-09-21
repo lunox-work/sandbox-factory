@@ -966,21 +966,32 @@ export function Jira({
               ))}
             </ul>
           )}
-
-          {manageable ? (
-            <Button className="mt-4 gap-2" onClick={connect}>
-              <Link2 className="size-4" />
-              {connections.length === 0
-                ? "Connect a Jira site"
-                : "Connect another site"}
-            </Button>
-          ) : (
-            <p className="mt-4 text-sm text-muted-foreground">
-              Only an owner or admin can connect a site.
-            </p>
-          )}
         </CardContent>
       </Card>
+
+      {/*
+        Outside the card, and to the right.
+
+        The card is the list of what is connected; connecting another is an
+        action on that list rather than a row in it, and inside the card it
+        sat under the last site as though it were one more. Trailing the card
+        on the right is where this app puts the action a page is for, which
+        is also the corner the eye finishes a list in.
+      */}
+      {manageable ? (
+        <div className="flex justify-end">
+          <Button className="gap-2" onClick={connect}>
+            <Link2 className="size-4" />
+            {connections.length === 0
+              ? "Connect a Jira site"
+              : "Connect another site"}
+          </Button>
+        </div>
+      ) : (
+        <p className="text-sm text-muted-foreground">
+          Only an owner or admin can connect a site.
+        </p>
+      )}
     </main>
   );
 }

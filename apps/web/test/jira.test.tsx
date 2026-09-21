@@ -111,6 +111,20 @@ test("connect navigates to the API rather than fetching it", async () => {
   expect(assigned[0]).toContain("returnTo=");
 });
 
+test("connecting sits outside the card, not as a row in the list", async () => {
+  // Inside the card it read as one more site under the last one. It is an
+  // action on the list, so it trails the card rather than joining it.
+  const { container } = renderPage();
+  await screen.findByText("Acme");
+
+  const button = screen.getByRole("button", { name: /^connect/i });
+  const card = container.querySelector('[data-slot="card"]');
+  expect(card).not.toBeNull();
+  expect(card?.contains(button)).toBe(false);
+  // And to the right, which is the corner the eye finishes a list in.
+  expect(button.parentElement?.className).toContain("justify-end");
+});
+
 test("a plain member gets no connect control", async () => {
   // Courtesy, not security: the API checks the role again on every write.
   renderPage("member");
