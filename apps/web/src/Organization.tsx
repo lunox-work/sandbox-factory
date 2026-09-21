@@ -188,8 +188,9 @@ export function Organization({
                   work can be read and priced here.
                 </CardDescription>
               </CardHeader>
-              <CardContent className="flex flex-col gap-2">
-                <JiraConnectionRow
+              {/* Three across, two on a phone — as on the team card. */}
+              <CardContent className="grid auto-rows-fr grid-cols-2 gap-2 sm:grid-cols-3">
+                <JiraConnectionTile
                   organizationId={organization.id}
                   onOpenJira={onOpenJira}
                 />
@@ -200,23 +201,13 @@ export function Organization({
                 answer for the other two is still an answer.
               */}
                 {COMING_SOON.map((provider) => (
-                  <ConnectionRow
+                  <ConnectionTile
                     key={provider.key}
                     icon={provider.icon}
                     label={provider.label}
                     status="Coming soon"
-                    action={
-                      // The visible word is just "Manage"; the label names the
-                      // tool, or a screen reader hears three identical buttons.
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        disabled
-                        aria-label={`Manage ${provider.label} connections`}
-                      >
-                        Manage
-                      </Button>
-                    }
+                    disabled
+                    actionLabel={`Manage ${provider.label} connections`}
                   />
                 ))}
               </CardContent>
@@ -257,8 +248,14 @@ export function Organization({
                     their work can be read and priced here.
                   </CardDescription>
                 </CardHeader>
-                <CardContent className="flex flex-col gap-2">
-                  <JiraConnectionRow
+                {/*
+                  Three across, and two on a phone where three squares would
+                  each be too small to hold a button. `auto-rows-fr` keeps the
+                  wrapped row the same height as the first, so the odd tile out
+                  is not a different size from its siblings.
+                */}
+                <CardContent className="grid auto-rows-fr grid-cols-2 gap-2 sm:grid-cols-3">
+                  <JiraConnectionTile
                     organizationId={organization.id}
                     onOpenJira={onOpenJira}
                   />
@@ -269,23 +266,13 @@ export function Organization({
                   answer for the other two is still an answer.
                 */}
                   {COMING_SOON.map((provider) => (
-                    <ConnectionRow
+                    <ConnectionTile
                       key={provider.key}
                       icon={provider.icon}
                       label={provider.label}
                       status="Coming soon"
-                      action={
-                        // The visible word is just "Manage"; the label names the
-                        // tool, or a screen reader hears three identical buttons.
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          disabled
-                          aria-label={`Manage ${provider.label} connections`}
-                        >
-                          Manage
-                        </Button>
-                      }
+                      disabled
+                      actionLabel={`Manage ${provider.label} connections`}
                     />
                   ))}
                 </CardContent>
@@ -466,48 +453,97 @@ const COMING_SOON: { key: string; label: string; icon: ReactNode }[] = [
 ];
 
 /**
- * One row on the Connections card: the provider's mark and name, what is
- * connected, and the way in.
+ * One tool on the Connections card: its mark, its name, what is connected,
+ * and the way in.
  *
- * The count sits to the right of the button rather than under the name,
- * because it is the outcome of the action beside it.
+ * A square tile rather than a full-width row. The three tools are siblings —
+ * one of them happens to be built and the other two are not, but that is a
+ * fact about today rather than a ranking — and stacked rows made the first
+ * one read as the heading of a list the others belonged to. Equal squares say
+ * what the card means: three tools, same standing.
+ *
+ * `aspect-square` rather than a fixed height, so the tiles stay square as the
+ * column they sit in changes width, and `justify-between` pins the stack to
+ * the middle and the Manage affordance to the foot however tall that turns
+ * out to be.
+ *
+ * **The tile is the button.** There is one thing to do with a tool and the
+ * whole square is the target, so a person aiming at a word inside a large
+ * square cannot miss. That is also why "Manage" is a `span` rather than a
+ * nested `Button`: a button inside a button is invalid HTML, and browsers
+ * resolve it by dropping one from the accessibility tree — so the affordance
+ * is drawn like a button and the tile carries the behaviour.
  */
-function ConnectionRow({
+function ConnectionTile({
   icon,
   label,
   status,
-  action,
+  disabled = false,
+  onOpen,
+  actionLabel,
 }: {
   icon: ReactNode;
   label: string;
   status: string;
-  action: ReactNode;
+  /** A tool that is not built yet: named, but nothing to open. */
+  disabled?: boolean | undefined;
+  onOpen?: (() => void) | undefined;
+  /**
+   * What the tile is called to a screen reader. The visible word is "Manage"
+   * on all three, so without this they are announced as three identical
+   * buttons.
+   */
+  actionLabel: string;
 }) {
   return (
-    <div className="flex items-center gap-3 rounded-lg border px-3.5 py-2.5">
-      {/* `mt-0.5` optically centres the mark against the two stacked lines,
-          which sit higher than a single one would. */}
-      <span className="mt-0.5 grid size-4 shrink-0 place-items-center">
-        {icon}
-      </span>
-      <span className="flex-1">
-        <span className="block text-sm font-medium">{label}</span>
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onOpen}
+      aria-label={actionLabel}
+      /*
+        `group` so the Manage affordance can pick up the tile's own hover —
+        it is drawn as a button but is not one, so it has no hover of its
+        own to inherit. `disabled:` rather than omitting the handler: a tool
+        that is not built should look unavailable, not merely do nothing.
+      */
+      className="group flex aspect-square flex-col items-center justify-between rounded-lg border p-3.5 text-center transition-colors hover:bg-muted/50 focus-visible:ring-ring/50 focus-visible:ring-[3px] focus-visible:outline-none disabled:pointer-events-none disabled:opacity-60"
+    >
+      {/*
+        The mark, the name and the status as one centred stack. `flex-1` with
+        `justify-center` rather than centring the tile itself: the three lines
+        centre in whatever space the affordance leaves, so a tool whose status
+        wraps stays balanced instead of drifting upward.
+      */}
+      <span className="flex flex-1 flex-col items-center justify-center">
+        <span className="grid size-8 place-items-center">{icon}</span>
+        <span className="mt-2.5 block text-sm font-medium">{label}</span>
         <span className="text-muted-foreground block text-xs">{status}</span>
       </span>
-      {action}
-    </div>
+      {/*
+        Drawn like an outline button, and lit by the tile's hover rather than
+        its own. `aria-hidden`, because the tile is already announced by
+        `actionLabel` and this would otherwise repeat the word "Manage".
+      */}
+      <span
+        aria-hidden="true"
+        className="bg-background group-hover:bg-accent group-hover:text-accent-foreground w-full rounded-md border px-3 py-1.5 text-sm font-medium transition-colors"
+      >
+        Manage
+      </span>
+    </button>
   );
 }
 
 /**
- * The Jira row, which is the only one that is real.
+ * The Jira tile, which is the only one that is real.
  *
  * It reads the organization's own connections rather than taking a count from
  * the page: `useJira` is already the per-organization read, and the home
  * screen's `useConnections` fans out over every membership, which is a
  * different question from the one this card asks.
  */
-function JiraConnectionRow({
+function JiraConnectionTile({
   organizationId,
   onOpenJira,
 }: {
@@ -520,8 +556,8 @@ function JiraConnectionRow({
   const active = connections.filter((entry) => entry.healthy).length;
 
   return (
-    <ConnectionRow
-      // Jira's mark, not Atlassian's: this row names the product, where the
+    <ConnectionTile
+      // Jira's mark, not Atlassian's: this tile names the product, where the
       // sign-in screen and the account page name the account provider.
       icon={<JiraIcon />}
       label="Jira"
@@ -531,16 +567,8 @@ function JiraConnectionRow({
       status={
         loading ? " " : `${active} active connection${active === 1 ? "" : "s"}`
       }
-      action={
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={onOpenJira}
-          aria-label="Manage Jira connections"
-        >
-          Manage
-        </Button>
-      }
+      onOpen={onOpenJira}
+      actionLabel="Manage Jira connections"
     />
   );
 }

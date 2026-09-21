@@ -825,6 +825,62 @@ test("GitHub and Slack are named but cannot be opened yet", async () => {
   expect(screen.getAllByText("Coming soon")).toHaveLength(2);
 });
 
+test("the three tools are equal squares, not a stacked list", async () => {
+  // One of them is built and two are not, which is a fact about today rather
+  // than a ranking. Stacked rows made the first read as the heading of a list
+  // the others belonged to.
+  showConnections();
+
+  await screen.findByRole("button", { name: "Manage Jira connections" });
+  const tiles = ["Jira", "GitHub", "Slack"].map((label) =>
+    screen.getByRole("button", { name: `Manage ${label} connections` }),
+  );
+
+  // Every tool is a square tile, and they share one grid container — which is
+  // what makes them the same size as each other.
+  expect(tiles.every((tile) => tile.className.includes("aspect-square"))).toBe(
+    true,
+  );
+  const grid = tiles[0]?.parentElement;
+  expect(grid?.className).toContain("grid");
+  expect(tiles.every((tile) => tile.parentElement === grid)).toBe(true);
+});
+
+test("the whole tile is the target, not just the word Manage", async () => {
+  // A word inside a large square is a target a person can miss while aiming
+  // at the square they think they are pressing.
+  const onOpenJira = vi.fn();
+  serverWith([]);
+  render(
+    <Organization
+      organization={{
+        id: "org_1",
+        name: "Acme",
+        slug: "acme",
+        kind: "team",
+        role: "owner",
+      }}
+      onChanged={vi.fn()}
+      onLeft={vi.fn()}
+      onOpenJira={onOpenJira}
+    />,
+  );
+
+  const tile = await screen.findByRole("button", {
+    name: "Manage Jira connections",
+  });
+  // The tile itself is the button, so there is no second one nested inside —
+  // a button within a button is invalid, and one of the two is dropped from
+  // the accessibility tree.
+  expect(tile.querySelector("button")).toBeNull();
+  expect(tile.className).toContain("aspect-square");
+  // And it lights up under the cursor, which is what says it is pressable.
+  expect(tile.className).toContain("hover:bg-muted/50");
+
+  fireEvent.click(tile);
+  expect(onOpenJira).toHaveBeenCalledTimes(1);
+});
+
 test("the Jira row stays clickable", async () => {
   // The one real connection: everything else on the card is disabled, so a
   // regression that disabled this one too would look intentional.

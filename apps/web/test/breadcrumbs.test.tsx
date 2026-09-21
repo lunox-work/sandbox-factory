@@ -295,8 +295,12 @@ test("the Jira crumb on a site goes back to the list of sites", async () => {
   window.history.replaceState(null, "", "/o/acme/jira/jrc_1");
   render(<App />);
 
+  // Waited on the organization crumb, not the Jira one. The Jira crumb is in
+  // the trail before the organization list arrives — `trailFor` drops only
+  // the middle crumb while it loads — so clicking on its appearance races the
+  // load, and a crumb clicked without a slug falls back to /organizations.
   await waitFor(() => {
-    expect(screen.getByRole("button", { name: "Jira" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Acme" })).toBeTruthy();
   });
 
   fireEvent.click(screen.getByRole("button", { name: "Jira" }));
