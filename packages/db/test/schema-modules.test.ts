@@ -18,6 +18,7 @@ import type { PgTable } from "drizzle-orm/pg-core";
 
 import * as schema from "../src/schema.js";
 import * as authSchema from "../src/schema/auth.js";
+import * as bountySchema from "../src/schema/bounty.js";
 import * as jiraSchema from "../src/schema/jira.js";
 import * as organizationSchema from "../src/schema/organizations.js";
 
@@ -29,7 +30,12 @@ function tableName(table: PgTable): string {
 test("the barrel re-exports every table each module declares", () => {
   // Not a hand-written list: a new table in a module is picked up here, so
   // this keeps holding as the schema grows rather than going stale.
-  for (const module of [authSchema, organizationSchema, jiraSchema]) {
+  for (const module of [
+    authSchema,
+    organizationSchema,
+    jiraSchema,
+    bountySchema,
+  ]) {
     for (const [name, value] of Object.entries(module)) {
       assert.equal(
         (schema as Record<string, unknown>)[name],

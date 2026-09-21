@@ -30,6 +30,32 @@ export type {
   SyncBoardInput,
   UpdateBoardInput,
 } from "./jira-boards.js";
+export { createJiraIssueStore } from "./jira-issues.js";
+export type {
+  JiraIssueInput,
+  JiraIssuePointer,
+  JiraIssueStore,
+} from "./jira-issues.js";
+export { createRateCardStore } from "./rate-cards.js";
+export type {
+  PutRateCardResult,
+  RateCardStore,
+  StoredRateCard,
+} from "./rate-cards.js";
+export { createBountyRunStore } from "./bounty-runs.js";
+export type {
+  BountyRunStore,
+  CreateBountyRunInput,
+  CreateBountyRunResult,
+  StoredBountyRun,
+} from "./bounty-runs.js";
+export { createBountyProposalStore } from "./bounty-proposals.js";
+export type {
+  BountyProposalStore,
+  CreateBountyProposalInput,
+  ProposalMutationResult,
+  StoredBountyProposal,
+} from "./bounty-proposals.js";
 export { createJiraConnectionStore } from "./jira-connections.js";
 export type {
   JiraConnectionInput,

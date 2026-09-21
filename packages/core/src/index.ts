@@ -9,3 +9,4 @@
  */
 
 export * from "./handle.js";
+export * from "./bounty.js";

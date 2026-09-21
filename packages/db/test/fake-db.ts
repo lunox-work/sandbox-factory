@@ -26,6 +26,8 @@ export interface FakeCall {
    * filtering entirely.
    */
   readonly filtered?: boolean;
+  readonly limited?: number;
+  readonly ignoredConflict?: boolean;
 }
 
 export interface FakeDb {
@@ -33,12 +35,17 @@ export interface FakeDb {
   readonly calls: FakeCall[];
 }
 
+type FakeResponse = readonly unknown[] | Error;
+type RowsProvider = () => FakeResponse;
+
 /** A chain that resolves to `rows` however far it is followed. */
 function chain(
-  rows: readonly unknown[],
+  response: FakeResponse,
   onOrder?: () => void,
   onWhere?: () => void,
   onConflict?: (set: Record<string, unknown>) => void,
+  onLimit?: (limit: number) => void,
+  onConflictNothing?: () => void,
 ): unknown {
   const result: Record<string, unknown> = {
     from: () => result,
@@ -53,13 +60,25 @@ function chain(
       onConflict?.(config.set ?? {});
       return result;
     },
+    onConflictDoNothing: () => {
+      onConflictNothing?.();
+      return result;
+    },
     innerJoin: () => result,
     leftJoin: () => result,
     orderBy: () => {
       onOrder?.();
       return result;
     },
-    then: (resolve: (value: unknown) => unknown) => resolve([...rows]),
+    limit: (limit: number) => {
+      onLimit?.(limit);
+      return result;
+    },
+    then: (
+      resolve: (value: unknown) => unknown,
+      reject?: (reason: unknown) => unknown,
+    ) =>
+      response instanceof Error ? reject?.(response) : resolve([...response]),
   };
   return result;
 }
@@ -71,7 +90,7 @@ function chain(
  * never inspects a row, it only hands it back, and typing it to a single
  * table's row would mean a second copy of this file for every table added.
  */
-export function createFakeDb(rows: readonly unknown[]): FakeDb {
+function createFakeDbWith(rowsForQuery: RowsProvider): FakeDb {
   const calls: FakeCall[] = [];
 
   /** Marks the recorded call as having had a `where` applied. */
@@ -83,38 +102,63 @@ export function createFakeDb(rows: readonly unknown[]): FakeDb {
 
   const db = {
     select: () => {
+      const response = rowsForQuery();
       const call: FakeCall = { kind: "select" };
       calls.push(call);
       return chain(
-        rows,
+        response,
         () => {
           Object.assign(call, { ordered: true });
         },
         markFiltered(call),
+        undefined,
+        (limit) => Object.assign(call, { limited: limit }),
       );
     },
     insert: () => ({
       values: (values: Record<string, unknown>) => {
+        const response = rowsForQuery();
         const call: FakeCall = { kind: "insert", values };
         calls.push(call);
-        return chain(rows, undefined, markFiltered(call), (set) => {
-          Object.assign(call, { conflictSet: set });
-        });
+        return chain(
+          response,
+          undefined,
+          markFiltered(call),
+          (set) => Object.assign(call, { conflictSet: set }),
+          undefined,
+          () => Object.assign(call, { ignoredConflict: true }),
+        );
       },
     }),
     update: () => ({
       set: (values: Record<string, unknown>) => {
+        const response = rowsForQuery();
         const call: FakeCall = { kind: "update", values };
         calls.push(call);
-        return chain(rows, undefined, markFiltered(call));
+        return chain(response, undefined, markFiltered(call));
       },
     }),
     delete: () => {
+      const response = rowsForQuery();
       const call: FakeCall = { kind: "delete" };
       calls.push(call);
-      return chain(rows, undefined, markFiltered(call));
+      return chain(response, undefined, markFiltered(call));
     },
+    transaction: async (work: (transaction: unknown) => Promise<unknown>) =>
+      work(db),
   };
 
   return { db: db as unknown as Database, calls };
+}
+
+export function createFakeDb(rows: readonly unknown[]): FakeDb {
+  return createFakeDbWith(() => rows);
+}
+
+/** Different rows for successive queries, useful for transactional stores. */
+export function createSequencedFakeDb(
+  responses: readonly FakeResponse[],
+): FakeDb {
+  let index = 0;
+  return createFakeDbWith(() => responses[index++] ?? []);
 }

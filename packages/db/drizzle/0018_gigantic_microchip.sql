@@ -1,0 +1,1 @@
+ALTER TABLE "bounty_run" ADD CONSTRAINT "bounty_run_source_proposal_id_bounty_proposal_id_fk" FOREIGN KEY ("source_proposal_id") REFERENCES "public"."bounty_proposal"("id") ON DELETE set null ON UPDATE no action;

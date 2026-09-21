@@ -120,6 +120,27 @@
       "when": 1789977041981,
       "tag": "0016_sudden_chameleon",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1790010961953,
+      "tag": "0017_deep_harpoon",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1790010979456,
+      "tag": "0018_gigantic_microchip",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1790011247711,
+      "tag": "0019_late_thunderbolt",
+      "breakpoints": true
     }
   ]
 }

@@ -1274,6 +1274,23 @@ test("clearing maxAgeDays survives as a null rather than being dropped", async (
   assert.deepEqual(boards.updates, [{ selection: { maxAgeDays: null } }]);
 });
 
+test("write-back cannot be enabled before delivery support exists", async () => {
+  const { app, boards } = appWith();
+
+  const response = await app.request("/api/v1/orgs/org_1/jira/boards/jrb_1", {
+    method: "PATCH",
+    headers: { ...signedIn, "content-type": "application/json" },
+    body: JSON.stringify({ writebackEnabled: true }),
+  });
+
+  assert.equal(response.status, 409);
+  assert.equal(
+    ((await response.json()) as { code: string }).code,
+    "writeback_unavailable",
+  );
+  assert.deepEqual(boards.updates, []);
+});
+
 test("the preview returns the board's oldest backlog tickets", async () => {
   const jira = fakeJiraApi();
   const { app } = appWith({ fetch: jira });

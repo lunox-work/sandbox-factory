@@ -543,6 +543,15 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
         400,
       );
     }
+    if (parsed.data.writebackEnabled === true) {
+      return c.json(
+        {
+          code: "writeback_unavailable",
+          error: "Jira write-back is not available yet.",
+        },
+        409,
+      );
+    }
 
     const updated = await boards.update(organizationId, c.req.param("id"), {
       ...(parsed.data.selection === undefined
