@@ -342,8 +342,7 @@ export const NAME_MAX_LENGTH = 100;
 
 /** No `taken`: display names are not unique. */
 export type NameResult =
-  | { status: "ok"; name: string }
-  | { status: "invalid"; reason: string };
+  { status: "ok"; name: string } | { status: "invalid"; reason: string };
 
 export interface UserProfileStore {
   /** The handle. The column is `not null`, so undefined means no such user. */

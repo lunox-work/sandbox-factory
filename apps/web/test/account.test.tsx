@@ -646,9 +646,8 @@ test("an empty name is refused and says so", async () => {
 
   // Nothing to save: the tick guards it before the round trip.
   expect(
-    (
-      screen.getByRole("button", { name: "Save name" }) as HTMLButtonElement
-    ).disabled,
+    (screen.getByRole("button", { name: "Save name" }) as HTMLButtonElement)
+      .disabled,
   ).toBe(true);
 });
 
