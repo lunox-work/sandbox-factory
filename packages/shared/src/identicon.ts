@@ -8,7 +8,7 @@
  * Lives here rather than in the web app because it is a contract, not a
  * component. A route that serves an identicon as an image — for an email,
  * where inline SVG cannot go — would call this same function and get the same
- * face; see docs/specs/2026-09-21-identicon-avatars-design.md.
+ * face.
  *
  * **The algorithm below is frozen.** It is not an implementation detail: it
  * decides what every existing account looks like. Changing the hash, the bit
