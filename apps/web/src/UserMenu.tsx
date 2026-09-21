@@ -1,10 +1,10 @@
 /**
  * The avatar at the foot of the rail, and the menu behind it.
  *
- * The menu is where the three things that used to sit in the todo header and
- * the page footer now live: who you are signed in as, sign out, and which
- * build this is. None of them is part of the task of writing todos, so none of
- * them earns permanent space on the screen.
+ * The menu is where the three things that used to sit in the page header and
+ * footer now live: who you are signed in as, sign out, and which build this
+ * is. None of them is part of the work a page is for, so none of them earns
+ * permanent space on the screen.
  *
  * The build readout keeps every distinction the footer drew — release vs
  * commit, a dirty tree, and the API running a different sha — because those
@@ -84,8 +84,8 @@ export function UserMenu({
 
         <DropdownMenuSeparator />
 
-        {/* No "Todos" item: Home in the rail is that destination, and two
-            affordances for one screen invite the wrong one. */}
+        {/* No "Home" item: the rail is that destination, and two affordances
+            for one screen invite the wrong one. */}
         <DropdownMenuItem onSelect={onAccount}>
           <Settings />
           Account settings

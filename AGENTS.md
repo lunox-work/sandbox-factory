@@ -17,7 +17,8 @@ Instructions for coding agents. Humans: see [CONTRIBUTING.md](./CONTRIBUTING.md)
 
 Dependency rules are in [docs/architecture.md](./docs/architecture.md). In short:
 
-- `packages/core` has zero dependencies and owns the todo domain rules.
+- `packages/core` has zero dependencies and owns the shared domain rules
+  (public handles, which users and organizations draw from one namespace).
 - `packages/client` is platform-neutral: `fetch` only, no `node:*`, no `vscode`.
 - Only `apps/extension` may import `vscode`.
 - Apps never import each other. Shared logic moves down into a package.
@@ -71,11 +72,16 @@ npx turbo run lint test --filter=@sandbox-factory/api
   makes it stale. `requireMembership` in `routes.ts` reads the `member` table;
   a non-member is a 404.
 - **Every store method takes the owner as its first argument, in the `WHERE`
-  clause.** For `TodoStore` the owner is the user; for an organization-owned
-  table it is the organization id. It comes from `c.get("user").id` or the path
-  segment the membership guard has already checked, never from a request body.
-  A session says who is asking, not what they may read. Another owner's id is a
-  404, never a 403.
+  clause.** The owner is an `organization_id`, whether the organization is a
+  team or somebody's personal one — every user gets a personal organization at
+  signup, which is why nothing needs a nullable user/organization pair. It
+  comes from the path segment the membership guard has already checked, never
+  from a request body. A session says who is asking, not what they may read.
+  Another owner's id is a 404, never a 403.
+- **No store method branches on `organization.kind`.** Personal and team
+  organizations take the same path; only surfaces present them differently.
+  The exceptions are the `refusePersonal` guards in `apps/api/src/auth.ts`,
+  which stop a personal organization gaining members or being deleted.
 - Email/password sign-in is deliberately off. `apps/api/test/auth.test.ts`
   asserts on the 400 response; do not enable the feature to make it pass.
 - `createApp` without an `auth` option serves 503 on `/api/*`. Routes under

@@ -15,15 +15,24 @@
 
 import { and, eq } from "drizzle-orm";
 
+import { generateId } from "./mapping.js";
 import { invitation, member, organization, user } from "./schema.js";
-import type { Database } from "./store.js";
+import type { OrganizationKind } from "./schema.js";
+import type { Database } from "./errors.js";
 
-/** An organization as every surface lists it: two names and nothing else. */
+/** An organization as every surface lists it: two names and its kind. */
 export interface OrganizationSummary {
   readonly id: string;
   readonly name: string;
   /** The public handle. Renameable, so never a foreign key. */
   readonly slug: string;
+  /**
+   * `personal` or `team`. Carried so a surface can present someone's own
+   * account differently — first in the switcher, no members page. No store
+   * method branches on it; authorization is the membership, whatever the
+   * kind.
+   */
+  readonly kind: OrganizationKind;
 }
 
 /** One of the caller's organizations, with the role they hold in it. */
@@ -56,6 +65,25 @@ export interface OrganizationStore {
    * switcher and the account page read this.
    */
   listForUser(userId: string): Promise<Membership[]>;
+  /**
+   * Creates the user's personal organization and their `owner` membership of
+   * it, or returns the existing one.
+   *
+   * The one write in this store the plugin does not own, and deliberately so:
+   * the plugin's create endpoint is a user action, whereas this runs from the
+   * signup hook so that no account can exist without a personal organization.
+   * Everything ownable then takes a single non-null `organization_id`, whether
+   * it belongs to a person or to a team.
+   *
+   * `preferredSlug` is the user's own handle. A team may already hold it —
+   * both draw from one namespace — so a taken handle gets a numeric suffix,
+   * matching what migration 0015 does for users who predate this hook.
+   */
+  createPersonal(input: {
+    userId: string;
+    name: string;
+    preferredSlug: string;
+  }): Promise<OrganizationSummary>;
   /**
    * The caller's role in one organization, or undefined when they are not a
    * member. The membership check every organization-scoped route makes; a
@@ -91,6 +119,27 @@ export interface OrganizationStore {
   touch(organizationId: string): Promise<void>;
 }
 
+/**
+ * Narrows the `kind` column, which Postgres stores as `text`.
+ *
+ * One place rather than a cast at each call site: an unrecognised value reads
+ * as `team`, so a row written by hand cannot make a surface treat a team as
+ * somebody's personal account.
+ */
+function toSummary(row: {
+  id: string;
+  name: string;
+  slug: string;
+  kind: string;
+}): OrganizationSummary {
+  return {
+    id: row.id,
+    name: row.name,
+    slug: row.slug,
+    kind: row.kind === "personal" ? "personal" : "team",
+  };
+}
+
 export function createOrganizationStore(db: Database): OrganizationStore {
   return {
     async listForUser(userId) {
@@ -99,6 +148,7 @@ export function createOrganizationStore(db: Database): OrganizationStore {
           id: organization.id,
           name: organization.name,
           slug: organization.slug,
+          kind: organization.kind,
           role: member.role,
           joinedAt: member.createdAt,
         })
@@ -112,7 +162,63 @@ export function createOrganizationStore(db: Database): OrganizationStore {
       return rows
         .slice()
         .sort((a, b) => a.joinedAt.getTime() - b.joinedAt.getTime())
-        .map(({ id, name, slug, role }) => ({ id, name, slug, role }));
+        .map(({ role, ...row }) => ({ ...toSummary(row), role }));
+    },
+
+    async createPersonal({ userId, name, preferredSlug }) {
+      // Already has one: the hook can run again for the same user (a retried
+      // signup), and two would break the unique constraint rather than being
+      // caught here.
+      const [existing] = await db
+        .select({
+          id: organization.id,
+          name: organization.name,
+          slug: organization.slug,
+          kind: organization.kind,
+        })
+        .from(organization)
+        .where(eq(organization.personalUserId, userId))
+        .limit(1);
+      if (existing !== undefined) {
+        return toSummary(existing);
+      }
+
+      const slug = await freeSlug(db, preferredSlug);
+      const id = generateId("org");
+      const [created] = await db
+        .insert(organization)
+        .values({
+          id,
+          name,
+          slug,
+          kind: "personal",
+          personalUserId: userId,
+        })
+        .returning({
+          id: organization.id,
+          name: organization.name,
+          slug: organization.slug,
+          kind: organization.kind,
+        });
+      if (created === undefined) {
+        throw new Error("Failed to create the personal organization.");
+      }
+
+      // Sole member, as owner. Separate insert rather than a transaction
+      // because the adapter hands this store a plain connection; a personal
+      // organization with no membership would be invisible to `listForUser`,
+      // so the membership is written immediately after and is idempotent.
+      await db
+        .insert(member)
+        .values({
+          id: generateId("mbr"),
+          organizationId: id,
+          userId,
+          role: "owner",
+        })
+        .onConflictDoNothing();
+
+      return toSummary(created);
     },
 
     async roleOf(userId, organizationId) {
@@ -135,11 +241,12 @@ export function createOrganizationStore(db: Database): OrganizationStore {
           id: organization.id,
           name: organization.name,
           slug: organization.slug,
+          kind: organization.kind,
         })
         .from(organization)
         .where(eq(organization.id, organizationId))
         .limit(1);
-      return row;
+      return row === undefined ? undefined : toSummary(row);
     },
 
     async findBySlug(slug) {
@@ -148,11 +255,12 @@ export function createOrganizationStore(db: Database): OrganizationStore {
           id: organization.id,
           name: organization.name,
           slug: organization.slug,
+          kind: organization.kind,
         })
         .from(organization)
         .where(eq(organization.slug, slug.trim().toLowerCase()))
         .limit(1);
-      return row;
+      return row === undefined ? undefined : toSummary(row);
     },
 
     async slugOwner(slug, exceptId) {
@@ -201,6 +309,7 @@ export function createOrganizationStore(db: Database): OrganizationStore {
           organizationId: organization.id,
           name: organization.name,
           slug: organization.slug,
+          kind: organization.kind,
         })
         .from(invitation)
         .innerJoin(organization, eq(invitation.organizationId, organization.id))
@@ -223,11 +332,12 @@ export function createOrganizationStore(db: Database): OrganizationStore {
             id: row.id,
             role: row.role,
             expiresAt: row.expiresAt,
-            organization: {
+            organization: toSummary({
               id: row.organizationId,
               name: row.name,
               slug: row.slug,
-            },
+              kind: row.kind,
+            }),
           }))
       );
     },
@@ -248,4 +358,29 @@ export function createOrganizationStore(db: Database): OrganizationStore {
         .where(eq(organization.id, organizationId));
     },
   };
+}
+
+/**
+ * The first free handle: `preferred`, then `preferred-2`, `-3` and so on.
+ *
+ * A loop of point lookups rather than one clever query, because it runs once
+ * per signup and the first candidate is almost always free. The bound stops a
+ * pathological case from looping forever; reaching it means that many
+ * organizations already hold the same stem, and failing loudly is better than
+ * spinning.
+ */
+async function freeSlug(db: Database, preferred: string): Promise<string> {
+  const stem = preferred.trim().toLowerCase();
+  for (let suffix = 1; suffix <= 1000; suffix += 1) {
+    const candidate = suffix === 1 ? stem : `${stem}-${suffix}`;
+    const [taken] = await db
+      .select({ id: organization.id })
+      .from(organization)
+      .where(eq(organization.slug, candidate))
+      .limit(1);
+    if (taken === undefined) {
+      return candidate;
+    }
+  }
+  throw new Error(`No handle available for "${stem}".`);
 }

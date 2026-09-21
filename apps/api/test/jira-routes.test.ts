@@ -10,7 +10,6 @@ import type {
 import type { Auth } from "../src/auth.js";
 import { signState } from "../src/jira/state.js";
 import { createApp } from "../src/routes.js";
-import { createInMemoryStore } from "../src/store.js";
 
 /**
  * The Jira connection routes.
@@ -138,7 +137,6 @@ function appWith(
 ) {
   const connections = options.connections ?? fakeConnections();
   const app = createApp({
-    store: createInMemoryStore(),
     corsOrigins: ["https://app.test"],
     auth: fakeAuth(options.user ?? dana),
     organizations: {
@@ -568,7 +566,6 @@ test("the routes are not mounted without the Jira credentials", async () => {
   // A deployment with no second Atlassian app must still serve everything
   // else, rather than refusing to start.
   const app = createApp({
-    store: createInMemoryStore(),
     corsOrigins: ["https://app.test"],
     auth: fakeAuth(),
     organizations: {
@@ -593,7 +590,7 @@ test("the routes are not mounted without the Jira credentials", async () => {
   );
   // And an unrelated route still works.
   assert.equal(
-    (await app.request("/api/v1/todos", { headers: signedIn })).status,
+    (await app.request("/api/v1/me", { headers: signedIn })).status,
     200,
   );
 });

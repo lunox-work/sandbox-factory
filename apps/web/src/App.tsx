@@ -1,26 +1,14 @@
-import type { TodoDto } from "@sandbox-factory/shared";
-import { Check, Plus, Trash2 } from "lucide-react";
-import {
-  TODO_FILTERS,
-  filterTodos,
-  isValidTitle,
-  type TodoFilter,
-} from "sandbox-factory";
-import { useEffect, useState, type FormEvent } from "react";
-
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { cn } from "@/lib/utils";
+import { useEffect, useState } from "react";
 
 import { Account } from "./Account";
 import { signOut, useSession } from "./auth";
+import { Home } from "./Home";
 import { CreateOrganization, Organization } from "./Organization";
 import { Organizations } from "./Organizations";
 import { Jira } from "./Jira";
 import { SideNav, type Screen } from "./SideNav";
 import { SignIn } from "./SignIn";
 import { useOrganizations } from "./useOrganizations";
-import { useTodos } from "./useTodos";
 
 export function App() {
   const { data: session, isPending } = useSession();
@@ -41,8 +29,9 @@ export function App() {
 
   /**
    * Keyed by user id, so switching account remounts everything below. Without
-   * the key, `useTodos` keeps the previous user's rows on screen until a
-   * refetch replaces them, which reads as one account showing another's data.
+   * the key, the connection list keeps the previous user's rows on screen
+   * until a refetch replaces them, which reads as one account showing
+   * another's data.
    */
   return (
     <Signed
@@ -149,9 +138,9 @@ function Signed({
             onCreated={(id) => {
               void organizations.refresh();
               organizations.select(id);
-              navigate("todos");
+              navigate("home");
             }}
-            onCancel={() => navigate("todos")}
+            onCancel={() => navigate("home")}
           />
         ) : screen === "org-jira" ? (
           organizations.active === null ? (
@@ -195,12 +184,21 @@ function Signed({
               }}
               onLeft={() => {
                 void organizations.refresh();
-                navigate("todos");
+                navigate("home");
               }}
             />
           )
         ) : (
-          <Todos />
+          <Home
+            organizations={organizations.organizations}
+            organizationsLoading={organizations.loading}
+            onOpen={(organization) => {
+              // Selecting is what makes the Jira screen show this one, as on
+              // the organizations page.
+              organizations.select(organization.id);
+              navigate("org-jira", organization.slug);
+            }}
+          />
         )}
       </div>
     </div>
@@ -210,11 +208,12 @@ function Signed({
 /**
  * The path each screen lives at, and the screen each path names.
  *
- * One pair of functions rather than a router: with two screens a table would
- * be more machinery than mapping. Anything unrecognised is the todo list, so a
- * stale bookmark or a typo lands somewhere useful instead of on a blank page —
- * which is also what nginx's `try_files` and the dev server's history
- * fallback already assume by serving `index.html` for any path.
+ * One pair of functions rather than a router: a handful of screens, where a
+ * table would be more machinery than mapping. Anything unrecognised is the
+ * home screen, so a stale bookmark or a typo lands somewhere useful instead of
+ * on a blank page — which is also what nginx's `try_files` and the dev
+ * server's history fallback already assume by serving `index.html` for any
+ * path.
  */
 const ACCOUNT_PATH = "/account";
 const ORGANIZATIONS_PATH = "/organizations";
@@ -249,7 +248,7 @@ function screenForPath(pathname: string): Screen {
     // `/o/:slug/jira` and `/o/:slug/settings` differ only in the last segment.
     return path.endsWith("/jira") ? "org-jira" : "org-settings";
   }
-  return "todos";
+  return "home";
 }
 
 function pathForScreen(screen: Screen, slug?: string | undefined): string {
@@ -266,208 +265,7 @@ function pathForScreen(screen: Screen, slug?: string | undefined): string {
       return slug === undefined ? ORGANIZATIONS_PATH : `/o/${slug}/settings`;
     case "org-jira":
       return slug === undefined ? ORGANIZATIONS_PATH : `/o/${slug}/jira`;
-    case "todos":
+    case "home":
       return "/";
   }
-}
-
-function Todos() {
-  const { todos, error, loading, create, setDone, rename, remove } = useTodos();
-  const [title, setTitle] = useState("");
-  const [filter, setFilter] = useState<TodoFilter>("all");
-
-  // From packages/core, shared with the extension, so the two surfaces cannot
-  // disagree about what "active" means.
-  const visible = filterTodos(todos, filter);
-
-  function onSubmit(event: FormEvent) {
-    event.preventDefault();
-    if (!isValidTitle(title)) {
-      return;
-    }
-    void create(title);
-    setTitle("");
-  }
-
-  return (
-    <main className="mx-auto w-full max-w-2xl px-4 py-10 sm:px-6 sm:py-14">
-      {/*
-        Just the title. The counts, the signed-in name and sign out all used to
-        crowd this line; none of them is part of writing a todo, and the first
-        two are answered by the list itself and by the avatar in the rail.
-      */}
-      <h1 className="text-2xl font-semibold tracking-tight">Todos</h1>
-
-      <form onSubmit={onSubmit} className="mt-6 flex gap-2">
-        <Input
-          aria-label="Todo title"
-          placeholder="What needs doing?"
-          value={title}
-          onChange={(event) => setTitle(event.target.value)}
-        />
-        <Button type="submit" disabled={!isValidTitle(title)}>
-          <Plus />
-          Add
-        </Button>
-      </form>
-
-      <nav className="mt-6 flex gap-1" aria-label="Filter todos">
-        {TODO_FILTERS.map((option) => (
-          <Button
-            key={option}
-            type="button"
-            variant={option === filter ? "secondary" : "ghost"}
-            size="sm"
-            aria-pressed={option === filter}
-            onClick={() => setFilter(option)}
-            className="capitalize"
-          >
-            {option}
-          </Button>
-        ))}
-      </nav>
-
-      {error !== null && (
-        <p
-          role="alert"
-          className="text-destructive border-destructive/35 bg-destructive/7 mt-6 rounded-lg border px-3 py-2.5 text-sm"
-        >
-          {error}
-        </p>
-      )}
-
-      {visible.length === 0 && !loading ? (
-        <p className="text-muted-foreground mt-10 text-center text-sm">
-          {todos.length === 0
-            ? "Nothing here yet. Add something above."
-            : `No ${filter} todos.`}
-        </p>
-      ) : (
-        <ul className="mt-6 flex flex-col gap-2">
-          {visible.map((todo) => (
-            <TodoRow
-              key={todo.id}
-              todo={todo}
-              onToggle={setDone}
-              onRename={rename}
-              onRemove={remove}
-            />
-          ))}
-        </ul>
-      )}
-    </main>
-  );
-}
-
-function TodoRow({
-  todo,
-  onToggle,
-  onRename,
-  onRemove,
-}: {
-  todo: TodoDto;
-  onToggle: (id: string, done: boolean) => void;
-  onRename: (id: string, title: string) => void;
-  onRemove: (id: string) => void;
-}) {
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(todo.title);
-
-  function commit() {
-    setEditing(false);
-    // An unchanged or unusable draft is a cancel, not an error.
-    if (draft !== todo.title && isValidTitle(draft)) {
-      onRename(todo.id, draft);
-    } else {
-      setDraft(todo.title);
-    }
-  }
-
-  return (
-    <li
-      className={cn(
-        "group bg-card flex items-center gap-3 rounded-xl border px-3 py-2.5 shadow-xs transition-colors",
-        "hover:border-foreground/15",
-      )}
-    >
-      {/*
-        A real checkbox, restyled: `appearance-none` drops the native control
-        but keeps the semantics and the keyboard behaviour that a div with a
-        click handler would have to reimplement.
-      */}
-      <label className="relative grid shrink-0 place-items-center">
-        <input
-          type="checkbox"
-          checked={todo.done}
-          aria-label={`Mark "${todo.title}" as ${todo.done ? "not done" : "done"}`}
-          onChange={(event) => onToggle(todo.id, event.target.checked)}
-          className={cn(
-            "peer border-input size-[1.15rem] cursor-pointer appearance-none rounded-[0.35rem] border transition-colors",
-            "checked:bg-primary checked:border-primary",
-            "focus-visible:ring-ring/50 focus-visible:border-ring focus-visible:ring-[3px] focus-visible:outline-none",
-          )}
-        />
-        {/* The tick is drawn over the input rather than by it, since an
-            appearance-none checkbox has no mark of its own. */}
-        <Check
-          aria-hidden="true"
-          className="text-primary-foreground pointer-events-none absolute size-3.5 opacity-0 peer-checked:opacity-100"
-          strokeWidth={3}
-        />
-      </label>
-
-      {editing ? (
-        <Input
-          aria-label="Edit title"
-          value={draft}
-          autoFocus
-          onChange={(event) => setDraft(event.target.value)}
-          onBlur={commit}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              commit();
-            } else if (event.key === "Escape") {
-              setDraft(todo.title);
-              setEditing(false);
-            }
-          }}
-          className="h-7 flex-1"
-        />
-      ) : (
-        // A button so rename is keyboard-reachable, styled to read as plain
-        // text.
-        <button
-          type="button"
-          title="Click to rename"
-          onClick={() => setEditing(true)}
-          className={cn(
-            "flex-1 cursor-text rounded px-1 py-0.5 text-left text-sm transition-colors",
-            "hover:bg-accent focus-visible:ring-ring/50 focus-visible:ring-2 focus-visible:outline-none",
-            todo.done && "text-muted-foreground line-through",
-          )}
-        >
-          {todo.title}
-        </button>
-      )}
-
-      {/*
-        Revealed on hover, but always present for keyboard and touch: hiding it
-        with `hidden` would take it out of the tab order, and on a touch screen
-        there is no hover to reveal it at all.
-      */}
-      <Button
-        type="button"
-        variant="ghost"
-        size="icon"
-        aria-label={`Delete "${todo.title}"`}
-        onClick={() => onRemove(todo.id)}
-        className={cn(
-          "text-muted-foreground hover:text-destructive hover:bg-destructive/10 size-7 shrink-0",
-          "opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100 sm:focus-visible:opacity-100",
-        )}
-      >
-        <Trash2 />
-      </Button>
-    </li>
-  );
 }

@@ -1,7 +1,7 @@
 {
   "name": "sandbox-factory-vscode",
   "displayName": "sandbox-factory",
-  "description": "Manage your todos from VS Code.",
+  "description": "sandbox-factory in VS Code.",
   "version": "0.0.1",
   "publisher": "lunox",
   "license": "MIT",
@@ -18,98 +18,20 @@
     "Other"
   ],
   "main": "./dist/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "contributes": {
-    "viewsContainers": {
-      "activitybar": [
-        {
-          "id": "sandbox-factory",
-          "title": "sandbox-factory",
-          "icon": "media/icon.svg"
-        }
-      ]
-    },
-    "views": {
-      "sandbox-factory": [
-        {
-          "id": "sandboxFactory.todos",
-          "name": "Todos",
-          "contextualTitle": "sandbox-factory"
-        }
-      ]
-    },
-    "viewsWelcome": [
-      {
-        "view": "sandboxFactory.todos",
-        "contents": "Loading todos\u2026\n[Add todo](command:sandboxFactory.create)\n[Refresh](command:sandboxFactory.refresh)\n[Open settings](command:workbench.action.openSettings?%22sandboxFactory%22)"
-      }
-    ],
     "commands": [
       {
-        "command": "sandboxFactory.create",
-        "title": "sandbox-factory: Add Todo",
-        "icon": "$(add)"
-      },
-      {
-        "command": "sandboxFactory.refresh",
-        "title": "sandbox-factory: Refresh Todos",
-        "icon": "$(refresh)"
-      },
-      {
-        "command": "sandboxFactory.toggle",
-        "title": "sandbox-factory: Toggle Done",
-        "icon": "$(check)"
-      },
-      {
-        "command": "sandboxFactory.rename",
-        "title": "sandbox-factory: Rename Todo",
-        "icon": "$(edit)"
-      },
-      {
-        "command": "sandboxFactory.delete",
-        "title": "sandbox-factory: Delete Todo",
-        "icon": "$(trash)"
+        "command": "sandboxFactory.signIn",
+        "title": "sandbox-factory: Set API Token"
       },
       {
         "command": "sandboxFactory.showVersion",
         "title": "sandbox-factory: Show Version"
       }
     ],
-    "menus": {
-      "view/title": [
-        {
-          "command": "sandboxFactory.create",
-          "when": "view == sandboxFactory.todos",
-          "group": "navigation@1"
-        },
-        {
-          "command": "sandboxFactory.refresh",
-          "when": "view == sandboxFactory.todos",
-          "group": "navigation@2"
-        }
-      ],
-      "view/item/context": [
-        {
-          "command": "sandboxFactory.toggle",
-          "when": "view == sandboxFactory.todos && viewItem =~ /^todo\\./",
-          "group": "inline@1"
-        },
-        {
-          "command": "sandboxFactory.delete",
-          "when": "view == sandboxFactory.todos && viewItem =~ /^todo\\./",
-          "group": "inline@2"
-        },
-        {
-          "command": "sandboxFactory.rename",
-          "when": "view == sandboxFactory.todos && viewItem =~ /^todo\\./",
-          "group": "1_modify"
-        },
-        {
-          "command": "sandboxFactory.delete",
-          "when": "view == sandboxFactory.todos && viewItem =~ /^todo\\./",
-          "group": "1_modify"
-        }
-      ]
-    },
     "configuration": {
       "title": "sandbox-factory",
       "properties": {

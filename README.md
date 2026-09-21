@@ -1,6 +1,6 @@
 # sandbox-factory
 
-> A todo list — from the web or from VS Code.
+> Connect a client's Jira site, price its backlog, and get the work done.
 
 [![CI](https://github.com/lunox-work/sandbox-factory/actions/workflows/ci.yml/badge.svg)](https://github.com/lunox-work/sandbox-factory/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
@@ -8,13 +8,14 @@
 A monorepo holding the API, the web app, the VS Code extension, and the packages
 they share. The domain rules live in one package and every surface imports them,
 so the browser, the editor, and the server cannot disagree about what a valid
-todo is.
+handle is.
 
 | Workspace                                | What it is                                        |
 | ---------------------------------------- | ------------------------------------------------- |
-| [`packages/core`](./packages/core)       | Todo rules and helpers. The publishable package   |
+| [`packages/core`](./packages/core)       | Shared domain rules. The publishable package      |
 | [`packages/shared`](./packages/shared)   | Zod schemas for the wire format                   |
 | [`packages/client`](./packages/client)   | Typed API client, used by web **and** extension   |
+| [`packages/jira`](./packages/jira)       | Atlassian OAuth and the Jira REST client          |
 | [`packages/db`](./packages/db)           | Drizzle schema, migrations, Postgres and S3 store |
 | [`apps/api`](./apps/api)                 | Hono HTTP API                                     |
 | [`apps/web`](./apps/web)                 | Vite + React dashboard                            |
@@ -65,8 +66,8 @@ Then open this repo in VS Code and press <kbd>F5</kbd>. A second window opens
 with the extension loaded — the sandbox-factory icon is in its activity bar.
 
 The extension is a bundle the editor loads, so it runs on your machine rather
-than in Docker and `make ext` needs Node 22+. Both surfaces share one API: a
-todo added in one shows in the other.
+than in Docker and `make ext` needs Node 22+. It is a shell today — activation,
+the API client and **Show Version** — kept ready for the first editor feature.
 
 ## Develop it
 
@@ -126,18 +127,16 @@ attached to a [release](https://github.com/lunox-work/sandbox-factory/releases).
 The import below is what publishing would enable:
 
 ```ts
-import {
-  countTodos,
-  filterTodos,
-  normalizeTitle,
-  toggle,
-} from "sandbox-factory";
+import { checkHandle, normalizeHandle, toHandleStem } from "sandbox-factory";
 
-normalizeTitle("  buy milk  "); // "buy milk"
-toggle(todo); // a new todo with `done` flipped
-filterTodos(todos, "active");
-countTodos(todos); // { total, active, completed }
+normalizeHandle("  Acme-Corp  "); // { status: "ok", handle: "acme-corp" }
+normalizeHandle("no spaces!"); // { status: "invalid", reason: "…" }
+toHandleStem("dana@example.test"); // "dana"
+checkHandle("ok-name"); // { status: "ok", handle: "ok-name" }
 ```
+
+Users and organizations draw handles from one namespace, so what counts as a
+valid handle is decided here and nowhere else.
 
 ## Which version am I running?
 

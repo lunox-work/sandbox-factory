@@ -38,7 +38,22 @@ vi.mock("../src/auth", () => ({
 const { CreateOrganization, Organization } =
   await import("../src/Organization");
 
-const acme = { id: "org_1", name: "Acme", slug: "acme", role: "owner" };
+const acme = {
+  id: "org_1",
+  name: "Acme",
+  slug: "acme",
+  kind: "team" as const,
+  role: "owner",
+};
+
+/** Someone's own account: one member, and it cannot gain another. */
+const personal = {
+  id: "org_personal",
+  name: "Dana",
+  slug: "dana",
+  kind: "personal" as const,
+  role: "owner",
+};
 
 /** Every request the page made, so a test can assert what it asked for. */
 const calls: string[] = [];
@@ -454,4 +469,100 @@ test("the server's reason for refusing a create is shown", async () => {
   fireEvent.click(screen.getByRole("button", { name: /create organization/i }));
 
   expect(await screen.findByText(/handle is taken/i)).toBeDefined();
+});
+
+// ---- personal organizations -----------------------------------------------
+//
+// A personal organization has exactly one member and cannot gain another, so
+// the sections about membership do not apply. The API refuses these writes —
+// see `refusePersonal` in `apps/api/src/auth.ts` — and the page must not offer
+// a control the server would reject.
+
+test("a personal organization shows no members section", async () => {
+  serverWith([
+    {
+      id: "mem_1",
+      userId: "user_1",
+      role: "owner",
+      name: "Dana",
+      username: "dana",
+      image: null,
+    },
+  ]);
+
+  render(
+    <Organization
+      organization={personal}
+      onChanged={vi.fn()}
+      onLeft={vi.fn()}
+    />,
+  );
+
+  await waitFor(() => {
+    expect(screen.getByLabelText("Organization handle")).toBeTruthy();
+  });
+  expect(screen.queryByRole("heading", { name: "Members" })).toBeNull();
+});
+
+test("a personal organization offers no way to invite anyone", async () => {
+  serverWith([]);
+
+  render(
+    <Organization
+      organization={personal}
+      onChanged={vi.fn()}
+      onLeft={vi.fn()}
+    />,
+  );
+
+  await waitFor(() => {
+    expect(screen.getByLabelText("Organization handle")).toBeTruthy();
+  });
+  expect(screen.queryByLabelText(/handle or email/i)).toBeNull();
+});
+
+test("a personal organization cannot be left or deleted", async () => {
+  // It is minted at signup and removed with the account; leaving would strand
+  // the person owning nothing.
+  serverWith([]);
+
+  render(
+    <Organization
+      organization={personal}
+      onChanged={vi.fn()}
+      onLeft={vi.fn()}
+    />,
+  );
+
+  await waitFor(() => {
+    expect(screen.getByLabelText("Organization handle")).toBeTruthy();
+  });
+  expect(screen.queryByRole("heading", { name: "Leaving" })).toBeNull();
+  expect(
+    screen.queryByRole("button", { name: /Leave organization/ }),
+  ).toBeNull();
+});
+
+test("a team organization still shows all three", async () => {
+  // The guard must be specific: a team is the ordinary case behind it.
+  serverWith([
+    {
+      id: "mem_1",
+      userId: "user_1",
+      role: "owner",
+      name: "Dana",
+      username: "dana",
+      image: null,
+    },
+  ]);
+
+  render(
+    <Organization organization={acme} onChanged={vi.fn()} onLeft={vi.fn()} />,
+  );
+
+  expect(await screen.findByRole("heading", { name: "Members" })).toBeTruthy();
+  expect(screen.getByRole("heading", { name: "Leaving" })).toBeTruthy();
+  expect(
+    screen.getByRole("button", { name: /Leave organization/ }),
+  ).toBeTruthy();
 });

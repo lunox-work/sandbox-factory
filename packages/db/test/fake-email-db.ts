@@ -5,7 +5,7 @@
  * shapes `emails.ts` issues; a new shape needs a new branch here.
  */
 
-import type { Database } from "../src/store.js";
+import type { Database } from "../src/errors.js";
 
 export interface EmailRow {
   id: string;

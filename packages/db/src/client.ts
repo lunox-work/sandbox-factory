@@ -6,7 +6,7 @@
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 
-import type { Database } from "./store.js";
+import type { Database } from "./errors.js";
 
 export interface ConnectionOptions {
   /** Postgres connection string, e.g. `postgres://user:pass@host:5432/db`. */

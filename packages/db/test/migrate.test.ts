@@ -3,7 +3,7 @@ import { test } from "node:test";
 
 import type { Connection } from "../src/client.js";
 import { type MigrateDeps, runMigrations } from "../src/migrate.js";
-import type { Database } from "../src/store.js";
+import type { Database } from "../src/errors.js";
 
 /**
  * The runner's logic: open one connection, run the migrator, close whichever

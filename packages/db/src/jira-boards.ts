@@ -15,7 +15,7 @@ import { and, desc, eq } from "drizzle-orm";
 import { generateId } from "./mapping.js";
 import { jiraBoard, jiraConnection } from "./schema.js";
 import type { JiraBoardRow } from "./schema.js";
-import type { Database } from "./store.js";
+import type { Database } from "./errors.js";
 
 /** The selection settings, as stored. Validated by Zod at the HTTP edge. */
 export interface StoredBoardSelection {

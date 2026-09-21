@@ -9,31 +9,12 @@ import {
 
 import type { Auth } from "../src/auth.js";
 import { createApp } from "../src/routes.js";
-import { createInMemoryStore } from "../src/store.js";
 
 const sessionUser = {
   id: "user_1",
   email: "signed-in@example.test",
   name: "Signed In",
 };
-
-/** A second account, for the cross-user tests. */
-const otherUser = {
-  id: "user_2",
-  email: "someone-else@example.test",
-  name: "Someone Else",
-};
-
-// Owned by `sessionUser`, whom the fake session below signs in as.
-const seed = [
-  {
-    id: "todo_1",
-    userId: sessionUser.id,
-    title: "write tests",
-    done: false,
-    createdAt: "2026-09-16T00:00:00.000Z",
-  },
-];
 
 /** A build record with every field populated, for the version routes below. */
 const build: BuildInfoDto = {
@@ -79,9 +60,8 @@ const signedIn = { cookie: "better-auth.session_token=test-token" };
  * A signed-in app: `request` injects the session cookie. Tests about auth call
  * `createApp` directly or pass their own headers, which win.
  */
-function app(todos = seed) {
+function app() {
   const server = createApp({
-    store: createInMemoryStore(todos),
     corsOrigins: ["http://localhost:5173"],
     auth: fakeAuth(),
   });
@@ -116,7 +96,6 @@ test("GET /health reports ok, with the build it is running", async () => {
 
 test("GET /health carries the injected build", async () => {
   const server = createApp({
-    store: createInMemoryStore(seed),
     corsOrigins: ["http://localhost:5173"],
     auth: fakeAuth(),
     buildInfo: build,
@@ -130,7 +109,6 @@ test("GET /health carries the injected build", async () => {
 
 test("GET /version returns the build record verbatim", async () => {
   const server = createApp({
-    store: createInMemoryStore(seed),
     corsOrigins: ["http://localhost:5173"],
     auth: fakeAuth(),
     buildInfo: build,
@@ -151,7 +129,6 @@ test("GET /version falls back to the unknown record", async () => {
 // The sign-in screen and deploy tooling read this without a session.
 test("GET /version needs no session", async () => {
   const server = createApp({
-    store: createInMemoryStore(seed),
     corsOrigins: ["http://localhost:5173"],
     auth: fakeAuth({ signedIn: false }),
     buildInfo: build,
@@ -162,157 +139,12 @@ test("GET /version needs no session", async () => {
 // A misconfigured server can still say which build it is.
 test("GET /version answers even with no auth configured", async () => {
   const server = createApp({
-    store: createInMemoryStore(seed),
     corsOrigins: ["http://localhost:5173"],
     buildInfo: build,
   });
   const res = await server.request("/version");
   assert.equal(res.status, 200);
   assert.deepEqual(await res.json(), build);
-});
-
-test("GET /api/v1/todos returns the seeded todos", async () => {
-  const res = await app().request("/api/v1/todos");
-  assert.equal(res.status, 200);
-  const body = (await res.json()) as { todos: unknown[] };
-  assert.equal(body.todos.length, 1);
-});
-
-test("GET one todo by id", async () => {
-  const res = await app().request("/api/v1/todos/todo_1");
-  assert.equal(res.status, 200);
-  assert.equal(((await res.json()) as { title: string }).title, "write tests");
-});
-
-test("GET an unknown id is a 404 with a message", async () => {
-  const res = await app().request("/api/v1/todos/nope");
-  assert.equal(res.status, 404);
-  assert.match(((await res.json()) as { error: string }).error, /No todo/);
-});
-
-test("POST creates a todo, not done, and returns 201", async () => {
-  const res = await app().request("/api/v1/todos", json({ title: "buy milk" }));
-
-  assert.equal(res.status, 201);
-  const body = (await res.json()) as { title: string; done: boolean };
-  assert.equal(body.title, "buy milk");
-  assert.equal(body.done, false);
-});
-
-test("POST trims the title", async () => {
-  const res = await app().request(
-    "/api/v1/todos",
-    json({ title: "  padded  " }),
-  );
-  assert.equal(((await res.json()) as { title: string }).title, "padded");
-});
-
-test("POST with an empty title is a 400 carrying the schema's message", async () => {
-  const res = await app().request("/api/v1/todos", json({ title: "   " }));
-
-  assert.equal(res.status, 400);
-  assert.match(
-    ((await res.json()) as { error: string }).error,
-    /needs a title/,
-  );
-});
-
-test("POST with an overlong title is a 400", async () => {
-  const res = await app().request(
-    "/api/v1/todos",
-    json({ title: "x".repeat(201) }),
-  );
-  assert.equal(res.status, 400);
-});
-
-test("POST with a malformed body is a 400, not a crash", async () => {
-  const res = await app().request("/api/v1/todos", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: "{{{",
-  });
-
-  assert.equal(res.status, 400);
-});
-
-test("PATCH marks a todo done", async () => {
-  const res = await app().request("/api/v1/todos/todo_1", {
-    ...json({ done: true }),
-    method: "PATCH",
-  });
-
-  assert.equal(res.status, 200);
-  assert.equal(((await res.json()) as { done: boolean }).done, true);
-});
-
-test("PATCH renames a todo", async () => {
-  const res = await app().request("/api/v1/todos/todo_1", {
-    ...json({ title: "renamed" }),
-    method: "PATCH",
-  });
-
-  assert.equal(((await res.json()) as { title: string }).title, "renamed");
-});
-
-test("PATCH can change title and done together", async () => {
-  const res = await app().request("/api/v1/todos/todo_1", {
-    ...json({ title: "both", done: true }),
-    method: "PATCH",
-  });
-
-  const body = (await res.json()) as { title: string; done: boolean };
-  assert.equal(body.title, "both");
-  assert.equal(body.done, true);
-});
-
-test("PATCH with an empty body is a 400", async () => {
-  const res = await app().request("/api/v1/todos/todo_1", {
-    ...json({}),
-    method: "PATCH",
-  });
-
-  assert.equal(res.status, 400);
-  assert.match(
-    ((await res.json()) as { error: string }).error,
-    /Provide a title/,
-  );
-});
-
-test("PATCH an unknown id is a 404", async () => {
-  const res = await app().request("/api/v1/todos/nope", {
-    ...json({ done: true }),
-    method: "PATCH",
-  });
-
-  assert.equal(res.status, 404);
-});
-
-test("DELETE removes the todo and returns 204 with no body", async () => {
-  const server = app();
-
-  const res = await server.request("/api/v1/todos/todo_1", {
-    method: "DELETE",
-  });
-  assert.equal(res.status, 204);
-  assert.equal(await res.text(), "");
-
-  const after = await server.request("/api/v1/todos");
-  assert.deepEqual(await after.json(), { todos: [] });
-});
-
-test("DELETE an unknown id is a 404", async () => {
-  const res = await app().request("/api/v1/todos/nope", { method: "DELETE" });
-  assert.equal(res.status, 404);
-});
-
-test("DELETE twice is a 404 the second time", async () => {
-  const server = app();
-  await server.request("/api/v1/todos/todo_1", { method: "DELETE" });
-  const res = await server.request("/api/v1/todos/todo_1", {
-    method: "DELETE",
-  });
-
-  assert.equal(res.status, 404);
 });
 
 test("an unknown route is a 404 in JSON, not HTML", async () => {
@@ -322,7 +154,7 @@ test("an unknown route is a 404 in JSON, not HTML", async () => {
 });
 
 test("CORS allows the configured origin", async () => {
-  const res = await app().request("/api/v1/todos", {
+  const res = await app().request("/api/v1/me", {
     headers: { Origin: "http://localhost:5173" },
   });
   assert.equal(
@@ -331,162 +163,39 @@ test("CORS allows the configured origin", async () => {
   );
 });
 
-// ---- ownership ------------------------------------------------------------
-//
-// Being signed in is not being entitled to a row. Regression tests for todo
-// routes that were authenticated but unscoped; a 401 test cannot catch that,
-// so the boundary is tested at the HTTP layer as well as in the store.
-
-/** A signed-in app whose caller is `user`. */
-function appAs(user: typeof sessionUser, todos = seed) {
-  const server = createApp({
-    store: createInMemoryStore(todos),
-    corsOrigins: ["http://localhost:5173"],
-    auth: fakeAuth({ as: user }),
-  });
-  return {
-    request(path: string, init?: RequestInit) {
-      return server.request(path, {
-        ...init,
-        headers: { ...signedIn, ...init?.headers },
-      });
-    },
-  };
-}
-
-test("a signed-in user does not see another user's todos", async () => {
-  const res = await appAs(otherUser).request("/api/v1/todos");
-
-  assert.equal(res.status, 200);
-  assert.deepEqual(await res.json(), { todos: [] });
-});
-
-test("reading another user's todo by id is a 404, not a 403", async () => {
-  // A 403 would confirm the id exists.
-  const res = await appAs(otherUser).request("/api/v1/todos/todo_1");
-
-  assert.equal(res.status, 404);
-});
-
-test("patching another user's todo is refused and changes nothing", async () => {
-  const store = createInMemoryStore(seed);
-  const server = createApp({
-    store,
-    corsOrigins: ["http://localhost:5173"],
-    auth: fakeAuth({ as: otherUser }),
-  });
-
-  const res = await server.request("/api/v1/todos/todo_1", {
-    method: "PATCH",
-    headers: { ...signedIn, "Content-Type": "application/json" },
-    body: JSON.stringify({ title: "hijacked" }),
-  });
-
-  assert.equal(res.status, 404);
-  assert.equal(
-    (await store.get(sessionUser.id, "todo_1"))?.title,
-    "write tests",
-  );
-});
-
-test("deleting another user's todo is refused and leaves it in place", async () => {
-  const store = createInMemoryStore(seed);
-  const server = createApp({
-    store,
-    corsOrigins: ["http://localhost:5173"],
-    auth: fakeAuth({ as: otherUser }),
-  });
-
-  const res = await server.request("/api/v1/todos/todo_1", {
-    method: "DELETE",
-    headers: signedIn,
-  });
-
-  assert.equal(res.status, 404);
-  assert.notEqual(await store.get(sessionUser.id, "todo_1"), undefined);
-});
-
-test("a created todo belongs to its creator and nobody else", async () => {
-  const store = createInMemoryStore([]);
-  function serverFor(user: typeof sessionUser) {
-    return createApp({
-      store,
-      corsOrigins: ["http://localhost:5173"],
-      auth: fakeAuth({ as: user }),
-    });
-  }
-
-  const created = await serverFor(otherUser).request("/api/v1/todos", {
-    method: "POST",
-    headers: { ...signedIn, "Content-Type": "application/json" },
-    body: JSON.stringify({ title: "theirs" }),
-  });
-  assert.equal(created.status, 201);
-
-  // The owner comes from the session, so this user's list stays empty.
-  const mine = await serverFor(sessionUser).request("/api/v1/todos", {
-    headers: signedIn,
-  });
-  assert.deepEqual(await mine.json(), { todos: [] });
-});
-
-test("an owner field in the request body cannot redirect a todo", async () => {
-  // The schema has no owner field and the route reads the id off the session.
-  const store = createInMemoryStore([]);
-  const server = createApp({
-    store,
-    corsOrigins: ["http://localhost:5173"],
-    auth: fakeAuth({ as: otherUser }),
-  });
-
-  const res = await server.request("/api/v1/todos", {
-    method: "POST",
-    headers: { ...signedIn, "Content-Type": "application/json" },
-    body: JSON.stringify({ title: "smuggled", userId: sessionUser.id }),
-  });
-
-  assert.equal(res.status, 201);
-  assert.deepEqual(await store.list(sessionUser.id), []);
-  assert.equal((await store.list(otherUser.id)).length, 1);
-});
-
-// ---- auth -----------------------------------------------------------------
-
-test("an unauthenticated request to a todo route is a 401", async () => {
+test("an unauthenticated request to a data route is a 401", async () => {
   // Not the `app` helper, which would inject the session.
   const server = createApp({
-    store: createInMemoryStore(seed),
     corsOrigins: ["http://localhost:5173"],
     auth: fakeAuth(),
   });
 
-  const res = await server.request("/api/v1/todos");
+  const res = await server.request("/api/v1/me");
 
   assert.equal(res.status, 401);
   assert.deepEqual(await res.json(), { error: "Authentication required." });
 });
 
-test("an unauthenticated write is a 401 and does not reach the store", async () => {
-  const store = createInMemoryStore(seed);
+test("an unauthenticated write is a 401 before it reaches a handler", async () => {
+  // The guard is the middleware, so the method does not matter: a write with
+  // no session is refused without the handler ever running.
   const server = createApp({
-    store,
     corsOrigins: ["http://localhost:5173"],
     auth: fakeAuth(),
   });
 
-  const res = await server.request("/api/v1/todos", json({ title: "sneaky" }));
+  const res = await server.request("/api/v1/me/username", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: "sneaky" }),
+  });
 
   assert.equal(res.status, 401);
-  // A 401 that still wrote the row would be the bug.
-  assert.deepEqual(
-    (await store.list(sessionUser.id)).map((todo) => todo.title),
-    ["write tests"],
-  );
+  assert.deepEqual(await res.json(), { error: "Authentication required." });
 });
 
 test("health stays public when auth is configured", async () => {
   const server = createApp({
-    store: createInMemoryStore(seed),
     corsOrigins: ["http://localhost:5173"],
     auth: fakeAuth(),
   });
@@ -528,7 +237,6 @@ test("GET /api/v1/me reports a null handle when none is configured", async () =>
 
 test("/api/auth/* is handled by Better Auth and needs no session", async () => {
   const server = createApp({
-    store: createInMemoryStore(seed),
     corsOrigins: ["http://localhost:5173"],
     auth: fakeAuth(),
   });
@@ -544,7 +252,6 @@ test("a bearer token is accepted where a cookie would be", async () => {
   // For the VS Code extension, which has no cookie jar. The middleware passes
   // every header to Better Auth, so there is no second code path.
   const server = createApp({
-    store: createInMemoryStore(seed),
     corsOrigins: ["http://localhost:5173"],
     auth: {
       api: {
@@ -559,21 +266,20 @@ test("a bearer token is accepted where a cookie would be", async () => {
     } as unknown as Auth,
   });
 
-  const res = await server.request("/api/v1/todos", {
+  const res = await server.request("/api/v1/me", {
     headers: { authorization: "Bearer test-token" },
   });
 
   assert.equal(res.status, 200);
 });
 
-test("with no auth configured the todo routes are 503, not open", async () => {
+test("with no auth configured the data routes are 503, not open", async () => {
   // A deploy that forgets the auth env must serve no data, not everyone's.
   const server = createApp({
-    store: createInMemoryStore(seed),
     corsOrigins: ["http://localhost:5173"],
   });
 
-  const res = await server.request("/api/v1/todos");
+  const res = await server.request("/api/v1/me");
 
   assert.equal(res.status, 503);
   assert.deepEqual(await res.json(), {
@@ -585,7 +291,6 @@ test("with no auth configured the todo routes are 503, not open", async () => {
 
 test("with no auth configured an unknown route is still a JSON 404", async () => {
   const server = createApp({
-    store: createInMemoryStore(seed),
     corsOrigins: ["http://localhost:5173"],
   });
 
@@ -645,7 +350,6 @@ function fakeEmails(
 
 function appWithEmails(emails = fakeEmails()) {
   const server = createApp({
-    store: createInMemoryStore(seed),
     corsOrigins: ["http://localhost:5173"],
     auth: fakeAuth(),
     emails: emails as unknown as Parameters<typeof createApp>[0]["emails"],
@@ -669,7 +373,6 @@ test("GET /api/v1/me/emails lists the proven addresses", async () => {
 
 test("the email routes require a session like any other /api/v1 route", async () => {
   const server = createApp({
-    store: createInMemoryStore(seed),
     corsOrigins: ["http://localhost:5173"],
     auth: fakeAuth(),
     emails: fakeEmails() as unknown as Parameters<
@@ -771,7 +474,6 @@ function fakeProfiles(initial: string | null = null) {
 
 function appWithProfiles(profiles = fakeProfiles()) {
   const server = createApp({
-    store: createInMemoryStore(seed),
     corsOrigins: ["http://localhost:5173"],
     auth: fakeAuth(),
     profiles: profiles as unknown as Parameters<
@@ -838,7 +540,6 @@ test("a PUT with no username is a 400", async () => {
 
 test("the username routes require a session", async () => {
   const server = createApp({
-    store: createInMemoryStore(seed),
     corsOrigins: ["http://localhost:5173"],
     auth: fakeAuth(),
     profiles: fakeProfiles() as unknown as Parameters<
@@ -862,7 +563,6 @@ test("the username routes are absent when no profile store is configured", async
 /** An app with origin verification switched on. */
 function guardedApp(secret = "s3cr3t-from-cloudfront") {
   return createApp({
-    store: createInMemoryStore(seed),
     corsOrigins: ["http://localhost:5173"],
     auth: fakeAuth(),
     originVerify: secret,
@@ -870,7 +570,7 @@ function guardedApp(secret = "s3cr3t-from-cloudfront") {
 }
 
 test("a request carrying the origin secret is served", async () => {
-  const response = await guardedApp().request("/api/v1/todos", {
+  const response = await guardedApp().request("/api/v1/me", {
     headers: { ...signedIn, "x-origin-verify": "s3cr3t-from-cloudfront" },
   });
 
@@ -878,7 +578,7 @@ test("a request carrying the origin secret is served", async () => {
 });
 
 test("a request without the origin secret is refused", async () => {
-  const response = await guardedApp().request("/api/v1/todos", {
+  const response = await guardedApp().request("/api/v1/me", {
     headers: signedIn,
   });
 
@@ -888,7 +588,7 @@ test("a request without the origin secret is refused", async () => {
 });
 
 test("a request with the wrong origin secret is refused", async () => {
-  const response = await guardedApp().request("/api/v1/todos", {
+  const response = await guardedApp().request("/api/v1/me", {
     headers: { ...signedIn, "x-origin-verify": "wrong" },
   });
 
@@ -906,7 +606,7 @@ test("/health answers without the origin secret", async () => {
 
 test("without originVerify configured no check is installed", async () => {
   // The local-development and behind-a-load-balancer case.
-  const response = await app().request("/api/v1/todos");
+  const response = await app().request("/api/v1/me");
 
   assert.equal(response.status, 200);
 });

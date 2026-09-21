@@ -13,7 +13,7 @@ import {
 } from "sandbox-factory";
 
 import { user, userEmail } from "./schema.js";
-import type { Database } from "./store.js";
+import type { Database } from "./errors.js";
 
 export interface ProvenEmail {
   readonly id: string;

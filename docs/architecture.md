@@ -45,13 +45,17 @@ repo. Only `apps/api` imports it.
 
 ## Domain rules live in `packages/core`
 
-[`packages/core`](../packages/core/src/index.ts) owns what a valid todo is.
-Everything else asks it: `apps/api` calls `normalizeTitle()` on write and maps
-`InvalidTitleError` to a 400; `apps/web` calls `isValidTitle()`,
-`filterTodos()`, and `countTodos()`; `apps/extension` calls `isValidTitle()`.
+[`packages/core`](../packages/core/src/index.ts) owns what a valid public
+handle is. Everything else asks it: `apps/api` calls `normalizeHandle()` before
+storing one and maps the refusal to a 400; `apps/web` calls `isValidHandle()`
+and `toHandleStem()` in the rename forms.
 
-`packages/shared` derives its zod schemas from core's constants
-(`TITLE_MAX_LENGTH`, `TODO_FILTERS`) rather than restating them.
+It is a genuine domain rule rather than a wire concern, because users and
+organizations draw handles from **one namespace** — a personal organization
+takes its owner's handle — so what counts as valid has to be decided once.
+
+`packages/shared` refines core's rules in `handleSchema` rather than restating
+them, so a change to the rules cannot leave the two disagreeing.
 
 ## TypeScript configuration
 
@@ -76,10 +80,10 @@ imports adjusted.
 ## The database layer
 
 [`packages/db`](../packages/db) holds the Drizzle schema, migrations, the
-Postgres `TodoStore`, and an S3 object store.
+owner-scoped stores, and an S3 object store.
 
-The store contract and `NotFoundError` live in this package, not in `apps/api`,
-because a package may not import an app.
+The store contracts and `NotFoundError` live in this package, not in
+`apps/api`, because a package may not import an app.
 [`apps/api/src/store.ts`](../apps/api/src/store.ts) re-exports both.
 
 `createInMemoryStore` is a **test double**, not a fallback. The server requires
@@ -146,11 +150,11 @@ Everything under `/api/v1` requires a session; `/health` and `/api/auth/*` do
 not. If `createApp` is given no `auth`, it serves 503 on `/api/*`, so a deploy
 missing the auth environment fails closed.
 
-**A session answers who is asking, not what they may read.** Every `TodoStore`
-method takes the owner as its first argument and puts it in the query — `create`
-records it, `update` and `remove` match on both id and owner — so no call can
-read _or write_ across users. An id belonging to someone else returns 404, not
-403, so ids cannot be enumerated.
+**A session answers who is asking, not what they may read.** Every store method
+takes the owner as its first argument and puts it in the query — `upsert`
+records it, `remove` matches on both id and owner — so no call can read _or
+write_ across owners. An id belonging to someone else returns 404, not 403, so
+ids cannot be enumerated.
 
 ## Organizations
 
@@ -187,7 +191,7 @@ input.** One value is shared by every tab and by the extension's bearer
 session, and the five-minute session cookie cache means a change in one lags in
 another. Organization-scoped routes take the id from the path and check
 membership against the `member` table; a non-member gets 404, not 403, exactly
-as another user's todo does.
+as any other owner-scoped row does.
 
 **Invitations are in-app.** `sendInvitationEmail` is left unset because this
 codebase sends no mail: an invitation is a row the invitee finds on their
@@ -200,13 +204,25 @@ accepts it.
 last one leave, be removed or be demoted; the settings page disables those
 controls rather than letting the click fail.
 
-**There is no organization switcher.** Nothing the app renders is owned by an
-organization yet — todos are personal — so a control that changed the "active"
-one moved a tick and nothing else, which reads as broken. The avatar menu has
-one **Organizations** item opening a list page; a row leads to that
-organization's settings. `useOrganizations` keeps `select` and `clear`, both
-tested, for the change that first renders organization-owned data.
-`session.activeOrganizationId` is written by those and by nothing else.
+**Every user has a personal organization.** It is created by the
+`user.create.after` hook in `apps/api/src/auth.ts` — `kind = 'personal'`, a
+sole `owner` member, and the user's own handle — and migration `0015` did the
+same for everyone who predates the hook. This is what lets anything ownable
+take a single non-null `organization_id` rather than a nullable
+user/organization pair, which would need a `num_nonnulls(...) = 1` check
+drizzle-kit cannot generate and would double every unique index and store path.
+
+It cannot gain members or be deleted: the `refusePersonal` guards in `auth.ts`
+cover the invitation, add-member and delete hooks, so "personal" stays a claim
+about the organization rather than a label on a two-person one. It goes when
+the user does, by the cascade on `personal_user_id`. Sharing means moving the
+work to a team organization.
+
+**Nothing below the API boundary branches on `kind`.** The stores take an
+organization id and the guard checks membership, whichever kind it is. Only
+surfaces distinguish them: the home screen groups connections by owner with
+the personal one first, the organizations list labels and sorts it first, and
+its settings page hides members, invitations and leaving.
 
 ### Open questions
 
@@ -226,8 +242,8 @@ Neither blocks anything; both are cheap if a need appears.
 Teams; per-organization custom roles (`dynamicAccessControl`); an email
 transport, at which point `sendInvitationEmail` is one function and the in-app
 flow stays as the fallback; organization avatars in object storage (`logo`
-holds a URL for now); moving `todos` to organization ownership; a shared handle
-namespace via a registry table, if a bare `/{handle}` URL is ever wanted.
+holds a URL for now); a shared handle namespace via a registry table, if a bare
+`/{handle}` URL is ever wanted.
 
 ## Not yet built
 

@@ -16,7 +16,7 @@ Written for coding agents: supply the title up front, and the script handles
 everything after that.
 
 ```bash
-./scripts/ship.sh --title "fix: reject blank todo titles" --issue 42 --yes
+./scripts/ship.sh --title "fix: reject a blank organization handle" --issue 42 --yes
 ```
 
 1. Returns you to an up-to-date `main` if you are on a stale branch with

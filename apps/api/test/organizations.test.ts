@@ -5,7 +5,6 @@ import type { OrganizationStore } from "@sandbox-factory/db";
 
 import type { Auth } from "../src/auth.js";
 import { createApp, rankAtLeast } from "../src/routes.js";
-import { createInMemoryStore } from "../src/store.js";
 
 /**
  * The organization routes.
@@ -30,7 +29,12 @@ const stranger = {
   name: "Stranger",
 };
 
-const acme = { id: "org_1", name: "Acme", slug: "acme" };
+const acme = {
+  id: "org_1",
+  name: "Acme",
+  slug: "acme",
+  kind: "team" as const,
+};
 
 function fakeAuth(
   options: {
@@ -77,7 +81,12 @@ function fakeStore(
     /** Role per `${userId}:${organizationId}`; absent means not a member. */
     roles?: Record<string, string>;
     handles?: Record<string, { id: string; email: string }>;
-    organizations?: Array<{ id: string; name: string; slug: string }>;
+    organizations?: Array<{
+      id: string;
+      name: string;
+      slug: string;
+      kind: "personal" | "team";
+    }>;
   } = {},
 ): { store: OrganizationStore; calls: Recorded } {
   const roles = options.roles ?? { [`${dana.id}:${acme.id}`]: "owner" };
@@ -85,6 +94,9 @@ function fakeStore(
   const calls: Recorded = { roleOf: [], listMembers: [], pendingFor: [] };
 
   const store: OrganizationStore = {
+    // Never called by a route: the signup hook is the only caller, and its
+    // own behaviour is covered in `packages/db`.
+    createPersonal: () => Promise.reject(new Error("not used in these tests")),
     listForUser: (userId) =>
       Promise.resolve(
         organizations
@@ -151,7 +163,6 @@ function app(
 ) {
   const organizations = options.store ?? fakeStore().store;
   const server = createApp({
-    store: createInMemoryStore([]),
     corsOrigins: ["http://localhost:5173"],
     auth: fakeAuth({
       ...(options.as === undefined ? {} : { as: options.as }),
@@ -197,7 +208,6 @@ test("someone in no organization gets an empty list", async () => {
 
 test("the organization list needs a session", async () => {
   const server = createApp({
-    store: createInMemoryStore([]),
     corsOrigins: ["http://localhost:5173"],
     auth: fakeAuth(),
     organizations: fakeStore().store,
@@ -233,7 +243,7 @@ test("a member reads their organization and their role in it", async () => {
 
 test("a non-member gets 404, not 403", async () => {
   // 403 would confirm the organization exists, which is how ids get
-  // enumerated. The same rule as another user's todo.
+  // enumerated. The same rule as any other owner-scoped row.
   const res = await app({ as: stranger }).request(`/api/v1/orgs/${acme.id}`);
 
   assert.equal(res.status, 404);
@@ -251,7 +261,10 @@ test("the guard checks the organization named in the path", async () => {
 test("a member of one organization cannot read another's members", async () => {
   const { store, calls } = fakeStore({
     roles: { [`${dana.id}:${acme.id}`]: "owner" },
-    organizations: [acme, { id: "org_2", name: "Globex", slug: "globex" }],
+    organizations: [
+      acme,
+      { id: "org_2", name: "Globex", slug: "globex", kind: "team" as const },
+    ],
   });
 
   const res = await app({ store }).request("/api/v1/orgs/org_2/members");
@@ -399,7 +412,10 @@ test("the invitation goes to the organization in the path, not the body", async 
   // verified the path segment; the body is not an input to that decision.
   const { store } = fakeStore({
     roles: { [`${dana.id}:${acme.id}`]: "owner" },
-    organizations: [acme, { id: "org_2", name: "Globex", slug: "globex" }],
+    organizations: [
+      acme,
+      { id: "org_2", name: "Globex", slug: "globex", kind: "team" as const },
+    ],
   });
   let sent: Record<string, unknown> | undefined;
 
@@ -467,7 +483,6 @@ test("without an organization store the routes are not mounted", async () => {
   // The same shape as the email routes: a deploy missing the wiring answers
   // 404 rather than pretending the caller belongs to nothing.
   const server = createApp({
-    store: createInMemoryStore([]),
     corsOrigins: ["http://localhost:5173"],
     auth: fakeAuth(),
   });
