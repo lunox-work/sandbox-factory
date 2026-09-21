@@ -80,7 +80,7 @@ esac
       "--yes",
       ...flags,
     ]);
-    assert.match(output, /https:\/\/github.com\/test\/repo\/pull\/1/);
+    assert.ok(output.includes("https://github.com/test/repo/pull/1"));
     assert.equal(run("git", ["branch", "--show-current"]), "main");
     assert.equal(run("git", ["status", "--porcelain"]), "");
     assert.equal(
