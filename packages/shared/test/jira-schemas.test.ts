@@ -3,7 +3,9 @@ import { test } from "node:test";
 
 import {
   accessibleResourceSchema,
+  boardSelectionSchema,
   jiraBoardPageResponseSchema,
+  jiraBoardSummarySchema,
   jiraBoardResponseSchema,
   jiraIssueDtoSchema,
   jiraIssuePageResponseSchema,
@@ -11,7 +13,9 @@ import {
   jiraSiteDtoSchema,
   jiraSprintPageResponseSchema,
   jiraStatusCategorySchema,
+  registerBoardSchema,
   tokenResponseSchema,
+  updateBoardSchema,
 } from "../src/index.js";
 
 /*
@@ -165,4 +169,99 @@ test("a site DTO carries the cloudId every REST call embeds", () => {
   });
 
   assert.equal(parsed.cloudId, "cloud-1");
+});
+
+/* The board selection settings, which decide which tickets a run prices. */
+
+test("board selection defaults to the plan's values", () => {
+  const selection = boardSelectionSchema.parse({});
+
+  assert.equal(selection.maxTickets, 10);
+  assert.equal(selection.excludeAssigned, true);
+  assert.equal(selection.minSpecChars, 0);
+  assert.equal(selection.maxAgeDays, undefined);
+});
+
+test("maxTickets is bounded at both ends", () => {
+  // It is the ceiling on what one run costs in model calls, so an unbounded
+  // value is a spending decision made by whoever edits a board.
+  assert.equal(
+    boardSelectionSchema.safeParse({ maxTickets: 0 }).success,
+    false,
+  );
+  assert.equal(
+    boardSelectionSchema.safeParse({ maxTickets: 51 }).success,
+    false,
+  );
+  assert.equal(
+    boardSelectionSchema.safeParse({ maxTickets: 1.5 }).success,
+    false,
+  );
+});
+
+test("age bounds refuse nonsense", () => {
+  assert.equal(
+    boardSelectionSchema.safeParse({ minAgeDays: -1 }).success,
+    false,
+  );
+  // 0 would mean "older than today", which is every ticket and no ticket.
+  assert.equal(
+    boardSelectionSchema.safeParse({ maxAgeDays: 0 }).success,
+    false,
+  );
+});
+
+test("registering a board needs a connection and a board id", () => {
+  assert.equal(
+    registerBoardSchema.safeParse({ connectionId: "jrc_1", externalId: "42" })
+      .success,
+    true,
+  );
+  assert.equal(
+    registerBoardSchema.safeParse({ connectionId: "", externalId: "42" })
+      .success,
+    false,
+  );
+  assert.equal(
+    registerBoardSchema.safeParse({ connectionId: "jrc_1" }).success,
+    false,
+  );
+});
+
+test("an update may change either half, but an empty body is refused", () => {
+  // An empty body almost always means the caller sent the wrong shape.
+  assert.equal(
+    updateBoardSchema.safeParse({ writebackEnabled: true }).success,
+    true,
+  );
+  assert.equal(
+    updateBoardSchema.safeParse({ selection: { maxTickets: 5 } }).success,
+    true,
+  );
+  assert.equal(updateBoardSchema.safeParse({}).success, false);
+});
+
+test("a partial selection update does not reimpose the defaults", () => {
+  // Editing `maxTickets` alone must not silently reset `excludeAssigned`.
+  const parsed = updateBoardSchema.parse({ selection: { maxTickets: 5 } });
+
+  assert.equal(parsed.selection?.maxTickets, 5);
+  assert.equal(parsed.selection?.excludeAssigned, undefined);
+});
+
+test("a board summary carries the settings, not the tickets", () => {
+  const summary = jiraBoardSummarySchema.parse({
+    id: "jrb_1",
+    connectionId: "jrc_1",
+    externalId: "42",
+    name: "Acme board",
+    boardType: "scrum",
+    projectKey: "ACME",
+    selection: {},
+    writebackEnabled: false,
+    createdAt: "2026-09-21T00:00:00.000Z",
+  });
+
+  assert.equal(summary.selection.maxTickets, 10);
+  assert.equal(summary.writebackEnabled, false);
 });

@@ -41,6 +41,8 @@ function chain(
     set: () => result,
     values: () => result,
     onConflictDoUpdate: () => result,
+    innerJoin: () => result,
+    leftJoin: () => result,
     orderBy: () => {
       onOrder?.();
       return result;

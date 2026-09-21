@@ -15,6 +15,7 @@
 import {
   boolean,
   index,
+  jsonb,
   pgTable,
   text,
   timestamp,
@@ -99,3 +100,70 @@ export const jiraConnection = pgTable(
 
 export type JiraConnectionRow = typeof jiraConnection.$inferSelect;
 export type NewJiraConnectionRow = typeof jiraConnection.$inferInsert;
+
+/**
+ * A board a run reads tickets from.
+ *
+ * Registered explicitly rather than discovered: a site can have dozens of
+ * boards and pricing the wrong one wastes model calls on work nobody asked
+ * about. The row holds a pointer and the settings, never the tickets.
+ */
+export const jiraBoard = pgTable(
+  "jira_board",
+  {
+    id: text("id").primaryKey(),
+    /** Denormalised from the connection so every read filters on one column. */
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    connectionId: text("connection_id")
+      .notNull()
+      .references(() => jiraConnection.id, { onDelete: "cascade" }),
+    /** Jira's board id. Survives a rename; the name does not. */
+    externalId: text("external_id").notNull(),
+    /** Display only, refreshed whenever the board is read from Jira. */
+    name: text("name").notNull(),
+    /**
+     * `scrum`, `kanban` or `unknown`.
+     *
+     * Decides how the backlog is asked for: a Scrum board (and a Kanban board
+     * with the backlog feature on) answers `/board/{id}/backlog`, while a
+     * plain Kanban board has no backlog endpoint at all and has to be read
+     * through `/board/{id}/issue` filtered to the To Do category.
+     */
+    boardType: text("board_type").notNull(),
+    projectKey: text("project_key"),
+    /**
+     * Which backlog tickets a run takes; `boardSelectionSchema` in
+     * `packages/shared` is the shape. `jsonb` rather than columns because the
+     * settings are expected to grow, and each addition would otherwise be a
+     * migration.
+     */
+    selection: jsonb("selection").notNull().default({}),
+    /**
+     * Whether approving a proposal writes a comment back to the ticket.
+     *
+     * Off by default, and per board rather than per organization: write-back
+     * needs `write:jira-work`, which is a scope the connection may not hold.
+     */
+    writebackEnabled: boolean("writeback_enabled").notNull().default(false),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    // One row per board per connection. Registering twice edits the settings
+    // rather than creating a second board that would be priced twice.
+    unique("jira_board_connection_external_unique").on(
+      table.connectionId,
+      table.externalId,
+    ),
+    index("jira_board_organization_id_idx").on(table.organizationId),
+  ],
+);
+
+export type JiraBoardRow = typeof jiraBoard.$inferSelect;
+export type NewJiraBoardRow = typeof jiraBoard.$inferInsert;

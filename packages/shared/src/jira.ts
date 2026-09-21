@@ -288,6 +288,110 @@ export const jiraSiteDtoSchema = z.object({
   avatarUrl: z.string().optional(),
 });
 
+/* -------------------------------------------------------------------------- */
+/* Which backlog tickets a run takes                                          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The selection settings stored on a board.
+ *
+ * "The oldest tickets still in the backlog" selects for the worst-specified
+ * work on a board: a ticket that has sat for two years is often a one-liner, a
+ * duplicate, or something the team quietly decided not to do. These settings
+ * are the levers for that — `maxAgeDays` excludes the truly abandoned, and
+ * `minSpecChars` marks a ticket `unsized` without spending a model call on it.
+ *
+ * Every field has a default, and the whole object defaults to `{}`, so a board
+ * registered before a field existed keeps working. That is why this is `jsonb`
+ * with a schema rather than columns: the settings are expected to grow, and
+ * each addition would otherwise be a migration.
+ */
+export const boardSelectionSchema = z.object({
+  /** Tickets per run. Also the ceiling on what one run costs in model calls. */
+  maxTickets: z.number().int().min(1).max(50).default(10),
+  /**
+   * Skip tickets someone is already assigned to. A bounty on a ticket with an
+   * owner is a conflict, not an opportunity.
+   */
+  excludeAssigned: z.boolean().default(true),
+  /**
+   * Issue types to consider. Empty means "anything that is not an epic or a
+   * sub-task", which the JQL excludes structurally: an epic is a container for
+   * work rather than work, and a sub-task is priced with its parent.
+   */
+  issueTypes: z.array(z.string()).default([]),
+  /** Ignore tickets newer than this; 0 considers everything. */
+  minAgeDays: z.number().int().min(0).default(0),
+  /**
+   * Ignore tickets older than this. Undefined considers everything, which is
+   * the setting most likely to need changing after a first real run.
+   */
+  maxAgeDays: z.number().int().min(1).optional(),
+  /**
+   * Below this many characters of summary plus description, a ticket is
+   * `unsized` without calling the model. A one-line title cannot carry a
+   * bounty, and pricing it anyway is how a dispute starts.
+   */
+  minSpecChars: z.number().int().min(0).default(0),
+});
+
+/** A board as the UI lists it. */
+export const jiraBoardSummarySchema = z.object({
+  id: z.string(),
+  connectionId: z.string(),
+  externalId: z.string(),
+  name: z.string(),
+  boardType: z.string(),
+  projectKey: z.string().nullable(),
+  selection: boardSelectionSchema,
+  writebackEnabled: z.boolean(),
+  createdAt: z.iso.datetime(),
+});
+
+/** Body for registering a board. The rest is read from Jira. */
+export const registerBoardSchema = z.object({
+  connectionId: z.string().min(1),
+  /** Jira's board id, as a string because every external id here is one. */
+  externalId: z.string().min(1),
+  selection: boardSelectionSchema.optional(),
+});
+
+/**
+ * A selection update: every field genuinely optional.
+ *
+ * **Not `boardSelectionSchema.partial()`.** A `.default()` survives
+ * `.partial()`, so parsing `{ maxTickets: 5 }` through that would return every
+ * other field at its default — and an edit to one setting would silently reset
+ * the rest. Written out so "absent" means "leave it alone".
+ */
+export const boardSelectionUpdateSchema = z.object({
+  maxTickets: z.number().int().min(1).max(50).optional(),
+  excludeAssigned: z.boolean().optional(),
+  issueTypes: z.array(z.string()).optional(),
+  minAgeDays: z.number().int().min(0).optional(),
+  /** Null clears the bound; undefined leaves it as it is. */
+  maxAgeDays: z.number().int().min(1).nullable().optional(),
+  minSpecChars: z.number().int().min(0).optional(),
+});
+
+/** Body for editing a board. Both halves optional; an empty body is refused. */
+export const updateBoardSchema = z
+  .object({
+    selection: boardSelectionUpdateSchema.optional(),
+    writebackEnabled: z.boolean().optional(),
+  })
+  .refine(
+    (body) =>
+      body.selection !== undefined || body.writebackEnabled !== undefined,
+    { message: "Provide selection settings, a write-back flag, or both." },
+  );
+
+export type BoardSelection = z.infer<typeof boardSelectionSchema>;
+export type BoardSelectionUpdate = z.infer<typeof boardSelectionUpdateSchema>;
+export type JiraBoardSummaryDto = z.infer<typeof jiraBoardSummarySchema>;
+export type RegisterBoardInput = z.infer<typeof registerBoardSchema>;
+export type UpdateBoardInput = z.infer<typeof updateBoardSchema>;
+
 export type JiraStatusCategory = z.infer<typeof jiraStatusCategorySchema>;
 
 export type JiraIssueResponse = z.infer<typeof jiraIssueResponseSchema>;
