@@ -400,13 +400,13 @@ function routedFetch(
   });
 }
 
-test("a registered board is listed with the settings a run would use", async () => {
+test("a registered board is listed with its type and project", async () => {
   vi.stubGlobal("fetch", routedFetch());
 
   renderPage();
 
   expect(await screen.findByText("Acme Board")).toBeDefined();
-  expect(screen.getByText(/oldest 10/i)).toBeDefined();
+  expect(screen.getByText(/scrum · ACME/i)).toBeDefined();
 });
 
 test("previewing a board shows its oldest tickets, newest last", async () => {
@@ -470,6 +470,20 @@ test("a revoked grant asks for a reconnect rather than a retry", async () => {
   expect(await screen.findByText(/expired or been revoked/i)).toBeDefined();
 });
 
+test("the board picker opens in a dialog", async () => {
+  // A choice to make and dismiss, not part of the page's own content.
+  vi.stubGlobal("fetch", routedFetch());
+  renderPage();
+  await screen.findByText("Acme Board");
+
+  expect(screen.queryByRole("dialog")).toBeNull();
+
+  await userEvent.click(screen.getByRole("button", { name: /add a board/i }));
+
+  const dialog = await screen.findByRole("dialog");
+  expect(within(dialog).getByText(/Other Board/)).toBeDefined();
+});
+
 test("adding a board registers it against the site it was listed from", async () => {
   // Reading the connection from the list instead would attach the board to
   // whichever site happened to be first.
@@ -479,8 +493,8 @@ test("adding a board registers it against the site it was listed from", async ()
   await screen.findByText("Acme Board");
 
   await userEvent.click(screen.getByRole("button", { name: /add a board/i }));
-  await screen.findByText(/Other Board/);
-  const rows = screen.getAllByRole("button", { name: /^add$/i });
+  const dialog = await screen.findByRole("dialog");
+  const rows = within(dialog).getAllByRole("button", { name: /^add$/i });
   await userEvent.click(rows[rows.length - 1] as HTMLElement);
 
   const post = fetchMock.mock.calls.find(
@@ -493,16 +507,34 @@ test("adding a board registers it against the site it was listed from", async ()
   });
 });
 
+test("the dialog closes once a board has been added", async () => {
+  // Leaving it open invites adding the same board twice.
+  vi.stubGlobal("fetch", routedFetch());
+  renderPage();
+  await screen.findByText("Acme Board");
+
+  await userEvent.click(screen.getByRole("button", { name: /add a board/i }));
+  const dialog = await screen.findByRole("dialog");
+  const rows = within(dialog).getAllByRole("button", { name: /^add$/i });
+  await userEvent.click(rows[rows.length - 1] as HTMLElement);
+
+  await waitFor(() => {
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+});
+
 test("a board already registered cannot be added twice", async () => {
   vi.stubGlobal("fetch", routedFetch());
   renderPage();
   await screen.findByText("Acme Board");
 
   await userEvent.click(screen.getByRole("button", { name: /add a board/i }));
-  await screen.findByText(/Other Board/);
+  const dialog = await screen.findByRole("dialog");
 
   // 42 is already registered, so its control reads "Added" and is disabled.
-  expect(screen.getByRole("button", { name: /^added$/i })).toBeDefined();
+  const added = within(dialog).getByRole("button", { name: /^added$/i });
+  expect(added).toBeDefined();
+  expect((added as HTMLButtonElement).disabled).toBe(true);
 });
 
 test("a plain member sees boards but cannot add one", async () => {

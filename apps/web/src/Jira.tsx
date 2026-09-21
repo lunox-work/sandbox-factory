@@ -31,6 +31,13 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 import {
   useJira,
@@ -324,8 +331,7 @@ function BoardRow({
           <span className="truncate font-medium">{board.name}</span>
           <p className="truncate text-sm text-muted-foreground">
             {board.boardType}
-            {board.projectKey === null ? "" : ` · ${board.projectKey}`} · oldest{" "}
-            {board.selection.maxTickets ?? 10}
+            {board.projectKey === null ? "" : ` · ${board.projectKey}`}
           </p>
         </div>
         <Button
@@ -358,6 +364,105 @@ function BoardRow({
  * site on load would spend a round trip per site to show a list nobody asked
  * for.
  */
+/**
+ * Choosing a board to register, from one site.
+ *
+ * A dialog rather than a list grown inline under the button: the site's
+ * boards are a choice to make and dismiss, not part of the page's own
+ * content, and on a site with many boards the inline list pushed everything
+ * below it off the screen with no way to put it back.
+ *
+ * Open state is owned by the caller, because the fetch that fills it starts
+ * before the dialog appears — the boards are already being read while the
+ * spinner shows.
+ */
+function BoardPickerDialog({
+  open,
+  onOpenChange,
+  siteName,
+  boards,
+  loading,
+  registeredExternalIds,
+  busyBoardId,
+  onPick,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  siteName: string;
+  boards: JiraRemoteBoard[];
+  loading: boolean;
+  registeredExternalIds: Set<string>;
+  busyBoardId: string | null;
+  onPick: (externalId: string) => void;
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Add a board</DialogTitle>
+          <DialogDescription>
+            Boards on {siteName}. Adding one records a pointer to it — no
+            tickets are read until you preview or run it.
+          </DialogDescription>
+        </DialogHeader>
+
+        {loading ? (
+          <p className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
+            <Loader2 className="size-4 animate-spin" />
+            Reading boards from Jira…
+          </p>
+        ) : boards.length === 0 ? (
+          <p className="py-6 text-sm text-muted-foreground">
+            No boards on this site are visible to the connected account.
+          </p>
+        ) : (
+          <ul
+            className="-mx-2 max-h-80 divide-y overflow-y-auto"
+            data-testid="board-picker"
+          >
+            {boards.map((board) => {
+              const externalId = String(board.id);
+              const already = registeredExternalIds.has(externalId);
+              return (
+                <li
+                  key={board.id}
+                  className="flex items-center justify-between gap-3 px-2 py-2.5"
+                >
+                  <span className="min-w-0">
+                    <span className="block truncate text-sm font-medium">
+                      {board.name}
+                    </span>
+                    <span className="block truncate text-xs text-muted-foreground">
+                      {board.type}
+                      {board.projectKey === null
+                        ? ""
+                        : ` · ${board.projectKey}`}
+                    </span>
+                  </span>
+                  <Button
+                    size="sm"
+                    variant={already ? "ghost" : "outline"}
+                    className="shrink-0"
+                    disabled={already || busyBoardId === externalId}
+                    onClick={() => {
+                      onPick(externalId);
+                    }}
+                  >
+                    {busyBoardId === externalId && (
+                      <Loader2 className="size-4 animate-spin" />
+                    )}
+                    {already ? "Added" : "Add"}
+                  </Button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function BoardsCard({
   organizationId,
   connections,
@@ -370,30 +475,59 @@ function BoardsCard({
   const { boards, loading, error, listRemote, register, preview } =
     useJiraBoards(organizationId);
 
-  const [adding, setAdding] = useState(false);
   /**
-   * The boards of one site, and which site they came from.
+   * The open picker: which site it is reading, and what it found.
    *
-   * Kept together deliberately: registering a board needs the connection it
-   * belongs to, and reading that from the connection list instead would
-   * attach the board to whichever site happened to be first.
+   * The connection id is held here rather than read back from the list when a
+   * board is picked. Registering needs the site the board was *listed* from,
+   * and taking it from anywhere else would attach the board to whichever site
+   * happened to be first.
    */
-  const [remote, setRemote] = useState<{
+  const [picker, setPicker] = useState<{
     connectionId: string;
+    siteName: string;
     boards: JiraRemoteBoard[];
+    loading: boolean;
   } | null>(null);
+  const [registering, setRegistering] = useState<string | null>(null);
   const [busyBoard, setBusyBoard] = useState<string | null>(null);
   const [previews, setPreviews] = useState<Record<string, BacklogPreview>>({});
 
   const onAdd = useCallback(
-    (connectionId: string) => {
-      setAdding(true);
-      void listRemote(connectionId).then((found) => {
-        setRemote({ connectionId, boards: found });
-        setAdding(false);
+    (connection: JiraConnection) => {
+      // Opened before the fetch resolves, so the dialog carries its own
+      // spinner instead of the page appearing to do nothing.
+      setPicker({
+        connectionId: connection.id,
+        siteName: connection.siteName,
+        boards: [],
+        loading: true,
+      });
+      void listRemote(connection.id).then((found) => {
+        setPicker((current) =>
+          current === null || current.connectionId !== connection.id
+            ? current
+            : { ...current, boards: found, loading: false },
+        );
       });
     },
     [listRemote],
+  );
+
+  const onPick = useCallback(
+    (externalId: string) => {
+      if (picker === null) {
+        return;
+      }
+      setRegistering(externalId);
+      void register(picker.connectionId, externalId).then(() => {
+        setRegistering(null);
+        // Closed on success: the board is now in the list behind the dialog,
+        // and leaving it open invites adding the same board twice.
+        setPicker(null);
+      });
+    },
+    [picker, register],
   );
 
   const onPreview = useCallback(
@@ -449,54 +583,40 @@ function BoardsCard({
         )}
 
         {manageable && connections.length > 0 && (
-          <div className="flex flex-col gap-2">
+          <div className="flex flex-wrap gap-2">
             {connections.map((connection) => (
               <Button
                 key={connection.id}
                 variant="outline"
                 size="sm"
-                className="self-start gap-2"
-                disabled={adding || !connection.healthy}
+                className="gap-2"
+                disabled={!connection.healthy}
                 onClick={() => {
-                  onAdd(connection.id);
+                  onAdd(connection);
                 }}
               >
                 <Plus className="size-4" />
                 Add a board from {connection.siteName}
               </Button>
             ))}
-
-            {remote !== null && remote.boards.length > 0 && (
-              <ul className="divide-y rounded-md border">
-                {remote.boards.map((board) => (
-                  <li
-                    key={board.id}
-                    className="flex items-center justify-between gap-3 px-3 py-2"
-                  >
-                    <span className="min-w-0 truncate text-sm">
-                      {board.name}
-                      <span className="text-muted-foreground">
-                        {" "}
-                        · {board.type}
-                      </span>
-                    </span>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      disabled={registered.has(String(board.id))}
-                      onClick={() => {
-                        void register(remote.connectionId, String(board.id));
-                      }}
-                    >
-                      {registered.has(String(board.id)) ? "Added" : "Add"}
-                    </Button>
-                  </li>
-                ))}
-              </ul>
-            )}
           </div>
         )}
       </CardContent>
+
+      <BoardPickerDialog
+        open={picker !== null}
+        onOpenChange={(next) => {
+          if (!next) {
+            setPicker(null);
+          }
+        }}
+        siteName={picker?.siteName ?? ""}
+        boards={picker?.boards ?? []}
+        loading={picker?.loading ?? false}
+        registeredExternalIds={registered}
+        busyBoardId={registering}
+        onPick={onPick}
+      />
     </Card>
   );
 }
