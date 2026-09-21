@@ -23,6 +23,9 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 const useSession = vi.fn();
 const signOut = vi.fn();
+
+/** What `/api/v1/me/invitations` answers with; set per test. */
+let pendingInvitations: unknown[] = [];
 const setActive = vi.fn(() => Promise.resolve({ data: {}, error: null }));
 
 vi.mock("../src/auth", () => ({
@@ -47,13 +50,37 @@ vi.stubGlobal(
   vi.fn((input: RequestInfo | URL) => {
     const url = String(input);
     if (url.includes("/jira/connections")) {
-      return Promise.resolve(Response.json({ connections: [] }));
+      // One site, on the first organization only, so the home screen has a
+      // row that leads somewhere and the test can tell which owner it
+      // carried.
+      return Promise.resolve(
+        Response.json({
+          connections: url.includes("org_1")
+            ? [
+                {
+                  id: "jrc_1",
+                  cloudId: "cloud-1",
+                  siteUrl: "https://acme.atlassian.net",
+                  siteName: "lunox-work",
+                  email: null,
+                  healthy: true,
+                  scopes: [],
+                  createdAt: "2026-09-21T00:00:00.000Z",
+                },
+              ]
+            : [],
+        }),
+      );
     }
     if (url.includes("/api/v1/me/emails")) {
       return Promise.resolve(Response.json({ emails: [] }));
     }
     if (url.includes("/api/v1/me/invitations")) {
-      return Promise.resolve(Response.json({ invitations: [] }));
+      // Per-test, so the mark on the avatar can be checked both ways without
+      // a second fake server.
+      return Promise.resolve(
+        Response.json({ invitations: pendingInvitations }),
+      );
     }
     // One organization, so the switcher and the `/o/:slug` route have
     // something real to resolve against.
@@ -194,6 +221,7 @@ beforeEach(() => {
   signedIn();
   signOut.mockClear();
   setActive.mockClear();
+  pendingInvitations = [];
   // Each test owns the path it renders under; `Signed` reads it once on mount
   // to decide the starting screen.
   window.history.replaceState(null, "", "/");
@@ -517,4 +545,119 @@ test("the organizations page reaches the create form", async () => {
   expect(
     await screen.findByRole("heading", { name: "New organization" }),
   ).toBeTruthy();
+});
+
+// ---- the rail answers the cursor ------------------------------------------
+
+test("an inactive destination lights up under the cursor", async () => {
+  // `sm:hover:bg-transparent` cancelled the hover fill at exactly the widths
+  // the rail exists at, so the only rail button gave no feedback at all.
+  window.history.replaceState(null, "", "/account");
+  render(<App />);
+
+  // Scoped to the rail: the trail above the page carries a "Home" crumb too,
+  // and on this screen both are on the page at once.
+  const rail = await screen.findByRole("navigation", { name: "Main" });
+  const home = within(rail).getByRole("button", { name: "Home" });
+  expect(home.className).toContain("hover:bg-accent");
+  expect(home.className).not.toContain("sm:hover:bg-transparent");
+});
+
+test("the logo answers the cursor too", async () => {
+  window.history.replaceState(null, "", "/");
+  render(<App />);
+
+  const logo = await screen.findByRole("button", { name: "Lunox home" });
+  expect(logo.className).toContain("hover:opacity-80");
+});
+
+test("a site on the home screen opens that site's page", async () => {
+  // End to end through the shell: the row names a site, so the URL it leads
+  // to names that site rather than the list it sits in.
+  window.history.replaceState(null, "", "/");
+  render(<App />);
+
+  await waitFor(() => {
+    expect(screen.getByText("lunox-work")).toBeTruthy();
+  });
+  fireEvent.click(screen.getByText("lunox-work"));
+
+  await waitFor(() => {
+    expect(window.location.pathname).toBe("/o/acme/jira/jrc_1");
+  });
+});
+
+test("cancelling a new organization goes back to the list, not home", async () => {
+  // The trail says Organizations is the parent, and it is where the button
+  // that opens this form lives.
+  window.history.replaceState(null, "", "/organizations/new");
+  render(<App />);
+
+  fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
+
+  await waitFor(() => {
+    expect(window.location.pathname).toBe("/organizations");
+  });
+});
+
+// ---- organizations, and what is waiting -----------------------------------
+
+test("the rail offers organizations as a destination", async () => {
+  // It is the parent of most screens in this app and was reachable only
+  // through the avatar menu.
+  render(<App />);
+
+  const rail = screen.getByRole("navigation", { name: "Main" });
+  const button = within(rail).getByRole("button", { name: "Organizations" });
+  fireEvent.click(button);
+
+  await waitFor(() => {
+    expect(window.location.pathname).toBe("/organizations");
+  });
+});
+
+test("the rail marks organizations while you are inside one", async () => {
+  // A rail that marks nothing while you are three levels into an
+  // organization says you are nowhere.
+  window.history.replaceState(null, "", "/o/acme/jira");
+  render(<App />);
+
+  const rail = screen.getByRole("navigation", { name: "Main" });
+  await waitFor(() => {
+    expect(
+      within(rail)
+        .getByRole("button", { name: "Organizations" })
+        .getAttribute("aria-current"),
+    ).toBe("page");
+  });
+  // And not Home, which is a different destination.
+  expect(railHome().getAttribute("aria-current")).toBeNull();
+});
+
+test("a pending invitation marks the avatar", async () => {
+  // Nothing is emailed, so without a mark the only way to find an invitation
+  // is to open Account and look.
+  pendingInvitations = [
+    {
+      id: "inv_1",
+      role: "member",
+      organization: { id: "org_9", name: "Globex", slug: "globex" },
+    },
+  ];
+  render(<App />);
+
+  // The count is in the name, not only in the dot: a mark that is purely
+  // colour says nothing to a screen reader.
+  expect(
+    await screen.findByRole("button", { name: /1 invitation/ }),
+  ).toBeDefined();
+});
+
+test("no mark when nothing is waiting", async () => {
+  render(<App />);
+
+  await waitFor(() => {
+    expect(screen.getByRole("button", { name: AVATAR })).toBeTruthy();
+  });
+  expect(screen.queryByRole("button", { name: /invitation/ })).toBeNull();
 });

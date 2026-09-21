@@ -15,7 +15,13 @@
  * `nav.test.tsx`.
  */
 
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import {
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import { trailFor } from "../src/Breadcrumbs";
@@ -44,7 +50,51 @@ vi.stubGlobal(
   vi.fn((input: RequestInfo | URL) => {
     const url = String(input);
     if (url.includes("/jira/connections")) {
-      return Promise.resolve(Response.json({ connections: [] }));
+      return Promise.resolve(
+        Response.json({
+          connections: [
+            {
+              id: "jrc_1",
+              cloudId: "cloud-1",
+              siteUrl: "https://acme.atlassian.net",
+              siteName: "lunox-work",
+              email: null,
+              healthy: true,
+              scopes: [],
+              createdAt: "2026-09-21T00:00:00.000Z",
+            },
+          ],
+        }),
+      );
+    }
+    if (url.includes("backlog-preview")) {
+      return Promise.resolve(
+        Response.json({
+          boardId: "jrb_1",
+          source: "backlog",
+          jql: "",
+          issues: [],
+        }),
+      );
+    }
+    if (url.includes("/jira/boards")) {
+      return Promise.resolve(
+        Response.json({
+          boards: [
+            {
+              id: "jrb_1",
+              connectionId: "jrc_1",
+              externalId: "42",
+              name: "Sprint Board",
+              boardType: "scrum",
+              projectKey: "ACME",
+              selection: {},
+              writebackEnabled: false,
+              createdAt: "2026-09-21T00:00:00.000Z",
+            },
+          ],
+        }),
+      );
     }
     if (url.includes("/api/v1/me/emails")) {
       return Promise.resolve(Response.json({ emails: [] }));
@@ -162,6 +212,69 @@ test("each screen's trail names every step above it", () => {
     "Acme",
     "Jira",
   ]);
+  // One deeper still: a connected site, under Jira.
+  expect(
+    trailFor("org-jira-site", ACME, "lunox-work").map((c) => c.label),
+  ).toEqual(["Home", "Organizations", "Acme", "Jira", "lunox-work"]);
+});
+
+test("a board is one step deeper, under the site it belongs to", () => {
+  expect(
+    trailFor("org-jira-board", ACME, "lunox-work", "Sprint Board", "jrc_1").map(
+      (c) => c.label,
+    ),
+  ).toEqual([
+    "Home",
+    "Organizations",
+    "Acme",
+    "Jira",
+    "lunox-work",
+    "Sprint Board",
+  ]);
+});
+
+test("the site crumb becomes a link on a board, and carries the site it names", () => {
+  // On the site's own trail it was the page you were on, so it had no
+  // destination. Here it is the way back up, and it needs the connection id
+  // to navigate — the slug alone resolves to the list of sites.
+  const trail = trailFor(
+    "org-jira-board",
+    ACME,
+    "lunox-work",
+    "Sprint Board",
+    "jrc_1",
+  );
+  const site = trail.find((crumb) => crumb.label === "lunox-work");
+
+  expect(site?.screen).toBe("org-jira-site");
+  expect(site?.connectionId).toBe("jrc_1");
+});
+
+test("a board whose name has not arrived keeps its place in the trail", () => {
+  expect(
+    trailFor("org-jira-board", ACME, "lunox-work").map((c) => c.label),
+  ).toEqual(["Home", "Organizations", "Acme", "Jira", "lunox-work", "Board"]);
+});
+
+test("the Jira crumb becomes a link on a site, which is the way back up", () => {
+  // The site page carries no other way back to the list of sites.
+  const trail = trailFor("org-jira-site", ACME, "lunox-work");
+  const jira = trail.find((crumb) => crumb.label === "Jira");
+
+  expect(jira?.screen).toBe("org-jira");
+  expect(jira?.slug).toBe("acme");
+});
+
+test("a site whose name has not arrived keeps its place in the trail", () => {
+  // Dropping the last crumb would mark Jira as the current page while a site
+  // is on screen.
+  expect(trailFor("org-jira-site", ACME).map((c) => c.label)).toEqual([
+    "Home",
+    "Organizations",
+    "Acme",
+    "Jira",
+    "Site",
+  ]);
 });
 
 test("an organization still loading is left out rather than guessed at", () => {
@@ -195,6 +308,10 @@ test("no trail ends in a step that goes nowhere", () => {
     trailFor("org-jira", ACME),
     trailFor("org-settings"),
     trailFor("org-jira"),
+    trailFor("org-jira-site", ACME, "lunox-work"),
+    trailFor("org-jira-site"),
+    trailFor("org-jira-board", ACME, "lunox-work", "Sprint Board", "jrc_1"),
+    trailFor("org-jira-board"),
   ];
 
   for (const trail of screens) {
@@ -216,8 +333,12 @@ test("the page you are on is text, and every step above it is a button", async (
   expect(current?.tagName).toBe("SPAN");
   // Not a button: a click would navigate to the screen already showing.
   expect(screen.queryByRole("button", { name: "Acme" })).toBeNull();
-  // The steps above it are, or the trail is decoration.
-  expect(screen.getByRole("button", { name: "Organizations" })).toBeTruthy();
+  // The steps above it are, or the trail is decoration. Scoped to the trail:
+  // the rail carries an Organizations destination of its own, and the two
+  // landmarks are named apart precisely so both may use the word.
+  expect(
+    within(nav).getByRole("button", { name: "Organizations" }),
+  ).toBeTruthy();
 });
 
 test("a deep link renders the whole trail", async () => {
@@ -226,6 +347,75 @@ test("a deep link renders the whole trail", async () => {
 
   await waitFor(() => {
     expect(labels()).toEqual(["Home", "Organizations", "Acme", "Jira"]);
+  });
+});
+
+test("a deep link to one site resolves, and the trail names it", async () => {
+  // `/o/:slug/jira/:id` is its own screen, so a bookmark or a reload lands on
+  // the site rather than on the list above it.
+  window.history.replaceState(null, "", "/o/acme/jira/jrc_1");
+  render(<App />);
+
+  await waitFor(() => {
+    expect(labels()).toEqual([
+      "Home",
+      "Organizations",
+      "Acme",
+      "Jira",
+      "lunox-work",
+    ]);
+  });
+});
+
+test("the Jira crumb on a site goes back to the list of sites", async () => {
+  window.history.replaceState(null, "", "/o/acme/jira/jrc_1");
+  render(<App />);
+
+  // Waited on the organization crumb, not the Jira one. The Jira crumb is in
+  // the trail before the organization list arrives — `trailFor` drops only
+  // the middle crumb while it loads — so clicking on its appearance races the
+  // load, and a crumb clicked without a slug falls back to /organizations.
+  await waitFor(() => {
+    expect(screen.getByRole("button", { name: "Acme" })).toBeTruthy();
+  });
+
+  fireEvent.click(screen.getByRole("button", { name: "Jira" }));
+
+  await waitFor(() => {
+    expect(window.location.pathname).toBe("/o/acme/jira");
+    expect(labels()).toEqual(["Home", "Organizations", "Acme", "Jira"]);
+  });
+});
+
+test("a deep link to one board resolves, and the trail names every step", async () => {
+  window.history.replaceState(null, "", "/o/acme/jira/jrc_1/jrb_1");
+  render(<App />);
+
+  await waitFor(() => {
+    expect(labels()).toEqual([
+      "Home",
+      "Organizations",
+      "Acme",
+      "Jira",
+      "lunox-work",
+      "Sprint Board",
+    ]);
+  });
+});
+
+test("the site crumb on a board goes back to that site, not the list", async () => {
+  // The slug alone would resolve to /o/acme/jira, one level too high.
+  window.history.replaceState(null, "", "/o/acme/jira/jrc_1/jrb_1");
+  render(<App />);
+
+  await waitFor(() => {
+    expect(screen.getByRole("button", { name: "lunox-work" })).toBeTruthy();
+  });
+
+  fireEvent.click(screen.getByRole("button", { name: "lunox-work" }));
+
+  await waitFor(() => {
+    expect(window.location.pathname).toBe("/o/acme/jira/jrc_1");
   });
 });
 
@@ -257,4 +447,50 @@ test("the trail is a second landmark, named apart from the rail", async () => {
     expect(screen.getByRole("navigation", { name: "Main" })).toBeTruthy();
     expect(screen.getByRole("navigation", { name: "Breadcrumb" })).toBeTruthy();
   });
+});
+
+// ---- the trail shares the page's column -----------------------------------
+//
+// The pages cap a padded `main` at `max-w-2xl`; the trail used to cap an `ol`
+// inside a padded `nav`, which made its column 48px wider — the crumbs began
+// where the padding did, one step left of every heading below them. Capping
+// the same element as the pages is what aligns the two.
+
+test("the trail is capped and padded on the same element as the page", async () => {
+  window.history.replaceState(null, "", "/o/acme/settings");
+  render(<App />);
+
+  await waitFor(() => {
+    expect(labels()).toEqual(["Home", "Organizations", "Acme"]);
+  });
+
+  const nav = screen.getByRole("navigation", { name: "Breadcrumb" });
+  expect(nav.className).toContain("max-w-2xl");
+  expect(nav.className).toContain("px-4");
+  expect(nav.className).toContain("sm:px-6");
+  // The list inside no longer carries a column of its own, or the two would
+  // compound and the crumbs would sit inside the page's text.
+  expect(nav.querySelector("ol")?.className).not.toContain("max-w-2xl");
+});
+
+test("a board's trail is as wide as the board page under it", async () => {
+  // The board is the one `max-w-5xl` page. A `max-w-2xl` trail above it is
+  // misaligned the other way — the crumbs sit ~150px right of the content.
+  window.history.replaceState(null, "", "/o/acme/jira/jrc_1/jrb_1");
+  render(<App />);
+
+  await waitFor(() => {
+    expect(labels()).toEqual([
+      "Home",
+      "Organizations",
+      "Acme",
+      "Jira",
+      "lunox-work",
+      "Sprint Board",
+    ]);
+  });
+
+  const nav = screen.getByRole("navigation", { name: "Breadcrumb" });
+  expect(nav.className).toContain("max-w-5xl");
+  expect(nav.className).not.toContain("max-w-2xl");
 });

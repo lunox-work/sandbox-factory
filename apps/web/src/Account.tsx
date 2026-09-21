@@ -49,6 +49,11 @@ export function Account({
   /** Called after an invitation is accepted, so the switcher picks it up. */
   onJoined,
   /**
+   * Called after an invitation is declined, so the mark on the avatar clears.
+   * Accepting reports through `onJoined`, which the switcher also listens to.
+   */
+  onDeclined,
+  /**
    * Called after a rename. The server also renames the caller's personal
    * organization, so the switcher and the rail are both a name behind until
    * they reload.
@@ -58,6 +63,7 @@ export function Account({
   onOpenOrganizations,
 }: {
   onJoined?: (() => void) | undefined;
+  onDeclined?: (() => void) | undefined;
   onRenamed?: (() => void) | undefined;
   /**
    * How many organizations you belong to. Undefined while the list is still
@@ -224,6 +230,8 @@ export function Account({
       await refresh();
       if (action === "accept") {
         onJoined?.();
+      } else {
+        onDeclined?.();
       }
     } catch {
       setError("Could not answer that invitation.");
@@ -280,7 +288,7 @@ export function Account({
                   key={invitation.id}
                   className="bg-muted/35 flex flex-wrap items-center gap-2 rounded-lg border px-3.5 py-3"
                 >
-                  <span className="flex-1 text-sm font-medium">
+                  <span className="min-w-0 flex-1 truncate text-sm font-medium">
                     {invitation.organization.name}
                     <span className="text-muted-foreground ml-1.5 font-normal">
                       as {invitation.role}
@@ -316,7 +324,7 @@ export function Account({
         <Card>
           <CardHeader>
             <CardTitle role="heading" aria-level={2}>
-              Connected Accounts
+              Connected accounts
             </CardTitle>
             <CardDescription>
               Each address is proved by an account you connected.
@@ -637,7 +645,7 @@ function UsernameForm({
           <button
             type="button"
             onClick={onOpenOrganizations}
-            className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 group/orgs mt-5 flex w-fit cursor-pointer items-center gap-1.5 rounded-sm text-sm transition-colors focus-visible:ring-[3px] focus-visible:outline-none"
+            className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 group/orgs mt-5 flex w-fit items-center gap-1.5 rounded-sm text-sm transition-colors focus-visible:ring-[3px] focus-visible:outline-none"
           >
             {/* The mark the avatar menu's own "Organizations" item uses, so
                 the two ways to this page read as the same destination. Sized

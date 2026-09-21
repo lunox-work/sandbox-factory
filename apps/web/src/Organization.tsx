@@ -16,7 +16,7 @@ import type {
   MembershipDto,
   OrganizationMemberDto,
 } from "@sandbox-factory/shared";
-import { Check, LogOut, Trash2, UserPlus, Users } from "lucide-react";
+import { LogOut, Trash2, UserPlus, Users } from "lucide-react";
 import {
   HANDLE_MAX_LENGTH,
   isValidHandle,
@@ -31,9 +31,10 @@ import {
 } from "react";
 
 import { AvatarField, UPLOAD_COMING_SOON } from "@/components/AvatarField";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { EditableField } from "@/components/EditableField";
 import { EntityAvatar } from "@/components/Avatar";
-import { ErrorBanner, FormStatus } from "@/components/Message";
+import { ErrorBanner, FormStatus, LoadingLine } from "@/components/Message";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -101,12 +102,17 @@ export function Organization({
       const res = await fetch(`/api/v1/orgs/${organization.id}/members`, {
         credentials: "include",
       });
-      if (res.ok) {
-        setMembers(
-          ((await res.json()) as { members: OrganizationMemberDto[] }).members,
-        );
-        setLoaded(true);
+      if (!res.ok) {
+        // It used to ignore this entirely, so a 500 left an empty member list
+        // and no reason for it — an organization that looked as though it had
+        // lost everybody.
+        setError("Could not load this organization.");
+        return;
       }
+      setMembers(
+        ((await res.json()) as { members: OrganizationMemberDto[] }).members,
+      );
+      setLoaded(true);
       setError(null);
     } catch {
       setError("Could not load this organization.");
@@ -188,8 +194,9 @@ export function Organization({
                   work can be read and priced here.
                 </CardDescription>
               </CardHeader>
-              <CardContent className="flex flex-col gap-2">
-                <JiraConnectionRow
+              {/* Three across, two on a phone — as on the team card. */}
+              <CardContent className="grid auto-rows-fr grid-cols-2 gap-2 sm:grid-cols-3">
+                <JiraConnectionTile
                   organizationId={organization.id}
                   onOpenJira={onOpenJira}
                 />
@@ -200,23 +207,13 @@ export function Organization({
                 answer for the other two is still an answer.
               */}
                 {COMING_SOON.map((provider) => (
-                  <ConnectionRow
+                  <ConnectionTile
                     key={provider.key}
                     icon={provider.icon}
                     label={provider.label}
                     status="Coming soon"
-                    action={
-                      // The visible word is just "Manage"; the label names the
-                      // tool, or a screen reader hears three identical buttons.
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        disabled
-                        aria-label={`Manage ${provider.label} connections`}
-                      >
-                        Manage
-                      </Button>
-                    }
+                    disabled
+                    actionLabel={`Manage ${provider.label} connections`}
                   />
                 ))}
               </CardContent>
@@ -257,8 +254,14 @@ export function Organization({
                     their work can be read and priced here.
                   </CardDescription>
                 </CardHeader>
-                <CardContent className="flex flex-col gap-2">
-                  <JiraConnectionRow
+                {/*
+                  Three across, and two on a phone where three squares would
+                  each be too small to hold a button. `auto-rows-fr` keeps the
+                  wrapped row the same height as the first, so the odd tile out
+                  is not a different size from its siblings.
+                */}
+                <CardContent className="grid auto-rows-fr grid-cols-2 gap-2 sm:grid-cols-3">
+                  <JiraConnectionTile
                     organizationId={organization.id}
                     onOpenJira={onOpenJira}
                   />
@@ -269,23 +272,13 @@ export function Organization({
                   answer for the other two is still an answer.
                 */}
                   {COMING_SOON.map((provider) => (
-                    <ConnectionRow
+                    <ConnectionTile
                       key={provider.key}
                       icon={provider.icon}
                       label={provider.label}
                       status="Coming soon"
-                      action={
-                        // The visible word is just "Manage"; the label names the
-                        // tool, or a screen reader hears three identical buttons.
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          disabled
-                          aria-label={`Manage ${provider.label} connections`}
-                        >
-                          Manage
-                        </Button>
-                      }
+                      disabled
+                      actionLabel={`Manage ${provider.label} connections`}
                     />
                   ))}
                 </CardContent>
@@ -307,6 +300,11 @@ export function Organization({
               </CardHeader>
 
               <CardContent className="flex flex-col gap-2">
+                {/* Until the list has answered once. It rendered an empty
+                    card before, so an organization briefly looked as though
+                    it had no members — which it never can. */}
+                {!loaded && <LoadingLine />}
+
                 {members.map((entry) => {
                   // The last owner cannot be removed or demoted; the plugin
                   // refuses it, and disabling the control says so before the
@@ -332,11 +330,11 @@ export function Organization({
                         what is read first. A non-breaking space holds the
                         second line's height for somebody with no handle, so
                         rows in one list stay the same height. */}
-                      <span className="flex-1">
-                        <span className="block text-sm font-medium">
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm font-medium">
                           {entry.name}
                         </span>
-                        <span className="text-muted-foreground block text-xs">
+                        <span className="text-muted-foreground block truncate text-xs">
                           {entry.username !== null ? `@${entry.username}` : " "}
                         </span>
                       </span>
@@ -346,36 +344,60 @@ export function Organization({
                           entry.role === "owner" ? "default" : "secondary"
                         }
                       >
-                        {entry.role === "owner" && <Check />}
+                        {/* No tick: the organizations list draws the same
+                            badge without one, and a filled badge already
+                            says which role this is. */}
                         <span className="capitalize">{entry.role}</span>
                       </Badge>
 
-                      {manage && (
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          className="text-muted-foreground hover:text-destructive"
-                          disabled={busy || lastOwner}
-                          title={
-                            lastOwner
-                              ? "An organization must keep at least one owner."
-                              : undefined
-                          }
-                          onClick={() =>
-                            void run(
-                              () =>
-                                authClient.organization.removeMember({
-                                  memberIdOrEmail: entry.id,
-                                  organizationId: organization.id,
-                                }),
-                              refresh,
-                            )
-                          }
-                        >
-                          Remove
-                        </Button>
-                      )}
+                      {manage &&
+                        // Behind a question: the rows are a column of similar
+                        // names, and removing the wrong one takes away
+                        // everything this organization owns from somebody who
+                        // still needs it.
+                        (lastOwner ? (
+                          // Nothing to confirm when the plugin would refuse
+                          // anyway. The disabled control says so before the
+                          // click rather than after.
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="text-muted-foreground"
+                            disabled
+                            title="An organization must keep at least one owner."
+                          >
+                            Remove
+                          </Button>
+                        ) : (
+                          <ConfirmDialog
+                            trigger={
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                className="text-muted-foreground hover:text-destructive"
+                                disabled={busy}
+                              >
+                                Remove
+                              </Button>
+                            }
+                            title={`Remove ${entry.name}?`}
+                            description="They lose access to everything this organization owns. You can invite them again afterwards."
+                            confirmLabel="Remove"
+                            busy={busy}
+                            onConfirm={() =>
+                              run(
+                                () =>
+                                  authClient.organization.removeMember({
+                                    memberIdOrEmail: entry.id,
+                                    organizationId: organization.id,
+                                  }),
+                                refresh,
+                              )
+                            }
+                          />
+                        ))}
                     </div>
                   );
                 })}
@@ -398,52 +420,98 @@ export function Organization({
           </TabsContent>
 
           <TabsContent value="settings">
+            {/*
+              Two actions that give something away, each with its own sentence
+              and its own button.
+
+              They used to share a card headed "Leaving", with delete's typed
+              confirmation expanding inline beneath the leave button — so the
+              words "Type acme to confirm" appeared directly under a control
+              they had nothing to do with. A row each, separated by a rule,
+              is what keeps a question attached to the thing it is asking
+              about.
+            */}
             <Card>
               <CardHeader>
                 <CardTitle role="heading" aria-level={2}>
-                  Leaving
+                  Danger zone
                 </CardTitle>
                 <CardDescription>
-                  Leaving gives up your access to everything this organization
-                  owns. An organization must always keep one owner, so the last
-                  one cannot leave.
+                  Both of these give up access to everything this organization
+                  owns. An organization must always keep one owner.
                 </CardDescription>
               </CardHeader>
 
-              <CardContent className="flex flex-wrap gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  disabled={busy}
-                  onClick={() =>
-                    void run(
-                      () =>
-                        authClient.organization.leave({
-                          organizationId: organization.id,
-                        }),
-                      onLeft,
-                    )
-                  }
+              <CardContent className="divide-y">
+                <DangerRow
+                  title="Leave this organization"
+                  detail="You lose access to everything it owns. The last owner cannot leave."
                 >
-                  <LogOut />
-                  Leave organization
-                </Button>
-
-                {organization.role === "owner" && (
-                  <DeleteOrganization
-                    organization={organization}
+                  <ConfirmDialog
+                    trigger={
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={busy}
+                      >
+                        <LogOut />
+                        Leave organization
+                      </Button>
+                    }
+                    title={`Leave ${organization.name}?`}
+                    description="You lose access to everything this organization owns. Someone still in it would have to invite you back."
+                    confirmLabel="Leave"
                     busy={busy}
-                    onDelete={() =>
-                      void run(
+                    onConfirm={() =>
+                      run(
                         () =>
-                          authClient.organization.delete({
+                          authClient.organization.leave({
                             organizationId: organization.id,
                           }),
                         onLeft,
                       )
                     }
                   />
+                </DangerRow>
+
+                {organization.role === "owner" && (
+                  <DangerRow
+                    title="Delete this organization"
+                    detail="Every member loses access, and what it owns goes with it. This cannot be undone."
+                  >
+                    <ConfirmDialog
+                      trigger={
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="text-danger hover:text-danger"
+                          disabled={busy}
+                        >
+                          <Trash2 />
+                          Delete organization
+                        </Button>
+                      }
+                      title={`Delete ${organization.name}?`}
+                      description="Every member loses access, and everything this organization owns goes with it. This cannot be undone."
+                      confirmLabel="Delete"
+                      tone="danger"
+                      // The one action in the app that asks for more than a
+                      // click: a mis-click here cannot be walked back.
+                      typeToConfirm={organization.slug}
+                      busy={busy}
+                      onConfirm={() =>
+                        run(
+                          () =>
+                            authClient.organization.delete({
+                              organizationId: organization.id,
+                            }),
+                          onLeft,
+                        )
+                      }
+                    />
+                  </DangerRow>
                 )}
               </CardContent>
             </Card>
@@ -466,48 +534,125 @@ const COMING_SOON: { key: string; label: string; icon: ReactNode }[] = [
 ];
 
 /**
- * One row on the Connections card: the provider's mark and name, what is
- * connected, and the way in.
+ * One tool on the Connections card: its mark, its name, what is connected,
+ * and the way in.
  *
- * The count sits to the right of the button rather than under the name,
- * because it is the outcome of the action beside it.
+ * A tile rather than a full-width row. The three tools are siblings — one of
+ * them happens to be built and the other two are not, but that is a fact about
+ * today rather than a ranking — and stacked rows made the first one read as
+ * the heading of a list the others belonged to. Equal tiles say what the card
+ * means: three tools, same standing.
+ *
+ * `min-h-36` rather than `aspect-square`, which at the width of this column
+ * made a 186px box for three short lines and a badge — mostly empty, and tall
+ * enough to push the card's own content off a laptop screen. A floor keeps
+ * them equal without letting the width dictate the height.
+ *
+ * `justify-between` pins the stack to the middle and the affordance to the
+ * foot however tall the tile turns out to be.
+ *
+ * **The tile is the button.** There is one thing to do with a tool and the
+ * whole square is the target, so a person aiming at a word inside a large
+ * square cannot miss. That is also why "Manage" is a `span` rather than a
+ * nested `Button`: a button inside a button is invalid HTML, and browsers
+ * resolve it by dropping one from the accessibility tree — so the affordance
+ * is drawn like a button and the tile carries the behaviour.
  */
-function ConnectionRow({
+function ConnectionTile({
   icon,
   label,
   status,
-  action,
+  disabled = false,
+  onOpen,
+  actionLabel,
 }: {
   icon: ReactNode;
   label: string;
   status: string;
-  action: ReactNode;
+  /** A tool that is not built yet: named, but nothing to open. */
+  disabled?: boolean | undefined;
+  onOpen?: (() => void) | undefined;
+  /**
+   * What the tile is called to a screen reader. The visible word is "Manage"
+   * on all three, so without this they are announced as three identical
+   * buttons.
+   */
+  actionLabel: string;
 }) {
   return (
-    <div className="flex items-center gap-3 rounded-lg border px-3.5 py-2.5">
-      {/* `mt-0.5` optically centres the mark against the two stacked lines,
-          which sit higher than a single one would. */}
-      <span className="mt-0.5 grid size-4 shrink-0 place-items-center">
-        {icon}
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onOpen}
+      aria-label={actionLabel}
+      /*
+        `group` so the Manage affordance can pick up the tile's own hover —
+        it is drawn as a button but is not one, so it has no hover of its
+        own to inherit. `disabled:` rather than omitting the handler: a tool
+        that is not built should look unavailable, not merely do nothing.
+      */
+      className="group hover:bg-muted/50 focus-visible:ring-ring/50 flex min-h-36 flex-col items-center justify-between gap-3 rounded-lg border p-3.5 text-center transition-colors focus-visible:ring-[3px] focus-visible:outline-none disabled:pointer-events-none disabled:opacity-60"
+    >
+      {/*
+        The mark, the name and the status as one centred stack. `flex-1` with
+        `justify-center` rather than centring the tile itself: the three lines
+        centre in whatever space the affordance leaves, so a tool whose status
+        wraps stays balanced instead of drifting upward.
+      */}
+      <span className="flex flex-1 flex-col items-center justify-center">
+        <span className="grid size-8 place-items-center">{icon}</span>
+        <span className="mt-2.5 block text-sm font-medium">{label}</span>
+        {/* A tool that is not built has nothing to count, so its status is
+            the badge at the foot instead — saying it twice would leave the
+            tile repeating itself. */}
+        {!disabled && (
+          <span className="text-muted-foreground block text-xs">{status}</span>
+        )}
       </span>
-      <span className="flex-1">
-        <span className="block text-sm font-medium">{label}</span>
-        <span className="text-muted-foreground block text-xs">{status}</span>
-      </span>
-      {action}
-    </div>
+      {/*
+        What the foot of the tile says depends on whether there is anything to
+        do. A tool that is built gets an affordance drawn like an outline
+        button — lit by the tile's hover rather than its own, since it is a
+        `span` and has none. One that is not built gets a badge: a disabled
+        button on a tile that cannot be opened is an affordance for something
+        that does not exist, and the reader has to hover it to find that out.
+
+        `aria-hidden` either way, because the tile is already announced by
+        `actionLabel` and this would otherwise repeat it.
+      */}
+      {disabled ? (
+        // The same height as the affordance beside it, so the three feet sit
+        // on one line. A badge is 22px against the button's 34px, and left to
+        // itself it aligned to the foot of the tile rather than to its
+        // siblings — which reads as the unbuilt tiles sagging.
+        <Badge
+          aria-hidden="true"
+          variant="secondary"
+          className="h-[34px] rounded-md px-3"
+        >
+          {status}
+        </Badge>
+      ) : (
+        <span
+          aria-hidden="true"
+          className="bg-background group-hover:bg-accent group-hover:text-accent-foreground w-full rounded-md border px-3 py-1.5 text-sm font-medium transition-colors"
+        >
+          Manage
+        </span>
+      )}
+    </button>
   );
 }
 
 /**
- * The Jira row, which is the only one that is real.
+ * The Jira tile, which is the only one that is real.
  *
  * It reads the organization's own connections rather than taking a count from
  * the page: `useJira` is already the per-organization read, and the home
  * screen's `useConnections` fans out over every membership, which is a
  * different question from the one this card asks.
  */
-function JiraConnectionRow({
+function JiraConnectionTile({
   organizationId,
   onOpenJira,
 }: {
@@ -520,8 +665,8 @@ function JiraConnectionRow({
   const active = connections.filter((entry) => entry.healthy).length;
 
   return (
-    <ConnectionRow
-      // Jira's mark, not Atlassian's: this row names the product, where the
+    <ConnectionTile
+      // Jira's mark, not Atlassian's: this tile names the product, where the
       // sign-in screen and the account page name the account provider.
       icon={<JiraIcon />}
       label="Jira"
@@ -531,16 +676,8 @@ function JiraConnectionRow({
       status={
         loading ? " " : `${active} active connection${active === 1 ? "" : "s"}`
       }
-      action={
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={onOpenJira}
-          aria-label="Manage Jira connections"
-        >
-          Manage
-        </Button>
-      }
+      onOpen={onOpenJira}
+      actionLabel="Manage Jira connections"
     />
   );
 }
@@ -676,7 +813,7 @@ function HandleForm({
             <button
               type="button"
               onClick={onOpenMembers}
-              className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 group/members mt-5 flex w-fit cursor-pointer items-center gap-1.5 rounded-sm text-sm transition-colors focus-visible:ring-[3px] focus-visible:outline-none"
+              className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 group/members mt-5 flex w-fit items-center gap-1.5 rounded-sm text-sm transition-colors focus-visible:ring-[3px] focus-visible:outline-none"
             >
               <Users className="size-4" strokeWidth={1.6} />
               {/* The underline is on the words, not the button: through the
@@ -787,77 +924,37 @@ function InviteForm({
 }
 
 /**
- * Delete, behind a typed confirmation.
+ * One row in the danger zone: what it does, and the control that does it.
  *
- * Unlike signing out, this cannot be undone and takes every member's access
- * with it, so it asks for the handle to be typed rather than for one click.
+ * The sentence sits beside the button rather than in the card's description,
+ * because the card now holds two of these and one shared description could
+ * only describe them vaguely. The rule between them comes from the card's
+ * `divide-y`.
  */
-function DeleteOrganization({
-  organization,
-  busy,
-  onDelete,
+function DangerRow({
+  title,
+  detail,
+  children,
 }: {
-  organization: MembershipDto;
-  busy: boolean;
-  onDelete: () => void;
+  title: string;
+  detail: string;
+  children: ReactNode;
 }) {
-  const [confirming, setConfirming] = useState(false);
-  const [typed, setTyped] = useState("");
-
-  if (!confirming) {
-    return (
-      <Button
-        type="button"
-        variant="ghost"
-        size="sm"
-        className="text-muted-foreground hover:text-danger"
-        disabled={busy}
-        onClick={() => setConfirming(true)}
-      >
-        <Trash2 />
-        Delete organization
-      </Button>
-    );
-  }
-
   return (
-    <div className="flex w-full flex-col gap-2">
-      <p className="text-sm">
-        Type <strong>{organization.slug}</strong> to confirm. This cannot be
-        undone.
-      </p>
-      <div className="flex gap-2">
-        <Input
-          aria-label="Type the handle to confirm"
-          value={typed}
-          onChange={(event) => setTyped(event.target.value)}
-        />
-        {/*
-          `variant="destructive"` for the shape and the focus ring, repainted
-          in the brand red. `focus-visible:ring-danger/20` too, or the ring
-          would stay the old red against the new fill.
-        */}
-        <Button
-          type="button"
-          variant="destructive"
-          className="bg-danger text-danger-foreground hover:bg-danger/90 focus-visible:ring-danger/20"
-          disabled={busy || typed.trim() !== organization.slug}
-          onClick={onDelete}
-        >
-          Delete
-        </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          disabled={busy}
-          onClick={() => {
-            setConfirming(false);
-            setTyped("");
-          }}
-        >
-          Cancel
-        </Button>
+    /*
+      The button beside the sentence, not under it. `min-w-0` on the text and
+      `shrink-0` on the control is what keeps the two on one line: without
+      them the sentence claims its full width and the button wraps to the
+      next row, which reads as a third item rather than as this row's action.
+
+      It still stacks below `sm`, where there is genuinely no room for both.
+    */
+    <div className="flex flex-col gap-3 py-4 first:pt-0 last:pb-0 sm:flex-row sm:items-center sm:justify-between">
+      <div className="min-w-0">
+        <p className="text-sm font-medium">{title}</p>
+        <p className="text-muted-foreground text-sm">{detail}</p>
       </div>
+      <div className="shrink-0">{children}</div>
     </div>
   );
 }
@@ -1002,19 +1099,37 @@ export function CreateOrganization({
               aria-label="Organization name"
               placeholder="Acme Robotics"
               value={name}
+              // The only field on the page, and the page exists to fill it in.
+              autoFocus
               onChange={(event) => {
                 setName(event.target.value);
                 setError(null);
               }}
             />
 
-            <div className="flex gap-2">
-              <Button
-                type="submit"
-                disabled={busy || name.trim() === "" || !isValidHandle(slug)}
-              >
-                Create organization
-              </Button>
+            {/*
+              The handle this name will get. It was derived and sent but never
+              shown, so the one thing the form decides on your behalf was
+              invisible until the settings page afterwards.
+
+              `aria-live` because it changes as the name is typed, and the slot
+              is held open so the buttons below do not jump when the first
+              character arrives.
+            */}
+            <p
+              aria-live="polite"
+              className="text-muted-foreground min-h-4 text-xs"
+            >
+              {slug === "" ? "\u00a0" : `Handle: @${slug}`}
+            </p>
+
+            {/*
+              Pushed to opposite ends, with the way out on the left and the
+              commit on the right: the affirmative action sits where the eye
+              finishes the form, and the gap between them is what stops a
+              cancel being clicked on the way to a create.
+            */}
+            <div className="flex items-center justify-between gap-2">
               <Button
                 type="button"
                 variant="ghost"
@@ -1022,6 +1137,12 @@ export function CreateOrganization({
                 onClick={onCancel}
               >
                 Cancel
+              </Button>
+              <Button
+                type="submit"
+                disabled={busy || name.trim() === "" || !isValidHandle(slug)}
+              >
+                Create organization
               </Button>
             </div>
           </form>

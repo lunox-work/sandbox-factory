@@ -22,7 +22,7 @@ import type { MembershipDto } from "@sandbox-factory/shared";
 import { ChevronRight, Plus } from "lucide-react";
 
 import { EntityAvatar } from "@/components/Avatar";
-import { ErrorBanner } from "@/components/Message";
+import { ErrorBanner, LoadingLine } from "@/components/Message";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -91,7 +91,7 @@ export function Organizations({
 
       <div className="mt-8">
         {loading ? (
-          <p className="text-muted-foreground text-sm">Loading…</p>
+          <LoadingLine />
         ) : organizations.length === 0 ? (
           // An empty state that says what an organization is for, since
           // someone seeing this has never made one.
@@ -125,7 +125,10 @@ export function Organizations({
                 <button
                   type="button"
                   onClick={() => onOpen(organization)}
-                  className="bg-card hover:border-foreground/15 focus-visible:ring-ring/50 flex w-full cursor-pointer items-center gap-3 rounded-xl border px-3.5 py-3 text-left shadow-xs transition-colors focus-visible:ring-[3px] focus-visible:outline-none"
+                  // A fill as well as the border: the border alone moved to
+                  // 15% of the foreground, which at a glance is no change at
+                  // all on a row the size of this one.
+                  className="bg-card hover:bg-accent/50 hover:border-foreground/15 focus-visible:ring-ring/50 flex w-full items-center gap-3 rounded-xl border px-3.5 py-3 text-left shadow-xs transition-colors focus-visible:ring-[3px] focus-visible:outline-none"
                 >
                   {/*
                     The personal row wears the person's own face, not one

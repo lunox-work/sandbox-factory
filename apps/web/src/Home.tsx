@@ -27,9 +27,10 @@
  * still shown: both are something to act on rather than nothing.
  */
 
-import { ArrowRight, Link2, Loader2, TriangleAlert } from "lucide-react";
+import { ArrowRight, Link2, TriangleAlert } from "lucide-react";
 import type { MembershipDto } from "@sandbox-factory/shared";
 
+import { ErrorBanner, LoadingLine } from "@/components/Message";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -42,7 +43,7 @@ import {
 
 import { useConnections, type ConnectionGroup } from "./useConnections";
 import { useJiraOutcome } from "./useJira";
-import { OutcomeBanner } from "./Jira";
+import { ConnectionRow, OutcomeBanner } from "./Jira";
 import type { JiraConnection } from "./useJira";
 
 /** Whether a group has anything worth a card. */
@@ -72,27 +73,16 @@ function groupLabel(organization: MembershipDto): string {
   return organization.kind === "personal" ? "Personal" : organization.name;
 }
 
-function ConnectionLine({ connection }: { connection: JiraConnection }) {
-  return (
-    <li className="flex items-center justify-between gap-4 py-2.5">
-      <div className="min-w-0">
-        <span className="truncate text-sm font-medium">
-          {connection.siteName}
-        </span>
-        <p className="text-muted-foreground truncate text-sm">
-          {connection.siteUrl}
-        </p>
-      </div>
-    </li>
-  );
-}
-
 function Group({
   group,
   onOpen,
+  onOpenSite,
 }: {
   group: ConnectionGroup;
   onOpen: (organization: MembershipDto) => void;
+  onOpenSite?:
+    | ((organization: MembershipDto, connection: JiraConnection) => void)
+    | undefined;
 }) {
   const { organization, connections, failed } = group;
 
@@ -105,7 +95,7 @@ function Group({
     <Card>
       <CardHeader className="flex-row items-start justify-between gap-4 space-y-0">
         <div className="min-w-0">
-          <CardTitle className="flex items-center gap-2 text-base">
+          <CardTitle className="flex items-center gap-2">
             <span className="truncate">{groupLabel(organization)}</span>
             {organization.kind === "personal" && (
               <Badge variant="secondary">Your account</Badge>
@@ -129,9 +119,9 @@ function Group({
         {failed ? (
           // One organization failing must not empty the others; it says so
           // here and the rest of the page still works.
-          <p className="text-destructive text-sm">
+          <ErrorBanner className="mt-0">
             Could not load these connections.
-          </p>
+          </ErrorBanner>
         ) : healthy.length === 0 && broken === 0 ? (
           <p className="text-muted-foreground text-sm">
             No sites connected yet.
@@ -141,7 +131,13 @@ function Group({
             {healthy.length > 0 && (
               <ul className="divide-y">
                 {healthy.map((connection) => (
-                  <ConnectionLine key={connection.id} connection={connection} />
+                  <ConnectionRow
+                    key={connection.id}
+                    connection={connection}
+                    // The organization travels with the site: a URL names
+                    // both, and a connection does not carry its owner.
+                    onOpen={() => onOpenSite?.(organization, connection)}
+                  />
                 ))}
               </ul>
             )}
@@ -149,7 +145,7 @@ function Group({
               <button
                 type="button"
                 onClick={() => onOpen(organization)}
-                className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 mt-3 flex cursor-pointer items-center gap-2 rounded text-sm transition-colors focus-visible:ring-[3px] focus-visible:outline-none"
+                className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 mt-3 flex items-center gap-2 rounded text-sm transition-colors focus-visible:ring-[3px] focus-visible:outline-none"
               >
                 <TriangleAlert className="text-destructive size-3.5 shrink-0" />
                 {broken === 1
@@ -168,10 +164,19 @@ export function Home({
   organizations,
   organizationsLoading,
   onOpen,
+  onOpenSite,
 }: {
   organizations: MembershipDto[];
   organizationsLoading: boolean;
+  /** Opens the organization's own Jira page: the list, and the way to add. */
   onOpen: (organization: MembershipDto) => void;
+  /**
+   * Opens one connected site. Optional so this page can be rendered in a test
+   * without the shell's navigation, as `onOpen` already is elsewhere.
+   */
+  onOpenSite?:
+    | ((organization: MembershipDto, connection: JiraConnection) => void)
+    | undefined;
 }) {
   const { groups, loading, error, total } = useConnections(
     organizations,
@@ -188,10 +193,10 @@ export function Home({
   const visible = groups.filter(hasSomethingToShow);
 
   return (
-    <main className="mx-auto flex w-full max-w-2xl flex-col gap-6 p-6">
+    <main className="mx-auto flex w-full max-w-2xl flex-col gap-6 px-4 py-10 sm:px-6 sm:py-14">
       <header>
         <h1 className="text-2xl font-semibold tracking-tight">Connections</h1>
-        <p className="text-muted-foreground text-sm">
+        <p className="text-muted-foreground mt-1.5 text-sm">
           Jira sites you and your organizations can read boards from.
         </p>
       </header>
@@ -205,16 +210,13 @@ export function Home({
       )}
 
       {loading ? (
-        <p className="text-muted-foreground flex items-center gap-2 text-sm">
-          <Loader2 className="size-4 animate-spin" />
-          Loading…
-        </p>
+        <LoadingLine />
       ) : error !== null ? (
-        <p className="text-destructive text-sm">{error}</p>
+        <ErrorBanner className="mt-0">{error}</ErrorBanner>
       ) : visible.length === 0 ? (
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">No sites connected yet</CardTitle>
+            <CardTitle>No sites connected yet</CardTitle>
             <CardDescription>
               {groups.length === 0
                 ? "You are not in an organization yet, so there is nowhere to connect a site."
@@ -247,7 +249,12 @@ export function Home({
             </p>
           )}
           {order(visible).map((group) => (
-            <Group key={group.organization.id} group={group} onOpen={onOpen} />
+            <Group
+              key={group.organization.id}
+              group={group}
+              onOpen={onOpen}
+              onOpenSite={onOpenSite}
+            />
           ))}
         </>
       )}

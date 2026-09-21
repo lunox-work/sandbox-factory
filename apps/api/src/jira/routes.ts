@@ -22,7 +22,11 @@
  * checked again when the callback lands, not merely when the flow starts.
  */
 
-import type { JiraBoardStore, JiraConnectionStore } from "@sandbox-factory/db";
+import type {
+  JiraBoardStore,
+  JiraBoardSummary,
+  JiraConnectionStore,
+} from "@sandbox-factory/db";
 import {
   accessibleSites,
   backlogJql,
@@ -40,7 +44,11 @@ import {
 } from "@sandbox-factory/shared";
 import type { Hono } from "hono";
 
-import { jiraClientFor, noteAuthFailure } from "./credential.js";
+import {
+  jiraClientFor,
+  noteAuthFailure,
+  type JiraClientFailure,
+} from "./credential.js";
 import { signState, verifyState } from "./state.js";
 
 /** What the routes need. Supplied by `createApp`, faked in tests. */
@@ -138,6 +146,58 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
   // CodeQL flagged as a ReDoS on PR #25, and `apiUrl` is configuration rather
   // than a constant.
   const redirectUri = `${stripTrailingSlashes(apiUrl)}/api/v1/jira/callback`;
+
+  /**
+   * Every board on a site, registered.
+   *
+   * The one place boards come from. A site's boards are not a second choice
+   * to make after connecting it — connecting is the decision, and a board row
+   * is a pointer with default settings that reads nothing until it is
+   * previewed or run. So the callback calls this once per granted site, and
+   * the site's page calls it on open to pick up boards created since.
+   *
+   * The store's `sync` rather than its `register`: this runs against boards
+   * somebody has already configured, so it refreshes what is Jira's to state
+   * — a renamed board, one moved to another project — and leaves the
+   * selection and the write-back flag exactly as they were found.
+   *
+   * Returns the failure rather than throwing it when the connection itself
+   * cannot produce a client, and throws whatever Jira threw when the call is
+   * what failed. Callers decide what that means: the page reports it, the
+   * callback swallows it so a missing Agile scope does not turn a granted
+   * site into a failed connection.
+   */
+  async function syncBoards(
+    organizationId: string,
+    connectionId: string,
+  ): Promise<
+    | { readonly ok: true; readonly boards: JiraBoardSummary[] }
+    | { readonly ok: false; readonly failure: JiraClientFailure }
+  > {
+    const result = await jiraClientFor(
+      clientOptions,
+      organizationId,
+      connectionId,
+    );
+    if (!result.ok) {
+      return result;
+    }
+
+    const visible = await result.client.boards();
+    const recorded: JiraBoardSummary[] = [];
+    for (const board of visible) {
+      recorded.push(
+        await boards.sync(organizationId, {
+          connectionId,
+          externalId: String(board.id),
+          name: board.name,
+          boardType: board.type,
+          projectKey: board.projectKey,
+        }),
+      );
+    }
+    return { ok: true, boards: recorded };
+  }
 
   /**
    * Start the flow. Behind the membership guard, so the caller has already
@@ -266,7 +326,7 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
       // mean holding the tokens somewhere while they choose; a connection per
       // site is cheap, and a board is registered against one of them later.
       for (const site of sites) {
-        await connections.upsert(organizationId, {
+        const connection = await connections.upsert(organizationId, {
           cloudId: site.cloudId,
           siteUrl: site.url,
           siteName: site.name,
@@ -275,6 +335,27 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
           expiresAt: tokens.expiresAt,
           scopes: tokens.scopes,
         });
+
+        /*
+          Its boards, registered straight away.
+
+          Connecting a site *is* the choice — a board registration records a
+          pointer and nothing else, reads no tickets, and costs nothing until
+          someone previews or runs one. Making the user then pick boards one by
+          one was asking them to repeat a decision they had already made.
+
+          Deliberately not awaited for its success: a site whose grant is
+          missing the Agile scopes, or which answers slowly, must still end as
+          a connected site. The sync runs again whenever the site's page is
+          opened, so a failure here costs a round trip rather than the boards.
+        */
+        try {
+          await syncBoards(organizationId, connection.id);
+        } catch {
+          // Swallowed on purpose. The result is discarded for the same
+          // reason: a site that granted no Agile scope is still a connected
+          // site, and the page says so when the sync fails there too.
+        }
       }
 
       const missing = missingScopes(tokens.scopes);
@@ -345,6 +426,33 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
 
     try {
       return c.json({ boards: await result.client.boards() });
+    } catch (error) {
+      return await jiraFailure(c, connections, connectionId, error);
+    }
+  });
+
+  /**
+   * Re-read a site's boards and record any that are new.
+   *
+   * What the site's page calls when it opens. The boards of a connected site
+   * are recorded at connect time, but a client creates boards afterwards and
+   * nothing tells us — so the list is refreshed where someone is looking at
+   * it, rather than by a job that polls every site on a timer for the benefit
+   * of nobody in particular.
+   *
+   * A POST because it writes rows, even though a caller means it as a read.
+   * Any member may call it: it registers pointers to boards the organization
+   * already holds a grant for, reads no ticket, and changes no setting.
+   */
+  app.post("/api/v1/orgs/:orgId/jira/connections/:id/sync", async (c) => {
+    const { organizationId } = c.get("member");
+    const connectionId = c.req.param("id");
+
+    try {
+      const result = await syncBoards(organizationId, connectionId);
+      return result.ok
+        ? c.json({ boards: result.boards })
+        : failureResponse(c, result.failure);
     } catch (error) {
       return await jiraFailure(c, connections, connectionId, error);
     }

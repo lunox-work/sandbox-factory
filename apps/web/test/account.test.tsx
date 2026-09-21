@@ -445,7 +445,7 @@ test("each account section is a level-two heading", async () => {
 
   await waitFor(() => {
     expect(
-      screen.getByRole("heading", { name: "Connected Accounts", level: 2 }),
+      screen.getByRole("heading", { name: "Connected accounts", level: 2 }),
     ).toBeDefined();
   });
   expect(
@@ -482,7 +482,7 @@ describe("organization invitations", () => {
 
     render(<Account />);
 
-    await screen.findByText("Connected Accounts");
+    await screen.findByText("Connected accounts");
     expect(screen.queryByText("Invitations")).toBeNull();
   });
 

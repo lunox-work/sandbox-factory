@@ -49,6 +49,15 @@ export interface RegisterBoardInput {
   readonly selection?: StoredBoardSelection;
 }
 
+/**
+ * What a sync records: Jira's facts about a board, and nothing of ours.
+ *
+ * `selection` is absent by construction rather than optional — a sync has no
+ * settings to offer, and a type that let it pass some would make the
+ * distinction from `register` a convention instead of a rule.
+ */
+export type SyncBoardInput = Omit<RegisterBoardInput, "selection">;
+
 export interface UpdateBoardInput {
   readonly selection?: StoredBoardSelection;
   readonly writebackEnabled?: boolean;
@@ -71,6 +80,22 @@ export interface JiraBoardStore {
   register(
     organizationId: string,
     input: RegisterBoardInput,
+  ): Promise<JiraBoardSummary>;
+  /**
+   * Records a board Jira reports, without touching how it is configured.
+   *
+   * What `register` is not. Every board on a connected site is recorded
+   * automatically, on connect and again whenever the site is opened, so this
+   * runs against boards a person has already configured. It refreshes only
+   * what is Jira's to state — the name, the type, the project a board was
+   * moved to — and leaves `selection` and `writebackEnabled` as they were.
+   *
+   * `register` overwrites the selection because a caller passing one is asking
+   * for it. A sync passes none and means none.
+   */
+  sync(
+    organizationId: string,
+    input: SyncBoardInput,
   ): Promise<JiraBoardSummary>;
   /**
    * Edits the settings. A selection update is **merged**, not replaced, so
@@ -171,6 +196,40 @@ export function createJiraBoardStore(db: Database): JiraBoardStore {
 
       if (row === undefined) {
         throw new Error("Failed to register the Jira board.");
+      }
+      return toSummary(row);
+    },
+
+    async sync(organizationId, input) {
+      // The same insert, with `selection` absent from the conflict branch: a
+      // board already registered keeps the settings someone chose for it,
+      // while a board seen for the first time still gets a row with the
+      // empty selection the route's schema fills in with defaults.
+      const jiraFacts = {
+        name: input.name,
+        boardType: input.boardType,
+        projectKey: input.projectKey ?? null,
+        updatedAt: new Date(),
+      };
+
+      const [row] = (await db
+        .insert(jiraBoard)
+        .values({
+          id: generateId("jrb"),
+          organizationId,
+          connectionId: input.connectionId,
+          externalId: input.externalId,
+          selection: {},
+          ...jiraFacts,
+        })
+        .onConflictDoUpdate({
+          target: [jiraBoard.connectionId, jiraBoard.externalId],
+          set: jiraFacts,
+        })
+        .returning()) as JiraBoardRow[];
+
+      if (row === undefined) {
+        throw new Error("Failed to record the Jira board.");
       }
       return toSummary(row);
     },

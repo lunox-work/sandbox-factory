@@ -1,12 +1,12 @@
 /**
  * The trail above each page: where you are, and every step back up.
  *
- * The rail names only Home, because a rail of icons has room for destinations
- * and not for a hierarchy. But most screens here sit under something — an
- * organization's Jira page is two levels down — and the only ways back up
- * were the browser's Back button and whichever link the page happened to
- * carry. Back is history, not hierarchy: arriving at `/o/acme/jira` from a
- * bookmark leaves it pointing out of the app.
+ * The rail names destinations, not a hierarchy: a rail of icons has room for
+ * Home and Organizations and no more. But most screens here sit under
+ * something — an organization's Jira page is two levels down — and the only
+ * ways back up were the browser's Back button and whichever link the page
+ * happened to carry. Back is history, not hierarchy: arriving at
+ * `/o/acme/jira` from a bookmark leaves it pointing out of the app.
  *
  * Rendered by the shell rather than by each page, so the trail cannot drift
  * between screens and a new screen gets one by describing itself in `trailFor`
@@ -20,6 +20,8 @@
  */
 
 import { ChevronRight } from "lucide-react";
+
+import { cn } from "@/lib/utils";
 
 import type { Screen } from "./SideNav";
 
@@ -35,6 +37,14 @@ export interface Crumb {
   label: string;
   screen?: Screen;
   slug?: string | undefined;
+  /**
+   * The connected site a crumb navigates to, for the screens below Jira.
+   *
+   * Travels with the crumb for the same reason `slug` does: the site a crumb
+   * names is the one it was built from, not whichever the app happens to be
+   * showing by the time it is clicked.
+   */
+  connectionId?: string | undefined;
 }
 
 /**
@@ -66,6 +76,20 @@ const ORGANIZATIONS: Crumb = {
 export function trailFor(
   screen: Screen,
   organization?: TrailOrganization | undefined,
+  /**
+   * The connected site the last crumb names, on `org-jira-site`.
+   *
+   * Passed in rather than looked up, because the trail is rendered by the
+   * shell and the site's name lives in a list only the page below has. Until
+   * it arrives the crumb reads "Site" — the trail is one step deeper than
+   * Jira whether or not the name has loaded, and dropping the last crumb
+   * would mark Jira as the current page while a site is on screen.
+   */
+  siteName?: string | undefined,
+  /** The board the last crumb names, on `org-jira-board`. See `siteName`. */
+  boardName?: string | undefined,
+  /** The site the board sits under, so its crumb can navigate back to it. */
+  connectionId?: string | undefined,
 ): Crumb[] {
   switch (screen) {
     case "home":
@@ -103,19 +127,76 @@ export function trailFor(
             },
             { label: "Jira" },
           ];
+    case "org-jira-board": {
+      /*
+        The deepest trail there is. Built from the site's rather than restated,
+        so the two cannot drift apart as the levels above them change — but
+        the site's own crumb has to become a link here, since on that trail it
+        was the page you were on and carried no destination.
+      */
+      const above = trailFor("org-jira-site", organization, siteName);
+      const site = above[above.length - 1];
+      return [
+        ...above.slice(0, -1),
+        {
+          label: site?.label ?? "Site",
+          screen: "org-jira-site",
+          slug: organization?.slug,
+          connectionId,
+        },
+        { label: boardName ?? "Board" },
+      ];
+    }
+    case "org-jira-site": {
+      // The Jira crumb becomes a link here, which is the way back to the list
+      // of sites — and the only one, since this screen carries no other.
+      const jira: Crumb = {
+        label: "Jira",
+        screen: "org-jira",
+        slug: organization?.slug,
+      };
+      return organization === undefined
+        ? [HOME, ORGANIZATIONS, jira, { label: siteName ?? "Site" }]
+        : [
+            HOME,
+            ORGANIZATIONS,
+            {
+              label: organization.name,
+              screen: "org-settings",
+              slug: organization.slug,
+            },
+            jira,
+            { label: siteName ?? "Site" },
+          ];
+    }
   }
 }
 
 export function Breadcrumbs({
   screen,
   organization,
+  siteName,
+  boardName,
+  connectionId,
   onNavigate,
 }: {
   screen: Screen;
   organization?: TrailOrganization | undefined;
-  onNavigate: (screen: Screen, slug?: string) => void;
+  /** The connected site `org-jira-site` is showing; see `trailFor`. */
+  siteName?: string | undefined;
+  /** The board `org-jira-board` is showing; see `trailFor`. */
+  boardName?: string | undefined;
+  /** The connected site the board sits under; see `trailFor`. */
+  connectionId?: string | undefined;
+  onNavigate: (screen: Screen, slug?: string, connectionId?: string) => void;
 }) {
-  const crumbs = trailFor(screen, organization);
+  const crumbs = trailFor(
+    screen,
+    organization,
+    siteName,
+    boardName,
+    connectionId,
+  );
 
   // Nothing to show on home, and a bare trail of one crumb is chrome rather
   // than navigation — it names where you are without offering a way up.
@@ -134,18 +215,32 @@ export function Breadcrumbs({
       announce the position in it. The separators sit outside the links and are
       hidden, or every crumb would be read with a chevron glued to it.
 
-      Aligned to the same `max-w-2xl` column the pages use, and with only top
-      padding: the page below opens with its own, which becomes the gap between
-      the trail and the heading. Bottom padding here would double it, and the
-      negative margin trims what is left to one header block rather than two
-      stacked ones — a constant here instead of a change to five pages, none of
-      which should have to know whether a trail sits above it.
+      The column is capped and padded on this one element, exactly as each page
+      caps and pads its own `main`. Splitting the two — padding here, the cap
+      on the `ol` inside — is what used to misalign the trail: the padding
+      applied outside the capped box, so the crumbs began 24px left of every
+      heading below them.
+
+      Only top padding, because the page below opens with its own, which
+      becomes the gap between the trail and the heading. Bottom padding here
+      would double it, and the negative margin trims what is left to one header
+      block rather than two stacked ones — a constant here instead of a change
+      to five pages, none of which should have to know whether a trail sits
+      above it.
     */
     <nav
       aria-label="Breadcrumb"
-      className="-mb-6 px-4 pt-5 sm:-mb-8 sm:px-6 sm:pt-7"
+      className={cn(
+        "mx-auto -mb-6 w-full px-4 pt-5 sm:-mb-8 sm:px-6 sm:pt-7",
+        // The board is the one wide page, so a trail capped at the narrow
+        // column would be misaligned the other way — the crumbs sitting well
+        // right of the content. Read from the screen rather than taken as a
+        // prop: which pages are wide is the trail's own business, and the
+        // shell already tells it where it is.
+        screen === "org-jira-board" ? "max-w-5xl" : "max-w-2xl",
+      )}
     >
-      <ol className="text-muted-foreground mx-auto flex w-full max-w-2xl flex-wrap items-center gap-1.5 text-sm">
+      <ol className="text-muted-foreground flex flex-wrap items-center gap-1.5 text-sm">
         {crumbs.map((crumb, index) => {
           /*
             The last crumb is the page you are on, so it is text whatever it
@@ -178,8 +273,10 @@ export function Breadcrumbs({
               ) : (
                 <button
                   type="button"
-                  onClick={() => onNavigate(target, crumb.slug)}
-                  className="hover:text-foreground focus-visible:ring-ring/50 cursor-pointer rounded-sm underline-offset-4 transition-colors hover:underline focus-visible:ring-[3px] focus-visible:outline-none"
+                  onClick={() =>
+                    onNavigate(target, crumb.slug, crumb.connectionId)
+                  }
+                  className="hover:text-foreground focus-visible:ring-ring/50 rounded-sm underline-offset-4 transition-colors hover:underline focus-visible:ring-[3px] focus-visible:outline-none"
                 >
                   {crumb.label}
                 </button>

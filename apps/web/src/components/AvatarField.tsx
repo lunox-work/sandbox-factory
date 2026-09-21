@@ -64,7 +64,7 @@ export function AvatarField({
       onClick={onEdit}
       aria-label={`Change ${label} picture`}
       className={cn(
-        "group focus-visible:ring-ring/50 relative shrink-0 cursor-pointer focus-visible:ring-[3px] focus-visible:outline-none",
+        "group focus-visible:ring-ring/50 relative shrink-0 focus-visible:ring-[3px] focus-visible:outline-none",
         // The root carries the shape so the scrim's `rounded-[inherit]` picks
         // it up. Left as `rounded-full`, a square avatar would get a circular
         // scrim over a rounded square.

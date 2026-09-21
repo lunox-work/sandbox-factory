@@ -27,6 +27,7 @@ export type {
   JiraBoardSummary,
   RegisterBoardInput,
   StoredBoardSelection,
+  SyncBoardInput,
   UpdateBoardInput,
 } from "./jira-boards.js";
 export { createJiraConnectionStore } from "./jira-connections.js";

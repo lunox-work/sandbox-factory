@@ -422,3 +422,88 @@ test("with organizations but no connections, each is offered to connect", async 
   await userEvent.click(screen.getByRole("button", { name: /Personal/ }));
   expect(onOpen).toHaveBeenCalledWith(personal);
 });
+
+// ---- the page opens like every other one ----------------------------------
+
+test("home has the same top padding as the other pages", async () => {
+  // It used `p-6`, which put its heading 48px higher than every other page's
+  // — a jump on each navigation. The trail above also pulls its bottom margin
+  // back by `-mb-6 sm:-mb-8`, which needs the page's own padding to exceed it.
+  byOrganization = { org_acme: [connection({ id: "jrc_1", siteName: "C" })] };
+
+  const { container } = render(
+    <Home
+      organizations={[acme]}
+      organizationsLoading={false}
+      onOpen={vi.fn()}
+    />,
+  );
+
+  await waitFor(() => {
+    expect(screen.getByText("Connections")).toBeTruthy();
+  });
+
+  const main = container.querySelector("main");
+  expect(main?.className).toContain("py-10");
+  expect(main?.className).toContain("sm:py-14");
+});
+
+// ---- a listed site is a way into it ---------------------------------------
+//
+// The sites on this page were inert text. The only control was a ghost
+// "Manage" leading to the organization's Jira list — one step short of the
+// site the reader was already looking at.
+
+test("a listed site opens that site", async () => {
+  byOrganization = {
+    org_acme: [connection({ id: "jrc_1", siteName: "Client" })],
+  };
+  const onOpenSite = vi.fn();
+
+  render(
+    <Home
+      organizations={[acme]}
+      organizationsLoading={false}
+      onOpen={vi.fn()}
+      onOpenSite={onOpenSite}
+    />,
+  );
+
+  await waitFor(() => {
+    expect(screen.getByText("Client")).toBeTruthy();
+  });
+  await userEvent.click(screen.getByText("Client"));
+
+  // Both halves: which site, and which organization owns it — the second is
+  // what the URL needs, and it is not on the connection.
+  expect(onOpenSite).toHaveBeenCalledTimes(1);
+  expect(onOpenSite.mock.calls[0]?.[0]).toEqual(acme);
+  expect(onOpenSite.mock.calls[0]?.[1]).toMatchObject({ id: "jrc_1" });
+});
+
+test("Manage still opens the organization, not the site", async () => {
+  // The two destinations are different: one site, or the list and the way to
+  // connect another.
+  byOrganization = {
+    org_acme: [connection({ id: "jrc_1", siteName: "Client" })],
+  };
+  const onOpen = vi.fn();
+  const onOpenSite = vi.fn();
+
+  render(
+    <Home
+      organizations={[acme]}
+      organizationsLoading={false}
+      onOpen={onOpen}
+      onOpenSite={onOpenSite}
+    />,
+  );
+
+  await waitFor(() => {
+    expect(screen.getByRole("button", { name: /Manage/ })).toBeTruthy();
+  });
+  await userEvent.click(screen.getByRole("button", { name: /Manage/ }));
+
+  expect(onOpen).toHaveBeenCalledWith(acme);
+  expect(onOpenSite).not.toHaveBeenCalled();
+});

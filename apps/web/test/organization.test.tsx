@@ -12,7 +12,13 @@
  * would refuse is not offered.
  */
 
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { beforeEach, expect, test, vi } from "vitest";
 
 const update = vi.fn();
@@ -318,8 +324,12 @@ test("removing a member names the organization and the membership row", async ()
   await openTab("Members");
 
   await screen.findByText("Sam");
+  // Two clicks now: the row's button asks, the dialog's button acts.
   const buttons = screen.getAllByRole("button", { name: "Remove" });
   fireEvent.click(buttons[1] as HTMLElement);
+
+  const dialog = await screen.findByRole("dialog");
+  fireEvent.click(within(dialog).getByRole("button", { name: "Remove" }));
 
   await waitFor(() =>
     expect(remove).toHaveBeenCalledWith({
@@ -381,6 +391,8 @@ test("leaving names the organization", async () => {
   fireEvent.click(
     await screen.findByRole("button", { name: /leave organization/i }),
   );
+  const dialog = await screen.findByRole("dialog");
+  fireEvent.click(within(dialog).getByRole("button", { name: "Leave" }));
 
   await waitFor(() =>
     expect(leave).toHaveBeenCalledWith({ organizationId: "org_1" }),
@@ -398,7 +410,11 @@ test("the server's reason for refusing a leave is shown", async () => {
   fireEvent.click(
     await screen.findByRole("button", { name: /leave organization/i }),
   );
+  const dialog = await screen.findByRole("dialog");
+  fireEvent.click(within(dialog).getByRole("button", { name: "Leave" }));
 
+  // Reported on the page behind the dialog, which has closed by then: the
+  // refusal is about the organization, not about the question.
   expect(await screen.findByText(/only owner/i)).toBeDefined();
 });
 
@@ -412,7 +428,8 @@ test("deleting asks for the handle to be typed", async () => {
     await screen.findByRole("button", { name: /delete organization/i }),
   );
 
-  const confirm = screen.getByRole("button", {
+  const dialog = await screen.findByRole("dialog");
+  const confirm = within(dialog).getByRole("button", {
     name: "Delete",
   }) as HTMLButtonElement;
   expect(confirm.disabled).toBe(true);
@@ -435,13 +452,17 @@ test("the wrong handle does not enable deletion", async () => {
   fireEvent.click(
     await screen.findByRole("button", { name: /delete organization/i }),
   );
+  const dialog = await screen.findByRole("dialog");
   fireEvent.change(screen.getByLabelText(/type the handle/i), {
     target: { value: "acmee" },
   });
 
   expect(
-    (screen.getByRole("button", { name: "Delete" }) as HTMLButtonElement)
-      .disabled,
+    (
+      within(dialog).getByRole("button", {
+        name: "Delete",
+      }) as HTMLButtonElement
+    ).disabled,
   ).toBe(true);
   expect(deleteOrg).not.toHaveBeenCalled();
 });
@@ -684,7 +705,7 @@ test("a team organization still shows all three", async () => {
   expect(screen.getByRole("heading", { name: "Members" })).toBeTruthy();
 
   await openTab("Settings");
-  expect(screen.getByRole("heading", { name: "Leaving" })).toBeTruthy();
+  expect(screen.getByRole("heading", { name: "Danger zone" })).toBeTruthy();
   expect(
     screen.getByRole("button", { name: /Leave organization/ }),
   ).toBeTruthy();
@@ -825,6 +846,62 @@ test("GitHub and Slack are named but cannot be opened yet", async () => {
   expect(screen.getAllByText("Coming soon")).toHaveLength(2);
 });
 
+test("the three tools are equal tiles, not a stacked list", async () => {
+  // One of them is built and two are not, which is a fact about today rather
+  // than a ranking. Stacked rows made the first read as the heading of a list
+  // the others belonged to.
+  showConnections();
+
+  await screen.findByRole("button", { name: "Manage Jira connections" });
+  const tiles = ["Jira", "GitHub", "Slack"].map((label) =>
+    screen.getByRole("button", { name: `Manage ${label} connections` }),
+  );
+
+  // Every tool gets the same tile, and they share one grid container — which
+  // is what makes them the same size as each other.
+  expect(tiles.every((tile) => tile.className.includes("min-h-36"))).toBe(true);
+  const grid = tiles[0]?.parentElement;
+  expect(grid?.className).toContain("grid");
+  expect(tiles.every((tile) => tile.parentElement === grid)).toBe(true);
+});
+
+test("the whole tile is the target, not just the word Manage", async () => {
+  // A word inside a large square is a target a person can miss while aiming
+  // at the square they think they are pressing.
+  const onOpenJira = vi.fn();
+  serverWith([]);
+  render(
+    <Organization
+      organization={{
+        id: "org_1",
+        name: "Acme",
+        slug: "acme",
+        kind: "team",
+        role: "owner",
+      }}
+      onChanged={vi.fn()}
+      onLeft={vi.fn()}
+      onOpenJira={onOpenJira}
+    />,
+  );
+
+  const tile = await screen.findByRole("button", {
+    name: "Manage Jira connections",
+  });
+  // The tile itself is the button, so there is no second one nested inside —
+  // a button within a button is invalid, and one of the two is dropped from
+  // the accessibility tree.
+  expect(tile.querySelector("button")).toBeNull();
+  // A floor rather than a square: at this column's width `aspect-square`
+  // made a 186px box for three short lines.
+  expect(tile.className).toContain("min-h-36");
+  // And it lights up under the cursor, which is what says it is pressable.
+  expect(tile.className).toContain("hover:bg-muted/50");
+
+  fireEvent.click(tile);
+  expect(onOpenJira).toHaveBeenCalledTimes(1);
+});
+
 test("the Jira row stays clickable", async () => {
   // The one real connection: everything else on the card is disabled, so a
   // regression that disabled this one too would look intentional.
@@ -930,4 +1007,203 @@ test("a personal organization names itself instead of counting members", async (
 
   expect(await screen.findByText("Personal organization")).toBeDefined();
   expect(screen.queryByText(/\d+ members?$/)).toBeNull();
+});
+
+// ---- nothing irreversible happens on one click ----------------------------
+//
+// The property these three share: the button on the page asks, and only the
+// button in the dialog acts. Removing, leaving and deleting each give away
+// access to everything an organization owns, and the rows they are reached
+// from are columns of similar names.
+
+test("removing a member asks before it removes", async () => {
+  serverWith([owner, plainMember]);
+  showSettings();
+  await openTab("Members");
+
+  await screen.findByText("Sam");
+  fireEvent.click(
+    screen.getAllByRole("button", { name: "Remove" })[1] as HTMLElement,
+  );
+
+  expect(await screen.findByRole("dialog")).toBeDefined();
+  expect(remove).not.toHaveBeenCalled();
+});
+
+test("cancelling the question removes nobody", async () => {
+  serverWith([owner, plainMember]);
+  showSettings();
+  await openTab("Members");
+
+  await screen.findByText("Sam");
+  fireEvent.click(
+    screen.getAllByRole("button", { name: "Remove" })[1] as HTMLElement,
+  );
+  const dialog = await screen.findByRole("dialog");
+  fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+
+  await waitFor(() => {
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+  expect(remove).not.toHaveBeenCalled();
+});
+
+test("leaving asks before it leaves", async () => {
+  showSettings();
+  await openTab("Settings");
+
+  fireEvent.click(
+    await screen.findByRole("button", { name: /leave organization/i }),
+  );
+
+  expect(await screen.findByRole("dialog")).toBeDefined();
+  expect(leave).not.toHaveBeenCalled();
+});
+
+test("the question names what it is about", async () => {
+  // A dialog that says "Are you sure?" over a page of similar rows is a
+  // question nobody can answer. Each one names the thing.
+  showSettings();
+  await openTab("Settings");
+
+  fireEvent.click(
+    await screen.findByRole("button", { name: /delete organization/i }),
+  );
+
+  const dialog = await screen.findByRole("dialog");
+  expect(within(dialog).getByText(/Delete Acme\?/)).toBeDefined();
+});
+
+// ---- a tool that is not built does not offer to manage it ------------------
+
+test("the unbuilt tools carry a badge, not a Manage button", async () => {
+  // A disabled button drawn on a tile that cannot be opened is an affordance
+  // for something that does not exist. The status says everything the tile
+  // has to say.
+  showConnections();
+
+  const slack = await screen.findByRole("button", {
+    name: "Manage Slack connections",
+  });
+  // The word appears once, as the accessible name — not a second time as a
+  // control drawn inside the tile.
+  expect(within(slack).queryByText("Manage")).toBeNull();
+  expect(within(slack).getByText("Coming soon")).toBeDefined();
+
+  // The one that is real keeps its affordance.
+  const jira = screen.getByRole("button", { name: "Manage Jira connections" });
+  expect(within(jira).getByText("Manage")).toBeDefined();
+});
+
+// ---- the page says what it is doing ---------------------------------------
+
+test("the members list says it is loading rather than looking empty", async () => {
+  // It rendered an empty list until the request answered, so an organization
+  // briefly looked as though it had no members — which it never can.
+  let release: (value: unknown) => void = () => {};
+  const pending = new Promise((resolve) => {
+    release = resolve;
+  });
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) =>
+      String(input).includes("/members")
+        ? pending.then(() => Response.json({ members: [owner] }))
+        : Promise.resolve(Response.json({})),
+    ),
+  );
+
+  showSettings();
+  await openTab("Members");
+
+  expect(await screen.findByRole("status")).toBeDefined();
+
+  release(null);
+  await waitFor(() => {
+    expect(screen.getByText("Dana")).toBeTruthy();
+  });
+});
+
+test("a members read that fails says so", async () => {
+  // It ignored `!res.ok` entirely, so a 500 left an empty list and no reason.
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) =>
+      Promise.resolve(
+        String(input).includes("/members")
+          ? Response.json({ error: "boom" }, { status: 500 })
+          : Response.json({}),
+      ),
+    ),
+  );
+
+  showSettings();
+
+  expect(
+    await screen.findByText(/could not load this organization/i),
+  ).toBeDefined();
+});
+
+test("a long member name does not grow the row", async () => {
+  serverWith([
+    owner,
+    {
+      id: "mem_2",
+      userId: "user_2",
+      role: "member",
+      name: "Grace Hopper With A Remarkably Long Display Name That Goes On",
+      username: "grace",
+      image: null,
+    },
+  ]);
+  showSettings();
+  await openTab("Members");
+
+  const name = await screen.findByText(/Grace Hopper With A Remarkably/);
+  // jsdom has no layout, so truncation is the class contract.
+  expect(name.className).toContain("truncate");
+});
+
+// ---- creating: the handle it will get, and the way back -------------------
+
+test("the derived handle is shown before it is created", async () => {
+  // It was computed and sent but never displayed, so the one thing the form
+  // decides on your behalf was invisible until the settings page afterwards.
+  render(<CreateOrganization onCreated={vi.fn()} onCancel={vi.fn()} />);
+
+  fireEvent.change(screen.getByLabelText("Organization name"), {
+    target: { value: "Acme Robotics" },
+  });
+
+  expect(await screen.findByText(/@acme-robotics/)).toBeDefined();
+});
+
+test("the name field takes the focus", () => {
+  // It is the only field, and the page exists to fill it in.
+  render(<CreateOrganization onCreated={vi.fn()} onCancel={vi.fn()} />);
+
+  expect(document.activeElement).toBe(
+    screen.getByLabelText("Organization name"),
+  );
+});
+
+test("every tile's foot is the same height, so the three line up", async () => {
+  // A badge is 22px and the Manage affordance 34px. Left alone the badge sat
+  // at the foot of its tile, 12px below the button beside it, which read as
+  // the unbuilt tiles sagging. jsdom has no layout, so the height is the
+  // contract.
+  showConnections();
+
+  const feet = ["Jira", "GitHub", "Slack"].map(
+    (label) =>
+      screen.getByRole("button", { name: `Manage ${label} connections` })
+        .lastElementChild,
+  );
+
+  expect(feet.every((foot) => foot !== null)).toBe(true);
+  for (const foot of feet.slice(1)) {
+    expect(foot?.className).toContain("h-[34px]");
+  }
+  // And the built one keeps the height the others are matching.
+  expect(feet[0]?.className).toContain("py-1.5");
 });
