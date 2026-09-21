@@ -18,6 +18,13 @@
  * it is not what this page is for. It is counted rather than dropped: a
  * connection that vanished silently would look like one nobody had made, and
  * the remedy is a click away on the organization's own page.
+ *
+ * An organization with nothing to show is left out entirely. This is a list of
+ * connections, not of organizations — a card reading "no sites connected yet"
+ * is a row about an absence, and several of them bury the sites that do
+ * exist. The organizations page is where the full list belongs. A group that
+ * failed to load, or that holds only connections needing reconnection, is
+ * still shown: both are something to act on rather than nothing.
  */
 
 import { ArrowRight, Link2, Loader2, TriangleAlert } from "lucide-react";
@@ -37,6 +44,11 @@ import { useConnections, type ConnectionGroup } from "./useConnections";
 import { useJiraOutcome } from "./useJira";
 import { OutcomeBanner } from "./Jira";
 import type { JiraConnection } from "./useJira";
+
+/** Whether a group has anything worth a card. */
+function hasSomethingToShow(group: ConnectionGroup): boolean {
+  return group.failed || group.connections.length > 0;
+}
 
 /**
  * Personal first, then teams by name.
@@ -172,6 +184,9 @@ export function Home({
    */
   const { outcome, missingScopes, dismiss } = useJiraOutcome();
 
+  // Organizations with nothing to show are left out; see the note at the top.
+  const visible = groups.filter(hasSomethingToShow);
+
   return (
     <main className="mx-auto flex w-full max-w-2xl flex-col gap-6 p-6">
       <header>
@@ -196,25 +211,42 @@ export function Home({
         </p>
       ) : error !== null ? (
         <p className="text-destructive text-sm">{error}</p>
-      ) : groups.length === 0 ? (
+      ) : visible.length === 0 ? (
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">Nothing here yet</CardTitle>
+            <CardTitle className="text-base">No sites connected yet</CardTitle>
             <CardDescription>
-              You are not in an organization yet, so there is nowhere to connect
-              a site.
+              {groups.length === 0
+                ? "You are not in an organization yet, so there is nowhere to connect a site."
+                : "Connecting happens on an organization\u2019s own page, because a site belongs to one owner."}
             </CardDescription>
           </CardHeader>
+          {groups.length > 0 && (
+            <CardContent className="flex flex-wrap gap-2">
+              {order(groups).map((group) => (
+                <Button
+                  key={group.organization.id}
+                  variant="outline"
+                  size="sm"
+                  className="gap-2"
+                  onClick={() => onOpen(group.organization)}
+                >
+                  <Link2 className="size-4" />
+                  {groupLabel(group.organization)}
+                </Button>
+              ))}
+            </CardContent>
+          )}
         </Card>
       ) : (
         <>
           {total === 0 && (
             <p className="text-muted-foreground flex items-center gap-2 text-sm">
               <Link2 className="size-4" />
-              No sites connected yet. Open one below to connect the first.
+              Nothing readable yet — the sites below need reconnecting.
             </p>
           )}
-          {order(groups).map((group) => (
+          {order(visible).map((group) => (
             <Group key={group.organization.id} group={group} onOpen={onOpen} />
           ))}
         </>

@@ -102,7 +102,9 @@ test("each connection is listed under the organization that owns it", async () =
 });
 
 test("the personal organization is shown as the person's own account", async () => {
-  byOrganization = { org_personal: [] };
+  byOrganization = {
+    org_personal: [connection({ id: "jrc_1", siteName: "Mine" })],
+  };
 
   render(
     <Home
@@ -122,7 +124,10 @@ test("the personal organization is shown as the person's own account", async () 
 test("the personal organization sorts first", async () => {
   // It is the one organization everyone has, so it anchors the list; teams
   // come and go beneath it.
-  byOrganization = { org_personal: [], org_acme: [] };
+  byOrganization = {
+    org_personal: [connection({ id: "jrc_1", siteName: "Mine" })],
+    org_acme: [connection({ id: "jrc_2", siteName: "Client" })],
+  };
 
   render(
     <Home
@@ -167,14 +172,17 @@ test("belonging to no organization says so rather than showing nothing", async (
   );
 
   await waitFor(() => {
-    expect(screen.getByText("Nothing here yet")).toBeTruthy();
+    expect(screen.getByText("No sites connected yet")).toBeTruthy();
   });
+  expect(screen.getByText(/not in an organization yet/)).toBeTruthy();
 });
 
 test("Manage opens that organization", async () => {
   // Connecting happens on the organization's own page, because the OAuth flow
   // has to name one owner.
-  byOrganization = { org_acme: [] };
+  byOrganization = {
+    org_acme: [connection({ id: "jrc_1", siteName: "Client" })],
+  };
   const onOpen = vi.fn();
 
   render(
@@ -302,9 +310,9 @@ test("the reconnect count opens that organization", async () => {
   expect(onOpen).toHaveBeenCalledWith(acme);
 });
 
-test("only unhealthy connections still prompts to connect the first", async () => {
-  // The page-level line is about working connections: there are none, and an
-  // unhealthy row is not something you can use.
+test("only unhealthy connections says nothing is readable", async () => {
+  // The page-level line is about working connections: there are none, but the
+  // group is still shown, because a broken connection is something to act on.
   byOrganization = {
     org_acme: [
       connection({ id: "jrc_2", siteName: "Revoked", healthy: false }),
@@ -320,8 +328,97 @@ test("only unhealthy connections still prompts to connect the first", async () =
   );
 
   await waitFor(() => {
-    expect(
-      screen.getByText(/No sites connected yet\. Open one below/),
-    ).toBeTruthy();
+    expect(screen.getByText(/Nothing readable yet/)).toBeTruthy();
   });
+  expect(screen.getByText("1 site needs reconnecting")).toBeTruthy();
+});
+
+// ---- organizations with nothing to show are left out -----------------------
+//
+// This is a list of connections, not of organizations. A card reading "no
+// sites connected yet" is a row about an absence, and several of them bury the
+// sites that do exist.
+
+test("an organization with no connections is not shown", async () => {
+  byOrganization = {
+    org_personal: [],
+    org_acme: [connection({ id: "jrc_1", siteName: "Client" })],
+  };
+
+  render(
+    <Home
+      organizations={[personal, acme]}
+      organizationsLoading={false}
+      onOpen={vi.fn()}
+    />,
+  );
+
+  expect(await screen.findByText("Client")).toBeTruthy();
+  expect(screen.queryByText("Personal")).toBeNull();
+  expect(screen.queryByText("No sites connected yet.")).toBeNull();
+});
+
+test("an organization that failed to load is still shown", async () => {
+  // A failure is something to act on, unlike an absence — and hiding it would
+  // claim there is nothing there when nobody knows.
+  byOrganization = {
+    org_acme: [connection({ id: "jrc_1", siteName: "Client" })],
+  };
+
+  render(
+    <Home
+      organizations={[personal, acme]}
+      organizationsLoading={false}
+      onOpen={vi.fn()}
+    />,
+  );
+
+  expect(await screen.findByText("Client")).toBeTruthy();
+  expect(screen.getByText("Personal")).toBeTruthy();
+});
+
+test("an organization holding only broken connections is still shown", async () => {
+  byOrganization = {
+    org_personal: [],
+    org_acme: [
+      connection({ id: "jrc_2", siteName: "Revoked", healthy: false }),
+    ],
+  };
+
+  render(
+    <Home
+      organizations={[personal, acme]}
+      organizationsLoading={false}
+      onOpen={vi.fn()}
+    />,
+  );
+
+  expect(await screen.findByText("1 site needs reconnecting")).toBeTruthy();
+  expect(screen.queryByText("Personal")).toBeNull();
+});
+
+test("with organizations but no connections, each is offered to connect", async () => {
+  // The empty state has to lead somewhere: connecting happens on an
+  // organization's own page, so it names them rather than saying "open one
+  // below" when there is nothing below.
+  byOrganization = { org_personal: [], org_acme: [] };
+  const onOpen = vi.fn();
+
+  render(
+    <Home
+      organizations={[personal, acme]}
+      organizationsLoading={false}
+      onOpen={onOpen}
+    />,
+  );
+
+  await waitFor(() => {
+    expect(screen.getByText("No sites connected yet")).toBeTruthy();
+  });
+  expect(
+    screen.getByText(/Connecting happens on an organization/),
+  ).toBeTruthy();
+
+  await userEvent.click(screen.getByRole("button", { name: /Personal/ }));
+  expect(onOpen).toHaveBeenCalledWith(personal);
 });
