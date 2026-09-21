@@ -31,6 +31,7 @@ import {
 } from "react";
 
 import { AvatarField, UPLOAD_COMING_SOON } from "@/components/AvatarField";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { EditableField } from "@/components/EditableField";
 import { EntityAvatar } from "@/components/Avatar";
 import { ErrorBanner, FormStatus } from "@/components/Message";
@@ -337,32 +338,54 @@ export function Organization({
                         <span className="capitalize">{entry.role}</span>
                       </Badge>
 
-                      {manage && (
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          className="text-muted-foreground hover:text-destructive"
-                          disabled={busy || lastOwner}
-                          title={
-                            lastOwner
-                              ? "An organization must keep at least one owner."
-                              : undefined
-                          }
-                          onClick={() =>
-                            void run(
-                              () =>
-                                authClient.organization.removeMember({
-                                  memberIdOrEmail: entry.id,
-                                  organizationId: organization.id,
-                                }),
-                              refresh,
-                            )
-                          }
-                        >
-                          Remove
-                        </Button>
-                      )}
+                      {manage &&
+                        // Behind a question: the rows are a column of similar
+                        // names, and removing the wrong one takes away
+                        // everything this organization owns from somebody who
+                        // still needs it.
+                        (lastOwner ? (
+                          // Nothing to confirm when the plugin would refuse
+                          // anyway. The disabled control says so before the
+                          // click rather than after.
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="text-muted-foreground"
+                            disabled
+                            title="An organization must keep at least one owner."
+                          >
+                            Remove
+                          </Button>
+                        ) : (
+                          <ConfirmDialog
+                            trigger={
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                className="text-muted-foreground hover:text-destructive"
+                                disabled={busy}
+                              >
+                                Remove
+                              </Button>
+                            }
+                            title={`Remove ${entry.name}?`}
+                            description="They lose access to everything this organization owns. You can invite them again afterwards."
+                            confirmLabel="Remove"
+                            busy={busy}
+                            onConfirm={() =>
+                              run(
+                                () =>
+                                  authClient.organization.removeMember({
+                                    memberIdOrEmail: entry.id,
+                                    organizationId: organization.id,
+                                  }),
+                                refresh,
+                              )
+                            }
+                          />
+                        ))}
                     </div>
                   );
                 })}
@@ -385,52 +408,98 @@ export function Organization({
           </TabsContent>
 
           <TabsContent value="settings">
+            {/*
+              Two actions that give something away, each with its own sentence
+              and its own button.
+
+              They used to share a card headed "Leaving", with delete's typed
+              confirmation expanding inline beneath the leave button — so the
+              words "Type acme to confirm" appeared directly under a control
+              they had nothing to do with. A row each, separated by a rule,
+              is what keeps a question attached to the thing it is asking
+              about.
+            */}
             <Card>
               <CardHeader>
                 <CardTitle role="heading" aria-level={2}>
-                  Leaving
+                  Danger zone
                 </CardTitle>
                 <CardDescription>
-                  Leaving gives up your access to everything this organization
-                  owns. An organization must always keep one owner, so the last
-                  one cannot leave.
+                  Both of these give up access to everything this organization
+                  owns. An organization must always keep one owner.
                 </CardDescription>
               </CardHeader>
 
-              <CardContent className="flex flex-wrap gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  disabled={busy}
-                  onClick={() =>
-                    void run(
-                      () =>
-                        authClient.organization.leave({
-                          organizationId: organization.id,
-                        }),
-                      onLeft,
-                    )
-                  }
+              <CardContent className="divide-y">
+                <DangerRow
+                  title="Leave this organization"
+                  detail="You lose access to everything it owns. The last owner cannot leave."
                 >
-                  <LogOut />
-                  Leave organization
-                </Button>
-
-                {organization.role === "owner" && (
-                  <DeleteOrganization
-                    organization={organization}
+                  <ConfirmDialog
+                    trigger={
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={busy}
+                      >
+                        <LogOut />
+                        Leave organization
+                      </Button>
+                    }
+                    title={`Leave ${organization.name}?`}
+                    description="You lose access to everything this organization owns. Someone still in it would have to invite you back."
+                    confirmLabel="Leave"
                     busy={busy}
-                    onDelete={() =>
-                      void run(
+                    onConfirm={() =>
+                      run(
                         () =>
-                          authClient.organization.delete({
+                          authClient.organization.leave({
                             organizationId: organization.id,
                           }),
                         onLeft,
                       )
                     }
                   />
+                </DangerRow>
+
+                {organization.role === "owner" && (
+                  <DangerRow
+                    title="Delete this organization"
+                    detail="Every member loses access, and what it owns goes with it. This cannot be undone."
+                  >
+                    <ConfirmDialog
+                      trigger={
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="text-danger hover:text-danger"
+                          disabled={busy}
+                        >
+                          <Trash2 />
+                          Delete organization
+                        </Button>
+                      }
+                      title={`Delete ${organization.name}?`}
+                      description="Every member loses access, and everything this organization owns goes with it. This cannot be undone."
+                      confirmLabel="Delete"
+                      tone="danger"
+                      // The one action in the app that asks for more than a
+                      // click: a mis-click here cannot be walked back.
+                      typeToConfirm={organization.slug}
+                      busy={busy}
+                      onConfirm={() =>
+                        run(
+                          () =>
+                            authClient.organization.delete({
+                              organizationId: organization.id,
+                            }),
+                          onLeft,
+                        )
+                      }
+                    />
+                  </DangerRow>
                 )}
               </CardContent>
             </Card>
@@ -815,77 +884,37 @@ function InviteForm({
 }
 
 /**
- * Delete, behind a typed confirmation.
+ * One row in the danger zone: what it does, and the control that does it.
  *
- * Unlike signing out, this cannot be undone and takes every member's access
- * with it, so it asks for the handle to be typed rather than for one click.
+ * The sentence sits beside the button rather than in the card's description,
+ * because the card now holds two of these and one shared description could
+ * only describe them vaguely. The rule between them comes from the card's
+ * `divide-y`.
  */
-function DeleteOrganization({
-  organization,
-  busy,
-  onDelete,
+function DangerRow({
+  title,
+  detail,
+  children,
 }: {
-  organization: MembershipDto;
-  busy: boolean;
-  onDelete: () => void;
+  title: string;
+  detail: string;
+  children: ReactNode;
 }) {
-  const [confirming, setConfirming] = useState(false);
-  const [typed, setTyped] = useState("");
-
-  if (!confirming) {
-    return (
-      <Button
-        type="button"
-        variant="ghost"
-        size="sm"
-        className="text-muted-foreground hover:text-danger"
-        disabled={busy}
-        onClick={() => setConfirming(true)}
-      >
-        <Trash2 />
-        Delete organization
-      </Button>
-    );
-  }
-
   return (
-    <div className="flex w-full flex-col gap-2">
-      <p className="text-sm">
-        Type <strong>{organization.slug}</strong> to confirm. This cannot be
-        undone.
-      </p>
-      <div className="flex gap-2">
-        <Input
-          aria-label="Type the handle to confirm"
-          value={typed}
-          onChange={(event) => setTyped(event.target.value)}
-        />
-        {/*
-          `variant="destructive"` for the shape and the focus ring, repainted
-          in the brand red. `focus-visible:ring-danger/20` too, or the ring
-          would stay the old red against the new fill.
-        */}
-        <Button
-          type="button"
-          variant="destructive"
-          className="bg-danger text-danger-foreground hover:bg-danger/90 focus-visible:ring-danger/20"
-          disabled={busy || typed.trim() !== organization.slug}
-          onClick={onDelete}
-        >
-          Delete
-        </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          disabled={busy}
-          onClick={() => {
-            setConfirming(false);
-            setTyped("");
-          }}
-        >
-          Cancel
-        </Button>
+    /*
+      The button beside the sentence, not under it. `min-w-0` on the text and
+      `shrink-0` on the control is what keeps the two on one line: without
+      them the sentence claims its full width and the button wraps to the
+      next row, which reads as a third item rather than as this row's action.
+
+      It still stacks below `sm`, where there is genuinely no room for both.
+    */
+    <div className="flex flex-col gap-3 py-4 first:pt-0 last:pb-0 sm:flex-row sm:items-center sm:justify-between">
+      <div className="min-w-0">
+        <p className="text-sm font-medium">{title}</p>
+        <p className="text-muted-foreground text-sm">{detail}</p>
       </div>
+      <div className="shrink-0">{children}</div>
     </div>
   );
 }

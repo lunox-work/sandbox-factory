@@ -12,7 +12,13 @@
  * would refuse is not offered.
  */
 
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { beforeEach, expect, test, vi } from "vitest";
 
 const update = vi.fn();
@@ -318,8 +324,12 @@ test("removing a member names the organization and the membership row", async ()
   await openTab("Members");
 
   await screen.findByText("Sam");
+  // Two clicks now: the row's button asks, the dialog's button acts.
   const buttons = screen.getAllByRole("button", { name: "Remove" });
   fireEvent.click(buttons[1] as HTMLElement);
+
+  const dialog = await screen.findByRole("dialog");
+  fireEvent.click(within(dialog).getByRole("button", { name: "Remove" }));
 
   await waitFor(() =>
     expect(remove).toHaveBeenCalledWith({
@@ -381,6 +391,8 @@ test("leaving names the organization", async () => {
   fireEvent.click(
     await screen.findByRole("button", { name: /leave organization/i }),
   );
+  const dialog = await screen.findByRole("dialog");
+  fireEvent.click(within(dialog).getByRole("button", { name: "Leave" }));
 
   await waitFor(() =>
     expect(leave).toHaveBeenCalledWith({ organizationId: "org_1" }),
@@ -398,7 +410,11 @@ test("the server's reason for refusing a leave is shown", async () => {
   fireEvent.click(
     await screen.findByRole("button", { name: /leave organization/i }),
   );
+  const dialog = await screen.findByRole("dialog");
+  fireEvent.click(within(dialog).getByRole("button", { name: "Leave" }));
 
+  // Reported on the page behind the dialog, which has closed by then: the
+  // refusal is about the organization, not about the question.
   expect(await screen.findByText(/only owner/i)).toBeDefined();
 });
 
@@ -412,7 +428,8 @@ test("deleting asks for the handle to be typed", async () => {
     await screen.findByRole("button", { name: /delete organization/i }),
   );
 
-  const confirm = screen.getByRole("button", {
+  const dialog = await screen.findByRole("dialog");
+  const confirm = within(dialog).getByRole("button", {
     name: "Delete",
   }) as HTMLButtonElement;
   expect(confirm.disabled).toBe(true);
@@ -435,13 +452,17 @@ test("the wrong handle does not enable deletion", async () => {
   fireEvent.click(
     await screen.findByRole("button", { name: /delete organization/i }),
   );
+  const dialog = await screen.findByRole("dialog");
   fireEvent.change(screen.getByLabelText(/type the handle/i), {
     target: { value: "acmee" },
   });
 
   expect(
-    (screen.getByRole("button", { name: "Delete" }) as HTMLButtonElement)
-      .disabled,
+    (
+      within(dialog).getByRole("button", {
+        name: "Delete",
+      }) as HTMLButtonElement
+    ).disabled,
   ).toBe(true);
   expect(deleteOrg).not.toHaveBeenCalled();
 });
@@ -684,7 +705,7 @@ test("a team organization still shows all three", async () => {
   expect(screen.getByRole("heading", { name: "Members" })).toBeTruthy();
 
   await openTab("Settings");
-  expect(screen.getByRole("heading", { name: "Leaving" })).toBeTruthy();
+  expect(screen.getByRole("heading", { name: "Danger zone" })).toBeTruthy();
   expect(
     screen.getByRole("button", { name: /Leave organization/ }),
   ).toBeTruthy();
@@ -986,4 +1007,69 @@ test("a personal organization names itself instead of counting members", async (
 
   expect(await screen.findByText("Personal organization")).toBeDefined();
   expect(screen.queryByText(/\d+ members?$/)).toBeNull();
+});
+
+// ---- nothing irreversible happens on one click ----------------------------
+//
+// The property these three share: the button on the page asks, and only the
+// button in the dialog acts. Removing, leaving and deleting each give away
+// access to everything an organization owns, and the rows they are reached
+// from are columns of similar names.
+
+test("removing a member asks before it removes", async () => {
+  serverWith([owner, plainMember]);
+  showSettings();
+  await openTab("Members");
+
+  await screen.findByText("Sam");
+  fireEvent.click(
+    screen.getAllByRole("button", { name: "Remove" })[1] as HTMLElement,
+  );
+
+  expect(await screen.findByRole("dialog")).toBeDefined();
+  expect(remove).not.toHaveBeenCalled();
+});
+
+test("cancelling the question removes nobody", async () => {
+  serverWith([owner, plainMember]);
+  showSettings();
+  await openTab("Members");
+
+  await screen.findByText("Sam");
+  fireEvent.click(
+    screen.getAllByRole("button", { name: "Remove" })[1] as HTMLElement,
+  );
+  const dialog = await screen.findByRole("dialog");
+  fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+
+  await waitFor(() => {
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+  expect(remove).not.toHaveBeenCalled();
+});
+
+test("leaving asks before it leaves", async () => {
+  showSettings();
+  await openTab("Settings");
+
+  fireEvent.click(
+    await screen.findByRole("button", { name: /leave organization/i }),
+  );
+
+  expect(await screen.findByRole("dialog")).toBeDefined();
+  expect(leave).not.toHaveBeenCalled();
+});
+
+test("the question names what it is about", async () => {
+  // A dialog that says "Are you sure?" over a page of similar rows is a
+  // question nobody can answer. Each one names the thing.
+  showSettings();
+  await openTab("Settings");
+
+  fireEvent.click(
+    await screen.findByRole("button", { name: /delete organization/i }),
+  );
+
+  const dialog = await screen.findByRole("dialog");
+  expect(within(dialog).getByText(/Delete Acme\?/)).toBeDefined();
 });

@@ -832,6 +832,11 @@ test("disconnecting lives on the site, and leaves it when done", async () => {
   await userEvent.click(
     screen.getByRole("button", { name: /disconnect acme/i }),
   );
+  // Behind a question now: it takes the boards and the grant with it.
+  const dialog = await screen.findByRole("dialog");
+  await userEvent.click(
+    within(dialog).getByRole("button", { name: "Disconnect" }),
+  );
 
   await waitFor(() => {
     expect(
@@ -1056,4 +1061,25 @@ test("an outcome that is not a failure is announced politely", async () => {
 
   const banner = await screen.findByTestId("jira-outcome");
   expect(banner.getAttribute("role")).toBe("status");
+});
+
+test("disconnecting asks before it disconnects", async () => {
+  // It takes every board registered from the site, and the grant with them.
+  const fetchMock = routedFetch();
+  vi.stubGlobal("fetch", fetchMock);
+  renderSite();
+  await screen.findByText("Acme Board");
+
+  await userEvent.click(
+    screen.getByRole("button", { name: /disconnect acme/i }),
+  );
+
+  const dialog = await screen.findByRole("dialog");
+  expect(within(dialog).getByText(/Disconnect acme\?/i)).toBeDefined();
+  expect(
+    fetchMock.mock.calls.some(
+      ([, init]) => (init as RequestInit | undefined)?.method === "DELETE",
+    ),
+  ).toBe(false);
+  expect(disconnected).toBe(0);
 });

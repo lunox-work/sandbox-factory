@@ -36,6 +36,7 @@ import {
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -1238,27 +1239,41 @@ export function JiraSite({
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <Button
-              variant="destructive"
-              className="gap-2"
-              disabled={disconnecting}
-              onClick={() => {
+            {/*
+              Behind a question, because this is the most consequential thing
+              there is to do with a site: it takes the boards and the grant
+              with it, and the row it was reached from sits in a list of
+              near-identical names.
+            */}
+            <ConfirmDialog
+              trigger={
+                <Button
+                  variant="destructive"
+                  className="gap-2"
+                  disabled={disconnecting}
+                >
+                  {disconnecting ? (
+                    <Loader2 className="size-4 animate-spin" />
+                  ) : (
+                    <Trash2 className="size-4" />
+                  )}
+                  Disconnect {connection.siteName}
+                </Button>
+              }
+              title={`Disconnect ${connection.siteName}?`}
+              description="Removes our access and every board registered from it. Atlassian keeps its own record of the grant until you revoke it in your account settings."
+              confirmLabel="Disconnect"
+              busy={disconnecting}
+              onConfirm={() => {
                 setDisconnecting(true);
-                void disconnect(connection.id).then(() => {
+                return disconnect(connection.id).then(() => {
                   // Back to the list whatever happened: on success the site
                   // is gone, and on failure the list is where the error is
                   // reported.
                   onDisconnected();
                 });
               }}
-            >
-              {disconnecting ? (
-                <Loader2 className="size-4 animate-spin" />
-              ) : (
-                <Trash2 className="size-4" />
-              )}
-              Disconnect {connection.siteName}
-            </Button>
+            />
           </CardContent>
         </Card>
       )}
