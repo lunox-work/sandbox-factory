@@ -11,6 +11,13 @@
  * Connecting is done on an organization's own Jira page, not here: the OAuth
  * flow has to name one organization, and a button that silently picked one
  * would attach a client's site to the wrong owner.
+ *
+ * Only working connections are listed. A connection goes unhealthy when
+ * Atlassian refuses the credential — a revoked grant, or a refresh token
+ * rotated past — and it cannot read a board until someone reconnects it, so
+ * it is not what this page is for. It is counted rather than dropped: a
+ * connection that vanished silently would look like one nobody had made, and
+ * the remedy is a click away on the organization's own page.
  */
 
 import { ArrowRight, Link2, Loader2, TriangleAlert } from "lucide-react";
@@ -57,17 +64,9 @@ function ConnectionLine({ connection }: { connection: JiraConnection }) {
   return (
     <li className="flex items-center justify-between gap-4 py-2.5">
       <div className="min-w-0">
-        <div className="flex items-center gap-2">
-          <span className="truncate text-sm font-medium">
-            {connection.siteName}
-          </span>
-          {!connection.healthy && (
-            <Badge variant="destructive" className="gap-1">
-              <TriangleAlert className="size-3" />
-              Reconnect
-            </Badge>
-          )}
-        </div>
+        <span className="truncate text-sm font-medium">
+          {connection.siteName}
+        </span>
         <p className="text-muted-foreground truncate text-sm">
           {connection.siteUrl}
         </p>
@@ -84,6 +83,11 @@ function Group({
   onOpen: (organization: MembershipDto) => void;
 }) {
   const { organization, connections, failed } = group;
+
+  // Split rather than filtered: the broken ones are not listed, but they are
+  // still reported, so a revoked grant cannot disappear unnoticed.
+  const healthy = connections.filter((connection) => connection.healthy);
+  const broken = connections.length - healthy.length;
 
   return (
     <Card>
@@ -116,16 +120,32 @@ function Group({
           <p className="text-destructive text-sm">
             Could not load these connections.
           </p>
-        ) : connections.length === 0 ? (
+        ) : healthy.length === 0 && broken === 0 ? (
           <p className="text-muted-foreground text-sm">
             No sites connected yet.
           </p>
         ) : (
-          <ul className="divide-y">
-            {connections.map((connection) => (
-              <ConnectionLine key={connection.id} connection={connection} />
-            ))}
-          </ul>
+          <>
+            {healthy.length > 0 && (
+              <ul className="divide-y">
+                {healthy.map((connection) => (
+                  <ConnectionLine key={connection.id} connection={connection} />
+                ))}
+              </ul>
+            )}
+            {broken > 0 && (
+              <button
+                type="button"
+                onClick={() => onOpen(organization)}
+                className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 mt-3 flex cursor-pointer items-center gap-2 rounded text-sm transition-colors focus-visible:ring-2 focus-visible:outline-none"
+              >
+                <TriangleAlert className="text-destructive size-3.5 shrink-0" />
+                {broken === 1
+                  ? "1 site needs reconnecting"
+                  : `${broken} sites need reconnecting`}
+              </button>
+            )}
+          </>
         )}
       </CardContent>
     </Card>

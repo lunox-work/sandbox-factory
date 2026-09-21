@@ -32,7 +32,11 @@ const acme = {
   role: "member",
 };
 
-function connection(overrides: { id: string; siteName: string }) {
+function connection(overrides: {
+  id: string;
+  siteName: string;
+  healthy?: boolean;
+}) {
   return {
     cloudId: `cloud-${overrides.id}`,
     siteUrl: `https://${overrides.siteName.toLowerCase()}.atlassian.net`,
@@ -187,4 +191,137 @@ test("Manage opens that organization", async () => {
   await userEvent.click(screen.getByRole("button", { name: /Manage/ }));
 
   expect(onOpen).toHaveBeenCalledWith(acme);
+});
+
+// ---- only working connections are listed ----------------------------------
+//
+// A connection goes unhealthy when Atlassian refuses the credential, and it
+// cannot read a board until someone reconnects it. It is not listed — but it
+// is counted, because one that vanished silently would look like one nobody
+// had made.
+
+test("an unhealthy connection is not listed", async () => {
+  byOrganization = {
+    org_acme: [
+      connection({ id: "jrc_1", siteName: "Working" }),
+      connection({ id: "jrc_2", siteName: "Revoked", healthy: false }),
+    ],
+  };
+
+  render(
+    <Home
+      organizations={[acme]}
+      organizationsLoading={false}
+      onOpen={vi.fn()}
+    />,
+  );
+
+  expect(await screen.findByText("Working")).toBeTruthy();
+  expect(screen.queryByText("Revoked")).toBeNull();
+});
+
+test("unhealthy connections are reported as a count", async () => {
+  // Hidden, not silent: the remedy is a click away on the organization's page.
+  byOrganization = {
+    org_acme: [
+      connection({ id: "jrc_1", siteName: "Working" }),
+      connection({ id: "jrc_2", siteName: "Revoked", healthy: false }),
+      connection({ id: "jrc_3", siteName: "AlsoGone", healthy: false }),
+    ],
+  };
+
+  render(
+    <Home
+      organizations={[acme]}
+      organizationsLoading={false}
+      onOpen={vi.fn()}
+    />,
+  );
+
+  expect(await screen.findByText("2 sites need reconnecting")).toBeTruthy();
+});
+
+test("the reconnect count is singular for one", async () => {
+  byOrganization = {
+    org_acme: [
+      connection({ id: "jrc_2", siteName: "Revoked", healthy: false }),
+    ],
+  };
+
+  render(
+    <Home
+      organizations={[acme]}
+      organizationsLoading={false}
+      onOpen={vi.fn()}
+    />,
+  );
+
+  expect(await screen.findByText("1 site needs reconnecting")).toBeTruthy();
+});
+
+test("a group of only unhealthy connections does not read as empty", async () => {
+  // "No sites connected yet" would be wrong: one is connected, it is broken.
+  byOrganization = {
+    org_acme: [
+      connection({ id: "jrc_2", siteName: "Revoked", healthy: false }),
+    ],
+  };
+
+  render(
+    <Home
+      organizations={[acme]}
+      organizationsLoading={false}
+      onOpen={vi.fn()}
+    />,
+  );
+
+  await waitFor(() => {
+    expect(screen.getByText("1 site needs reconnecting")).toBeTruthy();
+  });
+  expect(screen.queryByText("No sites connected yet.")).toBeNull();
+});
+
+test("the reconnect count opens that organization", async () => {
+  byOrganization = {
+    org_acme: [
+      connection({ id: "jrc_2", siteName: "Revoked", healthy: false }),
+    ],
+  };
+  const onOpen = vi.fn();
+
+  render(
+    <Home
+      organizations={[acme]}
+      organizationsLoading={false}
+      onOpen={onOpen}
+    />,
+  );
+
+  await userEvent.click(await screen.findByText("1 site needs reconnecting"));
+
+  expect(onOpen).toHaveBeenCalledWith(acme);
+});
+
+test("only unhealthy connections still prompts to connect the first", async () => {
+  // The page-level line is about working connections: there are none, and an
+  // unhealthy row is not something you can use.
+  byOrganization = {
+    org_acme: [
+      connection({ id: "jrc_2", siteName: "Revoked", healthy: false }),
+    ],
+  };
+
+  render(
+    <Home
+      organizations={[acme]}
+      organizationsLoading={false}
+      onOpen={vi.fn()}
+    />,
+  );
+
+  await waitFor(() => {
+    expect(
+      screen.getByText(/No sites connected yet\. Open one below/),
+    ).toBeTruthy();
+  });
 });

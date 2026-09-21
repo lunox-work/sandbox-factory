@@ -30,7 +30,12 @@ export interface Connections {
   loading: boolean;
   /** Set only when nothing could be loaded at all. */
   error: string | null;
-  /** Total across every group, so the empty state can be decided once. */
+  /**
+   * Working connections across every group, so the empty state can be decided
+   * once. Unhealthy ones are excluded: the page does not list them, so
+   * counting them would suppress the "connect your first" line while showing
+   * nothing to connect to.
+   */
   total: number;
   refresh: () => Promise<void>;
 }
@@ -108,7 +113,11 @@ export function useConnections(
     groups,
     loading: loading || organizationsLoading,
     error,
-    total: groups.reduce((sum, group) => sum + group.connections.length, 0),
+    total: groups.reduce(
+      (sum, group) =>
+        sum + group.connections.filter((entry) => entry.healthy).length,
+      0,
+    ),
     refresh,
   };
 }
