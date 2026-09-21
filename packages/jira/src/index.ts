@@ -46,6 +46,8 @@ export {
 } from "./mapping.js";
 export type { IssueMappingOptions } from "./mapping.js";
 export { adfToText } from "./adf.js";
+export { backlogJql, backlogSource, SKIP_LABEL } from "./backlog.js";
+export type { BacklogJqlOptions, BacklogSource } from "./backlog.js";
 export { SPEC_FIELDS, specHash, toIssueSpec } from "./spec.js";
 export type { JiraIssueSpec } from "./spec.js";
 export { stripTrailingSlashes } from "./url.js";
