@@ -42,6 +42,7 @@ export function Organization({
   organization,
   onChanged,
   onLeft,
+  onOpenJira,
 }: {
   /** The organization to show, with the caller's role in it. */
   organization: MembershipDto;
@@ -49,6 +50,11 @@ export function Organization({
   onChanged: () => void;
   /** Called after leaving or deleting, so the app moves elsewhere. */
   onLeft: () => void;
+  /**
+   * Opens the organization's Jira page. Optional so this component can be
+   * rendered in a test without the app's router.
+   */
+  onOpenJira?: (() => void) | undefined;
 }) {
   const [members, setMembers] = useState<OrganizationMemberDto[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -126,6 +132,25 @@ export function Organization({
           onBusy={setBusy}
           onSaved={onChanged}
         />
+
+        {onOpenJira !== undefined && (
+          <Card>
+            <CardHeader>
+              <CardTitle role="heading" aria-level={2}>
+                Jira
+              </CardTitle>
+              <CardDescription>
+                Connect a Jira site to read its boards and price the oldest
+                tickets in their backlog.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Button variant="outline" onClick={onOpenJira}>
+                Manage Jira connections
+              </Button>
+            </CardContent>
+          </Card>
+        )}
 
         <Card>
           <CardHeader>

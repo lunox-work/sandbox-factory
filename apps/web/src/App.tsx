@@ -16,6 +16,7 @@ import { Account } from "./Account";
 import { signOut, useSession } from "./auth";
 import { CreateOrganization, Organization } from "./Organization";
 import { Organizations } from "./Organizations";
+import { Jira } from "./Jira";
 import { SideNav, type Screen } from "./SideNav";
 import { SignIn } from "./SignIn";
 import { useOrganizations } from "./useOrganizations";
@@ -152,6 +153,25 @@ function Signed({
             }}
             onCancel={() => navigate("todos")}
           />
+        ) : screen === "org-jira" ? (
+          organizations.active === null ? (
+            <main className="mx-auto w-full max-w-2xl px-4 py-10">
+              <p className="text-muted-foreground text-sm">
+                {organizations.loading
+                  ? "Loading…"
+                  : "You are not in an organization yet."}
+              </p>
+            </main>
+          ) : (
+            <Jira
+              // Keyed by id for the same reason as the settings page: the
+              // connection list belongs to one organization.
+              key={organizations.active.id}
+              organizationId={organizations.active.id}
+              organizationName={organizations.active.name}
+              role={organizations.active.role}
+            />
+          )
         ) : screen === "org-settings" ? (
           organizations.active === null ? (
             // Either the list has not arrived or the person is in none. Both
@@ -170,6 +190,9 @@ function Signed({
               key={organizations.active.id}
               organization={organizations.active}
               onChanged={() => void organizations.refresh()}
+              onOpenJira={() => {
+                navigate("org-jira", organizations.active?.slug);
+              }}
               onLeft={() => {
                 void organizations.refresh();
                 navigate("todos");
@@ -223,7 +246,8 @@ function screenForPath(pathname: string): Screen {
     return "organizations";
   }
   if (slugForPath(pathname) !== undefined) {
-    return "org-settings";
+    // `/o/:slug/jira` and `/o/:slug/settings` differ only in the last segment.
+    return path.endsWith("/jira") ? "org-jira" : "org-settings";
   }
   return "todos";
 }
@@ -240,6 +264,8 @@ function pathForScreen(screen: Screen, slug?: string | undefined): string {
       // Without an organization there is nothing to name, so fall back to the
       // list rather than inventing a handle.
       return slug === undefined ? ORGANIZATIONS_PATH : `/o/${slug}/settings`;
+    case "org-jira":
+      return slug === undefined ? ORGANIZATIONS_PATH : `/o/${slug}/jira`;
     case "todos":
       return "/";
   }
