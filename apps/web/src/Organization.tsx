@@ -52,6 +52,7 @@ import { authClient } from "./auth";
 import { JiraIcon, ProviderIcon, SlackIcon } from "./ProviderIcon";
 import { isPlainLeftClick, pathForScreen } from "./routes";
 import { useJira } from "./useJira";
+import { RateCardEditor } from "./Bounties";
 
 /**
  * The three groups the settings page is split into, in tab order.
@@ -223,6 +224,11 @@ export function Organization({
             onBusy={setBusy}
             onSaved={onChanged}
             personal
+          />
+
+          <RateCardEditor
+            organizationId={organization.id}
+            role={organization.role}
           />
 
           {onOpenJira !== undefined && (
@@ -475,6 +481,12 @@ export function Organization({
           </TabsContent>
 
           <TabsContent value="settings">
+            <div className="mb-6">
+              <RateCardEditor
+                organizationId={organization.id}
+                role={organization.role}
+              />
+            </div>
             {/*
               Two actions that give something away, each with its own sentence
               and its own button.

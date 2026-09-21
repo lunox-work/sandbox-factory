@@ -107,8 +107,12 @@ export const bountyRunDtoSchema = z.object({
   requestedModel: z.string().min(1),
   promptVersion: z.string().min(1),
   outcomes: z.array(bountyRunOutcomeSchema),
+  candidatesScanned: z.number().int().nonnegative(),
+  skippedLive: z.number().int().nonnegative(),
+  scanLimitReached: z.boolean(),
   fatalErrorCode: z.string().nullable(),
   startedAt: z.iso.datetime().nullable(),
+  deadlineAt: z.iso.datetime().nullable(),
   finishedAt: z.iso.datetime().nullable(),
   createdAt: z.iso.datetime(),
 });
@@ -146,11 +150,15 @@ export const bountyProposalDtoSchema = z.object({
   promptVersion: z.string().min(1),
   complexity: bountyComplexitySchema,
   sizedBy: z.enum(["model", "reviewer"]),
+  resizedBy: z.string().nullable(),
+  resizedAt: z.iso.datetime().nullable(),
   amountMinor: minorAmountSchema.nullable(),
   currency: z.string().length(3).nullable(),
   status: bountyProposalStatusSchema,
   revision: z.number().int().positive(),
   decidedAt: z.iso.datetime().nullable(),
+  decidedBy: z.string().nullable(),
+  decisionDeliveryPolicy: z.enum(["off", "requested"]).nullable(),
   replacesProposalId: z.string().nullable(),
   freshness: proposalFreshnessSchema.optional(),
   liveTitle: z.string().optional(),
@@ -168,6 +176,53 @@ export const repriceProposalSchema = proposalMutationSchema.extend({
   requestId: z.uuid(),
 });
 
+export const proposalFreshnessDtoSchema = z.object({
+  freshness: proposalFreshnessSchema,
+  checkedAt: z.iso.datetime(),
+  code: z.string().optional(),
+  liveTitle: z.string().optional(),
+  liveKey: z.string().optional(),
+  liveUrl: z.url().optional(),
+});
+
+export const proposalLiveSpecSchema = z.object({
+  summary: z.string(),
+  descriptionText: z.string(),
+  issueType: z.string(),
+  key: z.string(),
+  url: z.url(),
+  inputTruncated: z.boolean(),
+});
+
+export const bountyWritebackDtoSchema = z.object({
+  id: z.string().min(1),
+  organizationId: z.string().min(1),
+  proposalId: z.string().min(1),
+  proposalRevision: z.number().int().positive(),
+  kind: z.enum(["approved", "rejected", "superseded"]),
+  status: z.enum([
+    "pending",
+    "running",
+    "done",
+    "failed",
+    "uncertain",
+    "cancelled",
+  ]),
+  step: z.enum(["comment", "label"]),
+  payload: z.object({
+    complexity: pricedComplexitySchema,
+    amountMinor: minorAmountSchema,
+    currency: z.string().length(3),
+    proposalUrl: z.url(),
+    replacementUrl: z.url().optional(),
+  }),
+  jiraCommentId: z.string().nullable(),
+  errorCode: z.string().nullable(),
+  commentAttemptedAt: z.iso.datetime().nullable(),
+  createdAt: z.iso.datetime(),
+  updatedAt: z.iso.datetime(),
+});
+
 export type RateCardValuesDto = z.infer<typeof rateCardValuesSchema>;
 export type RateCardSnapshotDto = z.infer<typeof rateCardSnapshotSchema>;
 export type RateCardDto = z.infer<typeof rateCardDtoSchema>;
@@ -175,3 +230,6 @@ export type SizingResult = z.infer<typeof sizingResultSchema>;
 export type BountyRunOutcome = z.infer<typeof bountyRunOutcomeSchema>;
 export type BountyRunDto = z.infer<typeof bountyRunDtoSchema>;
 export type BountyProposalDto = z.infer<typeof bountyProposalDtoSchema>;
+export type ProposalFreshnessDto = z.infer<typeof proposalFreshnessDtoSchema>;
+export type ProposalLiveSpecDto = z.infer<typeof proposalLiveSpecSchema>;
+export type BountyWritebackDto = z.infer<typeof bountyWritebackDtoSchema>;

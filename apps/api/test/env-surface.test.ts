@@ -54,6 +54,9 @@ test("the API reads exactly the documented environment variables", () => {
       // credential for another service: it is the only thing standing between
       // a leaked `jira_connection` row and a live grant on a client's Jira.
       "TOKEN_ENCRYPTION_KEY",
+      // Optional sizing adapter. Both are required before model calls exist.
+      "ANTHROPIC_API_KEY",
+      "SIZING_MODEL",
       // Reporting only.
       "BUILD_VERSION",
       "BUILD_SHA",
@@ -165,7 +168,11 @@ test("rotate-token can rotate each secret individually", () => {
   // credential", discovered while trying to rotate a leaked one.
   const rotate = bashArray("scripts/rotate-token.sh", "SECRET_KEYS");
 
-  for (const key of ["TOKEN_ENCRYPTION_KEY", "JIRA_CLIENT_SECRET"]) {
+  for (const key of [
+    "TOKEN_ENCRYPTION_KEY",
+    "JIRA_CLIENT_SECRET",
+    "ANTHROPIC_API_KEY",
+  ]) {
     assert.ok(rotate.includes(key), `--only ${key} would be rejected`);
   }
 });

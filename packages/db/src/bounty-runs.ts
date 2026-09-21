@@ -75,6 +75,8 @@ export interface BountyRunStore {
     },
   ): Promise<StoredBountyRun | null>;
   failExpired(organizationId: string, now: Date): Promise<number>;
+  /** Privileged watchdog discovery; returned ids must still be passed to failExpired. */
+  organizationsWithExpiredRuns(now: Date): Promise<string[]>;
 }
 
 export interface StoredBountyRun {
@@ -91,8 +93,12 @@ export interface StoredBountyRun {
   readonly requestedModel: string;
   readonly promptVersion: string;
   readonly outcomes: BountyRunOutcome[];
+  readonly candidatesScanned: number;
+  readonly skippedLive: number;
+  readonly scanLimitReached: boolean;
   readonly fatalErrorCode: string | null;
   readonly startedAt: string | null;
+  readonly deadlineAt: string | null;
   readonly finishedAt: string | null;
   readonly createdAt: string;
 }
@@ -112,8 +118,12 @@ function toDto(row: BountyRunRow): StoredBountyRun {
     requestedModel: row.requestedModel,
     promptVersion: row.promptVersion,
     outcomes: row.outcomes,
+    candidatesScanned: row.candidatesScanned,
+    skippedLive: row.skippedLive,
+    scanLimitReached: row.scanLimitReached,
     fatalErrorCode: row.fatalErrorCode,
     startedAt: row.startedAt?.toISOString() ?? null,
+    deadlineAt: row.deadlineAt?.toISOString() ?? null,
     finishedAt: row.finishedAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
   };
@@ -320,6 +330,8 @@ export function createBountyRunStore(db: Database): BountyRunStore {
             eq(bountyRun.id, runId),
             eq(bountyRun.status, "running"),
             eq(bountyRun.leaseToken, leaseToken),
+            sql`${bountyRun.leaseExpiresAt} > ${now}`,
+            sql`${bountyRun.deadlineAt} > ${now}`,
           ),
         )
         .returning()) as BountyRunRow[];
@@ -341,6 +353,8 @@ export function createBountyRunStore(db: Database): BountyRunStore {
             eq(bountyRun.status, "running"),
             eq(bountyRun.leaseToken, leaseToken),
             sql`${bountyRun.leaseExpiresAt} > ${now}`,
+            sql`${bountyRun.deadlineAt} > ${now}`,
+            sql`jsonb_array_length(${bountyRun.outcomes}) < COALESCE((${bountyRun.selection}->>'maxTickets')::int, 50)`,
           ),
         )
         .returning()) as BountyRunRow[];
@@ -374,6 +388,8 @@ export function createBountyRunStore(db: Database): BountyRunStore {
             eq(bountyRun.id, runId),
             eq(bountyRun.status, "running"),
             eq(bountyRun.leaseToken, leaseToken),
+            sql`${bountyRun.leaseExpiresAt} > ${now}`,
+            sql`${bountyRun.deadlineAt} > ${now}`,
           ),
         )
         .returning()) as BountyRunRow[];
@@ -408,6 +424,25 @@ export function createBountyRunStore(db: Database): BountyRunStore {
         )
         .returning()) as BountyRunRow[];
       return rows.length;
+    },
+
+    async organizationsWithExpiredRuns(now) {
+      const rows = await db
+        .select({ organizationId: bountyRun.organizationId })
+        .from(bountyRun)
+        .where(
+          or(
+            and(
+              eq(bountyRun.status, "running"),
+              lt(bountyRun.leaseExpiresAt, now),
+            ),
+            and(
+              eq(bountyRun.status, "queued"),
+              lt(bountyRun.createdAt, new Date(now.getTime() - 60_000)),
+            ),
+          ),
+        );
+      return [...new Set(rows.map((row) => row.organizationId))];
     },
   };
 }

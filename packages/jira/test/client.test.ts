@@ -611,3 +611,16 @@ test("a ticket missing every optional field still maps", () => {
   assert.equal(detail.originalEstimateSeconds, null);
   assert.equal(detail.votes, null);
 });
+
+test("comments paginate for explicit write recovery", async () => {
+  const { client: jira, urls } = client([
+    { body: { comments: [{ id: "1", body: { type: "doc" } }], total: 2 } },
+    { body: { comments: [{ id: "2", body: { type: "doc" } }], total: 2 } },
+  ]);
+  const comments = await jira.comments("ACME-1");
+  assert.deepEqual(
+    comments.map(({ id }) => id),
+    ["1", "2"],
+  );
+  assert.match(urls[1] ?? "", /startAt=1/);
+});

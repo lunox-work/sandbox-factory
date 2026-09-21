@@ -51,6 +51,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 import { JiraIcon } from "./ProviderIcon";
 import { isPlainLeftClick, pathForScreen } from "./routes";
+import { BoardBounties } from "./Bounties";
 
 import {
   useJira,
@@ -89,6 +90,19 @@ function describeOutcome(
         tone: "ok",
         title: "Jira connected",
         detail: "We can now read the boards on that site.",
+      };
+    case "write-consented":
+      return {
+        tone: "ok",
+        title: "Jira write access granted",
+        detail: "Turn on write-back for this board to post future approvals.",
+      };
+    case "write-scope-missing":
+      return {
+        tone: "error",
+        title: "Jira write access was not granted",
+        detail:
+          "Grant write:jira-work for this site, then try enabling the board again.",
       };
     case "cancelled":
       return {
@@ -1234,30 +1248,65 @@ export function JiraBoard({
       {error !== null && (
         <BoardsError
           error={error}
-          onReconnect={canManage(role ?? "") ? connect : undefined}
+          onReconnect={
+            canManage(role ?? "") ? () => connect(connectionId) : undefined
+          }
           onRetry={() => void preview(boardId).then(setBacklog)}
         />
       )}
 
-      {loading ? (
-        <LoadingLine>Reading the backlog from Jira…</LoadingLine>
-      ) : backlog === null ? null : (
-        /*
+      <Tabs
+        defaultValue={
+          new URLSearchParams(window.location.search).get("tab") === "proposals"
+            ? "proposals"
+            : "backlog"
+        }
+        onValueChange={(tab) => {
+          const params = new URLSearchParams(window.location.search);
+          if (tab === "proposals") params.set("tab", tab);
+          else params.delete("tab");
+          const query = params.toString();
+          window.history.pushState(
+            null,
+            "",
+            window.location.pathname + (query === "" ? "" : `?${query}`),
+          );
+        }}
+      >
+        <TabsList>
+          <TabsTrigger value="backlog">Backlog</TabsTrigger>
+          <TabsTrigger value="proposals">Proposals</TabsTrigger>
+        </TabsList>
+        <TabsContent value="backlog">
+          {loading ? (
+            <LoadingLine>Reading the backlog from Jira…</LoadingLine>
+          ) : backlog === null ? null : (
+            /*
           The list at full width, with the ticket opening over it rather than
           beside it. See `PeekPanel` for why: half a column was not enough for
           a spec with a table in it, and the other half was thirty rows of
           truncated summaries nobody reads while reading a ticket.
         */
-        <div className="overflow-hidden rounded-md border">
-          <SelectionSummary preview={backlog} />
-          <PreviewList
-            preview={backlog}
-            onOpenIssue={onOpenIssue}
-            openingKey={openingKey}
-            selectedKey={selected?.key ?? null}
+            <div className="overflow-hidden rounded-md border">
+              <SelectionSummary preview={backlog} />
+              <PreviewList
+                preview={backlog}
+                onOpenIssue={onOpenIssue}
+                openingKey={openingKey}
+                selectedKey={selected?.key ?? null}
+              />
+            </div>
+          )}
+        </TabsContent>
+        <TabsContent value="proposals">
+          <BoardBounties
+            organizationId={organizationId}
+            boardId={boardId}
+            role={role ?? "member"}
+            writebackEnabled={board?.writebackEnabled ?? false}
           />
-        </div>
-      )}
+        </TabsContent>
+      </Tabs>
 
       {/*
         Mounted whether or not a ticket is open, so Radix can animate it out
@@ -1407,7 +1456,7 @@ export function Jira({
       */}
       {manageable ? (
         <div className="flex justify-end">
-          <Button className="gap-2" onClick={connect}>
+          <Button className="gap-2" onClick={() => connect()}>
             <Link2 className="size-4" />
             {connections.length === 0
               ? "Connect a Jira site"
@@ -1546,7 +1595,11 @@ export function JiraSite({
             <p className="text-sm">
               Reconnect this site to read its boards again.
             </p>
-            <Button type="button" size="sm" onClick={connect}>
+            <Button
+              type="button"
+              size="sm"
+              onClick={() => connect(connection.id)}
+            >
               <RefreshCw />
               Reconnect
             </Button>
@@ -1570,9 +1623,9 @@ export function JiraSite({
           <CardHeader>
             <CardTitle>Disconnect this site</CardTitle>
             <CardDescription>
-              Removes our access and every board registered from it. Atlassian
-              keeps its own record of the grant until you revoke it in your
-              account settings.
+              Removes our access, boards, and local proposal history. Comments
+              already posted to Jira remain there. Atlassian keeps its grant
+              until you revoke it in your account settings.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -1598,7 +1651,7 @@ export function JiraSite({
                 </Button>
               }
               title={`Disconnect ${connection.siteName}?`}
-              description="Removes our access and every board registered from it. Atlassian keeps its own record of the grant until you revoke it in your account settings."
+              description="Removes our access, every registered board, and local proposal history. Comments already posted to Jira remain. Atlassian keeps its own grant until you revoke it in your account settings."
               confirmLabel="Disconnect"
               busy={disconnecting}
               onConfirm={async () => {

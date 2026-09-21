@@ -96,6 +96,16 @@ const envSchema = z.object({
   // in `infra/`, where the task is internet-reachable with no upstream filter.
   ORIGIN_VERIFY: z.string().optional(),
 
+  // Optional as a pair. Existing API features stay available without sizing.
+  ANTHROPIC_API_KEY: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.string().min(1).optional(),
+  ),
+  SIZING_MODEL: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.string().min(1).optional(),
+  ),
+
   // ---- build provenance ---------------------------------------------------
   //
   // Injected at image build time by `scripts/build-info.mjs`; see
@@ -180,6 +190,16 @@ export function jiraOAuthConfig(
     clientId: env.JIRA_CLIENT_ID,
     clientSecret: env.JIRA_CLIENT_SECRET,
   };
+}
+
+/** Provider config, or undefined unless both the key and explicit model exist. */
+export function sizingConfig(
+  env: Env,
+): { apiKey: string; model: string } | undefined {
+  if (env.ANTHROPIC_API_KEY === undefined || env.SIZING_MODEL === undefined) {
+    return undefined;
+  }
+  return { apiKey: env.ANTHROPIC_API_KEY, model: env.SIZING_MODEL };
 }
 
 /**

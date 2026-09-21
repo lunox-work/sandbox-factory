@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { SPEC_FIELDS, specHash, toIssueSpec } from "../src/spec.js";
+import {
+  pricingSpecHash,
+  SPEC_FIELDS,
+  specHash,
+  toIssueSpec,
+} from "../src/spec.js";
 
 test("the same spec hashes the same every time", () => {
   // If this were unstable every proposal would show as stale at random.
@@ -49,6 +54,19 @@ test("an empty spec still hashes", async () => {
   assert.match(await specHash("", ""), /^[0-9a-f]{64}$/);
 });
 
+test("pricing fingerprint includes issue type without changing legacy hashes", async () => {
+  const legacy = await specHash("Title", "Description");
+  const story = await pricingSpecHash("Title", "Description", "Story");
+  const bug = await pricingSpecHash("Title", "Description", "Bug");
+
+  assert.notEqual(story, bug);
+  assert.notEqual(story, legacy);
+  assert.equal(
+    story,
+    await pricingSpecHash("Title  ", "Description\r\n", "Story"),
+  );
+});
+
 test("SPEC_FIELDS asks for the description, and the list reads do not", () => {
   // The whole point of the separate call: `ISSUE_FIELDS` must never carry
   // `description`, so a board read cannot pull ticket text by accident.
@@ -74,8 +92,23 @@ test("toIssueSpec flattens the description and hashes what it read", async () =>
   assert.equal(spec.descriptionText, "Adds CSV.");
   assert.equal(spec.issueType, "Story");
   assert.equal(spec.updated, "2026-09-20T00:00:00.000Z");
+  assert.equal(spec.inputTruncated, false);
   // The hash covers exactly the text that was priced.
   assert.equal(spec.specHash, await specHash("Add export", "Adds CSV."));
+  assert.equal(
+    spec.pricingSpecHash,
+    await pricingSpecHash("Add export", "Adds CSV.", "Story"),
+  );
+});
+
+test("toIssueSpec reports capped sizing input", async () => {
+  const spec = await toIssueSpec("ACME-4", {
+    summary: "Large ticket",
+    description: "x".repeat(50_000),
+  });
+
+  assert.equal(spec.inputTruncated, true);
+  assert.match(spec.descriptionText, /\[truncated\]$/);
 });
 
 test("a ticket with no description is a valid spec", async () => {

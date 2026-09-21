@@ -7,6 +7,7 @@ import {
   exchangeCode,
   JiraAuthError,
   READ_SCOPES,
+  WRITE_SCOPES,
   refreshTokens,
 } from "../src/index.js";
 
@@ -96,6 +97,10 @@ test("READ_SCOPES asks for nothing that can write", () => {
       `${scope} is not a read scope`,
     );
   }
+});
+
+test("WRITE_SCOPES extends the read grant with only Jira work writes", () => {
+  assert.deepEqual(WRITE_SCOPES, [...READ_SCOPES, "write:jira-work"]);
 });
 
 test("exchangeCode resolves expires_in to an absolute instant", async () => {

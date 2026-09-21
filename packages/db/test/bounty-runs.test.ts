@@ -201,3 +201,18 @@ test("expired runs are failed within an organization", async () => {
   assert.equal(count, 1);
   assert.equal(fake.calls[0]?.values?.["fatalErrorCode"], "worker_lost");
 });
+
+test("watchdog discovery returns distinct organizations with expired work", async () => {
+  const fake = createFakeDb([
+    { organizationId: "org_1" },
+    { organizationId: "org_1" },
+    { organizationId: "org_2" },
+  ]);
+  assert.deepEqual(
+    await createBountyRunStore(fake.db).organizationsWithExpiredRuns(
+      new Date("2026-09-22T00:02:00Z"),
+    ),
+    ["org_1", "org_2"],
+  );
+  assert.equal(fake.calls[0]?.filtered, true);
+});

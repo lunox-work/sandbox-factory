@@ -321,6 +321,7 @@ export const jiraSiteDtoSchema = z.object({
   url: z.string(),
   name: z.string(),
   avatarUrl: z.string().optional(),
+  scopes: z.array(z.string()),
 });
 
 /* -------------------------------------------------------------------------- */

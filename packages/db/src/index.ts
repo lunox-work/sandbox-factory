@@ -56,6 +56,13 @@ export type {
   ProposalMutationResult,
   StoredBountyProposal,
 } from "./bounty-proposals.js";
+export { createBountyWritebackStore } from "./bounty-writebacks.js";
+export type {
+  BountyWritebackStore,
+  StoredBountyWriteback,
+  WritebackKind,
+  WritebackStatus,
+} from "./bounty-writebacks.js";
 export { createJiraConnectionStore } from "./jira-connections.js";
 export type {
   JiraConnectionInput,

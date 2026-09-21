@@ -24,6 +24,7 @@ const connection = {
   email: "dana@example.test",
   healthy: true,
   scopes: ["read:jira-work"],
+  resourceScopes: ["read:jira-work"],
   createdAt: "2026-09-21T00:00:00.000Z",
 };
 
@@ -190,6 +191,25 @@ test("an unhealthy connection is flagged for reconnection", async () => {
   renderPage();
 
   expect(await screen.findByText("Reconnect")).toBeDefined();
+});
+
+test("reconnect targets the existing connection so its scopes are preserved", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({ connections: [{ ...connection, healthy: false }] }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      ),
+    ),
+  );
+  renderSite();
+  await userEvent.click(
+    await screen.findByRole("button", { name: "Reconnect" }),
+  );
+  expect(assigned[0]).toContain("connectionId=jrc_1");
 });
 
 test("a failed load says so rather than rendering an empty list", async () => {

@@ -141,6 +141,13 @@
       "when": 1790011247711,
       "tag": "0019_late_thunderbolt",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1790012880240,
+      "tag": "0020_chemical_george_stacy",
+      "breakpoints": true
     }
   ]
 }

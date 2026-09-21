@@ -222,9 +222,70 @@ export const bountyProposal = pgTable(
   ],
 );
 
+export interface BountyWritebackPayload {
+  readonly complexity: "S" | "M" | "L" | "XL";
+  readonly amountMinor: number;
+  readonly currency: string;
+  readonly proposalUrl: string;
+  readonly replacementUrl?: string;
+}
+
+export const bountyWriteback = pgTable(
+  "bounty_writeback",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    proposalId: text("proposal_id")
+      .notNull()
+      .references(() => bountyProposal.id, { onDelete: "cascade" }),
+    proposalRevision: integer("proposal_revision").notNull(),
+    kind: text("kind").notNull(),
+    status: text("status").notNull().default("pending"),
+    step: text("step").notNull().default("comment"),
+    payload: jsonb("payload").$type<BountyWritebackPayload>().notNull(),
+    jiraCommentId: text("jira_comment_id"),
+    errorCode: text("error_code"),
+    leaseToken: text("lease_token"),
+    leaseExpiresAt: ts("lease_expires_at"),
+    commentAttemptedAt: ts("comment_attempted_at"),
+    requestedBy: text("requested_by").references(() => user.id, {
+      onDelete: "set null",
+    }),
+    createdAt: ts("created_at").notNull().defaultNow(),
+    updatedAt: ts("updated_at").notNull().defaultNow(),
+  },
+  (table) => [
+    unique("bounty_writeback_proposal_revision_kind_unique").on(
+      table.proposalId,
+      table.proposalRevision,
+      table.kind,
+    ),
+    uniqueIndex("bounty_writeback_proposal_running_unique")
+      .on(table.proposalId)
+      .where(sql`${table.status} = 'running'`),
+    index("bounty_writeback_organization_id_idx").on(table.organizationId),
+    check(
+      "bounty_writeback_kind_check",
+      sql`${table.kind} in ('approved', 'rejected', 'superseded')`,
+    ),
+    check(
+      "bounty_writeback_status_check",
+      sql`${table.status} in ('pending', 'running', 'done', 'failed', 'uncertain', 'cancelled')`,
+    ),
+    check(
+      "bounty_writeback_step_check",
+      sql`${table.step} in ('comment', 'label')`,
+    ),
+  ],
+);
+
 export type RateCardRow = typeof rateCard.$inferSelect;
 export type NewRateCardRow = typeof rateCard.$inferInsert;
 export type BountyRunRow = typeof bountyRun.$inferSelect;
 export type NewBountyRunRow = typeof bountyRun.$inferInsert;
 export type BountyProposalRow = typeof bountyProposal.$inferSelect;
 export type NewBountyProposalRow = typeof bountyProposal.$inferInsert;
+export type BountyWritebackRow = typeof bountyWriteback.$inferSelect;
+export type NewBountyWritebackRow = typeof bountyWriteback.$inferInsert;

@@ -14,7 +14,7 @@ import type {
 import { READ_SCOPES } from "@sandbox-factory/jira";
 
 import type { Auth } from "../src/auth.js";
-import { signState } from "../src/jira/state.js";
+import { signState, verifyState } from "../src/jira/state.js";
 import { createApp } from "../src/routes.js";
 
 /**
@@ -65,6 +65,8 @@ function fakeConnections(
     email: null,
     healthy: true,
     scopes: ["read:jira-work"],
+    resourceScopes: ["read:jira-work"],
+    credentialRevision: 1,
     createdAt: "2026-09-21T00:00:00.000Z",
     ...overrides,
   };
@@ -85,8 +87,9 @@ function fakeConnections(
         // Far future, so no test accidentally exercises the refresh path.
         expiresAt: "2099-01-01T00:00:00.000Z",
         scopes: ["read:jira-work"],
+        credentialRevision: 1,
       }),
-    saveTokens: () => Promise.resolve(),
+    saveTokens: () => Promise.resolve(true),
     markUnhealthy: (id) => {
       unhealthy.push(id);
       return Promise.resolve();
@@ -456,6 +459,49 @@ test("connect uses the second app's client id, not the sign-in one", async () =>
 
   const location = new URL(response.headers.get("location") ?? "");
   assert.equal(location.searchParams.get("client_id"), "jira-client-id");
+});
+
+test("write consent is target-scoped and requests the write grant", async () => {
+  const { app } = appWith();
+  const response = await app.request(
+    "/api/v1/orgs/org_1/jira/connect?intent=write&connectionId=jrc_1&returnTo=/o/acme/jira",
+    { headers: signedIn },
+  );
+  assert.equal(response.status, 302);
+  const target = new URL(response.headers.get("location")!);
+  assert.match(target.searchParams.get("scope") ?? "", /write:jira-work/);
+  const state = verifyState(
+    SECRET,
+    target.searchParams.get("state") ?? undefined,
+    dana.id,
+  );
+  assert.equal(state.ok, true);
+  if (state.ok) {
+    assert.equal(state.state.intent, "write");
+    assert.equal(state.state.connectionId, "jrc_1");
+    assert.equal(state.state.cloudId, "cloud-1");
+  }
+});
+
+test("reconnecting a write-capable site preserves its write scopes", async () => {
+  const connections = fakeConnections({
+    scopes: ["read:jira-work", "write:jira-work"],
+    resourceScopes: ["read:jira-work", "write:jira-work"],
+  });
+  const { app } = appWith({ connections });
+  const response = await app.request(
+    "/api/v1/orgs/org_1/jira/connect?connectionId=jrc_1",
+    { headers: signedIn },
+  );
+  const target = new URL(response.headers.get("location")!);
+  assert.match(target.searchParams.get("scope") ?? "", /write:jira-work/);
+  const state = verifyState(
+    SECRET,
+    target.searchParams.get("state") ?? undefined,
+    dana.id,
+  );
+  assert.equal(state.ok, true);
+  if (state.ok) assert.equal(state.state.intent, "write");
 });
 
 test("a plain member may not connect", async () => {
@@ -1274,7 +1320,7 @@ test("clearing maxAgeDays survives as a null rather than being dropped", async (
   assert.deepEqual(boards.updates, [{ selection: { maxAgeDays: null } }]);
 });
 
-test("write-back cannot be enabled before delivery support exists", async () => {
+test("write-back requires a verified per-site write grant", async () => {
   const { app, boards } = appWith();
 
   const response = await app.request("/api/v1/orgs/org_1/jira/boards/jrb_1", {
@@ -1284,11 +1330,25 @@ test("write-back cannot be enabled before delivery support exists", async () => 
   });
 
   assert.equal(response.status, 409);
-  assert.equal(
-    ((await response.json()) as { code: string }).code,
-    "writeback_unavailable",
-  );
+  const body = (await response.json()) as { code: string; consentUrl: string };
+  assert.equal(body.code, "write_consent_required");
+  assert.match(body.consentUrl, /intent=write/);
   assert.deepEqual(boards.updates, []);
+});
+
+test("a verified write grant allows one board to opt in", async () => {
+  const connections = fakeConnections({
+    scopes: ["read:jira-work", "write:jira-work"],
+    resourceScopes: ["read:jira-work", "write:jira-work"],
+  });
+  const { app, boards } = appWith({ connections });
+  const response = await app.request("/api/v1/orgs/org_1/jira/boards/jrb_1", {
+    method: "PATCH",
+    headers: { ...signedIn, "content-type": "application/json" },
+    body: JSON.stringify({ writebackEnabled: true }),
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(boards.updates, [{ writebackEnabled: true }]);
 });
 
 test("the preview returns the board's oldest backlog tickets", async () => {

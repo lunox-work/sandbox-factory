@@ -24,6 +24,8 @@ function connectionRow(
     keyId: cipher.keyId,
     expiresAt: new Date("2026-09-21T01:00:00.000Z"),
     scopes: "read:jira-work offline_access",
+    resourceScopes: "read:jira-work",
+    credentialRevision: 1,
     email: "user@acme.test",
     healthy: true,
     createdAt: new Date("2026-09-21T00:00:00.000Z"),
@@ -203,7 +205,7 @@ test("saveTokens re-encrypts and stamps the current key", async () => {
   // the connection alive.
   const { store: connections, calls } = store([connectionRow()]);
 
-  await connections.saveTokens("jrc_1", {
+  await connections.saveTokens("org_1", "jrc_1", 1, {
     accessToken: "access-2",
     refreshToken: "refresh-2",
     expiresAt: "2026-09-21T02:00:00.000Z",

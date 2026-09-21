@@ -20,6 +20,7 @@ import {
   JiraApiError,
   JiraAuthError,
   JiraClient,
+  JiraWriteClient,
   OAuthCredential,
   type TokenSource,
 } from "@sandbox-factory/jira";
@@ -48,6 +49,15 @@ export type JiraClientResult =
   | { readonly ok: true; readonly client: JiraClient; readonly cloudId: string }
   | { readonly ok: false; readonly failure: JiraClientFailure };
 
+export type JiraClientsResult =
+  | {
+      readonly ok: true;
+      readonly client: JiraClient;
+      readonly writeClient: JiraWriteClient;
+      readonly cloudId: string;
+    }
+  | { readonly ok: false; readonly failure: JiraClientFailure };
+
 /**
  * A `TokenSource` over one connection row.
  *
@@ -65,6 +75,7 @@ export function connectionTokenSource(
   organizationId: string,
   connectionId: string,
 ): TokenSource {
+  let loadedRevision: number | undefined;
   return {
     async load() {
       const stored = await connections.tokens(organizationId, connectionId);
@@ -75,6 +86,7 @@ export function connectionTokenSource(
           "invalid_grant",
         );
       }
+      loadedRevision = stored.credentialRevision;
       return {
         accessToken: stored.accessToken,
         refreshToken: stored.refreshToken ?? undefined,
@@ -86,12 +98,30 @@ export function connectionTokenSource(
     },
 
     async save(tokens) {
-      await connections.saveTokens(connectionId, {
-        accessToken: tokens.accessToken,
-        refreshToken: tokens.refreshToken ?? null,
-        expiresAt: tokens.expiresAt,
-        scopes: tokens.scopes,
-      });
+      if (loadedRevision === undefined) {
+        throw new JiraAuthError(
+          409,
+          "The Jira credential changed during refresh.",
+        );
+      }
+      const saved = await connections.saveTokens(
+        organizationId,
+        connectionId,
+        loadedRevision,
+        {
+          accessToken: tokens.accessToken,
+          refreshToken: tokens.refreshToken ?? null,
+          expiresAt: tokens.expiresAt,
+          scopes: tokens.scopes,
+        },
+      );
+      if (!saved) {
+        throw new JiraAuthError(
+          409,
+          "The Jira credential changed during refresh.",
+        );
+      }
+      loadedRevision += 1;
     },
   };
 }
@@ -113,6 +143,17 @@ export async function jiraClientFor(
   organizationId: string,
   connectionId: string,
 ): Promise<JiraClientResult> {
+  const result = await jiraClientsFor(options, organizationId, connectionId);
+  return result.ok
+    ? { ok: true, client: result.client, cloudId: result.cloudId }
+    : result;
+}
+
+export async function jiraClientsFor(
+  options: JiraClientFactoryOptions,
+  organizationId: string,
+  connectionId: string,
+): Promise<JiraClientsResult> {
   const {
     connections,
     clientId,
@@ -146,6 +187,10 @@ export async function jiraClientFor(
       // So issue DTOs carry a browsable `browse/` link. The OAuth credential
       // addresses `api.atlassian.com`, whose URL is not one a user can open.
       siteUrl: connection.siteUrl,
+      ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }),
+    }),
+    writeClient: new JiraWriteClient({
+      credential,
       ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }),
     }),
   };

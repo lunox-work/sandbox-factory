@@ -60,12 +60,20 @@ export type {
   NewJiraIssueRow,
 } from "./schema/jira.js";
 
-export { bountyProposal, bountyRun, rateCard } from "./schema/bounty.js";
+export {
+  bountyProposal,
+  bountyRun,
+  bountyWriteback,
+  rateCard,
+} from "./schema/bounty.js";
 export type {
   BountyProposalRow,
   BountyRunRow,
+  BountyWritebackPayload,
+  BountyWritebackRow,
   NewBountyProposalRow,
   NewBountyRunRow,
+  NewBountyWritebackRow,
   NewRateCardRow,
   RateCardRow,
 } from "./schema/bounty.js";

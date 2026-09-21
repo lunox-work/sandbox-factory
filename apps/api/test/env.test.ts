@@ -6,6 +6,7 @@ import {
   jiraOAuthConfig,
   objectStoreConfig,
   parseEnv,
+  sizingConfig,
 } from "../src/env.js";
 
 const DATABASE_URL = "postgres://postgres:postgres@localhost:5432/test";
@@ -307,4 +308,36 @@ test("the Jira app credentials are distinct from the sign-in ones", () => {
   });
 
   assert.notEqual(env.JIRA_CLIENT_ID, env.ATLASSIAN_CLIENT_ID);
+});
+
+test("sizing remains unavailable until both provider values are configured", () => {
+  assert.equal(sizingConfig(parseEnv(required)), undefined);
+  assert.equal(
+    sizingConfig(parseEnv({ ...required, ANTHROPIC_API_KEY: "key" })),
+    undefined,
+  );
+  assert.equal(
+    sizingConfig(parseEnv({ ...required, SIZING_MODEL: "configured-model" })),
+    undefined,
+  );
+  assert.deepEqual(
+    sizingConfig(
+      parseEnv({
+        ...required,
+        ANTHROPIC_API_KEY: "key",
+        SIZING_MODEL: "configured-model",
+      }),
+    ),
+    { apiKey: "key", model: "configured-model" },
+  );
+});
+
+test("empty sizing values behave as unset and do not stop boot", () => {
+  const env = parseEnv({
+    ...required,
+    ANTHROPIC_API_KEY: "",
+    SIZING_MODEL: "",
+  });
+  assert.equal(env.ANTHROPIC_API_KEY, undefined);
+  assert.equal(env.SIZING_MODEL, undefined);
 });

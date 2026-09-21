@@ -38,6 +38,10 @@ export interface JiraOAuthState {
   readonly issuedAt: number;
   /** Random, so two flows started in the same millisecond differ. */
   readonly nonce: string;
+  readonly intent?: "read" | "write";
+  readonly connectionId?: string;
+  readonly cloudId?: string;
+  readonly scopeVersion?: number;
 }
 
 /** Why a returned `state` was refused. Reported without detail to the caller. */
@@ -65,6 +69,14 @@ export function signState(
     returnTo: state.returnTo,
     issuedAt: state.issuedAt ?? Date.now(),
     nonce: state.nonce ?? randomBytes(9).toString("base64url"),
+    ...(state.intent === undefined ? {} : { intent: state.intent }),
+    ...(state.connectionId === undefined
+      ? {}
+      : { connectionId: state.connectionId }),
+    ...(state.cloudId === undefined ? {} : { cloudId: state.cloudId }),
+    ...(state.scopeVersion === undefined
+      ? {}
+      : { scopeVersion: state.scopeVersion }),
   };
   const body = toBase64Url(JSON.stringify(payload));
   return `${body}.${sign(secret, body)}`;
@@ -161,11 +173,38 @@ function asState(value: unknown): JiraOAuthState | undefined {
   ) {
     return undefined;
   }
+  if (
+    candidate["intent"] !== undefined &&
+    candidate["intent"] !== "read" &&
+    candidate["intent"] !== "write"
+  ) {
+    return undefined;
+  }
+  if (
+    candidate["intent"] === "write" &&
+    (typeof candidate["connectionId"] !== "string" ||
+      typeof candidate["cloudId"] !== "string" ||
+      candidate["scopeVersion"] !== 1)
+  ) {
+    return undefined;
+  }
   return {
     organizationId: candidate["organizationId"],
     userId: candidate["userId"],
     returnTo: candidate["returnTo"],
     issuedAt: candidate["issuedAt"],
     nonce: candidate["nonce"],
+    ...(candidate["intent"] === "read" || candidate["intent"] === "write"
+      ? { intent: candidate["intent"] }
+      : {}),
+    ...(typeof candidate["connectionId"] === "string"
+      ? { connectionId: candidate["connectionId"] }
+      : {}),
+    ...(typeof candidate["cloudId"] === "string"
+      ? { cloudId: candidate["cloudId"] }
+      : {}),
+    ...(typeof candidate["scopeVersion"] === "number"
+      ? { scopeVersion: candidate["scopeVersion"] }
+      : {}),
   };
 }

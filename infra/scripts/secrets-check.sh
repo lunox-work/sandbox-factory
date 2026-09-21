@@ -117,6 +117,25 @@ else
   fail=1
 fi
 
+# --- Sizing provider: optional, and both values or neither -----------------
+anthropic_key="$(read_value ANTHROPIC_API_KEY || true)"
+sizing_model="$(read_value SIZING_MODEL || true)"
+[[ "$anthropic_key" == REPLACE_ME ]] && anthropic_key=""
+[[ "$sizing_model" == REPLACE_ME ]] && sizing_model=""
+
+if [[ -n "$anthropic_key" && -n "$sizing_model" ]]; then
+  note ANTHROPIC_API_KEY "ok (${#anthropic_key} chars)"
+  note SIZING_MODEL "ok (${#sizing_model} chars)"
+elif [[ -z "$anthropic_key" && -z "$sizing_model" ]]; then
+  note ANTHROPIC_API_KEY "unset — bounty sizing stays unavailable (optional)"
+  note SIZING_MODEL "unset"
+else
+  note ANTHROPIC_API_KEY "$([[ -n "$anthropic_key" ]] && echo "set (${#anthropic_key} chars)" || echo EMPTY)"
+  note SIZING_MODEL "$([[ -n "$sizing_model" ]] && echo "set (${#sizing_model} chars)" || echo EMPTY)"
+  echo "  -> set both or neither: sizingConfig needs the pair." >&2
+  fail=1
+fi
+
 echo
 if (( fail )); then
   echo "Not ready. The API validates all of these at boot and will not start." >&2

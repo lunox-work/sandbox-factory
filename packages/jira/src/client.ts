@@ -103,6 +103,11 @@ export interface JiraClientOptions {
   sleep?: (ms: number) => Promise<void>;
 }
 
+export interface JiraComment {
+  readonly id: string;
+  readonly body: unknown;
+}
+
 /** The options shared by the three Agile issue endpoints. */
 interface IssuePageOptions {
   jql?: string;
@@ -286,6 +291,37 @@ export class JiraClient {
     );
     const issue = jiraIssueResponseSchema.parse(payload);
     return toIssueSpec(issue.key, issue.fields ?? {});
+  }
+
+  /** Comments are read only for explicit recovery of an ambiguous write. */
+  async comments(keyOrId: string): Promise<JiraComment[]> {
+    const comments: JiraComment[] = [];
+    let startAt = 0;
+    for (;;) {
+      const query = new URLSearchParams({
+        startAt: String(startAt),
+        maxResults: "100",
+      });
+      const payload = await this.#get(
+        `/rest/api/3/issue/${encodeURIComponent(keyOrId)}/comment?${query}`,
+      );
+      const record =
+        typeof payload === "object" && payload !== null
+          ? (payload as Record<string, unknown>)
+          : {};
+      const page = Array.isArray(record["comments"]) ? record["comments"] : [];
+      for (const value of page) {
+        if (typeof value !== "object" || value === null) continue;
+        const comment = value as Record<string, unknown>;
+        if (typeof comment["id"] === "string") {
+          comments.push({ id: comment["id"], body: comment["body"] });
+        }
+      }
+      const total =
+        typeof record["total"] === "number" ? record["total"] : comments.length;
+      if (page.length === 0 || comments.length >= total) return comments;
+      startAt += page.length;
+    }
   }
 
   /** Shared by the three Agile issue endpoints, which paginate identically. */

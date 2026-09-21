@@ -15,6 +15,7 @@
 import {
   boolean,
   index,
+  integer,
   jsonb,
   pgTable,
   text,
@@ -72,6 +73,10 @@ export const jiraConnection = pgTable(
      * adding one means sending the user through consent again.
      */
     scopes: text("scopes").notNull().default(""),
+    /** REST scopes reported for this particular accessible site. */
+    resourceScopes: text("resource_scopes").notNull().default(""),
+    /** Fences token refresh writes against a newer reconnect grant. */
+    credentialRevision: integer("credential_revision").notNull().default(1),
     /** The connecting account's address, for showing whose grant this is. */
     email: text("email"),
     /**

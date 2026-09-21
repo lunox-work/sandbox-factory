@@ -29,12 +29,11 @@ import type {
 } from "@sandbox-factory/db";
 import {
   accessibleSites,
-  backlogJql,
-  backlogSource,
   exchangeCode,
   JiraApiError,
   JiraAuthError,
   READ_SCOPES,
+  WRITE_SCOPES,
   stripTrailingSlashes,
 } from "@sandbox-factory/jira";
 import {
@@ -50,11 +49,16 @@ import {
   type JiraClientFailure,
 } from "./credential.js";
 import { signState, verifyState } from "./state.js";
+import { InvalidBoardIdError, selectBacklog } from "../bounty/selection.js";
 
 /** What the routes need. Supplied by `createApp`, faked in tests. */
 export interface JiraRouteOptions {
   connections: JiraConnectionStore;
   boards: JiraBoardStore;
+  proposals?: Pick<
+    import("@sandbox-factory/db").BountyProposalStore,
+    "liveExternalIds"
+  >;
   /**
    * The caller's current role in an organization, or undefined if they are not
    * a member. Read again in the callback — see the comment there.
@@ -123,6 +127,7 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
   const {
     connections,
     boards,
+    proposals,
     roleOf,
     clientId,
     clientSecret,
@@ -207,7 +212,7 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
    * access to a client's tickets for as long as the connection lives, which
    * is not a decision an ordinary member should make for the organization.
    */
-  app.get("/api/v1/orgs/:orgId/jira/connect", (c) => {
+  app.get("/api/v1/orgs/:orgId/jira/connect", async (c) => {
     const { organizationId, role } = c.get("member");
     if (!isAtLeastAdmin(role)) {
       // 403 rather than 404: membership is already established, so the
@@ -216,18 +221,48 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
     }
 
     const returnTo = c.req.query("returnTo") ?? "/settings/jira";
+    const targetId = c.req.query("connectionId");
+    const target =
+      targetId !== undefined
+        ? await connections.get(organizationId, targetId)
+        : null;
+    if (targetId !== undefined && target === null) {
+      return c.json({ error: "Not found" }, 404);
+    }
+    const requestedIntent =
+      c.req.query("intent") === "write" ? "write" : "read";
+    // A reconnect carries the site's existing capability. Requesting only the
+    // read scopes here would replace a previously write-capable Atlassian grant
+    // and silently disable delivery for every board on that connection.
+    const intent =
+      requestedIntent === "write" ||
+      (target?.scopes.includes("write:jira-work") === true &&
+        target.resourceScopes.includes("write:jira-work"))
+        ? "write"
+        : "read";
     const state = signState(secret, {
       organizationId,
       userId: c.get("user").id,
       // Only the path survives; see `redirectTarget`.
       returnTo: safePath(returnTo),
+      intent,
+      ...(target === null
+        ? {}
+        : {
+            connectionId: target.id,
+            cloudId: target.cloudId,
+            scopeVersion: 1,
+          }),
       ...(now === undefined ? {} : { issuedAt: now() }),
     });
 
     const url = new URL("https://auth.atlassian.com/authorize");
     url.searchParams.set("audience", "api.atlassian.com");
     url.searchParams.set("client_id", clientId);
-    url.searchParams.set("scope", READ_SCOPES.join(" "));
+    url.searchParams.set(
+      "scope",
+      (intent === "write" ? WRITE_SCOPES : READ_SCOPES).join(" "),
+    );
     url.searchParams.set("redirect_uri", redirectUri);
     url.searchParams.set("state", state);
     url.searchParams.set("response_type", "code");
@@ -273,6 +308,7 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
       );
     }
     const { organizationId, returnTo } = verified.state;
+    const intent = verified.state.intent ?? "read";
 
     /**
      * Membership, re-read rather than inferred from the state.
@@ -291,6 +327,19 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
       return c.redirect(
         redirectTarget(appUrl, returnTo, { jira: "forbidden" }),
       );
+    }
+    if (intent === "write") {
+      const target =
+        verified.state.connectionId === undefined
+          ? null
+          : await connections.get(organizationId, verified.state.connectionId);
+      if (
+        target === null ||
+        target.cloudId !== verified.state.cloudId ||
+        verified.state.scopeVersion !== 1
+      ) {
+        return c.redirect(redirectTarget(appUrl, returnTo, { jira: "state" }));
+      }
     }
 
     const code = c.req.query("code");
@@ -322,10 +371,25 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
         );
       }
 
+      const selectedSites =
+        intent === "write"
+          ? sites.filter(
+              (site) =>
+                site.cloudId === verified.state.cloudId &&
+                site.scopes.includes("write:jira-work") &&
+                tokens.scopes.includes("write:jira-work"),
+            )
+          : sites;
+      if (intent === "write" && selectedSites.length !== 1) {
+        return c.redirect(
+          redirectTarget(appUrl, returnTo, { jira: "write-scope-missing" }),
+        );
+      }
+
       // Every granted site is recorded. Asking the user to pick one here would
       // mean holding the tokens somewhere while they choose; a connection per
       // site is cheap, and a board is registered against one of them later.
-      for (const site of sites) {
+      for (const site of selectedSites) {
         const connection = await connections.upsert(organizationId, {
           cloudId: site.cloudId,
           siteUrl: site.url,
@@ -334,6 +398,7 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
           refreshToken: tokens.refreshToken ?? null,
           expiresAt: tokens.expiresAt,
           scopes: tokens.scopes,
+          resourceScopes: site.scopes,
         });
 
         /*
@@ -361,7 +426,12 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
       const missing = missingScopes(tokens.scopes);
       return c.redirect(
         redirectTarget(appUrl, returnTo, {
-          jira: missing.length > 0 ? "partial-scopes" : "connected",
+          jira:
+            intent === "write"
+              ? "write-consented"
+              : missing.length > 0
+                ? "partial-scopes"
+                : "connected",
           ...(missing.length > 0 ? { missing: missing.join(",") } : {}),
         }),
       );
@@ -544,13 +614,28 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
       );
     }
     if (parsed.data.writebackEnabled === true) {
-      return c.json(
-        {
-          code: "writeback_unavailable",
-          error: "Jira write-back is not available yet.",
-        },
-        409,
+      const board = await boards.get(organizationId, c.req.param("id"));
+      if (board === null) return c.json({ error: "Not found" }, 404);
+      const connection = await connections.get(
+        organizationId,
+        board.connectionId,
       );
+      const capable =
+        connection !== null &&
+        connection.healthy &&
+        connection.scopes.includes("write:jira-work") &&
+        connection.resourceScopes.includes("write:jira-work");
+      if (!capable) {
+        const returnTo = c.req.query("returnTo") ?? "/settings/jira";
+        return c.json(
+          {
+            code: "write_consent_required",
+            error: "Grant Jira write access before enabling write-back.",
+            consentUrl: `/api/v1/orgs/${encodeURIComponent(organizationId)}/jira/connect?intent=write&connectionId=${encodeURIComponent(board.connectionId)}&returnTo=${encodeURIComponent(safePath(returnTo))}`,
+          },
+          409,
+        );
+      }
     }
 
     const updated = await boards.update(organizationId, c.req.param("id"), {
@@ -652,44 +737,23 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
       return failureResponse(c, result.failure);
     }
 
-    // Parsed rather than cast: a row written before a setting existed holds
-    // none of its defaults, and the JQL builder reads every field.
-    const selection = boardSelectionSchema.parse(board.selection);
-    const source = backlogSource(board.boardType);
-    const jql = backlogJql(selection, {
-      projectKey: board.projectKey ?? undefined,
-      source,
-      ...(now === undefined ? {} : { now: new Date(now()) }),
-    });
-
-    const boardId = Number(board.externalId);
-    if (!Number.isInteger(boardId)) {
-      // Jira's board ids are numeric; a row holding anything else predates a
-      // check or was written by hand, and the Agile URL would 404 opaquely.
-      return c.json({ error: "That board has an unusable id." }, 422);
-    }
-
     try {
-      const page =
-        source === "backlog"
-          ? await result.client.backlogIssues(boardId, {
-              jql,
-              maxResults: selection.maxTickets,
-            })
-          : await result.client.boardIssues(boardId, {
-              jql,
-              maxResults: selection.maxTickets,
-            });
+      const selected = await selectBacklog({
+        organizationId,
+        board,
+        client: result.client,
+        ...(proposals === undefined ? {} : { proposals }),
+        ...(now === undefined ? {} : { now: new Date(now()) }),
+      });
 
       return c.json({
         boardId: board.id,
-        source,
-        jql,
-        selection,
-        issues: page.issues,
-        ...(page.total === undefined ? {} : { total: page.total }),
+        ...selected,
       });
     } catch (error) {
+      if (error instanceof InvalidBoardIdError) {
+        return c.json({ error: error.message }, 422);
+      }
       return await jiraFailure(c, connections, connectionId, error);
     }
   });

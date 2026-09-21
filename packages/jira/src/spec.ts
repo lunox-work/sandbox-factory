@@ -8,7 +8,7 @@
  * at a time, and the caller has to ask for it by name.
  */
 
-import { adfToText } from "./adf.js";
+import { adfToTextResult } from "./adf.js";
 
 /** What a run reads before it prices a ticket. */
 export interface JiraIssueSpec {
@@ -19,6 +19,8 @@ export interface JiraIssueSpec {
   readonly issueType: string;
   /** Jira's own `updated`, for ordering and for staleness reporting. */
   readonly updated: string | null;
+  /** True when ADF depth or length limits omitted any sizing input. */
+  readonly inputTruncated: boolean;
   /**
    * A fingerprint of `summary` + `descriptionText`.
    *
@@ -27,6 +29,8 @@ export interface JiraIssueSpec {
    * priced, and the proposal is stale.
    */
   readonly specHash: string;
+  /** Version 1: normalized summary, description and issue type JSON tuple. */
+  readonly pricingSpecHash: string;
 }
 
 /**
@@ -62,6 +66,25 @@ export async function specHash(
   // `\u0000` separates the fields: it cannot occur in text Jira renders, so
   // no summary can be crafted to collide with a summary+description pair.
   const canonical = `${normalize(summary)}\u0000${normalize(descriptionText)}`;
+  return sha256(canonical);
+}
+
+/** Fingerprints every input that affects pricing, encoded without ambiguity. */
+export function pricingSpecHash(
+  summary: string,
+  descriptionText: string,
+  issueType: string,
+): Promise<string> {
+  return sha256(
+    JSON.stringify([
+      normalize(summary),
+      normalize(descriptionText),
+      normalize(issueType),
+    ]),
+  );
+}
+
+async function sha256(canonical: string): Promise<string> {
   const bytes = new TextEncoder().encode(canonical);
   const digest = await crypto.subtle.digest("SHA-256", bytes);
   return [...new Uint8Array(digest)]
@@ -89,16 +112,21 @@ export async function toIssueSpec(
   },
 ): Promise<JiraIssueSpec> {
   const summary = typeof fields.summary === "string" ? fields.summary : "";
-  const descriptionText = adfToText(fields.description);
+  const description = adfToTextResult(fields.description);
+  const issueType =
+    typeof fields.issuetype?.name === "string" ? fields.issuetype.name : "Task";
   return {
     key,
     summary,
-    descriptionText,
-    issueType:
-      typeof fields.issuetype?.name === "string"
-        ? fields.issuetype.name
-        : "Task",
+    descriptionText: description.text,
+    issueType,
     updated: typeof fields.updated === "string" ? fields.updated : null,
-    specHash: await specHash(summary, descriptionText),
+    inputTruncated: description.truncated,
+    specHash: await specHash(summary, description.text),
+    pricingSpecHash: await pricingSpecHash(
+      summary,
+      description.text,
+      issueType,
+    ),
   };
 }

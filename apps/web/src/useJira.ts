@@ -19,6 +19,7 @@ export interface JiraConnection {
   email: string | null;
   healthy: boolean;
   scopes: string[];
+  resourceScopes: string[];
   createdAt: string;
 }
 
@@ -31,6 +32,8 @@ export interface JiraConnection {
  */
 export type JiraOutcome =
   | "connected"
+  | "write-consented"
+  | "write-scope-missing"
   | "cancelled"
   | "denied"
   | "no-sites"
@@ -47,7 +50,7 @@ export interface JiraState {
 
 export interface Jira extends JiraState {
   /** Sends the browser to Atlassian. Does not return. */
-  connect: () => void;
+  connect: (connectionId?: string) => void;
   disconnect: (
     connectionId: string,
   ) => Promise<{ ok: true } | { ok: false; error: string }>;
@@ -103,19 +106,22 @@ export function useJira(organizationId: string | undefined): Jira {
     void refresh();
   }, [refresh]);
 
-  const connect = useCallback(() => {
-    if (organizationId === undefined) {
-      return;
-    }
-    // A full-page navigation, not a fetch: the browser has to reach
-    // Atlassian's consent screen, and an XHR would fail CORS trying.
-    const returnTo = encodeURIComponent(
-      window.location.pathname + window.location.search,
-    );
-    window.location.href = `/api/v1/orgs/${encodeURIComponent(
-      organizationId,
-    )}/jira/connect?returnTo=${returnTo}`;
-  }, [organizationId]);
+  const connect = useCallback(
+    (connectionId?: string) => {
+      if (organizationId === undefined) {
+        return;
+      }
+      // A full-page navigation, not a fetch: the browser has to reach
+      // Atlassian's consent screen, and an XHR would fail CORS trying.
+      const returnTo = window.location.pathname + window.location.search;
+      const query = new URLSearchParams({ returnTo });
+      if (connectionId !== undefined) query.set("connectionId", connectionId);
+      window.location.href = `/api/v1/orgs/${encodeURIComponent(
+        organizationId,
+      )}/jira/connect?${query.toString()}`;
+    },
+    [organizationId],
+  );
 
   const disconnect = useCallback(
     async (connectionId: string) => {

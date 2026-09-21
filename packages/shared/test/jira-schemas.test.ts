@@ -166,9 +166,11 @@ test("a site DTO carries the cloudId every REST call embeds", () => {
     cloudId: "cloud-1",
     url: "https://acme.atlassian.net",
     name: "Acme",
+    scopes: ["read:jira-work", "write:jira-work"],
   });
 
   assert.equal(parsed.cloudId, "cloud-1");
+  assert.deepEqual(parsed.scopes, ["read:jira-work", "write:jira-work"]);
 });
 
 /* The board selection settings, which decide which tickets a run prices. */

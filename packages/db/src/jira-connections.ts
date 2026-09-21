@@ -13,7 +13,7 @@
  *   encryption exists: it asks a `TokenSource` for a pair.
  */
 
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 
 import type { TokenCipher } from "./cipher.js";
 import { generateId } from "./mapping.js";
@@ -31,6 +31,8 @@ export interface JiraConnectionSummary {
   readonly healthy: boolean;
   /** Granted scopes, split. Whether write-back is possible is read from here. */
   readonly scopes: readonly string[];
+  readonly resourceScopes: readonly string[];
+  readonly credentialRevision: number;
   readonly createdAt: string;
 }
 
@@ -40,6 +42,7 @@ export interface JiraConnectionTokens {
   readonly refreshToken: string | null;
   readonly expiresAt: string | null;
   readonly scopes: readonly string[];
+  readonly credentialRevision: number;
 }
 
 /** What a completed OAuth exchange has to record. */
@@ -52,6 +55,7 @@ export interface JiraConnectionInput {
   readonly refreshToken: string | null;
   readonly expiresAt: string | null;
   readonly scopes: readonly string[];
+  readonly resourceScopes?: readonly string[];
 }
 
 export interface JiraConnectionStore {
@@ -85,14 +89,16 @@ export interface JiraConnectionStore {
    * it was already built from an owner-scoped read.
    */
   saveTokens(
+    organizationId: string,
     connectionId: string,
+    expectedRevision: number,
     tokens: {
       accessToken: string | null;
       refreshToken: string | null;
       expiresAt: string | null;
       scopes: readonly string[];
     },
-  ): Promise<void>;
+  ): Promise<boolean>;
   /** Flags a connection Atlassian has refused, so the UI can say "reconnect". */
   markUnhealthy(connectionId: string): Promise<void>;
   remove(organizationId: string, connectionId: string): Promise<boolean>;
@@ -111,6 +117,8 @@ export function createJiraConnectionStore(
       email: row.email,
       healthy: row.healthy,
       scopes: splitScopes(row.scopes),
+      resourceScopes: splitScopes(row.resourceScopes),
+      credentialRevision: row.credentialRevision,
       createdAt: row.createdAt.toISOString(),
     };
   }
@@ -142,6 +150,7 @@ export function createJiraConnectionStore(
         keyId: cipher.keyId,
         expiresAt: input.expiresAt === null ? null : new Date(input.expiresAt),
         scopes: input.scopes.join(" "),
+        resourceScopes: (input.resourceScopes ?? input.scopes).join(" "),
         // A fresh grant is healthy by definition, so reconnecting is how a
         // user clears the "reconnect Jira" state.
         healthy: true,
@@ -153,7 +162,10 @@ export function createJiraConnectionStore(
         .values({ id: generateId("jrc"), ...values })
         .onConflictDoUpdate({
           target: [jiraConnection.organizationId, jiraConnection.cloudId],
-          set: values,
+          set: {
+            ...values,
+            credentialRevision: sql`${jiraConnection.credentialRevision} + 1`,
+          },
         })
         .returning()) as JiraConnectionRow[];
 
@@ -176,11 +188,12 @@ export function createJiraConnectionStore(
         refreshToken: cipher.decrypt(row.refreshTokenEnc),
         expiresAt: row.expiresAt?.toISOString() ?? null,
         scopes: splitScopes(row.scopes),
+        credentialRevision: row.credentialRevision,
       };
     },
 
-    async saveTokens(connectionId, tokens) {
-      await db
+    async saveTokens(organizationId, connectionId, expectedRevision, tokens) {
+      const rows = await db
         .update(jiraConnection)
         .set({
           accessTokenEnc: cipher.encrypt(tokens.accessToken),
@@ -190,9 +203,18 @@ export function createJiraConnectionStore(
             tokens.expiresAt === null ? null : new Date(tokens.expiresAt),
           scopes: tokens.scopes.join(" "),
           healthy: true,
+          credentialRevision: expectedRevision + 1,
           updatedAt: new Date(),
         })
-        .where(eq(jiraConnection.id, connectionId));
+        .where(
+          and(
+            eq(jiraConnection.organizationId, organizationId),
+            eq(jiraConnection.id, connectionId),
+            eq(jiraConnection.credentialRevision, expectedRevision),
+          ),
+        )
+        .returning();
+      return rows.length > 0;
     },
 
     async markUnhealthy(connectionId) {
