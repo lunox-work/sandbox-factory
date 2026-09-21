@@ -47,7 +47,7 @@ export function UserMenu({
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
-        className="ring-offset-background focus-visible:ring-ring cursor-pointer rounded-full transition-opacity outline-none hover:opacity-80 focus-visible:ring-2 focus-visible:ring-offset-2 data-[state=open]:opacity-80"
+        className="ring-offset-background focus-visible:ring-ring rounded-full transition-opacity outline-none hover:opacity-80 focus-visible:ring-2 focus-visible:ring-offset-2 data-[state=open]:opacity-80"
         aria-label={`Account and settings — ${name}`}
       >
         {/* 24px in the rail, matching the reference: small enough to read as

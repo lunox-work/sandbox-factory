@@ -94,7 +94,10 @@ export function SideNav({
         aria-label="Lunox home"
         title="Lunox"
         onClick={() => onNavigate("home")}
-        className="hidden shrink-0 cursor-pointer sm:block"
+        // It goes home like the destination below it, so it answers the
+        // cursor like one. Opacity rather than a fill: the mark is a gradient
+        // and a background behind it would fight the colour.
+        className="hidden shrink-0 rounded-md transition-opacity hover:opacity-80 sm:block"
       >
         <picture>
           <source
@@ -178,7 +181,7 @@ function RailButton({
       title={label}
       onClick={onClick}
       className={cn(
-        "grid cursor-pointer place-items-center transition-colors",
+        "grid place-items-center transition-colors",
         "[&_svg]:size-5 [&_svg]:shrink-0",
         // Phone: a tile in the bottom bar, since a left border on a horizontal
         // bar would read as a divider between items rather than as a marker.
@@ -188,7 +191,10 @@ function RailButton({
         "sm:border-l-2 sm:border-transparent",
         current
           ? "bg-primary/12 text-primary sm:bg-transparent sm:border-l-foreground sm:text-foreground"
-          : "text-muted-foreground hover:bg-accent hover:text-foreground sm:hover:bg-transparent",
+          : // The fill is what answers the cursor. It used to be cancelled at
+            // `sm` and up — exactly the widths the rail proper exists at — so
+            // the destinations gave no feedback at all on a desktop.
+            "text-muted-foreground hover:bg-accent hover:text-foreground",
       )}
     >
       {children}

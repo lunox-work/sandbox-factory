@@ -208,6 +208,58 @@
   :focus-visible {
     @apply outline-ring outline-2 outline-offset-2;
   }
+
+  /*
+   * The pointer cursor, once, for everything that is pressable.
+   *
+   * Tailwind v4's preflight leaves `button` at `cursor: default` — a change
+   * from v3, which followed the browser. shadcn's `Button` sets
+   * `cursor-pointer` itself, so it was only the hand-rolled controls that
+   * ended up with an arrow: every row on the Jira pages, the connection
+   * tiles, the tab triggers, the menu items. Half the app's controls said
+   * "pressable" to the cursor and half did not.
+   *
+   * A rule here rather than a class on each one, because the next hand-rolled
+   * button would have the same bug and nothing would catch it.
+   *
+   * Radix marks a disabled menu item with `data-disabled` rather than the
+   * attribute, which is why that one is matched differently.
+   */
+  button:not(:disabled),
+  [role="tab"]:not(:disabled),
+  summary {
+    cursor: pointer;
+  }
+}
+
+/*
+ * The menu items, outside the base layer on purpose.
+ *
+ * shadcn's dropdown item ships `cursor-default` as a utility class, and a
+ * utility beats a bare element selector however it is written — so inside
+ * `@layer base` this rule loses and the items keep the arrow. Here it is
+ * unlayered, which outranks every layered rule including Tailwind's own.
+ *
+ * Radix marks a disabled item with `data-disabled` rather than the attribute.
+ */
+[role="menuitem"]:not([data-disabled]),
+[role="menuitemcheckbox"]:not([data-disabled]),
+[role="menuitemradio"]:not([data-disabled]) {
+  cursor: pointer;
+}
+
+/*
+ * The generated tabs have no hover state: an inactive trigger looks exactly
+ * the same whether or not the cursor is on it. `components/ui/*` is kept as
+ * upstream ships it, so the hover is added here, by the slot the component
+ * already marks itself with.
+ *
+ * `background` rather than a border or a shadow, because the active trigger
+ * is distinguished by its own background — so this reads as a step towards
+ * what pressing would do, rather than as a second kind of mark.
+ */
+[data-slot="tabs-trigger"][data-state="inactive"]:hover {
+  background: color-mix(in oklab, var(--background) 60%, transparent);
 }
 
 /* ---- sign-in ------------------------------------------------------------- */

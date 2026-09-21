@@ -276,7 +276,7 @@ export function Breadcrumbs({
                   onClick={() =>
                     onNavigate(target, crumb.slug, crumb.connectionId)
                   }
-                  className="hover:text-foreground focus-visible:ring-ring/50 cursor-pointer rounded-sm underline-offset-4 transition-colors hover:underline focus-visible:ring-[3px] focus-visible:outline-none"
+                  className="hover:text-foreground focus-visible:ring-ring/50 rounded-sm underline-offset-4 transition-colors hover:underline focus-visible:ring-[3px] focus-visible:outline-none"
                 >
                   {crumb.label}
                 </button>

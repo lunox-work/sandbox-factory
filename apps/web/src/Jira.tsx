@@ -242,7 +242,10 @@ function ConnectionRow({
     <li>
       <button
         type="button"
-        className="flex w-full items-center gap-3 rounded-md px-1 py-3 text-left hover:bg-muted/50"
+        // `-mx-2 px-2` so the hover fill reaches past the icon and the
+        // chevron to the card's own padding. At `px-1` it hugged the text and
+        // read as a highlight on the words rather than on the row.
+        className="-mx-2 flex w-full items-center gap-3 rounded-md px-2 py-3 text-left transition-colors hover:bg-muted/50"
         onClick={() => {
           onOpen(connection);
         }}
@@ -619,7 +622,7 @@ function PreviewList({
           <button
             type="button"
             aria-current={selectedKey === issue.key ? "true" : undefined}
-            className={`hover:bg-muted/50 flex w-full items-center gap-3 px-3 py-2.5 text-left ${
+            className={`hover:bg-muted/50 flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors ${
               selectedKey === issue.key ? "bg-muted" : ""
             }`}
             onClick={() => {
@@ -691,7 +694,8 @@ function BoardRow({
     <li>
       <button
         type="button"
-        className="hover:bg-muted/50 flex w-full items-center gap-3 rounded-md px-1 py-3 text-left"
+        // The same reach as a connection row one level up; see `ConnectionRow`.
+        className="hover:bg-muted/50 -mx-2 flex w-full items-center gap-3 rounded-md px-2 py-3 text-left transition-colors"
         onClick={() => {
           onOpen(board);
         }}

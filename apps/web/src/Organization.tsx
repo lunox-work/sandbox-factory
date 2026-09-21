@@ -704,7 +704,7 @@ function HandleForm({
             <button
               type="button"
               onClick={onOpenMembers}
-              className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 group/members mt-5 flex w-fit cursor-pointer items-center gap-1.5 rounded-sm text-sm transition-colors focus-visible:ring-[3px] focus-visible:outline-none"
+              className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 group/members mt-5 flex w-fit items-center gap-1.5 rounded-sm text-sm transition-colors focus-visible:ring-[3px] focus-visible:outline-none"
             >
               <Users className="size-4" strokeWidth={1.6} />
               {/* The underline is on the words, not the button: through the

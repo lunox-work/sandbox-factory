@@ -270,3 +270,32 @@ test("the confirmation clears itself", async () => {
     vi.useRealTimers();
   }
 });
+
+// ---- the value looks pressable before you press it ------------------------
+//
+// These three fields are prose at rest, which is the point — but they had no
+// hover fill at all (`hover:bg-transparent` cancelled the one the padding was
+// there to hold) and the pencil was `opacity-0` until hovered. On a touch
+// screen, where there is no hover, the pencil never appeared at all, so a
+// name, a username and an organization handle were indistinguishable from
+// static text.
+
+test("the value at rest lights up under the cursor", () => {
+  render(<EditableField label="Name" value="Ada" onSave={vi.fn()} />);
+
+  const button = screen.getByRole("button", { name: /edit name/i });
+  expect(button.className).toContain("hover:bg-accent");
+  expect(button.className).not.toContain("hover:bg-transparent");
+});
+
+test("the pencil is visible without hovering, so touch can find it", () => {
+  const { container } = render(
+    <EditableField label="Name" value="Ada" onSave={vi.fn()} />,
+  );
+
+  const pencil = container.querySelector("svg");
+  expect(pencil).not.toBeNull();
+  // Dimmed at rest and full strength on hover, rather than absent entirely.
+  expect(pencil?.getAttribute("class")).not.toContain("opacity-0");
+  expect(pencil?.getAttribute("class")).toContain("opacity-40");
+});

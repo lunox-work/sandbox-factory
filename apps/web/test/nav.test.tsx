@@ -518,3 +518,27 @@ test("the organizations page reaches the create form", async () => {
     await screen.findByRole("heading", { name: "New organization" }),
   ).toBeTruthy();
 });
+
+// ---- the rail answers the cursor ------------------------------------------
+
+test("an inactive destination lights up under the cursor", async () => {
+  // `sm:hover:bg-transparent` cancelled the hover fill at exactly the widths
+  // the rail exists at, so the only rail button gave no feedback at all.
+  window.history.replaceState(null, "", "/account");
+  render(<App />);
+
+  // Scoped to the rail: the trail above the page carries a "Home" crumb too,
+  // and on this screen both are on the page at once.
+  const rail = await screen.findByRole("navigation", { name: "Main" });
+  const home = within(rail).getByRole("button", { name: "Home" });
+  expect(home.className).toContain("hover:bg-accent");
+  expect(home.className).not.toContain("sm:hover:bg-transparent");
+});
+
+test("the logo answers the cursor too", async () => {
+  window.history.replaceState(null, "", "/");
+  render(<App />);
+
+  const logo = await screen.findByRole("button", { name: "Lunox home" });
+  expect(logo.className).toContain("hover:opacity-80");
+});

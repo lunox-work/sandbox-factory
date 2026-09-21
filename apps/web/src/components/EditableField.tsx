@@ -165,7 +165,7 @@ export function EditableField({
             onClick={() => setEditing(true)}
             disabled={busy}
             aria-label={`Edit ${label.toLowerCase()}`}
-            className="group/edit focus-visible:ring-ring/50 -mx-1.5 flex w-fit max-w-full cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-0.5 text-left transition-colors hover:bg-transparent focus-visible:ring-[3px] focus-visible:outline-none disabled:cursor-default"
+            className="group/edit focus-visible:ring-ring/50 hover:bg-accent -mx-1.5 flex w-fit max-w-full items-center gap-1.5 rounded-md px-1.5 py-0.5 text-left transition-colors focus-visible:ring-[3px] focus-visible:outline-none disabled:cursor-default"
           >
             <span className="truncate text-sm font-medium">
               {prefix}
@@ -178,11 +178,18 @@ export function EditableField({
               )}
             </span>
             {/*
-              Visible on hover and whenever the line has keyboard focus. Held
-              in the layout rather than rendered conditionally, so nothing
-              shifts sideways as the pointer arrives.
-            */}
-            {/*
+              Dimmed at rest, full strength on hover or keyboard focus.
+
+              It used to be `opacity-0` until hovered, which left the three
+              fields looking like plain text — and on a touch screen, where
+              there is no hover, it never appeared at all, so nothing on the
+              page said a name or a handle could be changed. Visible but quiet
+              is what makes it findable without turning a line of prose into a
+              control that shouts.
+
+              Held in the layout either way, so nothing shifts sideways as the
+              pointer arrives.
+
               The pencil gives way to the tick, rather than the two sharing
               the line: both in the same slot means nothing moves as one
               replaces the other.
@@ -195,7 +202,7 @@ export function EditableField({
               />
             ) : (
               <Pencil
-                className="text-muted-foreground size-3.5 shrink-0 opacity-0 transition-opacity group-hover/edit:opacity-100 group-focus-visible/edit:opacity-100"
+                className="text-muted-foreground size-3.5 shrink-0 opacity-40 transition-opacity group-hover/edit:opacity-100 group-focus-visible/edit:opacity-100"
                 strokeWidth={1.8}
                 aria-hidden="true"
               />
