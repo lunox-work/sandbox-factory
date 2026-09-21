@@ -13,7 +13,7 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "rm -rf dist tsconfig.tsbuildinfo && tsc -p tsconfig.json",
     "lint": "tsc -p tsconfig.test.json --noEmit",
     "test": "rm -rf dist-test && tsc -p tsconfig.test.json && node --experimental-test-coverage --test-coverage-lines=90 --test-coverage-branches=85 --test-coverage-functions=90 --test-coverage-include=\"dist-test/src/**\" --test-coverage-exclude=\"dist-test/test/**\" --test dist-test/test/*.test.js > dist-test/coverage.txt; status=$?; cat dist-test/coverage.txt; [ $status -eq 0 ] && assert-all-covered dist-test/src dist-test/coverage.txt"
   },
