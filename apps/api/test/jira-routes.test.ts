@@ -2,10 +2,15 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type {
+  JiraBoardStore,
+  JiraBoardSummary,
   JiraConnectionInput,
   JiraConnectionStore,
   JiraConnectionSummary,
+  RegisterBoardInput,
 } from "@sandbox-factory/db";
+
+import { READ_SCOPES } from "@sandbox-factory/jira";
 
 import type { Auth } from "../src/auth.js";
 import { signState } from "../src/jira/state.js";
@@ -41,12 +46,16 @@ function fakeAuth(user = dana): Auth {
 }
 
 /** Records what reached the store, so the tests can assert on it. */
-function fakeConnections(): JiraConnectionStore & {
+function fakeConnections(
+  overrides: Partial<JiraConnectionSummary> = {},
+): JiraConnectionStore & {
   upserts: { organizationId: string; input: JiraConnectionInput }[];
   removed: string[];
+  unhealthy: string[];
 } {
   const upserts: { organizationId: string; input: JiraConnectionInput }[] = [];
   const removed: string[] = [];
+  const unhealthy: string[] = [];
   const summary: JiraConnectionSummary = {
     id: "jrc_1",
     cloudId: "cloud-1",
@@ -56,19 +65,31 @@ function fakeConnections(): JiraConnectionStore & {
     healthy: true,
     scopes: ["read:jira-work"],
     createdAt: "2026-09-21T00:00:00.000Z",
+    ...overrides,
   };
   return {
     upserts,
     removed,
+    unhealthy,
     list: () => Promise.resolve([summary]),
     get: () => Promise.resolve(summary),
     upsert: (organizationId, input) => {
       upserts.push({ organizationId, input });
       return Promise.resolve(summary);
     },
-    tokens: () => Promise.resolve(null),
+    tokens: () =>
+      Promise.resolve({
+        accessToken: "access-1",
+        refreshToken: "refresh-1",
+        // Far future, so no test accidentally exercises the refresh path.
+        expiresAt: "2099-01-01T00:00:00.000Z",
+        scopes: ["read:jira-work"],
+      }),
     saveTokens: () => Promise.resolve(),
-    markUnhealthy: () => Promise.resolve(),
+    markUnhealthy: (id) => {
+      unhealthy.push(id);
+      return Promise.resolve();
+    },
     remove: (_organizationId, id) => {
       removed.push(id);
       return Promise.resolve(id === "jrc_1");
@@ -113,9 +134,10 @@ function fakeAtlassian(
             access_token: "access-1",
             refresh_token: "refresh-1",
             expires_in: 3600,
-            scope:
-              options.scope ??
-              "read:jira-work read:jira-user read:board-scope:jira-software read:sprint:jira-software offline_access",
+            // Built from the real list rather than restated: a scope added to
+            // READ_SCOPES would otherwise read as one Atlassian withheld, and
+            // every happy-path test here would fail as "partial-scopes".
+            scope: options.scope ?? READ_SCOPES.join(" "),
           },
         ),
         { status: options.tokenStatus ?? 200 },
@@ -123,6 +145,177 @@ function fakeAtlassian(
     }
     throw new Error(`unexpected request to ${href}`);
   }) as typeof globalThis.fetch;
+}
+
+/** The board store, faked. Records registrations and settings edits. */
+function fakeBoards(
+  overrides: Partial<JiraBoardSummary> = {},
+): JiraBoardStore & {
+  registered: RegisterBoardInput[];
+  updates: unknown[];
+} {
+  const registered: RegisterBoardInput[] = [];
+  const updates: unknown[] = [];
+  const board: JiraBoardSummary = {
+    id: "jrb_1",
+    connectionId: "jrc_1",
+    externalId: "42",
+    name: "Acme Board",
+    boardType: "scrum",
+    projectKey: "ACME",
+    selection: {
+      maxTickets: 10,
+      excludeAssigned: true,
+      issueTypes: [],
+      minAgeDays: 0,
+      minSpecChars: 0,
+    },
+    writebackEnabled: false,
+    createdAt: "2026-09-21T00:00:00.000Z",
+    ...overrides,
+  };
+  return {
+    registered,
+    updates,
+    list: () => Promise.resolve([board]),
+    get: (_organizationId, id) =>
+      Promise.resolve(id === board.id ? board : null),
+    register: (_organizationId, input) => {
+      registered.push(input);
+      return Promise.resolve({
+        ...board,
+        ...input,
+        externalId: input.externalId,
+      });
+    },
+    update: (_organizationId, id, input) => {
+      if (id !== board.id) {
+        return Promise.resolve(null);
+      }
+      updates.push(input);
+      return Promise.resolve(board);
+    },
+    remove: () => Promise.resolve(true),
+    forRun: (_organizationId, id) =>
+      Promise.resolve(
+        id === board.id
+          ? {
+              board,
+              connectionId: board.connectionId,
+              cloudId: "cloud-1",
+              siteUrl: "https://acme.atlassian.net",
+            }
+          : null,
+      ),
+  };
+}
+
+/**
+ * Jira's REST API, faked at the two endpoints these routes call.
+ *
+ * Records every URL so a test can assert on the JQL, which is the part of the
+ * preview that decides which tickets a client is shown.
+ */
+function fakeJiraApi(
+  options: {
+    boards?: unknown[];
+    issues?: unknown[];
+    status?: number;
+    /** Atlassian's body, for the 401s that mean different things. */
+    errorBody?: unknown;
+  } = {},
+): typeof globalThis.fetch & { urls: string[] } {
+  const urls: string[] = [];
+  const impl = (async (url: string | URL | Request) => {
+    const href = String(url);
+    urls.push(href);
+    if (options.status !== undefined && options.status >= 400) {
+      return new Response(
+        JSON.stringify(options.errorBody ?? { errorMessages: ["nope"] }),
+        { status: options.status },
+      );
+    }
+    if (href.includes("/rest/agile/1.0/board?")) {
+      return new Response(
+        JSON.stringify({
+          values: options.boards ?? [
+            {
+              id: 42,
+              name: "Acme Board",
+              type: "scrum",
+              location: { projectKey: "ACME", projectName: "Acme" },
+            },
+          ],
+          isLast: true,
+        }),
+        { status: 200 },
+      );
+    }
+    if (href.includes("/rest/api/3/issue/")) {
+      return new Response(
+        JSON.stringify({
+          id: "1001",
+          key: "ACME-1",
+          fields: {
+            summary: "Ticket 1",
+            status: { name: "To Do", statusCategory: { key: "new" } },
+            issuetype: { name: "Task" },
+            labels: ["foundation"],
+            project: { key: "ACME" },
+            created: "2023-01-01T00:00:00.000+0000",
+            updated: "2024-01-01T00:00:00.000+0000",
+            description: {
+              type: "doc",
+              content: [
+                {
+                  type: "paragraph",
+                  content: [{ type: "text", text: "The objective." }],
+                },
+              ],
+            },
+            reporter: { displayName: "Dana" },
+            priority: { name: "Highest" },
+            watches: { watchCount: 3 },
+            votes: { votes: 0 },
+          },
+        }),
+        { status: 200 },
+      );
+    }
+    if (href.includes("/backlog") || href.includes("/board/42/issue")) {
+      return new Response(
+        JSON.stringify({
+          issues: options.issues ?? [issueResponse(1), issueResponse(2)],
+          total: 2,
+          startAt: 0,
+          maxResults: 10,
+        }),
+        { status: 200 },
+      );
+    }
+    throw new Error(`unexpected request to ${href}`);
+  }) as typeof globalThis.fetch & { urls: string[] };
+  impl.urls = urls;
+  return impl;
+}
+
+/** One issue as Jira returns it, old enough to be a backlog candidate. */
+function issueResponse(n: number): unknown {
+  return {
+    id: String(1000 + n),
+    key: `ACME-${n}`,
+    fields: {
+      summary: `Ticket ${n}`,
+      status: { name: "To Do", statusCategory: { key: "new" } },
+      assignee: null,
+      priority: { name: "Medium" },
+      issuetype: { name: "Task" },
+      labels: [],
+      project: { key: "ACME" },
+      created: `2023-0${n}-01T00:00:00.000+0000`,
+      updated: `2024-0${n}-01T00:00:00.000+0000`,
+    },
+  };
 }
 
 function appWith(
@@ -133,9 +326,11 @@ function appWith(
     user?: typeof dana;
     fetch?: typeof globalThis.fetch;
     connections?: ReturnType<typeof fakeConnections>;
+    boards?: ReturnType<typeof fakeBoards>;
   } = {},
 ) {
   const connections = options.connections ?? fakeConnections();
+  const boards = options.boards ?? fakeBoards();
   const app = createApp({
     corsOrigins: ["https://app.test"],
     auth: fakeAuth(options.user ?? dana),
@@ -163,6 +358,7 @@ function appWith(
     } as never,
     jira: {
       connections,
+      boards,
       clientId: "jira-client-id",
       clientSecret: "jira-client-secret",
       secret: SECRET,
@@ -171,7 +367,7 @@ function appWith(
       ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
     },
   });
-  return { app, connections };
+  return { app, connections, boards };
 }
 
 const signedIn = { cookie: "session=1" };
@@ -747,4 +943,375 @@ test("an admin who kept their role still completes the flow", async () => {
     "connected",
   );
   assert.equal(connections.upserts.length, 1);
+});
+
+/* -------------------------------------------------------------------------- */
+/* Boards and the backlog preview                                             */
+/* -------------------------------------------------------------------------- */
+
+test("listing a connection's boards reads them live from Jira", async () => {
+  const jira = fakeJiraApi();
+  const { app } = appWith({ fetch: jira });
+
+  const response = await app.request(
+    "/api/v1/orgs/org_1/jira/connections/jrc_1/boards",
+    { headers: signedIn },
+  );
+
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as { boards: { id: number }[] };
+  assert.deepEqual(
+    body.boards.map((board) => board.id),
+    [42],
+  );
+  // Through the gateway, addressed by cloud id — not the site's own host.
+  assert.ok(
+    jira.urls.some((url) =>
+      url.startsWith("https://api.atlassian.com/ex/jira/cloud-1/"),
+    ),
+  );
+});
+
+test("a board list for another organization's connection is a 404", async () => {
+  // `get` answering null is what an owner-scoped read does with a foreign id.
+  const connections = fakeConnections();
+  connections.get = () => Promise.resolve(null);
+  const { app } = appWith({ connections, fetch: fakeJiraApi() });
+
+  const response = await app.request(
+    "/api/v1/orgs/org_1/jira/connections/jrc_other/boards",
+    { headers: signedIn },
+  );
+
+  assert.equal(response.status, 404);
+});
+
+test("an unhealthy connection asks for a reconnect rather than retrying", async () => {
+  const jira = fakeJiraApi();
+  const { app } = appWith({
+    connections: fakeConnections({ healthy: false }),
+    fetch: jira,
+  });
+
+  const response = await app.request(
+    "/api/v1/orgs/org_1/jira/connections/jrc_1/boards",
+    { headers: signedIn },
+  );
+
+  assert.equal(response.status, 409);
+  assert.equal(((await response.json()) as { code: string }).code, "reconnect");
+  // The point of the check: no round trip is spent to learn what the row says.
+  assert.deepEqual(jira.urls, []);
+});
+
+test("registering a board takes its name and type from Jira, not the body", async () => {
+  const { app, boards } = appWith({ fetch: fakeJiraApi() });
+
+  const response = await app.request("/api/v1/orgs/org_1/jira/boards", {
+    method: "POST",
+    headers: { ...signedIn, "content-type": "application/json" },
+    body: JSON.stringify({
+      connectionId: "jrc_1",
+      externalId: "42",
+      name: "Attacker's name",
+      boardType: "kanban",
+    }),
+  });
+
+  assert.equal(response.status, 201);
+  const [registered] = boards.registered;
+  assert.equal(registered?.name, "Acme Board");
+  assert.equal(registered?.boardType, "scrum");
+  assert.equal(registered?.projectKey, "ACME");
+  // Defaults are filled in, so the row holds a complete set of settings.
+  assert.equal(registered?.selection?.maxTickets, 10);
+  assert.equal(registered?.selection?.excludeAssigned, true);
+});
+
+test("registering a board the grant cannot see is a 404", async () => {
+  const { app, boards } = appWith({ fetch: fakeJiraApi({ boards: [] }) });
+
+  const response = await app.request("/api/v1/orgs/org_1/jira/boards", {
+    method: "POST",
+    headers: { ...signedIn, "content-type": "application/json" },
+    body: JSON.stringify({ connectionId: "jrc_1", externalId: "999" }),
+  });
+
+  assert.equal(response.status, 404);
+  assert.deepEqual(boards.registered, []);
+});
+
+test("an ordinary member may not register a board", async () => {
+  const { app, boards } = appWith({ role: "member", fetch: fakeJiraApi() });
+
+  const response = await app.request("/api/v1/orgs/org_1/jira/boards", {
+    method: "POST",
+    headers: { ...signedIn, "content-type": "application/json" },
+    body: JSON.stringify({ connectionId: "jrc_1", externalId: "42" }),
+  });
+
+  assert.equal(response.status, 403);
+  assert.deepEqual(boards.registered, []);
+});
+
+test("editing a board passes only the settings that were sent", async () => {
+  const { app, boards } = appWith();
+
+  const response = await app.request("/api/v1/orgs/org_1/jira/boards/jrb_1", {
+    method: "PATCH",
+    headers: { ...signedIn, "content-type": "application/json" },
+    body: JSON.stringify({ selection: { maxTickets: 5 } }),
+  });
+
+  assert.equal(response.status, 200);
+  // Absent means "leave it alone": anything else would reset the rest to
+  // their defaults, which is the trap `boardSelectionUpdateSchema` documents.
+  assert.deepEqual(boards.updates, [{ selection: { maxTickets: 5 } }]);
+});
+
+test("clearing maxAgeDays survives as a null rather than being dropped", async () => {
+  const { app, boards } = appWith();
+
+  await app.request("/api/v1/orgs/org_1/jira/boards/jrb_1", {
+    method: "PATCH",
+    headers: { ...signedIn, "content-type": "application/json" },
+    body: JSON.stringify({ selection: { maxAgeDays: null } }),
+  });
+
+  assert.deepEqual(boards.updates, [{ selection: { maxAgeDays: null } }]);
+});
+
+test("the preview returns the board's oldest backlog tickets", async () => {
+  const jira = fakeJiraApi();
+  const { app } = appWith({ fetch: jira });
+
+  const response = await app.request(
+    "/api/v1/orgs/org_1/jira/boards/jrb_1/backlog-preview",
+    { headers: signedIn },
+  );
+
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as {
+    source: string;
+    jql: string;
+    issues: { key: string }[];
+  };
+
+  assert.equal(body.source, "backlog");
+  assert.deepEqual(
+    body.issues.map((issue) => issue.key),
+    ["ACME-1", "ACME-2"],
+  );
+  // The ordering is the product claim: "the oldest still in the backlog".
+  assert.ok(body.jql.includes("ORDER BY created ASC"));
+  assert.ok(body.jql.includes("assignee is EMPTY"));
+  assert.ok(jira.urls.some((url) => url.includes("/board/42/backlog")));
+});
+
+test("a Kanban board is previewed through the board-issues endpoint", async () => {
+  // A plain Kanban board has no backlog endpoint at all; its first column is
+  // the backlog, so the fallback has to restrict to To Do itself.
+  const jira = fakeJiraApi();
+  const { app } = appWith({
+    boards: fakeBoards({ boardType: "kanban" }),
+    fetch: jira,
+  });
+
+  const response = await app.request(
+    "/api/v1/orgs/org_1/jira/boards/jrb_1/backlog-preview",
+    { headers: signedIn },
+  );
+
+  const body = (await response.json()) as { source: string; jql: string };
+  assert.equal(body.source, "board-issues");
+  assert.ok(body.jql.includes('statusCategory = "To Do"'));
+  assert.ok(jira.urls.some((url) => url.includes("/board/42/issue")));
+});
+
+test("the preview stores nothing", async () => {
+  // Looking at a board must stay distinguishable from pricing it.
+  const { app, boards, connections } = appWith({ fetch: fakeJiraApi() });
+
+  await app.request("/api/v1/orgs/org_1/jira/boards/jrb_1/backlog-preview", {
+    headers: signedIn,
+  });
+
+  assert.deepEqual(boards.registered, []);
+  assert.deepEqual(boards.updates, []);
+  assert.deepEqual(connections.upserts, []);
+});
+
+test("an ordinary member may preview a board", async () => {
+  // Reading tickets the organization already has a grant for.
+  const { app } = appWith({ role: "member", fetch: fakeJiraApi() });
+
+  const response = await app.request(
+    "/api/v1/orgs/org_1/jira/boards/jrb_1/backlog-preview",
+    { headers: signedIn },
+  );
+
+  assert.equal(response.status, 200);
+});
+
+test("previewing another organization's board is a 404", async () => {
+  const { app } = appWith({ fetch: fakeJiraApi() });
+
+  const response = await app.request(
+    "/api/v1/orgs/org_1/jira/boards/jrb_other/backlog-preview",
+    { headers: signedIn },
+  );
+
+  assert.equal(response.status, 404);
+});
+
+test("a refused Jira call is a 502, not a 500", async () => {
+  const { app } = appWith({ fetch: fakeJiraApi({ status: 400 }) });
+
+  const response = await app.request(
+    "/api/v1/orgs/org_1/jira/boards/jrb_1/backlog-preview",
+    { headers: signedIn },
+  );
+
+  assert.equal(response.status, 502);
+  assert.equal(((await response.json()) as { code: string }).code, "jira");
+});
+
+test("a revoked grant marks the connection unhealthy", async () => {
+  const connections = fakeConnections();
+  const { app } = appWith({
+    connections,
+    fetch: fakeJiraApi({ status: 401 }),
+  });
+
+  const response = await app.request(
+    "/api/v1/orgs/org_1/jira/boards/jrb_1/backlog-preview",
+    { headers: signedIn },
+  );
+
+  assert.equal(response.status, 409);
+  // So the next page load says "reconnect" without spending a round trip.
+  assert.deepEqual(connections.unhealthy, ["jrc_1"]);
+});
+
+test("a scope mismatch is not treated as a revoked grant", async () => {
+  // Atlassian answers 401 "scope does not match" when the *app* was never
+  // granted a scope the endpoint needs. The token is live and consenting
+  // again mints an identical one, so flagging the row would tell the user to
+  // perform a fix that cannot work — and hide a working connection behind it.
+  const connections = fakeConnections();
+  const { app } = appWith({
+    connections,
+    fetch: fakeJiraApi({
+      status: 401,
+      errorBody: { code: 401, message: "Unauthorized; scope does not match" },
+    }),
+  });
+
+  const response = await app.request(
+    "/api/v1/orgs/org_1/jira/boards/jrb_1/backlog-preview",
+    { headers: signedIn },
+  );
+
+  assert.equal(response.status, 502);
+  assert.equal(((await response.json()) as { code: string }).code, "scope");
+  assert.deepEqual(connections.unhealthy, []);
+});
+
+test("a scope mismatch names the app, not the connection", async () => {
+  // The remedy is in the Atlassian console, so the message has to say so
+  // rather than sending the user round the consent loop again.
+  const { app } = appWith({
+    fetch: fakeJiraApi({
+      status: 401,
+      errorBody: { code: 401, message: "Unauthorized; scope does not match" },
+    }),
+  });
+
+  const response = await app.request(
+    "/api/v1/orgs/org_1/jira/connections/jrc_1/boards",
+    { headers: signedIn },
+  );
+
+  const body = (await response.json()) as { error: string };
+  assert.match(body.error, /scope list/i);
+});
+
+test("a missing scope does not mark the connection unhealthy", async () => {
+  // A 403 is a scope the grant never had. Reconnecting does not add it unless
+  // the user consents to more, so flagging the row would mislabel a grant that
+  // still works for everything else.
+  const connections = fakeConnections();
+  const { app } = appWith({
+    connections,
+    fetch: fakeJiraApi({ status: 403 }),
+  });
+
+  const response = await app.request(
+    "/api/v1/orgs/org_1/jira/boards/jrb_1/backlog-preview",
+    { headers: signedIn },
+  );
+
+  assert.equal(response.status, 502);
+  assert.deepEqual(connections.unhealthy, []);
+});
+
+test("a ticket's full detail is read live, including its description", async () => {
+  // The one route that returns ticket text, for one ticket asked for by name.
+  const { app } = appWith({ fetch: fakeJiraApi() });
+
+  const response = await app.request(
+    "/api/v1/orgs/org_1/jira/boards/jrb_1/issues/ACME-1",
+    { headers: signedIn },
+  );
+
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as {
+    issue: {
+      key: string;
+      descriptionText: string;
+      reporter: string | null;
+      watchers: number | null;
+    };
+  };
+  assert.equal(body.issue.key, "ACME-1");
+  assert.equal(body.issue.descriptionText, "The objective.");
+  assert.equal(body.issue.reporter, "Dana");
+  assert.equal(body.issue.watchers, 3);
+});
+
+test("a ticket is scoped through the board, not a bare connection", async () => {
+  // Otherwise a board the caller can see would be a way to read a ticket on
+  // a site they cannot.
+  const { app } = appWith({ fetch: fakeJiraApi() });
+
+  const response = await app.request(
+    "/api/v1/orgs/org_1/jira/boards/jrb_other/issues/ACME-1",
+    { headers: signedIn },
+  );
+
+  assert.equal(response.status, 404);
+});
+
+test("an ordinary member may read a ticket", async () => {
+  const { app } = appWith({ role: "member", fetch: fakeJiraApi() });
+
+  const response = await app.request(
+    "/api/v1/orgs/org_1/jira/boards/jrb_1/issues/ACME-1",
+    { headers: signedIn },
+  );
+
+  assert.equal(response.status, 200);
+});
+
+test("a ticket Jira will not show is a 404, not a 502", async () => {
+  // Jira conflates "no such ticket" with "not visible to this grant", and so
+  // does this: reporting it as deleted would be a guess.
+  const { app } = appWith({ fetch: fakeJiraApi({ status: 404 }) });
+
+  const response = await app.request(
+    "/api/v1/orgs/org_1/jira/boards/jrb_1/issues/ACME-9",
+    { headers: signedIn },
+  );
+
+  assert.equal(response.status, 404);
 });

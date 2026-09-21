@@ -10,7 +10,7 @@
  * The server is faked at the `fetch` boundary, as elsewhere in this suite.
  */
 
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
@@ -300,7 +300,482 @@ test("disconnecting asks the API and reloads the list", async () => {
     expect(calls.some((call) => call.method === "DELETE")).toBe(true);
   });
   // The list is re-read afterwards, so a failed delete cannot leave a stale row.
+  // Counted by route rather than by verb: the page also lists boards on load,
+  // and a bare GET count would pass or fail on an unrelated call.
   await waitFor(() => {
-    expect(calls.filter((call) => call.method === "GET")).toHaveLength(2);
+    expect(
+      calls.filter(
+        (call) => call.method === "GET" && call.url.endsWith("/connections"),
+      ),
+    ).toHaveLength(2);
   });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Boards and the backlog preview                                             */
+/* -------------------------------------------------------------------------- */
+
+const board = {
+  id: "jrb_1",
+  connectionId: "jrc_1",
+  externalId: "42",
+  name: "Acme Board",
+  boardType: "scrum",
+  projectKey: "ACME",
+  selection: { maxTickets: 10, excludeAssigned: true },
+  writebackEnabled: false,
+  createdAt: "2026-09-21T00:00:00.000Z",
+};
+
+function issue(n: number, created: string) {
+  return {
+    id: String(1000 + n),
+    key: `ACME-${n}`,
+    summary: `Ticket ${n}`,
+    status: "To Do",
+    statusCategory: "new",
+    assignee: null,
+    issueType: "Task",
+    created,
+    updated: created,
+    url: `https://acme.atlassian.net/browse/ACME-${n}`,
+  };
+}
+
+/**
+ * The server, faked per route rather than as one blanket response.
+ *
+ * The page now makes three different calls, and answering them all with the
+ * same body is how a test passes while the page is broken.
+ */
+function routedFetch(
+  overrides: {
+    boards?: { status?: number; body?: unknown };
+    remote?: { status?: number; body?: unknown };
+    preview?: { status?: number; body?: unknown };
+    detail?: { status?: number; body?: unknown };
+  } = {},
+) {
+  return vi.fn((input: string) => {
+    const url = String(input);
+    const json = (body: unknown, status = 200) =>
+      Promise.resolve(
+        new Response(status === 204 ? null : JSON.stringify(body), {
+          status,
+          headers: { "content-type": "application/json" },
+        }),
+      );
+
+    if (url.includes("/issues/")) {
+      const spec = overrides.detail;
+      return json(
+        spec?.body ?? {
+          issue: {
+            ...issue(1, "2020-01-01T00:00:00.000Z"),
+            descriptionText:
+              "## Objective\nEstablish the canonical data model.\n\n## Scope\n- Canonical entities\n- Multi-tenant isolation",
+            reporter: "charlie angriawan",
+            creator: "charlie angriawan",
+            resolution: null,
+            resolutionDate: null,
+            labels: ["foundation", "platform"],
+            priority: "Highest",
+            parentKey: null,
+            projectKey: "NOX",
+            dueDate: "2026-12-19",
+            components: [],
+            fixVersions: [],
+            originalEstimateSeconds: null,
+            remainingEstimateSeconds: null,
+            votes: 0,
+            watchers: 1,
+            environment: null,
+          },
+        },
+        spec?.status ?? 200,
+      );
+    }
+    if (url.includes("backlog-preview")) {
+      const spec = overrides.preview;
+      return json(
+        spec?.body ?? {
+          boardId: "jrb_1",
+          source: "backlog",
+          jql: "ORDER BY created ASC",
+          issues: [
+            issue(1, "2020-01-01T00:00:00.000Z"),
+            issue(2, "2021-01-01T00:00:00.000Z"),
+          ],
+        },
+        spec?.status ?? 200,
+      );
+    }
+    if (url.includes("/connections/") && url.endsWith("/boards")) {
+      const spec = overrides.remote;
+      return json(
+        spec?.body ?? {
+          boards: [
+            { id: 42, name: "Acme Board", type: "scrum", projectKey: "ACME" },
+            { id: 43, name: "Other Board", type: "kanban", projectKey: "OTH" },
+          ],
+        },
+        spec?.status ?? 200,
+      );
+    }
+    if (url.endsWith("/jira/boards")) {
+      const spec = overrides.boards;
+      return json(spec?.body ?? { boards: [board] }, spec?.status ?? 200);
+    }
+    return json({ connections: [connection] });
+  });
+}
+
+test("a registered board is listed with its type and project", async () => {
+  vi.stubGlobal("fetch", routedFetch());
+
+  renderPage();
+
+  expect(await screen.findByText("Acme Board")).toBeDefined();
+  expect(screen.getByText(/scrum · ACME/i)).toBeDefined();
+});
+
+test("previewing a board shows its oldest tickets in a dialog", async () => {
+  vi.stubGlobal("fetch", routedFetch());
+  renderPage();
+  await screen.findByText("Acme Board");
+
+  expect(screen.queryByRole("dialog")).toBeNull();
+  await userEvent.click(screen.getByRole("button", { name: /preview/i }));
+
+  const dialog = await screen.findByRole("dialog");
+  const preview = within(dialog).getByTestId("backlog-preview");
+  // The ordering is the product's claim about which work is worth a bounty.
+  const keys = within(preview)
+    .getAllByText(/^ACME-\d+$/)
+    .map((node) => node.textContent);
+  expect(keys).toEqual(["ACME-1", "ACME-2"]);
+  expect(within(dialog).getByText("Ticket 1")).toBeDefined();
+});
+
+test("a ticket opens its full detail in the same dialog", async () => {
+  vi.stubGlobal("fetch", routedFetch());
+  renderPage();
+  await screen.findByText("Acme Board");
+  await userEvent.click(screen.getByRole("button", { name: /preview/i }));
+  const dialog = await screen.findByRole("dialog");
+
+  await userEvent.click(within(dialog).getByText("Ticket 1"));
+
+  const detail = await screen.findByTestId("issue-detail");
+  // The spec tab is the one that opens, because the words are what a
+  // reviewer is here for.
+  expect(
+    within(detail).getByText(/Establish the canonical data model/),
+  ).toBeDefined();
+  // One dialog, two views: the list is gone rather than stacked behind.
+  expect(screen.queryByTestId("backlog-preview")).toBeNull();
+
+  // The fields the list DTO does not carry are on the other tab.
+  await userEvent.click(within(detail).getByRole("tab", { name: /fields/i }));
+  const fields = within(detail).getByTestId("issue-fields");
+  expect(within(fields).getByText("charlie angriawan")).toBeDefined();
+  expect(within(fields).getByText("Highest")).toBeDefined();
+  expect(within(fields).getByText("foundation")).toBeDefined();
+});
+
+test("going back returns to the ticket list", async () => {
+  vi.stubGlobal("fetch", routedFetch());
+  renderPage();
+  await screen.findByText("Acme Board");
+  await userEvent.click(screen.getByRole("button", { name: /preview/i }));
+  const dialog = await screen.findByRole("dialog");
+  await userEvent.click(within(dialog).getByText("Ticket 1"));
+  await screen.findByTestId("issue-detail");
+
+  await userEvent.click(
+    screen.getByRole("button", { name: /back to the ticket list/i }),
+  );
+
+  expect(await screen.findByTestId("backlog-preview")).toBeDefined();
+  expect(screen.queryByTestId("issue-detail")).toBeNull();
+});
+
+test("a field Jira did not send renders no row", async () => {
+  // A site can omit almost any field; a column of empty labels is worse than
+  // a short list.
+  vi.stubGlobal(
+    "fetch",
+    routedFetch({
+      detail: {
+        body: {
+          issue: {
+            ...issue(1, "2020-01-01T00:00:00.000Z"),
+            descriptionText: "",
+            reporter: null,
+            creator: null,
+            resolution: null,
+            resolutionDate: null,
+            labels: [],
+            priority: null,
+            parentKey: null,
+            projectKey: null,
+            dueDate: null,
+            components: [],
+            fixVersions: [],
+            originalEstimateSeconds: null,
+            remainingEstimateSeconds: null,
+            votes: null,
+            watchers: null,
+            environment: null,
+          },
+        },
+      },
+    }),
+  );
+  renderPage();
+  await screen.findByText("Acme Board");
+  await userEvent.click(screen.getByRole("button", { name: /preview/i }));
+  const dialog = await screen.findByRole("dialog");
+  await userEvent.click(within(dialog).getByText("Ticket 1"));
+
+  const detail = await screen.findByTestId("issue-detail");
+  await userEvent.click(within(detail).getByRole("tab", { name: /fields/i }));
+
+  const fields = within(detail).getByTestId("issue-fields");
+  expect(within(fields).queryByText("Reporter")).toBeNull();
+  expect(within(fields).queryByText("Resolution")).toBeNull();
+  expect(within(fields).queryByText("Labels")).toBeNull();
+  // Assignee still shows, because "Unassigned" is information.
+  expect(within(fields).getByText("Unassigned")).toBeDefined();
+});
+
+test("the preview says nothing was stored", async () => {
+  // The promise the page makes: looking at a board is not pricing it.
+  vi.stubGlobal("fetch", routedFetch());
+  renderPage();
+  await screen.findByText("Acme Board");
+
+  await userEvent.click(screen.getByRole("button", { name: /preview/i }));
+
+  const dialog = await screen.findByRole("dialog");
+  expect(within(dialog).getByText(/nothing was stored/i)).toBeDefined();
+});
+
+test("an empty backlog is explained rather than shown as a blank table", async () => {
+  vi.stubGlobal(
+    "fetch",
+    routedFetch({
+      preview: {
+        body: { boardId: "jrb_1", source: "backlog", jql: "", issues: [] },
+      },
+    }),
+  );
+  renderPage();
+  await screen.findByText("Acme Board");
+
+  await userEvent.click(screen.getByRole("button", { name: /preview/i }));
+
+  expect(await screen.findByText(/no tickets match/i)).toBeDefined();
+});
+
+test("a revoked grant asks for a reconnect rather than a retry", async () => {
+  // 409 with `reconnect` is the one failure a retry cannot fix.
+  vi.stubGlobal(
+    "fetch",
+    routedFetch({
+      preview: { status: 409, body: { error: "gone", code: "reconnect" } },
+    }),
+  );
+  renderPage();
+  await screen.findByText("Acme Board");
+
+  await userEvent.click(screen.getByRole("button", { name: /preview/i }));
+
+  expect(await screen.findByText(/expired or been revoked/i)).toBeDefined();
+});
+
+test("the board picker opens in a dialog", async () => {
+  // A choice to make and dismiss, not part of the page's own content.
+  vi.stubGlobal("fetch", routedFetch());
+  renderPage();
+  await screen.findByText("Acme Board");
+
+  expect(screen.queryByRole("dialog")).toBeNull();
+
+  await userEvent.click(screen.getByRole("button", { name: /add a board/i }));
+
+  const dialog = await screen.findByRole("dialog");
+  expect(within(dialog).getByText(/Other Board/)).toBeDefined();
+});
+
+test("adding a board registers it against the site it was listed from", async () => {
+  // Reading the connection from the list instead would attach the board to
+  // whichever site happened to be first.
+  const fetchMock = routedFetch();
+  vi.stubGlobal("fetch", fetchMock);
+  renderPage();
+  await screen.findByText("Acme Board");
+
+  await userEvent.click(screen.getByRole("button", { name: /add a board/i }));
+  const dialog = await screen.findByRole("dialog");
+  const rows = within(dialog).getAllByRole("button", { name: /^add$/i });
+  await userEvent.click(rows[rows.length - 1] as HTMLElement);
+
+  const post = fetchMock.mock.calls.find(
+    ([, init]) => (init as RequestInit | undefined)?.method === "POST",
+  );
+  expect(post).toBeDefined();
+  expect(JSON.parse(String((post?.[1] as RequestInit).body))).toEqual({
+    connectionId: "jrc_1",
+    externalId: "43",
+  });
+});
+
+test("the dialog closes once a board has been added", async () => {
+  // Leaving it open invites adding the same board twice.
+  vi.stubGlobal("fetch", routedFetch());
+  renderPage();
+  await screen.findByText("Acme Board");
+
+  await userEvent.click(screen.getByRole("button", { name: /add a board/i }));
+  const dialog = await screen.findByRole("dialog");
+  const rows = within(dialog).getAllByRole("button", { name: /^add$/i });
+  await userEvent.click(rows[rows.length - 1] as HTMLElement);
+
+  await waitFor(() => {
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+});
+
+test("a board already registered cannot be added twice", async () => {
+  vi.stubGlobal("fetch", routedFetch());
+  renderPage();
+  await screen.findByText("Acme Board");
+
+  await userEvent.click(screen.getByRole("button", { name: /add a board/i }));
+  const dialog = await screen.findByRole("dialog");
+
+  // 42 is already registered, so its control reads "Added" and is disabled.
+  const added = within(dialog).getByRole("button", { name: /^added$/i });
+  expect(added).toBeDefined();
+  expect((added as HTMLButtonElement).disabled).toBe(true);
+});
+
+test("a plain member sees boards but cannot add one", async () => {
+  vi.stubGlobal("fetch", routedFetch());
+
+  renderPage("member");
+
+  expect(await screen.findByText("Acme Board")).toBeDefined();
+  expect(screen.queryByRole("button", { name: /add a board/i })).toBeNull();
+  // Previewing is a read of tickets the organization already has a grant for.
+  expect(screen.getByRole("button", { name: /preview/i })).toBeDefined();
+});
+
+test("a scope mismatch is not reported as an expired connection", async () => {
+  // The failure that prompted this: a live grant, refused by the Agile API
+  // because the Atlassian app was never given the Jira Software scopes.
+  // "Reconnect" is a loop that ends where it started.
+  vi.stubGlobal(
+    "fetch",
+    routedFetch({
+      preview: {
+        status: 502,
+        body: {
+          code: "scope",
+          error:
+            "This Atlassian app is not authorised for Jira's Agile API. Its scope list needs the Jira Software scopes, and the site must then be connected again.",
+        },
+      },
+    }),
+  );
+  renderPage();
+  await screen.findByText("Acme Board");
+
+  await userEvent.click(screen.getByRole("button", { name: /preview/i }));
+
+  expect(await screen.findByTestId("jira-scope-error")).toBeDefined();
+  expect(screen.getByText(/scope list/i)).toBeDefined();
+  expect(screen.queryByText(/expired or been revoked/i)).toBeNull();
+});
+
+test("the description renders as markdown, not as literal hashes", async () => {
+  // `adfToText` hands over Markdown; showing it raw makes a spec a wall of
+  // `#` and `|`, which is exactly what a reviewer cannot read.
+  vi.stubGlobal("fetch", routedFetch());
+  renderPage();
+  await screen.findByText("Acme Board");
+  await userEvent.click(screen.getByRole("button", { name: /preview/i }));
+  const dialog = await screen.findByRole("dialog");
+  await userEvent.click(within(dialog).getByText("Ticket 1"));
+
+  const spec = await screen.findByTestId("issue-spec");
+  // A real heading element, and the hashes are gone from the text.
+  const heading = within(spec).getByText("Objective");
+  expect(heading.tagName).toMatch(/^H[1-6]$/);
+  expect(within(spec).queryByText(/^##/)).toBeNull();
+  // And the bullets are list items rather than hyphens.
+  expect(within(spec).getAllByRole("listitem").length).toBeGreaterThan(0);
+});
+
+test("a table in the description renders as a table", async () => {
+  // The substance of a ticket like NOX-2 is its entity table, and the ADF
+  // flattener now emits the delimiter row GFM needs to see one.
+  vi.stubGlobal(
+    "fetch",
+    routedFetch({
+      detail: {
+        body: {
+          issue: {
+            ...issue(1, "2020-01-01T00:00:00.000Z"),
+            descriptionText:
+              "| Entity | Notes |\n| --- | --- |\n| Worker | Tenant leaf |",
+            reporter: null,
+            creator: null,
+            resolution: null,
+            resolutionDate: null,
+            labels: [],
+            priority: null,
+            parentKey: null,
+            projectKey: null,
+            dueDate: null,
+            components: [],
+            fixVersions: [],
+            originalEstimateSeconds: null,
+            remainingEstimateSeconds: null,
+            votes: null,
+            watchers: null,
+            environment: null,
+          },
+        },
+      },
+    }),
+  );
+  renderPage();
+  await screen.findByText("Acme Board");
+  await userEvent.click(screen.getByRole("button", { name: /preview/i }));
+  const dialog = await screen.findByRole("dialog");
+  await userEvent.click(within(dialog).getByText("Ticket 1"));
+
+  const spec = await screen.findByTestId("issue-spec");
+  expect(within(spec).getByRole("table")).toBeDefined();
+  expect(
+    within(spec).getByRole("columnheader", { name: "Entity" }),
+  ).toBeDefined();
+  expect(within(spec).getByRole("cell", { name: "Tenant leaf" })).toBeDefined();
+});
+
+test("the page keeps enough top padding for the breadcrumb's negative margin", async () => {
+  // The trail above pulls its bottom margin back by `-mb-6 sm:-mb-8` so it
+  // and the heading read as one header block. A page whose own top padding is
+  // smaller than that pull has its heading dragged up into the trail, which
+  // is what `p-6` did here.
+  vi.stubGlobal("fetch", routedFetch());
+  const { container } = renderPage();
+  await screen.findByText("Acme Board");
+
+  const main = container.querySelector("main");
+  expect(main).not.toBeNull();
+  expect(main?.className).toContain("py-10");
+  expect(main?.className).toContain("sm:py-14");
 });

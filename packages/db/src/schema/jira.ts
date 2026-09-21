@@ -167,3 +167,76 @@ export const jiraBoard = pgTable(
 
 export type JiraBoardRow = typeof jiraBoard.$inferSelect;
 export type NewJiraBoardRow = typeof jiraBoard.$inferInsert;
+
+/**
+ * A ticket a run has looked at.
+ *
+ * A pointer, not a copy: the summary, description and status live in Jira and
+ * are read when they are needed. What is here is the minimum to answer
+ * questions that would otherwise need the client — which tickets has a run
+ * already considered, and when did Jira last say this one changed.
+ *
+ * Nothing writes a row yet. The backlog preview reads live from Jira and
+ * stores nothing, deliberately: a preview that persisted rows would make
+ * looking at a board indistinguishable from pricing it. The first writer is
+ * the run in M5, which records a ticket as it prices it.
+ *
+ * No `syncedAt`, no body columns, no full-board mirror. An earlier design
+ * synced whole boards and the decision was reversed: a mirror of a client's
+ * tickets is a liability to hold and a cache to invalidate, and every question
+ * the product asks can be answered from a pointer plus a live read.
+ */
+export const jiraIssue = pgTable(
+  "jira_issue",
+  {
+    id: text("id").primaryKey(),
+    /** Denormalised from the board, as everywhere: one column to filter on. */
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    boardId: text("board_id")
+      .notNull()
+      .references(() => jiraBoard.id, { onDelete: "cascade" }),
+    /**
+     * Jira's numeric issue id, as a string.
+     *
+     * The identity, rather than the key: a key changes when an issue moves
+     * project, and keying on it would make one ticket look like two.
+     */
+    externalId: text("external_id").notNull(),
+    /** `ACME-123`. Display only, refreshed whenever the ticket is seen. */
+    key: text("key").notNull(),
+    /** `new`, `indeterminate` or `done`, normalised by `toIssueDto`. */
+    statusCategory: text("status_category").notNull(),
+    /** Jira's own created time. What "the oldest backlog tickets" sorts on. */
+    remoteCreatedAt: timestamp("remote_created_at", {
+      withTimezone: true,
+    }).notNull(),
+    /** Jira's own updated time, for noticing a ticket has changed since. */
+    remoteUpdatedAt: timestamp("remote_updated_at", {
+      withTimezone: true,
+    }).notNull(),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    /**
+     * When Jira stopped returning the ticket: deleted, moved out of reach, or
+     * no longer visible to this connection's grant. Set rather than deleting
+     * the row, because a proposal may reference it and a priced ticket that
+     * vanished is a thing the review page has to be able to explain.
+     */
+    removedAt: timestamp("removed_at", { withTimezone: true }),
+  },
+  (table) => [
+    // One row per ticket per board. A ticket on two boards is two rows: the
+    // selection settings, and so the pricing, belong to the board.
+    unique("jira_issue_board_external_unique").on(
+      table.boardId,
+      table.externalId,
+    ),
+    index("jira_issue_organization_id_idx").on(table.organizationId),
+  ],
+);
+
+export type JiraIssueRow = typeof jiraIssue.$inferSelect;
+export type NewJiraIssueRow = typeof jiraIssue.$inferInsert;

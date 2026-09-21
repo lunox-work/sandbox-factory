@@ -81,7 +81,20 @@ BUILD_REF ?= $(shell git rev-parse --abbrev-ref HEAD 2>/dev/null)
 BUILD_DIRTY ?= $(shell test -n "$$(git status --porcelain 2>/dev/null)" && echo true || echo false)
 export BUILD_SHA BUILD_REF BUILD_DIRTY
 
-up: ## Start Postgres + API + web in containers (source mounted)
+# Recreating the dev containers is what picks up a dependency change (see
+# `relink`), and forgetting to looks like Vite failing to resolve an import
+# that plainly exists. This stamp makes `up` do it on its own: the recipe runs
+# only when the lockfile is newer, so a routine `up` stays a no-op.
+#
+# The stamp is deliberately not a `relink` dependency — `relink` is the manual
+# escape hatch for when the volumes are stale for some other reason, and must
+# recreate unconditionally.
+.docker-deps-stamp: package-lock.json
+	@test ! -f $@ || echo "lockfile changed — recreating the dev containers"
+	@test ! -f $@ || $(COMPOSE) --profile dev rm -fsv web-dev api-dev
+	@touch $@
+
+up: .docker-deps-stamp ## Start Postgres + API + web in containers (source mounted)
 	$(COMPOSE) --profile dev up -d
 	@echo "api  http://localhost:$${API_PORT:-4000}"
 	@echo "web  http://localhost:$${WEB_PORT:-5173}"
@@ -125,6 +138,7 @@ migrate: db-up ## Apply pending migrations to the local database
 
 reset: ## Stop everything and DELETE the database and object-storage volumes
 	$(COMPOSE) --profile dev --profile prod down -v
+	@rm -f .docker-deps-stamp
 
 # After adding or removing a dependency. The containers install into anonymous
 # volumes that `up` reuses, so a package added on the host is invisible inside
@@ -139,6 +153,7 @@ reset: ## Stop everything and DELETE the database and object-storage volumes
 relink: ## Recreate the dev containers' node_modules after a dependency change
 	$(COMPOSE) --profile dev rm -fsv web-dev api-dev
 	$(COMPOSE) --profile dev up -d
+	@touch .docker-deps-stamp
 	@echo "dependencies are reinstalling inside the containers — give it a minute"
 
 psql: ## Open a psql shell in the running container

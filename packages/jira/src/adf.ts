@@ -186,6 +186,10 @@ function collectBlocks(
     }
 
     case "table": {
+      // One block for the whole table, not one per row. Blocks are joined
+      // with a blank line, which between two rows ends the table and leaves
+      // a run of stray paragraphs that happen to start with a pipe.
+      const rows: string[] = [];
       for (const row of childrenOf(node)) {
         const rowNode = asNode(row);
         if (rowNode === undefined) {
@@ -199,11 +203,23 @@ function collectBlocks(
           }
           const cellBlocks: string[] = [];
           collectBlocks(cellNode, cellBlocks, depth + 1, "");
-          cells.push(cellBlocks.join(" ").trim());
+          // A cell's own newlines would end the row, so a multi-paragraph
+          // cell collapses to one line rather than breaking the table.
+          cells.push(cellBlocks.join(" ").replace(/\s+/g, " ").trim());
         }
-        // Pipe-separated: a table of fields and values stays readable, and
-        // the row structure is what carries the meaning.
-        blocks.push(`| ${cells.join(" | ")} |`);
+        rows.push(`| ${cells.join(" | ")} |`);
+
+        // The delimiter GFM requires after the header row. Without it these
+        // are not a table at all, which is how they read everywhere
+        // downstream — in the UI and to the sizing model alike. ADF's first
+        // row is the header when the table has one, and treating it as such
+        // when it does not costs a row of styling rather than any meaning.
+        if (rows.length === 1 && cells.length > 0) {
+          rows.push(`| ${cells.map(() => "---").join(" | ")} |`);
+        }
+      }
+      if (rows.length > 0) {
+        blocks.push(rows.join("\n"));
       }
       return;
     }

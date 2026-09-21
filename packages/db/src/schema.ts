@@ -50,10 +50,12 @@ export type {
   OrganizationRow,
 } from "./schema/organizations.js";
 
-export { jiraBoard, jiraConnection } from "./schema/jira.js";
+export { jiraBoard, jiraConnection, jiraIssue } from "./schema/jira.js";
 export type {
   JiraBoardRow,
   JiraConnectionRow,
+  JiraIssueRow,
   NewJiraBoardRow,
   NewJiraConnectionRow,
+  NewJiraIssueRow,
 } from "./schema/jira.js";

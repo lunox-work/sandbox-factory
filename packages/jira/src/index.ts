@@ -39,8 +39,10 @@ export type {
   TokenPair,
 } from "./oauth.js";
 export {
+  DETAIL_FIELDS,
   ISSUE_FIELDS,
   toBoardDto,
+  toIssueDetailDto,
   toIssueDto,
   toSprintDto,
 } from "./mapping.js";

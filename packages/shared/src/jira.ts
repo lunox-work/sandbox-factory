@@ -249,6 +249,41 @@ export const jiraIssueDtoSchema = z.object({
 });
 
 /**
+ * One issue in full, for a person reading it rather than a run pricing it.
+ *
+ * **This is the one DTO that carries ticket text**, and it exists only for a
+ * single-ticket read that a person asked for by name. `jiraIssueDtoSchema`
+ * above still has no description, so a board or backlog read cannot pull a
+ * client's ticket contents into a list, a log or a cache. The guarantee is
+ * about lists and about storage; showing someone the ticket they clicked on
+ * is the point of the integration.
+ *
+ * Nothing here is persisted. The detail route reads Jira live and returns it.
+ *
+ * Every field is nullable or defaulted, because Jira's are screen-configurable
+ * and a site can omit almost any of them. A field Jira did not send arrives as
+ * null and the UI omits its row, rather than rendering an empty label.
+ */
+export const jiraIssueDetailDtoSchema = jiraIssueDtoSchema.extend({
+  /** The description, flattened from ADF to Markdown-ish text. */
+  descriptionText: z.string(),
+  /** Who filed it, and who the site records as having created the row. */
+  reporter: z.string().nullable(),
+  creator: z.string().nullable(),
+  /** Set only once the ticket is resolved; both null on open work. */
+  resolution: z.string().nullable(),
+  resolutionDate: z.string().nullable(),
+  components: z.array(z.string()).default([]),
+  fixVersions: z.array(z.string()).default([]),
+  /** Seconds, as Jira counts them. Null when the site does not track time. */
+  originalEstimateSeconds: z.number().nullable(),
+  remainingEstimateSeconds: z.number().nullable(),
+  votes: z.number().nullable(),
+  watchers: z.number().nullable(),
+  environment: z.string().nullable(),
+});
+
+/**
  * A page of issues, with whichever cursor the underlying API paginates by.
  *
  * Both cursors are optional and at most one is ever set: the Agile endpoints
@@ -391,6 +426,8 @@ export type BoardSelectionUpdate = z.infer<typeof boardSelectionUpdateSchema>;
 export type JiraBoardSummaryDto = z.infer<typeof jiraBoardSummarySchema>;
 export type RegisterBoardInput = z.infer<typeof registerBoardSchema>;
 export type UpdateBoardInput = z.infer<typeof updateBoardSchema>;
+
+export type JiraIssueDetailDto = z.infer<typeof jiraIssueDetailDtoSchema>;
 
 export type JiraStatusCategory = z.infer<typeof jiraStatusCategorySchema>;
 

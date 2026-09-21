@@ -3,9 +3,12 @@ import { test } from "node:test";
 
 import {
   ApiTokenCredential,
+  DETAIL_FIELDS,
+  ISSUE_FIELDS,
   JiraApiError,
   JiraClient,
   toBoardDto,
+  toIssueDetailDto,
   toIssueDto,
   toSprintDto,
 } from "../src/index.js";
@@ -283,6 +286,42 @@ test("Jira's own error messages are surfaced", async () => {
   assert.deepEqual(error.errors, ["The JQL is invalid."]);
 });
 
+test("the gateway's own error message is surfaced", async () => {
+  // `api.atlassian.com` sits in front of Jira and reports its own refusals as
+  // `{ code, message }` rather than Jira's `errorMessages` list. Reading only
+  // the list leaves every gateway rejection wearing the generic 401 text —
+  // and discards "scope does not match", which is the only thing separating an
+  // app that was never granted a scope from a grant the user revoked.
+  const { client: jira } = client([
+    {
+      status: 401,
+      body: { code: 401, message: "Unauthorized; scope does not match" },
+    },
+  ]);
+
+  const error = await jira.boards().catch((caught: unknown) => caught);
+
+  assert.ok(error instanceof JiraApiError);
+  assert.equal(error.message, "Unauthorized; scope does not match");
+});
+
+test("Jira's own messages win over the gateway's summary", async () => {
+  // Both shapes at once: the specific list is the more useful of the two.
+  const { client: jira } = client([
+    {
+      status: 400,
+      body: { errorMessages: ["The JQL is invalid."], message: "Bad Request" },
+    },
+  ]);
+
+  const error = await jira
+    .search("nonsense")
+    .catch((caught: unknown) => caught);
+
+  assert.ok(error instanceof JiraApiError);
+  assert.equal(error.message, "The JQL is invalid.");
+});
+
 test("a 404 is not reported as deleted", async () => {
   const { client: jira } = client([{ status: 404, body: {} }]);
 
@@ -496,4 +535,79 @@ test("the list reads never ask Jira for a description", async () => {
   for (const url of urls) {
     assert.ok(!url.includes("description"), `${url} requested a description`);
   }
+});
+
+/* The detail read: the second of the two calls that see ticket text. */
+
+test("DETAIL_FIELDS asks for the description; ISSUE_FIELDS still does not", () => {
+  // The guarantee the package makes: a board or backlog read cannot pull a
+  // client's ticket contents, however many fields the detail call grows.
+  assert.ok(DETAIL_FIELDS.includes("description"));
+  assert.ok(!ISSUE_FIELDS.includes("description"));
+  // And the detail read is a superset, so the two cannot describe a ticket
+  // differently.
+  for (const field of ISSUE_FIELDS) {
+    assert.ok(DETAIL_FIELDS.includes(field), `missing ${field}`);
+  }
+});
+
+test("toIssueDetailDto resolves the fields Jira nests", () => {
+  const detail = toIssueDetailDto(
+    {
+      id: "1",
+      key: "ACME-1",
+      fields: {
+        summary: "Add export",
+        status: { name: "To Do", statusCategory: { key: "new" } },
+        issuetype: { name: "Story" },
+        description: {
+          type: "doc",
+          content: [
+            {
+              type: "paragraph",
+              content: [{ type: "text", text: "Adds CSV." }],
+            },
+          ],
+        },
+        reporter: { displayName: "Dana" },
+        creator: { displayName: "Sam" },
+        resolution: { name: "Done" },
+        components: [{ name: "api" }, { name: "web" }],
+        fixVersions: [{ name: "1.2" }],
+        timeoriginalestimate: 7200,
+        votes: { votes: 4 },
+        watches: { watchCount: 2 },
+      },
+    } as never,
+    { siteUrl: "https://acme.atlassian.net" },
+  );
+
+  assert.equal(detail.descriptionText, "Adds CSV.");
+  assert.equal(detail.reporter, "Dana");
+  assert.equal(detail.creator, "Sam");
+  assert.equal(detail.resolution, "Done");
+  assert.deepEqual(detail.components, ["api", "web"]);
+  assert.deepEqual(detail.fixVersions, ["1.2"]);
+  assert.equal(detail.originalEstimateSeconds, 7200);
+  assert.equal(detail.votes, 4);
+  assert.equal(detail.watchers, 2);
+  // Shared fields come from `toIssueDto`, so the two cannot disagree.
+  assert.equal(detail.summary, "Add export");
+  assert.equal(detail.url, "https://acme.atlassian.net/browse/ACME-1");
+});
+
+test("a ticket missing every optional field still maps", () => {
+  // Jira's fields are screen-configurable; a site can omit almost all of them.
+  const detail = toIssueDetailDto({
+    id: "1",
+    key: "ACME-2",
+    fields: { summary: "Bare" },
+  } as never);
+
+  assert.equal(detail.descriptionText, "");
+  assert.equal(detail.reporter, null);
+  assert.equal(detail.resolution, null);
+  assert.deepEqual(detail.components, []);
+  assert.equal(detail.originalEstimateSeconds, null);
+  assert.equal(detail.votes, null);
 });

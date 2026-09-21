@@ -215,12 +215,16 @@ if [[ "$CURRENT" != "main" && "${SHIP_NO_AUTO_MAIN:-0}" != "1" ]] \
   fi
 fi
 
-# Branching off a feature branch would sweep its commits into the PR.
-if [[ "$CURRENT" != "main" ]] && ! git diff --quiet --exit-code; then
+# Branching off a feature branch would sweep its commits into the PR. Passing
+# --branch for the branch you are already on is the deliberate opt-in: ship it
+# as-is, its own commits included. Any other --branch still cuts a new branch
+# from here, which is the case this refuses.
+if [[ "$CURRENT" != "main" && "$BRANCH" != "$CURRENT" ]] \
+   && ! git diff --quiet --exit-code; then
   if ! git merge-base --is-ancestor HEAD origin/main 2>/dev/null; then
     die "on '$CURRENT', which has commits not in main.
    Creating a branch here would include them in the PR.
-   Switch to main first, or pass --branch to ship this branch as-is."
+   Switch to main first, or pass --branch $CURRENT to ship this branch as-is."
   fi
 fi
 git diff --quiet && git diff --cached --quiet && HAS_CHANGES=0 || HAS_CHANGES=1
@@ -234,22 +238,26 @@ if [[ "$HAS_CHANGES" -eq 0 ]]; then
   info "No uncommitted changes; shipping existing commits on $CURRENT"
   BRANCH="$CURRENT"
   MODE="existing"
+elif [[ "$BRANCH" == "$CURRENT" ]]; then
+  # Already on the branch being shipped: commit here. Creating it would fail,
+  # and there is nowhere to move the changes to.
+  MODE="amend"
 else
   MODE="new"
 fi
 
 # Changes sitting on main must move to a branch — main is push-protected.
-if [[ "$MODE" == "new" ]]; then
-  info "Changes detected on $CURRENT → moving to $BRANCH"
-else
-  info "Branch $BRANCH"
-fi
+case "$MODE" in
+  new)    info "Changes detected on $CURRENT → moving to $BRANCH" ;;
+  amend)  info "Changes detected on $BRANCH → committing here" ;;
+  *)      info "Branch $BRANCH" ;;
+esac
 
 # --- confirm ------------------------------------------------------------------
 
 # Everything in the tree gets committed; show it so a stray untracked file
 # does not ride along unnoticed.
-if [[ "$MODE" == "new" ]]; then
+if [[ "$MODE" == "new" || "$MODE" == "amend" ]]; then
   echo
   echo "  Files to be committed:"
   git status --short | sed 's/^/    /'
@@ -274,13 +282,15 @@ fi
 
 # --- move changes onto a branch ----------------------------------------------
 
-if [[ "$MODE" == "new" ]]; then
-  if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
-    die "branch $BRANCH already exists. Pass a different --branch."
+if [[ "$MODE" == "new" || "$MODE" == "amend" ]]; then
+  if [[ "$MODE" == "new" ]]; then
+    if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
+      die "branch $BRANCH already exists. Pass a different --branch."
+    fi
+    # Uncommitted changes follow `checkout -b` across, leaving `main` untouched.
+    git checkout -b "$BRANCH" >/dev/null 2>&1 || die "could not create $BRANCH"
+    ok "created $BRANCH"
   fi
-  # Uncommitted changes follow `checkout -b` across, leaving `main` untouched.
-  git checkout -b "$BRANCH" >/dev/null 2>&1 || die "could not create $BRANCH"
-  ok "created $BRANCH"
 
   git add -A
   # Separate -m paragraphs: git only recognises a trailer in its own block.
