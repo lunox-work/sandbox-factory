@@ -121,7 +121,7 @@ test("a code block keeps its fence and language", () => {
   assert.equal(adfToText(document), "```sql\nselect 1;\n```");
 });
 
-test("a table becomes one pipe-separated line per row", () => {
+test("a table becomes a GFM table, header delimiter and all", () => {
   const cell = (text: string) => ({
     type: "tableCell",
     content: [paragraph(text)],
@@ -134,7 +134,13 @@ test("a table becomes one pipe-separated line per row", () => {
     ],
   });
 
-  assert.equal(adfToText(document), "| Field | Value |\n\n| Retries | 3 |");
+  // One block, single-newline separated, with the delimiter row GFM needs.
+  // Joined with a blank line instead, these would be stray paragraphs that
+  // merely begin with a pipe — which is how they rendered before.
+  assert.equal(
+    adfToText(document),
+    "| Field | Value |\n| --- | --- |\n| Retries | 3 |",
+  );
 });
 
 test("a mention keeps its label rather than vanishing", () => {
@@ -321,7 +327,7 @@ test("a malformed table row or cell is skipped, not fatal", () => {
     ],
   });
 
-  assert.equal(adfToText(document), "| Kept |");
+  assert.equal(adfToText(document), "| Kept |\n| --- |");
 });
 
 test("several attachments are counted rather than listed", () => {

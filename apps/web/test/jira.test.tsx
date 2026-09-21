@@ -467,15 +467,20 @@ test("a ticket opens its full detail in the same dialog", async () => {
   await userEvent.click(within(dialog).getByText("Ticket 1"));
 
   const detail = await screen.findByTestId("issue-detail");
-  // Fields the list DTO does not carry, which is the point of the detail read.
+  // The spec tab is the one that opens, because the words are what a
+  // reviewer is here for.
   expect(
     within(detail).getByText(/Establish the canonical data model/),
   ).toBeDefined();
-  expect(within(detail).getByText("charlie angriawan")).toBeDefined();
-  expect(within(detail).getByText("Highest")).toBeDefined();
-  expect(within(detail).getByText("foundation")).toBeDefined();
   // One dialog, two views: the list is gone rather than stacked behind.
   expect(screen.queryByTestId("backlog-preview")).toBeNull();
+
+  // The fields the list DTO does not carry are on the other tab.
+  await userEvent.click(within(detail).getByRole("tab", { name: /fields/i }));
+  const fields = within(detail).getByTestId("issue-fields");
+  expect(within(fields).getByText("charlie angriawan")).toBeDefined();
+  expect(within(fields).getByText("Highest")).toBeDefined();
+  expect(within(fields).getByText("foundation")).toBeDefined();
 });
 
 test("going back returns to the ticket list", async () => {
@@ -534,11 +539,14 @@ test("a field Jira did not send renders no row", async () => {
   await userEvent.click(within(dialog).getByText("Ticket 1"));
 
   const detail = await screen.findByTestId("issue-detail");
-  expect(within(detail).queryByText("Reporter")).toBeNull();
-  expect(within(detail).queryByText("Resolution")).toBeNull();
-  expect(within(detail).queryByText("Labels")).toBeNull();
+  await userEvent.click(within(detail).getByRole("tab", { name: /fields/i }));
+
+  const fields = within(detail).getByTestId("issue-fields");
+  expect(within(fields).queryByText("Reporter")).toBeNull();
+  expect(within(fields).queryByText("Resolution")).toBeNull();
+  expect(within(fields).queryByText("Labels")).toBeNull();
   // Assignee still shows, because "Unassigned" is information.
-  expect(within(detail).getByText("Unassigned")).toBeDefined();
+  expect(within(fields).getByText("Unassigned")).toBeDefined();
 });
 
 test("the preview says nothing was stored", async () => {
@@ -689,4 +697,85 @@ test("a scope mismatch is not reported as an expired connection", async () => {
   expect(await screen.findByTestId("jira-scope-error")).toBeDefined();
   expect(screen.getByText(/scope list/i)).toBeDefined();
   expect(screen.queryByText(/expired or been revoked/i)).toBeNull();
+});
+
+test("the description renders as markdown, not as literal hashes", async () => {
+  // `adfToText` hands over Markdown; showing it raw makes a spec a wall of
+  // `#` and `|`, which is exactly what a reviewer cannot read.
+  vi.stubGlobal("fetch", routedFetch());
+  renderPage();
+  await screen.findByText("Acme Board");
+  await userEvent.click(screen.getByRole("button", { name: /preview/i }));
+  const dialog = await screen.findByRole("dialog");
+  await userEvent.click(within(dialog).getByText("Ticket 1"));
+
+  const spec = await screen.findByTestId("issue-spec");
+  // A real heading element, and the hashes are gone from the text.
+  const heading = within(spec).getByText("Objective");
+  expect(heading.tagName).toMatch(/^H[1-6]$/);
+  expect(within(spec).queryByText(/^##/)).toBeNull();
+  // And the bullets are list items rather than hyphens.
+  expect(within(spec).getAllByRole("listitem").length).toBeGreaterThan(0);
+});
+
+test("a table in the description renders as a table", async () => {
+  // The substance of a ticket like NOX-2 is its entity table, and the ADF
+  // flattener now emits the delimiter row GFM needs to see one.
+  vi.stubGlobal(
+    "fetch",
+    routedFetch({
+      detail: {
+        body: {
+          issue: {
+            ...issue(1, "2020-01-01T00:00:00.000Z"),
+            descriptionText:
+              "| Entity | Notes |\n| --- | --- |\n| Worker | Tenant leaf |",
+            reporter: null,
+            creator: null,
+            resolution: null,
+            resolutionDate: null,
+            labels: [],
+            priority: null,
+            parentKey: null,
+            projectKey: null,
+            dueDate: null,
+            components: [],
+            fixVersions: [],
+            originalEstimateSeconds: null,
+            remainingEstimateSeconds: null,
+            votes: null,
+            watchers: null,
+            environment: null,
+          },
+        },
+      },
+    }),
+  );
+  renderPage();
+  await screen.findByText("Acme Board");
+  await userEvent.click(screen.getByRole("button", { name: /preview/i }));
+  const dialog = await screen.findByRole("dialog");
+  await userEvent.click(within(dialog).getByText("Ticket 1"));
+
+  const spec = await screen.findByTestId("issue-spec");
+  expect(within(spec).getByRole("table")).toBeDefined();
+  expect(
+    within(spec).getByRole("columnheader", { name: "Entity" }),
+  ).toBeDefined();
+  expect(within(spec).getByRole("cell", { name: "Tenant leaf" })).toBeDefined();
+});
+
+test("the page keeps enough top padding for the breadcrumb's negative margin", async () => {
+  // The trail above pulls its bottom margin back by `-mb-6 sm:-mb-8` so it
+  // and the heading read as one header block. A page whose own top padding is
+  // smaller than that pull has its heading dragged up into the trail, which
+  // is what `p-6` did here.
+  vi.stubGlobal("fetch", routedFetch());
+  const { container } = renderPage();
+  await screen.findByText("Acme Board");
+
+  const main = container.querySelector("main");
+  expect(main).not.toBeNull();
+  expect(main?.className).toContain("py-10");
+  expect(main?.className).toContain("sm:py-14");
 });

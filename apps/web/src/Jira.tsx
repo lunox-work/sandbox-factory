@@ -24,6 +24,8 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useState, type ReactNode } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -41,6 +43,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 import {
   useJira,
@@ -264,6 +267,110 @@ function ageInDays(created: string | null): string {
     : `${Math.floor(days / 365)}y ${Math.floor((days % 365) / 30)}m`;
 }
 
+/**
+ * A ticket's description, rendered.
+ *
+ * The text is Markdown already: `adfToText` flattens Atlassian Document
+ * Format on the server, keeping headings, lists, task checkboxes, tables and
+ * code fences. Rendering it as Markdown is what makes a spec readable — a
+ * table of entities is the substance of a ticket like NOX-2, and as raw text
+ * it is a wall of pipes.
+ *
+ * **Raw HTML stays off.** `react-markdown` disallows it by default and no
+ * `rehype-raw` is configured here, which matters because this is a third
+ * party's text: a ticket must not be able to put markup on this page.
+ *
+ * Every element is given a class, because the app has no typographic
+ * defaults for bare `h2`/`ul`/`table` — Tailwind's preflight strips them, so
+ * unstyled Markdown renders as undifferentiated text.
+ */
+function Markdown({ children }: { children: string }) {
+  return (
+    <div className="text-sm leading-relaxed" data-testid="markdown">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          h1: ({ children: c }) => (
+            <h4 className="mt-4 mb-2 text-sm font-semibold first:mt-0">{c}</h4>
+          ),
+          h2: ({ children: c }) => (
+            <h4 className="mt-4 mb-2 text-sm font-semibold first:mt-0">{c}</h4>
+          ),
+          h3: ({ children: c }) => (
+            <h5 className="mt-3 mb-1 text-sm font-medium first:mt-0">{c}</h5>
+          ),
+          p: ({ children: c }) => <p className="my-2">{c}</p>,
+          ul: ({ children: c }) => (
+            <ul className="my-2 list-disc space-y-1 pl-5">{c}</ul>
+          ),
+          ol: ({ children: c }) => (
+            <ol className="my-2 list-decimal space-y-1 pl-5">{c}</ol>
+          ),
+          // A task list renders its own checkbox, so the disc would be a
+          // second marker for the same item.
+          li: ({ children: c, ...rest }) =>
+            "checked" in rest && rest.checked !== null ? (
+              <li className="list-none">{c}</li>
+            ) : (
+              <li>{c}</li>
+            ),
+          input: ({ checked }) => (
+            // Disabled, not read-only: the state belongs to Jira, and a box
+            // that looks clickable here would be a lie.
+            <input
+              type="checkbox"
+              checked={checked ?? false}
+              disabled
+              readOnly
+              className="mr-2 align-middle"
+            />
+          ),
+          code: ({ className, children: c }) =>
+            className?.startsWith("language-") === true ? (
+              <code className="block">{c}</code>
+            ) : (
+              <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs">
+                {c}
+              </code>
+            ),
+          pre: ({ children: c }) => (
+            <pre className="my-2 overflow-x-auto rounded-md bg-muted p-3 font-mono text-xs">
+              {c}
+            </pre>
+          ),
+          blockquote: ({ children: c }) => (
+            <blockquote className="my-2 border-l-2 pl-3 text-muted-foreground">
+              {c}
+            </blockquote>
+          ),
+          hr: () => <hr className="my-3" />,
+          a: ({ href, children: c }) => (
+            <a
+              href={href}
+              target="_blank"
+              rel="noreferrer noopener"
+              className="underline underline-offset-2"
+            >
+              {c}
+            </a>
+          ),
+          table: ({ children: c }) => (
+            <div className="my-2 overflow-x-auto">
+              <table className="w-full border-collapse text-xs">{c}</table>
+            </div>
+          ),
+          th: ({ children: c }) => (
+            <th className="border px-2 py-1 text-left font-medium">{c}</th>
+          ),
+          td: ({ children: c }) => <td className="border px-2 py-1">{c}</td>,
+        }}
+      >
+        {children}
+      </ReactMarkdown>
+    </div>
+  );
+}
+
 /** A labelled row in the detail view. Renders nothing when Jira sent no value. */
 function Field({ label, children }: { label: string; children: ReactNode }) {
   if (children === null || children === undefined || children === "") {
@@ -336,60 +443,90 @@ function IssueDetail({ issue }: { issue: JiraIssueDetail }) {
         </div>
       </div>
 
-      {issue.descriptionText !== "" && (
-        <div className="rounded-md border bg-muted/40 p-3">
-          <p className="mb-1 text-xs font-medium text-muted-foreground">
-            Description
-          </p>
-          <pre className="max-h-64 overflow-y-auto font-sans text-sm whitespace-pre-wrap">
-            {issue.descriptionText}
-          </pre>
-        </div>
-      )}
+      <Tabs defaultValue="spec">
+        <TabsList>
+          <TabsTrigger value="spec">Spec</TabsTrigger>
+          <TabsTrigger value="fields">Fields</TabsTrigger>
+        </TabsList>
 
-      <div className="divide-y rounded-md border px-3">
-        <Field label="Assignee">{issue.assignee ?? "Unassigned"}</Field>
-        <Field label="Reporter">{issue.reporter}</Field>
-        <Field label="Creator">
-          {issue.creator === issue.reporter ? null : issue.creator}
-        </Field>
-        <Field label="Priority">{issue.priority}</Field>
-        <Field label="Resolution">{issue.resolution}</Field>
-        <Field label="Resolved">{asDate(issue.resolutionDate)}</Field>
-        <Field label="Created">{asDate(issue.created)}</Field>
-        <Field label="Updated">{asDate(issue.updated)}</Field>
-        <Field label="Due">{asDate(issue.dueDate)}</Field>
-        <Field label="Project">{issue.projectKey}</Field>
-        <Field label="Parent">{issue.parentKey}</Field>
-        <Field label="Components">
-          {issue.components.length === 0 ? null : issue.components.join(", ")}
-        </Field>
-        <Field label="Fix versions">
-          {issue.fixVersions.length === 0 ? null : issue.fixVersions.join(", ")}
-        </Field>
-        <Field label="Estimate">{hours(issue.originalEstimateSeconds)}</Field>
-        <Field label="Remaining">{hours(issue.remainingEstimateSeconds)}</Field>
-        <Field label="Environment">{issue.environment}</Field>
-        <Field label="Votes">
-          {issue.votes === null || issue.votes === 0 ? null : issue.votes}
-        </Field>
-        <Field label="Watchers">
-          {issue.watchers === null || issue.watchers === 0
-            ? null
-            : issue.watchers}
-        </Field>
-        <Field label="Labels">
-          {issue.labels.length === 0 ? null : (
-            <span className="flex flex-wrap gap-1">
-              {issue.labels.map((label) => (
-                <Badge key={label} variant="outline" className="font-normal">
-                  {label}
-                </Badge>
-              ))}
-            </span>
+        <TabsContent value="spec">
+          {issue.descriptionText === "" ? (
+            <p className="py-6 text-sm text-muted-foreground">
+              This ticket has no description. That is itself worth knowing — a
+              ticket with no spec is one a bounty cannot safely be priced
+              against.
+            </p>
+          ) : (
+            <div
+              className="max-h-[26rem] overflow-y-auto rounded-md border p-4"
+              data-testid="issue-spec"
+            >
+              <Markdown>{issue.descriptionText}</Markdown>
+            </div>
           )}
-        </Field>
-      </div>
+        </TabsContent>
+
+        <TabsContent value="fields">
+          <div
+            className="divide-y rounded-md border px-3"
+            data-testid="issue-fields"
+          >
+            <Field label="Assignee">{issue.assignee ?? "Unassigned"}</Field>
+            <Field label="Reporter">{issue.reporter}</Field>
+            <Field label="Creator">
+              {issue.creator === issue.reporter ? null : issue.creator}
+            </Field>
+            <Field label="Priority">{issue.priority}</Field>
+            <Field label="Resolution">{issue.resolution}</Field>
+            <Field label="Resolved">{asDate(issue.resolutionDate)}</Field>
+            <Field label="Created">{asDate(issue.created)}</Field>
+            <Field label="Updated">{asDate(issue.updated)}</Field>
+            <Field label="Due">{asDate(issue.dueDate)}</Field>
+            <Field label="Project">{issue.projectKey}</Field>
+            <Field label="Parent">{issue.parentKey}</Field>
+            <Field label="Components">
+              {issue.components.length === 0
+                ? null
+                : issue.components.join(", ")}
+            </Field>
+            <Field label="Fix versions">
+              {issue.fixVersions.length === 0
+                ? null
+                : issue.fixVersions.join(", ")}
+            </Field>
+            <Field label="Estimate">
+              {hours(issue.originalEstimateSeconds)}
+            </Field>
+            <Field label="Remaining">
+              {hours(issue.remainingEstimateSeconds)}
+            </Field>
+            <Field label="Environment">{issue.environment}</Field>
+            <Field label="Votes">
+              {issue.votes === null || issue.votes === 0 ? null : issue.votes}
+            </Field>
+            <Field label="Watchers">
+              {issue.watchers === null || issue.watchers === 0
+                ? null
+                : issue.watchers}
+            </Field>
+            <Field label="Labels">
+              {issue.labels.length === 0 ? null : (
+                <span className="flex flex-wrap gap-1">
+                  {issue.labels.map((label) => (
+                    <Badge
+                      key={label}
+                      variant="outline"
+                      className="font-normal"
+                    >
+                      {label}
+                    </Badge>
+                  ))}
+                </span>
+              )}
+            </Field>
+          </div>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }
@@ -917,10 +1054,18 @@ export function Jira({
   );
 
   return (
-    <div className="mx-auto flex w-full max-w-2xl flex-col gap-6 p-6">
+    /*
+      `main`, and the same column and padding as every other page: `px-4 py-10
+      sm:px-6 sm:py-14`. The breadcrumb above pulls its bottom margin back by
+      `-mb-6 sm:-mb-8` so the trail and the page heading read as one header
+      block — which only works if the page's own top padding is larger than
+      the pull. This page used `p-6`, 24px against a 32px pull, so at `sm` the
+      heading rode up into the trail and overlapped it.
+    */
+    <main className="mx-auto flex w-full max-w-2xl flex-col gap-6 px-4 py-10 sm:px-6 sm:py-14">
       <header>
-        <h1 className="text-2xl font-semibold">Jira</h1>
-        <p className="text-sm text-muted-foreground">
+        <h1 className="text-2xl font-semibold tracking-tight">Jira</h1>
+        <p className="text-muted-foreground mt-1.5 text-sm">
           Sites {organizationName} can read boards from.
         </p>
       </header>
@@ -987,6 +1132,6 @@ export function Jira({
         connections={connections}
         manageable={manageable}
       />
-    </div>
+    </main>
   );
 }
