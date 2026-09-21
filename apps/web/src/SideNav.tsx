@@ -30,7 +30,12 @@ import { cn } from "@/lib/utils";
 import { UserMenu } from "./UserMenu";
 
 export type Screen =
-  "todos" | "account" | "organizations" | "org-settings" | "create-org";
+  | "todos"
+  | "account"
+  | "organizations"
+  | "org-settings"
+  | "org-jira"
+  | "create-org";
 
 export function SideNav({
   screen,
