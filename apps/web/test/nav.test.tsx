@@ -97,6 +97,17 @@ vi.stubGlobal(
  */
 const FAILING_IMAGE = "https://example.test/gone.png";
 
+/**
+ * The identicon `user_1` generates, as the single path `Identicon` draws.
+ *
+ * Pinned from `packages/shared`'s own golden vectors rather than recomputed
+ * here: the point is to fail if this avatar stops being *that* person's.
+ */
+const IDENTICON_D =
+  "M1 0h1v1h-1zM3 0h1v1h-1zM1 1h1v1h-1zM3 1h1v1h-1zM1 2h1v1h-1z" +
+  "M3 2h1v1h-1zM0 3h1v1h-1zM1 3h1v1h-1zM2 3h1v1h-1zM3 3h1v1h-1z" +
+  "M4 3h1v1h-1zM0 4h1v1h-1zM2 4h1v1h-1zM4 4h1v1h-1z";
+
 vi.stubGlobal("Image", function FakeImage() {
   const element = document.createElement("img");
 
@@ -347,7 +358,7 @@ test("the avatar shows the provider's picture when there is one", async () => {
   expect(img?.getAttribute("referrerpolicy")).toBe("no-referrer");
 });
 
-test("an account with no picture falls back to its initials", async () => {
+test("an account with no picture falls back to its identicon", async () => {
   signedIn(null);
   render(<App />);
 
@@ -355,9 +366,25 @@ test("an account with no picture falls back to its initials", async () => {
   // image to load.
   const trigger = screen.getByRole("button", { name: AVATAR });
   await waitFor(() => {
-    // Both words of "Alice Ang", which is what distinguishes two people whose
-    // names start with the same letter.
-    expect(trigger.textContent).toBe("AA");
+    expect(trigger.querySelector("svg")).not.toBeNull();
+  });
+
+  // The grid generated for `user_1` and nothing else: a pinned path is what
+  // catches the avatar being seeded with the wrong value — a name, a handle,
+  // or an id from the wrong entity would all still render *a* grid.
+  expect(trigger.querySelector("path")?.getAttribute("d")).toBe(IDENTICON_D);
+  expect(trigger.querySelector("img")).toBeNull();
+});
+
+test("an account whose picture 404s falls back to its identicon", async () => {
+  // The case the fallback exists for: providers hand out avatar URLs that go
+  // stale, and Radix keeps the fallback when the load fails.
+  signedIn(FAILING_IMAGE);
+  render(<App />);
+
+  const trigger = screen.getByRole("button", { name: AVATAR });
+  await waitFor(() => {
+    expect(trigger.querySelector("path")?.getAttribute("d")).toBe(IDENTICON_D);
   });
   expect(trigger.querySelector("img")).toBeNull();
 });

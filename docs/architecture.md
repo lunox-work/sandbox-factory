@@ -241,9 +241,12 @@ Neither blocks anything; both are cheap if a need appears.
 
 Teams; per-organization custom roles (`dynamicAccessControl`); an email
 transport, at which point `sendInvitationEmail` is one function and the in-app
-flow stays as the fallback; organization avatars in object storage (`logo`
-holds a URL for now); a shared handle namespace via a registry table, if a bare
-`/{handle}` URL is ever wanted.
+flow stays as the fallback; uploaded avatars in object storage — every user and
+organization has a generated one (`packages/shared/src/identicon.ts`), and the
+`logo` column stays unread on purpose, since the plugin accepts any string
+there and rendering it would let one account aim another's browser at a URL it
+chose; a shared handle namespace via a registry table, if a bare `/{handle}`
+URL is ever wanted.
 
 ## Not yet built
 

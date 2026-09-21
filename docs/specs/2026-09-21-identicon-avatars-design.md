@@ -25,7 +25,7 @@ one shared avatar component, and wiring at the three places an avatar belongs.
 
 Out of scope: uploading avatars, object storage (`packages/db/src/objects.ts`
 stays unconsumed), any HTTP image endpoint, any CloudFront or nginx change,
-and **exposing `organization.logo`** — see *Why `logo` stays unexposed*.
+and **exposing `organization.logo`** — see _Why `logo` stays unexposed_.
 
 ## Design
 
@@ -101,8 +101,14 @@ tokens**, not derived values and not constants in TypeScript:
 
 ```css
 /* apps/web/src/index.css */
-:root { --identicon-l: 0.55; --identicon-c: 0.09; }
-.dark { --identicon-l: 0.75; --identicon-c: 0.12; }
+:root {
+  --identicon-l: 0.55;
+  --identicon-c: 0.09;
+}
+.dark {
+  --identicon-l: 0.75;
+  --identicon-c: 0.12;
+}
 ```
 
 and the component fills with
@@ -176,7 +182,7 @@ organizations too.
   distinction is one decision in one place and cannot be forgotten at a new
   call site. There is a trap a className convention walks into: shadcn's
   `AvatarFallback` carries its own `rounded-full` (`ui/avatar.tsx:52`), so
-  squaring only the root leaves a muted *circle* inside a rounded square. The
+  squaring only the root leaves a muted _circle_ inside a rounded square. The
   component passes `rounded-[inherit]` to the fallback.
 - **`name` is dropped.** It existed only to feed `initials()`.
 
@@ -192,7 +198,7 @@ Two changes:
    lucide `User` glyph are deleted; the identicon needs no name and has no
    degenerate case.
 2. When `image` is set, the fallback gets `delayMs={400}`. Radix shows the
-   fallback *while the image loads*, not only when it fails. Initials flashing
+   fallback _while the image loads_, not only when it fails. Initials flashing
    before a photo is quiet; a saturated pixel grid flashing before a photo on
    every page load is not. With the delay, an account with a working picture
    never shows its identicon, and one with a dead URL shows it 400ms late.
@@ -200,11 +206,11 @@ Two changes:
 
 ### Call sites
 
-| Site | Today | After |
-|---|---|---|
-| `UserMenu.tsx:53`, `:144` | `UserAvatar`, initials fallback | `EntityAvatar`, `shape="circle"`, seeded by `session.user.id` |
-| `Organization.tsx:182-206` | member rows: name, `@username`, role — no avatar | `EntityAvatar`, `shape="circle"`, per member; `image` is already in the response |
-| `Organizations.tsx:130-134` | lucide `User` / `Building2` mark | see below |
+| Site                        | Today                                            | After                                                                            |
+| --------------------------- | ------------------------------------------------ | -------------------------------------------------------------------------------- |
+| `UserMenu.tsx:53`, `:144`   | `UserAvatar`, initials fallback                  | `EntityAvatar`, `shape="circle"`, seeded by `session.user.id`                    |
+| `Organization.tsx:182-206`  | member rows: name, `@username`, role — no avatar | `EntityAvatar`, `shape="circle"`, per member; `image` is already in the response |
+| `Organizations.tsx:130-134` | lucide `User` / `Building2` mark                 | see below                                                                        |
 
 **Member rows are seeded by `entry.userId`, not `entry.id`.** The row key is
 the `member` row id. Seeding from it would give one person a different face in

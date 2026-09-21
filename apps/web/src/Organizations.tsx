@@ -19,8 +19,9 @@
  */
 
 import type { MembershipDto } from "@sandbox-factory/shared";
-import { Building2, ChevronRight, Plus, User } from "lucide-react";
+import { ChevronRight, Plus } from "lucide-react";
 
+import { EntityAvatar } from "@/components/Avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -46,12 +47,19 @@ function order(organizations: MembershipDto[]): MembershipDto[] {
 
 export function Organizations({
   organizations,
+  viewer,
   loading,
   error,
   onOpen,
   onCreate,
 }: {
   organizations: MembershipDto[];
+  /**
+   * Whoever is looking. Only the personal row uses it, and that row is always
+   * their own — nobody is ever listed in someone else's personal organization
+   * — so no owner id has to cross the API for this.
+   */
+  viewer: { id: string; image?: string | null };
   loading: boolean;
   error: string | null;
   /** Opens one organization's settings. */
@@ -125,14 +133,27 @@ export function Organizations({
                   onClick={() => onOpen(organization)}
                   className="bg-card hover:border-foreground/15 focus-visible:ring-ring/50 flex w-full cursor-pointer items-center gap-3 rounded-xl border px-3.5 py-3 text-left shadow-xs transition-colors focus-visible:ring-[3px] focus-visible:outline-none"
                 >
-                  {/* A person, not a building, for the one that is theirs. */}
-                  <span className="bg-muted text-muted-foreground grid size-9 shrink-0 place-items-center rounded-lg">
-                    {organization.kind === "personal" ? (
-                      <User className="size-4" strokeWidth={1.6} />
-                    ) : (
-                      <Building2 className="size-4" strokeWidth={1.6} />
-                    )}
-                  </span>
+                  {/*
+                    The personal row wears the person's own face, not one
+                    generated from the organization's id: the row above says it
+                    is theirs rather than shared, and a second, differently
+                    shaped face for the same person on the same screen as the
+                    rail would read as two accounts.
+                  */}
+                  {organization.kind === "personal" ? (
+                    <EntityAvatar
+                      id={viewer.id}
+                      image={viewer.image}
+                      shape="circle"
+                      className="size-9 shrink-0"
+                    />
+                  ) : (
+                    <EntityAvatar
+                      id={organization.id}
+                      shape="square"
+                      className="size-9 shrink-0"
+                    />
+                  )}
 
                   <span className="min-w-0 flex-1">
                     <span className="flex items-center gap-2">

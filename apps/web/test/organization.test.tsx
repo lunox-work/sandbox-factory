@@ -566,3 +566,52 @@ test("a team organization still shows all three", async () => {
     screen.getByRole("button", { name: /Leave organization/ }),
   ).toBeTruthy();
 });
+
+/**
+ * The faces `user_1` and `user_2` generate, as `Identicon` draws them. Pinned
+ * from `packages/shared`'s golden vectors.
+ */
+const USER_1_D =
+  "M1 0h1v1h-1zM3 0h1v1h-1zM1 1h1v1h-1zM3 1h1v1h-1zM1 2h1v1h-1z" +
+  "M3 2h1v1h-1zM0 3h1v1h-1zM1 3h1v1h-1zM2 3h1v1h-1zM3 3h1v1h-1z" +
+  "M4 3h1v1h-1zM0 4h1v1h-1zM2 4h1v1h-1zM4 4h1v1h-1z";
+
+test("a member row carries the face generated for that person", async () => {
+  serverWith([owner, plainMember]);
+  const { container } = showSettings();
+
+  await waitFor(() => {
+    expect(screen.getByText("Dana")).toBeTruthy();
+  });
+
+  const faces = [...container.querySelectorAll('[data-slot="avatar"]')].map(
+    (avatar) => avatar.querySelector("path")?.getAttribute("d"),
+  );
+
+  // Dana is `user_1`, and two people do not share a face.
+  expect(faces[0]).toBe(USER_1_D);
+  expect(faces).toHaveLength(2);
+  expect(new Set(faces).size).toBe(2);
+});
+
+test("a member's face follows the person, not the membership", async () => {
+  /*
+   * The row's key is the `member` row id, which differs per organization.
+   * Seeding from it would give one person a different face in every
+   * organization they belong to — the exact failure a generated avatar exists
+   * to avoid.
+   */
+  serverWith([{ ...owner, id: "mem_somewhere_else" }]);
+  const { container } = showSettings();
+
+  await waitFor(() => {
+    expect(screen.getByText("Dana")).toBeTruthy();
+  });
+
+  expect(
+    container
+      .querySelector('[data-slot="avatar"]')
+      ?.querySelector("path")
+      ?.getAttribute("d"),
+  ).toBe(USER_1_D);
+});

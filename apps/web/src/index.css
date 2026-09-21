@@ -29,6 +29,22 @@
   --secondary-foreground: oklch(0.21 0.006 285.885);
   --muted: oklch(0.967 0.001 286.375);
   --muted-foreground: oklch(0.552 0.016 285.938);
+
+  /*
+   * Identicons. The hue is a pure function of an account id
+   * (`packages/shared/src/identicon.ts`); these two decide what it is drawn
+   * at, against the `muted` fallback behind it.
+   *
+   * Here rather than in the generator so the look can be tuned without
+   * changing anyone's face, and per theme because one pair cannot serve both:
+   * a fill readable on a white card is nearly invisible on a dark one.
+   *
+   * Chroma is the largest that stays inside sRGB at every one of the 360 hues
+   * for this lightness, so nothing is gamut-mapped and every hue lands where
+   * it was measured: 4.2-4.6:1 against `muted` here, 6.3-7.1:1 in `.dark`.
+   */
+  --identicon-l: 0.55;
+  --identicon-c: 0.09;
   --accent: oklch(0.967 0.001 286.375);
   --accent-foreground: oklch(0.21 0.006 285.885);
 
@@ -64,6 +80,10 @@
   --secondary-foreground: oklch(0.985 0 0);
   --muted: oklch(0.274 0.006 286.033);
   --muted-foreground: oklch(0.705 0.015 286.067);
+
+  /* Lighter and more saturated than the light theme: see `:root`. */
+  --identicon-l: 0.75;
+  --identicon-c: 0.12;
   --accent: oklch(0.274 0.006 286.033);
   --accent-foreground: oklch(0.985 0 0);
 

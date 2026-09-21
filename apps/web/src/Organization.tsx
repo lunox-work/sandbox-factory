@@ -20,6 +20,7 @@ import { Check, LogOut, Trash2, UserPlus } from "lucide-react";
 import { isValidHandle, toHandleStem } from "sandbox-factory";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 
+import { EntityAvatar } from "@/components/Avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -189,6 +190,16 @@ export function Organization({
                     key={entry.id}
                     className="bg-muted/35 flex flex-wrap items-center gap-2 rounded-lg border px-3.5 py-3"
                   >
+                    {/* Seeded by `userId`, not the row's `id`: that one is
+                        the membership, so seeding from it would give one
+                        person a different face in every organization. */}
+                    <EntityAvatar
+                      id={entry.userId}
+                      image={entry.image}
+                      shape="circle"
+                      className="size-7"
+                    />
+
                     <span className="flex-1 text-sm font-medium">
                       {entry.name}
                       {entry.username !== null && (

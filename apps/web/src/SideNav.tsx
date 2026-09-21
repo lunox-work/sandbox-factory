@@ -39,6 +39,7 @@ export type Screen =
 
 export function SideNav({
   screen,
+  userId,
   name,
   email,
   image,
@@ -47,6 +48,8 @@ export function SideNav({
   children,
 }: {
   screen: Screen;
+  /** Passed through to the account menu, which seeds its avatar with it. */
+  userId: string;
   name: string;
   email?: string | undefined;
   image?: string | null;
@@ -130,6 +133,7 @@ export function SideNav({
           two controls apart. */}
       <div className="sm:mt-auto">
         <UserMenu
+          userId={userId}
           name={name}
           email={email}
           image={image}

@@ -25,6 +25,19 @@ const globex = {
   role: "member",
 } as const;
 
+/** Whoever is looking at the list. Only the personal row draws on it. */
+const VIEWER = { id: "user_1", image: null } as const;
+
+/**
+ * The faces generated for `user_1` and for `org_2`, as `Identicon` draws them.
+ * Pinned from `packages/shared`'s golden vectors: a row wearing the wrong one
+ * is the failure worth catching, and any seed at all renders *a* grid.
+ */
+const USER_1_D =
+  "M1 0h1v1h-1zM3 0h1v1h-1zM1 1h1v1h-1zM3 1h1v1h-1zM1 2h1v1h-1z" +
+  "M3 2h1v1h-1zM0 3h1v1h-1zM1 3h1v1h-1zM2 3h1v1h-1zM3 3h1v1h-1z" +
+  "M4 3h1v1h-1zM0 4h1v1h-1zM2 4h1v1h-1zM4 4h1v1h-1z";
+
 function show(props: Partial<Parameters<typeof Organizations>[0]> = {}): {
   onOpen: ReturnType<typeof vi.fn>;
   onCreate: ReturnType<typeof vi.fn>;
@@ -34,6 +47,7 @@ function show(props: Partial<Parameters<typeof Organizations>[0]> = {}): {
   render(
     <Organizations
       organizations={[acme, globex]}
+      viewer={VIEWER}
       loading={false}
       error={null}
       onOpen={onOpen}
@@ -134,4 +148,95 @@ test("the page does not offer to switch organization", () => {
 
   expect(screen.queryByText(/personal/i)).toBeNull();
   expect(screen.queryByRole("button", { name: /switch/i })).toBeNull();
+});
+
+test("the personal row wears the person's own face, not the organization's", () => {
+  /*
+   * The row says it is theirs rather than shared, so it shows them. Seeding it
+   * from the personal organization's own id would put a second, differently
+   * shaped face for the same person on the same screen as the rail's, which
+   * reads as two accounts.
+   */
+  const personal = {
+    id: "org_personal",
+    name: "Alice Ang",
+    slug: "alice",
+    role: "owner",
+    kind: "personal",
+  } as const;
+  const { container } = render(
+    <Organizations
+      organizations={[personal]}
+      viewer={VIEWER}
+      loading={false}
+      error={null}
+      onOpen={vi.fn()}
+      onCreate={vi.fn()}
+    />,
+  );
+
+  // Scoped to the avatar: the page's own lucide icons are paths too, and the
+  // "New organization" button's is the first in the container.
+  const avatar = container.querySelector('[data-slot="avatar"]');
+  expect(avatar?.querySelector("path")?.getAttribute("d")).toBe(USER_1_D);
+
+  // Round, like the rail's: it is a person.
+  expect(avatar?.className).toContain("rounded-full");
+  expect(avatar?.className).not.toContain("rounded-lg");
+});
+
+test("a team row is a rounded square seeded by the organization", () => {
+  const { container } = render(
+    <Organizations
+      organizations={[globex]}
+      viewer={VIEWER}
+      loading={false}
+      error={null}
+      onOpen={vi.fn()}
+      onCreate={vi.fn()}
+    />,
+  );
+
+  // Not the viewer's face: a team is not a person.
+  const avatar = container.querySelector('[data-slot="avatar"]');
+  expect(avatar?.querySelector("path")?.getAttribute("d")).not.toBe(USER_1_D);
+  expect(avatar?.className).toContain("rounded-lg");
+});
+
+test("two people looking at the same team see the same team face", () => {
+  // The face is a function of the organization's id and nothing else, so it
+  // does not depend on who is looking.
+  const { container: first, unmount } = render(
+    <Organizations
+      organizations={[globex]}
+      viewer={{ id: "user_1", image: null }}
+      loading={false}
+      error={null}
+      onOpen={vi.fn()}
+      onCreate={vi.fn()}
+    />,
+  );
+  const seen = first
+    .querySelector('[data-slot="avatar"]')
+    ?.querySelector("path")
+    ?.getAttribute("d");
+  unmount();
+
+  const { container: second } = render(
+    <Organizations
+      organizations={[globex]}
+      viewer={{ id: "user_99", image: null }}
+      loading={false}
+      error={null}
+      onOpen={vi.fn()}
+      onCreate={vi.fn()}
+    />,
+  );
+
+  expect(
+    second
+      .querySelector('[data-slot="avatar"]')
+      ?.querySelector("path")
+      ?.getAttribute("d"),
+  ).toBe(seen);
 });

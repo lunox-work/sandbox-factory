@@ -36,6 +36,7 @@ export function App() {
   return (
     <Signed
       key={session.user.id}
+      userId={session.user.id}
       name={session.user.name}
       email={session.user.email}
       image={session.user.image}
@@ -44,10 +45,13 @@ export function App() {
 }
 
 function Signed({
+  userId,
   name,
   email,
   image,
 }: {
+  /** Seeds the generated avatar wherever this person is shown. */
+  userId: string;
   name: string;
   email?: string | undefined;
   image?: string | null;
@@ -111,6 +115,7 @@ function Signed({
     <div className="flex min-h-dvh flex-col sm:h-dvh sm:flex-row sm:overflow-hidden">
       <SideNav
         screen={screen}
+        userId={userId}
         name={name}
         email={email}
         image={image}
@@ -123,6 +128,7 @@ function Signed({
         ) : screen === "organizations" ? (
           <Organizations
             organizations={organizations.organizations}
+            viewer={{ id: userId, image }}
             loading={organizations.loading}
             error={organizations.error}
             onOpen={(organization) => {
