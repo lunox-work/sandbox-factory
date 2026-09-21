@@ -621,7 +621,15 @@ function ConnectionTile({
         `actionLabel` and this would otherwise repeat it.
       */}
       {disabled ? (
-        <Badge aria-hidden="true" variant="secondary">
+        // The same height as the affordance beside it, so the three feet sit
+        // on one line. A badge is 22px against the button's 34px, and left to
+        // itself it aligned to the foot of the tile rather than to its
+        // siblings — which reads as the unbuilt tiles sagging.
+        <Badge
+          aria-hidden="true"
+          variant="secondary"
+          className="h-[34px] rounded-md px-3"
+        >
           {status}
         </Badge>
       ) : (

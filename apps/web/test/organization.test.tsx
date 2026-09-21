@@ -1186,3 +1186,24 @@ test("the name field takes the focus", () => {
     screen.getByLabelText("Organization name"),
   );
 });
+
+test("every tile's foot is the same height, so the three line up", async () => {
+  // A badge is 22px and the Manage affordance 34px. Left alone the badge sat
+  // at the foot of its tile, 12px below the button beside it, which read as
+  // the unbuilt tiles sagging. jsdom has no layout, so the height is the
+  // contract.
+  showConnections();
+
+  const feet = ["Jira", "GitHub", "Slack"].map(
+    (label) =>
+      screen.getByRole("button", { name: `Manage ${label} connections` })
+        .lastElementChild,
+  );
+
+  expect(feet.every((foot) => foot !== null)).toBe(true);
+  for (const foot of feet.slice(1)) {
+    expect(foot?.className).toContain("h-[34px]");
+  }
+  // And the built one keeps the height the others are matching.
+  expect(feet[0]?.className).toContain("py-1.5");
+});
