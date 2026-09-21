@@ -307,7 +307,14 @@ function BoardsError({ error }: { error: JiraFetchError }) {
   return <ErrorBanner className="mt-0">{error.message}</ErrorBanner>;
 }
 
-/** How old a ticket is, which is the whole basis of the selection. */
+/**
+ * How old a ticket is, which is the whole basis of the selection.
+ *
+ * A ticket raised today is "Today" rather than "0d". The zero was the one
+ * value in this column that read as a missing number instead of an age — the
+ * rest of the scale counts upward from it, so nothing else in the list makes
+ * "0d" legible as a quantity.
+ */
 function ageInDays(created: string | null): string {
   if (created === null) {
     return "";
@@ -317,6 +324,9 @@ function ageInDays(created: string | null): string {
   );
   if (!Number.isFinite(days) || days < 0) {
     return "";
+  }
+  if (days === 0) {
+    return "Today";
   }
   return days < 365
     ? `${days}d`

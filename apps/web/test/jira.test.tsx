@@ -1267,3 +1267,55 @@ test("the way out to Jira sits on the tab row, not in the status line", async ()
   expect(link.getAttribute("target")).toBe("_blank");
   expect(link.getAttribute("rel")).toContain("noopener");
 });
+
+// ---- how old a ticket is --------------------------------------------------
+
+test("a ticket raised today says so, rather than counting zero days", async () => {
+  // "0d" was the one value in this column that read as a missing number
+  // instead of an age: the rest of the scale counts upward from it, so
+  // nothing else in the list makes a zero legible as a quantity.
+  const today = new Date().toISOString();
+  vi.stubGlobal(
+    "fetch",
+    routedFetch({
+      preview: {
+        body: {
+          boardId: "jrb_1",
+          source: "backlog",
+          jql: "",
+          issues: [issue(1, today)],
+        },
+      },
+    }),
+  );
+  renderBoard();
+
+  const list = await screen.findByTestId("backlog-preview");
+  expect(within(list).getByText("Today")).toBeDefined();
+  expect(within(list).queryByText("0d")).toBeNull();
+});
+
+test("an older ticket still counts in days and years", async () => {
+  // The boundary above is the only special case; the scale itself is intact.
+  const days = (n: number) =>
+    new Date(Date.now() - n * 86_400_000).toISOString();
+  vi.stubGlobal(
+    "fetch",
+    routedFetch({
+      preview: {
+        body: {
+          boardId: "jrb_1",
+          source: "backlog",
+          jql: "",
+          issues: [issue(1, days(1)), issue(2, days(40)), issue(3, days(800))],
+        },
+      },
+    }),
+  );
+  renderBoard();
+
+  const list = await screen.findByTestId("backlog-preview");
+  expect(within(list).getByText("1d")).toBeDefined();
+  expect(within(list).getByText("40d")).toBeDefined();
+  expect(within(list).getByText("2y 2m")).toBeDefined();
+});
