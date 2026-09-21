@@ -36,7 +36,8 @@ value_of() {
 # Absent OAuth values are expected, not an error. `make secrets-check` is what
 # refuses an incomplete file.
 for k in GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET GITHUB_CLIENT_ID \
-         GITHUB_CLIENT_SECRET ATLASSIAN_CLIENT_ID ATLASSIAN_CLIENT_SECRET; do
+         GITHUB_CLIENT_SECRET ATLASSIAN_CLIENT_ID ATLASSIAN_CLIENT_SECRET \
+         JIRA_CLIENT_ID JIRA_CLIENT_SECRET; do
   value_of "$k" >/dev/null || echo "note: $k is empty in $SRC — fill it in $OUT by hand" >&2
 done
 
@@ -112,19 +113,35 @@ GOOGLE_CLIENT_SECRET=$(value_of GOOGLE_CLIENT_SECRET)
 GITHUB_CLIENT_ID=$(value_of GITHUB_CLIENT_ID)
 GITHUB_CLIENT_SECRET=$(value_of GITHUB_CLIENT_SECRET)
 
-# Atlassian: https://developer.atlassian.com/console/myapps/
+# Atlassian, app 1 of 2: sign-in.
+# https://developer.atlassian.com/console/myapps/
 # Under Authorization > OAuth 2.0 (3LO) > Configure, add this callback URL
 # alongside the localhost one:
 #   https://platform.lunox.work/api/auth/callback/atlassian
 #
-# Sign-in uses the "User Identity API" with \`read:me\` only. Connecting a Jira
-# site is a separate grant from the same app, which does request the Jira
-# scopes in READ_SCOPES (packages/jira/src/oauth.ts) — so the app needs the
-# Jira platform and software APIs enabled, and the sign-in grant still must
-# not ask for them. See apps/api/src/auth.ts for the trustedProviders
-# consequence.
+# "User Identity API" with \`read:me\` only. Do NOT add the Jira APIs here:
+# a grant is per app and a new grant overwrites the previous one's scopes, so
+# one app serving both flows would make signing in and connecting Jira break
+# each other. See apps/api/src/auth.ts for the trustedProviders consequence.
 ATLASSIAN_CLIENT_ID=$(value_of ATLASSIAN_CLIENT_ID)
 ATLASSIAN_CLIENT_SECRET=$(value_of ATLASSIAN_CLIENT_SECRET)
+
+# Atlassian, app 2 of 2: connecting a client's Jira site.
+# A separate 3LO app, for the reason above. Name it so a client recognises it
+# on the consent screen — this is the app they grant access to their tickets.
+#
+# Authorization > OAuth 2.0 (3LO) > Configure, alongside the localhost one:
+#   https://platform.lunox.work/api/v1/jira/callback
+# Note the path: this flow is the API's own, not Better Auth's.
+#
+# Permissions > "Jira API", granting exactly READ_SCOPES from
+# packages/jira/src/oauth.ts: read:jira-work and read:jira-user (classic),
+# plus read:board-scope:jira-software and read:sprint:jira-software, which are
+# on the console's GRANULAR scopes tab — Jira Software has no classic scopes,
+# so they are absent from the classic list and look missing. Without them the
+# agile endpoints answer 404, which reads like a missing board.
+JIRA_CLIENT_ID=$(value_of JIRA_CLIENT_ID)
+JIRA_CLIENT_SECRET=$(value_of JIRA_CLIENT_SECRET)
 
 # Left unset deliberately. The SPA and the API share one origin through
 # CloudFront, so the session cookie stays host-only — which is stricter than
