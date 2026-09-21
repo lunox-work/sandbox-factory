@@ -9,7 +9,7 @@
  * identicon while a missing or broken one does not.
  */
 
-import { render, waitFor } from "@testing-library/react";
+import { fireEvent, render, waitFor } from "@testing-library/react";
 import { expect, test, vi } from "vitest";
 
 import { EntityAvatar } from "../src/components/Avatar";
@@ -232,24 +232,13 @@ test("a circular avatar leaves the shape to the default", () => {
 });
 
 test("the settings avatar is itself the control for replacing it", () => {
-  /*
-   * The picture is the target rather than a labelled button beside it: a
-   * button there would sit between the avatar and the field it belongs to.
-   * Disabled because there is no upload endpoint behind it — not a server that
-   * would refuse, which is the case this codebase normally hides a control
-   * for.
-   */
+  // The picture is the target rather than a labelled button beside it: a
+  // button there would sit between the avatar and the field it belongs to.
   const { container } = render(
-    <AvatarField id="user_1" shape="circle" label="your" />,
+    <AvatarField id="user_1" shape="circle" label="your" onEdit={vi.fn()} />,
   );
 
   const button = container.querySelector("button");
-  expect(button?.disabled).toBe(true);
-  // The reason, where the control is: a disabled control with no explanation
-  // reads as a bug.
-  expect(button?.getAttribute("title")).toBe(
-    "Uploading a picture is not available yet.",
-  );
   // Named for what it changes: the picture itself is decorative, so without
   // this the control announces nothing.
   expect(button?.getAttribute("aria-label")).toBe("Change your picture");
@@ -257,9 +246,27 @@ test("the settings avatar is itself the control for replacing it", () => {
   expect(button?.querySelector('[data-slot="avatar"]')).not.toBeNull();
 });
 
+test("clicking the picture answers, rather than doing nothing", () => {
+  /*
+   * It was disabled, which swallowed the click: no event, and the `title`
+   * carrying the reason never showed on a touch screen or for a keyboard, so
+   * the control read as broken. It is enabled and says why instead.
+   */
+  const onEdit = vi.fn();
+  const { container } = render(
+    <AvatarField id="user_1" shape="circle" label="your" onEdit={onEdit} />,
+  );
+
+  const button = container.querySelector("button");
+  expect(button?.disabled).toBe(false);
+
+  fireEvent.click(button as HTMLElement);
+  expect(onEdit).toHaveBeenCalledTimes(1);
+});
+
 test("the edit overlay is hidden until the control is hovered or focused", () => {
   const { container } = render(
-    <AvatarField id="user_1" shape="circle" label="your" />,
+    <AvatarField id="user_1" shape="circle" label="your" onEdit={vi.fn()} />,
   );
 
   const overlay = container.querySelector("span[aria-hidden='true']");
@@ -278,7 +285,12 @@ test("the overlay follows the avatar's shape, not the default circle", () => {
    * a circular scrim over a rounded square.
    */
   const { container } = render(
-    <AvatarField id="org_globex" shape="square" label="organization" />,
+    <AvatarField
+      id="org_globex"
+      shape="square"
+      label="organization"
+      onEdit={vi.fn()}
+    />,
   );
 
   const button = container.querySelector("button");
@@ -291,7 +303,7 @@ test("the overlay follows the avatar's shape, not the default circle", () => {
 
 test("the settings avatar shows the generated face at a readable size", () => {
   const { container } = render(
-    <AvatarField id="user_1" shape="circle" label="your" />,
+    <AvatarField id="user_1" shape="circle" label="your" onEdit={vi.fn()} />,
   );
 
   // Larger than the rail's 24px: here the picture is the subject, and a 5x5
@@ -321,7 +333,12 @@ test("the settings avatar prefers a real picture over the generated one", async 
 
 test("an organization's settings avatar is a rounded square", () => {
   const { container } = render(
-    <AvatarField id="org_globex" shape="square" label="organization" />,
+    <AvatarField
+      id="org_globex"
+      shape="square"
+      label="organization"
+      onEdit={vi.fn()}
+    />,
   );
 
   expect(container.querySelector('[data-slot="avatar"]')?.className).toContain(

@@ -18,7 +18,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { AvatarField } from "@/components/AvatarField";
+import { AvatarField, UPLOAD_COMING_SOON } from "@/components/AvatarField";
 import { Input } from "@/components/ui/input";
 
 import { PROVIDERS, authClient, useSession, type ProviderId } from "./auth";
@@ -552,6 +552,12 @@ function UsernameForm({
               image={image}
               shape="circle"
               label="your"
+              // Reuses the line that reports a rename, rather than a toast or
+              // a popover: one sentence does not earn a layer or a dependency.
+              onEdit={() => {
+                setFailed(false);
+                setMessage(UPLOAD_COMING_SOON);
+              }}
             />
           )}
 

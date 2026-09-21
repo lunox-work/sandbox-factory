@@ -624,3 +624,16 @@ test("a member's face follows the person, not the membership", async () => {
 
   expect(memberFaces(container)[0]).toBe(USER_1_D);
 });
+
+test("clicking the organization picture says why it cannot be changed yet", async () => {
+  showSettings();
+
+  const picture = await screen.findByRole("button", {
+    name: "Change organization picture",
+  });
+  fireEvent.click(picture);
+
+  const notice = await screen.findByRole("status");
+  expect(notice.textContent).toContain("coming soon");
+  expect(notice.className).not.toContain("destructive");
+});

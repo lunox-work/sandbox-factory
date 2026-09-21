@@ -19,19 +19,20 @@ import { EntityAvatar, type AvatarShape } from "@/components/Avatar";
 import { cn } from "@/lib/utils";
 
 /**
- * Why the control does nothing yet.
+ * What a click says, until there is somewhere to put a picture.
  *
- * A `title` rather than body copy, following the "only way to sign in" control
- * on the account page: a sentence under every settings card explaining a thing
- * that does not exist yet is noise.
+ * Exported so the pages render the same sentence and the tests assert it
+ * rather than a copy of it.
  */
-const UPLOAD_UNAVAILABLE = "Uploading a picture is not available yet.";
+export const UPLOAD_COMING_SOON =
+  "Uploading your own picture is coming soon — for now it is generated from your account ID, which never changes.";
 
 export function AvatarField({
   id,
   image,
   shape,
   label,
+  onEdit,
 }: {
   /** The account id. Permanent, and what the generated picture is drawn from. */
   id: string;
@@ -39,24 +40,31 @@ export function AvatarField({
   shape: AvatarShape;
   /** Names what the picture belongs to, for assistive technology. */
   label: string;
+  /**
+   * Called when the picture is clicked.
+   *
+   * The message goes under the form, where this card already reports "Saved."
+   * after a rename, so the page owns it rather than this component: a 64px
+   * column has nowhere to put a sentence.
+   */
+  onEdit: () => void;
 }) {
   return (
     /*
-     * A `button` rather than a div with an overlay: this is a control, so it
-     * is reachable by keyboard and announces itself. Disabled, because there
-     * is no endpoint behind it yet — `disabled:` variants below are what keep
-     * it from looking live while it is not.
+     * Enabled, not disabled. A disabled button swallows the click silently —
+     * no event, and the `title` that used to carry the reason never appears on
+     * a touch screen and never for a keyboard. Answering the click is what
+     * makes the control honest: it is not broken, it is not built yet.
      *
      * `group` drives the overlay: the pencil is keyed off hover and focus on
      * this element, not on the avatar inside it.
      */
     <button
       type="button"
-      disabled
-      title={UPLOAD_UNAVAILABLE}
+      onClick={onEdit}
       aria-label={`Change ${label} picture`}
       className={cn(
-        "group focus-visible:ring-ring/50 relative shrink-0 cursor-pointer focus-visible:ring-[3px] focus-visible:outline-none disabled:cursor-default",
+        "group focus-visible:ring-ring/50 relative shrink-0 cursor-pointer focus-visible:ring-[3px] focus-visible:outline-none",
         // The root carries the shape so the scrim's `rounded-[inherit]` picks
         // it up. Left as `rounded-full`, a square avatar would get a circular
         // scrim over a rounded square.
@@ -75,8 +83,7 @@ export function AvatarField({
         badge would be too small to read as an affordance, and the scrim is
         what says the whole picture is the target.
 
-        `rounded-[inherit]` so it follows the avatar's shape — the root is
-        `rounded-full`, and an organization overrides it to `rounded-lg`.
+        `rounded-[inherit]` so it follows the avatar's shape.
       */}
       <span
         aria-hidden="true"

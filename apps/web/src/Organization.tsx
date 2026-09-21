@@ -20,7 +20,7 @@ import { Check, LogOut, Trash2, UserPlus } from "lucide-react";
 import { isValidHandle, toHandleStem } from "sandbox-factory";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 
-import { AvatarField } from "@/components/AvatarField";
+import { AvatarField, UPLOAD_COMING_SOON } from "@/components/AvatarField";
 import { EntityAvatar } from "@/components/Avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -392,6 +392,12 @@ function HandleForm({
             id={organization.id}
             shape="square"
             label="organization"
+            // Reuses the line that reports a rename, rather than a toast or a
+            // popover: one sentence does not earn a layer or a dependency.
+            onEdit={() => {
+              setFailed(false);
+              setMessage(UPLOAD_COMING_SOON);
+            }}
           />
 
           {/* Centred against the avatar rather than pinned to its top: there

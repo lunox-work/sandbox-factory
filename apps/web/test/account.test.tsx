@@ -562,3 +562,23 @@ test("the count is absent until it is known", async () => {
   });
   expect(screen.queryByText(/organizations?$/)).toBeNull();
 });
+
+test("clicking your picture says why it cannot be changed yet", async () => {
+  /*
+   * The control used to be disabled, which swallowed the click entirely: the
+   * page did nothing and the reason lived in a `title` that never appeared on
+   * a touch screen or for a keyboard. The answer goes in the line that already
+   * reports "Saved." after a rename.
+   */
+  render(<Account />);
+
+  const picture = await screen.findByRole("button", {
+    name: "Change your picture",
+  });
+  fireEvent.click(picture);
+
+  const notice = await screen.findByRole("status");
+  expect(notice.textContent).toContain("coming soon");
+  // Not an error: nothing failed, this is not built yet.
+  expect(notice.className).not.toContain("destructive");
+});
