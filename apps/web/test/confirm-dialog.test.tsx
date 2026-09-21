@@ -7,7 +7,7 @@
  * typed confirmation that does not match.
  */
 
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { expect, test, vi } from "vitest";
 
@@ -37,7 +37,7 @@ test("opening the dialog does not perform the action", async () => {
 
   await userEvent.click(screen.getByRole("button", { name: "Delete it" }));
 
-  expect(await screen.findByRole("dialog")).toBeDefined();
+  expect(await screen.findByRole("alertdialog")).toBeDefined();
   expect(onConfirm).not.toHaveBeenCalled();
 });
 
@@ -45,7 +45,7 @@ test("confirming performs it once", async () => {
   const { onConfirm } = renderDialog();
 
   await userEvent.click(screen.getByRole("button", { name: "Delete it" }));
-  await screen.findByRole("dialog");
+  await screen.findByRole("alertdialog");
   await userEvent.click(screen.getByRole("button", { name: "Delete" }));
 
   await waitFor(() => {
@@ -57,11 +57,11 @@ test("cancelling performs nothing and closes", async () => {
   const { onConfirm } = renderDialog();
 
   await userEvent.click(screen.getByRole("button", { name: "Delete it" }));
-  await screen.findByRole("dialog");
+  await screen.findByRole("alertdialog");
   await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
 
   await waitFor(() => {
-    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByRole("alertdialog")).toBeNull();
   });
   expect(onConfirm).not.toHaveBeenCalled();
 });
@@ -70,11 +70,11 @@ test("Escape closes without performing it", async () => {
   const { onConfirm } = renderDialog();
 
   await userEvent.click(screen.getByRole("button", { name: "Delete it" }));
-  await screen.findByRole("dialog");
+  await screen.findByRole("alertdialog");
   await userEvent.keyboard("{Escape}");
 
   await waitFor(() => {
-    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByRole("alertdialog")).toBeNull();
   });
   expect(onConfirm).not.toHaveBeenCalled();
 });
@@ -85,7 +85,7 @@ test("a typed confirmation stays disabled until the handle matches", async () =>
   const { onConfirm } = renderDialog({ typeToConfirm: "acme" });
 
   await userEvent.click(screen.getByRole("button", { name: "Delete it" }));
-  await screen.findByRole("dialog");
+  await screen.findByRole("alertdialog");
 
   const confirm = screen.getByRole("button", { name: "Delete" });
   expect((confirm as HTMLButtonElement).disabled).toBe(true);
@@ -117,18 +117,18 @@ test("an abandoned draft does not come back on the next open", async () => {
   renderDialog({ typeToConfirm: "acme" });
 
   await userEvent.click(screen.getByRole("button", { name: "Delete it" }));
-  await screen.findByRole("dialog");
+  await screen.findByRole("alertdialog");
   await userEvent.type(
     screen.getByRole("textbox", { name: /type the handle/i }),
     "acme",
   );
   await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
   await waitFor(() => {
-    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByRole("alertdialog")).toBeNull();
   });
 
   await userEvent.click(screen.getByRole("button", { name: "Delete it" }));
-  await screen.findByRole("dialog");
+  await screen.findByRole("alertdialog");
 
   expect(
     (
@@ -147,7 +147,7 @@ test("a write in flight disables both answers", async () => {
   renderDialog({ busy: true });
 
   await userEvent.click(screen.getByRole("button", { name: "Delete it" }));
-  await screen.findByRole("dialog");
+  await screen.findByRole("alertdialog");
 
   expect(
     (screen.getByRole("button", { name: "Delete" }) as HTMLButtonElement)
@@ -157,4 +157,31 @@ test("a write in flight disables both answers", async () => {
     (screen.getByRole("button", { name: "Cancel" }) as HTMLButtonElement)
       .disabled,
   ).toBe(true);
+});
+
+test("an async refusal keeps the question open and allows a retry", async () => {
+  const onConfirm = vi
+    .fn<() => Promise<string | void>>()
+    .mockResolvedValueOnce("Could not disconnect that site.")
+    .mockResolvedValueOnce();
+  renderDialog({ confirmLabel: "Disconnect", onConfirm });
+
+  await userEvent.click(screen.getByRole("button", { name: "Delete it" }));
+  const dialog = await screen.findByRole("alertdialog");
+  await userEvent.click(
+    within(dialog).getByRole("button", { name: "Disconnect" }),
+  );
+
+  expect((await within(dialog).findByRole("alert")).textContent).toBe(
+    "Could not disconnect that site.",
+  );
+  expect(screen.getByRole("alertdialog")).toBeDefined();
+
+  await userEvent.click(
+    within(dialog).getByRole("button", { name: "Disconnect" }),
+  );
+  await waitFor(() => {
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+  });
+  expect(onConfirm).toHaveBeenCalledTimes(2);
 });

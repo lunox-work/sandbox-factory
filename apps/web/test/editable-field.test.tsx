@@ -126,6 +126,19 @@ test("a value that fails its own rules cannot be saved", async () => {
   ).toBe(true);
 });
 
+test("a validation reason is shown beside the invalid draft", async () => {
+  show({ validate: () => "Use letters, numbers, or hyphens." });
+
+  fireEvent.click(screen.getByRole("button", { name: "Edit name" }));
+  const field = await screen.findByLabelText("Name");
+  fireEvent.change(field, { target: { value: "not valid!" } });
+
+  expect(screen.getByRole("alert").textContent).toBe(
+    "Use letters, numbers, or hyphens.",
+  );
+  expect(field.getAttribute("aria-invalid")).toBe("true");
+});
+
 test("a blank value cannot be saved by default", async () => {
   show();
 
@@ -196,6 +209,42 @@ test("a refusal holds the field open with the text that caused it", async () => 
   // Still open, still holding the rejected text, so it can be fixed.
   const field = (await screen.findByLabelText("Username")) as HTMLInputElement;
   expect(field.value).toBe("taken-one");
+});
+
+test("a pending save disables both answers and restores focus on success", async () => {
+  let finish: () => void = () => {};
+  const onSave = vi.fn(
+    () =>
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  render(<EditableField label="Name" value="Dana" onSave={onSave} />);
+
+  fireEvent.click(screen.getByRole("button", { name: "Edit name" }));
+  fireEvent.change(await screen.findByLabelText("Name"), {
+    target: { value: "Dana Rivers" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Save name" }));
+
+  expect(
+    (screen.getByRole("button", { name: "Save name" }) as HTMLButtonElement)
+      .disabled,
+  ).toBe(true);
+  expect(
+    (
+      screen.getByRole("button", {
+        name: "Cancel editing name",
+      }) as HTMLButtonElement
+    ).disabled,
+  ).toBe(true);
+
+  finish();
+  await waitFor(() => {
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: "Edit name" }),
+    );
+  });
 });
 
 test("typing again clears the refusal", async () => {

@@ -50,6 +50,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 import { JiraIcon } from "./ProviderIcon";
+import { isPlainLeftClick, pathForScreen } from "./routes";
 
 import {
   useJira,
@@ -212,7 +213,7 @@ export function OutcomeBanner({
       <Button
         variant="ghost"
         size="icon"
-        className="-mt-0.5 -mr-1 size-6 shrink-0"
+        className="-my-2 -mr-2 size-10 shrink-0 [@media(pointer:coarse)]:size-11"
         aria-label="Dismiss"
         onClick={onDismiss}
       >
@@ -237,23 +238,28 @@ export function OutcomeBanner({
  * and listed them as inert text — a row that named a site without being a way
  * into it. One row rather than two that drift apart.
  */
+const destinationRowClass =
+  "focus-visible:ring-ring/50 flex w-full items-center gap-3.5 rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-muted/60 focus-visible:bg-muted/60 focus-visible:ring-2 focus-visible:outline-none";
+
 export function ConnectionRow({
   connection,
+  href,
   onOpen,
 }: {
   connection: JiraConnection;
+  href: string;
   onOpen: (connection: JiraConnection) => void;
 }) {
   return (
     <li>
-      <button
-        type="button"
-        // `-mx-2 px-2` so the hover fill reaches past the icon and the
-        // chevron to the card's own padding. At `px-1` it hugged the text and
-        // read as a highlight on the words rather than on the row.
-        className="-mx-2 flex w-full items-center gap-3 rounded-md px-2 py-3 text-left transition-colors hover:bg-muted/50"
-        onClick={() => {
-          onOpen(connection);
+      <a
+        href={href}
+        className={destinationRowClass}
+        onClick={(event) => {
+          if (isPlainLeftClick(event)) {
+            event.preventDefault();
+            onOpen(connection);
+          }
         }}
       >
         <span className="size-5 shrink-0">
@@ -274,19 +280,34 @@ export function ConnectionRow({
           </span>
         </span>
         <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
-      </button>
+      </a>
     </li>
   );
 }
 
 /** A Jira read that failed, in the words the person can act on. */
-function BoardsError({ error }: { error: JiraFetchError }) {
+function BoardsError({
+  error,
+  onReconnect,
+  onRetry,
+}: {
+  error: JiraFetchError;
+  onReconnect?: (() => void) | undefined;
+  onRetry?: (() => void) | undefined;
+}) {
   if (error.kind === "reconnect") {
     return (
-      <ErrorBanner className="mt-0">
-        That site&rsquo;s connection has expired or been revoked. Reconnect it
-        above to read its boards again.
-      </ErrorBanner>
+      <div className="flex flex-col items-start gap-2">
+        <ErrorBanner className="mt-0">
+          That site&rsquo;s connection has expired or been revoked.
+        </ErrorBanner>
+        {onReconnect !== undefined && (
+          <Button type="button" size="sm" onClick={onReconnect}>
+            <RefreshCw />
+            Reconnect
+          </Button>
+        )}
+      </div>
     );
   }
   if (error.kind === "scope") {
@@ -304,7 +325,17 @@ function BoardsError({ error }: { error: JiraFetchError }) {
       </ErrorBanner>
     );
   }
-  return <ErrorBanner className="mt-0">{error.message}</ErrorBanner>;
+  return (
+    <div className="flex flex-col items-start gap-2">
+      <ErrorBanner className="mt-0">{error.message}</ErrorBanner>
+      {onRetry !== undefined && (
+        <Button type="button" variant="outline" size="sm" onClick={onRetry}>
+          <RefreshCw />
+          Try again
+        </Button>
+      )}
+    </div>
+  );
 }
 
 /**
@@ -443,8 +474,8 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
     return null;
   }
   return (
-    <div className="flex gap-3 py-1.5 text-sm">
-      <span className="w-32 shrink-0 text-muted-foreground">{label}</span>
+    <div className="flex flex-col gap-0.5 py-1.5 text-sm sm:flex-row sm:gap-3">
+      <span className="shrink-0 text-muted-foreground sm:w-32">{label}</span>
       <span className="min-w-0 flex-1">{children}</span>
     </div>
   );
@@ -561,13 +592,13 @@ function IssueDetail({ issue }: { issue: JiraIssueDetail }) {
       <div>
         <h3 className="text-base font-semibold">{issue.summary}</h3>
         {/*
-          Status and type on one line under the heading, the type after the
-          badge rather than beside it in the same breath: the badge is what
-          the eye lands on, and the type qualifies it — a To Do *Story*.
+          Status and type on one line under the heading, anchored to opposite
+          edges so they scan as separate facts: current workflow state on the
+          left, issue type on the right.
           The link out used to sit here too, which put a control in a row that
           is otherwise a statement of fact.
         */}
-        <div className="mt-1.5 flex flex-wrap items-center gap-2">
+        <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2">
           <Badge variant="secondary">{issue.status}</Badge>
           <span className="text-muted-foreground text-xs">
             {issue.issueType}
@@ -582,7 +613,7 @@ function IssueDetail({ issue }: { issue: JiraIssueDetail }) {
         stays pinned as the strip's own width changes.
       */}
       <Tabs defaultValue="spec">
-        <div className="flex items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <TabsList>
             <TabsTrigger value="spec">Spec</TabsTrigger>
             <TabsTrigger value="fields">Fields</TabsTrigger>
@@ -720,9 +751,8 @@ function PreviewList({
 }) {
   if (preview.issues.length === 0) {
     return (
-      <p className="text-muted-foreground py-6 text-sm">
-        No tickets match these settings. The backlog may be empty, or every
-        ticket in it is assigned.
+      <p className="text-muted-foreground px-4 py-8 text-sm">
+        No tickets matched this board&rsquo;s current selection rules.
       </p>
     );
   }
@@ -746,7 +776,7 @@ function PreviewList({
                 ? "true"
                 : undefined
             }
-            className={`hover:bg-muted/50 flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors ${
+            className={`hover:bg-muted/50 grid w-full grid-cols-[auto_1fr_auto] items-center gap-x-3 gap-y-1 px-3 py-3 text-left transition-colors sm:flex sm:py-2.5 ${
               selectedKey === issue.key || openingKey === issue.key
                 ? "bg-muted"
                 : ""
@@ -755,13 +785,13 @@ function PreviewList({
               onOpenIssue(issue.key);
             }}
           >
-            <span className="text-muted-foreground w-20 shrink-0 font-mono text-xs">
+            <span className="text-muted-foreground shrink-0 font-mono text-xs sm:w-20">
               {issue.key}
             </span>
-            <span className="min-w-0 flex-1 truncate text-sm">
+            <span className="min-w-0 text-sm sm:flex-1 sm:truncate">
               {issue.summary}
             </span>
-            <span className="text-muted-foreground shrink-0 text-xs">
+            <span className="text-muted-foreground col-start-1 row-start-2 shrink-0 text-xs sm:order-none sm:col-auto sm:row-auto">
               {ageInDays(issue.created)}
             </span>
             {/*
@@ -770,11 +800,62 @@ function PreviewList({
               the panel is the answer, and swapping the mark would be a second
               thing moving for the same event.
             */}
-            <ChevronRight className="text-muted-foreground size-4 shrink-0" />
+            <ChevronRight className="text-muted-foreground col-start-3 row-span-2 row-start-1 size-4 shrink-0 sm:order-none sm:col-auto sm:row-auto" />
           </button>
         </li>
       ))}
     </ul>
+  );
+}
+
+/** The rules behind a preview, so the list never looks like the whole backlog. */
+function SelectionSummary({ preview }: { preview: BacklogPreview }) {
+  const selection = preview.selection;
+  const shown = preview.issues.length;
+  const rules =
+    selection === undefined
+      ? []
+      : [
+          selection.excludeAssigned ? "Unassigned only" : null,
+          selection.minAgeDays > 0 ? `${selection.minAgeDays}+ days old` : null,
+          selection.maxAgeDays === undefined
+            ? null
+            : `Up to ${selection.maxAgeDays} days old`,
+          selection.issueTypes.length > 0
+            ? `Types: ${selection.issueTypes.join(", ")}`
+            : null,
+          selection.minSpecChars > 0
+            ? `${selection.minSpecChars}+ spec characters`
+            : null,
+        ].filter((rule): rule is string => rule !== null);
+
+  return (
+    <div className="flex flex-col gap-1 border-b bg-muted/25 px-3 py-2.5 text-xs sm:flex-row sm:items-center sm:justify-between">
+      <p className="font-medium">
+        Showing {shown} oldest ticket{shown === 1 ? "" : "s"}
+      </p>
+      <div
+        aria-label="Active filters"
+        className="flex flex-wrap items-center gap-1.5"
+      >
+        <span className="text-muted-foreground font-medium">Filters</span>
+        {selection === undefined ? (
+          <span className="text-muted-foreground">Unavailable</span>
+        ) : rules.length === 0 ? (
+          <span className="text-muted-foreground">None</span>
+        ) : (
+          rules.map((rule) => (
+            <Badge
+              key={rule}
+              variant="outline"
+              className="bg-background/50 font-normal"
+            >
+              {rule}
+            </Badge>
+          ))
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -793,14 +874,14 @@ function PreviewList({
 function BoardIcon({ boardType }: { boardType: string }) {
   const kind = boardType.toLowerCase();
   if (kind === "kanban") {
-    return <Columns3 className="size-4" />;
+    return <Columns3 className="size-5" />;
   }
   if (kind === "scrum") {
-    return <RefreshCw className="size-4" />;
+    return <RefreshCw className="size-5" />;
   }
   // Not a guess at one of the two: a board whose type we do not know should
   // not be drawn as though we did.
-  return <LayoutGrid className="size-4" />;
+  return <LayoutGrid className="size-5" />;
 }
 
 /**
@@ -813,19 +894,23 @@ function BoardIcon({ boardType }: { boardType: string }) {
  */
 function BoardRow({
   board,
+  href,
   onOpen,
 }: {
   board: JiraBoard;
+  href: string;
   onOpen: (board: JiraBoard) => void;
 }) {
   return (
     <li>
-      <button
-        type="button"
-        // The same reach as a connection row one level up; see `ConnectionRow`.
-        className="hover:bg-muted/50 -mx-2 flex w-full items-center gap-3 rounded-md px-2 py-3 text-left transition-colors"
-        onClick={() => {
-          onOpen(board);
+      <a
+        href={href}
+        className={destinationRowClass}
+        onClick={(event) => {
+          if (isPlainLeftClick(event)) {
+            event.preventDefault();
+            onOpen(board);
+          }
         }}
       >
         <span className="text-muted-foreground shrink-0">
@@ -839,7 +924,7 @@ function BoardRow({
           </span>
         </span>
         <ChevronRight className="text-muted-foreground size-4 shrink-0" />
-      </button>
+      </a>
     </li>
   );
 }
@@ -858,10 +943,12 @@ function BoardRow({
  */
 function BoardsCard({
   organizationId,
+  organizationSlug,
   connection,
   onOpenBoard,
 }: {
   organizationId: string;
+  organizationSlug: string;
   connection: JiraConnection;
   onOpenBoard: (board: JiraBoard) => void;
 }) {
@@ -925,7 +1012,17 @@ function BoardsCard({
         ) : (
           <ul className="divide-y">
             {siteBoards.map((board) => (
-              <BoardRow key={board.id} board={board} onOpen={onOpenBoard} />
+              <BoardRow
+                key={board.id}
+                board={board}
+                href={pathForScreen(
+                  "org-jira-board",
+                  organizationSlug,
+                  connection.id,
+                  board.id,
+                )}
+                onOpen={onOpenBoard}
+              />
             ))}
           </ul>
         )}
@@ -954,6 +1051,7 @@ export function JiraBoard({
   boardName,
   onBoardName,
   onSiteName,
+  role,
 }: {
   organizationId: string;
   /** The site this board is on, so the trail can name it. */
@@ -971,13 +1069,16 @@ export function JiraBoard({
    * list, so the crumb would read "Site" until the person navigated up.
    */
   onSiteName: (name: string | undefined) => void;
+  role?: string | undefined;
 }) {
   const { boards, error, preview, issue } = useJiraBoards(organizationId);
-  const { connections } = useJira(organizationId);
+  const { connections, connect } = useJira(organizationId);
+  const { outcome, missingScopes, dismiss } = useJiraOutcome();
   const [backlog, setBacklog] = useState<BacklogPreview | null>(null);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<JiraIssueDetail | null>(null);
   const [openingKey, setOpeningKey] = useState<string | null>(null);
+  const [issueError, setIssueError] = useState<string | null>(null);
   /**
    * The ticket the reader last asked for, read when a response resolves so a
    * superseded one can be dropped. A ref rather than state: the check happens
@@ -1032,7 +1133,17 @@ export function JiraBoard({
   */
   const onOpenIssue = useCallback(
     (issueKey: string) => {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get("issue") !== issueKey) {
+        params.set("issue", issueKey);
+        window.history.pushState(
+          null,
+          "",
+          `${window.location.pathname}?${params.toString()}`,
+        );
+      }
       setOpeningKey(issueKey);
+      setIssueError(null);
       // The previous ticket goes now rather than when the next one lands, or
       // the panel shows the last ticket while a different row is marked.
       setSelected(null);
@@ -1048,14 +1159,52 @@ export function JiraBoard({
         if (wantedKey.current !== issueKey) {
           return;
         }
-        setOpeningKey(null);
         if (detail !== null) {
+          setOpeningKey(null);
           setSelected(detail);
+        } else {
+          setIssueError("Could not load this ticket from Jira.");
         }
       });
     },
     [boardId, issue],
   );
+
+  const closeIssue = useCallback((updateUrl: boolean) => {
+    setSelected(null);
+    setOpeningKey(null);
+    setIssueError(null);
+    wantedKey.current = null;
+    if (updateUrl) {
+      const params = new URLSearchParams(window.location.search);
+      if (params.has("issue")) {
+        params.delete("issue");
+        const query = params.toString();
+        window.history.pushState(
+          null,
+          "",
+          window.location.pathname + (query === "" ? "" : `?${query}`),
+        );
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    const issueKey = new URLSearchParams(window.location.search).get("issue");
+    if (issueKey !== null && issueKey !== "") {
+      onOpenIssue(issueKey);
+    }
+    const syncIssue = () => {
+      const next = new URLSearchParams(window.location.search).get("issue");
+      if (next === null || next === "") {
+        closeIssue(false);
+      } else {
+        onOpenIssue(next);
+      }
+    };
+    window.addEventListener("popstate", syncIssue);
+    return () => window.removeEventListener("popstate", syncIssue);
+  }, [closeIssue, onOpenIssue]);
 
   return (
     <main className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-4 py-10 sm:px-6 sm:py-14">
@@ -1074,7 +1223,21 @@ export function JiraBoard({
         </p>
       </header>
 
-      {error !== null && <BoardsError error={error} />}
+      {outcome !== null && (
+        <OutcomeBanner
+          outcome={outcome}
+          missingScopes={missingScopes}
+          onDismiss={dismiss}
+        />
+      )}
+
+      {error !== null && (
+        <BoardsError
+          error={error}
+          onReconnect={canManage(role ?? "") ? connect : undefined}
+          onRetry={() => void preview(boardId).then(setBacklog)}
+        />
+      )}
 
       {loading ? (
         <LoadingLine>Reading the backlog from Jira…</LoadingLine>
@@ -1086,6 +1249,7 @@ export function JiraBoard({
           truncated summaries nobody reads while reading a ticket.
         */
         <div className="overflow-hidden rounded-md border">
+          <SelectionSummary preview={backlog} />
           <PreviewList
             preview={backlog}
             onOpenIssue={onOpenIssue}
@@ -1107,18 +1271,34 @@ export function JiraBoard({
         open={selected !== null || openingKey !== null}
         onOpenChange={(next: boolean) => {
           if (!next) {
-            setSelected(null);
-            setOpeningKey(null);
-            // So a response still in flight does not reopen the panel over a
-            // reader who has already closed it.
-            wantedKey.current = null;
+            closeIssue(true);
           }
         }}
-        title={selected?.summary ?? openingKey ?? "Ticket"}
-        description="Read live from Jira. Nothing here has been priced."
+        title={selected?.key ?? openingKey ?? "Ticket"}
+        description={
+          selected?.summary ??
+          "Read live from Jira. Nothing here has been priced."
+        }
         data-testid="issue-panel"
       >
-        {selected === null ? (
+        {selected === null && issueError !== null ? (
+          <div className="flex min-h-48 flex-col items-start justify-center gap-3">
+            <ErrorBanner className="mt-0">{issueError}</ErrorBanner>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                if (openingKey !== null) {
+                  onOpenIssue(openingKey);
+                }
+              }}
+            >
+              <RefreshCw />
+              Try again
+            </Button>
+          </div>
+        ) : selected === null ? (
           <IssueDetailSkeleton />
         ) : (
           <IssueDetail issue={selected} />
@@ -1139,11 +1319,13 @@ export function JiraBoard({
  */
 export function Jira({
   organizationId,
+  organizationSlug,
   organizationName,
   role,
   onOpenSite,
 }: {
   organizationId: string;
+  organizationSlug: string;
   organizationName: string;
   role: string;
   onOpenSite: (connection: JiraConnection) => void;
@@ -1201,6 +1383,11 @@ export function Jira({
                 <ConnectionRow
                   key={connection.id}
                   connection={connection}
+                  href={pathForScreen(
+                    "org-jira-site",
+                    organizationSlug,
+                    connection.id,
+                  )}
                   onOpen={onOpenSite}
                 />
               ))}
@@ -1253,6 +1440,7 @@ export function Jira({
  */
 export function JiraSite({
   organizationId,
+  organizationSlug,
   connectionId,
   role,
   onDisconnected,
@@ -1260,6 +1448,7 @@ export function JiraSite({
   onSiteName,
 }: {
   organizationId: string;
+  organizationSlug: string;
   connectionId: string;
   role: string;
   onDisconnected: () => void;
@@ -1272,7 +1461,9 @@ export function JiraSite({
    */
   onSiteName: (name: string | undefined) => void;
 }) {
-  const { connections, loading, disconnect } = useJira(organizationId);
+  const { connections, loading, error, connect, disconnect, refresh } =
+    useJira(organizationId);
+  const { outcome, missingScopes, dismiss } = useJiraOutcome();
   const [disconnecting, setDisconnecting] = useState(false);
   const manageable = canManage(role);
 
@@ -1291,6 +1482,19 @@ export function JiraSite({
       <main className="mx-auto w-full max-w-2xl px-4 py-10 sm:px-6 sm:py-14">
         {loading ? (
           <LoadingLine />
+        ) : error !== null ? (
+          <div className="flex flex-col items-start gap-3">
+            <ErrorBanner className="mt-0">{error}</ErrorBanner>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => void refresh()}
+            >
+              <RefreshCw />
+              Try again
+            </Button>
+          </div>
         ) : (
           <p className="text-muted-foreground text-sm">
             That site is not connected.
@@ -1313,7 +1517,7 @@ export function JiraSite({
           {!connection.healthy && (
             <Badge variant="destructive" className="gap-1">
               <TriangleAlert className="size-3" />
-              Reconnect
+              Connection expired
             </Badge>
           )}
         </div>
@@ -1328,8 +1532,34 @@ export function JiraSite({
         </a>
       </header>
 
+      {outcome !== null && (
+        <OutcomeBanner
+          outcome={outcome}
+          missingScopes={missingScopes}
+          onDismiss={dismiss}
+        />
+      )}
+
+      {!connection.healthy &&
+        (manageable ? (
+          <div className="flex items-center justify-between gap-3 rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3">
+            <p className="text-sm">
+              Reconnect this site to read its boards again.
+            </p>
+            <Button type="button" size="sm" onClick={connect}>
+              <RefreshCw />
+              Reconnect
+            </Button>
+          </div>
+        ) : (
+          <p className="text-muted-foreground text-sm">
+            Ask an owner or admin to reconnect this site.
+          </p>
+        ))}
+
       <BoardsCard
         organizationId={organizationId}
+        organizationSlug={organizationSlug}
         connection={connection}
         onOpenBoard={onOpenBoard}
         key={connection.id}
@@ -1371,14 +1601,18 @@ export function JiraSite({
               description="Removes our access and every board registered from it. Atlassian keeps its own record of the grant until you revoke it in your account settings."
               confirmLabel="Disconnect"
               busy={disconnecting}
-              onConfirm={() => {
+              onConfirm={async () => {
                 setDisconnecting(true);
-                return disconnect(connection.id).then(() => {
-                  // Back to the list whatever happened: on success the site
-                  // is gone, and on failure the list is where the error is
-                  // reported.
+                try {
+                  const result = await disconnect(connection.id);
+                  if (!result.ok) {
+                    return result.error;
+                  }
                   onDisconnected();
-                });
+                  return;
+                } finally {
+                  setDisconnecting(false);
+                }
               }}
             />
           </CardContent>

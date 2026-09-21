@@ -11,6 +11,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { expect, test, vi } from "vitest";
 
 import { Organizations } from "../src/Organizations";
+import { isPlainLeftClick } from "../src/routes";
 
 const acme = {
   id: "org_1",
@@ -73,17 +74,31 @@ test("each organization is listed with its handle and your role", () => {
 test("a row opens that organization, not another", () => {
   const { onOpen } = show();
 
-  fireEvent.click(screen.getByRole("button", { name: /Globex/ }));
+  fireEvent.click(screen.getByRole("link", { name: /Globex/ }));
 
   expect(onOpen).toHaveBeenCalledWith(globex);
+});
+
+test("a modified row click is left to the browser", () => {
+  expect(
+    isPlainLeftClick({
+      defaultPrevented: false,
+      button: 0,
+      metaKey: false,
+      ctrlKey: true,
+      shiftKey: false,
+      altKey: false,
+    }),
+  ).toBe(false);
 });
 
 test("the whole row is the control, reachable by keyboard", () => {
   // A div with a click handler would look identical and be unreachable.
   show();
 
-  const row = screen.getByRole("button", { name: /Acme/ });
-  expect(row.tagName).toBe("BUTTON");
+  const row = screen.getByRole("link", { name: /Acme/ });
+  expect(row.tagName).toBe("A");
+  expect(row.getAttribute("href")).toBe("/o/acme/settings");
 });
 
 test("an empty list explains what an organization is for", () => {
@@ -103,7 +118,7 @@ test("the empty state offers a way to create one", () => {
 
   // Two create buttons exist on an empty page: the header's and the card's.
   // Either must work.
-  for (const button of screen.getAllByRole("button", {
+  for (const button of screen.getAllByRole("link", {
     name: /New organization/,
   })) {
     fireEvent.click(button);
@@ -135,7 +150,7 @@ test("creating is reachable even with a long list", () => {
   // bottom of a long page.
   const { onCreate } = show();
 
-  fireEvent.click(screen.getByRole("button", { name: /New organization/ }));
+  fireEvent.click(screen.getByRole("link", { name: /New organization/ }));
 
   expect(onCreate).toHaveBeenCalled();
 });

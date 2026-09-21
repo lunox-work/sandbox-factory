@@ -24,6 +24,7 @@ import { ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 import type { Screen } from "./SideNav";
+import { isPlainLeftClick, pathForScreen } from "./routes";
 
 /**
  * One step. `screen` is absent on the last crumb — the page you are on is
@@ -54,6 +55,12 @@ export interface Crumb {
 export interface TrailOrganization {
   name: string;
   slug: string;
+}
+
+function crumbHref(crumb: Crumb): string {
+  return crumb.screen === undefined
+    ? window.location.pathname
+    : pathForScreen(crumb.screen, crumb.slug, crumb.connectionId);
 }
 
 const HOME: Crumb = { label: "Home", screen: "home" };
@@ -221,17 +228,14 @@ export function Breadcrumbs({
       applied outside the capped box, so the crumbs began 24px left of every
       heading below them.
 
-      Only top padding, because the page below opens with its own, which
-      becomes the gap between the trail and the heading. Bottom padding here
-      would double it, and the negative margin trims what is left to one header
-      block rather than two stacked ones — a constant here instead of a change
-      to five pages, none of which should have to know whether a trail sits
-      above it.
+      Only top padding, because the page shell gives routed pages a smaller
+      first-block offset when a breadcrumb is present. That keeps one stable
+      gap between the trail and heading without compensating margins.
     */
     <nav
       aria-label="Breadcrumb"
       className={cn(
-        "mx-auto -mb-6 w-full px-4 pt-5 sm:-mb-8 sm:px-6 sm:pt-7",
+        "mx-auto w-full px-4 pt-5 sm:px-6 sm:pt-7",
         // The board is the one wide page, so a trail capped at the narrow
         // column would be misaligned the other way — the crumbs sitting well
         // right of the content. Read from the screen rather than taken as a
@@ -271,15 +275,18 @@ export function Breadcrumbs({
                   {crumb.label}
                 </span>
               ) : (
-                <button
-                  type="button"
-                  onClick={() =>
-                    onNavigate(target, crumb.slug, crumb.connectionId)
-                  }
+                <a
+                  href={crumbHref(crumb)}
+                  onClick={(event) => {
+                    if (isPlainLeftClick(event)) {
+                      event.preventDefault();
+                      onNavigate(target, crumb.slug, crumb.connectionId);
+                    }
+                  }}
                   className="hover:text-foreground focus-visible:ring-ring/50 rounded-sm underline-offset-4 transition-colors hover:underline focus-visible:ring-[3px] focus-visible:outline-none"
                 >
                   {crumb.label}
-                </button>
+                </a>
               )}
             </li>
           );

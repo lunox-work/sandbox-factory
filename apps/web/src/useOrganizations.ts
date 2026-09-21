@@ -29,6 +29,8 @@ export interface Organizations extends State {
    * also when they have deliberately stepped out of one — see {@link clear}.
    */
   active: MembershipDto | null;
+  /** An explicit URL slug that is not present in the caller's memberships. */
+  notFound: boolean;
   /** Switches organization, and remembers the choice for the next reload. */
   select: (organizationId: string) => void;
   /**
@@ -124,6 +126,12 @@ export function useOrganizations(
       }
       return;
     }
+    if (preferredSlug !== undefined) {
+      if (activeId !== null) {
+        setActiveId(null);
+      }
+      return;
+    }
     // Having stepped out is a choice, not an empty slot to fill. Returning
     // here also keeps `activeId` honest: without it the effect would quietly
     // re-point it at an organization the person just left, which `active`
@@ -166,6 +174,10 @@ export function useOrganizations(
   // than two that could disagree.
   const active =
     state.organizations.find((entry) => entry.id === activeId) ?? null;
+  const notFound =
+    !state.loading &&
+    preferredSlug !== undefined &&
+    !state.organizations.some((entry) => entry.slug === preferredSlug);
 
-  return { ...state, active, select, clear, refresh };
+  return { ...state, active, notFound, select, clear, refresh };
 }

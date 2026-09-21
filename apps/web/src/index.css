@@ -390,6 +390,14 @@
   letter-spacing: -0.005em;
 }
 
+.signin-context {
+  margin: 0.45rem 0 0;
+  max-width: 19rem;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  color: var(--muted-foreground);
+}
+
 .signin-error {
   width: 100%;
   box-sizing: border-box;

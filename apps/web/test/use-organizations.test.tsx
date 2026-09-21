@@ -46,6 +46,7 @@ function Probe({ slug }: { slug?: string | undefined }) {
       <span data-testid="count">{organizations.organizations.length}</span>
       <span data-testid="error">{organizations.error ?? "none"}</span>
       <span data-testid="loading">{String(organizations.loading)}</span>
+      <span data-testid="not-found">{String(organizations.notFound)}</span>
       <button type="button" onClick={() => organizations.select("org_2")}>
         pick globex
       </button>
@@ -85,15 +86,15 @@ test("a handle in the URL wins over the first in the list", async () => {
   );
 });
 
-test("a handle naming an organization you are not in is ignored", async () => {
-  // Falls back to one you do belong to rather than showing an empty shell for
-  // a tenant that is not yours.
+test("a handle naming an organization you are not in is not found", async () => {
   serverReturning({ organizations: [acme] });
   render(<Probe slug="somebody-else" />);
 
   await waitFor(() =>
-    expect(screen.getByTestId("active").textContent).toBe("acme"),
+    expect(screen.getByTestId("loading").textContent).toBe("false"),
   );
+  expect(screen.getByTestId("active").textContent).toBe("none");
+  expect(screen.getByTestId("not-found").textContent).toBe("true");
 });
 
 test("belonging to none leaves nothing active", async () => {

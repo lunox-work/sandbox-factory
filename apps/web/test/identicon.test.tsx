@@ -231,80 +231,23 @@ test("a circular avatar leaves the shape to the default", () => {
   expect(root?.className).not.toContain("rounded-lg");
 });
 
-test("the settings avatar is itself the control for replacing it", () => {
-  // The picture is the target rather than a labelled button beside it: a
-  // button there would sit between the avatar and the field it belongs to.
-  const { container } = render(
-    <AvatarField id="user_1" shape="circle" label="your" onEdit={vi.fn()} />,
-  );
+test("the settings avatar does not advertise an unavailable upload", () => {
+  const { container } = render(<AvatarField id="user_1" shape="circle" />);
 
-  const button = container.querySelector("button");
-  // Named for what it changes: the picture itself is decorative, so without
-  // this the control announces nothing.
-  expect(button?.getAttribute("aria-label")).toBe("Change your picture");
-  // The avatar is inside the control, not beside it.
-  expect(button?.querySelector('[data-slot="avatar"]')).not.toBeNull();
+  expect(container.querySelector("button")).toBeNull();
+  expect(container.querySelector('[data-slot="avatar"]')).not.toBeNull();
 });
 
-test("clicking the picture answers, rather than doing nothing", () => {
-  /*
-   * It was disabled, which swallowed the click: no event, and the `title`
-   * carrying the reason never showed on a touch screen or for a keyboard, so
-   * the control read as broken. It is enabled and says why instead.
-   */
-  const onEdit = vi.fn();
-  const { container } = render(
-    <AvatarField id="user_1" shape="circle" label="your" onEdit={onEdit} />,
-  );
+test("the settings avatar keeps the requested shape", () => {
+  const { container } = render(<AvatarField id="org_globex" shape="square" />);
 
-  const button = container.querySelector("button");
-  expect(button?.disabled).toBe(false);
-
-  fireEvent.click(button as HTMLElement);
-  expect(onEdit).toHaveBeenCalledTimes(1);
-});
-
-test("the edit overlay is hidden until the control is hovered or focused", () => {
-  const { container } = render(
-    <AvatarField id="user_1" shape="circle" label="your" onEdit={vi.fn()} />,
-  );
-
-  const overlay = container.querySelector("span[aria-hidden='true']");
-  expect(overlay?.className).toContain("opacity-0");
-  expect(overlay?.className).toContain("group-hover:opacity-100");
-  // Keyboard users get it too; hover alone would hide it from them.
-  expect(overlay?.className).toContain("group-focus-visible:opacity-100");
-  // Decorative: the control around it already says what it does.
-  expect(overlay?.querySelector("svg")).not.toBeNull();
-});
-
-test("the overlay follows the avatar's shape, not the default circle", () => {
-  /*
-   * The scrim inherits its radius from the control, so the control has to
-   * carry the shape. Left as `rounded-full`, a square organization avatar gets
-   * a circular scrim over a rounded square.
-   */
-  const { container } = render(
-    <AvatarField
-      id="org_globex"
-      shape="square"
-      label="organization"
-      onEdit={vi.fn()}
-    />,
-  );
-
-  const button = container.querySelector("button");
-  expect(button?.className).toContain("rounded-lg");
-  expect(button?.className).not.toContain("rounded-full");
-  expect(
-    container.querySelector("span[aria-hidden='true']")?.className,
-  ).toContain("rounded-[inherit]");
+  const avatar = container.querySelector('[data-slot="avatar"]');
+  expect(avatar?.className).toContain("rounded-lg");
+  expect(avatar?.className).not.toContain("rounded-full");
 });
 
 test("the settings avatar shows the generated face at a readable size", () => {
-  const { container } = render(
-    <AvatarField id="user_1" shape="circle" label="your" onEdit={vi.fn()} />,
-  );
+  const { container } = render(<AvatarField id="user_1" shape="circle" />);
 
   // Larger than the rail's 24px: here the picture is the subject, and a 5x5
   // grid reads as texture when it is small.
@@ -319,7 +262,6 @@ test("the settings avatar prefers a real picture over the generated one", async 
       id="user_1"
       image="https://example.test/alice.png"
       shape="circle"
-      label="your"
     />,
   );
 
@@ -332,14 +274,7 @@ test("the settings avatar prefers a real picture over the generated one", async 
 });
 
 test("an organization's settings avatar is a rounded square", () => {
-  const { container } = render(
-    <AvatarField
-      id="org_globex"
-      shape="square"
-      label="organization"
-      onEdit={vi.fn()}
-    />,
-  );
+  const { container } = render(<AvatarField id="org_globex" shape="square" />);
 
   expect(container.querySelector('[data-slot="avatar"]')?.className).toContain(
     "rounded-lg",

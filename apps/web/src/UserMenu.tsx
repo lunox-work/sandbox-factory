@@ -12,6 +12,7 @@
  */
 
 import { Building2, LogOut, Settings } from "lucide-react";
+import { useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 
@@ -27,6 +28,7 @@ import {
 import type { Screen } from "./SideNav";
 
 import { BuildReadout, type LinkWrapper } from "./BuildReadout";
+import { isPlainLeftClick, pathForScreen } from "./routes";
 
 export function UserMenu({
   userId,
@@ -49,10 +51,11 @@ export function UserMenu({
   onAccount: () => void;
   onSignOut: () => void;
 }) {
+  const [open, setOpen] = useState(false);
   return (
-    <DropdownMenu>
+    <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger
-        className="ring-offset-background focus-visible:ring-ring relative rounded-full transition-opacity outline-none hover:opacity-80 focus-visible:ring-2 focus-visible:ring-offset-2 data-[state=open]:opacity-80"
+        className="ring-offset-background focus-visible:ring-ring relative grid size-10 place-items-center rounded-full transition-colors outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-offset-2 data-[state=open]:bg-accent [@media(pointer:coarse)]:size-11"
         /*
           The count is in the name, not only in the dot: a mark that exists
           purely as colour says nothing to a screen reader, and this is the
@@ -128,14 +131,25 @@ export function UserMenu({
             for one screen invite the wrong one. */}
         {/* The count travels with the item that leads to them, so the dot on
             the avatar resolves into something specific once the menu opens. */}
-        <DropdownMenuItem onSelect={onAccount}>
-          <Settings />
-          Account settings
-          {invitationCount > 0 && (
-            <Badge variant="secondary" className="ml-auto">
-              {invitationCount}
-            </Badge>
-          )}
+        <DropdownMenuItem asChild>
+          <a
+            href={pathForScreen("account")}
+            onClick={(event) => {
+              if (isPlainLeftClick(event)) {
+                event.preventDefault();
+                setOpen(false);
+                onAccount();
+              }
+            }}
+          >
+            <Settings />
+            Account settings
+            {invitationCount > 0 && (
+              <Badge variant="secondary" className="ml-auto">
+                {invitationCount}
+              </Badge>
+            )}
+          </a>
         </DropdownMenuItem>
 
         {/*
@@ -148,9 +162,20 @@ export function UserMenu({
           menu is where somebody looks for what belongs to their account, and
           the rail's icon is unlabelled.
         */}
-        <DropdownMenuItem onSelect={() => onNavigate?.("organizations")}>
-          <Building2 />
-          Organizations
+        <DropdownMenuItem asChild>
+          <a
+            href={pathForScreen("organizations")}
+            onClick={(event) => {
+              if (isPlainLeftClick(event)) {
+                event.preventDefault();
+                setOpen(false);
+                onNavigate?.("organizations");
+              }
+            }}
+          >
+            <Building2 />
+            Organizations
+          </a>
         </DropdownMenuItem>
 
         <DropdownMenuSeparator />

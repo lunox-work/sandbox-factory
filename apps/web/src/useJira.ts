@@ -48,7 +48,9 @@ export interface JiraState {
 export interface Jira extends JiraState {
   /** Sends the browser to Atlassian. Does not return. */
   connect: () => void;
-  disconnect: (connectionId: string) => Promise<void>;
+  disconnect: (
+    connectionId: string,
+  ) => Promise<{ ok: true } | { ok: false; error: string }>;
   refresh: () => Promise<void>;
 }
 
@@ -118,22 +120,31 @@ export function useJira(organizationId: string | undefined): Jira {
   const disconnect = useCallback(
     async (connectionId: string) => {
       if (organizationId === undefined) {
-        return;
+        return { ok: false as const, error: "Could not disconnect that site." };
       }
-      const res = await fetch(
-        `/api/v1/orgs/${encodeURIComponent(
-          organizationId,
-        )}/jira/connections/${encodeURIComponent(connectionId)}`,
-        { method: "DELETE", credentials: "include" },
-      );
-      if (!res.ok) {
+      try {
+        const res = await fetch(
+          `/api/v1/orgs/${encodeURIComponent(
+            organizationId,
+          )}/jira/connections/${encodeURIComponent(connectionId)}`,
+          { method: "DELETE", credentials: "include" },
+        );
+        if (!res.ok) {
+          const error = "Could not disconnect that site.";
+          setState((current) => ({ ...current, error }));
+          return { ok: false as const, error };
+        }
+        await refresh();
+        return { ok: true as const };
+      } catch {
+        const error =
+          "Could not reach the server. The site is still connected.";
         setState((current) => ({
           ...current,
-          error: "Could not disconnect that site.",
+          error,
         }));
-        return;
+        return { ok: false as const, error };
       }
-      await refresh();
     },
     [organizationId, refresh],
   );
@@ -250,6 +261,15 @@ export interface BacklogPreview {
   /** Which endpoint answered: a Kanban board has no backlog of its own. */
   source: "backlog" | "board-issues";
   jql: string;
+  /** The resolved rules used for this read, including server defaults. */
+  selection?: {
+    maxTickets: number;
+    excludeAssigned: boolean;
+    issueTypes: string[];
+    minAgeDays: number;
+    maxAgeDays?: number;
+    minSpecChars: number;
+  };
   issues: JiraPreviewIssue[];
   total?: number;
 }
@@ -367,16 +387,20 @@ export function useJiraBoards(organizationId: string | undefined): JiraBoards {
         return;
       }
       // A POST because it writes rows, though the page means it as a read.
-      const res = await fetch(
-        `${base}/connections/${encodeURIComponent(connectionId)}/sync`,
-        { method: "POST", credentials: "include" },
-      );
-      if (!res.ok) {
-        setError(await toFetchError(res));
-        return;
+      try {
+        const res = await fetch(
+          `${base}/connections/${encodeURIComponent(connectionId)}/sync`,
+          { method: "POST", credentials: "include" },
+        );
+        if (!res.ok) {
+          setError(await toFetchError(res));
+          return;
+        }
+        setError(null);
+        await refresh();
+      } catch {
+        setError({ kind: "other", message: "Could not reach the server." });
       }
-      setError(null);
-      await refresh();
     },
     [base, refresh],
   );
@@ -386,16 +410,21 @@ export function useJiraBoards(organizationId: string | undefined): JiraBoards {
       if (base === undefined) {
         return null;
       }
-      const res = await fetch(
-        `${base}/boards/${encodeURIComponent(boardId)}/backlog-preview`,
-        { credentials: "include" },
-      );
-      if (!res.ok) {
-        setError(await toFetchError(res));
+      try {
+        const res = await fetch(
+          `${base}/boards/${encodeURIComponent(boardId)}/backlog-preview`,
+          { credentials: "include" },
+        );
+        if (!res.ok) {
+          setError(await toFetchError(res));
+          return null;
+        }
+        setError(null);
+        return (await res.json()) as BacklogPreview;
+      } catch {
+        setError({ kind: "other", message: "Could not reach the server." });
         return null;
       }
-      setError(null);
-      return (await res.json()) as BacklogPreview;
     },
     [base],
   );
@@ -405,17 +434,22 @@ export function useJiraBoards(organizationId: string | undefined): JiraBoards {
       if (base === undefined) {
         return null;
       }
-      const res = await fetch(
-        `${base}/boards/${encodeURIComponent(boardId)}/issues/${encodeURIComponent(issueKey)}`,
-        { credentials: "include" },
-      );
-      if (!res.ok) {
-        setError(await toFetchError(res));
+      try {
+        const res = await fetch(
+          `${base}/boards/${encodeURIComponent(boardId)}/issues/${encodeURIComponent(issueKey)}`,
+          { credentials: "include" },
+        );
+        if (!res.ok) {
+          setError(await toFetchError(res));
+          return null;
+        }
+        setError(null);
+        const body = (await res.json()) as { issue?: JiraIssueDetail } | null;
+        return body?.issue ?? null;
+      } catch {
+        setError({ kind: "other", message: "Could not reach the server." });
         return null;
       }
-      setError(null);
-      const body = (await res.json()) as { issue?: JiraIssueDetail } | null;
-      return body?.issue ?? null;
     },
     [base],
   );

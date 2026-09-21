@@ -48,8 +48,7 @@ export function PeekPanel({
   open: boolean;
   onOpenChange: (open: boolean) => void;
   /**
-   * Names the panel for assistive technology. Rendered visually hidden: the
-   * record inside carries its own heading, and showing both would repeat it.
+   * Names the panel and appears in its fixed header above the scrolling body.
    */
   title: string;
   /** The same, for the sentence under the title. Optional. */
@@ -87,7 +86,7 @@ export function PeekPanel({
           near-black theme a plain `bg-black/50` over a black page is almost
           invisible, and the blur is what separates the two planes.
         */}
-        <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/40 backdrop-blur-[2px] data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0" />
+        <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/40 backdrop-blur-[2px] data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0 motion-reduce:animate-none" />
 
         <DialogPrimitive.Content
           className={cn(
@@ -97,7 +96,7 @@ export function PeekPanel({
             "bg-background fixed inset-y-0 right-0 z-50 flex w-full flex-col border-l shadow-lg outline-none sm:max-w-xl lg:max-w-2xl",
             // In from the edge it is attached to, which is what says where it
             // came from and where closing it will put it back.
-            "data-[state=closed]:animate-out data-[state=open]:animate-in data-[state=closed]:slide-out-to-right data-[state=open]:slide-in-from-right data-[state=closed]:duration-200 data-[state=open]:duration-300",
+            "data-[state=closed]:animate-out data-[state=open]:animate-in data-[state=closed]:slide-out-to-right data-[state=open]:slide-in-from-right data-[state=closed]:duration-200 data-[state=open]:duration-300 motion-reduce:animate-none",
             className,
           )}
           // The row that opened it, rather than Radix's default of a trigger
@@ -111,19 +110,24 @@ export function PeekPanel({
           }}
           {...rest}
         >
-          {/*
-            The heading and its sentence exist for screen readers, which
-            announce a dialog by its title. Radix warns when either is
-            missing, and the record below carries the visible ones.
-          */}
-          <DialogPrimitive.Title className="sr-only">
-            {title}
-          </DialogPrimitive.Title>
-          {description !== undefined && (
-            <DialogPrimitive.Description className="sr-only">
-              {description}
-            </DialogPrimitive.Description>
-          )}
+          <header className="bg-background flex min-h-14 shrink-0 items-center gap-3 border-b px-4 sm:px-6">
+            <div className="min-w-0 flex-1">
+              <DialogPrimitive.Title className="text-sm font-semibold break-words">
+                {title}
+              </DialogPrimitive.Title>
+              {description !== undefined && (
+                <DialogPrimitive.Description className="text-muted-foreground line-clamp-2 text-xs break-words">
+                  {description}
+                </DialogPrimitive.Description>
+              )}
+            </div>
+            <DialogPrimitive.Close
+              className="ring-offset-background focus-visible:ring-ring text-muted-foreground hover:bg-accent hover:text-foreground grid size-10 shrink-0 place-items-center rounded-md transition-colors focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
+              aria-label="Close"
+            >
+              <X className="size-4" />
+            </DialogPrimitive.Close>
+          </header>
 
           {/*
             The only scrolling region on screen while this is open: Radix
@@ -139,20 +143,6 @@ export function PeekPanel({
               {footer}
             </div>
           )}
-
-          {/*
-            Floating over the content rather than in a header bar of its own:
-            the record starts at the top of the panel, and a bar above it
-            would be a strip of chrome on every ticket. Escape and a click
-            outside both close it too — this is for the reader who reaches
-            for a control.
-          */}
-          <DialogPrimitive.Close
-            className="ring-offset-background focus-visible:ring-ring text-muted-foreground hover:bg-accent hover:text-foreground absolute top-3.5 right-4 grid size-7 place-items-center rounded-md transition-colors focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
-            aria-label="Close"
-          >
-            <X className="size-4" />
-          </DialogPrimitive.Close>
         </DialogPrimitive.Content>
       </DialogPrimitive.Portal>
     </DialogPrimitive.Root>

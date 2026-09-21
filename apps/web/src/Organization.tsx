@@ -20,6 +20,7 @@ import { LogOut, Trash2, UserPlus, Users } from "lucide-react";
 import {
   HANDLE_MAX_LENGTH,
   isValidHandle,
+  normalizeHandle,
   toHandleStem,
 } from "sandbox-factory";
 import {
@@ -30,11 +31,11 @@ import {
   type ReactNode,
 } from "react";
 
-import { AvatarField, UPLOAD_COMING_SOON } from "@/components/AvatarField";
+import { AvatarField } from "@/components/AvatarField";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { EditableField } from "@/components/EditableField";
 import { EntityAvatar } from "@/components/Avatar";
-import { ErrorBanner, FormStatus, LoadingLine } from "@/components/Message";
+import { ErrorBanner, LoadingLine } from "@/components/Message";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -49,6 +50,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 import { authClient } from "./auth";
 import { JiraIcon, ProviderIcon, SlackIcon } from "./ProviderIcon";
+import { isPlainLeftClick, pathForScreen } from "./routes";
 import { useJira } from "./useJira";
 
 /**
@@ -62,6 +64,15 @@ const TABS = [
   { value: "members", label: "Members" },
   { value: "settings", label: "Settings" },
 ] as const;
+type OrganizationTab = (typeof TABS)[number]["value"];
+
+function tabFromUrl(): OrganizationTab {
+  if (!window.location.pathname.startsWith("/o/")) {
+    return "overview";
+  }
+  const value = new URLSearchParams(window.location.search).get("tab");
+  return value === "members" || value === "settings" ? value : "overview";
+}
 
 /** Roles that may manage members and invitations. */
 function canManage(role: string): boolean {
@@ -77,7 +88,7 @@ export function Organization({
   /** The organization to show, with the caller's role in it. */
   organization: MembershipDto;
   /** Called after a rename, so the switcher shows the new handle. */
-  onChanged: () => void;
+  onChanged: (slug: string) => void;
   /** Called after leaving or deleting, so the app moves elsewhere. */
   onLeft: () => void;
   /**
@@ -89,15 +100,43 @@ export function Organization({
   const [members, setMembers] = useState<OrganizationMemberDto[]>([]);
   /** False until the members request has answered once; see `memberCount`. */
   const [loaded, setLoaded] = useState(false);
+  const [memberError, setMemberError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   /*
    * Controlled rather than `defaultValue`, so the member count in the handle
    * card can open the Members tab.
    */
-  const [tab, setTab] = useState<string>("overview");
+  const [tab, setTab] = useState<OrganizationTab>(tabFromUrl);
+
+  const selectTab = useCallback((next: string) => {
+    const selected = next as OrganizationTab;
+    setTab(selected);
+    if (!window.location.pathname.startsWith("/o/")) {
+      return;
+    }
+    const params = new URLSearchParams(window.location.search);
+    if (selected === "overview") {
+      params.delete("tab");
+    } else {
+      params.set("tab", selected);
+    }
+    const query = params.toString();
+    window.history.pushState(
+      null,
+      "",
+      window.location.pathname + (query === "" ? "" : `?${query}`),
+    );
+  }, []);
+
+  useEffect(() => {
+    const syncTab = () => setTab(tabFromUrl());
+    window.addEventListener("popstate", syncTab);
+    return () => window.removeEventListener("popstate", syncTab);
+  }, []);
 
   const refresh = useCallback(async () => {
+    setLoaded(false);
     try {
       const res = await fetch(`/api/v1/orgs/${organization.id}/members`, {
         credentials: "include",
@@ -106,16 +145,18 @@ export function Organization({
         // It used to ignore this entirely, so a 500 left an empty member list
         // and no reason for it — an organization that looked as though it had
         // lost everybody.
-        setError("Could not load this organization.");
+        setMemberError("Could not load this organization.");
         return;
       }
       setMembers(
         ((await res.json()) as { members: OrganizationMemberDto[] }).members,
       );
       setLoaded(true);
-      setError(null);
+      setMemberError(null);
     } catch {
-      setError("Could not load this organization.");
+      setMemberError("Could not load this organization.");
+    } finally {
+      setLoaded(true);
     }
   }, [organization.id]);
 
@@ -135,7 +176,7 @@ export function Organization({
   async function run(
     action: () => Promise<{ error?: { message?: string } | null }>,
     after: () => void,
-  ) {
+  ): Promise<string | void> {
     setBusy(true);
     setError(null);
     try {
@@ -143,12 +184,13 @@ export function Organization({
       if (result.error !== null && result.error !== undefined) {
         // The server's wording ("You cannot leave as the only owner") is
         // something the person can act on.
-        setError(result.error.message ?? "That did not work.");
-        return;
+        const message = result.error.message ?? "That did not work.";
+        return message;
       }
       after();
     } catch {
-      setError("That did not work.");
+      const message = "That did not work.";
+      return message;
     } finally {
       setBusy(false);
     }
@@ -194,10 +236,10 @@ export function Organization({
                   work can be read and priced here.
                 </CardDescription>
               </CardHeader>
-              {/* Three across, two on a phone — as on the team card. */}
-              <CardContent className="grid auto-rows-fr grid-cols-2 gap-2 sm:grid-cols-3">
+              <CardContent className="flex flex-col gap-2">
                 <JiraConnectionTile
                   organizationId={organization.id}
+                  organizationSlug={organization.slug}
                   onOpenJira={onOpenJira}
                 />
 
@@ -221,7 +263,7 @@ export function Organization({
           )}
         </div>
       ) : (
-        <Tabs value={tab} onValueChange={setTab} className="mt-8 gap-6">
+        <Tabs value={tab} onValueChange={selectTab} className="mt-8 gap-6">
           <TabsList className="w-full">
             {TABS.map((tab) => (
               <TabsTrigger key={tab.value} value={tab.value}>
@@ -240,7 +282,7 @@ export function Organization({
               // Undefined until the list arrives, which reads differently from
               // zero — every organization has at least its owner.
               memberCount={loaded ? members.length : undefined}
-              onOpenMembers={() => setTab("members")}
+              onOpenMembers={() => selectTab("members")}
             />
 
             {onOpenJira !== undefined && (
@@ -260,9 +302,10 @@ export function Organization({
                   wrapped row the same height as the first, so the odd tile out
                   is not a different size from its siblings.
                 */}
-                <CardContent className="grid auto-rows-fr grid-cols-2 gap-2 sm:grid-cols-3">
+                <CardContent className="flex flex-col gap-2">
                   <JiraConnectionTile
                     organizationId={organization.id}
+                    organizationSlug={organization.slug}
                     onOpenJira={onOpenJira}
                   />
 
@@ -304,6 +347,19 @@ export function Organization({
                     card before, so an organization briefly looked as though
                     it had no members — which it never can. */}
                 {!loaded && <LoadingLine />}
+                {loaded && memberError !== null && (
+                  <div className="flex flex-col items-start gap-2">
+                    <ErrorBanner className="mt-0">{memberError}</ErrorBanner>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => void refresh()}
+                    >
+                      Try again
+                    </Button>
+                  </div>
+                )}
 
                 {members.map((entry) => {
                   // The last owner cannot be removed or demoted; the plugin
@@ -339,65 +395,64 @@ export function Organization({
                         </span>
                       </span>
 
-                      <Badge
-                        variant={
-                          entry.role === "owner" ? "default" : "secondary"
-                        }
-                      >
-                        {/* No tick: the organizations list draws the same
-                            badge without one, and a filled badge already
-                            says which role this is. */}
-                        <span className="capitalize">{entry.role}</span>
-                      </Badge>
+                      <span className="ml-auto flex shrink-0 items-center gap-2.5">
+                        <Badge
+                          variant={
+                            entry.role === "owner" ? "default" : "secondary"
+                          }
+                        >
+                          {/* No tick: the organizations list draws the same
+                              badge without one, and a filled badge already
+                              says which role this is. */}
+                          <span className="capitalize">{entry.role}</span>
+                        </Badge>
 
-                      {manage &&
-                        // Behind a question: the rows are a column of similar
-                        // names, and removing the wrong one takes away
-                        // everything this organization owns from somebody who
-                        // still needs it.
-                        (lastOwner ? (
-                          // Nothing to confirm when the plugin would refuse
-                          // anyway. The disabled control says so before the
-                          // click rather than after.
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            className="text-muted-foreground"
-                            disabled
-                            title="An organization must keep at least one owner."
-                          >
-                            Remove
-                          </Button>
-                        ) : (
-                          <ConfirmDialog
-                            trigger={
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="sm"
-                                className="text-muted-foreground hover:text-destructive"
-                                disabled={busy}
-                              >
-                                Remove
-                              </Button>
-                            }
-                            title={`Remove ${entry.name}?`}
-                            description="They lose access to everything this organization owns. You can invite them again afterwards."
-                            confirmLabel="Remove"
-                            busy={busy}
-                            onConfirm={() =>
-                              run(
-                                () =>
-                                  authClient.organization.removeMember({
-                                    memberIdOrEmail: entry.id,
-                                    organizationId: organization.id,
-                                  }),
-                                refresh,
-                              )
-                            }
-                          />
-                        ))}
+                        {manage &&
+                          // Behind a question: the rows are a column of
+                          // similar names, and removing the wrong one takes
+                          // away everything this organization owns from
+                          // somebody who still needs it.
+                          (lastOwner ? (
+                            // There is no action the server could accept, so
+                            // state the constraint compactly instead of
+                            // rendering a disabled button and an error-shaped
+                            // paragraph beside an otherwise simple row.
+                            <span
+                              className="text-muted-foreground whitespace-nowrap text-xs"
+                              aria-label="This member is the only owner and cannot be removed"
+                            >
+                              Only owner
+                            </span>
+                          ) : (
+                            <ConfirmDialog
+                              trigger={
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="sm"
+                                  className="text-muted-foreground hover:text-destructive"
+                                  disabled={busy}
+                                >
+                                  Remove
+                                </Button>
+                              }
+                              title={`Remove ${entry.name}?`}
+                              description="They lose access to everything this organization owns. You can invite them again afterwards."
+                              confirmLabel="Remove"
+                              busy={busy}
+                              onConfirm={() =>
+                                run(
+                                  () =>
+                                    authClient.organization.removeMember({
+                                      memberIdOrEmail: entry.id,
+                                      organizationId: organization.id,
+                                    }),
+                                  refresh,
+                                )
+                              }
+                            />
+                          ))}
+                      </span>
                     </div>
                   );
                 })}
@@ -564,6 +619,7 @@ function ConnectionTile({
   status,
   disabled = false,
   onOpen,
+  href,
   actionLabel,
 }: {
   icon: ReactNode;
@@ -572,6 +628,7 @@ function ConnectionTile({
   /** A tool that is not built yet: named, but nothing to open. */
   disabled?: boolean | undefined;
   onOpen?: (() => void) | undefined;
+  href?: string | undefined;
   /**
    * What the tile is called to a screen reader. The visible word is "Manage"
    * on all three, so without this they are announced as three identical
@@ -579,68 +636,41 @@ function ConnectionTile({
    */
   actionLabel: string;
 }) {
-  return (
-    <button
-      type="button"
-      disabled={disabled}
-      onClick={onOpen}
-      aria-label={actionLabel}
-      /*
-        `group` so the Manage affordance can pick up the tile's own hover —
-        it is drawn as a button but is not one, so it has no hover of its
-        own to inherit. `disabled:` rather than omitting the handler: a tool
-        that is not built should look unavailable, not merely do nothing.
-      */
-      className="group hover:bg-muted/50 focus-visible:ring-ring/50 flex min-h-36 flex-col items-center justify-between gap-3 rounded-lg border p-3.5 text-center transition-colors focus-visible:ring-[3px] focus-visible:outline-none disabled:pointer-events-none disabled:opacity-60"
-    >
-      {/*
-        The mark, the name and the status as one centred stack. `flex-1` with
-        `justify-center` rather than centring the tile itself: the three lines
-        centre in whatever space the affordance leaves, so a tool whose status
-        wraps stays balanced instead of drifting upward.
-      */}
-      <span className="flex flex-1 flex-col items-center justify-center">
-        <span className="grid size-8 place-items-center">{icon}</span>
-        <span className="mt-2.5 block text-sm font-medium">{label}</span>
-        {/* A tool that is not built has nothing to count, so its status is
-            the badge at the foot instead — saying it twice would leave the
-            tile repeating itself. */}
-        {!disabled && (
-          <span className="text-muted-foreground block text-xs">{status}</span>
-        )}
-      </span>
-      {/*
-        What the foot of the tile says depends on whether there is anything to
-        do. A tool that is built gets an affordance drawn like an outline
-        button — lit by the tile's hover rather than its own, since it is a
-        `span` and has none. One that is not built gets a badge: a disabled
-        button on a tile that cannot be opened is an affordance for something
-        that does not exist, and the reader has to hover it to find that out.
+  if (disabled) {
+    return (
+      <div
+        role="group"
+        aria-label={`${label}: ${status}`}
+        className="bg-muted/25 flex items-center gap-3 rounded-lg border px-3.5 py-2.5"
+      >
+        <span className="grid size-6 shrink-0 place-items-center">{icon}</span>
+        <span className="min-w-0 flex-1 text-sm font-medium">{label}</span>
+        <Badge variant="secondary">{status}</Badge>
+      </div>
+    );
+  }
 
-        `aria-hidden` either way, because the tile is already announced by
-        `actionLabel` and this would otherwise repeat it.
-      */}
-      {disabled ? (
-        // The same height as the affordance beside it, so the three feet sit
-        // on one line. A badge is 22px against the button's 34px, and left to
-        // itself it aligned to the foot of the tile rather than to its
-        // siblings — which reads as the unbuilt tiles sagging.
-        <Badge
-          aria-hidden="true"
-          variant="secondary"
-          className="h-[34px] rounded-md px-3"
-        >
-          {status}
-        </Badge>
-      ) : (
-        <span
-          aria-hidden="true"
-          className="bg-background group-hover:bg-accent group-hover:text-accent-foreground w-full rounded-md border px-3 py-1.5 text-sm font-medium transition-colors"
-        >
-          Manage
-        </span>
-      )}
-    </button>
+  return href === undefined ? null : (
+    <a
+      href={href}
+      onClick={(event) => {
+        if (isPlainLeftClick(event)) {
+          event.preventDefault();
+          onOpen?.();
+        }
+      }}
+      aria-label={actionLabel}
+      className="group hover:bg-muted/50 focus-visible:ring-ring/50 flex w-full items-center gap-3 rounded-lg border px-3.5 py-3 text-left transition-colors focus-visible:ring-[3px] focus-visible:outline-none"
+    >
+      <span className="grid size-7 shrink-0 place-items-center">{icon}</span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-sm font-medium">{label}</span>
+        <span className="text-muted-foreground block text-xs">{status}</span>
+      </span>
+      <span className="text-muted-foreground text-sm font-medium group-hover:text-foreground">
+        Manage
+      </span>
+    </a>
   );
 }
 
@@ -654,9 +684,11 @@ function ConnectionTile({
  */
 function JiraConnectionTile({
   organizationId,
+  organizationSlug,
   onOpenJira,
 }: {
   organizationId: string;
+  organizationSlug: string;
   onOpenJira: () => void;
 }) {
   const { connections, loading } = useJira(organizationId);
@@ -676,6 +708,7 @@ function JiraConnectionTile({
       status={
         loading ? " " : `${active} active connection${active === 1 ? "" : "s"}`
       }
+      href={pathForScreen("org-jira", organizationSlug)}
       onOpen={onOpenJira}
       actionLabel="Manage Jira connections"
     />
@@ -699,7 +732,7 @@ function HandleForm({
   canRename: boolean;
   busy: boolean;
   onBusy: (busy: boolean) => void;
-  onSaved: () => void;
+  onSaved: (slug: string) => void;
   /** Somebody's own account, which names itself rather than counting. */
   personal?: boolean | undefined;
   /**
@@ -710,16 +743,6 @@ function HandleForm({
   memberCount?: number | undefined;
   onOpenMembers?: (() => void) | undefined;
 }) {
-  /** The avatar's "not yet" notice. The handle reports its own outcome. */
-  const [message, setMessage] = useState<string | null>(null);
-
-  // `EditableField` re-seeds its own draft from the handle; this clears the
-  // line under it, which would otherwise report the previous organization's
-  // save after a switch.
-  useEffect(() => {
-    setMessage(null);
-  }, [organization.slug]);
-
   /*
    * Returns the server's reason on a refusal and nothing on success. The
    * field shows it against the handle that was refused — "that handle is
@@ -735,7 +758,7 @@ function HandleForm({
       if (result.error !== null && result.error !== undefined) {
         return result.error.message ?? "Could not save that handle.";
       }
-      onSaved();
+      onSaved(next);
       return;
     } catch {
       return "Could not save that handle.";
@@ -761,16 +784,7 @@ function HandleForm({
           top-aligned avatar would sit against nothing.
         */}
         <div className="flex items-center gap-4">
-          <AvatarField
-            id={organization.id}
-            shape="square"
-            label="organization"
-            // Reuses the line that reports a rename, rather than a toast or a
-            // popover: one sentence does not earn a layer or a dependency.
-            onEdit={() => {
-              setMessage(UPLOAD_COMING_SOON);
-            }}
-          />
+          <AvatarField id={organization.id} shape="square" />
 
           <EditableField
             className="min-w-0 flex-1"
@@ -782,7 +796,10 @@ function HandleForm({
             readOnlyReason="Only an owner or an admin can rename an organization."
             // The same rules the server applies, so a handle it would refuse
             // cannot be submitted.
-            validate={(next) => isValidHandle(next)}
+            validate={(next) => {
+              const checked = normalizeHandle(next);
+              return checked.status === "ok" ? true : checked.reason;
+            }}
             onSave={(next) => save(next)}
           />
         </div>
@@ -824,8 +841,6 @@ function HandleForm({
             </button>
           )
         )}
-
-        {message !== null && <FormStatus failed={false}>{message}</FormStatus>}
       </CardContent>
     </Card>
   );
@@ -851,6 +866,7 @@ function InviteForm({
 }) {
   const [draft, setDraft] = useState("");
   const [message, setMessage] = useState<string | null>(null);
+  const [validationError, setValidationError] = useState<string | null>(null);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -858,9 +874,22 @@ function InviteForm({
     onError(null);
     setMessage(null);
     const value = draft.trim();
-    // An address is anything with an `@`; everything else is a handle. The
-    // server validates whichever this turns out to be.
-    const body = value.includes("@") ? { email: value } : { handle: value };
+    const email = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+    const rawHandle = value.startsWith("@") ? value.slice(1) : value;
+    const checked = normalizeHandle(rawHandle);
+    if (!email && checked.status === "invalid") {
+      setValidationError(
+        value.includes("@") && !value.startsWith("@")
+          ? "Enter a complete email address, or a handle such as @alex."
+          : checked.reason,
+      );
+      onBusy(false);
+      return;
+    }
+    setValidationError(null);
+    const body = email
+      ? { email: value }
+      : { handle: checked.status === "ok" ? checked.handle : rawHandle };
     try {
       const res = await fetch(`/api/v1/orgs/${organizationId}/invitations`, {
         method: "POST",
@@ -893,19 +922,24 @@ function InviteForm({
       */}
       <h3 className="text-sm font-medium">Invite someone</h3>
       <p className="text-muted-foreground text-sm">
-        By handle, or by the email address they sign in with. Nothing is
-        emailed: the invitation waits on their account page. An address they
-        have connected but not made primary will not find them.
+        Use a handle such as @alex, or the email address they sign in with.
+        Nothing is emailed: the invitation waits on their account page. An
+        address they have connected but not made primary will not find them.
       </p>
 
       <form onSubmit={(event) => void submit(event)} className="flex gap-2">
         <Input
           aria-label="Handle or email address"
-          placeholder="their-handle"
+          placeholder="@alex or alex@example.com"
+          aria-invalid={validationError !== null}
+          aria-describedby={
+            validationError === null ? undefined : "invite-error"
+          }
           value={draft}
           onChange={(event) => {
             setDraft(event.target.value);
             setMessage(null);
+            setValidationError(null);
           }}
         />
         <Button type="submit" disabled={busy || draft.trim() === ""}>
@@ -913,6 +947,12 @@ function InviteForm({
           Invite
         </Button>
       </form>
+
+      {validationError !== null && (
+        <p id="invite-error" role="alert" className="text-destructive text-sm">
+          {validationError}
+        </p>
+      )}
 
       {message !== null && (
         <p role="status" className="text-muted-foreground text-sm">

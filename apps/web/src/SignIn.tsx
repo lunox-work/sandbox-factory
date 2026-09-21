@@ -104,6 +104,7 @@ export function SignIn() {
 
         <h1 className="signin-brand">Lunox</h1>
         <p className="signin-tagline">See less, Build more</p>
+        <p className="signin-context">Sign in to Lunox.</p>
 
         {error !== null && (
           <p className="signin-error" role="alert">
