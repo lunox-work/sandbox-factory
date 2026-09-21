@@ -1,12 +1,12 @@
 /**
  * The trail above each page: where you are, and every step back up.
  *
- * The rail names only Home, because a rail of icons has room for destinations
- * and not for a hierarchy. But most screens here sit under something — an
- * organization's Jira page is two levels down — and the only ways back up
- * were the browser's Back button and whichever link the page happened to
- * carry. Back is history, not hierarchy: arriving at `/o/acme/jira` from a
- * bookmark leaves it pointing out of the app.
+ * The rail names destinations, not a hierarchy: a rail of icons has room for
+ * Home and Organizations and no more. But most screens here sit under
+ * something — an organization's Jira page is two levels down — and the only
+ * ways back up were the browser's Back button and whichever link the page
+ * happened to carry. Back is history, not hierarchy: arriving at
+ * `/o/acme/jira` from a bookmark leaves it pointing out of the app.
  *
  * Rendered by the shell rather than by each page, so the trail cannot drift
  * between screens and a new screen gets one by describing itself in `trailFor`

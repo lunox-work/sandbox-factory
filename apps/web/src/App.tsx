@@ -11,6 +11,7 @@ import { Organizations } from "./Organizations";
 import { Jira, JiraBoard, JiraSite } from "./Jira";
 import { SideNav, type Screen } from "./SideNav";
 import { SignIn } from "./SignIn";
+import { useInvitations } from "./useInvitations";
 import { useOrganizations } from "./useOrganizations";
 
 export function App() {
@@ -100,6 +101,13 @@ function Signed({
   /** The same, for the board on screen. See `siteName`. */
   const [boardName, setBoardName] = useState<string | undefined>(undefined);
 
+  /**
+   * Organizations waiting for an answer, for the mark on the avatar. Read in
+   * the shell rather than on the account page, because the rail is on every
+   * screen and the account page is the one place the badge is not needed.
+   */
+  const invitations = useInvitations();
+
   /*
    * The Back button. `pushState` below adds an entry per navigation, so the
    * browser offers to go back — and this is what makes it do something:
@@ -162,6 +170,7 @@ function Signed({
         name={name}
         email={email}
         image={image}
+        invitationCount={invitations.count}
         onNavigate={navigate}
         onSignOut={() => void signOut()}
       />
@@ -199,7 +208,13 @@ function Signed({
         />
         {screen === "account" ? (
           <Account
-            onJoined={() => void organizations.refresh()}
+            onJoined={() => {
+              void organizations.refresh();
+              // The one that was just accepted is no longer pending, so the
+              // mark on the avatar has to go without a reload.
+              void invitations.refresh();
+            }}
+            onDeclined={() => void invitations.refresh()}
             // The rename also renamed the personal organization, so the
             // switcher would otherwise keep showing the previous name.
             onRenamed={() => void organizations.refresh()}

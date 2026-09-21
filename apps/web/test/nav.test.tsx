@@ -23,6 +23,9 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 const useSession = vi.fn();
 const signOut = vi.fn();
+
+/** What `/api/v1/me/invitations` answers with; set per test. */
+let pendingInvitations: unknown[] = [];
 const setActive = vi.fn(() => Promise.resolve({ data: {}, error: null }));
 
 vi.mock("../src/auth", () => ({
@@ -73,7 +76,11 @@ vi.stubGlobal(
       return Promise.resolve(Response.json({ emails: [] }));
     }
     if (url.includes("/api/v1/me/invitations")) {
-      return Promise.resolve(Response.json({ invitations: [] }));
+      // Per-test, so the mark on the avatar can be checked both ways without
+      // a second fake server.
+      return Promise.resolve(
+        Response.json({ invitations: pendingInvitations }),
+      );
     }
     // One organization, so the switcher and the `/o/:slug` route have
     // something real to resolve against.
@@ -214,6 +221,7 @@ beforeEach(() => {
   signedIn();
   signOut.mockClear();
   setActive.mockClear();
+  pendingInvitations = [];
   // Each test owns the path it renders under; `Signed` reads it once on mount
   // to decide the starting screen.
   window.history.replaceState(null, "", "/");
@@ -590,4 +598,66 @@ test("cancelling a new organization goes back to the list, not home", async () =
   await waitFor(() => {
     expect(window.location.pathname).toBe("/organizations");
   });
+});
+
+// ---- organizations, and what is waiting -----------------------------------
+
+test("the rail offers organizations as a destination", async () => {
+  // It is the parent of most screens in this app and was reachable only
+  // through the avatar menu.
+  render(<App />);
+
+  const rail = screen.getByRole("navigation", { name: "Main" });
+  const button = within(rail).getByRole("button", { name: "Organizations" });
+  fireEvent.click(button);
+
+  await waitFor(() => {
+    expect(window.location.pathname).toBe("/organizations");
+  });
+});
+
+test("the rail marks organizations while you are inside one", async () => {
+  // A rail that marks nothing while you are three levels into an
+  // organization says you are nowhere.
+  window.history.replaceState(null, "", "/o/acme/jira");
+  render(<App />);
+
+  const rail = screen.getByRole("navigation", { name: "Main" });
+  await waitFor(() => {
+    expect(
+      within(rail)
+        .getByRole("button", { name: "Organizations" })
+        .getAttribute("aria-current"),
+    ).toBe("page");
+  });
+  // And not Home, which is a different destination.
+  expect(railHome().getAttribute("aria-current")).toBeNull();
+});
+
+test("a pending invitation marks the avatar", async () => {
+  // Nothing is emailed, so without a mark the only way to find an invitation
+  // is to open Account and look.
+  pendingInvitations = [
+    {
+      id: "inv_1",
+      role: "member",
+      organization: { id: "org_9", name: "Globex", slug: "globex" },
+    },
+  ];
+  render(<App />);
+
+  // The count is in the name, not only in the dot: a mark that is purely
+  // colour says nothing to a screen reader.
+  expect(
+    await screen.findByRole("button", { name: /1 invitation/ }),
+  ).toBeDefined();
+});
+
+test("no mark when nothing is waiting", async () => {
+  render(<App />);
+
+  await waitFor(() => {
+    expect(screen.getByRole("button", { name: AVATAR })).toBeTruthy();
+  });
+  expect(screen.queryByRole("button", { name: /invitation/ })).toBeNull();
 });

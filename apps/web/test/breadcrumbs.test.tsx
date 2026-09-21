@@ -15,7 +15,13 @@
  * `nav.test.tsx`.
  */
 
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import {
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import { trailFor } from "../src/Breadcrumbs";
@@ -327,8 +333,12 @@ test("the page you are on is text, and every step above it is a button", async (
   expect(current?.tagName).toBe("SPAN");
   // Not a button: a click would navigate to the screen already showing.
   expect(screen.queryByRole("button", { name: "Acme" })).toBeNull();
-  // The steps above it are, or the trail is decoration.
-  expect(screen.getByRole("button", { name: "Organizations" })).toBeTruthy();
+  // The steps above it are, or the trail is decoration. Scoped to the trail:
+  // the rail carries an Organizations destination of its own, and the two
+  // landmarks are named apart precisely so both may use the word.
+  expect(
+    within(nav).getByRole("button", { name: "Organizations" }),
+  ).toBeTruthy();
 });
 
 test("a deep link renders the whole trail", async () => {

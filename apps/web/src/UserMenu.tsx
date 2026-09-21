@@ -13,6 +13,8 @@
 
 import { Building2, LogOut, Settings } from "lucide-react";
 
+import { Badge } from "@/components/ui/badge";
+
 import { EntityAvatar } from "@/components/Avatar";
 import {
   DropdownMenu,
@@ -31,6 +33,7 @@ export function UserMenu({
   name,
   email,
   image,
+  invitationCount = 0,
   onNavigate,
   onAccount,
   onSignOut,
@@ -40,6 +43,8 @@ export function UserMenu({
   name: string;
   email?: string | undefined;
   image?: string | null;
+  /** Organizations waiting for an answer; see `SideNav`. */
+  invitationCount?: number | undefined;
   onNavigate?: ((screen: Screen) => void) | undefined;
   onAccount: () => void;
   onSignOut: () => void;
@@ -47,8 +52,19 @@ export function UserMenu({
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
-        className="ring-offset-background focus-visible:ring-ring rounded-full transition-opacity outline-none hover:opacity-80 focus-visible:ring-2 focus-visible:ring-offset-2 data-[state=open]:opacity-80"
-        aria-label={`Account and settings — ${name}`}
+        className="ring-offset-background focus-visible:ring-ring relative rounded-full transition-opacity outline-none hover:opacity-80 focus-visible:ring-2 focus-visible:ring-offset-2 data-[state=open]:opacity-80"
+        /*
+          The count is in the name, not only in the dot: a mark that exists
+          purely as colour says nothing to a screen reader, and this is the
+          only place in the app that an invitation is announced at all.
+        */
+        aria-label={
+          invitationCount > 0
+            ? `Account and settings — ${name}, ${invitationCount} ${
+                invitationCount === 1 ? "invitation" : "invitations"
+              }`
+            : `Account and settings — ${name}`
+        }
       >
         {/* 24px in the rail, matching the reference: small enough to read as
             chrome rather than as content. The copy inside the menu is the
@@ -59,6 +75,22 @@ export function UserMenu({
           shape="circle"
           className="size-6"
         />
+
+        {/*
+          The one mark anywhere that an invitation is waiting. Nothing is
+          emailed, so without it the only way to find one is to open Account
+          and look.
+
+          Ringed in the rail's own colour so it reads as a badge on the avatar
+          rather than a dot floating beside it, and `aria-hidden` because the
+          trigger's name already carries the count.
+        */}
+        {invitationCount > 0 && (
+          <span
+            aria-hidden="true"
+            className="bg-primary ring-sidebar absolute -top-0.5 -right-0.5 size-2 rounded-full ring-2"
+          />
+        )}
       </DropdownMenuTrigger>
 
       {/*
@@ -94,9 +126,16 @@ export function UserMenu({
 
         {/* No "Home" item: the rail is that destination, and two affordances
             for one screen invite the wrong one. */}
+        {/* The count travels with the item that leads to them, so the dot on
+            the avatar resolves into something specific once the menu opens. */}
         <DropdownMenuItem onSelect={onAccount}>
           <Settings />
           Account settings
+          {invitationCount > 0 && (
+            <Badge variant="secondary" className="ml-auto">
+              {invitationCount}
+            </Badge>
+          )}
         </DropdownMenuItem>
 
         {/*
@@ -104,6 +143,10 @@ export function UserMenu({
           worth a page — it carries names, roles and the actions on each — and
           a menu that tried to hold all that competed with the account items
           around it. See `Organizations.tsx`.
+
+          Kept even though the rail now carries the same destination: this
+          menu is where somebody looks for what belongs to their account, and
+          the rail's icon is unlabelled.
         */}
         <DropdownMenuItem onSelect={() => onNavigate?.("organizations")}>
           <Building2 />

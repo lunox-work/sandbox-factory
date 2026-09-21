@@ -49,6 +49,11 @@ export function Account({
   /** Called after an invitation is accepted, so the switcher picks it up. */
   onJoined,
   /**
+   * Called after an invitation is declined, so the mark on the avatar clears.
+   * Accepting reports through `onJoined`, which the switcher also listens to.
+   */
+  onDeclined,
+  /**
    * Called after a rename. The server also renames the caller's personal
    * organization, so the switcher and the rail are both a name behind until
    * they reload.
@@ -58,6 +63,7 @@ export function Account({
   onOpenOrganizations,
 }: {
   onJoined?: (() => void) | undefined;
+  onDeclined?: (() => void) | undefined;
   onRenamed?: (() => void) | undefined;
   /**
    * How many organizations you belong to. Undefined while the list is still
@@ -224,6 +230,8 @@ export function Account({
       await refresh();
       if (action === "accept") {
         onJoined?.();
+      } else {
+        onDeclined?.();
       }
     } catch {
       setError("Could not answer that invitation.");

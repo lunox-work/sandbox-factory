@@ -21,9 +21,13 @@
  * Below `sm` the rail lies down along the bottom edge — the reach zone on a
  * handset, and the convention there. The logo goes with it: it is the one item
  * that is decoration, and horizontal room is what is scarce.
+ *
+ * The avatar carries a mark when an invitation is waiting. Nothing is emailed,
+ * and the invitation itself lives on the account page, so without it there is
+ * no way to learn that one arrived.
  */
 
-import { House } from "lucide-react";
+import { Building2, House } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
@@ -47,6 +51,7 @@ export function SideNav({
   name,
   email,
   image,
+  invitationCount = 0,
   onNavigate,
   onSignOut,
   children,
@@ -57,6 +62,11 @@ export function SideNav({
   name: string;
   email?: string | undefined;
   image?: string | null;
+  /**
+   * Organizations waiting for an answer. Marks the avatar, because nothing
+   * else in the app says an invitation is waiting.
+   */
+  invitationCount?: number | undefined;
   onNavigate: (screen: Screen) => void;
   onSignOut: () => void;
   /**
@@ -76,9 +86,8 @@ export function SideNav({
       aria-label="Main"
       className={cn(
         "bg-sidebar flex shrink-0",
-        // Phone: a bottom bar, its two controls centred, floating over the
-        // page. Fixed only here, where the alternative is a bar that scrolls
-        // away.
+        // Phone: a bottom bar, its controls centred, floating over the page.
+        // Fixed only here, where the alternative is a bar that scrolls away.
         "fixed inset-x-0 bottom-0 z-10 h-16 flex-row items-center justify-center gap-6 border-t pb-[env(safe-area-inset-bottom)]",
         // Tablet up: the rail proper, a flex item beside the content rather
         // than laid over it.
@@ -127,6 +136,30 @@ export function SideNav({
           <House strokeWidth={1.6} />
         </RailButton>
 
+        {/*
+          Organizations, which is the parent of most of the screens in this
+          app and was reachable only through the avatar menu. The mark is the
+          one that menu item already uses, so the two read as one destination.
+
+          Current on every screen beneath it, not just the list: a rail that
+          marks nothing while you are three levels into an organization says
+          you are nowhere.
+        */}
+        <RailButton
+          label="Organizations"
+          current={
+            screen === "organizations" ||
+            screen === "create-org" ||
+            screen === "org-settings" ||
+            screen === "org-jira" ||
+            screen === "org-jira-site" ||
+            screen === "org-jira-board"
+          }
+          onClick={() => onNavigate("organizations")}
+        >
+          <Building2 strokeWidth={1.6} />
+        </RailButton>
+
         {children !== undefined && (
           <div className="hidden sm:mt-2 sm:flex sm:w-full sm:flex-col sm:border-t sm:pt-2">
             {children}
@@ -136,14 +169,15 @@ export function SideNav({
 
       {/* Pushed to the foot of the rail by `mt-auto`, so the account sits
           opposite the logo however tall it is. In the phone bar the margin is
-          dropped, or it would push the avatar to the far right and split the
-          two controls apart. */}
+          dropped, or it would push the avatar to the far right and split it
+          from the destinations. */}
       <div className="sm:mt-auto">
         <UserMenu
           userId={userId}
           name={name}
           email={email}
           image={image}
+          invitationCount={invitationCount}
           onNavigate={onNavigate}
           onAccount={() => onNavigate("account")}
           onSignOut={onSignOut}
