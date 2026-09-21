@@ -166,6 +166,21 @@
   }
 }
 
+/*
+ * `coarse:` targets a device whose primary pointer cannot hover — a phone or a
+ * tablet. Tailwind ships no such variant, and it is the only way to say
+ * "reveal this, because hovering is never going to happen here".
+ *
+ * Controls that appear on hover need it. A pencil held at `opacity-0` until
+ * the pointer arrives is invisible forever on a touch screen, so the affordance
+ * has to come back some other way; `coarse:opacity-100` is that way.
+ */
+@custom-variant coarse {
+  @media (pointer: coarse) {
+    @slot;
+  }
+}
+
 @media (prefers-color-scheme: dark) {
   :root:not(.light) {
     --background: oklch(0.141 0.005 285.823);

@@ -1123,13 +1123,13 @@ export function CreateOrganization({
               {slug === "" ? "\u00a0" : `Handle: @${slug}`}
             </p>
 
-            <div className="flex gap-2">
-              <Button
-                type="submit"
-                disabled={busy || name.trim() === "" || !isValidHandle(slug)}
-              >
-                Create organization
-              </Button>
+            {/*
+              Pushed to opposite ends, with the way out on the left and the
+              commit on the right: the affirmative action sits where the eye
+              finishes the form, and the gap between them is what stops a
+              cancel being clicked on the way to a create.
+            */}
+            <div className="flex items-center justify-between gap-2">
               <Button
                 type="button"
                 variant="ghost"
@@ -1137,6 +1137,12 @@ export function CreateOrganization({
                 onClick={onCancel}
               >
                 Cancel
+              </Button>
+              <Button
+                type="submit"
+                disabled={busy || name.trim() === "" || !isValidHandle(slug)}
+              >
+                Create organization
               </Button>
             </div>
           </form>

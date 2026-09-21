@@ -178,14 +178,18 @@ export function EditableField({
               )}
             </span>
             {/*
-              Dimmed at rest, full strength on hover or keyboard focus.
+              Hidden at rest, revealed on hover, keyboard focus, or a touch
+              screen.
 
-              It used to be `opacity-0` until hovered, which left the three
-              fields looking like plain text — and on a touch screen, where
-              there is no hover, it never appeared at all, so nothing on the
-              page said a name or a handle could be changed. Visible but quiet
-              is what makes it findable without turning a line of prose into a
-              control that shouts.
+              At rest the three fields read as prose, which is what they are
+              most of the time; the pencil is for the moment somebody goes
+              looking for a way in. Keyboard focus reveals it too, so it is
+              not hover-only.
+
+              `coarse:` covers the case that hover alone cannot: a phone has no
+              pointer to arrive, so a hover-only pencil would never show and
+              nothing on the page would say a name or a handle can be changed.
+              There the pencil is simply always visible.
 
               Held in the layout either way, so nothing shifts sideways as the
               pointer arrives.
@@ -202,7 +206,7 @@ export function EditableField({
               />
             ) : (
               <Pencil
-                className="text-muted-foreground size-3.5 shrink-0 opacity-40 transition-opacity group-hover/edit:opacity-100 group-focus-visible/edit:opacity-100"
+                className="text-muted-foreground size-3.5 shrink-0 opacity-0 transition-opacity group-hover/edit:opacity-100 group-focus-visible/edit:opacity-100 coarse:opacity-100"
                 strokeWidth={1.8}
                 aria-hidden="true"
               />

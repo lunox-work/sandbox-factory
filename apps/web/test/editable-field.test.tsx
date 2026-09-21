@@ -273,12 +273,11 @@ test("the confirmation clears itself", async () => {
 
 // ---- the value looks pressable before you press it ------------------------
 //
-// These three fields are prose at rest, which is the point — but they had no
-// hover fill at all (`hover:bg-transparent` cancelled the one the padding was
-// there to hold) and the pencil was `opacity-0` until hovered. On a touch
-// screen, where there is no hover, the pencil never appeared at all, so a
-// name, a username and an organization handle were indistinguishable from
-// static text.
+// These three fields are prose at rest, which is the point. The hover fill is
+// what says the line is pressable — it was once cancelled by
+// `hover:bg-transparent`, leaving the padding holding a fill that never
+// arrived. The pencil rides on top of that: absent until the pointer or the
+// keyboard reaches the line.
 
 test("the value at rest lights up under the cursor", () => {
   render(<EditableField label="Name" value="Ada" onSave={vi.fn()} />);
@@ -288,14 +287,30 @@ test("the value at rest lights up under the cursor", () => {
   expect(button.className).not.toContain("hover:bg-transparent");
 });
 
-test("the pencil is visible without hovering, so touch can find it", () => {
+test("the pencil stays out of sight until the line is hovered or focused", () => {
   const { container } = render(
     <EditableField label="Name" value="Ada" onSave={vi.fn()} />,
   );
 
   const pencil = container.querySelector("svg");
   expect(pencil).not.toBeNull();
-  // Dimmed at rest and full strength on hover, rather than absent entirely.
-  expect(pencil?.getAttribute("class")).not.toContain("opacity-0");
-  expect(pencil?.getAttribute("class")).toContain("opacity-40");
+  const className = pencil?.getAttribute("class") ?? "";
+  // Hidden at rest, and brought back by either route in — not hover alone,
+  // which would strand the keyboard.
+  expect(className).toContain("opacity-0");
+  expect(className).toContain("group-hover/edit:opacity-100");
+  expect(className).toContain("group-focus-visible/edit:opacity-100");
+});
+
+// A phone never hovers, so the two reveals above are both unreachable there.
+// Without this the fields are indistinguishable from static text on the
+// surface where that matters most — which is the bug the `opacity-40` era was
+// solving, kept fixed here without dimming the pencil for everyone else.
+test("the pencil is always visible where there is no pointer to hover", () => {
+  const { container } = render(
+    <EditableField label="Name" value="Ada" onSave={vi.fn()} />,
+  );
+
+  const pencil = container.querySelector("svg");
+  expect(pencil?.getAttribute("class") ?? "").toContain("coarse:opacity-100");
 });
