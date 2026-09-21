@@ -469,6 +469,22 @@ jobs:
             --cluster "$PROJECT" \
             --services "$PROJECT-api"
 
+          # A rollback ends in a *stable* service, so the wait above succeeds
+          # while production still runs the previous build. Without this check
+          # the failure only surfaces five minutes later, as a verify-deploy
+          # timeout that says nothing about why.
+          running="$(aws ecs describe-services \
+            --cluster "$PROJECT" --services "$PROJECT-api" \
+            --query 'services[0].deployments[?status==`PRIMARY`].taskDefinition' \
+            --output text)"
+          if [ "$running" != "${{ steps.taskdef.outputs.arn }}" ]; then
+            echo "::error::deployment rolled back: the service is running $running, not ${{ steps.taskdef.outputs.arn }}. The new tasks failed to start — check /ecs/$PROJECT-api in CloudWatch Logs for the container's own error, which is usually a missing secret or a failed migration."
+            aws ecs describe-services \
+              --cluster "$PROJECT" --services "$PROJECT-api" \
+              --query 'services[0].events[0:5].message' --output text
+            exit 1
+          fi
+
       # ---- publish the SPA -------------------------------------------------
 
       # After the API, so the browser never receives a bundle that calls an
