@@ -39,19 +39,39 @@ const AUTH_HOST = "https://auth.atlassian.com";
  * `write:` scope here is a security decision — it changes what a leaked token
  * can do — and needs the consent screen to say so.
  *
- * `read:jira-work` and `read:jira-user` are the classic scopes covering issues,
- * projects and user lookups. The `*-scope:jira-software` pair covers the Agile
- * API (`/rest/agile/1.0`), which the classic scopes do **not** reach: boards and
- * sprints 404 without them, which reads like a missing board rather than a
- * missing scope.
+ * **The Agile API needs granular scopes, and needs all of them.** Each
+ * `/rest/agile/1.0` endpoint declares its own pair, and a token missing any
+ * one of them is refused outright — not degraded. Taken from Atlassian's
+ * OpenAPI description, which is the only place these are stated completely:
+ *
+ * | Call                    | Scopes                                              |
+ * | ----------------------- | --------------------------------------------------- |
+ * | `GET /board`            | `read:board-scope:jira-software`, `read:project:jira` |
+ * | `GET /board/{id}/backlog` | `read:board-scope:jira-software`, `read:issue-details:jira` |
+ * | `GET /board/{id}/issue` | `read:board-scope:jira-software`, `read:issue-details:jira` |
+ * | `GET /board/{id}/sprint` | `read:sprint:jira-software`                        |
+ *
+ * `read:project:jira` and `read:issue-details:jira` are easy to leave out,
+ * because the classic `read:jira-work` looks like it covers the same ground
+ * and does for the platform API. It does not satisfy the Agile endpoints,
+ * which answer **401 `Unauthorized; scope does not match`** instead — a status
+ * that reads as a dead credential rather than a missing permission. The
+ * classic pair is kept for the platform calls (`/rest/api/3/*`) that `search`
+ * and `issue` make.
  *
  * `offline_access` is what makes a refresh token appear at all; see above.
+ *
+ * A scope added here must also be enabled on the Atlassian app itself:
+ * requesting one the app was never permitted produces the same 401, and no
+ * amount of re-consenting changes it.
  */
 export const READ_SCOPES: readonly string[] = [
   "read:jira-work",
   "read:jira-user",
   "read:board-scope:jira-software",
   "read:sprint:jira-software",
+  "read:project:jira",
+  "read:issue-details:jira",
   "offline_access",
 ];
 

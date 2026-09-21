@@ -10,6 +10,8 @@ import type {
   RegisterBoardInput,
 } from "@sandbox-factory/db";
 
+import { READ_SCOPES } from "@sandbox-factory/jira";
+
 import type { Auth } from "../src/auth.js";
 import { signState } from "../src/jira/state.js";
 import { createApp } from "../src/routes.js";
@@ -132,9 +134,10 @@ function fakeAtlassian(
             access_token: "access-1",
             refresh_token: "refresh-1",
             expires_in: 3600,
-            scope:
-              options.scope ??
-              "read:jira-work read:jira-user read:board-scope:jira-software read:sprint:jira-software offline_access",
+            // Built from the real list rather than restated: a scope added to
+            // READ_SCOPES would otherwise read as one Atlassian withheld, and
+            // every happy-path test here would fail as "partial-scopes".
+            scope: options.scope ?? READ_SCOPES.join(" "),
           },
         ),
         { status: options.tokenStatus ?? 200 },
