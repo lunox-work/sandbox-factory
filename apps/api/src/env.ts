@@ -53,6 +53,21 @@ const envSchema = z.object({
     .string()
     .min(1, "ATLASSIAN_CLIENT_SECRET is required."),
   /**
+   * The **second** Atlassian app, the one that connects a client's Jira site.
+   * Separate from the pair above because an Atlassian grant is per app and a
+   * new grant overwrites the previous one's scopes: one app serving both would
+   * make signing in and connecting Jira break each other.
+   *
+   * Optional, unlike the sign-in credentials. Those are required because the
+   * sign-in screen offers Atlassian unconditionally, so a missing value is a
+   * button that fails at the redirect. Connecting Jira is a feature an
+   * organization opts into, and an API with these unset should still serve
+   * every other route — `jiraOAuthConfig` below returns undefined, and the
+   * connect route answers 501 rather than the process refusing to boot.
+   */
+  JIRA_CLIENT_ID: z.string().optional(),
+  JIRA_CLIENT_SECRET: z.string().optional(),
+  /**
    * Encrypts the Jira tokens in `jira_connection`. `openssl rand -base64 32`.
    *
    * Required, and for a stronger reason than the rest of this block: an
@@ -145,6 +160,26 @@ export function parseEnv(source: NodeJS.ProcessEnv = process.env): Env {
     throw new Error(`Invalid environment configuration:\n${issues}`);
   }
   return result.data;
+}
+
+/**
+ * Credentials for the Jira connection app, or undefined unless both halves are
+ * set. A half-configured pair would fail at the Atlassian redirect, which is a
+ * worse place to discover it than the route that refuses to start the flow.
+ */
+export function jiraOAuthConfig(
+  env: Env,
+): { clientId: string; clientSecret: string } | undefined {
+  if (
+    env.JIRA_CLIENT_ID === undefined ||
+    env.JIRA_CLIENT_SECRET === undefined
+  ) {
+    return undefined;
+  }
+  return {
+    clientId: env.JIRA_CLIENT_ID,
+    clientSecret: env.JIRA_CLIENT_SECRET,
+  };
 }
 
 /**

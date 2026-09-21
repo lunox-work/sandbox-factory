@@ -17,8 +17,14 @@ locals {
     GOOGLE_CLIENT_SECRET    = "Google OAuth client secret"
     GITHUB_CLIENT_ID        = "GitHub OAuth client ID"
     GITHUB_CLIENT_SECRET    = "GitHub OAuth client secret"
-    ATLASSIAN_CLIENT_ID     = "Atlassian OAuth client ID"
-    ATLASSIAN_CLIENT_SECRET = "Atlassian OAuth client secret"
+    ATLASSIAN_CLIENT_ID     = "Atlassian OAuth client ID (sign-in app)"
+    ATLASSIAN_CLIENT_SECRET = "Atlassian OAuth client secret (sign-in app)"
+    # A second Atlassian 3LO app, for connecting a client's Jira site. Separate
+    # from the sign-in one because a grant is per app and a new grant overwrites
+    # the previous one's scopes, so sharing an app would make signing in and
+    # connecting Jira break each other.
+    JIRA_CLIENT_ID     = "Atlassian OAuth client ID (Jira connection app)"
+    JIRA_CLIENT_SECRET = "Atlassian OAuth client secret (Jira connection app)"
     # Encrypts the Jira tokens in `jira_connection`. Rotating it means
     # re-encrypting those rows, not just replacing the value: the `key_id`
     # column records which key wrote each row so both can be readable at once.

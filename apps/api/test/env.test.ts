@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { buildInfo, objectStoreConfig, parseEnv } from "../src/env.js";
+import {
+  buildInfo,
+  jiraOAuthConfig,
+  objectStoreConfig,
+  parseEnv,
+} from "../src/env.js";
 
 const DATABASE_URL = "postgres://postgres:postgres@localhost:5432/test";
 /** Exactly the 32-character minimum. */
@@ -253,4 +258,53 @@ test("parseEnv rejects a BUILD_DIRTY that is neither true nor false", () => {
     () => parseEnv({ ...required, BUILD_DIRTY: "yes" }),
     /BUILD_DIRTY/,
   );
+});
+
+test("the Jira connection credentials are optional", () => {
+  // Unlike the sign-in pair: the sign-in screen offers Atlassian
+  // unconditionally, so a missing value there is a button that fails at the
+  // redirect. Connecting Jira is opt-in, and an API without it must still
+  // serve every other route.
+  assert.equal(parseEnv(required).JIRA_CLIENT_ID, undefined);
+  assert.equal(jiraOAuthConfig(parseEnv(required)), undefined);
+});
+
+test("jiraOAuthConfig needs both halves", () => {
+  // A half-configured pair would fail at the Atlassian redirect, which is a
+  // worse place to find out than the route that refuses to start the flow.
+  for (const partial of [
+    { JIRA_CLIENT_ID: "jira-client-id" },
+    { JIRA_CLIENT_SECRET: "jira-client-secret" },
+  ]) {
+    assert.equal(
+      jiraOAuthConfig(parseEnv({ ...required, ...partial })),
+      undefined,
+    );
+  }
+});
+
+test("jiraOAuthConfig returns the pair when both are set", () => {
+  assert.deepEqual(
+    jiraOAuthConfig(
+      parseEnv({
+        ...required,
+        JIRA_CLIENT_ID: "jira-client-id",
+        JIRA_CLIENT_SECRET: "jira-client-secret",
+      }),
+    ),
+    { clientId: "jira-client-id", clientSecret: "jira-client-secret" },
+  );
+});
+
+test("the Jira app credentials are distinct from the sign-in ones", () => {
+  // The whole point of the split: one app's grant overwrites the other's
+  // scopes, so sharing a client id would make sign-in and Jira connections
+  // break each other.
+  const env = parseEnv({
+    ...required,
+    JIRA_CLIENT_ID: "jira-client-id",
+    JIRA_CLIENT_SECRET: "jira-client-secret",
+  });
+
+  assert.notEqual(env.JIRA_CLIENT_ID, env.ATLASSIAN_CLIENT_ID);
 });

@@ -81,7 +81,8 @@ fi
 # --- OAuth: presence only; only the provider can say if they are right -----
 for k in GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET \
          GITHUB_CLIENT_ID GITHUB_CLIENT_SECRET \
-         ATLASSIAN_CLIENT_ID ATLASSIAN_CLIENT_SECRET; do
+         ATLASSIAN_CLIENT_ID ATLASSIAN_CLIENT_SECRET \
+         JIRA_CLIENT_ID JIRA_CLIENT_SECRET; do
   if v="$(read_value "$k")" && [[ -n "$v" && "$v" != REPLACE_ME ]]; then
     note "$k" "ok (${#v} chars)"
   else
