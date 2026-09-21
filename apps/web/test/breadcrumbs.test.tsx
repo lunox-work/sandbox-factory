@@ -61,8 +61,34 @@ vi.stubGlobal(
         }),
       );
     }
+    if (url.includes("backlog-preview")) {
+      return Promise.resolve(
+        Response.json({
+          boardId: "jrb_1",
+          source: "backlog",
+          jql: "",
+          issues: [],
+        }),
+      );
+    }
     if (url.includes("/jira/boards")) {
-      return Promise.resolve(Response.json({ boards: [] }));
+      return Promise.resolve(
+        Response.json({
+          boards: [
+            {
+              id: "jrb_1",
+              connectionId: "jrc_1",
+              externalId: "42",
+              name: "Sprint Board",
+              boardType: "scrum",
+              projectKey: "ACME",
+              selection: {},
+              writebackEnabled: false,
+              createdAt: "2026-09-21T00:00:00.000Z",
+            },
+          ],
+        }),
+      );
     }
     if (url.includes("/api/v1/me/emails")) {
       return Promise.resolve(Response.json({ emails: [] }));
@@ -186,6 +212,44 @@ test("each screen's trail names every step above it", () => {
   ).toEqual(["Home", "Organizations", "Acme", "Jira", "lunox-work"]);
 });
 
+test("a board is one step deeper, under the site it belongs to", () => {
+  expect(
+    trailFor("org-jira-board", ACME, "lunox-work", "Sprint Board", "jrc_1").map(
+      (c) => c.label,
+    ),
+  ).toEqual([
+    "Home",
+    "Organizations",
+    "Acme",
+    "Jira",
+    "lunox-work",
+    "Sprint Board",
+  ]);
+});
+
+test("the site crumb becomes a link on a board, and carries the site it names", () => {
+  // On the site's own trail it was the page you were on, so it had no
+  // destination. Here it is the way back up, and it needs the connection id
+  // to navigate — the slug alone resolves to the list of sites.
+  const trail = trailFor(
+    "org-jira-board",
+    ACME,
+    "lunox-work",
+    "Sprint Board",
+    "jrc_1",
+  );
+  const site = trail.find((crumb) => crumb.label === "lunox-work");
+
+  expect(site?.screen).toBe("org-jira-site");
+  expect(site?.connectionId).toBe("jrc_1");
+});
+
+test("a board whose name has not arrived keeps its place in the trail", () => {
+  expect(
+    trailFor("org-jira-board", ACME, "lunox-work").map((c) => c.label),
+  ).toEqual(["Home", "Organizations", "Acme", "Jira", "lunox-work", "Board"]);
+});
+
 test("the Jira crumb becomes a link on a site, which is the way back up", () => {
   // The site page carries no other way back to the list of sites.
   const trail = trailFor("org-jira-site", ACME, "lunox-work");
@@ -240,6 +304,8 @@ test("no trail ends in a step that goes nowhere", () => {
     trailFor("org-jira"),
     trailFor("org-jira-site", ACME, "lunox-work"),
     trailFor("org-jira-site"),
+    trailFor("org-jira-board", ACME, "lunox-work", "Sprint Board", "jrc_1"),
+    trailFor("org-jira-board"),
   ];
 
   for (const trail of screens) {
@@ -308,6 +374,38 @@ test("the Jira crumb on a site goes back to the list of sites", async () => {
   await waitFor(() => {
     expect(window.location.pathname).toBe("/o/acme/jira");
     expect(labels()).toEqual(["Home", "Organizations", "Acme", "Jira"]);
+  });
+});
+
+test("a deep link to one board resolves, and the trail names every step", async () => {
+  window.history.replaceState(null, "", "/o/acme/jira/jrc_1/jrb_1");
+  render(<App />);
+
+  await waitFor(() => {
+    expect(labels()).toEqual([
+      "Home",
+      "Organizations",
+      "Acme",
+      "Jira",
+      "lunox-work",
+      "Sprint Board",
+    ]);
+  });
+});
+
+test("the site crumb on a board goes back to that site, not the list", async () => {
+  // The slug alone would resolve to /o/acme/jira, one level too high.
+  window.history.replaceState(null, "", "/o/acme/jira/jrc_1/jrb_1");
+  render(<App />);
+
+  await waitFor(() => {
+    expect(screen.getByRole("button", { name: "lunox-work" })).toBeTruthy();
+  });
+
+  fireEvent.click(screen.getByRole("button", { name: "lunox-work" }));
+
+  await waitFor(() => {
+    expect(window.location.pathname).toBe("/o/acme/jira/jrc_1");
   });
 });
 

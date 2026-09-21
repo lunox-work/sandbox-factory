@@ -35,6 +35,14 @@ export interface Crumb {
   label: string;
   screen?: Screen;
   slug?: string | undefined;
+  /**
+   * The connected site a crumb navigates to, for the screens below Jira.
+   *
+   * Travels with the crumb for the same reason `slug` does: the site a crumb
+   * names is the one it was built from, not whichever the app happens to be
+   * showing by the time it is clicked.
+   */
+  connectionId?: string | undefined;
 }
 
 /**
@@ -76,6 +84,10 @@ export function trailFor(
    * would mark Jira as the current page while a site is on screen.
    */
   siteName?: string | undefined,
+  /** The board the last crumb names, on `org-jira-board`. See `siteName`. */
+  boardName?: string | undefined,
+  /** The site the board sits under, so its crumb can navigate back to it. */
+  connectionId?: string | undefined,
 ): Crumb[] {
   switch (screen) {
     case "home":
@@ -113,6 +125,26 @@ export function trailFor(
             },
             { label: "Jira" },
           ];
+    case "org-jira-board": {
+      /*
+        The deepest trail there is. Built from the site's rather than restated,
+        so the two cannot drift apart as the levels above them change — but
+        the site's own crumb has to become a link here, since on that trail it
+        was the page you were on and carried no destination.
+      */
+      const above = trailFor("org-jira-site", organization, siteName);
+      const site = above[above.length - 1];
+      return [
+        ...above.slice(0, -1),
+        {
+          label: site?.label ?? "Site",
+          screen: "org-jira-site",
+          slug: organization?.slug,
+          connectionId,
+        },
+        { label: boardName ?? "Board" },
+      ];
+    }
     case "org-jira-site": {
       // The Jira crumb becomes a link here, which is the way back to the list
       // of sites — and the only one, since this screen carries no other.
@@ -142,15 +174,27 @@ export function Breadcrumbs({
   screen,
   organization,
   siteName,
+  boardName,
+  connectionId,
   onNavigate,
 }: {
   screen: Screen;
   organization?: TrailOrganization | undefined;
   /** The connected site `org-jira-site` is showing; see `trailFor`. */
   siteName?: string | undefined;
-  onNavigate: (screen: Screen, slug?: string) => void;
+  /** The board `org-jira-board` is showing; see `trailFor`. */
+  boardName?: string | undefined;
+  /** The connected site the board sits under; see `trailFor`. */
+  connectionId?: string | undefined;
+  onNavigate: (screen: Screen, slug?: string, connectionId?: string) => void;
 }) {
-  const crumbs = trailFor(screen, organization, siteName);
+  const crumbs = trailFor(
+    screen,
+    organization,
+    siteName,
+    boardName,
+    connectionId,
+  );
 
   // Nothing to show on home, and a bare trail of one crumb is chrome rather
   // than navigation — it names where you are without offering a way up.
@@ -213,7 +257,9 @@ export function Breadcrumbs({
               ) : (
                 <button
                   type="button"
-                  onClick={() => onNavigate(target, crumb.slug)}
+                  onClick={() =>
+                    onNavigate(target, crumb.slug, crumb.connectionId)
+                  }
                   className="hover:text-foreground focus-visible:ring-ring/50 cursor-pointer rounded-sm underline-offset-4 transition-colors hover:underline focus-visible:ring-[3px] focus-visible:outline-none"
                 >
                   {crumb.label}

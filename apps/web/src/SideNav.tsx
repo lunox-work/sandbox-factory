@@ -37,6 +37,8 @@ export type Screen =
   | "org-jira"
   /** One connected site, under the Jira screen. Carries a connection id. */
   | "org-jira-site"
+  /** One board, under a site. Carries a connection id and a board id. */
+  | "org-jira-board"
   | "create-org";
 
 export function SideNav({

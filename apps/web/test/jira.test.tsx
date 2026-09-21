@@ -14,7 +14,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
-import { Jira, JiraSite } from "../src/Jira";
+import { Jira, JiraBoard, JiraSite } from "../src/Jira";
 
 const connection = {
   id: "jrc_1",
@@ -436,10 +436,28 @@ function routedFetch(
 /** The one-site page: boards, the preview, and disconnecting. */
 let disconnected = 0;
 let reportedName: (string | undefined)[] = [];
+let openedBoards: string[] = [];
+
+/** The board page: the ticket list, and the detail panel beside it. */
+let reportedBoardName: (string | undefined)[] = [];
+
+function renderBoard(boardId = "jrb_1") {
+  reportedBoardName = [];
+  return render(
+    <JiraBoard
+      organizationId="org_1"
+      connectionId="jrc_1"
+      boardId={boardId}
+      onBoardName={(name) => reportedBoardName.push(name)}
+      onSiteName={vi.fn()}
+    />,
+  );
+}
 
 function renderSite(role = "owner", connectionId = "jrc_1") {
   disconnected = 0;
   reportedName = [];
+  openedBoards = [];
   return render(
     <JiraSite
       organizationId="org_1"
@@ -448,6 +466,7 @@ function renderSite(role = "owner", connectionId = "jrc_1") {
       onDisconnected={() => {
         disconnected += 1;
       }}
+      onOpenBoard={(opened) => openedBoards.push(opened.id)}
       onSiteName={(name) => reportedName.push(name)}
     />,
   );
@@ -462,65 +481,150 @@ test("a registered board is listed with its type and project", async () => {
   expect(screen.getByText(/scrum · ACME/i)).toBeDefined();
 });
 
-test("previewing a board shows its oldest tickets in a dialog", async () => {
+test("a board row opens the board rather than previewing it in place", async () => {
+  // The row used to carry a "Preview" button, which named the mechanism
+  // rather than the destination. The whole row is the target now.
   vi.stubGlobal("fetch", routedFetch());
   renderSite();
   await screen.findByText("Acme Board");
 
-  expect(screen.queryByRole("dialog")).toBeNull();
-  await userEvent.click(screen.getByRole("button", { name: /preview/i }));
+  expect(screen.queryByRole("button", { name: /preview/i })).toBeNull();
 
-  const dialog = await screen.findByRole("dialog");
-  const preview = within(dialog).getByTestId("backlog-preview");
+  await userEvent.click(screen.getByRole("button", { name: /acme board/i }));
+
+  expect(openedBoards).toEqual(["jrb_1"]);
+});
+
+test("a board carries the mark of the kind of board it is", async () => {
+  // Kanban and Scrum differ in a way that matters here — a Kanban board has
+  // no backlog of its own — so they are not drawn alike.
+  vi.stubGlobal(
+    "fetch",
+    routedFetch({
+      boards: {
+        body: {
+          boards: [
+            board,
+            {
+              ...board,
+              id: "jrb_2",
+              externalId: "43",
+              name: "Flow",
+              boardType: "kanban",
+            },
+          ],
+        },
+      },
+    }),
+  );
+  renderSite();
+  await screen.findByText("Acme Board");
+
+  const scrum = screen
+    .getByRole("button", { name: /acme board/i })
+    .querySelector("svg");
+  const kanban = screen
+    .getByRole("button", { name: /flow/i })
+    .querySelector("svg");
+
+  expect(scrum).not.toBeNull();
+  expect(kanban).not.toBeNull();
+  // Different marks, not the same one twice.
+  expect(scrum?.innerHTML).not.toBe(kanban?.innerHTML);
+});
+
+test("the board page lists its oldest tickets", async () => {
+  vi.stubGlobal("fetch", routedFetch());
+  renderBoard();
+
+  const list = await screen.findByTestId("backlog-preview");
   // The ordering is the product's claim about which work is worth a bounty.
-  const keys = within(preview)
+  const keys = within(list)
     .getAllByText(/^ACME-\d+$/)
     .map((node) => node.textContent);
   expect(keys).toEqual(["ACME-1", "ACME-2"]);
-  expect(within(dialog).getByText("Ticket 1")).toBeDefined();
+  expect(within(list).getByText("Ticket 1")).toBeDefined();
 });
 
-test("a ticket opens its full detail in the same dialog", async () => {
+test("a ticket opens beside the list, not over it", async () => {
+  // The whole point of the split: reading one ticket must not cost the place
+  // in the list, or comparing two means opening each in turn from memory.
   vi.stubGlobal("fetch", routedFetch());
-  renderSite();
-  await screen.findByText("Acme Board");
-  await userEvent.click(screen.getByRole("button", { name: /preview/i }));
-  const dialog = await screen.findByRole("dialog");
+  renderBoard();
+  await screen.findByTestId("backlog-preview");
 
-  await userEvent.click(within(dialog).getByText("Ticket 1"));
+  await userEvent.click(screen.getByText("Ticket 1"));
 
-  const detail = await screen.findByTestId("issue-detail");
-  // The spec tab is the one that opens, because the words are what a
-  // reviewer is here for.
+  const panel = await screen.findByTestId("issue-panel");
   expect(
-    within(detail).getByText(/Establish the canonical data model/),
+    within(panel).getByText(/Establish the canonical data model/),
   ).toBeDefined();
-  // One dialog, two views: the list is gone rather than stacked behind.
-  expect(screen.queryByTestId("backlog-preview")).toBeNull();
+  // The list is still there, which a dialog took away.
+  const list = screen.getByTestId("backlog-preview");
+  expect(list).toBeDefined();
 
-  // The fields the list DTO does not carry are on the other tab.
-  await userEvent.click(within(detail).getByRole("tab", { name: /fields/i }));
-  const fields = within(detail).getByTestId("issue-fields");
+  /*
+    And still *visible* beside the panel, not merely present in the DOM.
+    jsdom has no viewport, so `hidden md:block` and a plain `hidden` are
+    indistinguishable to a visibility check — the class contract is what
+    carries the behaviour, so that is what is asserted. The wrapper hides the
+    list only below `md`, where the panel covers it instead.
+  */
+  const column = list.parentElement;
+  expect(column?.className).toContain("hidden");
+  expect(column?.className).toContain("md:block");
+});
+
+test("the ticket being read is marked in the list", async () => {
+  // In a column of similar summaries, the only way to know which one the
+  // panel is showing is to see it.
+  vi.stubGlobal("fetch", routedFetch());
+  renderBoard();
+  await screen.findByTestId("backlog-preview");
+
+  await userEvent.click(screen.getByText("Ticket 1"));
+  await screen.findByTestId("issue-panel");
+
+  // Scoped to the list: the panel's own heading repeats the summary.
+  const list = screen.getByTestId("backlog-preview");
+  const row = within(list).getByText("Ticket 1").closest("button");
+  expect(row?.getAttribute("aria-current")).toBe("true");
+  // And only that one.
+  expect(
+    within(list)
+      .getAllByRole("button")
+      .filter((node) => node.getAttribute("aria-current") === "true"),
+  ).toHaveLength(1);
+});
+
+test("picking another ticket swaps the panel, without leaving the list", async () => {
+  vi.stubGlobal("fetch", routedFetch());
+  renderBoard();
+  await screen.findByTestId("backlog-preview");
+
+  const list = screen.getByTestId("backlog-preview");
+  await userEvent.click(within(list).getByText("Ticket 1"));
+  await screen.findByTestId("issue-panel");
+  await userEvent.click(within(list).getByText("Ticket 2"));
+
+  await waitFor(() => {
+    expect(screen.getByTestId("backlog-preview")).toBeDefined();
+    expect(screen.getByTestId("issue-panel")).toBeDefined();
+  });
+});
+
+test("the panel shows the fields the list DTO does not carry", async () => {
+  vi.stubGlobal("fetch", routedFetch());
+  renderBoard();
+  await screen.findByTestId("backlog-preview");
+  await userEvent.click(screen.getByText("Ticket 1"));
+
+  const panel = await screen.findByTestId("issue-panel");
+  await userEvent.click(within(panel).getByRole("tab", { name: /fields/i }));
+  const fields = within(panel).getByTestId("issue-fields");
   expect(within(fields).getByText("charlie angriawan")).toBeDefined();
   expect(within(fields).getByText("Highest")).toBeDefined();
   expect(within(fields).getByText("foundation")).toBeDefined();
-});
-
-test("going back returns to the ticket list", async () => {
-  vi.stubGlobal("fetch", routedFetch());
-  renderSite();
-  await screen.findByText("Acme Board");
-  await userEvent.click(screen.getByRole("button", { name: /preview/i }));
-  const dialog = await screen.findByRole("dialog");
-  await userEvent.click(within(dialog).getByText("Ticket 1"));
-  await screen.findByTestId("issue-detail");
-
-  await userEvent.click(
-    screen.getByRole("button", { name: /back to the ticket list/i }),
-  );
-
-  expect(await screen.findByTestId("backlog-preview")).toBeDefined();
-  expect(screen.queryByTestId("issue-detail")).toBeNull();
 });
 
 test("a field Jira did not send renders no row", async () => {
@@ -555,16 +659,14 @@ test("a field Jira did not send renders no row", async () => {
       },
     }),
   );
-  renderSite();
-  await screen.findByText("Acme Board");
-  await userEvent.click(screen.getByRole("button", { name: /preview/i }));
-  const dialog = await screen.findByRole("dialog");
-  await userEvent.click(within(dialog).getByText("Ticket 1"));
+  renderBoard();
+  await screen.findByTestId("backlog-preview");
+  await userEvent.click(screen.getByText("Ticket 1"));
 
-  const detail = await screen.findByTestId("issue-detail");
-  await userEvent.click(within(detail).getByRole("tab", { name: /fields/i }));
+  const panel = await screen.findByTestId("issue-panel");
+  await userEvent.click(within(panel).getByRole("tab", { name: /fields/i }));
 
-  const fields = within(detail).getByTestId("issue-fields");
+  const fields = within(panel).getByTestId("issue-fields");
   expect(within(fields).queryByText("Reporter")).toBeNull();
   expect(within(fields).queryByText("Resolution")).toBeNull();
   expect(within(fields).queryByText("Labels")).toBeNull();
@@ -572,16 +674,13 @@ test("a field Jira did not send renders no row", async () => {
   expect(within(fields).getByText("Unassigned")).toBeDefined();
 });
 
-test("the preview says nothing was stored", async () => {
+test("the board page says nothing was stored", async () => {
   // The promise the page makes: looking at a board is not pricing it.
   vi.stubGlobal("fetch", routedFetch());
-  renderSite();
-  await screen.findByText("Acme Board");
+  renderBoard();
 
-  await userEvent.click(screen.getByRole("button", { name: /preview/i }));
-
-  const dialog = await screen.findByRole("dialog");
-  expect(within(dialog).getByText(/nothing was stored/i)).toBeDefined();
+  await screen.findByTestId("backlog-preview");
+  expect(screen.getByText(/nothing was stored/i)).toBeDefined();
 });
 
 test("an empty backlog is explained rather than shown as a blank table", async () => {
@@ -593,10 +692,7 @@ test("an empty backlog is explained rather than shown as a blank table", async (
       },
     }),
   );
-  renderSite();
-  await screen.findByText("Acme Board");
-
-  await userEvent.click(screen.getByRole("button", { name: /preview/i }));
+  renderBoard();
 
   expect(await screen.findByText(/no tickets match/i)).toBeDefined();
 });
@@ -609,12 +705,43 @@ test("a revoked grant asks for a reconnect rather than a retry", async () => {
       preview: { status: 409, body: { error: "gone", code: "reconnect" } },
     }),
   );
-  renderSite();
-  await screen.findByText("Acme Board");
-
-  await userEvent.click(screen.getByRole("button", { name: /preview/i }));
+  renderBoard();
 
   expect(await screen.findByText(/expired or been revoked/i)).toBeDefined();
+});
+
+test("a scope mismatch is not reported as an expired connection", async () => {
+  // The failure that prompted this: a live grant, refused by the Agile API
+  // because the Atlassian app was never given the Jira Software scopes.
+  // "Reconnect" is a loop that ends where it started.
+  vi.stubGlobal(
+    "fetch",
+    routedFetch({
+      preview: {
+        status: 502,
+        body: {
+          code: "scope",
+          error:
+            "This Atlassian app is not authorised for Jira's Agile API. Its scope list needs the Jira Software scopes, and the site must then be connected again.",
+        },
+      },
+    }),
+  );
+  renderBoard();
+
+  expect(await screen.findByTestId("jira-scope-error")).toBeDefined();
+  expect(screen.getByText(/scope list/i)).toBeDefined();
+  expect(screen.queryByText(/expired or been revoked/i)).toBeNull();
+});
+
+test("the board's name is reported up, for the trail above the page", async () => {
+  vi.stubGlobal("fetch", routedFetch());
+  renderBoard();
+  await screen.findByTestId("backlog-preview");
+
+  await waitFor(() => {
+    expect(reportedBoardName).toContain("Acme Board");
+  });
 });
 
 test("opening a site re-reads its boards, so one made since shows up", async () => {
@@ -683,14 +810,15 @@ test("only this site's boards are listed", async () => {
   expect(screen.queryByText("Other Co")).toBeNull();
 });
 
-test("a plain member sees boards and may preview them", async () => {
+test("a plain member sees boards and may open them", async () => {
   vi.stubGlobal("fetch", routedFetch());
 
   renderSite("member");
 
   expect(await screen.findByText("Acme Board")).toBeDefined();
-  // Previewing is a read of tickets the organization already has a grant for.
-  expect(screen.getByRole("button", { name: /preview/i })).toBeDefined();
+  // Reading a board's tickets is a read the organization already has a grant
+  // for, so the row is open to anyone in it.
+  expect(screen.getByRole("button", { name: /acme board/i })).toBeDefined();
   // Disconnecting is not.
   expect(screen.queryByRole("button", { name: /^disconnect/i })).toBeNull();
 });
@@ -737,42 +865,13 @@ test("the site's name is reported up, for the trail above the page", async () =>
   });
 });
 
-test("a scope mismatch is not reported as an expired connection", async () => {
-  // The failure that prompted this: a live grant, refused by the Agile API
-  // because the Atlassian app was never given the Jira Software scopes.
-  // "Reconnect" is a loop that ends where it started.
-  vi.stubGlobal(
-    "fetch",
-    routedFetch({
-      preview: {
-        status: 502,
-        body: {
-          code: "scope",
-          error:
-            "This Atlassian app is not authorised for Jira's Agile API. Its scope list needs the Jira Software scopes, and the site must then be connected again.",
-        },
-      },
-    }),
-  );
-  renderSite();
-  await screen.findByText("Acme Board");
-
-  await userEvent.click(screen.getByRole("button", { name: /preview/i }));
-
-  expect(await screen.findByTestId("jira-scope-error")).toBeDefined();
-  expect(screen.getByText(/scope list/i)).toBeDefined();
-  expect(screen.queryByText(/expired or been revoked/i)).toBeNull();
-});
-
 test("the description renders as markdown, not as literal hashes", async () => {
   // `adfToText` hands over Markdown; showing it raw makes a spec a wall of
   // `#` and `|`, which is exactly what a reviewer cannot read.
   vi.stubGlobal("fetch", routedFetch());
-  renderSite();
-  await screen.findByText("Acme Board");
-  await userEvent.click(screen.getByRole("button", { name: /preview/i }));
-  const dialog = await screen.findByRole("dialog");
-  await userEvent.click(within(dialog).getByText("Ticket 1"));
+  renderBoard();
+  const list = await screen.findByTestId("backlog-preview");
+  await userEvent.click(within(list).getByText("Ticket 1"));
 
   const spec = await screen.findByTestId("issue-spec");
   // A real heading element, and the hashes are gone from the text.
@@ -816,11 +915,9 @@ test("a table in the description renders as a table", async () => {
       },
     }),
   );
-  renderSite();
-  await screen.findByText("Acme Board");
-  await userEvent.click(screen.getByRole("button", { name: /preview/i }));
-  const dialog = await screen.findByRole("dialog");
-  await userEvent.click(within(dialog).getByText("Ticket 1"));
+  renderBoard();
+  const list = await screen.findByTestId("backlog-preview");
+  await userEvent.click(within(list).getByText("Ticket 1"));
 
   const spec = await screen.findByTestId("issue-spec");
   expect(within(spec).getByRole("table")).toBeDefined();

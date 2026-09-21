@@ -6,7 +6,7 @@ import { Breadcrumbs } from "./Breadcrumbs";
 import { Home } from "./Home";
 import { CreateOrganization, Organization } from "./Organization";
 import { Organizations } from "./Organizations";
-import { Jira, JiraSite } from "./Jira";
+import { Jira, JiraBoard, JiraSite } from "./Jira";
 import { SideNav, type Screen } from "./SideNav";
 import { SignIn } from "./SignIn";
 import { useOrganizations } from "./useOrganizations";
@@ -83,12 +83,20 @@ function Signed({
     connectionForPath(window.location.pathname),
   );
 
+  /** The board `org-jira-board` is showing, from the URL's last segment. */
+  const [boardId, setBoardId] = useState<string | undefined>(() =>
+    boardForPath(window.location.pathname),
+  );
+
   /**
    * The name of the site on screen, reported up by `JiraSite` so the trail
    * can name it. The shell renders the trail and the page owns the list the
    * name comes from, and this is the seam between the two.
    */
   const [siteName, setSiteName] = useState<string | undefined>(undefined);
+
+  /** The same, for the board on screen. See `siteName`. */
+  const [boardName, setBoardName] = useState<string | undefined>(undefined);
 
   /*
    * The Back button. `pushState` below adds an entry per navigation, so the
@@ -99,6 +107,7 @@ function Signed({
     function onPopState() {
       setScreen(screenForPath(window.location.pathname));
       setConnectionId(connectionForPath(window.location.pathname));
+      setBoardId(boardForPath(window.location.pathname));
     }
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
@@ -114,8 +123,13 @@ function Signed({
    * navigation is, not a detail the target screen looks up afterwards — two
    * sites are the same screen at different URLs.
    */
-  function navigate(next: Screen, slug?: string, id?: string) {
-    if (next === screen && slug === undefined && id === connectionId) {
+  function navigate(next: Screen, slug?: string, id?: string, board?: string) {
+    if (
+      next === screen &&
+      slug === undefined &&
+      id === connectionId &&
+      board === boardId
+    ) {
       return;
     }
     // `pushState`, so each navigation is its own history entry and Back
@@ -123,10 +137,11 @@ function Signed({
     window.history.pushState(
       null,
       "",
-      pathForScreen(next, slug ?? organizations.active?.slug, id),
+      pathForScreen(next, slug ?? organizations.active?.slug, id, board),
     );
     setScreen(next);
     setConnectionId(id);
+    setBoardId(board);
   }
 
   return (
@@ -171,7 +186,13 @@ function Signed({
                   slug: organizations.active.slug,
                 }
           }
-          siteName={screen === "org-jira-site" ? siteName : undefined}
+          siteName={
+            screen === "org-jira-site" || screen === "org-jira-board"
+              ? siteName
+              : undefined
+          }
+          boardName={screen === "org-jira-board" ? boardName : undefined}
+          connectionId={connectionId}
           onNavigate={navigate}
         />
         {screen === "account" ? (
@@ -209,6 +230,31 @@ function Signed({
             }}
             onCancel={() => navigate("home")}
           />
+        ) : screen === "org-jira-board" ? (
+          organizations.active === null ||
+          connectionId === undefined ||
+          boardId === undefined ? (
+            <main className="mx-auto w-full max-w-2xl px-4 py-10">
+              <p className="text-muted-foreground text-sm">
+                {organizations.loading
+                  ? "Loading…"
+                  : "You are not in an organization yet."}
+              </p>
+            </main>
+          ) : (
+            <JiraBoard
+              // Keyed by the board, so moving between two boards remounts
+              // rather than showing the previous board's tickets while the
+              // new ones load.
+              key={`${organizations.active.id}:${boardId}`}
+              organizationId={organizations.active.id}
+              connectionId={connectionId}
+              boardId={boardId}
+              boardName={boardName}
+              onBoardName={setBoardName}
+              onSiteName={setSiteName}
+            />
+          )
         ) : screen === "org-jira-site" ? (
           organizations.active === null || connectionId === undefined ? (
             <main className="mx-auto w-full max-w-2xl px-4 py-10">
@@ -229,6 +275,18 @@ function Signed({
               role={organizations.active.role}
               onDisconnected={() => {
                 navigate("org-jira", organizations.active?.slug);
+              }}
+              onOpenBoard={(board) => {
+                // The name is carried across rather than waited for: the list
+                // that has it is on this page, and the board page would
+                // otherwise open on a heading that says nothing.
+                setBoardName(board.name);
+                navigate(
+                  "org-jira-board",
+                  organizations.active?.slug,
+                  connectionId,
+                  board.id,
+                );
               }}
               onSiteName={setSiteName}
             />
@@ -346,6 +404,22 @@ function connectionForPath(pathname: string): string | undefined {
     : undefined;
 }
 
+/**
+ * The board a path names, for `/o/{slug}/jira/{id}/{board}`.
+ *
+ * Undefined on the site page above it, which is a screen without a board in
+ * the same way the Jira list is a screen without a site.
+ */
+function boardForPath(pathname: string): string | undefined {
+  const parts = pathname.replace(/\/+$/, "").split("/");
+  return parts[1] === "o" &&
+    parts[3] === "jira" &&
+    parts[5] !== undefined &&
+    parts[5] !== ""
+    ? parts[5]
+    : undefined;
+}
+
 function screenForPath(pathname: string): Screen {
   // Trailing slashes are equivalent: `/account/` is the same screen.
   const path = pathname.replace(/\/+$/, "");
@@ -360,7 +434,9 @@ function screenForPath(pathname: string): Screen {
   }
   if (slugForPath(pathname) !== undefined) {
     if (connectionForPath(pathname) !== undefined) {
-      return "org-jira-site";
+      return boardForPath(pathname) === undefined
+        ? "org-jira-site"
+        : "org-jira-board";
     }
     // `/o/:slug/jira` and `/o/:slug/settings` differ only in the last segment.
     return path.endsWith("/jira") ? "org-jira" : "org-settings";
@@ -372,6 +448,7 @@ function pathForScreen(
   screen: Screen,
   slug?: string | undefined,
   connectionId?: string | undefined,
+  boardId?: string | undefined,
 ): string {
   switch (screen) {
     case "account":
@@ -395,6 +472,14 @@ function pathForScreen(
           ? ORGANIZATIONS_PATH
           : `/o/${slug}/jira`
         : `/o/${slug}/jira/${encodeURIComponent(connectionId)}`;
+    case "org-jira-board":
+      // Without a board this is the site it belongs to, which is the screen
+      // one step up rather than an invented URL.
+      return slug === undefined || connectionId === undefined
+        ? pathForScreen("org-jira", slug)
+        : boardId === undefined
+          ? pathForScreen("org-jira-site", slug, connectionId)
+          : `/o/${slug}/jira/${encodeURIComponent(connectionId)}/${encodeURIComponent(boardId)}`;
     case "home":
       return "/";
   }

@@ -14,10 +14,12 @@
 import {
   ChevronLeft,
   ChevronRight,
+  Columns3,
   ExternalLink,
-  Eye,
+  LayoutGrid,
   Link2,
   Loader2,
+  RefreshCw,
   Trash2,
   TriangleAlert,
   X,
@@ -35,13 +37,6 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 import { JiraIcon } from "./ProviderIcon";
@@ -540,19 +535,29 @@ function IssueDetail({ issue }: { issue: JiraIssueDetail }) {
   );
 }
 
-/** The ticket list: what a run would price, oldest first. */
+/**
+ * The ticket list: what a run would price, oldest first.
+ *
+ * A column beside the detail rather than a view that gets replaced by it, so
+ * reading one ticket does not cost the place in the list — which is the whole
+ * point of the split. The selected row is marked, because in a list of
+ * similar summaries the only way to know which one the panel is showing is to
+ * see it.
+ */
 function PreviewList({
   preview,
   onOpenIssue,
   openingKey,
+  selectedKey,
 }: {
   preview: BacklogPreview;
   onOpenIssue: (issueKey: string) => void;
   openingKey: string | null;
+  selectedKey: string | null;
 }) {
   if (preview.issues.length === 0) {
     return (
-      <p className="py-6 text-sm text-muted-foreground">
+      <p className="text-muted-foreground py-6 text-sm">
         No tickets match these settings. The backlog may be empty, or every
         ticket in it is assigned.
       </p>
@@ -560,152 +565,103 @@ function PreviewList({
   }
 
   return (
-    <div className="flex flex-col gap-2" data-testid="backlog-preview">
-      <ul className="max-h-96 divide-y overflow-y-auto rounded-md border">
-        {preview.issues.map((issue) => (
-          <li key={issue.id}>
-            {/* The whole row opens the ticket: a link-sized target inside a
-                dialog is a needless miss, and there is nothing else to click. */}
-            <button
-              type="button"
-              className="flex w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-muted/50"
-              onClick={() => {
-                onOpenIssue(issue.key);
-              }}
-            >
-              <span className="w-20 shrink-0 font-mono text-xs text-muted-foreground">
-                {issue.key}
-              </span>
-              <span className="min-w-0 flex-1 truncate text-sm">
-                {issue.summary}
-              </span>
-              <span className="shrink-0 text-xs text-muted-foreground">
-                {ageInDays(issue.created)}
-              </span>
-              {openingKey === issue.key ? (
-                <Loader2 className="size-4 shrink-0 animate-spin" />
-              ) : (
-                <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
-              )}
-            </button>
-          </li>
-        ))}
-      </ul>
-      <p className="text-xs text-muted-foreground">
-        Oldest first. Nothing here has been priced, and nothing was stored.
-      </p>
-    </div>
+    <ul className="divide-y" data-testid="backlog-preview">
+      {preview.issues.map((issue) => (
+        <li key={issue.id}>
+          {/* The whole row opens the ticket: a link-sized target is a
+              needless miss, and there is nothing else to click. */}
+          <button
+            type="button"
+            aria-current={selectedKey === issue.key ? "true" : undefined}
+            className={`hover:bg-muted/50 flex w-full items-center gap-3 px-3 py-2.5 text-left ${
+              selectedKey === issue.key ? "bg-muted" : ""
+            }`}
+            onClick={() => {
+              onOpenIssue(issue.key);
+            }}
+          >
+            <span className="text-muted-foreground w-20 shrink-0 font-mono text-xs">
+              {issue.key}
+            </span>
+            <span className="min-w-0 flex-1 truncate text-sm">
+              {issue.summary}
+            </span>
+            <span className="text-muted-foreground shrink-0 text-xs">
+              {ageInDays(issue.created)}
+            </span>
+            {openingKey === issue.key ? (
+              <Loader2 className="size-4 shrink-0 animate-spin" />
+            ) : (
+              <ChevronRight className="text-muted-foreground size-4 shrink-0" />
+            )}
+          </button>
+        </li>
+      ))}
+    </ul>
   );
 }
 
 /**
- * The preview, and the ticket you clicked on.
+ * The mark for a board, by the kind of board it is.
  *
- * One dialog with two views rather than two stacked dialogs: stacking two
- * overlays on a dark theme reads as mud, and Escape stops meaning one clear
- * thing. Going into a ticket swaps the content and offers a way back to the
- * list, which is the only navigation there is to get wrong.
+ * Jira reports `scrum`, `kanban`, or nothing — `unknown` is ours, for a site
+ * that did not say. Three columns for a Kanban board and a sprint's repeat
+ * for a Scrum one, because that is the difference a person is scanning for:
+ * a Kanban board has no backlog of its own, which is why the preview reads it
+ * through a different endpoint.
+ *
+ * Compared lowercased: the type is Jira's string, and a site is free to send
+ * `Kanban`.
  */
-function PreviewDialog({
-  open,
-  onOpenChange,
-  boardName,
-  preview,
-  loading,
-  issue,
-  openingKey,
-  onOpenIssue,
-  onBack,
-}: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  boardName: string;
-  preview: BacklogPreview | null;
-  loading: boolean;
-  issue: JiraIssueDetail | null;
-  openingKey: string | null;
-  onOpenIssue: (issueKey: string) => void;
-  onBack: () => void;
-}) {
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-2xl">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            {issue !== null && (
-              <Button
-                variant="ghost"
-                size="icon"
-                className="-ml-2 size-7"
-                aria-label="Back to the ticket list"
-                onClick={onBack}
-              >
-                <ChevronLeft className="size-4" />
-              </Button>
-            )}
-            {issue === null ? "Backlog preview" : issue.key}
-          </DialogTitle>
-          <DialogDescription>
-            {issue === null
-              ? `The tickets a run would price on ${boardName}, oldest first. Read live from Jira — nothing is stored.`
-              : `On ${boardName}. Read live from Jira; nothing here is stored.`}
-          </DialogDescription>
-        </DialogHeader>
-
-        {loading ? (
-          <p className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
-            <Loader2 className="size-4 animate-spin" />
-            Reading the backlog from Jira…
-          </p>
-        ) : issue !== null ? (
-          <IssueDetail issue={issue} />
-        ) : preview !== null ? (
-          <PreviewList
-            preview={preview}
-            onOpenIssue={onOpenIssue}
-            openingKey={openingKey}
-          />
-        ) : null}
-      </DialogContent>
-    </Dialog>
-  );
+function BoardIcon({ boardType }: { boardType: string }) {
+  const kind = boardType.toLowerCase();
+  if (kind === "kanban") {
+    return <Columns3 className="size-4" />;
+  }
+  if (kind === "scrum") {
+    return <RefreshCw className="size-4" />;
+  }
+  // Not a guess at one of the two: a board whose type we do not know should
+  // not be drawn as though we did.
+  return <LayoutGrid className="size-4" />;
 }
 
-/** One registered board, with the control that previews it. */
+/**
+ * One registered board, as a way into its tickets.
+ *
+ * The same row as a connected site one level up, for the same reason: there
+ * is one destination and nothing else to press, so the whole row is the
+ * target and the chevron says it leads somewhere. It replaced a "Preview"
+ * button, which named the mechanism rather than the destination.
+ */
 function BoardRow({
   board,
-  onPreview,
-  previewing,
+  onOpen,
 }: {
   board: JiraBoard;
-  onPreview: (board: JiraBoard) => void;
-  previewing: boolean;
+  onOpen: (board: JiraBoard) => void;
 }) {
   return (
-    <li className="flex items-center justify-between gap-4 py-3">
-      <div className="min-w-0">
-        <span className="truncate font-medium">{board.name}</span>
-        <p className="truncate text-sm text-muted-foreground">
-          {board.boardType}
-          {board.projectKey === null ? "" : ` · ${board.projectKey}`}
-        </p>
-      </div>
-      <Button
-        variant="outline"
-        size="sm"
-        className="shrink-0 gap-2"
-        disabled={previewing}
+    <li>
+      <button
+        type="button"
+        className="hover:bg-muted/50 flex w-full items-center gap-3 rounded-md px-1 py-3 text-left"
         onClick={() => {
-          onPreview(board);
+          onOpen(board);
         }}
       >
-        {previewing ? (
-          <Loader2 className="size-4 animate-spin" />
-        ) : (
-          <Eye className="size-4" />
-        )}
-        Preview
-      </Button>
+        <span className="text-muted-foreground shrink-0">
+          <BoardIcon boardType={board.boardType} />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate font-medium">{board.name}</span>
+          <span className="text-muted-foreground block truncate text-sm">
+            {board.boardType}
+            {board.projectKey === null ? "" : ` · ${board.projectKey}`}
+          </span>
+        </span>
+        <ChevronRight className="text-muted-foreground size-4 shrink-0" />
+      </button>
     </li>
   );
 }
@@ -725,29 +681,13 @@ function BoardRow({
 function BoardsCard({
   organizationId,
   connection,
+  onOpenBoard,
 }: {
   organizationId: string;
   connection: JiraConnection;
+  onOpenBoard: (board: JiraBoard) => void;
 }) {
-  const { boards, loading, error, sync, preview, issue } =
-    useJiraBoards(organizationId);
-
-  /**
-   * The open preview: which board, its tickets, and the one being read.
-   *
-   * `issue` non-null is what switches the dialog to the detail view, so
-   * going back is clearing it rather than a separate mode flag that could
-   * disagree with what is loaded.
-   */
-  const [viewer, setViewer] = useState<{
-    boardName: string;
-    boardId: string;
-    preview: BacklogPreview | null;
-    loading: boolean;
-    issue: JiraIssueDetail | null;
-  } | null>(null);
-  const [openingKey, setOpeningKey] = useState<string | null>(null);
-  const [busyBoard, setBusyBoard] = useState<string | null>(null);
+  const { boards, loading, error, sync } = useJiraBoards(organizationId);
   const [syncing, setSyncing] = useState(true);
 
   /*
@@ -775,53 +715,6 @@ function BoardsCard({
     };
   }, [connection.healthy, connection.id, sync]);
 
-  const onPreview = useCallback(
-    (board: JiraBoard) => {
-      setBusyBoard(board.id);
-      // The dialog opens once there is something to show. A preview can fail
-      // outright — a revoked grant, a missing scope — and opening first would
-      // mean flashing an empty dialog before closing it again to show the
-      // error the card renders.
-      void preview(board.id).then((result) => {
-        setBusyBoard(null);
-        if (result !== null) {
-          setViewer({
-            boardName: board.name,
-            boardId: board.id,
-            preview: result,
-            loading: false,
-            issue: null,
-          });
-        }
-      });
-    },
-    [preview],
-  );
-
-  const onOpenIssue = useCallback(
-    (issueKey: string) => {
-      if (viewer === null) {
-        return;
-      }
-      setOpeningKey(issueKey);
-      void issue(viewer.boardId, issueKey).then((detail) => {
-        setOpeningKey(null);
-        if (detail !== null) {
-          setViewer((current) =>
-            current === null ? current : { ...current, issue: detail },
-          );
-        }
-      });
-    },
-    [issue, viewer],
-  );
-
-  const onBack = useCallback(() => {
-    setViewer((current) =>
-      current === null ? current : { ...current, issue: null },
-    );
-  }, []);
-
   // This site's boards. The hook holds the organization's, because that is
   // what the API answers with, and the page is about one site.
   const siteBoards = boards.filter(
@@ -835,53 +728,201 @@ function BoardsCard({
         <CardTitle className="text-base">Boards</CardTitle>
         <CardDescription>
           Every board on this site, read when it was connected and again just
-          now. A board&rsquo;s oldest unassigned backlog tickets are the ones a
-          run prices — preview them here first, which reads Jira live and stores
-          nothing.
+          now. Open one to see the tickets a run would price — read live from
+          Jira, and stored nowhere.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
         {error !== null && <BoardsError error={error} />}
 
         {busy && siteBoards.length === 0 ? (
-          <p className="flex items-center gap-2 text-sm text-muted-foreground">
+          <p className="text-muted-foreground flex items-center gap-2 text-sm">
             <Loader2 className="size-4 animate-spin" />
             Reading this site&rsquo;s boards…
           </p>
         ) : siteBoards.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
+          <p className="text-muted-foreground text-sm">
             No boards on this site are visible to the connected account.
           </p>
         ) : (
           <ul className="divide-y">
             {siteBoards.map((board) => (
-              <BoardRow
-                key={board.id}
-                board={board}
-                onPreview={onPreview}
-                previewing={busyBoard === board.id}
-              />
+              <BoardRow key={board.id} board={board} onOpen={onOpenBoard} />
             ))}
           </ul>
         )}
       </CardContent>
-
-      <PreviewDialog
-        open={viewer !== null}
-        onOpenChange={(next) => {
-          if (!next) {
-            setViewer(null);
-          }
-        }}
-        boardName={viewer?.boardName ?? ""}
-        preview={viewer?.preview ?? null}
-        loading={viewer?.loading ?? false}
-        issue={viewer?.issue ?? null}
-        openingKey={openingKey}
-        onOpenIssue={onOpenIssue}
-        onBack={onBack}
-      />
     </Card>
+  );
+}
+
+/**
+ * One board: its tickets on the left, the one you picked on the right.
+ *
+ * A split rather than a dialog with two views. The dialog made reading a
+ * ticket cost the list — going back was the only way to reach the next one,
+ * and comparing two meant opening each in turn from memory. Here the list
+ * stays put and the panel changes under it, which is what a person scanning
+ * a backlog is actually doing.
+ *
+ * Below `md` the panel covers the list instead of sitting beside it, with a
+ * control back. Two columns on a phone would each be too narrow to hold a
+ * ticket summary, let alone a spec.
+ */
+export function JiraBoard({
+  organizationId,
+  connectionId,
+  boardId,
+  boardName,
+  onBoardName,
+  onSiteName,
+}: {
+  organizationId: string;
+  /** The site this board is on, so the trail can name it. */
+  connectionId: string;
+  boardId: string;
+  /** Known already when arriving from the site page; absent on a reload. */
+  boardName?: string | undefined;
+  /** Reports the board's name up for the trail; see `JiraSite`. */
+  onBoardName: (name: string | undefined) => void;
+  /**
+   * And the site's, for the crumb above it.
+   *
+   * Reported from here rather than left to `JiraSite`, which is not mounted
+   * on this page: arriving by URL, nothing else has ever read the connection
+   * list, so the crumb would read "Site" until the person navigated up.
+   */
+  onSiteName: (name: string | undefined) => void;
+}) {
+  const { boards, error, preview, issue } = useJiraBoards(organizationId);
+  const { connections } = useJira(organizationId);
+  const [backlog, setBacklog] = useState<BacklogPreview | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [selected, setSelected] = useState<JiraIssueDetail | null>(null);
+  const [openingKey, setOpeningKey] = useState<string | null>(null);
+
+  const board = boards.find((candidate) => candidate.id === boardId) ?? null;
+  // The name passed in wins while the list is still arriving, so arriving
+  // from the site page does not flash a heading that says nothing.
+  const name = board?.name ?? boardName;
+
+  useEffect(() => {
+    onBoardName(name);
+  }, [name, onBoardName]);
+
+  const siteName = connections.find(
+    (candidate) => candidate.id === connectionId,
+  )?.siteName;
+  useEffect(() => {
+    onSiteName(siteName);
+  }, [siteName, onSiteName]);
+
+  useEffect(() => {
+    let live = true;
+    setLoading(true);
+    void preview(boardId).then((result) => {
+      if (live) {
+        setBacklog(result);
+        setLoading(false);
+      }
+    });
+    return () => {
+      live = false;
+    };
+  }, [boardId, preview]);
+
+  const onOpenIssue = useCallback(
+    (issueKey: string) => {
+      setOpeningKey(issueKey);
+      void issue(boardId, issueKey).then((detail) => {
+        setOpeningKey(null);
+        if (detail !== null) {
+          setSelected(detail);
+        }
+      });
+    },
+    [boardId, issue],
+  );
+
+  return (
+    <main className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-4 py-10 sm:px-6 sm:py-14">
+      <header>
+        <div className="flex items-center gap-3">
+          <span className="text-muted-foreground shrink-0">
+            <BoardIcon boardType={board?.boardType ?? ""} />
+          </span>
+          <h1 className="min-w-0 truncate text-2xl font-semibold tracking-tight">
+            {name ?? "Board"}
+          </h1>
+        </div>
+        <p className="text-muted-foreground mt-1.5 text-sm">
+          The tickets a run would price, oldest first. Read live from Jira —
+          nothing here has been priced, and nothing was stored.
+        </p>
+      </header>
+
+      {error !== null && <BoardsError error={error} />}
+
+      {loading ? (
+        <p className="text-muted-foreground flex items-center gap-2 text-sm">
+          <Loader2 className="size-4 animate-spin" />
+          Reading the backlog from Jira…
+        </p>
+      ) : backlog === null ? null : (
+        /*
+          The split. `md:grid-cols-2` is the half-and-half the panel asks for;
+          below that the two stack in one column and only one of them renders,
+          which is what makes the panel cover the list rather than squeeze
+          beside it.
+
+          `items-start` so each side is as tall as its own content: without it
+          the grid stretches both to the taller one, and a short list grows a
+          long empty border beside a long ticket.
+        */
+        <div className="grid items-start gap-4 md:grid-cols-2">
+          <div
+            className={`overflow-hidden rounded-md border ${
+              selected === null ? "" : "hidden md:block"
+            }`}
+          >
+            <PreviewList
+              preview={backlog}
+              onOpenIssue={onOpenIssue}
+              openingKey={openingKey}
+              selectedKey={selected?.key ?? null}
+            />
+          </div>
+
+          {selected === null ? (
+            // The empty half, on wide screens only: a placeholder under the
+            // list on a phone would be a second thing to scroll past.
+            <p className="text-muted-foreground hidden rounded-md border p-6 text-sm md:block">
+              Pick a ticket to read it here.
+            </p>
+          ) : (
+            <div className="rounded-md border p-4" data-testid="issue-panel">
+              {/*
+                The way back, on narrow screens where the panel covers the
+                list. On a wide one the list is still there, so a control to
+                return to it would point at something already on screen.
+              */}
+              <Button
+                variant="ghost"
+                size="sm"
+                className="mb-2 -ml-2 gap-1 md:hidden"
+                onClick={() => {
+                  setSelected(null);
+                }}
+              >
+                <ChevronLeft className="size-4" />
+                All tickets
+              </Button>
+              <IssueDetail issue={selected} />
+            </div>
+          )}
+        </div>
+      )}
+    </main>
   );
 }
 
@@ -1016,12 +1057,14 @@ export function JiraSite({
   connectionId,
   role,
   onDisconnected,
+  onOpenBoard,
   onSiteName,
 }: {
   organizationId: string;
   connectionId: string;
   role: string;
   onDisconnected: () => void;
+  onOpenBoard: (board: JiraBoard) => void;
   /**
    * Reports the site's name up to the shell, which renders the trail above
    * this page and has no other way to learn it. Called with undefined while
@@ -1085,6 +1128,7 @@ export function JiraSite({
       <BoardsCard
         organizationId={organizationId}
         connection={connection}
+        onOpenBoard={onOpenBoard}
         key={connection.id}
       />
 
