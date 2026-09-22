@@ -4,6 +4,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
@@ -19,6 +20,9 @@ afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+  // The open proposal lives in the URL, and jsdom's is real: a test that
+  // opens one must not hand the next test an already-open peek.
+  window.history.replaceState(null, "", "/");
 });
 
 test("money formatting respects currencies with different minor units", () => {
@@ -635,28 +639,33 @@ test("members see proposals without review or run controls", async () => {
             sizingAvailable: true,
           }),
         );
-      return Promise.resolve(
-        Response.json({
-          proposals: [
-            {
-              id: "bpr_1",
-              issueKey: "APP-1",
-              liveKey: "APP-1",
-              liveTitle: "Ship export",
-              modelRationale: "A few files.",
-              complexity: "M",
-              amountMinor: 200,
-              currency: "USD",
-              modelComplexity: "M",
-              modelConfidence: "high",
-              actualModel: "deepseek-v4-pro",
-              freshness: "current",
-              status: "proposed",
-              revision: 1,
-            },
-          ],
-        }),
-      );
+      const proposal = {
+        id: "bpr_1",
+        issueKey: "APP-1",
+        liveKey: "APP-1",
+        liveTitle: "Ship export",
+        modelRationale: "A few files.",
+        complexity: "M",
+        amountMinor: 200,
+        currency: "USD",
+        modelComplexity: "M",
+        modelConfidence: "high",
+        actualModel: "deepseek-v4-pro",
+        freshness: "current",
+        status: "proposed",
+        revision: 1,
+      };
+      if (url.includes("/proposals/bpr_1?")) {
+        return Promise.resolve(
+          Response.json({
+            proposal,
+            freshness: { freshness: "current", checkedAt: "now" },
+            history: [proposal],
+            writebackOperations: [],
+          }),
+        );
+      }
+      return Promise.resolve(Response.json({ proposals: [proposal] }));
     }),
   );
   render(
@@ -664,21 +673,27 @@ test("members see proposals without review or run controls", async () => {
       organizationId="org_1"
       boardId="jrb_1"
       role="member"
-      writebackEnabled={false}
+      writeGranted={false}
+      readIssue={() => Promise.resolve(null)}
     />,
   );
   expect(await screen.findByText(/Ship export/)).toBeDefined();
-  // The proposal says which model sized it, readable and with the raw id on
-  // hover; the run summary says what actually did the work — the fallback
-  // here, not the requested Sonnet.
-  expect(screen.getByTitle("deepseek-v4-pro").textContent).toBe(
-    "DeepSeek V4 Pro",
-  );
+  // The run summary says what actually did the work — the fallback here,
+  // not the requested Sonnet.
   expect(screen.getByText(/Latest run/).textContent).toContain(
     "2 results · sized by DeepSeek V4 Pro",
   );
   expect(screen.queryByRole("button", { name: "Run sizing" })).toBeNull();
-  expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
+
+  // Opened, the proposal says which model sized it, readable and with the
+  // raw id on hover — and a member still has nothing to press.
+  await userEvent.click(screen.getByRole("button", { name: /Ship export/ }));
+  const panel = await screen.findByTestId("proposal-panel");
+  expect(within(panel).getByTitle("deepseek-v4-pro").textContent).toBe(
+    "DeepSeek V4 Pro",
+  );
+  expect(within(panel).queryByRole("button", { name: "Approve" })).toBeNull();
+  expect(within(panel).queryByTestId("proposal-actions")).toBeNull();
 });
 
 test("proposal filters and detail links survive navigation", async () => {
@@ -725,7 +740,8 @@ test("proposal filters and detail links survive navigation", async () => {
       organizationId="org_1"
       boardId="jrb_1"
       role="owner"
-      writebackEnabled={false}
+      writeGranted={false}
+      readIssue={() => Promise.resolve(null)}
     />,
   );
   await userEvent.click(
@@ -734,6 +750,12 @@ test("proposal filters and detail links survive navigation", async () => {
   expect(await screen.findByText("Proposal history")).toBeDefined();
   expect(window.location.search).toContain("proposal=bpr_1");
 
+  // The filters are behind the peek; closing it hands the list back.
+  await userEvent.keyboard("{Escape}");
+  await waitFor(() => {
+    expect(screen.queryByTestId("proposal-panel")).toBeNull();
+  });
+  expect(window.location.search).not.toContain("proposal=");
   await userEvent.click(screen.getByRole("button", { name: "Approved" }));
   await waitFor(() =>
     expect(urls.some((url) => url.includes("status=approved"))).toBe(true),

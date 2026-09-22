@@ -377,7 +377,7 @@ test("no banner is shown without an outcome in the URL", async () => {
 });
 
 /* -------------------------------------------------------------------------- */
-/* Boards and the backlog preview                                             */
+/* Boards and the proposals page                                              */
 /* -------------------------------------------------------------------------- */
 
 const board = {
@@ -406,6 +406,27 @@ function issue(n: number, created: string) {
   };
 }
 
+/** A sizing proposal against `issue(n)`, as the list and detail routes return it. */
+function proposal(n: number) {
+  return {
+    id: `bpr_${n}`,
+    issueKey: `ACME-${n}`,
+    liveKey: `ACME-${n}`,
+    liveTitle: `Ticket ${n}`,
+    liveUrl: `https://acme.atlassian.net/browse/ACME-${n}`,
+    modelRationale: "A few files.",
+    complexity: "M",
+    amountMinor: 200,
+    currency: "USD",
+    modelComplexity: "M",
+    modelConfidence: "high",
+    actualModel: "claude-sonnet-5",
+    freshness: "current",
+    status: "proposed",
+    revision: 1,
+  };
+}
+
 /**
  * The server, faked per route rather than as one blanket response.
  *
@@ -417,8 +438,8 @@ function routedFetch(
     boards?: { status?: number; body?: unknown };
     sync?: { status?: number; body?: unknown };
     connections?: { status?: number; body?: unknown };
-    preview?: { status?: number; body?: unknown };
     detail?: { status?: number; body?: unknown };
+    proposals?: { status?: number; body?: unknown };
   } = {},
 ) {
   return vi.fn((input: string) => {
@@ -460,18 +481,22 @@ function routedFetch(
         spec?.status ?? 200,
       );
     }
-    if (url.includes("backlog-preview")) {
-      const spec = overrides.preview;
+    if (url.includes("/runs")) {
+      return json({ runs: [], sizingAvailable: true });
+    }
+    if (url.includes("/proposals/")) {
+      const n = Number(/bpr_(\d+)/.exec(url)?.[1] ?? "1");
+      return json({
+        proposal: proposal(n),
+        freshness: { freshness: "current", checkedAt: "now" },
+        history: [proposal(n)],
+        writebackOperations: [],
+      });
+    }
+    if (url.includes("/proposals?")) {
+      const spec = overrides.proposals;
       return json(
-        spec?.body ?? {
-          boardId: "jrb_1",
-          source: "backlog",
-          jql: "ORDER BY created ASC",
-          issues: [
-            issue(1, "2020-01-01T00:00:00.000Z"),
-            issue(2, "2021-01-01T00:00:00.000Z"),
-          ],
-        },
+        spec?.body ?? { proposals: [proposal(1), proposal(2)] },
         spec?.status ?? 200,
       );
     }
@@ -496,10 +521,10 @@ let disconnected = 0;
 let reportedName: (string | undefined)[] = [];
 let openedBoards: string[] = [];
 
-/** The board page: the ticket list, and the detail panel beside it. */
+/** The board page: its proposals, and the peek that opens over them. */
 let reportedBoardName: (string | undefined)[] = [];
 
-function renderBoard(boardId = "jrb_1") {
+function renderBoard(boardId = "jrb_1", role?: string) {
   reportedBoardName = [];
   return render(
     <JiraBoard
@@ -508,6 +533,7 @@ function renderBoard(boardId = "jrb_1") {
       boardId={boardId}
       onBoardName={(name) => reportedBoardName.push(name)}
       onSiteName={vi.fn()}
+      role={role}
     />,
   );
 }
@@ -592,33 +618,40 @@ test("a board carries the mark of the kind of board it is", async () => {
   expect(scrum?.innerHTML).not.toBe(kanban?.innerHTML);
 });
 
-test("the board page lists its oldest tickets", async () => {
+test("the board page lists its proposals, and nothing else", async () => {
   vi.stubGlobal("fetch", routedFetch());
   renderBoard();
 
-  const list = await screen.findByTestId("backlog-preview");
-  // The ordering is the product's claim about which work is worth a bounty.
+  const list = await screen.findByTestId("proposal-list");
   const keys = within(list)
     .getAllByText(/^ACME-\d+$/)
     .map((node) => node.textContent);
   expect(keys).toEqual(["ACME-1", "ACME-2"]);
   expect(within(list).getByText("Ticket 1")).toBeDefined();
+  // A row is a scan: key, title, size, price. The rationale, the model line
+  // and the actions are all in the peek.
+  expect(within(list).getAllByText("M")).toHaveLength(2);
+  expect(within(list).getAllByText(/2\.00/)).toHaveLength(2);
+  expect(within(list).queryByText("A few files.")).toBeNull();
+  expect(within(list).queryByRole("button", { name: "Approve" })).toBeNull();
+  // No Backlog tab to switch to: proposals are the page.
+  expect(screen.queryByRole("tab", { name: /backlog/i })).toBeNull();
+  expect(screen.queryByTestId("backlog-preview")).toBeNull();
 });
 
-test("a ticket opens over the list, which keeps its place", async () => {
-  // The property the split existed for, and the peek keeps: reading one
-  // ticket must not cost the place in the list, or comparing two means
-  // opening each in turn from memory.
+test("a proposal opens over the list, which keeps its place", async () => {
+  // Reading one proposal must not cost the place in the list, or comparing
+  // two means opening each in turn from memory.
   vi.stubGlobal("fetch", routedFetch());
   renderBoard();
-  await screen.findByTestId("backlog-preview");
+  await screen.findByTestId("proposal-list");
 
   await userEvent.click(screen.getByText("Ticket 1"));
 
-  const panel = await screen.findByTestId("issue-panel");
-  expect(
-    within(panel).getByText(/Establish the canonical data model/),
-  ).toBeDefined();
+  const panel = await screen.findByTestId("proposal-panel");
+  expect(within(panel).getByRole("tab", { name: /bounty/i })).toBeDefined();
+  expect(within(panel).getByRole("tab", { name: /spec/i })).toBeDefined();
+  expect(within(panel).getByText("A few files.")).toBeDefined();
 
   /*
     The list is still mounted behind the peek, holding its scroll position
@@ -626,52 +659,38 @@ test("a ticket opens over the list, which keeps its place", async () => {
     everything outside it is `aria-hidden` and the default queries skip it —
     which is the point: it is there, and it is not what the reader is in.
   */
-  const list = screen.getByTestId("backlog-preview", { hidden: true });
-  expect(list).toBeDefined();
+  const list = screen.getByTestId("proposal-list", { hidden: true });
   expect(within(list).getAllByRole("button", { hidden: true })).toHaveLength(2);
 });
 
-test("the peek is a dialog, so Escape and a click outside close it", async () => {
-  // What a peek buys over a column: the focus trap, the return of focus to
-  // the row, and one obvious way out that does not need a bespoke control.
+test("the peek is a dialog, so Escape closes it", async () => {
   vi.stubGlobal("fetch", routedFetch());
   renderBoard();
-  await screen.findByTestId("backlog-preview");
+  await screen.findByTestId("proposal-list");
 
   await userEvent.click(screen.getByText("Ticket 1"));
-  await screen.findByTestId("issue-panel");
-
+  await screen.findByTestId("proposal-panel");
   expect(screen.getByRole("dialog")).toBeDefined();
 
   await userEvent.keyboard("{Escape}");
 
   await waitFor(() => {
-    expect(screen.queryByTestId("issue-panel")).toBeNull();
+    expect(screen.queryByTestId("proposal-panel")).toBeNull();
   });
-  // And the list is the reader's again.
-  expect(screen.getByTestId("backlog-preview")).toBeDefined();
+  expect(screen.getByTestId("proposal-list")).toBeDefined();
 });
 
-test("the ticket being read is marked in the list", async () => {
-  // In a column of similar summaries, the only way to know which one the
-  // panel is showing is to see it.
+test("the proposal being read is marked in the list", async () => {
   vi.stubGlobal("fetch", routedFetch());
   renderBoard();
-  await screen.findByTestId("backlog-preview");
+  await screen.findByTestId("proposal-list");
 
   await userEvent.click(screen.getByText("Ticket 1"));
-  await screen.findByTestId("issue-panel");
+  await screen.findByTestId("proposal-panel");
 
-  /*
-    Scoped to the list, and `hidden: true` because the peek is a modal that
-    marks everything behind it `aria-hidden`. The mark matters more with a
-    peek than it did with the split: the list is what the reader comes back
-    to when the panel closes.
-  */
-  const list = screen.getByTestId("backlog-preview", { hidden: true });
+  const list = screen.getByTestId("proposal-list", { hidden: true });
   const row = within(list).getByText("Ticket 1").closest("button");
   expect(row?.getAttribute("aria-current")).toBe("true");
-  // And only that one.
   expect(
     within(list)
       .getAllByRole("button", { hidden: true })
@@ -679,43 +698,49 @@ test("the ticket being read is marked in the list", async () => {
   ).toHaveLength(1);
 });
 
-test("picking another ticket swaps the panel, without leaving the list", async () => {
+test("picking another proposal swaps the panel, without leaving the list", async () => {
   vi.stubGlobal("fetch", routedFetch());
   renderBoard();
-  await screen.findByTestId("backlog-preview");
+  await screen.findByTestId("proposal-list");
 
-  const list = screen.getByTestId("backlog-preview");
-  await userEvent.click(within(list).getByText("Ticket 1"));
-  const panel = await screen.findByTestId("issue-panel");
-  // The peek names the ticket it is showing. Scoped, because the panel's own
-  // `sr-only` title carries the same summary as the heading inside it.
-  expect(within(panel).getAllByText("Ticket 1").length).toBeGreaterThan(0);
+  await userEvent.click(screen.getByText("Ticket 1"));
+  const panel = await screen.findByTestId("proposal-panel");
+  expect(within(panel).getAllByText("ACME-1").length).toBeGreaterThan(0);
 
-  // Closing and opening the next one, which is what a peek makes the reader
-  // do — and the list it returns to is still there to do it from.
   await userEvent.keyboard("{Escape}");
   await waitFor(() => {
-    expect(screen.queryByTestId("issue-panel")).toBeNull();
+    expect(screen.queryByTestId("proposal-panel")).toBeNull();
   });
 
   await userEvent.click(
-    within(screen.getByTestId("backlog-preview")).getByText("Ticket 2"),
+    within(screen.getByTestId("proposal-list")).getByText("Ticket 2"),
   );
-  await waitFor(() => {
-    expect(screen.getByTestId("issue-panel")).toBeDefined();
-  });
-  expect(screen.getByTestId("backlog-preview", { hidden: true })).toBeDefined();
+  const next = await screen.findByTestId("proposal-panel");
+  expect(within(next).getAllByText("ACME-2").length).toBeGreaterThan(0);
+  expect(screen.getByTestId("proposal-list", { hidden: true })).toBeDefined();
 });
 
-test("the panel shows the fields the list DTO does not carry", async () => {
+test("the Spec tab is the ticket read live: its description, then its fields", async () => {
   vi.stubGlobal("fetch", routedFetch());
   renderBoard();
-  await screen.findByTestId("backlog-preview");
+  await screen.findByTestId("proposal-list");
   await userEvent.click(screen.getByText("Ticket 1"));
 
-  const panel = await screen.findByTestId("issue-panel");
-  await userEvent.click(within(panel).getByRole("tab", { name: /fields/i }));
+  const panel = await screen.findByTestId("proposal-panel");
+  await userEvent.click(within(panel).getByRole("tab", { name: /spec/i }));
+
+  const spec = await within(panel).findByTestId("issue-spec");
+  expect(
+    within(spec).getByText(/Establish the canonical data model/),
+  ).toBeDefined();
+  // One scroll: the fields follow the description rather than hiding
+  // behind a second tab.
   const fields = within(panel).getByTestId("issue-fields");
+  expect(
+    spec.compareDocumentPosition(fields) & Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
+  expect(within(panel).queryByRole("tab", { name: /fields/i })).toBeNull();
+  expect(within(fields).getByText("To Do")).toBeDefined();
   expect(within(fields).getByText("charlie angriawan")).toBeDefined();
   expect(within(fields).getByText("Highest")).toBeDefined();
   expect(within(fields).getByText("foundation")).toBeDefined();
@@ -754,132 +779,95 @@ test("a field Jira did not send renders no row", async () => {
     }),
   );
   renderBoard();
-  await screen.findByTestId("backlog-preview");
+  await screen.findByTestId("proposal-list");
   await userEvent.click(screen.getByText("Ticket 1"));
 
-  const panel = await screen.findByTestId("issue-panel");
-  await userEvent.click(within(panel).getByRole("tab", { name: /fields/i }));
+  const panel = await screen.findByTestId("proposal-panel");
+  await userEvent.click(within(panel).getByRole("tab", { name: /spec/i }));
 
-  const fields = within(panel).getByTestId("issue-fields");
+  const fields = await within(panel).findByTestId("issue-fields");
   expect(within(fields).queryByText("Reporter")).toBeNull();
   expect(within(fields).queryByText("Resolution")).toBeNull();
   expect(within(fields).queryByText("Labels")).toBeNull();
   // Assignee still shows, because "Unassigned" is information.
   expect(within(fields).getByText("Unassigned")).toBeDefined();
+  // And a missing description is said, not left blank.
+  expect(within(panel).getByText(/no description/i)).toBeDefined();
 });
 
-test("the board page says nothing was stored", async () => {
-  // The promise the page makes: looking at a board is not pricing it.
-  vi.stubGlobal("fetch", routedFetch());
-  renderBoard();
-
-  await screen.findByTestId("backlog-preview");
-  expect(screen.getByText(/nothing was stored/i)).toBeDefined();
-});
-
-test("an empty backlog is explained rather than shown as a blank table", async () => {
+test("an empty proposal list is explained rather than shown as a blank table", async () => {
   vi.stubGlobal(
     "fetch",
-    routedFetch({
-      preview: {
-        body: { boardId: "jrb_1", source: "backlog", jql: "", issues: [] },
-      },
-    }),
+    routedFetch({ proposals: { body: { proposals: [] } } }),
   );
   renderBoard();
 
-  expect(await screen.findByText(/no tickets match/i)).toBeDefined();
+  expect(await screen.findByText(/no proposals match/i)).toBeDefined();
 });
 
-test("the preview states its result count and active filters", async () => {
-  vi.stubGlobal(
-    "fetch",
-    routedFetch({
-      preview: {
-        body: {
-          boardId: "jrb_1",
-          source: "backlog",
-          jql: "",
-          total: 17,
-          selection: {
-            maxTickets: 10,
-            excludeAssigned: true,
-            issueTypes: ["Story", "Bug"],
-            minAgeDays: 30,
-            minSpecChars: 0,
-          },
-          issues: [issue(1, "2020-01-01T00:00:00.000Z")],
-        },
-      },
-    }),
-  );
-  renderBoard();
-
-  expect(await screen.findByText("Showing 1 oldest ticket")).toBeDefined();
-  const filters = screen.getByLabelText("Active filters");
-  expect(within(filters).getByText("Filters")).toBeDefined();
-  expect(within(filters).getByText("Unassigned only")).toBeDefined();
-  expect(within(filters).getByText("30+ days old")).toBeDefined();
-  expect(within(filters).getByText("Types: Story, Bug")).toBeDefined();
-});
-
-test("a failed ticket read stays in its panel with a retry", async () => {
+test("a failed ticket read stays in the Spec tab with a retry", async () => {
   vi.stubGlobal(
     "fetch",
     routedFetch({ detail: { status: 502, body: { error: "upstream" } } }),
   );
   renderBoard();
-  await screen.findByTestId("backlog-preview");
+  await screen.findByTestId("proposal-list");
 
   await userEvent.click(screen.getByText("Ticket 1"));
-  const panel = await screen.findByTestId("issue-panel");
+  const panel = await screen.findByTestId("proposal-panel");
+  await userEvent.click(within(panel).getByRole("tab", { name: /spec/i }));
   expect(
     await within(panel).findByText(/could not load this ticket from Jira/i),
   ).toBeDefined();
   expect(
     within(panel).getByRole("button", { name: /try again/i }),
   ).toBeDefined();
+  // The Bounty tab is unaffected: the proposal itself loaded.
+  await userEvent.click(within(panel).getByRole("tab", { name: /bounty/i }));
+  expect(within(panel).getByText("A few files.")).toBeDefined();
 });
 
-test("a ticket can be opened directly from the issue query", async () => {
+test("a proposal can be opened directly from the query", async () => {
   Object.defineProperty(window, "location", {
     configurable: true,
     value: {
       pathname: "/o/acme/jira/jrc_1/jrb_1",
-      search: "?issue=NOX-1",
-      href: "http://localhost/o/acme/jira/jrc_1/jrb_1?issue=NOX-1",
+      search: "?proposal=bpr_1",
+      href: "http://localhost/o/acme/jira/jrc_1/jrb_1?proposal=bpr_1",
     },
   });
   vi.stubGlobal("fetch", routedFetch());
   renderBoard();
 
-  expect(await screen.findByTestId("issue-detail")).toBeDefined();
+  expect(await screen.findByTestId("proposal-detail")).toBeDefined();
   expect(screen.getByRole("dialog").getAttribute("data-testid")).toBe(
-    "issue-panel",
+    "proposal-panel",
   );
 });
 
 test("a revoked grant asks for a reconnect rather than a retry", async () => {
-  // 409 with `reconnect` is the one failure a retry cannot fix.
+  // 409 with `reconnect` is the one failure a retry cannot fix. The ticket
+  // read is where the grant is exercised now that the page reads no backlog.
   vi.stubGlobal(
     "fetch",
     routedFetch({
-      preview: { status: 409, body: { error: "gone", code: "reconnect" } },
+      detail: { status: 409, body: { error: "gone", code: "reconnect" } },
     }),
   );
   renderBoard();
+  await screen.findByTestId("proposal-list");
+  await userEvent.click(screen.getByText("Ticket 1"));
 
   expect(await screen.findByText(/expired or been revoked/i)).toBeDefined();
 });
 
 test("a scope mismatch is not reported as an expired connection", async () => {
-  // The failure that prompted this: a live grant, refused by the Agile API
-  // because the Atlassian app was never given the Jira Software scopes.
-  // "Reconnect" is a loop that ends where it started.
+  // A live grant, refused because the Atlassian app was never given the
+  // Jira Software scopes. "Reconnect" is a loop that ends where it started.
   vi.stubGlobal(
     "fetch",
     routedFetch({
-      preview: {
+      detail: {
         status: 502,
         body: {
           code: "scope",
@@ -890,16 +878,63 @@ test("a scope mismatch is not reported as an expired connection", async () => {
     }),
   );
   renderBoard();
+  await screen.findByTestId("proposal-list");
+  await userEvent.click(screen.getByText("Ticket 1"));
 
   expect(await screen.findByTestId("jira-scope-error")).toBeDefined();
-  expect(screen.getByText(/scope list/i)).toBeDefined();
   expect(screen.queryByText(/expired or been revoked/i)).toBeNull();
+});
+
+test("the actions sit in the peek's footer, for those who may act", async () => {
+  vi.stubGlobal("fetch", routedFetch());
+  renderBoard("jrb_1", "owner");
+  await screen.findByTestId("proposal-list");
+  // Not in the rows.
+  expect(screen.queryByTestId("proposal-actions")).toBeNull();
+
+  await userEvent.click(screen.getByText("Ticket 1"));
+  const panel = await screen.findByTestId("proposal-panel");
+  const actions = within(panel).getByTestId("proposal-actions");
+  for (const name of ["Approve", "XS", "S", "L", "XL", "Reject", "Re-price"]) {
+    expect(within(actions).getByRole("button", { name })).toBeDefined();
+  }
+  // The current size is not offered as a change.
+  expect(
+    (within(actions).getByRole("button", { name: "M" }) as HTMLButtonElement)
+      .disabled,
+  ).toBe(true);
+  // Outside the scrolling body, so a long spec never pushes them off.
+  expect(actions.closest(".overflow-y-auto")).toBeNull();
+});
+
+test("a member sees the proposal without any way to decide it", async () => {
+  vi.stubGlobal("fetch", routedFetch());
+  renderBoard("jrb_1", "member");
+  await screen.findByTestId("proposal-list");
+  expect(screen.queryByRole("button", { name: /run sizing/i })).toBeNull();
+
+  await userEvent.click(screen.getByText("Ticket 1"));
+  const panel = await screen.findByTestId("proposal-panel");
+  expect(within(panel).queryByTestId("proposal-actions")).toBeNull();
+  expect(within(panel).getByText("A few files.")).toBeDefined();
+});
+
+test("the proposal names the model that sized it", async () => {
+  vi.stubGlobal("fetch", routedFetch());
+  renderBoard();
+  await screen.findByTestId("proposal-list");
+  await userEvent.click(screen.getByText("Ticket 1"));
+
+  const panel = await screen.findByTestId("proposal-panel");
+  expect(within(panel).getByTitle("claude-sonnet-5").textContent).toBe(
+    "Claude Sonnet 5",
+  );
 });
 
 test("the board's name is reported up, for the trail above the page", async () => {
   vi.stubGlobal("fetch", routedFetch());
   renderBoard();
-  await screen.findByTestId("backlog-preview");
+  await screen.findByTestId("proposal-list");
 
   await waitFor(() => {
     expect(reportedBoardName).toContain("Acme Board");
@@ -1037,8 +1072,10 @@ test("the description renders as markdown, not as literal hashes", async () => {
   // `#` and `|`, which is exactly what a reviewer cannot read.
   vi.stubGlobal("fetch", routedFetch());
   renderBoard();
-  const list = await screen.findByTestId("backlog-preview");
+  const list = await screen.findByTestId("proposal-list");
   await userEvent.click(within(list).getByText("Ticket 1"));
+  const panel = await screen.findByTestId("proposal-panel");
+  await userEvent.click(within(panel).getByRole("tab", { name: /spec/i }));
 
   const spec = await screen.findByTestId("issue-spec");
   // A real heading element, and the hashes are gone from the text.
@@ -1083,8 +1120,10 @@ test("a table in the description renders as a table", async () => {
     }),
   );
   renderBoard();
-  const list = await screen.findByTestId("backlog-preview");
+  const list = await screen.findByTestId("proposal-list");
   await userEvent.click(within(list).getByText("Ticket 1"));
+  const panel = await screen.findByTestId("proposal-panel");
+  await userEvent.click(within(panel).getByRole("tab", { name: /spec/i }));
 
   const spec = await screen.findByTestId("issue-spec");
   expect(within(spec).getByRole("table")).toBeDefined();
@@ -1107,94 +1146,6 @@ test("the page keeps enough top padding for the breadcrumb's negative margin", a
   expect(main).not.toBeNull();
   expect(main?.className).toContain("py-10");
   expect(main?.className).toContain("sm:py-14");
-});
-
-// ---- the open ticket stays in view ----------------------------------------
-//
-// The panel renders in the right-hand column, which starts at the top of the
-// grid. Open a ticket from the foot of a long list and the panel was drawn
-// entirely above the viewport — measured 400px up, with nothing on screen to
-// show the click had done anything but highlight a row.
-
-test("the peek is its own scrolling region, and the only one", async () => {
-  /*
-    The whole reason a peek settles the scrolling question. The split pinned
-    the panel inside the page's own scroller, so either the panel captured
-    the wheel when the cursor was inside it, or a long ticket stretched the
-    page. A peek scrolls itself and Radix locks the page behind it, so the
-    wheel has one destination wherever the cursor is.
-
-    jsdom has no layout and no wheel, so the class contract carries this; the
-    behaviour itself is checked in a browser.
-  */
-  vi.stubGlobal("fetch", routedFetch());
-  renderBoard();
-  await screen.findByTestId("backlog-preview");
-
-  await userEvent.click(screen.getByText("Ticket 1"));
-  const panel = await screen.findByTestId("issue-panel");
-
-  const scroller = panel.querySelector(".overflow-y-auto");
-  expect(scroller).not.toBeNull();
-  // `overscroll-contain`, or reaching the end of the ticket starts scrolling
-  // the page behind the panel.
-  expect(scroller?.className).toContain("overscroll-contain");
-  // And the panel itself is not a second one.
-  expect(panel.className).not.toContain("overflow-y-auto");
-});
-
-test("the peek comes in from the edge it is attached to", async () => {
-  // Where it came from and where closing it puts it back. Without the
-  // direction it reads as a dialog that happens to be against one side.
-  vi.stubGlobal("fetch", routedFetch());
-  renderBoard();
-  await screen.findByTestId("backlog-preview");
-
-  await userEvent.click(screen.getByText("Ticket 1"));
-  const panel = await screen.findByTestId("issue-panel");
-
-  expect(panel.className).toContain("slide-in-from-right");
-  expect(panel.className).toContain("inset-y-0");
-  expect(panel.className).toContain("right-0");
-});
-
-test("the spec no longer scrolls inside the scrolling panel", async () => {
-  // A scroll area inside a scroll area: the spec had its own 26rem box, so a
-  // long ticket gave the reader two scrollbars for one document.
-  vi.stubGlobal("fetch", routedFetch());
-  renderBoard();
-  await screen.findByTestId("backlog-preview");
-
-  await userEvent.click(screen.getByText("Ticket 1"));
-  const spec = await screen.findByTestId("issue-spec");
-
-  expect(spec.className).not.toContain("max-h-");
-  expect(spec.className).not.toContain("overflow-y-auto");
-});
-
-test("the peek returns focus to the row it was opened from", async () => {
-  /*
-    What replaces the old scroll-into-view dance. The split had to bring the
-    panel to the top by hand, because it rendered wherever the grid happened
-    to start. A peek is a focus trap: Radix moves focus into it on open and
-    hands it back to the trigger on close, so the reader lands on the row
-    they were reading and can carry on down the list.
-  */
-  vi.stubGlobal("fetch", routedFetch());
-  renderBoard();
-  await screen.findByTestId("backlog-preview");
-
-  const row = within(screen.getByTestId("backlog-preview"))
-    .getByText("Ticket 1")
-    .closest("button");
-  await userEvent.click(row as HTMLElement);
-  await screen.findByTestId("issue-panel");
-
-  await userEvent.keyboard("{Escape}");
-
-  await waitFor(() => {
-    expect(document.activeElement).toBe(row);
-  });
 });
 
 // ---- the banner says its whole message ------------------------------------
@@ -1260,12 +1211,11 @@ test("disconnecting asks before it disconnects", async () => {
   expect(disconnected).toBe(0);
 });
 
-// ---- the wait has a shape -------------------------------------------------
+// ---- the peek, and the wait inside it -------------------------------------
 //
-// Opening waited for Jira before showing anything, so a click's only answer
-// was a small spinner in the row — on a slow read the page looked unchanged,
-// which invites a second click. The peek opens on the click instead, with the
-// ticket's own shape sketched inside it.
+// The peek opens on the click with the proposal already in it; only the
+// ticket behind the Spec tab is still on its way from Jira, and that tab
+// holds the ticket's shape until it lands rather than a spinner.
 
 /**
  * A fetch whose ticket detail is held open until it is released.
@@ -1287,162 +1237,144 @@ function pendingDetailFetch() {
   return { fetchMock, release: () => release() };
 }
 
-test("clicking a ticket opens the peek before the ticket has arrived", async () => {
-  const { fetchMock, release } = pendingDetailFetch();
-  vi.stubGlobal("fetch", fetchMock);
+test("the peek is its own scrolling region, and the only one", async () => {
+  // jsdom has no layout and no wheel, so the class contract carries this;
+  // the behaviour itself is checked in a browser.
+  vi.stubGlobal("fetch", routedFetch());
   renderBoard();
-  await screen.findByTestId("backlog-preview");
+  await screen.findByTestId("proposal-list");
 
   await userEvent.click(screen.getByText("Ticket 1"));
+  const panel = await screen.findByTestId("proposal-panel");
 
-  // Open, and holding the ticket's shape rather than the ticket.
-  expect(await screen.findByTestId("issue-panel")).toBeDefined();
-  expect(screen.getByTestId("issue-skeleton")).toBeDefined();
-  expect(screen.queryByTestId("issue-detail")).toBeNull();
-
-  release();
-
-  // And the real thing replaces it in the panel that was already open.
-  await waitFor(() => {
-    expect(screen.getByTestId("issue-detail")).toBeDefined();
-  });
-  expect(screen.queryByTestId("issue-skeleton")).toBeNull();
+  const scroller = panel.querySelector(".overflow-y-auto");
+  expect(scroller).not.toBeNull();
+  expect(scroller?.className).toContain("overscroll-contain");
+  expect(panel.className).not.toContain("overflow-y-auto");
 });
 
-test("the skeleton says what it is standing in for", async () => {
-  // The bars are `aria-hidden`; a screen reader should hear one sentence, not
-  // a tree of empty boxes.
+test("the peek comes in from the edge it is attached to", async () => {
+  vi.stubGlobal("fetch", routedFetch());
+  renderBoard();
+  await screen.findByTestId("proposal-list");
+
+  await userEvent.click(screen.getByText("Ticket 1"));
+  const panel = await screen.findByTestId("proposal-panel");
+
+  expect(panel.className).toContain("slide-in-from-right");
+  expect(panel.className).toContain("inset-y-0");
+  expect(panel.className).toContain("right-0");
+});
+
+test("the spec does not scroll inside the scrolling panel", async () => {
+  vi.stubGlobal("fetch", routedFetch());
+  renderBoard();
+  await screen.findByTestId("proposal-list");
+
+  await userEvent.click(screen.getByText("Ticket 1"));
+  const panel = await screen.findByTestId("proposal-panel");
+  await userEvent.click(within(panel).getByRole("tab", { name: /spec/i }));
+  const spec = await within(panel).findByTestId("issue-spec");
+
+  expect(spec.className).not.toContain("max-h-");
+  expect(spec.className).not.toContain("overflow-y-auto");
+});
+
+test("the peek returns focus to the row it was opened from", async () => {
+  vi.stubGlobal("fetch", routedFetch());
+  renderBoard();
+  await screen.findByTestId("proposal-list");
+
+  const row = within(screen.getByTestId("proposal-list"))
+    .getByText("Ticket 1")
+    .closest("button");
+  await userEvent.click(row as HTMLElement);
+  await screen.findByTestId("proposal-panel");
+
+  await userEvent.keyboard("{Escape}");
+
+  await waitFor(() => {
+    expect(document.activeElement).toBe(row);
+  });
+});
+
+test("the ticket is read when the peek opens, so the Spec tab is instant once it lands", async () => {
   const { fetchMock, release } = pendingDetailFetch();
   vi.stubGlobal("fetch", fetchMock);
   renderBoard();
-  await screen.findByTestId("backlog-preview");
+  await screen.findByTestId("proposal-list");
 
   await userEvent.click(screen.getByText("Ticket 1"));
-  const skeleton = await screen.findByTestId("issue-skeleton");
 
+  // Open at once, on the Bounty tab, with the proposal already there.
+  const panel = await screen.findByTestId("proposal-panel");
+  expect(within(panel).getByText("A few files.")).toBeDefined();
+  // The read started with the click, not with the tab.
+  expect(
+    fetchMock.mock.calls.some(([input]) => String(input).includes("/issues/")),
+  ).toBe(true);
+
+  // The Spec tab holds the ticket's shape until it arrives.
+  await userEvent.click(within(panel).getByRole("tab", { name: /spec/i }));
+  const skeleton = within(panel).getByTestId("issue-skeleton");
   expect(within(skeleton).getByRole("status").textContent).toMatch(/loading/i);
+  expect(within(panel).queryByTestId("issue-detail")).toBeNull();
+
   release();
+
   await waitFor(() => {
-    expect(screen.getByTestId("issue-detail")).toBeDefined();
+    expect(within(panel).getByTestId("issue-detail")).toBeDefined();
   });
+  expect(within(panel).queryByTestId("issue-skeleton")).toBeNull();
 });
 
 test("the row being opened is marked from the click, not from the response", async () => {
-  // Or the list shows nothing selected for as long as the read takes, while
-  // a panel about that very ticket is open beside it.
   const { fetchMock, release } = pendingDetailFetch();
   vi.stubGlobal("fetch", fetchMock);
   renderBoard();
-  await screen.findByTestId("backlog-preview");
+  await screen.findByTestId("proposal-list");
 
-  const list = screen.getByTestId("backlog-preview");
+  const list = screen.getByTestId("proposal-list");
   const row = within(list).getByText("Ticket 1").closest("button");
   await userEvent.click(row as HTMLElement);
-  await screen.findByTestId("issue-skeleton");
+  await screen.findByTestId("proposal-panel");
 
   expect(row?.getAttribute("aria-current")).toBe("true");
   release();
-  await waitFor(() => {
-    expect(screen.getByTestId("issue-detail")).toBeDefined();
-  });
 });
 
 test("closing while the ticket is still loading does not reopen it", async () => {
-  // The response is in flight when the reader gives up on it. Landing it
-  // afterwards would push a panel back over a page they had returned to.
   const { fetchMock, release } = pendingDetailFetch();
   vi.stubGlobal("fetch", fetchMock);
   renderBoard();
-  await screen.findByTestId("backlog-preview");
+  await screen.findByTestId("proposal-list");
 
   await userEvent.click(screen.getByText("Ticket 1"));
-  await screen.findByTestId("issue-skeleton");
+  await screen.findByTestId("proposal-panel");
 
   await userEvent.keyboard("{Escape}");
   await waitFor(() => {
-    expect(screen.queryByTestId("issue-panel")).toBeNull();
+    expect(screen.queryByTestId("proposal-panel")).toBeNull();
   });
 
   release();
 
-  // Still closed, a tick later.
   await new Promise((resolve) => setTimeout(resolve, 50));
-  expect(screen.queryByTestId("issue-panel")).toBeNull();
+  expect(screen.queryByTestId("proposal-panel")).toBeNull();
 });
 
-test("the way out to Jira sits on the tab row, not in the status line", async () => {
-  /*
-    Two separate things. The line under the heading states what the ticket is
-    — status, then the type qualifying it — and carries no controls. The way
-    out to Jira is a control, so it joins the tabs, pinned to the right edge
-    where this app puts the action a surface offers.
-  */
+test("the way out to Jira sits on the tab row", async () => {
   vi.stubGlobal("fetch", routedFetch());
   renderBoard();
-  await screen.findByTestId("backlog-preview");
+  await screen.findByTestId("proposal-list");
 
   await userEvent.click(screen.getByText("Ticket 1"));
-  await screen.findByTestId("issue-detail");
+  await screen.findByTestId("proposal-detail");
 
   const link = screen.getByRole("link", { name: /open in jira/i });
-  // A peer of the tabs: same row, and the row pins it to the far edge.
   const row = link.parentElement;
   expect(row?.className).toContain("justify-between");
   expect(within(row as HTMLElement).getByRole("tablist")).toBeDefined();
-
-  // Opens Jira in its own tab, without handing it this page's opener.
   expect(link.getAttribute("target")).toBe("_blank");
   expect(link.getAttribute("rel")).toContain("noopener");
-});
-
-// ---- how old a ticket is --------------------------------------------------
-
-test("a ticket raised today says so, rather than counting zero days", async () => {
-  // "0d" was the one value in this column that read as a missing number
-  // instead of an age: the rest of the scale counts upward from it, so
-  // nothing else in the list makes a zero legible as a quantity.
-  const today = new Date().toISOString();
-  vi.stubGlobal(
-    "fetch",
-    routedFetch({
-      preview: {
-        body: {
-          boardId: "jrb_1",
-          source: "backlog",
-          jql: "",
-          issues: [issue(1, today)],
-        },
-      },
-    }),
-  );
-  renderBoard();
-
-  const list = await screen.findByTestId("backlog-preview");
-  expect(within(list).getByText("Today")).toBeDefined();
-  expect(within(list).queryByText("0d")).toBeNull();
-});
-
-test("an older ticket still counts in days and years", async () => {
-  // The boundary above is the only special case; the scale itself is intact.
-  const days = (n: number) =>
-    new Date(Date.now() - n * 86_400_000).toISOString();
-  vi.stubGlobal(
-    "fetch",
-    routedFetch({
-      preview: {
-        body: {
-          boardId: "jrb_1",
-          source: "backlog",
-          jql: "",
-          issues: [issue(1, days(1)), issue(2, days(40)), issue(3, days(800))],
-        },
-      },
-    }),
-  );
-  renderBoard();
-
-  const list = await screen.findByTestId("backlog-preview");
-  expect(within(list).getByText("1d")).toBeDefined();
-  expect(within(list).getByText("40d")).toBeDefined();
-  expect(within(list).getByText("2y 2m")).toBeDefined();
 });
