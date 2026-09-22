@@ -992,16 +992,16 @@ function ProposalPeek({
               that sets it. The amount is the one number a reviewer is
               here to agree to, so it is the one thing set large.
             */}
-            <div className="flex flex-col gap-5 rounded-lg border p-4 sm:p-5">
+            <div className="flex flex-col gap-4 rounded-lg border p-4 sm:p-5">
               {/* The state, and the way to have the model look again. */}
               <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
                 <Badge variant="secondary" className="w-fit">
                   {capitalize(proposal.status)}
                 </Badge>
                 {canDecide && (
-                  <Button
-                    size="sm"
-                    variant="outline"
+                  <button
+                    type="button"
+                    className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 flex cursor-pointer items-center gap-1.5 rounded-sm text-sm underline-offset-4 transition-colors hover:underline focus-visible:ring-[3px] focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
                     disabled={busy}
                     onClick={() =>
                       void mutate(`/proposals/${proposal.id}/reprice`, {
@@ -1010,61 +1010,54 @@ function ProposalPeek({
                       })
                     }
                   >
-                    <RefreshCw />
+                    <RefreshCw className="size-3.5" />
                     Re-analyze
-                  </Button>
+                  </button>
                 )}
               </div>
 
               {/*
-                The amount, level with the size that sets it: the amount is
-                given the height of the selected size card, so the two sit
-                on one line with the sizing model in its pill beneath.
+                The amount level with the size that sets it, and the
+                sizing model level with the one warning a size can
+                carry: a two-by-two grid, each row centred on itself.
+                On a phone it stacks in reading order instead.
               */}
-              <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-4">
-                <div className="flex flex-col gap-2.5">
-                  <span
-                    className={`flex h-12 items-center text-3xl leading-none font-semibold tracking-tight ${
-                      priced ? "tabular-nums" : "text-muted-foreground"
-                    }`}
-                  >
-                    {money(proposal.amountMinor, proposal.currency)}
+              <div className="grid grid-cols-1 items-center gap-x-6 gap-y-2.5 sm:grid-cols-[1fr_auto]">
+                <span
+                  className={`text-3xl leading-none font-semibold tracking-tight sm:col-start-1 sm:row-start-1 ${
+                    priced ? "tabular-nums" : "text-muted-foreground"
+                  }`}
+                >
+                  {money(proposal.amountMinor, proposal.currency)}
+                </span>
+                {/* Who sized it, as a pill wearing the vendor's mark. */}
+                <span className="inline-flex w-fit items-center gap-1.5 rounded-full border py-1 pr-2.5 pl-2 text-xs sm:col-start-1 sm:row-start-2">
+                  <span className="flex size-3.5 shrink-0 items-center [&>svg]:size-3.5">
+                    <ModelIcon model={proposal.actualModel} />
                   </span>
-                  {/* Who sized it, as a pill wearing the vendor's mark. */}
-                  <span className="inline-flex w-fit items-center gap-1.5 rounded-full border py-1 pr-2.5 pl-2 text-xs">
-                    <span className="flex size-3.5 shrink-0 items-center [&>svg]:size-3.5">
-                      <ModelIcon model={proposal.actualModel} />
+                  {label === null ? (
+                    <span className="font-medium">{proposal.actualModel}</span>
+                  ) : (
+                    <span className="font-medium" title={proposal.actualModel}>
+                      {label}
                     </span>
-                    {label === null ? (
-                      <span className="font-medium">
-                        {proposal.actualModel}
-                      </span>
-                    ) : (
-                      <span
-                        className="font-medium"
-                        title={proposal.actualModel}
-                      >
-                        {label}
-                      </span>
-                    )}
-                    {/*
+                  )}
+                  {/*
                       The model's confidence as a mark: up in green, level
                       in neutral, down in red. Named for assistive
                       technology and on hover, since a shape and a colour
                       alone say nothing to a screen reader.
                     */}
-                    <span
-                      role="img"
-                      aria-label={`${proposal.modelConfidence} confidence`}
-                      title={`${proposal.modelConfidence} confidence`}
-                      className={`flex shrink-0 items-center [&>svg]:size-3.5 ${CONFIDENCE_MARK[proposal.modelConfidence].tone}`}
-                    >
-                      {CONFIDENCE_MARK[proposal.modelConfidence].icon}
-                    </span>
+                  <span
+                    role="img"
+                    aria-label={`${proposal.modelConfidence} confidence`}
+                    title={`${proposal.modelConfidence} confidence`}
+                    className={`flex shrink-0 items-center [&>svg]:size-3.5 ${CONFIDENCE_MARK[proposal.modelConfidence].tone}`}
+                  >
+                    {CONFIDENCE_MARK[proposal.modelConfidence].icon}
                   </span>
-                </div>
-
-                <div className="flex flex-col gap-1.5">
+                </span>
+                <div className="flex flex-col gap-1.5 sm:col-start-2 sm:row-start-1 sm:justify-self-end">
                   {canDecide && open ? (
                     /*
                       The size is the resize: a row of cards, one per size,
@@ -1112,19 +1105,18 @@ function ProposalPeek({
                     </span>
                   )}
                 </div>
+                {/*
+                  The one warning a size can carry, level with the model
+                  and under the size it is about: an XL is a hint that
+                  the ticket is two.
+                */}
+                {proposal.complexity === "XL" && (
+                  <span className="flex items-center gap-1 text-xs text-amber-700 dark:text-amber-400 sm:col-start-2 sm:row-start-2 sm:justify-self-end">
+                    <TriangleAlert className="size-3.5 shrink-0" />
+                    Consider splitting
+                  </span>
+                )}
               </div>
-
-              {/*
-                The one warning a size can carry, at the foot of the card on
-                the right, under the size it is about: an XL is a hint that
-                the ticket is two.
-              */}
-              {proposal.complexity === "XL" && (
-                <span className="flex items-center justify-end gap-1 text-xs text-amber-700 dark:text-amber-400">
-                  <TriangleAlert className="size-3.5 shrink-0" />
-                  Consider splitting
-                </span>
-              )}
             </div>
 
             <div>
@@ -1138,9 +1130,9 @@ function ProposalPeek({
 
             {/*
               The decision row, after the reasoning it is made on. On the
-              left, what the decision is checked against: whether the
-              ticket still says what it said when sized, and which revision
-              this is. On the right, the decision itself — Approve for a
+              left, what the decision is checked against: which revision
+              this is, and under it whether the ticket still says what it
+              said when sized. On the right, the decision itself — Approve for a
               proposed bounty, the way back for an approved one — where
               this app puts the action a surface offers, and centred under
               Approve, the way out: a text link rather than a button, since
@@ -1149,20 +1141,21 @@ function ProposalPeek({
               sit level whether or not Remove hangs below.
             */}
             <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
-              <span className="text-muted-foreground flex h-9 flex-wrap items-center gap-x-1.5 text-xs">
+              <span className="flex h-9 flex-col justify-center text-xs">
+                <span className="font-semibold">
+                  Revision {proposal.revision}
+                </span>
                 <span
                   className={
                     freshness.tone === "warn"
                       ? "text-amber-700 dark:text-amber-400"
                       : freshness.tone === "bad"
                         ? "text-destructive"
-                        : ""
+                        : "text-muted-foreground"
                   }
                 >
                   {freshness.text}
                 </span>
-                <span aria-hidden="true">·</span>
-                <span>Revision {proposal.revision}</span>
               </span>
               {canDecide &&
                 (open ? (
@@ -1285,7 +1278,7 @@ function SizeCard({
   // Square: the minimum width is the height, and the padding is small
   // enough that "XS" and "XL" fit inside it. Only "unsized" grows wider.
   const shape = current
-    ? "bg-primary text-primary-foreground border-primary size-12 min-w-12 px-2 text-lg font-bold shadow-sm"
+    ? "bg-primary text-primary-foreground border-primary size-12 min-w-12 px-2 text-lg font-extrabold shadow-sm"
     : "bg-card text-muted-foreground hover:text-foreground hover:border-foreground/30 size-7 min-w-7 px-1 text-xs";
   const className = `inline-flex items-center justify-center rounded-md border font-mono font-medium transition-[height,min-width,padding,font-size,color,background-color,border-color,box-shadow,transform] duration-300 ease-[cubic-bezier(0.2,0,0,1)] motion-reduce:transition-none ${shape}`;
   if (onClick === undefined) {
