@@ -1083,67 +1083,15 @@ function ProposalPeek({
               </div>
 
               {/*
-                The foot of the card. On the left, the one warning a size
-                can carry: an XL is a hint that the ticket is two. On the
-                right, the small print: whether the ticket still says what
-                it said when sized, which revision this is, and — on a
-                proposed one — the way out. Remove is a text link here
-                rather than a button: it is the least-wanted action in the
-                card and should read as such.
+                The one warning a size can carry, at the foot of the card:
+                an XL is a hint that the ticket is two.
               */}
-              <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 text-xs">
-                {proposal.complexity === "XL" ? (
-                  <span className="flex items-center gap-1 text-amber-700 dark:text-amber-400">
-                    <TriangleAlert className="size-3.5 shrink-0" />
-                    Consider splitting
-                  </span>
-                ) : (
-                  <span />
-                )}
-                <div className="text-muted-foreground flex flex-wrap items-center justify-end gap-x-1.5">
-                  <span
-                    className={
-                      freshness.tone === "warn"
-                        ? "text-amber-700 dark:text-amber-400"
-                        : freshness.tone === "bad"
-                          ? "text-destructive"
-                          : ""
-                    }
-                  >
-                    {freshness.text}
-                  </span>
-                  <span aria-hidden="true">·</span>
-                  <span>Revision {proposal.revision}</span>
-                  {canDecide && open && (
-                    <>
-                      <span aria-hidden="true">·</span>
-                      <ConfirmDialog
-                        trigger={
-                          <button
-                            type="button"
-                            className="text-destructive rounded-sm underline-offset-2 hover:underline focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
-                            disabled={busy}
-                          >
-                            Remove
-                          </button>
-                        }
-                        title={`Remove the proposal for ${key}?`}
-                        description="The ticket will have no proposal, and the next sizing run may propose it again. Nothing is posted to Jira."
-                        confirmLabel="Remove"
-                        tone="destructive"
-                        busy={busy}
-                        onConfirm={async () => {
-                          const removed = await mutate(
-                            `/proposals/${proposal.id}/remove`,
-                            { expectedRevision: proposal.revision },
-                          );
-                          if (removed) onRemoved();
-                        }}
-                      />
-                    </>
-                  )}
-                </div>
-              </div>
+              {proposal.complexity === "XL" && (
+                <span className="flex items-center gap-1 text-xs text-amber-700 dark:text-amber-400">
+                  <TriangleAlert className="size-3.5 shrink-0" />
+                  Consider splitting
+                </span>
+              )}
             </div>
 
             <div>
@@ -1191,6 +1139,57 @@ function ProposalPeek({
                   </Button>
                 </div>
               ))}
+
+            {/*
+              The small print, under the decision: whether the ticket still
+              says what it said when sized, which revision this is, and —
+              on a proposed one — the way out. Remove is a text link here
+              rather than a button: it is the least-wanted action on the
+              page and should read as such.
+            */}
+            <div className="text-muted-foreground -mt-3 flex flex-wrap items-center justify-end gap-x-1.5 text-xs">
+              <span
+                className={
+                  freshness.tone === "warn"
+                    ? "text-amber-700 dark:text-amber-400"
+                    : freshness.tone === "bad"
+                      ? "text-destructive"
+                      : ""
+                }
+              >
+                {freshness.text}
+              </span>
+              <span aria-hidden="true">·</span>
+              <span>Revision {proposal.revision}</span>
+              {canDecide && open && (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <ConfirmDialog
+                    trigger={
+                      <button
+                        type="button"
+                        className="text-destructive rounded-sm underline-offset-2 hover:underline focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
+                        disabled={busy}
+                      >
+                        Remove
+                      </button>
+                    }
+                    title={`Remove the proposal for ${key}?`}
+                    description="The ticket will have no proposal, and the next sizing run may propose it again. Nothing is posted to Jira."
+                    confirmLabel="Remove"
+                    tone="destructive"
+                    busy={busy}
+                    onConfirm={async () => {
+                      const removed = await mutate(
+                        `/proposals/${proposal.id}/remove`,
+                        { expectedRevision: proposal.revision },
+                      );
+                      if (removed) onRemoved();
+                    }}
+                  />
+                </>
+              )}
+            </div>
 
             {delivery !== undefined && (
               <div>
