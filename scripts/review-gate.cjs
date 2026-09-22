@@ -216,7 +216,10 @@ async function reconcile({ github, context, core, updateToken }) {
         threads(github, args.owner, args.repo, pull_number),
         github.rest.repos.compareCommitsWithBasehead({
           ...args,
-          basehead: `${pr.base.sha}...${head}`,
+          // Compare against the base ref, not pr.base.sha: GitHub freezes
+          // base.sha at PR creation, so a branch that fell behind an advancing
+          // main would report behind_by 0 and never be updated.
+          basehead: `${pr.base.ref}...${head}`,
         }),
       ]);
       const history = repairs(comments);

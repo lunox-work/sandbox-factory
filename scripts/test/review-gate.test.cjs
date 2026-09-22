@@ -231,6 +231,7 @@ test("policy acknowledgement verifies human, exact SHA and current permission", 
 function fixture(patch = {}) {
   const writes = [],
     comments = [],
+    compares = [],
     errors = [];
   let gets = 0;
   const pr = {
@@ -238,7 +239,7 @@ function fixture(patch = {}) {
     state: "open",
     draft: false,
     head: { sha: head, repo: { full_name: "o/r" } },
-    base: { sha: old, repo: { full_name: "o/r" } },
+    base: { sha: old, ref: "main", repo: { full_name: "o/r" } },
     author_association: "OWNER",
     changed_files: 1,
     ...patch.pr,
@@ -266,9 +267,16 @@ function fixture(patch = {}) {
       checks: { listForRef: "runs" },
       repos: {
         listCommitStatusesForRef: "statuses",
-        compareCommitsWithBasehead: async () => ({
-          data: { behind_by: patch.behind ? 1 : 0 },
-        }),
+        // Mirrors the real API: pr.base.sha is frozen at PR creation, so a
+        // branch that fell behind an advancing base only reads as behind when
+        // the comparison is made against the base ref.
+        compareCommitsWithBasehead: async ({ basehead }) => {
+          compares.push(basehead);
+          const from = basehead.split("...")[0];
+          return {
+            data: { behind_by: patch.behind && from === pr.base.ref ? 1 : 0 },
+          };
+        },
         createCommitStatus: async (s) => {
           writes.push(s);
         },
@@ -329,6 +337,7 @@ function fixture(patch = {}) {
     core: { info() {}, setFailed: (e) => errors.push(e) },
     writes,
     comments,
+    compares,
     errors,
   };
 }
@@ -377,6 +386,15 @@ test("repeated reconciliation sends one repair until the head changes", async ()
   await reconcile(again);
   assert.equal(again.comments.length, 0);
   assert.equal(again.writes.at(-1).state, "pending");
+});
+
+test("staleness is measured against the moving base ref, not the frozen base sha", async () => {
+  const f = fixture({ behind: true });
+  await reconcile({ ...f, updateToken: "test-token" });
+  // pr.base.sha never moves once the PR is open, so comparing from it would
+  // report behind_by 0 and silently strand the PR behind an advancing main.
+  assert.deepEqual(f.compares, [`main...${head}`]);
+  assert.equal(f.writes.at(-1).state, "pending");
 });
 
 test("updating a stale base requires event-producing token and expected head", async () => {
