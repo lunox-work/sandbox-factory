@@ -719,7 +719,7 @@ test("picking another proposal swaps the panel, without leaving the list", async
   expect(screen.getByTestId("proposal-list", { hidden: true })).toBeDefined();
 });
 
-test("the Spec tab is the ticket read live: its description, then its fields", async () => {
+test("the Spec tab is the ticket read live: its fields, then its description", async () => {
   vi.stubGlobal("fetch", routedFetch());
   renderBoard();
   await screen.findByTestId("proposal-list");
@@ -732,11 +732,11 @@ test("the Spec tab is the ticket read live: its description, then its fields", a
   expect(
     within(spec).getByText(/Establish the canonical data model/),
   ).toBeDefined();
-  // One scroll: the fields follow the description rather than hiding
-  // behind a second tab.
+  // One scroll: the fields come before the description rather than
+  // hiding behind a second tab.
   const fields = within(panel).getByTestId("issue-fields");
   expect(
-    spec.compareDocumentPosition(fields) & Node.DOCUMENT_POSITION_FOLLOWING,
+    fields.compareDocumentPosition(spec) & Node.DOCUMENT_POSITION_FOLLOWING,
   ).toBeTruthy();
   expect(within(panel).queryByRole("tab", { name: /fields/i })).toBeNull();
   expect(within(fields).getByText("To Do")).toBeDefined();

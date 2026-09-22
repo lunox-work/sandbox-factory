@@ -1,11 +1,12 @@
 /**
- * A Jira ticket as a spec: its description, then its fields, in one scroll.
+ * A Jira ticket as a spec: its fields, then its description, in one scroll.
  *
  * This is what a reviewer reads before pricing a bounty, and it is the same
  * whether the ticket is being previewed or already has a proposal against it.
  * It used to be two tabs inside the backlog peek; one scroll reads better,
  * because the fields are what qualify the description — a due date or a
- * parent changes what "add an export" means — and a tab hid them.
+ * parent changes what "add an export" means — and a tab hid them. They come
+ * first for the same reason: the reader knows the frame before the text.
  */
 
 import ReactMarkdown from "react-markdown";
@@ -166,7 +167,7 @@ function asDate(value: string | null): string | null {
 }
 
 /**
- * The description, then the fields.
+ * The fields, then the description.
  *
  * No scroll box of its own: the panel around this is what scrolls, and a
  * window inside it gave the reader two scrollbars for one document.
@@ -174,17 +175,6 @@ function asDate(value: string | null): string | null {
 export function IssueSpec({ issue }: { issue: JiraIssueDetail }) {
   return (
     <div className="flex flex-col gap-4" data-testid="issue-detail">
-      {issue.descriptionText === "" ? (
-        <p className="py-6 text-sm text-muted-foreground">
-          This ticket has no description. That is itself worth knowing — a
-          ticket with no spec is one a bounty cannot safely be priced against.
-        </p>
-      ) : (
-        <div className="rounded-md border p-4" data-testid="issue-spec">
-          <Markdown>{issue.descriptionText}</Markdown>
-        </div>
-      )}
-
       <div>
         <p className="text-muted-foreground mb-1.5 text-xs font-medium">
           Fields
@@ -245,6 +235,17 @@ export function IssueSpec({ issue }: { issue: JiraIssueDetail }) {
           </Field>
         </div>
       </div>
+
+      {issue.descriptionText === "" ? (
+        <p className="py-6 text-sm text-muted-foreground">
+          This ticket has no description. That is itself worth knowing — a
+          ticket with no spec is one a bounty cannot safely be priced against.
+        </p>
+      ) : (
+        <div className="rounded-md border p-4" data-testid="issue-spec">
+          <Markdown>{issue.descriptionText}</Markdown>
+        </div>
+      )}
     </div>
   );
 }
@@ -252,8 +253,8 @@ export function IssueSpec({ issue }: { issue: JiraIssueDetail }) {
 /**
  * The spec's shape while Jira is still answering.
  *
- * It mirrors `IssueSpec` block for block — the bordered description, then
- * the fields — so the real ticket lands into a layout the same shape and
+ * It mirrors `IssueSpec` block for block — the fields, then the bordered
+ * description — so the real ticket lands into a layout the same shape and
  * nothing jumps when it arrives. The lines are deliberately uneven: a stack
  * of identical bars reads as a loading graphic; varied widths read as text
  * that has not arrived, which is what is actually true.
@@ -265,6 +266,14 @@ export function IssueSpec({ issue }: { issue: JiraIssueDetail }) {
 export function IssueSpecSkeleton() {
   return (
     <div className="flex flex-col gap-4" data-testid="issue-skeleton">
+      <div aria-hidden="true">
+        <div className="skeleton mb-1.5 h-3 w-10 rounded" />
+        <div className="flex flex-col gap-2.5 rounded-md border px-3 py-2.5">
+          <div className="skeleton h-3 w-1/2 rounded" />
+          <div className="skeleton h-3 w-2/5 rounded" />
+          <div className="skeleton h-3 w-3/5 rounded" />
+        </div>
+      </div>
       <div
         aria-hidden="true"
         className="flex flex-col gap-2.5 rounded-md border p-4"
@@ -276,14 +285,6 @@ export function IssueSpecSkeleton() {
         <div className="skeleton mt-2 h-3 w-2/3 rounded" />
         <div className="skeleton h-3 w-full rounded" />
         <div className="skeleton h-3 w-3/4 rounded" />
-      </div>
-      <div aria-hidden="true">
-        <div className="skeleton mb-1.5 h-3 w-10 rounded" />
-        <div className="flex flex-col gap-2.5 rounded-md border px-3 py-2.5">
-          <div className="skeleton h-3 w-1/2 rounded" />
-          <div className="skeleton h-3 w-2/5 rounded" />
-          <div className="skeleton h-3 w-3/5 rounded" />
-        </div>
       </div>
       <p role="status" className="sr-only">
         Loading the ticket…
