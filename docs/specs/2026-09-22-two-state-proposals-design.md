@@ -56,9 +56,12 @@ constraints.
 
 ### Web
 
-Two filter tabs, Proposed and Approved. The peek's footer offers the actions
-for the proposal's state. Remove asks for confirmation. The History section
-goes; the revision number stays.
+Two filter tabs, Proposed and Approved. The peek's Bounty card offers the
+actions for the proposal's state, each beside the fact it changes: Approve or
+Unapprove with the status, the resize as the size control itself, Re-price
+with the amount, and Remove in the small print with the ticket's freshness
+and revision. Remove asks for confirmation. The History section goes; the
+revision number stays.
 
 ### Tests
 

@@ -7,6 +7,7 @@
  * assistive technology rather than announced a second time.
  */
 
+import { Sparkles } from "lucide-react";
 import type { ReactElement } from "react";
 
 import type { ProviderId } from "./auth";
@@ -126,6 +127,62 @@ export function SlackIcon() {
         fill="#ECB22E"
         d="M15.165 18.956a2.528 2.528 0 0 1 2.523 2.522A2.528 2.528 0 0 1 15.165 24a2.527 2.527 0 0 1-2.52-2.522v-2.522h2.52zM15.165 17.688a2.527 2.527 0 0 1-2.52-2.523 2.526 2.526 0 0 1 2.52-2.52h6.313A2.527 2.527 0 0 1 24 15.165a2.528 2.528 0 0 1-2.522 2.523h-6.313z"
       />
+    </svg>
+  );
+}
+
+/**
+ * The mark of the vendor whose model sized a proposal, from the model id.
+ *
+ * Kept apart from `ICONS` for the same reason as Slack: a sizing model is
+ * not a way to sign in. Keyed on the id's first segment, which is how
+ * `modelLabel` names the vendor too, so the icon and the name never
+ * disagree. A vendor without a mark gets a generic spark rather than
+ * nothing, so the pill keeps its shape whichever model is configured.
+ */
+export function ModelIcon({ model }: { model: string | null | undefined }) {
+  const vendor = (model ?? "").trim().split("-")[0]?.toLowerCase();
+  if (vendor === "claude") return <ClaudeIcon />;
+  if (vendor === "deepseek") return <DeepSeekIcon />;
+  return <Sparkles aria-hidden="true" focusable="false" />;
+}
+
+/**
+ * Claude's mark: a burst of twelve rays in Anthropic's terracotta, the
+ * longer and shorter ones alternating. Drawn from its geometry rather than
+ * traced, so it stays crisp at the 14px the pill gives it.
+ */
+function ClaudeIcon() {
+  const rays = Array.from({ length: 12 }, (_, index) => {
+    const angle = (index * Math.PI) / 6;
+    const inner = 2.4;
+    const outer = index % 2 === 0 ? 10 : 7;
+    const at = (radius: number) =>
+      [12 + radius * Math.cos(angle), 12 + radius * Math.sin(angle)].map((n) =>
+        n.toFixed(2),
+      );
+    const [x1, y1] = at(inner);
+    const [x2, y2] = at(outer);
+    return <line key={index} x1={x1} y1={y1} x2={x2} y2={y2} />;
+  });
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <g stroke="#D97757" strokeWidth="2.4" strokeLinecap="round">
+        {rays}
+      </g>
+    </svg>
+  );
+}
+
+/** DeepSeek's whale, in its blue. */
+function DeepSeekIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path
+        fill="#4D6BFE"
+        d="M21.5 11.2c-.6-3.7-3.9-6.2-7.9-6.2-2.6 0-4.9 1.1-6.4 2.9L5.3 9.7C4.6 8.5 3.6 7.6 2.4 7.1c-.3-.1-.6.1-.6.4.1 1.6.6 3 1.5 4.2-.9 1.2-1.4 2.6-1.5 4.2 0 .3.3.5.6.4 1.2-.5 2.2-1.4 2.9-2.6l1.9 1.8c1.5 1.8 3.8 2.9 6.4 2.9 3.5 0 6.4-1.9 7.5-4.7l1.1-.4c.4-.2.4-.7 0-.9l-.7-.2z"
+      />
+      <circle cx="16.5" cy="9.6" r="1" fill="#fff" />
     </svg>
   );
 }

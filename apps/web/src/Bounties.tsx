@@ -29,8 +29,8 @@ import { parseRateAmount } from "@/lib/rate-amount";
 import { CurrencySelect } from "@/components/CurrencySelect";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
-import { Field, IssueSpec, IssueSpecSkeleton } from "./IssueSpec";
-import { JiraIcon } from "./ProviderIcon";
+import { IssueSpec, IssueSpecSkeleton } from "./IssueSpec";
+import { JiraIcon, ModelIcon } from "./ProviderIcon";
 import type { JiraIssueDetail } from "./useJira";
 
 type EnrichedProposal = BountyProposalDto & {
@@ -831,8 +831,8 @@ export function BoardBounties({
 
       {/*
         Mounted whether or not a proposal is open, so Radix can animate it
-        out on close. The actions sit in the footer, outside the scrolling
-        body, so a long spec never pushes Approve off the bottom.
+        out on close. The actions live in the Bounty card, each beside the
+        fact it changes; the card is short, so nothing pushes them off.
       */}
       <PeekPanel
         open={selectedId !== null}
@@ -842,16 +842,6 @@ export function BoardBounties({
         title={selected?.liveTitle ?? "Proposal"}
         description={selected?.liveKey ?? selected?.issueKey ?? undefined}
         data-testid="proposal-panel"
-        footer={
-          canManage(role) && selected !== null ? (
-            <ProposalActions
-              proposal={selected}
-              busy={busy}
-              mutate={mutate}
-              onRemoved={() => closeProposal(true)}
-            />
-          ) : undefined
-        }
       >
         {selected === null ? (
           <LoadingLine>Loading the proposal…</LoadingLine>
@@ -867,6 +857,7 @@ export function BoardBounties({
             writeGranted={writeGranted}
             busy={busy}
             mutate={mutate}
+            onRemoved={() => closeProposal(true)}
           />
         )}
       </PeekPanel>
@@ -898,11 +889,18 @@ function capitalize(value: string): string {
 /**
  * The open proposal, in two tabs.
  *
- * Bounty is the decision — a property list of what the proposal is, the
- * model's reasoning as prose, and where delivery to Jira stands. Spec is
- * the ticket itself, read live, so the
- * decision is made against what Jira says now rather than what was stored
- * at sizing time.
+ * Bounty is the decision — one card of what the proposal is, with each
+ * action beside the fact it changes (for those who may act), the model's
+ * reasoning as prose, and where delivery to Jira stands. Spec is the ticket
+ * itself, read live, so the decision is made against what Jira says now
+ * rather than what was stored at sizing time.
+ *
+ * Two states, one card. Proposed: Approve beside the status, the resize as
+ * the size itself, Re-price beside the amount, Remove in the small print.
+ * Approved: Unapprove beside the status and Re-price beside the amount —
+ * removal comes after unapproving, because that is what owes Jira the
+ * withdrawal. A decision needs a current ticket; a re-price or an unapprove
+ * does not.
  */
 function ProposalPeek({
   proposal,
@@ -913,6 +911,7 @@ function ProposalPeek({
   writeGranted,
   busy,
   mutate,
+  onRemoved,
 }: {
   proposal: EnrichedProposal;
   ticket: JiraIssueDetail | null;
@@ -922,12 +921,15 @@ function ProposalPeek({
   writeGranted: boolean;
   busy: boolean;
   mutate: (path: string, body: object) => Promise<boolean>;
+  onRemoved: () => void;
 }) {
   const url = ticket?.url ?? proposal.liveUrl ?? null;
   const label = modelLabel(proposal.actualModel);
   const delivery = proposal.writebackOperations?.at(-1);
   const freshness = freshnessLabel(proposal.freshness);
   const priced = proposal.amountMinor !== null;
+  const open = proposal.status === "proposed";
+  const key = proposal.liveKey ?? proposal.issueKey;
   return (
     <div className="flex flex-col gap-5" data-testid="proposal-detail">
       {/*
@@ -961,59 +963,231 @@ function ProposalPeek({
 
         <TabsContent value="bounty" className="mt-2">
           <div className="flex flex-col gap-6" data-testid="proposal-bounty">
-            {/* The proposal as properties, the way a record reads in Notion. */}
-            <div className="divide-y rounded-md border px-3">
-              <Field label="Status">
-                <Badge variant="secondary">{capitalize(proposal.status)}</Badge>
-              </Field>
-              <Field label="Size">
-                <span className="flex flex-wrap items-center gap-2">
-                  <Badge className="font-mono">{proposal.complexity}</Badge>
-                  {proposal.sizedBy === "reviewer" && (
-                    <span className="text-muted-foreground text-xs">
-                      set by a reviewer · the model said{" "}
-                      {proposal.modelComplexity}
+            {/*
+              The proposal as one card, each fact beside the control that
+              changes it: the status with the decision, the size with the
+              resize, the amount with the re-price, and the ticket's
+              freshness and revision — what every mutation is checked
+              against — with the way out, small, in the corner. The amount
+              is the one number a reviewer is here to agree to, so it is
+              the one thing set large.
+            */}
+            <div className="flex flex-col gap-5 rounded-lg border p-4 sm:p-5">
+              <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-4">
+                <div className="flex flex-col gap-1.5">
+                  <span className="text-muted-foreground text-xs font-medium">
+                    Status
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <Badge variant="secondary">
+                      {capitalize(proposal.status)}
+                    </Badge>
+                    {canDecide &&
+                      (open ? (
+                        proposal.complexity !== "unsized" && (
+                          <Button
+                            size="sm"
+                            className="h-7"
+                            disabled={busy || proposal.freshness !== "current"}
+                            onClick={() =>
+                              void mutate(`/proposals/${proposal.id}/approve`, {
+                                expectedRevision: proposal.revision,
+                              })
+                            }
+                          >
+                            Approve
+                          </Button>
+                        )
+                      ) : (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7"
+                          disabled={busy}
+                          onClick={() =>
+                            void mutate(`/proposals/${proposal.id}/unapprove`, {
+                              expectedRevision: proposal.revision,
+                            })
+                          }
+                        >
+                          Unapprove
+                        </Button>
+                      ))}
+                  </div>
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <span className="text-muted-foreground text-xs font-medium">
+                    Size
+                  </span>
+                  {canDecide && open ? (
+                    /*
+                      The size is the resize: one segmented control whose
+                      pressed segment is the current size. That segment is
+                      disabled, since it is not a change, but drawn solid
+                      rather than faded — it is the fact being shown.
+                    */
+                    <div
+                      role="group"
+                      aria-label="Resize"
+                      className="bg-muted/40 inline-flex w-fit items-center gap-0.5 rounded-md border p-0.5"
+                    >
+                      {proposal.complexity === "unsized" && (
+                        <Badge variant="outline" className="mr-0.5 font-mono">
+                          unsized
+                        </Badge>
+                      )}
+                      {PRICED_BOUNTY_COMPLEXITIES.map((size) => {
+                        const current = proposal.complexity === size;
+                        return (
+                          <Button
+                            key={size}
+                            size="sm"
+                            variant={current ? "default" : "ghost"}
+                            className={`h-7 min-w-9 rounded-sm px-2 font-mono text-xs ${
+                              current ? "disabled:opacity-100" : ""
+                            }`}
+                            disabled={
+                              busy ||
+                              proposal.freshness !== "current" ||
+                              current
+                            }
+                            aria-pressed={current}
+                            onClick={() =>
+                              void mutate(`/proposals/${proposal.id}/resize`, {
+                                expectedRevision: proposal.revision,
+                                complexity: size,
+                              })
+                            }
+                          >
+                            {size}
+                          </Button>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <Badge className="w-fit font-mono">
+                      {proposal.complexity}
+                    </Badge>
+                  )}
+                  {(proposal.sizedBy === "reviewer" ||
+                    proposal.complexity === "XL") && (
+                    <span className="flex flex-wrap gap-x-2 text-xs">
+                      {proposal.sizedBy === "reviewer" && (
+                        <span className="text-muted-foreground">
+                          set by a reviewer · the model said{" "}
+                          {proposal.modelComplexity}
+                        </span>
+                      )}
+                      {proposal.complexity === "XL" && (
+                        <span className="text-amber-700 dark:text-amber-400">
+                          Consider splitting
+                        </span>
+                      )}
                     </span>
                   )}
-                  {proposal.complexity === "XL" && (
-                    <span className="text-xs text-amber-700 dark:text-amber-400">
-                      Consider splitting
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-end justify-between gap-x-4 gap-y-3">
+                <div className="flex flex-col gap-2.5">
+                  <span
+                    className={`text-3xl leading-none font-semibold tracking-tight ${
+                      priced ? "tabular-nums" : "text-muted-foreground"
+                    }`}
+                  >
+                    {money(proposal.amountMinor, proposal.currency)}
+                  </span>
+                  {/* Who sized it, as a pill wearing the vendor's mark. */}
+                  <span className="inline-flex w-fit items-center gap-1.5 rounded-full border py-1 pr-2.5 pl-2 text-xs">
+                    <span className="flex size-3.5 shrink-0 items-center [&>svg]:size-3.5">
+                      <ModelIcon model={proposal.actualModel} />
                     </span>
-                  )}
-                </span>
-              </Field>
-              <Field label="Amount">
-                <span
-                  className={priced ? "tabular-nums" : "text-muted-foreground"}
-                >
-                  {money(proposal.amountMinor, proposal.currency)}
-                </span>
-              </Field>
-              <Field label="Sized by">
-                {label === null ? (
-                  proposal.actualModel
-                ) : (
-                  <span title={proposal.actualModel}>{label}</span>
+                    {label === null ? (
+                      <span className="font-medium">
+                        {proposal.actualModel}
+                      </span>
+                    ) : (
+                      <span
+                        className="font-medium"
+                        title={proposal.actualModel}
+                      >
+                        {label}
+                      </span>
+                    )}
+                    <span className="text-muted-foreground">
+                      · {proposal.modelConfidence} confidence
+                    </span>
+                  </span>
+                </div>
+                {canDecide && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={busy}
+                    onClick={() =>
+                      void mutate(`/proposals/${proposal.id}/reprice`, {
+                        expectedRevision: proposal.revision,
+                        requestId: crypto.randomUUID(),
+                      })
+                    }
+                  >
+                    <RefreshCw />
+                    Re-price
+                  </Button>
                 )}
-                <span className="text-muted-foreground">
-                  {" "}
-                  · {proposal.modelConfidence} confidence
-                </span>
-              </Field>
-              <Field label="Ticket">
+              </div>
+
+              {/*
+                The small print, bottom right: whether the ticket still
+                says what it said when sized, which revision this is, and
+                — on a proposed one — the way out. Remove is a text link
+                here rather than a button: it is the least-wanted action
+                in the card and should read as such.
+              */}
+              <div className="text-muted-foreground flex flex-wrap items-center justify-end gap-x-1.5 text-xs">
                 <span
                   className={
                     freshness.tone === "warn"
                       ? "text-amber-700 dark:text-amber-400"
                       : freshness.tone === "bad"
                         ? "text-destructive"
-                        : "text-muted-foreground"
+                        : ""
                   }
                 >
                   {freshness.text}
                 </span>
-              </Field>
-              <Field label="Revision">{String(proposal.revision)}</Field>
+                <span aria-hidden="true">·</span>
+                <span>Revision {proposal.revision}</span>
+                {canDecide && open && (
+                  <>
+                    <span aria-hidden="true">·</span>
+                    <ConfirmDialog
+                      trigger={
+                        <button
+                          type="button"
+                          className="text-destructive rounded-sm underline-offset-2 hover:underline focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
+                          disabled={busy}
+                        >
+                          Remove
+                        </button>
+                      }
+                      title={`Remove the proposal for ${key}?`}
+                      description="The ticket will have no proposal, and the next sizing run may propose it again. Nothing is posted to Jira."
+                      confirmLabel="Remove"
+                      tone="destructive"
+                      busy={busy}
+                      onConfirm={async () => {
+                        const removed = await mutate(
+                          `/proposals/${proposal.id}/remove`,
+                          { expectedRevision: proposal.revision },
+                        );
+                        if (removed) onRemoved();
+                      }}
+                    />
+                  </>
+                )}
+              </div>
             </div>
 
             <div>
@@ -1069,139 +1243,6 @@ function ProposalPeek({
           )}
         </TabsContent>
       </Tabs>
-    </div>
-  );
-}
-
-/**
- * What an owner or admin may do to the open proposal, in the peek's footer.
- *
- * Two states, two footers. Proposed: the decision (Approve) on the left,
- * the adjustments (Resize, Re-price) and the way out (Remove) on the right.
- * Approved: Unapprove on the left, Re-price on the right — removal comes
- * after unapproving, because that is what owes Jira the withdrawal. A
- * decision needs a current ticket; a re-price or an unapprove does not.
- */
-function ProposalActions({
-  proposal,
-  busy,
-  mutate,
-  onRemoved,
-}: {
-  proposal: EnrichedProposal;
-  busy: boolean;
-  mutate: (path: string, body: object) => Promise<boolean>;
-  onRemoved: () => void;
-}) {
-  const open = proposal.status === "proposed";
-  const key = proposal.liveKey ?? proposal.issueKey;
-  return (
-    <div
-      className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2"
-      data-testid="proposal-actions"
-    >
-      <div className="flex flex-wrap items-center gap-2">
-        {open ? (
-          proposal.complexity !== "unsized" && (
-            <Button
-              size="sm"
-              disabled={busy || proposal.freshness !== "current"}
-              onClick={() =>
-                void mutate(`/proposals/${proposal.id}/approve`, {
-                  expectedRevision: proposal.revision,
-                })
-              }
-            >
-              Approve
-            </Button>
-          )
-        ) : (
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={busy}
-            onClick={() =>
-              void mutate(`/proposals/${proposal.id}/unapprove`, {
-                expectedRevision: proposal.revision,
-              })
-            }
-          >
-            Unapprove
-          </Button>
-        )}
-      </div>
-      <div className="flex flex-wrap items-center gap-2">
-        {open && (
-          <div
-            role="group"
-            aria-label="Resize"
-            className="flex items-center gap-1.5"
-          >
-            <span className="text-muted-foreground mr-0.5 text-xs">Resize</span>
-            {PRICED_BOUNTY_COMPLEXITIES.map((size) => (
-              <Button
-                key={size}
-                size="sm"
-                variant={proposal.complexity === size ? "secondary" : "outline"}
-                className="min-w-10 px-2 font-mono"
-                disabled={
-                  busy ||
-                  proposal.freshness !== "current" ||
-                  proposal.complexity === size
-                }
-                aria-pressed={proposal.complexity === size}
-                onClick={() =>
-                  void mutate(`/proposals/${proposal.id}/resize`, {
-                    expectedRevision: proposal.revision,
-                    complexity: size,
-                  })
-                }
-              >
-                {size}
-              </Button>
-            ))}
-          </div>
-        )}
-        <Button
-          size="sm"
-          variant="ghost"
-          disabled={busy}
-          onClick={() =>
-            void mutate(`/proposals/${proposal.id}/reprice`, {
-              expectedRevision: proposal.revision,
-              requestId: crypto.randomUUID(),
-            })
-          }
-        >
-          <RefreshCw />
-          Re-price
-        </Button>
-        {open && (
-          <ConfirmDialog
-            trigger={
-              <Button
-                size="sm"
-                variant="ghost"
-                className="text-destructive hover:text-destructive"
-                disabled={busy}
-              >
-                Remove
-              </Button>
-            }
-            title={`Remove the proposal for ${key}?`}
-            description="The ticket will have no proposal, and the next sizing run may propose it again. Nothing is posted to Jira."
-            confirmLabel="Remove"
-            tone="destructive"
-            busy={busy}
-            onConfirm={async () => {
-              const removed = await mutate(`/proposals/${proposal.id}/remove`, {
-                expectedRevision: proposal.revision,
-              });
-              if (removed) onRemoved();
-            }}
-          />
-        )}
-      </div>
     </div>
   );
 }

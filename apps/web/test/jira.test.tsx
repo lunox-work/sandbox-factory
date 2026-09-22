@@ -884,30 +884,50 @@ test("a scope mismatch is not reported as an expired connection", async () => {
   expect(screen.queryByText(/expired or been revoked/i)).toBeNull();
 });
 
-test("the actions sit in the peek's footer, for those who may act", async () => {
+test("the actions sit in the bounty card, beside what they change, for those who may act", async () => {
   vi.stubGlobal("fetch", routedFetch());
   renderBoard("jrb_1", "owner");
   await screen.findByTestId("proposal-list");
   // Not in the rows.
-  expect(screen.queryByTestId("proposal-actions")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
 
   await userEvent.click(screen.getByText("Ticket 1"));
   const panel = await screen.findByTestId("proposal-panel");
-  const actions = within(panel).getByTestId("proposal-actions");
+  const card = within(panel).getByTestId("proposal-bounty");
   for (const name of ["Approve", "XS", "S", "L", "XL", "Re-price", "Remove"]) {
-    expect(within(actions).getByRole("button", { name })).toBeDefined();
+    expect(within(card).getByRole("button", { name })).toBeDefined();
   }
-  // Two states, two footers: nothing here is for an approved proposal.
+  // Two states, one card: nothing here is for an approved proposal.
+  expect(within(card).queryByRole("button", { name: "Unapprove" })).toBeNull();
+  // The size is the resize: the current size is the pressed segment, and
+  // is not offered as a change.
+  const resize = within(card).getByRole("group", { name: "Resize" });
+  const current = within(resize).getByRole("button", {
+    name: "M",
+  }) as HTMLButtonElement;
+  expect(current.disabled).toBe(true);
+  expect(current.getAttribute("aria-pressed")).toBe("true");
+  // Approve sits with the status, Remove with the revision.
   expect(
-    within(actions).queryByRole("button", { name: "Unapprove" }),
-  ).toBeNull();
-  // The current size is not offered as a change.
-  expect(
-    (within(actions).getByRole("button", { name: "M" }) as HTMLButtonElement)
-      .disabled,
+    within(card)
+      .getByText("Proposed")
+      .parentElement?.contains(
+        within(card).getByRole("button", { name: "Approve" }),
+      ),
   ).toBe(true);
-  // Outside the scrolling body, so a long spec never pushes them off.
-  expect(actions.closest(".overflow-y-auto")).toBeNull();
+  expect(
+    within(card)
+      .getByText("Revision 1")
+      .parentElement?.contains(
+        within(card).getByRole("button", { name: "Remove" }),
+      ),
+  ).toBe(true);
+  // The model wears its vendor's mark.
+  expect(
+    within(card)
+      .getByTitle("claude-sonnet-5")
+      .parentElement?.querySelector("svg"),
+  ).not.toBeNull();
 });
 
 test("an approved proposal offers the way back and a re-price, nothing else", async () => {
@@ -930,16 +950,14 @@ test("an approved proposal offers the way back and a re-price, nothing else", as
 
   await userEvent.click(screen.getByText("Ticket 1"));
   const panel = await screen.findByTestId("proposal-panel");
-  const actions = within(panel).getByTestId("proposal-actions");
-  expect(
-    within(actions).getByRole("button", { name: "Unapprove" }),
-  ).toBeDefined();
-  expect(
-    within(actions).getByRole("button", { name: "Re-price" }),
-  ).toBeDefined();
-  expect(within(actions).queryByRole("button", { name: "Approve" })).toBeNull();
-  expect(within(actions).queryByRole("button", { name: "Remove" })).toBeNull();
-  expect(within(actions).queryByRole("group", { name: "Resize" })).toBeNull();
+  const card = within(panel).getByTestId("proposal-bounty");
+  expect(within(card).getByRole("button", { name: "Unapprove" })).toBeDefined();
+  expect(within(card).getByRole("button", { name: "Re-price" })).toBeDefined();
+  expect(within(card).queryByRole("button", { name: "Approve" })).toBeNull();
+  expect(within(card).queryByRole("button", { name: "Remove" })).toBeNull();
+  expect(within(card).queryByRole("group", { name: "Resize" })).toBeNull();
+  // The size is still shown, just not as a control.
+  expect(within(card).getByText("M")).toBeDefined();
 });
 
 test("removing a proposal asks first, then closes the peek", async () => {
@@ -981,7 +999,11 @@ test("a member sees the proposal without any way to decide it", async () => {
 
   await userEvent.click(screen.getByText("Ticket 1"));
   const panel = await screen.findByTestId("proposal-panel");
-  expect(within(panel).queryByTestId("proposal-actions")).toBeNull();
+  for (const name of ["Approve", "Re-price", "Remove", "Unapprove"]) {
+    expect(within(panel).queryByRole("button", { name })).toBeNull();
+  }
+  expect(within(panel).queryByRole("group", { name: "Resize" })).toBeNull();
+  expect(within(panel).getByText("M")).toBeDefined();
   expect(within(panel).getByText("A few files.")).toBeDefined();
 });
 
