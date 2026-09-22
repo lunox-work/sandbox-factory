@@ -1272,7 +1272,7 @@ function SizeCard({
   // Square: the minimum width is the height, and the padding is small
   // enough that "XS" and "XL" fit inside it. Only "unsized" grows wider.
   const shape = current
-    ? "bg-primary text-primary-foreground border-primary size-12 min-w-12 px-2 text-lg shadow-sm"
+    ? "bg-primary text-primary-foreground border-primary size-12 min-w-12 px-2 text-lg font-bold shadow-sm"
     : "bg-card text-muted-foreground hover:text-foreground hover:border-foreground/30 size-7 min-w-7 px-1 text-xs";
   const className = `inline-flex items-center justify-center rounded-md border font-mono font-medium transition-[height,min-width,padding,font-size,color,background-color,border-color,box-shadow,transform] duration-300 ease-[cubic-bezier(0.2,0,0,1)] motion-reduce:transition-none ${shape}`;
   if (onClick === undefined) {
