@@ -5,6 +5,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const ship = fs.readFileSync(path.join(__dirname, "../ship.sh"), "utf8");
+const STUB_PR_URL = "https://github.com/test/repo/pull/1";
 
 test("ship has no local watcher, review overrides or force merge", () => {
   assert.doesNotMatch(
@@ -52,7 +53,7 @@ for (const flags of [[], ["--draft"], ["--no-wait"]]) {
 printf '%s\\n' "$*" >> "$GH_TEST_LOG"
 case "$1 $2" in
   "auth status"|"pr list") exit 0 ;;
-  "pr create") echo 'https://github.com/test/repo/pull/1' ;;
+  "pr create") echo '${STUB_PR_URL}' ;;
   *) exit 99 ;;
 esac
 `,
@@ -80,7 +81,15 @@ esac
       "--yes",
       ...flags,
     ]);
-    assert.ok(output.includes("https://github.com/test/repo/pull/1"));
+    // ship.sh reports the URL as the final field of a decorated line
+    // ("==> <url>"), so compare whole tokens rather than testing for a
+    // substring: an arbitrary host could embed this URL as its own prefix.
+    assert.ok(
+      output
+        .split("\n")
+        .some((line) => line.trim().split(/\s+/).pop() === STUB_PR_URL),
+      `expected ${STUB_PR_URL} to be reported in:\n${output}`,
+    );
     assert.equal(run("git", ["branch", "--show-current"]), "main");
     assert.equal(run("git", ["status", "--porcelain"]), "");
     assert.equal(
