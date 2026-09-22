@@ -887,6 +887,13 @@ function freshnessLabel(freshness: EnrichedProposal["freshness"]): {
   }
 }
 
+/** The sizing model's confidence, as a colour: sure, unsure, or doubtful. */
+const CONFIDENCE_DOT: Record<BountyProposalDto["modelConfidence"], string> = {
+  high: "bg-emerald-500",
+  medium: "bg-muted-foreground/40",
+  low: "bg-red-500",
+};
+
 function capitalize(value: string): string {
   return value === "" ? value : value[0]!.toUpperCase() + value.slice(1);
 }
@@ -1028,9 +1035,17 @@ function ProposalPeek({
                         {label}
                       </span>
                     )}
-                    <span className="text-muted-foreground">
-                      · {proposal.modelConfidence} confidence
-                    </span>
+                    {/*
+                      The model's confidence as a dot: green, neutral or
+                      red. Named for assistive technology and on hover,
+                      since a colour alone says nothing to a screen reader.
+                    */}
+                    <span
+                      role="img"
+                      aria-label={`${proposal.modelConfidence} confidence`}
+                      title={`${proposal.modelConfidence} confidence`}
+                      className={`ml-0.5 size-2 shrink-0 rounded-full ${CONFIDENCE_DOT[proposal.modelConfidence]}`}
+                    />
                   </span>
                 </div>
 
