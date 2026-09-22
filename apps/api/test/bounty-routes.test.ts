@@ -430,7 +430,7 @@ test("proposal detail returns the proposal and validates its board deep link", a
   assert.equal(wrongBoard.status, 404);
 });
 
-test("approval and resize recheck Jira while unapprove and remove do not", async () => {
+test("approval rechecks Jira; resize, unapprove and remove do not", async () => {
   const approve = reviewHarness();
   const approved = await approve.app.request(
     "/api/v1/orgs/org_1/proposals/bpr_1/approve",
@@ -450,7 +450,7 @@ test("approval and resize recheck Jira while unapprove and remove do not", async
   );
   assert.equal(resized.status, 200);
   assert.equal(resize.current().amountMinor, 300);
-  assert.equal(resize.specReads(), 1);
+  assert.equal(resize.specReads(), 0);
 
   const unapprove = reviewHarness();
   const unapproved = await unapprove.app.request(

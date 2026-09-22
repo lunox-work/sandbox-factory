@@ -676,7 +676,22 @@ export function BoardBounties({
     loadTicket(selectedKey);
   }, [selectedKey, loadTicket]);
 
-  async function mutate(path: string, body: object): Promise<boolean> {
+  /**
+   * One POST, then the page catches up.
+   *
+   * By default that is a full re-read — runs, list and detail — because an
+   * approval or a re-price changes more than the row: the run list, the
+   * Jira delivery, the ticket's freshness. A mutation that returns the
+   * proposal it changed and touches nothing else can `apply` it instead:
+   * the row and the open detail take the proposal from the response, and
+   * no request follows. That is what keeps a resize instant, where the
+   * re-read would check every proposal on the board against Jira.
+   */
+  async function mutate(
+    path: string,
+    body: object,
+    { apply = false }: { apply?: boolean } = {},
+  ): Promise<boolean> {
     setBusy(true);
     try {
       const response = await fetch(`${base}${path}`, {
@@ -687,12 +702,27 @@ export function BoardBounties({
       });
       const value = (await response.json().catch(() => ({}))) as {
         error?: string;
+        proposal?: BountyProposalDto;
       };
       if (!response.ok) {
         setError(value.error ?? "That action could not be completed.");
         return false;
       }
       setError(null);
+      const changed = value.proposal;
+      if (apply && changed !== undefined) {
+        setProposals((current) =>
+          current.map((row) =>
+            row.id === changed.id ? { ...row, ...changed } : row,
+          ),
+        );
+        setDetail((current) =>
+          current === null || current.proposal.id !== changed.id
+            ? current
+            : { ...current, proposal: changed },
+        );
+        return true;
+      }
       await refresh();
       return true;
     } catch {
@@ -924,8 +954,8 @@ function capitalize(value: string): string {
  * reasoning with Remove under it. Approved: Re-analyze beside the status
  * and Unapprove after the reasoning —
  * removal comes after unapproving, because that is what owes Jira the
- * withdrawal. A decision needs a current ticket; a re-price or an unapprove
- * does not.
+ * withdrawal. Approve needs a current ticket; a resize, a re-price and an
+ * unapprove do not.
  */
 function ProposalPeek({
   proposal,
@@ -943,7 +973,11 @@ function ProposalPeek({
   onRetryTicket: () => void;
   canDecide: boolean;
   busy: boolean;
-  mutate: (path: string, body: object) => Promise<boolean>;
+  mutate: (
+    path: string,
+    body: object,
+    options?: { apply?: boolean },
+  ) => Promise<boolean>;
   onRemoved: () => void;
 }) {
   const url = ticket?.url ?? proposal.liveUrl ?? null;
@@ -1080,16 +1114,16 @@ function ProposalPeek({
                             key={size}
                             size={size}
                             current={current}
-                            disabled={
-                              busy ||
-                              proposal.freshness !== "current" ||
-                              current
-                            }
+                            disabled={busy || current}
                             onClick={() =>
-                              void mutate(`/proposals/${proposal.id}/resize`, {
-                                expectedRevision: proposal.revision,
-                                complexity: size,
-                              })
+                              void mutate(
+                                `/proposals/${proposal.id}/resize`,
+                                {
+                                  expectedRevision: proposal.revision,
+                                  complexity: size,
+                                },
+                                { apply: true },
+                              )
                             }
                           />
                         );
@@ -1306,7 +1340,11 @@ function DeliveryStatus({
 }: {
   operation: BountyWritebackDto;
   busy: boolean;
-  mutate: (path: string, body: object) => Promise<boolean>;
+  mutate: (
+    path: string,
+    body: object,
+    options?: { apply?: boolean },
+  ) => Promise<boolean>;
 }) {
   return (
     <div className="flex flex-wrap items-center gap-2 text-sm">

@@ -24,6 +24,10 @@ A proposal is `proposed` or `approved`. Nothing else.
   The id is stable, so links keep working. No replacement row.
 - **Unapprove** puts an approved proposal back to Proposed without
   re-sizing.
+- **Resize** changes the size and the amount it prices to, nothing else. It
+  does not read Jira: the ticket is checked at approval, the decision that
+  depends on it, and the web applies the returned proposal to the row
+  rather than re-reading the board.
 - **Remove** deletes the proposal, so the next sizing run may propose the
   ticket again. Offered on Proposed only. An approved bounty is unapproved
   or re-priced first: those are what owe Jira a withdrawal, and a write-back

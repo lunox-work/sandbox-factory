@@ -442,7 +442,7 @@ function routedFetch(
     proposals?: { status?: number; body?: unknown };
   } = {},
 ) {
-  return vi.fn((input: string) => {
+  return vi.fn((input: string, init?: RequestInit) => {
     const url = String(input);
     const json = (body: unknown, status = 200) =>
       Promise.resolve(
@@ -451,6 +451,18 @@ function routedFetch(
           headers: { "content-type": "application/json" },
         }),
       );
+
+    if (url.endsWith("/resize")) {
+      // The resized proposal, as the route returns it: the size asked for,
+      // priced, one revision on.
+      const n = Number(/bpr_(\d+)/.exec(url)?.[1] ?? "1");
+      const { complexity } = JSON.parse(String(init?.body)) as {
+        complexity: string;
+      };
+      return json({
+        proposal: { ...proposal(n), complexity, amountMinor: 300, revision: 2 },
+      });
+    }
 
     if (url.includes("/issues/")) {
       const spec = overrides.detail;
@@ -760,6 +772,36 @@ test("the Spec tab is the ticket read live: its fields, then its description", a
     within(fields).getByRole("button", { name: /show less/i }),
   );
   expect(within(fields).queryByText("Highest")).toBeNull();
+});
+
+test("a resize takes the row from the response and reads nothing else", async () => {
+  const fetchMock = routedFetch();
+  vi.stubGlobal("fetch", fetchMock);
+  renderBoard("jrb_1", "owner");
+  await screen.findByTestId("proposal-list");
+  await userEvent.click(screen.getByText("Ticket 1"));
+  const panel = await screen.findByTestId("proposal-panel");
+  const card = within(panel).getByTestId("proposal-bounty");
+  const before = fetchMock.mock.calls.length;
+
+  await userEvent.click(within(card).getByRole("button", { name: "L" }));
+  await waitFor(() => {
+    expect(
+      (
+        within(card).getByRole("button", { name: "L" }) as HTMLButtonElement
+      ).getAttribute("aria-pressed"),
+    ).toBe("true");
+  });
+  // The one POST, and no re-read of the list or the detail after it.
+  const after = fetchMock.mock.calls
+    .slice(before)
+    .map(([input]) => String(input));
+  expect(after).toHaveLength(1);
+  expect(after[0]).toContain("/proposals/bpr_1/resize");
+  // The list row moved with it.
+  const list = screen.getByTestId("proposal-list");
+  expect(within(list).getAllByText("L").length).toBeGreaterThan(0);
+  expect(within(card).getByText("Revision 2")).toBeDefined();
 });
 
 test("folded fields fall back from due date to priority to created", async () => {

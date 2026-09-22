@@ -368,12 +368,7 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
       return c.json({ error: "Invalid proposal revision." }, 400);
     const denied = requireAdmin(c.get("member").role);
     if (denied !== null) return c.json(denied, 403);
-    return decideWithFreshSpec(
-      c,
-      options,
-      "approve",
-      parsed.data.expectedRevision,
-    );
+    return approveWithFreshSpec(c, options, parsed.data.expectedRevision);
   });
 
   app.post("/api/v1/orgs/:orgId/proposals/:id/resize", async (c) => {
@@ -382,14 +377,40 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
     );
     if (!parsed.success)
       return c.json({ error: "Invalid resize request." }, 400);
-    const denied = requireAdmin(c.get("member").role);
+    const { organizationId, role } = c.get("member");
+    const denied = requireAdmin(role);
     if (denied !== null) return c.json(denied, 403);
-    return decideWithFreshSpec(
+    // A resize is a reviewer's own call on the size, and changes nothing
+    // but the size and the amount it prices to. It does not read Jira: the
+    // ticket is checked when the proposal is approved, which is the
+    // decision that depends on it.
+    const proposal = await options.proposals.get(
+      organizationId,
+      c.req.param("id"),
+    );
+    if (proposal === null) return c.json({ error: "Not found" }, 404);
+    if (proposal.revision !== parsed.data.expectedRevision) {
+      return c.json(
+        {
+          code: "proposal_changed",
+          error: "The proposal changed. Reload it before continuing.",
+          proposal,
+        },
+        409,
+      );
+    }
+    const amountMinor = priceFor(parsed.data.complexity, proposal.rateCard);
+    return proposalMutationResponse(
       c,
-      options,
-      "resize",
-      parsed.data.expectedRevision,
-      parsed.data.complexity,
+      await options.proposals.resize(
+        organizationId,
+        proposal.id,
+        parsed.data.expectedRevision,
+        c.get("user").id,
+        parsed.data.complexity,
+        amountMinor!,
+        proposal.rateCard.currency,
+      ),
     );
   });
 
@@ -698,12 +719,10 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
   });
 }
 
-async function decideWithFreshSpec(
+async function approveWithFreshSpec(
   c: any,
   options: BountyRouteOptions,
-  action: "approve" | "resize",
   expectedRevision: number,
-  complexity?: PricedComplexity,
 ) {
   const { organizationId } = c.get("member");
   const proposal = await options.proposals.get(
@@ -761,116 +780,98 @@ async function decideWithFreshSpec(
       409,
     );
   }
-  if (action === "approve") {
-    if (
-      proposal.complexity === "unsized" ||
-      proposal.amountMinor === null ||
-      proposal.currency === null
-    ) {
+  if (
+    proposal.complexity === "unsized" ||
+    proposal.amountMinor === null ||
+    proposal.currency === null
+  ) {
+    return c.json(
+      { code: "unsized", error: "Choose a size before approval." },
+      409,
+    );
+  }
+  const pointer = await options.issues.get(
+    organizationId,
+    proposal.jiraIssueId,
+  );
+  const registered =
+    pointer === null
+      ? null
+      : await options.boards.forRun(organizationId, pointer.boardId);
+  // Whether the approval is posted to the ticket is the site's grant: every
+  // consent asks for the write scope, so a site holds it unless the person
+  // withheld it. No grant means the approval is recorded here and nowhere
+  // else, which is what a read-only site was connected for.
+  const connection =
+    registered === null || options.connections === undefined
+      ? null
+      : await options.connections.get(organizationId, registered.connectionId);
+  if (registered !== null && connection?.writeGranted === true) {
+    if (!connection.healthy) {
+      // Not approved without the post: the site was connected to receive
+      // it, and a reconnect is a minute's work. Approving now would leave
+      // the ticket silent with nothing to say so later.
       return c.json(
-        { code: "unsized", error: "Choose a size before approval." },
+        {
+          code: "reconnect",
+          error: "Reconnect this Jira site before approving.",
+        },
         409,
       );
     }
-    const pointer = await options.issues.get(
-      organizationId,
-      proposal.jiraIssueId,
-    );
-    const registered =
-      pointer === null
-        ? null
-        : await options.boards.forRun(organizationId, pointer.boardId);
-    // Whether the approval is posted to the ticket is the site's grant: every
-    // consent asks for the write scope, so a site holds it unless the person
-    // withheld it. No grant means the approval is recorded here and nowhere
-    // else, which is what a read-only site was connected for.
-    const connection =
-      registered === null || options.connections === undefined
-        ? null
-        : await options.connections.get(
-            organizationId,
-            registered.connectionId,
-          );
-    if (registered !== null && connection?.writeGranted === true) {
-      if (!connection.healthy) {
-        // Not approved without the post: the site was connected to receive
-        // it, and a reconnect is a minute's work. Approving now would leave
-        // the ticket silent with nothing to say so later.
-        return c.json(
-          {
-            code: "reconnect",
-            error: "Reconnect this Jira site before approving.",
-          },
-          409,
-        );
-      }
-      if (
-        options.writebacks === undefined ||
-        options.delivery === undefined ||
-        options.appUrl === undefined ||
-        options.organizationSlug === undefined
-      ) {
-        return c.json(
-          {
-            code: "write_consent_required",
-            error: "Jira delivery is not configured.",
-          },
-          409,
-        );
-      }
-      const slug = await options.organizationSlug(organizationId);
-      if (slug === undefined) return c.json({ error: "Not found" }, 404);
-      const proposalUrl = `${options.appUrl}/o/${encodeURIComponent(slug)}/jira/${encodeURIComponent(registered.connectionId)}/${encodeURIComponent(registered.board.id)}?tab=proposals&proposal=${encodeURIComponent(proposal.id)}`;
-      const decision = await options.writebacks.approveWithIntent(
-        organizationId,
-        proposal.id,
-        expectedRevision,
-        c.get("user").id,
+    if (
+      options.writebacks === undefined ||
+      options.delivery === undefined ||
+      options.appUrl === undefined ||
+      options.organizationSlug === undefined
+    ) {
+      return c.json(
         {
-          complexity: proposal.complexity as PricedComplexity,
-          amountMinor: proposal.amountMinor,
-          currency: proposal.currency,
-          proposalUrl,
+          code: "write_consent_required",
+          error: "Jira delivery is not configured.",
         },
+        409,
       );
-      if (decision.status !== "created") {
-        return c.json(
-          {
-            code: "proposal_changed",
-            error: "The proposal changed. Reload it before continuing.",
-          },
-          decision.status === "not-found" ? 404 : 409,
-        );
-      }
-      options.delivery.start(organizationId, decision.operation.id);
-      const approved = await options.proposals.get(organizationId, proposal.id);
-      return c.json({
-        proposal: approved,
-        writebackOperation: decision.operation,
-      });
     }
-    return proposalMutationResponse(
-      c,
-      await options.proposals.approve(
-        organizationId,
-        proposal.id,
-        expectedRevision,
-        c.get("user").id,
-        "off",
-      ),
-    );
-  }
-  const amountMinor = priceFor(complexity!, proposal.rateCard);
-  return proposalMutationResponse(
-    c,
-    await options.proposals.resize(
+    const slug = await options.organizationSlug(organizationId);
+    if (slug === undefined) return c.json({ error: "Not found" }, 404);
+    const proposalUrl = `${options.appUrl}/o/${encodeURIComponent(slug)}/jira/${encodeURIComponent(registered.connectionId)}/${encodeURIComponent(registered.board.id)}?tab=proposals&proposal=${encodeURIComponent(proposal.id)}`;
+    const decision = await options.writebacks.approveWithIntent(
       organizationId,
       proposal.id,
       expectedRevision,
       c.get("user").id,
-      complexity!,
-      amountMinor!,
-      proposal.rateCard.currency,
+      {
+        complexity: proposal.complexity as PricedComplexity,
+        amountMinor: proposal.amountMinor,
+        currency: proposal.currency,
+        proposalUrl,
+      },
+    );
+    if (decision.status !== "created") {
+      return c.json(
+        {
+          code: "proposal_changed",
+          error: "The proposal changed. Reload it before continuing.",
+        },
+        decision.status === "not-found" ? 404 : 409,
+      );
+    }
+    options.delivery.start(organizationId, decision.operation.id);
+    const approved = await options.proposals.get(organizationId, proposal.id);
+    return c.json({
+      proposal: approved,
+      writebackOperation: decision.operation,
+    });
+  }
+  return proposalMutationResponse(
+    c,
+    await options.proposals.approve(
+      organizationId,
+      proposal.id,
+      expectedRevision,
+      c.get("user").id,
+      "off",
     ),
   );
 }
