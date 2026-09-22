@@ -42,6 +42,7 @@ import {
 import { RateSlider } from "@/components/RateSlider";
 import { parseRateAmount } from "@/lib/rate-amount";
 import { CurrencySelect } from "@/components/CurrencySelect";
+import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 import { IssueSpec, IssueSpecSkeleton } from "./IssueSpec";
@@ -1161,6 +1162,9 @@ function ProposalPeek({
                 {proposal.modelRationale}
               </p>
             </div>
+
+            {/* A rule before the decision: what follows is the act, not the record. */}
+            <Separator />
 
             {/*
               The decision row, after the reasoning it is made on. On the
