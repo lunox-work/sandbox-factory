@@ -1065,33 +1065,50 @@ function ProposalPeek({
                 >
                   {money(proposal.amountMinor, proposal.currency)}
                 </span>
-                {/* Who sized it, as a pill wearing the vendor's mark. */}
-                <span className="inline-flex w-fit items-center gap-1.5 rounded-full border py-1 pr-2.5 pl-2 text-xs sm:col-start-1 sm:row-start-2">
-                  <span className="flex size-3.5 shrink-0 items-center [&>svg]:size-3.5">
-                    <ModelIcon model={proposal.actualModel} />
-                  </span>
-                  {label === null ? (
-                    <span className="font-medium">{proposal.actualModel}</span>
-                  ) : (
-                    <span className="font-medium" title={proposal.actualModel}>
-                      {label}
+                {/*
+                  Who sized it, as a pill wearing the vendor's mark. When a
+                  reviewer has since overruled it, what the model said sits
+                  beside the pill: the model's answer stays with the model,
+                  on the left, and the reviewer's stays with the size.
+                */}
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 sm:col-start-1 sm:row-start-2">
+                  <span className="inline-flex w-fit items-center gap-1.5 rounded-full border py-1 pr-2.5 pl-2 text-xs">
+                    <span className="flex size-3.5 shrink-0 items-center [&>svg]:size-3.5">
+                      <ModelIcon model={proposal.actualModel} />
                     </span>
-                  )}
-                  {/*
+                    {label === null ? (
+                      <span className="font-medium">
+                        {proposal.actualModel}
+                      </span>
+                    ) : (
+                      <span
+                        className="font-medium"
+                        title={proposal.actualModel}
+                      >
+                        {label}
+                      </span>
+                    )}
+                    {/*
                       The model's confidence as a mark: up in green, level
                       in neutral, down in red. Named for assistive
                       technology and on hover, since a shape and a colour
                       alone say nothing to a screen reader.
                     */}
-                  <span
-                    role="img"
-                    aria-label={`${proposal.modelConfidence} confidence`}
-                    title={`${proposal.modelConfidence} confidence`}
-                    className={`flex shrink-0 items-center [&>svg]:size-3.5 ${CONFIDENCE_MARK[proposal.modelConfidence].tone}`}
-                  >
-                    {CONFIDENCE_MARK[proposal.modelConfidence].icon}
+                    <span
+                      role="img"
+                      aria-label={`${proposal.modelConfidence} confidence`}
+                      title={`${proposal.modelConfidence} confidence`}
+                      className={`flex shrink-0 items-center [&>svg]:size-3.5 ${CONFIDENCE_MARK[proposal.modelConfidence].tone}`}
+                    >
+                      {CONFIDENCE_MARK[proposal.modelConfidence].icon}
+                    </span>
                   </span>
-                </span>
+                  {proposal.sizedBy === "reviewer" && (
+                    <span className="text-muted-foreground text-xs">
+                      the model said {proposal.modelComplexity}
+                    </span>
+                  )}
+                </div>
                 <div className="flex flex-col gap-1.5 sm:col-start-2 sm:row-start-1 sm:items-end sm:justify-self-end">
                   {canDecide && open ? (
                     /*
@@ -1135,8 +1152,7 @@ function ProposalPeek({
                   )}
                   {proposal.sizedBy === "reviewer" && (
                     <span className="text-muted-foreground text-xs sm:text-right">
-                      set by a reviewer · the model said{" "}
-                      {proposal.modelComplexity}
+                      set by a reviewer
                     </span>
                   )}
                 </div>
