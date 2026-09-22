@@ -1022,53 +1022,43 @@ function ProposalPeek({
                   </span>
                   {canDecide && open ? (
                     /*
-                      The size is the resize: one segmented control whose
-                      pressed segment is the current size. That segment is
-                      disabled, since it is not a change, but drawn solid
-                      rather than faded — it is the fact being shown.
+                      The size is the resize: a row of cards, one per size,
+                      with the current size drawn as the larger one. That
+                      card is disabled, since it is not a change, but kept
+                      solid rather than faded — it is the fact being shown.
                     */
                     <div
                       role="group"
                       aria-label="Resize"
-                      className="bg-muted/40 inline-flex w-fit items-center gap-0.5 rounded-md border p-0.5"
+                      className="flex flex-wrap items-center gap-1.5"
                     >
                       {proposal.complexity === "unsized" && (
-                        <Badge variant="outline" className="mr-0.5 font-mono">
-                          unsized
-                        </Badge>
+                        <SizeCard size="unsized" current />
                       )}
                       {PRICED_BOUNTY_COMPLEXITIES.map((size) => {
                         const current = proposal.complexity === size;
                         return (
-                          <Button
+                          <SizeCard
                             key={size}
-                            size="sm"
-                            variant={current ? "default" : "ghost"}
-                            className={`h-7 min-w-9 rounded-sm px-2 font-mono text-xs ${
-                              current ? "disabled:opacity-100" : ""
-                            }`}
+                            size={size}
+                            current={current}
                             disabled={
                               busy ||
                               proposal.freshness !== "current" ||
                               current
                             }
-                            aria-pressed={current}
                             onClick={() =>
                               void mutate(`/proposals/${proposal.id}/resize`, {
                                 expectedRevision: proposal.revision,
                                 complexity: size,
                               })
                             }
-                          >
-                            {size}
-                          </Button>
+                          />
                         );
                       })}
                     </div>
                   ) : (
-                    <Badge className="w-fit font-mono">
-                      {proposal.complexity}
-                    </Badge>
+                    <SizeCard size={proposal.complexity} current />
                   )}
                   {(proposal.sizedBy === "reviewer" ||
                     proposal.complexity === "XL") && (
@@ -1244,6 +1234,45 @@ function ProposalPeek({
         </TabsContent>
       </Tabs>
     </div>
+  );
+}
+
+/**
+ * One size as a card. The current size is the larger card, drawn solid; the
+ * others are small and quiet, and become buttons when `onClick` is given.
+ * Without it the card is a plain label, which is what a member or an
+ * approved proposal sees: the size, without the offer to change it.
+ */
+function SizeCard({
+  size,
+  current,
+  disabled,
+  onClick,
+}: {
+  size: string;
+  current: boolean;
+  disabled?: boolean;
+  onClick?: () => void;
+}) {
+  const shape = current
+    ? "bg-primary text-primary-foreground border-primary h-10 min-w-12 px-3 text-base shadow-sm"
+    : "bg-card text-muted-foreground hover:text-foreground hover:border-foreground/30 h-7 min-w-9 px-2 text-xs";
+  const className = `inline-flex items-center justify-center rounded-md border font-mono font-medium transition-[color,border-color,transform] duration-150 motion-reduce:transition-none ${shape}`;
+  if (onClick === undefined) {
+    return <span className={className}>{size}</span>;
+  }
+  return (
+    <button
+      type="button"
+      className={`${className} cursor-pointer outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 active:scale-[0.98] disabled:pointer-events-none motion-reduce:active:scale-100 ${
+        current ? "" : "disabled:opacity-50"
+      }`}
+      disabled={disabled}
+      aria-pressed={current}
+      onClick={onClick}
+    >
+      {size}
+    </button>
   );
 }
 
