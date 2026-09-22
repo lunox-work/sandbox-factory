@@ -9,7 +9,13 @@ import {
   formatMinorUnits,
   PRICED_BOUNTY_COMPLEXITIES,
 } from "sandbox-factory";
-import { ChevronRight, ExternalLink, Loader2, RefreshCw } from "lucide-react";
+import {
+  ChevronRight,
+  ExternalLink,
+  Loader2,
+  RefreshCw,
+  TriangleAlert,
+} from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
@@ -1017,8 +1023,20 @@ function ProposalPeek({
                 </div>
 
                 <div className="flex flex-col gap-1.5">
-                  <span className="text-muted-foreground text-xs font-medium">
-                    Size
+                  {/*
+                    The label, and on its right the one warning a size can
+                    carry: an XL is a hint that the ticket is two tickets.
+                  */}
+                  <span className="flex items-center justify-between gap-4 text-xs">
+                    <span className="text-muted-foreground font-medium">
+                      Size
+                    </span>
+                    {proposal.complexity === "XL" && (
+                      <span className="flex items-center gap-1 text-amber-700 dark:text-amber-400">
+                        <TriangleAlert className="size-3.5 shrink-0" />
+                        Consider splitting
+                      </span>
+                    )}
                   </span>
                   {canDecide && open ? (
                     /*
@@ -1060,20 +1078,10 @@ function ProposalPeek({
                   ) : (
                     <SizeCard size={proposal.complexity} current />
                   )}
-                  {(proposal.sizedBy === "reviewer" ||
-                    proposal.complexity === "XL") && (
-                    <span className="flex flex-wrap gap-x-2 text-xs">
-                      {proposal.sizedBy === "reviewer" && (
-                        <span className="text-muted-foreground">
-                          set by a reviewer · the model said{" "}
-                          {proposal.modelComplexity}
-                        </span>
-                      )}
-                      {proposal.complexity === "XL" && (
-                        <span className="text-amber-700 dark:text-amber-400">
-                          Consider splitting
-                        </span>
-                      )}
+                  {proposal.sizedBy === "reviewer" && (
+                    <span className="text-muted-foreground text-xs">
+                      set by a reviewer · the model said{" "}
+                      {proposal.modelComplexity}
                     </span>
                   )}
                 </div>
