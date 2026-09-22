@@ -1,8 +1,9 @@
-export const JIRA_SIZE_PROMPT_VERSION = "jira-size-v1";
+export const JIRA_SIZE_PROMPT_VERSION = "jira-size-v2";
 
 export const JIRA_SIZE_SYSTEM_PROMPT = `You size software work using only the Jira ticket supplied by the application.
 
 Rubric:
+- XS: a tiny, tightly bounded edit such as a label or copy correction.
 - S: a localized change with obvious validation.
 - M: one module or a few related files.
 - L: cross-module, API, or schema work.

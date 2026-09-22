@@ -1,3 +1,4 @@
+import { BOUNTY_COMPLEXITIES } from "sandbox-factory";
 import Anthropic from "@anthropic-ai/sdk";
 import { sizingResultSchema } from "@sandbox-factory/shared";
 
@@ -132,7 +133,7 @@ export class AnthropicSizer implements Sizer {
             type: "object",
             additionalProperties: false,
             properties: {
-              complexity: { enum: ["S", "M", "L", "XL", "unsized"] },
+              complexity: { enum: [...BOUNTY_COMPLEXITIES] },
               confidence: { enum: ["low", "medium", "high"] },
               rationale: { type: "string", minLength: 1, maxLength: 500 },
               unsizedReason: { type: "string", minLength: 1, maxLength: 120 },

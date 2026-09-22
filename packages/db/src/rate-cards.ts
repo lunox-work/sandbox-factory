@@ -29,6 +29,7 @@ function toDto(row: RateCardRow): StoredRateCard {
   return {
     organizationId: row.organizationId,
     currency: row.currency,
+    xsMinor: row.xsMinor ?? row.sMinor,
     sMinor: row.sMinor,
     mMinor: row.mMinor,
     lMinor: row.lMinor,

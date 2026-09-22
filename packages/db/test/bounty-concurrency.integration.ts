@@ -27,6 +27,7 @@ function scratchUrl(): string {
 const selection = { batchSize: 5, scanLimit: 20 };
 const rateCard = {
   currency: "USD",
+  xsMinor: 100,
   sMinor: 100,
   mMinor: 200,
   lMinor: 300,

@@ -1,3 +1,4 @@
+import { PRICED_BOUNTY_COMPLEXITIES } from "sandbox-factory";
 import { readFile } from "node:fs/promises";
 
 import { AnthropicSizer } from "../dist/sizing/index.js";
@@ -16,7 +17,7 @@ if (!apiKey || !model) {
   );
 }
 
-const sizes = ["S", "M", "L", "XL"];
+const sizes = PRICED_BOUNTY_COMPLEXITIES;
 const examples = (await readFile(path, "utf8"))
   .split(/\r?\n/u)
   .filter(Boolean)

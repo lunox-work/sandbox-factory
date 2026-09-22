@@ -19,6 +19,7 @@ function proposal(
     specHashVersion: 1,
     rateCard: {
       currency: "USD",
+      xsMinor: 1,
       sMinor: 1,
       mMinor: 2,
       lMinor: 3,

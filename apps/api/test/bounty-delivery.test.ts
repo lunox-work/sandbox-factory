@@ -55,6 +55,7 @@ function proposal(): StoredBountyProposal {
     specHashVersion: 1,
     rateCard: {
       currency: "USD",
+      xsMinor: 100,
       sMinor: 100,
       mMinor: 200,
       lMinor: 300,

@@ -21,6 +21,7 @@ import type {
   BountyRunOutcome,
   BountySelection,
   RateCardSnapshot,
+  PricedComplexity,
 } from "sandbox-factory";
 
 import { user } from "./auth.js";
@@ -37,6 +38,8 @@ export const rateCard = pgTable(
       .primaryKey()
       .references(() => organization.id, { onDelete: "cascade" }),
     currency: text("currency").notNull(),
+    // Legacy cards inherit their S rate until the next edit.
+    xsMinor: safeMinor("xs_minor"),
     sMinor: safeMinor("s_minor").notNull(),
     mMinor: safeMinor("m_minor").notNull(),
     lMinor: safeMinor("l_minor").notNull(),
@@ -52,7 +55,7 @@ export const rateCard = pgTable(
     check("rate_card_currency_check", sql`${table.currency} ~ '^[A-Z]{3}$'`),
     check(
       "rate_card_amounts_check",
-      sql`${table.sMinor} > 0 AND ${table.sMinor} <= ${table.mMinor} AND ${table.mMinor} <= ${table.lMinor} AND ${table.lMinor} <= ${table.xlMinor} AND ${table.xlMinor} <= 9007199254740991`,
+      sql`coalesce(${table.xsMinor}, ${table.sMinor}) > 0 AND coalesce(${table.xsMinor}, ${table.sMinor}) <= ${table.sMinor} AND ${table.sMinor} <= ${table.mMinor} AND ${table.mMinor} <= ${table.lMinor} AND ${table.lMinor} <= ${table.xlMinor} AND ${table.xlMinor} <= 9007199254740991`,
     ),
     check("rate_card_revision_check", sql`${table.revision} > 0`),
   ],
@@ -180,11 +183,11 @@ export const bountyProposal = pgTable(
     }).onDelete("set null"),
     check(
       "bounty_proposal_model_complexity_check",
-      sql`${table.modelComplexity} in ('S', 'M', 'L', 'XL', 'unsized')`,
+      sql`${table.modelComplexity} in ('XS', 'S', 'M', 'L', 'XL', 'unsized')`,
     ),
     check(
       "bounty_proposal_complexity_check",
-      sql`${table.complexity} in ('S', 'M', 'L', 'XL', 'unsized')`,
+      sql`${table.complexity} in ('XS', 'S', 'M', 'L', 'XL', 'unsized')`,
     ),
     check(
       "bounty_proposal_confidence_check",
@@ -223,7 +226,7 @@ export const bountyProposal = pgTable(
 );
 
 export interface BountyWritebackPayload {
-  readonly complexity: "S" | "M" | "L" | "XL";
+  readonly complexity: PricedComplexity;
   readonly amountMinor: number;
   readonly currency: string;
   readonly proposalUrl: string;

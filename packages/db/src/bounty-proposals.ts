@@ -2,6 +2,7 @@ import type {
   BountyComplexity,
   BountySizingResult,
   RateCardSnapshot,
+  PricedComplexity,
   SizingConfidence,
 } from "sandbox-factory";
 import { and, desc, eq, inArray, lt, or, sql } from "drizzle-orm";
@@ -97,7 +98,7 @@ export interface BountyProposalStore {
     proposalId: string,
     expectedRevision: number,
     resizedBy: string,
-    complexity: "S" | "M" | "L" | "XL",
+    complexity: PricedComplexity,
     amountMinor: number,
     currency: string,
   ): Promise<ProposalMutationResult>;
@@ -167,7 +168,10 @@ function toDto(row: BountyProposalRow, issueKey: string): StoredBountyProposal {
     issueKey,
     specHash: row.specHash,
     specHashVersion: row.specHashVersion,
-    rateCard: row.rateCard,
+    rateCard: {
+      ...row.rateCard,
+      xsMinor: row.rateCard.xsMinor ?? row.rateCard.sMinor,
+    },
     modelComplexity: row.modelComplexity as BountyComplexity,
     modelConfidence: row.modelConfidence as SizingConfidence,
     modelRationale: row.modelRationale,

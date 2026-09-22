@@ -1,11 +1,16 @@
 /** Pure commercial rules. This module stays dependency-free. */
 
-export const BOUNTY_COMPLEXITIES = ["S", "M", "L", "XL", "unsized"] as const;
+export const PRICED_BOUNTY_COMPLEXITIES = ["XS", "S", "M", "L", "XL"] as const;
+export const BOUNTY_COMPLEXITIES = [
+  ...PRICED_BOUNTY_COMPLEXITIES,
+  "unsized",
+] as const;
 export type BountyComplexity = (typeof BOUNTY_COMPLEXITIES)[number];
 export type PricedComplexity = Exclude<BountyComplexity, "unsized">;
 
 export interface RateCardValues {
   readonly currency: string;
+  readonly xsMinor: number;
   readonly sMinor: number;
   readonly mMinor: number;
   readonly lMinor: number;
@@ -54,6 +59,11 @@ export type RateCardValidation =
 
 const MAX_MINOR = Number.MAX_SAFE_INTEGER;
 
+/** Maximum for new rate-card writes; historical snapshots remain readable. */
+export function maximumRateCardMinor(currency: string): number {
+  return currency.trim().toUpperCase() === "USD" ? 100_000 : MAX_MINOR;
+}
+
 export function validateRateCard(
   input: RateCardValues,
   supportedCurrencies: ReadonlySet<string>,
@@ -63,7 +73,13 @@ export function validateRateCard(
     return { ok: false, reason: "Choose a supported ISO currency." };
   }
 
-  const amounts = [input.sMinor, input.mMinor, input.lMinor, input.xlMinor];
+  const amounts = [
+    input.xsMinor,
+    input.sMinor,
+    input.mMinor,
+    input.lMinor,
+    input.xlMinor,
+  ];
   if (
     amounts.some(
       (amount) =>
@@ -76,13 +92,17 @@ export function validateRateCard(
     };
   }
   if (
+    input.xsMinor > input.sMinor ||
     input.sMinor > input.mMinor ||
     input.mMinor > input.lMinor ||
     input.lMinor > input.xlMinor
   ) {
-    return { ok: false, reason: "Rates must increase from S through XL." };
+    return { ok: false, reason: "Rates must increase from XS through XL." };
   }
 
+  if (input.xlMinor > maximumRateCardMinor(currency)) {
+    return { ok: false, reason: "XL cannot exceed USD 1,000." };
+  }
   return { ok: true, rateCard: { ...input, currency } };
 }
 
@@ -91,6 +111,8 @@ export function priceFor(
   rateCard: RateCardValues,
 ): number | null {
   switch (complexity) {
+    case "XS":
+      return rateCard.xsMinor;
     case "S":
       return rateCard.sMinor;
     case "M":

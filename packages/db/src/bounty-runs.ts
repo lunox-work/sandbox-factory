@@ -114,7 +114,10 @@ function toDto(row: BountyRunRow): StoredBountyRun {
     requestId: row.requestId,
     status: row.status as StoredBountyRun["status"],
     selection: row.selection,
-    rateCard: row.rateCard,
+    rateCard: {
+      ...row.rateCard,
+      xsMinor: row.rateCard.xsMinor ?? row.rateCard.sMinor,
+    },
     requestedModel: row.requestedModel,
     promptVersion: row.promptVersion,
     outcomes: row.outcomes,

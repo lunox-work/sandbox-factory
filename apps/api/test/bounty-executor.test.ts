@@ -16,6 +16,7 @@ import { FakeSizer, SizerError } from "../src/sizing/sizer.js";
 
 const rateCard = {
   currency: "USD",
+  xsMinor: 100,
   sMinor: 100,
   mMinor: 200,
   lMinor: 300,
@@ -450,4 +451,27 @@ test("re-price sizes only its source issue and atomically replaces it", async ()
     "bpr_replacement",
   );
   assert.deepEqual(state.startedWritebacks, ["bwo_superseded"]);
+});
+
+test("XS model sizing uses the distinct XS snapshot price", async () => {
+  const state = harness({
+    runOverrides: { rateCard: { ...rateCard, xsMinor: 50 } },
+    sizer: new FakeSizer("fake", "jira-size-v2", [
+      {
+        result: {
+          complexity: "XS",
+          confidence: "high",
+          rationale: "One label correction.",
+        },
+        actualModel: "actual-model",
+        usage: { inputTokens: 10, outputTokens: 5 },
+      },
+    ]),
+  });
+  await state.executor.execute("org_1", "brn_1");
+  assert.equal(state.finishes[0]?.status, "succeeded");
+  assert.equal(
+    (state.proposalInputs[0] as { amountMinor: number }).amountMinor,
+    50,
+  );
 });

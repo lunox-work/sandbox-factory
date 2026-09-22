@@ -4,14 +4,12 @@ import type {
   BountyWritebackDto,
   RateCardDto,
 } from "@sandbox-factory/shared";
-import { formatMinorUnits, parseMinorUnits } from "sandbox-factory";
 import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  type FormEvent,
-} from "react";
+  maximumRateCardMinor,
+  formatMinorUnits,
+  PRICED_BOUNTY_COMPLEXITIES,
+} from "sandbox-factory";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { ErrorBanner, LoadingLine } from "@/components/Message";
 import { Badge } from "@/components/ui/badge";
@@ -23,7 +21,9 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
+import { RateSlider } from "@/components/RateSlider";
+import { parseRateAmount } from "@/lib/rate-amount";
+import { CurrencySelect } from "@/components/CurrencySelect";
 
 type EnrichedProposal = BountyProposalDto & {
   freshness?: "current" | "stale" | "missing" | "unknown";
@@ -67,6 +67,12 @@ function fractionDigits(currency: string): number {
   }
 }
 
+function editableRateAmount(minor: number, digits: number): string {
+  // Drop only an all-zero fraction from stored amounts. Legacy fractional
+  // rates stay visible and must be corrected before the form can be saved.
+  return (formatMinorUnits(minor, digits) ?? "").replace(/\.0+$/, "");
+}
+
 export function money(
   amountMinor: number | null,
   currency: string | null,
@@ -81,6 +87,63 @@ export function money(
   }).format(amountMinor / 10 ** digits);
 }
 
+type RateDraft = Pick<
+  RateCardDto,
+  "currency" | "xsMinor" | "sMinor" | "mMinor" | "lMinor" | "xlMinor"
+>;
+
+function rateDraft(
+  currency: string,
+  values: Record<string, string>,
+): RateDraft | null {
+  const digits = fractionDigits(currency);
+  const [xsMinor = 0, sMinor = 0, mMinor = 0, lMinor = 0, xlMinor = 0] = [
+    "XS",
+    "S",
+    "M",
+    "L",
+    "XL",
+  ].map((size) => parseRateAmount(values[size] ?? "", digits) ?? 0);
+  if (
+    xsMinor <= 0 ||
+    sMinor < xsMinor ||
+    mMinor < sMinor ||
+    lMinor < mMinor ||
+    xlMinor < lMinor
+  )
+    return null;
+  return { currency, xsMinor, sMinor, mMinor, lMinor, xlMinor };
+}
+
+function sameRates(left: RateDraft, right: RateDraft | null): boolean {
+  return (
+    right !== null &&
+    left.currency === right.currency &&
+    left.xsMinor === right.xsMinor &&
+    left.sMinor === right.sMinor &&
+    left.mMinor === right.mMinor &&
+    left.lMinor === right.lMinor &&
+    left.xlMinor === right.xlMinor
+  );
+}
+
+// Evenly spaced from 10 to 200, rounded to whole major currency units.
+const DEFAULT_RATE_AMOUNTS = {
+  XS: "10",
+  S: "58",
+  M: "105",
+  L: "153",
+  XL: "200",
+};
+
+const RATE_SAVE_STATUSES = {
+  saving: "Saving…",
+  failed: "Changes not saved.",
+  saved: "Saved",
+  incomplete: "Set XS and XL to save your rates.",
+  automatic: "Changes save automatically.",
+} as const;
+
 export function RateCardEditor({
   organizationId,
   role,
@@ -90,18 +153,28 @@ export function RateCardEditor({
 }) {
   const [card, setCard] = useState<RateCardDto | null>(null);
   const [currency, setCurrency] = useState("USD");
-  const [values, setValues] = useState<Record<string, string>>({
-    S: "",
-    M: "",
-    L: "",
-    XL: "",
-  });
+  const [values, setValues] =
+    useState<Record<string, string>>(DEFAULT_RATE_AMOUNTS);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [showSaved, setShowSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [saveFailed, setSaveFailed] = useState(false);
+  const savedCard = useRef<RateCardDto | null>(null);
+  const pending = useRef<RateDraft | null>(null);
+  const writing = useRef(false);
+  const generation = useRef(0);
 
   const load = useCallback(async () => {
+    const request = ++generation.current;
+    pending.current = null;
+    writing.current = false;
+    setSaving(false);
+    setShowSaved(false);
     setLoading(true);
+    setLoadFailed(false);
+    setSaveFailed(false);
     try {
       const response = await fetch(
         `/api/v1/orgs/${encodeURIComponent(organizationId)}/rate-card`,
@@ -110,81 +183,145 @@ export function RateCardEditor({
       if (!response.ok) throw new Error();
       const next = ((await response.json()) as { rateCard: RateCardDto | null })
         .rateCard;
+      if (request !== generation.current) return false;
+      savedCard.current = next;
       setCard(next);
-      if (next !== null) {
-        const digits = fractionDigits(next.currency);
-        setCurrency(next.currency);
-        setValues({
-          S: formatMinorUnits(next.sMinor, digits) ?? "",
-          M: formatMinorUnits(next.mMinor, digits) ?? "",
-          L: formatMinorUnits(next.lMinor, digits) ?? "",
-          XL: formatMinorUnits(next.xlMinor, digits) ?? "",
-        });
-      }
+      setCurrency(next?.currency ?? "USD");
+      const digits = fractionDigits(next?.currency ?? "USD");
+      setValues(
+        next === null
+          ? { ...DEFAULT_RATE_AMOUNTS }
+          : {
+              XS: editableRateAmount(next.xsMinor, digits),
+              S: editableRateAmount(next.sMinor, digits),
+              M: editableRateAmount(next.mMinor, digits),
+              L: editableRateAmount(next.lMinor, digits),
+              XL: editableRateAmount(next.xlMinor, digits),
+            },
+      );
       setError(null);
+      return true;
     } catch {
-      setError("Could not load the rate card.");
+      if (request === generation.current) {
+        setError("Could not load the rate card.");
+        setLoadFailed(true);
+      }
+      return false;
     } finally {
-      setLoading(false);
+      if (request === generation.current) setLoading(false);
     }
   }, [organizationId]);
 
   useEffect(() => {
     void load();
+    return () => {
+      generation.current++;
+      pending.current = null;
+    };
   }, [load]);
 
-  async function save(event: FormEvent) {
-    event.preventDefault();
-    const digits = fractionDigits(currency);
-    const amounts = ["S", "M", "L", "XL"].map((size) =>
-      parseMinorUnits(values[size] ?? "", digits),
-    );
-    if (amounts.some((amount) => amount === null || amount <= 0)) {
-      setError(
-        `Enter positive ${currency} amounts with no more than ${digits} decimal places.`,
-      );
+  useEffect(() => {
+    if (!showSaved) return;
+    const timer = window.setTimeout(() => setShowSaved(false), 3000);
+    return () => window.clearTimeout(timer);
+  }, [showSaved, card]);
+
+  async function save(
+    nextCurrency: string,
+    nextValues: Record<string, string>,
+  ) {
+    if (!canManage(role) || loading || loadFailed) return;
+    const draft = rateDraft(nextCurrency, nextValues);
+    if (draft === null) {
+      // A new card needs both endpoints before there is a complete rate range.
+      if (nextValues.XS && nextValues.XL) {
+        setError(
+          `Enter positive whole-number ${nextCurrency} amounts in increasing order. Decimals are not supported.`,
+        );
+      }
       return;
     }
+    if (draft.xlMinor > maximumRateCardMinor(nextCurrency)) {
+      setError("XL cannot exceed USD 1,000.");
+      return;
+    }
+    pending.current = draft;
+    if (writing.current) return;
+    const request = generation.current;
+    writing.current = true;
     setSaving(true);
+    setShowSaved(false);
     setError(null);
+    setSaveFailed(false);
+    let wrote = false;
     try {
-      const response = await fetch(
-        `/api/v1/orgs/${encodeURIComponent(organizationId)}/rate-card`,
-        {
-          method: "PUT",
-          credentials: "include",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            expectedRevision: card?.revision ?? 0,
-            currency: currency.toUpperCase(),
-            sMinor: amounts[0],
-            mMinor: amounts[1],
-            lMinor: amounts[2],
-            xlMinor: amounts[3],
-          }),
-        },
-      );
-      const body = (await response.json()) as {
-        rateCard?: RateCardDto;
-        error?: string;
-      };
-      if (!response.ok || body.rateCard === undefined) {
-        setError(
-          response.status === 409
-            ? "The rate card changed. It has been reloaded."
-            : (body.error ?? "Could not save the rate card."),
+      while (pending.current !== null && request === generation.current) {
+        const next = pending.current;
+        pending.current = null;
+        if (sameRates(next, savedCard.current)) continue;
+        const response = await fetch(
+          `/api/v1/orgs/${encodeURIComponent(organizationId)}/rate-card`,
+          {
+            method: "PUT",
+            credentials: "include",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              expectedRevision: savedCard.current?.revision ?? 0,
+              ...next,
+            }),
+          },
         );
-        if (response.status === 409) await load();
-        return;
+        const body = (await response.json()) as {
+          rateCard?: RateCardDto;
+          error?: string;
+        };
+        if (request !== generation.current) return;
+        if (!response.ok || body.rateCard === undefined) {
+          pending.current = null;
+          if (response.status === 409) {
+            const reloaded = await load();
+            if (reloaded)
+              setError(
+                "The rate card changed elsewhere. The latest rates have been reloaded.",
+              );
+          } else {
+            setError(body.error ?? "Could not save the rate card.");
+            setSaveFailed(true);
+          }
+          return;
+        }
+        savedCard.current = body.rateCard;
+        setCard(body.rateCard);
+        wrote = true;
       }
-      setCard(body.rateCard);
+      if (wrote && request === generation.current) setShowSaved(true);
     } catch {
-      setError("Could not reach the server.");
+      if (request === generation.current) {
+        pending.current = null;
+        setError("Could not save changes. Check your connection and retry.");
+        setSaveFailed(true);
+      }
     } finally {
-      setSaving(false);
+      if (request === generation.current) {
+        writing.current = false;
+        setSaving(false);
+      }
     }
   }
 
+  const draft = rateDraft(currency, values);
+  const saved = draft !== null && sameRates(draft, card);
+  const saveStatus = saving
+    ? "saving"
+    : saveFailed
+      ? "failed"
+      : saved
+        ? showSaved
+          ? "saved"
+          : null
+        : !values.XS || !values.XL
+          ? "incomplete"
+          : "automatic";
   return (
     <Card>
       <CardHeader>
@@ -198,45 +335,67 @@ export function RateCardEditor({
         {loading ? (
           <LoadingLine />
         ) : (
-          <form className="flex flex-col gap-4" onSubmit={save}>
+          <div className="flex flex-col gap-4">
             {error !== null && (
-              <ErrorBanner className="mt-0">{error}</ErrorBanner>
+              <ErrorBanner className="mt-0">
+                {error}
+                {(loadFailed || saveFailed) && (
+                  <button
+                    type="button"
+                    disabled={saving}
+                    className="ml-2 font-medium underline underline-offset-2 disabled:opacity-50"
+                    onClick={() => {
+                      if (loadFailed) void load();
+                      else void save(currency, values);
+                    }}
+                  >
+                    Retry
+                  </button>
+                )}
+              </ErrorBanner>
             )}
-            <label className="grid gap-1 text-sm font-medium">
-              Currency
-              <Input
-                value={currency}
-                maxLength={3}
-                disabled={!canManage(role) || saving}
-                onChange={(event) =>
-                  setCurrency(event.target.value.toUpperCase())
-                }
-              />
-            </label>
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-              {["S", "M", "L", "XL"].map((size) => (
-                <label key={size} className="grid gap-1 text-sm font-medium">
-                  {size}
-                  <Input
-                    inputMode="decimal"
-                    value={values[size]}
-                    disabled={!canManage(role) || saving}
-                    onChange={(event) =>
-                      setValues((current) => ({
-                        ...current,
-                        [size]: event.target.value,
-                      }))
-                    }
-                  />
-                </label>
-              ))}
-            </div>
+            <CurrencySelect
+              value={currency}
+              disabled={!canManage(role) || loadFailed}
+              onValueChange={(next) => {
+                setCurrency(next);
+                void save(next, values);
+              }}
+            />
+            <RateSlider
+              currency={currency}
+              digits={fractionDigits(currency)}
+              values={values}
+              onValueChange={setValues}
+              onValueCommit={(next) => {
+                void save(currency, next);
+              }}
+              disabled={!canManage(role) || loadFailed}
+            />
             {canManage(role) && (
-              <Button type="submit" disabled={saving}>
-                {saving ? "Saving…" : "Save rate card"}
-              </Button>
+              <div className="text-muted-foreground relative min-h-4 text-right text-xs">
+                <span
+                  role="status"
+                  aria-label="Rate card save status"
+                  aria-atomic="true"
+                  className="sr-only"
+                >
+                  {saveStatus === null ? "" : RATE_SAVE_STATUSES[saveStatus]}
+                </span>
+                {Object.entries(RATE_SAVE_STATUSES).map(([state, label]) => (
+                  <span
+                    key={state}
+                    aria-hidden="true"
+                    data-save-state={state}
+                    data-active={state === saveStatus}
+                    className="rate-save-message"
+                  >
+                    {label}
+                  </span>
+                ))}
+              </div>
             )}
-          </form>
+          </div>
         )}
       </CardContent>
     </Card>
@@ -581,7 +740,7 @@ export function BoardBounties({
                       </Button>
                     )}
                   {proposal.status === "proposed" &&
-                    (["S", "M", "L", "XL"] as const).map((size) => (
+                    PRICED_BOUNTY_COMPLEXITIES.map((size) => (
                       <Button
                         key={size}
                         size="sm"

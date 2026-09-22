@@ -1,8 +1,12 @@
-import { BOUNTY_COMPLEXITIES } from "sandbox-factory";
+import {
+  BOUNTY_COMPLEXITIES,
+  maximumRateCardMinor,
+  PRICED_BOUNTY_COMPLEXITIES,
+} from "sandbox-factory";
 import { z } from "zod";
 
 export const bountyComplexitySchema = z.enum(BOUNTY_COMPLEXITIES);
-export const pricedComplexitySchema = z.enum(["S", "M", "L", "XL"]);
+export const pricedComplexitySchema = z.enum(PRICED_BOUNTY_COMPLEXITIES);
 export const sizingConfidenceSchema = z.enum(["low", "medium", "high"]);
 
 const minorAmountSchema = z
@@ -18,15 +22,19 @@ export const rateCardValuesSchema = z
       .trim()
       .length(3)
       .transform((value) => value.toUpperCase()),
+    xsMinor: minorAmountSchema,
     sMinor: minorAmountSchema,
     mMinor: minorAmountSchema,
     lMinor: minorAmountSchema,
     xlMinor: minorAmountSchema,
   })
   .refine(
-    ({ sMinor, mMinor, lMinor, xlMinor }) =>
-      sMinor <= mMinor && mMinor <= lMinor && lMinor <= xlMinor,
-    { message: "Rates must increase from S through XL." },
+    ({ xsMinor, sMinor, mMinor, lMinor, xlMinor }) =>
+      xsMinor <= sMinor &&
+      sMinor <= mMinor &&
+      mMinor <= lMinor &&
+      lMinor <= xlMinor,
+    { message: "Rates must increase from XS through XL." },
   );
 
 export const rateCardSnapshotSchema = rateCardValuesSchema.extend({
@@ -38,9 +46,17 @@ export const rateCardDtoSchema = rateCardSnapshotSchema.extend({
   updatedAt: z.iso.datetime(),
 });
 
-export const putRateCardSchema = rateCardValuesSchema.extend({
-  expectedRevision: z.number().int().nonnegative(),
-});
+export const putRateCardSchema = rateCardValuesSchema
+  .extend({
+    expectedRevision: z.number().int().nonnegative(),
+  })
+  .refine(
+    ({ currency, xlMinor }) => xlMinor <= maximumRateCardMinor(currency),
+    {
+      path: ["xlMinor"],
+      message: "XL cannot exceed USD 1,000.",
+    },
+  );
 
 export const sizingResultSchema = z
   .object({

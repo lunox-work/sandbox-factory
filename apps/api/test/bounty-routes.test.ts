@@ -20,6 +20,7 @@ const headers = { cookie: "session=1", "content-type": "application/json" };
 const card: StoredRateCard = {
   organizationId: "org_1",
   currency: "USD",
+  xsMinor: 100,
   sMinor: 100,
   mMinor: 200,
   lMinor: 300,
@@ -191,6 +192,18 @@ test("rate-card writes validate currency and save by expected revision", async (
     body: JSON.stringify({ ...card, currency: "ZZZ", expectedRevision: 1 }),
   });
   assert.equal(bad.status, 400);
+  const overLimit = await state.app.request("/api/v1/orgs/org_1/rate-card", {
+    method: "PUT",
+    headers,
+    body: JSON.stringify({
+      ...card,
+      currency: "USD",
+      xlMinor: 100001,
+      expectedRevision: 1,
+    }),
+  });
+  assert.equal(overLimit.status, 400);
+  assert.equal(state.puts.length, 0);
 
   const saved = await state.app.request("/api/v1/orgs/org_1/rate-card", {
     method: "PUT",
@@ -322,7 +335,7 @@ function reviewHarness(hash = "a".repeat(64)) {
       _p: string,
       _r: number,
       _u: string,
-      complexity: "S" | "M" | "L" | "XL",
+      complexity: "XS" | "S" | "M" | "L" | "XL",
       amountMinor: number,
     ) => {
       current = {
@@ -463,4 +476,19 @@ test("a Jira spec change blocks approval with a stable stale code", async () => 
     "proposal_stale",
   );
   assert.equal(state.current().status, "proposed");
+});
+
+test("reviewers can resize a proposal to XS using its snapshot", async () => {
+  const state = reviewHarness();
+  const response = await state.app.request(
+    "/api/v1/orgs/org_1/proposals/bpr_1/resize",
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ expectedRevision: 1, complexity: "XS" }),
+    },
+  );
+  assert.equal(response.status, 200);
+  assert.equal(state.current().complexity, "XS");
+  assert.equal(state.current().amountMinor, card.xsMinor);
 });

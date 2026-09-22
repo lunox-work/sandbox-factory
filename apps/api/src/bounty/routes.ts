@@ -16,7 +16,11 @@ import {
   resizeProposalSchema,
 } from "@sandbox-factory/shared";
 import type { Hono } from "hono";
-import { priceFor, validateRateCard } from "sandbox-factory";
+import {
+  priceFor,
+  validateRateCard,
+  type PricedComplexity,
+} from "sandbox-factory";
 
 import type { BountyExecutor, RunClientResult } from "./executor.js";
 import type { BountyDelivery } from "./delivery.js";
@@ -168,6 +172,7 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
       selection: boardSelectionSchema.parse(board.board.selection),
       rateCard: {
         currency: card.currency,
+        xsMinor: card.xsMinor,
         sMinor: card.sMinor,
         mMinor: card.mMinor,
         lMinor: card.lMinor,
@@ -575,6 +580,7 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
       },
       rateCard: {
         currency: card.currency,
+        xsMinor: card.xsMinor,
         sMinor: card.sMinor,
         mMinor: card.mMinor,
         lMinor: card.lMinor,
@@ -663,7 +669,7 @@ async function decideWithFreshSpec(
   options: BountyRouteOptions,
   action: "approve" | "resize",
   expectedRevision: number,
-  complexity?: "S" | "M" | "L" | "XL",
+  complexity?: PricedComplexity,
 ) {
   const { organizationId } = c.get("member");
   const proposal = await options.proposals.get(
@@ -785,7 +791,7 @@ async function decideWithFreshSpec(
         expectedRevision,
         c.get("user").id,
         {
-          complexity: proposal.complexity as "S" | "M" | "L" | "XL",
+          complexity: proposal.complexity as PricedComplexity,
           amountMinor: proposal.amountMinor,
           currency: proposal.currency,
           proposalUrl,

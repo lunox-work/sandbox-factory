@@ -28,7 +28,7 @@ test("forced tool output is validated and returns actual usage metadata", async 
         calls.push(params);
         return Promise.resolve(
           message({
-            complexity: "M",
+            complexity: "XS",
             confidence: "high",
             rationale: "A bounded change across a few files.",
           }),
@@ -37,11 +37,16 @@ test("forced tool output is validated and returns actual usage metadata", async 
     },
   });
 
+  assert.equal(sizer.promptVersion, "jira-size-v2");
   const sized = await sizer.size(input);
-  assert.equal(sized.result.complexity, "M");
+  assert.equal(sized.result.complexity, "XS");
   assert.equal(sized.actualModel, "actual-model");
   assert.deepEqual(sized.usage, { inputTokens: 12, outputTokens: 8 });
   assert.equal(calls[0]?.["max_tokens"], 1_024);
+  assert.match(
+    JSON.stringify(calls[0]?.["tools"]),
+    /"enum":\["XS","S","M","L","XL","unsized"\]/,
+  );
   assert.deepEqual(calls[0]?.["tool_choice"], {
     type: "tool",
     name: "size_bounty",

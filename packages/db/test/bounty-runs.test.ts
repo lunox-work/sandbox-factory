@@ -25,6 +25,7 @@ function row(overrides: Partial<BountyRunRow> = {}): BountyRunRow {
     },
     rateCard: {
       currency: "USD",
+      xsMinor: 100,
       sMinor: 100,
       mMinor: 200,
       lMinor: 300,
@@ -215,4 +216,14 @@ test("watchdog discovery returns distinct organizations with expired work", asyn
     ["org_1", "org_2"],
   );
   assert.equal(fake.calls[0]?.filtered, true);
+});
+
+test("legacy snapshot reads add XS without changing historical rates", async () => {
+  const legacy = row();
+  Reflect.deleteProperty(legacy.rateCard, "xsMinor");
+  const fake = createFakeDb([legacy]);
+  const record = await createBountyRunStore(fake.db).get("org_1", "brn_1");
+  assert.equal(record?.rateCard.xsMinor, 100);
+  assert.equal(record?.rateCard.sMinor, 100);
+  assert.equal(record?.rateCard.revision, 1);
 });

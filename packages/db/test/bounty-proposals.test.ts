@@ -19,6 +19,7 @@ function row(overrides: Partial<BountyProposalRow> = {}): BountyProposalRow {
     specHashVersion: 1,
     rateCard: {
       currency: "USD",
+      xsMinor: 100,
       sMinor: 100,
       mMinor: 200,
       lMinor: 300,
@@ -522,4 +523,14 @@ test("re-price completion distinguishes a vanished source from a changed one", a
     ).status,
     "changed",
   );
+});
+
+test("legacy snapshot reads add XS without changing historical rates", async () => {
+  const legacy = row();
+  Reflect.deleteProperty(legacy.rateCard, "xsMinor");
+  const fake = createFakeDb([{ row: legacy, issueKey: "APP-1" }]);
+  const record = await createBountyProposalStore(fake.db).get("org_1", "bpr_1");
+  assert.equal(record?.rateCard.xsMinor, 100);
+  assert.equal(record?.rateCard.sMinor, 100);
+  assert.equal(record?.rateCard.revision, 1);
 });
