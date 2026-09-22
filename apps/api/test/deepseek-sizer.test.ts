@@ -64,6 +64,9 @@ test("a forced function call is validated and reports OpenAI-shaped usage", asyn
     type: "function",
     function: { name: "size_bounty" },
   });
+  // Thinking mode rejects a forced tool_choice outright, so every request
+  // turns it off.
+  assert.deepEqual(calls[0]?.["thinking"], { type: "disabled" });
   // The system prompt is a message here, not a top-level field.
   const messages = calls[0]?.["messages"] as { role: string }[];
   assert.equal(messages[0]?.role, "system");
@@ -272,5 +275,95 @@ test("the default client maps a non-2xx status onto a fixed error code", async (
     );
   } finally {
     await server.close();
+  }
+});
+
+test("the default client posts to /chat/completions and classifies HTTP status", async () => {
+  const originalFetch = globalThis.fetch;
+  const requests: { url: string; init: RequestInit }[] = [];
+  let status = 200;
+  globalThis.fetch = ((url: string | URL | Request, init?: RequestInit) => {
+    requests.push({ url: String(url), init: init ?? {} });
+    return Promise.resolve(
+      status === 200
+        ? new Response(
+            JSON.stringify(
+              completion({
+                complexity: "S",
+                confidence: "high",
+                rationale: "A small change.",
+              }),
+            ),
+            { status, headers: { "content-type": "application/json" } },
+          )
+        : new Response("provider body that must not surface", {
+            status,
+            headers: { "retry-after": "0" },
+          }),
+    );
+  }) as typeof fetch;
+
+  try {
+    const sizer = new DeepSeekSizer({
+      apiKey: "sk-test",
+      model: "requested-deepseek-model",
+      baseUrl: "https://gateway.example.test/v1/",
+      sleep: () => Promise.resolve(),
+    });
+    const sized = await sizer.size(input);
+    assert.equal(sized.result.complexity, "S");
+    // A trailing slash on the base URL does not double up.
+    assert.equal(
+      requests[0]?.url,
+      "https://gateway.example.test/v1/chat/completions",
+    );
+    const headers = requests[0]?.init.headers as Record<string, string>;
+    assert.equal(headers["authorization"], "Bearer sk-test");
+    const body = JSON.parse(String(requests[0]?.init.body)) as Record<
+      string,
+      unknown
+    >;
+    assert.equal(body["model"], "requested-deepseek-model");
+    // What DeepSeek actually receives: thinking off, so the forced call is
+    // accepted.
+    assert.deepEqual(body["thinking"], { type: "disabled" });
+
+    // 401 is a configuration stop; the body is dropped.
+    status = 401;
+    await assert.rejects(
+      sizer.size(input),
+      (error: unknown) =>
+        error instanceof SizerError &&
+        error.code === "sizing_configuration" &&
+        error.stopsRun,
+    );
+
+    // 500 is transient: retried once, then a provider failure.
+    status = 500;
+    const before = requests.length;
+    await assert.rejects(
+      sizer.size(input),
+      (error: unknown) =>
+        error instanceof SizerError && error.code === "sizing_provider",
+    );
+    assert.equal(requests.length - before, 2);
+
+    // Without a key or base URL, the public API is addressed with an empty
+    // bearer, and the 401 that follows is the same configuration stop.
+    status = 401;
+    const bare = new DeepSeekSizer({ model: "requested-deepseek-model" });
+    await assert.rejects(bare.size(input));
+    assert.equal(
+      requests.at(-1)?.url,
+      "https://api.deepseek.com/chat/completions",
+    );
+    assert.equal(
+      (requests.at(-1)?.init.headers as Record<string, string>)[
+        "authorization"
+      ],
+      "Bearer ",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
   }
 });

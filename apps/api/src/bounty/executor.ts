@@ -52,7 +52,11 @@ export interface BountyExecutorOptions {
     organizationId: string,
     operationId: string,
   ) => void;
-  readonly onBackgroundError?: (code: string) => void;
+  /**
+   * Called when `execute` itself throws. `code` is fixed; `error` is the
+   * thrown value, for the operator's log — it is never sent to a client.
+   */
+  readonly onBackgroundError?: (code: string, error?: unknown) => void;
 }
 
 export class BountyExecutor {
@@ -64,8 +68,8 @@ export class BountyExecutor {
 
   /** Starts after the queued row commits; failures are observed as fixed codes. */
   start(organizationId: string, runId: string): void {
-    void this.execute(organizationId, runId).catch(() => {
-      this.#options.onBackgroundError?.("bounty_executor_failed");
+    void this.execute(organizationId, runId).catch((error: unknown) => {
+      this.#options.onBackgroundError?.("bounty_executor_failed", error);
     });
   }
 
@@ -198,7 +202,10 @@ export class BountyExecutor {
             controller.signal,
           );
           if (outcome.fatalCode !== undefined) {
-            fatalCode = outcome.fatalCode;
+            // The first fatal code is the cause. Aborting the controller
+            // cancels the other workers mid-request, and their resulting
+            // `worker_lost` must not overwrite it.
+            fatalCode ??= outcome.fatalCode;
             controller.abort();
           }
           if (outcome.value !== undefined) {

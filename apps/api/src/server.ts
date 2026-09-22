@@ -203,7 +203,7 @@ const bountyExecutor =
               onWritebackCreated: (organizationId, operationId) =>
                 bountyDelivery.start(organizationId, operationId),
             }),
-        onBackgroundError: (code) => console.error(code),
+        onBackgroundError: (code, error) => console.error(code, error),
       });
 const jira =
   jiraOAuth === undefined

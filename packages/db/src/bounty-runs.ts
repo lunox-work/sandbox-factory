@@ -3,7 +3,7 @@ import type {
   BountySelection,
   RateCardSnapshot,
 } from "sandbox-factory";
-import { and, desc, eq, lt, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, lt, or, sql } from "drizzle-orm";
 
 import type { Database } from "./errors.js";
 import { generateId } from "./mapping.js";
@@ -333,8 +333,8 @@ export function createBountyRunStore(db: Database): BountyRunStore {
             eq(bountyRun.id, runId),
             eq(bountyRun.status, "running"),
             eq(bountyRun.leaseToken, leaseToken),
-            sql`${bountyRun.leaseExpiresAt} > ${now}`,
-            sql`${bountyRun.deadlineAt} > ${now}`,
+            gt(bountyRun.leaseExpiresAt, now),
+            gt(bountyRun.deadlineAt, now),
           ),
         )
         .returning()) as BountyRunRow[];
@@ -355,8 +355,8 @@ export function createBountyRunStore(db: Database): BountyRunStore {
             eq(bountyRun.id, runId),
             eq(bountyRun.status, "running"),
             eq(bountyRun.leaseToken, leaseToken),
-            sql`${bountyRun.leaseExpiresAt} > ${now}`,
-            sql`${bountyRun.deadlineAt} > ${now}`,
+            gt(bountyRun.leaseExpiresAt, now),
+            gt(bountyRun.deadlineAt, now),
             sql`jsonb_array_length(${bountyRun.outcomes}) < COALESCE((${bountyRun.selection}->>'maxTickets')::int, 50)`,
           ),
         )
@@ -391,8 +391,8 @@ export function createBountyRunStore(db: Database): BountyRunStore {
             eq(bountyRun.id, runId),
             eq(bountyRun.status, "running"),
             eq(bountyRun.leaseToken, leaseToken),
-            sql`${bountyRun.leaseExpiresAt} > ${now}`,
-            sql`${bountyRun.deadlineAt} > ${now}`,
+            gt(bountyRun.leaseExpiresAt, now),
+            gt(bountyRun.deadlineAt, now),
           ),
         )
         .returning()) as BountyRunRow[];

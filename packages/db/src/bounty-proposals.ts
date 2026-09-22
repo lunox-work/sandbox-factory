@@ -5,7 +5,7 @@ import type {
   PricedComplexity,
   SizingConfidence,
 } from "sandbox-factory";
-import { and, desc, eq, inArray, lt, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, lt, or, sql } from "drizzle-orm";
 
 import type { Database } from "./errors.js";
 import { jiraWriteGranted, splitScopes } from "./jira-connections.js";
@@ -329,8 +329,8 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
               eq(bountyRun.id, input.runId),
               eq(bountyRun.status, "running"),
               eq(bountyRun.leaseToken, leaseToken),
-              sql`${bountyRun.leaseExpiresAt} > ${now}`,
-              sql`${bountyRun.deadlineAt} > ${now}`,
+              gt(bountyRun.leaseExpiresAt, now),
+              gt(bountyRun.deadlineAt, now),
             ),
           )
           .returning()) as BountyRunRow[];
@@ -638,8 +638,8 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
               eq(bountyRun.sourceProposalId, sourceProposalId),
               eq(bountyRun.sourceRevision, sourceRevision),
               eq(bountyRun.leaseToken, leaseToken),
-              sql`${bountyRun.leaseExpiresAt} > ${now}`,
-              sql`${bountyRun.deadlineAt} > ${now}`,
+              gt(bountyRun.leaseExpiresAt, now),
+              gt(bountyRun.deadlineAt, now),
             ),
           )
           .returning()) as BountyRunRow[];

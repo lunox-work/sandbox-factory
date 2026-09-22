@@ -11,6 +11,12 @@ import { after, before, describe, test } from "node:test";
 
 import postgres from "postgres";
 
+import {
+  createBountyProposalStore,
+  createBountyRunStore,
+  createBountyWritebackStore,
+  createConnection,
+} from "../src/index.js";
 import { runMigrations } from "../src/migrate.js";
 
 const ADMIN_URL =
@@ -72,7 +78,8 @@ describe("bounty database concurrency", () => {
         remote_created_at, remote_updated_at
       ) values
         ('issue_race', 'org_bounty', 'board_bounty', '1001', 'DEMO-1', 'new', now(), now()),
-        ('issue_rollback', 'org_bounty', 'board_bounty', '1002', 'DEMO-2', 'new', now(), now())
+        ('issue_rollback', 'org_bounty', 'board_bounty', '1002', 'DEMO-2', 'new', now(), now()),
+        ('issue_lease', 'org_bounty', 'board_bounty', '1003', 'DEMO-3', 'new', now(), now())
     `;
   });
 
@@ -147,6 +154,112 @@ describe("bounty database concurrency", () => {
       attempts.filter((attempt) => attempt.status === "rejected").length,
       1,
     );
+  });
+
+  test("lease-fenced updates bind their timestamps for the driver", async () => {
+    // Every lease-fenced update compares `lease_expires_at` and
+    // `deadline_at` with a `Date`. Through Drizzle's postgres-js driver a
+    // Date interpolated into a raw `sql` template reaches the wire unmapped
+    // and the driver throws, while `gt(column, date)` maps it through the
+    // column. The unit tests run on a fake that never serializes, so this is
+    // the only place the difference shows.
+    const connection = createConnection({ url: scratchUrl(), max: 2 });
+    try {
+      const runs = createBountyRunStore(connection.db);
+      const proposals = createBountyProposalStore(connection.db);
+      const writebacks = createBountyWritebackStore(connection.db);
+      await insertRun("run_lease", "request-lease", "queued");
+
+      const now = new Date();
+      const claimed = await runs.claim(
+        "org_bounty",
+        "run_lease",
+        "lease_1",
+        now,
+      );
+      assert.equal(claimed?.status, "running");
+      assert.equal(
+        await runs.heartbeat(
+          "org_bounty",
+          "run_lease",
+          "lease_1",
+          new Date(now.getTime() + 1_000),
+        ),
+        true,
+      );
+      assert.equal(
+        await runs.recordOutcome("org_bounty", "run_lease", "lease_1", {
+          externalIssueId: "1003",
+          issueKey: "DEMO-3",
+          status: "proposed",
+        }),
+        true,
+      );
+
+      const created = await proposals.createForLease("org_bounty", "lease_1", {
+        runId: "run_lease",
+        jiraIssueId: "issue_lease",
+        specHash: "c".repeat(64),
+        specHashVersion: 1,
+        rateCard,
+        sizing: {
+          complexity: "M",
+          confidence: "high",
+          rationale: "A bounded medium change.",
+        },
+        inputTruncated: false,
+        actualModel: "model-test",
+        promptVersion: "v1",
+        amountMinor: 200,
+        currency: "USD",
+      });
+      assert.equal(created.status, "created");
+      if (created.status !== "created") return;
+
+      const approved = await writebacks.approveWithIntent(
+        "org_bounty",
+        created.proposal.id,
+        created.proposal.revision,
+        "user_bounty",
+        {
+          complexity: "M",
+          amountMinor: 200,
+          currency: "USD",
+          proposalUrl: "https://example.test/proposals/1",
+        },
+      );
+      assert.equal(approved.status, "created");
+      if (approved.status !== "created") return;
+      const writebackNow = new Date();
+      const operation = await writebacks.claim(
+        "org_bounty",
+        approved.operation.id,
+        "lease_2",
+        writebackNow,
+      );
+      assert.equal(operation?.status, "running");
+      assert.equal(
+        await writebacks.heartbeat(
+          "org_bounty",
+          approved.operation.id,
+          "lease_2",
+          new Date(writebackNow.getTime() + 1_000),
+        ),
+        true,
+      );
+
+      const finished = await runs.finish(
+        "org_bounty",
+        "run_lease",
+        "lease_1",
+        "succeeded",
+        { candidatesScanned: 1 },
+      );
+      assert.equal(finished?.status, "succeeded");
+      assert.equal(finished?.outcomes.length, 1);
+    } finally {
+      await connection.close();
+    }
   });
 
   test("a failed replacement restores the source proposal", async () => {

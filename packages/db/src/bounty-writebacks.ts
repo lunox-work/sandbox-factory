@@ -1,4 +1,4 @@
-import { and, eq, lt, or, sql } from "drizzle-orm";
+import { and, eq, gt, lt, or, sql } from "drizzle-orm";
 
 import type { Database } from "./errors.js";
 import { generateId } from "./mapping.js";
@@ -324,7 +324,7 @@ export function createBountyWritebackStore(db: Database): BountyWritebackStore {
             eq(bountyWriteback.id, id),
             eq(bountyWriteback.status, "running"),
             eq(bountyWriteback.leaseToken, leaseToken),
-            sql`${bountyWriteback.leaseExpiresAt} > ${now}`,
+            gt(bountyWriteback.leaseExpiresAt, now),
           ),
         )
         .returning();
@@ -342,7 +342,7 @@ export function createBountyWritebackStore(db: Database): BountyWritebackStore {
             eq(bountyWriteback.status, "running"),
             eq(bountyWriteback.step, "comment"),
             eq(bountyWriteback.leaseToken, leaseToken),
-            sql`${bountyWriteback.leaseExpiresAt} > ${now}`,
+            gt(bountyWriteback.leaseExpiresAt, now),
           ),
         )
         .returning();
@@ -366,7 +366,7 @@ export function createBountyWritebackStore(db: Database): BountyWritebackStore {
             eq(bountyWriteback.id, id),
             eq(bountyWriteback.status, "running"),
             eq(bountyWriteback.leaseToken, leaseToken),
-            sql`${bountyWriteback.leaseExpiresAt} > ${now}`,
+            gt(bountyWriteback.leaseExpiresAt, now),
           ),
         )
         .returning()) as BountyWritebackRow[];
@@ -391,7 +391,7 @@ export function createBountyWritebackStore(db: Database): BountyWritebackStore {
             eq(bountyWriteback.status, "running"),
             eq(bountyWriteback.step, "label"),
             eq(bountyWriteback.leaseToken, leaseToken),
-            sql`${bountyWriteback.leaseExpiresAt} > ${now}`,
+            gt(bountyWriteback.leaseExpiresAt, now),
           ),
         )
         .returning()) as BountyWritebackRow[];

@@ -395,6 +395,29 @@ test("provider configuration failure is fatal and creates no draft", async () =>
   assert.equal(state.proposalInputs.length, 0);
 });
 
+test("the first fatal code survives the cancellation it triggers", async () => {
+  // Three workers start together. The first provider answer is a
+  // configuration stop; the abort it triggers cancels the other two mid-call,
+  // and the real sizers report that as `sizing_cancelled`. The recorded cause
+  // must stay the configuration stop, not the `worker_lost` from the cascade.
+  const state = harness({
+    candidates: [issue("1"), issue("2"), issue("3")],
+    sizer: new FakeSizer("fake", "jira-size-v1", [
+      new SizerError("sizing_configuration", true),
+      new SizerError("sizing_cancelled", false),
+      new SizerError("sizing_cancelled", false),
+    ]),
+  });
+  await state.executor.execute("org_1", "brn_1");
+
+  assert.equal(state.finishes[0]?.status, "failed");
+  assert.equal(
+    (state.finishes[0]?.details as { fatalErrorCode: string }).fatalErrorCode,
+    "sizing_configuration",
+  );
+  assert.equal(state.proposalInputs.length, 0);
+});
+
 test("invalid Jira dates fail one ticket without inventing timestamps", async () => {
   const state = harness({
     candidates: [issue("1", { created: null }), issue("2", { updated: "bad" })],

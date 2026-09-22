@@ -136,6 +136,13 @@ export class DeepSeekSizer implements Sizer {
     return {
       model: this.model,
       max_tokens: 1_024,
+      // DeepSeek's current models (deepseek-v4-pro, deepseek-flash) run in
+      // thinking mode by default, and thinking mode rejects a forced
+      // `tool_choice` with 400 "Thinking mode does not support this
+      // tool_choice" — which `isConfigurationError` would turn into a run
+      // stop. Sizing is one bounded classification, so thinking buys nothing
+      // here and would otherwise spend the `max_tokens` budget on reasoning.
+      thinking: { type: "disabled" },
       messages: [
         { role: "system", content: JIRA_SIZE_SYSTEM_PROMPT },
         {
