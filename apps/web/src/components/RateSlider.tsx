@@ -16,6 +16,17 @@ const MIN_TRACK_WIDTH = 300;
 const EDGE_SPACE = 0.1;
 const SLIDER_STEP = 5;
 
+/**
+ * Snap to the absolute step grid rather than stepping relative to the current
+ * value: an off-grid 21 moves to 20 or 25, never to 16 or 26. `direction`
+ * rounds down (-1), up (1) or to the nearest (0).
+ */
+function snapToStep(value: number, direction: -1 | 0 | 1 = 0): number {
+  const round =
+    direction === -1 ? Math.floor : direction === 1 ? Math.ceil : Math.round;
+  return round(value / SLIDER_STEP) * SLIDER_STEP;
+}
+
 function RateHandle({
   size,
   value,
@@ -89,11 +100,9 @@ function RateHandle({
       start.min,
       Math.min(
         start.max,
-        start.initialValue +
-          Math.round(
-            ((clientX - start.x) * start.unitsPerPixel) / SLIDER_STEP,
-          ) *
-            SLIDER_STEP,
+        snapToStep(
+          start.initialValue + (clientX - start.x) * start.unitsPerPixel,
+        ),
       ),
     );
     return start.value;
@@ -214,18 +223,10 @@ function RateHandle({
             moved: false,
             value: sliderProps.now,
             initialValue: sliderProps.now,
-            min: Math.max(
-              sliderProps.min,
-              sliderProps.now +
-                Math.ceil((dragMin - sliderProps.now) / SLIDER_STEP) *
-                  SLIDER_STEP,
-            ),
-            max: Math.min(
-              sliderProps.max,
-              sliderProps.now +
-                Math.floor((dragMax - sliderProps.now) / SLIDER_STEP) *
-                  SLIDER_STEP,
-            ),
+            // Clamp to the grid itself, so a snapped value is never pulled
+            // back off-grid by its own bounds.
+            min: Math.max(sliderProps.min, snapToStep(dragMin, 1)),
+            max: Math.min(sliderProps.max, snapToStep(dragMax, -1)),
             unitsPerPixel: Math.max(
               (sliderProps.scaleMax - sliderProps.scaleMin) /
                 (width * sliderProps.positionScale),
@@ -273,18 +274,27 @@ function RateHandle({
           sliderProps.onDragging(true);
         }}
         onKeyDown={(event) => {
-          const step =
-            (event.key === "PageUp" || event.key === "PageDown" ? 10 : 1) *
-            SLIDER_STEP;
+          const pages =
+            event.key === "PageUp" || event.key === "PageDown" ? 10 : 1;
+          // An off-grid value snaps onto the grid on the first press, then
+          // moves a whole step at a time: 21 → 20 → 15, never 21 → 16.
+          const up = (): number =>
+            snapToStep(sliderProps.now, 1) === sliderProps.now
+              ? sliderProps.now + pages * SLIDER_STEP
+              : snapToStep(sliderProps.now, 1) + (pages - 1) * SLIDER_STEP;
+          const down = (): number =>
+            snapToStep(sliderProps.now, -1) === sliderProps.now
+              ? sliderProps.now - pages * SLIDER_STEP
+              : snapToStep(sliderProps.now, -1) - (pages - 1) * SLIDER_STEP;
           const next =
             event.key === "Home"
               ? sliderProps.min
               : event.key === "End"
                 ? sliderProps.max
                 : ["ArrowRight", "ArrowUp", "PageUp"].includes(event.key)
-                  ? sliderProps.now + step
+                  ? up()
                   : ["ArrowLeft", "ArrowDown", "PageDown"].includes(event.key)
-                    ? sliderProps.now - step
+                    ? down()
                     : null;
           if (next !== null) {
             event.preventDefault();

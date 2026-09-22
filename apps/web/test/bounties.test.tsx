@@ -1518,7 +1518,7 @@ test.each([
   },
 );
 
-test("manual rates keep arbitrary whole numbers while keyboard adjustments use five", async () => {
+test("manual rates keep arbitrary whole numbers while keyboard adjustments snap to five", async () => {
   const fetchMock = vi.fn((_url: string, init?: RequestInit) =>
     Promise.resolve(
       Response.json({
@@ -1541,12 +1541,57 @@ test("manual rates keep arbitrary whole numbers while keyboard adjustments use f
   await userEvent.keyboard("{Enter}");
   expect(displayedRate("M")).toBe("USD247");
   screen.getByRole("slider", { name: "M rate" }).focus();
+  // An off-grid rate snaps onto the multiple-of-five grid before stepping,
+  // so 247 moves to 250 and 245, never to 252 and 242.
   await userEvent.keyboard("{ArrowRight}");
-  expect(displayedRate("M")).toBe("USD252");
+  expect(displayedRate("M")).toBe("USD250");
+  await userEvent.keyboard("{ArrowRight}");
+  expect(displayedRate("M")).toBe("USD255");
   await userEvent.keyboard("{ArrowLeft}");
-  expect(displayedRate("M")).toBe("USD247");
+  expect(displayedRate("M")).toBe("USD250");
+  await userEvent.keyboard("{ArrowLeft}");
+  expect(displayedRate("M")).toBe("USD245");
   await editEndpoint("XS", "13");
   await editEndpoint("XL", "413");
   expect(displayedRate("XS")).toBe("USD13");
   expect(displayedRate("XL")).toBe("USD413");
+});
+
+test("keyboard adjustments land on the grid whichever way an off-grid rate moves", async () => {
+  const fetchMock = vi.fn((_url: string, init?: RequestInit) =>
+    Promise.resolve(
+      Response.json({
+        rateCard:
+          init?.method === "PUT"
+            ? {
+                ...savedRateCard,
+                ...JSON.parse(String(init.body)),
+                revision: 2,
+              }
+            : savedRateCard,
+      }),
+    ),
+  );
+  vi.stubGlobal("fetch", fetchMock);
+  render(<RateCardEditor organizationId="org_1" role="admin" />);
+  const input = await screen.findByRole("textbox", { name: "M rate" });
+  await userEvent.clear(input);
+  // M sits between S (100) and L (300), so use an off-grid value in range.
+  await userEvent.paste("221");
+  await userEvent.keyboard("{Enter}");
+  expect(displayedRate("M")).toBe("USD221");
+  const slider = screen.getByRole("slider", { name: "M rate" });
+  slider.focus();
+  // Stepping down from 221 walks 220, 215, 210 rather than 216, 211, 206.
+  for (const expected of ["USD220", "USD215", "USD210"]) {
+    await userEvent.keyboard("{ArrowLeft}");
+    expect(displayedRate("M")).toBe(expected);
+  }
+  // A page step snaps first too, so it never leaves the grid.
+  await userEvent.clear(input);
+  await userEvent.paste("221");
+  await userEvent.keyboard("{Enter}");
+  slider.focus();
+  await userEvent.keyboard("{PageUp}");
+  expect(displayedRate("M")).toBe("USD270");
 });
