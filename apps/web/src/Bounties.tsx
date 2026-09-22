@@ -988,6 +988,9 @@ function ProposalPeek({
   const priced = proposal.amountMinor !== null;
   const open = proposal.status === "proposed";
   const key = proposal.liveKey ?? proposal.issueKey;
+  // The model pill and the XL warning drop a row when the notes are shown.
+  const lowerRow =
+    proposal.sizedBy === "reviewer" ? "sm:row-start-3" : "sm:row-start-2";
   return (
     <div className="flex flex-col gap-5" data-testid="proposal-detail">
       {/*
@@ -1055,31 +1058,25 @@ function ProposalPeek({
                 The amount level with the size that sets it, and the
                 sizing model level with the one warning a size can
                 carry: a two-by-two grid, each row centred on itself.
-                On a phone it stacks in reading order instead.
+                When a reviewer has overruled the model, a row of notes
+                sits between the two — what the model said on the left,
+                under the amount, and who set the size on the right,
+                under the size — one row, so the two are level whatever
+                the heights above them. On a phone it stacks in reading
+                order instead, the notes still sharing their line.
               */}
               <div className="grid grid-cols-1 items-center gap-x-6 gap-y-2.5 sm:grid-cols-[1fr_auto]">
-                {/*
-                  The amount, and under it what the model said when a
-                  reviewer has since overruled it: the model's answer stays
-                  on the model's side, level with the reviewer's note under
-                  the size on the other.
-                */}
-                <div className="flex flex-col gap-1.5 sm:col-start-1 sm:row-start-1">
-                  <span
-                    className={`text-3xl leading-none font-semibold tracking-tight ${
-                      priced ? "tabular-nums" : "text-muted-foreground"
-                    }`}
-                  >
-                    {money(proposal.amountMinor, proposal.currency)}
-                  </span>
-                  {proposal.sizedBy === "reviewer" && (
-                    <span className="text-muted-foreground text-xs">
-                      the model said {proposal.modelComplexity}
-                    </span>
-                  )}
-                </div>
+                <span
+                  className={`text-3xl leading-none font-semibold tracking-tight sm:col-start-1 sm:row-start-1 ${
+                    priced ? "tabular-nums" : "text-muted-foreground"
+                  }`}
+                >
+                  {money(proposal.amountMinor, proposal.currency)}
+                </span>
                 {/* Who sized it, as a pill wearing the vendor's mark. */}
-                <span className="inline-flex w-fit items-center gap-1.5 rounded-full border py-1 pr-2.5 pl-2 text-xs sm:col-start-1 sm:row-start-2">
+                <span
+                  className={`inline-flex w-fit items-center gap-1.5 rounded-full border py-1 pr-2.5 pl-2 text-xs sm:col-start-1 ${lowerRow}`}
+                >
                   <span className="flex size-3.5 shrink-0 items-center [&>svg]:size-3.5">
                     <ModelIcon model={proposal.actualModel} />
                   </span>
@@ -1105,7 +1102,7 @@ function ProposalPeek({
                     {CONFIDENCE_MARK[proposal.modelConfidence].icon}
                   </span>
                 </span>
-                <div className="flex flex-col gap-1.5 sm:col-start-2 sm:row-start-1 sm:items-end sm:justify-self-end">
+                <div className="sm:col-start-2 sm:row-start-1 sm:justify-self-end">
                   {canDecide && open ? (
                     /*
                       The size is the resize: a row of cards, one per size,
@@ -1146,19 +1143,22 @@ function ProposalPeek({
                   ) : (
                     <SizeCard size={proposal.complexity} current />
                   )}
-                  {proposal.sizedBy === "reviewer" && (
-                    <span className="text-muted-foreground text-xs sm:text-right">
-                      set by a reviewer
-                    </span>
-                  )}
                 </div>
+                {proposal.sizedBy === "reviewer" && (
+                  <div className="text-muted-foreground flex items-baseline justify-between gap-x-6 text-xs sm:col-span-2 sm:row-start-2">
+                    <span>the model said {proposal.modelComplexity}</span>
+                    <span className="text-right">set by a reviewer</span>
+                  </div>
+                )}
                 {/*
                   The one warning a size can carry, level with the model
                   and under the size it is about: an XL is a hint that
                   the ticket is two.
                 */}
                 {proposal.complexity === "XL" && (
-                  <span className="flex items-center gap-1 text-xs text-amber-700 dark:text-amber-400 sm:col-start-2 sm:row-start-2 sm:justify-self-end">
+                  <span
+                    className={`flex items-center gap-1 text-xs text-amber-700 dark:text-amber-400 sm:col-start-2 sm:justify-self-end ${lowerRow}`}
+                  >
                     <TriangleAlert className="size-3.5 shrink-0" />
                     Consider splitting
                   </span>
