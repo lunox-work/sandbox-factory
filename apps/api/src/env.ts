@@ -119,7 +119,10 @@ const envSchema = z.object({
     z.string().min(1).optional(),
   ),
   // Override for a proxy or a self-hosted gateway. Unset, the public API.
-  DEEPSEEK_BASE_URL: z.string().url().optional(),
+  DEEPSEEK_BASE_URL: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.string().url().optional(),
+  ),
 
   // ---- build provenance ---------------------------------------------------
   //

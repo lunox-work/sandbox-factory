@@ -7,14 +7,15 @@ import type {
   JiraConnectionInput,
   JiraConnectionStore,
   JiraConnectionSummary,
+  JiraConnectionTokens,
   RegisterBoardInput,
   SyncBoardInput,
 } from "@sandbox-factory/db";
 
-import { READ_SCOPES } from "@sandbox-factory/jira";
+import { READ_SCOPES, WRITE_SCOPES } from "@sandbox-factory/jira";
 
 import type { Auth } from "../src/auth.js";
-import { signState, verifyState } from "../src/jira/state.js";
+import { signState } from "../src/jira/state.js";
 import { createApp } from "../src/routes.js";
 
 /**
@@ -66,6 +67,7 @@ function fakeConnections(
     healthy: true,
     scopes: ["read:jira-work"],
     resourceScopes: ["read:jira-work"],
+    writeGranted: false,
     credentialRevision: 1,
     createdAt: "2026-09-21T00:00:00.000Z",
     ...overrides,
@@ -180,9 +182,9 @@ function fakeAtlassian(
             refresh_token: "refresh-1",
             expires_in: 3600,
             // Built from the real list rather than restated: a scope added to
-            // READ_SCOPES would otherwise read as one Atlassian withheld, and
+            // WRITE_SCOPES would otherwise read as one Atlassian withheld, and
             // every happy-path test here would fail as "partial-scopes".
-            scope: options.scope ?? READ_SCOPES.join(" "),
+            scope: options.scope ?? WRITE_SCOPES.join(" "),
           },
         ),
         { status: options.tokenStatus ?? 200 },
@@ -217,7 +219,6 @@ function fakeBoards(
       minAgeDays: 0,
       minSpecChars: 0,
     },
-    writebackEnabled: false,
     createdAt: "2026-09-21T00:00:00.000Z",
     ...overrides,
   };
@@ -461,47 +462,47 @@ test("connect uses the second app's client id, not the sign-in one", async () =>
   assert.equal(location.searchParams.get("client_id"), "jira-client-id");
 });
 
-test("write consent is target-scoped and requests the write grant", async () => {
+test("every consent asks for the write grant", async () => {
+  // Write-back is no longer a second trip to Atlassian started from a board:
+  // the permission is asked for where the site is connected, once. A person
+  // who withholds it still gets a connected, read-only site.
   const { app } = appWith();
   const response = await app.request(
-    "/api/v1/orgs/org_1/jira/connect?intent=write&connectionId=jrc_1&returnTo=/o/acme/jira",
+    "/api/v1/orgs/org_1/jira/connect?returnTo=/o/acme/jira",
     { headers: signedIn },
   );
   assert.equal(response.status, 302);
   const target = new URL(response.headers.get("location")!);
-  assert.match(target.searchParams.get("scope") ?? "", /write:jira-work/);
-  const state = verifyState(
-    SECRET,
-    target.searchParams.get("state") ?? undefined,
-    dana.id,
-  );
-  assert.equal(state.ok, true);
-  if (state.ok) {
-    assert.equal(state.state.intent, "write");
-    assert.equal(state.state.connectionId, "jrc_1");
-    assert.equal(state.state.cloudId, "cloud-1");
-  }
+  const scopes = (target.searchParams.get("scope") ?? "").split(" ");
+  assert.deepEqual(scopes, [...WRITE_SCOPES]);
 });
 
-test("reconnecting a write-capable site preserves its write scopes", async () => {
-  const connections = fakeConnections({
-    scopes: ["read:jira-work", "write:jira-work"],
-    resourceScopes: ["read:jira-work", "write:jira-work"],
+test("a withheld write scope is reported as a missing permission, not a failure", async () => {
+  const connections = fakeConnections();
+  const { app } = appWith({
+    connections,
+    fetch: fakeAtlassian({
+      scope: READ_SCOPES.join(" "),
+      boards: {},
+    }),
   });
-  const { app } = appWith({ connections });
+  const state = signState(SECRET, {
+    organizationId: "org_1",
+    userId: dana.id,
+    returnTo: "/o/acme/jira",
+  });
+
   const response = await app.request(
-    "/api/v1/orgs/org_1/jira/connect?connectionId=jrc_1",
+    `/api/v1/jira/callback?code=abc&state=${encodeURIComponent(state)}`,
     { headers: signedIn },
   );
-  const target = new URL(response.headers.get("location")!);
-  assert.match(target.searchParams.get("scope") ?? "", /write:jira-work/);
-  const state = verifyState(
-    SECRET,
-    target.searchParams.get("state") ?? undefined,
-    dana.id,
-  );
-  assert.equal(state.ok, true);
-  if (state.ok) assert.equal(state.state.intent, "write");
+
+  assert.equal(response.status, 302);
+  const location = new URL(response.headers.get("location") ?? "");
+  // Connected all the same: the site reads fine, and approvals stay here.
+  assert.equal(connections.upserts.length, 1);
+  assert.equal(location.searchParams.get("jira"), "partial-scopes");
+  assert.equal(location.searchParams.get("missing"), "write:jira-work");
 });
 
 test("a plain member may not connect", async () => {
@@ -1320,7 +1321,10 @@ test("clearing maxAgeDays survives as a null rather than being dropped", async (
   assert.deepEqual(boards.updates, [{ selection: { maxAgeDays: null } }]);
 });
 
-test("write-back requires a verified per-site write grant", async () => {
+test("write-back is not a board setting", async () => {
+  // It used to be a per-board switch behind a second consent. The grant is
+  // now the site's, so a client still sending the flag is sending the wrong
+  // shape, and nothing is written.
   const { app, boards } = appWith();
 
   const response = await app.request("/api/v1/orgs/org_1/jira/boards/jrb_1", {
@@ -1329,26 +1333,8 @@ test("write-back requires a verified per-site write grant", async () => {
     body: JSON.stringify({ writebackEnabled: true }),
   });
 
-  assert.equal(response.status, 409);
-  const body = (await response.json()) as { code: string; consentUrl: string };
-  assert.equal(body.code, "write_consent_required");
-  assert.match(body.consentUrl, /intent=write/);
+  assert.equal(response.status, 400);
   assert.deepEqual(boards.updates, []);
-});
-
-test("a verified write grant allows one board to opt in", async () => {
-  const connections = fakeConnections({
-    scopes: ["read:jira-work", "write:jira-work"],
-    resourceScopes: ["read:jira-work", "write:jira-work"],
-  });
-  const { app, boards } = appWith({ connections });
-  const response = await app.request("/api/v1/orgs/org_1/jira/boards/jrb_1", {
-    method: "PATCH",
-    headers: { ...signedIn, "content-type": "application/json" },
-    body: JSON.stringify({ writebackEnabled: true }),
-  });
-  assert.equal(response.status, 200);
-  assert.deepEqual(boards.updates, [{ writebackEnabled: true }]);
 });
 
 test("the preview returns the board's oldest backlog tickets", async () => {
@@ -1584,4 +1570,57 @@ test("a ticket Jira will not show is a 404, not a 502", async () => {
   );
 
   assert.equal(response.status, 404);
+});
+
+test("two requests landing on an expired token share one refresh", async () => {
+  // The site page syncs boards as it opens, and React's development
+  // double-mount sends that twice. Before credentials were shared per
+  // connection, each request refreshed on its own and the loser's write-back
+  // failed the revision check as an unclassified 409 — an Internal Server
+  // Error on the first visit after the token lapsed, gone on reload.
+  let stored: JiraConnectionTokens = {
+    accessToken: "stale",
+    refreshToken: "refresh-0",
+    expiresAt: "2000-01-01T00:00:00.000Z",
+    scopes: ["read:jira-work"],
+    credentialRevision: 1,
+  };
+  const connections = fakeConnections();
+  connections.tokens = () => Promise.resolve(stored);
+  connections.saveTokens = (_organizationId, _connectionId, expected, next) => {
+    // The real store's compare-and-swap: a stale revision writes nothing.
+    if (expected !== stored.credentialRevision) {
+      return Promise.resolve(false);
+    }
+    stored = { ...next, credentialRevision: expected + 1 };
+    return Promise.resolve(true);
+  };
+  let tokenCalls = 0;
+  const atlassian = fakeAtlassian({ boards: {} });
+  const fetch = ((url: string | URL | Request, init?: RequestInit) => {
+    if (String(url).endsWith("/oauth/token")) {
+      tokenCalls += 1;
+    }
+    return atlassian(url, init);
+  }) as typeof globalThis.fetch;
+  const { app } = appWith({ connections, fetch });
+
+  const responses = await Promise.all([
+    app.request("/api/v1/orgs/org_1/jira/connections/jrc_1/sync", {
+      method: "POST",
+      headers: signedIn,
+    }),
+    app.request("/api/v1/orgs/org_1/jira/connections/jrc_1/sync", {
+      method: "POST",
+      headers: signedIn,
+    }),
+  ]);
+
+  assert.deepEqual(
+    responses.map((response) => response.status),
+    [200, 200],
+  );
+  assert.equal(tokenCalls, 1);
+  assert.equal(stored.credentialRevision, 2);
+  assert.equal(stored.accessToken, "access-1");
 });

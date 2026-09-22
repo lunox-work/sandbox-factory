@@ -243,6 +243,34 @@ test("remove reports whether anything was deleted, scoped to the owner", async (
   assert.equal(await empty.remove("org_2", "jrc_1"), false);
 });
 
+test("the write grant is derived from both scope lists", async () => {
+  // The token's scopes say what Atlassian issued; the site's say what that
+  // token may do there. Either one alone is permission the other end refuses.
+  const both = store([
+    connectionRow({
+      scopes: "read:jira-work write:jira-work offline_access",
+      resourceScopes: "read:jira-work write:jira-work",
+    }),
+  ]);
+  assert.equal((await both.store.list("org_1"))[0]?.writeGranted, true);
+
+  const tokenOnly = store([
+    connectionRow({
+      scopes: "read:jira-work write:jira-work offline_access",
+      resourceScopes: "read:jira-work",
+    }),
+  ]);
+  assert.equal((await tokenOnly.store.list("org_1"))[0]?.writeGranted, false);
+
+  const siteOnly = store([
+    connectionRow({
+      scopes: "read:jira-work offline_access",
+      resourceScopes: "read:jira-work write:jira-work",
+    }),
+  ]);
+  assert.equal((await siteOnly.store.list("org_1"))[0]?.writeGranted, false);
+});
+
 test("an empty scope column reads as no scopes", async () => {
   const { store: connections } = store([connectionRow({ scopes: "" })]);
 

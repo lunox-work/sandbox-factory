@@ -406,12 +406,17 @@ export function BoardBounties({
   organizationId,
   boardId,
   role,
-  writebackEnabled,
+  writeGranted,
 }: {
   organizationId: string;
   boardId: string;
   role: string;
-  writebackEnabled: boolean;
+  /**
+   * Whether this board's site holds the write grant. Shown, not switched:
+   * the permission is asked for when a site is connected, and a site
+   * without it is connected again from the Jira page to grant it.
+   */
+  writeGranted: boolean;
 }) {
   const [runs, setRuns] = useState<BountyRunDto[]>([]);
   const [proposals, setProposals] = useState<EnrichedProposal[]>([]);
@@ -424,7 +429,6 @@ export function BoardBounties({
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [writeback, setWriteback] = useState(writebackEnabled);
   const requestGeneration = useRef(0);
 
   const base = `/api/v1/orgs/${encodeURIComponent(organizationId)}`;
@@ -480,12 +484,11 @@ export function BoardBounties({
     setLoading(true);
     setRuns([]);
     setProposals([]);
-    setWriteback(writebackEnabled);
     void refresh();
     return () => {
       requestGeneration.current += 1;
     };
-  }, [refresh, writebackEnabled]);
+  }, [refresh]);
   const active = runs.find(
     (run) => run.status === "queued" || run.status === "running",
   );
@@ -513,38 +516,6 @@ export function BoardBounties({
       }
       setError(null);
       await refresh();
-    } catch {
-      setError("Could not reach the server.");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function toggleWriteback() {
-    setBusy(true);
-    try {
-      const returnTo = window.location.pathname + window.location.search;
-      const response = await fetch(
-        `${base}/jira/boards/${encodeURIComponent(boardId)}?returnTo=${encodeURIComponent(returnTo)}`,
-        {
-          method: "PATCH",
-          credentials: "include",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ writebackEnabled: !writeback }),
-        },
-      );
-      const body = (await response.json().catch(() => ({}))) as {
-        error?: string;
-        consentUrl?: string;
-      };
-      if (!response.ok) {
-        if (body.consentUrl !== undefined)
-          window.location.href = body.consentUrl;
-        else setError(body.error ?? "Could not update Jira write-back.");
-        return;
-      }
-      setWriteback(!writeback);
-      setError(null);
     } catch {
       setError("Could not reach the server.");
     } finally {
@@ -603,28 +574,11 @@ export function BoardBounties({
           </Button>
         )}
       </div>
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border p-3">
-        <div>
-          <p className="text-sm font-medium">
-            Jira write-back: {writeback ? "On" : "Off"}
-          </p>
-          <p className="text-muted-foreground text-xs">
-            When on, future approvals post a fixed comment and add the bounty
-            label.
-          </p>
-        </div>
-        {canManage(role) && (
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={busy}
-            onClick={() => void toggleWriteback()}
-          >
-            {writeback ? "Turn off" : "Grant access and turn on"}
-          </Button>
-        )}
-      </div>
+      <p className="text-muted-foreground text-sm" data-testid="jira-writeback">
+        {writeGranted
+          ? "Approvals post a comment to the ticket and add the bounty label."
+          : "Approvals stay here: this site was connected without write access. Connect it again from the Jira page to grant it."}
+      </p>
       {!sizingAvailable && (
         <p className="text-muted-foreground text-sm">
           Sizing is not configured for this deployment.

@@ -127,6 +127,68 @@ export function connectionTokenSource(
 }
 
 /**
+ * One credential per connection per process.
+ *
+ * `OAuthCredential` collapses concurrent refreshes, but only among callers of
+ * the same instance. Built fresh per request, as it used to be, two requests
+ * landing together on an expired token — the site page syncs boards as it
+ * opens, and React's development double-mount sends that twice — each ran a
+ * refresh, and the loser's write-back failed the revision check with a 409 no
+ * route classified. That surfaced as an Internal Server Error on the first
+ * visit after the hour-long token lapsed, and vanished on reload because the
+ * winner had persisted a live pair.
+ *
+ * Keyed by the store, so a test that builds its own store gets its own
+ * credentials, and by cloud id and client id, so a row re-pointed at another
+ * site or app is never addressed through a credential built for the old one.
+ * Nothing is evicted: an entry is a closure and a cleared promise, and a
+ * process holds one per connection it has served.
+ *
+ * A credential shared across processes still races at the row; the library's
+ * reload-on-failure handles that end.
+ */
+const credentials = new WeakMap<
+  JiraConnectionStore,
+  Map<string, OAuthCredential>
+>();
+
+function sharedCredential(
+  options: JiraClientFactoryOptions,
+  organizationId: string,
+  connectionId: string,
+  cloudId: string,
+): OAuthCredential {
+  const {
+    connections,
+    clientId,
+    clientSecret,
+    fetch: fetchImpl,
+    now,
+  } = options;
+  let perStore = credentials.get(connections);
+  if (perStore === undefined) {
+    perStore = new Map();
+    credentials.set(connections, perStore);
+  }
+  // Newlines, because none of the parts may contain one and an id could in
+  // principle contain any other separator.
+  const key = [organizationId, connectionId, cloudId, clientId].join("\n");
+  let credential = perStore.get(key);
+  if (credential === undefined) {
+    credential = new OAuthCredential({
+      tokens: connectionTokenSource(connections, organizationId, connectionId),
+      clientId,
+      clientSecret,
+      cloudId,
+      ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }),
+      ...(now === undefined ? {} : { now }),
+    });
+    perStore.set(key, credential);
+  }
+  return credential;
+}
+
+/**
  * A client addressing the site a connection was granted for.
  *
  * Owner-scoped: the connection is read with the organization id in the
@@ -154,13 +216,7 @@ export async function jiraClientsFor(
   organizationId: string,
   connectionId: string,
 ): Promise<JiraClientsResult> {
-  const {
-    connections,
-    clientId,
-    clientSecret,
-    fetch: fetchImpl,
-    now,
-  } = options;
+  const { connections, fetch: fetchImpl } = options;
 
   const connection = await connections.get(organizationId, connectionId);
   if (connection === null) {
@@ -170,14 +226,12 @@ export async function jiraClientsFor(
     return { ok: false, failure: { reason: "reconnect" } };
   }
 
-  const credential = new OAuthCredential({
-    tokens: connectionTokenSource(connections, organizationId, connectionId),
-    clientId,
-    clientSecret,
-    cloudId: connection.cloudId,
-    ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }),
-    ...(now === undefined ? {} : { now }),
-  });
+  const credential = sharedCredential(
+    options,
+    organizationId,
+    connectionId,
+    connection.cloudId,
+  );
 
   return {
     ok: true,

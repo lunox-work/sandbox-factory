@@ -112,7 +112,6 @@ function harness(
     boardType: "scrum",
     projectKey: "APP",
     selection: run.selection,
-    writebackEnabled: false,
     createdAt: run.createdAt,
   };
   const boards = {
@@ -348,7 +347,7 @@ function reviewHarness(hash = "a".repeat(64)) {
       return Promise.resolve({ ok: true, proposal: current });
     },
   } as unknown as import("@sandbox-factory/db").BountyProposalStore;
-  const board = { id: "jrb_1", connectionId: "jrc_1", writebackEnabled: false };
+  const board = { id: "jrb_1", connectionId: "jrc_1" };
   const app = createApp({
     corsOrigins: ["https://app.test"],
     auth: fakeAuth(),

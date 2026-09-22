@@ -89,20 +89,8 @@ function describeOutcome(
       return {
         tone: "ok",
         title: "Jira connected",
-        detail: "We can now read the boards on that site.",
-      };
-    case "write-consented":
-      return {
-        tone: "ok",
-        title: "Jira write access granted",
-        detail: "Turn on write-back for this board to post future approvals.",
-      };
-    case "write-scope-missing":
-      return {
-        tone: "error",
-        title: "Jira write access was not granted",
         detail:
-          "Grant write:jira-work for this site, then try enabling the board again.",
+          "We can read the boards on that site, and approvals will post back to its tickets.",
       };
     case "cancelled":
       return {
@@ -121,10 +109,7 @@ function describeOutcome(
       return {
         tone: "warn",
         title: "Connected, but some permissions are missing",
-        detail:
-          missingScopes.length === 0
-            ? "Boards and sprints may not be readable."
-            : `Reading boards needs ${missingScopes.join(" and ")}. These are granular scopes: on the Atlassian console they are under the "Granular scopes" tab rather than the classic list. Without them a board reads as "not found" rather than "not permitted".`,
+        detail: describeMissingScopes(missingScopes),
       };
     case "denied":
       return {
@@ -154,6 +139,33 @@ function describeOutcome(
         detail: "The connection did not complete. Try again.",
       };
   }
+}
+
+/**
+ * What a withheld scope costs, in the words of what stops working.
+ *
+ * The write scope is named apart from the read ones because its remedy is
+ * different in kind: a site connected without it still works, read-only,
+ * and approvals simply stay here — whereas a missing read scope makes boards
+ * read as "not found", which nobody would guess was a permission.
+ */
+function describeMissingScopes(missingScopes: string[]): string {
+  const reads = missingScopes.filter((scope) => scope !== "write:jira-work");
+  const writeMissing = reads.length !== missingScopes.length;
+  const parts: string[] = [];
+  if (reads.length > 0) {
+    parts.push(
+      `Reading boards needs ${reads.join(" and ")}. These are granular scopes: on the Atlassian console they are under the "Granular scopes" tab rather than the classic list. Without them a board reads as "not found" rather than "not permitted".`,
+    );
+  }
+  if (writeMissing) {
+    parts.push(
+      "Without write:jira-work approvals stay here rather than posting to the ticket. Connect the site again to grant it.",
+    );
+  }
+  return parts.length === 0
+    ? "Boards and sprints may not be readable."
+    : parts.join(" ");
 }
 
 /**
@@ -287,6 +299,15 @@ export function ConnectionRow({
                 <TriangleAlert className="size-3" />
                 Reconnect
               </Badge>
+            )}
+            {connection.healthy && !connection.writeGranted && (
+              /*
+                A site connected before every consent asked for the write
+                scope, or whose admin withheld it. Approvals on its boards
+                stay here. Connecting it again is the remedy, and this is
+                the page that button is on.
+              */
+              <Badge variant="outline">Read-only</Badge>
             )}
           </span>
           <span className="block truncate text-sm text-muted-foreground">
@@ -1248,9 +1269,7 @@ export function JiraBoard({
       {error !== null && (
         <BoardsError
           error={error}
-          onReconnect={
-            canManage(role ?? "") ? () => connect(connectionId) : undefined
-          }
+          onReconnect={canManage(role ?? "") ? () => connect() : undefined}
           onRetry={() => void preview(boardId).then(setBacklog)}
         />
       )}
@@ -1303,7 +1322,10 @@ export function JiraBoard({
             organizationId={organizationId}
             boardId={boardId}
             role={role ?? "member"}
-            writebackEnabled={board?.writebackEnabled ?? false}
+            writeGranted={
+              connections.find((candidate) => candidate.id === connectionId)
+                ?.writeGranted ?? false
+            }
           />
         </TabsContent>
       </Tabs>
@@ -1595,11 +1617,7 @@ export function JiraSite({
             <p className="text-sm">
               Reconnect this site to read its boards again.
             </p>
-            <Button
-              type="button"
-              size="sm"
-              onClick={() => connect(connection.id)}
-            >
+            <Button type="button" size="sm" onClick={() => connect()}>
               <RefreshCw />
               Reconnect
             </Button>

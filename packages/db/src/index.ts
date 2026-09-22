@@ -63,7 +63,10 @@ export type {
   WritebackKind,
   WritebackStatus,
 } from "./bounty-writebacks.js";
-export { createJiraConnectionStore } from "./jira-connections.js";
+export {
+  createJiraConnectionStore,
+  jiraWriteGranted,
+} from "./jira-connections.js";
 export type {
   JiraConnectionInput,
   JiraConnectionStore,

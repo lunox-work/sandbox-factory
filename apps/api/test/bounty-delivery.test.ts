@@ -93,7 +93,8 @@ function harness(
     labelError?: Error;
     comments?: unknown[];
     commentsError?: Error;
-    boardEnabled?: boolean;
+    /** Whether the board's site holds the write grant. Default yes. */
+    writeGranted?: boolean;
     boardMissing?: boolean;
     claimMiss?: boolean;
     specHash?: string;
@@ -203,10 +204,7 @@ function harness(
           options.boardMissing
             ? null
             : {
-                board: {
-                  id: "jrb_1",
-                  writebackEnabled: options.boardEnabled ?? true,
-                },
+                board: { id: "jrb_1" },
                 connectionId: "jrc_1",
               },
         ),
@@ -217,6 +215,7 @@ function harness(
           healthy: true,
           scopes: ["write:jira-work"],
           resourceScopes: ["write:jira-work"],
+          writeGranted: options.writeGranted ?? true,
         }),
     } as unknown as JiraConnectionStore,
     clientsFor: () =>
@@ -272,11 +271,14 @@ test("a stale approval remains approved but its delivery fails before sending", 
   assert.ok(!state.events.includes("attempt"));
 });
 
-test("switching a board off cancels a claimed operation before sending", async () => {
-  const state = harness({ boardEnabled: false });
+test("a site that no longer holds the write grant fails preflight before sending", async () => {
+  // Queued while the site could write, run after it was connected again
+  // without the scope: the operation fails here, with a code that says why,
+  // rather than at Jira with a 401 that reads as a dead credential.
+  const state = harness({ writeGranted: false });
   const result = await state.delivery.execute("org_1", "bwo_1");
-  assert.equal(result?.status, "cancelled");
-  assert.ok(state.events.includes("cancelled:board_disabled"));
+  assert.equal(result?.status, "failed");
+  assert.ok(state.events.includes("failed:write_consent_required"));
   assert.ok(!state.events.includes("attempt"));
 });
 
@@ -347,32 +349,6 @@ test("reconciliation adopts exactly one matching fixed comment", async () => {
   const result = await state.delivery.reconcile("org_1", "bwo_1");
   assert.equal(result.status, "adopted");
   assert.equal(state.current().jiraCommentId, "10");
-});
-
-test("reconciliation records a known comment but cancels its label when the board is off", async () => {
-  const uncertain = operation({
-    status: "uncertain",
-    commentAttemptedAt: "2026-09-22T00:00:01.000Z",
-  });
-  const body = {
-    type: "doc",
-    content: [
-      {
-        type: "paragraph",
-        content: [{ type: "text", text: commentText(uncertain) }],
-      },
-    ],
-  };
-  const state = harness({
-    op: uncertain,
-    boardEnabled: false,
-    comments: [{ id: "10", body }],
-  });
-  const result = await state.delivery.reconcile("org_1", "bwo_1");
-  assert.equal(result.status, "adopted");
-  assert.equal(result.operation?.status, "cancelled");
-  assert.ok(state.events.includes("cancelled"));
-  assert.ok(!state.events.includes("label"));
 });
 
 test("reconciliation never guesses when there are zero, multiple, or unreadable matches", async () => {

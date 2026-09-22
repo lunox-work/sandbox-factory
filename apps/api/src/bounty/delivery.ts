@@ -106,7 +106,7 @@ export class BountyDelivery {
         organizationId,
         id,
         leaseToken,
-        context.code === "board_disabled" ? "cancelled" : "failed",
+        "failed",
         context.code,
       );
     }
@@ -212,7 +212,7 @@ export class BountyDelivery {
     ) {
       return { status: "not-uncertain", operation };
     }
-    const context = await this.#context(organizationId, operation, true);
+    const context = await this.#context(organizationId, operation);
     if (!context.ok) return { status: "none", operation };
     let comments;
     try {
@@ -233,23 +233,12 @@ export class BountyDelivery {
       matches[0]!.id,
     );
     if (adopted?.status === "pending") {
-      if (context.boardEnabled) {
-        this.start(organizationId, id);
-      } else {
-        return {
-          status: "adopted",
-          operation: await this.#options.writebacks.cancel(organizationId, id),
-        };
-      }
+      this.start(organizationId, id);
     }
     return { status: "adopted", operation: adopted };
   }
 
-  async #context(
-    organizationId: string,
-    operation: StoredBountyWriteback,
-    allowDisabled = false,
-  ) {
+  async #context(organizationId: string, operation: StoredBountyWriteback) {
     const proposal = await this.#options.proposals.get(
       organizationId,
       operation.proposalId,
@@ -265,20 +254,16 @@ export class BountyDelivery {
       issue.boardId,
     );
     if (registered === null) return { ok: false as const, code: "not_found" };
-    if (!registered.board.writebackEnabled && !allowDisabled) {
-      return { ok: false as const, code: "board_disabled" };
-    }
     const connection = await this.#options.connections.get(
       organizationId,
       registered.connectionId,
     );
-    if (
-      connection === null ||
-      !connection.healthy ||
-      !connection.scopes.includes("write:jira-work") ||
-      !connection.resourceScopes.includes("write:jira-work")
-    )
+    // The grant is the site's, not the board's; see `jiraWriteGranted`. An
+    // operation queued while the site held it and run after a reconnect that
+    // withheld it fails here rather than at Jira, with a code that says why.
+    if (connection === null || !connection.writeGranted)
       return { ok: false as const, code: "write_consent_required" };
+    if (!connection.healthy) return { ok: false as const, code: "reconnect" };
     const clients = await this.#options.clientsFor(
       organizationId,
       registered.connectionId,
@@ -288,7 +273,6 @@ export class BountyDelivery {
       ...clients,
       proposal,
       externalId: issue.externalId,
-      boardEnabled: registered.board.writebackEnabled,
     };
   }
 

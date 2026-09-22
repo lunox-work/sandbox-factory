@@ -32,7 +32,6 @@ import {
   exchangeCode,
   JiraApiError,
   JiraAuthError,
-  READ_SCOPES,
   WRITE_SCOPES,
   stripTrailingSlashes,
 } from "@sandbox-factory/jira";
@@ -164,7 +163,7 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
    * The store's `sync` rather than its `register`: this runs against boards
    * somebody has already configured, so it refreshes what is Jira's to state
    * — a renamed board, one moved to another project — and leaves the
-   * selection and the write-back flag exactly as they were found.
+   * selection exactly as it was found.
    *
    * Returns the failure rather than throwing it when the connection itself
    * cannot produce a client, and throws whatever Jira threw when the call is
@@ -209,8 +208,17 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
    * been shown to belong to the organization in the path.
    *
    * Owners and admins only. Connecting a Jira site grants the platform read
-   * access to a client's tickets for as long as the connection lives, which
-   * is not a decision an ordinary member should make for the organization.
+   * access to a client's tickets, and write access to post approvals back to
+   * them, for as long as the connection lives — not a decision an ordinary
+   * member should make for the organization.
+   *
+   * **Every consent asks for the write scope.** Write-back used to be a
+   * separate grant, asked for per board with a second trip to Atlassian, and
+   * the switch that started it was the only thing on the board page a person
+   * could not understand without knowing about scopes. Asking once, when the
+   * site is connected, puts the permission where the person is already
+   * granting permissions. A site whose admin withholds it is still
+   * connected, read-only, and the callback says so.
    */
   app.get("/api/v1/orgs/:orgId/jira/connect", async (c) => {
     const { organizationId, role } = c.get("member");
@@ -221,48 +229,18 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
     }
 
     const returnTo = c.req.query("returnTo") ?? "/settings/jira";
-    const targetId = c.req.query("connectionId");
-    const target =
-      targetId !== undefined
-        ? await connections.get(organizationId, targetId)
-        : null;
-    if (targetId !== undefined && target === null) {
-      return c.json({ error: "Not found" }, 404);
-    }
-    const requestedIntent =
-      c.req.query("intent") === "write" ? "write" : "read";
-    // A reconnect carries the site's existing capability. Requesting only the
-    // read scopes here would replace a previously write-capable Atlassian grant
-    // and silently disable delivery for every board on that connection.
-    const intent =
-      requestedIntent === "write" ||
-      (target?.scopes.includes("write:jira-work") === true &&
-        target.resourceScopes.includes("write:jira-work"))
-        ? "write"
-        : "read";
     const state = signState(secret, {
       organizationId,
       userId: c.get("user").id,
       // Only the path survives; see `redirectTarget`.
       returnTo: safePath(returnTo),
-      intent,
-      ...(target === null
-        ? {}
-        : {
-            connectionId: target.id,
-            cloudId: target.cloudId,
-            scopeVersion: 1,
-          }),
       ...(now === undefined ? {} : { issuedAt: now() }),
     });
 
     const url = new URL("https://auth.atlassian.com/authorize");
     url.searchParams.set("audience", "api.atlassian.com");
     url.searchParams.set("client_id", clientId);
-    url.searchParams.set(
-      "scope",
-      (intent === "write" ? WRITE_SCOPES : READ_SCOPES).join(" "),
-    );
+    url.searchParams.set("scope", WRITE_SCOPES.join(" "));
     url.searchParams.set("redirect_uri", redirectUri);
     url.searchParams.set("state", state);
     url.searchParams.set("response_type", "code");
@@ -308,7 +286,6 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
       );
     }
     const { organizationId, returnTo } = verified.state;
-    const intent = verified.state.intent ?? "read";
 
     /**
      * Membership, re-read rather than inferred from the state.
@@ -327,19 +304,6 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
       return c.redirect(
         redirectTarget(appUrl, returnTo, { jira: "forbidden" }),
       );
-    }
-    if (intent === "write") {
-      const target =
-        verified.state.connectionId === undefined
-          ? null
-          : await connections.get(organizationId, verified.state.connectionId);
-      if (
-        target === null ||
-        target.cloudId !== verified.state.cloudId ||
-        verified.state.scopeVersion !== 1
-      ) {
-        return c.redirect(redirectTarget(appUrl, returnTo, { jira: "state" }));
-      }
     }
 
     const code = c.req.query("code");
@@ -371,25 +335,10 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
         );
       }
 
-      const selectedSites =
-        intent === "write"
-          ? sites.filter(
-              (site) =>
-                site.cloudId === verified.state.cloudId &&
-                site.scopes.includes("write:jira-work") &&
-                tokens.scopes.includes("write:jira-work"),
-            )
-          : sites;
-      if (intent === "write" && selectedSites.length !== 1) {
-        return c.redirect(
-          redirectTarget(appUrl, returnTo, { jira: "write-scope-missing" }),
-        );
-      }
-
       // Every granted site is recorded. Asking the user to pick one here would
       // mean holding the tokens somewhere while they choose; a connection per
       // site is cheap, and a board is registered against one of them later.
-      for (const site of selectedSites) {
+      for (const site of sites) {
         const connection = await connections.upsert(organizationId, {
           cloudId: site.cloudId,
           siteUrl: site.url,
@@ -426,12 +375,7 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
       const missing = missingScopes(tokens.scopes);
       return c.redirect(
         redirectTarget(appUrl, returnTo, {
-          jira:
-            intent === "write"
-              ? "write-consented"
-              : missing.length > 0
-                ? "partial-scopes"
-                : "connected",
+          jira: missing.length > 0 ? "partial-scopes" : "connected",
           ...(missing.length > 0 ? { missing: missing.join(",") } : {}),
         }),
       );
@@ -608,52 +552,18 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
 
     const parsed = updateBoardSchema.safeParse(await c.req.json());
     if (!parsed.success) {
-      return c.json(
-        { error: "Provide selection settings, a write-back flag, or both." },
-        400,
-      );
-    }
-    if (parsed.data.writebackEnabled === true) {
-      const board = await boards.get(organizationId, c.req.param("id"));
-      if (board === null) return c.json({ error: "Not found" }, 404);
-      const connection = await connections.get(
-        organizationId,
-        board.connectionId,
-      );
-      const capable =
-        connection !== null &&
-        connection.healthy &&
-        connection.scopes.includes("write:jira-work") &&
-        connection.resourceScopes.includes("write:jira-work");
-      if (!capable) {
-        const returnTo = c.req.query("returnTo") ?? "/settings/jira";
-        return c.json(
-          {
-            code: "write_consent_required",
-            error: "Grant Jira write access before enabling write-back.",
-            consentUrl: `/api/v1/orgs/${encodeURIComponent(organizationId)}/jira/connect?intent=write&connectionId=${encodeURIComponent(board.connectionId)}&returnTo=${encodeURIComponent(safePath(returnTo))}`,
-          },
-          409,
-        );
-      }
+      return c.json({ error: "Provide selection settings." }, 400);
     }
 
     const updated = await boards.update(organizationId, c.req.param("id"), {
-      ...(parsed.data.selection === undefined
-        ? {}
-        : {
-            selection: Object.fromEntries(
-              // `maxAgeDays: null` clears the bound, and the store merges, so
-              // an undefined-stripping spread would drop the clear. Nulls are
-              // kept; only genuinely absent keys are removed.
-              Object.entries(parsed.data.selection).filter(
-                ([, value]) => value !== undefined,
-              ),
-            ),
-          }),
-      ...(parsed.data.writebackEnabled === undefined
-        ? {}
-        : { writebackEnabled: parsed.data.writebackEnabled }),
+      selection: Object.fromEntries(
+        // `maxAgeDays: null` clears the bound, and the store merges, so an
+        // undefined-stripping spread would drop the clear. Nulls are kept;
+        // only genuinely absent keys are removed.
+        Object.entries(parsed.data.selection).filter(
+          ([, value]) => value !== undefined,
+        ),
+      ),
     });
 
     if (updated === null) {
@@ -861,5 +771,5 @@ function safePath(value: string): string {
  * told, rather than leaving it to be diagnosed later.
  */
 function missingScopes(granted: readonly string[]): string[] {
-  return READ_SCOPES.filter((scope) => !granted.includes(scope));
+  return WRITE_SCOPES.filter((scope) => !granted.includes(scope));
 }

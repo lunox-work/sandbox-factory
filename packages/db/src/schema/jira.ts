@@ -145,13 +145,6 @@ export const jiraBoard = pgTable(
      * migration.
      */
     selection: jsonb("selection").notNull().default({}),
-    /**
-     * Whether approving a proposal writes a comment back to the ticket.
-     *
-     * Off by default, and per board rather than per organization: write-back
-     * needs `write:jira-work`, which is a scope the connection may not hold.
-     */
-    writebackEnabled: boolean("writeback_enabled").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

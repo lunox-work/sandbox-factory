@@ -400,7 +400,14 @@ test("re-price queues a follow-up for a posted approval in the same transaction"
     [row({ status: "superseded", revision: 2 })],
     [replacement],
     [{ row: replacement, issueKey: "APP-1" }],
-    [{ writebackEnabled: true }],
+    // The board's site, joined: the follow-up is queued only when the grant
+    // covers writes.
+    [
+      {
+        scopes: "read:jira-work write:jira-work offline_access",
+        resourceScopes: "read:jira-work write:jira-work",
+      },
+    ],
     [],
   ]);
 
@@ -444,7 +451,7 @@ test("re-price completion refuses unresolved approval delivery", async () => {
   assert.equal(result.status, "writeback-busy");
 });
 
-test("re-price does not queue a follow-up when the board was switched off", async () => {
+test("re-price does not queue a follow-up when the site holds no write grant", async () => {
   const source = row({
     status: "approved",
     decisionDeliveryPolicy: "requested",
@@ -472,7 +479,14 @@ test("re-price does not queue a follow-up when the board was switched off", asyn
     [row({ status: "superseded", revision: 2 })],
     [replacement],
     [{ row: replacement, issueKey: "APP-1" }],
-    [],
+    // A site connected read-only: the token was issued without the write
+    // scope, so nothing is posted and nothing is queued.
+    [
+      {
+        scopes: "read:jira-work offline_access",
+        resourceScopes: "read:jira-work",
+      },
+    ],
   ]);
   const result = await createBountyProposalStore(fake.db).replaceForLease(
     "org_1",

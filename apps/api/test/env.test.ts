@@ -341,11 +341,15 @@ test("empty sizing values behave as unset and do not stop boot", () => {
     SIZING_MODEL: "",
     DEEPSEEK_API_KEY: "",
     DEEPSEEK_SIZING_MODEL: "",
+    // docker-compose.yml passes `${DEEPSEEK_BASE_URL:-}`, so an unset override
+    // arrives as "" rather than absent; it must not fail URL validation.
+    DEEPSEEK_BASE_URL: "",
   });
   assert.equal(env.ANTHROPIC_API_KEY, undefined);
   assert.equal(env.SIZING_MODEL, undefined);
   assert.equal(env.DEEPSEEK_API_KEY, undefined);
   assert.equal(env.DEEPSEEK_SIZING_MODEL, undefined);
+  assert.equal(env.DEEPSEEK_BASE_URL, undefined);
 });
 
 test("the sizing fallback needs its own pair, and the base URL is optional", () => {

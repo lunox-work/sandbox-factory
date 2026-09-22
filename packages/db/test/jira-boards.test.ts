@@ -15,7 +15,6 @@ function boardRow(overrides: Partial<JiraBoardRow> = {}): JiraBoardRow {
     boardType: "scrum",
     projectKey: "ACME",
     selection: { maxTickets: 10, excludeAssigned: true },
-    writebackEnabled: false,
     createdAt: new Date("2026-09-21T00:00:00.000Z"),
     updatedAt: new Date("2026-09-21T00:00:00.000Z"),
     ...overrides,
@@ -63,22 +62,6 @@ test("register generates a prefixed id and records the owner", async () => {
   assert.equal(values["externalId"], "42");
 });
 
-test("registering the same board twice does not touch write-back", async () => {
-  // Re-registering is a user correcting the settings. Silently turning
-  // write-back on — or off — would be a change nobody asked for, and it is the
-  // switch that decides whether we comment on a client's tickets.
-  const { store: boards, calls } = store([boardRow()]);
-
-  await boards.register("org_1", {
-    connectionId: "jrc_1",
-    externalId: "42",
-    name: "Acme board",
-    boardType: "scrum",
-  });
-
-  assert.equal((calls[0]?.values ?? {})["writebackEnabled"], undefined);
-});
-
 test("a board with no settings gets an empty object, not null", async () => {
   const { store: boards, calls } = store([boardRow()]);
 
@@ -113,7 +96,6 @@ test("sync leaves the settings of a board already registered alone", async () =>
   assert.equal(conflict["projectKey"], "ACME");
   // Ours are not touched at all.
   assert.equal("selection" in conflict, false);
-  assert.equal("writebackEnabled" in conflict, false);
 });
 
 test("a board seen for the first time by sync still gets a row", async () => {
@@ -167,23 +149,22 @@ test("a selection update is merged, not replaced", async () => {
   });
 });
 
-test("updating only write-back leaves the settings alone", async () => {
+test("an update with no selection leaves the settings as they were", async () => {
   const { store: boards, calls } = store([
     boardRow({ selection: { maxTickets: 7 } }),
   ]);
 
-  await boards.update("org_1", "jrb_1", { writebackEnabled: true });
+  await boards.update("org_1", "jrb_1", {});
 
   const values = calls[1]?.values ?? {};
   assert.deepEqual(values["selection"], { maxTickets: 7 });
-  assert.equal(values["writebackEnabled"], true);
 });
 
 test("an update writes nothing for a board the caller does not own", async () => {
   const { store: boards, calls } = store([]);
 
   const result = await boards.update("org_2", "jrb_1", {
-    writebackEnabled: true,
+    selection: { maxTickets: 3 },
   });
 
   assert.equal(result, null);
@@ -196,7 +177,7 @@ test("the update is scoped to the owner as well as the id", async () => {
   // that having happened.
   const { store: boards, calls } = store([boardRow()]);
 
-  await boards.update("org_1", "jrb_1", { writebackEnabled: true });
+  await boards.update("org_1", "jrb_1", { selection: { maxTickets: 3 } });
 
   assert.equal(calls[1]?.filtered, true);
 });

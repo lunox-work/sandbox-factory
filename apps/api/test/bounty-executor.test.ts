@@ -154,7 +154,6 @@ function harness(options: {
     boardType: "scrum",
     projectKey: "APP",
     selection: current.selection,
-    writebackEnabled: false,
     createdAt: "2026-01-01T00:00:00.000Z",
   };
   const boards = {

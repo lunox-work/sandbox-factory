@@ -446,7 +446,14 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
         pointer === null
           ? null
           : await options.boards.forRun(organizationId, pointer.boardId);
-      if (announced !== undefined && registered?.board.writebackEnabled) {
+      const site =
+        registered === null || options.connections === undefined
+          ? null
+          : await options.connections.get(
+              organizationId,
+              registered.connectionId,
+            );
+      if (announced !== undefined && site?.writeGranted === true) {
         if (options.delivery === undefined)
           return c.json(
             {
@@ -746,24 +753,26 @@ async function decideWithFreshSpec(
       pointer === null
         ? null
         : await options.boards.forRun(organizationId, pointer.boardId);
-    if (registered?.board.writebackEnabled) {
-      const connection =
-        options.connections === undefined
-          ? null
-          : await options.connections.get(
-              organizationId,
-              registered.connectionId,
-            );
-      if (
-        connection === null ||
-        !connection.healthy ||
-        !connection.scopes.includes("write:jira-work") ||
-        !connection.resourceScopes.includes("write:jira-work")
-      ) {
+    // Whether the approval is posted to the ticket is the site's grant: every
+    // consent asks for the write scope, so a site holds it unless the person
+    // withheld it. No grant means the approval is recorded here and nowhere
+    // else, which is what a read-only site was connected for.
+    const connection =
+      registered === null || options.connections === undefined
+        ? null
+        : await options.connections.get(
+            organizationId,
+            registered.connectionId,
+          );
+    if (registered !== null && connection?.writeGranted === true) {
+      if (!connection.healthy) {
+        // Not approved without the post: the site was connected to receive
+        // it, and a reconnect is a minute's work. Approving now would leave
+        // the ticket silent with nothing to say so later.
         return c.json(
           {
-            code: "write_consent_required",
-            error: "Jira write consent is required before approval.",
+            code: "reconnect",
+            error: "Reconnect this Jira site before approving.",
           },
           409,
         );

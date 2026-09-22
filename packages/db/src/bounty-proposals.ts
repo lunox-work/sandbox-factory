@@ -8,12 +8,14 @@ import type {
 import { and, desc, eq, inArray, lt, or, sql } from "drizzle-orm";
 
 import type { Database } from "./errors.js";
+import { jiraWriteGranted, splitScopes } from "./jira-connections.js";
 import { generateId } from "./mapping.js";
 import {
   bountyProposal,
   bountyRun,
   bountyWriteback,
   jiraBoard,
+  jiraConnection,
   jiraIssue,
 } from "./schema.js";
 import type {
@@ -745,17 +747,32 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
           throw new Error("Replacement proposal vanished.");
         let writebackOperationId: string | undefined;
         if (announced !== undefined) {
-          const enabled = await tx
-            .select({ writebackEnabled: jiraBoard.writebackEnabled })
+          // Whether the site posts back is the connection's grant, read in
+          // the same transaction as the replacement so a site disconnected
+          // between the two cannot leave a follow-up nobody can deliver.
+          const site = await tx
+            .select({
+              scopes: jiraConnection.scopes,
+              resourceScopes: jiraConnection.resourceScopes,
+            })
             .from(jiraBoard)
+            .innerJoin(
+              jiraConnection,
+              eq(jiraConnection.id, jiraBoard.connectionId),
+            )
             .where(
               and(
                 eq(jiraBoard.organizationId, organizationId),
                 eq(jiraBoard.id, run.boardId),
-                eq(jiraBoard.writebackEnabled, true),
               ),
             );
-          if (enabled[0]?.writebackEnabled === true) {
+          const granted =
+            site[0] !== undefined &&
+            jiraWriteGranted(
+              splitScopes(site[0].scopes),
+              splitScopes(site[0].resourceScopes),
+            );
+          if (granted) {
             writebackOperationId = generateId("bwo");
             await tx.insert(bountyWriteback).values({
               id: writebackOperationId,

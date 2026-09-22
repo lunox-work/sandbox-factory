@@ -230,15 +230,17 @@ test("registering a board needs a connection and a board id", () => {
   );
 });
 
-test("an update may change either half, but an empty body is refused", () => {
-  // An empty body almost always means the caller sent the wrong shape.
-  assert.equal(
-    updateBoardSchema.safeParse({ writebackEnabled: true }).success,
-    true,
-  );
+test("an update is a selection, and an empty body is refused", () => {
+  // An empty body almost always means the caller sent the wrong shape. A
+  // write-back flag is not a board setting any more: whether approvals post
+  // back is the site's grant, asked for when the site is connected.
   assert.equal(
     updateBoardSchema.safeParse({ selection: { maxTickets: 5 } }).success,
     true,
+  );
+  assert.equal(
+    updateBoardSchema.safeParse({ writebackEnabled: true }).success,
+    false,
   );
   assert.equal(updateBoardSchema.safeParse({}).success, false);
 });
@@ -260,10 +262,9 @@ test("a board summary carries the settings, not the tickets", () => {
     boardType: "scrum",
     projectKey: "ACME",
     selection: {},
-    writebackEnabled: false,
     createdAt: "2026-09-21T00:00:00.000Z",
   });
 
   assert.equal(summary.selection.maxTickets, 10);
-  assert.equal(summary.writebackEnabled, false);
+  assert.equal("writebackEnabled" in summary, false);
 });

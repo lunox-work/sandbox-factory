@@ -29,11 +29,42 @@ export interface JiraConnectionSummary {
   readonly siteName: string;
   readonly email: string | null;
   readonly healthy: boolean;
-  /** Granted scopes, split. Whether write-back is possible is read from here. */
+  /** Granted scopes, split. */
   readonly scopes: readonly string[];
   readonly resourceScopes: readonly string[];
+  /**
+   * Whether approvals on this site's boards post back to the ticket.
+   *
+   * Derived, never stored: it is `write:jira-work` on both the grant and the
+   * site — see `jiraWriteGranted`. Health is separate. A site that holds the
+   * grant but needs reconnecting is still a write site, and its approvals
+   * wait for the reconnect rather than silently going nowhere.
+   */
+  readonly writeGranted: boolean;
   readonly credentialRevision: number;
   readonly createdAt: string;
+}
+
+/**
+ * Whether a grant lets this app write to a site.
+ *
+ * Both lists have to say so. `scopes` is what Atlassian issued the token for;
+ * `resourceScopes` is what that token may do on one particular site, which
+ * can be narrower when the site's admin has limited the app. Either one
+ * alone reads as permission the other end will refuse.
+ *
+ * The one definition of "write-back is on". Every consent asks for the write
+ * scope, so a site connected today holds it unless the person withheld it;
+ * one connected before that was the case holds it once connected again.
+ */
+export function jiraWriteGranted(
+  scopes: readonly string[],
+  resourceScopes: readonly string[],
+): boolean {
+  return (
+    scopes.includes("write:jira-work") &&
+    resourceScopes.includes("write:jira-work")
+  );
 }
 
 /** The decrypted grant, for building a credential. Never leaves the API. */
@@ -118,6 +149,10 @@ export function createJiraConnectionStore(
       healthy: row.healthy,
       scopes: splitScopes(row.scopes),
       resourceScopes: splitScopes(row.resourceScopes),
+      writeGranted: jiraWriteGranted(
+        splitScopes(row.scopes),
+        splitScopes(row.resourceScopes),
+      ),
       credentialRevision: row.credentialRevision,
       createdAt: row.createdAt.toISOString(),
     };
@@ -258,6 +293,6 @@ async function first(
 }
 
 /** Atlassian reports scopes space separated; an empty column is no scopes. */
-function splitScopes(scopes: string): readonly string[] {
+export function splitScopes(scopes: string): readonly string[] {
   return scopes === "" ? [] : scopes.split(" ");
 }

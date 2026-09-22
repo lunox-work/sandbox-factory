@@ -7,6 +7,7 @@ import {
   memoryTokenSource,
   OAuthCredential,
   type TokenPair,
+  type TokenSource,
 } from "../src/index.js";
 
 const hour = 60 * 60 * 1000;
@@ -243,4 +244,79 @@ test("memoryTokenSource round-trips a saved pair", async () => {
   await source.save(replacement);
 
   assert.equal((await source.load()).accessToken, "replaced");
+});
+
+/**
+ * A token source shared with another holder of the same grant, who refreshes
+ * first. Every `load` after the first hands back the winner's live pair, and
+ * `save` refuses this holder's pair the way a revision check would.
+ */
+function racedTokenSource(
+  now: number,
+  outcome: "winner-persisted" | "still-stale",
+): { source: TokenSource; saves: number } & { loads: number } {
+  const state = {
+    source: undefined as unknown as TokenSource,
+    saves: 0,
+    loads: 0,
+  };
+  state.source = {
+    load: () => {
+      state.loads += 1;
+      if (state.loads === 1 || outcome === "still-stale") {
+        return Promise.resolve(pair(now, -hour));
+      }
+      return Promise.resolve(
+        pair(now, hour, { accessToken: "winner", refreshToken: "winner-r" }),
+      );
+    },
+    save: () => {
+      state.saves += 1;
+      return Promise.reject(
+        new Error("The Jira credential changed during refresh."),
+      );
+    },
+  };
+  return state;
+}
+
+test("a refresh lost to another holder of the grant adopts that holder's pair", async () => {
+  const now = Date.parse("2026-09-18T00:00:00.000Z");
+  const stub = refreshStub(now);
+  const raced = racedTokenSource(now, "winner-persisted");
+  const credential = new OAuthCredential({
+    tokens: raced.source,
+    clientId: "c",
+    clientSecret: "s",
+    cloudId: "cloud-1",
+    fetch: stub.fetch,
+    now: stub.now,
+  });
+
+  // The refresh ran and its persist was refused, but the source now holds a
+  // live pair written by whoever won — so the call succeeds with that pair
+  // rather than reporting a conflict nobody can act on.
+  assert.equal(await credential.authorize(), "Bearer winner");
+  assert.equal(stub.calls(), 1);
+  assert.equal(raced.saves, 1);
+});
+
+test("a refresh that fails while the source is still stale reports the failure", async () => {
+  const now = Date.parse("2026-09-18T00:00:00.000Z");
+  const stub = refreshStub(now);
+  const raced = racedTokenSource(now, "still-stale");
+  const credential = new OAuthCredential({
+    tokens: raced.source,
+    clientId: "c",
+    clientSecret: "s",
+    cloudId: "cloud-1",
+    fetch: stub.fetch,
+    now: stub.now,
+  });
+
+  // Nobody else refreshed: the reload finds the same expired pair, and the
+  // save's own error is what the caller sees, not a second-hand one.
+  await assert.rejects(credential.authorize(), {
+    message: "The Jira credential changed during refresh.",
+  });
 });

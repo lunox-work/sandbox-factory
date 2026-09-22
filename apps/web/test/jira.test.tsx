@@ -25,6 +25,7 @@ const connection = {
   healthy: true,
   scopes: ["read:jira-work"],
   resourceScopes: ["read:jira-work"],
+  writeGranted: false,
   createdAt: "2026-09-21T00:00:00.000Z",
 };
 
@@ -193,7 +194,10 @@ test("an unhealthy connection is flagged for reconnection", async () => {
   expect(await screen.findByText("Reconnect")).toBeDefined();
 });
 
-test("reconnect targets the existing connection so its scopes are preserved", async () => {
+test("reconnect is the same consent as connecting, and comes back here", async () => {
+  // No per-connection parameter any more: every consent asks for the full
+  // grant, and Atlassian records it against the site it names, so a second
+  // consent to a connected site refreshes that connection.
   vi.stubGlobal(
     "fetch",
     vi.fn(() =>
@@ -209,7 +213,41 @@ test("reconnect targets the existing connection so its scopes are preserved", as
   await userEvent.click(
     await screen.findByRole("button", { name: "Reconnect" }),
   );
-  expect(assigned[0]).toContain("connectionId=jrc_1");
+  expect(assigned[0]).toMatch(
+    /^\/api\/v1\/orgs\/org_1\/jira\/connect\?returnTo=/,
+  );
+  expect(assigned[0]).not.toContain("connectionId=");
+});
+
+test("a site connected without the write grant is marked read-only", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            connections: [
+              connection,
+              {
+                ...connection,
+                id: "jrc_2",
+                siteName: "Beta",
+                siteUrl: "https://beta.atlassian.net",
+                writeGranted: true,
+              },
+            ],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      ),
+    ),
+  );
+  renderPage();
+
+  const badges = await screen.findAllByText("Read-only");
+  // One site of the two: Acme holds no write grant, Beta does.
+  expect(badges).toHaveLength(1);
+  expect(badges[0]?.closest("li")?.textContent).toContain("Acme");
 });
 
 test("a failed load says so rather than rendering an empty list", async () => {
@@ -350,7 +388,6 @@ const board = {
   boardType: "scrum",
   projectKey: "ACME",
   selection: { maxTickets: 10, excludeAssigned: true },
-  writebackEnabled: false,
   createdAt: "2026-09-21T00:00:00.000Z",
 };
 

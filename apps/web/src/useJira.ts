@@ -20,6 +20,13 @@ export interface JiraConnection {
   healthy: boolean;
   scopes: string[];
   resourceScopes: string[];
+  /**
+   * Whether approvals on this site's boards post back to the ticket. The
+   * API derives it from the grant; every consent asks for the write scope,
+   * so it is false only for a site connected before that was so, or one
+   * whose admin withheld it. Connecting the site again is the remedy.
+   */
+  writeGranted: boolean;
   createdAt: string;
 }
 
@@ -32,8 +39,6 @@ export interface JiraConnection {
  */
 export type JiraOutcome =
   | "connected"
-  | "write-consented"
-  | "write-scope-missing"
   | "cancelled"
   | "denied"
   | "no-sites"
@@ -106,22 +111,25 @@ export function useJira(organizationId: string | undefined): Jira {
     void refresh();
   }, [refresh]);
 
-  const connect = useCallback(
-    (connectionId?: string) => {
-      if (organizationId === undefined) {
-        return;
-      }
-      // A full-page navigation, not a fetch: the browser has to reach
-      // Atlassian's consent screen, and an XHR would fail CORS trying.
-      const returnTo = window.location.pathname + window.location.search;
-      const query = new URLSearchParams({ returnTo });
-      if (connectionId !== undefined) query.set("connectionId", connectionId);
-      window.location.href = `/api/v1/orgs/${encodeURIComponent(
-        organizationId,
-      )}/jira/connect?${query.toString()}`;
-    },
-    [organizationId],
-  );
+  /**
+   * Connect a site, or connect one again.
+   *
+   * The same call for both: a consent is recorded against the site it names,
+   * so re-consenting to a connected site refreshes that connection — which
+   * is also how a site connected read-only comes to hold the write grant.
+   */
+  const connect = useCallback(() => {
+    if (organizationId === undefined) {
+      return;
+    }
+    // A full-page navigation, not a fetch: the browser has to reach
+    // Atlassian's consent screen, and an XHR would fail CORS trying.
+    const returnTo = window.location.pathname + window.location.search;
+    const query = new URLSearchParams({ returnTo });
+    window.location.href = `/api/v1/orgs/${encodeURIComponent(
+      organizationId,
+    )}/jira/connect?${query.toString()}`;
+  }, [organizationId]);
 
   const disconnect = useCallback(
     async (connectionId: string) => {
@@ -223,7 +231,6 @@ export interface JiraBoard {
     maxAgeDays?: number | null;
     minSpecChars?: number;
   };
-  writebackEnabled: boolean;
   createdAt: string;
 }
 
