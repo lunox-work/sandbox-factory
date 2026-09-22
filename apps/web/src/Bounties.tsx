@@ -1242,6 +1242,13 @@ function ProposalPeek({
  * others are small and quiet, and become buttons when `onClick` is given.
  * Without it the card is a plain label, which is what a member or an
  * approved proposal sees: the size, without the offer to change it.
+ *
+ * A resize does not swap elements, it swaps classes on the same five cards
+ * once the server answers, so the change is animated rather than snapped:
+ * the old size shrinks and fades to quiet while the new one grows and
+ * fills, on one eased curve. Everything that differs between the two
+ * shapes is in the transition list, so nothing jumps while the rest glides.
+ * Off under reduced motion.
  */
 function SizeCard({
   size,
@@ -1257,7 +1264,7 @@ function SizeCard({
   const shape = current
     ? "bg-primary text-primary-foreground border-primary h-10 min-w-12 px-3 text-base shadow-sm"
     : "bg-card text-muted-foreground hover:text-foreground hover:border-foreground/30 h-7 min-w-9 px-2 text-xs";
-  const className = `inline-flex items-center justify-center rounded-md border font-mono font-medium transition-[color,border-color,transform] duration-150 motion-reduce:transition-none ${shape}`;
+  const className = `inline-flex items-center justify-center rounded-md border font-mono font-medium transition-[height,min-width,padding,font-size,color,background-color,border-color,box-shadow,transform] duration-300 ease-[cubic-bezier(0.2,0,0,1)] motion-reduce:transition-none ${shape}`;
   if (onClick === undefined) {
     return <span className={className}>{size}</span>;
   }
