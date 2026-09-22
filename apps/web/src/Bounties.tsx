@@ -1135,9 +1135,9 @@ function ProposalPeek({
               said when sized. On the right, the decision itself — Approve for a
               proposed bounty, the way back for an approved one — where
               this app puts the action a surface offers, and centred under
-              Approve, the way out: a text link rather than a button, since
-              it is the least-wanted action on the page and should read as
-              such. The left text is given the button's height so the two
+              Approve, the way out: a muted text link rather than a button,
+              since it is the least-wanted action on the page and should
+              read as such; the confirmation is where it turns red. The left text is given the button's height so the two
               sit level whether or not Remove hangs below.
             */}
             <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
@@ -1175,7 +1175,7 @@ function ProposalPeek({
                         trigger={
                           <button
                             type="button"
-                            className="text-destructive focus-visible:ring-ring/50 rounded-sm text-xs underline-offset-2 hover:underline focus-visible:ring-[3px] focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
+                            className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 rounded-sm text-xs underline-offset-2 transition-colors hover:underline focus-visible:ring-[3px] focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
                             disabled={busy}
                           >
                             Remove
