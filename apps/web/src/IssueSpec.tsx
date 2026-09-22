@@ -9,9 +9,10 @@
  * first for the same reason: the reader knows the frame before the text.
  */
 
+import { ChevronDown, ChevronUp } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 
 import { Badge } from "@/components/ui/badge";
 
@@ -167,72 +168,193 @@ function asDate(value: string | null): string | null {
 }
 
 /**
+ * How far a date is from today, in words: "in 3 days", "2 weeks ago",
+ * "today". Whole calendar days, so a due date of today is "today" all day
+ * rather than "in 5 hours"; the unit grows with the distance so a date next
+ * year is not "in 412 days". `null` for a value that is not a date.
+ */
+export function fromToday(
+  value: string | null,
+  now = new Date(),
+): string | null {
+  if (value === null) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  const startOf = (d: Date) =>
+    Date.UTC(d.getFullYear(), d.getMonth(), d.getDate());
+  const days = Math.round((startOf(date) - startOf(now)) / 86_400_000);
+  const format = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+  const magnitude = Math.abs(days);
+  if (magnitude < 7) return format.format(days, "day");
+  if (magnitude < 30) return format.format(Math.trunc(days / 7), "week");
+  if (magnitude < 365) return format.format(Math.trunc(days / 30), "month");
+  return format.format(Math.trunc(days / 365), "year");
+}
+
+/** A date with its distance from today beside it, the distance muted. */
+function DatedField({
+  label,
+  value,
+  overdue = false,
+}: {
+  label: string;
+  value: string | null;
+  overdue?: boolean;
+}) {
+  const date = asDate(value);
+  const distance = fromToday(value);
+  if (date === null) return null;
+  return (
+    <Field label={label}>
+      <span className="flex flex-wrap items-baseline gap-x-1.5">
+        <span>{date}</span>
+        {distance !== null && (
+          <span
+            className={
+              overdue
+                ? "text-xs text-amber-700 dark:text-amber-400"
+                : "text-muted-foreground text-xs"
+            }
+          >
+            · {distance}
+          </span>
+        )}
+      </span>
+    </Field>
+  );
+}
+
+/** Whether a due date has passed, by calendar day. */
+function isOverdue(value: string | null): boolean {
+  if (value === null) return false;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return false;
+  const today = new Date();
+  return (
+    Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) <
+    Date.UTC(today.getFullYear(), today.getMonth(), today.getDate())
+  );
+}
+
+/**
  * The fields, then the description.
+ *
+ * Folded, the fields are two: the status, and whichever of the due date,
+ * the priority or the created date the ticket has, in that order — the one
+ * thing most likely to change what the description means. Dates carry
+ * their distance from today, since "Dec 19" says less than "in 3 months".
  *
  * No scroll box of its own: the panel around this is what scrolls, and a
  * window inside it gave the reader two scrollbars for one document.
  */
 export function IssueSpec({ issue }: { issue: JiraIssueDetail }) {
+  const [expanded, setExpanded] = useState(false);
   return (
     <div className="flex flex-col gap-4" data-testid="issue-detail">
-      <div>
-        <p className="text-muted-foreground mb-1.5 text-xs font-medium">
-          Fields
-        </p>
-        <div
-          className="divide-y rounded-md border px-3"
-          data-testid="issue-fields"
-        >
-          {/* Jira's own state first: it is what the rest of the row qualifies. */}
-          <Field label="Status">
-            <Badge variant="secondary">{issue.status}</Badge>
-          </Field>
-          <Field label="Type">{issue.issueType}</Field>
-          <Field label="Assignee">{issue.assignee ?? "Unassigned"}</Field>
-          <Field label="Reporter">{issue.reporter}</Field>
-          <Field label="Creator">
-            {issue.creator === issue.reporter ? null : issue.creator}
-          </Field>
+      {/*
+        Two rows by default: Jira's own state, and the one date or priority
+        that most changes what the description means. The rest unfolds on
+        request, so the spec is read against its frame without the frame
+        taking the page.
+      */}
+      <div
+        className="divide-y rounded-md border px-3"
+        data-testid="issue-fields"
+      >
+        <Field label="Status">
+          <Badge variant="secondary">{issue.status}</Badge>
+        </Field>
+        {expanded ? (
+          <>
+            <Field label="Type">{issue.issueType}</Field>
+            <Field label="Assignee">{issue.assignee ?? "Unassigned"}</Field>
+            <Field label="Reporter">{issue.reporter}</Field>
+            <Field label="Creator">
+              {issue.creator === issue.reporter ? null : issue.creator}
+            </Field>
+            <Field label="Priority">{issue.priority}</Field>
+            <Field label="Resolution">{issue.resolution}</Field>
+            <DatedField label="Resolved" value={issue.resolutionDate} />
+            <DatedField label="Created" value={issue.created} />
+            <DatedField label="Updated" value={issue.updated} />
+            <DatedField
+              label="Due"
+              value={issue.dueDate}
+              overdue={isOverdue(issue.dueDate)}
+            />
+            <Field label="Project">{issue.projectKey}</Field>
+            <Field label="Parent">{issue.parentKey}</Field>
+            <Field label="Components">
+              {issue.components.length === 0
+                ? null
+                : issue.components.join(", ")}
+            </Field>
+            <Field label="Fix versions">
+              {issue.fixVersions.length === 0
+                ? null
+                : issue.fixVersions.join(", ")}
+            </Field>
+            <Field label="Estimate">
+              {hours(issue.originalEstimateSeconds)}
+            </Field>
+            <Field label="Remaining">
+              {hours(issue.remainingEstimateSeconds)}
+            </Field>
+            <Field label="Environment">{issue.environment}</Field>
+            <Field label="Votes">
+              {issue.votes === null || issue.votes === 0 ? null : issue.votes}
+            </Field>
+            <Field label="Watchers">
+              {issue.watchers === null || issue.watchers === 0
+                ? null
+                : issue.watchers}
+            </Field>
+            <Field label="Labels">
+              {issue.labels.length === 0 ? null : (
+                <span className="flex flex-wrap gap-1">
+                  {issue.labels.map((label) => (
+                    <Badge
+                      key={label}
+                      variant="outline"
+                      className="font-normal"
+                    >
+                      {label}
+                    </Badge>
+                  ))}
+                </span>
+              )}
+            </Field>
+          </>
+        ) : asDate(issue.dueDate) !== null ? (
+          <DatedField
+            label="Due"
+            value={issue.dueDate}
+            overdue={isOverdue(issue.dueDate)}
+          />
+        ) : issue.priority !== null && issue.priority !== "" ? (
           <Field label="Priority">{issue.priority}</Field>
-          <Field label="Resolution">{issue.resolution}</Field>
-          <Field label="Resolved">{asDate(issue.resolutionDate)}</Field>
-          <Field label="Created">{asDate(issue.created)}</Field>
-          <Field label="Updated">{asDate(issue.updated)}</Field>
-          <Field label="Due">{asDate(issue.dueDate)}</Field>
-          <Field label="Project">{issue.projectKey}</Field>
-          <Field label="Parent">{issue.parentKey}</Field>
-          <Field label="Components">
-            {issue.components.length === 0 ? null : issue.components.join(", ")}
-          </Field>
-          <Field label="Fix versions">
-            {issue.fixVersions.length === 0
-              ? null
-              : issue.fixVersions.join(", ")}
-          </Field>
-          <Field label="Estimate">{hours(issue.originalEstimateSeconds)}</Field>
-          <Field label="Remaining">
-            {hours(issue.remainingEstimateSeconds)}
-          </Field>
-          <Field label="Environment">{issue.environment}</Field>
-          <Field label="Votes">
-            {issue.votes === null || issue.votes === 0 ? null : issue.votes}
-          </Field>
-          <Field label="Watchers">
-            {issue.watchers === null || issue.watchers === 0
-              ? null
-              : issue.watchers}
-          </Field>
-          <Field label="Labels">
-            {issue.labels.length === 0 ? null : (
-              <span className="flex flex-wrap gap-1">
-                {issue.labels.map((label) => (
-                  <Badge key={label} variant="outline" className="font-normal">
-                    {label}
-                  </Badge>
-                ))}
-              </span>
+        ) : (
+          <DatedField label="Created" value={issue.created} />
+        )}
+        <div className="py-1.5">
+          <button
+            type="button"
+            className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 flex cursor-pointer items-center gap-1 rounded-sm text-xs underline-offset-2 transition-colors hover:underline focus-visible:ring-[3px] focus-visible:outline-none"
+            aria-expanded={expanded}
+            onClick={() => setExpanded((value) => !value)}
+          >
+            {expanded ? (
+              <>
+                <ChevronUp className="size-3.5" />
+                Show less
+              </>
+            ) : (
+              <>
+                <ChevronDown className="size-3.5" />
+                Show all
+              </>
             )}
-          </Field>
+          </button>
         </div>
       </div>
 
@@ -266,13 +388,13 @@ export function IssueSpec({ issue }: { issue: JiraIssueDetail }) {
 export function IssueSpecSkeleton() {
   return (
     <div className="flex flex-col gap-4" data-testid="issue-skeleton">
-      <div aria-hidden="true">
-        <div className="skeleton mb-1.5 h-3 w-10 rounded" />
-        <div className="flex flex-col gap-2.5 rounded-md border px-3 py-2.5">
-          <div className="skeleton h-3 w-1/2 rounded" />
-          <div className="skeleton h-3 w-2/5 rounded" />
-          <div className="skeleton h-3 w-3/5 rounded" />
-        </div>
+      <div
+        aria-hidden="true"
+        className="flex flex-col gap-2.5 rounded-md border px-3 py-2.5"
+      >
+        <div className="skeleton h-3 w-1/2 rounded" />
+        <div className="skeleton h-3 w-2/5 rounded" />
+        <div className="skeleton h-3 w-16 rounded" />
       </div>
       <div
         aria-hidden="true"

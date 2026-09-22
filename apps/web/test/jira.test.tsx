@@ -739,10 +739,70 @@ test("the Spec tab is the ticket read live: its fields, then its description", a
     fields.compareDocumentPosition(spec) & Node.DOCUMENT_POSITION_FOLLOWING,
   ).toBeTruthy();
   expect(within(panel).queryByRole("tab", { name: /fields/i })).toBeNull();
+  // Folded: the status and the due date, with its distance from today,
+  // and nothing else yet.
   expect(within(fields).getByText("To Do")).toBeDefined();
+  expect(within(fields).getByText("Due")).toBeDefined();
+  expect(within(fields).getByText(/^· (in|next) /)).toBeDefined();
+  expect(within(fields).queryByText("Priority")).toBeNull();
+  expect(within(fields).queryByText("charlie angriawan")).toBeNull();
+
+  await userEvent.click(
+    within(fields).getByRole("button", { name: /show all/i }),
+  );
   expect(within(fields).getByText("charlie angriawan")).toBeDefined();
   expect(within(fields).getByText("Highest")).toBeDefined();
   expect(within(fields).getByText("foundation")).toBeDefined();
+  // Created and Updated carry their distance too.
+  expect(within(fields).getAllByText(/years ago$/)).toHaveLength(2);
+
+  await userEvent.click(
+    within(fields).getByRole("button", { name: /show less/i }),
+  );
+  expect(within(fields).queryByText("Highest")).toBeNull();
+});
+
+test("folded fields fall back from due date to priority to created", async () => {
+  vi.stubGlobal(
+    "fetch",
+    routedFetch({
+      detail: {
+        body: {
+          issue: {
+            ...issue(1, "2020-01-01T00:00:00.000Z"),
+            descriptionText: "Some spec.",
+            reporter: null,
+            creator: null,
+            resolution: null,
+            resolutionDate: null,
+            labels: [],
+            priority: "Low",
+            parentKey: null,
+            projectKey: "NOX",
+            dueDate: null,
+            components: [],
+            fixVersions: [],
+            originalEstimateSeconds: null,
+            remainingEstimateSeconds: null,
+            votes: 0,
+            watchers: 0,
+            environment: null,
+          },
+        },
+      },
+    }),
+  );
+  renderBoard();
+  await screen.findByTestId("proposal-list");
+  await userEvent.click(screen.getByText("Ticket 1"));
+
+  const panel = await screen.findByTestId("proposal-panel");
+  await userEvent.click(within(panel).getByRole("tab", { name: /spec/i }));
+
+  const fields = await within(panel).findByTestId("issue-fields");
+  expect(within(fields).queryByText("Due")).toBeNull();
+  expect(within(fields).getByText("Low")).toBeDefined();
+  expect(within(fields).queryByText("Created")).toBeNull();
 });
 
 test("a field Jira did not send renders no row", async () => {
@@ -785,6 +845,11 @@ test("a field Jira did not send renders no row", async () => {
   await userEvent.click(within(panel).getByRole("tab", { name: /spec/i }));
 
   const fields = await within(panel).findByTestId("issue-fields");
+  // No due date and no priority: the fold shows when it was created.
+  expect(within(fields).getByText("Created")).toBeDefined();
+  await userEvent.click(
+    within(fields).getByRole("button", { name: /show all/i }),
+  );
   expect(within(fields).queryByText("Reporter")).toBeNull();
   expect(within(fields).queryByText("Resolution")).toBeNull();
   expect(within(fields).queryByText("Labels")).toBeNull();
