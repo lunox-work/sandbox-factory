@@ -981,9 +981,6 @@ function ProposalPeek({
             <div className="flex flex-col gap-5 rounded-lg border p-4 sm:p-5">
               <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-4">
                 <div className="flex flex-col gap-1.5">
-                  <span className="text-muted-foreground text-xs font-medium">
-                    Status
-                  </span>
                   <div className="flex items-center gap-2">
                     <Badge variant="secondary">
                       {capitalize(proposal.status)}
@@ -1024,20 +1021,15 @@ function ProposalPeek({
 
                 <div className="flex flex-col gap-1.5">
                   {/*
-                    The label, and on its right the one warning a size can
-                    carry: an XL is a hint that the ticket is two tickets.
+                    The one warning a size can carry, above the cards on
+                    the right: an XL is a hint that the ticket is two.
                   */}
-                  <span className="flex items-center justify-between gap-4 text-xs">
-                    <span className="text-muted-foreground font-medium">
-                      Size
+                  {proposal.complexity === "XL" && (
+                    <span className="flex items-center justify-end gap-1 text-xs text-amber-700 dark:text-amber-400">
+                      <TriangleAlert className="size-3.5 shrink-0" />
+                      Consider splitting
                     </span>
-                    {proposal.complexity === "XL" && (
-                      <span className="flex items-center gap-1 text-amber-700 dark:text-amber-400">
-                        <TriangleAlert className="size-3.5 shrink-0" />
-                        Consider splitting
-                      </span>
-                    )}
-                  </span>
+                  )}
                   {canDecide && open ? (
                     /*
                       The size is the resize: a row of cards, one per size,
