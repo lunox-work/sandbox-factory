@@ -1,52 +1,10 @@
 #!/usr/bin/env bash
-#
-# ship.sh — take working-tree changes from `main` to merged, unattended.
-#
-# Built for coding agents. The agent supplies the branch, title and body up
-# front; the script then moves the changes off `main`, verifies, pushes, opens
-# the PR, and babysits it until it merges. Nothing else is asked along the way.
-#
-#   ./scripts/ship.sh --title "fix: reject blank titles" \
-#                     --body "Closes #42" \
-#                     --type fix
-#
-# FIRE AND FORGET — this is the part agents get wrong.
-#
-# The script returns 0 as soon as the PR is *open*, having detached a child to
-# watch it merge. The PR URL on stdout is the finish line: the merge, the
-# review threads and the branch cleanup all complete without the caller.
-#
-# It leaves you on an up-to-date `main`, so the next change starts there. Do
-# not check the shipped branch back out to keep working on it — that stacks the
-# next change on an open PR, which this script then refuses.
-#
-# So do not poll afterwards — no `gh pr checks` loop, no `sleep` and re-check,
-# no tailing the log. A ship takes 10-15 minutes, nearly all of it waiting on
-# CodeRabbit, and an agent that watches burns its context on unchanged status
-# output while the user waits. Print the URL and move on. To learn the outcome
-# in a later turn, ask once: `gh pr view <n> --json state --jq .state`.
-#
-# --foreground opts back in, for the rare case where the merge is a
-# precondition for the very next thing you do.
-#
-# See scripts/README.md for the full flag list and the repo rules this encodes.
+# ship.sh — verify, push, open a PR, return to main. GitHub handles the rest.
 
 set -euo pipefail
 
-REPO="lunox-work/sandbox-factory"
-REQUIRED_CHECKS=("Test (Node 22)" "Test (Node 24)" "Analyze")
-
-# --- how long to wait ---------------------------------------------------------
-# Checks take ~2-4 min. CodeRabbit posts a few minutes after that.
-CHECK_TIMEOUT=${SHIP_CHECK_TIMEOUT:-1800}   # 30 min for required checks
-# CodeRabbit's `resolve` took ~8 min on PR #26; allow generous headroom.
-REVIEW_TIMEOUT=${SHIP_REVIEW_TIMEOUT:-1800} # 30 min for CodeRabbit to review+resolve
-MERGE_TIMEOUT=${SHIP_MERGE_TIMEOUT:-600}    # 10 min for auto-merge to fire
-POLL=${SHIP_POLL:-20}
-
 BRANCH="" TITLE="" BODY="" TYPE="" ISSUE=""
-ASSUME_YES=0 NO_WAIT=0 DRAFT=0 RESOLVE_MODE="coderabbit"
-FOREGROUND=0 IS_CHILD=0
+ASSUME_YES=0 DRAFT=0
 
 # Optional Co-Authored-By trailer; empty (the default) adds none.
 COAUTHOR="${SHIP_COAUTHOR:-}"
@@ -57,10 +15,11 @@ warn() { printf '\033[33mwarn:\033[0m %s\n' "$*" >&2; }
 ok()   { printf '\033[32m  ok\033[0m %s\n' "$*"; }
 
 usage() {
-  # Prints the header through the fire-and-forget note. Keep the range in step
-  # with the header above.
-  sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'
   cat <<'EOF'
+Usage: ./scripts/ship.sh --title "fix: ..." --yes
+
+Verifies, pushes, opens a PR and returns to main. GitHub handles review,
+repairs and auto-merge. Exit 0 means the PR is open, not merged or deployed.
 
 Flags:
   --branch <name>     Branch to create. Default: derived from the title.
@@ -75,19 +34,13 @@ Flags:
                       goes in both the commit and the PR body, because the
                       squash commit on main is built from the PR, not from
                       the branch commit.
-  --resolve <mode>    Review threads: coderabbit (ask it to resolve its own,
-                      default) | manual (stop and report) | force (resolve
-                      unread — discards feedback).
-  --draft             Open as a draft. Skips CodeRabbit and auto-merge.
-  --no-wait           Open the PR and exit without watching it at all.
-  --foreground        Watch in this terminal instead of detaching.
+  --draft             Open as a draft; no repairs or auto-merge until ready.
+  --no-wait           Accepted for compatibility; returning immediately is default.
   --yes, -y           Skip the confirmation prompt.
   -h, --help          This message.
 
 Exit codes:
-  0 merged (or opened with --no-wait/--draft)   3 checks failed
-  1 usage/precondition error                    4 timed out waiting
-  2 verify failed locally                       5 blocked on review threads
+  0 PR opened   1 usage/precondition error   2 verify failed locally
 EOF
 }
 
@@ -99,11 +52,9 @@ while [[ $# -gt 0 ]]; do
     --type)    TYPE="${2:-}"; shift 2 ;;
     --issue)   ISSUE="${2:-}"; shift 2 ;;
     --coauthor) COAUTHOR="${2:-}"; shift 2 ;;
-    --resolve) RESOLVE_MODE="${2:-}"; shift 2 ;;
+    --resolve|--foreground|--_child) die "$1 has been removed; GitHub owns review and merge" ;;
     --draft)   DRAFT=1; shift ;;
-    --no-wait) NO_WAIT=1; shift ;;
-    --foreground) FOREGROUND=1; shift ;;
-    --_child) IS_CHILD=1; shift ;;
+    --no-wait) shift ;;
     -y|--yes)  ASSUME_YES=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown flag: $1 (try --help)" ;;
@@ -115,11 +66,6 @@ done
 command -v gh  >/dev/null || die "gh not found. brew install gh"
 command -v git >/dev/null || die "git not found"
 gh auth status >/dev/null 2>&1 || die "gh not authenticated. Run: gh auth login"
-
-case "$RESOLVE_MODE" in
-  coderabbit|manual|force) ;;
-  *) die "--resolve must be coderabbit, manual or force (got: $RESOLVE_MODE)" ;;
-esac
 
 # git silently drops a trailer that is not "Name <email>", so reject it here.
 if [[ -n "$COAUTHOR" && ! "$COAUTHOR" =~ ^.+\ \<[^\ ]+@[^\ ]+\>$ ]]; then
@@ -142,21 +88,6 @@ if [[ -n "$ISSUE" && ! "$ISSUE" =~ ^[0-9]+$ ]]; then
   die "--issue must be a number (got: $ISSUE)"
 fi
 
-# --- detached child: skip setup, go straight to watching ----------------------
-# The parent already branched, verified, pushed and opened the PR; the child
-# (SHIP_WATCH_PR set) only watches it.
-
-if [[ "$IS_CHILD" -eq 1 ]]; then
-  [[ -n "${SHIP_WATCH_PR:-}" ]] || die "--_child requires SHIP_WATCH_PR"
-  PR_NUM="$SHIP_WATCH_PR"
-  BRANCH="${SHIP_WATCH_BRANCH:-$(git rev-parse --abbrev-ref HEAD)}"
-  PR_URL="https://github.com/$REPO/pull/$PR_NUM"
-  info "Watching PR #$PR_NUM (detached)"
-  WATCH_ONLY=1
-else
-  WATCH_ONLY=0
-fi
-
 # --- work out the branch ------------------------------------------------------
 
 slugify() {
@@ -167,7 +98,7 @@ slugify() {
     | cut -c1-48 | sed -E 's/-+$//'
 }
 
-if [[ "$WATCH_ONLY" -eq 0 && -z "$BRANCH" ]]; then
+if [[ -z "$BRANCH" ]]; then
   prefix="${TITLE%%:*}"; prefix="${prefix%%(*}"; prefix="${prefix%!}"
   case "$prefix" in
     feat) kind=feat ;; fix) kind=fix ;; docs) kind=docs ;; ci|build) kind=ci ;;
@@ -179,8 +110,6 @@ fi
 [[ "$BRANCH" != "main" ]] || die "refusing to use 'main' as the working branch"
 
 # --- inspect the working tree -------------------------------------------------
-
-if [[ "$WATCH_ONLY" -eq 0 ]]; then
 
 CURRENT="$(git rev-parse --abbrev-ref HEAD)"
 
@@ -209,7 +138,6 @@ if [[ "$CURRENT" != "main" && "${SHIP_NO_AUTO_MAIN:-0}" != "1" ]] \
     if git checkout main >/dev/null 2>&1; then
       git pull --ff-only --quiet >/dev/null 2>&1 || true
       ok "switched from $CURRENT to an up-to-date main"
-      # The sweep on the next merge deletes the leftover branch.
       CURRENT="main"
     fi
   fi
@@ -272,7 +200,6 @@ if [[ "$ASSUME_YES" -eq 0 ]]; then
   echo
   echo "  branch : $BRANCH"
   echo "  title  : $TITLE"
-  echo "  resolve: $RESOLVE_MODE"
   [[ "$DRAFT" -eq 1 ]] && echo "  draft  : yes (no auto-merge)"
   echo
   printf 'Ship it? [y/N] '
@@ -306,7 +233,7 @@ fi
 # Local `main` may be stale. A branch cut from it opens BEHIND, and the strict
 # ruleset blocks auto-merge until an update re-runs every check (PR #49).
 # Only for a branch this run just created: it is unpushed, so rewriting it is
-# free. The watch loop updates existing branches through GitHub instead.
+# free. The GitHub controller updates existing branches instead.
 if [[ "$MODE" == "new" ]]; then
   if git fetch origin main --quiet >/dev/null 2>&1; then
     if ! git merge-base --is-ancestor origin/main HEAD 2>/dev/null; then
@@ -405,465 +332,31 @@ info "Opening pull request"
 PR_ARGS=(--base main --head "$BRANCH" --title "$TITLE" --body "$PR_BODY")
 [[ "$DRAFT" -eq 1 ]] && PR_ARGS+=(--draft)
 
-PR_URL="$(gh pr create "${PR_ARGS[@]}")" || die "gh pr create failed"
+PR_URL="$(gh pr list --base main --head "$BRANCH" --state open --json url --jq '.[0].url // empty')" || die "could not look up existing PR"
+if [[ -z "$PR_URL" ]]; then
+  PR_URL="$(gh pr create "${PR_ARGS[@]}")" || die "gh pr create failed"
+fi
 PR_NUM="${PR_URL##*/}"
 ok "PR #$PR_NUM — $PR_URL"
 
-fi  # end WATCH_ONLY==0 setup phase
-
-if [[ "$DRAFT" -eq 1 ]]; then
-  echo
-  info "Draft PR: CodeRabbit and auto-merge both skip drafts."
-  info "Mark ready when you want it to land: gh pr ready $PR_NUM"
-  exit 0
-fi
-
-if [[ "$NO_WAIT" -eq 1 ]]; then
-  echo
-  info "Not waiting (--no-wait). Auto-merge is armed; it lands on green."
-  exit 0
-fi
-
-# --- detach -------------------------------------------------------------------
-# The PR is open and auto-merge armed; the rest is watching. Re-exec in the
-# background so the terminal is free. --foreground opts out.
-
-LOG_DIR="$(git rev-parse --git-dir)/ship"
-mkdir -p "$LOG_DIR"
-SHIP_LOG="$LOG_DIR/pr-$PR_NUM.log"
-
-if [[ "$FOREGROUND" -eq 0 && "$IS_CHILD" -eq 0 ]]; then
-  # Run the child from a copy under .git/ (untracked, never checked out), not
-  # "$0". bash reads a script lazily by byte offset, so the checkout below
-  # would rewrite a tracked "$0" underneath the running child. On PR #30 the
-  # child went silent, never saw the merge and never cleaned up.
-  CHILD_COPY="$LOG_DIR/ship-$PR_NUM.sh"
-  cp "$0" "$CHILD_COPY" && chmod +x "$CHILD_COPY" || CHILD_COPY="$0"
-
-  # Hand the child the PR we already opened; it skips straight to watching.
-  SHIP_WATCH_PR="$PR_NUM" SHIP_WATCH_BRANCH="$BRANCH" \
-    nohup "$CHILD_COPY" --_child --title "$TITLE" --resolve "$RESOLVE_MODE" --yes \
-    >"$SHIP_LOG" 2>&1 &
-  child=$!
-  disown "$child" 2>/dev/null || true
-
-  # Return the tree to main, or the next change starts on unmerged work and
-  # ship.sh refuses it after the edits are made. The child cannot do this: it
-  # shares the working tree with an interactive session. Safe because the
-  # branch is pushed; `--ff-only` leaves a diverged local main alone.
+# Parse the whole function before checkout changes this script on disk.
+finish_shipping() {
   if git checkout main >/dev/null 2>&1; then
-    git pull --ff-only --quiet >/dev/null 2>&1 || true
-    RETURNED_TO_MAIN=1
+    if git pull --ff-only --quiet; then
+      ok "back on main — synced now, not after the future PR merge"
+    else
+      warn "back on main, but could not fast-forward; update it before starting new work"
+    fi
   else
-    # Something in the tree blocked the switch. The PR is open and watched
-    # either way, so warn rather than fail.
-    RETURNED_TO_MAIN=0
-    warn "could not switch back to main — still on $BRANCH"
+    warn "could not switch back to main — still on $BRANCH; PR remains open"
   fi
-
-  echo
-  info "Watching in the background (pid $child)"
-  info "  log:    $SHIP_LOG"
-  info "  follow: tail -f $SHIP_LOG"
-  info "  status: gh pr view $PR_NUM"
-  echo
-  ok "terminal is free — the PR merges on its own once green"
-  [[ "$RETURNED_TO_MAIN" -eq 1 ]] && ok "back on main — start the next change here"
+  if [[ "$DRAFT" -eq 1 ]]; then
+    info "Draft PR: mark ready to start review: gh pr ready $PR_NUM"
+  else
+    info "GitHub owns CI, CodeRabbit repairs and gated auto-merge."
+    info "A blocker leaves the PR open; inspect: gh pr view $PR_NUM"
+  fi
+  info "$PR_URL"
   exit 0
-fi
-
-# --- helpers for the watch loop ----------------------------------------------
-
-pr_json() { gh pr view "$PR_NUM" --json "$1" --jq "$2" 2>/dev/null || echo ""; }
-
-threads_json() {
-  gh api graphql -f query="query{repository(owner:\"${REPO%%/*}\",name:\"${REPO##*/}\"){pullRequest(number:$PR_NUM){reviewThreads(first:100){nodes{id isResolved isOutdated path line comments(first:1){nodes{author{login}}}}}}}}" \
-    --jq '.data.repository.pullRequest.reviewThreads.nodes' 2>/dev/null || echo "[]"
 }
-
-# Bring the PR branch up to date when main has moved past it. Uses the compare
-# API, not `mergeStateStatus`, which reads BLOCKED rather than BEHIND while
-# checks are pending. Called from every loop so the check re-run overlaps the
-# waiting.
-update_if_behind() {
-  local behind
-  behind="$(gh api "repos/$REPO/compare/main...$BRANCH" --jq '.behind_by' 2>/dev/null || echo 0)"
-  [[ "${behind:-0}" =~ ^[0-9]+$ ]] || behind=0
-  [[ "$behind" -gt 0 ]] || return 1
-  info "branch is $behind commit(s) behind main; updating (checks re-run)"
-  gh pr update-branch "$PR_NUM" >/dev/null 2>&1 || warn "could not update the branch"
-  return 0
-}
-
-# Save unresolved review comments next to the ship log before resolving them.
-# `--resolve coderabbit|force` close threads nobody has read, and nobody
-# revisits a merged PR.
-save_review_feedback() {
-  local out="$LOG_DIR/pr-$PR_NUM.review.md"
-  gh api graphql -f query="query{repository(owner:\"${REPO%%/*}\",name:\"${REPO##*/}\"){pullRequest(number:$PR_NUM){reviewThreads(first:100){nodes{isResolved path line comments(first:1){nodes{author{login} body url}}}}}}}" \
-    --jq '.data.repository.pullRequest.reviewThreads.nodes' 2>/dev/null \
-  | python3 -c 'import sys,json
-try: t=json.load(sys.stdin)
-except Exception: raise SystemExit(1)
-t=[x for x in t if not x.get("isResolved")]
-if not t: raise SystemExit(1)
-print("# Review feedback on PR #{} — resolved unread by ship.sh\n".format(sys.argv[1]))
-print("Read this before the next change. Fix what is real in a follow-up PR.\n")
-for x in t:
-    c=(x.get("comments",{}).get("nodes") or [{}])[0]
-    print("## {}:{} ({})\n".format(x.get("path","?"), x.get("line") or "?", (c.get("author") or {}).get("login","?")))
-    print(c.get("url",""))
-    print()
-    print(c.get("body","").strip())
-    print()' "$PR_NUM" >"$out" 2>/dev/null \
-    && info "review feedback saved: $out" \
-    || rm -f "$out"
-  return 0
-}
-
-unresolved_count() {
-  threads_json | python3 -c 'import sys,json
-try: t=json.load(sys.stdin)
-except Exception: print(-1); raise SystemExit
-print(sum(1 for x in t if not x["isResolved"]))' 2>/dev/null || echo -1
-}
-
-print_unresolved() {
-  threads_json | python3 -c 'import sys,json
-try: t=json.load(sys.stdin)
-except Exception: raise SystemExit
-for x in t:
-    if x.get("isResolved"): continue
-    nodes = x.get("comments",{}).get("nodes") or [{}]
-    author = (nodes[0].get("author") or {}).get("login","?")
-    path = x.get("path","?")
-    line = x.get("line") or "?"
-    print("     {}:{}  ({})".format(path, line, author))' 2>/dev/null
-}
-
-# Zero unresolved threads means either "reviewed, nothing to flag" or "not
-# posted yet". Require positive evidence of a review: a CodeRabbit review, any
-# thread, or the CodeRabbit check reporting a conclusion.
-review_arrived() {
-  local seen
-  seen="$(gh api graphql -f query="query{repository(owner:\"${REPO%%/*}\",name:\"${REPO##*/}\"){pullRequest(number:$PR_NUM){reviews(first:20){nodes{author{login}}} reviewThreads(first:1){nodes{id}}}}}" \
-    --jq '[(.data.repository.pullRequest.reviews.nodes[]?|select(.author.login=="coderabbitai")),(.data.repository.pullRequest.reviewThreads.nodes[]?)]|length' 2>/dev/null || echo 0)"
-  [[ "${seen:-0}" -gt 0 ]] && return 0
-
-  # Fall back to the check run, which appears even on a no-findings review.
-  local concl
-  concl="$(gh pr view "$PR_NUM" --json statusCheckRollup \
-    --jq '[.statusCheckRollup[]|select((.name//.context)=="CodeRabbit")|.conclusion//empty]|length' 2>/dev/null || echo 0)"
-  [[ "${concl:-0}" -gt 0 ]]
-}
-
-# Path of the worktree holding $1 checked out, empty if none. Worktrees are
-# not ship.sh's own — agent sessions make them — but one pins its branch
-# against deletion, so the sweep and cleanup both have to see it. Reads the
-# porcelain stanzas: a `worktree <path>` line opens each, `branch <ref>` names
-# what it holds, and the main worktree is skipped since the caller's own
-# checkout is already excluded by name.
-worktree_holding() {
-  local want="refs/heads/$1" path=""
-  while read -r key value; do
-    case "$key" in
-      worktree) path="$value" ;;
-      branch)   [[ "$value" == "$want" ]] && { printf '%s' "$path"; return 0; } ;;
-    esac
-  done < <(git worktree list --porcelain 2>/dev/null)
-  return 0
-}
-
-# Sweep up branches left by earlier ships: runs that exited early, --no-wait,
-# or PRs merged in the web UI. Squash-merge makes `git branch --merged` useless
-# (the tip is never an ancestor of main), so delete a branch only when GitHub
-# reports its PR as MERGED. Skips main, the current and shipped branches,
-# release-please branches, branches held by another worktree, and any branch
-# carrying commits that exist nowhere else.
-sweep_merged_branches() {
-  command -v gh >/dev/null || return 0
-
-  local current b pr_state extra wt
-  current="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)"
-
-  while read -r b; do
-    [[ -z "$b" ]] && continue
-    [[ "$b" == "main" || "$b" == "$current" || "$b" == "$BRANCH" ]] && continue
-    [[ "$b" == release-please--* ]] && continue
-
-    # Commits that exist nowhere else: never delete. Measured against the
-    # remote branch while it survives, and against origin/main once the merge
-    # has deleted it — a squashed branch is fully contained in main, so
-    # anything still unique here (work committed on top after the merge) has
-    # never been pushed. Skipping this check when the remote ref is gone would
-    # sweep that work away silently.
-    if git rev-parse --verify --quiet "refs/remotes/origin/$b" >/dev/null; then
-      extra="$(git rev-list --count "origin/$b..$b" 2>/dev/null || echo 1)"
-    else
-      extra="$(git cherry origin/main "$b" 2>/dev/null | grep -c '^+' || true)"
-    fi
-    [[ "${extra:-1}" -ne 0 ]] && continue
-
-    pr_state="$(gh pr list --head "$b" --state all --limit 1 \
-      --json state --jq '.[0].state // empty' 2>/dev/null || echo "")"
-    [[ "$pr_state" == "MERGED" ]] || continue
-
-    # A branch checked out in another worktree cannot be deleted, and the
-    # failure is swallowed below, so every later sweep would retry it in
-    # silence. Say so once instead: the worktree is the thing to remove.
-    wt="$(worktree_holding "$b")"
-    if [[ -n "$wt" ]]; then
-      warn "branch $b is merged but held by worktree $wt — not swept"
-      continue
-    fi
-
-    git branch -D "$b" >/dev/null 2>&1 \
-      && ok "swept merged branch $b" || true
-    git push origin --delete "$b" >/dev/null 2>&1 || true
-  done < <(git for-each-ref --format='%(refname:short)' refs/heads/)
-
-  return 0
-}
-
-# Post-merge cleanup, called from all three wait loops because the merge can
-# land while any of them polls (usually the review loop). Nothing here is
-# fatal: failing over tidy-up would report a successful ship as an error.
-#
-# The remote delete is not redundant: `delete_branch_on_merge` does not
-# reliably fire for merges performed by auto-merge, which is how every PR
-# lands here.
-cleanup_merged() {
-  # A detached child shares the working tree with the user, who is probably
-  # mid-edit on main, so it must not check anything out; the parent already
-  # returned the tree to main. `git branch -D` moves no files, so it is safe
-  # from either.
-  if [[ "$IS_CHILD" -eq 0 ]]; then
-    git checkout main >/dev/null 2>&1 && git pull --quiet >/dev/null 2>&1 || true
-  fi
-  # -D, not -d: the squash commit is a different object, so -d refuses. A
-  # worktree holding the branch makes that impossible, and the error is
-  # swallowed here, so name it rather than leave a silently undeleted branch.
-  local wt
-  wt="$(worktree_holding "$BRANCH")"
-  if [[ -n "$wt" ]]; then
-    warn "branch $BRANCH is merged but held by worktree $wt — not deleted"
-  else
-    git branch -D "$BRANCH" >/dev/null 2>&1 || true
-  fi
-
-  git push origin --delete "$BRANCH" >/dev/null 2>&1 \
-    && ok "deleted branch $BRANCH" \
-    || true
-
-  # SHIP_NO_SWEEP=1 opts out, to keep a stale branch on purpose.
-  [[ "${SHIP_NO_SWEEP:-0}" == "1" ]] || sweep_merged_branches
-
-  git fetch origin --prune >/dev/null 2>&1 || true
-
-  # The child's script copy from the detach block. Removing it mid-run is
-  # fine: bash has read it all by now.
-  [[ -n "${CHILD_COPY:-}" ]] && rm -f "$CHILD_COPY"
-  [[ "$IS_CHILD" -eq 1 ]] && rm -f "$LOG_DIR/ship-$PR_NUM.sh"
-  return 0
-}
-
-resolve_all_threads() {
-  local ids
-  ids="$(threads_json | python3 -c 'import sys,json
-try: t=json.load(sys.stdin)
-except Exception: raise SystemExit
-print("\n".join(x["id"] for x in t if not x["isResolved"]))' 2>/dev/null)"
-  [[ -z "$ids" ]] && return 0
-  local id
-  while read -r id; do
-    [[ -z "$id" ]] && continue
-    gh api graphql -f query="mutation{resolveReviewThread(input:{threadId:\"$id\"}){thread{isResolved}}}" >/dev/null 2>&1 || true
-  done <<<"$ids"
-}
-
-# --- wait for required checks -------------------------------------------------
-
-info "Waiting for required checks (timeout ${CHECK_TIMEOUT}s)"
-deadline=$(( $(date +%s) + CHECK_TIMEOUT ))
-while :; do
-  state="$(pr_json state '.state')"
-  [[ "$state" == "MERGED" ]] && { ok "merged while waiting"; cleanup_merged; echo; info "$PR_URL"; exit 0; }
-  [[ "$state" == "CLOSED" ]] && die "PR was closed"
-
-  # Checks never start on a PR that conflicts with main, so waiting here would
-  # only run out the clock.
-  if [[ "$(pr_json mergeStateStatus '.mergeStateStatus')" == "DIRTY" ]]; then
-    warn "merge conflict with main — rebase required"
-    warn "$PR_URL"
-    exit 5
-  fi
-
-  # An update restarts the checks on a new merge commit. Give GitHub one poll
-  # to register them, or the rollup still shows the old commit's green results.
-  if update_if_behind; then
-    (( $(date +%s) > deadline )) && { warn "timed out waiting for checks"; warn "$PR_URL"; exit 4; }
-    sleep "$POLL"
-    continue
-  fi
-
-  rollup="$(gh pr view "$PR_NUM" --json statusCheckRollup --jq '.statusCheckRollup' 2>/dev/null || echo "[]")"
-  # Required check names are passed as argv, not interpolated into the source.
-  read -r pending failed <<<"$(printf '%s' "$rollup" | python3 -c '
-import sys,json
-req=set(sys.argv[1:])
-try: r=json.load(sys.stdin) or []
-except Exception: print("1 0"); raise SystemExit
-p=f=0
-for c in r:
-    n=c.get("name") or c.get("context")
-    if n not in req: continue
-    if c.get("status")!="COMPLETED": p+=1
-    elif c.get("conclusion") not in ("SUCCESS","NEUTRAL","SKIPPED"): f+=1
-print(f"{p} {f}")' "${REQUIRED_CHECKS[@]}" 2>/dev/null || echo "1 0")"
-
-  if [[ "${failed:-0}" -gt 0 ]]; then
-    echo
-    warn "required checks failed"
-    gh pr checks "$PR_NUM" 2>/dev/null | grep -vE '^\s*$' | head -20 >&2 || true
-    echo
-    warn "PR left open for inspection: $PR_URL"
-    exit 3
-  fi
-  [[ "${pending:-1}" -eq 0 ]] && { ok "required checks green"; break; }
-
-  (( $(date +%s) > deadline )) && { warn "timed out waiting for checks"; warn "$PR_URL"; exit 4; }
-  sleep "$POLL"
-done
-
-# --- settle review threads ----------------------------------------------------
-# `required_conversation_resolution` is ON for main, so any unresolved thread
-# blocks the merge even though the CodeRabbit check is not required. It lives
-# in the classic branch protection, not the ruleset (which misleadingly reports
-# `required_review_thread_resolution: false`); both layers apply. See
-# docs/ci.md, "Branch protection".
-
-info "Waiting for review threads to settle"
-review_deadline=$(( $(date +%s) + REVIEW_TIMEOUT ))
-asked_resolve=0
-
-while :; do
-  state="$(pr_json state '.state')"
-  # The usual finish: auto-merge fires once CodeRabbit resolves its threads.
-  [[ "$state" == "MERGED" ]] && { ok "merged"; cleanup_merged; echo; info "$PR_URL"; exit 0; }
-
-  update_if_behind || true
-
-  n="$(unresolved_count)"
-
-  if [[ "$n" -eq 0 ]]; then
-    # Zero can also mean the review has not started; see review_arrived.
-    if review_arrived; then
-      ok "review complete, no unresolved threads"
-      break
-    fi
-    if (( $(date +%s) > review_deadline )); then
-      echo
-      warn "no CodeRabbit review after ${REVIEW_TIMEOUT}s"
-      warn "Proceeding anyway — auto-merge still gates on the required checks."
-      break
-    fi
-    sleep "$POLL"
-    continue
-  fi
-
-  if [[ "$n" -gt 0 ]]; then
-    case "$RESOLVE_MODE" in
-      force)
-        warn "$n unresolved thread(s) — resolving unread (--resolve force)"
-        save_review_feedback
-        resolve_all_threads
-        sleep 5
-        continue
-        ;;
-      manual)
-        echo
-        warn "$n unresolved review thread(s) block the merge:"
-        print_unresolved >&2
-        echo
-        warn "Address them, then: gh pr comment $PR_NUM --body '@coderabbitai resolve'"
-        warn "$PR_URL"
-        exit 5
-        ;;
-      coderabbit)
-        if [[ "$asked_resolve" -eq 0 ]]; then
-          info "$n unresolved thread(s) — asking CodeRabbit to resolve its own"
-          save_review_feedback
-          gh pr comment "$PR_NUM" --body "@coderabbitai resolve" >/dev/null 2>&1 \
-            || warn "could not post the resolve comment"
-          asked_resolve=1
-          sleep 45
-          continue
-        fi
-        ;;
-    esac
-  fi
-
-  if (( $(date +%s) > review_deadline )); then
-    echo
-    if [[ "$n" -gt 0 ]]; then
-      warn "$n thread(s) still unresolved after ${REVIEW_TIMEOUT}s"
-      print_unresolved >&2
-      echo
-      warn "CodeRabbit did not resolve them. Options:"
-      warn "  address the feedback, then re-run with --resolve force, or"
-      warn "  resolve by hand in the UI"
-    else
-      warn "timed out waiting for review"
-    fi
-    warn "$PR_URL"
-    exit 5
-  fi
-  sleep "$POLL"
-done
-
-# --- wait for auto-merge ------------------------------------------------------
-
-info "Waiting for auto-merge"
-merge_deadline=$(( $(date +%s) + MERGE_TIMEOUT ))
-nudged=0
-while :; do
-  state="$(pr_json state '.state')"
-  if [[ "$state" == "MERGED" ]]; then
-    echo
-    ok "merged to main"
-    info "$PR_URL"
-    cleanup_merged
-    exit 0
-  fi
-  [[ "$state" == "CLOSED" ]] && die "PR was closed without merging"
-
-  ms="$(pr_json mergeStateStatus '.mergeStateStatus')"
-
-  # auto-merge should already be armed by the workflow; nudge once if not.
-  if [[ "$nudged" -eq 0 ]]; then
-    armed="$(pr_json autoMergeRequest '.autoMergeRequest != null')"
-    if [[ "$armed" == "false" ]]; then
-      gh pr merge "$PR_NUM" --squash --auto >/dev/null 2>&1 || true
-      nudged=1
-    fi
-  fi
-
-  if [[ "$ms" == "DIRTY" ]]; then
-    warn "merge conflict with main — rebase required"
-    warn "$PR_URL"
-    exit 5
-  fi
-  update_if_behind || true
-
-  if (( $(date +%s) > merge_deadline )); then
-    echo
-    warn "still not merged after ${MERGE_TIMEOUT}s (mergeStateStatus=$ms)"
-    if [[ "$ms" == "BLOCKED" ]]; then
-      n="$(unresolved_count)"
-      [[ "$n" -gt 0 ]] && { warn "$n thread(s) reappeared:"; print_unresolved >&2; }
-    fi
-    warn "$PR_URL"
-    exit 4
-  fi
-  sleep "$POLL"
-done
+finish_shipping

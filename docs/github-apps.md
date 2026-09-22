@@ -9,23 +9,24 @@ The only third-party GitHub App. Installed at the **`lunox-work` organization**
 level with `repository_selection: selected`, so adding another repository means
 adding it to the existing installation, not installing the app again.
 
-Its `CodeRabbit` check does not gate auto-merge, but **unresolved review
-threads do**. [ci.md](./ci.md#branch-protection) is the source of truth for what
-blocks a merge.
+CodeRabbit is a required reviewer through the SHA-bound `Review gate`, not
+merely an advisory comment bot. [ci.md](./ci.md#review-and-repair-gate) defines
+the merge contract and recovery behavior.
 
-Behavior is configured in [`.coderabbit.yaml`](../.coderabbit.yaml):
+[.coderabbit.yaml](../.coderabbit.yaml) enables request-changes/approval workflow,
+incremental automatic review without title exclusions or auto-pause, a stable
+legacy `CodeRabbit` commit status, autofix and CI repair. Generated output and
+the lockfile remain excluded from review content.
 
-- `profile: chill`, `request_changes_workflow: false` — it comments rather than
-  formally requesting changes.
-- Auto-review covers non-draft PRs, skipping titles containing `chore(deps)` or
-  `release`.
-- `path_filters` exclude `dist/`, `dist-test/`, and `package-lock.json`.
-- `finishing_touches.autofix` is on: `@coderabbitai autofix` commits to the PR
-  branch, `@coderabbitai autofix stacked pr` opens a separate PR. Prefer the
-  stacked form for anything non-trivial.
-- `chat.auto_reply` is on.
+Enabling autofix only makes it available; the GitHub controller requests fixes,
+and independent CI/review decides whether they can merge. CI repair uses
+`@coderabbitai fix-ci commit` to update the same PR. No automatic resolve or
+approve overrides are allowed.
 
-Free on its Open Source plan for public repositories.
+Review and finishing-touch entitlements depend on the installed CodeRabbit
+plan. In particular, `fix-ci` requires Team-level access. If a command is
+unavailable or declined, the PR stays blocked; configuration alone does not
+grant that capability.
 
 ## Dependabot
 
@@ -43,7 +44,7 @@ These will **not** come along if you copy the files into a new repository:
 | Default branch            | `main`                        | Settings → Branches         |
 | Delete branch on merge    | Enabled                       | Settings → General          |
 | Ruleset "main protection" | Active — see [ci.md](./ci.md) | Settings → Rules → Rulesets |
-| Classic branch protection | Active — see [ci.md](./ci.md) | Settings → Branches         |
+| Classic branch protection | Removed after ruleset rollout | Settings → Branches         |
 | `AUTO_MERGE_TOKEN` secret | Fine-grained PAT              | Settings → Secrets          |
 | Discussions               | **Disabled**                  | Settings → General          |
 

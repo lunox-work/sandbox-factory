@@ -1,6 +1,9 @@
 name: Auto-merge
 
-on: pull_request_target
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review]
+    branches: [main]
 
 # pull_request_target runs with write access to the base repository, so this
 # workflow never checks out or executes PR code — it only calls the GitHub API.
@@ -11,6 +14,11 @@ permissions:
 
 jobs:
   auto-merge:
+    if: >-
+      !github.event.pull_request.draft &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      (contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association) ||
+      github.event.pull_request.user.login == 'dependabot[bot]')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -19,49 +27,35 @@ jobs:
       # The only source of Dependabot's update-type; the merge step reads it.
       - name: Fetch Dependabot metadata
         id: meta
-        if: github.actor == 'dependabot[bot]'
+        if: github.event.pull_request.user.login == 'dependabot[bot]'
         uses: dependabot/fetch-metadata@v3
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      # `--auto` only arms the merge: it happens later, once every required
-      # status check passes. Nothing here bypasses the branch ruleset.
+      # `--auto` merges once eligible (possibly immediately if already green).
+      # Nothing here bypasses the branch ruleset.
       #
       # AUTO_MERGE_TOKEN, not GITHUB_TOKEN: GitHub raises no events for pushes
       # made with the default token, so a squash-merge armed with it lands on
       # main without triggering ci.yml or cd.yml, and nothing deploys. A token
       # from another identity makes the merge an ordinary push.
       #
-      # Falls back to GITHUB_TOKEN when the secret is absent or unusable, so PRs
-      # keep merging (without the cascade) rather than all failing the moment
-      # the token expires. deploy-watchdog.yml catches that state.
+      # Fail closed if the event-producing token is unavailable. A merge that
+      # silently suppresses CD is not a successful ship.
       - name: Arm auto-merge
         # Everything merges on green except a Dependabot major — that is where
         # breaking changes live, so it waits for a human.
         if: |
-          github.actor != 'dependabot[bot]' ||
+          github.event.pull_request.user.login != 'dependabot[bot]' ||
           steps.meta.outputs.update-type != 'version-update:semver-major'
         run: |
-          # Probe the token before using it. An expired, revoked or under-scoped
-          # token is still a non-empty string, and handing it to `gh pr merge`
-          # would fail the step and stop every PR merging.
-          #
-          # The probe is a read needing the same `pull_requests` access as the
-          # merge. Do not infer failure from `gh pr merge` instead: it exits 0
-          # on an already-merged PR, and retrying on any failure could re-merge.
-          if [ -n "${GH_TOKEN:-}" ] && ! gh pr view "$PR_URL" --json number >/dev/null 2>&1; then
-            echo "::warning::AUTO_MERGE_TOKEN is set but cannot read this pull request — it is expired, revoked or under-scoped. Falling back to the default token; CI and CD will not run on main until it is replaced."
-            GH_TOKEN=""
-          fi
-
-          if [ -z "${GH_TOKEN:-}" ]; then
-            echo "::warning::merging with the default token, which does not trigger CI or CD on main. Deploys must then be dispatched by hand."
-            GH_TOKEN="$FALLBACK_TOKEN"
-            export GH_TOKEN
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ] || ! gh pr view "$PR_URL" --json number >/dev/null 2>&1; then
+            echo "::error::AUTO_MERGE_TOKEN missing or unusable. Rotate it; no fallback merge will suppress CD."
+            exit 1
           fi
 
           gh pr merge --auto --squash "$PR_URL"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.AUTO_MERGE_TOKEN }}
-          FALLBACK_TOKEN: ${{ secrets.GITHUB_TOKEN }}
