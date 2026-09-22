@@ -1109,10 +1109,14 @@ function ProposalPeek({
               ticket still says what it said when sized, and which revision
               this is. On the right, the decision itself — Approve for a
               proposed bounty, the way back for an approved one — where
-              this app puts the action a surface offers.
+              this app puts the action a surface offers, and centred under
+              Approve, the way out: a text link rather than a button, since
+              it is the least-wanted action on the page and should read as
+              such. The left text is given the button's height so the two
+              sit level whether or not Remove hangs below.
             */}
-            <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-              <span className="text-muted-foreground flex flex-wrap items-center gap-x-1.5 text-xs">
+            <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
+              <span className="text-muted-foreground flex h-9 flex-wrap items-center gap-x-1.5 text-xs">
                 <span
                   className={
                     freshness.tone === "warn"
@@ -1130,16 +1134,41 @@ function ProposalPeek({
               {canDecide &&
                 (open ? (
                   proposal.complexity !== "unsized" && (
-                    <Button
-                      disabled={busy || proposal.freshness !== "current"}
-                      onClick={() =>
-                        void mutate(`/proposals/${proposal.id}/approve`, {
-                          expectedRevision: proposal.revision,
-                        })
-                      }
-                    >
-                      Approve
-                    </Button>
+                    <div className="flex flex-col items-center gap-1.5">
+                      <Button
+                        disabled={busy || proposal.freshness !== "current"}
+                        onClick={() =>
+                          void mutate(`/proposals/${proposal.id}/approve`, {
+                            expectedRevision: proposal.revision,
+                          })
+                        }
+                      >
+                        Approve
+                      </Button>
+                      <ConfirmDialog
+                        trigger={
+                          <button
+                            type="button"
+                            className="text-destructive focus-visible:ring-ring/50 rounded-sm text-xs underline-offset-2 hover:underline focus-visible:ring-[3px] focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
+                            disabled={busy}
+                          >
+                            Remove
+                          </button>
+                        }
+                        title={`Remove the proposal for ${key}?`}
+                        description="The ticket will have no proposal, and the next sizing run may propose it again. Nothing is posted to Jira."
+                        confirmLabel="Remove"
+                        tone="destructive"
+                        busy={busy}
+                        onConfirm={async () => {
+                          const removed = await mutate(
+                            `/proposals/${proposal.id}/remove`,
+                            { expectedRevision: proposal.revision },
+                          );
+                          if (removed) onRemoved();
+                        }}
+                      />
+                    </div>
                   )
                 ) : (
                   <Button
@@ -1155,39 +1184,6 @@ function ProposalPeek({
                   </Button>
                 ))}
             </div>
-
-            {/*
-              The way out, under the decision and as small as it can be: a
-              text link rather than a button, since it is the least-wanted
-              action on the page and should read as such.
-            */}
-            {canDecide && open && (
-              <div className="-mt-3 flex justify-end text-xs">
-                <ConfirmDialog
-                  trigger={
-                    <button
-                      type="button"
-                      className="text-destructive focus-visible:ring-ring/50 rounded-sm underline-offset-2 hover:underline focus-visible:ring-[3px] focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
-                      disabled={busy}
-                    >
-                      Remove
-                    </button>
-                  }
-                  title={`Remove the proposal for ${key}?`}
-                  description="The ticket will have no proposal, and the next sizing run may propose it again. Nothing is posted to Jira."
-                  confirmLabel="Remove"
-                  tone="destructive"
-                  busy={busy}
-                  onConfirm={async () => {
-                    const removed = await mutate(
-                      `/proposals/${proposal.id}/remove`,
-                      { expectedRevision: proposal.revision },
-                    );
-                    if (removed) onRemoved();
-                  }}
-                />
-              </div>
-            )}
 
             {delivery !== undefined && (
               <div>

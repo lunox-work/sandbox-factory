@@ -917,10 +917,11 @@ test("the actions sit in the bounty card, beside what they change, for those who
   expect(follows(within(card).getByText("A few files."), approve)).toBe(true);
   expect(
     within(card).getByText("Revision 1").parentElement?.parentElement,
-  ).toBe(approve.parentElement);
+  ).toBe(approve.parentElement?.parentElement);
+  // Remove hangs under Approve.
   expect(
-    follows(approve, within(card).getByRole("button", { name: "Remove" })),
-  ).toBe(true);
+    within(card).getByRole("button", { name: "Remove" }).parentElement,
+  ).toBe(approve.parentElement);
   // The model wears its vendor's mark.
   expect(
     within(card)
