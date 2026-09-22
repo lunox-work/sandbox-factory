@@ -1085,11 +1085,12 @@ function ProposalPeek({
               </div>
 
               {/*
-                The one warning a size can carry, at the foot of the card:
-                an XL is a hint that the ticket is two.
+                The one warning a size can carry, at the foot of the card on
+                the right, under the size it is about: an XL is a hint that
+                the ticket is two.
               */}
               {proposal.complexity === "XL" && (
-                <span className="flex items-center gap-1 text-xs text-amber-700 dark:text-amber-400">
+                <span className="flex items-center justify-end gap-1 text-xs text-amber-700 dark:text-amber-400">
                   <TriangleAlert className="size-3.5 shrink-0" />
                   Consider splitting
                 </span>
