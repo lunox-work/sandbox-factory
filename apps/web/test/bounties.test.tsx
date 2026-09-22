@@ -8,7 +8,12 @@ import {
 import { userEvent } from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
 
-import { BoardBounties, RateCardEditor, money } from "../src/Bounties";
+import {
+  BoardBounties,
+  RateCardEditor,
+  modelLabel,
+  money,
+} from "../src/Bounties";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -20,6 +25,16 @@ test("money formatting respects currencies with different minor units", () => {
   expect(money(25000, "USD")).toContain("250.00");
   expect(money(250, "JPY")).toContain("250");
   expect(money(null, null)).toBe("Unpriced");
+});
+
+test("modelLabel turns a provider id into a readable name", () => {
+  expect(modelLabel("claude-sonnet-5")).toBe("Claude Sonnet 5");
+  expect(modelLabel("claude-opus-4-6")).toBe("Claude Opus 4.6");
+  expect(modelLabel("claude-haiku-4-5-20251001")).toBe("Claude Haiku 4.5");
+  expect(modelLabel("deepseek-v4-pro")).toBe("DeepSeek V4 Pro");
+  expect(modelLabel("mistral-large")).toBe("Mistral Large");
+  expect(modelLabel(undefined)).toBeNull();
+  expect(modelLabel("")).toBeNull();
 });
 
 function ratePointerX(
@@ -595,7 +610,30 @@ test("members see proposals without review or run controls", async () => {
     vi.fn((url: string) => {
       if (url.includes("/runs"))
         return Promise.resolve(
-          Response.json({ runs: [], sizingAvailable: true }),
+          Response.json({
+            runs: [
+              {
+                id: "brn_1",
+                status: "succeeded",
+                requestedModel: "claude-sonnet-5",
+                outcomes: [
+                  {
+                    externalIssueId: "1",
+                    issueKey: "APP-1",
+                    status: "proposed",
+                    actualModel: "deepseek-v4-pro",
+                  },
+                  {
+                    externalIssueId: "2",
+                    issueKey: "APP-2",
+                    status: "proposed",
+                    actualModel: "deepseek-v4-pro",
+                  },
+                ],
+              },
+            ],
+            sizingAvailable: true,
+          }),
         );
       return Promise.resolve(
         Response.json({
@@ -611,6 +649,7 @@ test("members see proposals without review or run controls", async () => {
               currency: "USD",
               modelComplexity: "M",
               modelConfidence: "high",
+              actualModel: "deepseek-v4-pro",
               freshness: "current",
               status: "proposed",
               revision: 1,
@@ -629,6 +668,15 @@ test("members see proposals without review or run controls", async () => {
     />,
   );
   expect(await screen.findByText(/Ship export/)).toBeDefined();
+  // The proposal says which model sized it, readable and with the raw id on
+  // hover; the run summary says what actually did the work — the fallback
+  // here, not the requested Sonnet.
+  expect(screen.getByTitle("deepseek-v4-pro").textContent).toBe(
+    "DeepSeek V4 Pro",
+  );
+  expect(screen.getByText(/Latest run/).textContent).toContain(
+    "2 results · sized by DeepSeek V4 Pro",
+  );
   expect(screen.queryByRole("button", { name: "Run sizing" })).toBeNull();
   expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
 });

@@ -73,6 +73,47 @@ function editableRateAmount(minor: number, digits: number): string {
   return (formatMinorUnits(minor, digits) ?? "").replace(/\.0+$/, "");
 }
 
+const MODEL_VENDORS: Record<string, string> = {
+  claude: "Claude",
+  deepseek: "DeepSeek",
+};
+
+/**
+ * A readable name for a provider model id, e.g. `claude-sonnet-5` →
+ * "Claude Sonnet 5", `deepseek-v4-pro` → "DeepSeek V4 Pro". Adjacent numeric
+ * segments are a version (`4-6` → "4.6"); an eight-digit segment is a
+ * snapshot date and is dropped. Unknown vendors are capitalised as-is, so a
+ * new provider still reads as a name rather than an id. `null` when the
+ * proposal carries no model.
+ */
+export function modelLabel(id: string | null | undefined): string | null {
+  if (id === undefined || id === null || id.trim() === "") return null;
+  const words: string[] = [];
+  for (const segment of id.trim().split("-")) {
+    if (segment === "") continue;
+    if (/^\d{8}$/.test(segment)) continue;
+    if (/^\d+$/.test(segment) && /^\d+(\.\d+)*$/.test(words.at(-1) ?? "")) {
+      words[words.length - 1] = `${words.at(-1)}.${segment}`;
+      continue;
+    }
+    words.push(
+      MODEL_VENDORS[segment.toLowerCase()] ??
+        segment[0]!.toUpperCase() + segment.slice(1),
+    );
+  }
+  return words.length === 0 ? null : words.join(" ");
+}
+
+/** The distinct models that actually sized a run's tickets, in first-seen order. */
+function runModels(outcomes: readonly { actualModel?: string }[]): string[] {
+  const seen: string[] = [];
+  for (const { actualModel } of outcomes) {
+    const label = modelLabel(actualModel);
+    if (label !== null && !seen.includes(label)) seen.push(label);
+  }
+  return seen;
+}
+
 export function money(
   amountMinor: number | null,
   currency: string | null,
@@ -590,6 +631,9 @@ export function BoardBounties({
           <span className="font-medium text-foreground">{runs[0].status}</span>{" "}
           · {runs[0].outcomes.length} result
           {runs[0].outcomes.length === 1 ? "" : "s"}
+          {runModels(runs[0].outcomes).length > 0 && (
+            <> · sized by {runModels(runs[0].outcomes).join(", ")}</>
+          )}
         </p>
       )}
       <div className="flex flex-wrap gap-2" aria-label="Proposal status">
@@ -646,6 +690,15 @@ export function BoardBounties({
                 <span>{money(proposal.amountMinor, proposal.currency)}</span>
                 <span className="text-muted-foreground">
                   Model: {proposal.modelComplexity} · {proposal.modelConfidence}
+                  {modelLabel(proposal.actualModel) !== null && (
+                    <>
+                      {" "}
+                      ·{" "}
+                      <span title={proposal.actualModel}>
+                        {modelLabel(proposal.actualModel)}
+                      </span>
+                    </>
+                  )}
                 </span>
                 {proposal.complexity === "XL" && (
                   <span className="text-amber-600">Consider splitting</span>
