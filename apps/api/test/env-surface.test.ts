@@ -57,6 +57,10 @@ test("the API reads exactly the documented environment variables", () => {
       // Optional sizing adapter. Both are required before model calls exist.
       "ANTHROPIC_API_KEY",
       "SIZING_MODEL",
+      // The sizing fallback, on the same both-or-neither rule.
+      "DEEPSEEK_API_KEY",
+      "DEEPSEEK_SIZING_MODEL",
+      "DEEPSEEK_BASE_URL",
       // Reporting only.
       "BUILD_VERSION",
       "BUILD_SHA",
@@ -172,6 +176,7 @@ test("rotate-token can rotate each secret individually", () => {
     "TOKEN_ENCRYPTION_KEY",
     "JIRA_CLIENT_SECRET",
     "ANTHROPIC_API_KEY",
+    "DEEPSEEK_API_KEY",
   ]) {
     assert.ok(rotate.includes(key), `--only ${key} would be rejected`);
   }

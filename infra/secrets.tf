@@ -31,6 +31,10 @@ locals {
     TOKEN_ENCRYPTION_KEY = "AES-256 key for stored Jira tokens. openssl rand -base64 32"
     ANTHROPIC_API_KEY    = "Anthropic API key for optional Jira sizing"
     SIZING_MODEL         = "Explicit Anthropic model identifier for Jira sizing"
+    # The sizing fallback. Answers when an Anthropic call fails, or serves
+    # sizing alone when the pair above is unset.
+    DEEPSEEK_API_KEY      = "DeepSeek API key for the Jira sizing fallback"
+    DEEPSEEK_SIZING_MODEL = "Explicit DeepSeek model identifier for Jira sizing"
   }
 }
 

@@ -28,6 +28,7 @@ import { BountyWatchdog } from "./bounty/watchdog.js";
 import {
   appUrl,
   buildInfo,
+  deepseekSizingConfig,
   jiraOAuthConfig,
   parseEnv,
   sizingConfig,
@@ -35,7 +36,13 @@ import {
 import { resolveImageDigest } from "./image-digest.js";
 import { jiraClientFor, jiraClientsFor } from "./jira/credential.js";
 import { createApp } from "./routes.js";
-import { AnthropicSizer, JIRA_SIZE_PROMPT_VERSION } from "./sizing/index.js";
+import {
+  AnthropicSizer,
+  DeepSeekSizer,
+  FallbackSizer,
+  JIRA_SIZE_PROMPT_VERSION,
+  type Sizer,
+} from "./sizing/index.js";
 
 const env = parseEnv();
 
@@ -101,6 +108,39 @@ const auth = createAuth({
  */
 const jiraOAuth = jiraOAuthConfig(env);
 const sizing = sizingConfig(env);
+const deepseekSizing = deepseekSizingConfig(env);
+
+/**
+ * The sizer, or undefined when neither provider is configured. With both, the
+ * DeepSeek adapter answers whenever an Anthropic call fails; with one, that
+ * one serves sizing alone. Each sized ticket records the model that actually
+ * answered, so a handover stays visible after the fact.
+ */
+const sizer: Sizer | undefined = (() => {
+  const anthropic =
+    sizing === undefined
+      ? undefined
+      : new AnthropicSizer({ apiKey: sizing.apiKey, model: sizing.model });
+  const deepseek =
+    deepseekSizing === undefined
+      ? undefined
+      : new DeepSeekSizer({
+          apiKey: deepseekSizing.apiKey,
+          model: deepseekSizing.model,
+          ...(deepseekSizing.baseUrl === undefined
+            ? {}
+            : { baseUrl: deepseekSizing.baseUrl }),
+        });
+
+  if (anthropic !== undefined && deepseek !== undefined) {
+    return new FallbackSizer({
+      primary: anthropic,
+      fallback: deepseek,
+      onFallback: (code) => console.warn(`sizing_fallback ${code}`),
+    });
+  }
+  return anthropic ?? deepseek;
+})();
 const jiraClientOptions =
   jiraOAuth === undefined
     ? undefined
@@ -148,17 +188,14 @@ const bountyDelivery =
         onBackgroundError: (code) => console.error(code),
       });
 const bountyExecutor =
-  sizing === undefined || jiraClientOptions === undefined
+  sizer === undefined || jiraClientOptions === undefined
     ? undefined
     : new BountyExecutor({
         boards: jiraBoards,
         runs: bountyRuns,
         proposals: bountyProposals,
         issues: jiraIssues,
-        sizer: new AnthropicSizer({
-          apiKey: sizing.apiKey,
-          model: sizing.model,
-        }),
+        sizer,
         clientFor: runClientFor,
         ...(bountyDelivery === undefined
           ? {}
@@ -208,7 +245,10 @@ const app = createApp({
       ? {}
       : {
           executor: bountyExecutor,
-          requestedModel: sizing?.model,
+          // The sizer's own model, not the Anthropic pair's: on a
+          // DeepSeek-only deploy that pair is unset, and a missing
+          // `requestedModel` makes every run refuse to start.
+          requestedModel: sizer?.model,
           promptVersion: JIRA_SIZE_PROMPT_VERSION,
         }),
   },

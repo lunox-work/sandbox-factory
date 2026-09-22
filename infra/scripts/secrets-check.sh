@@ -123,16 +123,45 @@ sizing_model="$(read_value SIZING_MODEL || true)"
 [[ "$anthropic_key" == REPLACE_ME ]] && anthropic_key=""
 [[ "$sizing_model" == REPLACE_ME ]] && sizing_model=""
 
-if [[ -n "$anthropic_key" && -n "$sizing_model" ]]; then
+deepseek_key="$(read_value DEEPSEEK_API_KEY || true)"
+deepseek_model="$(read_value DEEPSEEK_SIZING_MODEL || true)"
+[[ "$deepseek_key" == REPLACE_ME ]] && deepseek_key=""
+[[ "$deepseek_model" == REPLACE_ME ]] && deepseek_model=""
+
+anthropic_pair=0
+[[ -n "$anthropic_key" && -n "$sizing_model" ]] && anthropic_pair=1
+deepseek_pair=0
+[[ -n "$deepseek_key" && -n "$deepseek_model" ]] && deepseek_pair=1
+
+if (( anthropic_pair )); then
   note ANTHROPIC_API_KEY "ok (${#anthropic_key} chars)"
   note SIZING_MODEL "ok (${#sizing_model} chars)"
 elif [[ -z "$anthropic_key" && -z "$sizing_model" ]]; then
-  note ANTHROPIC_API_KEY "unset — bounty sizing stays unavailable (optional)"
+  if (( deepseek_pair )); then
+    note ANTHROPIC_API_KEY "unset — DeepSeek serves sizing alone (optional)"
+  else
+    note ANTHROPIC_API_KEY "unset — bounty sizing stays unavailable (optional)"
+  fi
   note SIZING_MODEL "unset"
 else
   note ANTHROPIC_API_KEY "$([[ -n "$anthropic_key" ]] && echo "set (${#anthropic_key} chars)" || echo EMPTY)"
   note SIZING_MODEL "$([[ -n "$sizing_model" ]] && echo "set (${#sizing_model} chars)" || echo EMPTY)"
   echo "  -> set both or neither: sizingConfig needs the pair." >&2
+  fail=1
+fi
+
+# The fallback pair, on the same rule. With both pairs set it answers whenever
+# an Anthropic call fails; on its own it serves sizing outright.
+if (( deepseek_pair )); then
+  note DEEPSEEK_API_KEY "ok (${#deepseek_key} chars)"
+  note DEEPSEEK_SIZING_MODEL "ok (${#deepseek_model} chars)"
+elif [[ -z "$deepseek_key" && -z "$deepseek_model" ]]; then
+  note DEEPSEEK_API_KEY "unset — no sizing fallback (optional)"
+  note DEEPSEEK_SIZING_MODEL "unset"
+else
+  note DEEPSEEK_API_KEY "$([[ -n "$deepseek_key" ]] && echo "set (${#deepseek_key} chars)" || echo EMPTY)"
+  note DEEPSEEK_SIZING_MODEL "$([[ -n "$deepseek_model" ]] && echo "set (${#deepseek_model} chars)" || echo EMPTY)"
+  echo "  -> set both or neither: deepseekSizingConfig needs the pair." >&2
   fail=1
 fi
 

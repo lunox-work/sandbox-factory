@@ -106,6 +106,21 @@ const envSchema = z.object({
     z.string().min(1).optional(),
   ),
 
+  // The sizing fallback, optional as its own pair. Set alongside the Anthropic
+  // pair it answers whenever an Anthropic call fails; set on its own it serves
+  // sizing outright. Like `SIZING_MODEL`, the model is explicit: the account
+  // decides which models exist, not this application.
+  DEEPSEEK_API_KEY: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.string().min(1).optional(),
+  ),
+  DEEPSEEK_SIZING_MODEL: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.string().min(1).optional(),
+  ),
+  // Override for a proxy or a self-hosted gateway. Unset, the public API.
+  DEEPSEEK_BASE_URL: z.string().url().optional(),
+
   // ---- build provenance ---------------------------------------------------
   //
   // Injected at image build time by `scripts/build-info.mjs`; see
@@ -200,6 +215,40 @@ export function sizingConfig(
     return undefined;
   }
   return { apiKey: env.ANTHROPIC_API_KEY, model: env.SIZING_MODEL };
+}
+
+/**
+ * Fallback provider config, on the same both-or-neither rule as the primary.
+ * A key without a model is not a usable provider, and guessing a model on the
+ * operator's behalf is what `SIZING_MODEL` already refuses to do.
+ */
+export function deepseekSizingConfig(
+  env: Env,
+): { apiKey: string; model: string; baseUrl?: string } | undefined {
+  if (
+    env.DEEPSEEK_API_KEY === undefined ||
+    env.DEEPSEEK_SIZING_MODEL === undefined
+  ) {
+    return undefined;
+  }
+  return {
+    apiKey: env.DEEPSEEK_API_KEY,
+    model: env.DEEPSEEK_SIZING_MODEL,
+    ...(env.DEEPSEEK_BASE_URL === undefined
+      ? {}
+      : { baseUrl: env.DEEPSEEK_BASE_URL }),
+  };
+}
+
+/**
+ * Whether sizing can run at all: either provider pair on its own is enough.
+ * The executor is mounted on this, not on the Anthropic pair — a deploy
+ * carrying only DeepSeek credentials is a configured deploy.
+ */
+export function sizingAvailable(env: Env): boolean {
+  return (
+    sizingConfig(env) !== undefined || deepseekSizingConfig(env) !== undefined
+  );
 }
 
 /**

@@ -50,6 +50,8 @@ KEYS=(
   TOKEN_ENCRYPTION_KEY
   ANTHROPIC_API_KEY
   SIZING_MODEL
+  DEEPSEEK_API_KEY
+  DEEPSEEK_SIZING_MODEL
 )
 
 # Narrow to the requested keys, rejecting unknown ones.
@@ -132,7 +134,8 @@ if ((${#missing[@]} > 0)); then
   echo >&2
   echo "JIRA_CLIENT_ID/_SECRET are optional — if you have no Jira app yet, drop" >&2
   echo "them from --only rather than pushing a blank over a live value." >&2
-  echo "ANTHROPIC_API_KEY/SIZING_MODEL are also optional as a complete pair." >&2
+  echo "ANTHROPIC_API_KEY/SIZING_MODEL are also optional as a complete pair," >&2
+  echo "as are DEEPSEEK_API_KEY/DEEPSEEK_SIZING_MODEL, the sizing fallback." >&2
   exit 1
 fi
 

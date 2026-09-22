@@ -3,9 +3,11 @@ import { test } from "node:test";
 
 import {
   buildInfo,
+  deepseekSizingConfig,
   jiraOAuthConfig,
   objectStoreConfig,
   parseEnv,
+  sizingAvailable,
   sizingConfig,
 } from "../src/env.js";
 
@@ -337,7 +339,70 @@ test("empty sizing values behave as unset and do not stop boot", () => {
     ...required,
     ANTHROPIC_API_KEY: "",
     SIZING_MODEL: "",
+    DEEPSEEK_API_KEY: "",
+    DEEPSEEK_SIZING_MODEL: "",
   });
   assert.equal(env.ANTHROPIC_API_KEY, undefined);
   assert.equal(env.SIZING_MODEL, undefined);
+  assert.equal(env.DEEPSEEK_API_KEY, undefined);
+  assert.equal(env.DEEPSEEK_SIZING_MODEL, undefined);
+});
+
+test("the sizing fallback needs its own pair, and the base URL is optional", () => {
+  assert.equal(deepseekSizingConfig(parseEnv(required)), undefined);
+  assert.equal(
+    deepseekSizingConfig(parseEnv({ ...required, DEEPSEEK_API_KEY: "key" })),
+    undefined,
+  );
+  assert.deepEqual(
+    deepseekSizingConfig(
+      parseEnv({
+        ...required,
+        DEEPSEEK_API_KEY: "key",
+        DEEPSEEK_SIZING_MODEL: "deepseek-model",
+      }),
+    ),
+    { apiKey: "key", model: "deepseek-model" },
+  );
+  assert.deepEqual(
+    deepseekSizingConfig(
+      parseEnv({
+        ...required,
+        DEEPSEEK_API_KEY: "key",
+        DEEPSEEK_SIZING_MODEL: "deepseek-model",
+        DEEPSEEK_BASE_URL: "https://gateway.internal",
+      }),
+    ),
+    {
+      apiKey: "key",
+      model: "deepseek-model",
+      baseUrl: "https://gateway.internal",
+    },
+  );
+});
+
+test("either provider pair on its own makes sizing available", () => {
+  assert.equal(sizingAvailable(parseEnv(required)), false);
+  // A DeepSeek-only deploy is a configured deploy: the executor mounts on
+  // this, not on the Anthropic pair.
+  assert.equal(
+    sizingAvailable(
+      parseEnv({
+        ...required,
+        DEEPSEEK_API_KEY: "key",
+        DEEPSEEK_SIZING_MODEL: "deepseek-model",
+      }),
+    ),
+    true,
+  );
+  assert.equal(
+    sizingAvailable(
+      parseEnv({
+        ...required,
+        ANTHROPIC_API_KEY: "key",
+        SIZING_MODEL: "configured-model",
+      }),
+    ),
+    true,
+  );
 });

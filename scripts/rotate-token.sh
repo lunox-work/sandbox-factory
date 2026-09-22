@@ -72,6 +72,8 @@ SECRET_KEYS=(
   TOKEN_ENCRYPTION_KEY
   ANTHROPIC_API_KEY
   SIZING_MODEL
+  DEEPSEEK_API_KEY
+  DEEPSEEK_SIZING_MODEL
 )
 
 secret_hint() {
@@ -107,6 +109,14 @@ secret_hint() {
        Optional; sizing stays unavailable until SIZING_MODEL is also set." ;;
     SIZING_MODEL)
       echo "An explicit model identifier available to the Anthropic account.
+       Optional; verify it in the provider account before setting it." ;;
+    DEEPSEEK_API_KEY)
+      echo "platform.deepseek.com -> API keys.
+       The sizing fallback: it answers when an Anthropic call fails, and
+       serves sizing alone when ANTHROPIC_API_KEY is unset. Optional until
+       DEEPSEEK_SIZING_MODEL is also set." ;;
+    DEEPSEEK_SIZING_MODEL)
+      echo "An explicit model identifier available to the DeepSeek account.
        Optional; verify it in the provider account before setting it." ;;
   esac
 }
