@@ -1104,14 +1104,32 @@ function ProposalPeek({
             </div>
 
             {/*
-              The decision, after the reasoning it is made on: Approve for a
-              proposed bounty, the way back for an approved one. On the
-              right, where this app puts the action a surface offers.
+              The decision row, after the reasoning it is made on. On the
+              left, what the decision is checked against: whether the
+              ticket still says what it said when sized, and which revision
+              this is. On the right, the decision itself — Approve for a
+              proposed bounty, the way back for an approved one — where
+              this app puts the action a surface offers.
             */}
-            {canDecide &&
-              (open ? (
-                proposal.complexity !== "unsized" && (
-                  <div className="flex justify-end">
+            <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+              <span className="text-muted-foreground flex flex-wrap items-center gap-x-1.5 text-xs">
+                <span
+                  className={
+                    freshness.tone === "warn"
+                      ? "text-amber-700 dark:text-amber-400"
+                      : freshness.tone === "bad"
+                        ? "text-destructive"
+                        : ""
+                  }
+                >
+                  {freshness.text}
+                </span>
+                <span aria-hidden="true">·</span>
+                <span>Revision {proposal.revision}</span>
+              </span>
+              {canDecide &&
+                (open ? (
+                  proposal.complexity !== "unsized" && (
                     <Button
                       disabled={busy || proposal.freshness !== "current"}
                       onClick={() =>
@@ -1122,10 +1140,8 @@ function ProposalPeek({
                     >
                       Approve
                     </Button>
-                  </div>
-                )
-              ) : (
-                <div className="flex justify-end">
+                  )
+                ) : (
                   <Button
                     variant="outline"
                     disabled={busy}
@@ -1137,59 +1153,41 @@ function ProposalPeek({
                   >
                     Unapprove
                   </Button>
-                </div>
-              ))}
+                ))}
+            </div>
 
             {/*
-              The small print, under the decision: whether the ticket still
-              says what it said when sized, which revision this is, and —
-              on a proposed one — the way out. Remove is a text link here
-              rather than a button: it is the least-wanted action on the
-              page and should read as such.
+              The way out, under the decision and as small as it can be: a
+              text link rather than a button, since it is the least-wanted
+              action on the page and should read as such.
             */}
-            <div className="text-muted-foreground -mt-3 flex flex-wrap items-center justify-end gap-x-1.5 text-xs">
-              <span
-                className={
-                  freshness.tone === "warn"
-                    ? "text-amber-700 dark:text-amber-400"
-                    : freshness.tone === "bad"
-                      ? "text-destructive"
-                      : ""
-                }
-              >
-                {freshness.text}
-              </span>
-              <span aria-hidden="true">·</span>
-              <span>Revision {proposal.revision}</span>
-              {canDecide && open && (
-                <>
-                  <span aria-hidden="true">·</span>
-                  <ConfirmDialog
-                    trigger={
-                      <button
-                        type="button"
-                        className="text-destructive rounded-sm underline-offset-2 hover:underline focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
-                        disabled={busy}
-                      >
-                        Remove
-                      </button>
-                    }
-                    title={`Remove the proposal for ${key}?`}
-                    description="The ticket will have no proposal, and the next sizing run may propose it again. Nothing is posted to Jira."
-                    confirmLabel="Remove"
-                    tone="destructive"
-                    busy={busy}
-                    onConfirm={async () => {
-                      const removed = await mutate(
-                        `/proposals/${proposal.id}/remove`,
-                        { expectedRevision: proposal.revision },
-                      );
-                      if (removed) onRemoved();
-                    }}
-                  />
-                </>
-              )}
-            </div>
+            {canDecide && open && (
+              <div className="-mt-3 flex justify-end text-xs">
+                <ConfirmDialog
+                  trigger={
+                    <button
+                      type="button"
+                      className="text-destructive focus-visible:ring-ring/50 rounded-sm underline-offset-2 hover:underline focus-visible:ring-[3px] focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
+                      disabled={busy}
+                    >
+                      Remove
+                    </button>
+                  }
+                  title={`Remove the proposal for ${key}?`}
+                  description="The ticket will have no proposal, and the next sizing run may propose it again. Nothing is posted to Jira."
+                  confirmLabel="Remove"
+                  tone="destructive"
+                  busy={busy}
+                  onConfirm={async () => {
+                    const removed = await mutate(
+                      `/proposals/${proposal.id}/remove`,
+                      { expectedRevision: proposal.revision },
+                    );
+                    if (removed) onRemoved();
+                  }}
+                />
+              </div>
+            )}
 
             {delivery !== undefined && (
               <div>

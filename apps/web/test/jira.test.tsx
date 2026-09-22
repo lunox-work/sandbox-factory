@@ -907,19 +907,19 @@ test("the actions sit in the bounty card, beside what they change, for those who
   }) as HTMLButtonElement;
   expect(current.disabled).toBe(true);
   expect(current.getAttribute("aria-pressed")).toBe("true");
-  // Approve comes after the reasoning it is made on; Remove sits with the
-  // revision.
+  // Approve comes after the reasoning it is made on, on one row with what
+  // it is checked against; Remove comes last.
   const approve = within(card).getByRole("button", { name: "Approve" });
+  const follows = (before: Element, after: Element) =>
+    (before.compareDocumentPosition(after) &
+      Node.DOCUMENT_POSITION_FOLLOWING) !==
+    0;
+  expect(follows(within(card).getByText("A few files."), approve)).toBe(true);
   expect(
-    within(card).getByText("A few files.").compareDocumentPosition(approve) &
-      Node.DOCUMENT_POSITION_FOLLOWING,
-  ).not.toBe(0);
+    within(card).getByText("Revision 1").parentElement?.parentElement,
+  ).toBe(approve.parentElement);
   expect(
-    within(card)
-      .getByText("Revision 1")
-      .parentElement?.contains(
-        within(card).getByRole("button", { name: "Remove" }),
-      ),
+    follows(approve, within(card).getByRole("button", { name: "Remove" })),
   ).toBe(true);
   // The model wears its vendor's mark.
   expect(
