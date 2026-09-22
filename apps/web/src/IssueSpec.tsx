@@ -191,7 +191,12 @@ export function fromToday(
   return format.format(Math.trunc(days / 365), "year");
 }
 
-/** A date with its distance from today beside it, the distance muted. */
+/**
+ * A date with its distance from today at the far end of the row, the
+ * distance muted. The date reads on from the label; the distance sits on
+ * the right edge, where every dated row puts it, so the eye can run down
+ * the column of distances without re-reading the dates.
+ */
 function DatedField({
   label,
   value,
@@ -206,7 +211,7 @@ function DatedField({
   if (date === null) return null;
   return (
     <Field label={label}>
-      <span className="flex flex-wrap items-baseline gap-x-1.5">
+      <span className="flex flex-wrap items-baseline justify-between gap-x-3">
         <span>{date}</span>
         {distance !== null && (
           <span
@@ -216,7 +221,7 @@ function DatedField({
                 : "text-muted-foreground text-xs"
             }
           >
-            · {distance}
+            {distance}
           </span>
         )}
       </span>

@@ -755,7 +755,7 @@ test("the Spec tab is the ticket read live: its fields, then its description", a
   // and nothing else yet.
   expect(within(fields).getByText("To Do")).toBeDefined();
   expect(within(fields).getByText("Due")).toBeDefined();
-  expect(within(fields).getByText(/^· (in|next) /)).toBeDefined();
+  expect(within(fields).getByText(/^(in|next) /)).toBeDefined();
   expect(within(fields).queryByText("Priority")).toBeNull();
   expect(within(fields).queryByText("charlie angriawan")).toBeNull();
 
