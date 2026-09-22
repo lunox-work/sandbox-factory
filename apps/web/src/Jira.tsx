@@ -615,9 +615,8 @@ export function JiraBoard({
           </h1>
         </div>
         <p className="text-muted-foreground mt-1.5 text-sm">
-          What sizing proposed for this board&rsquo;s tickets. An owner or admin
-          reviews each one before it is approved; the ticket itself is read live
-          from Jira when a proposal is opened.
+          Sizing proposals for this board. Open one to review it against the
+          live ticket.
         </p>
       </header>
 

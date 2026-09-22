@@ -20,30 +20,36 @@ and the fields — moves into the proposal's peek as the Spec tab.
 ### Page
 
 - Header as today.
-- Toolbar: status filter pills (Proposed · Approved · Rejected · Superseded)
-  on the left, "Run sizing" on the right for an owner or admin. One muted
-  line under it: `Latest run: succeeded · 10 results · sized by DeepSeek V4
-  Pro`. The write-back notice and the sizing-unavailable notice stay as
-  one-liners.
-- The list sits in the bordered container the backlog used, with a summary
-  strip (`12 proposed`). A row is: key in mono · title, truncated ·
-  complexity badge · amount (or "Unpriced") · chevron. The whole row is the
-  button; the selected row is marked. Nothing else is in the row.
+- Toolbar: the status filter (Proposed · Approved · Rejected · Superseded)
+  as the same segmented control the peek's tabs use, on the left; "Run
+  sizing" on the right for an owner or admin. One muted line under it:
+  `Latest run: succeeded · 10 results · sized by DeepSeek V4 Pro`. The
+  sizing-unavailable notice stays; the write-access notice appears only
+  when the site lacks the grant, as a warning.
+- The list sits in the bordered container the backlog used, with a header
+  row (Ticket · Size · Amount). A row is: key in mono · title, truncated ·
+  complexity badge · amount (or "Unpriced"), right-aligned · chevron. The
+  whole row is the button; the selected row is marked. Nothing else is in
+  the row.
 
 ### Peek
 
 Opened by a row click, over the list, with `PeekPanel`.
 
-- Title is the key; the subtitle is the ticket title. Under them, the
-  proposal status badge and the freshness badge.
+- Title is the ticket title; the subtitle is the key. Focus lands on the
+  body, not on the close button.
 - A tab strip, Bounty | Spec, with "Open in Jira" pinned to the right as the
   ticket peek has it.
-- Bounty: complexity and amount ("Consider splitting" on XL); the model's
-  sizing line (`M · high · DeepSeek V4 Pro`) and its rationale; delivery
-  status when a write-back exists; the revision history as a list, where a
-  click switches the peek to that revision. The panel footer holds the
-  actions for an owner or admin — Approve, XS–XL, Reject, Re-price — with the
-  enabled rules the rows have today.
+- Bounty: a property list in the shape the Spec tab's fields use — Status,
+  Size (with "Consider splitting" on XL, and "set by a reviewer" when it
+  was), Amount, Sized by (model and confidence), Ticket (unchanged /
+  changed / missing since sizing, in words), Revision — then the rationale
+  as prose under "Why this size"; delivery status when a write-back exists;
+  the revision history only when there is more than one, where a click
+  switches the peek to that revision. The panel footer holds the actions for
+  an owner or admin: Approve and Reject on the left, a labelled Resize group
+  (XS–XL, the current size marked) and Re-price on the right, with the
+  enabled rules the rows had.
 - Spec: the ticket read live from Jira by key, through the same read the
   backlog peek used. One scroll: the description as Markdown, then the fields
   list beneath it as a section. No inner tabs. The same skeleton and

@@ -78,6 +78,17 @@ export function PeekPanel({
     }
   }, [open]);
 
+  /*
+    Where focus goes when this opens.
+
+    Radix's default is the first focusable thing inside, which here is the
+    close button — so every peek opened with a focus ring drawn around the
+    one control that undoes the open. The body takes it instead: it is what
+    the reader came for, it scrolls with the keyboard from there, and Tab
+    reaches the tabs and the close in order.
+  */
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+
   return (
     <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
       <DialogPrimitive.Portal>
@@ -101,6 +112,12 @@ export function PeekPanel({
           )}
           // The row that opened it, rather than Radix's default of a trigger
           // that does not exist here. See `openerRef`.
+          onOpenAutoFocus={(event) => {
+            if (bodyRef.current !== null) {
+              event.preventDefault();
+              bodyRef.current.focus({ preventScroll: true });
+            }
+          }}
           onCloseAutoFocus={(event) => {
             const opener = openerRef.current;
             if (opener !== null && document.contains(opener)) {
@@ -134,7 +151,11 @@ export function PeekPanel({
             locks the page behind it, so the wheel has one destination
             wherever the cursor is.
           */}
-          <div className="flex-1 overflow-y-auto overscroll-contain px-5 py-4 sm:px-6 sm:py-5">
+          <div
+            ref={bodyRef}
+            tabIndex={-1}
+            className="flex-1 overflow-y-auto overscroll-contain px-5 py-4 outline-none sm:px-6 sm:py-5"
+          >
             {children}
           </div>
 

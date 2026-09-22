@@ -120,8 +120,18 @@ export function Markdown({ children }: { children: string }) {
   );
 }
 
-/** A labelled row in the fields list. Renders nothing when Jira sent no value. */
-function Field({ label, children }: { label: string; children: ReactNode }) {
+/**
+ * A labelled row in a property list. Renders nothing when there is no value,
+ * so a record with sparse fields reads as a short list rather than a column
+ * of empty labels.
+ */
+export function Field({
+  label,
+  children,
+}: {
+  label: string;
+  children: ReactNode;
+}) {
   if (children === null || children === undefined || children === "") {
     return null;
   }

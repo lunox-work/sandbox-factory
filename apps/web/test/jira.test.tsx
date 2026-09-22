@@ -802,7 +802,7 @@ test("an empty proposal list is explained rather than shown as a blank table", a
   );
   renderBoard();
 
-  expect(await screen.findByText(/no proposals match/i)).toBeDefined();
+  expect(await screen.findByText(/no proposed proposals/i)).toBeDefined();
 });
 
 test("a failed ticket read stays in the Spec tab with a retry", async () => {

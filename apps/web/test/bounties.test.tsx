@@ -727,7 +727,11 @@ test("proposal filters and detail links survive navigation", async () => {
           Response.json({
             proposal,
             freshness: { freshness: "current", checkedAt: "now" },
-            history: [proposal],
+            // An earlier revision, so the peek has a history to show.
+            history: [
+              { ...proposal, id: "bpr_0", revision: 1, status: "superseded" },
+              { ...proposal, revision: 2 },
+            ],
             writebackOperations: [],
           }),
         );
@@ -747,7 +751,8 @@ test("proposal filters and detail links survive navigation", async () => {
   await userEvent.click(
     await screen.findByRole("button", { name: /Ship export/ }),
   );
-  expect(await screen.findByText("Proposal history")).toBeDefined();
+  expect(await screen.findByText("History")).toBeDefined();
+  expect(screen.getByText("Revision 1")).toBeDefined();
   expect(window.location.search).toContain("proposal=bpr_1");
 
   // The filters are behind the peek; closing it hands the list back.
@@ -756,7 +761,7 @@ test("proposal filters and detail links survive navigation", async () => {
     expect(screen.queryByTestId("proposal-panel")).toBeNull();
   });
   expect(window.location.search).not.toContain("proposal=");
-  await userEvent.click(screen.getByRole("button", { name: "Approved" }));
+  await userEvent.click(screen.getByRole("tab", { name: "Approved" }));
   await waitFor(() =>
     expect(urls.some((url) => url.includes("status=approved"))).toBe(true),
   );
