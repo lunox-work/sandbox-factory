@@ -860,7 +860,6 @@ export function BoardBounties({
               if (selectedKey !== null) loadTicket(selectedKey);
             }}
             canDecide={canManage(role)}
-            writeGranted={writeGranted}
             busy={busy}
             mutate={mutate}
             onRemoved={() => closeProposal(true)}
@@ -901,9 +900,9 @@ function capitalize(value: string): string {
  * itself, read live, so the decision is made against what Jira says now
  * rather than what was stored at sizing time.
  *
- * Two states, one card. Proposed: Approve beside the status, the resize as
- * the size itself, Re-price beside the amount, Remove in the small print.
- * Approved: Unapprove beside the status and Re-price beside the amount —
+ * Two states. Proposed: the resize as the size itself, Re-price beside the
+ * amount, Remove in the card's small print, and Approve after the reasoning.
+ * Approved: Re-price beside the amount and Unapprove after the reasoning —
  * removal comes after unapproving, because that is what owes Jira the
  * withdrawal. A decision needs a current ticket; a re-price or an unapprove
  * does not.
@@ -914,7 +913,6 @@ function ProposalPeek({
   ticketError,
   onRetryTicket,
   canDecide,
-  writeGranted,
   busy,
   mutate,
   onRemoved,
@@ -924,7 +922,6 @@ function ProposalPeek({
   ticketError: string | null;
   onRetryTicket: () => void;
   canDecide: boolean;
-  writeGranted: boolean;
   busy: boolean;
   mutate: (path: string, body: object) => Promise<boolean>;
   onRemoved: () => void;
@@ -981,42 +978,9 @@ function ProposalPeek({
             <div className="flex flex-col gap-5 rounded-lg border p-4 sm:p-5">
               <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-4">
                 <div className="flex flex-col gap-1.5">
-                  <div className="flex items-center gap-2">
-                    <Badge variant="secondary">
-                      {capitalize(proposal.status)}
-                    </Badge>
-                    {canDecide &&
-                      (open ? (
-                        proposal.complexity !== "unsized" && (
-                          <Button
-                            size="sm"
-                            className="h-7"
-                            disabled={busy || proposal.freshness !== "current"}
-                            onClick={() =>
-                              void mutate(`/proposals/${proposal.id}/approve`, {
-                                expectedRevision: proposal.revision,
-                              })
-                            }
-                          >
-                            Approve
-                          </Button>
-                        )
-                      ) : (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="h-7"
-                          disabled={busy}
-                          onClick={() =>
-                            void mutate(`/proposals/${proposal.id}/unapprove`, {
-                              expectedRevision: proposal.revision,
-                            })
-                          }
-                        >
-                          Unapprove
-                        </Button>
-                      ))}
-                  </div>
+                  <Badge variant="secondary" className="w-fit">
+                    {capitalize(proposal.status)}
+                  </Badge>
                 </div>
 
                 <div className="flex flex-col gap-1.5">
@@ -1191,6 +1155,43 @@ function ProposalPeek({
               </p>
             </div>
 
+            {/*
+              The decision, after the reasoning it is made on: Approve for a
+              proposed bounty, the way back for an approved one. On the
+              right, where this app puts the action a surface offers.
+            */}
+            {canDecide &&
+              (open ? (
+                proposal.complexity !== "unsized" && (
+                  <div className="flex justify-end">
+                    <Button
+                      disabled={busy || proposal.freshness !== "current"}
+                      onClick={() =>
+                        void mutate(`/proposals/${proposal.id}/approve`, {
+                          expectedRevision: proposal.revision,
+                        })
+                      }
+                    >
+                      Approve
+                    </Button>
+                  </div>
+                )
+              ) : (
+                <div className="flex justify-end">
+                  <Button
+                    variant="outline"
+                    disabled={busy}
+                    onClick={() =>
+                      void mutate(`/proposals/${proposal.id}/unapprove`, {
+                        expectedRevision: proposal.revision,
+                      })
+                    }
+                  >
+                    Unapprove
+                  </Button>
+                </div>
+              ))}
+
             {delivery !== undefined && (
               <div>
                 <p className="text-muted-foreground mb-1.5 text-xs font-medium">
@@ -1202,14 +1203,6 @@ function ProposalPeek({
                   mutate={mutate}
                 />
               </div>
-            )}
-
-            {canDecide && proposal.status === "proposed" && (
-              <p className="text-muted-foreground text-xs">
-                {writeGranted
-                  ? "Approving posts a comment on the ticket and adds the bounty label."
-                  : "Approving records the decision here; this site was connected without write access, so nothing is posted to Jira."}
-              </p>
             )}
           </div>
         </TabsContent>

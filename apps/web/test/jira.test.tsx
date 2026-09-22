@@ -907,14 +907,13 @@ test("the actions sit in the bounty card, beside what they change, for those who
   }) as HTMLButtonElement;
   expect(current.disabled).toBe(true);
   expect(current.getAttribute("aria-pressed")).toBe("true");
-  // Approve sits with the status, Remove with the revision.
+  // Approve comes after the reasoning it is made on; Remove sits with the
+  // revision.
+  const approve = within(card).getByRole("button", { name: "Approve" });
   expect(
-    within(card)
-      .getByText("Proposed")
-      .parentElement?.contains(
-        within(card).getByRole("button", { name: "Approve" }),
-      ),
-  ).toBe(true);
+    within(card).getByText("A few files.").compareDocumentPosition(approve) &
+      Node.DOCUMENT_POSITION_FOLLOWING,
+  ).not.toBe(0);
   expect(
     within(card)
       .getByText("Revision 1")
