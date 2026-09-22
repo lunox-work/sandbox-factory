@@ -1057,7 +1057,7 @@ function ProposalPeek({
                     {CONFIDENCE_MARK[proposal.modelConfidence].icon}
                   </span>
                 </span>
-                <div className="flex flex-col gap-1.5 sm:col-start-2 sm:row-start-1 sm:justify-self-end">
+                <div className="flex flex-col gap-1.5 sm:col-start-2 sm:row-start-1 sm:items-end sm:justify-self-end">
                   {canDecide && open ? (
                     /*
                       The size is the resize: a row of cards, one per size,
@@ -1068,7 +1068,7 @@ function ProposalPeek({
                     <div
                       role="group"
                       aria-label="Resize"
-                      className="flex flex-wrap items-center gap-1.5"
+                      className="flex flex-wrap items-center gap-1.5 sm:justify-end"
                     >
                       {proposal.complexity === "unsized" && (
                         <SizeCard size="unsized" current />
@@ -1099,7 +1099,7 @@ function ProposalPeek({
                     <SizeCard size={proposal.complexity} current />
                   )}
                   {proposal.sizedBy === "reviewer" && (
-                    <span className="text-muted-foreground text-xs">
+                    <span className="text-muted-foreground text-xs sm:text-right">
                       set by a reviewer · the model said{" "}
                       {proposal.modelComplexity}
                     </span>
