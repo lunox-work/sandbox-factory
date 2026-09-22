@@ -10,13 +10,22 @@ import {
   PRICED_BOUNTY_COMPLEXITIES,
 } from "sandbox-factory";
 import {
+  ChevronDown,
   ChevronRight,
+  ChevronUp,
   ExternalLink,
   Loader2,
+  Minus,
   RefreshCw,
   TriangleAlert,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ReactElement,
+} from "react";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { ErrorBanner, LoadingLine } from "@/components/Message";
@@ -887,11 +896,14 @@ function freshnessLabel(freshness: EnrichedProposal["freshness"]): {
   }
 }
 
-/** The sizing model's confidence, as a colour: sure, unsure, or doubtful. */
-const CONFIDENCE_DOT: Record<BountyProposalDto["modelConfidence"], string> = {
-  high: "bg-emerald-500",
-  medium: "bg-muted-foreground/40",
-  low: "bg-red-500",
+/** The sizing model's confidence as a mark and a colour: up, level, or down. */
+const CONFIDENCE_MARK: Record<
+  BountyProposalDto["modelConfidence"],
+  { icon: ReactElement; tone: string }
+> = {
+  high: { icon: <ChevronUp strokeWidth={2.5} />, tone: "text-emerald-500" },
+  medium: { icon: <Minus strokeWidth={2.5} />, tone: "text-muted-foreground" },
+  low: { icon: <ChevronDown strokeWidth={2.5} />, tone: "text-red-500" },
 };
 
 function capitalize(value: string): string {
@@ -1036,16 +1048,19 @@ function ProposalPeek({
                       </span>
                     )}
                     {/*
-                      The model's confidence as a dot: green, neutral or
-                      red. Named for assistive technology and on hover,
-                      since a colour alone says nothing to a screen reader.
+                      The model's confidence as a mark: up in green, level
+                      in neutral, down in red. Named for assistive
+                      technology and on hover, since a shape and a colour
+                      alone say nothing to a screen reader.
                     */}
                     <span
                       role="img"
                       aria-label={`${proposal.modelConfidence} confidence`}
                       title={`${proposal.modelConfidence} confidence`}
-                      className={`ml-0.5 size-2 shrink-0 rounded-full ${CONFIDENCE_DOT[proposal.modelConfidence]}`}
-                    />
+                      className={`flex shrink-0 items-center [&>svg]:size-3.5 ${CONFIDENCE_MARK[proposal.modelConfidence].tone}`}
+                    >
+                      {CONFIDENCE_MARK[proposal.modelConfidence].icon}
+                    </span>
                   </span>
                 </div>
 
