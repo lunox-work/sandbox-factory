@@ -57,10 +57,10 @@ constraints.
 ### Web
 
 Two filter tabs, Proposed and Approved. The peek's Bounty card offers the
-actions for the proposal's state, each beside the fact it changes: the resize
-as the size control itself, Re-price with the amount, Remove in the small
-print with the ticket's freshness and revision, and Approve or Unapprove
-after the model's reasoning. Remove asks for confirmation. The History section goes; the
+actions for the proposal's state: Re-price, labelled Re-analyze, beside the
+status; the resize as the size control itself, level with the amount;
+Approve or Unapprove after the model's reasoning, on a row with the ticket's
+freshness and revision; and Remove under Approve. Remove asks for confirmation. The History section goes; the
 revision number stays.
 
 ### Tests

@@ -900,9 +900,10 @@ function capitalize(value: string): string {
  * itself, read live, so the decision is made against what Jira says now
  * rather than what was stored at sizing time.
  *
- * Two states. Proposed: the resize as the size itself, Re-price beside the
- * amount, Remove in the card's small print, and Approve after the reasoning.
- * Approved: Re-price beside the amount and Unapprove after the reasoning —
+ * Two states. Proposed: Re-analyze (the re-price) beside the status, the
+ * resize as the size itself level with the amount, and Approve after the
+ * reasoning with Remove under it. Approved: Re-analyze beside the status
+ * and Unapprove after the reasoning —
  * removal comes after unapproving, because that is what owes Jira the
  * withdrawal. A decision needs a current ticket; a re-price or an unapprove
  * does not.
@@ -967,20 +968,70 @@ function ProposalPeek({
         <TabsContent value="bounty" className="mt-2">
           <div className="flex flex-col gap-6" data-testid="proposal-bounty">
             {/*
-              The proposal as one card, each fact beside the control that
-              changes it: the status with the decision, the size with the
-              resize, the amount with the re-price, and the ticket's
-              freshness and revision — what every mutation is checked
-              against — with the way out, small, in the corner. The amount
-              is the one number a reviewer is here to agree to, so it is
-              the one thing set large.
+              The proposal as one card: the status with the way to have
+              the model look again, then the amount level with the size
+              that sets it. The amount is the one number a reviewer is
+              here to agree to, so it is the one thing set large.
             */}
             <div className="flex flex-col gap-5 rounded-lg border p-4 sm:p-5">
+              {/* The state, and the way to have the model look again. */}
+              <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
+                <Badge variant="secondary" className="w-fit">
+                  {capitalize(proposal.status)}
+                </Badge>
+                {canDecide && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={busy}
+                    onClick={() =>
+                      void mutate(`/proposals/${proposal.id}/reprice`, {
+                        expectedRevision: proposal.revision,
+                        requestId: crypto.randomUUID(),
+                      })
+                    }
+                  >
+                    <RefreshCw />
+                    Re-analyze
+                  </Button>
+                )}
+              </div>
+
+              {/*
+                The amount, level with the size that sets it: the amount is
+                given the height of the selected size card, so the two sit
+                on one line with the sizing model in its pill beneath.
+              */}
               <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-4">
-                <div className="flex flex-col gap-1.5">
-                  <Badge variant="secondary" className="w-fit">
-                    {capitalize(proposal.status)}
-                  </Badge>
+                <div className="flex flex-col gap-2.5">
+                  <span
+                    className={`flex h-12 items-center text-3xl leading-none font-semibold tracking-tight ${
+                      priced ? "tabular-nums" : "text-muted-foreground"
+                    }`}
+                  >
+                    {money(proposal.amountMinor, proposal.currency)}
+                  </span>
+                  {/* Who sized it, as a pill wearing the vendor's mark. */}
+                  <span className="inline-flex w-fit items-center gap-1.5 rounded-full border py-1 pr-2.5 pl-2 text-xs">
+                    <span className="flex size-3.5 shrink-0 items-center [&>svg]:size-3.5">
+                      <ModelIcon model={proposal.actualModel} />
+                    </span>
+                    {label === null ? (
+                      <span className="font-medium">
+                        {proposal.actualModel}
+                      </span>
+                    ) : (
+                      <span
+                        className="font-medium"
+                        title={proposal.actualModel}
+                      >
+                        {label}
+                      </span>
+                    )}
+                    <span className="text-muted-foreground">
+                      · {proposal.modelConfidence} confidence
+                    </span>
+                  </span>
                 </div>
 
                 <div className="flex flex-col gap-1.5">
@@ -1031,55 +1082,6 @@ function ProposalPeek({
                     </span>
                   )}
                 </div>
-              </div>
-
-              <div className="flex flex-wrap items-end justify-between gap-x-4 gap-y-3">
-                <div className="flex flex-col gap-2.5">
-                  <span
-                    className={`text-3xl leading-none font-semibold tracking-tight ${
-                      priced ? "tabular-nums" : "text-muted-foreground"
-                    }`}
-                  >
-                    {money(proposal.amountMinor, proposal.currency)}
-                  </span>
-                  {/* Who sized it, as a pill wearing the vendor's mark. */}
-                  <span className="inline-flex w-fit items-center gap-1.5 rounded-full border py-1 pr-2.5 pl-2 text-xs">
-                    <span className="flex size-3.5 shrink-0 items-center [&>svg]:size-3.5">
-                      <ModelIcon model={proposal.actualModel} />
-                    </span>
-                    {label === null ? (
-                      <span className="font-medium">
-                        {proposal.actualModel}
-                      </span>
-                    ) : (
-                      <span
-                        className="font-medium"
-                        title={proposal.actualModel}
-                      >
-                        {label}
-                      </span>
-                    )}
-                    <span className="text-muted-foreground">
-                      · {proposal.modelConfidence} confidence
-                    </span>
-                  </span>
-                </div>
-                {canDecide && (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={busy}
-                    onClick={() =>
-                      void mutate(`/proposals/${proposal.id}/reprice`, {
-                        expectedRevision: proposal.revision,
-                        requestId: crypto.randomUUID(),
-                      })
-                    }
-                  >
-                    <RefreshCw />
-                    Re-price
-                  </Button>
-                )}
               </div>
 
               {/*

@@ -894,7 +894,15 @@ test("the actions sit in the bounty card, beside what they change, for those who
   await userEvent.click(screen.getByText("Ticket 1"));
   const panel = await screen.findByTestId("proposal-panel");
   const card = within(panel).getByTestId("proposal-bounty");
-  for (const name of ["Approve", "XS", "S", "L", "XL", "Re-price", "Remove"]) {
+  for (const name of [
+    "Approve",
+    "XS",
+    "S",
+    "L",
+    "XL",
+    "Re-analyze",
+    "Remove",
+  ]) {
     expect(within(card).getByRole("button", { name })).toBeDefined();
   }
   // Two states, one card: nothing here is for an approved proposal.
@@ -952,7 +960,9 @@ test("an approved proposal offers the way back and a re-price, nothing else", as
   const panel = await screen.findByTestId("proposal-panel");
   const card = within(panel).getByTestId("proposal-bounty");
   expect(within(card).getByRole("button", { name: "Unapprove" })).toBeDefined();
-  expect(within(card).getByRole("button", { name: "Re-price" })).toBeDefined();
+  expect(
+    within(card).getByRole("button", { name: "Re-analyze" }),
+  ).toBeDefined();
   expect(within(card).queryByRole("button", { name: "Approve" })).toBeNull();
   expect(within(card).queryByRole("button", { name: "Remove" })).toBeNull();
   expect(within(card).queryByRole("group", { name: "Resize" })).toBeNull();
@@ -999,7 +1009,7 @@ test("a member sees the proposal without any way to decide it", async () => {
 
   await userEvent.click(screen.getByText("Ticket 1"));
   const panel = await screen.findByTestId("proposal-panel");
-  for (const name of ["Approve", "Re-price", "Remove", "Unapprove"]) {
+  for (const name of ["Approve", "Re-analyze", "Remove", "Unapprove"]) {
     expect(within(panel).queryByRole("button", { name })).toBeNull();
   }
   expect(within(panel).queryByRole("group", { name: "Resize" })).toBeNull();
