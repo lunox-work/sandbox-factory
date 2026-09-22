@@ -336,7 +336,7 @@ export function IssueSpec({ issue }: { issue: JiraIssueDetail }) {
         ) : (
           <DatedField label="Created" value={issue.created} />
         )}
-        <div className="py-1.5">
+        <div className="flex justify-end py-1.5">
           <button
             type="button"
             className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 flex cursor-pointer items-center gap-1 rounded-sm text-xs underline-offset-2 transition-colors hover:underline focus-visible:ring-[3px] focus-visible:outline-none"
