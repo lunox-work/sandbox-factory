@@ -12,6 +12,7 @@ import {
 import { ChevronRight, ExternalLink, Loader2, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { ErrorBanner, LoadingLine } from "@/components/Message";
 import { PeekPanel } from "@/components/PeekPanel";
 import { Badge } from "@/components/ui/badge";
@@ -46,7 +47,6 @@ type ProposalStatus = BountyProposalDto["status"];
 
 interface ProposalDetail {
   proposal: BountyProposalDto;
-  history: BountyProposalDto[];
   freshness: {
     freshness: "current" | "stale" | "missing" | "unknown";
     checkedAt: string;
@@ -661,7 +661,7 @@ export function BoardBounties({
     loadTicket(selectedKey);
   }, [selectedKey, loadTicket]);
 
-  async function mutate(path: string, body: object) {
+  async function mutate(path: string, body: object): Promise<boolean> {
     setBusy(true);
     try {
       const response = await fetch(`${base}${path}`, {
@@ -675,12 +675,14 @@ export function BoardBounties({
       };
       if (!response.ok) {
         setError(value.error ?? "That action could not be completed.");
-        return;
+        return false;
       }
       setError(null);
       await refresh();
+      return true;
     } catch {
       setError("Could not reach the server.");
+      return false;
     } finally {
       setBusy(false);
     }
@@ -705,13 +707,11 @@ export function BoardBounties({
           onValueChange={(next) => setStatus(next as ProposalStatus)}
         >
           <TabsList aria-label="Proposal status">
-            {(["proposed", "approved", "rejected", "superseded"] as const).map(
-              (candidate) => (
-                <TabsTrigger key={candidate} value={candidate}>
-                  {candidate[0]!.toUpperCase() + candidate.slice(1)}
-                </TabsTrigger>
-              ),
-            )}
+            {(["proposed", "approved"] as const).map((candidate) => (
+              <TabsTrigger key={candidate} value={candidate}>
+                {candidate[0]!.toUpperCase() + candidate.slice(1)}
+              </TabsTrigger>
+            ))}
           </TabsList>
         </Tabs>
         {canManage(role) && (
@@ -844,7 +844,12 @@ export function BoardBounties({
         data-testid="proposal-panel"
         footer={
           canManage(role) && selected !== null ? (
-            <ProposalActions proposal={selected} busy={busy} mutate={mutate} />
+            <ProposalActions
+              proposal={selected}
+              busy={busy}
+              mutate={mutate}
+              onRemoved={() => closeProposal(true)}
+            />
           ) : undefined
         }
       >
@@ -853,13 +858,11 @@ export function BoardBounties({
         ) : (
           <ProposalPeek
             proposal={selected}
-            history={detail === null ? null : detail.history}
             ticket={ticket}
             ticketError={ticketError}
             onRetryTicket={() => {
               if (selectedKey !== null) loadTicket(selectedKey);
             }}
-            onSelectRevision={openProposal}
             canDecide={canManage(role)}
             writeGranted={writeGranted}
             busy={busy}
@@ -896,34 +899,29 @@ function capitalize(value: string): string {
  * The open proposal, in two tabs.
  *
  * Bounty is the decision — a property list of what the proposal is, the
- * model's reasoning as prose, where delivery to Jira stands, and the
- * revisions before this one. Spec is the ticket itself, read live, so the
+ * model's reasoning as prose, and where delivery to Jira stands. Spec is
+ * the ticket itself, read live, so the
  * decision is made against what Jira says now rather than what was stored
  * at sizing time.
  */
 function ProposalPeek({
   proposal,
-  history,
   ticket,
   ticketError,
   onRetryTicket,
-  onSelectRevision,
   canDecide,
   writeGranted,
   busy,
   mutate,
 }: {
   proposal: EnrichedProposal;
-  /** `null` while the detail read is still in flight. */
-  history: BountyProposalDto[] | null;
   ticket: JiraIssueDetail | null;
   ticketError: string | null;
   onRetryTicket: () => void;
-  onSelectRevision: (proposalId: string) => void;
   canDecide: boolean;
   writeGranted: boolean;
   busy: boolean;
-  mutate: (path: string, body: object) => Promise<void>;
+  mutate: (path: string, body: object) => Promise<boolean>;
 }) {
   const url = ticket?.url ?? proposal.liveUrl ?? null;
   const label = modelLabel(proposal.actualModel);
@@ -1015,11 +1013,7 @@ function ProposalPeek({
                   {freshness.text}
                 </span>
               </Field>
-              <Field label="Revision">
-                {history !== null && history.length > 1
-                  ? `${proposal.revision} · ${history.length} in history`
-                  : String(proposal.revision)}
-              </Field>
+              <Field label="Revision">{String(proposal.revision)}</Field>
             </div>
 
             <div>
@@ -1041,49 +1035,6 @@ function ProposalPeek({
                   busy={busy}
                   mutate={mutate}
                 />
-              </div>
-            )}
-
-            {/*
-              Only when there is a history to show: a list of one entry, this
-              one, says nothing a reader does not already know.
-            */}
-            {history !== null && history.length > 1 && (
-              <div>
-                <p className="text-muted-foreground mb-1.5 text-xs font-medium">
-                  History
-                </p>
-                <ul className="divide-y rounded-md border px-3 text-sm">
-                  {history.map((entry) => (
-                    <li key={entry.id}>
-                      <button
-                        type="button"
-                        className="hover:text-foreground flex w-full items-center gap-3 py-1.5 text-left disabled:cursor-default"
-                        aria-current={
-                          entry.id === proposal.id ? "true" : undefined
-                        }
-                        disabled={entry.id === proposal.id}
-                        onClick={() => onSelectRevision(entry.id)}
-                      >
-                        <span className="text-muted-foreground w-20 shrink-0 text-xs">
-                          Revision {entry.revision}
-                        </span>
-                        <Badge variant="outline" className="font-mono">
-                          {entry.complexity}
-                        </Badge>
-                        <span
-                          className={
-                            entry.id === proposal.id
-                              ? "font-medium"
-                              : "text-muted-foreground"
-                          }
-                        >
-                          {capitalize(entry.status)}
-                        </span>
-                      </button>
-                    </li>
-                  ))}
-                </ul>
               </div>
             )}
 
@@ -1125,54 +1076,57 @@ function ProposalPeek({
 /**
  * What an owner or admin may do to the open proposal, in the peek's footer.
  *
- * The decision on the left, the adjustments on the right: Approve and
- * Reject are the two ends of a review, and resizing or re-pricing are what
- * a reviewer does instead of deciding. The enabled rules are the ones the
- * list rows used to carry — a decision needs a current ticket, a re-price
- * does not.
+ * Two states, two footers. Proposed: the decision (Approve) on the left,
+ * the adjustments (Resize, Re-price) and the way out (Remove) on the right.
+ * Approved: Unapprove on the left, Re-price on the right — removal comes
+ * after unapproving, because that is what owes Jira the withdrawal. A
+ * decision needs a current ticket; a re-price or an unapprove does not.
  */
 function ProposalActions({
   proposal,
   busy,
   mutate,
+  onRemoved,
 }: {
   proposal: EnrichedProposal;
   busy: boolean;
-  mutate: (path: string, body: object) => Promise<void>;
+  mutate: (path: string, body: object) => Promise<boolean>;
+  onRemoved: () => void;
 }) {
   const open = proposal.status === "proposed";
-  const decidable = open || proposal.status === "approved";
+  const key = proposal.liveKey ?? proposal.issueKey;
   return (
     <div
       className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2"
       data-testid="proposal-actions"
     >
       <div className="flex flex-wrap items-center gap-2">
-        {open && proposal.complexity !== "unsized" && (
-          <Button
-            size="sm"
-            disabled={busy || proposal.freshness !== "current"}
-            onClick={() =>
-              void mutate(`/proposals/${proposal.id}/approve`, {
-                expectedRevision: proposal.revision,
-              })
-            }
-          >
-            Approve
-          </Button>
-        )}
-        {decidable && (
+        {open ? (
+          proposal.complexity !== "unsized" && (
+            <Button
+              size="sm"
+              disabled={busy || proposal.freshness !== "current"}
+              onClick={() =>
+                void mutate(`/proposals/${proposal.id}/approve`, {
+                  expectedRevision: proposal.revision,
+                })
+              }
+            >
+              Approve
+            </Button>
+          )
+        ) : (
           <Button
             size="sm"
             variant="outline"
             disabled={busy}
             onClick={() =>
-              void mutate(`/proposals/${proposal.id}/reject`, {
+              void mutate(`/proposals/${proposal.id}/unapprove`, {
                 expectedRevision: proposal.revision,
               })
             }
           >
-            Reject
+            Unapprove
           </Button>
         )}
       </div>
@@ -1208,21 +1162,44 @@ function ProposalActions({
             ))}
           </div>
         )}
-        {decidable && (
-          <Button
-            size="sm"
-            variant="ghost"
-            disabled={busy}
-            onClick={() =>
-              void mutate(`/proposals/${proposal.id}/reprice`, {
-                expectedRevision: proposal.revision,
-                requestId: crypto.randomUUID(),
-              })
+        <Button
+          size="sm"
+          variant="ghost"
+          disabled={busy}
+          onClick={() =>
+            void mutate(`/proposals/${proposal.id}/reprice`, {
+              expectedRevision: proposal.revision,
+              requestId: crypto.randomUUID(),
+            })
+          }
+        >
+          <RefreshCw />
+          Re-price
+        </Button>
+        {open && (
+          <ConfirmDialog
+            trigger={
+              <Button
+                size="sm"
+                variant="ghost"
+                className="text-destructive hover:text-destructive"
+                disabled={busy}
+              >
+                Remove
+              </Button>
             }
-          >
-            <RefreshCw />
-            Re-price
-          </Button>
+            title={`Remove the proposal for ${key}?`}
+            description="The ticket will have no proposal, and the next sizing run may propose it again. Nothing is posted to Jira."
+            confirmLabel="Remove"
+            tone="destructive"
+            busy={busy}
+            onConfirm={async () => {
+              const removed = await mutate(`/proposals/${proposal.id}/remove`, {
+                expectedRevision: proposal.revision,
+              });
+              if (removed) onRemoved();
+            }}
+          />
         )}
       </div>
     </div>
@@ -1236,7 +1213,7 @@ function DeliveryStatus({
 }: {
   operation: BountyWritebackDto;
   busy: boolean;
-  mutate: (path: string, body: object) => Promise<void>;
+  mutate: (path: string, body: object) => Promise<boolean>;
 }) {
   return (
     <div className="flex flex-wrap items-center gap-2 text-sm">

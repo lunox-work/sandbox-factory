@@ -80,7 +80,6 @@ function proposal(): StoredBountyProposal {
     decidedAt: "2026-09-22T00:00:00.000Z",
     decidedBy: "usr_1",
     decisionDeliveryPolicy: "requested",
-    replacesProposalId: null,
     createdAt: "2026-09-22T00:00:00.000Z",
     updatedAt: "2026-09-22T00:00:00.000Z",
   };
@@ -238,16 +237,8 @@ test("approval posts one fixed comment then adds the label", async () => {
   assert.match(commentText(operation()), /Bounty approved: M — USD 250\.00/);
   assert.ok(!commentText(operation()).includes("private model text"));
   assert.match(
-    commentText(
-      operation({
-        kind: "superseded",
-        payload: {
-          ...operation().payload,
-          replacementUrl: "https://app.test/p/2",
-        },
-      }),
-    ),
-    /Previous: https:\/\/app\.test\/p\/1\. Replacement: https:\/\/app\.test\/p\/2\./,
+    commentText(operation({ kind: "withdrawn" })),
+    /The approved bounty was withdrawn\. Review: https:\/\/app\.test\/p\/1\./,
   );
 });
 
@@ -325,7 +316,7 @@ test("a failed label remains safely retryable without reposting", async () => {
 });
 
 test("a follow-up comment completes without adding the bounty label", async () => {
-  const state = harness({ op: operation({ kind: "rejected" }) });
+  const state = harness({ op: operation({ kind: "withdrawn" }) });
   const result = await state.delivery.execute("org_1", "bwo_1");
   assert.equal(result?.status, "done");
   assert.deepEqual(state.events, ["attempt", "comment:comment_1"]);

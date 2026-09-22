@@ -20,7 +20,8 @@ and the fields — moves into the proposal's peek as the Spec tab.
 ### Page
 
 - Header as today.
-- Toolbar: the status filter (Proposed · Approved · Rejected · Superseded)
+- Toolbar: the status filter (Proposed · Approved; see the two-state
+  proposals spec)
   as the same segmented control the peek's tabs use, on the left; "Run
   sizing" on the right for an owner or admin. One muted line under it:
   `Latest run: succeeded · 10 results · sized by DeepSeek V4 Pro`. The
@@ -47,9 +48,7 @@ Opened by a row click, over the list, with `PeekPanel`.
   as prose under "Why this size"; delivery status when a write-back exists;
   the revision history only when there is more than one, where a click
   switches the peek to that revision. The panel footer holds the actions for
-  an owner or admin: Approve and Reject on the left, a labelled Resize group
-  (XS–XL, the current size marked) and Re-price on the right, with the
-  enabled rules the rows had.
+  an owner or admin, by state; see the two-state proposals spec.
 - Spec: the ticket read live from Jira by key, through the same read the
   backlog peek used. One scroll: the description as Markdown, then the fields
   list beneath it as a section. No inner tabs. The same skeleton and

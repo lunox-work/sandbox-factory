@@ -5,7 +5,7 @@ import { generateId } from "./mapping.js";
 import { bountyProposal, bountyWriteback } from "./schema.js";
 import type { BountyWritebackPayload, BountyWritebackRow } from "./schema.js";
 
-export type WritebackKind = "approved" | "rejected" | "superseded";
+export type WritebackKind = "approved" | "withdrawn";
 export type WritebackStatus =
   "pending" | "running" | "done" | "failed" | "uncertain" | "cancelled";
 
@@ -36,7 +36,11 @@ export interface BountyWritebackStore {
     | { readonly status: "created"; readonly operation: StoredBountyWriteback }
     | { readonly status: "not-found" | "changed" | "invalid-state" }
   >;
-  rejectWithIntent(
+  /**
+   * An approved proposal back to proposed, with the withdrawal comment queued
+   * in the same transaction. For an approval whose comment reached Jira.
+   */
+  withdrawWithIntent(
     organizationId: string,
     proposalId: string,
     expectedRevision: number,
@@ -193,7 +197,7 @@ export function createBountyWritebackStore(db: Database): BountyWritebackStore {
       });
     },
 
-    async rejectWithIntent(
+    async withdrawWithIntent(
       organizationId,
       proposalId,
       expectedRevision,
@@ -203,14 +207,14 @@ export function createBountyWritebackStore(db: Database): BountyWritebackStore {
       return db.transaction(async (transaction) => {
         const tx = transaction as unknown as Database;
         const now = new Date();
-        const rejected = (await tx
+        const withdrawn = (await tx
           .update(bountyProposal)
           .set({
-            status: "rejected",
+            status: "proposed",
             revision: expectedRevision + 1,
-            decidedBy,
-            decidedAt: now,
-            decisionDeliveryPolicy: "requested",
+            decidedBy: null,
+            decidedAt: null,
+            decisionDeliveryPolicy: null,
             updatedAt: now,
           })
           .where(
@@ -222,7 +226,7 @@ export function createBountyWritebackStore(db: Database): BountyWritebackStore {
             ),
           )
           .returning()) as (typeof bountyProposal.$inferSelect)[];
-        if (rejected[0] === undefined) {
+        if (withdrawn[0] === undefined) {
           const current = await tx
             .select({
               revision: bountyProposal.revision,
@@ -250,7 +254,7 @@ export function createBountyWritebackStore(db: Database): BountyWritebackStore {
             organizationId,
             proposalId,
             proposalRevision: expectedRevision + 1,
-            kind: "rejected",
+            kind: "withdrawn",
             payload,
             requestedBy: decidedBy,
           })

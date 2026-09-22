@@ -396,7 +396,7 @@ export class BountyExecutor {
       run.kind === "reprice" &&
       run.sourceProposalId !== null &&
       run.sourceRevision !== null
-        ? await this.#options.proposals.replaceForLease(
+        ? await this.#options.proposals.repriceForLease(
             organizationId,
             leaseToken,
             run.sourceProposalId,
@@ -409,7 +409,7 @@ export class BountyExecutor {
             input,
           );
     if (created.status === "lost-lease") return { fatalCode: "worker_lost" };
-    if (created.status !== "created") {
+    if (created.status !== "created" && created.status !== "repriced") {
       return {
         value: {
           ...base,

@@ -5,7 +5,6 @@ import {
   bigint,
   boolean,
   check,
-  foreignKey,
   index,
   integer,
   jsonb,
@@ -165,7 +164,6 @@ export const bountyProposal = pgTable(
       onDelete: "set null",
     }),
     decidedAt: ts("decided_at"),
-    replacesProposalId: text("replaces_proposal_id"),
     decisionDeliveryPolicy: text("decision_delivery_policy"),
     createdAt: ts("created_at").notNull().defaultNow(),
     updatedAt: ts("updated_at").notNull().defaultNow(),
@@ -176,11 +174,6 @@ export const bountyProposal = pgTable(
       .where(sql`${table.status} in ('proposed', 'approved')`),
     index("bounty_proposal_organization_id_idx").on(table.organizationId),
     index("bounty_proposal_run_id_idx").on(table.runId),
-    foreignKey({
-      columns: [table.replacesProposalId],
-      foreignColumns: [table.id],
-      name: "bounty_proposal_replaces_proposal_id_fkey",
-    }).onDelete("set null"),
     check(
       "bounty_proposal_model_complexity_check",
       sql`${table.modelComplexity} in ('XS', 'S', 'M', 'L', 'XL', 'unsized')`,
@@ -195,7 +188,7 @@ export const bountyProposal = pgTable(
     ),
     check(
       "bounty_proposal_status_check",
-      sql`${table.status} in ('proposed', 'approved', 'rejected', 'superseded')`,
+      sql`${table.status} in ('proposed', 'approved')`,
     ),
     check(
       "bounty_proposal_sized_by_check",
@@ -230,7 +223,6 @@ export interface BountyWritebackPayload {
   readonly amountMinor: number;
   readonly currency: string;
   readonly proposalUrl: string;
-  readonly replacementUrl?: string;
 }
 
 export const bountyWriteback = pgTable(
@@ -271,7 +263,7 @@ export const bountyWriteback = pgTable(
     index("bounty_writeback_organization_id_idx").on(table.organizationId),
     check(
       "bounty_writeback_kind_check",
-      sql`${table.kind} in ('approved', 'rejected', 'superseded')`,
+      sql`${table.kind} in ('approved', 'withdrawn')`,
     ),
     check(
       "bounty_writeback_status_check",

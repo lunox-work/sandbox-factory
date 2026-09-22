@@ -79,7 +79,8 @@ describe("bounty database concurrency", () => {
       ) values
         ('issue_race', 'org_bounty', 'board_bounty', '1001', 'DEMO-1', 'new', now(), now()),
         ('issue_rollback', 'org_bounty', 'board_bounty', '1002', 'DEMO-2', 'new', now(), now()),
-        ('issue_lease', 'org_bounty', 'board_bounty', '1003', 'DEMO-3', 'new', now(), now())
+        ('issue_lease', 'org_bounty', 'board_bounty', '1003', 'DEMO-3', 'new', now(), now()),
+        ('issue_states', 'org_bounty', 'board_bounty', '1004', 'DEMO-4', 'new', now(), now())
     `;
   });
 
@@ -262,7 +263,10 @@ describe("bounty database concurrency", () => {
     }
   });
 
-  test("a failed replacement restores the source proposal", async () => {
+  test("a failed follow-up write restores the proposal it decided", async () => {
+    // The shape of every decision here: the proposal's status changes and a
+    // second write follows in the same transaction. If the second write is
+    // refused, the first must not survive it.
     await insertRun("run_rollback", "request-rollback", "succeeded");
     await insertProposal("proposal_rollback", "run_rollback", "issue_rollback");
 
@@ -270,20 +274,16 @@ describe("bounty database concurrency", () => {
       sql.begin(async (tx) => {
         await tx`
           update bounty_proposal
-          set status = 'superseded'
+          set status = 'approved'
           where id = 'proposal_rollback'
         `;
+        // A write-back of a kind the schema no longer knows.
         await tx`
-          insert into bounty_proposal (
-            id, organization_id, run_id, jira_issue_id, spec_hash, rate_card,
-            model_complexity, model_confidence, model_rationale, actual_model,
-            prompt_version, complexity, amount_minor, currency,
-            replaces_proposal_id
+          insert into bounty_writeback (
+            id, organization_id, proposal_id, proposal_revision, kind, payload
           ) values (
-            'proposal_invalid', 'org_bounty', 'run_rollback', 'issue_rollback',
-            ${"b".repeat(64)}, ${tx.json(rateCard)}, 'M', 'high',
-            'A replacement that must roll back.', 'model-test', 'v1',
-            'M', null, 'USD', 'proposal_rollback'
+            'bwo_invalid', 'org_bounty', 'proposal_rollback', 2, 'superseded',
+            ${tx.json({ complexity: "M", amountMinor: 200, currency: "USD", proposalUrl: "https://example.test/p" })}
           )
         `;
       }),
@@ -293,5 +293,18 @@ describe("bounty database concurrency", () => {
       select status from bounty_proposal where id = 'proposal_rollback'
     `;
     assert.equal(rows[0]?.["status"], "proposed");
+  });
+
+  test("a proposal may only be proposed or approved", async () => {
+    await insertRun("run_states", "request-states", "succeeded");
+    await insertProposal("proposal_states", "run_states", "issue_states");
+    await assert.rejects(
+      sql`update bounty_proposal set status = 'rejected' where id = 'proposal_states'`,
+    );
+    await assert.rejects(
+      sql`update bounty_proposal set status = 'superseded' where id = 'proposal_states'`,
+    );
+    await sql`update bounty_proposal set status = 'approved' where id = 'proposal_states'`;
+    await sql`delete from bounty_proposal where id = 'proposal_states'`;
   });
 });

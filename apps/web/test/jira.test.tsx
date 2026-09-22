@@ -489,7 +489,6 @@ function routedFetch(
       return json({
         proposal: proposal(n),
         freshness: { freshness: "current", checkedAt: "now" },
-        history: [proposal(n)],
         writebackOperations: [],
       });
     }
@@ -895,9 +894,13 @@ test("the actions sit in the peek's footer, for those who may act", async () => 
   await userEvent.click(screen.getByText("Ticket 1"));
   const panel = await screen.findByTestId("proposal-panel");
   const actions = within(panel).getByTestId("proposal-actions");
-  for (const name of ["Approve", "XS", "S", "L", "XL", "Reject", "Re-price"]) {
+  for (const name of ["Approve", "XS", "S", "L", "XL", "Re-price", "Remove"]) {
     expect(within(actions).getByRole("button", { name })).toBeDefined();
   }
+  // Two states, two footers: nothing here is for an approved proposal.
+  expect(
+    within(actions).queryByRole("button", { name: "Unapprove" }),
+  ).toBeNull();
   // The current size is not offered as a change.
   expect(
     (within(actions).getByRole("button", { name: "M" }) as HTMLButtonElement)
@@ -905,6 +908,69 @@ test("the actions sit in the peek's footer, for those who may act", async () => 
   ).toBe(true);
   // Outside the scrolling body, so a long spec never pushes them off.
   expect(actions.closest(".overflow-y-auto")).toBeNull();
+});
+
+test("an approved proposal offers the way back and a re-price, nothing else", async () => {
+  vi.stubGlobal(
+    "fetch",
+    routedFetch({
+      proposals: {
+        body: { proposals: [{ ...proposal(1), status: "approved" }] },
+      },
+    }),
+  );
+  renderBoard("jrb_1", "owner");
+  await screen.findByTestId("proposal-list");
+  // The two filters are the two states.
+  expect(screen.getByRole("tab", { name: "Proposed" })).toBeDefined();
+  expect(screen.getByRole("tab", { name: "Approved" })).toBeDefined();
+  expect(
+    screen.queryByRole("tab", { name: /rejected|superseded/i }),
+  ).toBeNull();
+
+  await userEvent.click(screen.getByText("Ticket 1"));
+  const panel = await screen.findByTestId("proposal-panel");
+  const actions = within(panel).getByTestId("proposal-actions");
+  expect(
+    within(actions).getByRole("button", { name: "Unapprove" }),
+  ).toBeDefined();
+  expect(
+    within(actions).getByRole("button", { name: "Re-price" }),
+  ).toBeDefined();
+  expect(within(actions).queryByRole("button", { name: "Approve" })).toBeNull();
+  expect(within(actions).queryByRole("button", { name: "Remove" })).toBeNull();
+  expect(within(actions).queryByRole("group", { name: "Resize" })).toBeNull();
+});
+
+test("removing a proposal asks first, then closes the peek", async () => {
+  const fetchMock = routedFetch();
+  vi.stubGlobal("fetch", fetchMock);
+  renderBoard("jrb_1", "owner");
+  await screen.findByTestId("proposal-list");
+  await userEvent.click(screen.getByText("Ticket 1"));
+  const panel = await screen.findByTestId("proposal-panel");
+
+  await userEvent.click(within(panel).getByRole("button", { name: "Remove" }));
+  const dialog = await screen.findByRole("alertdialog");
+  expect(
+    within(dialog).getByText(/remove the proposal for ACME-1/i),
+  ).toBeDefined();
+  // Nothing sent yet.
+  expect(
+    fetchMock.mock.calls.some(([input]) => String(input).includes("/remove")),
+  ).toBe(false);
+
+  await userEvent.click(within(dialog).getByRole("button", { name: "Remove" }));
+  await waitFor(() => {
+    expect(
+      fetchMock.mock.calls.some(([input]) =>
+        String(input).includes("/proposals/bpr_1/remove"),
+      ),
+    ).toBe(true);
+  });
+  await waitFor(() => {
+    expect(screen.queryByTestId("proposal-panel")).toBeNull();
+  });
 });
 
 test("a member sees the proposal without any way to decide it", async () => {

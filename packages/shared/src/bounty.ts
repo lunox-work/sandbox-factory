@@ -135,12 +135,7 @@ export const bountyRunDtoSchema = z.object({
 
 export const createRunSchema = z.object({ requestId: z.uuid() });
 
-export const bountyProposalStatusSchema = z.enum([
-  "proposed",
-  "approved",
-  "rejected",
-  "superseded",
-]);
+export const bountyProposalStatusSchema = z.enum(["proposed", "approved"]);
 export const proposalFreshnessSchema = z.enum([
   "current",
   "stale",
@@ -175,7 +170,6 @@ export const bountyProposalDtoSchema = z.object({
   decidedAt: z.iso.datetime().nullable(),
   decidedBy: z.string().nullable(),
   decisionDeliveryPolicy: z.enum(["off", "requested"]).nullable(),
-  replacesProposalId: z.string().nullable(),
   freshness: proposalFreshnessSchema.optional(),
   liveTitle: z.string().optional(),
   createdAt: z.iso.datetime(),
@@ -215,7 +209,7 @@ export const bountyWritebackDtoSchema = z.object({
   organizationId: z.string().min(1),
   proposalId: z.string().min(1),
   proposalRevision: z.number().int().positive(),
-  kind: z.enum(["approved", "rejected", "superseded"]),
+  kind: z.enum(["approved", "withdrawn"]),
   status: z.enum([
     "pending",
     "running",
@@ -230,7 +224,6 @@ export const bountyWritebackDtoSchema = z.object({
     amountMinor: minorAmountSchema,
     currency: z.string().length(3),
     proposalUrl: z.url(),
-    replacementUrl: z.url().optional(),
   }),
   jiraCommentId: z.string().nullable(),
   errorCode: z.string().nullable(),

@@ -303,7 +303,6 @@ function reviewProposal(
     decidedAt: null,
     decidedBy: null,
     decisionDeliveryPolicy: null,
-    replacesProposalId: null,
     createdAt: run.createdAt,
     updatedAt: run.createdAt,
     ...overrides,
@@ -315,19 +314,18 @@ function reviewHarness(hash = "a".repeat(64)) {
   let specReads = 0;
   const proposals = {
     get: () => Promise.resolve(current),
-    historyForIssue: () =>
-      Promise.resolve([
-        current,
-        reviewProposal({ id: "bpr_old", status: "superseded" }),
-      ]),
     listForBoard: () => Promise.resolve([current]),
     approve: () => {
       current = { ...current, status: "approved", revision: 2 };
       return Promise.resolve({ ok: true, proposal: current });
     },
-    reject: () => {
-      current = { ...current, status: "rejected", revision: 2 };
+    withdraw: () => {
+      current = { ...current, status: "proposed", revision: 2 };
       return Promise.resolve({ ok: true, proposal: current });
+    },
+    remove: () => {
+      const removed = current;
+      return Promise.resolve({ ok: true, proposal: removed });
     },
     resize: (
       _o: string,
@@ -410,7 +408,7 @@ test("proposal reads enrich live freshness without returning list descriptions",
   assert.equal(body.proposals[0]?.descriptionText, undefined);
 });
 
-test("proposal detail returns issue history and validates its board deep link", async () => {
+test("proposal detail returns the proposal and validates its board deep link", async () => {
   const state = reviewHarness();
   const response = await state.app.request(
     "/api/v1/orgs/org_1/proposals/bpr_1?boardId=jrb_1",
@@ -418,12 +416,12 @@ test("proposal detail returns issue history and validates its board deep link", 
   );
   assert.equal(response.status, 200);
   const body = (await response.json()) as {
-    history: StoredBountyProposal[];
+    proposal: StoredBountyProposal;
+    history?: unknown;
   };
-  assert.deepEqual(
-    body.history.map(({ id }) => id),
-    ["bpr_1", "bpr_old"],
-  );
+  assert.equal(body.proposal.id, "bpr_1");
+  // One proposal per ticket now: there is no history to return.
+  assert.equal(body.history, undefined);
 
   const wrongBoard = await state.app.request(
     "/api/v1/orgs/org_1/proposals/bpr_1?boardId=jrb_other",
@@ -432,7 +430,7 @@ test("proposal detail returns issue history and validates its board deep link", 
   assert.equal(wrongBoard.status, 404);
 });
 
-test("approval and resize recheck Jira while rejection does not", async () => {
+test("approval and resize recheck Jira while unapprove and remove do not", async () => {
   const approve = reviewHarness();
   const approved = await approve.app.request(
     "/api/v1/orgs/org_1/proposals/bpr_1/approve",
@@ -454,13 +452,29 @@ test("approval and resize recheck Jira while rejection does not", async () => {
   assert.equal(resize.current().amountMinor, 300);
   assert.equal(resize.specReads(), 1);
 
-  const reject = reviewHarness();
-  const rejected = await reject.app.request(
+  const unapprove = reviewHarness();
+  const unapproved = await unapprove.app.request(
+    "/api/v1/orgs/org_1/proposals/bpr_1/unapprove",
+    { method: "POST", headers, body: JSON.stringify({ expectedRevision: 1 }) },
+  );
+  assert.equal(unapproved.status, 200);
+  assert.equal(unapprove.current().status, "proposed");
+  assert.equal(unapprove.specReads(), 0);
+
+  const remove = reviewHarness();
+  const removed = await remove.app.request(
+    "/api/v1/orgs/org_1/proposals/bpr_1/remove",
+    { method: "POST", headers, body: JSON.stringify({ expectedRevision: 1 }) },
+  );
+  assert.equal(removed.status, 200);
+  assert.equal(remove.specReads(), 0);
+
+  // The retired route is gone rather than aliased.
+  const rejected = await reviewHarness().app.request(
     "/api/v1/orgs/org_1/proposals/bpr_1/reject",
     { method: "POST", headers, body: JSON.stringify({ expectedRevision: 1 }) },
   );
-  assert.equal(rejected.status, 200);
-  assert.equal(reject.specReads(), 0);
+  assert.equal(rejected.status, 404);
 });
 
 test("a Jira spec change blocks approval with a stable stale code", async () => {

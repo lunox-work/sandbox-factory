@@ -162,6 +162,20 @@
       "when": 1790065396757,
       "tag": "0022_square_toxin",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1790081917990,
+      "tag": "0023_retire_proposal_statuses",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1790081918556,
+      "tag": "0024_two_state_proposals",
+      "breakpoints": true
     }
   ]
 }

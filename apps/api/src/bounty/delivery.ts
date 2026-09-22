@@ -320,10 +320,7 @@ export function commentText(operation: StoredBountyWriteback): string {
   if (operation.kind === "approved") {
     return `Bounty approved: ${operation.payload.complexity} — ${operation.payload.currency} ${amount}. Review: ${operation.payload.proposalUrl}. Reference: ${operation.id}.`;
   }
-  if (operation.kind === "rejected") {
-    return `The approved bounty was withdrawn. Review: ${operation.payload.proposalUrl}. Reference: ${operation.id}.`;
-  }
-  return `The approved bounty was replaced by a new draft. Previous: ${operation.payload.proposalUrl}. Replacement: ${operation.payload.replacementUrl ?? operation.payload.proposalUrl}. Reference: ${operation.id}.`;
+  return `The approved bounty was withdrawn. Review: ${operation.payload.proposalUrl}. Reference: ${operation.id}.`;
 }
 
 export function commentAdf(operation: StoredBountyWriteback): unknown {

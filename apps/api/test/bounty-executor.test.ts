@@ -220,17 +220,17 @@ function harness(options: {
           : { status },
       );
     },
-    replaceForLease: (
+    repriceForLease: (
       _org: string,
       _lease: string,
-      _source: string,
+      source: string,
       _revision: number,
       input: Record<string, unknown>,
     ) => {
       proposalInputs.push(input);
       return Promise.resolve({
-        status: "created" as const,
-        proposal: { id: "bpr_replacement" },
+        status: "repriced" as const,
+        proposal: { id: source },
         ...(options.writebackOperationId === undefined
           ? {}
           : { writebackOperationId: options.writebackOperationId }),
@@ -454,10 +454,10 @@ test("an empty backlog succeeds without model calls", async () => {
   assert.equal(sizer.calls.length, 0);
 });
 
-test("re-price sizes only its source issue and atomically replaces it", async () => {
+test("re-price sizes only its source issue and updates it in place", async () => {
   const state = harness({
     candidates: [],
-    writebackOperationId: "bwo_superseded",
+    writebackOperationId: "bwo_withdrawn",
     runOverrides: {
       kind: "reprice",
       sourceProposalId: "bpr_source",
@@ -468,11 +468,12 @@ test("re-price sizes only its source issue and atomically replaces it", async ()
   await state.executor.execute("org_1", "brn_1");
   assert.equal(state.finishes[0]?.status, "succeeded");
   assert.equal(state.proposalInputs.length, 1);
+  // The outcome names the source proposal: the same row, sized again.
   assert.equal(
     (state.outcomes[0] as { proposalId: string }).proposalId,
-    "bpr_replacement",
+    "bpr_source",
   );
-  assert.deepEqual(state.startedWritebacks, ["bwo_superseded"]);
+  assert.deepEqual(state.startedWritebacks, ["bwo_withdrawn"]);
 });
 
 test("XS model sizing uses the distinct XS snapshot price", async () => {

@@ -43,7 +43,6 @@ function row(overrides: Partial<BountyProposalRow> = {}): BountyProposalRow {
     revision: 1,
     decidedBy: null,
     decidedAt: null,
-    replacesProposalId: null,
     decisionDeliveryPolicy: null,
     createdAt: new Date("2026-09-22T00:00:00Z"),
     updatedAt: new Date("2026-09-22T00:00:00Z"),
@@ -148,24 +147,6 @@ test("gets and lists proposals with issue display keys", async () => {
   assert.equal(fake.calls[1]?.limited, 50);
 });
 
-test("proposal history is owner scoped and newest first", async () => {
-  const newest = row({ id: "bpr_2" });
-  const fake = createFakeDb([
-    { row: newest, issueKey: "APP-1" },
-    { row: row(), issueKey: "APP-1" },
-  ]);
-  const history = await createBountyProposalStore(fake.db).historyForIssue(
-    "org_1",
-    "jri_1",
-  );
-  assert.deepEqual(
-    history.map(({ id }) => id),
-    ["bpr_2", "bpr_1"],
-  );
-  assert.equal(fake.calls[0]?.filtered, true);
-  assert.equal(fake.calls[0]?.ordered, true);
-});
-
 test("proposal reads can miss and list with defaults", async () => {
   const fake = createFakeDb([]);
   const store = createBountyProposalStore(fake.db);
@@ -226,23 +207,26 @@ test("approves once and treats the exact replay as idempotent", async () => {
   );
 });
 
-test("rejects and resizes through expected-revision filters", async () => {
-  const changed = row({ revision: 2, status: "rejected" });
-  const rejectFake = createSequencedFakeDb([
-    [changed],
-    [{ row: changed, issueKey: "APP-1" }],
+test("withdraws and resizes through expected-revision filters", async () => {
+  const withdrawn = row({ revision: 2, status: "proposed" });
+  const withdrawFake = createSequencedFakeDb([
+    [withdrawn],
+    [{ row: withdrawn, issueKey: "APP-1" }],
   ]);
   assert.equal(
     (
-      await createBountyProposalStore(rejectFake.db).reject(
+      await createBountyProposalStore(withdrawFake.db).withdraw(
         "org_1",
         "bpr_1",
         1,
-        "usr_1",
       )
     ).ok,
     true,
   );
+  // Back to proposed with no decision left on the row.
+  assert.equal(withdrawFake.calls[0]?.values?.["status"], "proposed");
+  assert.equal(withdrawFake.calls[0]?.values?.["decidedBy"], null);
+  assert.equal(withdrawFake.calls[0]?.values?.["decisionDeliveryPolicy"], null);
 
   const resized = row({ revision: 2, complexity: "L", amountMinor: 300 });
   const resizeFake = createSequencedFakeDb([
@@ -268,12 +252,7 @@ test("rejects and resizes through expected-revision filters", async () => {
 test("a missed mutation distinguishes not found from changed", async () => {
   const missing = createSequencedFakeDb([[], []]);
   assert.deepEqual(
-    await createBountyProposalStore(missing.db).reject(
-      "org_2",
-      "bpr_1",
-      1,
-      "usr_1",
-    ),
+    await createBountyProposalStore(missing.db).withdraw("org_2", "bpr_1", 1),
     { ok: false, reason: "not-found" },
   );
 
@@ -294,65 +273,93 @@ test("a missed mutation distinguishes not found from changed", async () => {
   assert.equal(result.ok, false);
   if (!result.ok) assert.equal(result.reason, "changed");
 
-  const invalid = row({ revision: 1, status: "rejected" });
+  // Withdrawing what is already proposed: the revision matches, the state
+  // does not.
+  const invalid = row({ revision: 1, status: "proposed" });
   const invalidState = createSequencedFakeDb([
     [],
     [{ row: invalid, issueKey: "APP-1" }],
   ]);
-  const invalidResult = await createBountyProposalStore(invalidState.db).reject(
-    "org_1",
-    "bpr_1",
-    1,
-    "usr_1",
-  );
+  const invalidResult = await createBountyProposalStore(
+    invalidState.db,
+  ).withdraw("org_1", "bpr_1", 1);
   assert.equal(invalidResult.ok, false);
   if (!invalidResult.ok) assert.equal(invalidResult.reason, "invalid-state");
 });
 
-test("re-price replacement supersedes and inserts in one transaction", async () => {
-  const replacement = row({ id: "bpr_2", replacesProposalId: "bpr_1" });
+test("remove deletes a proposed proposal by expected revision", async () => {
   const fake = createSequencedFakeDb([
-    [row({ status: "superseded", revision: 2 })],
-    [replacement],
-    [{ row: replacement, issueKey: "APP-1" }],
+    [{ row: row(), issueKey: "APP-1" }],
+    [row()],
   ]);
-  const result = await createBountyProposalStore(fake.db).replace(
+  const result = await createBountyProposalStore(fake.db).remove(
     "org_1",
     "bpr_1",
     1,
-    { ...input, runId: "brn_2" },
   );
   assert.equal(result.ok, true);
-  if (result.ok) assert.equal(result.proposal.replacesProposalId, "bpr_1");
+  if (result.ok) assert.equal(result.proposal.id, "bpr_1");
+  assert.equal(fake.calls[1]?.kind, "delete");
+  assert.equal(fake.calls[1]?.filtered, true);
+
+  const missing = createSequencedFakeDb([[]]);
+  assert.deepEqual(
+    await createBountyProposalStore(missing.db).remove("org_1", "bpr_1", 1),
+    { ok: false, reason: "not-found" },
+  );
+
+  // Present but moved on: the delete matches nothing, and the miss says why.
+  const moved = row({ revision: 2 });
+  const changed = createSequencedFakeDb([
+    [{ row: moved, issueKey: "APP-1" }],
+    [],
+    [{ row: moved, issueKey: "APP-1" }],
+  ]);
+  const conflict = await createBountyProposalStore(changed.db).remove(
+    "org_1",
+    "bpr_1",
+    1,
+  );
+  assert.equal(conflict.ok, false);
+  if (!conflict.ok) assert.equal(conflict.reason, "changed");
 });
 
-test("re-price replacement is fenced by its run lease and source revision", async () => {
-  const replacement = row({
-    id: "bpr_2",
-    runId: "brn_2",
-    replacesProposalId: "bpr_1",
-  });
+test("re-price updates the source in place, fenced by its run lease and source revision", async () => {
+  const repriced = row({ revision: 2, runId: "brn_2" });
   const fake = createSequencedFakeDb([
     [{ id: "brn_2", boardId: "jrb_1" } as BountyRunRow],
     [row()],
-    [row({ status: "superseded", revision: 2 })],
-    [replacement],
-    [{ row: replacement, issueKey: "APP-1" }],
+    [repriced],
+    [{ row: repriced, issueKey: "APP-1" }],
   ]);
-  const result = await createBountyProposalStore(fake.db).replaceForLease(
+  const result = await createBountyProposalStore(fake.db).repriceForLease(
     "org_1",
     "lease_1",
     "bpr_1",
     1,
     { ...input, runId: "brn_2" },
   );
-  assert.equal(result.status, "created");
-  assert.ok(fake.calls.slice(0, 2).every(({ filtered }) => filtered));
+  assert.equal(result.status, "repriced");
+  if (result.status === "repriced") {
+    // The same proposal, not a replacement.
+    assert.equal(result.proposal.id, "bpr_1");
+    assert.equal(result.proposal.revision, 2);
+  }
+  assert.ok(fake.calls.slice(0, 3).every(({ filtered }) => filtered));
+  // Sized again by the model, back to proposed, with no decision carried over.
+  const update = fake.calls[2]?.values;
+  assert.equal(update?.["status"], "proposed");
+  assert.equal(update?.["sizedBy"], "model");
+  assert.equal(update?.["resizedBy"], null);
+  assert.equal(update?.["decidedBy"], null);
+  assert.equal(update?.["runId"], "brn_2");
+  assert.equal(update?.["revision"], 2);
+  assert.ok(!fake.calls.some(({ kind }) => kind === "insert"));
 
   const lost = createFakeDb([]);
   assert.equal(
     (
-      await createBountyProposalStore(lost.db).replaceForLease(
+      await createBountyProposalStore(lost.db).repriceForLease(
         "org_1",
         "old",
         "bpr_1",
@@ -364,16 +371,12 @@ test("re-price replacement is fenced by its run lease and source revision", asyn
   );
 });
 
-test("re-price queues a follow-up for a posted approval in the same transaction", async () => {
+test("re-price queues a withdrawal for a posted approval in the same transaction", async () => {
   const source = row({
     status: "approved",
     decisionDeliveryPolicy: "requested",
   });
-  const replacement = row({
-    id: "bpr_2",
-    runId: "brn_2",
-    replacesProposalId: "bpr_1",
-  });
+  const repriced = row({ revision: 2, runId: "brn_2" });
   const approval = {
     id: "bwo_approved",
     kind: "approved",
@@ -397,9 +400,8 @@ test("re-price queues a follow-up for a posted approval in the same transaction"
     ],
     [source],
     [approval],
-    [row({ status: "superseded", revision: 2 })],
-    [replacement],
-    [{ row: replacement, issueKey: "APP-1" }],
+    [repriced],
+    [{ row: repriced, issueKey: "APP-1" }],
     // The board's site, joined: the follow-up is queued only when the grant
     // covers writes.
     [
@@ -411,7 +413,7 @@ test("re-price queues a follow-up for a posted approval in the same transaction"
     [],
   ]);
 
-  const result = await createBountyProposalStore(fake.db).replaceForLease(
+  const result = await createBountyProposalStore(fake.db).repriceForLease(
     "org_1",
     "lease_1",
     "bpr_1",
@@ -419,20 +421,19 @@ test("re-price queues a follow-up for a posted approval in the same transaction"
     { ...input, runId: "brn_2" },
   );
 
-  assert.equal(result.status, "created");
-  if (result.status === "created") {
+  assert.equal(result.status, "repriced");
+  if (result.status === "repriced") {
     assert.match(result.writebackOperationId ?? "", /^bwo_/);
   }
   const followUp = fake.calls.find(
-    (call) => call.kind === "insert" && call.values?.["kind"] === "superseded",
+    (call) => call.kind === "insert" && call.values?.["kind"] === "withdrawn",
   );
-  assert.match(
-    String(
-      (followUp?.values?.["payload"] as { replacementUrl?: string })
-        .replacementUrl,
-    ),
-    /proposal=bpr_2/,
-  );
+  assert.ok(followUp !== undefined);
+  // The withdrawal carries the approval's own payload: same amount, same
+  // link, since the proposal it points at is the one that lives on.
+  assert.deepEqual(followUp?.values?.["payload"], approval.payload);
+  assert.equal(followUp?.values?.["proposalRevision"], 2);
+  assert.equal(followUp?.values?.["requestedBy"], "usr_1");
 });
 
 test("re-price completion refuses unresolved approval delivery", async () => {
@@ -441,7 +442,7 @@ test("re-price completion refuses unresolved approval delivery", async () => {
     [row({ status: "approved", decisionDeliveryPolicy: "requested" })],
     [{ status: "uncertain" } as BountyWritebackRow],
   ]);
-  const result = await createBountyProposalStore(fake.db).replaceForLease(
+  const result = await createBountyProposalStore(fake.db).repriceForLease(
     "org_1",
     "lease_1",
     "bpr_1",
@@ -451,16 +452,12 @@ test("re-price completion refuses unresolved approval delivery", async () => {
   assert.equal(result.status, "writeback-busy");
 });
 
-test("re-price does not queue a follow-up when the site holds no write grant", async () => {
+test("re-price does not queue a withdrawal when the site holds no write grant", async () => {
   const source = row({
     status: "approved",
     decisionDeliveryPolicy: "requested",
   });
-  const replacement = row({
-    id: "bpr_2",
-    runId: "brn_2",
-    replacesProposalId: "bpr_1",
-  });
+  const repriced = row({ revision: 2, runId: "brn_2" });
   const approval = {
     kind: "approved",
     status: "done",
@@ -476,9 +473,8 @@ test("re-price does not queue a follow-up when the site holds no write grant", a
     [{ id: "brn_2", boardId: "jrb_1" } as BountyRunRow],
     [source],
     [approval],
-    [row({ status: "superseded", revision: 2 })],
-    [replacement],
-    [{ row: replacement, issueKey: "APP-1" }],
+    [repriced],
+    [{ row: repriced, issueKey: "APP-1" }],
     // A site connected read-only: the token was issued without the write
     // scope, so nothing is posted and nothing is queued.
     [
@@ -488,15 +484,15 @@ test("re-price does not queue a follow-up when the site holds no write grant", a
       },
     ],
   ]);
-  const result = await createBountyProposalStore(fake.db).replaceForLease(
+  const result = await createBountyProposalStore(fake.db).repriceForLease(
     "org_1",
     "lease_1",
     "bpr_1",
     1,
     { ...input, runId: "brn_2" },
   );
-  assert.equal(result.status, "created");
-  if (result.status === "created") {
+  assert.equal(result.status, "repriced");
+  if (result.status === "repriced") {
     assert.equal(result.writebackOperationId, undefined);
   }
 });
@@ -509,7 +505,7 @@ test("re-price completion distinguishes a vanished source from a changed one", a
   ]);
   assert.equal(
     (
-      await createBountyProposalStore(missing.db).replaceForLease(
+      await createBountyProposalStore(missing.db).repriceForLease(
         "org_1",
         "lease_1",
         "bpr_1",
@@ -527,7 +523,7 @@ test("re-price completion distinguishes a vanished source from a changed one", a
   ]);
   assert.equal(
     (
-      await createBountyProposalStore(changed.db).replaceForLease(
+      await createBountyProposalStore(changed.db).repriceForLease(
         "org_1",
         "lease_1",
         "bpr_1",

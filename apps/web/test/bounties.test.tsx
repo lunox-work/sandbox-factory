@@ -660,7 +660,6 @@ test("members see proposals without review or run controls", async () => {
           Response.json({
             proposal,
             freshness: { freshness: "current", checkedAt: "now" },
-            history: [proposal],
             writebackOperations: [],
           }),
         );
@@ -727,11 +726,6 @@ test("proposal filters and detail links survive navigation", async () => {
           Response.json({
             proposal,
             freshness: { freshness: "current", checkedAt: "now" },
-            // An earlier revision, so the peek has a history to show.
-            history: [
-              { ...proposal, id: "bpr_0", revision: 1, status: "superseded" },
-              { ...proposal, revision: 2 },
-            ],
             writebackOperations: [],
           }),
         );
@@ -751,8 +745,7 @@ test("proposal filters and detail links survive navigation", async () => {
   await userEvent.click(
     await screen.findByRole("button", { name: /Ship export/ }),
   );
-  expect(await screen.findByText("History")).toBeDefined();
-  expect(screen.getByText("Revision 1")).toBeDefined();
+  expect(await screen.findByText("Why this size")).toBeDefined();
   expect(window.location.search).toContain("proposal=bpr_1");
 
   // The filters are behind the peek; closing it hands the list back.

@@ -81,7 +81,7 @@ test("a missed approval distinguishes missing and changed proposals", async () =
   );
   const invalid = createSequencedFakeDb([
     [],
-    [{ revision: 1, status: "rejected" }],
+    [{ revision: 1, status: "approved" }],
   ]);
   assert.equal(
     (
@@ -98,10 +98,10 @@ test("a missed approval distinguishes missing and changed proposals", async () =
 });
 
 test("withdrawal and its follow-up intent commit through one transaction", async () => {
-  const rejected = { id: "bpr_1" } as BountyProposalRow;
-  const followUp = operation({ kind: "rejected", proposalRevision: 3 });
-  const fake = createSequencedFakeDb([[rejected], [followUp]]);
-  const result = await createBountyWritebackStore(fake.db).rejectWithIntent(
+  const withdrawn = { id: "bpr_1" } as BountyProposalRow;
+  const followUp = operation({ kind: "withdrawn", proposalRevision: 3 });
+  const fake = createSequencedFakeDb([[withdrawn], [followUp]]);
+  const result = await createBountyWritebackStore(fake.db).withdrawWithIntent(
     "org_1",
     "bpr_1",
     2,
@@ -109,15 +109,19 @@ test("withdrawal and its follow-up intent commit through one transaction", async
     operation().payload,
   );
   assert.equal(result.status, "created");
-  assert.equal(fake.calls[0]?.values?.["status"], "rejected");
-  assert.equal(fake.calls[1]?.values?.["kind"], "rejected");
+  // Back to proposed, the decision cleared, and the withdrawal queued.
+  assert.equal(fake.calls[0]?.values?.["status"], "proposed");
+  assert.equal(fake.calls[0]?.values?.["decidedBy"], null);
+  assert.equal(fake.calls[0]?.values?.["decisionDeliveryPolicy"], null);
+  assert.equal(fake.calls[1]?.values?.["kind"], "withdrawn");
+  assert.equal(fake.calls[1]?.values?.["requestedBy"], "usr_1");
 });
 
 test("a missed withdrawal distinguishes missing and invalid state", async () => {
   const missing = createSequencedFakeDb([[], []]);
   assert.equal(
     (
-      await createBountyWritebackStore(missing.db).rejectWithIntent(
+      await createBountyWritebackStore(missing.db).withdrawWithIntent(
         "org_1",
         "bpr_1",
         2,
@@ -129,11 +133,11 @@ test("a missed withdrawal distinguishes missing and invalid state", async () => 
   );
   const invalid = createSequencedFakeDb([
     [],
-    [{ revision: 2, status: "rejected" }],
+    [{ revision: 2, status: "proposed" }],
   ]);
   assert.equal(
     (
-      await createBountyWritebackStore(invalid.db).rejectWithIntent(
+      await createBountyWritebackStore(invalid.db).withdrawWithIntent(
         "org_1",
         "bpr_1",
         2,
@@ -149,7 +153,7 @@ test("a missed withdrawal distinguishes missing and invalid state", async () => 
   ]);
   assert.equal(
     (
-      await createBountyWritebackStore(changed.db).rejectWithIntent(
+      await createBountyWritebackStore(changed.db).withdrawWithIntent(
         "org_1",
         "bpr_1",
         2,

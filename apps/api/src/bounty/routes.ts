@@ -323,10 +323,6 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
     ) {
       return c.json({ error: "Not found" }, 404);
     }
-    const history = await options.proposals.historyForIssue(
-      organizationId,
-      proposal.jiraIssueId,
-    );
     if (options.clientFor === undefined) {
       return c.json({
         proposal,
@@ -336,7 +332,6 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
           checkedAt: new Date().toISOString(),
           code: "reconnect",
         },
-        history,
         writebackOperations: [],
       });
     }
@@ -355,7 +350,6 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
       proposal: stored,
       liveSpec: liveSpec ?? null,
       freshness,
-      history,
       writebackOperations:
         options.writebacks === undefined
           ? []
@@ -399,7 +393,15 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
     );
   });
 
-  app.post("/api/v1/orgs/:orgId/proposals/:id/reject", async (c) => {
+  /**
+   * An approved proposal back to proposed, without re-sizing.
+   *
+   * If the approval's comment reached Jira and the site still holds the
+   * write grant, the withdrawal is queued in the same transaction as the
+   * status change, so the ticket is never left saying "approved" for a
+   * proposal this app no longer calls approved.
+   */
+  app.post("/api/v1/orgs/:orgId/proposals/:id/unapprove", async (c) => {
     const parsed = proposalMutationSchema.safeParse(
       await c.req.json().catch(() => null),
     );
@@ -418,14 +420,7 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
         organizationId,
         proposal.id,
       );
-      if (
-        operations.some(
-          ({ status }) =>
-            status === "pending" ||
-            status === "running" ||
-            status === "uncertain",
-        )
-      ) {
+      if (writebackBusy(operations)) {
         return c.json(
           {
             code: "writeback_busy",
@@ -462,7 +457,7 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
             },
             409,
           );
-        const result = await options.writebacks.rejectWithIntent(
+        const result = await options.writebacks.withdrawWithIntent(
           organizationId,
           proposal.id,
           parsed.data.expectedRevision,
@@ -487,11 +482,50 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
     }
     return proposalMutationResponse(
       c,
-      await options.proposals.reject(
+      await options.proposals.withdraw(
         organizationId,
         c.req.param("id"),
         parsed.data.expectedRevision,
-        c.get("user").id,
+      ),
+    );
+  });
+
+  /**
+   * Deletes a proposed proposal, so the next run may propose the ticket
+   * again. An approved one is unapproved or re-priced first — that is what
+   * owes Jira a withdrawal, and a write-back is delivered by loading its
+   * proposal, so the row must outlive any withdrawal still pending.
+   */
+  app.post("/api/v1/orgs/:orgId/proposals/:id/remove", async (c) => {
+    const parsed = proposalMutationSchema.safeParse(
+      await c.req.json().catch(() => null),
+    );
+    if (!parsed.success)
+      return c.json({ error: "Invalid proposal revision." }, 400);
+    const { organizationId, role } = c.get("member");
+    const denied = requireAdmin(role);
+    if (denied !== null) return c.json(denied, 403);
+    if (options.writebacks !== undefined) {
+      const operations = await options.writebacks.listForProposal(
+        organizationId,
+        c.req.param("id"),
+      );
+      if (writebackBusy(operations)) {
+        return c.json(
+          {
+            code: "writeback_busy",
+            error: "Resolve the Jira update before removing this proposal.",
+          },
+          409,
+        );
+      }
+    }
+    return proposalMutationResponse(
+      c,
+      await options.proposals.remove(
+        organizationId,
+        c.req.param("id"),
+        parsed.data.expectedRevision,
       ),
     );
   });
@@ -541,14 +575,7 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
         organizationId,
         proposal.id,
       );
-      if (
-        operations.some(
-          ({ status }) =>
-            status === "pending" ||
-            status === "running" ||
-            status === "uncertain",
-        )
-      ) {
+      if (writebackBusy(operations)) {
         return c.json(
           {
             code: "writeback_busy",
@@ -872,11 +899,19 @@ function requireAdmin(role: string): { error: string } | null {
 
 function proposalStatus(
   value: string | undefined,
-): "proposed" | "approved" | "rejected" | "superseded" | undefined | null {
+): "proposed" | "approved" | undefined | null {
   if (value === undefined || value === "") return undefined;
-  return ["proposed", "approved", "rejected", "superseded"].includes(value)
-    ? (value as "proposed" | "approved" | "rejected" | "superseded")
-    : null;
+  return value === "proposed" || value === "approved" ? value : null;
+}
+
+/** Whether a Jira update for the proposal is still unresolved. */
+function writebackBusy(
+  operations: readonly { readonly status: string }[],
+): boolean {
+  return operations.some(
+    ({ status }) =>
+      status === "pending" || status === "running" || status === "uncertain",
+  );
 }
 
 function boundedLimit(value: string | undefined): number {

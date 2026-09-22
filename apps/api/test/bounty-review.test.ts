@@ -44,7 +44,6 @@ function proposal(
     decidedAt: null,
     decidedBy: null,
     decisionDeliveryPolicy: null,
-    replacesProposalId: null,
     createdAt: "2026-09-22T00:00:00.000Z",
     updatedAt: "2026-09-22T00:00:00.000Z",
     ...overrides,

@@ -36,7 +36,6 @@ export interface CreateBountyProposalInput {
   readonly promptVersion: string;
   readonly amountMinor: number | null;
   readonly currency: string | null;
-  readonly replacesProposalId?: string;
 }
 
 export type ProposalMutationResult =
@@ -64,15 +63,11 @@ export interface BountyProposalStore {
     organizationId: string,
     proposalId: string,
   ): Promise<StoredBountyProposal | null>;
-  historyForIssue(
-    organizationId: string,
-    jiraIssueId: string,
-  ): Promise<StoredBountyProposal[]>;
   listForBoard(
     organizationId: string,
     boardId: string,
     options?: {
-      status?: "proposed" | "approved" | "rejected" | "superseded";
+      status?: "proposed" | "approved";
       cursor?: { readonly createdAt: string; readonly id: string };
       limit?: number;
     },
@@ -89,11 +84,11 @@ export interface BountyProposalStore {
     decidedBy: string,
     deliveryPolicy: "off" | "requested",
   ): Promise<ProposalMutationResult>;
-  reject(
+  /** An approved proposal back to proposed, without re-sizing. */
+  withdraw(
     organizationId: string,
     proposalId: string,
     expectedRevision: number,
-    decidedBy: string,
   ): Promise<ProposalMutationResult>;
   resize(
     organizationId: string,
@@ -104,13 +99,23 @@ export interface BountyProposalStore {
     amountMinor: number,
     currency: string,
   ): Promise<ProposalMutationResult>;
-  replace(
+  /**
+   * Deletes a proposed proposal, so the ticket has none and a later run may
+   * propose it again. The returned proposal is the row as it was.
+   */
+  remove(
     organizationId: string,
-    sourceProposalId: string,
-    sourceRevision: number,
-    input: CreateBountyProposalInput,
+    proposalId: string,
+    expectedRevision: number,
   ): Promise<ProposalMutationResult>;
-  replaceForLease(
+  /**
+   * A re-price run's result: the same proposal, sized again and back to
+   * proposed. Fenced by the run's lease and the source revision, like
+   * `createForLease`. When the source was approved and its approval comment
+   * is on the ticket, a `withdrawn` write-back is queued in the same
+   * transaction and its id returned.
+   */
+  repriceForLease(
     organizationId: string,
     leaseToken: string,
     sourceProposalId: string,
@@ -118,7 +123,7 @@ export interface BountyProposalStore {
     input: CreateBountyProposalInput,
   ): Promise<
     | {
-        readonly status: "created";
+        readonly status: "repriced";
         readonly proposal: StoredBountyProposal;
         readonly writebackOperationId?: string;
       }
@@ -156,7 +161,6 @@ export interface StoredBountyProposal {
   readonly decidedAt: string | null;
   readonly decidedBy: string | null;
   readonly decisionDeliveryPolicy: "off" | "requested" | null;
-  readonly replacesProposalId: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
 }
@@ -193,7 +197,6 @@ function toDto(row: BountyProposalRow, issueKey: string): StoredBountyProposal {
     decidedBy: row.decidedBy,
     decisionDeliveryPolicy:
       row.decisionDeliveryPolicy as StoredBountyProposal["decisionDeliveryPolicy"],
-    replacesProposalId: row.replacesProposalId,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
@@ -255,7 +258,6 @@ function insertValues(
     complexity: input.sizing.complexity,
     amountMinor: input.amountMinor,
     currency: input.currency,
-    replacesProposalId: input.replacesProposalId ?? null,
   };
 }
 
@@ -266,16 +268,6 @@ function uniqueViolation(error: unknown): boolean {
     "code" in error &&
     error.code === "23505"
   );
-}
-
-function replacementUrl(proposalUrl: string, proposalId: string): string {
-  try {
-    const url = new URL(proposalUrl);
-    url.searchParams.set("proposal", proposalId);
-    return url.toString();
-  } catch {
-    return proposalUrl;
-  }
 }
 
 export function createBountyProposalStore(db: Database): BountyProposalStore {
@@ -370,21 +362,6 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
       return found === undefined ? null : toDto(found.row, found.issueKey);
     },
 
-    async historyForIssue(organizationId, jiraIssueId) {
-      const rows = await db
-        .select({ row: bountyProposal, issueKey: jiraIssue.key })
-        .from(bountyProposal)
-        .innerJoin(jiraIssue, eq(bountyProposal.jiraIssueId, jiraIssue.id))
-        .where(
-          and(
-            eq(bountyProposal.organizationId, organizationId),
-            eq(bountyProposal.jiraIssueId, jiraIssueId),
-          ),
-        )
-        .orderBy(desc(bountyProposal.createdAt), desc(bountyProposal.id));
-      return rows.map(({ row, issueKey }) => toDto(row, issueKey));
-    },
-
     async listForBoard(organizationId, boardId, options = {}) {
       const limit = Math.min(Math.max(options.limit ?? 25, 1), 50);
       const rows = await db
@@ -397,12 +374,7 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
             eq(bountyProposal.organizationId, organizationId),
             eq(bountyRun.boardId, boardId),
             options.status === undefined
-              ? or(
-                  eq(bountyProposal.status, "proposed"),
-                  eq(bountyProposal.status, "approved"),
-                  eq(bountyProposal.status, "rejected"),
-                  eq(bountyProposal.status, "superseded"),
-                )
+              ? undefined
               : eq(bountyProposal.status, options.status),
             options.cursor === undefined
               ? undefined
@@ -490,25 +462,25 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
       return { ok: true, proposal: toDto(found.row, found.issueKey) };
     },
 
-    async reject(organizationId, proposalId, expectedRevision, decidedBy) {
+    async withdraw(organizationId, proposalId, expectedRevision) {
+      // The decision columns are cleared rather than overwritten: a proposed
+      // proposal has no decision, and the write-back records who withdrew.
       const now = new Date();
       const rows = (await db
         .update(bountyProposal)
         .set({
-          status: "rejected",
+          status: "proposed",
           revision: expectedRevision + 1,
-          decidedBy,
-          decidedAt: now,
+          decidedBy: null,
+          decidedAt: null,
+          decisionDeliveryPolicy: null,
           updatedAt: now,
         })
         .where(
           and(
             eq(bountyProposal.organizationId, organizationId),
             eq(bountyProposal.id, proposalId),
-            or(
-              eq(bountyProposal.status, "proposed"),
-              eq(bountyProposal.status, "approved"),
-            ),
+            eq(bountyProposal.status, "approved"),
             eq(bountyProposal.revision, expectedRevision),
           ),
         )
@@ -562,61 +534,27 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
       return { ok: true, proposal: toDto(found.row, found.issueKey) };
     },
 
-    async replace(organizationId, sourceProposalId, sourceRevision, input) {
-      return db.transaction(async (transaction) => {
-        const tx = transaction as unknown as Database;
-        const now = new Date();
-        const superseded = (await tx
-          .update(bountyProposal)
-          .set({
-            status: "superseded",
-            revision: sourceRevision + 1,
-            updatedAt: now,
-          })
-          .where(
-            and(
-              eq(bountyProposal.organizationId, organizationId),
-              eq(bountyProposal.id, sourceProposalId),
-              or(
-                eq(bountyProposal.status, "proposed"),
-                eq(bountyProposal.status, "approved"),
-              ),
-              eq(bountyProposal.revision, sourceRevision),
-            ),
-          )
-          .returning()) as BountyProposalRow[];
-        if (superseded[0] === undefined) {
-          return mutationMiss(
-            tx,
-            organizationId,
-            sourceProposalId,
-            sourceRevision,
-          );
-        }
-
-        const created = (await tx
-          .insert(bountyProposal)
-          .values({
-            ...insertValues(organizationId, {
-              ...input,
-              replacesProposalId: sourceProposalId,
-            }),
-            createdAt: now,
-            updatedAt: now,
-          })
-          .returning()) as BountyProposalRow[];
-        const replacement = created[0];
-        if (replacement === undefined) {
-          throw new Error("Failed to replace bounty proposal.");
-        }
-        const found = await first(tx, organizationId, replacement.id);
-        if (found === undefined)
-          throw new Error("Replacement proposal vanished.");
-        return { ok: true, proposal: toDto(found.row, found.issueKey) };
-      });
+    async remove(organizationId, proposalId, expectedRevision) {
+      const found = await first(db, organizationId, proposalId);
+      if (found === undefined) return { ok: false, reason: "not-found" };
+      const rows = (await db
+        .delete(bountyProposal)
+        .where(
+          and(
+            eq(bountyProposal.organizationId, organizationId),
+            eq(bountyProposal.id, proposalId),
+            eq(bountyProposal.status, "proposed"),
+            eq(bountyProposal.revision, expectedRevision),
+          ),
+        )
+        .returning()) as BountyProposalRow[];
+      if (rows[0] === undefined) {
+        return mutationMiss(db, organizationId, proposalId, expectedRevision);
+      }
+      return { ok: true, proposal: toDto(found.row, found.issueKey) };
     },
 
-    async replaceForLease(
+    async repriceForLease(
       organizationId,
       leaseToken,
       sourceProposalId,
@@ -700,55 +638,54 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
           );
         }
 
-        const superseded = (await tx
+        // The same row, sized again: the id is what links and Jira comments
+        // point at, and a decision made earlier does not carry over.
+        const values = insertValues(organizationId, input);
+        const repriced = (await tx
           .update(bountyProposal)
           .set({
-            status: "superseded",
+            runId: values.runId,
+            specHash: values.specHash,
+            specHashVersion: values.specHashVersion,
+            rateCard: values.rateCard,
+            modelComplexity: values.modelComplexity,
+            modelConfidence: values.modelConfidence,
+            modelRationale: values.modelRationale,
+            unsizedReason: values.unsizedReason,
+            inputTruncated: values.inputTruncated,
+            actualModel: values.actualModel,
+            promptVersion: values.promptVersion,
+            complexity: values.complexity,
+            sizedBy: "model",
+            resizedBy: null,
+            resizedAt: null,
+            amountMinor: values.amountMinor,
+            currency: values.currency,
+            status: "proposed",
             revision: sourceRevision + 1,
+            decidedBy: null,
+            decidedAt: null,
+            decisionDeliveryPolicy: null,
             updatedAt: now,
           })
           .where(
             and(
               eq(bountyProposal.organizationId, organizationId),
               eq(bountyProposal.id, sourceProposalId),
-              eq(bountyProposal.jiraIssueId, input.jiraIssueId),
-              or(
-                eq(bountyProposal.status, "proposed"),
-                eq(bountyProposal.status, "approved"),
-              ),
               eq(bountyProposal.revision, sourceRevision),
             ),
           )
           .returning()) as BountyProposalRow[];
-        if (superseded[0] === undefined) {
-          const current = await first(tx, organizationId, sourceProposalId);
-          return {
-            status: current === undefined ? "not-found" : "changed",
-          } as const;
+        if (repriced[0] === undefined) {
+          throw new Error("Failed to re-price bounty proposal.");
         }
-
-        const created = (await tx
-          .insert(bountyProposal)
-          .values({
-            ...insertValues(organizationId, {
-              ...input,
-              replacesProposalId: sourceProposalId,
-            }),
-            createdAt: now,
-            updatedAt: now,
-          })
-          .returning()) as BountyProposalRow[];
-        const replacement = created[0];
-        if (replacement === undefined) {
-          throw new Error("Failed to replace bounty proposal.");
-        }
-        const found = await first(tx, organizationId, replacement.id);
+        const found = await first(tx, organizationId, sourceProposalId);
         if (found === undefined)
-          throw new Error("Replacement proposal vanished.");
+          throw new Error("Re-priced proposal vanished.");
         let writebackOperationId: string | undefined;
         if (announced !== undefined) {
           // Whether the site posts back is the connection's grant, read in
-          // the same transaction as the replacement so a site disconnected
+          // the same transaction as the re-price so a site disconnected
           // between the two cannot leave a follow-up nobody can deliver.
           const site = await tx
             .select({
@@ -779,14 +716,8 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
               organizationId,
               proposalId: sourceProposalId,
               proposalRevision: sourceRevision + 1,
-              kind: "superseded",
-              payload: {
-                ...announced.payload,
-                replacementUrl: replacementUrl(
-                  announced.payload.proposalUrl,
-                  replacement.id,
-                ),
-              },
+              kind: "withdrawn",
+              payload: announced.payload,
               requestedBy: run.startedBy,
               createdAt: now,
               updatedAt: now,
@@ -794,7 +725,7 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
           }
         }
         return {
-          status: "created",
+          status: "repriced",
           proposal: toDto(found.row, found.issueKey),
           ...(writebackOperationId === undefined
             ? {}
