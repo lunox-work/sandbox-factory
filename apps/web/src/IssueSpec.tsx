@@ -9,7 +9,6 @@
  * first for the same reason: the reader knows the frame before the text.
  */
 
-import { ChevronDown, ChevronUp } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useState, type ReactNode } from "react";
@@ -344,21 +343,11 @@ export function IssueSpec({ issue }: { issue: JiraIssueDetail }) {
         <div className="flex justify-end py-1.5">
           <button
             type="button"
-            className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 flex cursor-pointer items-center gap-1 rounded-sm text-xs underline-offset-2 transition-colors hover:underline focus-visible:ring-[3px] focus-visible:outline-none"
+            className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 cursor-pointer rounded-sm text-xs underline-offset-2 transition-colors hover:underline focus-visible:ring-[3px] focus-visible:outline-none"
             aria-expanded={expanded}
             onClick={() => setExpanded((value) => !value)}
           >
-            {expanded ? (
-              <>
-                <ChevronUp className="size-3.5" />
-                Show less
-              </>
-            ) : (
-              <>
-                <ChevronDown className="size-3.5" />
-                Show all
-              </>
-            )}
+            {expanded ? "Show less" : "Show all"}
           </button>
         </div>
       </div>
