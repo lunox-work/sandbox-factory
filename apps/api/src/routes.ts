@@ -25,7 +25,11 @@ import type {
 } from "@sandbox-factory/db";
 
 import type { Auth } from "./auth.js";
-import { mountBountyRoutes, type BountyRouteOptions } from "./bounty/routes.js";
+import {
+  mountBountyRoutes,
+  sizeIfNeverSized,
+  type BountyRouteOptions,
+} from "./bounty/routes.js";
 import { mountJiraRoutes, type JiraRouteOptions } from "./jira/routes.js";
 
 export interface AppOptions {
@@ -483,6 +487,17 @@ export function createApp({
         // question for the guard above.
         roleOf: (userId, organizationId) =>
           organizations.roleOf(userId, organizationId),
+        // Every board a sync sees is sized once, through the same checks
+        // the board's own run endpoint applies.
+        ...(bounty === undefined || jira.startSizing !== undefined
+          ? {}
+          : {
+              startSizing: (input: {
+                organizationId: string;
+                boardId: string;
+                startedBy: string;
+              }) => sizeIfNeverSized(bounty, input),
+            }),
       });
     }
     if (bounty !== undefined) {

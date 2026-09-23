@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import type {
   BountyProposalStore,
   BountyRunStore,
@@ -6,6 +8,8 @@ import type {
   JiraConnectionStore,
   JiraIssueStore,
   RateCardStore,
+  StoredBountyRun,
+  StoredRateCard,
 } from "@sandbox-factory/db";
 import {
   boardSelectionSchema,
@@ -17,6 +21,7 @@ import {
 } from "@sandbox-factory/shared";
 import type { Hono } from "hono";
 import {
+  DEFAULT_RATE_CARD,
   priceFor,
   validateRateCard,
   type PricedComplexity,
@@ -54,6 +59,147 @@ interface BountyAppEnv {
     user: { id: string };
     member: { organizationId: string; role: string };
   };
+}
+
+/** Why a run did not start, for the route to answer and a caller to skip. */
+export type StartRunResult =
+  | { readonly ok: true; readonly run: StoredBountyRun }
+  | { readonly ok: false; readonly reason: "active"; readonly runId: string }
+  | {
+      readonly ok: false;
+      readonly reason:
+        | "sizing-unavailable"
+        | "not-found"
+        | "reconnect"
+        | "rate-card-required"
+        | "request-conflict";
+    };
+
+/**
+ * Start sizing one board: the run row, then the executor in the background.
+ *
+ * Shared by the board's run endpoint and the Jira callback, which sizes the
+ * boards a newly connected site brings. The checks are the same either way —
+ * a run needs a sizer, a usable connection and a rate card to price with —
+ * and so is the idempotency: `requestId` names the run, and a board with a
+ * run already in flight gets no second one.
+ *
+ * Does not check the caller's role. The route does, and the callback has
+ * already re-read it.
+ */
+/**
+ * Start sizing a board unless it has been sized before.
+ *
+ * What a Jira sync calls for every board it sees. "Before" means any run,
+ * whatever it ended as: a board is sized automatically once, and after that
+ * only when someone asks. A board whose first attempt could not start — no
+ * sizer yet, a connection needing a reconnect — has no run, so the next sync
+ * tries again.
+ */
+export async function sizeIfNeverSized(
+  options: BountyRouteOptions,
+  input: {
+    readonly organizationId: string;
+    readonly boardId: string;
+    readonly startedBy: string;
+  },
+): Promise<StartRunResult | null> {
+  const previous = await options.runs.listForBoard(
+    input.organizationId,
+    input.boardId,
+    { limit: 1 },
+  );
+  if (previous.length > 0) return null;
+  return startRun(options, { ...input, requestId: randomUUID() });
+}
+
+/**
+ * The organization's rate card, saving the default the first time a run
+ * needs one.
+ *
+ * The editor shows `DEFAULT_RATE_CARD` to an organization that never saved a
+ * card, so that is the card the organization has as far as anyone can see.
+ * Pricing with it without saving it would snapshot a revision no row holds;
+ * saving it makes the run's snapshot and the editor agree. A save that loses
+ * a race to a person's own first save takes theirs.
+ */
+async function rateCardFor(
+  rateCards: RateCardStore,
+  organizationId: string,
+  input: { readonly startedBy: string },
+): Promise<StoredRateCard | null> {
+  const saved = await rateCards.get(organizationId);
+  if (saved !== null) return saved;
+  const put = await rateCards.put(
+    organizationId,
+    input.startedBy,
+    DEFAULT_RATE_CARD,
+    0,
+  );
+  return put.ok ? put.rateCard : put.current;
+}
+
+export async function startRun(
+  options: BountyRouteOptions,
+  input: {
+    readonly organizationId: string;
+    readonly boardId: string;
+    readonly startedBy: string;
+    readonly requestId: string;
+  },
+): Promise<StartRunResult> {
+  const { organizationId } = input;
+  if (
+    options.executor === undefined ||
+    options.clientFor === undefined ||
+    options.requestedModel === undefined ||
+    options.promptVersion === undefined
+  ) {
+    return { ok: false, reason: "sizing-unavailable" };
+  }
+
+  const board = await options.boards.forRun(organizationId, input.boardId);
+  if (board === null) return { ok: false, reason: "not-found" };
+  const ready = await options.clientFor(organizationId, board.connectionId);
+  if (!ready.ok) {
+    return {
+      ok: false,
+      reason: ready.reason === "not-found" ? "not-found" : "reconnect",
+    };
+  }
+  const card = await rateCardFor(options.rateCards, organizationId, input);
+  if (card === null) return { ok: false, reason: "rate-card-required" };
+
+  const created = await options.runs.create(organizationId, {
+    boardId: board.board.id,
+    startedBy: input.startedBy,
+    requestId: input.requestId,
+    selection: boardSelectionSchema.parse(board.board.selection),
+    rateCard: {
+      currency: card.currency,
+      xsMinor: card.xsMinor,
+      sMinor: card.sMinor,
+      mMinor: card.mMinor,
+      lMinor: card.lMinor,
+      xlMinor: card.xlMinor,
+      revision: card.revision,
+    },
+    requestedModel: options.requestedModel,
+    promptVersion: options.promptVersion,
+  });
+  if (!created.ok) {
+    return created.reason === "active"
+      ? { ok: false, reason: "active", runId: created.runId }
+      : {
+          ok: false,
+          reason:
+            created.reason === "request-conflict"
+              ? "request-conflict"
+              : "not-found",
+        };
+  }
+  if (created.created) options.executor.start(organizationId, created.run.id);
+  return { ok: true, run: created.run };
 }
 
 export function mountBountyRoutes<Env extends BountyAppEnv>(
@@ -122,93 +268,59 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
     if (!parsed.success) {
       return c.json({ error: "Provide a valid requestId." }, 400);
     }
-    if (
-      options.executor === undefined ||
-      options.clientFor === undefined ||
-      options.requestedModel === undefined ||
-      options.promptVersion === undefined
-    ) {
-      return c.json(
-        {
-          code: "sizing_unavailable",
-          error: "Sizing is not configured for this deployment.",
-        },
-        503,
-      );
-    }
 
-    const board = await options.boards.forRun(
+    const started = await startRun(options, {
       organizationId,
-      c.req.param("id"),
-    );
-    if (board === null) return c.json({ error: "Not found" }, 404);
-    const ready = await options.clientFor(organizationId, board.connectionId);
-    if (!ready.ok) {
-      return c.json(
-        ready.reason === "not-found"
-          ? { error: "Not found" }
-          : {
-              code: "reconnect",
-              error: "This Jira connection needs reconnecting.",
-            },
-        ready.reason === "not-found" ? 404 : 409,
-      );
-    }
-    const card = await options.rateCards.get(organizationId);
-    if (card === null) {
-      return c.json(
-        {
-          code: "rate_card_required",
-          error: "Set a rate card before running.",
-        },
-        409,
-      );
-    }
-
-    const created = await options.runs.create(organizationId, {
-      boardId: board.board.id,
+      boardId: c.req.param("id"),
       startedBy: c.get("user").id,
       requestId: parsed.data.requestId,
-      selection: boardSelectionSchema.parse(board.board.selection),
-      rateCard: {
-        currency: card.currency,
-        xsMinor: card.xsMinor,
-        sMinor: card.sMinor,
-        mMinor: card.mMinor,
-        lMinor: card.lMinor,
-        xlMinor: card.xlMinor,
-        revision: card.revision,
-      },
-      requestedModel: options.requestedModel,
-      promptVersion: options.promptVersion,
     });
-    if (!created.ok) {
-      if (created.reason === "active") {
+    if (started.ok) return c.json({ run: started.run }, 202);
+    switch (started.reason) {
+      case "sizing-unavailable":
+        return c.json(
+          {
+            code: "sizing_unavailable",
+            error: "Sizing is not configured for this deployment.",
+          },
+          503,
+        );
+      case "reconnect":
+        return c.json(
+          {
+            code: "reconnect",
+            error: "This Jira connection needs reconnecting.",
+          },
+          409,
+        );
+      case "rate-card-required":
+        return c.json(
+          {
+            code: "rate_card_required",
+            error: "Set a rate card before running.",
+          },
+          409,
+        );
+      case "active":
         return c.json(
           {
             code: "run_active",
             error: "A run is already active for this board.",
-            runId: created.runId,
+            runId: started.runId,
           },
           409,
         );
-      }
-      return c.json(
-        {
-          code:
-            created.reason === "request-conflict"
-              ? "request_conflict"
-              : "not_found",
-          error:
-            created.reason === "request-conflict"
-              ? "That requestId was already used for another run."
-              : "Not found",
-        },
-        created.reason === "request-conflict" ? 409 : 404,
-      );
+      case "request-conflict":
+        return c.json(
+          {
+            code: "request_conflict",
+            error: "That requestId was already used for another run.",
+          },
+          409,
+        );
+      case "not-found":
+        return c.json({ error: "Not found" }, 404);
     }
-    if (created.created) options.executor.start(organizationId, created.run.id);
-    return c.json({ run: created.run }, 202);
   });
 
   app.get("/api/v1/orgs/:orgId/jira/boards/:id/runs", async (c) => {

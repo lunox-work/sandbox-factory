@@ -677,11 +677,8 @@ test("members see proposals without review or run controls", async () => {
     />,
   );
   expect(await screen.findByText(/Ship export/)).toBeDefined();
-  // The run summary says what actually did the work — the fallback here,
-  // not the requested Sonnet.
-  expect(screen.getByText(/Latest run/).textContent).toContain(
-    "2 results · sized by DeepSeek V4 Pro",
-  );
+  // No run controls and no run summary: the list is the proposals alone.
+  expect(screen.queryByText(/Latest run/)).toBeNull();
   expect(screen.queryByRole("button", { name: "Run sizing" })).toBeNull();
 
   // Opened, the proposal says which model sized it, readable and with the
@@ -695,7 +692,121 @@ test("members see proposals without review or run controls", async () => {
   expect(within(panel).queryByTestId("proposal-actions")).toBeNull();
 });
 
-test("proposal filters and detail links survive navigation", async () => {
+test("a board opened mid-run streams the run ticket by ticket", async () => {
+  // Connecting a site sizes its boards in the background, so a board is
+  // often opened while that is still going.
+  const planned = [1, 2, 3, 4, 5].map((n) => ({
+    externalIssueId: String(n),
+    issueKey: `APP-${n}`,
+    summary: `Ticket ${n}`,
+  }));
+  const running = {
+    id: "brn_1",
+    status: "running",
+    planned,
+    outcomes: [
+      {
+        externalIssueId: "1",
+        issueKey: "APP-1",
+        status: "proposed",
+        proposalId: "bpr_1",
+      },
+    ],
+  };
+  const proposal = {
+    id: "bpr_1",
+    issueKey: "APP-1",
+    liveTitle: "Ticket 1",
+    complexity: "M",
+    amountMinor: 10500,
+    currency: "USD",
+    status: "proposed",
+    revision: 1,
+  };
+  let finished = false;
+  const urls: string[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((url: string) => {
+      urls.push(url);
+      const run = finished ? { ...running, status: "succeeded" } : running;
+      if (url.endsWith("/runs/brn_1"))
+        return Promise.resolve(Response.json({ run }));
+      if (url.includes("/runs"))
+        return Promise.resolve(
+          Response.json({ runs: [run], sizingAvailable: true }),
+        );
+      return Promise.resolve(Response.json({ proposals: [proposal] }));
+    }),
+  );
+  render(
+    <BoardBounties
+      organizationId="org_1"
+      boardId="jrb_1"
+      role="owner"
+      writeGranted
+      readIssue={() => Promise.resolve(null)}
+    />,
+  );
+
+  const stream = await screen.findByTestId("sizing-active");
+  expect(within(stream).getByText(/Sizing 5 tickets/)).toBeDefined();
+  expect(within(stream).getByText(/1 done/)).toBeDefined();
+  const states = within(stream)
+    .getAllByRole("listitem")
+    .map((row) => row.getAttribute("data-state"));
+  // The executor works three at a time, in plan order.
+  expect(states).toEqual(["done", "sizing", "sizing", "sizing", "queued"]);
+  // A finished ticket shows its price as soon as it lands.
+  expect(within(stream).getByText(/105\.00/)).toBeDefined();
+
+  // Only the run is polled while it runs; the list is re-read when it ends.
+  const listReads = urls.filter((url) => url.includes("/proposals?")).length;
+  finished = true;
+  await waitFor(
+    () => expect(screen.queryByTestId("sizing-active")).toBeNull(),
+    {
+      timeout: 3000,
+    },
+  );
+  expect(urls.some((url) => url.endsWith("/runs/brn_1"))).toBe(true);
+  expect(
+    urls.filter((url) => url.includes("/proposals?")).length,
+  ).toBeGreaterThan(listReads);
+});
+
+test("a run that has not picked its tickets yet says so", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((url: string) =>
+      Promise.resolve(
+        url.includes("/runs")
+          ? Response.json({
+              runs: [
+                { id: "brn_1", status: "queued", planned: [], outcomes: [] },
+              ],
+              sizingAvailable: true,
+            })
+          : Response.json({ proposals: [] }),
+      ),
+    ),
+  );
+  render(
+    <BoardBounties
+      organizationId="org_1"
+      boardId="jrb_1"
+      role="owner"
+      writeGranted
+      readIssue={() => Promise.resolve(null)}
+    />,
+  );
+  expect(await screen.findByText(/Picking tickets/)).toBeDefined();
+  expect(
+    screen.getByText("Proposals appear here as tickets are sized."),
+  ).toBeDefined();
+});
+
+test("proposal detail links survive navigation", async () => {
   const urls: string[] = [];
   const proposal = {
     id: "bpr_1",
@@ -748,16 +859,14 @@ test("proposal filters and detail links survive navigation", async () => {
   expect(await screen.findByText("Why this size")).toBeDefined();
   expect(window.location.search).toContain("proposal=bpr_1");
 
-  // The filters are behind the peek; closing it hands the list back.
+  // The list is behind the peek; closing it hands the list back.
   await userEvent.keyboard("{Escape}");
   await waitFor(() => {
     expect(screen.queryByTestId("proposal-panel")).toBeNull();
   });
   expect(window.location.search).not.toContain("proposal=");
-  await userEvent.click(screen.getByRole("tab", { name: "Approved" }));
-  await waitFor(() =>
-    expect(urls.some((url) => url.includes("status=approved"))).toBe(true),
-  );
+  // One list of every status, so nothing asks the server to filter.
+  expect(urls.some((url) => url.includes("status="))).toBe(false);
 });
 
 test("S is draggable between XS and M, and XS edits autosave the five-point range", async () => {

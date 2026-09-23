@@ -15,6 +15,7 @@ import type {
 import { READ_SCOPES, WRITE_SCOPES } from "@sandbox-factory/jira";
 
 import type { Auth } from "../src/auth.js";
+import type { JiraRouteOptions } from "../src/jira/routes.js";
 import { signState } from "../src/jira/state.js";
 import { createApp } from "../src/routes.js";
 
@@ -380,6 +381,7 @@ function appWith(
     fetch?: typeof globalThis.fetch;
     connections?: ReturnType<typeof fakeConnections>;
     boards?: ReturnType<typeof fakeBoards>;
+    startSizing?: JiraRouteOptions["startSizing"];
   } = {},
 ) {
   const connections = options.connections ?? fakeConnections();
@@ -418,6 +420,9 @@ function appWith(
       apiUrl: API_URL,
       appUrl: APP_URL,
       ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+      ...(options.startSizing === undefined
+        ? {}
+        : { startSizing: options.startSizing }),
     },
   });
   return { app, connections, boards };
@@ -628,6 +633,103 @@ test("connecting a site registers every board on it", async () => {
   // Recorded, not registered: a sync must not write settings over a board
   // this organization had configured before.
   assert.equal(boards.registered.length, 0);
+});
+
+/** Boards as the store would hold them: one row per Jira board, ids stable. */
+function boardsAlreadyHolding(externalIds: string[]) {
+  const boards = fakeBoards();
+  const held = new Map(externalIds.map((id) => [id, `jrb_${id}`]));
+  return Object.assign(boards, {
+    list: async () => {
+      const [template] = await fakeBoards().list("org_1");
+      return [...held.values()].map((id) => ({ ...template!, id }));
+    },
+    sync: async (_organizationId: string, input: SyncBoardInput) => {
+      boards.synced.push(input);
+      const id = `jrb_${input.externalId}`;
+      held.set(input.externalId, id);
+      const [template] = await fakeBoards().list("org_1");
+      return { ...template!, ...input, id };
+    },
+  });
+}
+
+test("connecting a site sizes its boards", async () => {
+  // A new site's boards open on proposals, not on a button to press.
+  const started: unknown[] = [];
+  const { app } = appWith({
+    fetch: fakeAtlassian({ boards: {} }),
+    boards: boardsAlreadyHolding([]),
+    startSizing: (input) => {
+      started.push(input);
+      return Promise.resolve();
+    },
+  });
+  const state = signState(SECRET, {
+    organizationId: "org_1",
+    userId: dana.id,
+    returnTo: "/settings/jira",
+  });
+
+  await app.request(
+    `/api/v1/jira/callback?code=c&state=${encodeURIComponent(state)}`,
+    { headers: signedIn },
+  );
+
+  assert.deepEqual(started, [
+    { organizationId: "org_1", boardId: "jrb_42", startedBy: dana.id },
+    { organizationId: "org_1", boardId: "jrb_43", startedBy: dana.id },
+  ]);
+});
+
+test("every sync offers every board it saw, leaving once-only to the sizer", async () => {
+  // Whether a board has been sized before is the bounty side's question
+  // (see sizeIfNeverSized); the callback offers every board it registered,
+  // so a board whose first attempt could not start is tried again.
+  const started: string[] = [];
+  const { app } = appWith({
+    fetch: fakeAtlassian({ boards: {} }),
+    boards: boardsAlreadyHolding(["42"]),
+    startSizing: ({ boardId }) => {
+      started.push(boardId);
+      return Promise.resolve();
+    },
+  });
+  const state = signState(SECRET, {
+    organizationId: "org_1",
+    userId: dana.id,
+    returnTo: "/settings/jira",
+  });
+
+  await app.request(
+    `/api/v1/jira/callback?code=c&state=${encodeURIComponent(state)}`,
+    { headers: signedIn },
+  );
+
+  assert.deepEqual(started, ["jrb_42", "jrb_43"]);
+});
+
+test("a board that cannot be sized does not fail the connection", async () => {
+  const { app } = appWith({
+    fetch: fakeAtlassian({ boards: {} }),
+    boards: boardsAlreadyHolding([]),
+    startSizing: () => Promise.reject(new Error("sizer down")),
+  });
+  const state = signState(SECRET, {
+    organizationId: "org_1",
+    userId: dana.id,
+    returnTo: "/settings/jira",
+  });
+
+  const response = await app.request(
+    `/api/v1/jira/callback?code=c&state=${encodeURIComponent(state)}`,
+    { headers: signedIn },
+  );
+
+  assert.equal(
+    new URL(response.headers.get("location") ?? "").searchParams.get("jira"),
+    "connected",
+  );
 });
 
 test("a site whose boards cannot be read is still connected", async () => {
@@ -1187,6 +1289,46 @@ test("syncing a site records every board on it, settings untouched", async () =>
   // `sync`, not `register`: the second would write default settings over a
   // board this organization had already configured.
   assert.equal(boards.registered.length, 0);
+});
+
+test("a re-sync reports new boards and offers every board for sizing", async () => {
+  // A board made in Jira since the site was connected is sized in the
+  // background, the same as one that came with the connection.
+  const started: string[] = [];
+  const { app } = appWith({
+    fetch: fakeJiraApi({
+      boards: [
+        {
+          id: 42,
+          name: "Acme Board",
+          type: "scrum",
+          location: { projectKey: "ACME" },
+        },
+        {
+          id: 43,
+          name: "Made Yesterday",
+          type: "kanban",
+          location: { projectKey: "NEW" },
+        },
+      ],
+    }),
+    boards: boardsAlreadyHolding(["42"]),
+    startSizing: ({ boardId }) => {
+      started.push(boardId);
+      return Promise.resolve();
+    },
+  });
+
+  const response = await app.request(
+    "/api/v1/orgs/org_1/jira/connections/jrc_1/sync",
+    { method: "POST", headers: signedIn },
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(((await response.json()) as { added: string[] }).added, [
+    "jrb_43",
+  ]);
+  assert.deepEqual(started, ["jrb_42", "jrb_43"]);
 });
 
 test("a plain member may sync, because it records pointers and nothing else", async () => {

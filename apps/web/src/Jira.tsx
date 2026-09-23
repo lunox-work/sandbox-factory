@@ -437,8 +437,9 @@ function BoardRow({
  * Every board on a connected site is already registered — connecting is the
  * decision, and a board row is a pointer that reads nothing until somebody
  * previews it. So this card never offers to add one. What it does instead is
- * re-read the site when it opens, which is what picks up a board created in
- * Jira since the site was connected.
+ * re-read the site when it opens, and again on Re-sync, which is what picks
+ * up a board created in Jira since the site was connected — and starts
+ * sizing it in the background.
  *
  * Scoped to one connection: the page it sits on is about one site, and
  * showing every organization's boards here would undo that.
@@ -456,9 +457,12 @@ function BoardsCard({
 }) {
   const { boards, loading, error, sync } = useJiraBoards(organizationId);
   const [syncing, setSyncing] = useState(true);
+  // What the last sync found, said once under the header: how many boards
+  // are new, since those are the ones now being sized in the background.
+  const [found, setFound] = useState<number | null>(null);
 
   /*
-    Re-read on open, rather than on a timer or a button.
+    Re-read on open, rather than on a timer.
 
     A client creates boards in Jira and nothing tells us, so the registered
     list goes stale. Refreshing it here spends one round trip exactly when
@@ -472,15 +476,29 @@ function BoardsCard({
       return;
     }
     let live = true;
-    void sync(connection.id).finally(() => {
+    void sync(connection.id).then((added) => {
       if (live) {
         setSyncing(false);
+        if (added !== null && added.length > 0) setFound(added.length);
       }
     });
     return () => {
       live = false;
     };
   }, [connection.healthy, connection.id, sync]);
+
+  /*
+    The same re-read, on request. Opening the page already does it; the
+    button is for someone who has just made a board in Jira and does not
+    want to reload to see it.
+  */
+  async function resync() {
+    setSyncing(true);
+    setFound(null);
+    const added = await sync(connection.id);
+    setSyncing(false);
+    if (added !== null) setFound(added.length);
+  }
 
   // This site's boards. The hook holds the organization's, because that is
   // what the API answers with, and the page is about one site.
@@ -491,16 +509,34 @@ function BoardsCard({
 
   return (
     <Card>
-      <CardHeader>
-        <CardTitle>Boards</CardTitle>
-        <CardDescription>
-          Every board on this site, read when it was connected and again just
-          now. Open one to see the tickets a run would price — read live from
-          Jira, and stored nowhere.
-        </CardDescription>
+      <CardHeader className="flex flex-row items-start justify-between gap-4">
+        <div className="flex flex-col gap-1.5">
+          <CardTitle>Boards</CardTitle>
+          <CardDescription>
+            Every board on this site, read when it was connected and again just
+            now. A new board is sized in the background as soon as it is found.
+          </CardDescription>
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={syncing || !connection.healthy}
+          onClick={() => void resync()}
+        >
+          <RefreshCw className={syncing ? "animate-spin" : undefined} />
+          Re-sync
+        </Button>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
         {error !== null && <BoardsError error={error} />}
+
+        {found !== null && (
+          <p className="text-muted-foreground text-sm" role="status">
+            {found === 0
+              ? "No new boards."
+              : `Found ${found} new board${found === 1 ? "" : "s"} — sizing started.`}
+          </p>
+        )}
 
         {busy && siteBoards.length === 0 ? (
           <p className="text-muted-foreground flex items-center gap-2 text-sm">

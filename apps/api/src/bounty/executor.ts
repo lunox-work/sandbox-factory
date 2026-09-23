@@ -180,6 +180,23 @@ export class BountyExecutor {
         return;
       }
 
+      /*
+        What the run is about to size, before the first ticket is sent to
+        the model. A page opened mid-run lists it with each ticket's state,
+        so what is still to come shows as well as what is done.
+      */
+      const planned = await runs.recordPlan(
+        organizationId,
+        runId,
+        leaseToken,
+        selected.issues.map((issue) => ({
+          externalIssueId: issue.id,
+          issueKey: issue.key,
+          summary: issue.summary,
+        })),
+      );
+      if (!planned) return;
+
       const outcomes: BountyRunOutcome[] = [];
       let nextIndex = 0;
       let fatalCode: string | undefined;

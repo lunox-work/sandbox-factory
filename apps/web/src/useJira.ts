@@ -340,7 +340,11 @@ export interface JiraBoards {
    * picked up — called when a site's page opens, where somebody is actually
    * looking at the list.
    */
-  sync: (connectionId: string) => Promise<void>;
+  /**
+   * Re-reads a site's boards. Resolves to the ids of boards seen for the
+   * first time — which the API has started sizing — or null on failure.
+   */
+  sync: (connectionId: string) => Promise<string[] | null>;
   preview: (boardId: string) => Promise<BacklogPreview | null>;
   /** One ticket in full. Read live, stored nowhere. */
   issue: (boardId: string, issueKey: string) => Promise<JiraIssueDetail | null>;
@@ -397,7 +401,7 @@ export function useJiraBoards(organizationId: string | undefined): JiraBoards {
   const sync = useCallback(
     async (connectionId: string) => {
       if (base === undefined) {
-        return;
+        return null;
       }
       // A POST because it writes rows, though the page means it as a read.
       try {
@@ -407,12 +411,17 @@ export function useJiraBoards(organizationId: string | undefined): JiraBoards {
         );
         if (!res.ok) {
           setError(await toFetchError(res));
-          return;
+          return null;
         }
+        const body = (await res.json().catch(() => null)) as {
+          added?: string[];
+        } | null;
         setError(null);
         await refresh();
+        return body?.added ?? [];
       } catch {
         setError({ kind: "other", message: "Could not reach the server." });
+        return null;
       }
     },
     [base, refresh],

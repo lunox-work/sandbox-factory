@@ -577,6 +577,35 @@ test("a registered board is listed with its type and project", async () => {
   expect(screen.getByText(/scrum · ACME/i)).toBeDefined();
 });
 
+test("Re-sync re-reads the site and says what it found", async () => {
+  // Opening the page syncs already; the button is for a board made in Jira
+  // a moment ago. A new board is sized in the background, and the card
+  // says so.
+  const fetchMock = routedFetch({
+    sync: { body: { boards: [board], added: [] } },
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  renderSite();
+  await screen.findByText("Acme Board");
+  const syncs = () =>
+    fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/sync"))
+      .length;
+  await waitFor(() => expect(syncs()).toBe(1));
+  expect(screen.queryByRole("status")).toBeNull();
+
+  fetchMock.mockImplementation(
+    routedFetch({
+      sync: { body: { boards: [board], added: ["jrb_2", "jrb_3"] } },
+    }).getMockImplementation()!,
+  );
+  await userEvent.click(screen.getByRole("button", { name: /re-sync/i }));
+
+  expect(syncs()).toBe(2);
+  expect((await screen.findByRole("status")).textContent).toBe(
+    "Found 2 new boards — sizing started.",
+  );
+});
+
 test("a board row opens the board rather than previewing it in place", async () => {
   // The row used to carry a "Preview" button, which named the mechanism
   // rather than the destination. The whole row is the target now.
@@ -908,7 +937,7 @@ test("an empty proposal list is explained rather than shown as a blank table", a
   );
   renderBoard();
 
-  expect(await screen.findByText(/no proposed proposals/i)).toBeDefined();
+  expect(await screen.findByText(/no proposals yet/i)).toBeDefined();
 });
 
 test("a failed ticket read stays in the Spec tab with a retry", async () => {
@@ -1056,12 +1085,11 @@ test("an approved proposal offers the way back and a re-price, nothing else", as
   );
   renderBoard("jrb_1", "owner");
   await screen.findByTestId("proposal-list");
-  // The two filters are the two states.
-  expect(screen.getByRole("tab", { name: "Proposed" })).toBeDefined();
-  expect(screen.getByRole("tab", { name: "Approved" })).toBeDefined();
+  // The status is a column on the row, not a filter over the list.
+  expect(screen.queryByRole("tab", { name: "Approved" })).toBeNull();
   expect(
-    screen.queryByRole("tab", { name: /rejected|superseded/i }),
-  ).toBeNull();
+    within(screen.getByTestId("proposal-list")).getByText("Approved"),
+  ).toBeDefined();
 
   await userEvent.click(screen.getByText("Ticket 1"));
   const panel = await screen.findByTestId("proposal-panel");

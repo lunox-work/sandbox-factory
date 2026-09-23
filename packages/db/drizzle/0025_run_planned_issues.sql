@@ -1,0 +1,1 @@
+ALTER TABLE "bounty_run" ADD COLUMN "planned" jsonb DEFAULT '[]'::jsonb NOT NULL;

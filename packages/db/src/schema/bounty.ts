@@ -18,6 +18,7 @@ import {
 
 import type {
   BountyRunOutcome,
+  BountyRunPlannedIssue,
   BountySelection,
   RateCardSnapshot,
   PricedComplexity,
@@ -85,6 +86,10 @@ export const bountyRun = pgTable(
     rateCard: jsonb("rate_card").$type<RateCardSnapshot>().notNull(),
     requestedModel: text("requested_model").notNull(),
     promptVersion: text("prompt_version").notNull(),
+    planned: jsonb("planned")
+      .$type<BountyRunPlannedIssue[]>()
+      .notNull()
+      .default([]),
     outcomes: jsonb("outcomes")
       .$type<BountyRunOutcome[]>()
       .notNull()

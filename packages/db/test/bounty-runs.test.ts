@@ -34,6 +34,7 @@ function row(overrides: Partial<BountyRunRow> = {}): BountyRunRow {
     },
     requestedModel: "configured-model",
     promptVersion: "jira-size-v1",
+    planned: [],
     outcomes: [],
     candidatesScanned: 0,
     skippedLive: 0,
@@ -141,6 +142,7 @@ test("run reads and lease writes report misses", async () => {
   const now = new Date("2026-09-22T00:00:00Z");
   assert.equal(await store.claim("org_1", "brn_x", "lease", now), null);
   assert.equal(await store.heartbeat("org_1", "brn_x", "lease", now), false);
+  assert.equal(await store.recordPlan("org_1", "brn_x", "lease", []), false);
   assert.equal(
     await store.recordOutcome("org_1", "brn_x", "lease", {
       externalIssueId: "1",
@@ -173,6 +175,12 @@ test("claims, heartbeats, records and finishes only under the lease", async () =
   );
   assert.equal(await store.heartbeat("org_1", "brn_1", "lease", now), true);
   assert.equal(
+    await store.recordPlan("org_1", "brn_1", "lease", [
+      { externalIssueId: "10001", issueKey: "APP-1", summary: "Add login" },
+    ]),
+    true,
+  );
+  assert.equal(
     await store.recordOutcome("org_1", "brn_1", "lease", {
       externalIssueId: "10001",
       issueKey: "APP-1",
@@ -190,7 +198,7 @@ test("claims, heartbeats, records and finishes only under the lease", async () =
     )?.status,
     "running",
   );
-  assert.ok(fake.calls.slice(0, 4).every(({ filtered }) => filtered));
+  assert.ok(fake.calls.slice(0, 5).every(({ filtered }) => filtered));
 });
 
 test("expired runs are failed within an organization", async () => {

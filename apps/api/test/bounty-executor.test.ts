@@ -44,6 +44,7 @@ function run(overrides: Partial<StoredBountyRun> = {}): StoredBountyRun {
     rateCard,
     requestedModel: "requested-model",
     promptVersion: "jira-size-v1",
+    planned: [],
     outcomes: [],
     candidatesScanned: 0,
     skippedLive: 0,
@@ -105,8 +106,10 @@ function harness(options: {
   createStatus?: "created" | "duplicate" | "lost-lease" | "not-found";
   writebackOperationId?: string;
   runOverrides?: Partial<StoredBountyRun>;
+  planHeld?: boolean;
 }) {
   const current = run(options.runOverrides);
+  const plans: unknown[] = [];
   const outcomes: unknown[] = [];
   const finishes: { status: string; details: unknown }[] = [];
   const proposalInputs: unknown[] = [];
@@ -124,6 +127,10 @@ function harness(options: {
         }),
       ),
     heartbeat: () => Promise.resolve(true),
+    recordPlan: (_org: string, _id: string, _lease: string, plan: unknown) => {
+      plans.push(plan);
+      return Promise.resolve(options.planHeld ?? true);
+    },
     recordOutcome: (
       _org: string,
       _id: string,
@@ -277,6 +284,7 @@ function harness(options: {
   });
   return {
     executor,
+    plans,
     outcomes,
     finishes,
     proposalInputs,
@@ -285,6 +293,28 @@ function harness(options: {
     sizer,
   };
 }
+
+test("a run records what it will size before sizing any of it", async () => {
+  // A page opened mid-run lists these, so what is still to come shows as
+  // well as what is done.
+  const state = harness({});
+  await state.executor.execute("org_1", "brn_1");
+
+  assert.equal(state.plans.length, 1);
+  const [plan] = state.plans as { issueKey: string; summary: string }[][];
+  assert.ok(plan !== undefined && plan.length > 0);
+  assert.equal(plan.length, state.outcomes.length);
+  assert.ok(plan.every(({ issueKey }) => issueKey.length > 0));
+});
+
+test("a run that lost its lease before planning sizes nothing", async () => {
+  const state = harness({ planHeld: false });
+  await state.executor.execute("org_1", "brn_1");
+
+  assert.equal(state.sizer.calls.length, 0);
+  assert.equal(state.outcomes.length, 0);
+  assert.equal(state.finishes.length, 0);
+});
 
 test("a run persists sized drafts with snapshot pricing and usage", async () => {
   const state = harness({});

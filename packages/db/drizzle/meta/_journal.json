@@ -176,6 +176,13 @@
       "when": 1790081918556,
       "tag": "0024_two_state_proposals",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1790120336831,
+      "tag": "0025_run_planned_issues",
+      "breakpoints": true
     }
   ]
 }

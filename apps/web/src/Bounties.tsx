@@ -5,6 +5,7 @@ import type {
   RateCardDto,
 } from "@sandbox-factory/shared";
 import {
+  DEFAULT_RATE_CARD,
   maximumRateCardMinor,
   formatMinorUnits,
   PRICED_BOUNTY_COMPLEXITIES,
@@ -13,6 +14,9 @@ import {
   ChevronDown,
   ChevronRight,
   ChevronUp,
+  Circle,
+  CircleCheck,
+  CircleX,
   ExternalLink,
   Loader2,
   Minus,
@@ -58,8 +62,6 @@ type EnrichedProposal = BountyProposalDto & {
   liveUrl?: string;
   writebackOperations?: BountyWritebackDto[];
 };
-
-type ProposalStatus = BountyProposalDto["status"];
 
 interface ProposalDetail {
   proposal: BountyProposalDto;
@@ -127,16 +129,6 @@ export function modelLabel(id: string | null | undefined): string | null {
   return words.length === 0 ? null : words.join(" ");
 }
 
-/** The distinct models that actually sized a run's tickets, in first-seen order. */
-function runModels(outcomes: readonly { actualModel?: string }[]): string[] {
-  const seen: string[] = [];
-  for (const { actualModel } of outcomes) {
-    const label = modelLabel(actualModel);
-    if (label !== null && !seen.includes(label)) seen.push(label);
-  }
-  return seen;
-}
-
 export function money(
   amountMinor: number | null,
   currency: string | null,
@@ -191,13 +183,14 @@ function sameRates(left: RateDraft, right: RateDraft | null): boolean {
   );
 }
 
-// Evenly spaced from 10 to 200, rounded to whole major currency units.
+// The card the API saves on an organization's first run, so what the editor
+// shows before anyone edits it is what that run prices with.
 const DEFAULT_RATE_AMOUNTS = {
-  XS: "10",
-  S: "58",
-  M: "105",
-  L: "153",
-  XL: "200",
+  XS: editableRateAmount(DEFAULT_RATE_CARD.xsMinor, 2),
+  S: editableRateAmount(DEFAULT_RATE_CARD.sMinor, 2),
+  M: editableRateAmount(DEFAULT_RATE_CARD.mMinor, 2),
+  L: editableRateAmount(DEFAULT_RATE_CARD.lMinor, 2),
+  XL: editableRateAmount(DEFAULT_RATE_CARD.xlMinor, 2),
 };
 
 const RATE_SAVE_STATUSES = {
@@ -491,7 +484,6 @@ export function BoardBounties({
 }) {
   const [runs, setRuns] = useState<BountyRunDto[]>([]);
   const [proposals, setProposals] = useState<EnrichedProposal[]>([]);
-  const [status, setStatus] = useState<ProposalStatus>("proposed");
   const [selectedId, setSelectedId] = useState<string | null>(() =>
     new URLSearchParams(window.location.search).get("proposal"),
   );
@@ -524,10 +516,9 @@ export function BoardBounties({
           fetch(`${base}/jira/boards/${encodeURIComponent(boardId)}/runs`, {
             credentials: "include",
           }),
-          fetch(
-            `${base}/proposals?boardId=${encodeURIComponent(boardId)}&status=${encodeURIComponent(status)}`,
-            { credentials: "include" },
-          ),
+          fetch(`${base}/proposals?boardId=${encodeURIComponent(boardId)}`, {
+            credentials: "include",
+          }),
           ...(selectedId === null
             ? []
             : [
@@ -562,11 +553,11 @@ export function BoardBounties({
     } finally {
       if (generation === requestGeneration.current) setLoading(false);
     }
-  }, [base, boardId, selectedId, status]);
+  }, [base, boardId, selectedId]);
 
   /*
     The list is emptied and shown loading only when what it lists changes —
-    the board or the filter. Opening a proposal also re-reads (for its
+    the board. Opening a proposal also re-reads (for its
     detail), and that read must not blank the list: the row that was pressed
     is what the peek returns focus to, and a list that unmounts under an
     open peek takes the row with it.
@@ -574,7 +565,7 @@ export function BoardBounties({
   useEffect(() => {
     setLoading(true);
     setProposals([]);
-  }, [boardId, status]);
+  }, [boardId]);
   useEffect(() => {
     void refresh();
     return () => {
@@ -584,11 +575,46 @@ export function BoardBounties({
   const active = runs.find(
     (run) => run.status === "queued" || run.status === "running",
   );
+  /*
+    While a run is active, the run alone is polled, every second: it is one
+    local read, and it carries the plan and each result as it lands. The
+    full re-read — which checks every proposal against Jira — runs only when
+    a result has landed or the run has ended, so the list catches up
+    without Jira being asked about the whole board every second.
+  */
+  const activeId = active?.id;
+  const seenOutcomes = useRef(active?.outcomes.length ?? 0);
   useEffect(() => {
-    if (active === undefined) return;
-    const timer = window.setInterval(() => void refresh(), 2_000);
-    return () => window.clearInterval(timer);
-  }, [active, refresh]);
+    if (activeId === undefined) return;
+    let live = true;
+    const timer = window.setInterval(() => {
+      void fetch(`${base}/runs/${encodeURIComponent(activeId)}`, {
+        credentials: "include",
+      })
+        .then((response) =>
+          response.ok
+            ? (response.json() as Promise<{ run: BountyRunDto }>)
+            : null,
+        )
+        .then((body) => {
+          if (!live || body === null) return;
+          const run = body.run;
+          setRuns((current) =>
+            current.map((row) => (row.id === run.id ? run : row)),
+          );
+          const ended = run.status !== "queued" && run.status !== "running";
+          if (ended || run.outcomes.length !== seenOutcomes.current) {
+            seenOutcomes.current = run.outcomes.length;
+            void refresh();
+          }
+        })
+        .catch(() => {});
+    }, 1_000);
+    return () => {
+      live = false;
+      window.clearInterval(timer);
+    };
+  }, [activeId, base, refresh]);
 
   /*
     `?proposal=<id>` is the open peek, so a reload or a shared link lands on
@@ -736,67 +762,26 @@ export function BoardBounties({
 
   if (loading) return <LoadingLine>Loading proposals…</LoadingLine>;
 
-  const latest = runs[0];
-  const latestModels = latest === undefined ? [] : runModels(latest.outcomes);
   return (
     <div className="flex flex-col gap-4">
       {error !== null && <ErrorBanner className="mt-0">{error}</ErrorBanner>}
 
       {/*
-        The view on the left and the one action on the right: what is being
-        looked at, and what can be done about it. The filter is the same
-        segmented control the peek's tabs use, so the page has one idiom.
+        Connecting a site sizes its boards on its own, so the first visit
+        usually lands mid-run. Said here, above a list that fills as the
+        poll brings proposals in.
       */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <Tabs
-          value={status}
-          onValueChange={(next) => setStatus(next as ProposalStatus)}
-        >
-          <TabsList aria-label="Proposal status">
-            {(["proposed", "approved"] as const).map((candidate) => (
-              <TabsTrigger key={candidate} value={candidate}>
-                {candidate[0]!.toUpperCase() + candidate.slice(1)}
-              </TabsTrigger>
-            ))}
-          </TabsList>
-        </Tabs>
-        {canManage(role) && (
-          <Button
-            disabled={busy || active !== undefined || !sizingAvailable}
-            onClick={() =>
-              void mutate(`/jira/boards/${encodeURIComponent(boardId)}/runs`, {
-                requestId: crypto.randomUUID(),
-              })
-            }
-          >
-            {active === undefined ? (
-              "Run sizing"
-            ) : (
-              <>
-                <Loader2 className="animate-spin" />
-                Sizing…
-              </>
-            )}
-          </Button>
-        )}
-      </div>
+      {active !== undefined && (
+        <SizingStream
+          run={active}
+          proposals={visibleProposals}
+          onOpen={openProposal}
+        />
+      )}
 
-      {/* One line of state, and a warning only when there is something to warn about. */}
-      {(latest !== undefined || !sizingAvailable || !writeGranted) && (
+      {/* A warning only when there is something to warn about. */}
+      {(!sizingAvailable || !writeGranted) && (
         <div className="text-muted-foreground flex flex-col gap-1 text-xs">
-          {latest !== undefined && (
-            <p>
-              Latest run:{" "}
-              <span className="text-foreground font-medium">
-                {latest.status}
-              </span>{" "}
-              · {latest.outcomes.length} result
-              {latest.outcomes.length === 1 ? "" : "s"}
-              {latestModels.length > 0 && (
-                <> · sized by {latestModels.join(", ")}</>
-              )}
-            </p>
-          )}
           {!sizingAvailable && (
             <p>Sizing is not configured for this deployment.</p>
           )}
@@ -821,7 +806,9 @@ export function BoardBounties({
       <div className="overflow-hidden rounded-lg border">
         {visibleProposals.length === 0 ? (
           <p className="text-muted-foreground px-4 py-10 text-center text-sm">
-            No {status} proposals.
+            {active === undefined
+              ? "No proposals yet."
+              : "Proposals appear here as tickets are sized."}
           </p>
         ) : (
           <>
@@ -831,6 +818,7 @@ export function BoardBounties({
             >
               <span className="w-20 shrink-0">Ticket</span>
               <span className="flex-1" />
+              <span className="w-24 shrink-0">Status</span>
               <span className="w-12 shrink-0">Size</span>
               <span className="w-24 shrink-0 text-right">Amount</span>
               <span className="size-4 shrink-0" />
@@ -857,6 +845,17 @@ export function BoardBounties({
                       </span>
                     </span>
                     <span className="flex shrink-0 items-center gap-3 sm:contents">
+                      <span className="sm:w-24 sm:shrink-0">
+                        <Badge
+                          variant={
+                            proposal.status === "approved"
+                              ? "default"
+                              : "secondary"
+                          }
+                        >
+                          {capitalize(proposal.status)}
+                        </Badge>
+                      </span>
                       <span className="sm:w-12 sm:shrink-0">
                         <Badge variant="outline" className="font-mono">
                           {proposal.complexity}
@@ -925,6 +924,137 @@ function freshnessLabel(freshness: EnrichedProposal["freshness"]): {
     default:
       return { text: "Not checked", tone: "muted" };
   }
+}
+
+/** How many tickets the executor sizes at once. Mirrors the API's own. */
+const SIZING_CONCURRENCY = 3;
+
+/**
+ * A run in flight, ticket by ticket.
+ *
+ * Connecting a site sizes its boards in the background, so a board is often
+ * opened mid-run. This is what the run is doing: the tickets it picked, the
+ * ones it has finished — with the size and amount as they land — the ones
+ * being sized now, and the ones still waiting. The page polls every second
+ * while a run is active, so rows turn over as the model answers.
+ *
+ * Which tickets are "sizing now" is inferred, not reported: the executor
+ * takes the plan in order, a few at a time, so the first few without a
+ * result are the ones in the model's hands.
+ */
+function SizingStream({
+  run,
+  proposals,
+  onOpen,
+}: {
+  run: BountyRunDto;
+  proposals: EnrichedProposal[];
+  onOpen: (proposalId: string) => void;
+}) {
+  const done = new Map(run.outcomes.map((o) => [o.externalIssueId, o]));
+  const byId = new Map(proposals.map((p) => [p.id, p]));
+  const total = run.planned.length;
+  let inFlight = 0;
+
+  return (
+    <section
+      aria-label="Sizing in progress"
+      className="overflow-hidden rounded-lg border"
+      data-testid="sizing-active"
+    >
+      <div className="flex items-center gap-2 px-3 py-2.5 text-sm">
+        <Loader2 className="text-muted-foreground size-4 animate-spin" />
+        {total === 0 ? (
+          <span>Picking tickets from the backlog…</span>
+        ) : (
+          <span>
+            Sizing {total} ticket{total === 1 ? "" : "s"}
+            <span className="text-muted-foreground"> · {done.size} done</span>
+          </span>
+        )}
+      </div>
+      {total > 0 && (
+        <>
+          <div
+            className="bg-muted h-0.5"
+            role="progressbar"
+            aria-valuemin={0}
+            aria-valuemax={total}
+            aria-valuenow={done.size}
+          >
+            <div
+              className="bg-primary h-full transition-[width] duration-500 ease-out"
+              style={{ width: `${(done.size / total) * 100}%` }}
+            />
+          </div>
+          <ul className="divide-y text-sm">
+            {run.planned.map((ticket) => {
+              const outcome = done.get(ticket.externalIssueId);
+              const proposal =
+                outcome?.proposalId === undefined
+                  ? undefined
+                  : byId.get(outcome.proposalId);
+              const sizing =
+                outcome === undefined && inFlight++ < SIZING_CONCURRENCY;
+              return (
+                <li
+                  key={ticket.externalIssueId}
+                  className="flex items-center gap-3 px-3 py-2"
+                  data-state={
+                    outcome !== undefined
+                      ? "done"
+                      : sizing
+                        ? "sizing"
+                        : "queued"
+                  }
+                >
+                  <span className="flex size-4 shrink-0 items-center justify-center">
+                    {outcome === undefined ? (
+                      sizing ? (
+                        <Loader2 className="text-muted-foreground size-3.5 animate-spin" />
+                      ) : (
+                        <Circle className="text-muted-foreground/50 size-3" />
+                      )
+                    ) : outcome.status === "failed" ? (
+                      <CircleX className="size-4 text-red-600 dark:text-red-400" />
+                    ) : (
+                      <CircleCheck className="size-4 text-emerald-600 dark:text-emerald-400" />
+                    )}
+                  </span>
+                  <span className="w-20 shrink-0 font-mono text-xs">
+                    {ticket.issueKey}
+                  </span>
+                  <span
+                    className={`min-w-0 flex-1 truncate ${outcome === undefined && !sizing ? "text-muted-foreground" : ""}`}
+                  >
+                    {ticket.summary}
+                  </span>
+                  {proposal !== undefined ? (
+                    <button
+                      type="button"
+                      className="flex shrink-0 items-center gap-2 animate-in fade-in"
+                      onClick={() => onOpen(proposal.id)}
+                    >
+                      <Badge variant="outline" className="font-mono">
+                        {proposal.complexity}
+                      </Badge>
+                      <span className="w-20 text-right tabular-nums">
+                        {money(proposal.amountMinor, proposal.currency)}
+                      </span>
+                    </button>
+                  ) : outcome !== undefined ? (
+                    <span className="text-muted-foreground shrink-0 text-xs">
+                      {capitalize(outcome.status)}
+                    </span>
+                  ) : null}
+                </li>
+              );
+            })}
+          </ul>
+        </>
+      )}
+    </section>
+  );
 }
 
 /** The sizing model's confidence as a mark and a colour: up, level, or down. */

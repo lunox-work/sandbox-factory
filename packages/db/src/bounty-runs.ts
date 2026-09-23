@@ -1,5 +1,6 @@
 import type {
   BountyRunOutcome,
+  BountyRunPlannedIssue,
   BountySelection,
   RateCardSnapshot,
 } from "sandbox-factory";
@@ -56,6 +57,17 @@ export interface BountyRunStore {
     leaseToken: string,
     now: Date,
   ): Promise<boolean>;
+  /**
+   * The tickets a claimed run is about to size, written once before the
+   * first. Guarded by the lease like an outcome, so a run that lost its lease
+   * cannot overwrite the plan of the worker that took it over.
+   */
+  recordPlan(
+    organizationId: string,
+    runId: string,
+    leaseToken: string,
+    planned: readonly BountyRunPlannedIssue[],
+  ): Promise<boolean>;
   recordOutcome(
     organizationId: string,
     runId: string,
@@ -92,6 +104,7 @@ export interface StoredBountyRun {
   readonly rateCard: RateCardSnapshot;
   readonly requestedModel: string;
   readonly promptVersion: string;
+  readonly planned: BountyRunPlannedIssue[];
   readonly outcomes: BountyRunOutcome[];
   readonly candidatesScanned: number;
   readonly skippedLive: number;
@@ -120,6 +133,7 @@ function toDto(row: BountyRunRow): StoredBountyRun {
     },
     requestedModel: row.requestedModel,
     promptVersion: row.promptVersion,
+    planned: row.planned,
     outcomes: row.outcomes,
     candidatesScanned: row.candidatesScanned,
     skippedLive: row.skippedLive,
@@ -335,6 +349,24 @@ export function createBountyRunStore(db: Database): BountyRunStore {
             eq(bountyRun.leaseToken, leaseToken),
             gt(bountyRun.leaseExpiresAt, now),
             gt(bountyRun.deadlineAt, now),
+          ),
+        )
+        .returning()) as BountyRunRow[];
+      return rows.length > 0;
+    },
+
+    async recordPlan(organizationId, runId, leaseToken, planned) {
+      const now = new Date();
+      const rows = (await db
+        .update(bountyRun)
+        .set({ planned: [...planned], updatedAt: now })
+        .where(
+          and(
+            eq(bountyRun.organizationId, organizationId),
+            eq(bountyRun.id, runId),
+            eq(bountyRun.status, "running"),
+            eq(bountyRun.leaseToken, leaseToken),
+            gt(bountyRun.leaseExpiresAt, now),
           ),
         )
         .returning()) as BountyRunRow[];

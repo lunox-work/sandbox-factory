@@ -109,6 +109,12 @@ export const bountyRunOutcomeSchema = z.object({
   outputTokens: z.number().int().nonnegative().optional(),
 });
 
+export const bountyRunPlannedIssueSchema = z.object({
+  externalIssueId: z.string().min(1),
+  issueKey: z.string().min(1),
+  summary: z.string(),
+});
+
 export const bountyRunDtoSchema = z.object({
   id: z.string().min(1),
   organizationId: z.string().min(1),
@@ -122,6 +128,7 @@ export const bountyRunDtoSchema = z.object({
   rateCard: rateCardSnapshotSchema,
   requestedModel: z.string().min(1),
   promptVersion: z.string().min(1),
+  planned: z.array(bountyRunPlannedIssueSchema),
   outcomes: z.array(bountyRunOutcomeSchema),
   candidatesScanned: z.number().int().nonnegative(),
   skippedLive: z.number().int().nonnegative(),
@@ -237,6 +244,7 @@ export type RateCardSnapshotDto = z.infer<typeof rateCardSnapshotSchema>;
 export type RateCardDto = z.infer<typeof rateCardDtoSchema>;
 export type SizingResult = z.infer<typeof sizingResultSchema>;
 export type BountyRunOutcome = z.infer<typeof bountyRunOutcomeSchema>;
+export type BountyRunPlannedIssue = z.infer<typeof bountyRunPlannedIssueSchema>;
 export type BountyRunDto = z.infer<typeof bountyRunDtoSchema>;
 export type BountyProposalDto = z.infer<typeof bountyProposalDtoSchema>;
 export type ProposalFreshnessDto = z.infer<typeof proposalFreshnessDtoSchema>;

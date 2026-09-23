@@ -10,8 +10,14 @@ import type {
   StoredRateCard,
 } from "@sandbox-factory/db";
 
+import { DEFAULT_RATE_CARD } from "sandbox-factory";
+
 import type { Auth } from "../src/auth.js";
 import type { BountyExecutor } from "../src/bounty/executor.js";
+import {
+  sizeIfNeverSized,
+  type BountyRouteOptions,
+} from "../src/bounty/routes.js";
 import { createApp } from "../src/routes.js";
 
 const requestId = "28bb313f-252a-4a1d-b656-558a215b604b";
@@ -48,6 +54,7 @@ const run: StoredBountyRun = {
   rateCard: { ...card },
   requestedModel: "configured-model",
   promptVersion: "jira-size-v1",
+  planned: [],
   outcomes: [],
   candidatesScanned: 0,
   skippedLive: 0,
@@ -76,7 +83,9 @@ function harness(
   options: {
     role?: string;
     rateCard?: StoredRateCard | null;
+    putResult?: Awaited<ReturnType<RateCardStore["put"]>>;
     createResult?: Awaited<ReturnType<BountyRunStore["create"]>>;
+    previousRuns?: StoredBountyRun[];
     sizing?: boolean;
   } = {},
 ) {
@@ -92,7 +101,9 @@ function harness(
       expectedRevision: number,
     ) => {
       puts.push({ values, expectedRevision });
-      return Promise.resolve({ ok: true as const, rateCard: card });
+      return Promise.resolve(
+        options.putResult ?? { ok: true as const, rateCard: card },
+      );
     },
   } as RateCardStore;
   const runs = {
@@ -100,7 +111,7 @@ function harness(
       Promise.resolve(
         options.createResult ?? { ok: true as const, run, created: true },
       ),
-    listForBoard: () => Promise.resolve([run]),
+    listForBoard: () => Promise.resolve(options.previousRuns ?? [run]),
     get: (_org: string, id: string) =>
       Promise.resolve(id === run.id ? run : null),
   } as unknown as BountyRunStore;
@@ -130,6 +141,29 @@ function harness(
       ),
   } as unknown as JiraBoardStore;
   const sizing = options.sizing ?? true;
+  const bounty: BountyRouteOptions = {
+    rateCards,
+    runs,
+    boards,
+    proposals: {
+      get: () => Promise.resolve(null),
+      listForBoard: () => Promise.resolve([]),
+    } as never,
+    issues: { get: () => Promise.resolve(null) } as never,
+    ...(sizing
+      ? {
+          executor: {
+            start: (_org: string, id: string) => {
+              starts.push(id);
+            },
+          } as unknown as BountyExecutor,
+          clientFor: () => Promise.resolve({ ok: true, client: {} as never }),
+          requestedModel: "configured-model",
+          promptVersion: "jira-size-v1",
+        }
+      : {}),
+    supportedCurrencies: new Set(["USD", "JPY"]),
+  };
   const app = createApp({
     corsOrigins: ["https://app.test"],
     auth: fakeAuth(),
@@ -139,31 +173,9 @@ function harness(
           org === "org_1" ? (options.role ?? "owner") : undefined,
         ),
     } as never,
-    bounty: {
-      rateCards,
-      runs,
-      boards,
-      proposals: {
-        get: () => Promise.resolve(null),
-        listForBoard: () => Promise.resolve([]),
-      } as never,
-      issues: { get: () => Promise.resolve(null) } as never,
-      ...(sizing
-        ? {
-            executor: {
-              start: (_org: string, id: string) => {
-                starts.push(id);
-              },
-            } as unknown as BountyExecutor,
-            clientFor: () => Promise.resolve({ ok: true, client: {} as never }),
-            requestedModel: "configured-model",
-            promptVersion: "jira-size-v1",
-          }
-        : {}),
-      supportedCurrencies: new Set(["USD", "JPY"]),
-    },
+    bounty,
   });
-  return { app, starts, puts };
+  return { app, bounty, starts, puts };
 }
 
 test("members may read a rate card but only admins may edit it", async () => {
@@ -225,10 +237,15 @@ test("run creation requires sizing and a rate card, then starts after create", a
     503,
   );
 
-  const missing = harness({ rateCard: null });
+  // A card nobody could save, because the row vanished between the read and
+  // the write, is still refused rather than priced with nothing.
+  const gone = harness({
+    rateCard: null,
+    putResult: { ok: false, current: null },
+  });
   assert.equal(
     (
-      await missing.app.request("/api/v1/orgs/org_1/jira/boards/jrb_1/runs", {
+      await gone.app.request("/api/v1/orgs/org_1/jira/boards/jrb_1/runs", {
         method: "POST",
         headers,
         body: JSON.stringify({ requestId }),
@@ -244,6 +261,58 @@ test("run creation requires sizing and a rate card, then starts after create", a
   );
   assert.equal(response.status, 202);
   assert.deepEqual(ready.starts, ["brn_1"]);
+});
+
+test("a first run saves the default rate card rather than refusing", async () => {
+  // The editor shows the default to an organization that never saved one,
+  // so that is the card it has. Sizing a new Jira site must not stop at
+  // settings first.
+  const state = harness({ rateCard: null });
+  const response = await state.app.request(
+    "/api/v1/orgs/org_1/jira/boards/jrb_1/runs",
+    { method: "POST", headers, body: JSON.stringify({ requestId }) },
+  );
+  assert.equal(response.status, 202);
+  assert.deepEqual(state.puts, [
+    { values: DEFAULT_RATE_CARD, expectedRevision: 0 },
+  ]);
+  assert.deepEqual(state.starts, ["brn_1"]);
+});
+
+test("a default save that loses the race prices with the winner's card", async () => {
+  const state = harness({
+    rateCard: null,
+    putResult: { ok: false, current: card },
+  });
+  const response = await state.app.request(
+    "/api/v1/orgs/org_1/jira/boards/jrb_1/runs",
+    { method: "POST", headers, body: JSON.stringify({ requestId }) },
+  );
+  assert.equal(response.status, 202);
+});
+
+test("a board is sized automatically once, and never again", async () => {
+  const fresh = harness({ previousRuns: [] });
+  const started = await sizeIfNeverSized(fresh.bounty, {
+    organizationId: "org_1",
+    boardId: "jrb_1",
+    startedBy: "user_1",
+  });
+  assert.equal(started?.ok, true);
+  assert.deepEqual(fresh.starts, ["brn_1"]);
+
+  // Any earlier run counts, whatever it ended as: after the first, sizing
+  // is something a person asks for.
+  const sized = harness({ previousRuns: [{ ...run, status: "failed" }] });
+  assert.equal(
+    await sizeIfNeverSized(sized.bounty, {
+      organizationId: "org_1",
+      boardId: "jrb_1",
+      startedBy: "user_1",
+    }),
+    null,
+  );
+  assert.deepEqual(sized.starts, []);
 });
 
 test("run reads are owner-scoped and report sizing capability", async () => {

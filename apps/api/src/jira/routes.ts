@@ -75,6 +75,16 @@ export interface JiraRouteOptions {
   apiUrl: string;
   /** Public origin of the web app, where the browser is sent afterwards. */
   appUrl: string;
+  /**
+   * Starts sizing a board that has never been sized, and does nothing to one
+   * that has. Absent when the deployment has no bounty routes; a sync then
+   * only registers boards.
+   */
+  startSizing?: (input: {
+    organizationId: string;
+    boardId: string;
+    startedBy: string;
+  }) => Promise<unknown>;
   /** Injectable for tests. */
   fetch?: typeof globalThis.fetch;
   now?: () => number;
@@ -128,6 +138,7 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
     boards,
     proposals,
     roleOf,
+    startSizing,
     clientId,
     clientSecret,
     secret,
@@ -175,7 +186,12 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
     organizationId: string,
     connectionId: string,
   ): Promise<
-    | { readonly ok: true; readonly boards: JiraBoardSummary[] }
+    | {
+        readonly ok: true;
+        readonly boards: JiraBoardSummary[];
+        /** Boards this sync registered for the first time. */
+        readonly added: string[];
+      }
     | { readonly ok: false; readonly failure: JiraClientFailure }
   > {
     const result = await jiraClientFor(
@@ -188,6 +204,9 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
     }
 
     const visible = await result.client.boards();
+    const known = new Set(
+      (await boards.list(organizationId)).map(({ id }) => id),
+    );
     const recorded: JiraBoardSummary[] = [];
     for (const board of visible) {
       recorded.push(
@@ -200,7 +219,38 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
         }),
       );
     }
-    return { ok: true, boards: recorded };
+    return {
+      ok: true,
+      boards: recorded,
+      added: recorded.map(({ id }) => id).filter((id) => !known.has(id)),
+    };
+  }
+
+  /**
+   * Size a site's boards in the background, each once.
+   *
+   * Every sync — on connect, on the Re-sync button, and when the site's page
+   * opens — offers every board it saw. `startSizing` starts a run only on a
+   * board that has never had one, so a board is sized the first time it is
+   * seen (or the first time sizing could run at all) and never again unless
+   * someone asks. Reconnecting a site to add a scope re-sizes nothing.
+   *
+   * Each run starts in the background; this only creates the rows. A failure
+   * here never fails the sync or the connection that called it.
+   */
+  async function sizeBoards(
+    organizationId: string,
+    synced: readonly JiraBoardSummary[],
+    startedBy: string,
+  ): Promise<void> {
+    if (startSizing === undefined) return;
+    for (const { id: boardId } of synced) {
+      try {
+        await startSizing({ organizationId, boardId, startedBy });
+      } catch {
+        // Swallowed on purpose; see above.
+      }
+    }
   }
 
   /**
@@ -364,7 +414,11 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
           opened, so a failure here costs a round trip rather than the boards.
         */
         try {
-          await syncBoards(organizationId, connection.id);
+          // Boards never sized are sized now; see `sizeBoards`.
+          const synced = await syncBoards(organizationId, connection.id);
+          if (synced.ok) {
+            await sizeBoards(organizationId, synced.boards, c.get("user").id);
+          }
         } catch {
           // Swallowed on purpose. The result is discarded for the same
           // reason: a site that granted no Agile scope is still a connected
@@ -456,7 +510,9 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
    *
    * A POST because it writes rows, even though a caller means it as a read.
    * Any member may call it: it registers pointers to boards the organization
-   * already holds a grant for, reads no ticket, and changes no setting.
+   * already holds a grant for and changes no setting. A board never sized is
+   * sized in the background, as on connect — the one run every board gets,
+   * not a choice the caller is making for anyone.
    */
   app.post("/api/v1/orgs/:orgId/jira/connections/:id/sync", async (c) => {
     const { organizationId } = c.get("member");
@@ -464,9 +520,9 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
 
     try {
       const result = await syncBoards(organizationId, connectionId);
-      return result.ok
-        ? c.json({ boards: result.boards })
-        : failureResponse(c, result.failure);
+      if (!result.ok) return failureResponse(c, result.failure);
+      await sizeBoards(organizationId, result.boards, c.get("user").id);
+      return c.json({ boards: result.boards, added: result.added });
     } catch (error) {
       return await jiraFailure(c, connections, connectionId, error);
     }

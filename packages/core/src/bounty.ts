@@ -21,6 +21,21 @@ export interface RateCardSnapshot extends RateCardValues {
   readonly revision: number;
 }
 
+/**
+ * The card an organization prices with until someone edits it: USD, evenly
+ * spaced from 10 to 200 in whole dollars. The rate card editor shows it as
+ * the starting values, and the first run on an organization with no card
+ * saves it, so a new Jira site is sized without a stop at settings first.
+ */
+export const DEFAULT_RATE_CARD: RateCardValues = {
+  currency: "USD",
+  xsMinor: 1_000,
+  sMinor: 5_800,
+  mMinor: 10_500,
+  lMinor: 15_300,
+  xlMinor: 20_000,
+};
+
 export interface BountySelection {
   readonly maxTickets: number;
   readonly excludeAssigned: boolean;
@@ -40,6 +55,16 @@ export interface BountySizingResult {
 }
 
 export type BountyOutcomeStatus = "proposed" | "unsized" | "failed" | "skipped";
+
+/**
+ * A ticket a run chose to size, recorded before sizing starts, so a page
+ * opened mid-run can show what is still to come as well as what is done.
+ */
+export interface BountyRunPlannedIssue {
+  readonly externalIssueId: string;
+  readonly issueKey: string;
+  readonly summary: string;
+}
 
 export interface BountyRunOutcome {
   readonly externalIssueId: string;
