@@ -6,7 +6,9 @@
  * server, the web app and the skill's CLI share one implementation of the
  * integration mechanics instead of three that drift.
  *
- * Read-only. Nothing here writes to Jira; see `READ_SCOPES`.
+ * Reads and two narrow writes. `JiraClient` only reads; `JiraWriteClient`
+ * posts a comment and adds a label, the bounty write-back, and nothing else.
+ * Consent asks for `WRITE_SCOPES` (`READ_SCOPES` plus `write:jira-work`).
  */
 
 export { JiraApiError, JiraClient } from "./client.js";

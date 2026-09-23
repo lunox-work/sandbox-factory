@@ -46,7 +46,13 @@ export type JiraClientFailure =
   { readonly reason: "not-found" } | { readonly reason: "reconnect" };
 
 export type JiraClientResult =
-  | { readonly ok: true; readonly client: JiraClient; readonly cloudId: string }
+  | {
+      readonly ok: true;
+      readonly client: JiraClient;
+      readonly cloudId: string;
+      /** The row's revision when the client was built; see `noteAuthFailure`. */
+      readonly credentialRevision: number;
+    }
   | { readonly ok: false; readonly failure: JiraClientFailure };
 
 export type JiraClientsResult =
@@ -55,6 +61,7 @@ export type JiraClientsResult =
       readonly client: JiraClient;
       readonly writeClient: JiraWriteClient;
       readonly cloudId: string;
+      readonly credentialRevision: number;
     }
   | { readonly ok: false; readonly failure: JiraClientFailure };
 
@@ -207,7 +214,12 @@ export async function jiraClientFor(
 ): Promise<JiraClientResult> {
   const result = await jiraClientsFor(options, organizationId, connectionId);
   return result.ok
-    ? { ok: true, client: result.client, cloudId: result.cloudId }
+    ? {
+        ok: true,
+        client: result.client,
+        cloudId: result.cloudId,
+        credentialRevision: result.credentialRevision,
+      }
     : result;
 }
 
@@ -236,6 +248,7 @@ export async function jiraClientsFor(
   return {
     ok: true,
     cloudId: connection.cloudId,
+    credentialRevision: connection.credentialRevision,
     client: new JiraClient({
       credential,
       // So issue DTOs carry a browsable `browse/` link. The OAuth credential
@@ -298,23 +311,41 @@ export type JiraFailureKind = "reconnect" | "scope" | "other";
  *
  * A 403 is likewise excluded: that is a permission the *user* lacks, which a
  * reconnect does not change either.
+ *
+ * **The flag is fenced on the revision the request started from.** A user can
+ * reconnect while a request on the old grant is still in flight; its 401 then
+ * says nothing about the new grant, and flagging the row would hide a working
+ * connection. The answer is still "reconnect" — for this request it was.
  */
 export async function noteAuthFailure(
   connections: JiraConnectionStore,
-  connectionId: string,
+  target: JiraFailureTarget,
   error: unknown,
 ): Promise<JiraFailureKind> {
+  const flag = () =>
+    connections.markUnhealthy(
+      target.organizationId,
+      target.connectionId,
+      target.credentialRevision,
+    );
   if (error instanceof JiraApiError && error.isUnauthorized) {
     if (isScopeMismatch(error)) {
       // Deliberately no `markUnhealthy`: the grant is fine.
       return "scope";
     }
-    await connections.markUnhealthy(connectionId);
+    await flag();
     return "reconnect";
   }
   if (error instanceof JiraAuthError && error.needsReconnect) {
-    await connections.markUnhealthy(connectionId);
+    await flag();
     return "reconnect";
   }
   return "other";
+}
+
+/** The connection a failed call used, as it stood when the call began. */
+export interface JiraFailureTarget {
+  readonly organizationId: string;
+  readonly connectionId: string;
+  readonly credentialRevision: number;
 }

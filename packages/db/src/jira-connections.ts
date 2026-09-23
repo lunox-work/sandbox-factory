@@ -130,8 +130,18 @@ export interface JiraConnectionStore {
       scopes: readonly string[];
     },
   ): Promise<boolean>;
-  /** Flags a connection Atlassian has refused, so the UI can say "reconnect". */
-  markUnhealthy(connectionId: string): Promise<void>;
+  /**
+   * Flags a connection Atlassian has refused, so the UI can say "reconnect".
+   *
+   * Fenced on the revision the failing request started from: a reconnect
+   * during the request moves the row on, and the old grant's failure must not
+   * flag the new one. `false` when the row has moved (or is not the owner's).
+   */
+  markUnhealthy(
+    organizationId: string,
+    connectionId: string,
+    expectedRevision: number,
+  ): Promise<boolean>;
   remove(organizationId: string, connectionId: string): Promise<boolean>;
 }
 
@@ -252,11 +262,19 @@ export function createJiraConnectionStore(
       return rows.length > 0;
     },
 
-    async markUnhealthy(connectionId) {
-      await db
+    async markUnhealthy(organizationId, connectionId, expectedRevision) {
+      const rows = await db
         .update(jiraConnection)
         .set({ healthy: false, updatedAt: new Date() })
-        .where(eq(jiraConnection.id, connectionId));
+        .where(
+          and(
+            eq(jiraConnection.organizationId, organizationId),
+            eq(jiraConnection.id, connectionId),
+            eq(jiraConnection.credentialRevision, expectedRevision),
+          ),
+        )
+        .returning();
+      return rows.length > 0;
     },
 
     async remove(organizationId, connectionId) {

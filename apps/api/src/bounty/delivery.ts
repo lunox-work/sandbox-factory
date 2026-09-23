@@ -123,8 +123,13 @@ export class BountyDelivery {
     }
 
     if (operation.kind === "approved") {
+      const requestController = new AbortController();
+      const timer = setTimeout(() => requestController.abort(), 30_000);
       try {
-        const spec = await context.client.issueSpec(context.externalId);
+        const spec = await context.client.issueSpec(
+          context.externalId,
+          AbortSignal.any([leaseSignal, requestController.signal]),
+        );
         if (
           context.proposal.specHashVersion !== 1 ||
           spec.pricingSpecHash !== context.proposal.specHash ||
@@ -146,6 +151,8 @@ export class BountyDelivery {
           "failed",
           "spec_unavailable",
         );
+      } finally {
+        clearTimeout(timer);
       }
     }
 

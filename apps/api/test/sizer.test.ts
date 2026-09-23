@@ -47,6 +47,11 @@ test("forced tool output is validated and returns actual usage metadata", async 
     JSON.stringify(calls[0]?.["tools"]),
     /"enum":\["XS","S","M","L","XL","unsized"\]/,
   );
+  // A strict tool schema with length keywords is a 400 at Anthropic.
+  assert.doesNotMatch(
+    JSON.stringify(calls[0]?.["tools"]),
+    /minLength|maxLength/,
+  );
   assert.deepEqual(calls[0]?.["tool_choice"], {
     type: "tool",
     name: "size_bounty",

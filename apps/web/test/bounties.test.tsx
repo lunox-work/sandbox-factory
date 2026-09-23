@@ -1100,6 +1100,82 @@ test("proposal detail links survive navigation", async () => {
   expect(urls.some((url) => url.includes("status="))).toBe(false);
 });
 
+test("a shared link to a proposal that is gone says so instead of loading forever", async () => {
+  window.history.replaceState(null, "", "/?proposal=bpr_gone");
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((url: string) => {
+      if (url.includes("/runs")) {
+        return Promise.resolve(
+          Response.json({ runs: [], sizingAvailable: true }),
+        );
+      }
+      if (url.includes("/proposals/bpr_gone?")) {
+        return Promise.resolve(
+          Response.json({ error: "not_found" }, { status: 404 }),
+        );
+      }
+      return Promise.resolve(Response.json({ proposals: [] }));
+    }),
+  );
+  render(
+    <BoardBounties
+      organizationId="org_1"
+      boardId="jrb_1"
+      role="owner"
+      writeGranted={false}
+      readIssue={() => Promise.resolve(null)}
+    />,
+  );
+  const panel = await screen.findByTestId("proposal-panel");
+  expect(
+    await within(panel).findByText("This proposal is not on this board."),
+  ).toBeDefined();
+  expect(within(panel).queryByText("Loading the proposal…")).toBeNull();
+});
+
+test("a proposal that could not be read offers another try", async () => {
+  window.history.replaceState(null, "", "/?proposal=bpr_1");
+  let detailCalls = 0;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((url: string) => {
+      if (url.includes("/runs")) {
+        return Promise.resolve(
+          Response.json({ runs: [], sizingAvailable: true }),
+        );
+      }
+      if (url.includes("/proposals/bpr_1?")) {
+        detailCalls += 1;
+        return Promise.resolve(
+          Response.json({ error: "internal" }, { status: 500 }),
+        );
+      }
+      return Promise.resolve(Response.json({ proposals: [] }));
+    }),
+  );
+  render(
+    <BoardBounties
+      organizationId="org_1"
+      boardId="jrb_1"
+      role="owner"
+      writeGranted={false}
+      readIssue={() => Promise.resolve(null)}
+    />,
+  );
+  const panel = await screen.findByTestId("proposal-panel");
+  expect(
+    await within(panel).findByText("Could not load the proposal."),
+  ).toBeDefined();
+  const before = detailCalls;
+  await userEvent.click(
+    within(panel).getByRole("button", { name: "Try again" }),
+  );
+  await waitFor(() => {
+    expect(detailCalls).toBeGreaterThan(before);
+  });
+});
+
 test("S is draggable between XS and M, and XS edits autosave the five-point range", async () => {
   const fetchMock = vi.fn((_url: string, init?: RequestInit) =>
     Promise.resolve(

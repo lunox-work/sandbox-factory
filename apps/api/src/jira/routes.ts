@@ -46,6 +46,7 @@ import {
   jiraClientFor,
   noteAuthFailure,
   type JiraClientFailure,
+  type JiraFailureTarget,
 } from "./credential.js";
 import { signState, verifyState } from "./state.js";
 import { InvalidBoardIdError, selectBacklog } from "../bounty/selection.js";
@@ -495,7 +496,16 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
     try {
       return c.json({ boards: await result.client.boards() });
     } catch (error) {
-      return await jiraFailure(c, connections, connectionId, error);
+      return await jiraFailure(
+        c,
+        connections,
+        {
+          organizationId,
+          connectionId,
+          credentialRevision: result.credentialRevision,
+        },
+        error,
+      );
     }
   });
 
@@ -518,13 +528,27 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
     const { organizationId } = c.get("member");
     const connectionId = c.req.param("id");
 
+    // The revision the sync starts from, so a failure on a grant replaced
+    // meanwhile does not flag its successor; see `noteAuthFailure`.
+    const started = await connections.get(organizationId, connectionId);
+    if (started === null) return failureResponse(c, { reason: "not-found" });
+
     try {
       const result = await syncBoards(organizationId, connectionId);
       if (!result.ok) return failureResponse(c, result.failure);
       await sizeBoards(organizationId, result.boards, c.get("user").id);
       return c.json({ boards: result.boards, added: result.added });
     } catch (error) {
-      return await jiraFailure(c, connections, connectionId, error);
+      return await jiraFailure(
+        c,
+        connections,
+        {
+          organizationId,
+          connectionId,
+          credentialRevision: started.credentialRevision,
+        },
+        error,
+      );
     }
   });
 
@@ -575,7 +599,16 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
         (candidate) => String(candidate.id) === parsed.data.externalId,
       );
     } catch (error) {
-      return await jiraFailure(c, connections, parsed.data.connectionId, error);
+      return await jiraFailure(
+        c,
+        connections,
+        {
+          organizationId,
+          connectionId: parsed.data.connectionId,
+          credentialRevision: result.credentialRevision,
+        },
+        error,
+      );
     }
 
     if (board === undefined) {
@@ -670,7 +703,16 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
         // and so does this: reporting it as deleted would be a guess.
         return c.json({ error: "Not found" }, 404);
       }
-      return await jiraFailure(c, connections, registered.connectionId, error);
+      return await jiraFailure(
+        c,
+        connections,
+        {
+          organizationId,
+          connectionId: registered.connectionId,
+          credentialRevision: result.credentialRevision,
+        },
+        error,
+      );
     }
   });
 
@@ -720,7 +762,16 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
       if (error instanceof InvalidBoardIdError) {
         return c.json({ error: error.message }, 422);
       }
-      return await jiraFailure(c, connections, connectionId, error);
+      return await jiraFailure(
+        c,
+        connections,
+        {
+          organizationId,
+          connectionId,
+          credentialRevision: result.credentialRevision,
+        },
+        error,
+      );
     }
   });
 }
@@ -760,10 +811,10 @@ function failureResponse(
 async function jiraFailure(
   c: { json: (body: unknown, status: 404 | 409 | 502) => Response },
   connections: JiraConnectionStore,
-  connectionId: string,
+  target: JiraFailureTarget,
   error: unknown,
 ): Promise<Response> {
-  const kind = await noteAuthFailure(connections, connectionId, error);
+  const kind = await noteAuthFailure(connections, target, error);
   if (kind === "reconnect") {
     return failureResponse(c, { reason: "reconnect" });
   }

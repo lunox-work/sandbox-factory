@@ -152,11 +152,23 @@ function hours(seconds: number | null): string | null {
   return `${Number.isInteger(value) ? value : value.toFixed(1)}h`;
 }
 
+/**
+ * A Jira date. `dueDate` comes without a time (`2026-12-19`), which
+ * `new Date` reads as UTC midnight — the day before, west of Greenwich — so a
+ * bare date is built as a local calendar day instead. Timestamps pass through.
+ */
+function parseDate(value: string): Date {
+  const day = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  return day === null
+    ? new Date(value)
+    : new Date(Number(day[1]), Number(day[2]) - 1, Number(day[3]));
+}
+
 function asDate(value: string | null): string | null {
   if (value === null) {
     return null;
   }
-  const date = new Date(value);
+  const date = parseDate(value);
   return Number.isNaN(date.getTime())
     ? null
     : date.toLocaleDateString(undefined, {
@@ -177,7 +189,7 @@ export function fromToday(
   now = new Date(),
 ): string | null {
   if (value === null) return null;
-  const date = new Date(value);
+  const date = parseDate(value);
   if (Number.isNaN(date.getTime())) return null;
   const startOf = (d: Date) =>
     Date.UTC(d.getFullYear(), d.getMonth(), d.getDate());
@@ -231,7 +243,7 @@ function DatedField({
 /** Whether a due date has passed, by calendar day. */
 function isOverdue(value: string | null): boolean {
   if (value === null) return false;
-  const date = new Date(value);
+  const date = parseDate(value);
   if (Number.isNaN(date.getTime())) return false;
   const today = new Date();
   return (

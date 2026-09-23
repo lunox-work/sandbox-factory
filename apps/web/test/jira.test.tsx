@@ -14,6 +14,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
+import { fromToday } from "../src/IssueSpec";
 import { Jira, JiraBoard, JiraSite } from "../src/Jira";
 
 const connection = {
@@ -1610,4 +1611,19 @@ test("the way out to Jira sits on the tab row", async () => {
   expect(within(row as HTMLElement).getByRole("tablist")).toBeDefined();
   expect(link.getAttribute("target")).toBe("_blank");
   expect(link.getAttribute("rel")).toContain("noopener");
+});
+
+test("a date-only due date is that calendar day west of UTC too", () => {
+  const zone = process.env.TZ;
+  // Jira sends `dueDate` without a time; read as UTC midnight, it is the day
+  // before anywhere west of Greenwich.
+  process.env.TZ = "America/Los_Angeles";
+  try {
+    const noon = new Date(2026, 11, 19, 12);
+    expect(fromToday("2026-12-19", noon)).toBe("today");
+    expect(fromToday("2026-12-20", noon)).toBe("tomorrow");
+  } finally {
+    if (zone === undefined) delete process.env.TZ;
+    else process.env.TZ = zone;
+  }
 });

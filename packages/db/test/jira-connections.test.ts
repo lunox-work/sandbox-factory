@@ -226,12 +226,21 @@ test("markUnhealthy flags the row without touching the tokens", async () => {
   // The row is kept so the UI can name the site the user recognises.
   const { store: connections, calls } = store([connectionRow()]);
 
-  await connections.markUnhealthy("jrc_1");
+  assert.equal(await connections.markUnhealthy("org_1", "jrc_1", 1), true);
 
   const values = calls[0]?.values ?? {};
   assert.equal(values["healthy"], false);
   assert.equal(values["accessTokenEnc"], undefined);
   assert.equal(values["refreshTokenEnc"], undefined);
+  // Owner and revision are in the WHERE, not just the id.
+  assert.equal(calls[0]?.filtered, true);
+});
+
+test("markUnhealthy reports a row that has moved on", async () => {
+  // A reconnect mid-request bumps the revision; the fake returns no row for
+  // the stale update, as Postgres would.
+  const { store: connections } = store([]);
+  assert.equal(await connections.markUnhealthy("org_1", "jrc_1", 1), false);
 });
 
 test("remove reports whether anything was deleted, scoped to the owner", async () => {

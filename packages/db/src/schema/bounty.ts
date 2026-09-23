@@ -132,7 +132,9 @@ export const bountyRun = pgTable(
     ),
     check(
       "bounty_run_source_check",
-      sql`(${table.kind} in ('backlog', 'issue') AND ${table.sourceProposalId} IS NULL AND ${table.sourceRevision} IS NULL) OR (${table.kind} = 'reprice' AND ${table.sourceProposalId} IS NOT NULL AND ${table.sourceRevision} > 0)`,
+      // A reprice run's source may be deleted later, and `ON DELETE SET NULL`
+      // clears the pointer; requiring it here would make that delete fail.
+      sql`(${table.kind} in ('backlog', 'issue') AND ${table.sourceProposalId} IS NULL AND ${table.sourceRevision} IS NULL) OR (${table.kind} = 'reprice' AND ${table.sourceRevision} > 0)`,
     ),
   ],
 );

@@ -135,8 +135,17 @@ export class AnthropicSizer implements Sizer {
             properties: {
               complexity: { enum: [...BOUNTY_COMPLEXITIES] },
               confidence: { enum: ["low", "medium", "high"] },
-              rationale: { type: "string", minLength: 1, maxLength: 500 },
-              unsizedReason: { type: "string", minLength: 1, maxLength: 120 },
+              // Strict tool schemas reject minLength/maxLength with a 400, so
+              // the limits are described here and enforced by
+              // `sizingResultSchema` on the way back.
+              rationale: {
+                type: "string",
+                description: "Non-empty, at most 500 characters.",
+              },
+              unsizedReason: {
+                type: "string",
+                description: "Non-empty, at most 120 characters.",
+              },
             },
             required: ["complexity", "confidence", "rationale"],
           },

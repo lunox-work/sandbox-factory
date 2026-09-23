@@ -55,7 +55,7 @@ export interface JiraState {
 
 export interface Jira extends JiraState {
   /** Sends the browser to Atlassian. Does not return. */
-  connect: (connectionId?: string) => void;
+  connect: () => void;
   disconnect: (
     connectionId: string,
   ) => Promise<{ ok: true } | { ok: false; error: string }>;

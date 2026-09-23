@@ -55,6 +55,8 @@ function fakeConnections(
   upserts: { organizationId: string; input: JiraConnectionInput }[];
   removed: string[];
   unhealthy: string[];
+  /** The row's revision now; move it to stand in for a reconnect. */
+  row: { credentialRevision: number };
 } {
   const upserts: { organizationId: string; input: JiraConnectionInput }[] = [];
   const removed: string[] = [];
@@ -73,10 +75,12 @@ function fakeConnections(
     createdAt: "2026-09-21T00:00:00.000Z",
     ...overrides,
   };
+  const row = { credentialRevision: summary.credentialRevision };
   return {
     upserts,
     removed,
     unhealthy,
+    row,
     list: () => Promise.resolve([summary]),
     get: () => Promise.resolve(summary),
     upsert: (organizationId, input) => {
@@ -93,9 +97,12 @@ function fakeConnections(
         credentialRevision: 1,
       }),
     saveTokens: () => Promise.resolve(true),
-    markUnhealthy: (id) => {
+    markUnhealthy: (_organizationId, id, expectedRevision) => {
+      if (expectedRevision !== row.credentialRevision) {
+        return Promise.resolve(false);
+      }
       unhealthy.push(id);
-      return Promise.resolve();
+      return Promise.resolve(true);
     },
     remove: (_organizationId, id) => {
       removed.push(id);
@@ -1588,6 +1595,45 @@ test("a revoked grant marks the connection unhealthy", async () => {
 
   assert.equal(response.status, 409);
   // So the next page load says "reconnect" without spending a round trip.
+  assert.deepEqual(connections.unhealthy, ["jrc_1"]);
+});
+
+test("a 401 on a grant replaced mid-request does not flag its successor", async () => {
+  // The request built its client at revision 1; the user reconnected before
+  // Jira answered. The old token's 401 says nothing about the new grant.
+  const connections = fakeConnections();
+  const jira = fakeJiraApi({ status: 401 });
+  const { app } = appWith({
+    connections,
+    fetch: (input, init) => {
+      connections.row.credentialRevision = 2;
+      return jira(input, init);
+    },
+  });
+
+  const response = await app.request(
+    "/api/v1/orgs/org_1/jira/boards/jrb_1/backlog-preview",
+    { headers: signedIn },
+  );
+
+  // This request's grant was finished, so it still says reconnect.
+  assert.equal(response.status, 409);
+  assert.deepEqual(connections.unhealthy, []);
+});
+
+test("a revoked grant flags the connection from the sync route too", async () => {
+  const connections = fakeConnections();
+  const { app } = appWith({
+    connections,
+    fetch: fakeJiraApi({ status: 401 }),
+  });
+
+  const response = await app.request(
+    "/api/v1/orgs/org_1/jira/connections/jrc_1/sync",
+    { method: "POST", headers: signedIn },
+  );
+
+  assert.equal(response.status, 409);
   assert.deepEqual(connections.unhealthy, ["jrc_1"]);
 });
 

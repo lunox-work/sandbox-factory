@@ -1,6 +1,6 @@
 # Proposals as the board page, with a Notion-style peek
 
-Date: 2026-09-22. Status: approved.
+Date: 2026-09-22. Status: shipped; revised to match the code.
 
 ## Problem
 
@@ -20,18 +20,19 @@ and the fields — moves into the proposal's peek as the Spec tab.
 ### Page
 
 - Header as today.
-- Toolbar: the status filter (Proposed · Approved; see the two-state
-  proposals spec)
-  as the same segmented control the peek's tabs use, on the left; "Run
-  sizing" on the right for an owner or admin. One muted line under it:
-  `Latest run: succeeded · 10 results · sized by DeepSeek V4 Pro`. The
-  sizing-unavailable notice stays; the write-access notice appears only
-  when the site lacks the grant, as a warning.
-- The list sits in the bordered container the backlog used, with a header
-  row (Ticket · Size · Amount). A row is: key in mono · title, truncated ·
-  complexity badge · amount (or "Unpriced"), right-aligned · chevron. The
-  whole row is the button; the selected row is marked. Nothing else is in
-  the row.
+- For an owner or admin, when sizing is configured: a ticket search on top,
+  "Find a ticket to size — key or words from its title". Picking a ticket
+  sizes it and opens its proposal when it lands. There is no status filter,
+  no "Run sizing" button and no latest-run line: connecting a site sizes its
+  boards on its own, and a run in progress streams ticket by ticket above the
+  list instead.
+- The notices appear only when there is something to say: sizing is not
+  configured, or the site lacks the write grant (as a warning).
+- One list of every status, in the bordered container the backlog used, with
+  a header row (Ticket · Status · Size · Amount). A row is: key in mono ·
+  title, truncated · status badge · complexity badge · amount (or
+  "Unpriced"), right-aligned · chevron. The whole row is the button; the
+  selected row is marked. Nothing else is in the row.
 
 ### Peek
 
@@ -47,13 +48,16 @@ Opened by a row click, over the list, with `PeekPanel`.
   changed / missing since sizing, in words), Revision — then the rationale
   as prose under "Why this size"; delivery status when a write-back exists;
   the revision history only when there is more than one, where a click
-  switches the peek to that revision. The panel footer holds the actions for
-  an owner or admin, by state; see the two-state proposals spec.
+  switches the peek to that revision. The actions for an owner or admin, by
+  state, sit inside the Bounty card, each beside the fact it changes; see the
+  two-state proposals spec.
 - Spec: the ticket read live from Jira by key, through the same read the
-  backlog peek used. One scroll: the description as Markdown, then the fields
-  list beneath it as a section. No inner tabs. The same skeleton and
+  backlog peek used. One scroll: the fields list first, then the description
+  as Markdown beneath it. No inner tabs. The same skeleton and
   error-with-retry. Fetched when the peek opens, so switching to the tab is
   instant.
+- A `?proposal=` id the board no longer has (a stale shared link) says so in
+  the peek; a read that failed for another reason offers to try again.
 
 ### URL
 
@@ -76,4 +80,5 @@ the list, the peek, and the URL state.
 
 The backlog peek tests (open on click, skeleton, error and retry, back
 button, focus return) become proposal peek tests. The proposals tests cover
-the minimal rows, the footer actions, the Spec tab, and the status filters.
+the minimal rows, the actions in the Bounty card, the Spec tab, and the
+absence of a status filter or run controls.

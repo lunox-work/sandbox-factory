@@ -97,6 +97,10 @@ function harness(
     boardMissing?: boolean;
     claimMiss?: boolean;
     specHash?: string;
+    /** The spec read never settles on its own; only its signal ends it. */
+    specHangs?: boolean;
+    /** The first heartbeat finds the lease taken. */
+    leaseLost?: boolean;
   } = {},
 ) {
   let current = options.op ?? operation();
@@ -107,7 +111,7 @@ function harness(
       current = { ...current, status: "running" };
       return Promise.resolve(current);
     },
-    heartbeat: () => Promise.resolve(true),
+    heartbeat: () => Promise.resolve(!options.leaseLost),
     get: () => Promise.resolve(current),
     markCommentAttempted: () => {
       events.push("attempt");
@@ -161,11 +165,15 @@ function harness(
     },
   } as unknown as BountyWritebackStore;
   const readClient = {
-    issueSpec: () =>
-      Promise.resolve({
-        pricingSpecHash: options.specHash ?? "a".repeat(64),
-        inputTruncated: false,
-      }),
+    issueSpec: (_id: string, signal?: AbortSignal) =>
+      options.specHangs
+        ? new Promise((_resolve, reject) => {
+            signal?.addEventListener("abort", () => reject(signal.reason));
+          })
+        : Promise.resolve({
+            pricingSpecHash: options.specHash ?? "a".repeat(64),
+            inputTruncated: false,
+          }),
     comments: () =>
       options.commentsError === undefined
         ? Promise.resolve(options.comments ?? [])
@@ -220,6 +228,16 @@ function harness(
     clientsFor: () =>
       Promise.resolve({ ok: true, client: readClient, writeClient }),
     leaseToken: () => "lease",
+    ...(options.leaseLost
+      ? {
+          // Beat once, straight away, so a lost lease shows mid-request.
+          setInterval: ((beat: () => void) => {
+            setImmediate(beat);
+            return 0;
+          }) as unknown as typeof globalThis.setInterval,
+          clearInterval: () => {},
+        }
+      : {}),
   });
   return { delivery, events, current: () => current };
 }
@@ -259,6 +277,14 @@ test("a stale approval remains approved but its delivery fails before sending", 
   const result = await state.delivery.execute("org_1", "bwo_1");
   assert.equal(result?.status, "failed");
   assert.ok(state.events.includes("failed:proposal_stale"));
+  assert.ok(!state.events.includes("attempt"));
+});
+
+test("a lost lease ends a stalled spec read instead of holding the worker", async () => {
+  const state = harness({ specHangs: true, leaseLost: true });
+  const result = await state.delivery.execute("org_1", "bwo_1");
+  assert.equal(result?.status, "failed");
+  assert.ok(state.events.includes("failed:spec_unavailable"));
   assert.ok(!state.events.includes("attempt"));
 });
 

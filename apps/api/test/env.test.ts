@@ -352,6 +352,34 @@ test("empty sizing values behave as unset and do not stop boot", () => {
   assert.equal(env.DEEPSEEK_BASE_URL, undefined);
 });
 
+test("the Terraform placeholder leaves a sizing pair unset", () => {
+  // infra/secrets.tf seeds every secret with it; a pair never pushed must not
+  // look configured and send the placeholder to a provider.
+  const env = parseEnv({
+    ...required,
+    ANTHROPIC_API_KEY: "REPLACE_ME",
+    SIZING_MODEL: "REPLACE_ME",
+    DEEPSEEK_API_KEY: "REPLACE_ME",
+    DEEPSEEK_SIZING_MODEL: "REPLACE_ME",
+  });
+  assert.equal(sizingConfig(env), undefined);
+  assert.equal(deepseekSizingConfig(env), undefined);
+  assert.equal(sizingAvailable(env), false);
+});
+
+test("the Terraform placeholder or an empty value leaves the Jira app unset", () => {
+  // Unset, the connect route answers 501; a placeholder taken for a client id
+  // would send the user to Atlassian's error page instead.
+  for (const value of ["REPLACE_ME", ""]) {
+    const env = parseEnv({
+      ...required,
+      JIRA_CLIENT_ID: value,
+      JIRA_CLIENT_SECRET: value,
+    });
+    assert.equal(jiraOAuthConfig(env), undefined);
+  }
+});
+
 test("the sizing fallback needs its own pair, and the base URL is optional", () => {
   assert.equal(deepseekSizingConfig(parseEnv(required)), undefined);
   assert.equal(

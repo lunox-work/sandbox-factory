@@ -491,6 +491,15 @@ export function BoardBounties({
     new URLSearchParams(window.location.search).get("proposal"),
   );
   const [detail, setDetail] = useState<ProposalDetail | null>(null);
+  /*
+    The open proposal's detail read finished with nothing to show. Keyed by
+    id, so a read for one proposal never speaks for the next; without it a
+    stale shared link leaves the peek on its loading line for good.
+  */
+  const [detailFailure, setDetailFailure] = useState<{
+    id: string;
+    notFound: boolean;
+  } | null>(null);
   const [sizingAvailable, setSizingAvailable] = useState(true);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -549,6 +558,11 @@ export function BoardBounties({
       setSizingAvailable(runBody.sizingAvailable);
       setProposals(proposalBody.proposals ?? []);
       setDetail(nextDetail);
+      setDetailFailure(
+        selectedId === null || detailResponse === undefined || detailResponse.ok
+          ? null
+          : { id: selectedId, notFound: detailResponse.status === 404 },
+      );
       setError(null);
     } catch {
       if (generation === requestGeneration.current)
@@ -910,7 +924,30 @@ export function BoardBounties({
         data-testid="proposal-panel"
       >
         {selected === null ? (
-          <LoadingLine>Loading the proposal…</LoadingLine>
+          detailFailure !== null && detailFailure.id === selectedId ? (
+            detailFailure.notFound ? (
+              <p className="text-muted-foreground text-sm">
+                This proposal is not on this board.
+              </p>
+            ) : (
+              <div className="flex flex-col items-start gap-3">
+                <ErrorBanner className="mt-0">
+                  Could not load the proposal.
+                </ErrorBanner>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void refresh()}
+                >
+                  <RefreshCw />
+                  Try again
+                </Button>
+              </div>
+            )
+          ) : (
+            <LoadingLine>Loading the proposal…</LoadingLine>
+          )
         ) : (
           <ProposalPeek
             proposal={selected}

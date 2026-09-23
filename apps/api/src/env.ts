@@ -6,6 +6,15 @@
 import { unknownBuildInfo, type BuildInfoDto } from "@sandbox-factory/shared";
 import { z } from "zod";
 
+/**
+ * An optional secret that has no value. Terraform seeds every secret with
+ * `REPLACE_ME` (infra/secrets.tf) and compose passes an unset var as "", and
+ * neither is a credential or a model: kept, they would configure a feature
+ * that fails on its first call instead of reporting it as off.
+ */
+const unsetSecret = (value: unknown) =>
+  value === "" || value === "REPLACE_ME" ? undefined : value;
+
 const envSchema = z.object({
   PORT: z.coerce.number().int().positive().default(4000),
   CORS_ORIGINS: z
@@ -65,8 +74,8 @@ const envSchema = z.object({
    * every other route — `jiraOAuthConfig` below returns undefined, and the
    * connect route answers 501 rather than the process refusing to boot.
    */
-  JIRA_CLIENT_ID: z.string().optional(),
-  JIRA_CLIENT_SECRET: z.string().optional(),
+  JIRA_CLIENT_ID: z.preprocess(unsetSecret, z.string().min(1).optional()),
+  JIRA_CLIENT_SECRET: z.preprocess(unsetSecret, z.string().min(1).optional()),
   /**
    * Encrypts the Jira tokens in `jira_connection`. `openssl rand -base64 32`.
    *
@@ -97,25 +106,16 @@ const envSchema = z.object({
   ORIGIN_VERIFY: z.string().optional(),
 
   // Optional as a pair. Existing API features stay available without sizing.
-  ANTHROPIC_API_KEY: z.preprocess(
-    (value) => (value === "" ? undefined : value),
-    z.string().min(1).optional(),
-  ),
-  SIZING_MODEL: z.preprocess(
-    (value) => (value === "" ? undefined : value),
-    z.string().min(1).optional(),
-  ),
+  ANTHROPIC_API_KEY: z.preprocess(unsetSecret, z.string().min(1).optional()),
+  SIZING_MODEL: z.preprocess(unsetSecret, z.string().min(1).optional()),
 
   // The sizing fallback, optional as its own pair. Set alongside the Anthropic
   // pair it answers whenever an Anthropic call fails; set on its own it serves
   // sizing outright. Like `SIZING_MODEL`, the model is explicit: the account
   // decides which models exist, not this application.
-  DEEPSEEK_API_KEY: z.preprocess(
-    (value) => (value === "" ? undefined : value),
-    z.string().min(1).optional(),
-  ),
+  DEEPSEEK_API_KEY: z.preprocess(unsetSecret, z.string().min(1).optional()),
   DEEPSEEK_SIZING_MODEL: z.preprocess(
-    (value) => (value === "" ? undefined : value),
+    unsetSecret,
     z.string().min(1).optional(),
   ),
   // Override for a proxy or a self-hosted gateway. Unset, the public API.

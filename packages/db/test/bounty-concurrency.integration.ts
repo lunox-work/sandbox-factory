@@ -80,7 +80,8 @@ describe("bounty database concurrency", () => {
         ('issue_race', 'org_bounty', 'board_bounty', '1001', 'DEMO-1', 'new', now(), now()),
         ('issue_rollback', 'org_bounty', 'board_bounty', '1002', 'DEMO-2', 'new', now(), now()),
         ('issue_lease', 'org_bounty', 'board_bounty', '1003', 'DEMO-3', 'new', now(), now()),
-        ('issue_states', 'org_bounty', 'board_bounty', '1004', 'DEMO-4', 'new', now(), now())
+        ('issue_states', 'org_bounty', 'board_bounty', '1004', 'DEMO-4', 'new', now(), now()),
+        ('issue_repriced', 'org_bounty', 'board_bounty', '1005', 'DEMO-5', 'new', now(), now())
     `;
   });
 
@@ -331,6 +332,39 @@ describe("bounty database concurrency", () => {
       select status from bounty_proposal where id = 'proposal_rollback'
     `;
     assert.equal(rows[0]?.["status"], "proposed");
+  });
+
+  test("a re-priced proposal can still be removed", async () => {
+    // A reprice run points at the proposal it re-priced, and the pointer is
+    // `ON DELETE SET NULL`. The run's check must accept the cleared pointer,
+    // or Postgres refuses the delete (and the ticket's cascade with it).
+    await insertRun("run_repriced", "request-repriced", "succeeded");
+    await insertProposal("proposal_repriced", "run_repriced", "issue_repriced");
+    await sql`
+      insert into bounty_run (
+        id, organization_id, board_id, started_by, request_id, status, kind,
+        source_proposal_id, source_revision,
+        selection, rate_card, requested_model, prompt_version
+      ) values (
+        'run_reprice_of', 'org_bounty', 'board_bounty', 'user_bounty',
+        'request-reprice-of', 'succeeded', 'reprice',
+        'proposal_repriced', 1,
+        ${sql.json(selection)}, ${sql.json(rateCard)}, 'model-test', 'v1'
+      )
+    `;
+
+    const connection = createConnection({ url: scratchUrl() });
+    const removed = await createBountyProposalStore(connection.db)
+      .remove("org_bounty", "proposal_repriced", 1)
+      .finally(() => connection.close());
+    assert.equal(removed.ok, true);
+
+    const runs = await sql`
+      select source_proposal_id, source_revision
+      from bounty_run where id = 'run_reprice_of'
+    `;
+    assert.equal(runs[0]?.["source_proposal_id"], null);
+    assert.equal(runs[0]?.["source_revision"], 1);
   });
 
   test("a proposal may only be proposed or approved", async () => {

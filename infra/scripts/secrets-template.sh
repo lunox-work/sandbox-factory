@@ -152,6 +152,8 @@ SIZING_MODEL=$(value_of SIZING_MODEL)
 # The sizing fallback, on the same both-or-neither rule.
 DEEPSEEK_API_KEY=$(value_of DEEPSEEK_API_KEY)
 DEEPSEEK_SIZING_MODEL=$(value_of DEEPSEEK_SIZING_MODEL)
+# Only for a proxy or self-hosted gateway. Unset: https://api.deepseek.com
+# DEEPSEEK_BASE_URL=
 
 # Left unset deliberately. The SPA and the API share one origin through
 # CloudFront, so the session cookie stays host-only — which is stricter than
