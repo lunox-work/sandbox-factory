@@ -1,6 +1,6 @@
 # CI and automation
 
-Eleven workflows in [`.github/workflows/`](../.github/workflows/), plus branch
+Workflows in [`.github/workflows/`](../.github/workflows/), plus branch
 protection on `main`.
 
 | Workflow              | Does                                                                    |
@@ -14,39 +14,80 @@ protection on `main`.
 | `terraform.yml`       | Validates infra; plans on PRs only, with a read-only role               |
 | `deploy-watchdog.yml` | Daily: is production at `main`'s head?                                  |
 | `security-sweep.yml`  | Nightly security sweep                                                  |
-| `codeql-autofix.yml`  | Asks CodeQL for a fix on its own findings                               |
+| `review-gate.yml`     | SHA-bound review gate and bounded CodeRabbit repair requests            |
 | `scorecard.yml`       | OpenSSF supply-chain posture, weekly. Pinned to an exact action version |
 
 ## Branch protection
 
-`main` is protected by **two** layers, and both must be satisfied.
+The target configuration is [main-ruleset.json](../.github/main-ruleset.json):
+one active ruleset, no bypass actors, no force-push/deletion, linear history,
+squash-only PR merges and resolved review threads. Strict checks require an
+up-to-date branch and these contexts from their expected GitHub Apps:
 
-A repository ruleset named **main protection** (Settings → Rules → Rulesets):
+- `Test (Node 22)`, `Test (Node 24)`, `Analyze`, `Review gate`: GitHub Actions.
+- `CodeQL`: GitHub Advanced Security (the findings result, not just the scanner job).
 
-- No deletion, no force-push.
-- Pull request required, squash-merge only. Zero approving reviews.
-- Required status checks: `Test (Node 22)`, `Test (Node 24)`, `Analyze`. Strict
-  mode is on, so a branch must be up to date with `main` to merge.
-- `CodeRabbit`, `label` and `Scorecard analysis` are deliberately **not**
-  required: an advisory review and a labeling bot should not be able to wedge
-  the repository shut.
-- `require_extra_approval_for_unattributed_changes` is off. A solo maintainer
-  cannot approve their own PR, so it would deadlock any PR whose commits carry
-  a `Co-Authored-By` trailer.
+Zero generic approving reviews are required because a generic approval cannot
+identify CodeRabbit. The custom gate independently requires its exact-head
+approval. An absent/renamed check blocks merging; update policy and job names
+together. Labeler and Scorecard remain advisory.
 
-And a **classic branch protection** (Settings → Branches), which adds:
+The checked-in policy is not automatically applied by a PR. During bootstrap,
+retain existing classic protection until the new controller is on main and the
+stronger ruleset is active and verified. Only then remove the redundant classic
+rule. Never publish a fabricated gate success to unblock bootstrap.
 
-- `required_conversation_resolution` — **every review thread must be resolved
-  before the merge**. The most common reason a green PR will not merge.
-- `enforce_admins` — so `gh pr merge --admin` overrides none of this.
-- Two extra required contexts, `CodeQL` and `CodeRabbit`. **`CodeRabbit` never
-  reports a conclusion**, so it is permanently pending. This is a
-  misconfiguration, harmless only because auto-merge evaluates the ruleset and
-  not this layer. The REST merge API evaluates this layer, so anything merging
-  through the API stalls (confirmed on PR #26).
+## Review and repair gate
 
-Required checks are matched **by job name**. Renaming a CI job or changing the
-Node matrix silently stops the ruleset requiring it — update both together.
+[review-gate.yml](../.github/workflows/review-gate.yml) loads
+[scripts/review-gate.cjs](../scripts/review-gate.cjs) from the **default branch**,
+not the PR. It never checks out PR code. Events reconcile open main PRs; a
+five-minute schedule recovers missed/coalesced events (GitHub may delay schedules).
+
+Success requires all of:
+
+- CI and CodeQL actually succeeded; missing, skipped and neutral results are not success.
+- CodeRabbit completed review and approved the **current head SHA**.
+- All review discussions are resolved, including human and outdated threads.
+- No repair is outstanding and any policy change has exact-head maintainer acknowledgement.
+
+The controller asks for `@coderabbitai autofix` when review findings remain,
+or `@coderabbitai fix-ci commit` when required checks fail. It waits for a new
+commit, then checks/review repeat. Bot-authored markers prevent duplicate
+requests. At most **three repair requests per PR**; a request with no new commit
+after **one hour** fails closed. A successful third repair may still merge.
+
+The controller never posts approval/resolve overrides and never dismisses
+reviews. Unsupported fixes, rate limits, unavailable review, conflicts or
+exhausted repair rounds leave the PR open. A maintainer must investigate rather
+than bypass the gate. Missing/expired `AUTO_MERGE_TOKEN` also blocks branch
+updates; updates use that token so CI events fire.
+
+Workflows, scripts, review configuration, dependency/test configuration and
+infrastructure are policy-sensitive. A human with current write/maintain/admin
+permission must inspect the head and comment exactly:
+
+```text
+/review-gate accept <full-40-character-head-sha>
+```
+
+The PR explains which SHA needs acknowledgement. A new commit needs a new
+acknowledgement. This is a human control-plane decision, not permission for an
+agent to post the command on a human's behalf. It does not waive CI, review or
+repair limits. Forks require manual maintainer handling.
+
+### Rollout
+
+1. Before opening the bootstrap PR, strengthen native protection with required
+   `CodeRabbit` and `CodeQL` contexts, one approving review, stale-approval
+   dismissal, resolved threads and no bypass actors. Keep classic protection.
+2. Ship the bootstrap under those native checks. CodeRabbit must complete its
+   review and approve before it can merge; no custom gate is fabricated.
+3. After bootstrap merges, the trusted controller becomes available on main.
+4. Apply the checked-in ruleset, preserving unrelated rulesets. Verify its active
+   checks, conversation resolution and empty bypass list before removing classic protection.
+5. Confirm a normal PR stays blocked before CodeRabbit completes, repair commits
+   retrigger CI/review, and a clean exact-head approval unlocks auto-merge.
 
 ## CI (`ci.yml`)
 
@@ -80,8 +121,9 @@ advisories against unchanged code.
 
 Both it and `scorecard.yml` are gated on the repository being public, since
 uploading results requires Advanced Security. **If the repository goes private
-the job skips, and GitHub reports a skipped required check as successful** — PRs
-would merge with no scan at all. Revisit the ruleset if visibility changes.
+the job skips, and GitHub reports a skipped required check as successful**.
+Our custom gate additionally rejects skipped checks, so this blocks rather than
+silently merging. Revisit CodeQL licensing and policy if visibility changes.
 
 ## Dependabot
 
@@ -92,18 +134,18 @@ grouped into one PR.
 ## Auto-merge
 
 [`auto-merge.yml`](../.github/workflows/auto-merge.yml) arms GitHub's auto-merge
-on every PR except a **Dependabot major**, which waits for a human.
+on ready, trusted same-repository PRs except a **Dependabot major**, which waits for a human.
 
 **It merges with the `AUTO_MERGE_TOKEN` secret, not the default
 `GITHUB_TOKEN`.** GitHub raises no events for pushes made with the default
 token, so a merge performed with it produces a `main` that CI and CD never
-observe, and nothing deploys. If the secret expires the workflow falls back to
-the default token and says so in its log; rotate it with
+observe, and nothing deploys. If the secret is absent or unusable the workflow fails; it never falls back to
+the default token. Rotate it with
 [`scripts/rotate-token.sh`](../scripts/rotate-token.sh).
 
 Two things make this safe:
 
-- **`--auto` arms a queue; it does not merge.** GitHub merges only once every
+- **`--auto` enables auto-merge, or merges immediately if already eligible.** GitHub merges only once every
   required check passes. Nothing bypasses the ruleset.
 - **Verification happens before the push.** The
   [`pre-push` hook](../.husky/pre-push) runs the same `npm run verify` as CI.

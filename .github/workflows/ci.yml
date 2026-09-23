@@ -17,8 +17,8 @@ concurrency:
 jobs:
   # The job name is load-bearing: `Test (Node 22)` and `Test (Node 24)` are the
   # required status checks in the branch ruleset. Renaming this job or changing
-  # the matrix values silently stops branch protection from requiring it, and
-  # auto-merge will then merge on checks that never ran.
+  # the matrix values leaves a missing required context and blocks merging.
+  # Update the protection policy alongside check names.
   test:
     name: Test (Node ${{ matrix.node }})
     runs-on: ubuntu-latest
