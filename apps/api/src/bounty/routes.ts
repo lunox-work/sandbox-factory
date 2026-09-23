@@ -11,13 +11,19 @@ import type {
   StoredBountyRun,
   StoredRateCard,
 } from "@sandbox-factory/db";
+import { JiraApiError, JiraAuthError } from "@sandbox-factory/jira";
 import {
+  addIssueSchema,
   boardSelectionSchema,
   createRunSchema,
   putRateCardSchema,
   proposalMutationSchema,
   repriceProposalSchema,
   resizeProposalSchema,
+} from "@sandbox-factory/shared";
+import type {
+  BountyRunPlannedIssue,
+  JiraIssueDto,
 } from "@sandbox-factory/shared";
 import type { Hono } from "hono";
 import {
@@ -27,7 +33,11 @@ import {
   type PricedComplexity,
 } from "sandbox-factory";
 
-import type { BountyExecutor, RunClientResult } from "./executor.js";
+import type {
+  BountyExecutor,
+  RunClientResult,
+  RunJiraClient,
+} from "./executor.js";
 import type { BountyDelivery } from "./delivery.js";
 import { freshProposal, mapConcurrent } from "./review.js";
 
@@ -65,6 +75,11 @@ interface BountyAppEnv {
 export type StartRunResult =
   | { readonly ok: true; readonly run: StoredBountyRun }
   | { readonly ok: false; readonly reason: "active"; readonly runId: string }
+  | {
+      readonly ok: false;
+      readonly reason: "live-proposal";
+      readonly proposalId: string;
+    }
   | {
       readonly ok: false;
       readonly reason:
@@ -139,6 +154,55 @@ async function rateCardFor(
   return put.ok ? put.rateCard : put.current;
 }
 
+/** How many tickets the search shows, and how many it asks Jira for. */
+const SEARCH_RESULTS = 10;
+const SEARCH_CANDIDATES = 50;
+
+/**
+ * One ticket, if it is on the board.
+ *
+ * Read through the board rather than by issue id alone, so a run on one board
+ * cannot be pointed at a ticket that belongs to another — or to a project the
+ * board does not show.
+ */
+async function ticketOnBoard(
+  client: RunJiraClient,
+  boardExternalId: string,
+  issueId: string,
+): Promise<JiraIssueDto | null> {
+  try {
+    const page = await client.boardIssues(Number(boardExternalId), {
+      jql: `issue = ${issueId}`,
+      startAt: 0,
+      maxResults: 1,
+    });
+    return page.issues[0] ?? null;
+  } catch (error) {
+    // Jira answers 400 for an issue id that does not exist.
+    if (error instanceof JiraApiError && error.status === 400) return null;
+    throw error;
+  }
+}
+
+/**
+ * JQL for what a person typed into the board's ticket search.
+ *
+ * A key (`APP-12`) is looked up as a key; anything else is a text search on
+ * what is left once JQL's reserved characters are removed — they would
+ * otherwise make Jira refuse the query rather than search for them.
+ */
+export function ticketSearchJql(query: string): string | null {
+  const text = query.trim().slice(0, 100);
+  if (/^[A-Za-z][A-Za-z0-9_]*-\d+$/.test(text)) {
+    return `key = "${text.toUpperCase()}"`;
+  }
+  const words = text
+    .replace(/[+\-&|!(){}[\]^~*?\\:"'/]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return words === "" ? null : `text ~ "${words}*"`;
+}
+
 export async function startRun(
   options: BountyRouteOptions,
   input: {
@@ -146,6 +210,12 @@ export async function startRun(
     readonly boardId: string;
     readonly startedBy: string;
     readonly requestId: string;
+    /**
+     * Size this one ticket rather than the board's backlog. It must be on
+     * the board, and a ticket that already has a live proposal gets that
+     * proposal back instead of a run.
+     */
+    readonly issueId?: string;
   },
 ): Promise<StartRunResult> {
   const { organizationId } = input;
@@ -167,10 +237,35 @@ export async function startRun(
       reason: ready.reason === "not-found" ? "not-found" : "reconnect",
     };
   }
+  let planned: BountyRunPlannedIssue | undefined;
+  if (input.issueId !== undefined) {
+    const found = await ticketOnBoard(
+      ready.client,
+      board.board.externalId,
+      input.issueId,
+    );
+    if (found === null) return { ok: false, reason: "not-found" };
+    const live = await options.proposals.liveProposalIds(
+      organizationId,
+      board.board.id,
+      [found.id],
+    );
+    const proposalId = live.get(found.id);
+    if (proposalId !== undefined) {
+      return { ok: false, reason: "live-proposal", proposalId };
+    }
+    planned = {
+      externalIssueId: found.id,
+      issueKey: found.key,
+      summary: found.summary,
+    };
+  }
+
   const card = await rateCardFor(options.rateCards, organizationId, input);
   if (card === null) return { ok: false, reason: "rate-card-required" };
 
   const created = await options.runs.create(organizationId, {
+    ...(planned === undefined ? {} : { kind: "issue", planned: [planned] }),
     boardId: board.board.id,
     startedBy: input.startedBy,
     requestId: input.requestId,
@@ -319,6 +414,166 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
           409,
         );
       case "not-found":
+      case "live-proposal":
+        return c.json({ error: "Not found" }, 404);
+    }
+  });
+
+  /**
+   * Search the board's tickets, for picking one to size.
+   *
+   * Read live through the board, so it finds what the board shows and
+   * nothing else. A ticket already on the platform — one with a live
+   * proposal, proposed or approved — is left out: the list is for adding,
+   * and that ticket is already in the proposals below. Jira is asked for a
+   * page of candidates so that dropping those still leaves a full list.
+   * Any member may search; only an owner or admin may add.
+   */
+  app.get("/api/v1/orgs/:orgId/jira/boards/:id/search", async (c) => {
+    const { organizationId } = c.get("member");
+    if (options.clientFor === undefined) {
+      return c.json(
+        {
+          code: "sizing_unavailable",
+          error: "Sizing is not configured for this deployment.",
+        },
+        503,
+      );
+    }
+    const board = await options.boards.forRun(
+      organizationId,
+      c.req.param("id"),
+    );
+    if (board === null) return c.json({ error: "Not found" }, 404);
+    const jql = ticketSearchJql(c.req.query("q") ?? "");
+    if (jql === null) return c.json({ issues: [] });
+    const ready = await options.clientFor(organizationId, board.connectionId);
+    if (!ready.ok) {
+      return ready.reason === "not-found"
+        ? c.json({ error: "Not found" }, 404)
+        : c.json(
+            {
+              code: "reconnect",
+              error: "This Jira connection needs reconnecting.",
+            },
+            409,
+          );
+    }
+
+    let issues: JiraIssueDto[];
+    try {
+      issues = (
+        await ready.client.boardIssues(Number(board.board.externalId), {
+          jql,
+          startAt: 0,
+          maxResults: SEARCH_CANDIDATES,
+        })
+      ).issues;
+    } catch (error) {
+      // A key that does not exist is a 400 from Jira, not an error to show.
+      if (error instanceof JiraApiError && error.status === 400) {
+        return c.json({ issues: [] });
+      }
+      if (
+        (error instanceof JiraAuthError && error.needsReconnect) ||
+        (error instanceof JiraApiError && error.isUnauthorized)
+      ) {
+        return c.json(
+          {
+            code: "reconnect",
+            error: "This Jira connection needs reconnecting.",
+          },
+          409,
+        );
+      }
+      return c.json({ error: "Jira could not be searched." }, 502);
+    }
+
+    const live = await options.proposals.liveProposalIds(
+      organizationId,
+      board.board.id,
+      issues.map(({ id }) => id),
+    );
+    return c.json({
+      issues: issues
+        .filter(({ id }) => !live.has(id))
+        .slice(0, SEARCH_RESULTS)
+        .map((issue) => ({
+          id: issue.id,
+          key: issue.key,
+          summary: issue.summary,
+          status: issue.status,
+          issueType: issue.issueType,
+        })),
+    });
+  });
+
+  /**
+   * Size one ticket someone picked, in the background.
+   *
+   * 202 with the run, which the page polls until the proposal lands and
+   * then opens it. A ticket that already has a live proposal is 200 with
+   * that proposal's id, so the page opens it without sizing anything.
+   */
+  app.post("/api/v1/orgs/:orgId/jira/boards/:id/issues", async (c) => {
+    const { organizationId, role } = c.get("member");
+    if (!isAtLeastAdmin(role)) {
+      return c.json({ error: "Only an owner or admin may add a ticket." }, 403);
+    }
+    const parsed = addIssueSchema.safeParse(
+      await c.req.json().catch(() => null),
+    );
+    if (!parsed.success) {
+      return c.json({ error: "Provide a requestId and an issueId." }, 400);
+    }
+
+    let started: StartRunResult;
+    try {
+      started = await startRun(options, {
+        organizationId,
+        boardId: c.req.param("id"),
+        startedBy: c.get("user").id,
+        requestId: parsed.data.requestId,
+        issueId: parsed.data.issueId,
+      });
+    } catch (error) {
+      // Only Jira's own failures are Jira's. Anything else — a database
+      // refusing the row — is a server fault, left to the error handler so
+      // it is logged rather than reported as a Jira problem.
+      if (error instanceof JiraApiError || error instanceof JiraAuthError) {
+        return c.json({ error: "Jira could not be read." }, 502);
+      }
+      throw error;
+    }
+    if (started.ok) return c.json({ run: started.run }, 202);
+    switch (started.reason) {
+      case "live-proposal":
+        return c.json({ proposalId: started.proposalId });
+      case "sizing-unavailable":
+        return c.json(
+          {
+            code: "sizing_unavailable",
+            error: "Sizing is not configured for this deployment.",
+          },
+          503,
+        );
+      case "reconnect":
+        return c.json(
+          {
+            code: "reconnect",
+            error: "This Jira connection needs reconnecting.",
+          },
+          409,
+        );
+      case "request-conflict":
+        return c.json(
+          {
+            code: "request_conflict",
+            error: "That requestId was already used for another run.",
+          },
+          409,
+        );
+      default:
         return c.json({ error: "Not found" }, 404);
     }
   });

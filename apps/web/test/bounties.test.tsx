@@ -806,6 +806,237 @@ test("a run that has not picked its tickets yet says so", async () => {
   ).toBeDefined();
 });
 
+function searchingBoard(options: {
+  results: unknown[];
+  add?: { status: number; body: unknown };
+  runs?: unknown[];
+}) {
+  const proposal = {
+    id: "bpr_7",
+    issueKey: "APP-7",
+    liveKey: "APP-7",
+    liveTitle: "Add login",
+    modelRationale: "One form.",
+    modelComplexity: "S",
+    modelConfidence: "high",
+    actualModel: "deepseek-v4-pro",
+    freshness: "current",
+    complexity: "S",
+    amountMinor: 5800,
+    currency: "USD",
+    status: "proposed",
+    revision: 1,
+  };
+  const runs = [...(options.runs ?? [])];
+  const requests: { url: string; body?: string }[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((url: string, init?: RequestInit) => {
+      requests.push({ url, body: init?.body as string | undefined });
+      if (url.includes("/search?"))
+        return Promise.resolve(Response.json({ issues: options.results }));
+      if (url.endsWith("/issues"))
+        return Promise.resolve(
+          Response.json(options.add?.body ?? {}, {
+            status: options.add?.status ?? 202,
+          }),
+        );
+      if (url.endsWith("/runs/brn_7"))
+        return Promise.resolve(
+          Response.json({ run: runs.length > 1 ? runs.shift() : runs[0] }),
+        );
+      if (url.includes("/runs"))
+        return Promise.resolve(
+          Response.json({ runs: [], sizingAvailable: true }),
+        );
+      if (url.includes("/proposals/bpr_7?"))
+        return Promise.resolve(
+          Response.json({
+            proposal,
+            freshness: { freshness: "current", checkedAt: "now" },
+            writebackOperations: [],
+          }),
+        );
+      return Promise.resolve(Response.json({ proposals: [proposal] }));
+    }),
+  );
+  render(
+    <BoardBounties
+      organizationId="org_1"
+      boardId="jrb_1"
+      role="owner"
+      writeGranted
+      readIssue={() => Promise.resolve(null)}
+    />,
+  );
+  return requests;
+}
+
+const addLogin = {
+  id: "10007",
+  key: "APP-7",
+  summary: "Add login",
+  status: "To Do",
+  issueType: "Story",
+};
+
+test("a ticket found by search is sized, then opened when its proposal lands", async () => {
+  const requests = searchingBoard({
+    results: [addLogin],
+    add: { status: 202, body: { run: { id: "brn_7" } } },
+    runs: [
+      { id: "brn_7", kind: "issue", status: "running", outcomes: [] },
+      {
+        id: "brn_7",
+        kind: "issue",
+        status: "succeeded",
+        outcomes: [
+          {
+            externalIssueId: "10007",
+            issueKey: "APP-7",
+            status: "proposed",
+            proposalId: "bpr_7",
+          },
+        ],
+      },
+    ],
+  });
+
+  await userEvent.type(
+    await screen.findByRole("searchbox", { name: "Find a ticket to size" }),
+    "login",
+  );
+  const results = await screen.findByTestId("ticket-results");
+  await userEvent.click(
+    await within(results).findByRole("button", { name: /APP-7/ }),
+  );
+
+  expect(
+    requests.find(({ url }) => url.endsWith("/jira/boards/jrb_1/issues"))?.body,
+  ).toContain('"issueId":"10007"');
+  expect((await screen.findByRole("status")).textContent).toContain(
+    "Sizing APP-7",
+  );
+  // Opened by itself, once the run has the proposal.
+  expect(
+    await screen.findByTestId("proposal-panel", {}, { timeout: 4000 }),
+  ).toBeDefined();
+  expect(new URLSearchParams(window.location.search).get("proposal")).toBe(
+    "bpr_7",
+  );
+});
+
+test("a ticket proposed by the board's run meanwhile opens that proposal", async () => {
+  // The add lost a race to the backlog run. Search no longer lists the
+  // ticket, so its proposal is found in the board's list.
+  searchingBoard({
+    results: [addLogin],
+    add: { status: 202, body: { run: { id: "brn_7" } } },
+    runs: [
+      {
+        id: "brn_7",
+        kind: "issue",
+        status: "succeeded",
+        outcomes: [
+          {
+            externalIssueId: "10007",
+            issueKey: "APP-7",
+            status: "skipped",
+            code: "live_proposal",
+          },
+        ],
+      },
+    ],
+  });
+  await userEvent.type(
+    await screen.findByRole("searchbox", { name: "Find a ticket to size" }),
+    "login",
+  );
+  await userEvent.click(
+    await within(await screen.findByTestId("ticket-results")).findByRole(
+      "button",
+      { name: /APP-7/ },
+    ),
+  );
+  expect(
+    await screen.findByTestId("proposal-panel", {}, { timeout: 4000 }),
+  ).toBeDefined();
+});
+
+test("a run that could not size the ticket says so", async () => {
+  searchingBoard({
+    results: [addLogin],
+    add: { status: 202, body: { run: { id: "brn_7" } } },
+    runs: [
+      {
+        id: "brn_7",
+        kind: "issue",
+        status: "failed",
+        outcomes: [],
+      },
+    ],
+  });
+  await userEvent.type(
+    await screen.findByRole("searchbox", { name: "Find a ticket to size" }),
+    "login",
+  );
+  await userEvent.click(
+    await within(await screen.findByTestId("ticket-results")).findByRole(
+      "button",
+      { name: /APP-7/ },
+    ),
+  );
+  expect(
+    (await screen.findByRole("alert", {}, { timeout: 4000 })).textContent,
+  ).toBe("Could not size APP-7.");
+});
+
+test("a refused add is said, and Enter picks the first result", async () => {
+  searchingBoard({
+    results: [addLogin],
+    add: {
+      status: 409,
+      body: { error: "This Jira connection needs reconnecting." },
+    },
+  });
+  const box = await screen.findByRole("searchbox", {
+    name: "Find a ticket to size",
+  });
+  await userEvent.type(box, "login");
+  await within(await screen.findByTestId("ticket-results")).findByRole(
+    "button",
+    { name: /APP-7/ },
+  );
+  await userEvent.type(box, "{Enter}");
+  expect((await screen.findByRole("alert")).textContent).toBe(
+    "This Jira connection needs reconnecting.",
+  );
+});
+
+test("members get no ticket search, since adding sizes and spends", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((url: string) =>
+      Promise.resolve(
+        url.includes("/runs")
+          ? Response.json({ runs: [], sizingAvailable: true })
+          : Response.json({ proposals: [] }),
+      ),
+    ),
+  );
+  render(
+    <BoardBounties
+      organizationId="org_1"
+      boardId="jrb_1"
+      role="member"
+      writeGranted
+      readIssue={() => Promise.resolve(null)}
+    />,
+  );
+  await screen.findByText("No proposals yet.");
+  expect(screen.queryByRole("searchbox")).toBeNull();
+});
+
 test("proposal detail links survive navigation", async () => {
   const urls: string[] = [];
   const proposal = {

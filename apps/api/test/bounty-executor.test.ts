@@ -8,7 +8,7 @@ import type {
   JiraIssueStore,
   StoredBountyRun,
 } from "@sandbox-factory/db";
-import type { JiraIssueSpec } from "@sandbox-factory/jira";
+import { JiraApiError, type JiraIssueSpec } from "@sandbox-factory/jira";
 import type { JiraIssueDto } from "@sandbox-factory/shared";
 
 import { BountyExecutor } from "../src/bounty/executor.js";
@@ -107,6 +107,7 @@ function harness(options: {
   writebackOperationId?: string;
   runOverrides?: Partial<StoredBountyRun>;
   planHeld?: boolean;
+  issueError?: Error;
 }) {
   const current = run(options.runOverrides);
   const plans: unknown[] = [];
@@ -249,6 +250,10 @@ function harness(options: {
     backlogIssues: () =>
       Promise.resolve({ issues: candidates, total: candidates.length }),
     boardIssues: () => Promise.resolve({ issues: [], total: 0 }),
+    issue: (id: string) =>
+      options.issueError === undefined
+        ? Promise.resolve(issue(id, { summary: `Fresh ${id}` }))
+        : Promise.reject(options.issueError),
     issueSpec: (id: string) => {
       const answer = options.specs?.[id] ?? spec(id);
       return answer instanceof Error
@@ -314,6 +319,45 @@ test("a run that lost its lease before planning sizes nothing", async () => {
   assert.equal(state.sizer.calls.length, 0);
   assert.equal(state.outcomes.length, 0);
   assert.equal(state.finishes.length, 0);
+});
+
+test("an issue run sizes the one ticket it names, read fresh from Jira", async () => {
+  const state = harness({
+    runOverrides: {
+      kind: "issue",
+      planned: [{ externalIssueId: "7", issueKey: "APP-7", summary: "Old" }],
+    },
+  });
+  await state.executor.execute("org_1", "brn_1");
+
+  assert.equal(state.finishes[0]?.status, "succeeded");
+  assert.equal(state.sizer.calls.length, 1);
+  assert.deepEqual(state.plans, [
+    [{ externalIssueId: "7", issueKey: "APP-7", summary: "Fresh 7" }],
+  ]);
+  assert.equal(
+    (state.outcomes[0] as { proposalId?: string }).proposalId,
+    "bpr_1",
+  );
+});
+
+test("an issue run without a ticket, or whose ticket is gone, fails", async () => {
+  const empty = harness({ runOverrides: { kind: "issue", planned: [] } });
+  await empty.executor.execute("org_1", "brn_1");
+  assert.deepEqual(empty.finishes, [
+    { status: "failed", details: { fatalErrorCode: "issue_unavailable" } },
+  ]);
+
+  const gone = harness({
+    runOverrides: {
+      kind: "issue",
+      planned: [{ externalIssueId: "7", issueKey: "APP-7", summary: "Old" }],
+    },
+    issueError: new JiraApiError(404, "gone"),
+  });
+  await gone.executor.execute("org_1", "brn_1");
+  assert.equal(gone.finishes[0]?.status, "failed");
+  assert.equal(gone.sizer.calls.length, 0);
 });
 
 test("a run persists sized drafts with snapshot pricing and usage", async () => {

@@ -138,6 +138,44 @@ describe("bounty database concurrency", () => {
     await sql`update bounty_run set status = 'succeeded' where status = 'queued'`;
   });
 
+  test("a one-ticket run is created beside the board's active run", async () => {
+    // Through the store, so the insert is the one the add route makes: the
+    // kind, the plan, no source proposal. The fake database cannot see the
+    // table's checks, which is how an issue run once failed every insert.
+    await insertRun("run_backlog_active", "request-backlog-active", "running");
+    const connection = createConnection({ url: scratchUrl() });
+    const runs = createBountyRunStore(connection.db);
+    const planned = [
+      { externalIssueId: "1001", issueKey: "DEMO-1", summary: "Race" },
+    ];
+    // Closed after, or dropping the scratch database waits on it forever.
+    const created = await runs
+      .create("org_bounty", {
+        kind: "issue",
+        planned,
+        boardId: "board_bounty",
+        startedBy: "user_bounty",
+        requestId: "7b1f5a36-6c51-4d7e-9a57-3d0f2c1e8b41",
+        selection: {
+          maxTickets: 10,
+          excludeAssigned: true,
+          issueTypes: [],
+          minAgeDays: 0,
+          minSpecChars: 0,
+        },
+        rateCard,
+        requestedModel: "model-test",
+        promptVersion: "v1",
+      })
+      .finally(() => connection.close());
+    assert.equal(created.ok, true);
+    if (created.ok) {
+      assert.equal(created.run.kind, "issue");
+      assert.deepEqual(created.run.planned, planned);
+    }
+    await sql`update bounty_run set status = 'succeeded' where status in ('queued', 'running')`;
+  });
+
   test("only one concurrent live proposal can exist for an issue", async () => {
     await insertRun("run_proposal_a", "request-proposal-a", "succeeded");
     await insertRun("run_proposal_b", "request-proposal-b", "succeeded");

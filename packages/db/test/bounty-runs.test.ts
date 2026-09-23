@@ -105,6 +105,56 @@ test("refuses a foreign board and reports an existing active run", async () => {
   );
 });
 
+test("a one-ticket run does not wait behind the board's active run", async () => {
+  // No activity read: the sequence has no row for it, so the insert is the
+  // third call. The ticket is stored as the plan from the start.
+  const planned = [
+    { externalIssueId: "10007", issueKey: "APP-7", summary: "Add login" },
+  ];
+  const fake = createSequencedFakeDb([
+    [],
+    [{ id: "jrb_1" }],
+    [row({ kind: "issue", planned })],
+  ]);
+  const result = await createBountyRunStore(fake.db).create("org_1", {
+    ...input,
+    kind: "issue",
+    planned,
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(fake.calls[2]?.values?.["planned"], planned);
+  assert.equal(fake.calls[2]?.values?.["kind"], "issue");
+});
+
+test("a replayed one-ticket request must name the same ticket", async () => {
+  const planned = [
+    { externalIssueId: "10007", issueKey: "APP-7", summary: "Add login" },
+  ];
+  const existing = row({ kind: "issue", planned });
+  const same = createSequencedFakeDb([[existing]]);
+  assert.equal(
+    (
+      await createBountyRunStore(same.db).create("org_1", {
+        ...input,
+        kind: "issue",
+        planned,
+      })
+    ).ok,
+    true,
+  );
+  const other = createSequencedFakeDb([[existing]]);
+  assert.deepEqual(
+    await createBountyRunStore(other.db).create("org_1", {
+      ...input,
+      kind: "issue",
+      planned: [
+        { externalIssueId: "10008", issueKey: "APP-8", summary: "Other" },
+      ],
+    }),
+    { ok: false, reason: "request-conflict" },
+  );
+});
+
 test("a uniqueness race is reclassified as the active run", async () => {
   const violation = Object.assign(new Error("unique"), { code: "23505" });
   const fake = createSequencedFakeDb([

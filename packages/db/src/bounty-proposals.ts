@@ -77,6 +77,12 @@ export interface BountyProposalStore {
     boardId: string,
     externalIds: readonly string[],
   ): Promise<Set<string>>;
+  /** The same tickets, each with the id of its live proposal. */
+  liveProposalIds(
+    organizationId: string,
+    boardId: string,
+    externalIds: readonly string[],
+  ): Promise<Map<string, string>>;
   approve(
     organizationId: string,
     proposalId: string,
@@ -270,6 +276,37 @@ function uniqueViolation(error: unknown): boolean {
   );
 }
 
+/** Each ticket's live proposal, for the tickets that have one. */
+async function liveProposalIds(
+  db: Database,
+  organizationId: string,
+  boardId: string,
+  externalIds: readonly string[],
+): Promise<Map<string, string>> {
+  if (externalIds.length === 0) return new Map();
+  const rows = await db
+    .select({
+      externalId: jiraIssue.externalId,
+      proposalId: bountyProposal.id,
+    })
+    .from(bountyProposal)
+    .innerJoin(jiraIssue, eq(bountyProposal.jiraIssueId, jiraIssue.id))
+    .where(
+      and(
+        eq(bountyProposal.organizationId, organizationId),
+        eq(jiraIssue.boardId, boardId),
+        inArray(jiraIssue.externalId, [...externalIds]),
+        or(
+          eq(bountyProposal.status, "proposed"),
+          eq(bountyProposal.status, "approved"),
+        ),
+      ),
+    );
+  return new Map(
+    rows.map(({ externalId, proposalId }) => [externalId, proposalId]),
+  );
+}
+
 export function createBountyProposalStore(db: Database): BountyProposalStore {
   return {
     async create(organizationId, input) {
@@ -399,24 +436,15 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
     },
 
     async liveExternalIds(organizationId, boardId, externalIds) {
-      if (externalIds.length === 0) return new Set();
-      const rows = await db
-        .select({ externalId: jiraIssue.externalId })
-        .from(bountyProposal)
-        .innerJoin(jiraIssue, eq(bountyProposal.jiraIssueId, jiraIssue.id))
-        .where(
-          and(
-            eq(bountyProposal.organizationId, organizationId),
-            eq(jiraIssue.boardId, boardId),
-            inArray(jiraIssue.externalId, [...externalIds]),
-            or(
-              eq(bountyProposal.status, "proposed"),
-              eq(bountyProposal.status, "approved"),
-            ),
-          ),
-        );
-      return new Set(rows.map(({ externalId }) => externalId));
+      return new Set(
+        (
+          await liveProposalIds(db, organizationId, boardId, externalIds)
+        ).keys(),
+      );
     },
+
+    liveProposalIds: (organizationId, boardId, externalIds) =>
+      liveProposalIds(db, organizationId, boardId, externalIds),
 
     async approve(
       organizationId,

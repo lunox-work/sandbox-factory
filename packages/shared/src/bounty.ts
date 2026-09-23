@@ -82,7 +82,7 @@ export const sizingResultSchema = z
     }
   });
 
-export const bountyRunKindSchema = z.enum(["backlog", "reprice"]);
+export const bountyRunKindSchema = z.enum(["backlog", "reprice", "issue"]);
 export const bountyRunStatusSchema = z.enum([
   "queued",
   "running",
@@ -141,6 +141,12 @@ export const bountyRunDtoSchema = z.object({
 });
 
 export const createRunSchema = z.object({ requestId: z.uuid() });
+
+/** Size one ticket someone picked, by Jira's numeric issue id. */
+export const addIssueSchema = z.object({
+  requestId: z.uuid(),
+  issueId: z.string().regex(/^\d{1,18}$/),
+});
 
 export const bountyProposalStatusSchema = z.enum(["proposed", "approved"]);
 export const proposalFreshnessSchema = z.enum([

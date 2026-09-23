@@ -20,6 +20,8 @@ import {
   ExternalLink,
   Loader2,
   Minus,
+  Plus,
+  Search,
   RefreshCw,
   TriangleAlert,
 } from "lucide-react";
@@ -36,6 +38,7 @@ import { ErrorBanner, LoadingLine } from "@/components/Message";
 import { PeekPanel } from "@/components/PeekPanel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   Card,
   CardContent,
@@ -572,8 +575,12 @@ export function BoardBounties({
       requestGeneration.current += 1;
     };
   }, [refresh]);
+  // The board's own sizing run. A one-ticket run someone added is followed
+  // by the search that started it, not shown as the board's stream.
   const active = runs.find(
-    (run) => run.status === "queued" || run.status === "running",
+    (run) =>
+      run.kind !== "issue" &&
+      (run.status === "queued" || run.status === "running"),
   );
   /*
     While a run is active, the run alone is polled, every second: it is one
@@ -633,6 +640,16 @@ export function BoardBounties({
     }
     setSelectedId(proposalId);
   }, []);
+
+  // A proposal the ticket search produced: the list re-read so it has the
+  // row, then opened. Stable, because the search follows a run with it.
+  const showProposal = useCallback(
+    async (proposalId: string) => {
+      await refresh();
+      openProposal(proposalId);
+    },
+    [refresh, openProposal],
+  );
 
   const closeProposal = useCallback((updateUrl: boolean) => {
     setSelectedId(null);
@@ -765,6 +782,10 @@ export function BoardBounties({
   return (
     <div className="flex flex-col gap-4">
       {error !== null && <ErrorBanner className="mt-0">{error}</ErrorBanner>}
+
+      {canManage(role) && sizingAvailable && (
+        <TicketSearch base={base} boardId={boardId} onProposal={showProposal} />
+      )}
 
       {/*
         Connecting a site sizes its boards on its own, so the first visit
@@ -924,6 +945,265 @@ function freshnessLabel(freshness: EnrichedProposal["freshness"]): {
     default:
       return { text: "Not checked", tone: "muted" };
   }
+}
+
+interface TicketResult {
+  id: string;
+  key: string;
+  summary: string;
+  status: string;
+  issueType: string;
+}
+
+/**
+ * Find a ticket on the board and size it now.
+ *
+ * For the ticket the automatic run did not pick — too new, assigned, past
+ * the board's limit — or one somebody wants priced before anything else.
+ * The search reads the board live from Jira and lists only tickets not yet
+ * on the platform — one with a proposal is already in the list below.
+ * Picking one starts a run for that ticket alone, follows it, and opens the
+ * proposal the moment it lands.
+ */
+function TicketSearch({
+  base,
+  boardId,
+  onProposal,
+}: {
+  base: string;
+  boardId: string;
+  onProposal: (proposalId: string) => Promise<void>;
+}) {
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<TicketResult[] | null>(null);
+  const [searching, setSearching] = useState(false);
+  const [pending, setPending] = useState<{
+    key: string;
+    summary: string;
+    runId: string;
+  } | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const boardPath = `${base}/jira/boards/${encodeURIComponent(boardId)}`;
+
+  /*
+    Searched as the person types, a quarter-second after they stop. The
+    generation check drops an answer that arrives after a newer query was
+    sent, so a slow search cannot overwrite a faster later one.
+  */
+  const generation = useRef(0);
+  useEffect(() => {
+    const request = ++generation.current;
+    if (query.trim() === "") {
+      setResults(null);
+      setSearching(false);
+      return;
+    }
+    setSearching(true);
+    const timer = window.setTimeout(() => {
+      void fetch(`${boardPath}/search?q=${encodeURIComponent(query.trim())}`, {
+        credentials: "include",
+      })
+        .then(async (response) => {
+          const body = (await response.json().catch(() => ({}))) as {
+            issues?: TicketResult[];
+            error?: string;
+          };
+          if (request !== generation.current) return;
+          setResults(response.ok ? (body.issues ?? []) : []);
+          setMessage(
+            response.ok ? null : (body.error ?? "Could not search Jira."),
+          );
+        })
+        .catch(() => {
+          if (request === generation.current)
+            setMessage("Could not reach the server.");
+        })
+        .finally(() => {
+          if (request === generation.current) setSearching(false);
+        });
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [boardPath, query]);
+
+  /*
+    The added ticket's run, followed until it has an answer: its proposal
+    opens as soon as it exists. A run that ends without one either lost a
+    race to another run that proposed the same ticket — whose proposal is
+    then the one to open — or could not size it, which is said here.
+  */
+  useEffect(() => {
+    if (pending === null) return;
+    let live = true;
+    const timer = window.setInterval(() => {
+      void fetch(`${base}/runs/${encodeURIComponent(pending.runId)}`, {
+        credentials: "include",
+      })
+        .then((response) =>
+          response.ok
+            ? (response.json() as Promise<{ run: BountyRunDto }>)
+            : null,
+        )
+        .then(async (body) => {
+          if (!live || body === null) return;
+          const { run } = body;
+          const outcome = run.outcomes[0];
+          const ended = run.status !== "queued" && run.status !== "running";
+          if (outcome?.proposalId !== undefined) {
+            live = false;
+            setPending(null);
+            await onProposal(outcome.proposalId);
+            return;
+          }
+          if (!ended) return;
+          live = false;
+          setPending(null);
+          if (outcome?.code === "live_proposal") {
+            // Proposed by the board's own run in the meantime. The search
+            // no longer lists it, so its proposal is found in the board's.
+            const listed = await fetch(
+              `${base}/proposals?boardId=${encodeURIComponent(boardId)}`,
+              { credentials: "include" },
+            );
+            const found = listed.ok
+              ? (
+                  (await listed.json()) as { proposals: BountyProposalDto[] }
+                ).proposals.find(({ issueKey }) => issueKey === pending.key)
+              : undefined;
+            if (found !== undefined) {
+              await onProposal(found.id);
+              return;
+            }
+          }
+          setMessage(`Could not size ${pending.key}.`);
+        })
+        .catch(() => {});
+    }, 1_000);
+    return () => {
+      live = false;
+      window.clearInterval(timer);
+    };
+  }, [base, boardId, onProposal, pending]);
+
+  async function pick(ticket: TicketResult) {
+    setMessage(null);
+    try {
+      const response = await fetch(`${boardPath}/issues`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          requestId: crypto.randomUUID(),
+          issueId: ticket.id,
+        }),
+      });
+      const body = (await response.json().catch(() => ({}))) as {
+        run?: BountyRunDto;
+        proposalId?: string;
+        error?: string;
+      };
+      if (!response.ok) {
+        setMessage(body.error ?? `Could not add ${ticket.key}.`);
+        return;
+      }
+      setQuery("");
+      if (body.proposalId !== undefined) {
+        await onProposal(body.proposalId);
+      } else if (body.run !== undefined) {
+        setPending({
+          key: ticket.key,
+          summary: ticket.summary,
+          runId: body.run.id,
+        });
+      }
+    } catch {
+      setMessage("Could not reach the server.");
+    }
+  }
+
+  return (
+    <div className="relative flex flex-col gap-2">
+      <div className="relative">
+        <Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2" />
+        <Input
+          type="search"
+          aria-label="Find a ticket to size"
+          placeholder="Find a ticket to size — key or words from its title"
+          className="pl-9"
+          value={query}
+          disabled={pending !== null}
+          onChange={(event) => setQuery(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") setQuery("");
+            if (event.key === "Enter" && results?.[0] !== undefined) {
+              event.preventDefault();
+              void pick(results[0]);
+            }
+          }}
+        />
+      </div>
+
+      {query.trim() !== "" && (
+        <div
+          className="bg-popover absolute top-full right-0 left-0 z-20 mt-1 overflow-hidden rounded-md border shadow-md"
+          data-testid="ticket-results"
+        >
+          {searching && results === null ? (
+            <p className="text-muted-foreground flex items-center gap-2 px-3 py-2.5 text-sm">
+              <Loader2 className="size-4 animate-spin" />
+              Searching…
+            </p>
+          ) : results !== null && results.length === 0 ? (
+            <p className="text-muted-foreground px-3 py-2.5 text-sm">
+              No tickets to add match — tickets already proposed are in the list
+              below.
+            </p>
+          ) : (
+            <ul className="divide-y">
+              {(results ?? []).map((ticket) => (
+                <li key={ticket.id}>
+                  <button
+                    type="button"
+                    className="hover:bg-muted/50 flex w-full items-center gap-3 px-3 py-2 text-left text-sm"
+                    onClick={() => void pick(ticket)}
+                  >
+                    <span className="w-20 shrink-0 font-mono text-xs">
+                      {ticket.key}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate">
+                      {ticket.summary}
+                    </span>
+                    <span className="text-muted-foreground hidden shrink-0 text-xs sm:inline">
+                      {ticket.status}
+                    </span>
+                    <span className="text-primary flex shrink-0 items-center gap-1 text-xs font-medium">
+                      <Plus className="size-3.5" />
+                      Add
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
+      {pending !== null && (
+        <p
+          className="text-muted-foreground flex items-center gap-2 text-sm"
+          role="status"
+        >
+          <Loader2 className="size-4 animate-spin" />
+          Sizing <span className="font-mono text-xs">{pending.key}</span>
+          <span className="truncate">{pending.summary}</span>…
+        </p>
+      )}
+      {message !== null && (
+        <p className="text-sm text-red-600 dark:text-red-400" role="alert">
+          {message}
+        </p>
+      )}
+    </div>
+  );
 }
 
 /** How many tickets the executor sizes at once. Mirrors the API's own. */

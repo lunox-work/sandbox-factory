@@ -10,12 +10,15 @@ import type {
   StoredRateCard,
 } from "@sandbox-factory/db";
 
+import { JiraApiError } from "@sandbox-factory/jira";
+import type { JiraIssueDto } from "@sandbox-factory/shared";
 import { DEFAULT_RATE_CARD } from "sandbox-factory";
 
 import type { Auth } from "../src/auth.js";
 import type { BountyExecutor } from "../src/bounty/executor.js";
 import {
   sizeIfNeverSized,
+  ticketSearchJql,
   type BountyRouteOptions,
 } from "../src/bounty/routes.js";
 import { createApp } from "../src/routes.js";
@@ -86,10 +89,25 @@ function harness(
     putResult?: Awaited<ReturnType<RateCardStore["put"]>>;
     createResult?: Awaited<ReturnType<BountyRunStore["create"]>>;
     previousRuns?: StoredBountyRun[];
+    /** What the board's issue read answers, or throws. */
+    boardIssues?: JiraIssueDto[] | Error;
+    live?: Record<string, string>;
+    clientReady?: boolean;
     sizing?: boolean;
   } = {},
 ) {
   const starts: string[] = [];
+  const created: unknown[] = [];
+  const jql: string[] = [];
+  const client = {
+    boardIssues: (_board: number, query: { jql: string }) => {
+      jql.push(query.jql);
+      const answer = options.boardIssues ?? [];
+      return answer instanceof Error
+        ? Promise.reject(answer)
+        : Promise.resolve({ issues: answer, total: answer.length });
+    },
+  };
   const puts: unknown[] = [];
   const rateCards = {
     get: () =>
@@ -107,10 +125,12 @@ function harness(
     },
   } as RateCardStore;
   const runs = {
-    create: () =>
-      Promise.resolve(
+    create: (_org: string, input: unknown) => {
+      created.push(input);
+      return Promise.resolve(
         options.createResult ?? { ok: true as const, run, created: true },
-      ),
+      );
+    },
     listForBoard: () => Promise.resolve(options.previousRuns ?? [run]),
     get: (_org: string, id: string) =>
       Promise.resolve(id === run.id ? run : null),
@@ -148,6 +168,8 @@ function harness(
     proposals: {
       get: () => Promise.resolve(null),
       listForBoard: () => Promise.resolve([]),
+      liveProposalIds: () =>
+        Promise.resolve(new Map(Object.entries(options.live ?? {}))),
     } as never,
     issues: { get: () => Promise.resolve(null) } as never,
     ...(sizing
@@ -157,7 +179,12 @@ function harness(
               starts.push(id);
             },
           } as unknown as BountyExecutor,
-          clientFor: () => Promise.resolve({ ok: true, client: {} as never }),
+          clientFor: () =>
+            Promise.resolve(
+              options.clientReady === false
+                ? { ok: false as const, reason: "reconnect" as const }
+                : { ok: true as const, client: client as never },
+            ),
           requestedModel: "configured-model",
           promptVersion: "jira-size-v1",
         }
@@ -175,7 +202,7 @@ function harness(
     } as never,
     bounty,
   });
-  return { app, bounty, starts, puts };
+  return { app, bounty, starts, puts, created, jql };
 }
 
 test("members may read a rate card but only admins may edit it", async () => {
@@ -573,4 +600,195 @@ test("reviewers can resize a proposal to XS using its snapshot", async () => {
   assert.equal(response.status, 200);
   assert.equal(state.current().complexity, "XS");
   assert.equal(state.current().amountMinor, card.xsMinor);
+});
+
+function ticket(id: string, summary = `Ticket ${id}`): JiraIssueDto {
+  return {
+    id,
+    key: `APP-${id}`,
+    summary,
+    status: "To Do",
+    statusCategory: "new",
+    assignee: null,
+    priority: null,
+    issueType: "Story",
+    labels: [],
+    projectKey: "APP",
+    parentKey: null,
+    created: "2026-01-01T00:00:00.000Z",
+    updated: "2026-01-02T00:00:00.000Z",
+    dueDate: null,
+    url: null,
+  };
+}
+
+test("ticket search looks a key up as a key and anything else as text", () => {
+  assert.equal(ticketSearchJql(" app-12 "), 'key = "APP-12"');
+  assert.equal(ticketSearchJql("add login"), 'text ~ "add login*"');
+  // JQL's reserved characters would make Jira refuse the query outright.
+  assert.equal(ticketSearchJql('fix "auth" (v2)*'), 'text ~ "fix auth v2*"');
+  assert.equal(ticketSearchJql("  "), null);
+  assert.equal(ticketSearchJql("*?"), null);
+});
+
+test("searching a board leaves out tickets already on the platform", async () => {
+  const state = harness({
+    role: "member",
+    boardIssues: [ticket("7"), ticket("8"), ticket("9")],
+    live: { "8": "bpr_8" },
+  });
+  const response = await state.app.request(
+    "/api/v1/orgs/org_1/jira/boards/jrb_1/search?q=login",
+    { headers },
+  );
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as { issues: { key: string }[] };
+  assert.deepEqual(
+    body.issues.map(({ key }) => key),
+    ["APP-7", "APP-9"],
+  );
+  assert.deepEqual(state.jql, ['text ~ "login*"']);
+});
+
+test("a search still fills its list when many candidates are proposed", async () => {
+  // Jira is asked for more than are shown, so the ones dropped for being
+  // proposed are replaced rather than leaving the list short.
+  const candidates = Array.from({ length: 30 }, (_, n) => ticket(String(n)));
+  const live = Object.fromEntries(
+    candidates.slice(0, 15).map(({ id }) => [id, `bpr_${id}`]),
+  );
+  const state = harness({ boardIssues: candidates, live });
+  const body = (await (
+    await state.app.request(
+      "/api/v1/orgs/org_1/jira/boards/jrb_1/search?q=login",
+      { headers },
+    )
+  ).json()) as { issues: { id: string }[] };
+  assert.equal(body.issues.length, 10);
+  assert.equal(body.issues[0]?.id, "15");
+});
+
+test("an empty search asks Jira nothing", async () => {
+  const state = harness();
+  const response = await state.app.request(
+    "/api/v1/orgs/org_1/jira/boards/jrb_1/search?q=",
+    { headers },
+  );
+  assert.deepEqual(await response.json(), { issues: [] });
+  assert.deepEqual(state.jql, []);
+});
+
+test("search failures are told apart", async () => {
+  const search = (state: ReturnType<typeof harness>, board = "jrb_1") =>
+    state.app.request(
+      `/api/v1/orgs/org_1/jira/boards/${board}/search?q=APP-9`,
+      {
+        headers,
+      },
+    );
+
+  // A key that does not exist is Jira's 400, and simply no results.
+  const missingKey = await search(
+    harness({ boardIssues: new JiraApiError(400, "no such issue") }),
+  );
+  assert.deepEqual(await missingKey.json(), { issues: [] });
+
+  assert.equal(
+    (await search(harness({ boardIssues: new JiraApiError(401, "expired") })))
+      .status,
+    409,
+  );
+  assert.equal(
+    (await search(harness({ boardIssues: new JiraApiError(500, "down") })))
+      .status,
+    502,
+  );
+  assert.equal((await search(harness({ clientReady: false }))).status, 409);
+  assert.equal((await search(harness({ sizing: false }))).status, 503);
+  assert.equal((await search(harness(), "jrb_other")).status, 404);
+});
+
+test("adding a ticket starts a one-ticket run for it", async () => {
+  const state = harness({ boardIssues: [ticket("7", "Add login")] });
+  const response = await state.app.request(
+    "/api/v1/orgs/org_1/jira/boards/jrb_1/issues",
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ requestId, issueId: "7" }),
+    },
+  );
+  assert.equal(response.status, 202);
+  assert.deepEqual(state.starts, ["brn_1"]);
+  const [input] = state.created as { kind: string; planned: unknown }[];
+  assert.equal(input?.kind, "issue");
+  assert.deepEqual(input?.planned, [
+    { externalIssueId: "7", issueKey: "APP-7", summary: "Add login" },
+  ]);
+  // Read through the board, so a ticket from elsewhere cannot be sized here.
+  assert.deepEqual(state.jql, ["issue = 7"]);
+});
+
+test("adding a ticket that already has a proposal opens that one instead", async () => {
+  const state = harness({
+    boardIssues: [ticket("7")],
+    live: { "7": "bpr_7" },
+  });
+  const response = await state.app.request(
+    "/api/v1/orgs/org_1/jira/boards/jrb_1/issues",
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ requestId, issueId: "7" }),
+    },
+  );
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { proposalId: "bpr_7" });
+  assert.deepEqual(state.starts, []);
+});
+
+test("adding a ticket is refused when it cannot be sized", async () => {
+  const add = (state: ReturnType<typeof harness>, body: unknown) =>
+    state.app.request("/api/v1/orgs/org_1/jira/boards/jrb_1/issues", {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    });
+  const valid = { requestId, issueId: "7" };
+
+  assert.equal((await add(harness({ role: "member" }), valid)).status, 403);
+  assert.equal(
+    (await add(harness(), { requestId, issueId: "APP-7" })).status,
+    400,
+  );
+  // Not on this board.
+  assert.equal((await add(harness(), valid)).status, 404);
+  assert.equal(
+    (
+      await add(
+        harness({ boardIssues: new JiraApiError(400, "no such issue") }),
+        valid,
+      )
+    ).status,
+    404,
+  );
+  assert.equal(
+    (await add(harness({ boardIssues: new JiraApiError(500, "down") }), valid))
+      .status,
+    502,
+  );
+  assert.equal((await add(harness({ sizing: false }), valid)).status, 503);
+  assert.equal((await add(harness({ clientReady: false }), valid)).status, 409);
+  assert.equal(
+    (
+      await add(
+        harness({
+          boardIssues: [ticket("7")],
+          createResult: { ok: false, reason: "request-conflict" },
+        }),
+        valid,
+      )
+    ).status,
+    409,
+  );
 });

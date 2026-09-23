@@ -4,7 +4,7 @@ import type {
   BountySelection,
   RateCardSnapshot,
 } from "sandbox-factory";
-import { and, desc, eq, gt, lt, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, lt, ne, or, sql } from "drizzle-orm";
 
 import type { Database } from "./errors.js";
 import { generateId } from "./mapping.js";
@@ -14,7 +14,9 @@ import type { BountyRunRow } from "./schema.js";
 export interface CreateBountyRunInput {
   readonly boardId: string;
   readonly startedBy: string;
-  readonly kind?: "backlog" | "reprice";
+  readonly kind?: "backlog" | "reprice" | "issue";
+  /** The ticket an `issue` run sizes, stored as its plan from the start. */
+  readonly planned?: readonly BountyRunPlannedIssue[];
   readonly sourceProposalId?: string;
   readonly sourceRevision?: number;
   readonly requestId: string;
@@ -95,7 +97,7 @@ export interface StoredBountyRun {
   readonly id: string;
   readonly organizationId: string;
   readonly boardId: string;
-  readonly kind: "backlog" | "reprice";
+  readonly kind: "backlog" | "reprice" | "issue";
   readonly sourceProposalId: string | null;
   readonly sourceRevision: number | null;
   readonly requestId: string;
@@ -176,6 +178,7 @@ async function activeForBoard(
         eq(bountyRun.organizationId, organizationId),
         eq(bountyRun.boardId, boardId),
         or(eq(bountyRun.status, "queued"), eq(bountyRun.status, "running")),
+        ne(bountyRun.kind, "issue"),
       ),
     )) as BountyRunRow[];
   return rows[0];
@@ -186,7 +189,8 @@ function sameRequest(row: BountyRunRow, input: CreateBountyRunInput): boolean {
     row.boardId === input.boardId &&
     row.kind === (input.kind ?? "backlog") &&
     row.sourceProposalId === (input.sourceProposalId ?? null) &&
-    row.sourceRevision === (input.sourceRevision ?? null)
+    row.sourceRevision === (input.sourceRevision ?? null) &&
+    row.planned[0]?.externalIssueId === input.planned?.[0]?.externalIssueId
   );
 }
 
@@ -225,7 +229,10 @@ export function createBountyRunStore(db: Database): BountyRunStore {
       if (ownedBoard[0] === undefined)
         return { ok: false, reason: "not-found" };
 
-      const active = await activeForBoard(db, organizationId, input.boardId);
+      const active =
+        input.kind === "issue"
+          ? undefined
+          : await activeForBoard(db, organizationId, input.boardId);
       if (active !== undefined) {
         return { ok: false, reason: "active", runId: active.id };
       }
@@ -246,6 +253,7 @@ export function createBountyRunStore(db: Database): BountyRunStore {
             rateCard: input.rateCard,
             requestedModel: input.requestedModel,
             promptVersion: input.promptVersion,
+            planned: [...(input.planned ?? [])],
           })
           .returning()) as BountyRunRow[];
         const created = rows[0];

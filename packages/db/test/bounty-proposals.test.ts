@@ -174,6 +174,16 @@ test("finds live proposal issue ids for selection", async () => {
   );
 });
 
+test("finds each live ticket's proposal id, for search results", async () => {
+  const fake = createFakeDb([{ externalId: "10001", proposalId: "bpr_1" }]);
+  const ids = await createBountyProposalStore(fake.db).liveProposalIds(
+    "org_1",
+    "jrb_1",
+    ["10001", "10002"],
+  );
+  assert.deepEqual([...ids], [["10001", "bpr_1"]]);
+});
+
 test("approves once and treats the exact replay as idempotent", async () => {
   const approved = row({ status: "approved", revision: 2 });
   const fake = createSequencedFakeDb([

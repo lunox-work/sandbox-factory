@@ -28,6 +28,8 @@ const CONCURRENCY = 3;
 
 export interface RunJiraClient extends BacklogPageReader {
   issueSpec(issueId: string): Promise<JiraIssueSpec>;
+  /** One ticket's list fields, for an `issue` run's single ticket. */
+  issue(issueId: string): Promise<JiraIssueDto>;
 }
 
 export type RunClientResult =
@@ -160,6 +162,26 @@ export class BountyExecutor {
                 url: null,
               },
             ],
+            candidatesScanned: 1,
+            skippedLive: 0,
+            scanLimitReached: false,
+          };
+        } else if (run.kind === "issue") {
+          /*
+            One ticket someone picked, named in the plan when the run was
+            created. Read again here rather than trusted from the plan: its
+            dates and status are what the pointer records, and the ticket
+            may have moved or gone since it was picked.
+          */
+          const target = run.planned[0];
+          if (target === undefined) {
+            await runs.finish(organizationId, runId, leaseToken, "failed", {
+              fatalErrorCode: "issue_unavailable",
+            });
+            return;
+          }
+          selected = {
+            issues: [await clientResult.client.issue(target.externalIssueId)],
             candidatesScanned: 1,
             skippedLive: 0,
             scanLimitReached: false,

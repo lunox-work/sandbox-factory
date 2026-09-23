@@ -114,12 +114,17 @@ export const bountyRun = pgTable(
     ),
     uniqueIndex("bounty_run_board_active_unique")
       .on(table.boardId)
-      .where(sql`${table.status} in ('queued', 'running')`),
+      // A one-ticket run someone asked for is not counted: it must not wait
+      // behind a board's backlog run, and the proposal store already refuses
+      // a second live proposal for the same ticket.
+      .where(
+        sql`${table.status} in ('queued', 'running') and ${table.kind} <> 'issue'`,
+      ),
     index("bounty_run_organization_id_idx").on(table.organizationId),
     index("bounty_run_board_created_idx").on(table.boardId, table.createdAt),
     check(
       "bounty_run_kind_check",
-      sql`${table.kind} in ('backlog', 'reprice')`,
+      sql`${table.kind} in ('backlog', 'reprice', 'issue')`,
     ),
     check(
       "bounty_run_status_check",
@@ -127,7 +132,7 @@ export const bountyRun = pgTable(
     ),
     check(
       "bounty_run_source_check",
-      sql`(${table.kind} = 'backlog' AND ${table.sourceProposalId} IS NULL AND ${table.sourceRevision} IS NULL) OR (${table.kind} = 'reprice' AND ${table.sourceProposalId} IS NOT NULL AND ${table.sourceRevision} > 0)`,
+      sql`(${table.kind} in ('backlog', 'issue') AND ${table.sourceProposalId} IS NULL AND ${table.sourceRevision} IS NULL) OR (${table.kind} = 'reprice' AND ${table.sourceProposalId} IS NOT NULL AND ${table.sourceRevision} > 0)`,
     ),
   ],
 );
