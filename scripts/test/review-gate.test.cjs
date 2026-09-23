@@ -4,9 +4,7 @@ const {
   decide,
   repairs,
   checksState,
-  sensitive,
   threads,
-  acknowledged,
   reconcile,
   REPAIR_TIMEOUT,
 } = require("../review-gate.cjs");
@@ -19,8 +17,6 @@ const clean = () => ({
   head,
   trusted: true,
   draft: false,
-  sensitive: false,
-  acknowledged: false,
   conflict: false,
   behind: false,
   repairs: [],
@@ -36,7 +32,6 @@ test("only a fully reviewed, approved, passing current head succeeds", () => {
   for (const patch of [
     { draft: true },
     { trusted: false },
-    { sensitive: true },
     { conflict: true },
     { behind: true },
     { reviewStatus: undefined },
@@ -96,33 +91,6 @@ test("autofix and CI repair are serialized, bounded and never resolve threads", 
   );
   // Three successful repairs do not prevent a now-clean PR from landing.
   assert.equal(decide({ ...clean(), repairs: exhausted }).state, "success");
-});
-
-test("maintainer acknowledgement only unlocks policy review, not other checks", () => {
-  assert.equal(
-    decide({ ...clean(), sensitive: true, acknowledged: true }).state,
-    "success",
-  );
-  assert.equal(
-    decide({
-      ...clean(),
-      sensitive: true,
-      acknowledged: true,
-      review: undefined,
-    }).state,
-    "pending",
-  );
-  for (const path of [
-    ".github/workflows/ci.yml",
-    ".coderabbit.yaml",
-    "scripts/review-gate.cjs",
-    "infra/main.tf",
-    "packages/a/package.json",
-    "apps/web/vitest.config.ts",
-    "AGENTS.md",
-  ])
-    assert.equal(sensitive(path), true, path);
-  assert.equal(sensitive("apps/web/src/Home.tsx"), false);
 });
 
 test("repair markers require the actual Actions bot and valid payload", () => {
@@ -202,32 +170,6 @@ test("threads paginate beyond 100, including outdated unresolved threads", async
   assert.deepEqual(cursors, [null, "next"]);
 });
 
-test("policy acknowledgement verifies human, exact SHA and current permission", async () => {
-  const comment = {
-    user: { type: "User", login: "maintainer" },
-    body: `/review-gate accept ${head}`,
-  };
-  const github = {
-    rest: {
-      repos: {
-        getCollaboratorPermissionLevel: async () => ({
-          data: { permission: "write" },
-        }),
-      },
-    },
-  };
-  assert.equal(await acknowledged(github, {}, [comment], head), true);
-  assert.equal(await acknowledged(github, {}, [comment], old), false);
-  assert.equal(
-    await acknowledged(github, {}, [{ ...comment, user: actions }], head),
-    false,
-  );
-  github.rest.repos.getCollaboratorPermissionLevel = async () => ({
-    data: { permission: "read" },
-  });
-  assert.equal(await acknowledged(github, {}, [comment], head), false);
-});
-
 function fixture(patch = {}) {
   const writes = [],
     comments = [],
@@ -240,8 +182,9 @@ function fixture(patch = {}) {
     draft: false,
     head: { sha: head, repo: { full_name: "o/r" } },
     base: { sha: old, ref: "main", repo: { full_name: "o/r" } },
-    author_association: "OWNER",
-    changed_files: 1,
+    // What the Actions token reports for a member whose org membership is
+    // private; trust must not depend on it.
+    author_association: "CONTRIBUTOR",
     ...patch.pr,
   };
   const names = ["Test (Node 22)", "Test (Node 24)", "Analyze", "CodeQL"];
@@ -250,7 +193,6 @@ function fixture(patch = {}) {
       pulls: {
         list: "prs",
         listReviews: "reviews",
-        listFiles: "files",
         get: async () => ({
           data: {
             ...pr,
@@ -287,7 +229,6 @@ function fixture(patch = {}) {
       return {
         prs: [pr],
         reviews: [{ id: 1, user: bot, commit_id: head, state: "APPROVED" }],
-        files: [{ filename: "apps/web/src/Home.tsx" }],
         comments: patch.comments || [],
         runs: names.map((name) => ({
           id: 1,
@@ -352,9 +293,22 @@ test("reconciliation revokes old success, reads evidence, then publishes success
   assert.ok(f.writes.every((s) => s.sha === head));
 });
 
-test("reconciliation fails closed for API failure, truncated files and head races", async () => {
-  for (const patch of [{ error: "reviews" }, { pr: { changed_files: 3001 } }]) {
-    const f = fixture(patch);
+test("a same-repository PR is trusted whatever GitHub calls its author, and a fork is not", async () => {
+  // The fixture's author reads CONTRIBUTOR, as a private org member does.
+  const own = fixture();
+  await reconcile(own);
+  assert.equal(own.writes.at(-1).state, "success");
+  const fork = fixture({
+    pr: { head: { sha: head, repo: { full_name: "someone/r" } } },
+  });
+  await reconcile(fork);
+  assert.equal(fork.writes.at(-1).state, "failure");
+  assert.match(fork.writes.at(-1).description, /Fork/);
+});
+
+test("reconciliation fails closed for API failure and head races", async () => {
+  {
+    const f = fixture({ error: "reviews" });
     await reconcile(f);
     assert.deepEqual(
       f.writes.map((s) => s.state),

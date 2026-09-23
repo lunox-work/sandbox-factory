@@ -47,10 +47,10 @@ happens. Run `git pull --ff-only` before your next change. GitHub deletes merged
 remote branches; local feature branches remain as recoverable references.
 If checkout or fast-forward fails, the script warns and preserves your work.
 
-Policy changes (workflows, scripts, dependency/test configuration, infra) need
-an explicit human maintainer acknowledgement of the latest SHA. The gate posts
-the exact command on the PR. That acknowledgement does not bypass CI or review.
-Dependabot majors and forks are not automatically merged.
+Policy changes (workflows, scripts, dependency/test configuration, infra) merge
+like any other change: once CI passes and CodeRabbit approves the latest SHA.
+Open a draft to hold one back. Dependabot majors and forks are not
+automatically merged.
 
 ## `rotate-token.sh`
 

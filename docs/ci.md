@@ -49,7 +49,7 @@ Success requires all of:
 - CI and CodeQL actually succeeded; missing, skipped and neutral results are not success.
 - CodeRabbit completed review and approved the **current head SHA**.
 - All review discussions are resolved, including human and outdated threads.
-- No repair is outstanding and any policy change has exact-head maintainer acknowledgement.
+- No repair is outstanding, and the PR's branch is in this repository.
 
 The controller asks for `@coderabbitai autofix` when review findings remain,
 or `@coderabbitai fix-ci commit` when required checks fail. It waits for a new
@@ -63,18 +63,16 @@ exhausted repair rounds leave the PR open. A maintainer must investigate rather
 than bypass the gate. Missing/expired `AUTO_MERGE_TOKEN` also blocks branch
 updates; updates use that token so CI events fire.
 
-Workflows, scripts, review configuration, dependency/test configuration and
-infrastructure are policy-sensitive. A human with current write/maintain/admin
-permission must inspect the head and comment exactly:
+**Trust is the branch's repository, not the author's association.** Only
+someone with write access can push a branch here, so a same-repository PR is
+trusted and a fork's needs manual maintainer handling. `author_association`
+is not used: the Actions token cannot see a private organization membership,
+so it reported the maintainer's own PRs as untrusted and nothing ever merged.
 
-```text
-/review-gate accept <full-40-character-head-sha>
-```
-
-The PR explains which SHA needs acknowledgement. A new commit needs a new
-acknowledgement. This is a human control-plane decision, not permission for an
-agent to post the command on a human's behalf. It does not waive CI, review or
-repair limits. Forks require manual maintainer handling.
+There is no separate sign-off for policy changes (workflows, scripts,
+infrastructure, dependencies). This is a one-maintainer repository, and the
+maintainer chose that a change merges once CI passes and CodeRabbit approves
+its exact head, whatever it touches. Draft a PR to hold it back.
 
 ### Rollout
 
@@ -134,7 +132,8 @@ grouped into one PR.
 ## Auto-merge
 
 [`auto-merge.yml`](../.github/workflows/auto-merge.yml) arms GitHub's auto-merge
-on ready, trusted same-repository PRs except a **Dependabot major**, which waits for a human.
+on ready same-repository PRs except a **Dependabot major**, which waits for a human.
+The squash then lands once every required check passes, `Review gate` included.
 
 **It merges with the `AUTO_MERGE_TOKEN` secret, not the default
 `GITHUB_TOKEN`.** GitHub raises no events for pushes made with the default

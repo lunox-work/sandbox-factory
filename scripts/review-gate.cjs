@@ -32,17 +32,6 @@ function repairs(comments) {
   });
 }
 
-function sensitive(path) {
-  return (
-    /^(\.github\/|\.coderabbit\.ya?ml$|\.husky\/|AGENTS\.md$|scripts\/|tooling\/|infra\/)/.test(
-      path,
-    ) ||
-    /(^|\/)(package(?:-lock)?\.json|turbo\.json|.*config\.[^/]+|tsconfig[^/]*\.json)$/.test(
-      path,
-    )
-  );
-}
-
 // Use newest run per expected app/name, never a previous successful rerun.
 function checksState(runs) {
   return CHECKS.map((name) => {
@@ -60,12 +49,7 @@ function decide(s, now = Date.now()) {
   const pending = (reason) => ({ state: "pending", reason });
   const blocked = (reason) => ({ state: "failure", reason, attention: true });
   if (s.draft) return pending("Draft: mark ready to start review");
-  if (!s.trusted)
-    return blocked("Fork or untrusted author: maintainer handling required");
-  if (s.sensitive && !s.acknowledged)
-    return blocked(
-      "Policy changes need maintainer acknowledgement of this SHA",
-    );
+  if (!s.trusted) return blocked("Fork: maintainer handling required");
   if (s.conflict)
     return blocked("Merge conflict: maintainer resolution required");
   const last = s.repairs.at(-1);
@@ -128,19 +112,6 @@ async function threads(github, owner, repo, number) {
   return nodes.filter((t) => !t.isResolved);
 }
 
-async function acknowledged(github, args, comments, head) {
-  const text = `/review-gate accept ${head}`;
-  for (const c of comments) {
-    if (c.body.trim() !== text || c.user?.type !== "User") continue;
-    const { data } = await github.rest.repos.getCollaboratorPermissionLevel({
-      ...args,
-      username: c.user.login,
-    });
-    if (["admin", "maintain", "write"].includes(data.permission)) return true;
-  }
-  return false;
-}
-
 async function reconcile({ github, context, core, updateToken }) {
   const args = context.repo;
   const base = context.payload.repository?.default_branch || "main";
@@ -178,59 +149,39 @@ async function reconcile({ github, context, core, updateToken }) {
       // PR-specific. Never let one PR's success unlock another at the same SHA.
       if (prs.filter((p) => p.head.sha === head).length > 1)
         throw new Error("Multiple open PRs share this head SHA");
-      const [
-        comments,
-        reviews,
-        runs,
-        statuses,
-        files,
-        openThreads,
-        comparison,
-      ] = await Promise.all([
-        github.paginate(github.rest.issues.listComments, {
-          ...args,
-          issue_number: pull_number,
-          per_page: 100,
-        }),
-        github.paginate(github.rest.pulls.listReviews, {
-          ...args,
-          pull_number,
-          per_page: 100,
-        }),
-        github.paginate(github.rest.checks.listForRef, {
-          ...args,
-          ref: head,
-          filter: "latest",
-          per_page: 100,
-        }),
-        github.paginate(github.rest.repos.listCommitStatusesForRef, {
-          ...args,
-          ref: head,
-          per_page: 100,
-        }),
-        github.paginate(github.rest.pulls.listFiles, {
-          ...args,
-          pull_number,
-          per_page: 100,
-        }),
-        threads(github, args.owner, args.repo, pull_number),
-        github.rest.repos.compareCommitsWithBasehead({
-          ...args,
-          // Compare against the base ref, not pr.base.sha: GitHub freezes
-          // base.sha at PR creation, so a branch that fell behind an advancing
-          // main would report behind_by 0 and never be updated.
-          basehead: `${pr.base.ref}...${head}`,
-        }),
-      ]);
+      const [comments, reviews, runs, statuses, openThreads, comparison] =
+        await Promise.all([
+          github.paginate(github.rest.issues.listComments, {
+            ...args,
+            issue_number: pull_number,
+            per_page: 100,
+          }),
+          github.paginate(github.rest.pulls.listReviews, {
+            ...args,
+            pull_number,
+            per_page: 100,
+          }),
+          github.paginate(github.rest.checks.listForRef, {
+            ...args,
+            ref: head,
+            filter: "latest",
+            per_page: 100,
+          }),
+          github.paginate(github.rest.repos.listCommitStatusesForRef, {
+            ...args,
+            ref: head,
+            per_page: 100,
+          }),
+          threads(github, args.owner, args.repo, pull_number),
+          github.rest.repos.compareCommitsWithBasehead({
+            ...args,
+            // Compare against the base ref, not pr.base.sha: GitHub freezes
+            // base.sha at PR creation, so a branch that fell behind an advancing
+            // main would report behind_by 0 and never be updated.
+            basehead: `${pr.base.ref}...${head}`,
+          }),
+        ]);
       const history = repairs(comments);
-      const policyChange = files.some(
-        (f) =>
-          sensitive(f.filename) ||
-          (f.previous_filename && sensitive(f.previous_filename)),
-      );
-      // listFiles is capped at 3000 by GitHub: never overlook unreturned files.
-      if (files.length !== pr.changed_files)
-        throw new Error("Incomplete changed-file inventory");
       const review = reviews
         .filter((r) => isBot(r.user, BOT) && r.state !== "PENDING")
         .sort((a, b) => b.id - a.id)[0];
@@ -240,15 +191,11 @@ async function reconcile({ github, context, core, updateToken }) {
       const result = decide({
         head,
         draft: pr.draft,
-        trusted:
-          pr.head.repo?.full_name === pr.base.repo.full_name &&
-          (["OWNER", "MEMBER", "COLLABORATOR"].includes(
-            pr.author_association,
-          ) ||
-            isBot(pr.user, "dependabot[bot]")),
-        sensitive: policyChange,
-        acknowledged:
-          policyChange && (await acknowledged(github, args, comments, head)),
+        // A branch in this repository can only be pushed by someone with
+        // write access, which is the trust that matters. Not
+        // `author_association`: the Actions token does not see a private
+        // organization membership, so a member's own PRs read as untrusted.
+        trusted: pr.head.repo?.full_name === pr.base.repo.full_name,
         conflict: pr.mergeable === false,
         behind: comparison.data.behind_by > 0,
         repairs: history,
@@ -311,8 +258,7 @@ async function reconcile({ github, context, core, updateToken }) {
             issue_number: pull_number,
             body:
               `${marker}\nReview gate blocked: ${result.reason}.\n\n` +
-              "For policy changes only, a human maintainer must inspect this commit and comment " +
-              `\`/review-gate accept ${head}\`. This acknowledges policy changes; it does not bypass CI, CodeRabbit or the repair limit.`,
+              "Nothing merges until a maintainer resolves it; the gate does not bypass CI, CodeRabbit or the repair limit.",
           });
         }
       }
@@ -337,10 +283,8 @@ module.exports = {
   MAX_REPAIRS,
   REPAIR_TIMEOUT,
   repairs,
-  sensitive,
   checksState,
   decide,
   threads,
-  acknowledged,
   reconcile,
 };

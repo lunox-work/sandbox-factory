@@ -14,11 +14,13 @@ permissions:
 
 jobs:
   auto-merge:
+    # A branch in this repository means its author could push here, which is
+    # the trust that matters (Dependabot's branches included), not the
+    # author's association: the Actions token cannot see a private org
+    # membership, so that check skipped the maintainer's own PRs.
     if: >-
       !github.event.pull_request.draft &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      (contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association) ||
-      github.event.pull_request.user.login == 'dependabot[bot]')
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       contents: write

@@ -212,8 +212,6 @@ and auto-merge. See [scripts/README.md](./scripts/README.md).
   starting the next change. GitHub deletes merged remote branches, not local ones.
 - Never automatically resolve threads, dismiss reviews, post CodeRabbit approval
   overrides, fabricate passing statuses or use admin bypass to unblock shipping.
-- Policy-sensitive changes require the human maintainer to acknowledge the exact
-  SHA in the PR. Agents must not impersonate that acknowledgement.
 - Use a draft for changes that should not enter the automatic pipeline yet.
 
 ### Commits, PRs, and releases
@@ -222,10 +220,11 @@ The rules `ship.sh` encodes; [docs/ci.md](./docs/ci.md) has the detail.
 
 - Branch off `main` as `fix/...` or `feat/...`. `main` takes squash merges only;
   you cannot push to it. One logical change per PR; fill in the template.
-- **Ready PRs enter the automatic pipeline.** Eligible same-repository PRs
-  auto-merge after checks and current-head review, except Dependabot majors.
-  Policy changes also need explicit maintainer acknowledgement. Use a **draft**
-  when a change should be held for inspection.
+- **Ready PRs enter the automatic pipeline.** Same-repository PRs auto-merge
+  (squash) once CI passes and CodeRabbit approves the current head, except
+  Dependabot majors. Policy changes (workflows, scripts, infra) take the same
+  path; there is no separate sign-off. Use a **draft** when a change should be
+  held for inspection.
 - **The PR title is the squash commit, and the squash commit decides the
   version.** `scripts/next-version.mjs`: `!`/`BREAKING CHANGE:` → major, `feat`
   → minor, `fix`/`perf`/`revert`/`build`/`refactor` → patch, anything else → no

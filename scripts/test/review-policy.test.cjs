@@ -58,3 +58,14 @@ test("auto-merge cannot silently use a token that suppresses downstream CD", () 
   );
   assert.match(workflow, /exit 1/);
 });
+
+test("auto-merge trusts a same-repository branch, not the author's association", () => {
+  // The Actions token cannot see a private org membership, so an
+  // association check skipped every PR its own maintainer opened.
+  const workflow = read(".github/workflows/auto-merge.yml");
+  assert.match(
+    workflow,
+    /github\.event\.pull_request\.head\.repo\.full_name == github\.repository/,
+  );
+  assert.doesNotMatch(workflow, /author_association/);
+});
