@@ -35,7 +35,6 @@ export interface JiraBoardSummary {
   readonly boardType: string;
   readonly projectKey: string | null;
   readonly selection: StoredBoardSelection;
-  readonly writebackEnabled: boolean;
   readonly createdAt: string;
 }
 
@@ -60,7 +59,6 @@ export type SyncBoardInput = Omit<RegisterBoardInput, "selection">;
 
 export interface UpdateBoardInput {
   readonly selection?: StoredBoardSelection;
-  readonly writebackEnabled?: boolean;
 }
 
 export interface JiraBoardStore {
@@ -88,7 +86,7 @@ export interface JiraBoardStore {
    * automatically, on connect and again whenever the site is opened, so this
    * runs against boards a person has already configured. It refreshes only
    * what is Jira's to state — the name, the type, the project a board was
-   * moved to — and leaves `selection` and `writebackEnabled` as they were.
+   * moved to — and leaves `selection` as it was.
    *
    * `register` overwrites the selection because a caller passing one is asking
    * for it. A sync passes none and means none.
@@ -135,7 +133,6 @@ export function createJiraBoardStore(db: Database): JiraBoardStore {
       boardType: row.boardType,
       projectKey: row.projectKey,
       selection: (row.selection ?? {}) as StoredBoardSelection,
-      writebackEnabled: row.writebackEnabled,
       createdAt: row.createdAt.toISOString(),
     };
   }
@@ -188,8 +185,6 @@ export function createJiraBoardStore(db: Database): JiraBoardStore {
         .values({ id: generateId("jrb"), ...values })
         .onConflictDoUpdate({
           target: [jiraBoard.connectionId, jiraBoard.externalId],
-          // `writebackEnabled` is deliberately absent: re-registering a board
-          // must not silently turn write-back back on, or off.
           set: values,
         })
         .returning()) as JiraBoardRow[];
@@ -254,9 +249,6 @@ export function createJiraBoardStore(db: Database): JiraBoardStore {
         .update(jiraBoard)
         .set({
           selection,
-          ...(input.writebackEnabled === undefined
-            ? {}
-            : { writebackEnabled: input.writebackEnabled }),
           updatedAt: new Date(),
         })
         .where(

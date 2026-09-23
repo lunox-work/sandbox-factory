@@ -41,6 +41,16 @@ interface AdfNode {
   attrs?: Record<string, unknown> | undefined;
 }
 
+export interface AdfTextResult {
+  readonly text: string;
+  /** True when either the depth or output cap omitted source content. */
+  readonly truncated: boolean;
+}
+
+interface WalkState {
+  truncated: boolean;
+}
+
 function asNode(value: unknown): AdfNode | undefined {
   return typeof value === "object" && value !== null
     ? (value as AdfNode)
@@ -60,23 +70,30 @@ function childrenOf(node: AdfNode): unknown[] {
  * anticipated. All of those answer with a string, never an exception.
  */
 export function adfToText(document: unknown): string {
+  return adfToTextResult(document).text;
+}
+
+/** Flattens ADF while preserving whether any source content was omitted. */
+export function adfToTextResult(document: unknown): AdfTextResult {
   // A pre-ADF site sends the description as a plain string.
   if (typeof document === "string") {
-    return clamp(normalizeWhitespace(document));
+    return clamp(normalizeWhitespace(document), false);
   }
 
   const root = asNode(document);
   if (root === undefined) {
-    return "";
+    return { text: "", truncated: false };
   }
 
   const blocks: string[] = [];
-  collectBlocks(root, blocks, 0, "");
+  const state: WalkState = { truncated: false };
+  collectBlocks(root, blocks, 0, "", state);
   return clamp(
     blocks
       .map((block) => block.trimEnd())
       .filter((block) => block !== "")
       .join("\n\n"),
+    state.truncated,
   );
 }
 
@@ -92,8 +109,10 @@ function collectBlocks(
   blocks: string[],
   depth: number,
   prefix: string,
+  state: WalkState,
 ): void {
   if (depth > MAX_DEPTH) {
+    state.truncated = true;
     return;
   }
 
@@ -107,12 +126,12 @@ function collectBlocks(
       );
       // Kept as Markdown: the model reads these as structure, and a heading
       // stripped to bare text is indistinguishable from a sentence.
-      pushInline(blocks, `${hashes} `, node, depth);
+      pushInline(blocks, `${hashes} `, node, depth, state);
       return;
     }
 
     case "paragraph": {
-      pushInline(blocks, prefix, node, depth);
+      pushInline(blocks, prefix, node, depth, state);
       return;
     }
 
@@ -121,7 +140,7 @@ function collectBlocks(
         typeof node.attrs?.["language"] === "string"
           ? String(node.attrs["language"])
           : "";
-      const body = inlineText(node, depth + 1);
+      const body = inlineText(node, depth + 1, state);
       blocks.push(`\`\`\`${language}\n${body}\n\`\`\``);
       return;
     }
@@ -131,7 +150,7 @@ function collectBlocks(
       for (const child of childrenOf(node)) {
         const childNode = asNode(child);
         if (childNode !== undefined) {
-          collectBlocks(childNode, inner, depth + 1, "");
+          collectBlocks(childNode, inner, depth + 1, "", state);
         }
       }
       blocks.push(inner.map((line) => `> ${line}`).join("\n"));
@@ -156,7 +175,7 @@ function collectBlocks(
         for (const grandchild of childrenOf(item)) {
           const grandchildNode = asNode(grandchild);
           if (grandchildNode !== undefined) {
-            collectBlocks(grandchildNode, itemBlocks, depth + 1, "");
+            collectBlocks(grandchildNode, itemBlocks, depth + 1, "", state);
           }
         }
         const [first, ...rest] = itemBlocks;
@@ -179,7 +198,7 @@ function collectBlocks(
         // Acceptance criteria are often a task list, and whether a box is
         // ticked is exactly what says how much work is left.
         const done = item.attrs?.["state"] === "DONE";
-        const text = inlineText(item, depth + 1);
+        const text = inlineText(item, depth + 1, state);
         blocks.push(`${prefix}- [${done ? "x" : " "}] ${text}`);
       }
       return;
@@ -202,7 +221,7 @@ function collectBlocks(
             continue;
           }
           const cellBlocks: string[] = [];
-          collectBlocks(cellNode, cellBlocks, depth + 1, "");
+          collectBlocks(cellNode, cellBlocks, depth + 1, "", state);
           // A cell's own newlines would end the row, so a multi-paragraph
           // cell collapses to one line rather than breaking the table.
           cells.push(cellBlocks.join(" ").replace(/\s+/g, " ").trim());
@@ -250,7 +269,7 @@ function collectBlocks(
       for (const child of childrenOf(node)) {
         const childNode = asNode(child);
         if (childNode !== undefined) {
-          collectBlocks(childNode, blocks, depth + 1, prefix);
+          collectBlocks(childNode, blocks, depth + 1, prefix, state);
         }
       }
     }
@@ -263,8 +282,9 @@ function pushInline(
   prefix: string,
   node: AdfNode,
   depth: number,
+  state: WalkState,
 ): void {
-  const text = inlineText(node, depth + 1);
+  const text = inlineText(node, depth + 1, state);
   if (text !== "") {
     blocks.push(`${prefix}${text}`);
   }
@@ -277,8 +297,9 @@ function pushInline(
  * `text`, plus the three reference types whose *label* is the content, since
  * "assign to @Ada" loses its meaning if the mention flattens to nothing.
  */
-function inlineText(node: AdfNode, depth: number): string {
+function inlineText(node: AdfNode, depth: number, state: WalkState): string {
   if (depth > MAX_DEPTH) {
+    state.truncated = true;
     return "";
   }
 
@@ -318,7 +339,7 @@ function inlineText(node: AdfNode, depth: number): string {
   for (const child of childrenOf(node)) {
     const childNode = asNode(child);
     if (childNode !== undefined) {
-      out += inlineText(childNode, depth + 1);
+      out += inlineText(childNode, depth + 1, state);
     }
   }
   return out;
@@ -329,9 +350,12 @@ function normalizeWhitespace(value: string): string {
   return value.replace(/[^\S\n]+/g, " ").trim();
 }
 
-/** Truncates to the cap, marking that it happened. */
-function clamp(value: string): string {
+/** Truncates to the cap, marking both the text and metadata when it happened. */
+function clamp(value: string, alreadyTruncated: boolean): AdfTextResult {
   return value.length <= MAX_LENGTH
-    ? value
-    : `${value.slice(0, MAX_LENGTH)}\n[truncated]`;
+    ? { text: value, truncated: alreadyTruncated }
+    : {
+        text: `${value.slice(0, MAX_LENGTH)}\n[truncated]`,
+        truncated: true,
+      };
 }

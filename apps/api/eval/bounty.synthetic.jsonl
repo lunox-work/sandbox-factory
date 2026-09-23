@@ -1,0 +1,2 @@
+{"summary":"Change one button label","descriptionText":"Rename Save to Apply on the profile form and update its focused UI test.","issueType":"Task","label":"XS"}
+{"summary":"Unknown integration requirements","descriptionText":"Connect the system to the partner platform. The partner, API, authentication, and acceptance criteria are not specified.","issueType":"Story","label":"unsized"}

@@ -24,6 +24,8 @@ function connectionRow(
     keyId: cipher.keyId,
     expiresAt: new Date("2026-09-21T01:00:00.000Z"),
     scopes: "read:jira-work offline_access",
+    resourceScopes: "read:jira-work",
+    credentialRevision: 1,
     email: "user@acme.test",
     healthy: true,
     createdAt: new Date("2026-09-21T00:00:00.000Z"),
@@ -203,7 +205,7 @@ test("saveTokens re-encrypts and stamps the current key", async () => {
   // the connection alive.
   const { store: connections, calls } = store([connectionRow()]);
 
-  await connections.saveTokens("jrc_1", {
+  await connections.saveTokens("org_1", "jrc_1", 1, {
     accessToken: "access-2",
     refreshToken: "refresh-2",
     expiresAt: "2026-09-21T02:00:00.000Z",
@@ -224,12 +226,21 @@ test("markUnhealthy flags the row without touching the tokens", async () => {
   // The row is kept so the UI can name the site the user recognises.
   const { store: connections, calls } = store([connectionRow()]);
 
-  await connections.markUnhealthy("jrc_1");
+  assert.equal(await connections.markUnhealthy("org_1", "jrc_1", 1), true);
 
   const values = calls[0]?.values ?? {};
   assert.equal(values["healthy"], false);
   assert.equal(values["accessTokenEnc"], undefined);
   assert.equal(values["refreshTokenEnc"], undefined);
+  // Owner and revision are in the WHERE, not just the id.
+  assert.equal(calls[0]?.filtered, true);
+});
+
+test("markUnhealthy reports a row that has moved on", async () => {
+  // A reconnect mid-request bumps the revision; the fake returns no row for
+  // the stale update, as Postgres would.
+  const { store: connections } = store([]);
+  assert.equal(await connections.markUnhealthy("org_1", "jrc_1", 1), false);
 });
 
 test("remove reports whether anything was deleted, scoped to the owner", async () => {
@@ -239,6 +250,34 @@ test("remove reports whether anything was deleted, scoped to the owner", async (
 
   const { store: empty } = store([]);
   assert.equal(await empty.remove("org_2", "jrc_1"), false);
+});
+
+test("the write grant is derived from both scope lists", async () => {
+  // The token's scopes say what Atlassian issued; the site's say what that
+  // token may do there. Either one alone is permission the other end refuses.
+  const both = store([
+    connectionRow({
+      scopes: "read:jira-work write:jira-work offline_access",
+      resourceScopes: "read:jira-work write:jira-work",
+    }),
+  ]);
+  assert.equal((await both.store.list("org_1"))[0]?.writeGranted, true);
+
+  const tokenOnly = store([
+    connectionRow({
+      scopes: "read:jira-work write:jira-work offline_access",
+      resourceScopes: "read:jira-work",
+    }),
+  ]);
+  assert.equal((await tokenOnly.store.list("org_1"))[0]?.writeGranted, false);
+
+  const siteOnly = store([
+    connectionRow({
+      scopes: "read:jira-work offline_access",
+      resourceScopes: "read:jira-work write:jira-work",
+    }),
+  ]);
+  assert.equal((await siteOnly.store.list("org_1"))[0]?.writeGranted, false);
 });
 
 test("an empty scope column reads as no scopes", async () => {

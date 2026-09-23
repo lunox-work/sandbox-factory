@@ -611,3 +611,42 @@ test("a ticket missing every optional field still maps", () => {
   assert.equal(detail.originalEstimateSeconds, null);
   assert.equal(detail.votes, null);
 });
+
+test("comments paginate for explicit write recovery", async () => {
+  const { client: jira, urls } = client([
+    { body: { comments: [{ id: "1", body: { type: "doc" } }], total: 2 } },
+    { body: { comments: [{ id: "2", body: { type: "doc" } }], total: 2 } },
+  ]);
+  const comments = await jira.comments("ACME-1");
+  assert.deepEqual(
+    comments.map(({ id }) => id),
+    ["1", "2"],
+  );
+  assert.equal(new URL(urls[1] ?? "").searchParams.get("startAt"), "1");
+});
+
+test("issueSpec hands its signal to fetch and stops retrying once it aborts", async () => {
+  const controller = new AbortController();
+  const signals: (AbortSignal | null | undefined)[] = [];
+  const jira = new JiraClient({
+    credential,
+    fetch: (async (_url: string | URL | Request, init?: RequestInit) => {
+      signals.push(init?.signal);
+      return new Response("{}", { status: 503 });
+    }) as typeof globalThis.fetch,
+    maxRetries: 2,
+    // The lease is lost while the client waits to retry.
+    sleep: () => {
+      controller.abort();
+      return Promise.resolve();
+    },
+  });
+
+  const error = await jira
+    .issueSpec("ACME-1", controller.signal)
+    .catch((caught: unknown) => caught);
+
+  assert.equal(signals.length, 1);
+  assert.equal(signals[0], controller.signal);
+  assert.ok(error instanceof Error && error.name === "AbortError");
+});

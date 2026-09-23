@@ -125,10 +125,41 @@ export class OAuthCredential implements Credential {
     }
 
     // Collapse concurrent refreshes; see the class comment.
-    this.#inFlight ??= this.#refresh(stored.refreshToken).finally(() => {
-      this.#inFlight = undefined;
-    });
+    this.#inFlight ??= this.#refresh(stored.refreshToken)
+      .catch((error: unknown) => this.#recover(error))
+      .finally(() => {
+        this.#inFlight = undefined;
+      });
     return this.#inFlight;
+  }
+
+  /**
+   * A failed refresh is not always a dead grant.
+   *
+   * `#inFlight` collapses the refreshes of *this* credential, but another
+   * holder of the same token source — another process, or another credential
+   * built over the same stored row — may have refreshed first. Its write-back
+   * rotates the pair this one loaded, so this one's refresh either loses the
+   * persist (a `save` that refuses a stale revision) or is refused at
+   * Atlassian for a refresh token already spent. Both look fatal and neither
+   * is: the source now holds a live pair, and reading it back is the whole
+   * cure. Only when the source still holds a stale pair was the failure real.
+   *
+   * The original error is what surfaces when the reload cannot help, including
+   * when the reload itself fails: that error is about the refresh the caller
+   * asked for, and the reload was only an attempt to make it unnecessary.
+   */
+  async #recover(error: unknown): Promise<TokenPair> {
+    let latest: TokenPair;
+    try {
+      latest = await this.#options.tokens.load();
+    } catch {
+      throw error;
+    }
+    if (this.#isStale(latest)) {
+      throw error;
+    }
+    return latest;
   }
 
   async #refresh(refreshToken: string): Promise<TokenPair> {

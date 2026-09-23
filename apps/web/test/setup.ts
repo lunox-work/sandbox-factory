@@ -44,6 +44,8 @@ afterEach(async () => {
 if (typeof window !== "undefined") {
   if (!("ResizeObserver" in globalThis)) {
     globalThis.ResizeObserver = class ResizeObserver {
+      // The real constructor's signature, so callers passing a callback match.
+      constructor(_callback: ResizeObserverCallback) {}
       observe(): void {}
       unobserve(): void {}
       disconnect(): void {}

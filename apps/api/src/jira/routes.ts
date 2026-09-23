@@ -29,12 +29,10 @@ import type {
 } from "@sandbox-factory/db";
 import {
   accessibleSites,
-  backlogJql,
-  backlogSource,
   exchangeCode,
   JiraApiError,
   JiraAuthError,
-  READ_SCOPES,
+  WRITE_SCOPES,
   stripTrailingSlashes,
 } from "@sandbox-factory/jira";
 import {
@@ -48,13 +46,19 @@ import {
   jiraClientFor,
   noteAuthFailure,
   type JiraClientFailure,
+  type JiraFailureTarget,
 } from "./credential.js";
 import { signState, verifyState } from "./state.js";
+import { InvalidBoardIdError, selectBacklog } from "../bounty/selection.js";
 
 /** What the routes need. Supplied by `createApp`, faked in tests. */
 export interface JiraRouteOptions {
   connections: JiraConnectionStore;
   boards: JiraBoardStore;
+  proposals?: Pick<
+    import("@sandbox-factory/db").BountyProposalStore,
+    "liveExternalIds"
+  >;
   /**
    * The caller's current role in an organization, or undefined if they are not
    * a member. Read again in the callback — see the comment there.
@@ -72,6 +76,16 @@ export interface JiraRouteOptions {
   apiUrl: string;
   /** Public origin of the web app, where the browser is sent afterwards. */
   appUrl: string;
+  /**
+   * Starts sizing a board that has never been sized, and does nothing to one
+   * that has. Absent when the deployment has no bounty routes; a sync then
+   * only registers boards.
+   */
+  startSizing?: (input: {
+    organizationId: string;
+    boardId: string;
+    startedBy: string;
+  }) => Promise<unknown>;
   /** Injectable for tests. */
   fetch?: typeof globalThis.fetch;
   now?: () => number;
@@ -123,7 +137,9 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
   const {
     connections,
     boards,
+    proposals,
     roleOf,
+    startSizing,
     clientId,
     clientSecret,
     secret,
@@ -159,7 +175,7 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
    * The store's `sync` rather than its `register`: this runs against boards
    * somebody has already configured, so it refreshes what is Jira's to state
    * — a renamed board, one moved to another project — and leaves the
-   * selection and the write-back flag exactly as they were found.
+   * selection exactly as it was found.
    *
    * Returns the failure rather than throwing it when the connection itself
    * cannot produce a client, and throws whatever Jira threw when the call is
@@ -171,7 +187,12 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
     organizationId: string,
     connectionId: string,
   ): Promise<
-    | { readonly ok: true; readonly boards: JiraBoardSummary[] }
+    | {
+        readonly ok: true;
+        readonly boards: JiraBoardSummary[];
+        /** Boards this sync registered for the first time. */
+        readonly added: string[];
+      }
     | { readonly ok: false; readonly failure: JiraClientFailure }
   > {
     const result = await jiraClientFor(
@@ -184,6 +205,9 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
     }
 
     const visible = await result.client.boards();
+    const known = new Set(
+      (await boards.list(organizationId)).map(({ id }) => id),
+    );
     const recorded: JiraBoardSummary[] = [];
     for (const board of visible) {
       recorded.push(
@@ -196,7 +220,38 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
         }),
       );
     }
-    return { ok: true, boards: recorded };
+    return {
+      ok: true,
+      boards: recorded,
+      added: recorded.map(({ id }) => id).filter((id) => !known.has(id)),
+    };
+  }
+
+  /**
+   * Size a site's boards in the background, each once.
+   *
+   * Every sync — on connect, on the Re-sync button, and when the site's page
+   * opens — offers every board it saw. `startSizing` starts a run only on a
+   * board that has never had one, so a board is sized the first time it is
+   * seen (or the first time sizing could run at all) and never again unless
+   * someone asks. Reconnecting a site to add a scope re-sizes nothing.
+   *
+   * Each run starts in the background; this only creates the rows. A failure
+   * here never fails the sync or the connection that called it.
+   */
+  async function sizeBoards(
+    organizationId: string,
+    synced: readonly JiraBoardSummary[],
+    startedBy: string,
+  ): Promise<void> {
+    if (startSizing === undefined) return;
+    for (const { id: boardId } of synced) {
+      try {
+        await startSizing({ organizationId, boardId, startedBy });
+      } catch {
+        // Swallowed on purpose; see above.
+      }
+    }
   }
 
   /**
@@ -204,10 +259,19 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
    * been shown to belong to the organization in the path.
    *
    * Owners and admins only. Connecting a Jira site grants the platform read
-   * access to a client's tickets for as long as the connection lives, which
-   * is not a decision an ordinary member should make for the organization.
+   * access to a client's tickets, and write access to post approvals back to
+   * them, for as long as the connection lives — not a decision an ordinary
+   * member should make for the organization.
+   *
+   * **Every consent asks for the write scope.** Write-back used to be a
+   * separate grant, asked for per board with a second trip to Atlassian, and
+   * the switch that started it was the only thing on the board page a person
+   * could not understand without knowing about scopes. Asking once, when the
+   * site is connected, puts the permission where the person is already
+   * granting permissions. A site whose admin withholds it is still
+   * connected, read-only, and the callback says so.
    */
-  app.get("/api/v1/orgs/:orgId/jira/connect", (c) => {
+  app.get("/api/v1/orgs/:orgId/jira/connect", async (c) => {
     const { organizationId, role } = c.get("member");
     if (!isAtLeastAdmin(role)) {
       // 403 rather than 404: membership is already established, so the
@@ -227,7 +291,7 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
     const url = new URL("https://auth.atlassian.com/authorize");
     url.searchParams.set("audience", "api.atlassian.com");
     url.searchParams.set("client_id", clientId);
-    url.searchParams.set("scope", READ_SCOPES.join(" "));
+    url.searchParams.set("scope", WRITE_SCOPES.join(" "));
     url.searchParams.set("redirect_uri", redirectUri);
     url.searchParams.set("state", state);
     url.searchParams.set("response_type", "code");
@@ -334,6 +398,7 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
           refreshToken: tokens.refreshToken ?? null,
           expiresAt: tokens.expiresAt,
           scopes: tokens.scopes,
+          resourceScopes: site.scopes,
         });
 
         /*
@@ -350,7 +415,11 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
           opened, so a failure here costs a round trip rather than the boards.
         */
         try {
-          await syncBoards(organizationId, connection.id);
+          // Boards never sized are sized now; see `sizeBoards`.
+          const synced = await syncBoards(organizationId, connection.id);
+          if (synced.ok) {
+            await sizeBoards(organizationId, synced.boards, c.get("user").id);
+          }
         } catch {
           // Swallowed on purpose. The result is discarded for the same
           // reason: a site that granted no Agile scope is still a connected
@@ -427,7 +496,16 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
     try {
       return c.json({ boards: await result.client.boards() });
     } catch (error) {
-      return await jiraFailure(c, connections, connectionId, error);
+      return await jiraFailure(
+        c,
+        connections,
+        {
+          organizationId,
+          connectionId,
+          credentialRevision: result.credentialRevision,
+        },
+        error,
+      );
     }
   });
 
@@ -442,19 +520,35 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
    *
    * A POST because it writes rows, even though a caller means it as a read.
    * Any member may call it: it registers pointers to boards the organization
-   * already holds a grant for, reads no ticket, and changes no setting.
+   * already holds a grant for and changes no setting. A board never sized is
+   * sized in the background, as on connect — the one run every board gets,
+   * not a choice the caller is making for anyone.
    */
   app.post("/api/v1/orgs/:orgId/jira/connections/:id/sync", async (c) => {
     const { organizationId } = c.get("member");
     const connectionId = c.req.param("id");
 
+    // The revision the sync starts from, so a failure on a grant replaced
+    // meanwhile does not flag its successor; see `noteAuthFailure`.
+    const started = await connections.get(organizationId, connectionId);
+    if (started === null) return failureResponse(c, { reason: "not-found" });
+
     try {
       const result = await syncBoards(organizationId, connectionId);
-      return result.ok
-        ? c.json({ boards: result.boards })
-        : failureResponse(c, result.failure);
+      if (!result.ok) return failureResponse(c, result.failure);
+      await sizeBoards(organizationId, result.boards, c.get("user").id);
+      return c.json({ boards: result.boards, added: result.added });
     } catch (error) {
-      return await jiraFailure(c, connections, connectionId, error);
+      return await jiraFailure(
+        c,
+        connections,
+        {
+          organizationId,
+          connectionId,
+          credentialRevision: started.credentialRevision,
+        },
+        error,
+      );
     }
   });
 
@@ -505,7 +599,16 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
         (candidate) => String(candidate.id) === parsed.data.externalId,
       );
     } catch (error) {
-      return await jiraFailure(c, connections, parsed.data.connectionId, error);
+      return await jiraFailure(
+        c,
+        connections,
+        {
+          organizationId,
+          connectionId: parsed.data.connectionId,
+          credentialRevision: result.credentialRevision,
+        },
+        error,
+      );
     }
 
     if (board === undefined) {
@@ -538,28 +641,18 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
 
     const parsed = updateBoardSchema.safeParse(await c.req.json());
     if (!parsed.success) {
-      return c.json(
-        { error: "Provide selection settings, a write-back flag, or both." },
-        400,
-      );
+      return c.json({ error: "Provide selection settings." }, 400);
     }
 
     const updated = await boards.update(organizationId, c.req.param("id"), {
-      ...(parsed.data.selection === undefined
-        ? {}
-        : {
-            selection: Object.fromEntries(
-              // `maxAgeDays: null` clears the bound, and the store merges, so
-              // an undefined-stripping spread would drop the clear. Nulls are
-              // kept; only genuinely absent keys are removed.
-              Object.entries(parsed.data.selection).filter(
-                ([, value]) => value !== undefined,
-              ),
-            ),
-          }),
-      ...(parsed.data.writebackEnabled === undefined
-        ? {}
-        : { writebackEnabled: parsed.data.writebackEnabled }),
+      selection: Object.fromEntries(
+        // `maxAgeDays: null` clears the bound, and the store merges, so an
+        // undefined-stripping spread would drop the clear. Nulls are kept;
+        // only genuinely absent keys are removed.
+        Object.entries(parsed.data.selection).filter(
+          ([, value]) => value !== undefined,
+        ),
+      ),
     });
 
     if (updated === null) {
@@ -610,7 +703,16 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
         // and so does this: reporting it as deleted would be a guess.
         return c.json({ error: "Not found" }, 404);
       }
-      return await jiraFailure(c, connections, registered.connectionId, error);
+      return await jiraFailure(
+        c,
+        connections,
+        {
+          organizationId,
+          connectionId: registered.connectionId,
+          credentialRevision: result.credentialRevision,
+        },
+        error,
+      );
     }
   });
 
@@ -643,45 +745,33 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
       return failureResponse(c, result.failure);
     }
 
-    // Parsed rather than cast: a row written before a setting existed holds
-    // none of its defaults, and the JQL builder reads every field.
-    const selection = boardSelectionSchema.parse(board.selection);
-    const source = backlogSource(board.boardType);
-    const jql = backlogJql(selection, {
-      projectKey: board.projectKey ?? undefined,
-      source,
-      ...(now === undefined ? {} : { now: new Date(now()) }),
-    });
-
-    const boardId = Number(board.externalId);
-    if (!Number.isInteger(boardId)) {
-      // Jira's board ids are numeric; a row holding anything else predates a
-      // check or was written by hand, and the Agile URL would 404 opaquely.
-      return c.json({ error: "That board has an unusable id." }, 422);
-    }
-
     try {
-      const page =
-        source === "backlog"
-          ? await result.client.backlogIssues(boardId, {
-              jql,
-              maxResults: selection.maxTickets,
-            })
-          : await result.client.boardIssues(boardId, {
-              jql,
-              maxResults: selection.maxTickets,
-            });
+      const selected = await selectBacklog({
+        organizationId,
+        board,
+        client: result.client,
+        ...(proposals === undefined ? {} : { proposals }),
+        ...(now === undefined ? {} : { now: new Date(now()) }),
+      });
 
       return c.json({
         boardId: board.id,
-        source,
-        jql,
-        selection,
-        issues: page.issues,
-        ...(page.total === undefined ? {} : { total: page.total }),
+        ...selected,
       });
     } catch (error) {
-      return await jiraFailure(c, connections, connectionId, error);
+      if (error instanceof InvalidBoardIdError) {
+        return c.json({ error: error.message }, 422);
+      }
+      return await jiraFailure(
+        c,
+        connections,
+        {
+          organizationId,
+          connectionId,
+          credentialRevision: result.credentialRevision,
+        },
+        error,
+      );
     }
   });
 }
@@ -721,10 +811,10 @@ function failureResponse(
 async function jiraFailure(
   c: { json: (body: unknown, status: 404 | 409 | 502) => Response },
   connections: JiraConnectionStore,
-  connectionId: string,
+  target: JiraFailureTarget,
   error: unknown,
 ): Promise<Response> {
-  const kind = await noteAuthFailure(connections, connectionId, error);
+  const kind = await noteAuthFailure(connections, target, error);
   if (kind === "reconnect") {
     return failureResponse(c, { reason: "reconnect" });
   }
@@ -788,5 +878,5 @@ function safePath(value: string): string {
  * told, rather than leaving it to be diagnosed later.
  */
 function missingScopes(granted: readonly string[]): string[] {
-  return READ_SCOPES.filter((scope) => !granted.includes(scope));
+  return WRITE_SCOPES.filter((scope) => !granted.includes(scope));
 }

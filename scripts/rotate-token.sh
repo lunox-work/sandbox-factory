@@ -11,19 +11,19 @@
 #                      that token never triggers ci.yml or cd.yml. A dead token
 #                      here stops main deploying, quietly.
 #
-#   .env.production    the eleven application secrets, which reach the API
+#   .env.production    the application secrets, which reach the API
 #                      through AWS Secrets Manager. A dead one here crash-loops
 #                      the task on its next boot, loudly.
 #
 #   ./scripts/rotate-token.sh                    # the GitHub token; prompts
 #   ./scripts/rotate-token.sh --check            # is the stored one still good?
-#   ./scripts/rotate-token.sh --secrets          # the eleven app secrets
+#   ./scripts/rotate-token.sh --secrets          # the app secrets
 #   ./scripts/rotate-token.sh --secrets --only DATABASE_URL
 #   ./scripts/rotate-token.sh <token>            # inline; see the warning below
 #   op read "op://Private/gh-auto-merge/token" | ./scripts/rotate-token.sh -
 #
 # --secrets asks for each key in turn and SKIPS ANY YOU LEAVE BLANK, so rotating
-# one credential does not mean re-pasting the other ten. It rewrites
+# one credential does not mean re-pasting all the others. It rewrites
 # .env.production in place, then offers to push the changed keys to AWS and to
 # restart the API so they take effect. Both are prompts, not automatic.
 #
@@ -55,7 +55,7 @@ info() { printf '\033[36m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[33mwarn:\033[0m %s\n' "$*" >&2; }
 ok()   { printf '\033[32m  ok\033[0m %s\n' "$*"; }
 
-# The eleven app secrets, in .env.production order. Keep in step with
+# The app secrets, in .env.production order. Keep in step with
 # `local.app_secrets` in infra/secrets.tf and `KEYS` in
 # infra/scripts/secrets-push.sh.
 SECRET_KEYS=(
@@ -70,6 +70,10 @@ SECRET_KEYS=(
   JIRA_CLIENT_ID
   JIRA_CLIENT_SECRET
   TOKEN_ENCRYPTION_KEY
+  ANTHROPIC_API_KEY
+  SIZING_MODEL
+  DEEPSEEK_API_KEY
+  DEEPSEEK_SIZING_MODEL
 )
 
 secret_hint() {
@@ -100,6 +104,20 @@ secret_hint() {
        replacing it alone leaves every stored Jira token unreadable and every
        connection has to be made again. Re-encrypt those rows first — key_id
        records which key wrote each one so both can be readable while you do." ;;
+    ANTHROPIC_API_KEY)
+      echo "console.anthropic.com -> Settings -> API keys.
+       Optional; sizing stays unavailable until SIZING_MODEL is also set." ;;
+    SIZING_MODEL)
+      echo "An explicit model identifier available to the Anthropic account.
+       Optional; verify it in the provider account before setting it." ;;
+    DEEPSEEK_API_KEY)
+      echo "platform.deepseek.com -> API keys.
+       The sizing fallback: it answers when an Anthropic call fails, and
+       serves sizing alone when ANTHROPIC_API_KEY is unset. Optional until
+       DEEPSEEK_SIZING_MODEL is also set." ;;
+    DEEPSEEK_SIZING_MODEL)
+      echo "An explicit model identifier available to the DeepSeek account.
+       Optional; verify it in the provider account before setting it." ;;
   esac
 }
 

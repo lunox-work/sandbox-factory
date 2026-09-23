@@ -132,6 +132,9 @@ export type InviteMemberInput = z.infer<typeof inviteMemberSchema>;
 /** Build provenance: describes the artifact, not the data it serves. */
 export * from "./build-info.js";
 
+/** Bounty pricing, sizing, run and proposal contracts. */
+export * from "./bounty.js";
+
 /** The Jira wire contract, for `packages/jira` and the routes that use it. */
 export * from "./jira.js";
 

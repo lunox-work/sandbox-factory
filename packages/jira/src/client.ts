@@ -3,9 +3,9 @@
  * the HTTP routes in `apps/api`, the MCP tools in `apps/api/src/mcp`, and the
  * skill's CLI. Whatever differs between them is a `Credential`, not a code path.
  *
- * Read-only by construction: there is no method here that writes, and the
- * scopes in `oauth.ts` would not permit one. That is the security posture of
- * the whole feature — see the `READ_SCOPES` comment.
+ * Read-only by construction: there is no method here that writes. The two
+ * writes the bounty workflow makes live in `JiraWriteClient`, apart, with no
+ * automatic retry — see `write-client.ts`.
  *
  * Two Jira APIs are in play, and which one serves a call is not arbitrary:
  *
@@ -101,6 +101,11 @@ export interface JiraClientOptions {
   maxRetries?: number;
   /** Injectable for tests, so a retry does not really wait. */
   sleep?: (ms: number) => Promise<void>;
+}
+
+export interface JiraComment {
+  readonly id: string;
+  readonly body: unknown;
 }
 
 /** The options shared by the three Agile issue endpoints. */
@@ -278,14 +283,51 @@ export class JiraClient {
    *
    * The platform stores the returned `specHash` and not the text. Re-reading a
    * ticket later and comparing hashes is how a proposal is known to be stale.
+   *
+   * `signal` bounds the read, retries included, for a caller holding a lease.
    */
-  async issueSpec(keyOrId: string): Promise<JiraIssueSpec> {
+  async issueSpec(
+    keyOrId: string,
+    signal?: AbortSignal,
+  ): Promise<JiraIssueSpec> {
     const query = new URLSearchParams({ fields: SPEC_FIELDS.join(",") });
     const payload = await this.#get(
       `/rest/api/3/issue/${encodeURIComponent(keyOrId)}?${query}`,
+      signal,
     );
     const issue = jiraIssueResponseSchema.parse(payload);
     return toIssueSpec(issue.key, issue.fields ?? {});
+  }
+
+  /** Comments are read only for explicit recovery of an ambiguous write. */
+  async comments(keyOrId: string): Promise<JiraComment[]> {
+    const comments: JiraComment[] = [];
+    let startAt = 0;
+    for (;;) {
+      const query = new URLSearchParams({
+        startAt: String(startAt),
+        maxResults: "100",
+      });
+      const payload = await this.#get(
+        `/rest/api/3/issue/${encodeURIComponent(keyOrId)}/comment?${query}`,
+      );
+      const record =
+        typeof payload === "object" && payload !== null
+          ? (payload as Record<string, unknown>)
+          : {};
+      const page = Array.isArray(record["comments"]) ? record["comments"] : [];
+      for (const value of page) {
+        if (typeof value !== "object" || value === null) continue;
+        const comment = value as Record<string, unknown>;
+        if (typeof comment["id"] === "string") {
+          comments.push({ id: comment["id"], body: comment["body"] });
+        }
+      }
+      const total =
+        typeof record["total"] === "number" ? record["total"] : comments.length;
+      if (page.length === 0 || comments.length >= total) return comments;
+      startAt += page.length;
+    }
   }
 
   /** Shared by the three Agile issue endpoints, which paginate identically. */
@@ -323,9 +365,11 @@ export class JiraClient {
   }
 
   /** A GET with auth, retries and error translation. */
-  async #get(path: string): Promise<unknown> {
+  async #get(path: string, signal?: AbortSignal): Promise<unknown> {
     let attempt = 0;
     for (;;) {
+      // A retry's sleep does not listen to the signal; stop before the next try.
+      signal?.throwIfAborted();
       // Re-read inside the loop: a retry after a 401 refresh needs the new
       // token, and the credential may have rotated it since the last attempt.
       const authorization = await this.#credential.authorize();
@@ -333,6 +377,7 @@ export class JiraClient {
         `${this.#credential.baseUrl()}${path}`,
         {
           headers: { Authorization: authorization, Accept: "application/json" },
+          ...(signal === undefined ? {} : { signal }),
         },
       );
 

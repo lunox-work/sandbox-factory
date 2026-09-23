@@ -1,0 +1,2 @@
+ALTER TABLE "bounty_run" DROP CONSTRAINT "bounty_run_source_check";--> statement-breakpoint
+ALTER TABLE "bounty_run" ADD CONSTRAINT "bounty_run_source_check" CHECK (("bounty_run"."kind" in ('backlog', 'issue') AND "bounty_run"."source_proposal_id" IS NULL AND "bounty_run"."source_revision" IS NULL) OR ("bounty_run"."kind" = 'reprice' AND "bounty_run"."source_revision" > 0));

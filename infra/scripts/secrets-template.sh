@@ -37,7 +37,8 @@ value_of() {
 # refuses an incomplete file.
 for k in GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET GITHUB_CLIENT_ID \
          GITHUB_CLIENT_SECRET ATLASSIAN_CLIENT_ID ATLASSIAN_CLIENT_SECRET \
-         JIRA_CLIENT_ID JIRA_CLIENT_SECRET; do
+         JIRA_CLIENT_ID JIRA_CLIENT_SECRET ANTHROPIC_API_KEY SIZING_MODEL \
+         DEEPSEEK_API_KEY DEEPSEEK_SIZING_MODEL; do
   value_of "$k" >/dev/null || echo "note: $k is empty in $SRC — fill it in $OUT by hand" >&2
 done
 
@@ -142,6 +143,17 @@ ATLASSIAN_CLIENT_SECRET=$(value_of ATLASSIAN_CLIENT_SECRET)
 # agile endpoints answer 404, which reads like a missing board.
 JIRA_CLIENT_ID=$(value_of JIRA_CLIENT_ID)
 JIRA_CLIENT_SECRET=$(value_of JIRA_CLIENT_SECRET)
+
+# Optional bounty sizing. The model remains explicit so a deploy cannot change
+# model behavior merely by updating application code.
+ANTHROPIC_API_KEY=$(value_of ANTHROPIC_API_KEY)
+SIZING_MODEL=$(value_of SIZING_MODEL)
+
+# The sizing fallback, on the same both-or-neither rule.
+DEEPSEEK_API_KEY=$(value_of DEEPSEEK_API_KEY)
+DEEPSEEK_SIZING_MODEL=$(value_of DEEPSEEK_SIZING_MODEL)
+# Only for a proxy or self-hosted gateway. Unset: https://api.deepseek.com
+# DEEPSEEK_BASE_URL=
 
 # Left unset deliberately. The SPA and the API share one origin through
 # CloudFront, so the session cookie stays host-only — which is stricter than

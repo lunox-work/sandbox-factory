@@ -20,6 +20,7 @@ import {
   JiraApiError,
   JiraAuthError,
   JiraClient,
+  JiraWriteClient,
   OAuthCredential,
   type TokenSource,
 } from "@sandbox-factory/jira";
@@ -45,7 +46,23 @@ export type JiraClientFailure =
   { readonly reason: "not-found" } | { readonly reason: "reconnect" };
 
 export type JiraClientResult =
-  | { readonly ok: true; readonly client: JiraClient; readonly cloudId: string }
+  | {
+      readonly ok: true;
+      readonly client: JiraClient;
+      readonly cloudId: string;
+      /** The row's revision when the client was built; see `noteAuthFailure`. */
+      readonly credentialRevision: number;
+    }
+  | { readonly ok: false; readonly failure: JiraClientFailure };
+
+export type JiraClientsResult =
+  | {
+      readonly ok: true;
+      readonly client: JiraClient;
+      readonly writeClient: JiraWriteClient;
+      readonly cloudId: string;
+      readonly credentialRevision: number;
+    }
   | { readonly ok: false; readonly failure: JiraClientFailure };
 
 /**
@@ -65,6 +82,7 @@ export function connectionTokenSource(
   organizationId: string,
   connectionId: string,
 ): TokenSource {
+  let loadedRevision: number | undefined;
   return {
     async load() {
       const stored = await connections.tokens(organizationId, connectionId);
@@ -75,6 +93,7 @@ export function connectionTokenSource(
           "invalid_grant",
         );
       }
+      loadedRevision = stored.credentialRevision;
       return {
         accessToken: stored.accessToken,
         refreshToken: stored.refreshToken ?? undefined,
@@ -86,14 +105,94 @@ export function connectionTokenSource(
     },
 
     async save(tokens) {
-      await connections.saveTokens(connectionId, {
-        accessToken: tokens.accessToken,
-        refreshToken: tokens.refreshToken ?? null,
-        expiresAt: tokens.expiresAt,
-        scopes: tokens.scopes,
-      });
+      if (loadedRevision === undefined) {
+        throw new JiraAuthError(
+          409,
+          "The Jira credential changed during refresh.",
+        );
+      }
+      const saved = await connections.saveTokens(
+        organizationId,
+        connectionId,
+        loadedRevision,
+        {
+          accessToken: tokens.accessToken,
+          refreshToken: tokens.refreshToken ?? null,
+          expiresAt: tokens.expiresAt,
+          scopes: tokens.scopes,
+        },
+      );
+      if (!saved) {
+        throw new JiraAuthError(
+          409,
+          "The Jira credential changed during refresh.",
+        );
+      }
+      loadedRevision += 1;
     },
   };
+}
+
+/**
+ * One credential per connection per process.
+ *
+ * `OAuthCredential` collapses concurrent refreshes, but only among callers of
+ * the same instance. Built fresh per request, as it used to be, two requests
+ * landing together on an expired token — the site page syncs boards as it
+ * opens, and React's development double-mount sends that twice — each ran a
+ * refresh, and the loser's write-back failed the revision check with a 409 no
+ * route classified. That surfaced as an Internal Server Error on the first
+ * visit after the hour-long token lapsed, and vanished on reload because the
+ * winner had persisted a live pair.
+ *
+ * Keyed by the store, so a test that builds its own store gets its own
+ * credentials, and by cloud id and client id, so a row re-pointed at another
+ * site or app is never addressed through a credential built for the old one.
+ * Nothing is evicted: an entry is a closure and a cleared promise, and a
+ * process holds one per connection it has served.
+ *
+ * A credential shared across processes still races at the row; the library's
+ * reload-on-failure handles that end.
+ */
+const credentials = new WeakMap<
+  JiraConnectionStore,
+  Map<string, OAuthCredential>
+>();
+
+function sharedCredential(
+  options: JiraClientFactoryOptions,
+  organizationId: string,
+  connectionId: string,
+  cloudId: string,
+): OAuthCredential {
+  const {
+    connections,
+    clientId,
+    clientSecret,
+    fetch: fetchImpl,
+    now,
+  } = options;
+  let perStore = credentials.get(connections);
+  if (perStore === undefined) {
+    perStore = new Map();
+    credentials.set(connections, perStore);
+  }
+  // Newlines, because none of the parts may contain one and an id could in
+  // principle contain any other separator.
+  const key = [organizationId, connectionId, cloudId, clientId].join("\n");
+  let credential = perStore.get(key);
+  if (credential === undefined) {
+    credential = new OAuthCredential({
+      tokens: connectionTokenSource(connections, organizationId, connectionId),
+      clientId,
+      clientSecret,
+      cloudId,
+      ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }),
+      ...(now === undefined ? {} : { now }),
+    });
+    perStore.set(key, credential);
+  }
+  return credential;
 }
 
 /**
@@ -113,13 +212,23 @@ export async function jiraClientFor(
   organizationId: string,
   connectionId: string,
 ): Promise<JiraClientResult> {
-  const {
-    connections,
-    clientId,
-    clientSecret,
-    fetch: fetchImpl,
-    now,
-  } = options;
+  const result = await jiraClientsFor(options, organizationId, connectionId);
+  return result.ok
+    ? {
+        ok: true,
+        client: result.client,
+        cloudId: result.cloudId,
+        credentialRevision: result.credentialRevision,
+      }
+    : result;
+}
+
+export async function jiraClientsFor(
+  options: JiraClientFactoryOptions,
+  organizationId: string,
+  connectionId: string,
+): Promise<JiraClientsResult> {
+  const { connections, fetch: fetchImpl } = options;
 
   const connection = await connections.get(organizationId, connectionId);
   if (connection === null) {
@@ -129,23 +238,26 @@ export async function jiraClientFor(
     return { ok: false, failure: { reason: "reconnect" } };
   }
 
-  const credential = new OAuthCredential({
-    tokens: connectionTokenSource(connections, organizationId, connectionId),
-    clientId,
-    clientSecret,
-    cloudId: connection.cloudId,
-    ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }),
-    ...(now === undefined ? {} : { now }),
-  });
+  const credential = sharedCredential(
+    options,
+    organizationId,
+    connectionId,
+    connection.cloudId,
+  );
 
   return {
     ok: true,
     cloudId: connection.cloudId,
+    credentialRevision: connection.credentialRevision,
     client: new JiraClient({
       credential,
       // So issue DTOs carry a browsable `browse/` link. The OAuth credential
       // addresses `api.atlassian.com`, whose URL is not one a user can open.
       siteUrl: connection.siteUrl,
+      ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }),
+    }),
+    writeClient: new JiraWriteClient({
+      credential,
       ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }),
     }),
   };
@@ -199,23 +311,41 @@ export type JiraFailureKind = "reconnect" | "scope" | "other";
  *
  * A 403 is likewise excluded: that is a permission the *user* lacks, which a
  * reconnect does not change either.
+ *
+ * **The flag is fenced on the revision the request started from.** A user can
+ * reconnect while a request on the old grant is still in flight; its 401 then
+ * says nothing about the new grant, and flagging the row would hide a working
+ * connection. The answer is still "reconnect" — for this request it was.
  */
 export async function noteAuthFailure(
   connections: JiraConnectionStore,
-  connectionId: string,
+  target: JiraFailureTarget,
   error: unknown,
 ): Promise<JiraFailureKind> {
+  const flag = () =>
+    connections.markUnhealthy(
+      target.organizationId,
+      target.connectionId,
+      target.credentialRevision,
+    );
   if (error instanceof JiraApiError && error.isUnauthorized) {
     if (isScopeMismatch(error)) {
       // Deliberately no `markUnhealthy`: the grant is fine.
       return "scope";
     }
-    await connections.markUnhealthy(connectionId);
+    await flag();
     return "reconnect";
   }
   if (error instanceof JiraAuthError && error.needsReconnect) {
-    await connections.markUnhealthy(connectionId);
+    await flag();
     return "reconnect";
   }
   return "other";
+}
+
+/** The connection a failed call used, as it stood when the call began. */
+export interface JiraFailureTarget {
+  readonly organizationId: string;
+  readonly connectionId: string;
+  readonly credentialRevision: number;
 }

@@ -3,9 +3,12 @@ import { test } from "node:test";
 
 import {
   buildInfo,
+  deepseekSizingConfig,
   jiraOAuthConfig,
   objectStoreConfig,
   parseEnv,
+  sizingAvailable,
+  sizingConfig,
 } from "../src/env.js";
 
 const DATABASE_URL = "postgres://postgres:postgres@localhost:5432/test";
@@ -307,4 +310,131 @@ test("the Jira app credentials are distinct from the sign-in ones", () => {
   });
 
   assert.notEqual(env.JIRA_CLIENT_ID, env.ATLASSIAN_CLIENT_ID);
+});
+
+test("sizing remains unavailable until both provider values are configured", () => {
+  assert.equal(sizingConfig(parseEnv(required)), undefined);
+  assert.equal(
+    sizingConfig(parseEnv({ ...required, ANTHROPIC_API_KEY: "key" })),
+    undefined,
+  );
+  assert.equal(
+    sizingConfig(parseEnv({ ...required, SIZING_MODEL: "configured-model" })),
+    undefined,
+  );
+  assert.deepEqual(
+    sizingConfig(
+      parseEnv({
+        ...required,
+        ANTHROPIC_API_KEY: "key",
+        SIZING_MODEL: "configured-model",
+      }),
+    ),
+    { apiKey: "key", model: "configured-model" },
+  );
+});
+
+test("empty sizing values behave as unset and do not stop boot", () => {
+  const env = parseEnv({
+    ...required,
+    ANTHROPIC_API_KEY: "",
+    SIZING_MODEL: "",
+    DEEPSEEK_API_KEY: "",
+    DEEPSEEK_SIZING_MODEL: "",
+    // docker-compose.yml passes `${DEEPSEEK_BASE_URL:-}`, so an unset override
+    // arrives as "" rather than absent; it must not fail URL validation.
+    DEEPSEEK_BASE_URL: "",
+  });
+  assert.equal(env.ANTHROPIC_API_KEY, undefined);
+  assert.equal(env.SIZING_MODEL, undefined);
+  assert.equal(env.DEEPSEEK_API_KEY, undefined);
+  assert.equal(env.DEEPSEEK_SIZING_MODEL, undefined);
+  assert.equal(env.DEEPSEEK_BASE_URL, undefined);
+});
+
+test("the Terraform placeholder leaves a sizing pair unset", () => {
+  // infra/secrets.tf seeds every secret with it; a pair never pushed must not
+  // look configured and send the placeholder to a provider.
+  const env = parseEnv({
+    ...required,
+    ANTHROPIC_API_KEY: "REPLACE_ME",
+    SIZING_MODEL: "REPLACE_ME",
+    DEEPSEEK_API_KEY: "REPLACE_ME",
+    DEEPSEEK_SIZING_MODEL: "REPLACE_ME",
+  });
+  assert.equal(sizingConfig(env), undefined);
+  assert.equal(deepseekSizingConfig(env), undefined);
+  assert.equal(sizingAvailable(env), false);
+});
+
+test("the Terraform placeholder or an empty value leaves the Jira app unset", () => {
+  // Unset, the connect route answers 501; a placeholder taken for a client id
+  // would send the user to Atlassian's error page instead.
+  for (const value of ["REPLACE_ME", ""]) {
+    const env = parseEnv({
+      ...required,
+      JIRA_CLIENT_ID: value,
+      JIRA_CLIENT_SECRET: value,
+    });
+    assert.equal(jiraOAuthConfig(env), undefined);
+  }
+});
+
+test("the sizing fallback needs its own pair, and the base URL is optional", () => {
+  assert.equal(deepseekSizingConfig(parseEnv(required)), undefined);
+  assert.equal(
+    deepseekSizingConfig(parseEnv({ ...required, DEEPSEEK_API_KEY: "key" })),
+    undefined,
+  );
+  assert.deepEqual(
+    deepseekSizingConfig(
+      parseEnv({
+        ...required,
+        DEEPSEEK_API_KEY: "key",
+        DEEPSEEK_SIZING_MODEL: "deepseek-model",
+      }),
+    ),
+    { apiKey: "key", model: "deepseek-model" },
+  );
+  assert.deepEqual(
+    deepseekSizingConfig(
+      parseEnv({
+        ...required,
+        DEEPSEEK_API_KEY: "key",
+        DEEPSEEK_SIZING_MODEL: "deepseek-model",
+        DEEPSEEK_BASE_URL: "https://gateway.internal",
+      }),
+    ),
+    {
+      apiKey: "key",
+      model: "deepseek-model",
+      baseUrl: "https://gateway.internal",
+    },
+  );
+});
+
+test("either provider pair on its own makes sizing available", () => {
+  assert.equal(sizingAvailable(parseEnv(required)), false);
+  // A DeepSeek-only deploy is a configured deploy: the executor mounts on
+  // this, not on the Anthropic pair.
+  assert.equal(
+    sizingAvailable(
+      parseEnv({
+        ...required,
+        DEEPSEEK_API_KEY: "key",
+        DEEPSEEK_SIZING_MODEL: "deepseek-model",
+      }),
+    ),
+    true,
+  );
+  assert.equal(
+    sizingAvailable(
+      parseEnv({
+        ...required,
+        ANTHROPIC_API_KEY: "key",
+        SIZING_MODEL: "configured-model",
+      }),
+    ),
+    true,
+  );
 });

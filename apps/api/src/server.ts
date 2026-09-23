@@ -5,21 +5,44 @@
 
 import { serve } from "@hono/node-server";
 import {
+  createBountyRunStore,
+  createBountyWritebackStore,
   createConnection,
+  createBountyProposalStore,
   createEmailStore,
   createJiraBoardStore,
   createJiraConnectionStore,
+  createJiraIssueStore,
   createOrganizationStore,
   createProfileStore,
+  createRateCardStore,
   createTokenCipher,
 } from "@sandbox-factory/db";
 
 import { buildBanner } from "@sandbox-factory/shared";
 
 import { createAuth } from "./auth.js";
-import { appUrl, buildInfo, jiraOAuthConfig, parseEnv } from "./env.js";
+import { BountyExecutor } from "./bounty/executor.js";
+import { BountyDelivery } from "./bounty/delivery.js";
+import { BountyWatchdog } from "./bounty/watchdog.js";
+import {
+  appUrl,
+  buildInfo,
+  deepseekSizingConfig,
+  jiraOAuthConfig,
+  parseEnv,
+  sizingConfig,
+} from "./env.js";
 import { resolveImageDigest } from "./image-digest.js";
+import { jiraClientFor, jiraClientsFor } from "./jira/credential.js";
 import { createApp } from "./routes.js";
+import {
+  AnthropicSizer,
+  DeepSeekSizer,
+  FallbackSizer,
+  JIRA_SIZE_PROMPT_VERSION,
+  type Sizer,
+} from "./sizing/index.js";
 
 const env = parseEnv();
 
@@ -33,6 +56,16 @@ const connection = createConnection({ url: env.DATABASE_URL });
 const emails = createEmailStore(connection.db);
 const profiles = createProfileStore(connection.db);
 const organizations = createOrganizationStore(connection.db);
+const jiraConnections = createJiraConnectionStore(
+  connection.db,
+  createTokenCipher(env.TOKEN_ENCRYPTION_KEY),
+);
+const jiraBoards = createJiraBoardStore(connection.db);
+const bountyRuns = createBountyRunStore(connection.db);
+const bountyProposals = createBountyProposalStore(connection.db);
+const jiraIssues = createJiraIssueStore(connection.db);
+const rateCards = createRateCardStore(connection.db);
+const bountyWritebacks = createBountyWritebackStore(connection.db);
 
 const auth = createAuth({
   db: connection.db,
@@ -74,15 +107,111 @@ const auth = createAuth({
  * a token in the clear.
  */
 const jiraOAuth = jiraOAuthConfig(env);
+const sizing = sizingConfig(env);
+const deepseekSizing = deepseekSizingConfig(env);
+
+/**
+ * The sizer, or undefined when neither provider is configured. With both, the
+ * DeepSeek adapter answers whenever an Anthropic call fails; with one, that
+ * one serves sizing alone. Each sized ticket records the model that actually
+ * answered, so a handover stays visible after the fact.
+ */
+const sizer: Sizer | undefined = (() => {
+  const anthropic =
+    sizing === undefined
+      ? undefined
+      : new AnthropicSizer({ apiKey: sizing.apiKey, model: sizing.model });
+  const deepseek =
+    deepseekSizing === undefined
+      ? undefined
+      : new DeepSeekSizer({
+          apiKey: deepseekSizing.apiKey,
+          model: deepseekSizing.model,
+          ...(deepseekSizing.baseUrl === undefined
+            ? {}
+            : { baseUrl: deepseekSizing.baseUrl }),
+        });
+
+  if (anthropic !== undefined && deepseek !== undefined) {
+    return new FallbackSizer({
+      primary: anthropic,
+      fallback: deepseek,
+      onFallback: (code) => console.warn(`sizing_fallback ${code}`),
+    });
+  }
+  return anthropic ?? deepseek;
+})();
+const jiraClientOptions =
+  jiraOAuth === undefined
+    ? undefined
+    : {
+        connections: jiraConnections,
+        clientId: jiraOAuth.clientId,
+        clientSecret: jiraOAuth.clientSecret,
+      };
+const runClientFor = async (organizationId: string, connectionId: string) => {
+  if (jiraClientOptions === undefined) {
+    return { ok: false as const, reason: "reconnect" as const };
+  }
+  const result = await jiraClientFor(
+    jiraClientOptions,
+    organizationId,
+    connectionId,
+  );
+  return result.ok
+    ? { ok: true as const, client: result.client }
+    : { ok: false as const, reason: result.failure.reason };
+};
+const bountyDelivery =
+  jiraClientOptions === undefined
+    ? undefined
+    : new BountyDelivery({
+        writebacks: bountyWritebacks,
+        proposals: bountyProposals,
+        issues: jiraIssues,
+        boards: jiraBoards,
+        connections: jiraConnections,
+        clientsFor: async (organizationId, connectionId) => {
+          const result = await jiraClientsFor(
+            jiraClientOptions,
+            organizationId,
+            connectionId,
+          );
+          return result.ok
+            ? {
+                ok: true,
+                client: result.client,
+                writeClient: result.writeClient,
+              }
+            : { ok: false, reason: result.failure.reason };
+        },
+        onBackgroundError: (code) => console.error(code),
+      });
+const bountyExecutor =
+  sizer === undefined || jiraClientOptions === undefined
+    ? undefined
+    : new BountyExecutor({
+        boards: jiraBoards,
+        runs: bountyRuns,
+        proposals: bountyProposals,
+        issues: jiraIssues,
+        sizer,
+        clientFor: runClientFor,
+        ...(bountyDelivery === undefined
+          ? {}
+          : {
+              onWritebackCreated: (organizationId, operationId) =>
+                bountyDelivery.start(organizationId, operationId),
+            }),
+        onBackgroundError: (code, error) => console.error(code, error),
+      });
 const jira =
   jiraOAuth === undefined
     ? undefined
     : {
-        connections: createJiraConnectionStore(
-          connection.db,
-          createTokenCipher(env.TOKEN_ENCRYPTION_KEY),
-        ),
-        boards: createJiraBoardStore(connection.db),
+        connections: jiraConnections,
+        boards: jiraBoards,
+        proposals: bountyProposals,
         clientId: jiraOAuth.clientId,
         clientSecret: jiraOAuth.clientSecret,
         // The same secret Better Auth signs sessions with. A forged `state`
@@ -99,9 +228,40 @@ const app = createApp({
   profiles,
   organizations,
   jira,
+  bounty: {
+    rateCards,
+    runs: bountyRuns,
+    boards: jiraBoards,
+    proposals: bountyProposals,
+    issues: jiraIssues,
+    connections: jiraConnections,
+    writebacks: bountyWritebacks,
+    ...(bountyDelivery === undefined ? {} : { delivery: bountyDelivery }),
+    appUrl: appUrl(env),
+    organizationSlug: async (organizationId) =>
+      (await organizations.get(organizationId))?.slug,
+    clientFor: runClientFor,
+    ...(bountyExecutor === undefined
+      ? {}
+      : {
+          executor: bountyExecutor,
+          // The sizer's own model, not the Anthropic pair's: on a
+          // DeepSeek-only deploy that pair is unset, and a missing
+          // `requestedModel` makes every run refuse to start.
+          requestedModel: sizer?.model,
+          promptVersion: JIRA_SIZE_PROMPT_VERSION,
+        }),
+  },
   buildInfo: build,
   originVerify: env.ORIGIN_VERIFY,
 });
+
+const bountyWatchdog = new BountyWatchdog({
+  runs: bountyRuns,
+  writebacks: bountyWritebacks,
+  onError: (code) => console.error(code),
+});
+bountyWatchdog.start();
 
 const server = serve({ fetch: app.fetch, port: env.PORT }, (info) => {
   // First log line names the build. Logs outlive the deployment, whereas
@@ -114,6 +274,7 @@ const server = serve({ fetch: app.fetch, port: env.PORT }, (info) => {
 // alive until the container's stop timeout.
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.on(signal, () => {
+    bountyWatchdog.stop();
     server.close(() => {
       void connection.close().then(() => process.exit(0));
     });

@@ -25,6 +25,11 @@ import type {
 } from "@sandbox-factory/db";
 
 import type { Auth } from "./auth.js";
+import {
+  mountBountyRoutes,
+  sizeIfNeverSized,
+  type BountyRouteOptions,
+} from "./bounty/routes.js";
 import { mountJiraRoutes, type JiraRouteOptions } from "./jira/routes.js";
 
 export interface AppOptions {
@@ -51,6 +56,8 @@ export interface AppOptions {
    * that block's membership guard.
    */
   jira?: Omit<JiraRouteOptions, "roleOf"> | undefined;
+  /** Commercial routes. Rate-card reads remain mounted without model config. */
+  bounty?: BountyRouteOptions | undefined;
   /**
    * Shared secret the CDN sends on every origin request. Set where the task is
    * internet-reachable with nothing upstream to filter (the CloudFront-to-
@@ -117,6 +124,7 @@ export function createApp({
   profiles,
   organizations,
   jira,
+  bounty,
   buildInfo = unknownBuildInfo,
   originVerify,
 }: AppOptions): Hono<AppEnv> {
@@ -142,7 +150,7 @@ export function createApp({
       // browsers reject it with "*", so the origins are enumerated.
       origin: [...corsOrigins],
       credentials: true,
-      allowMethods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+      allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     }),
   );
 
@@ -479,7 +487,21 @@ export function createApp({
         // question for the guard above.
         roleOf: (userId, organizationId) =>
           organizations.roleOf(userId, organizationId),
+        // Every board a sync sees is sized once, through the same checks
+        // the board's own run endpoint applies.
+        ...(bounty === undefined || jira.startSizing !== undefined
+          ? {}
+          : {
+              startSizing: (input: {
+                organizationId: string;
+                boardId: string;
+                startedBy: string;
+              }) => sizeIfNeverSized(bounty, input),
+            }),
       });
+    }
+    if (bounty !== undefined) {
+      mountBountyRoutes(app, bounty);
     }
   }
 

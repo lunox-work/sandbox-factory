@@ -25,18 +25,9 @@ import {
   TriangleAlert,
   X,
 } from "lucide-react";
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { useCallback, useEffect, useState } from "react";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { PeekPanel } from "@/components/PeekPanel";
 import { ErrorBanner, LoadingLine } from "@/components/Message";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -47,20 +38,18 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 import { JiraIcon } from "./ProviderIcon";
 import { isPlainLeftClick, pathForScreen } from "./routes";
+import { BoardBounties } from "./Bounties";
 
 import {
   useJira,
   useJiraBoards,
   useJiraOutcome,
-  type BacklogPreview,
   type JiraBoard,
   type JiraConnection,
   type JiraFetchError,
-  type JiraIssueDetail,
   type JiraOutcome,
 } from "./useJira";
 
@@ -88,7 +77,8 @@ function describeOutcome(
       return {
         tone: "ok",
         title: "Jira connected",
-        detail: "We can now read the boards on that site.",
+        detail:
+          "We can read the boards on that site, and approvals will post back to its tickets.",
       };
     case "cancelled":
       return {
@@ -107,10 +97,7 @@ function describeOutcome(
       return {
         tone: "warn",
         title: "Connected, but some permissions are missing",
-        detail:
-          missingScopes.length === 0
-            ? "Boards and sprints may not be readable."
-            : `Reading boards needs ${missingScopes.join(" and ")}. These are granular scopes: on the Atlassian console they are under the "Granular scopes" tab rather than the classic list. Without them a board reads as "not found" rather than "not permitted".`,
+        detail: describeMissingScopes(missingScopes),
       };
     case "denied":
       return {
@@ -140,6 +127,33 @@ function describeOutcome(
         detail: "The connection did not complete. Try again.",
       };
   }
+}
+
+/**
+ * What a withheld scope costs, in the words of what stops working.
+ *
+ * The write scope is named apart from the read ones because its remedy is
+ * different in kind: a site connected without it still works, read-only,
+ * and approvals simply stay here — whereas a missing read scope makes boards
+ * read as "not found", which nobody would guess was a permission.
+ */
+function describeMissingScopes(missingScopes: string[]): string {
+  const reads = missingScopes.filter((scope) => scope !== "write:jira-work");
+  const writeMissing = reads.length !== missingScopes.length;
+  const parts: string[] = [];
+  if (reads.length > 0) {
+    parts.push(
+      `Reading boards needs ${reads.join(" and ")}. These are granular scopes: on the Atlassian console they are under the "Granular scopes" tab rather than the classic list. Without them a board reads as "not found" rather than "not permitted".`,
+    );
+  }
+  if (writeMissing) {
+    parts.push(
+      "Without write:jira-work approvals stay here rather than posting to the ticket. Connect the site again to grant it.",
+    );
+  }
+  return parts.length === 0
+    ? "Boards and sprints may not be readable."
+    : parts.join(" ");
 }
 
 /**
@@ -274,6 +288,15 @@ export function ConnectionRow({
                 Reconnect
               </Badge>
             )}
+            {connection.healthy && !connection.writeGranted && (
+              /*
+                A site connected before every consent asked for the write
+                scope, or whose admin withheld it. Approvals on its boards
+                stay here. Connecting it again is the remedy, and this is
+                the page that button is on.
+              */
+              <Badge variant="outline">Read-only</Badge>
+            )}
           </span>
           <span className="block truncate text-sm text-muted-foreground">
             {connection.siteUrl}
@@ -334,527 +357,6 @@ function BoardsError({
           Try again
         </Button>
       )}
-    </div>
-  );
-}
-
-/**
- * How old a ticket is, which is the whole basis of the selection.
- *
- * A ticket raised today is "Today" rather than "0d". The zero was the one
- * value in this column that read as a missing number instead of an age — the
- * rest of the scale counts upward from it, so nothing else in the list makes
- * "0d" legible as a quantity.
- */
-function ageInDays(created: string | null): string {
-  if (created === null) {
-    return "";
-  }
-  const days = Math.floor(
-    (Date.now() - new Date(created).getTime()) / 86_400_000,
-  );
-  if (!Number.isFinite(days) || days < 0) {
-    return "";
-  }
-  if (days === 0) {
-    return "Today";
-  }
-  return days < 365
-    ? `${days}d`
-    : `${Math.floor(days / 365)}y ${Math.floor((days % 365) / 30)}m`;
-}
-
-/**
- * A ticket's description, rendered.
- *
- * The text is Markdown already: `adfToText` flattens Atlassian Document
- * Format on the server, keeping headings, lists, task checkboxes, tables and
- * code fences. Rendering it as Markdown is what makes a spec readable — a
- * table of entities is the substance of a ticket like NOX-2, and as raw text
- * it is a wall of pipes.
- *
- * **Raw HTML stays off.** `react-markdown` disallows it by default and no
- * `rehype-raw` is configured here, which matters because this is a third
- * party's text: a ticket must not be able to put markup on this page.
- *
- * Every element is given a class, because the app has no typographic
- * defaults for bare `h2`/`ul`/`table` — Tailwind's preflight strips them, so
- * unstyled Markdown renders as undifferentiated text.
- */
-function Markdown({ children }: { children: string }) {
-  return (
-    <div className="text-sm leading-relaxed" data-testid="markdown">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        components={{
-          h1: ({ children: c }) => (
-            <h4 className="mt-4 mb-2 text-sm font-semibold first:mt-0">{c}</h4>
-          ),
-          h2: ({ children: c }) => (
-            <h4 className="mt-4 mb-2 text-sm font-semibold first:mt-0">{c}</h4>
-          ),
-          h3: ({ children: c }) => (
-            <h5 className="mt-3 mb-1 text-sm font-medium first:mt-0">{c}</h5>
-          ),
-          p: ({ children: c }) => <p className="my-2">{c}</p>,
-          ul: ({ children: c }) => (
-            <ul className="my-2 list-disc space-y-1 pl-5">{c}</ul>
-          ),
-          ol: ({ children: c }) => (
-            <ol className="my-2 list-decimal space-y-1 pl-5">{c}</ol>
-          ),
-          // A task list renders its own checkbox, so the disc would be a
-          // second marker for the same item.
-          li: ({ children: c, ...rest }) =>
-            "checked" in rest && rest.checked !== null ? (
-              <li className="list-none">{c}</li>
-            ) : (
-              <li>{c}</li>
-            ),
-          input: ({ checked }) => (
-            // Disabled, not read-only: the state belongs to Jira, and a box
-            // that looks clickable here would be a lie.
-            <input
-              type="checkbox"
-              checked={checked ?? false}
-              disabled
-              readOnly
-              className="mr-2 align-middle"
-            />
-          ),
-          code: ({ className, children: c }) =>
-            className?.startsWith("language-") === true ? (
-              <code className="block">{c}</code>
-            ) : (
-              <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs">
-                {c}
-              </code>
-            ),
-          pre: ({ children: c }) => (
-            <pre className="my-2 overflow-x-auto rounded-md bg-muted p-3 font-mono text-xs">
-              {c}
-            </pre>
-          ),
-          blockquote: ({ children: c }) => (
-            <blockquote className="my-2 border-l-2 pl-3 text-muted-foreground">
-              {c}
-            </blockquote>
-          ),
-          hr: () => <hr className="my-3" />,
-          a: ({ href, children: c }) => (
-            <a
-              href={href}
-              target="_blank"
-              rel="noreferrer noopener"
-              className="underline underline-offset-2"
-            >
-              {c}
-            </a>
-          ),
-          table: ({ children: c }) => (
-            <div className="my-2 overflow-x-auto">
-              <table className="w-full border-collapse text-xs">{c}</table>
-            </div>
-          ),
-          th: ({ children: c }) => (
-            <th className="border px-2 py-1 text-left font-medium">{c}</th>
-          ),
-          td: ({ children: c }) => <td className="border px-2 py-1">{c}</td>,
-        }}
-      >
-        {children}
-      </ReactMarkdown>
-    </div>
-  );
-}
-
-/** A labelled row in the detail view. Renders nothing when Jira sent no value. */
-function Field({ label, children }: { label: string; children: ReactNode }) {
-  if (children === null || children === undefined || children === "") {
-    return null;
-  }
-  return (
-    <div className="flex flex-col gap-0.5 py-1.5 text-sm sm:flex-row sm:gap-3">
-      <span className="shrink-0 text-muted-foreground sm:w-32">{label}</span>
-      <span className="min-w-0 flex-1">{children}</span>
-    </div>
-  );
-}
-
-/** Jira's seconds as the hours a person reads. */
-function hours(seconds: number | null): string | null {
-  if (seconds === null) {
-    return null;
-  }
-  const value = seconds / 3600;
-  return `${Number.isInteger(value) ? value : value.toFixed(1)}h`;
-}
-
-/** An ISO timestamp as a plain date. Jira sends several shapes; all parse. */
-function asDate(value: string | null): string | null {
-  if (value === null) {
-    return null;
-  }
-  const date = new Date(value);
-  return Number.isNaN(date.getTime())
-    ? null
-    : date.toLocaleDateString(undefined, {
-        year: "numeric",
-        month: "short",
-        day: "numeric",
-      });
-}
-
-/**
- * One ticket in full.
- *
- * The description arrives as text already — `adfToText` flattens Atlassian
- * Document Format on the server, keeping headings, lists and checkboxes as
- * Markdown-ish lines. It is rendered pre-wrapped rather than parsed: the
- * structure survives, and a ticket cannot inject markup into this page.
- *
- * Fields Jira did not send render nothing at all, because a site can omit
- * almost any of them and a column of empty labels is worse than a short list.
- */
-/**
- * The ticket's shape, while the ticket itself is still being read.
- *
- * The peek opens on the click rather than when the response lands, so the
- * click has an immediate answer — a panel that is on its way to holding
- * something — instead of a spinner on the row and a page that looks
- * unchanged for as long as Jira takes.
- *
- * It mirrors `IssueDetail` block for block: a heading, the badge row under
- * it, the two tabs, and a bordered body of text lines. That is what keeps the
- * swap quiet — the real ticket lands into a layout the same shape, so nothing
- * jumps when it arrives.
- *
- * The lines are deliberately uneven. A stack of identical bars reads as a
- * loading graphic; varied widths read as text that has not arrived, which is
- * what is actually true.
- *
- * `aria-hidden`, with the announcement left to the status line below it: a
- * screen reader should hear "Loading the ticket" once, not a tree of empty
- * boxes.
- */
-function IssueDetailSkeleton() {
-  return (
-    <div className="flex flex-col gap-4" data-testid="issue-skeleton">
-      <div aria-hidden="true">
-        {/* The heading, at two lines: most summaries on this board wrap. */}
-        <div className="skeleton h-5 w-4/5 rounded-md" />
-        <div className="skeleton mt-1.5 h-5 w-1/3 rounded-md" />
-
-        {/* Status and type, the row under the heading. */}
-        <div className="mt-2.5 flex items-center gap-2">
-          <div className="skeleton h-5 w-16 rounded-full" />
-          <div className="skeleton h-3 w-12 rounded" />
-        </div>
-      </div>
-
-      {/* The tab strip and the link out, which share a row and are the same
-          size whatever the ticket turns out to say. */}
-      <div
-        aria-hidden="true"
-        className="flex items-center justify-between gap-3"
-      >
-        <div className="skeleton h-9 w-[13rem] rounded-lg" />
-        <div className="skeleton h-8 w-28 rounded-md" />
-      </div>
-
-      {/* The spec, in the bordered box the real one gets. The border is real
-          rather than a skeleton: it is chrome that does not depend on the
-          response, so drawing it straight away is one less thing that moves. */}
-      <div
-        aria-hidden="true"
-        className="flex flex-col gap-2.5 rounded-md border p-4"
-      >
-        <div className="skeleton h-4 w-24 rounded" />
-        <div className="skeleton h-3 w-full rounded" />
-        <div className="skeleton h-3 w-11/12 rounded" />
-        <div className="skeleton h-3 w-4/5 rounded" />
-        <div className="skeleton mt-2 h-3 w-2/3 rounded" />
-        <div className="skeleton h-3 w-full rounded" />
-        <div className="skeleton h-3 w-3/4 rounded" />
-      </div>
-
-      {/* What the skeleton above is silently standing in for. */}
-      <p role="status" className="sr-only">
-        Loading the ticket…
-      </p>
-    </div>
-  );
-}
-
-function IssueDetail({ issue }: { issue: JiraIssueDetail }) {
-  return (
-    <div className="flex flex-col gap-4" data-testid="issue-detail">
-      <div>
-        <h3 className="text-base font-semibold">{issue.summary}</h3>
-        {/*
-          Status and type on one line under the heading, anchored to opposite
-          edges so they scan as separate facts: current workflow state on the
-          left, issue type on the right.
-          The link out used to sit here too, which put a control in a row that
-          is otherwise a statement of fact.
-        */}
-        <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2">
-          <Badge variant="secondary">{issue.status}</Badge>
-          <span className="text-muted-foreground text-xs">
-            {issue.issueType}
-          </span>
-        </div>
-      </div>
-
-      {/*
-        The tab strip and the way out to Jira share a row: both are controls
-        on this ticket, and the right edge is where this app puts the action a
-        surface offers. `justify-between` rather than a margin, so the link
-        stays pinned as the strip's own width changes.
-      */}
-      <Tabs defaultValue="spec">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <TabsList>
-            <TabsTrigger value="spec">Spec</TabsTrigger>
-            <TabsTrigger value="fields">Fields</TabsTrigger>
-          </TabsList>
-
-          {issue.url !== null && (
-            /*
-              A button rather than a bare link, so it reads as the peer of the
-              tabs beside it, and carrying Jira's own mark — the destination
-              is Jira, and the mark says so faster than the words do. The
-              arrow stays as well: the mark names where it goes, the arrow
-              says it leaves this page.
-            */
-            <Button
-              variant="outline"
-              size="sm"
-              className="shrink-0 gap-1.5"
-              asChild
-            >
-              <a href={issue.url} target="_blank" rel="noreferrer noopener">
-                <span className="size-3.5 shrink-0">
-                  <JiraIcon />
-                </span>
-                Open in Jira
-                <ExternalLink className="size-3" />
-              </a>
-            </Button>
-          )}
-        </div>
-
-        <TabsContent value="spec">
-          {issue.descriptionText === "" ? (
-            <p className="py-6 text-sm text-muted-foreground">
-              This ticket has no description. That is itself worth knowing — a
-              ticket with no spec is one a bounty cannot safely be priced
-              against.
-            </p>
-          ) : (
-            /*
-              No scroll box of its own. The panel around this one is what
-              scrolls now, and a 26rem window inside it gave the reader two
-              scrollbars for one document — the outer one moving the ticket,
-              the inner one moving the spec within it.
-            */
-            <div className="rounded-md border p-4" data-testid="issue-spec">
-              <Markdown>{issue.descriptionText}</Markdown>
-            </div>
-          )}
-        </TabsContent>
-
-        <TabsContent value="fields">
-          <div
-            className="divide-y rounded-md border px-3"
-            data-testid="issue-fields"
-          >
-            <Field label="Assignee">{issue.assignee ?? "Unassigned"}</Field>
-            <Field label="Reporter">{issue.reporter}</Field>
-            <Field label="Creator">
-              {issue.creator === issue.reporter ? null : issue.creator}
-            </Field>
-            <Field label="Priority">{issue.priority}</Field>
-            <Field label="Resolution">{issue.resolution}</Field>
-            <Field label="Resolved">{asDate(issue.resolutionDate)}</Field>
-            <Field label="Created">{asDate(issue.created)}</Field>
-            <Field label="Updated">{asDate(issue.updated)}</Field>
-            <Field label="Due">{asDate(issue.dueDate)}</Field>
-            <Field label="Project">{issue.projectKey}</Field>
-            <Field label="Parent">{issue.parentKey}</Field>
-            <Field label="Components">
-              {issue.components.length === 0
-                ? null
-                : issue.components.join(", ")}
-            </Field>
-            <Field label="Fix versions">
-              {issue.fixVersions.length === 0
-                ? null
-                : issue.fixVersions.join(", ")}
-            </Field>
-            <Field label="Estimate">
-              {hours(issue.originalEstimateSeconds)}
-            </Field>
-            <Field label="Remaining">
-              {hours(issue.remainingEstimateSeconds)}
-            </Field>
-            <Field label="Environment">{issue.environment}</Field>
-            <Field label="Votes">
-              {issue.votes === null || issue.votes === 0 ? null : issue.votes}
-            </Field>
-            <Field label="Watchers">
-              {issue.watchers === null || issue.watchers === 0
-                ? null
-                : issue.watchers}
-            </Field>
-            <Field label="Labels">
-              {issue.labels.length === 0 ? null : (
-                <span className="flex flex-wrap gap-1">
-                  {issue.labels.map((label) => (
-                    <Badge
-                      key={label}
-                      variant="outline"
-                      className="font-normal"
-                    >
-                      {label}
-                    </Badge>
-                  ))}
-                </span>
-              )}
-            </Field>
-          </div>
-        </TabsContent>
-      </Tabs>
-    </div>
-  );
-}
-
-/**
- * The ticket list: what a run would price, oldest first.
- *
- * A column beside the detail rather than a view that gets replaced by it, so
- * reading one ticket does not cost the place in the list — which is the whole
- * point of the split. The selected row is marked, because in a list of
- * similar summaries the only way to know which one the panel is showing is to
- * see it.
- */
-function PreviewList({
-  preview,
-  onOpenIssue,
-  openingKey,
-  selectedKey,
-}: {
-  preview: BacklogPreview;
-  onOpenIssue: (issueKey: string) => void;
-  openingKey: string | null;
-  selectedKey: string | null;
-}) {
-  if (preview.issues.length === 0) {
-    return (
-      <p className="text-muted-foreground px-4 py-8 text-sm">
-        No tickets matched this board&rsquo;s current selection rules.
-      </p>
-    );
-  }
-
-  return (
-    <ul className="divide-y" data-testid="backlog-preview">
-      {preview.issues.map((issue) => (
-        <li key={issue.id}>
-          {/* The whole row opens the ticket: a link-sized target is a
-              needless miss, and there is nothing else to click. */}
-          {/*
-            Marked from the click, not from the response: the row the peek is
-            about is the one that was pressed, whether or not Jira has
-            answered yet. `openingKey` and `selectedKey` are the same ticket
-            at two moments of the same open.
-          */}
-          <button
-            type="button"
-            aria-current={
-              selectedKey === issue.key || openingKey === issue.key
-                ? "true"
-                : undefined
-            }
-            className={`hover:bg-muted/50 grid w-full grid-cols-[auto_1fr_auto] items-center gap-x-3 gap-y-1 px-3 py-3 text-left transition-colors sm:flex sm:py-2.5 ${
-              selectedKey === issue.key || openingKey === issue.key
-                ? "bg-muted"
-                : ""
-            }`}
-            onClick={() => {
-              onOpenIssue(issue.key);
-            }}
-          >
-            <span className="text-muted-foreground shrink-0 font-mono text-xs sm:w-20">
-              {issue.key}
-            </span>
-            <span className="min-w-0 text-sm sm:flex-1 sm:truncate">
-              {issue.summary}
-            </span>
-            <span className="text-muted-foreground col-start-1 row-start-2 shrink-0 text-xs sm:order-none sm:col-auto sm:row-auto">
-              {ageInDays(issue.created)}
-            </span>
-            {/*
-              The chevron stays put while the ticket loads. A spinner here was
-              the only answer a click had before the peek opened on it; now
-              the panel is the answer, and swapping the mark would be a second
-              thing moving for the same event.
-            */}
-            <ChevronRight className="text-muted-foreground col-start-3 row-span-2 row-start-1 size-4 shrink-0 sm:order-none sm:col-auto sm:row-auto" />
-          </button>
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-/** The rules behind a preview, so the list never looks like the whole backlog. */
-function SelectionSummary({ preview }: { preview: BacklogPreview }) {
-  const selection = preview.selection;
-  const shown = preview.issues.length;
-  const rules =
-    selection === undefined
-      ? []
-      : [
-          selection.excludeAssigned ? "Unassigned only" : null,
-          selection.minAgeDays > 0 ? `${selection.minAgeDays}+ days old` : null,
-          selection.maxAgeDays === undefined
-            ? null
-            : `Up to ${selection.maxAgeDays} days old`,
-          selection.issueTypes.length > 0
-            ? `Types: ${selection.issueTypes.join(", ")}`
-            : null,
-          selection.minSpecChars > 0
-            ? `${selection.minSpecChars}+ spec characters`
-            : null,
-        ].filter((rule): rule is string => rule !== null);
-
-  return (
-    <div className="flex flex-col gap-1 border-b bg-muted/25 px-3 py-2.5 text-xs sm:flex-row sm:items-center sm:justify-between">
-      <p className="font-medium">
-        Showing {shown} oldest ticket{shown === 1 ? "" : "s"}
-      </p>
-      <div
-        aria-label="Active filters"
-        className="flex flex-wrap items-center gap-1.5"
-      >
-        <span className="text-muted-foreground font-medium">Filters</span>
-        {selection === undefined ? (
-          <span className="text-muted-foreground">Unavailable</span>
-        ) : rules.length === 0 ? (
-          <span className="text-muted-foreground">None</span>
-        ) : (
-          rules.map((rule) => (
-            <Badge
-              key={rule}
-              variant="outline"
-              className="bg-background/50 font-normal"
-            >
-              {rule}
-            </Badge>
-          ))
-        )}
-      </div>
     </div>
   );
 }
@@ -935,8 +437,9 @@ function BoardRow({
  * Every board on a connected site is already registered — connecting is the
  * decision, and a board row is a pointer that reads nothing until somebody
  * previews it. So this card never offers to add one. What it does instead is
- * re-read the site when it opens, which is what picks up a board created in
- * Jira since the site was connected.
+ * re-read the site when it opens, and again on Re-sync, which is what picks
+ * up a board created in Jira since the site was connected — and starts
+ * sizing it in the background.
  *
  * Scoped to one connection: the page it sits on is about one site, and
  * showing every organization's boards here would undo that.
@@ -954,9 +457,12 @@ function BoardsCard({
 }) {
   const { boards, loading, error, sync } = useJiraBoards(organizationId);
   const [syncing, setSyncing] = useState(true);
+  // What the last sync found, said once under the header: how many boards
+  // are new, since those are the ones now being sized in the background.
+  const [found, setFound] = useState<number | null>(null);
 
   /*
-    Re-read on open, rather than on a timer or a button.
+    Re-read on open, rather than on a timer.
 
     A client creates boards in Jira and nothing tells us, so the registered
     list goes stale. Refreshing it here spends one round trip exactly when
@@ -970,15 +476,29 @@ function BoardsCard({
       return;
     }
     let live = true;
-    void sync(connection.id).finally(() => {
+    void sync(connection.id).then((added) => {
       if (live) {
         setSyncing(false);
+        if (added !== null && added.length > 0) setFound(added.length);
       }
     });
     return () => {
       live = false;
     };
   }, [connection.healthy, connection.id, sync]);
+
+  /*
+    The same re-read, on request. Opening the page already does it; the
+    button is for someone who has just made a board in Jira and does not
+    want to reload to see it.
+  */
+  async function resync() {
+    setSyncing(true);
+    setFound(null);
+    const added = await sync(connection.id);
+    setSyncing(false);
+    if (added !== null) setFound(added.length);
+  }
 
   // This site's boards. The hook holds the organization's, because that is
   // what the API answers with, and the page is about one site.
@@ -989,16 +509,34 @@ function BoardsCard({
 
   return (
     <Card>
-      <CardHeader>
-        <CardTitle>Boards</CardTitle>
-        <CardDescription>
-          Every board on this site, read when it was connected and again just
-          now. Open one to see the tickets a run would price — read live from
-          Jira, and stored nowhere.
-        </CardDescription>
+      <CardHeader className="flex flex-row items-start justify-between gap-4">
+        <div className="flex flex-col gap-1.5">
+          <CardTitle>Boards</CardTitle>
+          <CardDescription>
+            Every board on this site, read when it was connected and again just
+            now. A new board is sized in the background as soon as it is found.
+          </CardDescription>
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={syncing || !connection.healthy}
+          onClick={() => void resync()}
+        >
+          <RefreshCw className={syncing ? "animate-spin" : undefined} />
+          Re-sync
+        </Button>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
         {error !== null && <BoardsError error={error} />}
+
+        {found !== null && (
+          <p className="text-muted-foreground text-sm" role="status">
+            {found === 0
+              ? "No new boards."
+              : `Found ${found} new board${found === 1 ? "" : "s"} — sizing started.`}
+          </p>
+        )}
 
         {busy && siteBoards.length === 0 ? (
           <p className="text-muted-foreground flex items-center gap-2 text-sm">
@@ -1071,21 +609,9 @@ export function JiraBoard({
   onSiteName: (name: string | undefined) => void;
   role?: string | undefined;
 }) {
-  const { boards, error, preview, issue } = useJiraBoards(organizationId);
+  const { boards, error, issue } = useJiraBoards(organizationId);
   const { connections, connect } = useJira(organizationId);
   const { outcome, missingScopes, dismiss } = useJiraOutcome();
-  const [backlog, setBacklog] = useState<BacklogPreview | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [selected, setSelected] = useState<JiraIssueDetail | null>(null);
-  const [openingKey, setOpeningKey] = useState<string | null>(null);
-  const [issueError, setIssueError] = useState<string | null>(null);
-  /**
-   * The ticket the reader last asked for, read when a response resolves so a
-   * superseded one can be dropped. A ref rather than state: the check happens
-   * inside a closure that captured the old state, and this must be current.
-   * Cleared on close, so a response arriving after that does not reopen it.
-   */
-  const wantedKey = useRef<string | null>(null);
 
   const board = boards.find((candidate) => candidate.id === boardId) ?? null;
   // The name passed in wins while the list is still arriving, so arriving
@@ -1103,108 +629,15 @@ export function JiraBoard({
     onSiteName(siteName);
   }, [siteName, onSiteName]);
 
-  useEffect(() => {
-    let live = true;
-    setLoading(true);
-    void preview(boardId).then((result) => {
-      if (live) {
-        setBacklog(result);
-        setLoading(false);
-      }
-    });
-    return () => {
-      live = false;
-    };
-  }, [boardId, preview]);
-
   /*
-    The peek opens on the click, not on the response.
-
-    Waiting for Jira before opening anything left the click with no visible
-    answer but a small spinner in the row — on a slow read the page looked
-    unchanged, and the natural response is to click again. Opening
-    immediately turns the wait into something with a shape: the panel is
-    there, and what it will hold is sketched inside it.
-
-    `openingKey` is what holds it open until the detail arrives, which is why
-    it also drives the skeleton. A read that fails clears it and the panel
-    closes again — the error belongs on the page, not inside a panel about
-    one ticket.
+    The ticket read the peek's Spec tab uses, bound to this board. Memoised
+    because the proposals component keys a fetch effect on it: a fresh
+    closure each render would read the ticket on every render.
   */
-  const onOpenIssue = useCallback(
-    (issueKey: string) => {
-      const params = new URLSearchParams(window.location.search);
-      if (params.get("issue") !== issueKey) {
-        params.set("issue", issueKey);
-        window.history.pushState(
-          null,
-          "",
-          `${window.location.pathname}?${params.toString()}`,
-        );
-      }
-      setOpeningKey(issueKey);
-      setIssueError(null);
-      // The previous ticket goes now rather than when the next one lands, or
-      // the panel shows the last ticket while a different row is marked.
-      setSelected(null);
-      /*
-        Which ticket the panel is for. Clicking a second row while the first
-        is still in flight must not let the slower response land on top of
-        the faster one, and neither `openingKey` nor `selected` can be read
-        inside this closure to tell — both are stale by then. A ref is read at
-        resolve time, so the check is against what the reader last asked for.
-      */
-      wantedKey.current = issueKey;
-      void issue(boardId, issueKey).then((detail) => {
-        if (wantedKey.current !== issueKey) {
-          return;
-        }
-        if (detail !== null) {
-          setOpeningKey(null);
-          setSelected(detail);
-        } else {
-          setIssueError("Could not load this ticket from Jira.");
-        }
-      });
-    },
+  const readIssue = useCallback(
+    (issueKey: string) => issue(boardId, issueKey),
     [boardId, issue],
   );
-
-  const closeIssue = useCallback((updateUrl: boolean) => {
-    setSelected(null);
-    setOpeningKey(null);
-    setIssueError(null);
-    wantedKey.current = null;
-    if (updateUrl) {
-      const params = new URLSearchParams(window.location.search);
-      if (params.has("issue")) {
-        params.delete("issue");
-        const query = params.toString();
-        window.history.pushState(
-          null,
-          "",
-          window.location.pathname + (query === "" ? "" : `?${query}`),
-        );
-      }
-    }
-  }, []);
-
-  useEffect(() => {
-    const issueKey = new URLSearchParams(window.location.search).get("issue");
-    if (issueKey !== null && issueKey !== "") {
-      onOpenIssue(issueKey);
-    }
-    const syncIssue = () => {
-      const next = new URLSearchParams(window.location.search).get("issue");
-      if (next === null || next === "") {
-        closeIssue(false);
-      } else {
-        onOpenIssue(next);
-      }
-    };
-    window.addEventListener("popstate", syncIssue);
-    return () => window.removeEventListener("popstate", syncIssue);
-  }, [closeIssue, onOpenIssue]);
 
   return (
     <main className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-4 py-10 sm:px-6 sm:py-14">
@@ -1218,8 +651,8 @@ export function JiraBoard({
           </h1>
         </div>
         <p className="text-muted-foreground mt-1.5 text-sm">
-          The tickets a run would price, oldest first. Read live from Jira —
-          nothing here has been priced, and nothing was stored.
+          Sizing proposals for this board. Open one to review it against the
+          live ticket.
         </p>
       </header>
 
@@ -1234,76 +667,20 @@ export function JiraBoard({
       {error !== null && (
         <BoardsError
           error={error}
-          onReconnect={canManage(role ?? "") ? connect : undefined}
-          onRetry={() => void preview(boardId).then(setBacklog)}
+          onReconnect={canManage(role ?? "") ? () => connect() : undefined}
         />
       )}
 
-      {loading ? (
-        <LoadingLine>Reading the backlog from Jira…</LoadingLine>
-      ) : backlog === null ? null : (
-        /*
-          The list at full width, with the ticket opening over it rather than
-          beside it. See `PeekPanel` for why: half a column was not enough for
-          a spec with a table in it, and the other half was thirty rows of
-          truncated summaries nobody reads while reading a ticket.
-        */
-        <div className="overflow-hidden rounded-md border">
-          <SelectionSummary preview={backlog} />
-          <PreviewList
-            preview={backlog}
-            onOpenIssue={onOpenIssue}
-            openingKey={openingKey}
-            selectedKey={selected?.key ?? null}
-          />
-        </div>
-      )}
-
-      {/*
-        Mounted whether or not a ticket is open, so Radix can animate it out
-        on close: unmounting on `selected === null` would make it vanish.
-        `selected` is held until the close finishes for the same reason — the
-        panel would otherwise empty itself mid-flight.
-      */}
-      <PeekPanel
-        // Open from the click, through the read, until it is closed: the
-        // panel is what answers the click, and the ticket arrives into it.
-        open={selected !== null || openingKey !== null}
-        onOpenChange={(next: boolean) => {
-          if (!next) {
-            closeIssue(true);
-          }
-        }}
-        title={selected?.key ?? openingKey ?? "Ticket"}
-        description={
-          selected?.summary ??
-          "Read live from Jira. Nothing here has been priced."
+      <BoardBounties
+        organizationId={organizationId}
+        boardId={boardId}
+        role={role ?? "member"}
+        writeGranted={
+          connections.find((candidate) => candidate.id === connectionId)
+            ?.writeGranted ?? false
         }
-        data-testid="issue-panel"
-      >
-        {selected === null && issueError !== null ? (
-          <div className="flex min-h-48 flex-col items-start justify-center gap-3">
-            <ErrorBanner className="mt-0">{issueError}</ErrorBanner>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                if (openingKey !== null) {
-                  onOpenIssue(openingKey);
-                }
-              }}
-            >
-              <RefreshCw />
-              Try again
-            </Button>
-          </div>
-        ) : selected === null ? (
-          <IssueDetailSkeleton />
-        ) : (
-          <IssueDetail issue={selected} />
-        )}
-      </PeekPanel>
+        readIssue={readIssue}
+      />
     </main>
   );
 }
@@ -1407,7 +784,7 @@ export function Jira({
       */}
       {manageable ? (
         <div className="flex justify-end">
-          <Button className="gap-2" onClick={connect}>
+          <Button className="gap-2" onClick={() => connect()}>
             <Link2 className="size-4" />
             {connections.length === 0
               ? "Connect a Jira site"
@@ -1546,7 +923,7 @@ export function JiraSite({
             <p className="text-sm">
               Reconnect this site to read its boards again.
             </p>
-            <Button type="button" size="sm" onClick={connect}>
+            <Button type="button" size="sm" onClick={() => connect()}>
               <RefreshCw />
               Reconnect
             </Button>
@@ -1570,9 +947,9 @@ export function JiraSite({
           <CardHeader>
             <CardTitle>Disconnect this site</CardTitle>
             <CardDescription>
-              Removes our access and every board registered from it. Atlassian
-              keeps its own record of the grant until you revoke it in your
-              account settings.
+              Removes our access, boards, and local proposal history. Comments
+              already posted to Jira remain there. Atlassian keeps its grant
+              until you revoke it in your account settings.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -1598,7 +975,7 @@ export function JiraSite({
                 </Button>
               }
               title={`Disconnect ${connection.siteName}?`}
-              description="Removes our access and every board registered from it. Atlassian keeps its own record of the grant until you revoke it in your account settings."
+              description="Removes our access, every registered board, and local proposal history. Comments already posted to Jira remain. Atlassian keeps its own grant until you revoke it in your account settings."
               confirmLabel="Disconnect"
               busy={disconnecting}
               onConfirm={async () => {

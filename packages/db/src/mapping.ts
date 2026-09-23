@@ -29,6 +29,8 @@ export const ID_PREFIXES = [
   /** Commercials: bounty run, bounty proposal. */
   "brn",
   "bpr",
+  /** One durable Jira write intent. */
+  "bwo",
 ] as const;
 
 export type IdPrefix = (typeof ID_PREFIXES)[number];

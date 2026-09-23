@@ -78,3 +78,6 @@ infra/terraform.tfvars
 # Working notes and drafts that stay on the machine they were written on.
 *.local.md
 docs/plan/
+# Private, human-labelled sizing examples. Synthetic fixtures remain tracked.
+apps/api/eval/*.jsonl
+!apps/api/eval/*.synthetic.jsonl

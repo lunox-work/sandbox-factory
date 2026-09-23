@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { adfToText } from "../src/adf.js";
+import { adfToText, adfToTextResult } from "../src/adf.js";
 
 /** A document wrapper, since every real description is one. */
 function doc(...content: unknown[]): unknown {
@@ -296,6 +296,18 @@ test("output is capped, and says so when it truncates", () => {
 
   assert.ok(result.length < 21_000, `got ${result.length} characters`);
   assert.match(result, /\[truncated\]$/);
+  assert.equal(adfToTextResult(doc(paragraph(long))).truncated, true);
+});
+
+test("depth truncation is reported even when the output is short", () => {
+  let node: unknown = paragraph("Hidden by depth.");
+  for (let index = 0; index < 60; index += 1) {
+    node = { type: "panel", content: [node] };
+  }
+
+  const result = adfToTextResult(doc(node));
+  assert.equal(result.truncated, true);
+  assert.equal(result.text, "");
 });
 
 test("a very long document is flattened in linear time", () => {

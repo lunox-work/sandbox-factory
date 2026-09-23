@@ -48,7 +48,28 @@ KEYS=(
   JIRA_CLIENT_ID
   JIRA_CLIENT_SECRET
   TOKEN_ENCRYPTION_KEY
+  ANTHROPIC_API_KEY
+  SIZING_MODEL
+  DEEPSEEK_API_KEY
+  DEEPSEEK_SIZING_MODEL
 )
+
+# Pairs a deployment may leave out entirely: each is a feature that is off
+# until both halves exist. A full push skips a pair with neither value, rather
+# than failing, and still refuses one with only half. Naming a key in --only
+# always requires its value.
+OPTIONAL_PAIRS=(
+  "JIRA_CLIENT_ID JIRA_CLIENT_SECRET"
+  "ANTHROPIC_API_KEY SIZING_MODEL"
+  "DEEPSEEK_API_KEY DEEPSEEK_SIZING_MODEL"
+)
+
+in_list() {
+  local want="$1" item
+  shift
+  for item in "$@"; do [[ "$item" == "$want" ]] && return 0; done
+  return 1
+}
 
 # Narrow to the requested keys, rejecting unknown ones.
 if ((${#ONLY_KEYS[@]} > 0)); then
@@ -121,6 +142,23 @@ for key in "${KEYS[@]}"; do
   values+=("$value")
 done
 
+skipped=()
+if ((${#ONLY_KEYS[@]} == 0 && ${#missing[@]} > 0)); then
+  for pair in "${OPTIONAL_PAIRS[@]}"; do
+    read -r first second <<<"$pair"
+    if in_list "$first" "${missing[@]}" && in_list "$second" "${missing[@]}"; then
+      skipped+=("$first" "$second")
+    fi
+  done
+  if ((${#skipped[@]} > 0)); then
+    still_missing=()
+    for key in "${missing[@]}"; do
+      in_list "$key" "${skipped[@]}" || still_missing+=("$key")
+    done
+    missing=(${still_missing[@]+"${still_missing[@]}"})
+  fi
+fi
+
 if ((${#missing[@]} > 0)); then
   echo "Incomplete — nothing was written:" >&2
   printf '  %s\n' "${missing[@]}" >&2
@@ -128,14 +166,21 @@ if ((${#missing[@]} > 0)); then
   echo "Every key named in a push must have a value; nothing empty is written." >&2
   echo "Generate a signing or encryption key with: openssl rand -base64 32" >&2
   echo >&2
-  echo "JIRA_CLIENT_ID/_SECRET are optional — if you have no Jira app yet, drop" >&2
-  echo "them from --only rather than pushing a blank over a live value." >&2
+  echo "Optional pairs, each all-or-nothing: JIRA_CLIENT_ID/_SECRET," >&2
+  echo "ANTHROPIC_API_KEY/SIZING_MODEL and DEEPSEEK_API_KEY/DEEPSEEK_SIZING_MODEL." >&2
+  echo "A full push skips a pair with neither value; fill in the other half of" >&2
+  echo "a partial one, or drop it from --only rather than pushing a blank." >&2
   exit 1
 fi
 
 for i in "${!KEYS[@]}"; do
   key="${KEYS[$i]}"
   value="${values[$i]}"
+
+  if ((${#skipped[@]} > 0)) && in_list "$key" "${skipped[@]}"; then
+    printf '  %-26s skipped (optional pair, both unset)\n' "$key"
+    continue
+  fi
 
   # Mirrors the naming in secrets.tf: BETTER_AUTH_SECRET -> better-auth-secret.
   secret_id="${PROJECT}/$(echo "$key" | tr '[:upper:]_' '[:lower:]-')"

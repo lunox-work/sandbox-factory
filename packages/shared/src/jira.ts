@@ -321,6 +321,7 @@ export const jiraSiteDtoSchema = z.object({
   url: z.string(),
   name: z.string(),
   avatarUrl: z.string().optional(),
+  scopes: z.array(z.string()),
 });
 
 /* -------------------------------------------------------------------------- */
@@ -379,7 +380,6 @@ export const jiraBoardSummarySchema = z.object({
   boardType: z.string(),
   projectKey: z.string().nullable(),
   selection: boardSelectionSchema,
-  writebackEnabled: z.boolean(),
   createdAt: z.iso.datetime(),
 });
 
@@ -409,17 +409,15 @@ export const boardSelectionUpdateSchema = z.object({
   minSpecChars: z.number().int().min(0).optional(),
 });
 
-/** Body for editing a board. Both halves optional; an empty body is refused. */
-export const updateBoardSchema = z
-  .object({
-    selection: boardSelectionUpdateSchema.optional(),
-    writebackEnabled: z.boolean().optional(),
-  })
-  .refine(
-    (body) =>
-      body.selection !== undefined || body.writebackEnabled !== undefined,
-    { message: "Provide selection settings, a write-back flag, or both." },
-  );
+/**
+ * Body for editing a board: its selection settings.
+ *
+ * Nothing else is a board's to set. Whether approvals post back to Jira is
+ * the site's grant, asked for when the site is connected, not a switch here.
+ */
+export const updateBoardSchema = z.object({
+  selection: boardSelectionUpdateSchema,
+});
 
 export type BoardSelection = z.infer<typeof boardSelectionSchema>;
 export type BoardSelectionUpdate = z.infer<typeof boardSelectionUpdateSchema>;

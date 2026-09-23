@@ -74,6 +74,10 @@ export const READ_SCOPES: readonly string[] = [
   "read:issue-details:jira",
   "offline_access",
 ];
+export const WRITE_SCOPES: readonly string[] = [
+  ...READ_SCOPES,
+  "write:jira-work",
+];
 
 export interface AuthorizeUrlOptions {
   clientId: string;
@@ -326,5 +330,6 @@ export async function accessibleSites({
       url: site.url,
       name: site.name,
       avatarUrl: site.avatarUrl,
+      scopes: site.scopes,
     }));
 }

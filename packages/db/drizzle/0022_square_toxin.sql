@@ -1,0 +1,1 @@
+ALTER TABLE "jira_board" DROP COLUMN "writeback_enabled";

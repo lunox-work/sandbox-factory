@@ -53,6 +53,12 @@ npx turbo run lint test --filter=@sandbox-factory/api
 
 ## Rules
 
+**Read `CONVENTIONS.local.md` first when it exists.** It is gitignored, so it
+is absent from a clean checkout and invisible to anything that only reads the
+tracked tree — an agent that does not open it by name will not know its rules
+exist. It holds conventions that cannot live here, and it takes precedence
+where the two overlap.
+
 ### Auth and data access
 
 - **`packages/db/src/schema.ts` auth table consts stay singular (`user`) and
@@ -249,6 +255,17 @@ The rules `ship.sh` encodes; [docs/ci.md](./docs/ci.md) has the detail.
   `packages/core` has zero runtime dependencies by design.
 - Commit secrets. `.env.development` and `.env.production` are gitignored;
   `docker-compose.yml` credentials are local development values only.
+- **Change `.env.example` without updating `.env.development` and
+  `.env.production` in the same task.** Because both are gitignored, a missed
+  update never shows in `git status` and never fails CI — it surfaces as a
+  service that boots without the value. `.env.example` is the structural source
+  of truth: all three keep the same line count, with every key on the same
+  line and matching comments, headers, and blank lines. Add new keys with an
+  **empty value** (`KEY=`), commented out (`# KEY=`) if the example comments
+  them. Never copy an example default over a configured value, and never
+  enable a key an environment deliberately leaves commented out. Check the
+  line counts afterwards, and keep the values out of any output.
+  `CONVENTIONS.local.md` states this rule in full.
 
 ## Two names
 

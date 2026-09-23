@@ -19,6 +19,14 @@ export interface JiraConnection {
   email: string | null;
   healthy: boolean;
   scopes: string[];
+  resourceScopes: string[];
+  /**
+   * Whether approvals on this site's boards post back to the ticket. The
+   * API derives it from the grant; every consent asks for the write scope,
+   * so it is false only for a site connected before that was so, or one
+   * whose admin withheld it. Connecting the site again is the remedy.
+   */
+  writeGranted: boolean;
   createdAt: string;
 }
 
@@ -103,18 +111,24 @@ export function useJira(organizationId: string | undefined): Jira {
     void refresh();
   }, [refresh]);
 
+  /**
+   * Connect a site, or connect one again.
+   *
+   * The same call for both: a consent is recorded against the site it names,
+   * so re-consenting to a connected site refreshes that connection — which
+   * is also how a site connected read-only comes to hold the write grant.
+   */
   const connect = useCallback(() => {
     if (organizationId === undefined) {
       return;
     }
     // A full-page navigation, not a fetch: the browser has to reach
     // Atlassian's consent screen, and an XHR would fail CORS trying.
-    const returnTo = encodeURIComponent(
-      window.location.pathname + window.location.search,
-    );
+    const returnTo = window.location.pathname + window.location.search;
+    const query = new URLSearchParams({ returnTo });
     window.location.href = `/api/v1/orgs/${encodeURIComponent(
       organizationId,
-    )}/jira/connect?returnTo=${returnTo}`;
+    )}/jira/connect?${query.toString()}`;
   }, [organizationId]);
 
   const disconnect = useCallback(
@@ -217,7 +231,6 @@ export interface JiraBoard {
     maxAgeDays?: number | null;
     minSpecChars?: number;
   };
-  writebackEnabled: boolean;
   createdAt: string;
 }
 
@@ -327,7 +340,11 @@ export interface JiraBoards {
    * picked up — called when a site's page opens, where somebody is actually
    * looking at the list.
    */
-  sync: (connectionId: string) => Promise<void>;
+  /**
+   * Re-reads a site's boards. Resolves to the ids of boards seen for the
+   * first time — which the API has started sizing — or null on failure.
+   */
+  sync: (connectionId: string) => Promise<string[] | null>;
   preview: (boardId: string) => Promise<BacklogPreview | null>;
   /** One ticket in full. Read live, stored nowhere. */
   issue: (boardId: string, issueKey: string) => Promise<JiraIssueDetail | null>;
@@ -384,7 +401,7 @@ export function useJiraBoards(organizationId: string | undefined): JiraBoards {
   const sync = useCallback(
     async (connectionId: string) => {
       if (base === undefined) {
-        return;
+        return null;
       }
       // A POST because it writes rows, though the page means it as a read.
       try {
@@ -394,12 +411,17 @@ export function useJiraBoards(organizationId: string | undefined): JiraBoards {
         );
         if (!res.ok) {
           setError(await toFetchError(res));
-          return;
+          return null;
         }
+        const body = (await res.json().catch(() => null)) as {
+          added?: string[];
+        } | null;
         setError(null);
         await refresh();
+        return body?.added ?? [];
       } catch {
         setError({ kind: "other", message: "Could not reach the server." });
+        return null;
       }
     },
     [base, refresh],
