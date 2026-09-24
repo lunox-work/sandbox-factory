@@ -6,7 +6,7 @@ import type {
 } from "sandbox-factory";
 import { and, desc, eq, gt, lt, ne, or, sql } from "drizzle-orm";
 
-import type { Database } from "./errors.js";
+import { isUniqueViolation, type Database } from "./errors.js";
 import { generateId } from "./mapping.js";
 import { bountyRun, jiraBoard } from "./schema.js";
 import type { BountyRunRow } from "./schema.js";
@@ -194,15 +194,6 @@ function sameRequest(row: BountyRunRow, input: CreateBountyRunInput): boolean {
   );
 }
 
-function uniqueViolation(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    error.code === "23505"
-  );
-}
-
 export function createBountyRunStore(db: Database): BountyRunStore {
   return {
     async create(organizationId, input) {
@@ -261,7 +252,7 @@ export function createBountyRunStore(db: Database): BountyRunStore {
           throw new Error("Failed to create bounty run.");
         return { ok: true, run: toDto(created), created: true };
       } catch (error) {
-        if (!uniqueViolation(error)) throw error;
+        if (!isUniqueViolation(error)) throw error;
         const racedRequest = await firstByRequest(
           db,
           organizationId,

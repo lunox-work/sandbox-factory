@@ -13,13 +13,17 @@
  */
 
 import {
+  act,
   fireEvent,
   render,
   screen,
   waitFor,
   within,
 } from "@testing-library/react";
+import type { MembershipDto } from "@sandbox-factory/shared";
 import { beforeEach, expect, test, vi } from "vitest";
+
+import { EntityAvatar } from "../src/components/Avatar";
 
 const update = vi.fn();
 const create = vi.fn();
@@ -49,7 +53,7 @@ const acme = {
   name: "Acme",
   slug: "acme",
   kind: "team" as const,
-  role: "owner",
+  role: "owner" as const,
 };
 
 /** Someone's own account: one member, and it cannot gain another. */
@@ -58,11 +62,15 @@ const personal = {
   name: "Dana",
   slug: "dana",
   kind: "personal" as const,
-  role: "owner",
+  role: "owner" as const,
 };
 
 /** Every request the page made, so a test can assert what it asked for. */
 const calls: string[] = [];
+
+/** What the avatar route answers with after a team upload. */
+const TEAM_PICTURE =
+  "/api/avatars/organization/org_1/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.webp";
 
 function serverWith(
   members: Array<{
@@ -83,6 +91,13 @@ function serverWith(
       }
       if (String(url).includes("/invitations")) {
         return new Response(JSON.stringify({ invitation: { id: "inv_1" } }));
+      }
+      if (String(url).endsWith("/org_1/avatar")) {
+        return new Response(
+          JSON.stringify({
+            image: init?.method === "DELETE" ? null : TEAM_PICTURE,
+          }),
+        );
       }
       return new Response("{}", { status: 404 });
     }),
@@ -133,7 +148,7 @@ async function openField(label: string): Promise<HTMLInputElement> {
   return (await screen.findByLabelText(label)) as HTMLInputElement;
 }
 
-function showSettings(organization = acme) {
+function showSettings(organization: MembershipDto = acme) {
   return render(
     <Organization
       organization={organization}
@@ -172,7 +187,7 @@ test("the settings page shows the handle, and not the internal id", async () => 
   showSettings();
 
   expect(await screen.findByText("acme")).toBeDefined();
-  expect((await openField("Organization handle")).value).toBe("acme");
+  expect((await openField("Workspace handle")).value).toBe("acme");
   expect(screen.queryByText("org_1")).toBeNull();
 });
 
@@ -181,10 +196,10 @@ test("renaming names the organization explicitly", async () => {
   // so a rename could otherwise land on the wrong organization.
   showSettings();
 
-  const field = await openField("Organization handle");
+  const field = await openField("Workspace handle");
   fireEvent.change(field, { target: { value: "acme-robotics" } });
   fireEvent.click(
-    screen.getByRole("button", { name: "Save organization handle" }),
+    screen.getByRole("button", { name: "Save workspace handle" }),
   );
 
   await waitFor(() =>
@@ -200,13 +215,13 @@ test("a handle the rules refuse cannot be submitted", async () => {
   // bad name costs no round trip.
   showSettings();
 
-  const field = await openField("Organization handle");
+  const field = await openField("Workspace handle");
   fireEvent.change(field, { target: { value: "not a handle" } });
 
   expect(
     (
       screen.getByRole("button", {
-        name: "Save organization handle",
+        name: "Save workspace handle",
       }) as HTMLButtonElement
     ).disabled,
   ).toBe(true);
@@ -215,14 +230,14 @@ test("a handle the rules refuse cannot be submitted", async () => {
 test("the server's reason for refusing a rename is shown", async () => {
   update.mockResolvedValue({
     data: null,
-    error: { message: "That organization handle is taken." },
+    error: { message: "That workspace handle is taken." },
   });
   showSettings();
 
-  const field = await openField("Organization handle");
+  const field = await openField("Workspace handle");
   fireEvent.change(field, { target: { value: "globex" } });
   fireEvent.click(
-    screen.getByRole("button", { name: "Save organization handle" }),
+    screen.getByRole("button", { name: "Save workspace handle" }),
   );
 
   expect(await screen.findByText(/handle is taken/i)).toBeDefined();
@@ -237,7 +252,7 @@ test("a member cannot rename the organization", async () => {
   expect(await screen.findByText("acme")).toBeDefined();
   // No way in at all, rather than an input that refuses to take anything.
   expect(
-    screen.queryByRole("button", { name: "Edit organization handle" }),
+    screen.queryByRole("button", { name: "Edit workspace handle" }),
   ).toBeNull();
   expect(screen.getByText(/only an owner or an admin/i)).toBeDefined();
 });
@@ -257,7 +272,7 @@ test("an admin can invite and rename", async () => {
   showSettings({ ...acme, role: "admin" });
 
   expect(
-    await screen.findByRole("button", { name: "Edit organization handle" }),
+    await screen.findByRole("button", { name: "Edit workspace handle" }),
   ).toBeDefined();
   await openTab("Members");
   expect(screen.getByLabelText("Handle or email address")).toBeDefined();
@@ -268,11 +283,9 @@ test("only an owner is offered deletion", async () => {
 
   // In the Settings tab, where it would be: see the invite-form test above.
   await openTab("Settings");
+  expect(screen.getByRole("button", { name: /Leave workspace/ })).toBeDefined();
   expect(
-    screen.getByRole("button", { name: /Leave organization/ }),
-  ).toBeDefined();
-  expect(
-    screen.queryByRole("button", { name: /delete organization/i }),
+    screen.queryByRole("button", { name: /delete workspace/i }),
   ).toBeNull();
 });
 
@@ -424,7 +437,7 @@ test("leaving names the organization", async () => {
   await openTab("Settings");
 
   fireEvent.click(
-    await screen.findByRole("button", { name: /leave organization/i }),
+    await screen.findByRole("button", { name: /leave workspace/i }),
   );
   const dialog = await screen.findByRole("alertdialog");
   fireEvent.click(within(dialog).getByRole("button", { name: "Leave" }));
@@ -443,7 +456,7 @@ test("the server's reason for refusing a leave is shown", async () => {
   await openTab("Settings");
 
   fireEvent.click(
-    await screen.findByRole("button", { name: /leave organization/i }),
+    await screen.findByRole("button", { name: /leave workspace/i }),
   );
   const dialog = await screen.findByRole("alertdialog");
   fireEvent.click(within(dialog).getByRole("button", { name: "Leave" }));
@@ -459,7 +472,7 @@ test("deleting asks for the handle to be typed", async () => {
   await openTab("Settings");
 
   fireEvent.click(
-    await screen.findByRole("button", { name: /delete organization/i }),
+    await screen.findByRole("button", { name: /delete workspace/i }),
   );
 
   const dialog = await screen.findByRole("alertdialog");
@@ -484,7 +497,7 @@ test("the wrong handle does not enable deletion", async () => {
   await openTab("Settings");
 
   fireEvent.click(
-    await screen.findByRole("button", { name: /delete organization/i }),
+    await screen.findByRole("button", { name: /delete workspace/i }),
   );
   const dialog = await screen.findByRole("alertdialog");
   fireEvent.change(screen.getByLabelText(/type the handle/i), {
@@ -508,18 +521,18 @@ test("only a name is asked for", async () => {
   // somebody decide something they had no basis to decide.
   render(<CreateOrganization onCreated={vi.fn()} onCancel={vi.fn()} />);
 
-  expect(screen.getByLabelText("Organization name")).toBeDefined();
-  expect(screen.queryByLabelText("Organization handle")).toBeNull();
+  expect(screen.getByLabelText("Workspace name")).toBeDefined();
+  expect(screen.queryByLabelText("Workspace handle")).toBeNull();
 });
 
 test("creating derives the handle from the name", async () => {
   const onCreated = vi.fn();
   render(<CreateOrganization onCreated={onCreated} onCancel={vi.fn()} />);
 
-  fireEvent.change(screen.getByLabelText("Organization name"), {
+  fireEvent.change(screen.getByLabelText("Workspace name"), {
     target: { value: "Acme Robotics, Inc." },
   });
-  fireEvent.click(screen.getByRole("button", { name: /create organization/i }));
+  fireEvent.click(screen.getByRole("button", { name: /create workspace/i }));
 
   // The same normaliser the server applies, so the handle it stores is the
   // one that was sent.
@@ -540,10 +553,10 @@ test("creating hands back the id and the handle the server stored", async () => 
   const onCreated = vi.fn();
   render(<CreateOrganization onCreated={onCreated} onCancel={vi.fn()} />);
 
-  fireEvent.change(screen.getByLabelText("Organization name"), {
+  fireEvent.change(screen.getByLabelText("Workspace name"), {
     target: { value: "Acme" },
   });
-  fireEvent.click(screen.getByRole("button", { name: /create organization/i }));
+  fireEvent.click(screen.getByRole("button", { name: /create workspace/i }));
 
   await waitFor(() =>
     expect(onCreated).toHaveBeenCalledWith("org_new", "acme-2"),
@@ -560,7 +573,7 @@ test("a taken handle is retried with a suffix, not reported", async () => {
       data: null,
       error: {
         code: "ORGANIZATION_SLUG_ALREADY_TAKEN",
-        message: "That organization handle is taken.",
+        message: "That workspace handle is taken.",
       },
     })
     .mockResolvedValueOnce({
@@ -570,10 +583,10 @@ test("a taken handle is retried with a suffix, not reported", async () => {
   const onCreated = vi.fn();
   render(<CreateOrganization onCreated={onCreated} onCancel={vi.fn()} />);
 
-  fireEvent.change(screen.getByLabelText("Organization name"), {
+  fireEvent.change(screen.getByLabelText("Workspace name"), {
     target: { value: "Acme" },
   });
-  fireEvent.click(screen.getByRole("button", { name: /create organization/i }));
+  fireEvent.click(screen.getByRole("button", { name: /create workspace/i }));
 
   await waitFor(() =>
     expect(onCreated).toHaveBeenCalledWith("org_new", "acme-2"),
@@ -589,14 +602,14 @@ test("a name that normalises to nothing still yields a valid handle", async () =
   // so a name of pure punctuation is still creatable.
   render(<CreateOrganization onCreated={vi.fn()} onCancel={vi.fn()} />);
 
-  fireEvent.change(screen.getByLabelText("Organization name"), {
+  fireEvent.change(screen.getByLabelText("Workspace name"), {
     target: { value: "!!!" },
   });
 
   expect(
     (
       screen.getByRole("button", {
-        name: /create organization/i,
+        name: /create workspace/i,
       }) as HTMLButtonElement
     ).disabled,
   ).toBe(false);
@@ -608,7 +621,7 @@ test("an empty name cannot be submitted", async () => {
   expect(
     (
       screen.getByRole("button", {
-        name: /create organization/i,
+        name: /create workspace/i,
       }) as HTMLButtonElement
     ).disabled,
   ).toBe(true);
@@ -619,16 +632,16 @@ test("the server's reason for refusing a create is shown", async () => {
   // reported, which the test above pins.
   create.mockResolvedValue({
     data: null,
-    error: { message: "You already have too many organizations." },
+    error: { message: "You already have too many workspaces." },
   });
   render(<CreateOrganization onCreated={vi.fn()} onCancel={vi.fn()} />);
 
-  fireEvent.change(screen.getByLabelText("Organization name"), {
+  fireEvent.change(screen.getByLabelText("Workspace name"), {
     target: { value: "Acme" },
   });
-  fireEvent.click(screen.getByRole("button", { name: /create organization/i }));
+  fireEvent.click(screen.getByRole("button", { name: /create workspace/i }));
 
-  expect(await screen.findByText(/too many organizations/i)).toBeDefined();
+  expect(await screen.findByText(/too many workspaces/i)).toBeDefined();
 });
 
 // ---- personal organizations -----------------------------------------------
@@ -658,11 +671,8 @@ test("a personal organization shows no members section", async () => {
     />,
   );
 
-  await waitFor(() => {
-    expect(
-      screen.getByRole("button", { name: "Edit organization handle" }),
-    ).toBeTruthy();
-  });
+  // Loaded once the handle has rendered; a personal one has no pencil.
+  await screen.findByText("The same as your username, and changed with it.");
   expect(screen.queryByRole("heading", { name: "Members" })).toBeNull();
 });
 
@@ -677,11 +687,8 @@ test("a personal organization offers no way to invite anyone", async () => {
     />,
   );
 
-  await waitFor(() => {
-    expect(
-      screen.getByRole("button", { name: "Edit organization handle" }),
-    ).toBeTruthy();
-  });
+  // Loaded once the handle has rendered; a personal one has no pencil.
+  await screen.findByText("The same as your username, and changed with it.");
   expect(screen.queryByLabelText(/handle or email/i)).toBeNull();
 });
 
@@ -698,15 +705,10 @@ test("a personal organization cannot be left or deleted", async () => {
     />,
   );
 
-  await waitFor(() => {
-    expect(
-      screen.getByRole("button", { name: "Edit organization handle" }),
-    ).toBeTruthy();
-  });
+  // Loaded once the handle has rendered; a personal one has no pencil.
+  await screen.findByText("The same as your username, and changed with it.");
   expect(screen.queryByRole("heading", { name: "Leaving" })).toBeNull();
-  expect(
-    screen.queryByRole("button", { name: /Leave organization/ }),
-  ).toBeNull();
+  expect(screen.queryByRole("button", { name: /Leave workspace/ })).toBeNull();
 });
 
 test("a team organization still shows all three", async () => {
@@ -739,10 +741,9 @@ test("a team organization still shows all three", async () => {
   expect(screen.getByRole("heading", { name: "Members" })).toBeTruthy();
 
   await openTab("Settings");
+  expect(screen.getByText("Bounty rate card")).toBeTruthy();
   expect(screen.getByRole("heading", { name: "Danger zone" })).toBeTruthy();
-  expect(
-    screen.getByRole("button", { name: /Leave organization/ }),
-  ).toBeTruthy();
+  expect(screen.getByRole("button", { name: /Leave workspace/ })).toBeTruthy();
 });
 
 /**
@@ -761,7 +762,7 @@ const USER_1_D =
  * form's own avatar sits in the Overview tab, and only the open tab is
  * mounted, so with Members open nothing else can match.
  */
-function memberFaces(container: HTMLElement): Array<string | undefined> {
+function memberFaces(container: HTMLElement): Array<string | null | undefined> {
   return [...container.querySelectorAll('[data-slot="avatar"]')].map((avatar) =>
     avatar.querySelector("path")?.getAttribute("d"),
   );
@@ -802,31 +803,138 @@ test("a member's face follows the person, not the membership", async () => {
   expect(memberFaces(container)[0]).toBe(USER_1_D);
 });
 
-test("the organization picture does not offer an unavailable upload", async () => {
-  showSettings();
+test("an owner can change a team's picture, and the app hears of it", async () => {
+  const onPictureChanged = vi.fn();
+  render(
+    <Organization
+      organization={acme}
+      onChanged={vi.fn()}
+      onLeft={vi.fn()}
+      onPictureChanged={onPictureChanged}
+    />,
+  );
+  await screen.findByRole("button", { name: "Change workspace picture" });
 
-  await screen.findByRole("button", { name: "Edit organization handle" });
+  fireEvent.change(screen.getByLabelText("Upload picture"), {
+    target: {
+      files: [new File([new Uint8Array(8)], "logo.png", { type: "image/png" })],
+    },
+  });
+
+  await waitFor(() => expect(calls).toContain("PUT /api/v1/orgs/org_1/avatar"));
+  // So the switcher and the list reload with the new picture.
+  await waitFor(() => expect(onPictureChanged).toHaveBeenCalled());
+
+  const trigger = screen.getByRole("button", {
+    name: "Change workspace picture",
+  });
+  trigger.focus();
+  await act(async () => {
+    fireEvent.keyDown(trigger, { key: "Enter" });
+  });
+  expect((await screen.findByRole("menu")).textContent).toContain(
+    "Remove picture",
+  );
+});
+
+test("a team that already has a picture offers to remove it", async () => {
+  showSettings({ ...acme, image: TEAM_PICTURE });
+  const trigger = await screen.findByRole("button", {
+    name: "Change workspace picture",
+  });
+  trigger.focus();
+  await act(async () => {
+    fireEvent.keyDown(trigger, { key: "Enter" });
+  });
+  const menu = await screen.findByRole("menu");
+
+  await act(async () => {
+    fireEvent.click(within(menu).getByText("Remove picture"));
+  });
+
+  await waitFor(() =>
+    expect(calls).toContain("DELETE /api/v1/orgs/org_1/avatar"),
+  );
+});
+
+test("a plain member sees the team's picture but cannot change it", async () => {
+  showSettings({ ...acme, role: "member" });
+
+  // The read-only face says who can change it.
+  await waitFor(() =>
+    expect(
+      document.querySelector(
+        '[title="Only an owner or an admin can change the workspace\u2019s picture."]',
+      ),
+    ).not.toBeNull(),
+  );
   expect(
-    screen.queryByRole("button", { name: "Change organization picture" }),
+    screen.queryByRole("button", { name: "Change workspace picture" }),
   ).toBeNull();
 });
 
-// ---- the connections card -------------------------------------------------
+test("a personal workspace points at the account page for its picture", async () => {
+  render(
+    <Organization
+      organization={personal}
+      onChanged={vi.fn()}
+      onLeft={vi.fn()}
+      viewer={{ id: "user_1", image: null }}
+    />,
+  );
+
+  await screen.findByText("Personal workspace");
+  expect(
+    screen.queryByRole("button", { name: "Change workspace picture" }),
+  ).toBeNull();
+  expect(
+    document.querySelector(
+      '[title="Your personal workspace wears your picture. Change it in Account settings."]',
+    ),
+  ).not.toBeNull();
+});
+
+// ---- connections ----------------------------------------------------------
 
 /**
- * The card names every tool the organization can connect, including the two
- * that are not built yet.
+ * The Connections section: a square tab per tool, and one card showing the
+ * chosen one. Jira is managed in that card rather than on a page of its own.
  *
- * `onOpenJira` is what gates the whole card, so these pass it: without it the
+ * `onOpenBoard` is what gates the section, so these pass it: without it the
  * component renders no connections at all, which is what the settings page
- * does when it has no router to open.
+ * does when it has no router to open a board with.
  */
-function showConnections(connections: Array<{ healthy: boolean }> = []) {
+function showConnections(
+  connections: Array<{ healthy: boolean }> = [],
+  path = "/o/acme/settings",
+) {
+  window.history.replaceState(null, "", path);
   vi.stubGlobal(
     "fetch",
     vi.fn(async (url: string) => {
       if (String(url).includes("/jira/connections")) {
-        return new Response(JSON.stringify({ connections }));
+        return new Response(
+          JSON.stringify({
+            connections: connections.map((entry, index) => ({
+              id: `jrc_${index + 1}`,
+              cloudId: `cloud-${index + 1}`,
+              siteUrl: `https://site-${index + 1}.atlassian.net`,
+              siteName: `Site ${index + 1}`,
+              email: null,
+              scopes: [],
+              resourceScopes: [],
+              writeGranted: true,
+              createdAt: "2026-09-21T00:00:00.000Z",
+              ...entry,
+            })),
+          }),
+        );
+      }
+      if (String(url).includes("/jira/boards")) {
+        return new Response(JSON.stringify({ boards: [] }));
+      }
+      if (String(url).endsWith("/sync")) {
+        return new Response(JSON.stringify({ added: [] }));
       }
       if (String(url).includes("/members")) {
         return new Response(JSON.stringify({ members: [owner] }));
@@ -839,127 +947,215 @@ function showConnections(connections: Array<{ healthy: boolean }> = []) {
       organization={acme}
       onChanged={vi.fn()}
       onLeft={vi.fn()}
-      onOpenJira={vi.fn()}
+      onOpenBoard={vi.fn()}
     />,
   );
 }
 
-test("the connections card counts only healthy Jira connections", async () => {
-  // An unhealthy connection is one the organization cannot actually read, so
-  // counting it would overstate what is working.
-  showConnections([{ healthy: true }, { healthy: true }, { healthy: false }]);
+/** The column of square tabs, apart from the page's own tab row. */
+function connectionTabs() {
+  return screen.getByRole("tablist", { name: "Connections" });
+}
 
-  expect(await screen.findByText("2 active connections")).toBeDefined();
-});
+async function openConnection(name: "Home" | "Jira" | "GitHub" | "Slack") {
+  const tab = await within(connectionTabs()).findByRole("tab", { name });
+  fireEvent.mouseDown(tab, { button: 0 });
+  await waitFor(() => expect(tab.getAttribute("aria-selected")).toBe("true"));
+}
 
-test("the connections card is headed Connections, not Jira", async () => {
-  // It names every tool now, so heading it after one of them would be wrong.
+test("Connections is a section of its own, headed as one", async () => {
+  // It names every tool, so heading it after one of them would be wrong.
   showConnections();
 
   expect(
     await screen.findByRole("heading", { name: "Connections", level: 2 }),
   ).toBeDefined();
-  expect(screen.queryByRole("heading", { name: "Jira" })).toBeNull();
 });
 
-test("GitHub and Slack are named but cannot be opened yet", async () => {
-  // Named rather than left out: the card is about which tools this
-  // organization connects, and "not yet" is still an answer.
+test("each tool is a square tab, under a Home tab that opens first", async () => {
   showConnections();
 
-  for (const label of ["GitHub", "Slack"]) {
-    const status = await screen.findByRole("group", {
-      name: `${label}: Coming soon`,
-    });
-    expect(status).toBeDefined();
-    expect(within(status).queryByRole("button")).toBeNull();
+  await screen.findByRole("heading", { name: "Connections", level: 2 });
+  const tabs = within(connectionTabs()).getAllByRole("tab");
+  expect(tabs.map((tab) => tab.getAttribute("aria-label"))).toEqual([
+    "Home",
+    "Jira",
+    "GitHub",
+    "Slack",
+  ]);
+  // Squares: the mark alone, the name only as its label.
+  for (const tab of tabs) {
+    expect(tab.className).toContain("size-11");
+    expect(tab.textContent).toBe("");
   }
-  expect(screen.getAllByText("Coming soon")).toHaveLength(2);
+  expect(tabs[0]?.getAttribute("aria-selected")).toBe("true");
+  // Vertical, so the arrow keys move the way the column is drawn.
+  expect(connectionTabs().getAttribute("aria-orientation")).toBe("vertical");
 });
 
-test("available and future tools use distinct component types", async () => {
-  showConnections();
+test("Home counts only healthy Jira connections", async () => {
+  // An unhealthy connection is one the organization cannot actually read, so
+  // counting it would overstate what is working — but it is still reported.
+  showConnections([{ healthy: true }, { healthy: true }, { healthy: false }]);
 
   expect(
-    await screen.findByRole("link", { name: "Manage Jira connections" }),
+    await screen.findByText("2 active connections across 3 tools."),
   ).toBeDefined();
-  expect(
-    screen.getByRole("group", { name: "GitHub: Coming soon" }),
-  ).toBeDefined();
-  expect(
-    screen.getByRole("group", { name: "Slack: Coming soon" }),
-  ).toBeDefined();
-});
-
-test("the whole tile is the target, not just the word Manage", async () => {
-  // A word inside a large square is a target a person can miss while aiming
-  // at the square they think they are pressing.
-  const onOpenJira = vi.fn();
-  serverWith([]);
-  render(
-    <Organization
-      organization={{
-        id: "org_1",
-        name: "Acme",
-        slug: "acme",
-        kind: "team",
-        role: "owner",
-      }}
-      onChanged={vi.fn()}
-      onLeft={vi.fn()}
-      onOpenJira={onOpenJira}
-    />,
-  );
-
-  const tile = await screen.findByRole("link", {
-    name: "Manage Jira connections",
-  });
-  // The tile itself is the button, so there is no second one nested inside —
-  // a button within a button is invalid, and one of the two is dropped from
-  // the accessibility tree.
-  expect(tile.querySelector("button")).toBeNull();
-  // And it lights up under the cursor, which is what says it is pressable.
-  expect(tile.className).toContain("hover:bg-muted/50");
-
-  fireEvent.click(tile);
-  expect(onOpenJira).toHaveBeenCalledTimes(1);
-});
-
-test("the Jira row stays clickable", async () => {
-  // The one real connection: everything else on the card is disabled, so a
-  // regression that disabled this one too would look intentional.
-  showConnections();
-
-  const button = await screen.findByRole("link", {
-    name: "Manage Jira connections",
-  });
-  expect(button.getAttribute("href")).toBe("/o/acme/jira");
+  expect(screen.getByText("1 needs reconnecting")).toBeDefined();
 });
 
 test("one connection reads in the singular", async () => {
   // "1 active connections" is the kind of wrong that looks unfinished.
   showConnections([{ healthy: true }]);
 
-  expect(await screen.findByText("1 active connection")).toBeDefined();
+  expect(
+    await screen.findByText("1 active connection across 3 tools."),
+  ).toBeDefined();
+  expect(screen.getByText("active site")).toBeDefined();
 });
 
-test("a personal organization is not split into tabs", async () => {
-  // Two of the three tabs would be empty: a personal organization has no
-  // members to list and cannot be left. It keeps the stacked layout, so the
-  // handle and the connections are both on screen at once.
+test("a tile on Home opens that tool's tab", async () => {
+  // A count is only useful if it leads to the list it counts.
+  showConnections([{ healthy: true }]);
+
+  await screen.findByText("1 active connection across 3 tools.");
+  fireEvent.click(screen.getByRole("button", { name: /^Jira/ }));
+
+  await waitFor(() => {
+    expect(
+      within(connectionTabs())
+        .getByRole("tab", { name: "Jira" })
+        .getAttribute("aria-selected"),
+    ).toBe("true");
+  });
+  expect(await screen.findByText("Site 1")).toBeDefined();
+});
+
+test("the Jira tab manages sites in place, and says so in the URL", async () => {
+  showConnections([{ healthy: true }]);
+
+  await openConnection("Jira");
+
+  expect(await screen.findByText("Site 1")).toBeDefined();
+  expect(
+    screen.getByRole("button", { name: "Connect another site" }),
+  ).toBeDefined();
+  expect(screen.getByRole("button", { name: "Site 1 options" })).toBeDefined();
+  // So a reload, a shared link and the return from Atlassian open here.
+  expect(window.location.search).toBe("?connection=jira");
+
+  await openConnection("Home");
+  expect(window.location.search).toBe("");
+});
+
+test("the tab named in the URL is the one that opens", async () => {
+  showConnections([{ healthy: true }], "/o/acme/settings?connection=jira");
+
+  expect(await screen.findByText("Site 1")).toBeDefined();
+  expect(
+    within(connectionTabs())
+      .getByRole("tab", { name: "Jira" })
+      .getAttribute("aria-selected"),
+  ).toBe("true");
+});
+
+test("the return from Atlassian opens on the Jira tab and reports it", async () => {
+  // The banner that explains the round trip is on the Jira tab, so an
+  // outcome in the query opens it whatever else the query says.
+  showConnections([{ healthy: true }], "/o/acme/settings?jira=connected");
+
+  expect(await screen.findByText(/jira connected/i)).toBeDefined();
+  expect(
+    within(connectionTabs())
+      .getByRole("tab", { name: "Jira" })
+      .getAttribute("aria-selected"),
+  ).toBe("true");
+});
+
+test("GitHub and Slack say they are coming soon, and offer nothing to press", async () => {
+  // Named rather than left out: the rail is about which tools this
+  // organization connects, and "not yet" is still an answer.
+  showConnections();
+
+  for (const name of ["GitHub", "Slack"] as const) {
+    await openConnection(name);
+    // Named by its square, which Radix wires up as the panel's label.
+    const panel = screen.getByRole("tabpanel", { name });
+    expect(within(panel).getByText("Coming soon")).toBeDefined();
+    expect(within(panel).queryByRole("button")).toBeNull();
+  }
+});
+
+test("without a router there is no connections section", async () => {
+  // A board listed under Jira could not be opened, so none is listed.
+  serverWith([owner]);
+  render(
+    <Organization organization={acme} onChanged={vi.fn()} onLeft={vi.fn()} />,
+  );
+
+  await screen.findByRole("button", { name: "Edit workspace handle" });
+  expect(screen.queryByRole("heading", { name: "Connections" })).toBeNull();
+  expect(calls.some((call) => call.includes("/jira/"))).toBe(false);
+});
+
+test("a personal organization has Overview and Settings, but no Members", async () => {
+  // It has one member and cannot gain another, so a Members tab would always
+  // be empty. Settings stays, because that is where the rate card is.
   serverWith([]);
   render(
     <Organization
       organization={personal}
       onChanged={vi.fn()}
       onLeft={vi.fn()}
-      onOpenJira={vi.fn()}
+      onOpenBoard={vi.fn()}
     />,
   );
 
-  await screen.findByRole("button", { name: "Edit organization handle" });
-  expect(screen.queryByRole("tab")).toBeNull();
+  await screen.findByText("The same as your username, and changed with it.");
+  // The page's own tab row; the Connections column is a tab list of its own.
+  const [sections] = screen.getAllByRole("tablist");
+  expect(
+    within(sections!)
+      .getAllByRole("tab")
+      .map((tab) => tab.textContent),
+  ).toEqual(["Overview", "Settings"]);
+  // The handle and the connections share the overview, as on a team.
   expect(screen.getByRole("heading", { name: "Connections" })).toBeDefined();
+  expect(screen.queryByText("Bounty rate card")).toBeNull();
+});
+
+test("a personal organization's rate card is under Settings, as on a team", async () => {
+  serverWith([]);
+  render(
+    <Organization
+      organization={personal}
+      onChanged={vi.fn()}
+      onLeft={vi.fn()}
+    />,
+  );
+
+  await openTab("Settings");
+  expect(screen.getByText("Bounty rate card")).toBeDefined();
+  // Nothing to leave or delete: it goes with the account.
+  expect(screen.queryByRole("heading", { name: "Danger zone" })).toBeNull();
+});
+
+test("a Members link opens a personal organization on its overview", async () => {
+  // A `?tab=members` URL copied from a team's page names a tab this page
+  // does not have.
+  window.history.replaceState(null, "", "/o/dana?tab=members");
+  serverWith([]);
+  render(
+    <Organization
+      organization={personal}
+      onChanged={vi.fn()}
+      onLeft={vi.fn()}
+    />,
+  );
+
+  const overview = await screen.findByRole("tab", { name: "Overview" });
+  expect(overview.getAttribute("aria-selected")).toBe("true");
+  window.history.replaceState(null, "", "/");
 });
 
 // ---- the member count -----------------------------------------------------
@@ -995,7 +1191,7 @@ test("no count is shown before the members arrive", async () => {
   );
   showSettings();
 
-  await screen.findByRole("button", { name: "Edit organization handle" });
+  await screen.findByRole("button", { name: "Edit workspace handle" });
   expect(screen.queryByText(/\d+ members?$/)).toBeNull();
 });
 
@@ -1028,8 +1224,67 @@ test("a personal organization names itself instead of counting members", async (
     />,
   );
 
-  expect(await screen.findByText("Personal organization")).toBeDefined();
+  expect(await screen.findByText("Personal workspace")).toBeDefined();
   expect(screen.queryByText(/\d+ members?$/)).toBeNull();
+});
+
+test("a personal organization's handle is its username, not edited here", async () => {
+  // One handle per person: it follows the username, which is changed on the
+  // account page. An owner would otherwise see a pencil here.
+  serverWith([owner]);
+  render(
+    <Organization
+      organization={personal}
+      onChanged={vi.fn()}
+      onLeft={vi.fn()}
+    />,
+  );
+
+  expect(
+    await screen.findByText("The same as your username, and changed with it."),
+  ).toBeDefined();
+  expect(screen.queryByRole("button", { name: "Edit handle" })).toBeNull();
+});
+
+test("a personal organization wears its owner's picture", async () => {
+  // The same face the account page shows, not a square identicon of its own.
+  serverWith([owner]);
+  const { container } = render(
+    <Organization
+      organization={personal}
+      onChanged={vi.fn()}
+      onLeft={vi.fn()}
+      viewer={{ id: "user_1" }}
+    />,
+  );
+  await screen.findByText("The same as your username, and changed with it.");
+
+  // Round, and drawn from the user's id rather than the organization's.
+  const avatar = container.querySelector('[data-slot="avatar"]');
+  expect(avatar?.className).not.toContain("rounded-lg");
+  const theirs = render(<EntityAvatar id="user_1" shape="circle" />);
+  expect(avatar?.querySelector("path")?.getAttribute("d")).toBe(
+    theirs.container.querySelector("path")?.getAttribute("d"),
+  );
+});
+
+test("a team organization's handle is still edited here, under its own face", async () => {
+  serverWith([owner]);
+  const { container } = render(
+    <Organization
+      organization={acme}
+      onChanged={vi.fn()}
+      onLeft={vi.fn()}
+      viewer={{ id: "user_1" }}
+    />,
+  );
+
+  expect(
+    await screen.findByRole("button", { name: "Edit workspace handle" }),
+  ).toBeDefined();
+  expect(container.querySelector('[data-slot="avatar"]')?.className).toContain(
+    "rounded-lg",
+  );
 });
 
 // ---- nothing irreversible happens on one click ----------------------------
@@ -1072,7 +1327,7 @@ test("leaving asks before it leaves", async () => {
   await openTab("Settings");
 
   fireEvent.click(
-    await screen.findByRole("button", { name: /leave organization/i }),
+    await screen.findByRole("button", { name: /leave workspace/i }),
   );
 
   expect(await screen.findByRole("alertdialog")).toBeDefined();
@@ -1086,32 +1341,11 @@ test("the question names what it is about", async () => {
   await openTab("Settings");
 
   fireEvent.click(
-    await screen.findByRole("button", { name: /delete organization/i }),
+    await screen.findByRole("button", { name: /delete workspace/i }),
   );
 
   const dialog = await screen.findByRole("alertdialog");
   expect(within(dialog).getByText(/Delete Acme\?/)).toBeDefined();
-});
-
-// ---- a tool that is not built does not offer to manage it ------------------
-
-test("the unbuilt tools carry a badge, not a Manage button", async () => {
-  // A disabled button drawn on a tile that cannot be opened is an affordance
-  // for something that does not exist. The status says everything the tile
-  // has to say.
-  showConnections();
-
-  const slack = await screen.findByRole("group", {
-    name: "Slack: Coming soon",
-  });
-  // The word appears once, as the accessible name — not a second time as a
-  // control drawn inside the tile.
-  expect(within(slack).queryByText("Manage")).toBeNull();
-  expect(within(slack).getByText("Coming soon")).toBeDefined();
-
-  // The one that is real keeps its affordance.
-  const jira = screen.getByRole("link", { name: "Manage Jira connections" });
-  expect(within(jira).getByText("Manage")).toBeDefined();
 });
 
 // ---- the page says what it is doing ---------------------------------------
@@ -1160,7 +1394,7 @@ test("a members read that fails says so", async () => {
   await openTab("Members");
 
   expect(
-    await screen.findByText(/could not load this organization/i),
+    await screen.findByText(/could not load this workspace/i),
   ).toBeDefined();
 });
 
@@ -1184,36 +1418,38 @@ test("a long member name does not grow the row", async () => {
   expect(name.className).toContain("truncate");
 });
 
-// ---- creating: the handle it will get, and the way back -------------------
+// ---- creating: the name field, and the way back ---------------------------
 
-test("the derived handle is shown before it is created", async () => {
-  // It was computed and sent but never displayed, so the one thing the form
-  // decides on your behalf was invisible until the settings page afterwards.
+test("the derived handle is not shown while typing", async () => {
+  // The form says only what people will read. The handle is still derived
+  // and sent, and can be changed on the settings page afterwards.
   render(<CreateOrganization onCreated={vi.fn()} onCancel={vi.fn()} />);
 
-  fireEvent.change(screen.getByLabelText("Organization name"), {
+  fireEvent.change(screen.getByLabelText("Workspace name"), {
     target: { value: "Acme Robotics" },
   });
 
-  expect(await screen.findByText(/@acme-robotics/)).toBeDefined();
+  expect(
+    (screen.getByLabelText("Workspace name") as HTMLInputElement).value,
+  ).toBe("Acme Robotics");
+  expect(screen.queryByText(/@acme-robotics/)).toBeNull();
+});
+
+test("cancel sits beside create, on the right", () => {
+  // Alone at the far left, the ghost button's padding set its label in from
+  // the field above it.
+  render(<CreateOrganization onCreated={vi.fn()} onCancel={vi.fn()} />);
+
+  const cancel = screen.getByRole("button", { name: "Cancel" });
+  const create = screen.getByRole("button", { name: "Create workspace" });
+  expect(cancel.parentElement).toBe(create.parentElement);
+  expect(cancel.parentElement?.className).toContain("justify-end");
+  expect(cancel.nextElementSibling).toBe(create);
 });
 
 test("the name field takes the focus", () => {
   // It is the only field, and the page exists to fill it in.
   render(<CreateOrganization onCreated={vi.fn()} onCancel={vi.fn()} />);
 
-  expect(document.activeElement).toBe(
-    screen.getByLabelText("Organization name"),
-  );
-});
-
-test("connection rows share compact spacing", async () => {
-  showConnections();
-
-  const jira = await screen.findByRole("link", {
-    name: "Manage Jira connections",
-  });
-  const github = screen.getByRole("group", { name: "GitHub: Coming soon" });
-  expect(jira.className).toContain("py-3");
-  expect(github.className).toContain("py-2.5");
+  expect(document.activeElement).toBe(screen.getByLabelText("Workspace name"));
 });

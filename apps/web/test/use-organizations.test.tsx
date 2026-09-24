@@ -126,7 +126,7 @@ test("a failed request reports an error and shows no organizations", async () =>
   render(<Probe />);
 
   await waitFor(() =>
-    expect(screen.getByTestId("error").textContent).toMatch(/organizations/i),
+    expect(screen.getByTestId("error").textContent).toMatch(/workspaces/i),
   );
   expect(screen.getByTestId("count").textContent).toBe("0");
   expect(screen.getByTestId("active").textContent).toBe("none");
@@ -140,7 +140,7 @@ test("a network failure is reported rather than thrown", async () => {
   render(<Probe />);
 
   await waitFor(() =>
-    expect(screen.getByTestId("error").textContent).toMatch(/organizations/i),
+    expect(screen.getByTestId("error").textContent).toMatch(/workspaces/i),
   );
 });
 

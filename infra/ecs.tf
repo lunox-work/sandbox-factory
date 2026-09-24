@@ -59,6 +59,10 @@ resource "aws_ecs_task_definition" "api" {
       { name = "BETTER_AUTH_URL", value = local.api_origin },
       { name = "APP_URL", value = local.api_origin },
       { name = "CORS_ORIGINS", value = local.api_origin },
+      # Object storage for avatars. The bucket alone switches it on: no
+      # S3_ENDPOINT means AWS itself, and no keys means the task role.
+      { name = "S3_BUCKET", value = aws_s3_bucket.private.bucket },
+      { name = "S3_REGION", value = var.region },
       # BUILD_SHA is deliberately absent, do not add it: CD sets the real sha
       # on every deploy, and a copy here would revert to "bootstrap" on any
       # apply that did not pass -var api_image_tag=<sha>.

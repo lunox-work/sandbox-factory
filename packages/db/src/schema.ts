@@ -12,7 +12,8 @@
  * Jira and commercials tables were about to be added to it:
  *
  * - `schema/auth.ts` — Better Auth's four tables, plus `user_email`.
- * - `schema/organizations.ts` — the second principal and its membership.
+ * - `schema/organizations.ts` — the second principal, its membership, and the
+ *   handle namespace both principals share.
  * - `schema/jira.ts` — connections to a client's Atlassian site.
  *
  * `auth.ts` and `organizations.ts` import each other; see the note in
@@ -37,11 +38,13 @@ export type {
 
 export {
   invitation,
+  handle,
   member,
   organization,
   ORGANIZATION_KINDS,
 } from "./schema/organizations.js";
 export type {
+  HandleRow,
   OrganizationKind,
   InvitationRow,
   MemberRow,

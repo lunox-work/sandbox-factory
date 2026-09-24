@@ -21,6 +21,8 @@ export interface OrganizationRowLite {
   /** `personal` or `team`; defaults to `team`, as the column does. */
   kind?: string;
   personalUserId?: string | null;
+  /** The uploaded picture's served path; defaults to none. */
+  logo?: string | null;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -181,6 +183,7 @@ export function createFakeOrganizationDb(
           slug: row.slug,
           kind: row.kind ?? "team",
           personal_user_id: row.personalUserId ?? null,
+          logo: row.logo ?? null,
           created_at: row.createdAt ?? new Date(0),
           updated_at: row.updatedAt ?? new Date(0),
         }));
@@ -203,6 +206,32 @@ export function createFakeOrganizationDb(
           expires_at: row.expiresAt,
           created_at: row.createdAt,
         }));
+      /*
+       * Not stored: derived, as the triggers in migration 0030 keep it. One
+       * row per username and one per team; a personal organization holds
+       * none, riding on its owner's.
+       */
+      case "handle":
+        return [
+          ...users.flatMap((row) =>
+            row.username === null
+              ? []
+              : [
+                  {
+                    handle: row.username.toLowerCase(),
+                    user_id: row.id,
+                    organization_id: null,
+                  },
+                ],
+          ),
+          ...organizations
+            .filter((row) => (row.kind ?? "team") === "team")
+            .map((row) => ({
+              handle: row.slug.toLowerCase(),
+              user_id: null,
+              organization_id: row.id,
+            })),
+        ];
       case "user":
         return users.map((row) => ({
           id: row.id,
@@ -346,6 +375,18 @@ export function createFakeOrganizationDb(
         values: (value: Columns) => {
           inserted = value;
           if (name === "organization") {
+            // The trigger's rule: a personal organization carries its
+            // owner's username and nothing else.
+            if (value["kind"] === "personal") {
+              const owner = users.find(
+                (row) => row.id === value["personalUserId"],
+              );
+              if (value["slug"] !== owner?.username?.toLowerCase()) {
+                throw new Error(
+                  "personal organization must carry its owner's username",
+                );
+              }
+            }
             organizations.push({
               id: String(value["id"]),
               name: String(value["name"]),
@@ -437,6 +478,9 @@ export function createFakeOrganizationDb(
               }
               if (typeof patch["name"] === "string") {
                 row.name = patch["name"];
+              }
+              if ("logo" in patch) {
+                row.logo = patch["logo"] as string | null;
               }
             }
           }

@@ -29,11 +29,26 @@ const envSchema = z.object({
   // Required, with no in-memory fallback: that would look healthy and lose
   // data on restart.
   DATABASE_URL: z.string().min(1, "DATABASE_URL is required."),
-  // Optional: nothing in the API reads object storage yet.
-  S3_ENDPOINT: z.string().optional(),
-  S3_BUCKET: z.string().default("sandbox-factory"),
-  S3_ACCESS_KEY_ID: z.string().optional(),
-  S3_SECRET_ACCESS_KEY: z.string().optional(),
+  /**
+   * Object storage, for uploaded avatars. Off unless `S3_BUCKET` is set, and
+   * the avatar routes are unmounted while it is off.
+   *
+   * Two shapes, one code path. Locally all four are set and point at the
+   * SeaweedFS gateway. In production only the bucket is set: no endpoint means
+   * AWS itself, and no keys means the SDK's default chain, which finds the ECS
+   * task role. The keys are a pair — one without the other is refused below.
+   *
+   * `unsetSecret` for the same reason as the secrets further down: compose
+   * passes an unset variable as "", which would otherwise switch storage on
+   * with a bucket named nothing.
+   */
+  S3_ENDPOINT: z.preprocess(
+    unsetSecret,
+    z.url({ protocol: /^https?$/ }).optional(),
+  ),
+  S3_BUCKET: z.preprocess(unsetSecret, z.string().min(1).optional()),
+  S3_ACCESS_KEY_ID: z.preprocess(unsetSecret, z.string().min(1).optional()),
+  S3_SECRET_ACCESS_KEY: z.preprocess(unsetSecret, z.string().min(1).optional()),
   S3_REGION: z.string().default("us-east-1"),
 
   // ---- auth ---------------------------------------------------------------
@@ -180,7 +195,23 @@ export function buildInfo(env: Env): BuildInfoDto {
 }
 
 export function parseEnv(source: NodeJS.ProcessEnv = process.env): Env {
-  const result = envSchema.safeParse(source);
+  const result = envSchema
+    .superRefine((env, context) => {
+      // Half a key pair signs every request wrongly, and the first upload is
+      // a worse place to find out than boot.
+      if (
+        (env.S3_ACCESS_KEY_ID === undefined) !==
+        (env.S3_SECRET_ACCESS_KEY === undefined)
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["S3_ACCESS_KEY_ID"],
+          message:
+            "S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY must be set together, or both left unset to use the AWS default credential chain.",
+        });
+      }
+    })
+    .safeParse(source);
   if (!result.success) {
     const issues = result.error.issues
       .map((issue) => `  ${issue.path.join(".")}: ${issue.message}`)
@@ -255,30 +286,35 @@ export function sizingAvailable(env: Env): boolean {
 }
 
 /**
- * Object-storage config, or undefined unless the endpoint and both keys are
- * all set: a half-configured client would fail at the first request.
+ * Object-storage config, or undefined unless a bucket is named.
+ *
+ * `endpoint` and `credentials` are present only when set: absent, the S3
+ * client talks to AWS and resolves credentials itself (the task role in
+ * production). `parseEnv` has already refused a lone key.
  */
 export function objectStoreConfig(env: Env):
   | {
-      endpoint: string;
       bucket: string;
-      accessKeyId: string;
-      secretAccessKey: string;
       region: string;
+      endpoint?: string;
+      credentials?: { accessKeyId: string; secretAccessKey: string };
     }
   | undefined {
-  if (
-    env.S3_ENDPOINT === undefined ||
-    env.S3_ACCESS_KEY_ID === undefined ||
-    env.S3_SECRET_ACCESS_KEY === undefined
-  ) {
+  if (env.S3_BUCKET === undefined) {
     return undefined;
   }
   return {
-    endpoint: env.S3_ENDPOINT,
     bucket: env.S3_BUCKET,
-    accessKeyId: env.S3_ACCESS_KEY_ID,
-    secretAccessKey: env.S3_SECRET_ACCESS_KEY,
     region: env.S3_REGION,
+    ...(env.S3_ENDPOINT === undefined ? {} : { endpoint: env.S3_ENDPOINT }),
+    ...(env.S3_ACCESS_KEY_ID === undefined ||
+    env.S3_SECRET_ACCESS_KEY === undefined
+      ? {}
+      : {
+          credentials: {
+            accessKeyId: env.S3_ACCESS_KEY_ID,
+            secretAccessKey: env.S3_SECRET_ACCESS_KEY,
+          },
+        }),
   };
 }

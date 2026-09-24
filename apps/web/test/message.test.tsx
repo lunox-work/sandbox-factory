@@ -14,10 +14,10 @@ import { expect, test } from "vitest";
 import { ErrorBanner, FormStatus } from "../src/components/Message";
 
 test("an error banner announces itself as an alert", () => {
-  render(<ErrorBanner>Could not load organizations.</ErrorBanner>);
+  render(<ErrorBanner>Could not load workspaces.</ErrorBanner>);
 
   expect(screen.getByRole("alert").textContent).toBe(
-    "Could not load organizations.",
+    "Could not load workspaces.",
   );
 });
 

@@ -12,8 +12,8 @@ import {
   normalizeHandle,
 } from "sandbox-factory";
 
-import { user, userEmail } from "./schema.js";
-import type { Database } from "./errors.js";
+import { handle, user, userEmail } from "./schema.js";
+import { isUniqueViolation, type Database } from "./errors.js";
 
 export interface ProvenEmail {
   readonly id: string;
@@ -353,8 +353,9 @@ export interface UserProfileStore {
    */
   suggest(email: string): Promise<string>;
   /**
-   * Claims or changes a handle. Stored lowercase and unique;
-   * `displayUsername` keeps the casing the person typed.
+   * Claims or changes a handle. Stored lowercase, and unique across users
+   * *and* organizations; `displayUsername` keeps the casing the person typed.
+   * The person's personal organization takes the new handle with it.
    */
   setUsername(userId: string, raw: string): Promise<UsernameResult>;
   /**
@@ -366,16 +367,38 @@ export interface UserProfileStore {
    * and the length are checked.
    */
   setName(userId: string, raw: string): Promise<NameResult>;
+  /**
+   * The picture the account shows now: an uploaded avatar's served path, a
+   * provider's URL from signup, or null for the identicon. Null also for an
+   * unknown user.
+   *
+   * Read-only on purpose. The column is written through Better Auth, whose
+   * update re-issues the session cookie so every screen sees the change at
+   * once; the avatar routes read this only to know which object to delete.
+   */
+  image(userId: string): Promise<string | null>;
 }
 
 export function createProfileStore(db: Database): UserProfileStore {
-  async function isTaken(candidate: string): Promise<boolean> {
+  /**
+   * Who holds a handle, from the one namespace users and organizations share
+   * (migration 0030). `userId` is null when a team holds it. Asked before a
+   * write so a taken handle is a clean `taken` rather than a failed update;
+   * the primary key is what actually guarantees it.
+   */
+  async function holderOf(
+    candidate: string,
+  ): Promise<{ userId: string | null } | undefined> {
     const [row] = await db
-      .select({ id: user.id })
-      .from(user)
-      .where(eq(user.username, candidate))
+      .select({ userId: handle.userId })
+      .from(handle)
+      .where(eq(handle.handle, candidate))
       .limit(1);
-    return row !== undefined;
+    return row;
+  }
+
+  async function isTaken(candidate: string): Promise<boolean> {
+    return (await holderOf(candidate)) !== undefined;
   }
 
   return {
@@ -404,6 +427,15 @@ export function createProfileStore(db: Database): UserProfileStore {
         .where(eq(user.id, userId))
         .limit(1);
       return row;
+    },
+
+    async image(userId) {
+      const [row] = await db
+        .select({ image: user.image })
+        .from(user)
+        .where(eq(user.id, userId))
+        .limit(1);
+      return row?.image ?? null;
     },
 
     async setName(userId, raw) {
@@ -438,20 +470,27 @@ export function createProfileStore(db: Database): UserProfileStore {
       }
       const { handle: username, display: displayUsername } = normalized;
 
-      const [existing] = await db
-        .select({ id: user.id })
-        .from(user)
-        .where(eq(user.username, username))
-        .limit(1);
-      // Re-claiming your own handle in different casing is a rename.
-      if (existing !== undefined && existing.id !== userId) {
+      // A team's handle is as taken as another person's. Re-claiming your
+      // own handle in different casing is a rename.
+      const holder = await holderOf(username);
+      if (holder !== undefined && holder.userId !== userId) {
         return { status: "taken" };
       }
 
-      await db
-        .update(user)
-        .set({ username, displayUsername, updatedAt: new Date() })
-        .where(eq(user.id, userId));
+      try {
+        // The database moves the claim and the personal organization's
+        // handle with it, in this statement (migration 0030).
+        await db
+          .update(user)
+          .set({ username, displayUsername, updatedAt: new Date() })
+          .where(eq(user.id, userId));
+      } catch (error) {
+        // Claimed by someone else between the check and the write.
+        if (isUniqueViolation(error)) {
+          return { status: "taken" };
+        }
+        throw error;
+      }
 
       return { status: "ok", username, displayUsername };
     },

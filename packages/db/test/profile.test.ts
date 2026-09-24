@@ -40,6 +40,53 @@ test("a handle already held by someone else is refused", async () => {
   });
 });
 
+test("a team's handle is as taken as a person's", async () => {
+  // Users and organizations share one namespace: `/o/acme` cannot mean a
+  // team and a person at once.
+  const fake = createFakeEmailDb({
+    users: [user()],
+    teams: [{ handle: "acme", organizationId: "org_acme" }],
+  });
+  const store = createProfileStore(fake.db);
+
+  assert.deepEqual(await store.setUsername("user_1", "Acme"), {
+    status: "taken",
+  });
+  assert.equal(fake.users[0]?.username, null);
+});
+
+test("a handle claimed between the check and the write is still taken", async () => {
+  // The check found it free; the primary key is what refuses the write.
+  const fake = createFakeEmailDb({
+    users: [user()],
+    racingTeam: { handle: "contested", organizationId: "org_race" },
+  });
+  const store = createProfileStore(fake.db);
+
+  assert.deepEqual(await store.setUsername("user_1", "contested"), {
+    status: "taken",
+  });
+});
+
+test("a failed write that is not a collision is not reported as taken", async () => {
+  const fake = createFakeEmailDb({ users: [user()] });
+  const failing = new Proxy(fake.db, {
+    get(target, property, receiver) {
+      if (property === "update") {
+        return () => {
+          throw new Error("connection lost");
+        };
+      }
+      return Reflect.get(target, property, receiver) as unknown;
+    },
+  });
+  const store = createProfileStore(failing);
+
+  await assert.rejects(store.setUsername("user_1", "anything"), {
+    message: "connection lost",
+  });
+});
+
 test("re-claiming your own handle with different casing is a rename", async () => {
   const fake = createFakeEmailDb({ users: [user({ username: "feversoul" })] });
   const store = createProfileStore(fake.db);
@@ -129,6 +176,17 @@ test("a collision counts upward rather than failing", async () => {
   assert.equal(await store.suggest("dana@example.test"), "dana2");
 });
 
+test("a suggestion steps around a team's handle too", async () => {
+  // Otherwise a new account would be minted onto a team's handle, and the
+  // database would refuse the signup.
+  const fake = createFakeEmailDb({
+    teams: [{ handle: "dana", organizationId: "org_dana" }],
+  });
+  const store = createProfileStore(fake.db);
+
+  assert.equal(await store.suggest("dana@example.test"), "dana2");
+});
+
 test("repeated collisions keep counting", async () => {
   const fake = createFakeEmailDb({
     users: [
@@ -211,4 +269,17 @@ test("surrounding hyphens are trimmed but inner ones are kept", async () => {
     await store.suggest("--dana--rivers--@example.test"),
     "dana--rivers",
   );
+});
+
+test("image reads the picture the account shows now", async () => {
+  const picture = `/api/avatars/user/user_1/${"b".repeat(64)}.webp`;
+  const fake = createFakeEmailDb({
+    users: [user({ image: picture }), user({ id: "user_2" })],
+  });
+  const store = createProfileStore(fake.db);
+
+  assert.equal(await store.image("user_1"), picture);
+  // No picture reads as null — the identicon — not as undefined.
+  assert.equal(await store.image("user_2"), null);
+  assert.equal(await store.image("user_nobody"), null);
 });

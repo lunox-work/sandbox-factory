@@ -88,6 +88,30 @@ test("foreign keys across the auth/organization cycle resolve", () => {
   assert.ok(memberToUser, "member does not reference user");
 });
 
+test("a handle is held by a user or an organization, and goes with them", () => {
+  // The shared namespace. Cascades, so deleting a holder releases its handle
+  // rather than leaving it claimed by nobody.
+  const config = getTableConfig(organizationSchema.handle);
+  const targets = config.foreignKeys.map((key) => ({
+    table: key.reference().foreignTable,
+    onDelete: key.onDelete,
+  }));
+
+  assert.deepEqual(
+    targets.map((target) => target.onDelete),
+    ["cascade", "cascade"],
+  );
+  assert.ok(targets.some((target) => target.table === authSchema.user));
+  assert.ok(
+    targets.some((target) => target.table === organizationSchema.organization),
+  );
+  // Exactly one holder, and one spelling of each handle.
+  assert.deepEqual(config.checks.map((check) => check.name).sort(), [
+    "handle_lowercase",
+    "handle_one_holder",
+  ]);
+});
+
 test("jira_connection is owned by an organization and indexed for it", () => {
   // The ownership column every store method filters on. A cascade, so
   // deleting an organization takes its connections — and their tokens — with

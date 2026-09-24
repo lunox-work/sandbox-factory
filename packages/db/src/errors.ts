@@ -19,3 +19,26 @@ export class NotFoundError extends Error {
 }
 
 export type Database = PostgresJsDatabase<Record<string, never>>;
+
+/**
+ * Whether a write was refused by a unique constraint — Postgres' `23505`.
+ *
+ * Also what the handle triggers raise (migration 0030), so a claim that loses
+ * a race to a concurrent one reads the same as any other duplicate.
+ */
+export function isUniqueViolation(error: unknown): boolean {
+  // drizzle-orm >= 0.44 wraps every driver failure in a `DrizzleQueryError`
+  // whose own `code` is undefined; the postgres.js error, with the SQLSTATE,
+  // is its `cause`. Followed a few levels, never unboundedly.
+  let current: unknown = error;
+  for (let depth = 0; depth < 5; depth += 1) {
+    if (typeof current !== "object" || current === null) {
+      return false;
+    }
+    if ("code" in current && current.code === "23505") {
+      return true;
+    }
+    current = "cause" in current ? current.cause : undefined;
+  }
+  return false;
+}

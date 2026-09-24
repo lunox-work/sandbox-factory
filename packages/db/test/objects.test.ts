@@ -8,8 +8,7 @@ import { createObjectStore, isNotFound } from "../src/objects.js";
 const options = {
   endpoint: "http://localhost:8333",
   bucket: "sandbox-factory",
-  accessKeyId: "key",
-  secretAccessKey: "secret",
+  credentials: { accessKeyId: "key", secretAccessKey: "secret" },
 };
 
 /**
@@ -165,6 +164,40 @@ test("signedUrl returns a presigned url for the key", async () => {
 test("signedUrl defaults to a 15 minute expiry", async () => {
   const url = await createObjectStore(options).signedUrl("a.txt");
   assert.match(url, /X-Amz-Expires=900/);
+});
+
+/**
+ * The production shape: a bucket and nothing else. No endpoint means AWS
+ * itself, and no keys means the SDK's default chain — whose first link is the
+ * environment, so setting it here stands in for the task role without
+ * reaching for whatever credentials the machine running the tests holds.
+ */
+test("with no endpoint or keys, the client targets AWS and the default chain", async () => {
+  const saved = {
+    id: process.env["AWS_ACCESS_KEY_ID"],
+    secret: process.env["AWS_SECRET_ACCESS_KEY"],
+  };
+  process.env["AWS_ACCESS_KEY_ID"] = "from-the-chain";
+  process.env["AWS_SECRET_ACCESS_KEY"] = "chain-secret";
+  try {
+    const url = await createObjectStore({
+      bucket: "avatars-bucket",
+      region: "us-east-1",
+    }).signedUrl("a.txt");
+    assert.match(
+      url,
+      /^https:\/\/s3\.us-east-1\.amazonaws\.com\/avatars-bucket\/a\.txt/,
+    );
+    assert.match(url, /X-Amz-Credential=from-the-chain%2F/);
+  } finally {
+    for (const [name, value] of [
+      ["AWS_ACCESS_KEY_ID", saved.id],
+      ["AWS_SECRET_ACCESS_KEY", saved.secret],
+    ] as const) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
 });
 
 test("isNotFound recognises a bare 404 from a non-AWS gateway", () => {

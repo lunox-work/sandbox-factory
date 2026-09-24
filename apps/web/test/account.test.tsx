@@ -9,7 +9,13 @@
  * what a person sees given a server response.
  */
 
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
 const listAccounts = vi.fn();
@@ -17,6 +23,7 @@ const acceptInvitation = vi.fn();
 const rejectInvitation = vi.fn();
 const unlinkAccount = vi.fn();
 const linkSocial = vi.fn();
+const refetchSession = vi.fn();
 
 vi.mock("../src/auth", () => ({
   authClient: {
@@ -37,6 +44,7 @@ vi.mock("../src/auth", () => ({
   // no picture — the case that falls through to the generated one.
   useSession: () => ({
     data: { user: { id: "user_1", image: null, name: "charlie ang" } },
+    refetch: () => refetchSession(),
   }),
 }));
 
@@ -44,6 +52,10 @@ const { Account } = await import("../src/Account");
 
 /** Every request the page made, so a test can assert what it asked for. */
 const calls: string[] = [];
+
+/** What the avatar route answers with after an upload. */
+const PICTURE =
+  "/api/avatars/user/user_1/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.webp";
 
 /**
  * Clicks a value open and hands back its input.
@@ -67,6 +79,8 @@ function serverWith(options: {
     isPrimary: boolean;
   }>;
   username?: string | null;
+  /** How the avatar route answers; absent means it is not mounted. */
+  avatar?: "on" | "refuse";
   invitations?: Array<{
     id: string;
     organization: { id: string; name: string; slug: string };
@@ -107,6 +121,21 @@ function serverWith(options: {
               username: options.username ?? "dana",
             },
           }),
+        );
+      }
+      if (String(url).endsWith("/api/v1/me/avatar")) {
+        if (options.avatar === "refuse") {
+          return new Response(
+            JSON.stringify({ error: "Use a PNG, JPEG, WebP or GIF." }),
+            { status: 400 },
+          );
+        }
+        if (options.avatar !== "on") {
+          // Unmounted: the server has no object storage.
+          return new Response("{}", { status: 404 });
+        }
+        return new Response(
+          JSON.stringify({ image: init?.method === "DELETE" ? null : PICTURE }),
         );
       }
       return new Response("{}", { status: 404 });
@@ -555,7 +584,7 @@ test("the page links to the organizations you belong to", async () => {
     <Account organizationCount={3} onOpenOrganizations={onOpenOrganizations} />,
   );
 
-  const link = await screen.findByRole("button", { name: "3 organizations" });
+  const link = await screen.findByRole("button", { name: "3 workspaces" });
   fireEvent.click(link);
 
   expect(onOpenOrganizations).toHaveBeenCalledTimes(1);
@@ -572,7 +601,7 @@ test("one organization is not 'organizations'", async () => {
   render(<Account organizationCount={1} onOpenOrganizations={vi.fn()} />);
 
   expect(
-    await screen.findByRole("button", { name: "1 organization" }),
+    await screen.findByRole("button", { name: "1 workspace" }),
   ).toBeTruthy();
 });
 
@@ -584,16 +613,100 @@ test("the count is absent until it is known", async () => {
   render(<Account />);
 
   await screen.findByRole("button", { name: "Edit username" });
-  expect(screen.queryByText(/organizations?$/)).toBeNull();
+  expect(screen.queryByText(/workspaces?$/)).toBeNull();
 });
 
-test("the account picture does not offer an unavailable upload", async () => {
+// ---- the picture -----------------------------------------------------------
+
+/** Opens the picture's menu and hands it back. */
+async function openPictureMenu(): Promise<HTMLElement> {
+  const trigger = await screen.findByRole("button", {
+    name: "Change your picture",
+  });
+  trigger.focus();
+  // Inside `act`: Radix moves focus into the menu in an effect after opening.
+  await act(async () => {
+    fireEvent.keyDown(trigger, { key: "Enter" });
+  });
+  return await screen.findByRole("menu");
+}
+
+function pick(file: File) {
+  fireEvent.change(screen.getByLabelText("Upload picture"), {
+    target: { files: [file] },
+  });
+}
+
+const photo = () =>
+  new File([new Uint8Array(64)], "me.png", { type: "image/png" });
+
+test("the picture offers an upload, and no removal while there is nothing to remove", async () => {
   render(<Account />);
 
-  await screen.findByRole("button", { name: "Edit username" });
-  expect(
-    screen.queryByRole("button", { name: "Change your picture" }),
-  ).toBeNull();
+  const menu = await openPictureMenu();
+
+  expect(menu.textContent).toContain("Upload picture");
+  // The session carries no picture: the identicon has nothing to remove.
+  expect(menu.textContent).not.toContain("Remove picture");
+});
+
+test("uploading a picture sends it to the avatar route and refreshes the session", async () => {
+  serverWith({ avatar: "on" });
+  render(<Account />);
+  await screen.findByRole("button", { name: "Change your picture" });
+
+  pick(photo());
+
+  await waitFor(() => expect(calls).toContain("PUT /api/v1/me/avatar"));
+  // Every other screen reads the picture from the session.
+  await waitFor(() => expect(refetchSession).toHaveBeenCalled());
+  // The new picture is now there to remove.
+  expect((await openPictureMenu()).textContent).toContain("Remove picture");
+});
+
+test("removing the picture asks the server to clear it", async () => {
+  serverWith({ avatar: "on" });
+  render(<Account />);
+  await screen.findByRole("button", { name: "Change your picture" });
+  pick(photo());
+  await waitFor(() => expect(refetchSession).toHaveBeenCalledTimes(1));
+
+  const menu = await openPictureMenu();
+  await act(async () => {
+    fireEvent.click(
+      Array.from(menu.querySelectorAll('[role="menuitem"]')).find((item) =>
+        item.textContent?.includes("Remove picture"),
+      )!,
+    );
+  });
+
+  await waitFor(() => expect(calls).toContain("DELETE /api/v1/me/avatar"));
+  await waitFor(() => expect(refetchSession).toHaveBeenCalledTimes(2));
+});
+
+test("a refused picture says why, next to the picture", async () => {
+  serverWith({ avatar: "refuse" });
+  render(<Account />);
+  await screen.findByRole("button", { name: "Change your picture" });
+
+  pick(photo());
+
+  expect((await screen.findByRole("alert")).textContent).toBe(
+    "Use a PNG, JPEG, WebP or GIF.",
+  );
+  expect(refetchSession).not.toHaveBeenCalled();
+});
+
+test("a server without uploads says so rather than failing quietly", async () => {
+  serverWith({});
+  render(<Account />);
+  await screen.findByRole("button", { name: "Change your picture" });
+
+  pick(photo());
+
+  expect((await screen.findByRole("alert")).textContent).toBe(
+    "Picture uploads are not enabled on this server.",
+  );
 });
 
 // ---- the display name -----------------------------------------------------

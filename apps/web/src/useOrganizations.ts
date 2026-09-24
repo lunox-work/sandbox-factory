@@ -31,6 +31,13 @@ export interface Organizations extends State {
   active: MembershipDto | null;
   /** An explicit URL slug that is not present in the caller's memberships. */
   notFound: boolean;
+  /**
+   * The list has arrived but the effect that picks one from it has not run.
+   *
+   * One render long, and easy to mistake for "in none": a screen that shows
+   * something different when there is no organization would flash it here.
+   */
+  settling: boolean;
   /** Switches organization, and remembers the choice for the next reload. */
   select: (organizationId: string) => void;
   /**
@@ -76,7 +83,7 @@ export function useOrganizations(
         setState({
           organizations: [],
           loading: false,
-          error: "Could not load your organizations.",
+          error: "Could not load your workspaces.",
         });
         return;
       }
@@ -94,7 +101,7 @@ export function useOrganizations(
       setState({
         organizations: [],
         loading: false,
-        error: "Could not load your organizations.",
+        error: "Could not load your workspaces.",
       });
     }
   }, []);
@@ -179,5 +186,13 @@ export function useOrganizations(
     preferredSlug !== undefined &&
     !state.organizations.some((entry) => entry.slug === preferredSlug);
 
-  return { ...state, active, notFound, select, clear, refresh };
+  const settling =
+    !state.loading &&
+    !deselected &&
+    active === null &&
+    (preferredSlug === undefined
+      ? state.organizations.length > 0
+      : state.organizations.some((entry) => entry.slug === preferredSlug));
+
+  return { ...state, active, notFound, settling, select, clear, refresh };
 }

@@ -49,16 +49,18 @@ import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 import { authClient } from "./auth";
-import { JiraIcon, ProviderIcon, SlackIcon } from "./ProviderIcon";
-import { isPlainLeftClick, pathForScreen } from "./routes";
-import { useJira } from "./useJira";
+import { removeAvatar, uploadAvatar, type AvatarResult } from "./avatars";
+import { Connections } from "./Connections";
+import type { JiraBoard } from "./useJira";
 import { RateCardEditor } from "./Bounties";
 
 /**
  * The three groups the settings page is split into, in tab order.
  *
- * Overview is first because it is the one every organization has: the other
- * two are about a team, and a personal organization shows neither.
+ * Overview is first because it is the one every organization has. A personal
+ * organization has no Members tab — it has one member and cannot gain
+ * another — but keeps Settings, which is where its rate card lives, the same
+ * as a team's.
  */
 const TABS = [
   { value: "overview", label: "Overview" },
@@ -67,12 +69,20 @@ const TABS = [
 ] as const;
 type OrganizationTab = (typeof TABS)[number]["value"];
 
-function tabFromUrl(): OrganizationTab {
+function tabsFor(personal: boolean) {
+  return personal ? TABS.filter((tab) => tab.value !== "members") : TABS;
+}
+
+function tabFromUrl(personal: boolean): OrganizationTab {
   if (!window.location.pathname.startsWith("/o/")) {
     return "overview";
   }
   const value = new URLSearchParams(window.location.search).get("tab");
-  return value === "members" || value === "settings" ? value : "overview";
+  // A personal organization has no Members tab, so a link that names it
+  // (one copied from a team's page, say) opens on the overview instead.
+  return tabsFor(personal).some((tab) => tab.value === value)
+    ? (value as OrganizationTab)
+    : "overview";
 }
 
 /** Roles that may manage members and invitations. */
@@ -84,7 +94,9 @@ export function Organization({
   organization,
   onChanged,
   onLeft,
-  onOpenJira,
+  onOpenBoard,
+  onPictureChanged,
+  viewer,
 }: {
   /** The organization to show, with the caller's role in it. */
   organization: MembershipDto;
@@ -93,10 +105,23 @@ export function Organization({
   /** Called after leaving or deleting, so the app moves elsewhere. */
   onLeft: () => void;
   /**
-   * Opens the organization's Jira page. Optional so this component can be
-   * rendered in a test without the app's router.
+   * Called after the team's picture changes, so the switcher and the list
+   * wear the new one. Optional: a test may leave it out.
    */
-  onOpenJira?: (() => void) | undefined;
+  onPictureChanged?: (() => void) | undefined;
+  /**
+   * Opens a board from the Jira tab under Connections. Optional so this
+   * component can be rendered in a test without the app's router; without it
+   * the Connections section is left out, since a board it listed could not
+   * be opened.
+   */
+  onOpenBoard?: ((board: JiraBoard) => void) | undefined;
+  /**
+   * Whoever is looking. A personal organization is always the viewer's own —
+   * nobody is ever in someone else's — so its picture is theirs, the one the
+   * account page shows. Optional so a test may leave it out.
+   */
+  viewer?: { id: string; image?: string | null } | undefined;
 }) {
   const [members, setMembers] = useState<OrganizationMemberDto[]>([]);
   /** False until the members request has answered once; see `memberCount`. */
@@ -108,7 +133,9 @@ export function Organization({
    * Controlled rather than `defaultValue`, so the member count in the handle
    * card can open the Members tab.
    */
-  const [tab, setTab] = useState<OrganizationTab>(tabFromUrl);
+  const [tab, setTab] = useState<OrganizationTab>(() =>
+    tabFromUrl(organization.kind === "personal"),
+  );
 
   const selectTab = useCallback((next: string) => {
     const selected = next as OrganizationTab;
@@ -131,10 +158,10 @@ export function Organization({
   }, []);
 
   useEffect(() => {
-    const syncTab = () => setTab(tabFromUrl());
+    const syncTab = () => setTab(tabFromUrl(organization.kind === "personal"));
     window.addEventListener("popstate", syncTab);
     return () => window.removeEventListener("popstate", syncTab);
-  }, []);
+  }, [organization.kind]);
 
   const refresh = useCallback(async () => {
     setLoaded(false);
@@ -146,7 +173,7 @@ export function Organization({
         // It used to ignore this entirely, so a 500 left an empty member list
         // and no reason for it — an organization that looked as though it had
         // lost everybody.
-        setMemberError("Could not load this organization.");
+        setMemberError("Could not load this workspace.");
         return;
       }
       setMembers(
@@ -155,7 +182,7 @@ export function Organization({
       setLoaded(true);
       setMemberError(null);
     } catch {
-      setMemberError("Could not load this organization.");
+      setMemberError("Could not load this workspace.");
     } finally {
       setLoaded(true);
     }
@@ -205,136 +232,63 @@ export function Organization({
       <p className="text-muted-foreground mt-1.5 text-sm">
         {personal
           ? "Your personal account\u2019s handle and connections."
-          : "Your organization\u2019s handle, and who belongs to it."}
+          : "Your workspace\u2019s handle, and who belongs to it."}
       </p>
 
       {error !== null && <ErrorBanner>{error}</ErrorBanner>}
 
       {/*
-        Three tabs rather than one long column, and only for a team: a
-        personal organization has no members and cannot be left, so two of
-        the three would be empty. It keeps the stacked layout instead.
+        Tabs rather than one long column. A personal organization has no
+        members and cannot be left, so it gets Overview and Settings only —
+        the rate card is in Settings for both kinds, so it is found in the
+        same place whichever workspace is open.
       */}
-      {personal ? (
-        <div className="mt-8 flex flex-col gap-6">
-          <HandleForm
-            organization={organization}
-            canRename={manage}
-            busy={busy}
-            onBusy={setBusy}
-            onSaved={onChanged}
-            personal
-          />
+      <Tabs value={tab} onValueChange={selectTab} className="mt-8 gap-6">
+        <TabsList className="w-full">
+          {tabsFor(personal).map((tab) => (
+            <TabsTrigger key={tab.value} value={tab.value}>
+              {tab.label}
+            </TabsTrigger>
+          ))}
+        </TabsList>
 
-          <RateCardEditor
-            organizationId={organization.id}
-            role={organization.role}
-          />
-
-          {onOpenJira !== undefined && (
-            <Card>
-              <CardHeader>
-                <CardTitle role="heading" aria-level={2}>
-                  Connections
-                </CardTitle>
-                <CardDescription>
-                  Connect the tools this organization already works in, so their
-                  work can be read and priced here.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="flex flex-col gap-2">
-                <JiraConnectionTile
-                  organizationId={organization.id}
-                  organizationSlug={organization.slug}
-                  onOpenJira={onOpenJira}
-                />
-
-                {/*
-                Not built yet, but named here rather than left out: the card
-                is about which tools this organization connects, and an empty
-                answer for the other two is still an answer.
-              */}
-                {COMING_SOON.map((provider) => (
-                  <ConnectionTile
-                    key={provider.key}
-                    icon={provider.icon}
-                    label={provider.label}
-                    status="Coming soon"
-                    disabled
-                    actionLabel={`Manage ${provider.label} connections`}
-                  />
-                ))}
-              </CardContent>
-            </Card>
-          )}
-        </div>
-      ) : (
-        <Tabs value={tab} onValueChange={selectTab} className="mt-8 gap-6">
-          <TabsList className="w-full">
-            {TABS.map((tab) => (
-              <TabsTrigger key={tab.value} value={tab.value}>
-                {tab.label}
-              </TabsTrigger>
-            ))}
-          </TabsList>
-
-          <TabsContent value="overview" className="flex flex-col gap-6">
+        <TabsContent value="overview" className="flex flex-col gap-6">
+          {personal ? (
             <HandleForm
               organization={organization}
               canRename={manage}
               busy={busy}
               onBusy={setBusy}
               onSaved={onChanged}
-              // Undefined until the list arrives, which reads differently from
-              // zero — every organization has at least its owner.
+              personal
+              viewer={viewer}
+            />
+          ) : (
+            <HandleForm
+              organization={organization}
+              canRename={manage}
+              busy={busy}
+              onBusy={setBusy}
+              onSaved={onChanged}
+              onPicture={() => onPictureChanged?.()}
+              // Undefined until the list arrives, which reads differently
+              // from zero — every organization has at least its owner.
               memberCount={loaded ? members.length : undefined}
               onOpenMembers={() => selectTab("members")}
             />
+          )}
 
-            {onOpenJira !== undefined && (
-              <Card>
-                <CardHeader>
-                  <CardTitle role="heading" aria-level={2}>
-                    Connections
-                  </CardTitle>
-                  <CardDescription>
-                    Connect the tools this organization already works in, so
-                    their work can be read and priced here.
-                  </CardDescription>
-                </CardHeader>
-                {/*
-                  Three across, and two on a phone where three squares would
-                  each be too small to hold a button. `auto-rows-fr` keeps the
-                  wrapped row the same height as the first, so the odd tile out
-                  is not a different size from its siblings.
-                */}
-                <CardContent className="flex flex-col gap-2">
-                  <JiraConnectionTile
-                    organizationId={organization.id}
-                    organizationSlug={organization.slug}
-                    onOpenJira={onOpenJira}
-                  />
+          {onOpenBoard !== undefined && (
+            <Connections
+              organizationId={organization.id}
+              organizationSlug={organization.slug}
+              role={organization.role}
+              onOpenBoard={onOpenBoard}
+            />
+          )}
+        </TabsContent>
 
-                  {/*
-                  Not built yet, but named here rather than left out: the card
-                  is about which tools this organization connects, and an empty
-                  answer for the other two is still an answer.
-                */}
-                  {COMING_SOON.map((provider) => (
-                    <ConnectionTile
-                      key={provider.key}
-                      icon={provider.icon}
-                      label={provider.label}
-                      status="Coming soon"
-                      disabled
-                      actionLabel={`Manage ${provider.label} connections`}
-                    />
-                  ))}
-                </CardContent>
-              </Card>
-            )}
-          </TabsContent>
-
+        {!personal && (
           <TabsContent value="members">
             <Card>
               <CardHeader>
@@ -342,9 +296,9 @@ export function Organization({
                   Members
                 </CardTitle>
                 <CardDescription>
-                  Everyone who can see this organization. An owner can do
-                  anything here; an admin can manage members but cannot delete
-                  the organization.
+                  Everyone who can see this workspace. An owner can do anything
+                  here; an admin can manage members but cannot delete the
+                  workspace.
                 </CardDescription>
               </CardHeader>
 
@@ -443,7 +397,7 @@ export function Organization({
                                 </Button>
                               }
                               title={`Remove ${entry.name}?`}
-                              description="They lose access to everything this organization owns. You can invite them again afterwards."
+                              description="They lose access to everything this workspace owns. You can invite them again afterwards."
                               confirmLabel="Remove"
                               busy={busy}
                               onConfirm={() =>
@@ -479,15 +433,16 @@ export function Organization({
               </CardContent>
             </Card>
           </TabsContent>
+        )}
 
-          <TabsContent value="settings">
-            <div className="mb-6">
-              <RateCardEditor
-                organizationId={organization.id}
-                role={organization.role}
-              />
-            </div>
-            {/*
+        <TabsContent value="settings">
+          <RateCardEditor
+            organizationId={organization.id}
+            role={organization.role}
+          />
+          {!personal && (
+            <div className="mt-6">
+              {/*
               Two actions that give something away, each with its own sentence
               and its own button.
 
@@ -498,54 +453,21 @@ export function Organization({
               is what keeps a question attached to the thing it is asking
               about.
             */}
-            <Card>
-              <CardHeader>
-                <CardTitle role="heading" aria-level={2}>
-                  Danger zone
-                </CardTitle>
-                <CardDescription>
-                  Both of these give up access to everything this organization
-                  owns. An organization must always keep one owner.
-                </CardDescription>
-              </CardHeader>
+              <Card>
+                <CardHeader>
+                  <CardTitle role="heading" aria-level={2}>
+                    Danger zone
+                  </CardTitle>
+                  <CardDescription>
+                    Both of these give up access to everything this workspace
+                    owns. A workspace must always keep one owner.
+                  </CardDescription>
+                </CardHeader>
 
-              <CardContent className="divide-y">
-                <DangerRow
-                  title="Leave this organization"
-                  detail="You lose access to everything it owns. The last owner cannot leave."
-                >
-                  <ConfirmDialog
-                    trigger={
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        disabled={busy}
-                      >
-                        <LogOut />
-                        Leave organization
-                      </Button>
-                    }
-                    title={`Leave ${organization.name}?`}
-                    description="You lose access to everything this organization owns. Someone still in it would have to invite you back."
-                    confirmLabel="Leave"
-                    busy={busy}
-                    onConfirm={() =>
-                      run(
-                        () =>
-                          authClient.organization.leave({
-                            organizationId: organization.id,
-                          }),
-                        onLeft,
-                      )
-                    }
-                  />
-                </DangerRow>
-
-                {organization.role === "owner" && (
+                <CardContent className="divide-y">
                   <DangerRow
-                    title="Delete this organization"
-                    detail="Every member loses access, and what it owns goes with it. This cannot be undone."
+                    title="Leave this workspace"
+                    detail="You lose access to everything it owns. The last owner cannot leave."
                   >
                     <ConfirmDialog
                       trigger={
@@ -553,25 +475,20 @@ export function Organization({
                           type="button"
                           variant="outline"
                           size="sm"
-                          className="text-danger hover:text-danger"
                           disabled={busy}
                         >
-                          <Trash2 />
-                          Delete organization
+                          <LogOut />
+                          Leave workspace
                         </Button>
                       }
-                      title={`Delete ${organization.name}?`}
-                      description="Every member loses access, and everything this organization owns goes with it. This cannot be undone."
-                      confirmLabel="Delete"
-                      tone="danger"
-                      // The one action in the app that asks for more than a
-                      // click: a mis-click here cannot be walked back.
-                      typeToConfirm={organization.slug}
+                      title={`Leave ${organization.name}?`}
+                      description="You lose access to everything this workspace owns. Someone still in it would have to invite you back."
+                      confirmLabel="Leave"
                       busy={busy}
                       onConfirm={() =>
                         run(
                           () =>
-                            authClient.organization.delete({
+                            authClient.organization.leave({
                               organizationId: organization.id,
                             }),
                           onLeft,
@@ -579,151 +496,52 @@ export function Organization({
                       }
                     />
                   </DangerRow>
-                )}
-              </CardContent>
-            </Card>
-          </TabsContent>
-        </Tabs>
-      )}
+
+                  {organization.role === "owner" && (
+                    <DangerRow
+                      title="Delete this workspace"
+                      detail="Every member loses access, and what it owns goes with it. This cannot be undone."
+                    >
+                      <ConfirmDialog
+                        trigger={
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="text-danger hover:text-danger"
+                            disabled={busy}
+                          >
+                            <Trash2 />
+                            Delete workspace
+                          </Button>
+                        }
+                        title={`Delete ${organization.name}?`}
+                        description="Every member loses access, and everything this workspace owns goes with it. This cannot be undone."
+                        confirmLabel="Delete"
+                        tone="danger"
+                        // The one action in the app that asks for more than a
+                        // click: a mis-click here cannot be walked back.
+                        typeToConfirm={organization.slug}
+                        busy={busy}
+                        onConfirm={() =>
+                          run(
+                            () =>
+                              authClient.organization.delete({
+                                organizationId: organization.id,
+                              }),
+                            onLeft,
+                          )
+                        }
+                      />
+                    </DangerRow>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
+          )}
+        </TabsContent>
+      </Tabs>
     </main>
-  );
-}
-
-/**
- * The tools named on the Connections card but not yet built.
- *
- * Each carries its own mark rather than a provider id: Slack is not a sign-in
- * provider, so it has no `ProviderId` to look one up by.
- */
-const COMING_SOON: { key: string; label: string; icon: ReactNode }[] = [
-  { key: "github", label: "GitHub", icon: <ProviderIcon provider="github" /> },
-  { key: "slack", label: "Slack", icon: <SlackIcon /> },
-];
-
-/**
- * One tool on the Connections card: its mark, its name, what is connected,
- * and the way in.
- *
- * A tile rather than a full-width row. The three tools are siblings — one of
- * them happens to be built and the other two are not, but that is a fact about
- * today rather than a ranking — and stacked rows made the first one read as
- * the heading of a list the others belonged to. Equal tiles say what the card
- * means: three tools, same standing.
- *
- * `min-h-36` rather than `aspect-square`, which at the width of this column
- * made a 186px box for three short lines and a badge — mostly empty, and tall
- * enough to push the card's own content off a laptop screen. A floor keeps
- * them equal without letting the width dictate the height.
- *
- * `justify-between` pins the stack to the middle and the affordance to the
- * foot however tall the tile turns out to be.
- *
- * **The tile is the button.** There is one thing to do with a tool and the
- * whole square is the target, so a person aiming at a word inside a large
- * square cannot miss. That is also why "Manage" is a `span` rather than a
- * nested `Button`: a button inside a button is invalid HTML, and browsers
- * resolve it by dropping one from the accessibility tree — so the affordance
- * is drawn like a button and the tile carries the behaviour.
- */
-function ConnectionTile({
-  icon,
-  label,
-  status,
-  disabled = false,
-  onOpen,
-  href,
-  actionLabel,
-}: {
-  icon: ReactNode;
-  label: string;
-  status: string;
-  /** A tool that is not built yet: named, but nothing to open. */
-  disabled?: boolean | undefined;
-  onOpen?: (() => void) | undefined;
-  href?: string | undefined;
-  /**
-   * What the tile is called to a screen reader. The visible word is "Manage"
-   * on all three, so without this they are announced as three identical
-   * buttons.
-   */
-  actionLabel: string;
-}) {
-  if (disabled) {
-    return (
-      <div
-        role="group"
-        aria-label={`${label}: ${status}`}
-        className="bg-muted/25 flex items-center gap-3 rounded-lg border px-3.5 py-2.5"
-      >
-        <span className="grid size-6 shrink-0 place-items-center">{icon}</span>
-        <span className="min-w-0 flex-1 text-sm font-medium">{label}</span>
-        <Badge variant="secondary">{status}</Badge>
-      </div>
-    );
-  }
-
-  return href === undefined ? null : (
-    <a
-      href={href}
-      onClick={(event) => {
-        if (isPlainLeftClick(event)) {
-          event.preventDefault();
-          onOpen?.();
-        }
-      }}
-      aria-label={actionLabel}
-      className="group hover:bg-muted/50 focus-visible:ring-ring/50 flex w-full items-center gap-3 rounded-lg border px-3.5 py-3 text-left transition-colors focus-visible:ring-[3px] focus-visible:outline-none"
-    >
-      <span className="grid size-7 shrink-0 place-items-center">{icon}</span>
-      <span className="min-w-0 flex-1">
-        <span className="block text-sm font-medium">{label}</span>
-        <span className="text-muted-foreground block text-xs">{status}</span>
-      </span>
-      <span className="text-muted-foreground text-sm font-medium group-hover:text-foreground">
-        Manage
-      </span>
-    </a>
-  );
-}
-
-/**
- * The Jira tile, which is the only one that is real.
- *
- * It reads the organization's own connections rather than taking a count from
- * the page: `useJira` is already the per-organization read, and the home
- * screen's `useConnections` fans out over every membership, which is a
- * different question from the one this card asks.
- */
-function JiraConnectionTile({
-  organizationId,
-  organizationSlug,
-  onOpenJira,
-}: {
-  organizationId: string;
-  organizationSlug: string;
-  onOpenJira: () => void;
-}) {
-  const { connections, loading } = useJira(organizationId);
-  // Healthy ones only, matching what the home screen counts: a connection
-  // that cannot be read is not one the organization can use.
-  const active = connections.filter((entry) => entry.healthy).length;
-
-  return (
-    <ConnectionTile
-      // Jira's mark, not Atlassian's: this tile names the product, where the
-      // sign-in screen and the account page name the account provider.
-      icon={<JiraIcon />}
-      label="Jira"
-      // A non-breaking space rather than "0 active connections" while the
-      // answer is unknown: the row does not claim none and then correct
-      // itself, and the line still holds its height so nothing shifts.
-      status={
-        loading ? " " : `${active} active connection${active === 1 ? "" : "s"}`
-      }
-      href={pathForScreen("org-jira", organizationSlug)}
-      onOpen={onOpenJira}
-      actionLabel="Manage Jira connections"
-    />
   );
 }
 
@@ -736,15 +554,19 @@ function HandleForm({
   busy,
   onBusy,
   onSaved,
+  onPicture,
   personal = false,
   memberCount,
   onOpenMembers,
+  viewer,
 }: {
   organization: MembershipDto;
   canRename: boolean;
   busy: boolean;
   onBusy: (busy: boolean) => void;
   onSaved: (slug: string) => void;
+  /** Called with the team's new picture — null after a removal. */
+  onPicture?: ((image: string | null) => void) | undefined;
   /** Somebody's own account, which names itself rather than counting. */
   personal?: boolean | undefined;
   /**
@@ -754,12 +576,39 @@ function HandleForm({
    */
   memberCount?: number | undefined;
   onOpenMembers?: (() => void) | undefined;
+  /** Whose picture a personal organization wears; see `Organization`. */
+  viewer?: { id: string; image?: string | null } | undefined;
 }) {
   /*
    * Returns the server's reason on a refusal and nothing on success. The
    * field shows it against the handle that was refused — "that handle is
    * taken" is only actionable next to the one that was typed.
    */
+  /*
+   * The picture after a change here, until the membership list reloads with
+   * it. Undefined means "whatever the organization says".
+   */
+  const [picture, setPicture] = useState<string | null | undefined>(undefined);
+  const avatarUrl = `/api/v1/orgs/${organization.id}/avatar`;
+
+  /** Upload or removal; the server's reason on a refusal. */
+  async function changePicture(
+    action: () => Promise<AvatarResult>,
+  ): Promise<string | void> {
+    onBusy(true);
+    try {
+      const result = await action();
+      if ("error" in result) {
+        return result.error;
+      }
+      setPicture(result.image);
+      onPicture?.(result.image);
+      return;
+    } finally {
+      onBusy(false);
+    }
+  }
+
   async function save(next: string): Promise<string | void> {
     onBusy(true);
     try {
@@ -785,7 +634,11 @@ function HandleForm({
         <CardTitle role="heading" aria-level={2}>
           Handle
         </CardTitle>
-        <CardDescription>The organization&rsquo;s public name.</CardDescription>
+        <CardDescription>
+          {personal
+            ? "Your username, which your personal pages live under."
+            : "The workspace\u2019s public name."}
+        </CardDescription>
       </CardHeader>
 
       <CardContent>
@@ -796,16 +649,57 @@ function HandleForm({
           top-aligned avatar would sit against nothing.
         */}
         <div className="flex items-center gap-4">
-          <AvatarField id={organization.id} shape="square" />
+          {/* A personal organization is its owner under another name, so it
+              wears their face — circle, their picture — rather than a
+              square identicon of its own that matches nothing else. */}
+          {personal && viewer !== undefined ? (
+            <AvatarField
+              id={viewer.id}
+              image={viewer.image}
+              shape="circle"
+              readOnlyReason="Your personal workspace wears your picture. Change it in Account settings."
+            />
+          ) : (
+            <AvatarField
+              id={organization.id}
+              image={picture !== undefined ? picture : organization.image}
+              shape="square"
+              label="Change workspace picture"
+              // The same people who may rename it; the server checks too.
+              edit={
+                canRename
+                  ? {
+                      busy,
+                      onUpload: (file) =>
+                        changePicture(() => uploadAvatar(avatarUrl, file)),
+                      onRemove: () =>
+                        changePicture(() => removeAvatar(avatarUrl)),
+                    }
+                  : undefined
+              }
+              readOnlyReason={
+                canRename
+                  ? undefined
+                  : "Only an owner or an admin can change the workspace’s picture."
+              }
+            />
+          )}
 
           <EditableField
             className="min-w-0 flex-1"
-            label="Organization handle"
+            label={personal ? "Handle" : "Workspace handle"}
             value={organization.slug}
             placeholder="your-org"
             busy={busy}
-            canEdit={canRename}
-            readOnlyReason="Only an owner or an admin can rename an organization."
+            // A personal organization's handle is its owner's username, kept in
+            // step by the database, so there is one handle to manage and it
+            // lives on the account page. The server refuses a rename here too.
+            canEdit={canRename && !personal}
+            readOnlyReason={
+              personal
+                ? "The same as your username, and changed with it."
+                : "Only an owner or an admin can rename a workspace."
+            }
             // The same rules the server applies, so a handle it would refuse
             // cannot be submitted.
             validate={(next) => {
@@ -835,7 +729,7 @@ function HandleForm({
         {personal ? (
           <p className="text-muted-foreground mt-5 flex w-fit items-center gap-1.5 text-sm">
             <Users className="size-4" strokeWidth={1.6} />
-            Personal organization
+            Personal workspace
           </p>
         ) : (
           memberCount !== undefined && (
@@ -1100,7 +994,7 @@ export function CreateOrganization({
           if (isHandleTaken(failure) && attempt < CREATE_ATTEMPTS) {
             continue;
           }
-          setError(failure.message ?? "Could not create that organization.");
+          setError(failure.message ?? "Could not create that workspace.");
           return;
         }
         /*
@@ -1114,7 +1008,7 @@ export function CreateOrganization({
         return;
       }
     } catch {
-      setError("Could not create that organization.");
+      setError("Could not create that workspace.");
     } finally {
       setBusy(false);
     }
@@ -1122,11 +1016,9 @@ export function CreateOrganization({
 
   return (
     <main className="mx-auto w-full max-w-2xl px-4 py-10 sm:px-6 sm:py-14">
-      <h1 className="text-2xl font-semibold tracking-tight">
-        New organization
-      </h1>
+      <h1 className="text-2xl font-semibold tracking-tight">New workspace</h1>
       <p className="text-muted-foreground mt-1.5 text-sm">
-        A shared workspace. You will be its owner.
+        Shared with the people you invite. You will be its owner.
       </p>
 
       {error !== null && <ErrorBanner>{error}</ErrorBanner>}
@@ -1148,7 +1040,7 @@ export function CreateOrganization({
             className="flex flex-col gap-3"
           >
             <Input
-              aria-label="Organization name"
+              aria-label="Workspace name"
               placeholder="Acme Robotics"
               value={name}
               // The only field on the page, and the page exists to fill it in.
@@ -1160,28 +1052,12 @@ export function CreateOrganization({
             />
 
             {/*
-              The handle this name will get. It was derived and sent but never
-              shown, so the one thing the form decides on your behalf was
-              invisible until the settings page afterwards.
-
-              `aria-live` because it changes as the name is typed, and the slot
-              is held open so the buttons below do not jump when the first
-              character arrives.
+              Together on the right, the way out before the commit, as in the
+              confirm dialogs. Alone at the left edge, the ghost button's
+              padding set its label in from the field above, so it read as
+              misaligned rather than as a second action.
             */}
-            <p
-              aria-live="polite"
-              className="text-muted-foreground min-h-4 text-xs"
-            >
-              {slug === "" ? "\u00a0" : `Handle: @${slug}`}
-            </p>
-
-            {/*
-              Pushed to opposite ends, with the way out on the left and the
-              commit on the right: the affirmative action sits where the eye
-              finishes the form, and the gap between them is what stops a
-              cancel being clicked on the way to a create.
-            */}
-            <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center justify-end gap-2">
               <Button
                 type="button"
                 variant="ghost"
@@ -1194,7 +1070,7 @@ export function CreateOrganization({
                 type="submit"
                 disabled={busy || name.trim() === "" || !isValidHandle(slug)}
               >
-                Create organization
+                Create workspace
               </Button>
             </div>
           </form>

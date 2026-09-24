@@ -85,6 +85,24 @@ resource "aws_cloudfront_distribution" "main" {
 
   # ---- api behaviour -------------------------------------------------------
 
+  # Avatars, cached at the edge. Declared before `/api/*` so it wins. The URL
+  # names the picture by its hash and the API marks it immutable, so a cached
+  # copy can never be stale; the route needs no session, so nothing from the
+  # viewer is forwarded. The origin still sees X-Origin-Verify, which is an
+  # origin header rather than a viewer one.
+  ordered_cache_behavior {
+    path_pattern           = "/api/avatars/*"
+    target_origin_id       = "alb-api"
+    viewer_protocol_policy = "redirect-to-https"
+    allowed_methods        = ["GET", "HEAD"]
+    cached_methods         = ["GET", "HEAD"]
+    # Already compressed: WebP gains nothing from gzip.
+    compress = false
+
+    # Managed-CachingOptimized.
+    cache_policy_id = "658327ea-f89d-4fab-a63d-7e88639e58f6"
+  }
+
   ordered_cache_behavior {
     path_pattern           = "/api/*"
     target_origin_id       = "alb-api"

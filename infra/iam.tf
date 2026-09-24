@@ -4,9 +4,8 @@
 #                    pull the image and resolve secrets into the environment.
 #   task role      — used by the *application*, at runtime, for AWS API calls.
 #
-# The task role has no policies: secrets arrive through the execution role, so
-# the running process needs no AWS permissions today. It exists so that wiring
-# up the S3 object store in packages/db/src/objects.ts is a policy attachment.
+# Secrets arrive through the execution role, so the task role's only grant is
+# the object store: avatars in the private bucket (s3.tf).
 
 data "aws_iam_policy_document" "ecs_assume" {
   statement {
@@ -46,4 +45,29 @@ resource "aws_iam_role_policy" "task_execution_secrets" {
 resource "aws_iam_role" "task" {
   name               = "${local.name}-task"
   assume_role_policy = data.aws_iam_policy_document.ecs_assume.json
+}
+
+# Avatars only: the prefix the API writes. `ListBucket` is on the bucket, not
+# the prefix, and carries no prefix condition on purpose — without it S3
+# answers a missing key with 403 instead of 404, and `isNotFound` in
+# packages/db/src/objects.ts would turn every never-uploaded avatar into a 500.
+# A GET that misses carries no `s3:prefix`, so a condition would not match.
+data "aws_iam_policy_document" "task_objects" {
+  statement {
+    sid       = "AvatarObjects"
+    actions   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
+    resources = ["${aws_s3_bucket.private.arn}/avatars/*"]
+  }
+
+  statement {
+    sid       = "MissingKeyIs404"
+    actions   = ["s3:ListBucket"]
+    resources = [aws_s3_bucket.private.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "task_objects" {
+  name   = "avatar-objects"
+  role   = aws_iam_role.task.id
+  policy = data.aws_iam_policy_document.task_objects.json
 }

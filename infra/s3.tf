@@ -59,3 +59,63 @@ resource "aws_s3_bucket_policy" "web" {
   bucket = aws_s3_bucket.web.id
   policy = data.aws_iam_policy_document.web.json
 }
+
+# ---- private objects: uploaded avatars -------------------------------------
+#
+# The API's object store (packages/db/src/objects.ts). Locally the same code
+# talks to SeaweedFS; here it talks to this bucket with no endpoint and no
+# keys, so the SDK uses AWS and the task role (iam.tf). Created up front
+# because S3, unlike SeaweedFS, does not create a bucket on first write.
+#
+# Named "private" rather than "avatars": it is the private bucket the sandbox
+# context plan describes, and later artifacts share it under other prefixes.
+# Never public — the API streams every avatar itself (`/api/avatars/*`), which
+# is what keeps the read path identical to local development.
+
+resource "aws_s3_bucket" "private" {
+  bucket = "${local.name}-private-${data.aws_caller_identity.current.account_id}"
+}
+
+resource "aws_s3_bucket_public_access_block" "private" {
+  bucket = aws_s3_bucket.private.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "private" {
+  bucket = aws_s3_bucket.private.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+# Off deliberately: a replaced avatar is deleted on purpose, and versioning
+# would keep every picture anyone ever removed.
+resource "aws_s3_bucket_versioning" "private" {
+  bucket = aws_s3_bucket.private.id
+
+  versioning_configuration {
+    status = "Disabled"
+  }
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "private" {
+  bucket = aws_s3_bucket.private.id
+
+  rule {
+    id     = "abort-incomplete-multipart"
+    status = "Enabled"
+
+    filter {}
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
+  }
+}

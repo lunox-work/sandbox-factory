@@ -204,6 +204,20 @@
       "when": 1790131203013,
       "tag": "0028_reprice_source_nullable",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1790136535344,
+      "tag": "0029_handle_registry",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1790136570847,
+      "tag": "0030_handle_claims",
+      "breakpoints": true
     }
   ]
 }

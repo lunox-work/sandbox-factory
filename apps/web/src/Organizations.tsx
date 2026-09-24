@@ -11,11 +11,9 @@
  * otherwise identical — nothing below the API boundary distinguishes the two,
  * and neither should this page beyond saying which is which.
  *
- * Switching which organization is "active" is deliberately absent. Nothing
- * the app renders is owned by an organization yet, so a switcher changed a
- * tick and nothing else, which reads as a broken control. When
- * organization-owned data arrives, this page is where the switch belongs —
- * `useOrganizations` already has `select` and `clear`, both tested.
+ * Switching which organization is active is not done here but in the rail,
+ * where it is one click from every screen — see `OrganizationSwitcher`. This
+ * page is the full list that switcher links to.
  */
 
 import type { MembershipDto } from "@sandbox-factory/shared";
@@ -72,11 +70,9 @@ export function Organizations({
     <main className="mx-auto w-full max-w-2xl px-4 py-10 sm:px-6 sm:py-14">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">
-            Organizations
-          </h1>
+          <h1 className="text-2xl font-semibold tracking-tight">Workspaces</h1>
           <p className="text-muted-foreground mt-1.5 text-sm">
-            Shared workspaces you belong to.
+            Workspaces you belong to.
           </p>
         </div>
         {/* Beside the heading rather than under the list: creating is not the
@@ -93,7 +89,7 @@ export function Organizations({
             }}
           >
             <Plus />
-            New organization
+            New workspace
           </a>
         </Button>
       </div>
@@ -109,11 +105,11 @@ export function Organizations({
           <Card>
             <CardHeader>
               <CardTitle role="heading" aria-level={2}>
-                You are not in an organization yet
+                You are not in a workspace yet
               </CardTitle>
               <CardDescription>
-                An organization is a shared workspace. Create one and you will
-                be its owner, able to invite others and share what it owns.
+                Create one and you will be its owner, able to invite others and
+                share what it owns.
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -128,7 +124,7 @@ export function Organizations({
                   }}
                 >
                   <Plus />
-                  New organization
+                  New workspace
                 </a>
               </Button>
             </CardContent>
@@ -173,6 +169,7 @@ export function Organizations({
                   ) : (
                     <EntityAvatar
                       id={organization.id}
+                      image={organization.image}
                       shape="square"
                       className="size-9 shrink-0"
                     />

@@ -22,6 +22,14 @@ export interface UserRowLite {
   updatedAt: Date;
   username?: string | null;
   displayUsername?: string | null;
+  /** The picture column; selects return whole rows, so it is read as is. */
+  image?: string | null;
+}
+
+/** A team's claim in the shared `handle` table. */
+export interface TeamHandleLite {
+  handle: string;
+  organizationId: string;
 }
 
 interface Condition {
@@ -116,13 +124,54 @@ export interface FakeEmailDb {
 
 /**
  * Builds the fake. Filtering matches only the columns the store's queries
- * name: `id`, `user_id`, `email` and `username`.
+ * name: `id`, `user_id`, `email`, `username` and `handle`.
+ *
+ * The `handle` table is not stored: it is derived, as the triggers in
+ * migration 0030 keep it — one row per username, plus the teams seeded here.
+ * A username update onto a handle someone else holds fails with Postgres'
+ * `23505`, as the trigger does.
+ *
+ * `racingTeam` is claimed at the moment a username update reaches for it,
+ * after the store has already checked and found it free: the race the
+ * primary key, not the check, has to win.
  */
 export function createFakeEmailDb(
-  seed: { emails?: EmailRow[]; users?: UserRowLite[] } = {},
+  seed: {
+    emails?: EmailRow[];
+    users?: UserRowLite[];
+    teams?: TeamHandleLite[];
+    racingTeam?: TeamHandleLite;
+  } = {},
 ): FakeEmailDb {
   const emails: EmailRow[] = [...(seed.emails ?? [])];
   const users: UserRowLite[] = [...(seed.users ?? [])];
+  const teams: TeamHandleLite[] = [...(seed.teams ?? [])];
+
+  /** The `handle` table as the triggers would have it. */
+  function handles(): Array<{
+    handle: string;
+    userId: string | null;
+    organizationId: string | null;
+  }> {
+    return [
+      ...users.flatMap((row) =>
+        typeof row.username === "string"
+          ? [
+              {
+                handle: row.username.toLowerCase(),
+                userId: row.id,
+                organizationId: null,
+              },
+            ]
+          : [],
+      ),
+      ...teams.map((team) => ({
+        handle: team.handle,
+        userId: null,
+        organizationId: team.organizationId,
+      })),
+    ];
+  }
 
   function match(row: EmailRow, where: unknown): boolean {
     const found = conditions(where);
@@ -173,10 +222,10 @@ export function createFakeEmailDb(
   function selectChain() {
     let where: unknown;
     let limit: number | undefined;
-    let fromUser = false;
+    let from: string | undefined;
     const chain: Record<string, unknown> = {
       from: (table: unknown) => {
-        fromUser = tableName(table) === "user";
+        from = tableName(table);
         return chain;
       },
       where: (w: unknown) => {
@@ -188,9 +237,18 @@ export function createFakeEmailDb(
         return chain;
       },
       then: (resolve: (value: unknown) => unknown) => {
-        const rows = fromUser
-          ? users.filter((row) => matchUser(row, where))
-          : emails.filter((row) => match(row, where));
+        const rows =
+          from === "user"
+            ? users.filter((row) => matchUser(row, where))
+            : from === "handle"
+              ? handles().filter((row) =>
+                  conditions(where).every(
+                    (condition) =>
+                      condition.column !== "handle" ||
+                      row.handle === condition.value,
+                  ),
+                )
+              : emails.filter((row) => match(row, where));
         return resolve(limit === undefined ? rows : rows.slice(0, limit));
       },
     };
@@ -233,8 +291,21 @@ export function createFakeEmailDb(
                 if (typeof patch["email"] === "string") {
                   row.email = patch["email"];
                 }
-                if (typeof patch["username"] === "string") {
-                  row.username = patch["username"];
+                const username = patch["username"];
+                if (typeof username === "string") {
+                  if (seed.racingTeam?.handle === username) {
+                    teams.push(seed.racingTeam);
+                  }
+                  const holder = handles().find(
+                    (claim) => claim.handle === username.toLowerCase(),
+                  );
+                  if (holder !== undefined && holder.userId !== row.id) {
+                    throw Object.assign(
+                      new Error(`handle ${username} is already taken`),
+                      { code: "23505" },
+                    );
+                  }
+                  row.username = username;
                 }
                 if (typeof patch["displayUsername"] === "string") {
                   row.displayUsername = patch["displayUsername"];

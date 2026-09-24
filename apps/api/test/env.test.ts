@@ -33,7 +33,8 @@ test("parseEnv applies defaults when only the required vars are set", () => {
   const env = parseEnv(required);
   assert.equal(env.PORT, 4000);
   assert.deepEqual(env.CORS_ORIGINS, ["http://localhost:5173"]);
-  assert.equal(env.S3_BUCKET, "sandbox-factory");
+  // Object storage is off until a bucket is named.
+  assert.equal(env.S3_BUCKET, undefined);
   assert.equal(env.S3_REGION, "us-east-1");
 });
 
@@ -159,11 +160,16 @@ test("objectStoreConfig is undefined when S3 is not configured", () => {
   assert.equal(objectStoreConfig(parseEnv(required)), undefined);
 });
 
-test("objectStoreConfig is undefined when only some S3 vars are set", () => {
+test("objectStoreConfig is undefined without a bucket, whatever else is set", () => {
   for (const partial of [
     { S3_ENDPOINT: "http://localhost:8333" },
-    { S3_ENDPOINT: "http://localhost:8333", S3_ACCESS_KEY_ID: "key" },
-    { S3_ACCESS_KEY_ID: "key", S3_SECRET_ACCESS_KEY: "secret" },
+    {
+      S3_ENDPOINT: "http://localhost:8333",
+      S3_ACCESS_KEY_ID: "key",
+      S3_SECRET_ACCESS_KEY: "secret",
+    },
+    // Compose passes an unset variable as "", which is not a bucket.
+    { S3_BUCKET: "" },
   ]) {
     assert.equal(
       objectStoreConfig(parseEnv({ ...required, ...partial })),
@@ -172,12 +178,20 @@ test("objectStoreConfig is undefined when only some S3 vars are set", () => {
   }
 });
 
-test("objectStoreConfig returns the config when S3 is fully configured", () => {
+test("objectStoreConfig with a bucket alone targets AWS with the default chain", () => {
+  assert.deepEqual(
+    objectStoreConfig(parseEnv({ ...required, S3_BUCKET: "avatars" })),
+    { bucket: "avatars", region: "us-east-1" },
+  );
+});
+
+test("objectStoreConfig returns the gateway config when S3 is fully configured", () => {
   assert.deepEqual(
     objectStoreConfig(
       parseEnv({
         ...required,
         S3_ENDPOINT: "http://localhost:8333",
+        S3_BUCKET: "sandbox-factory",
         S3_ACCESS_KEY_ID: "key",
         S3_SECRET_ACCESS_KEY: "secret",
       }),
@@ -185,10 +199,38 @@ test("objectStoreConfig returns the config when S3 is fully configured", () => {
     {
       endpoint: "http://localhost:8333",
       bucket: "sandbox-factory",
-      accessKeyId: "key",
-      secretAccessKey: "secret",
+      credentials: { accessKeyId: "key", secretAccessKey: "secret" },
       region: "us-east-1",
     },
+  );
+});
+
+test("parseEnv refuses half an S3 key pair with a readable message", () => {
+  for (const partial of [
+    { S3_ACCESS_KEY_ID: "key" },
+    { S3_SECRET_ACCESS_KEY: "secret" },
+  ]) {
+    assert.throws(
+      () => parseEnv({ ...required, S3_BUCKET: "b", ...partial }),
+      /S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY must be set together/,
+    );
+  }
+});
+
+test("parseEnv treats empty S3 keys as unset, as compose passes them", () => {
+  const env = parseEnv({
+    ...required,
+    S3_BUCKET: "b",
+    S3_ACCESS_KEY_ID: "",
+    S3_SECRET_ACCESS_KEY: "",
+  });
+  assert.equal(objectStoreConfig(env)?.credentials, undefined);
+});
+
+test("parseEnv rejects an S3_ENDPOINT that is not a URL", () => {
+  assert.throws(
+    () => parseEnv({ ...required, S3_ENDPOINT: "localhost:8333" }),
+    /S3_ENDPOINT/,
   );
 });
 

@@ -72,14 +72,15 @@
   --input: oklch(0.92 0.004 286.32);
   --ring: oklch(0.546 0.215 262.881);
 
-  /* The rail reads as chrome rather than as page: a step off the background,
-     in the same direction the theme's own depth runs — darker on light,
-     lighter on dark. */
+  /* The rail and the frame around the content panel, from `sm` up. It reads
+     as chrome rather than as page by sitting behind it: a step darker than the
+     background in both themes, near-black on dark, so the panel is what comes
+     forward. */
   --sidebar: oklch(0.985 0 0);
 }
 
 .dark {
-  --background: oklch(0.141 0.005 285.823);
+  --background: oklch(0.175 0.005 285.85);
   --foreground: oklch(0.985 0 0);
   /* Cards and popovers sit one step lighter than the page, which is what gives
      the dark theme depth without borrowing a shadow it cannot show. */
@@ -121,7 +122,7 @@
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(0.707 0.165 254.624);
-  --sidebar: oklch(0.21 0.006 285.885);
+  --sidebar: oklch(0.1 0.004 285.8);
 }
 
 /*
@@ -201,7 +202,7 @@
 
 @media (prefers-color-scheme: dark) {
   :root:not(.light) {
-    --background: oklch(0.141 0.005 285.823);
+    --background: oklch(0.175 0.005 285.85);
     --foreground: oklch(0.985 0 0);
     --card: oklch(0.21 0.006 285.885);
     --card-foreground: oklch(0.985 0 0);
@@ -220,7 +221,7 @@
     --border: oklch(1 0 0 / 10%);
     --input: oklch(1 0 0 / 15%);
     --ring: oklch(0.707 0.165 254.624);
-    --sidebar: oklch(0.21 0.006 285.885);
+    --sidebar: oklch(0.1 0.004 285.8);
   }
 }
 
@@ -610,12 +611,124 @@
   transition: transform 220ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 
-[data-rate-dragging="true"] .rate-position {
+[data-rate-dragging="true"] .rate-position,
+[data-rate-settled="false"] .rate-position {
   transition: none;
 }
 
 @media (prefers-reduced-motion: reduce) {
   .rate-position {
+    transition: none;
+  }
+}
+
+/* ---- connection tabs ----------------------------------------------------- */
+
+/*
+ * The chosen square on the settings page's Connections rail reaches across to
+ * the card, like a folder's tab (see `SquareTab` in Connections.tsx). These
+ * are the two inner corners where it meets the card, curved to the card's own
+ * radius so the joined outline has one curvature throughout.
+ *
+ * Each is a radius-sized square against the tab's right edge, above or below
+ * it, with only the quarter-circle of its border drawn: that is the edge.
+ * Its outer shadow, clipped to its own box, fills the space between the curve
+ * and the corner with the card's colour, covering the straight edges the curve
+ * replaces.
+ */
+/*
+ * The joined outline's colour: the border as it looks over the card, but
+ * opaque. Dark mode's `--border` is translucent, so where a corner's stroke
+ * meets the straight edges it continues, the two overlapping strokes added up
+ * to a brighter segment at each join. Opaque, they overlap unseen. Set on the
+ * rail's root so the tab, its corners and the card all read it.
+ */
+.connection-tabs {
+  --connection-edge: var(--border);
+
+  @variant dark {
+    --connection-edge: color-mix(in srgb, oklch(1 0 0) 10%, var(--card));
+  }
+}
+
+/*
+ * Switching squares glides rather than snaps, the way a segmented control's
+ * thumb does: one indicator, shaped like the joined tab, slides under the
+ * squares to the chosen one. Only its `transform` changes, so nothing is laid
+ * out again mid-flight and the card beside it never moves. The curve is iOS's
+ * sheet spring as a bezier: a quick start that settles slowly, with no
+ * overshoot to push the tab past the card.
+ */
+.connection-tabs {
+  --connection-ease: cubic-bezier(0.32, 0.72, 0, 1);
+  --connection-duration: 420ms;
+}
+
+/*
+ * The joined tab: a square's height, 13px wider so it reaches across the 12px
+ * gap and over the card's 1px border, with its right edge open and the card's
+ * fill, so the border between them disappears. Its outer corners take the
+ * card's radius, and its two pseudo-elements curve the inner ones where it
+ * meets the card, so the pair has one curvature throughout. Top is the
+ * rail's own padding, where the first square sits.
+ */
+.connection-indicator {
+  position: absolute;
+  top: 2rem;
+  left: 0;
+  width: calc(2.75rem + 13px);
+  height: 2.75rem;
+  pointer-events: none;
+  border: 1px solid var(--connection-edge);
+  border-right-color: transparent;
+  border-radius: var(--radius-xl) 0 0 var(--radius-xl);
+  background: var(--card);
+  transition: transform var(--connection-duration) var(--connection-ease);
+  will-change: transform;
+}
+
+/* The squares' frames hand over on the same curve as the indicator moves. It
+   is front-loaded enough that a hover still answers at once. */
+.connection-tab {
+  transition:
+    border-color var(--connection-duration) var(--connection-ease),
+    background-color var(--connection-duration) var(--connection-ease),
+    color 150ms ease-out,
+    box-shadow 150ms ease-out;
+}
+
+.connection-indicator::before,
+.connection-indicator::after {
+  content: "";
+  position: absolute;
+  /* Over the indicator's own transparent right border, flush with the card's. */
+  right: -1px;
+  width: var(--radius-xl);
+  height: var(--radius-xl);
+  border: 0 solid var(--connection-edge);
+  box-shadow: 0 0 0 var(--radius-xl) var(--card);
+  clip-path: inset(0);
+}
+
+/* Above: its bottom edge sits on the indicator's top border, continuing it. */
+.connection-indicator::before {
+  bottom: 100%;
+  border-right-width: 1px;
+  border-bottom-width: 1px;
+  border-bottom-right-radius: var(--radius-xl);
+}
+
+/* Below: its top edge sits on the indicator's bottom border. */
+.connection-indicator::after {
+  top: 100%;
+  border-top-width: 1px;
+  border-right-width: 1px;
+  border-top-right-radius: var(--radius-xl);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .connection-indicator,
+  .connection-tab {
     transition: none;
   }
 }

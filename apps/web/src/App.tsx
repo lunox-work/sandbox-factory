@@ -6,17 +6,20 @@ import { Account } from "./Account";
 import { signOut, useSession } from "./auth";
 import { Breadcrumbs } from "./Breadcrumbs";
 import { Home } from "./Home";
+import { HomeBoard, writeHomeBoard } from "./HomeBoard";
 import { CreateOrganization, Organization } from "./Organization";
 import { Organizations } from "./Organizations";
-import { Jira, JiraBoard, JiraSite } from "./Jira";
+import { JiraBoard } from "./Jira";
 import { SideNav, type Screen } from "./SideNav";
 import { SignIn } from "./SignIn";
 import {
   boardForPath,
+  canonicalUrl,
   connectionForPath,
   isPlainLeftClick,
   ORGANIZATIONS_PATH,
   pathForScreen,
+  type ConnectionTab,
   screenForPath,
   slugForPath,
 } from "./routes";
@@ -80,6 +83,23 @@ function Signed({
     screenForPath(window.location.pathname),
   );
 
+  // An old `/organizations` or `/o/acme/jira` link opens the page, then the
+  // address bar is brought up to date. Replaced rather than pushed: it is the
+  // same page.
+  useEffect(() => {
+    const current = canonicalUrl(
+      window.location.pathname,
+      window.location.search,
+    );
+    if (current !== undefined) {
+      window.history.replaceState(
+        window.history.state,
+        "",
+        current + window.location.hash,
+      );
+    }
+  }, []);
+
   /**
    * The organization the app is showing. The handle in the URL wins over the
    * remembered choice, so `/o/acme/settings` opens Acme even when another was
@@ -88,7 +108,7 @@ function Signed({
   const organizations = useOrganizations(slugForPath(window.location.pathname));
 
   /**
-   * The connected site `org-jira-site` is showing, from the URL.
+   * The connected site the board on screen is on, from the URL.
    *
    * Held in state beside the screen rather than read from `window.location`
    * at render time, for the same reason the screen is: a `popstate` has to
@@ -105,13 +125,10 @@ function Signed({
   );
 
   /**
-   * The name of the site on screen, reported up by `JiraSite` so the trail
+   * The name of the board on screen, reported up by `JiraBoard` so the trail
    * can name it. The shell renders the trail and the page owns the list the
    * name comes from, and this is the seam between the two.
    */
-  const [siteName, setSiteName] = useState<string | undefined>(undefined);
-
-  /** The same, for the board on screen. See `siteName`. */
   const [boardName, setBoardName] = useState<string | undefined>(undefined);
 
   /**
@@ -145,18 +162,43 @@ function Signed({
         : screen === "account"
           ? "Account"
           : screen === "organizations"
-            ? "Organizations"
+            ? "Workspaces"
             : screen === "create-org"
-              ? "New organization"
+              ? "New workspace"
               : screen === "org-jira-board"
                 ? (boardName ?? "Board")
-                : screen === "org-jira-site"
-                  ? (siteName ?? "Jira site")
-                  : screen === "org-jira"
-                    ? "Jira"
-                    : (organizations.active?.name ?? "Organization");
+                : (organizations.active?.name ?? "Workspace");
     document.title = `${page} · Lunox`;
-  }, [boardName, organizations.active?.name, screen, siteName]);
+  }, [boardName, organizations.active?.name, screen]);
+
+  /*
+    The board on screen becomes the one home opens on, for this organization.
+    Written on arrival rather than on the click that led here, so a board
+    reached by URL or by Back counts the same as one opened from its site.
+  */
+  const activeOrganizationId = organizations.active?.id;
+  const activeSlug = organizations.active?.slug;
+  useEffect(() => {
+    /*
+      Only under the workspace the URL names. After Back, the board already
+      matches the new URL while the active workspace is still the previous
+      one — `useOrganizations` catches up in its own effect — and writing then
+      would file one workspace's board under another. This runs again once
+      they agree.
+    */
+    const named = slugForPath(window.location.pathname);
+    if (
+      screen === "org-jira-board" &&
+      activeOrganizationId !== undefined &&
+      activeSlug !== undefined &&
+      named !== undefined &&
+      named.toLowerCase() === activeSlug.toLowerCase() &&
+      connectionId !== undefined &&
+      boardId !== undefined
+    ) {
+      writeHomeBoard(userId, activeOrganizationId, { connectionId, boardId });
+    }
+  }, [activeOrganizationId, activeSlug, boardId, connectionId, screen, userId]);
 
   useEffect(() => {
     if (!shouldFocusPage.current) {
@@ -194,16 +236,26 @@ function Signed({
    * reading the active one here would write the *previous* organization's
    * handle into the URL.
    *
-   * `id` is the connected site `org-jira-site` names. It is part of what a
-   * navigation is, not a detail the target screen looks up afterwards — two
-   * sites are the same screen at different URLs.
+   * `id` and `board` are the site and board `org-jira-board` names. They are
+   * part of what a navigation is, not a detail the target screen looks up
+   * afterwards — two boards are the same screen at different URLs.
+   *
+   * `tab` is the Connections tab `org-settings` opens on. The settings page
+   * owns that choice once it is showing; this only says where it starts.
    */
-  function navigate(next: Screen, slug?: string, id?: string, board?: string) {
+  function navigate(
+    next: Screen,
+    slug?: string,
+    id?: string,
+    board?: string,
+    tab?: ConnectionTab,
+  ) {
     if (
       next === screen &&
       slug === undefined &&
       id === connectionId &&
-      board === boardId
+      board === boardId &&
+      tab === undefined
     ) {
       return;
     }
@@ -221,13 +273,38 @@ function Signed({
     window.history.pushState(
       null,
       "",
-      pathForScreen(next, slug ?? organizations.active?.slug, id, board),
+      pathForScreen(next, slug ?? organizations.active?.slug, id, board, tab),
     );
     shouldFocusPage.current = true;
     setScreen(next);
     setConnectionId(id);
     setBoardId(board);
   }
+
+  /*
+    The connections list, which home used to be. Still what home shows when
+    the organization has no board yet: connecting a site is the only way on.
+  */
+  const homeConnections = (
+    <Home
+      organizations={organizations.organizations}
+      organizationsLoading={organizations.loading}
+      activeOrganization={organizations.active}
+      onOpen={(organization) => {
+        // Selecting is what makes the settings screen show this one, as on
+        // the organizations page. Opened on the Jira tab, which is where
+        // its sites are managed.
+        organizations.select(organization.id);
+        navigate(
+          "org-settings",
+          organization.slug,
+          undefined,
+          undefined,
+          "jira",
+        );
+      }}
+    />
+  );
 
   return (
     /*
@@ -237,8 +314,12 @@ function Signed({
 
       On a phone the rail is a fixed bottom bar instead, so the row collapses
       and the padding keeps the last row clear of it.
+
+      From `sm` up the row is painted the rail's colour and the content sits
+      in it as an inset rounded panel, a thin margin on every side but the
+      rail's, so the rail and the frame around the panel are one surface.
     */
-    <div className="flex min-h-dvh flex-col sm:h-dvh sm:flex-row sm:overflow-hidden">
+    <div className="flex min-h-dvh flex-col sm:bg-sidebar sm:h-dvh sm:flex-row sm:overflow-hidden">
       <SideNav
         screen={screen}
         userId={userId}
@@ -246,12 +327,37 @@ function Signed({
         email={email}
         image={image}
         invitationCount={invitations.count}
+        organizations={organizations}
+        onSelectOrganization={(organization) => {
+          // Choosing the one already shown is a no-op, not a history entry.
+          if (organization.id === organizations.active?.id) {
+            return;
+          }
+          organizations.select(organization.id);
+          // A screen inside an organization moves to the same screen in the
+          // chosen one, so the URL and the page agree about which is shown. A
+          // site or a board belongs to the old organization, so those land
+          // on the new one's Jira list rather than on an id that is not its.
+          // Screens outside any organization stay where they are. The slug is
+          // passed because `select` has not re-rendered yet — see `navigate`.
+          if (screen === "org-settings") {
+            navigate("org-settings", organization.slug);
+          } else if (screen === "org-jira-board") {
+            navigate(
+              "org-settings",
+              organization.slug,
+              undefined,
+              undefined,
+              "jira",
+            );
+          }
+        }}
         onNavigate={navigate}
         onSignOut={() => void signOut()}
       />
       <div
         ref={contentRef}
-        className={`min-w-0 flex-1 pb-[calc(4rem+env(safe-area-inset-bottom))] sm:overflow-y-auto sm:pb-0 ${
+        className={`min-w-0 flex-1 pb-[calc(4rem+env(safe-area-inset-bottom))] sm:bg-background sm:my-2 sm:mr-2 sm:overflow-y-auto sm:rounded-[6px] sm:border sm:pb-0 ${
           screen === "home" ? "" : "[&>main]:!pt-4 sm:[&>main]:!pt-6"
         }`}
       >
@@ -276,13 +382,7 @@ function Signed({
                   slug: organizations.active.slug,
                 }
           }
-          siteName={
-            screen === "org-jira-site" || screen === "org-jira-board"
-              ? siteName
-              : undefined
-          }
           boardName={screen === "org-jira-board" ? boardName : undefined}
-          connectionId={connectionId}
           onNavigate={navigate}
         />
         {screen === "account" ? (
@@ -348,68 +448,7 @@ function Signed({
               boardId={boardId}
               boardName={boardName}
               onBoardName={setBoardName}
-              onSiteName={setSiteName}
               role={organizations.active.role}
-            />
-          )
-        ) : screen === "org-jira-site" ? (
-          organizations.active === null || connectionId === undefined ? (
-            <NoOrganization
-              loading={organizations.loading}
-              notFound={organizations.notFound}
-              onOpenOrganizations={() => navigate("organizations")}
-            />
-          ) : (
-            <JiraSite
-              // Keyed by both, so moving between two sites remounts rather
-              // than leaving the previous site's boards on screen while the
-              // new ones load.
-              key={`${organizations.active.id}:${connectionId}`}
-              organizationId={organizations.active.id}
-              organizationSlug={organizations.active.slug}
-              connectionId={connectionId}
-              role={organizations.active.role}
-              onDisconnected={() => {
-                navigate("org-jira", organizations.active?.slug);
-              }}
-              onOpenBoard={(board) => {
-                // The name is carried across rather than waited for: the list
-                // that has it is on this page, and the board page would
-                // otherwise open on a heading that says nothing.
-                setBoardName(board.name);
-                navigate(
-                  "org-jira-board",
-                  organizations.active?.slug,
-                  connectionId,
-                  board.id,
-                );
-              }}
-              onSiteName={setSiteName}
-            />
-          )
-        ) : screen === "org-jira" ? (
-          organizations.active === null ? (
-            <NoOrganization
-              loading={organizations.loading}
-              notFound={organizations.notFound}
-              onOpenOrganizations={() => navigate("organizations")}
-            />
-          ) : (
-            <Jira
-              // Keyed by id for the same reason as the settings page: the
-              // connection list belongs to one organization.
-              key={organizations.active.id}
-              organizationId={organizations.active.id}
-              organizationSlug={organizations.active.slug}
-              organizationName={organizations.active.name}
-              role={organizations.active.role}
-              onOpenSite={(connection) => {
-                navigate(
-                  "org-jira-site",
-                  organizations.active?.slug,
-                  connection.id,
-                );
-              }}
             />
           )
         ) : screen === "org-settings" ? (
@@ -434,8 +473,18 @@ function Signed({
                 );
                 void organizations.refresh();
               }}
-              onOpenJira={() => {
-                navigate("org-jira", organizations.active?.slug);
+              viewer={{ id: userId, image }}
+              // The switcher and the list read pictures from this list.
+              onPictureChanged={() => void organizations.refresh()}
+              onOpenBoard={(board) => {
+                // Carried across for the same reason as from the site page.
+                setBoardName(board.name);
+                navigate(
+                  "org-jira-board",
+                  organizations.active?.slug,
+                  board.connectionId,
+                  board.id,
+                );
               }}
               onLeft={() => {
                 void organizations.refresh();
@@ -443,24 +492,35 @@ function Signed({
               }}
             />
           )
+        ) : organizations.active === null ? (
+          organizations.loading || organizations.settling ? (
+            <main className="mx-auto w-full max-w-5xl px-4 py-10 sm:px-6 sm:py-14">
+              <LoadingLine />
+            </main>
+          ) : (
+            homeConnections
+          )
         ) : (
-          <Home
-            organizations={organizations.organizations}
-            organizationsLoading={organizations.loading}
-            onOpen={(organization) => {
-              // Selecting is what makes the Jira screen show this one, as on
-              // the organizations page.
-              organizations.select(organization.id);
-              navigate("org-jira", organization.slug);
+          <HomeBoard
+            // Keyed by the organization: switching one in the rail is a
+            // different home, and the previous board must not linger.
+            key={organizations.active.id}
+            userId={userId}
+            name={name}
+            organizationId={organizations.active.id}
+            organizationSlug={organizations.active.slug}
+            role={organizations.active.role}
+            onBoardName={setBoardName}
+            onOpenBoard={(board) => {
+              setBoardName(board.name);
+              navigate(
+                "org-jira-board",
+                organizations.active?.slug,
+                board.connectionId,
+                board.id,
+              );
             }}
-            onOpenSite={(organization, connection) => {
-              // Straight to the site, rather than to the list it is in: the
-              // row named one, and stopping a level short of it would make
-              // the reader find it again. The slug is passed because `select`
-              // has not re-rendered yet — see `navigate`.
-              organizations.select(organization.id);
-              navigate("org-jira-site", organization.slug, connection.id);
-            }}
+            fallback={homeConnections}
           />
         )}
       </div>
@@ -496,7 +556,7 @@ function NoOrganization({
       ) : notFound ? (
         <div className="flex flex-col items-start gap-3">
           <div>
-            <h1 className="text-xl font-semibold">Organization unavailable</h1>
+            <h1 className="text-xl font-semibold">Workspace unavailable</h1>
             <p className="text-muted-foreground mt-1 text-sm">
               It may have been renamed, removed, or no longer shared with you.
             </p>
@@ -511,12 +571,12 @@ function NoOrganization({
               }
             }}
           >
-            View your organizations
+            View your workspaces
           </a>
         </div>
       ) : (
         <p className="text-muted-foreground text-sm">
-          You are not in an organization yet.
+          You are not in a workspace yet.
         </p>
       )}
     </main>

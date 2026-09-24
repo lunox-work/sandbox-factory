@@ -24,6 +24,7 @@ import { EditableField } from "@/components/EditableField";
 import { ErrorBanner } from "@/components/Message";
 
 import { PROVIDERS, authClient, useSession, type ProviderId } from "./auth";
+import { removeAvatar, uploadAvatar, type AvatarResult } from "./avatars";
 import { ProviderIcon } from "./ProviderIcon";
 
 interface ProvenEmail {
@@ -54,8 +55,9 @@ export function Account({
    */
   onDeclined,
   /**
-   * Called after a rename. The server also renames the caller's personal
-   * organization, so the switcher and the rail are both a name behind until
+   * Called after a rename or a new username. The server also renames the
+   * caller's personal organization, and the database moves its handle with
+   * the username, so the switcher and the rail are both a step behind until
    * they reload.
    */
   onRenamed,
@@ -91,7 +93,14 @@ export function Account({
    * carry one, and adding it there would be a wire change for a value the
    * session already holds on every screen.
    */
-  const { data: session } = useSession();
+  const { data: session, refetch } = useSession();
+  /*
+   * The picture after a change on this page, until the session catches up.
+   * Undefined means "whatever the session says". The upload route refreshes
+   * the session cookie, and `refetch` then moves every screen — the rail, the
+   * menu — onto the new picture; this only covers the moment in between.
+   */
+  const [picture, setPicture] = useState<string | null | undefined>(undefined);
 
   const refresh = useCallback(async () => {
     try {
@@ -258,11 +267,19 @@ export function Account({
           current={username}
           currentName={name}
           accountId={accountId}
-          image={session?.user.image}
+          image={picture !== undefined ? picture : session?.user.image}
+          onPicture={(next) => {
+            setPicture(next);
+            // Optional-called: tests stand the session in without it.
+            void refetch?.();
+          }}
           organizationCount={organizationCount}
           onOpenOrganizations={onOpenOrganizations}
           busy={busy}
-          onSaved={(next) => setUsername(next)}
+          onSaved={(next) => {
+            setUsername(next);
+            onRenamed?.();
+          }}
           onNameSaved={(next) => {
             setName(next);
             onRenamed?.();
@@ -277,8 +294,8 @@ export function Account({
                 Invitations
               </CardTitle>
               <CardDescription>
-                Organizations that have invited you. Accepting gives you access
-                to everything they own.
+                Workspaces that have invited you. Accepting gives you access to
+                everything they own.
               </CardDescription>
             </CardHeader>
 
@@ -487,6 +504,7 @@ function UsernameForm({
   currentName,
   accountId,
   image,
+  onPicture,
   organizationCount,
   onOpenOrganizations,
   busy,
@@ -500,8 +518,12 @@ function UsernameForm({
   /** The display name, which the session carries on every screen. */
   currentName: string;
   accountId: string | null;
-  /** The provider's picture, if there is one; the identicon stands in if not. */
-  image?: string | null;
+  /**
+   * The uploaded picture, else the provider's, else null for the identicon.
+   */
+  image?: string | null | undefined;
+  /** Called with the new picture — null after a removal — once it is saved. */
+  onPicture: (image: string | null) => void;
   busy: boolean;
   onSaved: (username: string) => void;
   onNameSaved: (name: string) => void;
@@ -539,6 +561,23 @@ function UsernameForm({
       return body?.error ?? "Could not save that name.";
     } catch {
       return "Could not save that name.";
+    } finally {
+      onBusy(false);
+    }
+  }
+
+  /** Upload or removal; the server's reason on a refusal. */
+  async function changePicture(
+    action: () => Promise<AvatarResult>,
+  ): Promise<string | void> {
+    onBusy(true);
+    try {
+      const result = await action();
+      if ("error" in result) {
+        return result.error;
+      }
+      onPicture(result.image);
+      return;
     } finally {
       onBusy(false);
     }
@@ -595,7 +634,19 @@ function UsernameForm({
           {accountId === null ? (
             <div className="size-16 shrink-0" />
           ) : (
-            <AvatarField id={accountId} image={image} shape="circle" />
+            <AvatarField
+              id={accountId}
+              image={image}
+              shape="circle"
+              label="Change your picture"
+              edit={{
+                busy,
+                onUpload: (file) =>
+                  changePicture(() => uploadAvatar("/api/v1/me/avatar", file)),
+                onRemove: () =>
+                  changePicture(() => removeAvatar("/api/v1/me/avatar")),
+              }}
+            />
           )}
 
           {/*
@@ -658,7 +709,7 @@ function UsernameForm({
                 button it would run under the icon too. */}
             <span className="underline-offset-4 group-hover/orgs:underline">
               {organizationCount}{" "}
-              {organizationCount === 1 ? "organization" : "organizations"}
+              {organizationCount === 1 ? "workspace" : "workspaces"}
             </span>
           </button>
         )}

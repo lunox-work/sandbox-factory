@@ -11,10 +11,11 @@
  * are the facts a bug report needs. See `BuildDetails`.
  */
 
-import { Building2, LogOut, Settings } from "lucide-react";
+import { Building2, ChevronsUpDown, LogOut, Settings } from "lucide-react";
 import { useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
+import { cn } from "@/lib/utils";
 
 import { EntityAvatar } from "@/components/Avatar";
 import {
@@ -31,6 +32,8 @@ import { BuildReadout, type LinkWrapper } from "./BuildReadout";
 import { isPlainLeftClick, pathForScreen } from "./routes";
 
 export function UserMenu({
+  expanded = false,
+  current = false,
   userId,
   name,
   email,
@@ -40,6 +43,17 @@ export function UserMenu({
   onAccount,
   onSignOut,
 }: {
+  /**
+   * The rail is expanded, so the row shows the name beside the avatar. From
+   * `sm` up only: the phone bar has no room for it.
+   */
+  expanded?: boolean | undefined;
+  /**
+   * A screen this menu leads to is showing — the account page or the
+   * organizations list — so the trigger is filled like the rail's current
+   * destination. Otherwise nothing in the rail says where you are.
+   */
+  current?: boolean | undefined;
   /** Seeds the generated avatar when there is no picture. */
   userId: string;
   name: string;
@@ -55,7 +69,24 @@ export function UserMenu({
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger
-        className="ring-offset-background focus-visible:ring-ring relative grid size-10 place-items-center rounded-full transition-colors outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-offset-2 data-[state=open]:bg-accent [@media(pointer:coarse)]:size-11"
+        className={cn(
+          // Phone: a round tile in the bottom bar, grown to a full 44px
+          // target on a touch screen.
+          "ring-offset-background focus-visible:ring-ring relative grid size-10 place-items-center rounded-full transition-colors outline-none focus-visible:ring-2 focus-visible:ring-offset-2 max-sm:[@media(pointer:coarse)]:size-11",
+          // Tablet up: a rounded row, inset 8px from the rail's edges by the
+          // wrapper in `SideNav`, marked by its fill alone. 8px of padding
+          // puts the 24px avatar at the centre of the collapsed rail — 8 of
+          // inset, 8 of padding, 24 of avatar, 16 to spare — so toggling does
+          // not move it. The ring goes inset: the rail clips anything past
+          // its edge.
+          "sm:flex sm:h-10 sm:w-full sm:justify-start sm:gap-3 sm:rounded-md sm:pr-3 sm:pl-2 sm:focus-visible:ring-inset sm:focus-visible:ring-offset-0",
+          // The same fills as a destination: solid when current, and half
+          // strength under the cursor so a hovered row never looks current.
+          current
+            ? "bg-accent"
+            : "hover:bg-accent/60 data-[state=open]:bg-accent/60",
+        )}
+        aria-current={current ? "page" : undefined}
         /*
           The count is in the name, not only in the dot: a mark that exists
           purely as colour says nothing to a screen reader, and this is the
@@ -72,45 +103,71 @@ export function UserMenu({
         {/* 24px in the rail, matching the reference: small enough to read as
             chrome rather than as content. The copy inside the menu is the
             larger one, where it identifies the account. */}
-        <EntityAvatar
-          id={userId}
-          image={image}
-          shape="circle"
-          className="size-6"
-        />
-
-        {/*
-          The one mark anywhere that an invitation is waiting. Nothing is
-          emailed, so without it the only way to find one is to open Account
-          and look.
-
-          Ringed in the rail's own colour so it reads as a badge on the avatar
-          rather than a dot floating beside it, and `aria-hidden` because the
-          trigger's name already carries the count.
-        */}
-        {invitationCount > 0 && (
-          <span
-            aria-hidden="true"
-            className="bg-primary ring-sidebar absolute -top-0.5 -right-0.5 size-2 rounded-full ring-2"
+        <span className="relative shrink-0">
+          <EntityAvatar
+            id={userId}
+            image={image}
+            shape="circle"
+            className="size-6"
           />
+
+          {/*
+            The one mark anywhere that an invitation is waiting. Nothing is
+            emailed, so without it the only way to find one is to open Account
+            and look.
+
+            On the avatar rather than the trigger, so it stays on the face
+            when the trigger widens into a row. Ringed in the rail's own
+            colour so it reads as a badge on the avatar rather than a dot
+            floating beside it, and `aria-hidden` because the trigger's name
+            already carries the count.
+          */}
+          {invitationCount > 0 && (
+            <span
+              aria-hidden="true"
+              className="bg-primary ring-sidebar absolute -top-1 -right-1 size-2 rounded-full ring-2"
+            />
+          )}
+        </span>
+
+        {expanded && (
+          <>
+            <span
+              aria-hidden="true"
+              className="hidden min-w-0 flex-1 truncate text-left text-sm font-medium sm:block"
+            >
+              {name}
+            </span>
+            <ChevronsUpDown
+              aria-hidden="true"
+              strokeWidth={1.6}
+              className="text-muted-foreground hidden size-4 shrink-0 sm:block"
+            />
+          </>
         )}
       </DropdownMenuTrigger>
 
       {/*
-        Opens to the right, its bottom edge level with the avatar — the
-        reference's placement, and the one that keeps the menu clear of the
-        list it sits over. `collisionPadding` keeps it off the viewport edge
-        without letting Radix flip it to the far side of the rail.
+        Opens upwards from the foot of the rail, its left edge level with the
+        trigger's. `collisionPadding` keeps it off the viewport edge, and is
+        the rail's own 8px inset: any more and it shoves the menu right of the
+        row it opens from, off centre in the rail.
 
-        On a phone the rail is a bottom bar, and Radix re-sides the menu itself
-        rather than letting it run off screen, so there is no breakpoint here.
+        Expanded, it is exactly as wide as the account row under it, so the
+        two read as one control. Collapsed, the row is only the avatar, and the
+        menu keeps its own width and hangs out over the page.
+
+        On a phone the rail is a bottom bar, where opening upwards is already
+        right, so there is no breakpoint here.
       */}
       <DropdownMenuContent
-        side="right"
-        align="end"
-        sideOffset={10}
-        collisionPadding={12}
-        className="w-60"
+        side="top"
+        align="start"
+        sideOffset={6}
+        collisionPadding={8}
+        className={
+          expanded ? "w-(--radix-dropdown-menu-trigger-width)" : "w-60"
+        }
       >
         {/* Name over address, the address quieter: the pair identifies the
             account, and only one of them is worth reading twice. */}
@@ -158,9 +215,8 @@ export function UserMenu({
           a menu that tried to hold all that competed with the account items
           around it. See `Organizations.tsx`.
 
-          Kept even though the rail now carries the same destination: this
-          menu is where somebody looks for what belongs to their account, and
-          the rail's icon is unlabelled.
+          The switcher at the head of the rail links to the same list; this
+          menu is where somebody looks for what belongs to their account.
         */}
         <DropdownMenuItem asChild>
           <a
@@ -174,7 +230,7 @@ export function UserMenu({
             }}
           >
             <Building2 />
-            Organizations
+            Workspaces
           </a>
         </DropdownMenuItem>
 

@@ -158,6 +158,7 @@ function fakeStore(
     findUserByHandle: (handle) =>
       Promise.resolve((options.handles ?? {})[handle.toLowerCase()]),
     touch: () => Promise.resolve(),
+    setLogo: () => Promise.resolve(),
   };
 
   return { store, calls };

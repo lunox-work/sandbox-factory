@@ -1,0 +1,124 @@
+name: Autofix
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# A newer push supersedes the fix for an older head.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+# Formatting is the one CI failure with a mechanical fix, so it is fixed here
+# rather than spending one of the review gate's three CodeRabbit repair rounds.
+# Type errors (`npm run lint`) have no such fix and stay with that gate.
+#
+# Two jobs, because formatting runs the PR's code (its lockfile, its Prettier
+# config) and pushing needs AUTO_MERGE_TOKEN. The first job has the code and no
+# secrets; the second has the token and only runs `git apply` on the diff.
+jobs:
+  format:
+    name: Format
+    # Same-repository branches only: a fork's branch cannot be pushed to, and
+    # Dependabot's runs get no Actions secrets to push with.
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.user.login != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.diff.outputs.changed }}
+    steps:
+      # The head commit, not the merge ref: the diff must apply to the branch.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Format
+        run: npm run format
+
+      - name: Collect the diff
+        id: diff
+        run: |
+          git diff --binary > format.patch
+          if [ -s format.patch ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            git diff --stat
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Already formatted."
+          fi
+
+      - if: steps.diff.outputs.changed == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: format-patch
+          path: format.patch
+          retention-days: 1
+
+  push:
+    name: Push formatting fix
+    needs: format
+    if: needs.format.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      # AUTO_MERGE_TOKEN, not GITHUB_TOKEN: a push with the default token raises
+      # no events, so CI would never run on the fixed head and the PR would sit
+      # without its required checks. Fail closed, as auto-merge.yml does.
+      - name: Require the push token
+        env:
+          TOKEN: ${{ secrets.AUTO_MERGE_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "::error::AUTO_MERGE_TOKEN is not set; cannot push the formatting fix. Run \`npm run format\` and push."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          token: ${{ secrets.AUTO_MERGE_TOKEN }}
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: format-patch
+          path: ${{ runner.temp }}
+
+      # The patch is for the head the first job formatted. If the branch has
+      # moved, that push has its own run.
+      #
+      # Workflow files are left out: the token has no Workflows permission, so
+      # GitHub would reject the whole push. They stay failing in CI instead.
+      - name: Apply and push
+        env:
+          EXPECTED: ${{ github.event.pull_request.head.sha }}
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+          PATCH: ${{ runner.temp }}/format.patch
+        run: |
+          set -euo pipefail
+          if [ "$(git rev-parse HEAD)" != "$EXPECTED" ]; then
+            echo "Branch moved past $EXPECTED; the newer run handles it."
+            exit 0
+          fi
+
+          git apply --index --exclude='.github/workflows/*' "$PATCH"
+          if git diff --cached --quiet; then
+            echo "::warning::Only workflow files need formatting, and this token cannot push them. Run \`npm run format\` and push."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "style: format with prettier"
+          git push origin "HEAD:refs/heads/$BRANCH"
