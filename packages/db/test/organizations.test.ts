@@ -23,6 +23,8 @@ const acmeSummary = {
   name: "Acme",
   slug: "acme",
   kind: "team" as const,
+  // No picture: the identicon.
+  image: null,
 };
 
 function member(over: Partial<MemberRowLite> = {}): MemberRowLite {
@@ -207,6 +209,37 @@ test("slugOwner ignores the organization being renamed", async () => {
   assert.equal(
     await createOrganizationStore(fake.db).slugOwner("ACME", "org_1"),
     undefined,
+  );
+});
+
+test("slugOwner names a user holding a handle", async () => {
+  // One namespace: a team cannot take a handle a person holds.
+  const fake = createFakeOrganizationDb({ users: [person("user_1", "dana")] });
+
+  assert.equal(
+    await createOrganizationStore(fake.db).slugOwner("Dana"),
+    "user_1",
+  );
+});
+
+test("slugOwner answers for a personal organization with its owner", async () => {
+  // Its handle is its owner's username, not a claim of its own.
+  const fake = createFakeOrganizationDb({
+    users: [person("user_1", "dana")],
+    organizations: [
+      {
+        id: "org_personal",
+        name: "Dana",
+        slug: "dana",
+        kind: "personal",
+        personalUserId: "user_1",
+      },
+    ],
+  });
+
+  assert.equal(
+    await createOrganizationStore(fake.db).slugOwner("dana", "org_personal"),
+    "user_1",
   );
 });
 
@@ -437,6 +470,52 @@ test("touch stamps the organization as updated", async () => {
   );
 });
 
+// ---- pictures ------------------------------------------------------------
+
+const acmePicture = `/api/avatars/organization/org_1/${"a".repeat(64)}.webp`;
+
+test("a summary carries the picture from the logo column as image", async () => {
+  const fake = createFakeOrganizationDb({
+    organizations: [{ ...acme, logo: acmePicture }],
+    members: [member()],
+  });
+  const store = createOrganizationStore(fake.db);
+
+  assert.equal((await store.get("org_1"))?.image, acmePicture);
+  assert.equal((await store.listForUser("user_1"))[0]?.image, acmePicture);
+});
+
+test("setLogo writes the picture and stamps updatedAt with it", async () => {
+  const before = new Date("2026-09-01T00:00:00.000Z");
+  const fake = createFakeOrganizationDb({
+    organizations: [{ ...acme, updatedAt: before }, globex],
+  });
+
+  await createOrganizationStore(fake.db).setLogo("org_1", acmePicture);
+
+  assert.equal(fake.organizations[0]?.logo, acmePicture);
+  assert.ok(
+    (fake.organizations[0]?.updatedAt?.getTime() ?? 0) > before.getTime(),
+    "expected updatedAt to move forward",
+  );
+  // Scoped to the one id: the other organization is untouched.
+  assert.equal(fake.organizations[1]?.logo, undefined);
+});
+
+test("setLogo with null clears the picture", async () => {
+  const fake = createFakeOrganizationDb({
+    organizations: [{ ...acme, logo: acmePicture }],
+  });
+
+  await createOrganizationStore(fake.db).setLogo("org_1", null);
+
+  assert.equal(fake.organizations[0]?.logo, null);
+  assert.deepEqual(
+    await createOrganizationStore(fake.db).get("org_1"),
+    acmeSummary,
+  );
+});
+
 // ---- inviting by handle ---------------------------------------------------
 
 test("findUserByHandle resolves a handle to its primary address", async () => {
@@ -497,13 +576,17 @@ test("findUserByHandle is undefined when nobody holds the handle", async () => {
 // pair. These pin the three things that invariant depends on: it is created,
 // it carries the sole owner membership, and asking twice does not make two.
 
+/** Someone who has signed up: a user row, with the username they hold. */
+function person(id: string, username: string, name = username) {
+  return { id, name, username, image: null };
+}
+
 test("createPersonal creates the organization and marks it personal", async () => {
-  const fake = createFakeOrganizationDb({});
+  const fake = createFakeOrganizationDb({ users: [person("user_1", "dana")] });
 
   const created = await createOrganizationStore(fake.db).createPersonal({
     userId: "user_1",
     name: "Dana",
-    preferredSlug: "dana",
   });
 
   assert.equal(created.slug, "dana");
@@ -517,12 +600,11 @@ test("createPersonal creates the organization and marks it personal", async () =
 test("createPersonal makes the user its sole owner", async () => {
   // Without the membership the organization exists but `listForUser` cannot
   // see it, so the user would appear to be in none.
-  const fake = createFakeOrganizationDb({});
+  const fake = createFakeOrganizationDb({ users: [person("user_1", "dana")] });
 
   await createOrganizationStore(fake.db).createPersonal({
     userId: "user_1",
     name: "Dana",
-    preferredSlug: "dana",
   });
 
   assert.equal(fake.members.length, 1);
@@ -534,6 +616,7 @@ test("createPersonal returns the existing organization rather than a second", as
   // The signup hook can run again for the same user — a retried signup — and
   // the unique constraint would raise rather than be caught here.
   const fake = createFakeOrganizationDb({
+    users: [person("user_1", "dana")],
     organizations: [
       {
         id: "org_existing",
@@ -548,71 +631,52 @@ test("createPersonal returns the existing organization rather than a second", as
   const found = await createOrganizationStore(fake.db).createPersonal({
     userId: "user_1",
     name: "Dana",
-    preferredSlug: "dana",
   });
 
   assert.equal(found.id, "org_existing");
   assert.equal(fake.organizations.length, 1);
 });
 
-test("createPersonal suffixes a handle a team already holds", async () => {
-  // Users and organizations draw handles from one namespace, so the handle a
-  // user holds may already name a team.
+test("createPersonal takes the owner's username as its handle, unsuffixed", async () => {
+  // A username is never a team's — the two share one namespace — so there is
+  // nothing to step around, and the database accepts nothing else.
   const fake = createFakeOrganizationDb({
+    users: [person("user_1", "Dana")],
     organizations: [
-      { id: "org_team", name: "Dana Corp", slug: "dana", kind: "team" },
+      { id: "org_team", name: "Dana Corp", slug: "dana-2", kind: "team" },
     ],
   });
 
   const created = await createOrganizationStore(fake.db).createPersonal({
     userId: "user_1",
     name: "Dana",
-    preferredSlug: "dana",
-  });
-
-  assert.equal(created.slug, "dana-2");
-});
-
-test("createPersonal keeps suffixing past a taken suffix", async () => {
-  const fake = createFakeOrganizationDb({
-    organizations: [
-      { id: "org_a", name: "One", slug: "dana", kind: "team" },
-      { id: "org_b", name: "Two", slug: "dana-2", kind: "team" },
-    ],
-  });
-
-  const created = await createOrganizationStore(fake.db).createPersonal({
-    userId: "user_1",
-    name: "Dana",
-    preferredSlug: "dana",
-  });
-
-  assert.equal(created.slug, "dana-3");
-});
-
-test("createPersonal lowercases the handle it is given", async () => {
-  // Handles are stored lowercase; `displayUsername` keeps the typed casing.
-  const fake = createFakeOrganizationDb({});
-
-  const created = await createOrganizationStore(fake.db).createPersonal({
-    userId: "user_1",
-    name: "Dana",
-    preferredSlug: "Dana",
   });
 
   assert.equal(created.slug, "dana");
 });
 
+test("createPersonal refuses a user who does not exist", async () => {
+  const fake = createFakeOrganizationDb({});
+
+  await assert.rejects(
+    createOrganizationStore(fake.db).createPersonal({
+      userId: "user_gone",
+      name: "Gone",
+    }),
+    /No user "user_gone"/,
+  );
+  assert.equal(fake.organizations.length, 0);
+});
+
 test("a personal organization is listed like any other", async () => {
   // Nothing below the API boundary branches on `kind`: the membership is what
   // grants access, whichever kind the organization is.
-  const fake = createFakeOrganizationDb({});
+  const fake = createFakeOrganizationDb({ users: [person("user_1", "dana")] });
   const store = createOrganizationStore(fake.db);
 
   const created = await store.createPersonal({
     userId: "user_1",
     name: "Dana",
-    preferredSlug: "dana",
   });
 
   const listed = await store.listForUser("user_1");
@@ -629,17 +693,18 @@ test("a personal organization is listed like any other", async () => {
  */
 
 test("renamePersonal renames the caller's personal organization", async () => {
-  const fake = createFakeOrganizationDb({});
+  const fake = createFakeOrganizationDb({
+    users: [person("user_1", "ada")],
+  });
   const store = createOrganizationStore(fake.db);
   await store.createPersonal({
     userId: "user_1",
-    name: "charlie ang",
-    preferredSlug: "charlie",
+    name: "ada lovelace",
   });
 
-  await store.renamePersonal("user_1", "Charlie Ang");
+  await store.renamePersonal("user_1", "Ada Lovelace");
 
-  assert.equal(fake.organizations[0]?.name, "Charlie Ang");
+  assert.equal(fake.organizations[0]?.name, "Ada Lovelace");
 });
 
 test("renamePersonal matches on the personal user, not the organization", async () => {
@@ -648,7 +713,9 @@ test("renamePersonal matches on the personal user, not the organization", async 
    * the row is found by `personal_user_id`, so a team the caller owns cannot
    * be renamed through it however the request is shaped.
    */
-  const fake = createFakeOrganizationDb({});
+  const fake = createFakeOrganizationDb({
+    users: [person("user_1", "dana"), person("user_2", "sam")],
+  });
   const store = createOrganizationStore(fake.db);
   // Two people, each with their own. One renaming must not touch the other —
   // with a single row on the table, a rename scoped to nothing at all would
@@ -656,12 +723,10 @@ test("renamePersonal matches on the personal user, not the organization", async 
   await store.createPersonal({
     userId: "user_1",
     name: "Dana",
-    preferredSlug: "dana",
   });
   await store.createPersonal({
     userId: "user_2",
     name: "Sam",
-    preferredSlug: "sam",
   });
 
   await store.renamePersonal("user_1", "Renamed");

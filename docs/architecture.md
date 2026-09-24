@@ -89,14 +89,59 @@ The store contracts and `NotFoundError` live in this package, not in
 `createInMemoryStore` is a **test double**, not a fallback. The server requires
 `DATABASE_URL` and will not boot without it.
 
-Object storage targets SeaweedFS' S3 gateway but is not SeaweedFS-specific. Two
-caveats if you swap the backend:
+Object storage is SeaweedFS' S3 gateway locally and an S3 bucket in
+production, through one code path: only the plain object calls are used, and
+both answer those the same way. `S3_BUCKET` switches it on; locally the
+endpoint and a key pair point at SeaweedFS, in production neither is set, so
+the SDK talks to AWS with the task role. The differences that do exist, and
+where each is handled:
 
 - `forcePathStyle` is on, because a self-hosted gateway has no per-bucket DNS.
-- SeaweedFS creates a bucket on first write; S3 and MinIO return `NoSuchBucket`.
-  Other backends need the bucket created up front.
+  AWS accepts it too.
+- SeaweedFS creates a bucket on first write; S3 returns `NoSuchBucket`.
+  Terraform creates the production bucket (`infra/s3.tf`).
+- S3 answers a missing key with 403 rather than 404 unless the caller may
+  `s3:ListBucket`. The task role has it (`infra/iam.tf`); without it every
+  never-uploaded avatar would be a 500.
+- SeaweedFS as run in compose does not check credentials at all. Local
+  development proves nothing about IAM; the production grant is its own check.
 
-Nothing in the API consumes the object store yet.
+## Avatars
+
+Every user and team has a generated identicon
+(`packages/shared/src/identicon.ts`, frozen) and may upload a picture over it.
+A personal organization has no picture of its own: it wears its owner's face
+everywhere, so the only way to change it is on the account page.
+
+**Uploads are re-encoded, never stored as sent.** `apps/api/src/avatars/image.ts`
+sniffs the first bytes (PNG, JPEG, WebP or GIF only, so libvips never parses
+SVG or anything else), refuses a canvas over 40 megapixels from its header, and
+writes a 256px square WebP with no metadata. The object is named by the SHA-256
+of those bytes.
+
+**The picture columns hold our own served paths**, e.g.
+`/api/avatars/user/<id>/<hash>.webp`, in `user.image` and `organization.logo`.
+Both columns used to accept any string from a client — Better Auth's
+`update-user` and the organization plugin's create and update — which is why
+`logo` was once never rendered. Three hooks in `apps/api/src/auth.ts` now admit
+only null or the owner's own avatar path, so both are safe to render. The
+`update-user` guard is a _database_ hook on purpose: a request hook runs before
+the bearer plugin resolves a session, sees none, and cannot tell the caller's
+own path from another account's. A provider picture from signup stays until
+the person replaces or removes it.
+
+**Reads are sessionless and immutable.** `GET /api/avatars/:kind/:id/:hash.webp`
+sits under `/api/` so every proxy forwards it, outside `/api/v1` so no session
+is needed — member lists show other people's pictures, and the hash makes the
+URL unguessable without the picture. It is cached for a year, at the browser
+and at CloudFront, because a new picture is a new URL.
+
+**Writes go where the session is.** The user upload writes through
+`auth.api.updateUser`, whose response re-issues the session cookie, so the
+five-minute cookie cache carries the new picture at once. A team's is written
+through `OrganizationStore.setLogo` behind the membership guard, for owners
+and admins. The replaced object is then deleted, best effort: a failure leaves
+an orphan of a few kilobytes rather than failing a change that happened.
 
 ## Auth
 
@@ -241,12 +286,10 @@ Neither blocks anything; both are cheap if a need appears.
 
 Teams; per-organization custom roles (`dynamicAccessControl`); an email
 transport, at which point `sendInvitationEmail` is one function and the in-app
-flow stays as the fallback; uploaded avatars in object storage — every user and
-organization has a generated one (`packages/shared/src/identicon.ts`), and the
-`logo` column stays unread on purpose, since the plugin accepts any string
-there and rendering it would let one account aim another's browser at a URL it
-chose; a shared handle namespace via a registry table, if a bare `/{handle}`
-URL is ever wanted.
+flow stays as the fallback; a crop tool, a sweeper for avatar objects orphaned
+by a failed delete, and more than one avatar size (see [Avatars](#avatars));
+a shared handle namespace via a registry table, if a bare `/{handle}` URL is
+ever wanted.
 
 ## Not yet built
 

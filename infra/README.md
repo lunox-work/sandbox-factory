@@ -26,6 +26,11 @@ deliberate local action so no merge can replace a database.
                           (outside AWS)
 ```
 
+The task also reads and writes one private S3 bucket, `sandbox-factory-private-<account>`,
+for uploaded avatars. It has no public path: the API streams each picture at
+`/api/avatars/*`, which CloudFront caches because the URL names the picture by
+its hash. Access is the task role's (`iam.tf`), with no keys anywhere.
+
 One hostname, two origins. The SPA and the API share an origin because
 `apps/web/nginx.conf` and the Vite dev proxy already do — so the session cookie
 stays host-only and no request needs a CORS preflight.

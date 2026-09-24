@@ -36,9 +36,15 @@ export function ConfirmDialog({
   typeToConfirm,
   busy = false,
   onConfirm,
+  open: controlledOpen,
+  onOpenChange,
 }: {
-  /** The control that opens this. Rendered as the trigger itself, not wrapped. */
-  trigger: ReactNode;
+  /**
+   * The control that opens this. Rendered as the trigger itself, not wrapped.
+   * Absent when the question is opened from a menu item: the menu closes as
+   * the item is chosen, taking any trigger inside it along.
+   */
+  trigger?: ReactNode;
   title: string;
   description: ReactNode;
   /** What the confirming button says. Names the act, never "OK". */
@@ -56,8 +62,16 @@ export function ConfirmDialog({
   /** A write is in flight somewhere on the page. */
   busy?: boolean | undefined;
   onConfirm: () => void | string | Promise<void | string>;
+  /** Held by the caller instead, for a dialog opened without a trigger. */
+  open?: boolean | undefined;
+  onOpenChange?: ((open: boolean) => void) | undefined;
 }) {
-  const [open, setOpen] = useState(false);
+  const [ownOpen, setOwnOpen] = useState(false);
+  const open = controlledOpen ?? ownOpen;
+  const setOpen = (next: boolean) => {
+    setOwnOpen(next);
+    onOpenChange?.(next);
+  };
   const [typed, setTyped] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -110,9 +124,11 @@ export function ConfirmDialog({
         button wrapping one — which would be invalid markup, and would drop one
         of the two from the accessibility tree.
       */}
-      <AlertDialogPrimitive.Trigger asChild>
-        {trigger}
-      </AlertDialogPrimitive.Trigger>
+      {trigger !== undefined && (
+        <AlertDialogPrimitive.Trigger asChild>
+          {trigger}
+        </AlertDialogPrimitive.Trigger>
+      )}
 
       <AlertDialogPrimitive.Portal>
         <AlertDialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0 motion-reduce:animate-none" />

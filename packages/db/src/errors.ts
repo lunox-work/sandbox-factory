@@ -19,3 +19,18 @@ export class NotFoundError extends Error {
 }
 
 export type Database = PostgresJsDatabase<Record<string, never>>;
+
+/**
+ * Whether a write was refused by a unique constraint — Postgres' `23505`.
+ *
+ * Also what the handle triggers raise (migration 0030), so a claim that loses
+ * a race to a concurrent one reads the same as any other duplicate.
+ */
+export function isUniqueViolation(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === "23505"
+  );
+}

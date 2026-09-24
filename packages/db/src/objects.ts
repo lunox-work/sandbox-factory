@@ -1,9 +1,11 @@
 /**
- * Object storage over the S3 API. Targets SeaweedFS' gateway but works with
- * any S3 endpoint. Not consumed by the app yet.
+ * Object storage over the S3 API: the SeaweedFS gateway locally, AWS S3 in
+ * production. Only the plain object calls are used, which both answer the same
+ * way, so the two differ by configuration alone. Holds uploaded avatars.
  *
  * `forcePathStyle` must stay on: the SDK's default virtual-hosted style needs
- * per-bucket DNS that a self-hosted gateway does not have.
+ * per-bucket DNS that a self-hosted gateway does not have. AWS accepts path
+ * style too.
  */
 
 import {
@@ -18,13 +20,21 @@ import {
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 export interface ObjectStoreOptions {
-  /** S3 gateway endpoint, e.g. `http://localhost:8333`. */
-  readonly endpoint: string;
+  /**
+   * S3 gateway endpoint, e.g. `http://localhost:8333`. Omitted, the client
+   * talks to AWS S3 in `region`.
+   */
+  readonly endpoint?: string | undefined;
   readonly bucket: string;
-  readonly accessKeyId: string;
-  readonly secretAccessKey: string;
+  /**
+   * Static keys. Omitted, the SDK's default credential chain supplies them —
+   * the ECS task role in production.
+   */
+  readonly credentials?:
+    | { readonly accessKeyId: string; readonly secretAccessKey: string }
+    | undefined;
   /** Ignored by SeaweedFS, but the request signer requires a value. */
-  readonly region?: string;
+  readonly region?: string | undefined;
 }
 
 export interface PutOptions {
@@ -43,13 +53,17 @@ export interface ObjectStore {
 export function createObjectStore(options: ObjectStoreOptions): ObjectStore {
   const { bucket } = options;
   const client = new S3Client({
-    endpoint: options.endpoint,
     region: options.region ?? "us-east-1",
     forcePathStyle: true,
-    credentials: {
-      accessKeyId: options.accessKeyId,
-      secretAccessKey: options.secretAccessKey,
-    },
+    ...(options.endpoint === undefined ? {} : { endpoint: options.endpoint }),
+    ...(options.credentials === undefined
+      ? {}
+      : {
+          credentials: {
+            accessKeyId: options.credentials.accessKeyId,
+            secretAccessKey: options.credentials.secretAccessKey,
+          },
+        }),
   });
 
   return {

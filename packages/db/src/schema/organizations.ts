@@ -18,7 +18,15 @@
  * not be.
  */
 
-import { index, pgTable, text, timestamp, unique } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import {
+  check,
+  index,
+  pgTable,
+  text,
+  timestamp,
+  unique,
+} from "drizzle-orm/pg-core";
 
 import { user } from "./auth.js";
 
@@ -41,9 +49,12 @@ export const organization = pgTable("organization", {
   name: text("name").notNull(),
   /**
    * The public handle. Unique, and stored lowercase by the plugin hooks in
-   * `apps/api/src/auth.ts`, which is what makes this plain `.unique()`
-   * case-insensitive in effect. The hooks are the only writer, so the
-   * functional index used for `user.email` would be belt and braces here.
+   * `apps/api/src/auth.ts`.
+   *
+   * A team's handle is claimed in {@link handle}, which is what stops it
+   * colliding with a username. A personal organization's is not a claim of
+   * its own: it is always its owner's username, kept in step by the database
+   * (migration 0030).
    *
    * Renameable: never store it as a foreign key.
    */
@@ -164,3 +175,50 @@ export type NewOrganizationRow = typeof organization.$inferInsert;
 export type MemberRow = typeof member.$inferSelect;
 export type NewMemberRow = typeof member.$inferInsert;
 export type InvitationRow = typeof invitation.$inferSelect;
+
+/**
+ * Every public handle, users' and organizations' alike, in one column.
+ *
+ * Users and organizations draw handles from one namespace — `/o/acme` must
+ * not be able to mean a team and a person at once. `user.username` and
+ * `organization.slug` are each unique, but neither constraint can see the
+ * other, and Postgres cannot index the union of two columns. So the handle
+ * itself is the primary key here, and a row says who holds it: exactly one of
+ * a user or an organization.
+ *
+ * A key rather than a trigger that looks for conflicts, which is how the email
+ * rule started (0007) and why it needed three follow-ups: a check can be
+ * outrun by a concurrent insert (0009), miss a write path (0008) or compare
+ * case-sensitively (0011). A primary key has none of those holes.
+ *
+ * **Nothing in the application writes this table.** Triggers on `user` and
+ * `organization` keep it in step with the columns it mirrors (migration
+ * 0030), so Better Auth's own writes, which never pass through our stores, are
+ * covered too. The stores only read it, to answer "is this taken?" before a
+ * write rather than after one fails.
+ *
+ * A personal organization holds no row: its handle is its owner's username,
+ * which the owner's row already claims.
+ */
+export const handle = pgTable(
+  "handle",
+  {
+    /** Stored lowercase, so `Acme` and `acme` are one handle. */
+    handle: text("handle").primaryKey(),
+    userId: text("user_id")
+      .unique()
+      .references(() => user.id, { onDelete: "cascade" }),
+    organizationId: text("organization_id")
+      .unique()
+      .references(() => organization.id, { onDelete: "cascade" }),
+  },
+  (table) => [
+    check(
+      "handle_one_holder",
+      sql`num_nonnulls(${table.userId}, ${table.organizationId}) = 1`,
+    ),
+    check("handle_lowercase", sql`${table.handle} = lower(${table.handle})`),
+  ],
+);
+
+export type HandleRow = typeof handle.$inferSelect;

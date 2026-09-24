@@ -62,6 +62,13 @@ export const organizationSummarySchema = z.object({
    * personal organizations parses as a team, which is what it is.
    */
   kind: organizationKindSchema.default("team"),
+  /**
+   * The uploaded picture's served path; null or absent for the identicon.
+   * Optional rather than defaulted: a response from an API that predates
+   * uploads carries none, and every renderer already treats a missing
+   * picture and a null one alike.
+   */
+  image: z.string().nullable().optional(),
 });
 
 export const membershipSchema = organizationSummarySchema.extend({

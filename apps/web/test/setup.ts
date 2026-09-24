@@ -82,8 +82,10 @@ if (typeof window !== "undefined") {
    * Every other selector goes to the real implementation.
    */
   const matches = Element.prototype.matches;
-  Element.prototype.matches = function (selectors: string): boolean {
+  // Cast because the DOM types declare `matches` as a set of tag-name type
+  // predicates, which no plain function can restate.
+  Element.prototype.matches = function (this: Element, selectors: string) {
     if (selectors === ":fullscreen" || selectors === ":modal") return false;
     return matches.call(this, selectors);
-  };
+  } as typeof matches;
 }

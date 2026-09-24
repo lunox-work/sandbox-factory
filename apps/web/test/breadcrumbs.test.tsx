@@ -2,7 +2,7 @@
  * Tests for the trail above each page.
  *
  * Two properties. The trail must describe the hierarchy rather than the
- * history: arriving at `/o/acme/jira` from a bookmark must still offer every
+ * history: arriving at `/o/acme/jira/:site` from a bookmark must still offer every
  * step up, because Back would leave the app. And the last crumb must not be a
  * link — a step that navigates to the page you are already on reads as a
  * broken control, and is the mistake this component is easiest to regress
@@ -192,89 +192,47 @@ test("each screen's trail names every step above it", () => {
   expect(trailFor("account").map((c) => c.label)).toEqual(["Home", "Account"]);
   expect(trailFor("organizations").map((c) => c.label)).toEqual([
     "Home",
-    "Organizations",
+    "Workspaces",
   ]);
   expect(trailFor("create-org").map((c) => c.label)).toEqual([
     "Home",
-    "Organizations",
-    "New organization",
+    "Workspaces",
+    "New workspace",
   ]);
   expect(trailFor("org-settings", ACME).map((c) => c.label)).toEqual([
     "Home",
-    "Organizations",
+    "Workspaces",
     "Acme",
-  ]);
-  // The deepest screen, and the one Back serves worst: two levels down, and
-  // reachable directly by URL.
-  expect(trailFor("org-jira", ACME).map((c) => c.label)).toEqual([
-    "Home",
-    "Organizations",
-    "Acme",
-    "Jira",
-  ]);
-  // One deeper still: a connected site, under Jira.
-  expect(
-    trailFor("org-jira-site", ACME, "lunox-work").map((c) => c.label),
-  ).toEqual(["Home", "Organizations", "Acme", "Jira", "lunox-work"]);
-});
-
-test("a board is one step deeper, under the site it belongs to", () => {
-  expect(
-    trailFor("org-jira-board", ACME, "lunox-work", "Sprint Board", "jrc_1").map(
-      (c) => c.label,
-    ),
-  ).toEqual([
-    "Home",
-    "Organizations",
-    "Acme",
-    "Jira",
-    "lunox-work",
-    "Sprint Board",
   ]);
 });
 
-test("the site crumb becomes a link on a board, and carries the site it names", () => {
-  // On the site's own trail it was the page you were on, so it had no
-  // destination. Here it is the way back up, and it needs the connection id
-  // to navigate — the slug alone resolves to the list of sites.
-  const trail = trailFor(
-    "org-jira-board",
-    ACME,
-    "lunox-work",
-    "Sprint Board",
-    "jrc_1",
-  );
-  const site = trail.find((crumb) => crumb.label === "lunox-work");
-
-  expect(site?.screen).toBe("org-jira-site");
-  expect(site?.connectionId).toBe("jrc_1");
+test("a board sits under Jira, with no step for its site", () => {
+  // A site has no page of its own, so a crumb for it would lead nowhere new.
+  expect(
+    trailFor("org-jira-board", ACME, "Sprint Board").map((c) => c.label),
+  ).toEqual(["Home", "Workspaces", "Acme", "Jira", "Sprint Board"]);
 });
 
 test("a board whose name has not arrived keeps its place in the trail", () => {
-  expect(
-    trailFor("org-jira-board", ACME, "lunox-work").map((c) => c.label),
-  ).toEqual(["Home", "Organizations", "Acme", "Jira", "lunox-work", "Board"]);
-});
-
-test("the Jira crumb becomes a link on a site, which is the way back up", () => {
-  // The site page carries no other way back to the list of sites.
-  const trail = trailFor("org-jira-site", ACME, "lunox-work");
-  const jira = trail.find((crumb) => crumb.label === "Jira");
-
-  expect(jira?.screen).toBe("org-jira");
-  expect(jira?.slug).toBe("acme");
-});
-
-test("a site whose name has not arrived keeps its place in the trail", () => {
-  // Dropping the last crumb would mark Jira as the current page while a site
+  // Dropping the last crumb would mark Jira as the current page while a board
   // is on screen.
-  expect(trailFor("org-jira-site", ACME).map((c) => c.label)).toEqual([
+  expect(trailFor("org-jira-board", ACME).map((c) => c.label)).toEqual([
     "Home",
-    "Organizations",
+    "Workspaces",
     "Acme",
     "Jira",
-    "Site",
+    "Board",
   ]);
+});
+
+test("the Jira crumb on a board leads to the Jira tab of settings", () => {
+  // That tab is where every site's boards are listed now.
+  const trail = trailFor("org-jira-board", ACME, "Sprint Board");
+  const jira = trail.find((crumb) => crumb.label === "Jira");
+
+  expect(jira?.screen).toBe("org-settings");
+  expect(jira?.slug).toBe("acme");
+  expect(jira?.connectionTab).toBe("jira");
 });
 
 test("an organization still loading is left out rather than guessed at", () => {
@@ -282,14 +240,15 @@ test("an organization still loading is left out rather than guessed at", () => {
    * A crumb reading "Loading…" shifts the row under the cursor when the name
    * lands. The settings screen is the organization, so it has no trail to
    * show until the name arrives — ending it at "Organizations" would mark the
-   * list as the current page while an organization is on screen. Jira names
-   * itself, so only its middle crumb goes missing.
+   * list as the current page while an organization is on screen. A board
+   * names itself, so only its organization crumb goes missing.
    */
   expect(trailFor("org-settings")).toEqual([]);
-  expect(trailFor("org-jira").map((c) => c.label)).toEqual([
+  expect(trailFor("org-jira-board").map((c) => c.label)).toEqual([
     "Home",
-    "Organizations",
+    "Workspaces",
     "Jira",
+    "Board",
   ]);
 });
 
@@ -305,12 +264,8 @@ test("no trail ends in a step that goes nowhere", () => {
     trailFor("organizations"),
     trailFor("create-org"),
     trailFor("org-settings", ACME),
-    trailFor("org-jira", ACME),
     trailFor("org-settings"),
-    trailFor("org-jira"),
-    trailFor("org-jira-site", ACME, "lunox-work"),
-    trailFor("org-jira-site"),
-    trailFor("org-jira-board", ACME, "lunox-work", "Sprint Board", "jrc_1"),
+    trailFor("org-jira-board", ACME, "Sprint Board"),
     trailFor("org-jira-board"),
   ];
 
@@ -324,7 +279,7 @@ test("the page you are on is text, and every step above it is a button", async (
   render(<App />);
 
   await waitFor(() => {
-    expect(labels()).toEqual(["Home", "Organizations", "Acme"]);
+    expect(labels()).toEqual(["Home", "Workspaces", "Acme"]);
   });
 
   const nav = screen.getByRole("navigation", { name: "Breadcrumb" });
@@ -333,40 +288,48 @@ test("the page you are on is text, and every step above it is a button", async (
   expect(current?.tagName).toBe("SPAN");
   // Not a button: a click would navigate to the screen already showing.
   expect(screen.queryByRole("link", { name: "Acme" })).toBeNull();
-  // The steps above it are, or the trail is decoration. Scoped to the trail:
-  // the rail carries an Organizations destination of its own, and the two
-  // landmarks are named apart precisely so both may use the word.
-  expect(within(nav).getByRole("link", { name: "Organizations" })).toBeTruthy();
+  // The steps above it are, or the trail is decoration. Scoped to the trail,
+  // so another landmark using the word cannot satisfy it.
+  expect(within(nav).getByRole("link", { name: "Workspaces" })).toBeTruthy();
 });
 
-test("a deep link renders the whole trail", async () => {
-  window.history.replaceState(null, "", "/o/acme/jira");
+test("the old Jira page opens the Jira tab of the organization's settings", async () => {
+  // A bookmark from before the list moved into settings. The outcome riding
+  // on it is kept, or the return from Atlassian would lose its banner.
+  window.history.replaceState(null, "", "/o/acme/jira?jira=cancelled");
   render(<App />);
 
   await waitFor(() => {
-    expect(labels()).toEqual(["Home", "Organizations", "Acme", "Jira"]);
+    expect(labels()).toEqual(["Home", "Workspaces", "Acme"]);
+    expect(window.location.pathname).toBe("/o/acme/settings");
+  });
+  expect(
+    await screen.findByRole("tab", { name: "Jira", selected: true }),
+  ).toBeTruthy();
+  expect(await screen.findByText(/connection cancelled/i)).toBeTruthy();
+  // The outcome is read once and stripped; the tab stays named.
+  await waitFor(() => {
+    expect(window.location.search).toBe("?connection=jira");
   });
 });
 
-test("a deep link to one site resolves, and the trail names it", async () => {
-  // `/o/:slug/jira/:id` is its own screen, so a bookmark or a reload lands on
-  // the site rather than on the list above it.
+test("an old link to one site opens the Jira tab of settings", async () => {
+  // A site has no page of its own any more; its boards are listed there.
   window.history.replaceState(null, "", "/o/acme/jira/jrc_1");
   render(<App />);
 
   await waitFor(() => {
-    expect(labels()).toEqual([
-      "Home",
-      "Organizations",
-      "Acme",
-      "Jira",
-      "lunox-work",
-    ]);
+    expect(window.location.pathname).toBe("/o/acme/settings");
+    expect(window.location.search).toBe("?connection=jira");
+    expect(labels()).toEqual(["Home", "Workspaces", "Acme"]);
   });
+  expect(
+    await screen.findByRole("tab", { name: "Jira", selected: true }),
+  ).toBeTruthy();
 });
 
-test("the Jira crumb on a site goes back to the list of sites", async () => {
-  window.history.replaceState(null, "", "/o/acme/jira/jrc_1");
+test("the Jira crumb on a board goes back to the list of sites", async () => {
+  window.history.replaceState(null, "", "/o/acme/jira/jrc_1/jrb_1");
   render(<App />);
 
   // Waited on the organization crumb, not the Jira one. The Jira crumb is in
@@ -380,9 +343,13 @@ test("the Jira crumb on a site goes back to the list of sites", async () => {
   fireEvent.click(screen.getByRole("link", { name: "Jira" }));
 
   await waitFor(() => {
-    expect(window.location.pathname).toBe("/o/acme/jira");
-    expect(labels()).toEqual(["Home", "Organizations", "Acme", "Jira"]);
+    expect(window.location.pathname).toBe("/o/acme/settings");
+    expect(window.location.search).toBe("?connection=jira");
+    expect(labels()).toEqual(["Home", "Workspaces", "Acme"]);
   });
+  expect(
+    await screen.findByRole("tab", { name: "Jira", selected: true }),
+  ).toBeTruthy();
 });
 
 test("a deep link to one board resolves, and the trail names every step", async () => {
@@ -392,33 +359,16 @@ test("a deep link to one board resolves, and the trail names every step", async 
   await waitFor(() => {
     expect(labels()).toEqual([
       "Home",
-      "Organizations",
+      "Workspaces",
       "Acme",
       "Jira",
-      "lunox-work",
       "Sprint Board",
     ]);
   });
 });
 
-test("the site crumb on a board goes back to that site, not the list", async () => {
-  // The slug alone would resolve to /o/acme/jira, one level too high.
-  window.history.replaceState(null, "", "/o/acme/jira/jrc_1/jrb_1");
-  render(<App />);
-
-  await waitFor(() => {
-    expect(screen.getByRole("link", { name: "lunox-work" })).toBeTruthy();
-  });
-
-  fireEvent.click(screen.getByRole("link", { name: "lunox-work" }));
-
-  await waitFor(() => {
-    expect(window.location.pathname).toBe("/o/acme/jira/jrc_1");
-  });
-});
-
 test("a crumb navigates up to the screen it names", async () => {
-  window.history.replaceState(null, "", "/o/acme/jira");
+  window.history.replaceState(null, "", "/o/acme/jira/jrc_1/jrb_1");
   render(<App />);
 
   await waitFor(() => {
@@ -431,12 +381,12 @@ test("a crumb navigates up to the screen it names", async () => {
 
   await waitFor(() => {
     expect(window.location.pathname).toBe("/o/acme/settings");
-    expect(labels()).toEqual(["Home", "Organizations", "Acme"]);
+    expect(labels()).toEqual(["Home", "Workspaces", "Acme"]);
   });
 });
 
 test("the trail is a second landmark, named apart from the rail", async () => {
-  window.history.replaceState(null, "", "/organizations");
+  window.history.replaceState(null, "", "/workspaces");
   render(<App />);
 
   // Two navigation landmarks on one page have to be told apart by name, or a
@@ -459,7 +409,7 @@ test("the trail is capped and padded on the same element as the page", async () 
   render(<App />);
 
   await waitFor(() => {
-    expect(labels()).toEqual(["Home", "Organizations", "Acme"]);
+    expect(labels()).toEqual(["Home", "Workspaces", "Acme"]);
   });
 
   const nav = screen.getByRole("navigation", { name: "Breadcrumb" });
@@ -480,10 +430,9 @@ test("a board's trail is as wide as the board page under it", async () => {
   await waitFor(() => {
     expect(labels()).toEqual([
       "Home",
-      "Organizations",
+      "Workspaces",
       "Acme",
       "Jira",
-      "lunox-work",
       "Sprint Board",
     ]);
   });

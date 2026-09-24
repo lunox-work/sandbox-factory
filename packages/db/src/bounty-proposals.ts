@@ -7,7 +7,7 @@ import type {
 } from "sandbox-factory";
 import { and, desc, eq, gt, inArray, lt, or, sql } from "drizzle-orm";
 
-import type { Database } from "./errors.js";
+import { isUniqueViolation, type Database } from "./errors.js";
 import { jiraWriteGranted, splitScopes } from "./jira-connections.js";
 import { generateId } from "./mapping.js";
 import {
@@ -267,15 +267,6 @@ function insertValues(
   };
 }
 
-function uniqueViolation(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    error.code === "23505"
-  );
-}
-
 /** Each ticket's live proposal, for the tickets that have one. */
 async function liveProposalIds(
   db: Database,
@@ -338,7 +329,7 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
         return rows[0] === undefined ? null : toDto(rows[0], parent.issueKey);
       } catch (error) {
         // Another worker or process may have won the one-live-proposal race.
-        if (uniqueViolation(error)) return null;
+        if (isUniqueViolation(error)) return null;
         throw error;
       }
     },

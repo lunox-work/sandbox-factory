@@ -26,6 +26,12 @@ import type {
 
 import type { Auth } from "./auth.js";
 import {
+  mountAvatarReadRoute,
+  mountOrganizationAvatarRoutes,
+  mountUserAvatarRoutes,
+} from "./avatars/routes.js";
+import type { AvatarService } from "./avatars/service.js";
+import {
   mountBountyRoutes,
   sizeIfNeverSized,
   type BountyRouteOptions,
@@ -58,6 +64,13 @@ export interface AppOptions {
   jira?: Omit<JiraRouteOptions, "roleOf"> | undefined;
   /** Commercial routes. Rate-card reads remain mounted without model config. */
   bounty?: BountyRouteOptions | undefined;
+  /**
+   * Uploaded avatars. Optional for the same reason as `jira`: without object
+   * storage configured the upload routes are not mounted and answer 404,
+   * which the web app reads as "uploads are off here", and everything else
+   * is served as before.
+   */
+  avatars?: AvatarService | undefined;
   /**
    * Shared secret the CDN sends on every origin request. Set where the task is
    * internet-reachable with nothing upstream to filter (the CloudFront-to-
@@ -100,11 +113,9 @@ const ROLE_RANK: Record<string, number> = {
  * ranks lowest rather than throwing: a role added to the plugin's config but
  * not here must not silently pass a check.
  *
- * Exported for its tests. Nothing calls it yet: every route the membership
- * guard covers is readable by any member, and the plugin checks the role
- * itself on the writes that need one. It is here, and pinned, for the first
- * route that needs a floor — an untested comparison that grants access is
- * exactly the thing that should not be written under time pressure later.
+ * The floor for the writes this API makes itself rather than through the
+ * plugin — a team's picture needs `admin`. The plugin checks roles on its own
+ * endpoints.
  */
 export function rankAtLeast(held: string, required: OrganizationRole): boolean {
   const strongest = held
@@ -125,6 +136,7 @@ export function createApp({
   organizations,
   jira,
   bounty,
+  avatars,
   buildInfo = unknownBuildInfo,
   originVerify,
 }: AppOptions): Hono<AppEnv> {
@@ -184,6 +196,15 @@ export function createApp({
    * callbacks, session reads and sign-out.
    */
   app.all("/api/auth/*", (c) => auth.handler(c.req.raw));
+
+  /**
+   * Avatar pictures, sessionless. Under `/api/` so every proxy in front of
+   * the API forwards it unchanged, and outside `/api/v1` so the session
+   * guard below does not apply. See `avatars/routes.ts` for why that is safe.
+   */
+  if (avatars !== undefined) {
+    mountAvatarReadRoute(app, { avatars });
+  }
 
   /**
    * Everything under /api/v1 requires a session. Resolving it from the headers
@@ -294,6 +315,10 @@ export function createApp({
         displayUsername: result.displayUsername,
       });
     });
+
+    if (avatars !== undefined) {
+      mountUserAvatarRoutes(app, { avatars, auth, profiles });
+    }
   }
 
   if (emails !== undefined) {
@@ -378,7 +403,14 @@ export function createApp({
       if (found === undefined) {
         throw new NotFoundError(c.req.param("slug"));
       }
-      return c.json(found);
+      // Spelled out so a field added to the summary — the picture, say —
+      // does not reach signed-out readers without a decision to send it.
+      return c.json({
+        id: found.id,
+        name: found.name,
+        slug: found.slug,
+        kind: found.kind,
+      });
     });
 
     /**
@@ -502,6 +534,11 @@ export function createApp({
     }
     if (bounty !== undefined) {
       mountBountyRoutes(app, bounty);
+    }
+
+    /** A team's picture; behind the membership guard above. */
+    if (avatars !== undefined) {
+      mountOrganizationAvatarRoutes(app, { avatars, organizations });
     }
   }
 

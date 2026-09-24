@@ -21,12 +21,20 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
+import { EntityAvatar } from "../src/components/Avatar";
+
 const useSession = vi.fn();
 const signOut = vi.fn();
 
 /** What `/api/v1/me/invitations` answers with; set per test. */
 let pendingInvitations: unknown[] = [];
-const setActive = vi.fn(() => Promise.resolve({ data: {}, error: null }));
+/** Organizations listed after Acme and Globex; set per test. */
+let extraOrganizations: unknown[] = [];
+/** What each organization's `/jira/boards` answers with; set per test. */
+let boardsByOrganization: Record<string, unknown[]> = {};
+const setActive = vi.fn((_input: unknown) =>
+  Promise.resolve({ data: {}, error: null }),
+);
 
 vi.mock("../src/auth", () => ({
   useSession: () => useSession(),
@@ -49,6 +57,12 @@ vi.stubGlobal(
   "fetch",
   vi.fn((input: RequestInfo | URL) => {
     const url = String(input);
+    const boards = /\/orgs\/([^/]+)\/jira\/boards$/.exec(url);
+    if (boards !== null) {
+      return Promise.resolve(
+        Response.json({ boards: boardsByOrganization[boards[1]!] ?? [] }),
+      );
+    }
     if (url.includes("/jira/connections")) {
       // One site, on the first organization only, so the home screen has a
       // row that leads somewhere and the test can tell which owner it
@@ -92,6 +106,7 @@ vi.stubGlobal(
             // A second one, so a test that opens it can tell "the clicked
             // organization" apart from "the first in the list".
             { id: "org_2", name: "Globex", slug: "globex", role: "member" },
+            ...extraOrganizations,
           ],
         }),
       );
@@ -203,6 +218,32 @@ function signedIn(image?: string | null) {
  * userEvent's pointer emulation is several times slower in jsdom for no extra
  * coverage.
  */
+/** The identicon an id draws, rendered on its own to compare against. */
+function identiconPath(id: string): string | null | undefined {
+  const { container, unmount } = render(
+    <EntityAvatar id={id} shape="square" />,
+  );
+  const d = container.querySelector("path")?.getAttribute("d");
+  unmount();
+  return d;
+}
+
+/** The organization switcher's trigger, whichever organization is active. */
+const SWITCHER = /^Switch workspace/;
+
+/** Opens the switcher, once the active organization has loaded into it. */
+async function openSwitcher() {
+  const trigger = await screen.findByRole("button", {
+    name: /^Switch workspace — /,
+  });
+  trigger.focus();
+  // See `openMenu`: Radix focuses the menu in an effect after the open.
+  await act(async () => {
+    fireEvent.keyDown(trigger, { key: "Enter" });
+  });
+  return await screen.findByRole("menu");
+}
+
 async function openMenu() {
   const trigger = screen.getByRole("button", { name: AVATAR });
   trigger.focus();
@@ -222,6 +263,8 @@ beforeEach(() => {
   signOut.mockClear();
   setActive.mockClear();
   pendingInvitations = [];
+  extraOrganizations = [];
+  boardsByOrganization = {};
   // Each test owns the path it renders under; `Signed` reads it once on mount
   // to decide the starting screen.
   window.history.replaceState(null, "", "/");
@@ -229,24 +272,28 @@ beforeEach(() => {
 
 afterEach(() => {
   window.history.replaceState(null, "", "/");
+  // The rail remembers whether it was expanded; no test inherits another's.
+  window.localStorage.clear();
 });
 
-test("the rail offers home and the account avatar, with the logo above them", () => {
+test("the rail offers home and the account avatar, with the switcher above them", () => {
   render(<App />);
 
   const rail = screen.getByRole("navigation", { name: "Main" });
-  expect(rail.querySelector("img[src*='logo-gradient']")).toBeTruthy();
+  expect(within(rail).getByRole("button", { name: SWITCHER })).toBeTruthy();
   expect(railHome()).toBeTruthy();
   expect(screen.getByRole("button", { name: AVATAR })).toBeTruthy();
 });
 
-test("the home header carries no name or sign out", () => {
+test("the home header carries no name or sign out", async () => {
   render(<App />);
 
   // Both moved into the avatar menu; neither is part of the work the page is
   // for. This is the header the screenshot asked for.
+  expect(
+    await screen.findByRole("heading", { name: "Connections" }),
+  ).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Sign out" })).toBeNull();
-  expect(screen.getByRole("heading", { name: "Connections" })).toBeTruthy();
 });
 
 test("the version readout is in the menu, not on the page", async () => {
@@ -261,7 +308,9 @@ test("the version readout is in the menu, not on the page", async () => {
 
 test("the menu opens the account screen, and home comes back", async () => {
   render(<App />);
-  expect(screen.getByRole("heading", { name: "Connections" })).toBeTruthy();
+  expect(
+    await screen.findByRole("heading", { name: "Connections" }),
+  ).toBeTruthy();
 
   await openMenu();
   fireEvent.click(screen.getByRole("menuitem", { name: /Account settings/ }));
@@ -337,13 +386,15 @@ test("a trailing slash names the same screen", () => {
   expect(screen.getByRole("heading", { name: "Account" })).toBeTruthy();
 });
 
-test("an unknown path falls back to the home screen", () => {
+test("an unknown path falls back to the home screen", async () => {
   // Rather than a blank screen: the server serves index.html for any path, so
   // the app has to decide what a stale link means.
   window.history.replaceState(null, "", "/nope");
   render(<App />);
 
-  expect(screen.getByRole("heading", { name: "Connections" })).toBeTruthy();
+  expect(
+    await screen.findByRole("heading", { name: "Connections" }),
+  ).toBeTruthy();
 });
 
 test("navigating writes the path, so a reload stays put", async () => {
@@ -462,15 +513,15 @@ test("an unavailable organization route stays unavailable and links to the list"
   render(<App />);
 
   expect(
-    await screen.findByRole("heading", { name: "Organization unavailable" }),
+    await screen.findByRole("heading", { name: "Workspace unavailable" }),
   ).toBeTruthy();
   const destination = screen.getByRole("link", {
-    name: "View your organizations",
+    name: "View your workspaces",
   });
-  expect(destination.getAttribute("href")).toBe("/organizations");
+  expect(destination.getAttribute("href")).toBe("/workspaces");
 
   fireEvent.click(destination);
-  expect(window.location.pathname).toBe("/organizations");
+  expect(window.location.pathname).toBe("/workspaces");
 });
 
 test("the document title follows the current page", async () => {
@@ -491,19 +542,43 @@ test("only /o/... names an organization, not any two-segment path", async () => 
   window.history.replaceState(null, "", "/settings/profile");
   render(<App />);
 
-  expect(screen.getByRole("heading", { name: "Connections" })).toBeTruthy();
   expect(
-    screen.queryByRole("button", { name: "Edit organization handle" }),
+    await screen.findByRole("heading", { name: "Connections" }),
+  ).toBeTruthy();
+  expect(
+    screen.queryByRole("button", { name: "Edit workspace handle" }),
   ).toBeNull();
 });
 
-test("/organizations/new opens the create form", async () => {
-  window.history.replaceState(null, "", "/organizations/new");
+test("/workspaces/new opens the create form", async () => {
+  window.history.replaceState(null, "", "/workspaces/new");
   render(<App />);
 
   expect(
-    await screen.findByRole("heading", { name: "New organization" }),
+    await screen.findByRole("heading", { name: "New workspace" }),
   ).toBeTruthy();
+});
+
+test("an old /organizations link still opens its page, under the new path", async () => {
+  // Bookmarks and links in old messages predate the rename. They land on the
+  // same page, and the address bar is brought up to date without adding a
+  // history entry.
+  for (const [legacy, current, heading] of [
+    ["/organizations", "/workspaces", "Workspaces"],
+    ["/organizations/new", "/workspaces/new", "New workspace"],
+  ] as const) {
+    window.history.replaceState(null, "", `${legacy}?x=1`);
+    const before = window.history.length;
+    const { unmount } = render(<App />);
+
+    expect(
+      await screen.findByRole("heading", { name: heading, level: 1 }),
+    ).toBeTruthy();
+    expect(window.location.pathname).toBe(current);
+    expect(window.location.search).toBe("?x=1");
+    expect(window.history.length).toBe(before);
+    unmount();
+  }
 });
 
 test("the account menu reaches the organizations page", async () => {
@@ -512,12 +587,12 @@ test("the account menu reaches the organizations page", async () => {
   render(<App />);
 
   await openMenu();
-  fireEvent.click(screen.getByRole("menuitem", { name: /Organizations/ }));
+  fireEvent.click(screen.getByRole("menuitem", { name: /Workspaces/ }));
 
   expect(
-    await screen.findByRole("heading", { name: "Organizations", level: 1 }),
+    await screen.findByRole("heading", { name: "Workspaces", level: 1 }),
   ).toBeTruthy();
-  expect(window.location.pathname).toBe("/organizations");
+  expect(window.location.pathname).toBe("/workspaces");
 });
 
 test("the menu no longer switches organization", async () => {
@@ -529,16 +604,17 @@ test("the menu no longer switches organization", async () => {
 
   expect(screen.queryByRole("menuitem", { name: /^Acme/ })).toBeNull();
   expect(screen.queryByRole("menuitem", { name: /Personal/ })).toBeNull();
-  expect(
-    screen.queryByRole("menuitem", { name: /New organization/ }),
-  ).toBeNull();
+  expect(screen.queryByRole("menuitem", { name: /New workspace/ })).toBeNull();
 });
 
 test("the organizations page lists what you belong to, with your role", async () => {
-  window.history.replaceState(null, "", "/organizations");
+  window.history.replaceState(null, "", "/workspaces");
   render(<App />);
 
-  expect(await screen.findByText("Acme")).toBeTruthy();
+  // Scoped to the page: the switcher at the head of the rail names the
+  // active organization too.
+  const page = await screen.findByRole("main");
+  expect(await within(page).findByText("Acme")).toBeTruthy();
   expect(screen.getByText("@acme")).toBeTruthy();
   expect(screen.getByText("owner")).toBeTruthy();
 });
@@ -547,7 +623,7 @@ test("a row opens that organization's settings", async () => {
   // Deliberately the *second* row: opening the first would pass even if the
   // path were built from whichever organization happened to be active, which
   // is the bug — `select` has not re-rendered when `navigate` runs.
-  window.history.replaceState(null, "", "/organizations");
+  window.history.replaceState(null, "", "/workspaces");
   render(<App />);
 
   fireEvent.click(await screen.findByRole("link", { name: /Globex/ }));
@@ -561,15 +637,13 @@ test("a row opens that organization's settings", async () => {
 });
 
 test("the organizations page reaches the create form", async () => {
-  window.history.replaceState(null, "", "/organizations");
+  window.history.replaceState(null, "", "/workspaces");
   render(<App />);
 
-  fireEvent.click(
-    await screen.findByRole("link", { name: /New organization/ }),
-  );
+  fireEvent.click(await screen.findByRole("link", { name: /New workspace/ }));
 
   expect(
-    await screen.findByRole("heading", { name: "New organization" }),
+    await screen.findByRole("heading", { name: "New workspace" }),
   ).toBeTruthy();
 });
 
@@ -589,17 +663,17 @@ test("an inactive destination lights up under the cursor", async () => {
   expect(home.className).not.toContain("sm:hover:bg-transparent");
 });
 
-test("the logo answers the cursor too", async () => {
+test("the switcher answers the cursor too", async () => {
   window.history.replaceState(null, "", "/");
   render(<App />);
 
-  const logo = await screen.findByRole("link", { name: "Lunox home" });
-  expect(logo.className).toContain("hover:opacity-80");
+  const switcher = await screen.findByRole("button", { name: SWITCHER });
+  expect(switcher.className).toContain("hover:bg-accent");
 });
 
-test("a site on the home screen opens that site's page", async () => {
-  // End to end through the shell: the row names a site, so the URL it leads
-  // to names that site rather than the list it sits in.
+test("a site on the home screen opens its organization's Jira tab", async () => {
+  // End to end through the shell: a site has no page of its own, so the row
+  // leads to where its boards are listed.
   window.history.replaceState(null, "", "/");
   render(<App />);
 
@@ -609,55 +683,448 @@ test("a site on the home screen opens that site's page", async () => {
   fireEvent.click(screen.getByText("lunox-work"));
 
   await waitFor(() => {
-    expect(window.location.pathname).toBe("/o/acme/jira/jrc_1");
+    expect(window.location.pathname).toBe("/o/acme/settings");
+    expect(window.location.search).toBe("?connection=jira");
   });
+});
+
+function board(id: string, name: string) {
+  return {
+    id,
+    connectionId: "jrc_1",
+    externalId: `ext-${id}`,
+    name,
+    boardType: "scrum",
+    projectKey: null,
+    selection: {},
+    createdAt: "2026-09-21T00:00:00.000Z",
+  };
+}
+
+/** The home screen's board picker, named for the board it is showing. */
+async function homeBoard(name: string) {
+  return screen.findByRole("button", { name: `Switch board — ${name}` });
+}
+
+test("home opens on the organization's board, not the connections list", async () => {
+  // The proposals are the work; the list of sites is one step removed from
+  // them. With no board opened yet, the first one is where home lands.
+  boardsByOrganization = {
+    org_1: [board("jrb_1", "Delivery"), board("jrb_2", "Platform")],
+  };
+  render(<App />);
+
+  expect(await homeBoard("Delivery")).toBeTruthy();
+  expect(screen.queryByRole("heading", { name: "Connections" })).toBeNull();
+  expect(window.location.pathname).toBe("/");
+});
+
+test("home greets the person rather than titling the board", async () => {
+  // Home is where the day starts, not a board somebody navigated to: the
+  // board is named in the picker, and the heading is the greeting.
+  boardsByOrganization = { org_1: [board("jrb_1", "Delivery")] };
+  render(<App />);
+
+  const heading = await screen.findByRole("heading", { level: 1 });
+  expect(heading.textContent).toMatch(
+    /^Good (morning|afternoon|evening), Alice$/,
+  );
+  expect(screen.queryByRole("heading", { name: "Delivery" })).toBeNull();
+});
+
+test("home comes back to the board last opened", async () => {
+  boardsByOrganization = {
+    org_1: [board("jrb_1", "Delivery"), board("jrb_2", "Platform")],
+  };
+  window.history.replaceState(null, "", "/o/acme/jira/jrc_1/jrb_2");
+  render(<App />);
+  expect(await screen.findByRole("heading", { name: "Platform" })).toBeTruthy();
+
+  fireEvent.click(railHome());
+
+  await waitFor(() => expect(window.location.pathname).toBe("/"));
+  expect(await homeBoard("Platform")).toBeTruthy();
+});
+
+test("the picker switches home's board and remembers it", async () => {
+  boardsByOrganization = {
+    org_1: [board("jrb_1", "Delivery"), board("jrb_2", "Platform")],
+  };
+  const { unmount } = render(<App />);
+
+  const trigger = await homeBoard("Delivery");
+  await act(async () => {
+    fireEvent.keyDown(trigger, { key: "Enter" });
+  });
+  const menu = await screen.findByRole("menu");
+  fireEvent.click(within(menu).getByRole("menuitem", { name: /Platform/ }));
+
+  expect(await homeBoard("Platform")).toBeTruthy();
+  expect(window.location.pathname).toBe("/");
+
+  // A reload lands on the one chosen, not back on the first.
+  unmount();
+  render(<App />);
+  expect(await homeBoard("Platform")).toBeTruthy();
+});
+
+test("the picker leads out to the board's own page", async () => {
+  // Home has no trail, so this is how the board's page and its site are
+  // reached from here.
+  boardsByOrganization = { org_1: [board("jrb_1", "Delivery")] };
+  render(<App />);
+
+  const trigger = await homeBoard("Delivery");
+  await act(async () => {
+    fireEvent.keyDown(trigger, { key: "Enter" });
+  });
+  const menu = await screen.findByRole("menu");
+  fireEvent.click(
+    within(menu).getByRole("menuitem", { name: /Open board page/ }),
+  );
+
+  await waitFor(() => {
+    expect(window.location.pathname).toBe("/o/acme/jira/jrc_1/jrb_1");
+  });
+  expect(await screen.findByRole("heading", { name: "Delivery" })).toBeTruthy();
+});
+
+test("a remembered board that is gone falls back to the first", async () => {
+  // Removed since, or its site disconnected: opening it would be a page with
+  // nothing behind it.
+  window.localStorage.setItem(
+    "lunox:home-board:user_1:org_1",
+    JSON.stringify({ connectionId: "jrc_1", boardId: "jrb_gone" }),
+  );
+  boardsByOrganization = { org_1: [board("jrb_1", "Delivery")] };
+  render(<App />);
+
+  expect(await homeBoard("Delivery")).toBeTruthy();
+});
+
+test("switching organization moves home to that organization's board", async () => {
+  boardsByOrganization = {
+    org_1: [board("jrb_1", "Delivery")],
+    org_2: [board("jrb_9", "Globex board")],
+  };
+  render(<App />);
+  expect(await homeBoard("Delivery")).toBeTruthy();
+
+  const menu = await openSwitcher();
+  fireEvent.click(within(menu).getByRole("menuitem", { name: /Globex/ }));
+
+  expect(await homeBoard("Globex board")).toBeTruthy();
+  expect(window.location.pathname).toBe("/");
 });
 
 test("cancelling a new organization goes back to the list, not home", async () => {
   // The trail says Organizations is the parent, and it is where the button
   // that opens this form lives.
-  window.history.replaceState(null, "", "/organizations/new");
+  window.history.replaceState(null, "", "/workspaces/new");
   render(<App />);
 
   fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
 
   await waitFor(() => {
-    expect(window.location.pathname).toBe("/organizations");
+    expect(window.location.pathname).toBe("/workspaces");
+  });
+});
+
+// ---- expanding and collapsing ----------------------------------------------
+
+test("the rail starts expanded, collapses, and remembers it", async () => {
+  const { unmount } = render(<App />);
+
+  const rail = screen.getByRole("navigation", { name: "Main" });
+  const toggle = within(rail).getByRole("button", { name: "Sidebar" });
+  // Expanded, the label is written beside the icon, so there is no tooltip
+  // repeating it.
+  expect(toggle.getAttribute("aria-expanded")).toBe("true");
+  expect(railHome().getAttribute("title")).toBeNull();
+  expect(within(rail).getByText("Home")).toBeTruthy();
+
+  fireEvent.click(toggle);
+
+  expect(toggle.getAttribute("aria-expanded")).toBe("false");
+  // Collapsed, only the icon is left: the tooltip is what names it.
+  expect(railHome().getAttribute("title")).toBe("Home");
+  expect(within(rail).queryByText("Home")).toBeNull();
+  // Named the same in both states, so it is one control that changed.
+  expect(railHome().getAttribute("aria-label")).toBe("Home");
+  // The toggle stands in for the switcher, so the way back is always
+  // showing. The switcher stays mounted to fade out, but inert: no focus, not
+  // announced.
+  expect(
+    within(rail).getByRole("button", { name: SWITCHER }).hasAttribute("inert"),
+  ).toBe(true);
+
+  // A reload keeps the choice.
+  unmount();
+  render(<App />);
+  expect(
+    within(screen.getByRole("navigation", { name: "Main" }))
+      .getByRole("button", { name: "Sidebar" })
+      .getAttribute("aria-expanded"),
+  ).toBe("false");
+});
+
+test("the rail still renders when storage throws", () => {
+  // A private window or blocked site data: the rail falls back to expanded
+  // rather than taking the shell down with it.
+  const getItem = vi
+    .spyOn(Storage.prototype, "getItem")
+    .mockImplementation(() => {
+      throw new Error("blocked");
+    });
+  const setItem = vi
+    .spyOn(Storage.prototype, "setItem")
+    .mockImplementation(() => {
+      throw new Error("blocked");
+    });
+  try {
+    render(<App />);
+    const toggle = within(
+      screen.getByRole("navigation", { name: "Main" }),
+    ).getByRole("button", { name: "Sidebar" });
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+  } finally {
+    getItem.mockRestore();
+    setItem.mockRestore();
+  }
+});
+
+// ---- the organization switcher --------------------------------------------
+
+test("the switcher names the active organization and lists the rest", async () => {
+  window.history.replaceState(null, "", "/o/acme/jira");
+  render(<App />);
+
+  expect(
+    await screen.findByRole("button", { name: "Switch workspace — Acme" }),
+  ).toBeTruthy();
+
+  const menu = await openSwitcher();
+  const acme = within(menu).getByRole("menuitem", { name: /Acme/ });
+  // The one being shown is marked, and only that one.
+  expect(acme.getAttribute("aria-current")).toBe("true");
+  expect(
+    within(menu)
+      .getByRole("menuitem", { name: /Globex/ })
+      .getAttribute("aria-current"),
+  ).toBeNull();
+});
+
+test("a personal organization is called Personal, not by its name", async () => {
+  // Its name is the person's own, which says whose it is but not what it is.
+  extraOrganizations = [
+    {
+      id: "org_0",
+      name: "Alice Example",
+      slug: "alice",
+      role: "owner",
+      kind: "personal",
+    },
+  ];
+  window.history.replaceState(null, "", "/o/alice/jira");
+  render(<App />);
+
+  expect(
+    await screen.findByRole("button", {
+      name: "Switch workspace — Personal",
+    }),
+  ).toBeTruthy();
+  const menu = await openSwitcher();
+  expect(within(menu).getByRole("menuitem", { name: "Personal" })).toBeTruthy();
+  expect(within(menu).queryByText("Alice Example")).toBeNull();
+});
+
+test("the switcher shows a team's identicon, square, not the app's logo", async () => {
+  window.history.replaceState(null, "", "/o/acme/jira");
+  render(<App />);
+
+  const trigger = await screen.findByRole("button", {
+    name: "Switch workspace — Acme",
+  });
+  expect(trigger.querySelector("img[src*='logo-gradient']")).toBeNull();
+  const face = trigger.querySelector('[data-slot="avatar"]');
+  expect(face?.className).not.toContain("rounded-full");
+  expect(face?.querySelector("path")?.getAttribute("d")).toBe(
+    identiconPath("org_1"),
+  );
+});
+
+test("the switcher shows your own face for your personal organization", async () => {
+  // It is always the viewer's, so it wears their picture, round, as the
+  // account page does — seeded from the user, not the organization.
+  extraOrganizations = [
+    {
+      id: "org_0",
+      name: "Alice Example",
+      slug: "alice",
+      role: "owner",
+      kind: "personal",
+    },
+  ];
+  window.history.replaceState(null, "", "/o/alice/jira");
+  render(<App />);
+
+  const trigger = await screen.findByRole("button", {
+    name: "Switch workspace — Personal",
+  });
+  const face = trigger.querySelector('[data-slot="avatar"]');
+  expect(face?.className).toContain("rounded-full");
+  expect(face?.querySelector("path")?.getAttribute("d")).toBe(IDENTICON_D);
+});
+
+test("every organization in the switcher's menu carries its face", async () => {
+  render(<App />);
+
+  const menu = await openSwitcher();
+  for (const [name, id] of [
+    ["Acme", "org_1"],
+    ["Globex", "org_2"],
+  ] as const) {
+    const item = within(menu).getByRole("menuitem", {
+      name: new RegExp(name),
+    });
+    expect(item.querySelector("path")?.getAttribute("d")).toBe(
+      identiconPath(id),
+    );
+  }
+});
+
+test("choosing another organization keeps you on the same screen in it", async () => {
+  // Inside an organization, so the URL has to follow: a switch that changed
+  // the page but left `/o/acme/...` in the address would reload to Acme.
+  window.history.replaceState(null, "", "/o/acme/settings");
+  render(<App />);
+
+  const menu = await openSwitcher();
+  fireEvent.click(within(menu).getByRole("menuitem", { name: /Globex/ }));
+
+  await waitFor(() => {
+    expect(window.location.pathname).toBe("/o/globex/settings");
+  });
+  expect(
+    await screen.findByRole("button", { name: "Switch workspace — Globex" }),
+  ).toBeTruthy();
+});
+
+test("switching away from a board lands on the new organization's Jira tab", async () => {
+  // The board belongs to the old organization, so its id cannot follow; the
+  // nearest screen the new one has is its own list of sites and boards.
+  window.history.replaceState(null, "", "/o/acme/jira/jrc_1/jrb_1");
+  render(<App />);
+
+  const menu = await openSwitcher();
+  fireEvent.click(within(menu).getByRole("menuitem", { name: /Globex/ }));
+
+  await waitFor(() => {
+    expect(window.location.pathname).toBe("/o/globex/settings");
+    expect(window.location.search).toBe("?connection=jira");
+  });
+});
+
+test("a switch outside any organization stays on that screen", async () => {
+  window.history.replaceState(null, "", "/account");
+  render(<App />);
+
+  const menu = await openSwitcher();
+  fireEvent.click(within(menu).getByRole("menuitem", { name: /Globex/ }));
+
+  expect(
+    await screen.findByRole("button", { name: "Switch workspace — Globex" }),
+  ).toBeTruthy();
+  expect(window.location.pathname).toBe("/account");
+});
+
+test("the switcher's search narrows the list and keeps its keystrokes", async () => {
+  render(<App />);
+
+  const menu = await openSwitcher();
+  const search = within(menu).getByRole("textbox", {
+    name: "Search workspaces",
+  });
+  // Radix's typeahead would take a "g" and move focus to the item starting
+  // with it; the field has to keep it.
+  await waitFor(() => expect(document.activeElement).toBe(search));
+  fireEvent.keyDown(search, { key: "g" });
+  // Radix moves typeahead focus on a timer, so give it one to act on.
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  });
+  expect(document.activeElement).toBe(search);
+  fireEvent.change(search, { target: { value: "glo" } });
+
+  expect(within(menu).queryByRole("menuitem", { name: /Acme/ })).toBeNull();
+  expect(within(menu).getByRole("menuitem", { name: /Globex/ })).toBeTruthy();
+
+  fireEvent.change(search, { target: { value: "nothing like it" } });
+  expect(within(menu).getByText("No workspaces match.")).toBeTruthy();
+});
+
+test("the switcher reaches the full list", async () => {
+  render(<App />);
+
+  const menu = await openSwitcher();
+  fireEvent.click(
+    within(menu).getByRole("menuitem", { name: "View all workspaces" }),
+  );
+  await waitFor(() => {
+    expect(window.location.pathname).toBe("/workspaces");
   });
 });
 
 // ---- organizations, and what is waiting -----------------------------------
 
-test("the rail offers organizations as a destination", async () => {
-  // It is the parent of most screens in this app and was reachable only
-  // through the avatar menu.
+test("the rail has no organizations destination", () => {
+  // The switcher at its head is where organizations are chosen; a second
+  // way in beside it said the same thing twice.
   render(<App />);
 
   const rail = screen.getByRole("navigation", { name: "Main" });
-  const button = within(rail).getByRole("link", { name: "Organizations" });
-  fireEvent.click(button);
-
-  await waitFor(() => {
-    expect(window.location.pathname).toBe("/organizations");
-  });
+  expect(within(rail).queryByRole("link", { name: "Workspaces" })).toBeNull();
 });
 
-test("the rail marks organizations while you are inside one", async () => {
-  // A rail that marks nothing while you are three levels into an
-  // organization says you are nowhere.
+test("home is not marked while you are inside an organization", async () => {
   window.history.replaceState(null, "", "/o/acme/jira");
   render(<App />);
 
-  const rail = screen.getByRole("navigation", { name: "Main" });
-  await waitFor(() => {
-    expect(
-      within(rail)
-        .getByRole("link", { name: "Organizations" })
-        .getAttribute("aria-current"),
-    ).toBe("page");
-  });
-  // And not Home, which is a different destination.
+  await screen.findByRole("button", { name: "Switch workspace — Acme" });
   expect(railHome().getAttribute("aria-current")).toBeNull();
+});
+
+test("the avatar is marked on the screens its menu leads to", async () => {
+  // Account and the organizations list are reached from the avatar's menu;
+  // without this the rail marks nothing while you are on them.
+  for (const path of ["/account", "/workspaces", "/workspaces/new"]) {
+    window.history.replaceState(null, "", path);
+    const { unmount } = render(<App />);
+
+    const avatar = await screen.findByRole("button", { name: AVATAR });
+    expect(avatar.getAttribute("aria-current"), path).toBe("page");
+    // The bare class, not `hover:bg-accent`, which every state carries.
+    expect(avatar.className.split(/\s+/), path).toContain("bg-accent");
+    // The fill alone: no border down its leading edge.
+    expect(avatar.className, path).not.toMatch(/border-l/);
+    expect(railHome().getAttribute("aria-current"), path).toBeNull();
+    unmount();
+  }
+});
+
+test("the avatar is not marked elsewhere", async () => {
+  // Home is the rail's own; an organization's pages are the switcher's.
+  for (const path of ["/", "/o/acme/jira"]) {
+    window.history.replaceState(null, "", path);
+    const { unmount } = render(<App />);
+
+    const avatar = await screen.findByRole("button", { name: AVATAR });
+    expect(avatar.getAttribute("aria-current"), path).toBeNull();
+    expect(avatar.className.split(/\s+/), path).not.toContain("bg-accent");
+    unmount();
+  }
 });
 
 test("a pending invitation marks the avatar", async () => {

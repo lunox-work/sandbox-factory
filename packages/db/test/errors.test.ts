@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { NotFoundError } from "../src/errors.js";
+import { isUniqueViolation, NotFoundError } from "../src/errors.js";
 
 test("NotFoundError names the id it was raised for", () => {
   // The id reaches the log and, through the route's error handler, the 404
@@ -17,4 +17,14 @@ test("NotFoundError is an Error, so `instanceof` routing works", () => {
   const error = new NotFoundError("jrb_1");
   assert.ok(error instanceof Error);
   assert.ok(error instanceof NotFoundError);
+});
+
+test("isUniqueViolation recognises Postgres' duplicate-key code", () => {
+  // `23505` is both a plain unique constraint and what the handle triggers
+  // raise when a claim is lost.
+  assert.equal(isUniqueViolation({ code: "23505" }), true);
+  assert.equal(isUniqueViolation({ code: "23503" }), false);
+  assert.equal(isUniqueViolation(new Error("no code")), false);
+  assert.equal(isUniqueViolation(null), false);
+  assert.equal(isUniqueViolation("23505"), false);
 });

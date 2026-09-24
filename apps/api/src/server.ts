@@ -13,6 +13,7 @@ import {
   createJiraBoardStore,
   createJiraConnectionStore,
   createJiraIssueStore,
+  createObjectStore,
   createOrganizationStore,
   createProfileStore,
   createRateCardStore,
@@ -22,6 +23,7 @@ import {
 import { buildBanner } from "@sandbox-factory/shared";
 
 import { createAuth } from "./auth.js";
+import { createAvatarService } from "./avatars/service.js";
 import { BountyExecutor } from "./bounty/executor.js";
 import { BountyDelivery } from "./bounty/delivery.js";
 import { BountyWatchdog } from "./bounty/watchdog.js";
@@ -30,6 +32,7 @@ import {
   buildInfo,
   deepseekSizingConfig,
   jiraOAuthConfig,
+  objectStoreConfig,
   parseEnv,
   sizingConfig,
 } from "./env.js";
@@ -221,6 +224,17 @@ const jira =
         appUrl: appUrl(env),
       };
 
+/**
+ * Avatar storage, when a bucket is configured: SeaweedFS locally, S3 in
+ * production. Undefined leaves the upload routes unmounted and everyone on
+ * their identicon or provider picture.
+ */
+const storage = objectStoreConfig(env);
+const avatars =
+  storage === undefined
+    ? undefined
+    : createAvatarService({ store: createObjectStore(storage) });
+
 const app = createApp({
   corsOrigins: env.CORS_ORIGINS,
   auth,
@@ -252,6 +266,7 @@ const app = createApp({
           promptVersion: JIRA_SIZE_PROMPT_VERSION,
         }),
   },
+  avatars,
   buildInfo: build,
   originVerify: env.ORIGIN_VERIFY,
 });

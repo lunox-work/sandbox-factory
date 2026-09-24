@@ -18,6 +18,8 @@ import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { bearer, organization } from "better-auth/plugins";
 import { normalizeHandle } from "sandbox-factory";
 
+import { admitsPicture, type AvatarKind } from "./avatars/keys.js";
+
 /**
  * The address a provider asserted during this request, keyed by provider id.
  * Hands it from `validateUserInfo`, the only callback that sees the provider's
@@ -90,6 +92,57 @@ export interface OAuthCredentials {
 
 export type Auth = ReturnType<typeof createAuth>;
 
+/**
+ * Refuses a picture value a client may not write: anything but null or that
+ * same owner's own avatar path. See `admitsPicture`.
+ *
+ * Both picture columns used to take any string — Better Auth's `update-user`
+ * for `user.image`, the plugin for `organization.logo` — so one account could
+ * aim everyone's browser at a URL of its choosing. With this in front of
+ * both, what the columns hold is safe to render.
+ */
+function requireOwnPicture(
+  value: unknown,
+  owner: { kind: AvatarKind; id: string },
+): void {
+  if (!admitsPicture(value, owner)) {
+    throw new APIError("BAD_REQUEST", {
+      code: "INVALID_IMAGE",
+      message: "Upload a picture instead of linking one.",
+    });
+  }
+}
+
+/**
+ * The `update-user` picture guard, apart from the database hook that calls it
+ * so it can be tested without a database behind a session.
+ *
+ * Runs on every user update Better Auth makes, so it looks only at updates
+ * that carry `image` and come from the `update-user` endpoint — sign-in and
+ * account linking have their own reasons to touch the row and are left alone.
+ *
+ * It runs inside the endpoint, after its session middleware, which is why it
+ * is a database hook and not a request hook: a request hook runs before the
+ * bearer plugin has turned an `Authorization` header into a session, and
+ * would see none. For the same reason a missing session fails closed here —
+ * only null gets through — rather than deferring to anything later.
+ */
+export function guardUserPicture(
+  update: Record<string, unknown>,
+  context: { path?: string | undefined; sessionUserId?: string | undefined },
+): void {
+  // `update-user` hands the adapter `{ name, image, ... }` whatever the client
+  // sent, so an untouched picture arrives as a present key holding undefined.
+  if (update["image"] === undefined || context.path !== "/update-user") {
+    return;
+  }
+  requireOwnPicture(update["image"], {
+    kind: "user",
+    // No session: an id no avatar path can carry, so only null is admitted.
+    id: context.sessionUserId ?? "",
+  });
+}
+
 export function createAuth({
   db,
   emails,
@@ -124,7 +177,7 @@ export function createAuth({
     if (normalized.status === "invalid") {
       throw new APIError("BAD_REQUEST", {
         code: "INVALID_ORGANIZATION_SLUG",
-        message: `Organization handle: ${normalized.reason}`,
+        message: `Workspace handle: ${normalized.reason}`,
       });
     }
     if (organizations !== undefined) {
@@ -132,17 +185,26 @@ export function createAuth({
       if (owner !== undefined) {
         throw new APIError("BAD_REQUEST", {
           code: "ORGANIZATION_SLUG_ALREADY_TAKEN",
-          message: "That organization handle is taken.",
+          message: "That workspace handle is taken.",
         });
       }
     }
     return normalized.handle;
   }
 
+  /**
+   * Why a personal organization's handle cannot be edited, and where to go
+   * instead. It is its owner's username and follows it (migration 0030), so
+   * the one handle a person manages is on their account.
+   */
+  const HANDLE_IS_USERNAME =
+    "A personal workspace's handle is your username. " +
+    "Change your username in Account settings to change it.";
+
   /** The one message these refusals share, and the remedy with it. */
   const NOT_SHAREABLE =
-    "A personal organization cannot have other members. " +
-    "Create a team organization to share with someone.";
+    "A personal workspace cannot have other members. " +
+    "Create a team workspace to share with someone.";
 
   /** Raised by the two guards below. */
   function personalRefusal(message: string): APIError {
@@ -183,6 +245,11 @@ export function createAuth({
       throw personalRefusal(message);
     }
   }
+
+  /** Why a personal organization has no picture of its own. */
+  const PICTURE_IS_OWNERS =
+    "A personal workspace wears your picture. " +
+    "Change it in Account settings.";
 
   return betterAuth({
     database: drizzleAdapter(db, {
@@ -275,6 +342,7 @@ export function createAuth({
       // `session`. Revocation lags by up to this window, so keep it small.
       cookieCache: { enabled: true, maxAge: 5 * 60 },
     },
+
     account: {
       accountLinking: {
         enabled: true,
@@ -355,6 +423,22 @@ export function createAuth({
     },
     databaseHooks: {
       user: {
+        /**
+         * `update-user` accepts any `image` string from the client. Only null
+         * or the caller's own avatar path gets through; the upload route
+         * writes through this same endpoint and passes because its value is
+         * exactly that. See `guardUserPicture`.
+         */
+        update: {
+          before: async (update, context) => {
+            guardUserPicture(update, {
+              path: context?.path,
+              sessionUserId: (
+                context?.context as { session?: { user?: { id?: string } } }
+              )?.session?.user?.id,
+            });
+          },
+        },
         create: {
           /**
            * Gives every new account a handle, derived from its email and made
@@ -417,19 +501,13 @@ export function createAuth({
               return;
             }
             try {
+              // Its handle is the username `before` just assigned, which the
+              // store reads back rather than taking from here: the database
+              // accepts nothing else for a personal organization.
               await organizations.createPersonal({
                 userId: createdUser.id,
                 // Their own name, which is what the switcher shows for it.
                 name: createdUser.name,
-                // The handle `before` just assigned. Better Auth types the
-                // additional fields as `{}`, so it is narrowed here rather
-                // than asserted. Users and organizations share one namespace,
-                // so this may already name a team; the store suffixes it.
-                preferredSlug:
-                  typeof createdUser.username === "string" &&
-                  createdUser.username !== ""
-                    ? createdUser.username
-                    : createdUser.id,
               });
             } catch (error) {
               console.error(
@@ -548,6 +626,14 @@ export function createAuth({
            * a handle no URL could carry.
            */
           beforeCreateOrganization: async ({ organization: incoming }) => {
+            // A new organization has no id yet, so no avatar path can be its
+            // own: a picture comes after, through the upload route.
+            if (incoming.logo !== undefined && incoming.logo !== null) {
+              requireOwnPicture(incoming.logo, {
+                kind: "organization",
+                id: "",
+              });
+            }
             const slug = await requireFreeHandle(incoming.slug, undefined);
             return { data: { ...incoming, slug } };
           },
@@ -565,9 +651,30 @@ export function createAuth({
             organization: incoming,
             member,
           }) => {
+            /*
+             * The picture: null, or this organization's own avatar path, and
+             * never a picture at all on a personal one, which wears its
+             * owner's. The upload route writes through the store instead, so
+             * this binds clients only.
+             */
+            if (incoming.logo !== undefined) {
+              requireOwnPicture(incoming.logo, {
+                kind: "organization",
+                id: member.organizationId,
+              });
+              if (incoming.logo !== null) {
+                await refusePersonalById(
+                  member.organizationId,
+                  PICTURE_IS_OWNERS,
+                );
+              }
+            }
             if (incoming.slug === undefined) {
               return;
             }
+            // Refused here with the remedy, rather than left to the database
+            // trigger, which would refuse it too but as a 500.
+            await refusePersonalById(member.organizationId, HANDLE_IS_USERNAME);
             const slug = await requireFreeHandle(
               incoming.slug,
               member.organizationId,
@@ -614,7 +721,7 @@ export function createAuth({
           beforeDeleteOrganization: async ({ organization: target }) => {
             if (isPersonal(target)) {
               throw personalRefusal(
-                "Your personal organization cannot be deleted. " +
+                "Your personal workspace cannot be deleted. " +
                   "It is removed with your account.",
               );
             }

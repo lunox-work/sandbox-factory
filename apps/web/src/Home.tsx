@@ -8,9 +8,11 @@
  * organization comes first, under their own name — it is the one they always
  * have.
  *
- * Connecting is done on an organization's own Jira page, not here: the OAuth
+ * Connecting is done in an organization's own settings, not here: the OAuth
  * flow has to name one organization, and a button that silently picked one
- * would attach a client's site to the wrong owner.
+ * would attach a client's site to the wrong owner. So the empty state's
+ * "Connect Jira" opens the organization chosen in the switcher at the head of
+ * the rail, which is on screen beside it and says whose it will be.
  *
  * Only working connections are listed. A connection goes unhealthy when
  * Atlassian refuses the credential — a revoked grant, or a refresh token
@@ -41,11 +43,11 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 
+import { JiraIcon } from "./ProviderIcon";
 import { useConnections, type ConnectionGroup } from "./useConnections";
 import { useJiraOutcome } from "./useJira";
 import { ConnectionRow, OutcomeBanner } from "./Jira";
 import { isPlainLeftClick, pathForScreen } from "./routes";
-import type { JiraConnection } from "./useJira";
 
 /** Whether a group has anything worth a card. */
 function hasSomethingToShow(group: ConnectionGroup): boolean {
@@ -77,13 +79,9 @@ function groupLabel(organization: MembershipDto): string {
 function Group({
   group,
   onOpen,
-  onOpenSite,
 }: {
   group: ConnectionGroup;
   onOpen: (organization: MembershipDto) => void;
-  onOpenSite?:
-    | ((organization: MembershipDto, connection: JiraConnection) => void)
-    | undefined;
 }) {
   const { organization, connections, failed } = group;
 
@@ -108,7 +106,13 @@ function Group({
         </div>
         <Button variant="ghost" size="sm" className="shrink-0 gap-1" asChild>
           <a
-            href={pathForScreen("org-jira", organization.slug)}
+            href={pathForScreen(
+              "org-settings",
+              organization.slug,
+              undefined,
+              undefined,
+              "jira",
+            )}
             onClick={(event) => {
               if (isPlainLeftClick(event)) {
                 event.preventDefault();
@@ -140,21 +144,31 @@ function Group({
                   <ConnectionRow
                     key={connection.id}
                     connection={connection}
+                    // A site has no page of its own: its boards are listed
+                    // in the Jira tab of the organization that owns it. The
+                    // organization travels with the row, since a connection
+                    // does not carry its owner.
                     href={pathForScreen(
-                      "org-jira-site",
+                      "org-settings",
                       organization.slug,
-                      connection.id,
+                      undefined,
+                      undefined,
+                      "jira",
                     )}
-                    // The organization travels with the site: a URL names
-                    // both, and a connection does not carry its owner.
-                    onOpen={() => onOpenSite?.(organization, connection)}
+                    onOpen={() => onOpen(organization)}
                   />
                 ))}
               </ul>
             )}
             {broken > 0 && (
               <a
-                href={pathForScreen("org-jira", organization.slug)}
+                href={pathForScreen(
+                  "org-settings",
+                  organization.slug,
+                  undefined,
+                  undefined,
+                  "jira",
+                )}
                 onClick={(event) => {
                   if (isPlainLeftClick(event)) {
                     event.preventDefault();
@@ -179,20 +193,18 @@ function Group({
 export function Home({
   organizations,
   organizationsLoading,
+  activeOrganization,
   onOpen,
-  onOpenSite,
 }: {
   organizations: MembershipDto[];
   organizationsLoading: boolean;
-  /** Opens the organization's own Jira page: the list, and the way to add. */
-  onOpen: (organization: MembershipDto) => void;
+  /** The organization chosen in the switcher; where "Connect Jira" goes. */
+  activeOrganization: MembershipDto | null;
   /**
-   * Opens one connected site. Optional so this page can be rendered in a test
-   * without the shell's navigation, as `onOpen` already is elsewhere.
+   * Opens the organization's settings on its Jira tab: the list, and the way
+   * to add.
    */
-  onOpenSite?:
-    | ((organization: MembershipDto, connection: JiraConnection) => void)
-    | undefined;
+  onOpen: (organization: MembershipDto) => void;
 }) {
   const { groups, loading, error, total } = useConnections(
     organizations,
@@ -207,13 +219,18 @@ export function Home({
 
   // Organizations with nothing to show are left out; see the note at the top.
   const visible = groups.filter(hasSomethingToShow);
+  // Only once the answer is known, so a failed read is not called a fresh
+  // start.
+  const onboarding = !loading && error === null && visible.length === 0;
 
   return (
     <main className="mx-auto flex w-full max-w-2xl flex-col gap-6 px-4 py-10 sm:px-6 sm:py-14">
       <header>
-        <h1 className="text-2xl font-semibold tracking-tight">Connections</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">
+          {onboarding ? "Onboarding" : "Connections"}
+        </h1>
         <p className="text-muted-foreground mt-1.5 text-sm">
-          Jira sites you and your organizations can read boards from.
+          Jira sites you and your workspaces can read boards from.
         </p>
       </header>
 
@@ -235,24 +252,21 @@ export function Home({
             <CardTitle>No sites connected yet</CardTitle>
             <CardDescription>
               {groups.length === 0
-                ? "You are not in an organization yet, so there is nowhere to connect a site."
-                : "Connecting happens on an organization\u2019s own page, because a site belongs to one owner."}
+                ? "You are not in a workspace yet, so there is nowhere to connect a site."
+                : "Connecting happens in a workspace\u2019s own settings, because a site belongs to one owner."}
             </CardDescription>
           </CardHeader>
-          {groups.length > 0 && (
-            <CardContent className="flex flex-wrap gap-2">
-              {order(groups).map((group) => (
-                <Button
-                  key={group.organization.id}
-                  variant="outline"
-                  size="sm"
-                  className="gap-2"
-                  onClick={() => onOpen(group.organization)}
-                >
-                  <Link2 className="size-4" />
-                  {groupLabel(group.organization)}
-                </Button>
-              ))}
+          {groups.length > 0 && activeOrganization !== null && (
+            <CardContent>
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-2"
+                onClick={() => onOpen(activeOrganization)}
+              >
+                <JiraIcon />
+                Connect Jira
+              </Button>
             </CardContent>
           )}
         </Card>
@@ -265,12 +279,7 @@ export function Home({
             </p>
           )}
           {order(visible).map((group) => (
-            <Group
-              key={group.organization.id}
-              group={group}
-              onOpen={onOpen}
-              onOpenSite={onOpenSite}
-            />
+            <Group key={group.organization.id} group={group} onOpen={onOpen} />
           ))}
         </>
       )}

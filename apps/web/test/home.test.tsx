@@ -21,7 +21,7 @@ const personal = {
   name: "Dana",
   slug: "dana",
   kind: "personal" as const,
-  role: "owner",
+  role: "owner" as const,
 };
 
 const acme = {
@@ -29,7 +29,7 @@ const acme = {
   name: "Acme",
   slug: "acme",
   kind: "team" as const,
-  role: "member",
+  role: "member" as const,
 };
 
 function connection(overrides: {
@@ -83,6 +83,7 @@ test("each connection is listed under the organization that owns it", async () =
     <Home
       organizations={[personal, acme]}
       organizationsLoading={false}
+      activeOrganization={null}
       onOpen={vi.fn()}
     />,
   );
@@ -110,6 +111,7 @@ test("the personal organization is shown as the person's own account", async () 
     <Home
       organizations={[personal]}
       organizationsLoading={false}
+      activeOrganization={null}
       onOpen={vi.fn()}
     />,
   );
@@ -133,6 +135,7 @@ test("the personal organization sorts first", async () => {
     <Home
       organizations={[acme, personal]}
       organizationsLoading={false}
+      activeOrganization={null}
       onOpen={vi.fn()}
     />,
   );
@@ -158,6 +161,7 @@ test("one organization failing does not empty the others", async () => {
     <Home
       organizations={[personal, acme]}
       organizationsLoading={false}
+      activeOrganization={null}
       onOpen={vi.fn()}
     />,
   );
@@ -168,17 +172,22 @@ test("one organization failing does not empty the others", async () => {
 
 test("belonging to no organization says so rather than showing nothing", async () => {
   render(
-    <Home organizations={[]} organizationsLoading={false} onOpen={vi.fn()} />,
+    <Home
+      organizations={[]}
+      organizationsLoading={false}
+      activeOrganization={null}
+      onOpen={vi.fn()}
+    />,
   );
 
   await waitFor(() => {
     expect(screen.getByText("No sites connected yet")).toBeTruthy();
   });
-  expect(screen.getByText(/not in an organization yet/)).toBeTruthy();
+  expect(screen.getByText(/not in a workspace yet/)).toBeTruthy();
 });
 
 test("Manage opens that organization", async () => {
-  // Connecting happens on the organization's own page, because the OAuth flow
+  // Connecting happens in the organization's own settings, because the OAuth flow
   // has to name one owner.
   byOrganization = {
     org_acme: [connection({ id: "jrc_1", siteName: "Client" })],
@@ -189,6 +198,7 @@ test("Manage opens that organization", async () => {
     <Home
       organizations={[acme]}
       organizationsLoading={false}
+      activeOrganization={null}
       onOpen={onOpen}
     />,
   );
@@ -220,6 +230,7 @@ test("an unhealthy connection is not listed", async () => {
     <Home
       organizations={[acme]}
       organizationsLoading={false}
+      activeOrganization={null}
       onOpen={vi.fn()}
     />,
   );
@@ -242,6 +253,7 @@ test("unhealthy connections are reported as a count", async () => {
     <Home
       organizations={[acme]}
       organizationsLoading={false}
+      activeOrganization={null}
       onOpen={vi.fn()}
     />,
   );
@@ -260,6 +272,7 @@ test("the reconnect count is singular for one", async () => {
     <Home
       organizations={[acme]}
       organizationsLoading={false}
+      activeOrganization={null}
       onOpen={vi.fn()}
     />,
   );
@@ -279,6 +292,7 @@ test("a group of only unhealthy connections does not read as empty", async () =>
     <Home
       organizations={[acme]}
       organizationsLoading={false}
+      activeOrganization={null}
       onOpen={vi.fn()}
     />,
   );
@@ -301,6 +315,7 @@ test("the reconnect count opens that organization", async () => {
     <Home
       organizations={[acme]}
       organizationsLoading={false}
+      activeOrganization={null}
       onOpen={onOpen}
     />,
   );
@@ -323,6 +338,7 @@ test("only unhealthy connections says nothing is readable", async () => {
     <Home
       organizations={[acme]}
       organizationsLoading={false}
+      activeOrganization={null}
       onOpen={vi.fn()}
     />,
   );
@@ -349,6 +365,7 @@ test("an organization with no connections is not shown", async () => {
     <Home
       organizations={[personal, acme]}
       organizationsLoading={false}
+      activeOrganization={null}
       onOpen={vi.fn()}
     />,
   );
@@ -369,6 +386,7 @@ test("an organization that failed to load is still shown", async () => {
     <Home
       organizations={[personal, acme]}
       organizationsLoading={false}
+      activeOrganization={null}
       onOpen={vi.fn()}
     />,
   );
@@ -389,6 +407,7 @@ test("an organization holding only broken connections is still shown", async () 
     <Home
       organizations={[personal, acme]}
       organizationsLoading={false}
+      activeOrganization={null}
       onOpen={vi.fn()}
     />,
   );
@@ -397,10 +416,45 @@ test("an organization holding only broken connections is still shown", async () 
   expect(screen.queryByText("Personal")).toBeNull();
 });
 
-test("with organizations but no connections, each is offered to connect", async () => {
-  // The empty state has to lead somewhere: connecting happens on an
-  // organization's own page, so it names them rather than saying "open one
-  // below" when there is nothing below.
+test("with nothing connected, the page is onboarding", async () => {
+  byOrganization = { org_personal: [], org_acme: [] };
+
+  render(
+    <Home
+      organizations={[personal, acme]}
+      organizationsLoading={false}
+      activeOrganization={null}
+      onOpen={vi.fn()}
+    />,
+  );
+
+  expect(
+    await screen.findByRole("heading", { level: 1, name: "Onboarding" }),
+  ).toBeTruthy();
+});
+
+test("with something connected, the page is still Connections", async () => {
+  byOrganization = { org_acme: [connection({ id: "jrc_1", siteName: "C" })] };
+
+  render(
+    <Home
+      organizations={[acme]}
+      organizationsLoading={false}
+      activeOrganization={null}
+      onOpen={vi.fn()}
+    />,
+  );
+
+  expect(await screen.findByText("C")).toBeTruthy();
+  expect(
+    screen.getByRole("heading", { level: 1, name: "Connections" }),
+  ).toBeTruthy();
+});
+
+test("Connect Jira opens the workspace chosen in the switcher", async () => {
+  // Connecting happens on an organization's own page, because a site belongs
+  // to one owner. The switcher at the head of the rail names that owner, so
+  // the button follows it rather than guessing, and rather than asking again.
   byOrganization = { org_personal: [], org_acme: [] };
   const onOpen = vi.fn();
 
@@ -408,19 +462,17 @@ test("with organizations but no connections, each is offered to connect", async 
     <Home
       organizations={[personal, acme]}
       organizationsLoading={false}
+      activeOrganization={acme}
       onOpen={onOpen}
     />,
   );
 
-  await waitFor(() => {
-    expect(screen.getByText("No sites connected yet")).toBeTruthy();
-  });
-  expect(
-    screen.getByText(/Connecting happens on an organization/),
-  ).toBeTruthy();
-
-  await userEvent.click(screen.getByRole("button", { name: /Personal/ }));
-  expect(onOpen).toHaveBeenCalledWith(personal);
+  await userEvent.click(
+    await screen.findByRole("button", { name: "Connect Jira" }),
+  );
+  expect(onOpen).toHaveBeenCalledWith(acme);
+  expect(screen.queryByRole("menu")).toBeNull();
+  expect(screen.queryByRole("button", { name: /Personal/ })).toBeNull();
 });
 
 // ---- the page opens like every other one ----------------------------------
@@ -435,6 +487,7 @@ test("home has the same top padding as the other pages", async () => {
     <Home
       organizations={[acme]}
       organizationsLoading={false}
+      activeOrganization={null}
       onOpen={vi.fn()}
     />,
   );
@@ -448,62 +501,32 @@ test("home has the same top padding as the other pages", async () => {
   expect(main?.className).toContain("sm:py-14");
 });
 
-// ---- a listed site is a way into it ---------------------------------------
+// ---- a listed site is a way to its boards ---------------------------------
 //
-// The sites on this page were inert text. The only control was a ghost
-// "Manage" leading to the organization's Jira list — one step short of the
-// site the reader was already looking at.
+// The sites on this page were inert text. A site has no page of its own, so
+// its row leads where its boards are: the Jira tab of the organization that
+// owns it.
 
-test("a listed site opens that site", async () => {
-  byOrganization = {
-    org_acme: [connection({ id: "jrc_1", siteName: "Client" })],
-  };
-  const onOpenSite = vi.fn();
-
-  render(
-    <Home
-      organizations={[acme]}
-      organizationsLoading={false}
-      onOpen={vi.fn()}
-      onOpenSite={onOpenSite}
-    />,
-  );
-
-  await waitFor(() => {
-    expect(screen.getByText("Client")).toBeTruthy();
-  });
-  await userEvent.click(screen.getByText("Client"));
-
-  // Both halves: which site, and which organization owns it — the second is
-  // what the URL needs, and it is not on the connection.
-  expect(onOpenSite).toHaveBeenCalledTimes(1);
-  expect(onOpenSite.mock.calls[0]?.[0]).toEqual(acme);
-  expect(onOpenSite.mock.calls[0]?.[1]).toMatchObject({ id: "jrc_1" });
-});
-
-test("Manage still opens the organization, not the site", async () => {
-  // The two destinations are different: one site, or the list and the way to
-  // connect another.
+test("a listed site opens its organization's Jira tab", async () => {
   byOrganization = {
     org_acme: [connection({ id: "jrc_1", siteName: "Client" })],
   };
   const onOpen = vi.fn();
-  const onOpenSite = vi.fn();
 
   render(
     <Home
       organizations={[acme]}
       organizationsLoading={false}
+      activeOrganization={null}
       onOpen={onOpen}
-      onOpenSite={onOpenSite}
     />,
   );
 
-  await waitFor(() => {
-    expect(screen.getByRole("link", { name: /Manage/ })).toBeTruthy();
-  });
-  await userEvent.click(screen.getByRole("link", { name: /Manage/ }));
+  const row = await screen.findByRole("link", { name: /Client/ });
+  expect(row.getAttribute("href")).toBe("/o/acme/settings?connection=jira");
+  await userEvent.click(row);
 
+  // The organization, which is what the URL needs and the connection does
+  // not carry.
   expect(onOpen).toHaveBeenCalledWith(acme);
-  expect(onOpenSite).not.toHaveBeenCalled();
 });

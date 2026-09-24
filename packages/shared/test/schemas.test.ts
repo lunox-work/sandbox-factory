@@ -77,6 +77,33 @@ test("membershipSchema keeps the id and the handle apart", () => {
   assert.equal(parsed.slug, "acme");
 });
 
+test("organizationSummarySchema accepts a summary with no image", () => {
+  // An API that predates uploads sends none; that is "no picture".
+  const parsed = organizationSummarySchema.parse({
+    id: "org_1",
+    name: "Acme",
+    slug: "acme",
+  });
+  assert.equal(parsed.image, undefined);
+  assert.equal(
+    organizationSummarySchema.parse({ ...parsed, image: null }).image,
+    null,
+  );
+});
+
+test("organizationSummarySchema keeps an uploaded picture's path", () => {
+  const image = `/api/avatars/organization/org_1/${"c".repeat(64)}.webp`;
+  assert.equal(
+    organizationSummarySchema.parse({
+      id: "org_1",
+      name: "Acme",
+      slug: "acme",
+      image,
+    }).image,
+    image,
+  );
+});
+
 test("organizationSummarySchema defaults kind to team", () => {
   // A response from an API that predates personal organizations carries no
   // `kind`, and it is a team — so parsing must not fail on the old shape.

@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { runWithRequestState } from "@better-auth/core/context";
 import type { OrganizationStore } from "@sandbox-factory/db";
 
-import { createAuth, type AuthOptions } from "../src/auth.js";
+import { createAuth, guardUserPicture, type AuthOptions } from "../src/auth.js";
 
 /**
  * These build a real Better Auth instance and inspect its configuration. No
@@ -699,6 +699,7 @@ function fakeOrganizations(held: Record<string, string> = {}) {
       store.touched.push(id);
       return Promise.resolve();
     },
+    setLogo: () => Promise.resolve(),
   };
   return store;
 }
@@ -714,10 +715,10 @@ function orgOptions(auth: ReturnType<typeof createAuth>) {
 
 type OrganizationHooks = {
   beforeCreateOrganization?: (data: {
-    organization: { slug?: string; name?: string };
+    organization: { slug?: string; name?: string; logo?: string | null };
   }) => Promise<{ data: { slug: string } } | void>;
   beforeUpdateOrganization?: (data: {
-    organization: { slug?: string };
+    organization: { slug?: string; logo?: string | null };
     member: { organizationId: string };
   }) => Promise<{ data: { slug: string } } | void>;
   afterUpdateOrganization?: (data: {
@@ -989,20 +990,12 @@ test("any signed-in user may create an organization", () => {
 /** Records what `createPersonal` was asked for. */
 function recordingOrganizations(onCreate?: () => Promise<never>): {
   store: OrganizationStore;
-  created: Array<{ userId: string; name: string; preferredSlug: string }>;
+  created: Array<{ userId: string; name: string }>;
 } {
-  const created: Array<{
-    userId: string;
-    name: string;
-    preferredSlug: string;
-  }> = [];
+  const created: Array<{ userId: string; name: string }> = [];
   const store = {
     ...fakeOrganizations(),
-    createPersonal: (input: {
-      userId: string;
-      name: string;
-      preferredSlug: string;
-    }) => {
+    createPersonal: (input: { userId: string; name: string }) => {
       created.push(input);
       if (onCreate !== undefined) {
         return onCreate();
@@ -1010,7 +1003,7 @@ function recordingOrganizations(onCreate?: () => Promise<never>): {
       return Promise.resolve({
         id: "org_personal",
         name: input.name,
-        slug: input.preferredSlug,
+        slug: "dana",
         kind: "personal" as const,
       });
     },
@@ -1028,34 +1021,9 @@ test("a new user gets a personal organization named after them", async () => {
     username: "dana",
   });
 
-  assert.deepEqual(created, [
-    { userId: "user_1", name: "Dana", preferredSlug: "dana" },
-  ]);
-});
-
-test("the personal organization takes the handle assigned at signup", async () => {
-  // `before` assigns the handle; this runs after, so it is already set.
-  const { store, created } = recordingOrganizations();
-  const auth = createAuth({ ...options, organizations: store });
-
-  await userCreateAfterHook(auth)({
-    id: "user_2",
-    name: "Sam Smith",
-    username: "sam",
-  });
-
-  assert.equal(created[0]?.preferredSlug, "sam");
-});
-
-test("a user with no handle falls back to their id", async () => {
-  // Not reachable while `before` always assigns one, but a slug is required
-  // and an empty one would make an unreachable URL.
-  const { store, created } = recordingOrganizations();
-  const auth = createAuth({ ...options, organizations: store });
-
-  await userCreateAfterHook(auth)({ id: "user_3", name: "Nameless" });
-
-  assert.equal(created[0]?.preferredSlug, "user_3");
+  // No handle is passed: the store reads the username back, because the
+  // database accepts nothing else for a personal organization.
+  assert.deepEqual(created, [{ userId: "user_1", name: "Dana" }]);
 });
 
 test("a failure to create the personal organization does not fail the signup", async () => {
@@ -1126,6 +1094,43 @@ test("inviting someone to a personal organization is refused", async () => {
   );
 });
 
+test("a personal organization's handle cannot be renamed on its own", async () => {
+  // It is its owner's username and follows it; the one handle a person
+  // manages is on their account. Refused here with that remedy, rather than
+  // by the database trigger as a 500.
+  const auth = createAuth({
+    ...options,
+    organizations: organizationsOfKind("personal"),
+  });
+
+  await assert.rejects(
+    async () =>
+      orgHooks(auth).beforeUpdateOrganization?.({
+        organization: { slug: "something-else" },
+        member: { organizationId: "org_1" },
+      }),
+    (error: { body?: { code?: string; message?: string } }) => {
+      assert.equal(error.body?.code, "PERSONAL_ORGANIZATION");
+      assert.match(String(error.body?.message), /Account settings/);
+      return true;
+    },
+  );
+});
+
+test("a team organization's handle can still be renamed", async () => {
+  const auth = createAuth({
+    ...options,
+    organizations: organizationsOfKind("team"),
+  });
+
+  const result = await orgHooks(auth).beforeUpdateOrganization?.({
+    organization: { slug: "New-Handle" },
+    member: { organizationId: "org_1" },
+  });
+
+  assert.equal(result?.data.slug, "new-handle");
+});
+
 test("inviting someone to a team organization still works", async () => {
   // The guard must be specific: this is the ordinary case it sits in front of.
   const auth = createAuth({
@@ -1192,5 +1197,170 @@ test("adding a member to a team organization is allowed", async () => {
       orgHooks(auth).beforeAddMember?.({
         organization: { id: "org_1", kind: "team" },
       }) ?? Promise.resolve(),
+  );
+});
+
+// ---- pictures ---------------------------------------------------------------
+//
+// Both picture columns are rendered, so neither may hold a URL a client
+// chose. `update-user` and the plugin's create and update each accepted any
+// string; these pin the guards that now stand in front of all three.
+
+const ownUserPicture = `/api/avatars/user/user_1/${"a".repeat(64)}.webp`;
+const orgPicture = (id: string) =>
+  `/api/avatars/organization/${id}/${"b".repeat(64)}.webp`;
+
+function refusedAsInvalidImage(error: { body?: { code?: string } }): boolean {
+  return error.body?.code === "INVALID_IMAGE";
+}
+
+test("the update-user picture guard is installed as a user update hook", () => {
+  const hooks = (
+    createAuth(options).options as {
+      databaseHooks?: { user?: { update?: { before?: unknown } } };
+    }
+  ).databaseHooks;
+  assert.equal(typeof hooks?.user?.update?.before, "function");
+});
+
+const fromCaller = { path: "/update-user", sessionUserId: "user_1" };
+
+test("update-user accepts null and the caller's own avatar path", () => {
+  guardUserPicture({ image: null }, fromCaller);
+  guardUserPicture({ image: ownUserPicture }, fromCaller);
+});
+
+test("update-user refuses a foreign URL or another account's avatar", () => {
+  for (const image of [
+    "https://evil.example/tracker.png",
+    ownUserPicture.replace("user_1", "user_2"),
+    orgPicture("org_1"),
+    "",
+  ]) {
+    assert.throws(
+      () => guardUserPicture({ image }, fromCaller),
+      refusedAsInvalidImage,
+      image,
+    );
+  }
+});
+
+test("the guard leaves alone updates that are not a client's picture change", () => {
+  // A rename — which Better Auth passes with `image: undefined` present — and
+  // sign-in or linking touching the row for their own reasons.
+  guardUserPicture({ name: "Dana" }, fromCaller);
+  guardUserPicture({ name: "Dana", image: undefined }, fromCaller);
+  guardUserPicture(
+    { image: "https://provider.example/me.png" },
+    { path: "/callback/:id", sessionUserId: undefined },
+  );
+  guardUserPicture({ image: "https://provider.example/me.png" }, {});
+});
+
+test("without a session, update-user admits only null", () => {
+  const noSession = { path: "/update-user", sessionUserId: undefined };
+
+  guardUserPicture({ image: null }, noSession);
+  assert.throws(
+    () => guardUserPicture({ image: ownUserPicture }, noSession),
+    refusedAsInvalidImage,
+  );
+});
+
+test("the installed hook reads the caller from the endpoint's session", async () => {
+  const before = (
+    createAuth(options).options as {
+      databaseHooks: {
+        user: {
+          update: {
+            before: (
+              update: Record<string, unknown>,
+              context: unknown,
+            ) => Promise<unknown>;
+          };
+        };
+      };
+    }
+  ).databaseHooks.user.update.before;
+  const context = {
+    path: "/update-user",
+    context: { session: { user: { id: "user_1" } } },
+  };
+
+  await before({ image: ownUserPicture }, context);
+  await assert.rejects(
+    before({ image: "https://evil.example/x.png" }, context),
+    refusedAsInvalidImage,
+  );
+  // No endpoint context at all: an internal update, not a client's.
+  await before({ image: "https://evil.example/x.png" }, null);
+});
+
+test("a new organization cannot be created with a picture", async () => {
+  const auth = createAuth({ ...options, organizations: fakeOrganizations() });
+
+  await assert.rejects(
+    async () =>
+      orgHooks(auth).beforeCreateOrganization?.({
+        organization: {
+          slug: "acme",
+          name: "Acme",
+          logo: "https://evil.example/logo.png",
+        },
+      }),
+    refusedAsInvalidImage,
+  );
+
+  // Null is the absence of one, and passes.
+  const result = await orgHooks(auth).beforeCreateOrganization?.({
+    organization: { slug: "acme", name: "Acme", logo: null },
+  });
+  assert.equal(result?.data.slug, "acme");
+});
+
+test("a team's picture may be set only to its own avatar path, or cleared", async () => {
+  const auth = createAuth({
+    ...options,
+    organizations: organizationsOfKind("team"),
+  });
+  const update = (logo: string | null) =>
+    orgHooks(auth).beforeUpdateOrganization?.({
+      organization: { logo },
+      member: { organizationId: "org_1" },
+    });
+
+  assert.equal(await update(orgPicture("org_1")), undefined);
+  assert.equal(await update(null), undefined);
+
+  for (const logo of [
+    "https://evil.example/logo.png",
+    orgPicture("org_2"),
+    ownUserPicture,
+  ]) {
+    await assert.rejects(async () => update(logo), refusedAsInvalidImage, logo);
+  }
+});
+
+test("a personal workspace cannot be given a picture, but may be cleared", async () => {
+  const auth = createAuth({
+    ...options,
+    organizations: organizationsOfKind("personal"),
+  });
+
+  await assert.rejects(
+    async () =>
+      orgHooks(auth).beforeUpdateOrganization?.({
+        organization: { logo: orgPicture("org_1") },
+        member: { organizationId: "org_1" },
+      }),
+    (error: { body?: { code?: string } }) =>
+      error.body?.code === "PERSONAL_ORGANIZATION",
+  );
+  assert.equal(
+    await orgHooks(auth).beforeUpdateOrganization?.({
+      organization: { logo: null },
+      member: { organizationId: "org_1" },
+    }),
+    undefined,
   );
 });

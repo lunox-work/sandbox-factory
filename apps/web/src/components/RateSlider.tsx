@@ -1,5 +1,12 @@
 import { maximumRateCardMinor } from "sandbox-factory";
-import { useEffect, useId, useRef, useState, type RefObject } from "react";
+import {
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type RefObject,
+} from "react";
 
 import {
   formatRateAmount,
@@ -335,7 +342,11 @@ export function RateSlider({
   const hintId = useId();
   const trackRef = useRef<HTMLDivElement>(null);
   const [trackWidth, setTrackWidth] = useState(480);
-  useEffect(() => {
+  // The handles arrive where they belong rather than gliding in from the
+  // guessed width: measure before the first paint, and keep the reframing
+  // transition off until that measured layout has been painted.
+  const [settled, setSettled] = useState(false);
+  useLayoutEffect(() => {
     const track = trackRef.current;
     if (!track) return;
     const measure = () => {
@@ -345,7 +356,13 @@ export function RateSlider({
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(track);
-    return () => observer.disconnect();
+    let frame = requestAnimationFrame(() => {
+      frame = requestAnimationFrame(() => setSettled(true));
+    });
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
   }, []);
   const small = parseRateAmount(values.XS ?? "", 0);
   const large = parseRateAmount(values.XL ?? "", 0);
@@ -514,6 +531,7 @@ export function RateSlider({
             ref={trackRef}
             className="relative h-8"
             data-rate-dragging={dragRange !== null}
+            data-rate-settled={settled}
           >
             <div
               aria-hidden="true"

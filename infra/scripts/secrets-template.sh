@@ -172,18 +172,16 @@ DEEPSEEK_SIZING_MODEL=$(value_of DEEPSEEK_SIZING_MODEL)
 # a stranger who resolved the origin record.
 # ORIGIN_VERIFY=
 
-# ---- object storage (SeaweedFS S3 gateway) --------------------------------
+# ---- object storage (uploaded avatars) ----------------------------------
 #
-# Unset in production, and correctly so: nothing in the API consumes object
-# storage yet (packages/db/src/objects.ts is written and tested but has no
-# caller), and env.ts treats the whole group as optional.
-#
-# When a feature needs it, the target is an S3 bucket rather than SeaweedFS —
-# the code is not SeaweedFS-specific — and these move to Secrets Manager
-# alongside the rest, with S3_ENDPOINT left unset so the SDK uses AWS directly.
+# Not set here, and correctly so. In production the bucket and region are
+# plain ECS environment (infra/ecs.tf), there is no endpoint, so the SDK talks
+# to AWS, and there are no keys: the task role grants access (infra/iam.tf).
+# None of these is a secret, so none is in Secrets Manager, and a value here
+# would never reach the task.
 
 # S3_ENDPOINT=
-# S3_BUCKET=sandbox-factory
+# S3_BUCKET=
 # S3_ACCESS_KEY_ID=
 # S3_SECRET_ACCESS_KEY=
 # S3_REGION=us-east-1

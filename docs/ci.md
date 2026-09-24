@@ -6,6 +6,7 @@ protection on `main`.
 | Workflow              | Does                                                                    |
 | --------------------- | ----------------------------------------------------------------------- |
 | `ci.yml`              | Lint, format, build, test on Node 22 and 24                             |
+| `autofix.yml`         | Pushes `npm run format` fixes to same-repository PRs                    |
 | `codeql.yml`          | Security analysis — the `Analyze` check                                 |
 | `auto-merge.yml`      | Arms auto-merge on every PR                                             |
 | `labeler.yml`         | Labels PRs by path                                                      |
@@ -102,6 +103,13 @@ skipping, and asserts the build recorded its commit.
 
 - **Format is a separate gate from lint.** `npm run lint` is `tsc --noEmit`.
   Unformatted Markdown fails CI as hard as unformatted TypeScript.
+  [`autofix.yml`](../.github/workflows/autofix.yml) runs `npm run format` on
+  each same-repository PR and pushes any diff as a `style:` commit, which
+  reruns CI. It uses `AUTO_MERGE_TOKEN` for the push, so CI fires on the new
+  head, and never in the job that runs the PR's code. It skips forks,
+  Dependabot and `.github/workflows/` (the token has no Workflows permission).
+  Type errors have no mechanical fix; the review gate's `fix-ci` repair covers
+  them.
 - **`npm test` tests compiled output**, via `tsconfig.test.json` into
   `dist-test/`, catching module-resolution and emit problems a TypeScript-native
   runner would paper over.

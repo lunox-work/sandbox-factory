@@ -17,12 +17,14 @@ const acme = {
   id: "org_1",
   name: "Acme",
   slug: "acme",
+  kind: "team",
   role: "owner",
 } as const;
 const globex = {
   id: "org_2",
   name: "Globex",
   slug: "globex",
+  kind: "team",
   role: "member",
 } as const;
 
@@ -105,7 +107,7 @@ test("an empty list explains what an organization is for", () => {
   // Someone seeing this has never made one, so "no results" would not help.
   show({ organizations: [] });
 
-  expect(screen.getByText(/not in an organization yet/i)).toBeTruthy();
+  expect(screen.getByText(/not in a workspace yet/i)).toBeTruthy();
   // Scoped to the card: the page subtitle also says "shared workspaces", and
   // the point here is that the *empty state* explains itself.
   expect(
@@ -119,7 +121,7 @@ test("the empty state offers a way to create one", () => {
   // Two create buttons exist on an empty page: the header's and the card's.
   // Either must work.
   for (const button of screen.getAllByRole("link", {
-    name: /New organization/,
+    name: /New workspace/,
   })) {
     fireEvent.click(button);
   }
@@ -133,13 +135,13 @@ test("loading says so rather than claiming you belong to none", () => {
   show({ organizations: [], loading: true });
 
   expect(screen.getByText("Loading…")).toBeTruthy();
-  expect(screen.queryByText(/not in an organization yet/i)).toBeNull();
+  expect(screen.queryByText(/not in a workspace yet/i)).toBeNull();
 });
 
 test("a failed load is reported, not shown as an empty list", () => {
   show({
     organizations: [],
-    error: "Could not load your organizations.",
+    error: "Could not load your workspaces.",
   });
 
   expect(screen.getByRole("alert").textContent).toMatch(/could not load/i);
@@ -150,7 +152,7 @@ test("creating is reachable even with a long list", () => {
   // bottom of a long page.
   const { onCreate } = show();
 
-  fireEvent.click(screen.getByRole("link", { name: /New organization/ }));
+  fireEvent.click(screen.getByRole("link", { name: /New workspace/ }));
 
   expect(onCreate).toHaveBeenCalled();
 });
