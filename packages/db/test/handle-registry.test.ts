@@ -129,8 +129,24 @@ async function holderOf(
   return row === undefined ? undefined : (row.user_id ?? row.organization_id);
 }
 
-const reachable = await serverReachable();
-const skip = reachable ? false : `no Postgres at ${ADMIN_URL}`;
+/**
+ * Only a server on this machine, or CI's service container. The suite drops
+ * and recreates its scratch databases, and a shell that happens to export a
+ * shared `DATABASE_URL` must not point that at someone else's server.
+ */
+function isLocalOrCi(url: string): boolean {
+  if (process.env["CI"] === "true") {
+    return true;
+  }
+  const { hostname } = new URL(url);
+  return ["localhost", "127.0.0.1", "::1", "[::1]"].includes(hostname);
+}
+
+const skip = !isLocalOrCi(ADMIN_URL)
+  ? "DATABASE_URL is not a local server; set CI=true to run against it"
+  : (await serverReachable())
+    ? false
+    : `no Postgres at ${ADMIN_URL}`;
 
 describe("one handle namespace", { skip }, () => {
   let sql: postgres.Sql;

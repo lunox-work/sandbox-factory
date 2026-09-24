@@ -177,16 +177,28 @@ function Signed({
     reached by URL or by Back counts the same as one opened from its site.
   */
   const activeOrganizationId = organizations.active?.id;
+  const activeSlug = organizations.active?.slug;
   useEffect(() => {
+    /*
+      Only under the workspace the URL names. After Back, the board already
+      matches the new URL while the active workspace is still the previous
+      one — `useOrganizations` catches up in its own effect — and writing then
+      would file one workspace's board under another. This runs again once
+      they agree.
+    */
+    const named = slugForPath(window.location.pathname);
     if (
       screen === "org-jira-board" &&
       activeOrganizationId !== undefined &&
+      activeSlug !== undefined &&
+      named !== undefined &&
+      named.toLowerCase() === activeSlug.toLowerCase() &&
       connectionId !== undefined &&
       boardId !== undefined
     ) {
       writeHomeBoard(userId, activeOrganizationId, { connectionId, boardId });
     }
-  }, [activeOrganizationId, boardId, connectionId, screen, userId]);
+  }, [activeOrganizationId, activeSlug, boardId, connectionId, screen, userId]);
 
   useEffect(() => {
     if (!shouldFocusPage.current) {

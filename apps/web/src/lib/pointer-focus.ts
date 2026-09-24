@@ -37,6 +37,25 @@ const CONTROL_INPUT_TYPES = new Set([
 /** Held alone, these are half a shortcut, not keyboard navigation. */
 const MODIFIER_KEYS = new Set(["Alt", "Control", "Meta", "Shift"]);
 
+/**
+ * Keys that move somewhere even with a modifier held: Alt+Left and Cmd+[ go
+ * back through history, and the app then focuses the new page's heading. That
+ * is keyboard navigation, so it keeps its ring. Other shortcuts, like Cmd+C
+ * after a click, move nothing and leave pointer mode alone.
+ */
+const NAVIGATION_KEYS = new Set([
+  "ArrowLeft",
+  "ArrowRight",
+  "ArrowUp",
+  "ArrowDown",
+  "[",
+  "]",
+  "Home",
+  "End",
+  "PageUp",
+  "PageDown",
+]);
+
 function takesText(element: HTMLElement): boolean {
   if (element.tagName === "TEXTAREA") {
     return true;
@@ -61,11 +80,12 @@ export function installPointerFocus(): () => void {
     pointer = true;
   };
   const onKeyDown = (event: KeyboardEvent) => {
+    if (MODIFIER_KEYS.has(event.key)) {
+      return;
+    }
     if (
-      MODIFIER_KEYS.has(event.key) ||
-      event.metaKey ||
-      event.ctrlKey ||
-      event.altKey
+      (event.metaKey || event.ctrlKey || event.altKey) &&
+      !NAVIGATION_KEYS.has(event.key)
     ) {
       return;
     }

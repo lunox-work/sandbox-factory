@@ -78,6 +78,19 @@ test("a modifier or a shortcut does not count as keyboard use", () => {
   expect(focus).toHaveBeenCalledWith({ focusVisible: false });
 });
 
+test("a navigation shortcut counts as keyboard use, so its focus rings", () => {
+  // Alt+Left goes back through history; the heading focused on arrival
+  // must show where the keyboard user landed.
+  const heading = element("button");
+
+  fireEvent.pointerDown(document.body);
+  fireEvent.keyDown(document.body, { key: "Alt" });
+  fireEvent.keyDown(document.body, { key: "ArrowLeft", altKey: true });
+  heading.focus();
+
+  expect(focus).toHaveBeenCalledWith(undefined);
+});
+
 test("before any interaction, focus is left as the browser decides", () => {
   element("button").focus();
 

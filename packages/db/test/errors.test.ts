@@ -28,3 +28,26 @@ test("isUniqueViolation recognises Postgres' duplicate-key code", () => {
   assert.equal(isUniqueViolation(null), false);
   assert.equal(isUniqueViolation("23505"), false);
 });
+
+test("isUniqueViolation sees through the error Drizzle wraps around the driver's", () => {
+  // drizzle-orm >= 0.44 throws a `DrizzleQueryError` with no `code` of its
+  // own; the SQLSTATE is on `cause`. Without this a lost race was a 500.
+  const wrapped = Object.assign(new Error("Failed query: insert ..."), {
+    cause: Object.assign(new Error("duplicate key"), { code: "23505" }),
+  });
+  assert.equal(isUniqueViolation(wrapped), true);
+  assert.equal(
+    isUniqueViolation({ message: "Failed query", cause: { code: "23503" } }),
+    false,
+  );
+  // A cycle, or a chain deeper than any real wrapper, ends rather than spins.
+  const loop: { cause?: unknown } = {};
+  loop.cause = loop;
+  assert.equal(isUniqueViolation(loop), false);
+  assert.equal(
+    isUniqueViolation({
+      cause: { cause: { cause: { cause: { cause: { code: "23505" } } } } },
+    }),
+    false,
+  );
+});

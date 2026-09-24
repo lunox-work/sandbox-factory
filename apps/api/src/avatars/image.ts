@@ -58,6 +58,23 @@ export function sniff(bytes: Uint8Array): Format | undefined {
   return undefined;
 }
 
+/**
+ * Runs decodes one at a time.
+ *
+ * The API is one task with 0.5 GB, and a picture at the pixel cap needs about
+ * 120 MB for its pixels alone before libvips' own buffers. Unbounded, a few
+ * parallel uploads — from one person or several — could take the process
+ * down. Queued, the worst case is one decode's worth of memory and a short
+ * wait. A failed decode releases the queue like a finished one.
+ */
+let decoding: Promise<unknown> = Promise.resolve();
+
+export function oneAtATime<T>(task: () => Promise<T>): Promise<T> {
+  const run = decoding.then(task, task);
+  decoding = run.catch(() => undefined);
+  return run;
+}
+
 export interface ProcessedAvatar {
   /** The WebP to store. */
   readonly bytes: Uint8Array;
@@ -106,14 +123,16 @@ export async function processImage(
 
   let output: Buffer;
   try {
-    output = await sharp(input, { limitInputPixels: MAX_INPUT_PIXELS })
-      // Applies the EXIF orientation, so a phone photo is not sideways once
-      // the metadata carrying that orientation is dropped.
-      .rotate()
-      .resize(AVATAR_SIZE, AVATAR_SIZE, { fit: "cover", position: "centre" })
-      // No `withMetadata()`: sharp drops EXIF, ICC and XMP by default.
-      .webp({ quality: WEBP_QUALITY })
-      .toBuffer();
+    output = await oneAtATime(() =>
+      sharp(input, { limitInputPixels: MAX_INPUT_PIXELS })
+        // Applies the EXIF orientation, so a phone photo is not sideways once
+        // the metadata carrying that orientation is dropped.
+        .rotate()
+        .resize(AVATAR_SIZE, AVATAR_SIZE, { fit: "cover", position: "centre" })
+        // No `withMetadata()`: sharp drops EXIF, ICC and XMP by default.
+        .webp({ quality: WEBP_QUALITY })
+        .toBuffer(),
+    );
   } catch {
     throw new UnsupportedImageError(UNREADABLE);
   }

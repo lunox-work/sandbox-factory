@@ -817,6 +817,39 @@ test("switching organization moves home to that organization's board", async () 
   expect(window.location.pathname).toBe("/");
 });
 
+test("Back onto another workspace's board does not file it under this one", async () => {
+  // Open a board in Acme, switch to Globex, then press Back. For a moment the
+  // URL names Acme's board while Globex is still active; remembering the board
+  // then would overwrite Globex's home board with Acme's.
+  boardsByOrganization = {
+    org_1: [board("jrb_1", "Delivery"), board("jrb_2", "Platform")],
+    org_2: [board("jrb_9", "Globex board")],
+  };
+  window.history.replaceState(null, "", "/o/acme/jira/jrc_1/jrb_2");
+  render(<App />);
+  expect(await screen.findByRole("heading", { name: "Platform" })).toBeTruthy();
+
+  const menu = await openSwitcher();
+  fireEvent.click(within(menu).getByRole("menuitem", { name: /Globex/ }));
+  await screen.findByRole("button", { name: "Switch workspace — Globex" });
+  await waitFor(() =>
+    expect(window.location.pathname).not.toBe("/o/acme/jira/jrc_1/jrb_2"),
+  );
+
+  window.history.back();
+  window.dispatchEvent(new PopStateEvent("popstate"));
+  expect(await screen.findByRole("heading", { name: "Platform" })).toBeTruthy();
+
+  expect(
+    window.localStorage.getItem("lunox:home-board:user_1:org_2"),
+  ).toBeNull();
+  expect(
+    JSON.parse(
+      window.localStorage.getItem("lunox:home-board:user_1:org_1") ?? "null",
+    ),
+  ).toEqual({ connectionId: "jrc_1", boardId: "jrb_2" });
+});
+
 test("cancelling a new organization goes back to the list, not home", async () => {
   // The trail says Organizations is the parent, and it is where the button
   // that opens this form lives.

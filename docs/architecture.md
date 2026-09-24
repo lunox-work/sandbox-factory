@@ -217,11 +217,12 @@ neither principal invites the mistake of storing a name as a key.
 **The handle rules live in `packages/core`.** `packages/core/src/handle.ts` is
 the single definition, shared by the profile store, the plugin hooks, the wire
 schemas and both browser forms — the only package all four can import. Users
-and organizations have **separate** handle namespaces: `dana` can be both.
-Sharing one would need cross-table uniqueness, which the email work showed
-costs a trigger pair plus an advisory lock (migrations 0007 to 0011), and
-nothing needs a bare `/{handle}` URL. Prefixed paths (`/u/`, `/o/`) keep them
-apart.
+and organizations share **one** handle namespace, held in the `handle`
+registry table (migrations 0029 and 0030): `dana` is either a person or a
+team, never both. Triggers keep the registry in step with `user.username` and
+team slugs, and a personal organization takes its owner's username and
+follows it on every rename, so it never claims a handle of its own.
+`slugOwner` and `setUsername` both ask the registry.
 
 **The plugin leaves two gaps, closed by hooks in `auth.ts`.** It accepts any
 non-empty string as a slug, so `beforeCreateOrganization` and
@@ -287,9 +288,7 @@ Neither blocks anything; both are cheap if a need appears.
 Teams; per-organization custom roles (`dynamicAccessControl`); an email
 transport, at which point `sendInvitationEmail` is one function and the in-app
 flow stays as the fallback; a crop tool, a sweeper for avatar objects orphaned
-by a failed delete, and more than one avatar size (see [Avatars](#avatars));
-a shared handle namespace via a registry table, if a bare `/{handle}` URL is
-ever wanted.
+by a failed delete, and more than one avatar size (see [Avatars](#avatars)).
 
 ## Not yet built
 

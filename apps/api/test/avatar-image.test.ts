@@ -10,6 +10,7 @@ import {
   UNREADABLE,
   UNSUPPORTED_FORMAT,
   UnsupportedImageError,
+  oneAtATime,
   processImage,
   sniff,
 } from "../src/avatars/image.js";
@@ -187,4 +188,46 @@ function declaredPng(width: number, height: number): Uint8Array {
 test("a declared canvas over the pixel cap is refused from its header", async () => {
   // 100 megapixels in a few dozen bytes: the decompression bomb shape.
   assert.equal(await refusal(declaredPng(10_000, 10_000)), TOO_MANY_PIXELS);
+});
+
+test("decodes run one at a time, so parallel uploads cannot exhaust memory", async () => {
+  let running = 0;
+  let peak = 0;
+  const task = async () => {
+    running += 1;
+    peak = Math.max(peak, running);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    running -= 1;
+  };
+
+  await Promise.all([oneAtATime(task), oneAtATime(task), oneAtATime(task)]);
+
+  assert.equal(peak, 1);
+});
+
+test("a failed decode does not block the ones queued behind it", async () => {
+  const failed = oneAtATime(() => Promise.reject(new Error("bad input")));
+  const next = oneAtATime(() => Promise.resolve("done"));
+
+  await assert.rejects(failed, /bad input/);
+  assert.equal(await next, "done");
+});
+
+test("parallel real uploads all succeed through the queue", async () => {
+  const inputs = await Promise.all(
+    ["#102030", "#405060", "#708090"].map(
+      async (background) =>
+        new Uint8Array(
+          await sharp({
+            create: { width: 300, height: 200, channels: 3, background },
+          })
+            .png()
+            .toBuffer(),
+        ),
+    ),
+  );
+
+  const outputs = await Promise.all(inputs.map((input) => processImage(input)));
+
+  assert.equal(new Set(outputs.map((output) => output.hash)).size, 3);
 });
