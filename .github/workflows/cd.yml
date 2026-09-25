@@ -249,7 +249,7 @@ jobs:
       - uses: aws-actions/amazon-ecr-login@v2
         id: ecr
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       # The ECR repository is IMMUTABLE, so pushing an existing tag is an
       # error, and a `workflow_dispatch` retry of the same commit would fail
