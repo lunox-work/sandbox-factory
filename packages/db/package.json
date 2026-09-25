@@ -30,8 +30,8 @@
   "devDependencies": {
     "@sandbox-factory/coverage": "*",
     "@sandbox-factory/tsconfig": "*",
-    "@types/node": "^26.6.1",
-    "drizzle-kit": "^0.31.10",
+    "@types/node": "^26.6.2",
+    "drizzle-kit": "^0.31.11",
     "typescript": "^7.0.2"
   }
 }
