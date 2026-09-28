@@ -12,9 +12,8 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
-# Formatting is the one CI failure with a mechanical fix, so it is fixed here
-# rather than spending one of the review gate's three CodeRabbit repair rounds.
-# Type errors (`npm run lint`) have no such fix and stay with that gate.
+# Formatting is the one CI failure with a mechanical fix, so it is fixed here.
+# Type errors (`npm run lint`) have no such fix and stay with the author.
 #
 # Two jobs, because formatting runs the PR's code (its lockfile, its Prettier
 # config) and pushing needs AUTO_MERGE_TOKEN. The first job has the code and no

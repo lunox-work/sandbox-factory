@@ -21,10 +21,9 @@ Moves changes onto a branch, commits, rebases a newly created branch onto
 returns the checkout to `main`, including for drafts. Exit 0 means **PR open**,
 not merged or deployed. No detached process runs on your laptop.
 
-GitHub owns the rest: CI and CodeRabbit review, up to three repair requests,
-fresh checks/review after every push, and auto-merge only after the required
-`Review gate` succeeds. Repairs that time out or cannot be made safely leave
-the PR blocked. See [the gate policy](../docs/ci.md#review-and-repair-gate).
+GitHub owns the rest: CI on every push, and auto-merge once the required
+checks pass. CodeRabbit reviews, but its findings are advisory. See
+[branch protection](../docs/ci.md#branch-protection).
 
 | Flag               | Purpose                                                        |
 | ------------------ | -------------------------------------------------------------- |
@@ -34,7 +33,7 @@ the PR blocked. See [the gate policy](../docs/ci.md#review-and-repair-gate).
 | `--type <type>`    | bug, feature, breaking, docs or internal; inferred by default  |
 | `--issue <number>` | Adds Closes #number                                            |
 | `--coauthor <who>` | Name and email in both commit and PR; also `SHIP_COAUTHOR`     |
-| `--draft`          | Hold for inspection; no automatic fixes or merging until ready |
+| `--draft`          | Hold for inspection; no automatic merging until ready          |
 | `--no-wait`        | Compatibility alias for the default behavior                   |
 | `--yes` / `-y`     | Skip the commit confirmation prompt                            |
 
@@ -48,7 +47,7 @@ remote branches; local feature branches remain as recoverable references.
 If checkout or fast-forward fails, the script warns and preserves your work.
 
 Policy changes (workflows, scripts, dependency/test configuration, infra) merge
-like any other change: once CI passes and CodeRabbit approves the latest SHA.
+like any other change: once CI passes.
 Open a draft to hold one back. Dependabot majors and forks are not
 automatically merged.
 

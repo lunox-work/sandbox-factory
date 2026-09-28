@@ -18,8 +18,8 @@ usage() {
   cat <<'EOF'
 Usage: ./scripts/ship.sh --title "fix: ..." --yes
 
-Verifies, pushes, opens a PR and returns to main. GitHub handles review,
-repairs and auto-merge. Exit 0 means the PR is open, not merged or deployed.
+Verifies, pushes, opens a PR and returns to main. GitHub handles CI and
+auto-merge. Exit 0 means the PR is open, not merged or deployed.
 
 Flags:
   --branch <name>     Branch to create. Default: derived from the title.
@@ -34,7 +34,7 @@ Flags:
                       goes in both the commit and the PR body, because the
                       squash commit on main is built from the PR, not from
                       the branch commit.
-  --draft             Open as a draft; no repairs or auto-merge until ready.
+  --draft             Open as a draft; no auto-merge until ready.
   --no-wait           Accepted for compatibility; returning immediately is default.
   --yes, -y           Skip the confirmation prompt.
   -h, --help          This message.
@@ -353,7 +353,7 @@ finish_shipping() {
   if [[ "$DRAFT" -eq 1 ]]; then
     info "Draft PR: mark ready to start review: gh pr ready $PR_NUM"
   else
-    info "GitHub owns CI, CodeRabbit repairs and gated auto-merge."
+    info "GitHub owns CI and auto-merge."
     info "A blocker leaves the PR open; inspect: gh pr view $PR_NUM"
   fi
   info "$PR_URL"

@@ -9,23 +9,21 @@ The only third-party GitHub App. Installed at the **`lunox-work` organization**
 level with `repository_selection: selected`, so adding another repository means
 adding it to the existing installation, not installing the app again.
 
-CodeRabbit is a required reviewer through the SHA-bound `Review gate`, not
-merely an advisory comment bot. [ci.md](./ci.md#review-and-repair-gate) defines
-the merge contract and recovery behavior.
+CodeRabbit is an advisory reviewer. It comments on every PR, but merging waits
+only for CI; see [ci.md](./ci.md#branch-protection).
 
-[.coderabbit.yaml](../.coderabbit.yaml) enables request-changes/approval workflow,
-incremental automatic review without title exclusions or auto-pause, a stable
-legacy `CodeRabbit` commit status, autofix and CI repair. Generated output and
-the lockfile remain excluded from review content.
+[.coderabbit.yaml](../.coderabbit.yaml) enables incremental automatic review
+without title exclusions or auto-pause, a `CodeRabbit` commit status, autofix
+and CI repair. Generated output and the lockfile remain excluded from review
+content.
 
-Enabling autofix only makes it available; the GitHub controller requests fixes,
-and independent CI/review decides whether they can merge. CI repair uses
-`@coderabbitai fix-ci commit` to update the same PR. No automatic resolve or
-approve overrides are allowed.
+Enabling autofix only makes it available; nothing requests it automatically.
+Ask with `@coderabbitai autofix` on the PR, or `@coderabbitai fix-ci commit`
+for a CI repair.
 
 Review and finishing-touch entitlements depend on the installed CodeRabbit
 plan. In particular, `fix-ci` requires Team-level access. If a command is
-unavailable or declined, the PR stays blocked; configuration alone does not
+unavailable or declined, nothing is fixed; configuration alone does not
 grant that capability.
 
 ## Dependabot
