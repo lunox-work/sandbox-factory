@@ -2,6 +2,9 @@
 
 Approved in conversation on 2026-09-22.
 
+> Superseded 2026-09-28: the review gate was removed. A PR now merges once CI
+> passes; see [ci.md](../ci.md#branch-protection).
+
 `ship.sh` verifies, pushes, opens a PR and returns the checkout to main. It does
 not watch, resolve discussions or merge. GitHub owns the remaining lifecycle.
 

@@ -18,21 +18,20 @@
         "require_code_owner_review": false,
         "require_last_push_approval": false,
         "require_extra_approval_for_unattributed_changes": false,
-        "required_review_thread_resolution": true,
+        "required_review_thread_resolution": false,
         "allowed_merge_methods": ["squash"]
       }
     },
     {
       "type": "required_status_checks",
       "parameters": {
-        "strict_required_status_checks_policy": true,
+        "strict_required_status_checks_policy": false,
         "do_not_enforce_on_create": false,
         "required_status_checks": [
           { "context": "Test (Node 22)", "integration_id": 15368 },
           { "context": "Test (Node 24)", "integration_id": 15368 },
           { "context": "Analyze", "integration_id": 15368 },
-          { "context": "CodeQL", "integration_id": 57789 },
-          { "context": "Review gate", "integration_id": 15368 }
+          { "context": "CodeQL", "integration_id": 57789 }
         ]
       }
     }

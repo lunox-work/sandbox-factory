@@ -4,8 +4,8 @@ language: en-US
 
 reviews:
   profile: chill
-  request_changes_workflow: true
-  # Stable legacy status surface, consumed by our SHA-bound Review gate.
+  # Advisory: a finding is a comment, never a blocking review.
+  request_changes_workflow: false
   review_progress: false
   commit_status: true
   fail_commit_status: true

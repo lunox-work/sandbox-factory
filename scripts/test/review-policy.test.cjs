@@ -2,21 +2,22 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const { CHECKS, CONTEXT } = require("../review-gate.cjs");
 const root = path.join(__dirname, "../..");
 const read = (file) => fs.readFileSync(path.join(root, file), "utf8");
 
-test("required checks and controller agree, without bypass or weaker thread policy", () => {
+test("required checks are the CI contexts, without bypass actors", () => {
   const policy = JSON.parse(read(".github/main-ruleset.json"));
   assert.equal(policy.enforcement, "active");
   assert.deepEqual(policy.bypass_actors, []);
   const checks = policy.rules.find(
     (r) => r.type === "required_status_checks",
   ).parameters;
-  assert.equal(checks.strict_required_status_checks_policy, true);
+  // Nothing updates a PR branch for us, so requiring an up-to-date head
+  // would strand a green PR the moment main moves.
+  assert.equal(checks.strict_required_status_checks_policy, false);
   assert.deepEqual(
     checks.required_status_checks.map((c) => c.context),
-    [...CHECKS, CONTEXT],
+    ["Test (Node 22)", "Test (Node 24)", "Analyze", "CodeQL"],
   );
   assert.ok(
     checks.required_status_checks.every(
@@ -24,29 +25,11 @@ test("required checks and controller agree, without bypass or weaker thread poli
     ),
   );
   const review = policy.rules.find((r) => r.type === "pull_request").parameters;
-  assert.equal(review.required_review_thread_resolution, true);
+  // CodeRabbit is advisory; its open threads must not hold a green PR.
+  assert.equal(review.required_review_thread_resolution, false);
   assert.equal(review.dismiss_stale_reviews_on_push, true);
   assert.equal(review.require_extra_approval_for_unattributed_changes, false);
   assert.deepEqual(review.allowed_merge_methods, ["squash"]);
-});
-
-test("privileged controller only loads default-branch code and has serialized recovery", () => {
-  const workflow = read(".github/workflows/review-gate.yml");
-  assert.match(
-    workflow,
-    /ref: \$\{\{ github\.event\.repository\.default_branch \}\}/,
-  );
-  assert.match(workflow, /persist-credentials: false/);
-  assert.match(
-    workflow,
-    /require\('\.\/trusted-controller\/scripts\/review-gate\.cjs'\)/,
-  );
-  assert.match(workflow, /schedule:/);
-  assert.match(workflow, /cancel-in-progress: false/);
-  assert.doesNotMatch(
-    workflow,
-    /pull_request\.head|npm (ci|install)|refs\/pull/,
-  );
 });
 
 test("auto-merge cannot silently use a token that suppresses downstream CD", () => {

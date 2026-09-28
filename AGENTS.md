@@ -211,8 +211,7 @@ a broken injection stamps the artifact `unknown` rather than breaking the build
 ### Shipping a change
 
 **Use `./scripts/ship.sh --title "fix: ..." --yes`.** It verifies, pushes, opens
-the PR and returns to local main. GitHub owns CI, CodeRabbit repairs, re-review
-and auto-merge. See [scripts/README.md](./scripts/README.md).
+the PR and returns to local main. GitHub owns CI and auto-merge. See [scripts/README.md](./scripts/README.md).
 
 - Exit 0 means PR open, not merged or deployed. Report its URL; no local watcher.
 - Local main is refreshed on return, not after the eventual merge. Pull before
@@ -242,11 +241,11 @@ The rules `ship.sh` encodes; [docs/ci.md](./docs/ci.md) has the detail.
   tags. A failed deploy cuts no release. A chore-only merge deploys without a
   version; a docs-only merge does not deploy at all (`paths-ignore`).
 - **Tags are the version of record, not `package.json`**, which nothing bumps.
-- **Unresolved review threads block the merge.** CodeRabbit must verify the
-  fixes and approve the latest head; do not issue resolve/approve overrides.
-- Required contexts: `Test (Node 22)`, `Test (Node 24)`, `Analyze`, `CodeQL`,
-  `Review gate`. Renaming a required context blocks merging until protection is
-  updated. See `.github/main-ruleset.json` and the rollout notes in `docs/ci.md`.
+- **A PR auto-merges once CI passes.** CodeRabbit is advisory: its findings
+  and open threads do not block the merge.
+- Required contexts: `Test (Node 22)`, `Test (Node 24)`, `Analyze`, `CodeQL`.
+  Renaming a required context blocks merging until protection is updated. See
+  `.github/main-ruleset.json` and `docs/ci.md`.
 - Never hand-edit `CHANGELOG.md`.
 
 ### Do not
