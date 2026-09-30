@@ -17,14 +17,98 @@ import { jiraBoard, jiraConnection } from "./schema.js";
 import type { JiraBoardRow } from "./schema.js";
 import type { Database } from "./errors.js";
 
-/** The selection settings, as stored. Validated by Zod at the HTTP edge. */
+/** One category's overrides on a board. Absent means the registry's default. */
+export interface StoredCategorySettings {
+  readonly enabled?: boolean | undefined;
+  /** In an update, `null` removes an override. It is never stored. */
+  readonly thresholds?:
+    Readonly<Record<string, number | null | undefined>> | undefined;
+}
+
+/**
+ * The selection settings, as stored. Validated by Zod at the HTTP edge.
+ *
+ * In an update, `null` on a clearable setting removes it; see `update`.
+ */
 export interface StoredBoardSelection {
-  readonly maxTickets?: number;
-  readonly excludeAssigned?: boolean;
+  readonly ticketCap?: number | null;
+  readonly unassignedOnly?: boolean;
   readonly issueTypes?: readonly string[];
   readonly minAgeDays?: number;
   readonly maxAgeDays?: number | null;
   readonly minSpecChars?: number;
+  readonly categories?: Readonly<
+    Record<string, StoredCategorySettings | undefined>
+  >;
+}
+
+/**
+ * One category's settings with an update laid over them. A threshold sent as
+ * `null` is removed, so it falls back to the registry's default rather than
+ * being stored as a null a later read would have to explain.
+ */
+function mergeCategory(
+  existing: StoredCategorySettings,
+  update: StoredCategorySettings,
+): StoredCategorySettings {
+  const thresholds: Record<string, number> = {};
+  for (const source of [existing.thresholds, update.thresholds]) {
+    for (const [name, value] of Object.entries(source ?? {})) {
+      if (value === null) {
+        delete thresholds[name];
+      } else if (value !== undefined) {
+        thresholds[name] = value;
+      }
+    }
+  }
+  const enabled = update.enabled ?? existing.enabled;
+  return {
+    ...(enabled === undefined ? {} : { enabled }),
+    ...(Object.keys(thresholds).length === 0 ? {} : { thresholds }),
+  };
+}
+
+/**
+ * A board's settings with an update laid over them.
+ *
+ * Merged at every level a caller can address: setting by setting, then
+ * category by category, then threshold by threshold. Tuning one number
+ * therefore leaves every other setting, category and threshold as it was.
+ * `null` removes a setting instead of storing a null.
+ */
+export function mergeSelection(
+  existing: StoredBoardSelection,
+  update: StoredBoardSelection,
+): StoredBoardSelection {
+  const merged: Record<string, unknown> = { ...existing };
+  for (const [key, value] of Object.entries(update)) {
+    if (key === "categories" || value === undefined) continue;
+    if (value === null) {
+      delete merged[key];
+    } else {
+      merged[key] = value;
+    }
+  }
+
+  if (update.categories !== undefined) {
+    const categories: Record<string, StoredCategorySettings> = {};
+    for (const [id, settings] of Object.entries(existing.categories ?? {})) {
+      if (settings !== undefined) categories[id] = settings;
+    }
+    for (const [id, settings] of Object.entries(update.categories)) {
+      if (settings === undefined) continue;
+      const next = mergeCategory(categories[id] ?? {}, settings);
+      if (Object.keys(next).length === 0) {
+        // Every override cleared: the category is back to its defaults.
+        delete categories[id];
+      } else {
+        categories[id] = next;
+      }
+    }
+    merged["categories"] = categories;
+  }
+
+  return merged;
 }
 
 export interface JiraBoardSummary {
@@ -235,15 +319,15 @@ export function createJiraBoardStore(db: Database): JiraBoardStore {
         return null;
       }
 
-      // Merged, not replaced: a caller editing `maxTickets` alone would
+      // Merged, not replaced: a caller editing `ticketCap` alone would
       // otherwise reset every other setting to its default.
       const selection =
         input.selection === undefined
           ? (existing.selection as StoredBoardSelection)
-          : {
-              ...(existing.selection as StoredBoardSelection),
-              ...input.selection,
-            };
+          : mergeSelection(
+              existing.selection as StoredBoardSelection,
+              input.selection,
+            );
 
       const [row] = (await db
         .update(jiraBoard)

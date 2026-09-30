@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { createBountyRunStore } from "../src/bounty-runs.js";
+import { createBountyRunStore, runDeadline } from "../src/bounty-runs.js";
 import type { BountyRunRow } from "../src/schema.js";
 import { createFakeDb, createSequencedFakeDb } from "./fake-db.js";
 
@@ -17,11 +17,11 @@ function row(overrides: Partial<BountyRunRow> = {}): BountyRunRow {
     requestId: "28bb313f-252a-4a1d-b656-558a215b604b",
     status: "queued",
     selection: {
-      maxTickets: 10,
-      excludeAssigned: true,
+      unassignedOnly: false,
       issueTypes: [],
       minAgeDays: 0,
       minSpecChars: 0,
+      categories: {},
     },
     rateCard: {
       currency: "USD",
@@ -192,7 +192,7 @@ test("run reads and lease writes report misses", async () => {
   const now = new Date("2026-09-22T00:00:00Z");
   assert.equal(await store.claim("org_1", "brn_x", "lease", now), null);
   assert.equal(await store.heartbeat("org_1", "brn_x", "lease", now), false);
-  assert.equal(await store.recordPlan("org_1", "brn_x", "lease", []), false);
+  assert.equal(await store.recordPlan("org_1", "brn_x", "lease", []), null);
   assert.equal(
     await store.recordOutcome("org_1", "brn_x", "lease", {
       externalIssueId: "1",
@@ -224,12 +224,35 @@ test("claims, heartbeats, records and finishes only under the lease", async () =
     "running",
   );
   assert.equal(await store.heartbeat("org_1", "brn_1", "lease", now), true);
+  const planned = [
+    {
+      externalIssueId: "10001",
+      issueKey: "APP-1",
+      summary: "Add login",
+      categories: [
+        {
+          id: "left-behind",
+          label: "Left behind",
+          reason: "Open 412 days, never in a sprint, unassigned",
+        },
+      ],
+    },
+    { externalIssueId: "10002", issueKey: "APP-2", summary: "Fix logout" },
+  ];
+  const before = Date.now();
   assert.equal(
-    await store.recordPlan("org_1", "brn_1", "lease", [
-      { externalIssueId: "10001", issueKey: "APP-1", summary: "Add login" },
-    ]),
-    true,
+    (await store.recordPlan("org_1", "brn_1", "lease", planned))?.id,
+    "brn_1",
   );
+  // The plan is written with its reasons, and the deadline moves with its
+  // size: ten minutes, plus twenty seconds a ticket.
+  const planWrite = fake.calls.find(
+    ({ values }) => values?.["planned"] !== undefined,
+  );
+  assert.deepEqual(planWrite?.values?.["planned"], planned);
+  const deadline = planWrite?.values?.["deadlineAt"] as Date;
+  assert.ok(deadline.getTime() >= before + 10 * 60_000 + 2 * 20_000);
+  assert.ok(deadline.getTime() <= Date.now() + 10 * 60_000 + 2 * 20_000);
   assert.equal(
     await store.recordOutcome("org_1", "brn_1", "lease", {
       externalIssueId: "10001",
@@ -249,6 +272,15 @@ test("claims, heartbeats, records and finishes only under the lease", async () =
     "running",
   );
   assert.ok(fake.calls.slice(0, 5).every(({ filtered }) => filtered));
+});
+
+test("a run's deadline grows with the number of tickets it planned", () => {
+  const now = new Date("2026-09-30T00:00:00Z");
+  // Nothing planned yet: the time a run has to choose its tickets.
+  assert.equal(runDeadline(now, 0).toISOString(), "2026-09-30T00:10:00.000Z");
+  assert.equal(runDeadline(now, 3).toISOString(), "2026-09-30T00:11:00.000Z");
+  // A board's worth of matches is hours, not a failure at ten minutes.
+  assert.equal(runDeadline(now, 900).toISOString(), "2026-09-30T05:10:00.000Z");
 });
 
 test("expired runs are failed within an organization", async () => {

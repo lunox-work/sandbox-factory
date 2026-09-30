@@ -47,16 +47,18 @@ export type {
 export {
   DETAIL_FIELDS,
   ISSUE_FIELDS,
+  SELECTION_FIELDS,
   toBoardDto,
   toIssueDetailDto,
   toIssueDto,
+  toIssueSignalsDto,
   toSprintDto,
 } from "./mapping.js";
 export type { IssueMappingOptions } from "./mapping.js";
 export { adfToText, adfToTextResult } from "./adf.js";
 export type { AdfTextResult } from "./adf.js";
-export { backlogJql, backlogSource, SKIP_LABEL } from "./backlog.js";
-export type { BacklogJqlOptions, BacklogSource } from "./backlog.js";
+export { selectionJql, SKIP_LABEL } from "./selection-jql.js";
+export type { SelectionJqlOptions } from "./selection-jql.js";
 export { pricingSpecHash, SPEC_FIELDS, specHash, toIssueSpec } from "./spec.js";
 export type { JiraIssueSpec } from "./spec.js";
 export { stripTrailingSlashes } from "./url.js";

@@ -2304,3 +2304,293 @@ test("a refresh after a decision asks Jira for no title it already has", async (
   expect(server.titleReads()).toBe(1);
   expect(within(list).getByText("Second ticket")).toBeDefined();
 });
+
+/* Why a ticket was picked, and lists longer than one page. */
+
+/**
+ * A board with `count` stored proposals, served a page at a time as the API
+ * does: newest first, with a cursor while more remain. Titles are answered
+ * at once, and every request is recorded.
+ */
+function pagedBoard(
+  count: number,
+  categoriesFor: (n: number) => object[] = () => [],
+) {
+  const calls: string[] = [];
+  const approved = new Set<number>();
+  const row = (n: number) => ({
+    id: `bpr_${n}`,
+    issueKey: `APP-${n}`,
+    modelRationale: "A few files.",
+    complexity: "M",
+    amountMinor: 200,
+    currency: "USD",
+    modelComplexity: "M",
+    modelConfidence: "high",
+    actualModel: "deepseek-v4-pro",
+    status: approved.has(n) ? "approved" : "proposed",
+    revision: approved.has(n) ? 2 : 1,
+    sizedTitle: `Ticket ${n}`,
+    categories: categoriesFor(n),
+  });
+  const fetchMock = vi.fn((input: string) => {
+    const url = String(input);
+    calls.push(url);
+    if (url.includes("/proposal-titles?")) {
+      return Promise.resolve(new Response(""));
+    }
+    if (url.includes("/runs")) {
+      return Promise.resolve(
+        Response.json({ runs: [], sizingAvailable: true }),
+      );
+    }
+    if (url.endsWith("/approve")) {
+      const n = Number(/bpr_(\d+)/.exec(url)?.[1]);
+      approved.add(n);
+      return Promise.resolve(Response.json({ proposal: row(n) }));
+    }
+    if (url.includes("/proposals/bpr_")) {
+      const n = Number(/bpr_(\d+)/.exec(url)?.[1]);
+      return Promise.resolve(
+        Response.json({
+          // As the detail route answers: the stored proposal, which does
+          // not carry the list's `categories`.
+          proposal: { ...row(n), categories: undefined },
+          freshness: { freshness: "current", checkedAt: "now" },
+          writebackOperations: [],
+        }),
+      );
+    }
+    const query = new URL(url, "http://localhost").searchParams;
+    const limit = Number(query.get("limit") ?? 25);
+    const after = Number(/bpr_(\d+)$/.exec(query.get("cursor") ?? "")?.[1]);
+    const all = Array.from({ length: count }, (_, index) => index + 1);
+    const from = Number.isNaN(after) ? 0 : all.indexOf(after) + 1;
+    const page = all.slice(from, from + limit);
+    const last = page.at(-1);
+    return Promise.resolve(
+      Response.json({
+        proposals: page.map(row),
+        nextCursor:
+          page.length === limit && last !== undefined
+            ? `2026-09-30T00:00:00.000Z|bpr_${last}`
+            : null,
+      }),
+    );
+  });
+  return {
+    fetchMock,
+    calls,
+    listReads: () => calls.filter((url) => url.includes("/proposals?")),
+    titleReads: () => calls.filter((url) => url.includes("/proposal-titles?")),
+  };
+}
+
+const leftBehindMatch = {
+  id: "left-behind",
+  label: "Left behind",
+  reason: "Open 412 days, never in a sprint, unassigned",
+};
+const paperCutMatch = {
+  id: "paper-cuts",
+  label: "Paper cuts",
+  reason: "Low-priority bug, open 412 days",
+};
+
+test("a row says why its ticket was picked, and the peek lists every reason", async () => {
+  const server = pagedBoard(3, (n) =>
+    n === 1 ? [leftBehindMatch, paperCutMatch] : n === 2 ? [paperCutMatch] : [],
+  );
+  vi.stubGlobal("fetch", server.fetchMock);
+  renderStreamedBoard();
+  const list = await screen.findByTestId("proposal-list");
+  const rows = within(list).getAllByRole("listitem");
+
+  // The first category and its reason, and that there is another.
+  expect(within(rows[0]!).getByTestId("category-line").textContent).toBe(
+    "Left behind · Open 412 days, never in a sprint, unassigned · +1 more",
+  );
+  expect(within(rows[1]!).getByTestId("category-line").textContent).toBe(
+    "Paper cuts · Low-priority bug, open 412 days",
+  );
+  // A ticket someone added by hand has no reason to give, and says nothing.
+  expect(within(rows[2]!).queryByTestId("category-line")).toBeNull();
+
+  await userEvent.click(within(rows[0]!).getByRole("button"));
+  const panel = await screen.findByTestId("proposal-panel");
+  const why = await within(panel).findByTestId("proposal-categories");
+  expect(within(why).getByText("Why this ticket")).toBeDefined();
+  expect(
+    within(why)
+      .getAllByRole("listitem")
+      .map((item) => item.textContent),
+  ).toEqual([
+    "Left behindOpen 412 days, never in a sprint, unassigned",
+    "Paper cutsLow-priority bug, open 412 days",
+  ]);
+  // Still there once the proposal's own read has landed over the row.
+  expect(
+    await within(panel).findByText("Unchanged since sizing"),
+  ).toBeDefined();
+  expect(within(panel).getByTestId("proposal-categories")).toBeDefined();
+});
+
+test("a proposal for a hand-picked ticket shows no reason in the peek", async () => {
+  const server = pagedBoard(1);
+  vi.stubGlobal("fetch", server.fetchMock);
+  renderStreamedBoard();
+  const list = await screen.findByTestId("proposal-list");
+
+  await userEvent.click(within(list).getByRole("button"));
+  const panel = await screen.findByTestId("proposal-panel");
+  expect(
+    await within(panel).findByText("Unchanged since sizing"),
+  ).toBeDefined();
+  expect(within(panel).queryByTestId("proposal-categories")).toBeNull();
+});
+
+test("a board with more proposals than a page offers the rest", async () => {
+  // A run sizes every ticket that fits, so a board can hold hundreds.
+  const server = pagedBoard(120);
+  vi.stubGlobal("fetch", server.fetchMock);
+  renderStreamedBoard();
+  const list = await screen.findByTestId("proposal-list");
+
+  expect(within(list).getAllByRole("listitem")).toHaveLength(50);
+  expect(server.listReads()).toEqual([
+    "/api/v1/orgs/org_1/proposals?boardId=jrb_1&limit=50",
+  ]);
+
+  await userEvent.click(screen.getByRole("button", { name: "Show more" }));
+  await waitFor(() =>
+    expect(within(list).getAllByRole("listitem")).toHaveLength(100),
+  );
+  // The second page continues from the first page's cursor.
+  expect(server.listReads().at(-1)).toBe(
+    "/api/v1/orgs/org_1/proposals?boardId=jrb_1&limit=50&cursor=2026-09-30T00%3A00%3A00.000Z%7Cbpr_50",
+  );
+  expect(within(list).getByText("Ticket 100")).toBeDefined();
+
+  await userEvent.click(screen.getByRole("button", { name: "Show more" }));
+  await waitFor(() =>
+    expect(within(list).getAllByRole("listitem")).toHaveLength(120),
+  );
+  // The board has no more: the offer goes away.
+  expect(screen.queryByRole("button", { name: "Show more" })).toBeNull();
+});
+
+test("a board that fits in one page offers nothing more", async () => {
+  const server = pagedBoard(50);
+  vi.stubGlobal("fetch", server.fetchMock);
+  renderStreamedBoard();
+  const list = await screen.findByTestId("proposal-list");
+
+  // Exactly a page: the API hands back a cursor, and the next read is empty.
+  expect(within(list).getAllByRole("listitem")).toHaveLength(50);
+  await userEvent.click(screen.getByRole("button", { name: "Show more" }));
+  await waitFor(() =>
+    expect(screen.queryByRole("button", { name: "Show more" })).toBeNull(),
+  );
+  expect(within(list).getAllByRole("listitem")).toHaveLength(50);
+});
+
+test("a refresh keeps every page that was open", async () => {
+  const server = pagedBoard(120);
+  vi.stubGlobal("fetch", server.fetchMock);
+  renderStreamedBoard();
+  const list = await screen.findByTestId("proposal-list");
+  await userEvent.click(screen.getByRole("button", { name: "Show more" }));
+  await waitFor(() =>
+    expect(within(list).getAllByRole("listitem")).toHaveLength(100),
+  );
+
+  // Approving re-reads the list. It must not fold back to the first page
+  // and take the row being decided out from under the peek.
+  await userEvent.click(
+    within(list).getByRole("button", { name: /Ticket 80/ }),
+  );
+  const panel = await screen.findByTestId("proposal-panel");
+  const approve = await within(panel).findByRole("button", {
+    name: "Approve",
+  });
+  await waitFor(() =>
+    expect((approve as HTMLButtonElement).disabled).toBe(false),
+  );
+  const before = server.listReads().length;
+  await userEvent.click(approve);
+
+  // Two reads, because two pages were open. `hidden`, because the open
+  // peek is modal and hides the list behind it from the accessibility tree.
+  await waitFor(() =>
+    expect(server.listReads().length).toBeGreaterThanOrEqual(before + 2),
+  );
+  await waitFor(() =>
+    expect(within(panel).getByText("Approved")).toBeDefined(),
+  );
+  expect(within(list).getAllByRole("listitem", { hidden: true })).toHaveLength(
+    100,
+  );
+  expect(within(list).getByText("Ticket 80")).toBeDefined();
+});
+
+test("titles are asked for in batches the route accepts", async () => {
+  // The titles route takes at most fifty ids. A list holding more untitled
+  // rows than that must not send them all in one refused request.
+  const server = pagedBoard(120);
+  vi.stubGlobal("fetch", server.fetchMock);
+  renderStreamedBoard();
+  const list = await screen.findByTestId("proposal-list");
+  await userEvent.click(screen.getByRole("button", { name: "Show more" }));
+  await waitFor(() =>
+    expect(within(list).getAllByRole("listitem")).toHaveLength(100),
+  );
+
+  await waitFor(() =>
+    expect(server.titleReads().length).toBeGreaterThanOrEqual(2),
+  );
+  for (const url of server.titleReads()) {
+    const ids = new URL(url, "http://localhost").searchParams.get("ids") ?? "";
+    expect(ids.split(",").length).toBeLessThanOrEqual(50);
+  }
+});
+
+test("a run in progress says why each ticket is in its plan", async () => {
+  const planned = [
+    {
+      externalIssueId: "1",
+      issueKey: "APP-1",
+      summary: "Ticket 1",
+      categories: [
+        {
+          id: "holding-others-up",
+          label: "Holding others up",
+          reason: "Blocks 3 open tickets, unassigned",
+        },
+      ],
+    },
+    // A plan recorded before categories existed has none, and still lists.
+    { externalIssueId: "2", issueKey: "APP-2", summary: "Ticket 2" },
+  ];
+  const running = { id: "brn_1", status: "running", planned, outcomes: [] };
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((url: string) => {
+      if (url.endsWith("/runs/brn_1"))
+        return Promise.resolve(Response.json({ run: running }));
+      if (url.includes("/runs"))
+        return Promise.resolve(
+          Response.json({ runs: [running], sizingAvailable: true }),
+        );
+      return Promise.resolve(Response.json({ proposals: [] }));
+    }),
+  );
+  renderStreamedBoard();
+
+  const stream = await screen.findByTestId("sizing-active");
+  const rows = within(stream).getAllByRole("listitem");
+  expect(within(rows[0]!).getByTestId("category-line").textContent).toBe(
+    "Holding others up · Blocks 3 open tickets, unassigned",
+  );
+  expect(within(rows[1]!).queryByTestId("category-line")).toBeNull();
+  expect(within(rows[1]!).getByText("Ticket 2")).toBeDefined();
+});

@@ -507,7 +507,7 @@ const board = {
   name: "Acme Board",
   boardType: "scrum",
   projectKey: "ACME",
-  selection: { maxTickets: 10, excludeAssigned: true },
+  selection: { unassignedOnly: false, categories: {} },
   createdAt: "2026-09-21T00:00:00.000Z",
 };
 

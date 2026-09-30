@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { createJiraBoardStore } from "../src/jira-boards.js";
+import { createJiraBoardStore, mergeSelection } from "../src/jira-boards.js";
 import type { JiraBoardRow } from "../src/schema.js";
 import { createFakeDb } from "./fake-db.js";
 
@@ -14,7 +14,7 @@ function boardRow(overrides: Partial<JiraBoardRow> = {}): JiraBoardRow {
     name: "Acme board",
     boardType: "scrum",
     projectKey: "ACME",
-    selection: { maxTickets: 10, excludeAssigned: true },
+    selection: { ticketCap: 10, unassignedOnly: true },
     createdAt: new Date("2026-09-21T00:00:00.000Z"),
     updatedAt: new Date("2026-09-21T00:00:00.000Z"),
     ...overrides,
@@ -133,38 +133,130 @@ test("sync refuses to report success when no row came back", async () => {
 });
 
 test("a selection update is merged, not replaced", async () => {
-  // The bug this prevents: editing `maxTickets` alone resetting
-  // `excludeAssigned`, which would quietly start pricing assigned tickets.
+  // The bug this prevents: editing `ticketCap` alone resetting
+  // `unassignedOnly`, which would quietly change which tickets are priced.
   const { store: boards, calls } = store([
-    boardRow({ selection: { maxTickets: 10, excludeAssigned: false } }),
+    boardRow({ selection: { ticketCap: 10, unassignedOnly: true } }),
   ]);
 
-  await boards.update("org_1", "jrb_1", { selection: { maxTickets: 5 } });
+  await boards.update("org_1", "jrb_1", { selection: { ticketCap: 5 } });
 
   // calls[0] is the read; calls[1] is the write.
   const values = calls[1]?.values ?? {};
   assert.deepEqual(values["selection"], {
-    maxTickets: 5,
-    excludeAssigned: false,
+    ticketCap: 5,
+    unassignedOnly: true,
   });
+});
+
+test("a null in an update removes the setting instead of storing a null", async () => {
+  // A stored null would have to be explained by every later read. Removing
+  // the key is what "back to the default" means.
+  const { store: boards, calls } = store([
+    boardRow({ selection: { ticketCap: 10, maxAgeDays: 90, minAgeDays: 7 } }),
+  ]);
+
+  await boards.update("org_1", "jrb_1", {
+    selection: { ticketCap: null, maxAgeDays: null },
+  });
+
+  assert.deepEqual(calls[1]?.values?.["selection"], { minAgeDays: 7 });
+});
+
+test("category settings merge by category and by threshold", async () => {
+  // Tuning one number must leave every other category, and every other
+  // threshold of the same category, as it was.
+  const { store: boards, calls } = store([
+    boardRow({
+      selection: {
+        minAgeDays: 7,
+        categories: {
+          "left-behind": {
+            enabled: true,
+            thresholds: { minAgeDays: 200, minQuietDays: 60 },
+          },
+          "paper-cuts": { enabled: false },
+        },
+      },
+    }),
+  ]);
+
+  await boards.update("org_1", "jrb_1", {
+    selection: {
+      categories: {
+        "left-behind": { thresholds: { minAgeDays: 365 } },
+        "quietly-wanted": { thresholds: { minWatchers: 2 } },
+      },
+    },
+  });
+
+  assert.deepEqual(calls[1]?.values?.["selection"], {
+    minAgeDays: 7,
+    categories: {
+      "left-behind": {
+        enabled: true,
+        thresholds: { minAgeDays: 365, minQuietDays: 60 },
+      },
+      "paper-cuts": { enabled: false },
+      "quietly-wanted": { thresholds: { minWatchers: 2 } },
+    },
+  });
+});
+
+test("clearing every override returns a category to its defaults", () => {
+  const merged = mergeSelection(
+    {
+      categories: {
+        "left-behind": { thresholds: { minAgeDays: 200, minQuietDays: 60 } },
+        "paper-cuts": { enabled: false, thresholds: { minAgeDays: 30 } },
+        "deadline-exposed": undefined,
+      },
+    },
+    {
+      categories: {
+        // Both thresholds cleared and nothing else set: nothing is left.
+        "left-behind": { thresholds: { minAgeDays: null, minQuietDays: null } },
+        // One cleared; the switch stays.
+        "paper-cuts": { thresholds: { minAgeDays: null, other: undefined } },
+        "always-next-sprint": undefined,
+        // An update that says nothing stores nothing.
+        "holding-others-up": {},
+      },
+    },
+  );
+
+  assert.deepEqual(merged, {
+    categories: { "paper-cuts": { enabled: false } },
+  });
+  // And an update that does not mention categories leaves them alone.
+  assert.deepEqual(
+    mergeSelection(
+      { categories: { "paper-cuts": { enabled: false } } },
+      {
+        minAgeDays: 3,
+        unassignedOnly: undefined,
+      },
+    ),
+    { categories: { "paper-cuts": { enabled: false } }, minAgeDays: 3 },
+  );
 });
 
 test("an update with no selection leaves the settings as they were", async () => {
   const { store: boards, calls } = store([
-    boardRow({ selection: { maxTickets: 7 } }),
+    boardRow({ selection: { ticketCap: 7 } }),
   ]);
 
   await boards.update("org_1", "jrb_1", {});
 
   const values = calls[1]?.values ?? {};
-  assert.deepEqual(values["selection"], { maxTickets: 7 });
+  assert.deepEqual(values["selection"], { ticketCap: 7 });
 });
 
 test("an update writes nothing for a board the caller does not own", async () => {
   const { store: boards, calls } = store([]);
 
   const result = await boards.update("org_2", "jrb_1", {
-    selection: { maxTickets: 3 },
+    selection: { ticketCap: 3 },
   });
 
   assert.equal(result, null);
@@ -177,7 +269,7 @@ test("the update is scoped to the owner as well as the id", async () => {
   // that having happened.
   const { store: boards, calls } = store([boardRow()]);
 
-  await boards.update("org_1", "jrb_1", { selection: { maxTickets: 3 } });
+  await boards.update("org_1", "jrb_1", { selection: { ticketCap: 3 } });
 
   assert.equal(calls[1]?.filtered, true);
 });

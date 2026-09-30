@@ -259,6 +259,8 @@ export async function startRun(
       externalIssueId: found.id,
       issueKey: found.key,
       summary: found.summary,
+      // Picked by a person, not by a category.
+      categories: [],
     };
   }
 
@@ -1023,10 +1025,9 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
       sourceProposalId: proposal.id,
       sourceRevision: proposal.revision,
       requestId: parsed.data.requestId,
-      selection: {
-        ...boardSelectionSchema.parse(board.selection),
-        maxTickets: 1,
-      },
+      // A re-price sizes the one ticket its proposal names; the selection
+      // is snapshotted for `minSpecChars`, and nothing is selected with it.
+      selection: boardSelectionSchema.parse(board.selection),
       rateCard: {
         currency: card.currency,
         xsMinor: card.xsMinor,

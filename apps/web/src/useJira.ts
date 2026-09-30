@@ -225,13 +225,26 @@ export interface JiraBoard {
   boardType: string;
   projectKey: string | null;
   selection: {
-    maxTickets?: number;
-    excludeAssigned?: boolean;
+    /** A ceiling on tickets per run. Absent means every ticket that fits. */
+    ticketCap?: number;
+    unassignedOnly?: boolean;
     minAgeDays?: number;
     maxAgeDays?: number | null;
     minSpecChars?: number;
+    /** Per-category overrides, by category id. */
+    categories?: Record<
+      string,
+      { enabled?: boolean; thresholds?: Record<string, number> }
+    >;
   };
   createdAt: string;
+}
+
+/** Why a run picks a ticket: one category it fits, and the case for it. */
+export interface JiraCategoryMatch {
+  id: string;
+  label: string;
+  reason: string;
 }
 
 /** A ticket in the preview. The same DTO a run will price. */
@@ -246,6 +259,8 @@ export interface JiraPreviewIssue {
   created: string | null;
   updated: string | null;
   url: string | null;
+  /** Every category the ticket fits. Present, and non-empty, in a preview. */
+  categories?: JiraCategoryMatch[];
 }
 
 /** One ticket in full, as the detail view shows it. */
@@ -269,21 +284,42 @@ export interface JiraIssueDetail extends JiraPreviewIssue {
   environment: string | null;
 }
 
+/**
+ * What a run would size on a board, read live and priced by nobody: every
+ * open ticket that fits a category, with why.
+ */
 export interface BacklogPreview {
   boardId: string;
-  /** Which endpoint answered: a Kanban board has no backlog of its own. */
-  source: "backlog" | "board-issues";
   jql: string;
   /** The resolved rules used for this read, including server defaults. */
   selection?: {
-    maxTickets: number;
-    excludeAssigned: boolean;
+    ticketCap?: number;
+    unassignedOnly: boolean;
     issueTypes: string[];
     minAgeDays: number;
     maxAgeDays?: number;
     minSpecChars: number;
   };
+  /** Every category as this board runs it: on or off, thresholds resolved. */
+  categories: {
+    id: string;
+    label: string;
+    why: string;
+    enabled: boolean;
+    thresholds: Record<string, number>;
+  }[];
   issues: JiraPreviewIssue[];
+  /** How many scanned tickets fit each category, by id. */
+  matched: Record<string, number>;
+  /** Scanned tickets that fit no category. */
+  unmatched: number;
+  candidatesScanned: number;
+  /** Fitting tickets left out because they already have a proposal. */
+  skippedLive: number;
+  /** The scan stopped at its ceiling with the board not fully read. */
+  scanLimitReached: boolean;
+  /** The board's `ticketCap` stopped the selection early. */
+  ticketCapReached: boolean;
   total?: number;
 }
 

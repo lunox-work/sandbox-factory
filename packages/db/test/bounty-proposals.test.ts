@@ -133,7 +133,18 @@ test("gets and lists proposals with issue display keys", async () => {
     externalId: "10001",
     planned: [
       { externalIssueId: "10002", issueKey: "APP-2", summary: "Another" },
-      { externalIssueId: "10001", issueKey: "APP-1", summary: "Add login" },
+      {
+        externalIssueId: "10001",
+        issueKey: "APP-1",
+        summary: "Add login",
+        categories: [
+          {
+            id: "holding-others-up",
+            label: "Holding others up",
+            reason: "Blocks 3 open tickets, unassigned",
+          },
+        ],
+      },
     ],
   };
   const fake = createFakeDb([joined]);
@@ -150,6 +161,14 @@ test("gets and lists proposals with issue display keys", async () => {
   assert.equal(listed[0]?.id, "bpr_1");
   // The title its own ticket was planned under, not a neighbour's.
   assert.equal(listed[0]?.sizedTitle, "Add login");
+  // And why its own run picked it, from the same plan entry.
+  assert.deepEqual(listed[0]?.categories, [
+    {
+      id: "holding-others-up",
+      label: "Holding others up",
+      reason: "Blocks 3 open tickets, unassigned",
+    },
+  ]);
   assert.equal(fake.calls[1]?.limited, 50);
 });
 
@@ -168,6 +187,8 @@ test("a listed proposal has no sized title when its run planned none", async () 
       "jrb_1",
     );
     assert.equal(listed[0]?.sizedTitle, null);
+    // A plan from before categories, or a ticket picked by hand: none.
+    assert.deepEqual(listed[0]?.categories, []);
   }
 });
 

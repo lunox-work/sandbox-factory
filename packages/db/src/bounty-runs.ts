@@ -63,13 +63,18 @@ export interface BountyRunStore {
    * The tickets a claimed run is about to size, written once before the
    * first. Guarded by the lease like an outcome, so a run that lost its lease
    * cannot overwrite the plan of the worker that took it over.
+   *
+   * **Also sets the run's deadline from the size of the plan** (see
+   * `runDeadline`), and returns the run so the caller sizes against the
+   * deadline now in force rather than the one it claimed with. Null when the
+   * lease is gone.
    */
   recordPlan(
     organizationId: string,
     runId: string,
     leaseToken: string,
     planned: readonly BountyRunPlannedIssue[],
-  ): Promise<boolean>;
+  ): Promise<StoredBountyRun | null>;
   recordOutcome(
     organizationId: string,
     runId: string,
@@ -91,6 +96,29 @@ export interface BountyRunStore {
   failExpired(organizationId: string, now: Date): Promise<number>;
   /** Privileged watchdog discovery; returned ids must still be passed to failExpired. */
   organizationsWithExpiredRuns(now: Date): Promise<string[]>;
+}
+
+/** How long a run has to choose its tickets, before any is sized. */
+const RUN_BASE_MS = 10 * 60_000;
+/**
+ * The allowance each planned ticket adds. A ticket costs one Jira read and
+ * one model call, and three are sized at a time, so this is several times
+ * what one needs. It is a bound on a stuck run, not a target.
+ */
+const RUN_PER_TICKET_MS = 20_000;
+
+/**
+ * When a run with this many planned tickets must be finished.
+ *
+ * A run takes every ticket that matches a category, so its length is the
+ * board's to decide, not a constant. A fixed deadline would fail a large
+ * run partway as `worker_lost`; one that grows with the plan still ends a
+ * run that has stopped making progress.
+ */
+export function runDeadline(now: Date, plannedTickets: number): Date {
+  return new Date(
+    now.getTime() + RUN_BASE_MS + RUN_PER_TICKET_MS * plannedTickets,
+  );
 }
 
 export interface StoredBountyRun {
@@ -309,7 +337,9 @@ export function createBountyRunStore(db: Database): BountyRunStore {
 
     async claim(organizationId, runId, leaseToken, now) {
       const leaseExpiresAt = new Date(now.getTime() + 60_000);
-      const deadlineAt = new Date(now.getTime() + 10 * 60_000);
+      // Before the plan exists, so with no tickets to allow for. `recordPlan`
+      // moves it once the run knows how many it will size.
+      const deadlineAt = runDeadline(now, 0);
       const rows = (await db
         .update(bountyRun)
         .set({
@@ -358,7 +388,13 @@ export function createBountyRunStore(db: Database): BountyRunStore {
       const now = new Date();
       const rows = (await db
         .update(bountyRun)
-        .set({ planned: [...planned], updatedAt: now })
+        .set({
+          planned: [...planned],
+          // Always later than the deadline `claim` set: this runs after it,
+          // from a later `now`, with at least the same allowance.
+          deadlineAt: runDeadline(now, planned.length),
+          updatedAt: now,
+        })
         .where(
           and(
             eq(bountyRun.organizationId, organizationId),
@@ -369,7 +405,7 @@ export function createBountyRunStore(db: Database): BountyRunStore {
           ),
         )
         .returning()) as BountyRunRow[];
-      return rows.length > 0;
+      return rows[0] === undefined ? null : toDto(rows[0]);
     },
 
     async recordOutcome(organizationId, runId, leaseToken, outcome) {
@@ -388,7 +424,9 @@ export function createBountyRunStore(db: Database): BountyRunStore {
             eq(bountyRun.leaseToken, leaseToken),
             gt(bountyRun.leaseExpiresAt, now),
             gt(bountyRun.deadlineAt, now),
-            sql`jsonb_array_length(${bountyRun.outcomes}) < COALESCE((${bountyRun.selection}->>'maxTickets')::int, 50)`,
+            // One outcome per planned ticket, and no more. The plan is the
+            // bound now that a run has no fixed number of tickets.
+            sql`jsonb_array_length(${bountyRun.outcomes}) < jsonb_array_length(${bountyRun.planned})`,
           ),
         )
         .returning()) as BountyRunRow[];

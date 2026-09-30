@@ -24,7 +24,9 @@ import {
   type JiraIssueDto,
   type JiraIssuePageDto,
   jiraIssuePageResponseSchema,
+  type JiraIssueResponse,
   jiraIssueResponseSchema,
+  type JiraIssueSignalsPageDto,
   type JiraSprintDto,
   jiraSprintPageResponseSchema,
 } from "@sandbox-factory/shared";
@@ -33,9 +35,11 @@ import type { Credential } from "./credentials.js";
 import {
   DETAIL_FIELDS,
   ISSUE_FIELDS,
+  SELECTION_FIELDS,
   toBoardDto,
   toIssueDetailDto,
   toIssueDto,
+  toIssueSignalsDto,
   toSprintDto,
 } from "./mapping.js";
 import { type JiraIssueSpec, SPEC_FIELDS, toIssueSpec } from "./spec.js";
@@ -178,7 +182,28 @@ export class JiraClient {
       options.sprintId === undefined
         ? `/rest/agile/1.0/board/${boardId}/issue`
         : `/rest/agile/1.0/board/${boardId}/sprint/${options.sprintId}/issue`;
-    return this.#issuePage(path, options);
+    return this.#issuePage(path, options, ISSUE_FIELDS, toIssueDto);
+  }
+
+  /**
+   * A board's issues with the signals selection classifies by: sprint
+   * history, votes and watchers, links, and fix versions.
+   *
+   * The same endpoint as `boardIssues`, asked for more fields. Deliberately
+   * not the backlog endpoint: that returns only tickets outside every sprint,
+   * and a ticket carried from sprint to sprint is exactly one of the things
+   * selection looks for. Still no description; see `SELECTION_FIELDS`.
+   */
+  async boardIssueSignals(
+    boardId: number,
+    options: IssuePageOptions = {},
+  ): Promise<JiraIssueSignalsPageDto> {
+    return this.#issuePage(
+      `/rest/agile/1.0/board/${boardId}/issue`,
+      options,
+      SELECTION_FIELDS,
+      toIssueSignalsDto,
+    );
   }
 
   /**
@@ -189,7 +214,12 @@ export class JiraClient {
     boardId: number,
     options: IssuePageOptions = {},
   ): Promise<JiraIssuePageDto> {
-    return this.#issuePage(`/rest/agile/1.0/board/${boardId}/backlog`, options);
+    return this.#issuePage(
+      `/rest/agile/1.0/board/${boardId}/backlog`,
+      options,
+      ISSUE_FIELDS,
+      toIssueDto,
+    );
   }
 
   /** A board's sprints, newest state first as Jira orders them. */
@@ -330,17 +360,26 @@ export class JiraClient {
     }
   }
 
-  /** Shared by the three Agile issue endpoints, which paginate identically. */
-  async #issuePage(
+  /**
+   * Shared by the Agile issue endpoints, which paginate identically. What
+   * differs between callers is which fields are asked for and how an issue
+   * is mapped, and the two must agree: `map` reads what `fields` requested.
+   */
+  async #issuePage<Issue>(
     path: string,
     options: IssuePageOptions,
-  ): Promise<JiraIssuePageDto> {
+    fields: readonly string[],
+    map: (
+      issue: JiraIssueResponse,
+      options: { siteUrl?: string | undefined },
+    ) => Issue,
+  ): Promise<{ issues: Issue[]; total?: number; nextStartAt?: number }> {
     const startAt = options.startAt ?? 0;
     const maxResults = Math.min(options.maxResults ?? 50, MAX_PAGE_SIZE);
     const query = new URLSearchParams({
       startAt: String(startAt),
       maxResults: String(maxResults),
-      fields: ISSUE_FIELDS.join(","),
+      fields: fields.join(","),
     });
     if (options.jql !== undefined && options.jql !== "") {
       query.set("jql", options.jql);
@@ -348,7 +387,7 @@ export class JiraClient {
     const payload = await this.#get(`${path}?${query}`);
     const page = jiraIssuePageResponseSchema.parse(payload);
     const issues = page.issues.map((issue) =>
-      toIssueDto(issue, { siteUrl: this.#siteUrl }),
+      map(issue, { siteUrl: this.#siteUrl }),
     );
     // The Agile API reports `total`, so "is there more" is answerable without
     // requesting a page past the end.

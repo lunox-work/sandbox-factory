@@ -1,5 +1,7 @@
 /** Pure commercial rules. This module stays dependency-free. */
 
+import type { CategoryConfig, CategoryMatch } from "./selection/categories.js";
+
 export const PRICED_BOUNTY_COMPLEXITIES = ["XS", "S", "M", "L", "XL"] as const;
 export const BOUNTY_COMPLEXITIES = [
   ...PRICED_BOUNTY_COMPLEXITIES,
@@ -36,13 +38,23 @@ export const DEFAULT_RATE_CARD: RateCardValues = {
   xlMinor: 20_000,
 };
 
+/**
+ * The selection settings a run was started with, as snapshotted on the run.
+ *
+ * Runs from before categories existed hold the older shape (`maxTickets`,
+ * `excludeAssigned`); those keys are simply absent from this type and are
+ * never read.
+ */
 export interface BountySelection {
-  readonly maxTickets: number;
-  readonly excludeAssigned: boolean;
+  /** A ceiling on tickets per run. Absent means every matching ticket. */
+  readonly ticketCap?: number | undefined;
+  readonly unassignedOnly: boolean;
   readonly issueTypes: readonly string[];
   readonly minAgeDays: number;
-  readonly maxAgeDays?: number;
+  readonly maxAgeDays?: number | undefined;
   readonly minSpecChars: number;
+  /** Per-category overrides, by category id. See `selection/categories`. */
+  readonly categories: CategoryConfig;
 }
 
 export type SizingConfidence = "low" | "medium" | "high";
@@ -64,6 +76,11 @@ export interface BountyRunPlannedIssue {
   readonly externalIssueId: string;
   readonly issueKey: string;
   readonly summary: string;
+  /**
+   * Why a backlog run picked it. Absent on plans recorded before categories
+   * existed, and empty for a ticket a person picked by hand.
+   */
+  readonly categories?: readonly CategoryMatch[] | undefined;
 }
 
 export interface BountyRunOutcome {

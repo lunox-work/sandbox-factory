@@ -1,6 +1,7 @@
 import type {
   BountyComplexity,
   BountySizingResult,
+  CategoryMatch,
   RateCardSnapshot,
   PricedComplexity,
   SizingConfidence,
@@ -55,6 +56,12 @@ export type ListedBountyProposal = StoredBountyProposal & {
    * differ.
    */
   readonly sizedTitle: string | null;
+  /**
+   * Why the run picked the ticket: the categories it fit and the reason for
+   * each, from the same plan entry. Empty for a ticket someone picked by
+   * hand, and for a run from before categories existed.
+   */
+  readonly categories: readonly CategoryMatch[];
 };
 
 export interface BountyProposalStore {
@@ -452,12 +459,14 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
         .orderBy(desc(bountyProposal.createdAt), desc(bountyProposal.id))
         .limit(limit);
       return rows.map(({ row, issueKey, externalId, planned }) => {
-        const summary = planned.find(
+        const entry = planned.find(
           (issue) => issue.externalIssueId === externalId,
-        )?.summary;
+        );
+        const summary = entry?.summary;
         return {
           ...toDto(row, issueKey),
           sizedTitle: summary === undefined || summary === "" ? null : summary,
+          categories: entry?.categories ?? [],
         };
       });
     },

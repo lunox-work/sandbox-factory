@@ -15,6 +15,7 @@ import type {
   JiraIssueDetailDto,
   JiraIssueDto,
   JiraIssueResponse,
+  JiraIssueSignalsDto,
   JiraSprintDto,
   JiraSprintResponse,
   JiraStatusCategory,
@@ -78,6 +79,66 @@ export function toIssueDto(
       siteUrl === undefined
         ? null
         : `${stripTrailingSlashes(siteUrl)}/browse/${issue.key}`,
+  };
+}
+
+/**
+ * One issue with what selection reads to decide whether to offer it.
+ *
+ * Built on `toIssueDto` so the two can never disagree about a shared field.
+ * Everything beyond it is a count, a date or a name, and every one of them
+ * is optional upstream: a Kanban board sends no sprints, a site can hide
+ * votes, and a project with no releases has no fix versions. Each absence
+ * lands as null or an empty list, which selection reads as "no signal", so a
+ * sparse ticket is merely less likely to be selected, never an error.
+ */
+export function toIssueSignalsDto(
+  issue: JiraIssueResponse,
+  options: IssueMappingOptions = {},
+): JiraIssueSignalsDto {
+  const fields = issue.fields ?? {};
+  const sprint = fields.sprint ?? null;
+
+  return {
+    ...toIssueDto(issue, options),
+    sprint:
+      sprint === null
+        ? null
+        : { name: sprint.name ?? "", state: sprint.state ?? "unknown" },
+    closedSprints: (fields.closedSprints ?? []).map((closed) => ({
+      name: closed.name ?? "",
+      startDate: closed.startDate ?? null,
+      endDate: closed.endDate ?? null,
+    })),
+    votes: fields.votes?.votes ?? null,
+    watchers: fields.watches?.watchCount ?? null,
+    links: (fields.issuelinks ?? []).flatMap((link) => {
+      // Jira sends exactly one side. A link with neither is malformed and
+      // says nothing about this ticket.
+      const direction =
+        link.outwardIssue !== undefined
+          ? "outward"
+          : link.inwardIssue !== undefined
+            ? "inward"
+            : null;
+      if (direction === null) return [];
+      const other = link.outwardIssue ?? link.inwardIssue;
+      return [
+        {
+          type: link.type?.name ?? "",
+          direction,
+          key: other?.key ?? null,
+          statusCategory: toStatusCategory(
+            other?.fields?.status?.statusCategory?.key,
+          ),
+        },
+      ];
+    }),
+    releases: (fields.fixVersions ?? []).map((version) => ({
+      name: version.name ?? "",
+      releaseDate: version.releaseDate ?? null,
+      released: version.released ?? false,
+    })),
   };
 }
 
@@ -174,6 +235,26 @@ export const ISSUE_FIELDS: readonly string[] = [
   "duedate",
   "parent",
   "project",
+];
+
+/**
+ * The fields the selection read asks for: `ISSUE_FIELDS` plus the signals a
+ * category tests. `sprint` and `closedSprints` exist only on the Agile
+ * endpoints, which is where this list is used.
+ *
+ * A separate list rather than a longer `ISSUE_FIELDS`, so that a ticket
+ * search or a title read does not pay for link and sprint data it never
+ * looks at. **No `description` and no `comment`**: both carry ticket text,
+ * and a list read must not. That is why comment counts are not a signal yet.
+ */
+export const SELECTION_FIELDS: readonly string[] = [
+  ...ISSUE_FIELDS,
+  "sprint",
+  "closedSprints",
+  "votes",
+  "watches",
+  "issuelinks",
+  "fixVersions",
 ];
 
 /**

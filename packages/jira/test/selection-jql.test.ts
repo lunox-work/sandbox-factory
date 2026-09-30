@@ -3,26 +3,23 @@ import { test } from "node:test";
 
 import { boardSelectionSchema } from "@sandbox-factory/shared";
 
-import { backlogJql, backlogSource, SKIP_LABEL } from "../src/backlog.js";
+import { selectionJql, SKIP_LABEL } from "../src/selection-jql.js";
 
 /** The defaults, which is what a board registered with no settings gets. */
 const defaults = boardSelectionSchema.parse({});
 
 function jql(overrides: Record<string, unknown> = {}, options = {}): string {
-  return backlogJql(boardSelectionSchema.parse(overrides), {
+  return selectionJql(boardSelectionSchema.parse(overrides), {
     now: new Date("2026-09-21T00:00:00.000Z"),
     ...options,
   });
 }
 
-test("the ordering is oldest first, which is the whole point", () => {
-  assert.match(jql(), /ORDER BY created ASC/);
-});
-
-test("ties break on key, so two runs read the same tickets", () => {
-  // Several tickets created in the same minute is common after an import, and
-  // an unstable order would make "the next ten" arbitrary.
-  assert.match(jql(), /ORDER BY created ASC, key ASC/);
+test("the order is stable, so two runs page the same tickets the same way", () => {
+  // Every match is taken, so the order no longer decides which. It still has
+  // to be total: several tickets created in the same minute is common after
+  // an import, and an unstable order would repeat or skip one across pages.
+  assert.match(jql(), /ORDER BY created ASC, key ASC$/);
 });
 
 test("epics and sub-tasks are excluded structurally", () => {
@@ -31,10 +28,19 @@ test("epics and sub-tasks are excluded structurally", () => {
   assert.match(jql(), /issuetype not in \(Epic, subTaskIssueTypes\(\)\)/);
 });
 
-test("assigned tickets are skipped by default", () => {
-  // A bounty on a ticket someone already owns is a conflict.
-  assert.match(jql(), /assignee is EMPTY/);
-  assert.ok(!jql({ excludeAssigned: false }).includes("assignee is EMPTY"));
+test("assigned tickets are candidates unless the board says otherwise", () => {
+  // The categories that need an unowned ticket test for it themselves. A
+  // blanket filter here would hide a ticket carried through four sprints,
+  // which usually has an owner.
+  assert.ok(!jql().includes("assignee is EMPTY"));
+  assert.match(jql({ unassignedOnly: true }), /assignee is EMPTY/);
+});
+
+test("settings from before categories are not read", () => {
+  // Boards registered then have these written into their rows. They must
+  // not resurrect the old filter.
+  const legacy = jql({ maxTickets: 10, excludeAssigned: true });
+  assert.equal(legacy, jql());
 });
 
 test("the opt-out label excludes a ticket that carries it among others", () => {
@@ -100,52 +106,21 @@ test("a project key is quoted and applied", () => {
   assert.ok(!jql({}, { projectKey: "" }).includes("project ="));
 });
 
-test("the backlog endpoint is not told to exclude Done", () => {
-  // It returns incomplete issues by definition, and restating that would be a
-  // claim that could drift from what Jira means by it.
-  assert.ok(!jql().includes("statusCategory"));
+test("finished work is excluded, and started work is not", () => {
+  // The board endpoint returns everything on the board. "Not done" rather
+  // than "to do": a ticket started and never finished is still open.
+  assert.match(jql(), /statusCategory != Done/);
+  assert.ok(!jql().includes('statusCategory = "To Do"'));
 });
 
-test("reading board issues instead does filter to To Do", () => {
-  // `/board/{id}/issue` returns everything on the board, including Done.
-  assert.match(jql({}, { source: "board-issues" }), /statusCategory = "To Do"/);
-});
-
-test("a Kanban board is read through board issues, not the backlog", () => {
-  // A plain Kanban board has no backlog endpoint: its first column is the
-  // backlog.
-  assert.equal(backlogSource("kanban"), "board-issues");
-  assert.equal(backlogSource("KANBAN"), "board-issues");
-});
-
-test("scrum and unknown board types use the backlog endpoint", () => {
-  // Guessing the other way would silently read sprint-assigned tickets as
-  // though they were backlog.
-  assert.equal(backlogSource("scrum"), "backlog");
-  assert.equal(backlogSource("unknown"), "backlog");
-  assert.equal(backlogSource(""), "backlog");
-});
-
-test("the defaults are the ones the plan specifies", () => {
-  assert.equal(defaults.maxTickets, 10);
-  assert.equal(defaults.excludeAssigned, true);
+test("the defaults select every match and filter nothing extra", () => {
+  assert.equal(defaults.ticketCap, undefined);
+  assert.equal(defaults.unassignedOnly, false);
   assert.equal(defaults.minAgeDays, 0);
   assert.equal(defaults.maxAgeDays, undefined);
   assert.equal(defaults.minSpecChars, 0);
   assert.deepEqual(defaults.issueTypes, []);
-});
-
-test("maxTickets is capped, so one run cannot spend without limit", () => {
-  // It is the ceiling on what a run costs in model calls.
-  assert.equal(
-    boardSelectionSchema.safeParse({ maxTickets: 500 }).success,
-    false,
-  );
-  assert.equal(
-    boardSelectionSchema.safeParse({ maxTickets: 0 }).success,
-    false,
-  );
-  assert.equal(boardSelectionSchema.parse({ maxTickets: 50 }).maxTickets, 50);
+  assert.deepEqual(defaults.categories, {});
 });
 
 test("every clause is joined with AND", () => {

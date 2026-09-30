@@ -720,7 +720,9 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
    * The tickets a run would price, read live and priced by nobody.
    *
    * The point of the route: a client can see exactly which tickets their
-   * settings select before spending a model call on any of them. It stores
+   * settings select, why each was picked, and how many fit each category,
+   * before spending a model call on any of them. A run sizes every ticket
+   * listed here, so this is also what a run will cost. It stores
    * nothing — no `jira_issue` row, no run — so pressing it twice is free and
    * looking at a board stays distinguishable from pricing it.
    *

@@ -381,8 +381,8 @@ function BoardsError({
  * Jira reports `scrum`, `kanban`, or nothing — `unknown` is ours, for a site
  * that did not say. Three columns for a Kanban board and a sprint's repeat
  * for a Scrum one, because that is the difference a person is scanning for:
- * a Kanban board has no backlog of its own, which is why the preview reads it
- * through a different endpoint.
+ * only a Scrum board has sprints, so only there can a ticket be picked for
+ * being carried from one sprint to the next.
  *
  * Compared lowercased: the type is Jira's string, and a site is free to send
  * `Kanban`.

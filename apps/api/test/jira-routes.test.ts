@@ -221,11 +221,11 @@ function fakeBoards(
     boardType: "scrum",
     projectKey: "ACME",
     selection: {
-      maxTickets: 10,
-      excludeAssigned: true,
+      unassignedOnly: false,
       issueTypes: [],
       minAgeDays: 0,
       minSpecChars: 0,
+      categories: {},
     },
     createdAt: "2026-09-21T00:00:00.000Z",
     ...overrides,
@@ -1413,8 +1413,10 @@ test("registering a board takes its name and type from Jira, not the body", asyn
   assert.equal(registered?.boardType, "scrum");
   assert.equal(registered?.projectKey, "ACME");
   // Defaults are filled in, so the row holds a complete set of settings.
-  assert.equal(registered?.selection?.maxTickets, 10);
-  assert.equal(registered?.selection?.excludeAssigned, true);
+  // None of them is a ticket count: a run takes every ticket that fits.
+  assert.equal(registered?.selection?.ticketCap, undefined);
+  assert.equal(registered?.selection?.unassignedOnly, false);
+  assert.deepEqual(registered?.selection?.categories, {});
 });
 
 test("registering a board the grant cannot see is a 404", async () => {
@@ -1449,13 +1451,50 @@ test("editing a board passes only the settings that were sent", async () => {
   const response = await app.request("/api/v1/orgs/org_1/jira/boards/jrb_1", {
     method: "PATCH",
     headers: { ...signedIn, "content-type": "application/json" },
-    body: JSON.stringify({ selection: { maxTickets: 5 } }),
+    body: JSON.stringify({ selection: { ticketCap: 5 } }),
   });
 
   assert.equal(response.status, 200);
   // Absent means "leave it alone": anything else would reset the rest to
   // their defaults, which is the trap `boardSelectionUpdateSchema` documents.
-  assert.deepEqual(boards.updates, [{ selection: { maxTickets: 5 } }]);
+  assert.deepEqual(boards.updates, [{ selection: { ticketCap: 5 } }]);
+});
+
+test("a category can be tuned or switched off on one board", async () => {
+  const { app, boards } = appWith();
+  const categories = {
+    "left-behind": { thresholds: { minAgeDays: 365, minQuietDays: null } },
+    "paper-cuts": { enabled: false },
+  };
+
+  const response = await app.request("/api/v1/orgs/org_1/jira/boards/jrb_1", {
+    method: "PATCH",
+    headers: { ...signedIn, "content-type": "application/json" },
+    body: JSON.stringify({ selection: { categories } }),
+  });
+
+  assert.equal(response.status, 200);
+  // Passed on as sent, the null included: the store merges it threshold by
+  // threshold, and a null there clears an override.
+  assert.deepEqual(boards.updates, [{ selection: { categories } }]);
+});
+
+test("a category or threshold that does not exist is refused, not dropped", async () => {
+  // Accepting it would look like it had been saved.
+  const { app, boards } = appWith();
+
+  for (const categories of [
+    { "no-such-category": { enabled: false } },
+    { "left-behind": { thresholds: { minAge: 30 } } },
+  ]) {
+    const response = await app.request("/api/v1/orgs/org_1/jira/boards/jrb_1", {
+      method: "PATCH",
+      headers: { ...signedIn, "content-type": "application/json" },
+      body: JSON.stringify({ selection: { categories } }),
+    });
+    assert.equal(response.status, 400);
+  }
+  assert.deepEqual(boards.updates, []);
 });
 
 test("clearing maxAgeDays survives as a null rather than being dropped", async () => {
@@ -1486,8 +1525,30 @@ test("write-back is not a board setting", async () => {
   assert.deepEqual(boards.updates, []);
 });
 
-test("the preview returns the board's oldest backlog tickets", async () => {
-  const jira = fakeJiraApi();
+test("the preview returns every ticket that fits a category, with why", async () => {
+  const jira = fakeJiraApi({
+    issues: [
+      issueResponse(1),
+      issueResponse(2),
+      // Recent and owned: fits nothing, so a run would not take it.
+      {
+        id: "1003",
+        key: "ACME-3",
+        fields: {
+          summary: "Ticket 3",
+          status: {
+            name: "In Progress",
+            statusCategory: { key: "indeterminate" },
+          },
+          assignee: { displayName: "Ada Lovelace" },
+          priority: { name: "High" },
+          issuetype: { name: "Task" },
+          created: "2026-09-20T00:00:00.000+0000",
+          updated: "2026-09-20T00:00:00.000+0000",
+        },
+      },
+    ],
+  });
   const { app } = appWith({ fetch: jira });
 
   const response = await app.request(
@@ -1497,40 +1558,76 @@ test("the preview returns the board's oldest backlog tickets", async () => {
 
   assert.equal(response.status, 200);
   const body = (await response.json()) as {
-    source: string;
+    boardId: string;
     jql: string;
-    issues: { key: string }[];
+    issues: {
+      key: string;
+      categories: { id: string; label: string; reason: string }[];
+    }[];
+    categories: { id: string; enabled: boolean; thresholds: unknown }[];
+    matched: Record<string, number>;
+    unmatched: number;
+    scanLimitReached: boolean;
+    ticketCapReached: boolean;
   };
 
-  assert.equal(body.source, "backlog");
+  assert.equal(body.boardId, "jrb_1");
   assert.deepEqual(
     body.issues.map((issue) => issue.key),
     ["ACME-1", "ACME-2"],
   );
-  // The ordering is the product claim: "the oldest still in the backlog".
-  assert.ok(body.jql.includes("ORDER BY created ASC"));
-  assert.ok(body.jql.includes("assignee is EMPTY"));
-  assert.ok(jira.urls.some((url) => url.includes("/board/42/backlog")));
+  // Each ticket says why it is there.
+  assert.deepEqual(
+    body.issues[0]?.categories.map(({ id, label }) => [id, label]),
+    [["left-behind", "Left behind"]],
+  );
+  assert.match(
+    body.issues[0]?.categories[0]?.reason ?? "",
+    /^Open \d+ days, never in a sprint, unassigned$/,
+  );
+  // And the board says how many fit each category, and how many fit none.
+  assert.equal(body.matched["left-behind"], 2);
+  assert.equal(body.unmatched, 1);
+  assert.equal(body.scanLimitReached, false);
+  assert.equal(body.ticketCapReached, false);
+  // The categories are reported as this board runs them.
+  assert.deepEqual(
+    body.categories.find(({ id }) => id === "left-behind"),
+    {
+      id: "left-behind",
+      label: "Left behind",
+      why: "The team has shown it won't reach this, so outsourcing takes nothing off the roadmap.",
+      enabled: true,
+      thresholds: { minAgeDays: 180, minQuietDays: 90 },
+    },
+  );
+  // Open work of any owner is a candidate; the categories do the choosing.
+  assert.ok(body.jql.includes("statusCategory != Done"));
+  assert.ok(!body.jql.includes("assignee is EMPTY"));
 });
 
-test("a Kanban board is previewed through the board-issues endpoint", async () => {
-  // A plain Kanban board has no backlog endpoint at all; its first column is
-  // the backlog, so the fallback has to restrict to To Do itself.
-  const jira = fakeJiraApi();
-  const { app } = appWith({
-    boards: fakeBoards({ boardType: "kanban" }),
-    fetch: jira,
-  });
+test("every board is read through its issues, never the backlog endpoint", async () => {
+  // The backlog endpoint leaves out every ticket in a sprint, which hides
+  // the ones carried from sprint to sprint. So a Scrum board and a Kanban
+  // board are read the same way, asking for the signals and no ticket text.
+  for (const boardType of ["scrum", "kanban", "unknown"]) {
+    const jira = fakeJiraApi();
+    const { app } = appWith({ boards: fakeBoards({ boardType }), fetch: jira });
 
-  const response = await app.request(
-    "/api/v1/orgs/org_1/jira/boards/jrb_1/backlog-preview",
-    { headers: signedIn },
-  );
+    const response = await app.request(
+      "/api/v1/orgs/org_1/jira/boards/jrb_1/backlog-preview",
+      { headers: signedIn },
+    );
 
-  const body = (await response.json()) as { source: string; jql: string };
-  assert.equal(body.source, "board-issues");
-  assert.ok(body.jql.includes('statusCategory = "To Do"'));
-  assert.ok(jira.urls.some((url) => url.includes("/board/42/issue")));
+    assert.equal(response.status, 200);
+    assert.equal(jira.urls.length, 1);
+    const [url = ""] = jira.urls;
+    assert.ok(url.includes("/board/42/issue?"));
+    assert.ok(!url.includes("/backlog"));
+    assert.ok(url.includes("closedSprints"));
+    assert.ok(!url.includes("description"));
+    assert.ok(!url.includes("comment"));
+  }
 });
 
 test("the preview stores nothing", async () => {

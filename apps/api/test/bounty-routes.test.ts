@@ -51,11 +51,11 @@ const run: StoredBountyRun = {
   requestId,
   status: "queued",
   selection: {
-    maxTickets: 10,
-    excludeAssigned: true,
+    unassignedOnly: false,
     issueTypes: [],
     minAgeDays: 0,
     minSpecChars: 0,
+    categories: {},
   },
   rateCard: { ...card },
   requestedModel: "configured-model",
@@ -734,8 +734,14 @@ test("adding a ticket starts a one-ticket run for it", async () => {
   assert.deepEqual(state.starts, ["brn_1"]);
   const [input] = state.created as { kind: string; planned: unknown }[];
   assert.equal(input?.kind, "issue");
+  // A person picked it, so no category is given as the reason.
   assert.deepEqual(input?.planned, [
-    { externalIssueId: "7", issueKey: "APP-7", summary: "Add login" },
+    {
+      externalIssueId: "7",
+      issueKey: "APP-7",
+      summary: "Add login",
+      categories: [],
+    },
   ]);
   // Read through the board, so a ticket from elsewhere cannot be sized here.
   assert.deepEqual(state.jql, ["issue = 7"]);

@@ -109,10 +109,19 @@ export const bountyRunOutcomeSchema = z.object({
   outputTokens: z.number().int().nonnegative().optional(),
 });
 
+/** Why a backlog run picked a ticket: one category it fits, and the case. */
+export const bountyCategoryMatchSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  reason: z.string().min(1),
+});
+
 export const bountyRunPlannedIssueSchema = z.object({
   externalIssueId: z.string().min(1),
   issueKey: z.string().min(1),
   summary: z.string(),
+  /** Absent on plans recorded before categories existed. */
+  categories: z.array(bountyCategoryMatchSchema).optional(),
 });
 
 export const bountyRunDtoSchema = z.object({
@@ -250,6 +259,7 @@ export type RateCardSnapshotDto = z.infer<typeof rateCardSnapshotSchema>;
 export type RateCardDto = z.infer<typeof rateCardDtoSchema>;
 export type SizingResult = z.infer<typeof sizingResultSchema>;
 export type BountyRunOutcome = z.infer<typeof bountyRunOutcomeSchema>;
+export type BountyCategoryMatch = z.infer<typeof bountyCategoryMatchSchema>;
 export type BountyRunPlannedIssue = z.infer<typeof bountyRunPlannedIssueSchema>;
 export type BountyRunDto = z.infer<typeof bountyRunDtoSchema>;
 export type BountyProposalDto = z.infer<typeof bountyProposalDtoSchema>;

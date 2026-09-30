@@ -12,11 +12,12 @@ import {
   JiraAuthError,
   type JiraIssueSpec,
 } from "@sandbox-factory/jira";
-import type { JiraIssueDto } from "@sandbox-factory/shared";
+import type { JiraIssueDto, JiraIssuePageDto } from "@sandbox-factory/shared";
 import {
   priceFor,
   type BountyRunOutcome,
   type BountySizingResult,
+  type CategoryMatch,
 } from "sandbox-factory";
 
 import type { Sizer } from "../sizing/sizer.js";
@@ -26,7 +27,20 @@ import { selectBacklog, type BacklogPageReader } from "./selection.js";
 const HEARTBEAT_MS = 15_000;
 const CONCURRENCY = 3;
 
+/**
+ * A ticket a run is about to size. A backlog run knows why it picked each
+ * one; a ticket a person picked, or one being re-priced, has no such reason.
+ */
+type RunCandidate = JiraIssueDto & {
+  readonly categories?: readonly CategoryMatch[];
+};
+
 export interface RunJiraClient extends BacklogPageReader {
+  /** A board's tickets, for finding one by id or by what a person typed. */
+  boardIssues(
+    boardId: number,
+    options: { jql: string; startAt: number; maxResults: number },
+  ): Promise<JiraIssuePageDto>;
   issueSpec(issueId: string): Promise<JiraIssueSpec>;
   /** One ticket's list fields, for an `issue` run's single ticket. */
   issue(issueId: string): Promise<JiraIssueDto>;
@@ -114,7 +128,7 @@ export class BountyExecutor {
       }
 
       let selected: {
-        issues: JiraIssueDto[];
+        issues: RunCandidate[];
         candidatesScanned: number;
         skippedLive: number;
         scanLimitReached: boolean;
@@ -205,7 +219,13 @@ export class BountyExecutor {
       /*
         What the run is about to size, before the first ticket is sent to
         the model. A page opened mid-run lists it with each ticket's state,
-        so what is still to come shows as well as what is done.
+        so what is still to come shows as well as what is done. Each ticket
+        carries why it was picked, which is what a proposal later shows as
+        its reason.
+
+        Recording the plan also moves the deadline out by its size, so the
+        run continues as the row the store hands back: sizing against the
+        deadline it claimed with would cut a long run short.
       */
       const planned = await runs.recordPlan(
         organizationId,
@@ -215,9 +235,10 @@ export class BountyExecutor {
           externalIssueId: issue.id,
           issueKey: issue.key,
           summary: issue.summary,
+          categories: [...(issue.categories ?? [])],
         })),
       );
-      if (!planned) return;
+      if (planned === null) return;
 
       const outcomes: BountyRunOutcome[] = [];
       let nextIndex = 0;
@@ -234,7 +255,7 @@ export class BountyExecutor {
           if (candidate === undefined) return;
           const outcome = await this.#processIssue(
             organizationId,
-            run,
+            planned,
             leaseToken,
             candidate,
             clientResult.client,
@@ -297,7 +318,7 @@ export class BountyExecutor {
     organizationId: string,
     run: StoredBountyRun,
     leaseToken: string,
-    candidate: Awaited<ReturnType<typeof selectBacklog>>["issues"][number],
+    candidate: RunCandidate,
     client: RunJiraClient,
     signal: AbortSignal,
   ): Promise<{ value?: BountyRunOutcome; fatalCode?: string }> {

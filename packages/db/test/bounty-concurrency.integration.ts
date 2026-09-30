@@ -158,11 +158,11 @@ describe("bounty database concurrency", () => {
         startedBy: "user_bounty",
         requestId: "7b1f5a36-6c51-4d7e-9a57-3d0f2c1e8b41",
         selection: {
-          maxTickets: 10,
-          excludeAssigned: true,
+          unassignedOnly: false,
           issueTypes: [],
           minAgeDays: 0,
           minSpecChars: 0,
+          categories: {},
         },
         rateCard,
         requestedModel: "model-test",
@@ -227,14 +227,48 @@ describe("bounty database concurrency", () => {
         ),
         true,
       );
-      assert.equal(
-        await runs.recordOutcome("org_bounty", "run_lease", "lease_1", {
-          externalIssueId: "1003",
-          issueKey: "DEMO-3",
+      // An outcome needs a plan to belong to: before one is recorded there
+      // is no ticket it could be the outcome of.
+      const outcome = (externalIssueId: string) =>
+        runs.recordOutcome("org_bounty", "run_lease", "lease_1", {
+          externalIssueId,
+          issueKey: `DEMO-${externalIssueId}`,
           status: "proposed",
-        }),
-        true,
+        });
+      assert.equal(await outcome("1003"), false);
+
+      // The plan is stored with its reasons, and moves the deadline out by
+      // its size. 60 tickets, because the bound on outcomes used to be a
+      // fixed 50 and a run now takes every ticket that matches.
+      const plan = Array.from({ length: 60 }, (_, index) => ({
+        externalIssueId: String(2000 + index),
+        issueKey: `DEMO-${2000 + index}`,
+        summary: `Ticket ${index}`,
+        categories: [
+          {
+            id: "left-behind",
+            label: "Left behind",
+            reason: "Open 412 days, never in a sprint, unassigned",
+          },
+        ],
+      }));
+      const planned = await runs.recordPlan(
+        "org_bounty",
+        "run_lease",
+        "lease_1",
+        plan,
       );
+      assert.deepEqual(planned?.planned, plan);
+      assert.ok(
+        Date.parse(planned?.deadlineAt ?? "") >
+          Date.parse(claimed?.deadlineAt ?? "") + 60 * 19_000,
+      );
+
+      for (const ticket of plan) {
+        assert.equal(await outcome(ticket.externalIssueId), true);
+      }
+      // One outcome per planned ticket, and no more.
+      assert.equal(await outcome("9999"), false);
 
       const created = await proposals.createForLease("org_bounty", "lease_1", {
         runId: "run_lease",
@@ -296,7 +330,7 @@ describe("bounty database concurrency", () => {
         { candidatesScanned: 1 },
       );
       assert.equal(finished?.status, "succeeded");
-      assert.equal(finished?.outcomes.length, 1);
+      assert.equal(finished?.outcomes.length, plan.length);
     } finally {
       await connection.close();
     }
