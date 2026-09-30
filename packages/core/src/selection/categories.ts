@@ -137,6 +137,16 @@ export const CATEGORIES: readonly Category[] = [
   }),
 ];
 
+/**
+ * What stands where a category id would for the tickets in no category:
+ * one somebody picked by hand, or one sized before there were categories.
+ *
+ * Not a category. It has no rule, nothing is ever matched to it and no
+ * board can configure it. But it travels where a category id does — the
+ * list's filter, a link to a view — so no category may take it as its id.
+ */
+export const UNCATEGORIZED = "uncategorized";
+
 /** One category's settings on a board. Everything absent means "default". */
 export interface CategorySettings {
   readonly enabled?: boolean | undefined;

@@ -156,9 +156,22 @@ export class BountyExecutor {
             });
             return;
           }
+          /*
+            Why the ticket was picked, carried over from the plan its
+            proposal came from. A re-price moves the proposal onto this run,
+            and a proposal's reasons are read from its run's plan: without
+            this, asking the model to look again would quietly take the
+            ticket out of its category.
+          */
+          const origin = await runs.get(organizationId, source.runId);
+          const categories =
+            origin?.planned.find(
+              (planned) => planned.externalIssueId === pointer.externalId,
+            )?.categories ?? [];
           selected = {
             issues: [
               {
+                categories,
                 id: pointer.externalId,
                 key: pointer.key,
                 summary: "",

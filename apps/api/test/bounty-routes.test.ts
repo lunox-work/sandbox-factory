@@ -513,6 +513,168 @@ test("the proposal list is stored rows alone and never waits on Jira", async () 
   assert.equal(state.specReads(), 0);
 });
 
+/* The category view above the list: counts, and the list by category. */
+
+/** A harness whose proposal store records what the routes ask of it. */
+function categoryHarness(
+  counts: {
+    total: number;
+    uncategorized?: number;
+    counts: Record<string, number>;
+  },
+  role = "owner",
+) {
+  const state = harness({ role });
+  const listed: unknown[] = [];
+  Object.assign(state.bounty.proposals, {
+    categoryCounts: () => Promise.resolve({ uncategorized: 0, ...counts }),
+    listForBoard: (_org: string, _board: string, options: unknown) => {
+      listed.push(options);
+      return Promise.resolve([]);
+    },
+  });
+  return { ...state, listed };
+}
+
+const categoriesPath =
+  "/api/v1/orgs/org_1/jira/boards/jrb_1/proposal-categories";
+
+test("a board's proposals are counted into the six categories, in order", async () => {
+  const state = categoryHarness({
+    total: 12,
+    uncategorized: 2,
+    counts: {
+      "paper-cuts": 4,
+      "left-behind": 7,
+      // Stored with a run before the category was retired: not one of the
+      // six any more, so it is not offered as a view.
+      "a-retired-category": 3,
+    },
+  });
+  const response = await state.app.request(categoriesPath, { headers });
+
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as {
+    total: number;
+    uncategorized: number;
+    categories: { id: string; label: string; why: string; count: number }[];
+  };
+  assert.equal(body.total, 12);
+  // The ones in no category are counted beside the six, not among them.
+  assert.equal(body.uncategorized, 2);
+  // Registry order, every category present, zeros included.
+  assert.deepEqual(
+    body.categories.map(({ id, count }) => [id, count]),
+    [
+      ["left-behind", 7],
+      ["always-next-sprint", 0],
+      ["quietly-wanted", 0],
+      ["holding-others-up", 0],
+      ["paper-cuts", 4],
+      ["deadline-exposed", 0],
+    ],
+  );
+  // The page names no category itself: label and why-text come with it.
+  assert.equal(body.categories[0]?.label, "Left behind");
+  assert.match(body.categories[0]?.why ?? "", /roadmap/);
+});
+
+test("stored counts cannot smuggle in a key the registry does not have", async () => {
+  const counts = JSON.parse(
+    '{"__proto__": 9, "constructor": 9, "left-behind": 1}',
+  ) as Record<string, number>;
+  const state = categoryHarness({ total: 1, counts });
+  const body = (await (
+    await state.app.request(categoriesPath, { headers })
+  ).json()) as { categories: { id: string; count: number }[] };
+
+  assert.deepEqual(
+    body.categories.filter(({ count }) => count > 0),
+    [
+      {
+        id: "left-behind",
+        label: "Left behind",
+        why: "The team has shown it won't reach this, so outsourcing takes nothing off the roadmap.",
+        count: 1,
+      },
+    ],
+  );
+});
+
+test("any member may read the categories, and another board is a 404", async () => {
+  const member = categoryHarness({ total: 0, counts: {} }, "member");
+  assert.equal(
+    (await member.app.request(categoriesPath, { headers })).status,
+    200,
+  );
+  assert.equal(
+    (
+      await member.app.request(
+        "/api/v1/orgs/org_1/jira/boards/jrb_other/proposal-categories",
+        { headers },
+      )
+    ).status,
+    404,
+  );
+});
+
+test("the list can be narrowed to one category", async () => {
+  const state = categoryHarness({ total: 0, counts: {} });
+  const list = (query: string) =>
+    state.app.request(`/api/v1/orgs/org_1/proposals?boardId=jrb_1${query}`, {
+      headers,
+    });
+
+  assert.equal((await list("&category=paper-cuts&limit=50")).status, 200);
+  assert.deepEqual(state.listed.at(-1), { limit: 50, category: "paper-cuts" });
+
+  // No category, or an empty one, is the whole board.
+  await list("");
+  assert.deepEqual(state.listed.at(-1), { limit: 25 });
+  await list("&category=");
+  assert.deepEqual(state.listed.at(-1), { limit: 25 });
+
+  // An id no category has is a category with nothing in it, not an error:
+  // that is what a retired one looks like to a link that still names it.
+  assert.equal((await list("&category=retired-last-month")).status, 200);
+  assert.deepEqual(state.listed.at(-1), {
+    limit: 25,
+    category: "retired-last-month",
+  });
+});
+
+test("the list can be narrowed to the tickets in no category", async () => {
+  const state = categoryHarness({ total: 0, counts: {} });
+  const response = await state.app.request(
+    "/api/v1/orgs/org_1/proposals?boardId=jrb_1&category=uncategorized&limit=50",
+    { headers },
+  );
+
+  assert.equal(response.status, 200);
+  // Asked of the store as its own question, not as a category by that name:
+  // no plan ever records one.
+  assert.deepEqual(state.listed.at(-1), { limit: 50, uncategorized: true });
+});
+
+test("a malformed category is refused before the store is asked", async () => {
+  const state = categoryHarness({ total: 0, counts: {} });
+  for (const category of [
+    "Paper Cuts",
+    "paper_cuts",
+    "-paper",
+    "paper--cuts",
+    `x"}] or true --`,
+    "a".repeat(65),
+  ]) {
+    const response = await state.app.request(
+      `/api/v1/orgs/org_1/proposals?boardId=jrb_1&category=${encodeURIComponent(category)}`,
+      { headers },
+    );
+    assert.equal(response.status, 400, category);
+  }
+  assert.deepEqual(state.listed, []);
+});
+
 test("proposal detail returns the proposal and validates its board deep link", async () => {
   const state = reviewHarness();
   const response = await state.app.request(

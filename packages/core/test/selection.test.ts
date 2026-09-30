@@ -20,6 +20,7 @@ import {
   signal,
   silent,
   unassigned,
+  UNCATEGORIZED,
   type Category,
   type IssueFacts,
   type SelectionIssue,
@@ -576,6 +577,8 @@ test("every category has a unique kebab-case id and integer defaults", () => {
     assert.match(category.id, /^[a-z]+(-[a-z]+)*$/);
     assert.equal(seen.has(category.id), false);
     seen.add(category.id);
+    // Reserved: it is what a link or a filter says to mean "in none".
+    assert.notEqual(category.id, UNCATEGORIZED);
     assert.notEqual(category.label, "");
     assert.notEqual(category.why, "");
     for (const value of Object.values(category.defaults)) {

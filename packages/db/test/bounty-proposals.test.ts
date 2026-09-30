@@ -192,6 +192,102 @@ test("a listed proposal has no sized title when its run planned none", async () 
   }
 });
 
+test("category counts are per category and per proposal", async () => {
+  const leftBehind = { id: "left-behind", label: "Left behind", reason: "r" };
+  const paperCuts = { id: "paper-cuts", label: "Paper cuts", reason: "r" };
+  const fake = createFakeDb([
+    { categories: [leftBehind, paperCuts] },
+    { categories: [leftBehind] },
+    // A ticket someone picked by hand, and a plan from before categories.
+    { categories: [] },
+    { categories: null },
+    // Stored JSON is not trusted to be well formed: a repeat counts once,
+    // and an entry without a usable id counts nowhere.
+    { categories: [paperCuts, paperCuts, { label: "No id" }, null, { id: 7 }] },
+  ]);
+
+  const result = await createBountyProposalStore(fake.db).categoryCounts(
+    "org_1",
+    "jrb_1",
+  );
+
+  // Five proposals; one is in two categories, so the counts sum past the
+  // two that are in none.
+  assert.deepEqual(result, {
+    total: 5,
+    uncategorized: 2,
+    counts: { "left-behind": 2, "paper-cuts": 2 },
+  });
+  assert.equal(fake.calls[0]?.filtered, true);
+});
+
+test("a board with no proposals has no counts", async () => {
+  const fake = createFakeDb([]);
+  assert.deepEqual(
+    await createBountyProposalStore(fake.db).categoryCounts("org_1", "jrb_1"),
+    { total: 0, uncategorized: 0, counts: {} },
+  );
+});
+
+test("a plan entry with no usable category id is in no category", async () => {
+  // Counted the way the list's `uncategorized` filter reads it: what makes
+  // a category is a string id, not the presence of a list.
+  const fake = createFakeDb([
+    { categories: [{ label: "No id" }, null, { id: 7 }] },
+    { categories: "not a list" },
+  ]);
+  assert.deepEqual(
+    await createBountyProposalStore(fake.db).categoryCounts("org_1", "jrb_1"),
+    { total: 2, uncategorized: 2, counts: {} },
+  );
+});
+
+test("listing the uncategorized filters, and still pages", async () => {
+  const fake = createFakeDb([
+    { row: row(), issueKey: "APP-1", externalId: "10001", planned: [] },
+  ]);
+  const listed = await createBountyProposalStore(fake.db).listForBoard(
+    "org_1",
+    "jrb_1",
+    { uncategorized: true, limit: 10 },
+  );
+
+  assert.equal(listed[0]?.id, "bpr_1");
+  assert.deepEqual(listed[0]?.categories, []);
+  assert.equal(fake.calls[0]?.limited, 10);
+  assert.equal(fake.calls[0]?.filtered, true);
+});
+
+test("listing by category still pages and still reads each row's reasons", async () => {
+  const joined = {
+    row: row(),
+    issueKey: "APP-1",
+    externalId: "10001",
+    planned: [
+      {
+        externalIssueId: "10001",
+        issueKey: "APP-1",
+        summary: "Add login",
+        categories: [{ id: "paper-cuts", label: "Paper cuts", reason: "r" }],
+      },
+    ],
+  };
+  const fake = createFakeDb([joined]);
+  const listed = await createBountyProposalStore(fake.db).listForBoard(
+    "org_1",
+    "jrb_1",
+    { category: "paper-cuts", limit: 10 },
+  );
+
+  assert.equal(listed[0]?.id, "bpr_1");
+  assert.deepEqual(
+    listed[0]?.categories.map(({ id }) => id),
+    ["paper-cuts"],
+  );
+  assert.equal(fake.calls[0]?.limited, 10);
+  assert.equal(fake.calls[0]?.filtered, true);
+});
+
 test("proposal reads can miss and list with defaults", async () => {
   const fake = createFakeDb([]);
   const store = createBountyProposalStore(fake.db);

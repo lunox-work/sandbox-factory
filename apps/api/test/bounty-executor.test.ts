@@ -138,6 +138,8 @@ function harness(options: {
   runOverrides?: Partial<StoredBountyRun>;
   planHeld?: boolean;
   issueError?: Error;
+  /** The plan of the run a re-priced proposal came from. */
+  originPlanned?: StoredBountyRun["planned"];
 }) {
   const current = run(options.runOverrides);
   const plans: unknown[] = [];
@@ -147,7 +149,14 @@ function harness(options: {
   const removed: string[] = [];
   const startedWritebacks: string[] = [];
   const runs = {
-    get: () => Promise.resolve(current),
+    get: (_org: string, id: string) =>
+      Promise.resolve(
+        id === "brn_origin"
+          ? options.originPlanned === undefined
+            ? null
+            : run({ id: "brn_origin", planned: options.originPlanned })
+          : current,
+      ),
     claim: () =>
       Promise.resolve(
         run({
@@ -254,6 +263,7 @@ function harness(options: {
     get: () =>
       Promise.resolve({
         id: "bpr_source",
+        runId: "brn_origin",
         jiraIssueId: "jri_1",
         revision: options.runOverrides?.sourceRevision ?? 1,
       }),
@@ -706,6 +716,61 @@ test("re-price sizes only its source issue and updates it in place", async () =>
     "bpr_source",
   );
   assert.deepEqual(state.startedWritebacks, ["bwo_withdrawn"]);
+});
+
+test("a re-priced proposal keeps the reason its ticket was picked for", async () => {
+  // A re-price moves the proposal onto the re-price run, and a proposal's
+  // reasons are read from its run's plan. Without carrying them over,
+  // "Re-analyze" would take the ticket out of its category.
+  const categories = [
+    {
+      id: "holding-others-up",
+      label: "Holding others up",
+      reason: "Blocks 3 open tickets, unassigned",
+    },
+  ];
+  const reprice = {
+    kind: "reprice" as const,
+    sourceProposalId: "bpr_source",
+    sourceRevision: 1,
+  };
+  const state = harness({
+    candidates: [],
+    runOverrides: reprice,
+    originPlanned: [
+      { externalIssueId: "9", issueKey: "APP-9", summary: "Another" },
+      { externalIssueId: "1", issueKey: "APP-1", summary: "Old", categories },
+    ],
+  });
+  await state.executor.execute("org_1", "brn_1");
+
+  assert.equal(state.finishes[0]?.status, "succeeded");
+  assert.deepEqual(
+    (state.plans[0] as { categories: unknown }[]).map(
+      (planned) => planned.categories,
+    ),
+    [categories],
+  );
+
+  // The run it came from is gone, or never planned the ticket, or planned
+  // it before categories existed: no reason to carry, and no failure.
+  for (const originPlanned of [
+    undefined,
+    [],
+    [{ externalIssueId: "1", issueKey: "APP-1", summary: "Old" }],
+  ]) {
+    const bare = harness({
+      candidates: [],
+      runOverrides: reprice,
+      ...(originPlanned === undefined ? {} : { originPlanned }),
+    });
+    await bare.executor.execute("org_1", "brn_1");
+    assert.equal(bare.finishes[0]?.status, "succeeded");
+    assert.deepEqual(
+      (bare.plans[0] as { categories: unknown }[])[0]?.categories,
+      [],
+    );
+  }
 });
 
 test("XS model sizing uses the distinct XS snapshot price", async () => {
