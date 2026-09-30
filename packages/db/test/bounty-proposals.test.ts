@@ -127,24 +127,48 @@ test("creates under a live lease and classifies fencing outcomes", async () => {
 });
 
 test("gets and lists proposals with issue display keys", async () => {
-  const joined = { row: row(), issueKey: "APP-1" };
+  const joined = {
+    row: row(),
+    issueKey: "APP-1",
+    externalId: "10001",
+    planned: [
+      { externalIssueId: "10002", issueKey: "APP-2", summary: "Another" },
+      { externalIssueId: "10001", issueKey: "APP-1", summary: "Add login" },
+    ],
+  };
   const fake = createFakeDb([joined]);
   const store = createBountyProposalStore(fake.db);
   assert.equal((await store.get("org_1", "bpr_1"))?.issueKey, "APP-1");
-  assert.equal(
-    (
-      await store.listForBoard("org_1", "jrb_1", {
-        status: "proposed",
-        cursor: {
-          createdAt: "2026-09-23T00:00:00Z",
-          id: "bpr_after",
-        },
-        limit: 500,
-      })
-    )[0]?.id,
-    "bpr_1",
-  );
+  const listed = await store.listForBoard("org_1", "jrb_1", {
+    status: "proposed",
+    cursor: {
+      createdAt: "2026-09-23T00:00:00Z",
+      id: "bpr_after",
+    },
+    limit: 500,
+  });
+  assert.equal(listed[0]?.id, "bpr_1");
+  // The title its own ticket was planned under, not a neighbour's.
+  assert.equal(listed[0]?.sizedTitle, "Add login");
   assert.equal(fake.calls[1]?.limited, 50);
+});
+
+test("a listed proposal has no sized title when its run planned none", async () => {
+  for (const planned of [
+    [],
+    [{ externalIssueId: "10002", issueKey: "APP-2", summary: "Another" }],
+    // A plan that recorded the ticket with nothing to call it.
+    [{ externalIssueId: "10001", issueKey: "APP-1", summary: "" }],
+  ]) {
+    const fake = createFakeDb([
+      { row: row(), issueKey: "APP-1", externalId: "10001", planned },
+    ]);
+    const listed = await createBountyProposalStore(fake.db).listForBoard(
+      "org_1",
+      "jrb_1",
+    );
+    assert.equal(listed[0]?.sizedTitle, null);
+  }
 });
 
 test("proposal reads can miss and list with defaults", async () => {
@@ -182,6 +206,22 @@ test("finds each live ticket's proposal id, for search results", async () => {
     ["10001", "10002"],
   );
   assert.deepEqual([...ids], [["10001", "bpr_1"]]);
+});
+
+test("finds each proposal's Jira issue, for reading live titles", async () => {
+  const fake = createFakeDb([
+    { proposalId: "bpr_1", jiraIssueId: "jri_1", externalId: "10001" },
+  ]);
+  const store = createBountyProposalStore(fake.db);
+  const issues = await store.issuesForProposals("org_1", "jrb_1", [
+    "bpr_1",
+    "bpr_2",
+  ]);
+  assert.deepEqual(
+    [...issues],
+    [["bpr_1", { jiraIssueId: "jri_1", externalId: "10001" }]],
+  );
+  assert.equal((await store.issuesForProposals("org_1", "jrb_1", [])).size, 0);
 });
 
 test("approves once and treats the exact replay as idempotent", async () => {

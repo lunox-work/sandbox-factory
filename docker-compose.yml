@@ -119,10 +119,19 @@ services:
       - .:/repo
       # Anonymous volumes shadow the bind mount, so the container uses its own
       # node_modules: the host tree holds darwin binaries and symlinks.
+      #
+      # Every workspace is listed, not only the ones this service runs. The
+      # `npm ci` in the command installs the whole workspace tree, and any
+      # workspace left off writes its linux binaries through the bind mount
+      # into the host's node_modules — after which the host's own build of
+      # that workspace fails. A new workspace needs a line here and below.
       - /repo/node_modules
       - /repo/apps/api/node_modules
+      - /repo/apps/web/node_modules
+      - /repo/apps/extension/node_modules
       - /repo/packages/core/node_modules
       - /repo/packages/db/node_modules
+      - /repo/packages/jira/node_modules
       - /repo/packages/shared/node_modules
       - /repo/packages/client/node_modules
     depends_on:
@@ -156,9 +165,14 @@ services:
       - "${WEB_PORT:-5173}:5173"
     volumes:
       - .:/repo
+      # Every workspace, for the reason given on api-dev.
       - /repo/node_modules
+      - /repo/apps/api/node_modules
       - /repo/apps/web/node_modules
+      - /repo/apps/extension/node_modules
       - /repo/packages/core/node_modules
+      - /repo/packages/db/node_modules
+      - /repo/packages/jira/node_modules
       - /repo/packages/shared/node_modules
       - /repo/packages/client/node_modules
     depends_on:

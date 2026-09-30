@@ -627,11 +627,11 @@ test("PUT /api/v1/me/name saves a trimmed name", async () => {
   const res = await appWithProfiles().request("/api/v1/me/name", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name: "  Charlie Ang  " }),
+    body: JSON.stringify({ name: "  Ada Lovelace  " }),
   });
 
   assert.equal(res.status, 200);
-  assert.deepEqual(await res.json(), { name: "Charlie Ang" });
+  assert.deepEqual(await res.json(), { name: "Ada Lovelace" });
 });
 
 test("PUT /api/v1/me/name refuses an empty name", async () => {
@@ -648,7 +648,7 @@ test("PUT /api/v1/me/name refuses a body without a name", async () => {
   const res = await appWithProfiles().request("/api/v1/me/name", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ nickname: "Charlie" }),
+    body: JSON.stringify({ nickname: "Ada" }),
   });
 
   assert.equal(res.status, 400);

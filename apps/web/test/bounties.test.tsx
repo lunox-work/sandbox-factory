@@ -2079,3 +2079,228 @@ test("keyboard adjustments land on the grid whichever way an off-grid rate moves
   await userEvent.keyboard("{PageUp}");
   expect(displayedRate("M")).toBe("USD270");
 });
+
+/*
+  A board whose titles stream the test feeds a line at a time, and whose
+  open-proposal read waits until the test lets it through. Two stored
+  proposals: APP-1 at M, APP-2 at L.
+*/
+function streamedBoard(sizedTitles: Record<number, string> = {}) {
+  const encoder = new TextEncoder();
+  const calls: string[] = [];
+  let feed: ReadableStreamDefaultController<Uint8Array> | undefined;
+  let releaseDetail = () => {};
+  const detailGate = new Promise<void>((resolve) => {
+    releaseDetail = resolve;
+  });
+  const stored = (n: number, overrides: object = {}) => ({
+    id: `bpr_${n}`,
+    issueKey: `APP-${n}`,
+    modelRationale: "A few files.",
+    complexity: n === 1 ? "M" : "L",
+    amountMinor: n === 1 ? 200 : 300,
+    currency: "USD",
+    modelComplexity: "M",
+    modelConfidence: "high",
+    actualModel: "deepseek-v4-pro",
+    status: "proposed",
+    revision: 1,
+    // The title the run planned the ticket under, when it recorded one.
+    sizedTitle: sizedTitles[n] ?? null,
+    ...overrides,
+  });
+  const fetchMock = vi.fn((input: string) => {
+    const url = String(input);
+    calls.push(url);
+    if (url.includes("/proposal-titles?")) {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          feed = controller;
+        },
+      });
+      // Only what the page reads of a response: a plain object keeps the
+      // test's stream out of the fetch implementation's own checks.
+      return Promise.resolve({ ok: true, status: 200, body } as Response);
+    }
+    if (url.includes("/runs")) {
+      return Promise.resolve(
+        Response.json({ runs: [], sizingAvailable: true }),
+      );
+    }
+    if (url.endsWith("/approve")) {
+      return Promise.resolve(
+        Response.json({
+          proposal: stored(1, { status: "approved", revision: 2 }),
+        }),
+      );
+    }
+    if (url.includes("/proposals/bpr_")) {
+      const n = Number(/bpr_(\d+)/.exec(url)?.[1]);
+      return detailGate.then(() =>
+        Response.json({
+          proposal: stored(n),
+          freshness: {
+            freshness: "current",
+            checkedAt: "now",
+            liveKey: `APP-${n}`,
+            liveTitle: `Ticket ${n}`,
+          },
+          writebackOperations: [],
+        }),
+      );
+    }
+    return Promise.resolve(
+      Response.json({ proposals: [stored(1), stored(2)] }),
+    );
+  });
+  const titleReads = () =>
+    calls.filter((url) => url.includes("/proposal-titles?")).length;
+  return {
+    fetchMock,
+    calls,
+    titleReads,
+    releaseDetail: () => releaseDetail(),
+    /** Waits for the stream to open, then sends one line down it. */
+    line: async (value: object) => {
+      await waitFor(() => expect(feed).toBeDefined());
+      act(() => {
+        feed?.enqueue(encoder.encode(`${JSON.stringify(value)}\n`));
+      });
+    },
+    end: () => {
+      act(() => feed?.close());
+    },
+  };
+}
+
+function renderStreamedBoard() {
+  return render(
+    <BoardBounties
+      organizationId="org_1"
+      boardId="jrb_1"
+      role="admin"
+      writeGranted={false}
+      readIssue={() => Promise.resolve(null)}
+    />,
+  );
+}
+
+test("rows show what is stored at once and fill in title by title", async () => {
+  const server = streamedBoard();
+  vi.stubGlobal("fetch", server.fetchMock);
+  renderStreamedBoard();
+  const list = await screen.findByTestId("proposal-list");
+
+  // Size, amount and status are stored: there before Jira has said anything.
+  expect(within(list).getByText("M")).toBeDefined();
+  expect(within(list).getByText("L")).toBeDefined();
+  expect(within(list).getByText(money(300, "USD"))).toBeDefined();
+  expect(within(list).getAllByText("Proposed")).toHaveLength(2);
+  expect(within(list).getAllByTestId("title-pending")).toHaveLength(2);
+  // One stream, asking for both rows.
+  await waitFor(() => expect(server.titleReads()).toBe(1));
+  expect(
+    server.calls.find((url) => url.includes("/proposal-titles?")),
+  ).toContain("/jira/boards/jrb_1/proposal-titles?ids=bpr_1,bpr_2");
+
+  // One line fills one row; the other is still waiting.
+  await server.line({ id: "bpr_2", key: "APP-2", title: "Second ticket" });
+  expect(await within(list).findByText("Second ticket")).toBeDefined();
+  expect(within(list).getAllByTestId("title-pending")).toHaveLength(1);
+
+  // A row the stream ended without says what it is, not that it is loading.
+  server.end();
+  expect(await within(list).findByText("Jira ticket")).toBeDefined();
+  expect(within(list).queryAllByTestId("title-pending")).toHaveLength(0);
+});
+
+test("a row is titled at once from its sizing, and Jira's answer wins", async () => {
+  const server = streamedBoard({ 1: "Add login", 2: "Export to CSV" });
+  vi.stubGlobal("fetch", server.fetchMock);
+  renderStreamedBoard();
+  const list = await screen.findByTestId("proposal-list");
+
+  // Stored with the run that sized them: no placeholder, nothing to wait for.
+  expect(within(list).getByText("Add login")).toBeDefined();
+  expect(within(list).getByText("Export to CSV")).toBeDefined();
+  expect(within(list).queryAllByTestId("title-pending")).toHaveLength(0);
+
+  // The ticket was renamed since: the live title replaces the stored one.
+  await server.line({ id: "bpr_1", key: "APP-1", title: "Add SSO login" });
+  expect(await within(list).findByText("Add SSO login")).toBeDefined();
+  expect(within(list).queryByText("Add login")).toBeNull();
+
+  // Jira could not say: the row keeps the title it was sized under.
+  await server.line({ id: "bpr_2", code: "missing" });
+  server.end();
+  await waitFor(() => expect(server.titleReads()).toBe(1));
+  expect(within(list).getByText("Export to CSV")).toBeDefined();
+  expect(within(list).queryByText("Jira ticket")).toBeNull();
+});
+
+test("opening a proposal reads it alone, and approval waits for its check", async () => {
+  const server = streamedBoard();
+  vi.stubGlobal("fetch", server.fetchMock);
+  renderStreamedBoard();
+  const list = await screen.findByTestId("proposal-list");
+  await server.line({ id: "bpr_1", key: "APP-1", title: "First ticket" });
+  await server.line({ id: "bpr_2", key: "APP-2", title: "Second ticket" });
+  server.end();
+  await within(list).findByText("First ticket");
+  const before = server.calls.length;
+
+  await userEvent.click(
+    within(list).getByRole("button", { name: /First ticket/ }),
+  );
+  const panel = await screen.findByTestId("proposal-panel");
+  // The row is there at once; whether the ticket changed is not claimed
+  // until the proposal's own read says so, and approval waits for it.
+  expect(within(panel).getByText("Checking Jira…")).toBeDefined();
+  const approve = within(panel).getByRole("button", {
+    name: "Approve",
+  }) as HTMLButtonElement;
+  expect(approve.disabled).toBe(true);
+
+  server.releaseDetail();
+  expect(
+    await within(panel).findByText("Unchanged since sizing"),
+  ).toBeDefined();
+  await waitFor(() => expect(approve.disabled).toBe(false));
+  // One read: the proposal. Neither the list nor the titles again.
+  expect(server.calls.slice(before)).toEqual([
+    "/api/v1/orgs/org_1/proposals/bpr_1?boardId=jrb_1",
+  ]);
+});
+
+test("a refresh after a decision asks Jira for no title it already has", async () => {
+  const server = streamedBoard();
+  vi.stubGlobal("fetch", server.fetchMock);
+  server.releaseDetail();
+  renderStreamedBoard();
+  const list = await screen.findByTestId("proposal-list");
+  await server.line({ id: "bpr_1", key: "APP-1", title: "First ticket" });
+  await server.line({ id: "bpr_2", key: "APP-2", title: "Second ticket" });
+  server.end();
+  await userEvent.click(
+    await within(list).findByRole("button", { name: /First ticket/ }),
+  );
+  const panel = await screen.findByTestId("proposal-panel");
+  const approve = await within(panel).findByRole("button", {
+    name: "Approve",
+  });
+  await waitFor(() =>
+    expect((approve as HTMLButtonElement).disabled).toBe(false),
+  );
+  const before = server.calls.length;
+
+  await userEvent.click(approve);
+  // The decision re-reads the list and the open proposal...
+  await waitFor(() => {
+    const after = server.calls.slice(before);
+    expect(after.some((url) => url.includes("/proposals?boardId"))).toBe(true);
+    expect(after.some((url) => url.includes("/proposals/bpr_1?"))).toBe(true);
+  });
+  // ...and the titles it already has stay where they are.
+  expect(server.titleReads()).toBe(1);
+  expect(within(list).getByText("Second ticket")).toBeDefined();
+});

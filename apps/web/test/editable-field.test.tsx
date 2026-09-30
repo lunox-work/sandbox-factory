@@ -23,7 +23,7 @@ function show(props: Partial<Parameters<typeof EditableField>[0]> = {}) {
   render(
     <EditableField
       label="Name"
-      value="charlie ang"
+      value="ada lovelace"
       onSave={onSave}
       {...props}
     />,
@@ -34,7 +34,7 @@ function show(props: Partial<Parameters<typeof EditableField>[0]> = {}) {
 test("the value reads as text, with no input in sight", () => {
   show();
 
-  expect(screen.getByText("charlie ang")).toBeDefined();
+  expect(screen.getByText("ada lovelace")).toBeDefined();
   expect(screen.queryByLabelText("Name")).toBeNull();
 });
 
@@ -54,7 +54,7 @@ test("clicking the value opens an input seeded with it", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Edit name" }));
 
   const field = (await screen.findByLabelText("Name")) as HTMLInputElement;
-  expect(field.value).toBe("charlie ang");
+  expect(field.value).toBe("ada lovelace");
 });
 
 test("saving reports the trimmed value and closes", async () => {
@@ -62,11 +62,11 @@ test("saving reports the trimmed value and closes", async () => {
 
   fireEvent.click(screen.getByRole("button", { name: "Edit name" }));
   fireEvent.change(await screen.findByLabelText("Name"), {
-    target: { value: "  Charlie Ang  " },
+    target: { value: "  Ada Lovelace  " },
   });
   fireEvent.click(screen.getByRole("button", { name: "Save name" }));
 
-  expect(onSave).toHaveBeenCalledWith("Charlie Ang");
+  expect(onSave).toHaveBeenCalledWith("Ada Lovelace");
   await waitFor(() => expect(screen.queryByLabelText("Name")).toBeNull());
 });
 
@@ -80,7 +80,7 @@ test("cancelling saves nothing and keeps the stored value", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Cancel editing name" }));
 
   expect(onSave).not.toHaveBeenCalled();
-  expect(screen.getByText("charlie ang")).toBeDefined();
+  expect(screen.getByText("ada lovelace")).toBeDefined();
 });
 
 test("a cancelled draft does not come back on the next edit", async () => {
@@ -97,7 +97,7 @@ test("a cancelled draft does not come back on the next edit", async () => {
 
   expect(
     ((await screen.findByLabelText("Name")) as HTMLInputElement).value,
-  ).toBe("charlie ang");
+  ).toBe("ada lovelace");
 });
 
 test("Escape leaves without saving", async () => {
@@ -158,7 +158,7 @@ test("a viewer who may not edit is offered no way in", () => {
   // one that should.
   show({ canEdit: false, readOnlyReason: "Only an owner can rename this." });
 
-  expect(screen.getByText("charlie ang")).toBeDefined();
+  expect(screen.getByText("ada lovelace")).toBeDefined();
   expect(screen.queryByRole("button", { name: "Edit name" })).toBeNull();
   // The reason is said out loud rather than hidden in a tooltip.
   expect(screen.getByText("Only an owner can rename this.")).toBeDefined();
@@ -269,7 +269,7 @@ test("a save is announced for a reader who cannot see the tick", async () => {
 
   fireEvent.click(screen.getByRole("button", { name: "Edit name" }));
   fireEvent.change(await screen.findByLabelText("Name"), {
-    target: { value: "Charlie Ang" },
+    target: { value: "Ada Lovelace" },
   });
   fireEvent.click(screen.getByRole("button", { name: "Save name" }));
 

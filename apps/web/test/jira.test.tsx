@@ -531,9 +531,6 @@ function proposal(n: number) {
   return {
     id: `bpr_${n}`,
     issueKey: `ACME-${n}`,
-    liveKey: `ACME-${n}`,
-    liveTitle: `Ticket ${n}`,
-    liveUrl: `https://acme.atlassian.net/browse/ACME-${n}`,
     modelRationale: "A few files.",
     complexity: "M",
     amountMinor: 200,
@@ -541,7 +538,6 @@ function proposal(n: number) {
     modelComplexity: "M",
     modelConfidence: "high",
     actualModel: "claude-sonnet-5",
-    freshness: "current",
     status: "proposed",
     revision: 1,
   };
@@ -572,6 +568,24 @@ function routedFetch(
         }),
       );
 
+    if (url.includes("/proposal-titles?")) {
+      // A line per proposal asked for, as the stream sends them.
+      const ids =
+        new URL(url, "http://localhost").searchParams.get("ids")?.split(",") ??
+        [];
+      return Promise.resolve(
+        new Response(
+          ids
+            .map((id) => {
+              const n = Number(/bpr_(\d+)/.exec(id)?.[1] ?? "1");
+              return `${JSON.stringify({ id, key: `ACME-${n}`, title: `Ticket ${n}` })}\n`;
+            })
+            .join(""),
+          { headers: { "content-type": "application/x-ndjson" } },
+        ),
+      );
+    }
+
     if (url.endsWith("/resize")) {
       // The resized proposal, as the route returns it: the size asked for,
       // priced, one revision on.
@@ -592,8 +606,8 @@ function routedFetch(
             ...issue(1, "2020-01-01T00:00:00.000Z"),
             descriptionText:
               "## Objective\nEstablish the canonical data model.\n\n## Scope\n- Canonical entities\n- Multi-tenant isolation",
-            reporter: "charlie angriawan",
-            creator: "charlie angriawan",
+            reporter: "ada lovelace",
+            creator: "ada lovelace",
             resolution: null,
             resolutionDate: null,
             labels: ["foundation", "platform"],
@@ -620,7 +634,13 @@ function routedFetch(
       const n = Number(/bpr_(\d+)/.exec(url)?.[1] ?? "1");
       return json({
         proposal: proposal(n),
-        freshness: { freshness: "current", checkedAt: "now" },
+        freshness: {
+          freshness: "current",
+          checkedAt: "now",
+          liveKey: `ACME-${n}`,
+          liveTitle: `Ticket ${n}`,
+          liveUrl: `https://acme.atlassian.net/browse/ACME-${n}`,
+        },
         writebackOperations: [],
       });
     }
@@ -784,7 +804,7 @@ test("the board page lists its proposals, and nothing else", async () => {
     .getAllByText(/^ACME-\d+$/)
     .map((node) => node.textContent);
   expect(keys).toEqual(["ACME-1", "ACME-2"]);
-  expect(within(list).getByText("Ticket 1")).toBeDefined();
+  expect(await within(list).findByText("Ticket 1")).toBeDefined();
   // A row is a scan: key, title, size, price. The rationale, the model line
   // and the actions are all in the peek.
   expect(within(list).getAllByText("M")).toHaveLength(2);
@@ -803,7 +823,7 @@ test("a proposal opens over the list, which keeps its place", async () => {
   renderBoard();
   await screen.findByTestId("proposal-list");
 
-  await userEvent.click(screen.getByText("Ticket 1"));
+  await userEvent.click(await screen.findByText("Ticket 1"));
 
   const panel = await screen.findByTestId("proposal-panel");
   expect(within(panel).getByRole("tab", { name: /bounty/i })).toBeDefined();
@@ -825,7 +845,7 @@ test("the peek is a dialog, so Escape closes it", async () => {
   renderBoard();
   await screen.findByTestId("proposal-list");
 
-  await userEvent.click(screen.getByText("Ticket 1"));
+  await userEvent.click(await screen.findByText("Ticket 1"));
   await screen.findByTestId("proposal-panel");
   expect(screen.getByRole("dialog")).toBeDefined();
 
@@ -842,11 +862,11 @@ test("the proposal being read is marked in the list", async () => {
   renderBoard();
   await screen.findByTestId("proposal-list");
 
-  await userEvent.click(screen.getByText("Ticket 1"));
+  await userEvent.click(await screen.findByText("Ticket 1"));
   await screen.findByTestId("proposal-panel");
 
   const list = screen.getByTestId("proposal-list");
-  const row = within(list).getByText("Ticket 1").closest("button");
+  const row = (await within(list).findByText("Ticket 1")).closest("button");
   expect(row?.getAttribute("aria-current")).toBe("true");
   expect(
     within(list)
@@ -860,7 +880,7 @@ test("picking another proposal swaps the panel, without leaving the list", async
   renderBoard();
   await screen.findByTestId("proposal-list");
 
-  await userEvent.click(screen.getByText("Ticket 1"));
+  await userEvent.click(await screen.findByText("Ticket 1"));
   const panel = await screen.findByTestId("proposal-panel");
   expect(within(panel).getAllByText("ACME-1").length).toBeGreaterThan(0);
 
@@ -881,7 +901,7 @@ test("the Spec tab is the ticket read live: its fields, then its description", a
   vi.stubGlobal("fetch", routedFetch());
   renderBoard();
   await screen.findByTestId("proposal-list");
-  await userEvent.click(screen.getByText("Ticket 1"));
+  await userEvent.click(await screen.findByText("Ticket 1"));
 
   const panel = await screen.findByTestId("proposal-panel");
   await userEvent.click(within(panel).getByRole("tab", { name: /spec/i }));
@@ -903,12 +923,12 @@ test("the Spec tab is the ticket read live: its fields, then its description", a
   expect(within(fields).getByText("Due")).toBeDefined();
   expect(within(fields).getByText(/^(in|next) /)).toBeDefined();
   expect(within(fields).queryByText("Priority")).toBeNull();
-  expect(within(fields).queryByText("charlie angriawan")).toBeNull();
+  expect(within(fields).queryByText("ada lovelace")).toBeNull();
 
   await userEvent.click(
     within(fields).getByRole("button", { name: /show all/i }),
   );
-  expect(within(fields).getByText("charlie angriawan")).toBeDefined();
+  expect(within(fields).getByText("ada lovelace")).toBeDefined();
   expect(within(fields).getByText("Highest")).toBeDefined();
   expect(within(fields).getByText("foundation")).toBeDefined();
   // Created and Updated carry their distance too.
@@ -925,7 +945,7 @@ test("a resize takes the row from the response and reads nothing else", async ()
   vi.stubGlobal("fetch", fetchMock);
   renderBoard("jrb_1", "owner");
   await screen.findByTestId("proposal-list");
-  await userEvent.click(screen.getByText("Ticket 1"));
+  await userEvent.click(await screen.findByText("Ticket 1"));
   const panel = await screen.findByTestId("proposal-panel");
   const card = within(panel).getByTestId("proposal-bounty");
   const before = fetchMock.mock.calls.length;
@@ -982,7 +1002,7 @@ test("folded fields fall back from due date to priority to created", async () =>
   );
   renderBoard();
   await screen.findByTestId("proposal-list");
-  await userEvent.click(screen.getByText("Ticket 1"));
+  await userEvent.click(await screen.findByText("Ticket 1"));
 
   const panel = await screen.findByTestId("proposal-panel");
   await userEvent.click(within(panel).getByRole("tab", { name: /spec/i }));
@@ -1027,7 +1047,7 @@ test("a field Jira did not send renders no row", async () => {
   );
   renderBoard();
   await screen.findByTestId("proposal-list");
-  await userEvent.click(screen.getByText("Ticket 1"));
+  await userEvent.click(await screen.findByText("Ticket 1"));
 
   const panel = await screen.findByTestId("proposal-panel");
   await userEvent.click(within(panel).getByRole("tab", { name: /spec/i }));
@@ -1065,7 +1085,7 @@ test("a failed ticket read stays in the Spec tab with a retry", async () => {
   renderBoard();
   await screen.findByTestId("proposal-list");
 
-  await userEvent.click(screen.getByText("Ticket 1"));
+  await userEvent.click(await screen.findByText("Ticket 1"));
   const panel = await screen.findByTestId("proposal-panel");
   await userEvent.click(within(panel).getByRole("tab", { name: /spec/i }));
   expect(
@@ -1108,7 +1128,7 @@ test("a revoked grant asks for a reconnect rather than a retry", async () => {
   );
   renderBoard();
   await screen.findByTestId("proposal-list");
-  await userEvent.click(screen.getByText("Ticket 1"));
+  await userEvent.click(await screen.findByText("Ticket 1"));
 
   expect(await screen.findByText(/expired or been revoked/i)).toBeDefined();
 });
@@ -1131,7 +1151,7 @@ test("a scope mismatch is not reported as an expired connection", async () => {
   );
   renderBoard();
   await screen.findByTestId("proposal-list");
-  await userEvent.click(screen.getByText("Ticket 1"));
+  await userEvent.click(await screen.findByText("Ticket 1"));
 
   expect(await screen.findByTestId("jira-scope-error")).toBeDefined();
   expect(screen.queryByText(/expired or been revoked/i)).toBeNull();
@@ -1144,7 +1164,7 @@ test("the actions sit in the bounty card, beside what they change, for those who
   // Not in the rows.
   expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
 
-  await userEvent.click(screen.getByText("Ticket 1"));
+  await userEvent.click(await screen.findByText("Ticket 1"));
   const panel = await screen.findByTestId("proposal-panel");
   const card = within(panel).getByTestId("proposal-bounty");
   for (const name of [
@@ -1208,7 +1228,7 @@ test("an approved proposal offers the way back and a re-price, nothing else", as
     within(screen.getByTestId("proposal-list")).getByText("Approved"),
   ).toBeDefined();
 
-  await userEvent.click(screen.getByText("Ticket 1"));
+  await userEvent.click(await screen.findByText("Ticket 1"));
   const panel = await screen.findByTestId("proposal-panel");
   const card = within(panel).getByTestId("proposal-bounty");
   expect(within(card).getByRole("button", { name: "Unapprove" })).toBeDefined();
@@ -1227,7 +1247,7 @@ test("removing a proposal asks first, then closes the peek", async () => {
   vi.stubGlobal("fetch", fetchMock);
   renderBoard("jrb_1", "owner");
   await screen.findByTestId("proposal-list");
-  await userEvent.click(screen.getByText("Ticket 1"));
+  await userEvent.click(await screen.findByText("Ticket 1"));
   const panel = await screen.findByTestId("proposal-panel");
 
   await userEvent.click(within(panel).getByRole("button", { name: "Remove" }));
@@ -1259,7 +1279,7 @@ test("a member sees the proposal without any way to decide it", async () => {
   await screen.findByTestId("proposal-list");
   expect(screen.queryByRole("button", { name: /run sizing/i })).toBeNull();
 
-  await userEvent.click(screen.getByText("Ticket 1"));
+  await userEvent.click(await screen.findByText("Ticket 1"));
   const panel = await screen.findByTestId("proposal-panel");
   for (const name of ["Approve", "Re-analyze", "Remove", "Unapprove"]) {
     expect(within(panel).queryByRole("button", { name })).toBeNull();
@@ -1273,7 +1293,7 @@ test("the proposal names the model that sized it", async () => {
   vi.stubGlobal("fetch", routedFetch());
   renderBoard();
   await screen.findByTestId("proposal-list");
-  await userEvent.click(screen.getByText("Ticket 1"));
+  await userEvent.click(await screen.findByText("Ticket 1"));
 
   const panel = await screen.findByTestId("proposal-panel");
   expect(within(panel).getByTitle("claude-sonnet-5").textContent).toBe(
@@ -1357,7 +1377,7 @@ test("the description renders as markdown, not as literal hashes", async () => {
   vi.stubGlobal("fetch", routedFetch());
   renderBoard();
   const list = await screen.findByTestId("proposal-list");
-  await userEvent.click(within(list).getByText("Ticket 1"));
+  await userEvent.click(await within(list).findByText("Ticket 1"));
   const panel = await screen.findByTestId("proposal-panel");
   await userEvent.click(within(panel).getByRole("tab", { name: /spec/i }));
 
@@ -1405,7 +1425,7 @@ test("a table in the description renders as a table", async () => {
   );
   renderBoard();
   const list = await screen.findByTestId("proposal-list");
-  await userEvent.click(within(list).getByText("Ticket 1"));
+  await userEvent.click(await within(list).findByText("Ticket 1"));
   const panel = await screen.findByTestId("proposal-panel");
   await userEvent.click(within(panel).getByRole("tab", { name: /spec/i }));
 
@@ -1528,7 +1548,7 @@ test("the peek is its own scrolling region, and the only one", async () => {
   renderBoard();
   await screen.findByTestId("proposal-list");
 
-  await userEvent.click(screen.getByText("Ticket 1"));
+  await userEvent.click(await screen.findByText("Ticket 1"));
   const panel = await screen.findByTestId("proposal-panel");
 
   const scroller = panel.querySelector(".overflow-y-auto");
@@ -1542,7 +1562,7 @@ test("the peek comes in from the edge it is attached to", async () => {
   renderBoard();
   await screen.findByTestId("proposal-list");
 
-  await userEvent.click(screen.getByText("Ticket 1"));
+  await userEvent.click(await screen.findByText("Ticket 1"));
   const panel = await screen.findByTestId("proposal-panel");
 
   expect(panel.className).toContain("slide-in-from-right");
@@ -1555,7 +1575,7 @@ test("the spec does not scroll inside the scrolling panel", async () => {
   renderBoard();
   await screen.findByTestId("proposal-list");
 
-  await userEvent.click(screen.getByText("Ticket 1"));
+  await userEvent.click(await screen.findByText("Ticket 1"));
   const panel = await screen.findByTestId("proposal-panel");
   await userEvent.click(within(panel).getByRole("tab", { name: /spec/i }));
   const spec = await within(panel).findByTestId("issue-spec");
@@ -1569,9 +1589,9 @@ test("the peek returns focus to the row it was opened from", async () => {
   renderBoard();
   await screen.findByTestId("proposal-list");
 
-  const row = within(screen.getByTestId("proposal-list"))
-    .getByText("Ticket 1")
-    .closest("button");
+  const row = (
+    await within(screen.getByTestId("proposal-list")).findByText("Ticket 1")
+  ).closest("button");
   await userEvent.click(row as HTMLElement);
   await screen.findByTestId("proposal-panel");
 
@@ -1588,7 +1608,7 @@ test("the ticket is read when the peek opens, so the Spec tab is instant once it
   renderBoard();
   await screen.findByTestId("proposal-list");
 
-  await userEvent.click(screen.getByText("Ticket 1"));
+  await userEvent.click(await screen.findByText("Ticket 1"));
 
   // Open at once, on the Bounty tab, with the proposal already there.
   const panel = await screen.findByTestId("proposal-panel");
@@ -1619,7 +1639,7 @@ test("the row being opened is marked from the click, not from the response", asy
   await screen.findByTestId("proposal-list");
 
   const list = screen.getByTestId("proposal-list");
-  const row = within(list).getByText("Ticket 1").closest("button");
+  const row = (await within(list).findByText("Ticket 1")).closest("button");
   await userEvent.click(row as HTMLElement);
   await screen.findByTestId("proposal-panel");
 
@@ -1633,7 +1653,7 @@ test("closing while the ticket is still loading does not reopen it", async () =>
   renderBoard();
   await screen.findByTestId("proposal-list");
 
-  await userEvent.click(screen.getByText("Ticket 1"));
+  await userEvent.click(await screen.findByText("Ticket 1"));
   await screen.findByTestId("proposal-panel");
 
   await userEvent.keyboard("{Escape}");
@@ -1652,7 +1672,7 @@ test("the way out to Jira sits on the tab row", async () => {
   renderBoard();
   await screen.findByTestId("proposal-list");
 
-  await userEvent.click(screen.getByText("Ticket 1"));
+  await userEvent.click(await screen.findByText("Ticket 1"));
   await screen.findByTestId("proposal-detail");
 
   const link = screen.getByRole("link", { name: /open in jira/i });

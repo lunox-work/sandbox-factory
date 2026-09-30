@@ -47,6 +47,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { RateSlider } from "@/components/RateSlider";
+import { readNdjson } from "@/lib/ndjson";
 import { parseRateAmount } from "@/lib/rate-amount";
 import { CurrencySelect } from "@/components/CurrencySelect";
 import { Separator } from "@/components/ui/separator";
@@ -57,6 +58,11 @@ import { JiraIcon, ModelIcon } from "./ProviderIcon";
 import type { JiraIssueDetail } from "./useJira";
 
 type EnrichedProposal = BountyProposalDto & {
+  /**
+   * The ticket's title when it was sized, which the list carries: stored,
+   * so a row has something to call itself before Jira answers.
+   */
+  sizedTitle?: string | null;
   freshness?: "current" | "stale" | "missing" | "unknown";
   checkedAt?: string;
   code?: string;
@@ -65,6 +71,25 @@ type EnrichedProposal = BountyProposalDto & {
   liveUrl?: string;
   writebackOperations?: BountyWritebackDto[];
 };
+
+/** A line of the titles stream: a row's live title, or why it has none. */
+type ProposalTitle =
+  { id: string; key: string; title: string } | { id: string; code: string };
+
+/** A titles-stream line, or null for one this page does not understand. */
+function titleLine(value: unknown): ProposalTitle | null {
+  if (typeof value !== "object" || value === null) return null;
+  const line = value as Record<string, unknown>;
+  const id = line["id"];
+  if (typeof id !== "string") return null;
+  const key = line["key"];
+  const title = line["title"];
+  if (typeof key === "string" && typeof title === "string") {
+    return { id, key, title };
+  }
+  const code = line["code"];
+  return typeof code === "string" ? { id, code } : null;
+}
 
 interface ProposalDetail {
   proposal: BountyProposalDto;
@@ -519,28 +544,47 @@ export function BoardBounties({
   const [ticketError, setTicketError] = useState<string | null>(null);
   const wantedKey = useRef<string | null>(null);
 
+  /*
+    Live titles, by proposal id, as the titles stream reports them. Kept
+    across list refreshes, so a refresh asks Jira only about rows it has not
+    titled yet: after an approval or a landed run result, usually none or
+    one. `titleRequests` holds the ids a stream is out for, so a row is never
+    asked for twice at once; `titlesPending` is the same set as state, for
+    the placeholder.
+
+    `titled` repeats the map's keys in a ref, and is what decides whether
+    to ask. An effect can run after the stream that answered a row has
+    already let go of it, while its render's `titles` predates that
+    answer; checked against state, the row would be asked for again.
+  */
+  const [titles, setTitles] = useState<Record<string, ProposalTitle>>({});
+  const [titlesPending, setTitlesPending] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const titled = useRef(new Set<string>());
+  const titleRequests = useRef(new Set<string>());
+  const titleStreams = useRef(new Set<AbortController>());
+  /** Bumped by `refresh`, so the open proposal is read again with the list. */
+  const [detailVersion, setDetailVersion] = useState(0);
+
   const base = `/api/v1/orgs/${encodeURIComponent(organizationId)}`;
-  const refresh = useCallback(async () => {
+  /*
+    Runs and stored proposals: both local reads, so the list renders as soon
+    as they land. Nothing here waits on Jira — titles stream in below, and
+    the open proposal's freshness comes from its own read — and nothing here
+    depends on which proposal is open, so opening one does not re-read it.
+  */
+  const loadList = useCallback(async () => {
     const generation = ++requestGeneration.current;
     try {
-      const [runResponse, proposalResponse, detailResponse] = await Promise.all(
-        [
-          fetch(`${base}/jira/boards/${encodeURIComponent(boardId)}/runs`, {
-            credentials: "include",
-          }),
-          fetch(`${base}/proposals?boardId=${encodeURIComponent(boardId)}`, {
-            credentials: "include",
-          }),
-          ...(selectedId === null
-            ? []
-            : [
-                fetch(
-                  `${base}/proposals/${encodeURIComponent(selectedId)}?boardId=${encodeURIComponent(boardId)}`,
-                  { credentials: "include" },
-                ),
-              ]),
-        ],
-      );
+      const [runResponse, proposalResponse] = await Promise.all([
+        fetch(`${base}/jira/boards/${encodeURIComponent(boardId)}/runs`, {
+          credentials: "include",
+        }),
+        fetch(`${base}/proposals?boardId=${encodeURIComponent(boardId)}`, {
+          credentials: "include",
+        }),
+      ]);
       if (!runResponse.ok || !proposalResponse.ok) throw new Error();
       const runBody = (await runResponse.json()) as {
         runs: BountyRunDto[];
@@ -549,20 +593,10 @@ export function BoardBounties({
       const proposalBody = (await proposalResponse.json()) as {
         proposals: EnrichedProposal[];
       };
-      const nextDetail =
-        detailResponse === undefined || !detailResponse.ok
-          ? null
-          : ((await detailResponse.json()) as ProposalDetail);
       if (generation !== requestGeneration.current) return;
       setRuns(runBody.runs ?? []);
       setSizingAvailable(runBody.sizingAvailable);
       setProposals(proposalBody.proposals ?? []);
-      setDetail(nextDetail);
-      setDetailFailure(
-        selectedId === null || detailResponse === undefined || detailResponse.ok
-          ? null
-          : { id: selectedId, notFound: detailResponse.status === 404 },
-      );
       setError(null);
     } catch {
       if (generation === requestGeneration.current)
@@ -570,25 +604,121 @@ export function BoardBounties({
     } finally {
       if (generation === requestGeneration.current) setLoading(false);
     }
-  }, [base, boardId, selectedId]);
+  }, [base, boardId]);
+
+  /*
+    What a mutation, a landed run result or a search re-reads: the list, and
+    the open proposal with it, since either may have changed under it.
+  */
+  const refresh = useCallback(async () => {
+    setDetailVersion((version) => version + 1);
+    await loadList();
+  }, [loadList]);
 
   /*
     The list is emptied and shown loading only when what it lists changes —
-    the board. Opening a proposal also re-reads (for its
-    detail), and that read must not blank the list: the row that was pressed
-    is what the peek returns focus to, and a list that unmounts under an
-    open peek takes the row with it.
+    the board. A refresh must not blank it: the row that was pressed is what
+    the peek returns focus to, and a list that unmounts under an open peek
+    takes the row with it.
   */
   useEffect(() => {
     setLoading(true);
     setProposals([]);
   }, [boardId]);
   useEffect(() => {
-    void refresh();
+    void loadList();
     return () => {
       requestGeneration.current += 1;
     };
-  }, [refresh]);
+  }, [loadList]);
+
+  /*
+    The open proposal, read on its own. Its freshness is checked against
+    Jira, which is why it is not part of the list: one ticket's read, when
+    somebody opens it, rather than every ticket's on every list read.
+  */
+  useEffect(() => {
+    if (selectedId === null) {
+      setDetail(null);
+      setDetailFailure(null);
+      return;
+    }
+    let live = true;
+    const failed = (notFound: boolean) => {
+      if (!live) return;
+      setDetail(null);
+      setDetailFailure({ id: selectedId, notFound });
+    };
+    fetch(
+      `${base}/proposals/${encodeURIComponent(selectedId)}?boardId=${encodeURIComponent(boardId)}`,
+      { credentials: "include" },
+    )
+      .then(async (response) => {
+        if (!response.ok) return failed(response.status === 404);
+        const body = (await response.json()) as ProposalDetail;
+        if (!live) return;
+        setDetail(body);
+        setDetailFailure(null);
+      })
+      .catch(() => failed(false));
+    return () => {
+      live = false;
+    };
+  }, [base, boardId, selectedId, detailVersion]);
+
+  /*
+    Titles for the rows that have none yet, one stream for all of them. Each
+    row fills in as its line arrives rather than when the slowest ticket
+    answers. A row the stream ended without is left untitled and unrecorded,
+    so the next refresh asks for it again.
+  */
+  useEffect(() => {
+    const wanted = proposals
+      .map(({ id }) => id)
+      .filter(
+        (id) => !titled.current.has(id) && !titleRequests.current.has(id),
+      );
+    if (wanted.length === 0) return;
+    for (const id of wanted) titleRequests.current.add(id);
+    setTitlesPending((current) => new Set([...current, ...wanted]));
+    const controller = new AbortController();
+    titleStreams.current.add(controller);
+    fetch(
+      `${base}/jira/boards/${encodeURIComponent(boardId)}/proposal-titles?ids=${wanted.map(encodeURIComponent).join(",")}`,
+      { credentials: "include", signal: controller.signal },
+    )
+      .then((response) =>
+        response.ok && response.body !== null
+          ? readNdjson(response.body, (value) => {
+              const title = titleLine(value);
+              if (title === null) return;
+              titled.current.add(title.id);
+              setTitles((current) => ({ ...current, [title.id]: title }));
+            })
+          : undefined,
+      )
+      .catch(() => {})
+      .finally(() => {
+        titleStreams.current.delete(controller);
+        for (const id of wanted) titleRequests.current.delete(id);
+        setTitlesPending(
+          (current) =>
+            new Set([...current].filter((id) => !wanted.includes(id))),
+        );
+      });
+  }, [base, boardId, proposals]);
+
+  // Streams still reading when the list goes away are stopped, so Jira is
+  // not asked about rows nobody will see.
+  useEffect(() => {
+    const streams = titleStreams.current;
+    const requests = titleRequests.current;
+    return () => {
+      for (const controller of streams) controller.abort();
+      streams.clear();
+      requests.clear();
+    };
+  }, []);
   // The board's own sizing run. A one-ticket run someone added is followed
   // by the search that started it, not shown as the board's stream.
   const active = runs.find(
@@ -704,12 +834,62 @@ export function BoardBounties({
     proposals.some(({ id }) => id === detailProposal.id)
       ? proposals
       : [detailProposal, ...proposals];
-  const selected =
+  /*
+    A row's key and title: live once its line has arrived, and until then
+    the title the ticket was sized under, when the run recorded one. The
+    two are nearly always the same words, so most rows never change.
+  */
+  const nameOf = (proposal: EnrichedProposal) => {
+    const live = titles[proposal.id];
+    return {
+      key:
+        (live !== undefined && "key" in live ? live.key : undefined) ??
+        proposal.liveKey ??
+        proposal.issueKey,
+      title:
+        (live !== undefined && "title" in live ? live.title : undefined) ??
+        proposal.liveTitle ??
+        proposal.sizedTitle ??
+        undefined,
+      pending: titlesPending.has(proposal.id),
+    };
+  };
+  const selectedRow =
     selectedId === null
       ? null
       : (visibleProposals.find(({ id }) => id === selectedId) ?? null);
-  const selectedKey =
-    selected === null ? null : (selected.liveKey ?? selected.issueKey);
+  /*
+    The open proposal: its stored row, with what only its detail knows —
+    freshness, the live title, delivery — laid over it once that arrives.
+    The row stays the word on stored fields, as it was before the detail
+    was read separately. Freshness is only ever the detail's, so until it
+    lands the peek says Jira is being checked, and a failed read says it
+    was not.
+  */
+  const selectedView: EnrichedProposal | null =
+    selectedRow === null
+      ? null
+      : detail !== null && detail.proposal.id === selectedRow.id
+        ? {
+            ...selectedRow,
+            ...detail.freshness,
+            writebackOperations: detail.writebackOperations,
+          }
+        : detailFailure !== null && detailFailure.id === selectedRow.id
+          ? { ...selectedRow, freshness: "unknown" }
+          : selectedRow;
+  const selectedName = selectedView === null ? null : nameOf(selectedView);
+  const selected: EnrichedProposal | null =
+    selectedView === null || selectedName === null
+      ? null
+      : {
+          ...selectedView,
+          liveKey: selectedName.key,
+          ...(selectedName.title === undefined
+            ? {}
+            : { liveTitle: selectedName.title }),
+        };
+  const selectedKey = selectedName === null ? null : selectedName.key;
 
   const loadTicket = useCallback(
     (issueKey: string) => {
@@ -743,7 +923,7 @@ export function BoardBounties({
    * proposal it changed and touches nothing else can `apply` it instead:
    * the row and the open detail take the proposal from the response, and
    * no request follows. That is what keeps a resize instant, where the
-   * re-read would check every proposal on the board against Jira.
+   * re-read would check the open proposal against Jira again.
    */
   async function mutate(
     path: string,
@@ -859,51 +1039,65 @@ export function BoardBounties({
               <span className="size-4 shrink-0" />
             </div>
             <ul className="divide-y" data-testid="proposal-list">
-              {visibleProposals.map((proposal) => (
-                <li key={proposal.id}>
-                  <button
-                    type="button"
-                    aria-current={
-                      selectedId === proposal.id ? "true" : undefined
-                    }
-                    className={`hover:bg-muted/50 grid w-full grid-cols-[1fr_auto_1rem] items-center gap-x-3 gap-y-1 px-3 py-3 text-left transition-colors sm:flex sm:py-2.5 ${
-                      selectedId === proposal.id ? "bg-muted" : ""
-                    }`}
-                    onClick={() => openProposal(proposal.id)}
-                  >
-                    <span className="flex min-w-0 flex-col sm:contents">
-                      <span className="text-muted-foreground shrink-0 font-mono text-xs sm:w-20">
-                        {proposal.liveKey ?? proposal.issueKey}
+              {visibleProposals.map((proposal) => {
+                const name = nameOf(proposal);
+                return (
+                  <li key={proposal.id}>
+                    <button
+                      type="button"
+                      aria-current={
+                        selectedId === proposal.id ? "true" : undefined
+                      }
+                      className={`hover:bg-muted/50 grid w-full grid-cols-[1fr_auto_1rem] items-center gap-x-3 gap-y-1 px-3 py-3 text-left transition-colors sm:flex sm:py-2.5 ${
+                        selectedId === proposal.id ? "bg-muted" : ""
+                      }`}
+                      onClick={() => openProposal(proposal.id)}
+                    >
+                      <span className="flex min-w-0 flex-col sm:contents">
+                        <span className="text-muted-foreground shrink-0 font-mono text-xs sm:w-20">
+                          {name.key}
+                        </span>
+                        <span className="min-w-0 text-sm sm:flex-1 sm:truncate">
+                          {name.title ??
+                            (name.pending ? (
+                              // Held open at a title's width, so the row does
+                              // not reflow when its line arrives.
+                              <span
+                                aria-hidden="true"
+                                data-testid="title-pending"
+                                className="skeleton inline-block h-3 w-40 max-w-full rounded align-middle"
+                              />
+                            ) : (
+                              "Jira ticket"
+                            ))}
+                        </span>
                       </span>
-                      <span className="min-w-0 text-sm sm:flex-1 sm:truncate">
-                        {proposal.liveTitle ?? "Jira ticket"}
+                      <span className="flex shrink-0 items-center gap-3 sm:contents">
+                        <span className="sm:w-24 sm:shrink-0">
+                          <Badge
+                            variant={
+                              proposal.status === "approved"
+                                ? "default"
+                                : "secondary"
+                            }
+                          >
+                            {capitalize(proposal.status)}
+                          </Badge>
+                        </span>
+                        <span className="sm:w-12 sm:shrink-0">
+                          <Badge variant="outline" className="font-mono">
+                            {proposal.complexity}
+                          </Badge>
+                        </span>
+                        <span className="text-sm tabular-nums sm:w-24 sm:shrink-0 sm:text-right">
+                          {money(proposal.amountMinor, proposal.currency)}
+                        </span>
                       </span>
-                    </span>
-                    <span className="flex shrink-0 items-center gap-3 sm:contents">
-                      <span className="sm:w-24 sm:shrink-0">
-                        <Badge
-                          variant={
-                            proposal.status === "approved"
-                              ? "default"
-                              : "secondary"
-                          }
-                        >
-                          {capitalize(proposal.status)}
-                        </Badge>
-                      </span>
-                      <span className="sm:w-12 sm:shrink-0">
-                        <Badge variant="outline" className="font-mono">
-                          {proposal.complexity}
-                        </Badge>
-                      </span>
-                      <span className="text-sm tabular-nums sm:w-24 sm:shrink-0 sm:text-right">
-                        {money(proposal.amountMinor, proposal.currency)}
-                      </span>
-                    </span>
-                    <ChevronRight className="text-muted-foreground size-4 shrink-0" />
-                  </button>
-                </li>
-              ))}
+                      <ChevronRight className="text-muted-foreground size-4 shrink-0" />
+                    </button>
+                  </li>
+                );
+              })}
             </ul>
           </>
         )}
@@ -979,6 +1173,9 @@ function freshnessLabel(freshness: EnrichedProposal["freshness"]): {
       return { text: "Changed since sizing", tone: "warn" };
     case "missing":
       return { text: "No longer in Jira", tone: "bad" };
+    // Not known yet: the open proposal's own read is still out.
+    case undefined:
+      return { text: "Checking Jira…", tone: "muted" };
     default:
       return { text: "Not checked", tone: "muted" };
   }
