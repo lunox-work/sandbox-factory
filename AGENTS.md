@@ -196,6 +196,14 @@ a broken injection stamps the artifact `unknown` rather than breaking the build
 - Dev containers shadow `node_modules` with anonymous volumes (the host tree
   holds darwin binaries). Both Dockerfiles build from the repo root, because the
   apps import workspace packages from outside their directory.
+- **Both dev services shadow every workspace's `node_modules`, not only the
+  ones they run.** Their `npm ci` installs the whole tree, so a workspace left
+  off the list has its linux binaries written through the bind mount into the
+  host's copy, and the host's next build of that workspace fails (`esbuild`
+  "Host version does not match binary version", or a missing
+  `node_modules/.bin/vite`). A new workspace needs a line under `api-dev` and
+  `web-dev` in `docker-compose.yml`. If the host tree is already damaged,
+  `npm ci` on the host repairs it.
 - **Adding a dependency needs `make relink`, not `make up`.** The `npm ci` in
   `web-dev`/`api-dev`'s command installs into anonymous volumes that
   `docker compose up` reuses, so a package installed on the host never appears

@@ -26,6 +26,7 @@ import type {
   JiraIssueDto,
 } from "@sandbox-factory/shared";
 import type { Hono } from "hono";
+import { stream } from "hono/streaming";
 import {
   DEFAULT_RATE_CARD,
   priceFor,
@@ -39,7 +40,7 @@ import type {
   RunJiraClient,
 } from "./executor.js";
 import type { BountyDelivery } from "./delivery.js";
-import { freshProposal, mapConcurrent } from "./review.js";
+import { freshProposal, mapConcurrent, proposalTitle } from "./review.js";
 
 export interface BountyRouteOptions {
   readonly rateCards: RateCardStore;
@@ -600,6 +601,59 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
     });
   });
 
+  /*
+    The live title of each listed proposal, a line of NDJSON per proposal,
+    written as Jira answers for it rather than when the last one does, so
+    the rows fill in one by one. Titles are relayed, never stored.
+
+    Under the board rather than beside `/proposals/:id`, which would match
+    it. One client serves the whole board, as every row shares its
+    connection; five reads at a time, not the three sizing uses, because
+    these skip the description and a person is waiting on them.
+  */
+  app.get("/api/v1/orgs/:orgId/jira/boards/:id/proposal-titles", async (c) => {
+    const { organizationId } = c.get("member");
+    const boardId = c.req.param("id");
+    const ids = [
+      ...new Set(
+        (c.req.query("ids") ?? "").split(",").filter((id) => id !== ""),
+      ),
+    ];
+    // The list's largest page.
+    if (ids.length === 0 || ids.length > 50) {
+      return c.json({ error: "Ask for 1 to 50 proposals." }, 400);
+    }
+    const board = await options.boards.get(organizationId, boardId);
+    if (board === null) return c.json({ error: "Not found" }, 404);
+    const targets = await options.proposals.issuesForProposals(
+      organizationId,
+      boardId,
+      ids,
+    );
+    const ready: RunClientResult =
+      options.clientFor === undefined
+        ? { ok: false, reason: "reconnect" }
+        : targets.size === 0
+          ? { ok: false, reason: "not-found" }
+          : await options.clientFor(organizationId, board.connectionId);
+    c.header("content-type", "application/x-ndjson; charset=utf-8");
+    c.header("cache-control", "no-store");
+    return stream(c, async (out) => {
+      await mapConcurrent(ids, 5, async (id) => {
+        // The browser left: nothing is waiting for the rest.
+        if (out.aborted) return;
+        const line = await proposalTitle(
+          options.issues,
+          organizationId,
+          id,
+          targets.get(id),
+          ready,
+        );
+        await out.write(`${JSON.stringify(line)}\n`);
+      });
+    });
+  });
+
   app.get("/api/v1/orgs/:orgId/runs/:id", async (c) => {
     const { organizationId } = c.get("member");
     const run = await options.runs.get(organizationId, c.req.param("id"));
@@ -620,6 +674,13 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
     const limit = boundedLimit(c.req.query("limit"));
     const cursor = proposalCursor(c.req.query("cursor"));
     if (cursor === null) return c.json({ error: "Invalid cursor." }, 400);
+    /*
+      Stored rows only, so the list answers at once. What a row cannot show
+      without Jira — its live title — streams in from `proposal-titles`, and
+      the open proposal's freshness and delivery come from its detail read.
+      Checking every row against Jira here held the whole list back for
+      the slowest ticket on the page.
+    */
     const proposals = await options.proposals.listForBoard(
       organizationId,
       boardId,
@@ -629,42 +690,8 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
         ...(cursor === undefined ? {} : { cursor }),
       },
     );
-    const enriched =
-      options.clientFor === undefined
-        ? proposals.map((proposal) => ({
-            ...proposal,
-            freshness: "unknown" as const,
-            checkedAt: new Date().toISOString(),
-            code: "reconnect",
-          }))
-        : await mapConcurrent(proposals, 3, async (proposal) => {
-            const live = await freshProposal(
-              {
-                proposals: options.proposals,
-                issues: options.issues,
-                boards: options.boards,
-                clientFor: options.clientFor!,
-              },
-              organizationId,
-              proposal,
-            );
-            const { liveSpec: _discard, proposal: stored, ...freshness } = live;
-            return { ...stored, ...freshness };
-          });
-    const withDelivery =
-      options.writebacks === undefined
-        ? enriched
-        : await Promise.all(
-            enriched.map(async (proposal) => ({
-              ...proposal,
-              writebackOperations: await options.writebacks!.listForProposal(
-                organizationId,
-                proposal.id,
-              ),
-            })),
-          );
     return c.json({
-      proposals: withDelivery,
+      proposals,
       nextCursor:
         proposals.length === limit && proposals.at(-1) !== undefined
           ? `${proposals.at(-1)!.createdAt}|${proposals.at(-1)!.id}`

@@ -53,6 +53,7 @@ export { createBountyProposalStore } from "./bounty-proposals.js";
 export type {
   BountyProposalStore,
   CreateBountyProposalInput,
+  ListedBountyProposal,
   ProposalMutationResult,
   StoredBountyProposal,
 } from "./bounty-proposals.js";

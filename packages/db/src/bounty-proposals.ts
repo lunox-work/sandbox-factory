@@ -46,6 +46,17 @@ export type ProposalMutationResult =
       readonly current?: StoredBountyProposal;
     };
 
+/** A proposal as the board's list returns it. */
+export type ListedBountyProposal = StoredBountyProposal & {
+  /**
+   * The ticket's title as the run that sized it planned it, or null when
+   * that run recorded no plan for the ticket. Already stored with the run:
+   * the list shows it at once, and the live title replaces it if the two
+   * differ.
+   */
+  readonly sizedTitle: string | null;
+};
+
 export interface BountyProposalStore {
   create(
     organizationId: string,
@@ -71,7 +82,7 @@ export interface BountyProposalStore {
       cursor?: { readonly createdAt: string; readonly id: string };
       limit?: number;
     },
-  ): Promise<StoredBountyProposal[]>;
+  ): Promise<ListedBountyProposal[]>;
   liveExternalIds(
     organizationId: string,
     boardId: string,
@@ -83,6 +94,18 @@ export interface BountyProposalStore {
     boardId: string,
     externalIds: readonly string[],
   ): Promise<Map<string, string>>;
+  /**
+   * The Jira issue behind each of these proposals, for reading its live
+   * title. Only proposals of the owner whose issue is on this board are in
+   * the map; any other id is simply absent.
+   */
+  issuesForProposals(
+    organizationId: string,
+    boardId: string,
+    proposalIds: readonly string[],
+  ): Promise<
+    Map<string, { readonly jiraIssueId: string; readonly externalId: string }>
+  >;
   approve(
     organizationId: string,
     proposalId: string,
@@ -393,7 +416,12 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
     async listForBoard(organizationId, boardId, options = {}) {
       const limit = Math.min(Math.max(options.limit ?? 25, 1), 50);
       const rows = await db
-        .select({ row: bountyProposal, issueKey: jiraIssue.key })
+        .select({
+          row: bountyProposal,
+          issueKey: jiraIssue.key,
+          externalId: jiraIssue.externalId,
+          planned: bountyRun.planned,
+        })
         .from(bountyProposal)
         .innerJoin(bountyRun, eq(bountyProposal.runId, bountyRun.id))
         .innerJoin(jiraIssue, eq(bountyProposal.jiraIssueId, jiraIssue.id))
@@ -423,7 +451,15 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
         )
         .orderBy(desc(bountyProposal.createdAt), desc(bountyProposal.id))
         .limit(limit);
-      return rows.map(({ row, issueKey }) => toDto(row, issueKey));
+      return rows.map(({ row, issueKey, externalId, planned }) => {
+        const summary = planned.find(
+          (issue) => issue.externalIssueId === externalId,
+        )?.summary;
+        return {
+          ...toDto(row, issueKey),
+          sizedTitle: summary === undefined || summary === "" ? null : summary,
+        };
+      });
     },
 
     async liveExternalIds(organizationId, boardId, externalIds) {
@@ -436,6 +472,31 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
 
     liveProposalIds: (organizationId, boardId, externalIds) =>
       liveProposalIds(db, organizationId, boardId, externalIds),
+
+    async issuesForProposals(organizationId, boardId, proposalIds) {
+      if (proposalIds.length === 0) return new Map();
+      const rows = await db
+        .select({
+          proposalId: bountyProposal.id,
+          jiraIssueId: jiraIssue.id,
+          externalId: jiraIssue.externalId,
+        })
+        .from(bountyProposal)
+        .innerJoin(jiraIssue, eq(bountyProposal.jiraIssueId, jiraIssue.id))
+        .where(
+          and(
+            eq(bountyProposal.organizationId, organizationId),
+            eq(jiraIssue.boardId, boardId),
+            inArray(bountyProposal.id, [...proposalIds]),
+          ),
+        );
+      return new Map(
+        rows.map(({ proposalId, jiraIssueId, externalId }) => [
+          proposalId,
+          { jiraIssueId, externalId },
+        ]),
+      );
+    },
 
     async approve(
       organizationId,

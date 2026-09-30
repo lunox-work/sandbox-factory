@@ -43,7 +43,7 @@ vi.mock("../src/auth", () => ({
   // are about the handle and the providers, so it stands in as signed in with
   // no picture — the case that falls through to the generated one.
   useSession: () => ({
-    data: { user: { id: "user_1", image: null, name: "charlie ang" } },
+    data: { user: { id: "user_1", image: null, name: "ada lovelace" } },
     refetch: () => refetchSession(),
   }),
 }));
@@ -718,8 +718,8 @@ test("the name field seeds from the session", async () => {
   render(<Account />);
 
   // The value reads as text; opening it seeds the input from the same value.
-  expect(await screen.findByText("charlie ang")).toBeDefined();
-  expect((await openField("Name")).value).toBe("charlie ang");
+  expect(await screen.findByText("ada lovelace")).toBeDefined();
+  expect((await openField("Name")).value).toBe("ada lovelace");
 });
 
 test("saving the name sends it to the name route", async () => {
@@ -727,7 +727,7 @@ test("saving the name sends it to the name route", async () => {
   render(<Account />);
 
   fireEvent.change(await openField("Name"), {
-    target: { value: "Charlie Ang" },
+    target: { value: "Ada Lovelace" },
   });
   fireEvent.click(screen.getByRole("button", { name: "Save name" }));
 
@@ -735,7 +735,7 @@ test("saving the name sends it to the name route", async () => {
   const body = JSON.parse(
     (vi.mocked(fetch).mock.calls.at(-1)?.[1] as { body: string }).body,
   ) as Record<string, string>;
-  expect(body).toEqual({ name: "Charlie Ang" });
+  expect(body).toEqual({ name: "Ada Lovelace" });
 });
 
 test("an empty name is refused and says so", async () => {
@@ -760,7 +760,7 @@ test("the handle and the name save separately", async () => {
   render(<Account />);
 
   fireEvent.change(await openField("Name"), {
-    target: { value: "Charlie Ang" },
+    target: { value: "Ada Lovelace" },
   });
   fireEvent.click(screen.getByRole("button", { name: "Save name" }));
 

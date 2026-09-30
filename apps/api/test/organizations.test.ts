@@ -585,12 +585,12 @@ test("renaming yourself renames your personal organization too", async () => {
   const res = await appWithNameRoute(store).request("/api/v1/me/name", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name: "Charlie Ang" }),
+    body: JSON.stringify({ name: "Ada Lovelace" }),
   });
 
   assert.equal(res.status, 200);
   // The caller's own id, from the session — never one from the body.
-  assert.deepEqual(calls.renamePersonal, [[dana.id, "Charlie Ang"]]);
+  assert.deepEqual(calls.renamePersonal, [[dana.id, "Ada Lovelace"]]);
 });
 
 test("a refused name renames nothing", async () => {
@@ -631,9 +631,9 @@ test("a failed organization rename still saves the name", async () => {
   const res = await appWithNameRoute(failing).request("/api/v1/me/name", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name: "Charlie Ang" }),
+    body: JSON.stringify({ name: "Ada Lovelace" }),
   });
 
   assert.equal(res.status, 200);
-  assert.deepEqual(await res.json(), { name: "Charlie Ang" });
+  assert.deepEqual(await res.json(), { name: "Ada Lovelace" });
 });
