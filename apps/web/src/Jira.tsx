@@ -865,8 +865,7 @@ export function JiraConnections({
       <header>
         <h3 className="leading-none font-semibold">Jira</h3>
         <p className="text-muted-foreground mt-1.5 text-sm">
-          Every board on a connected site is registered when it is connected. We
-          never store ticket contents, which are read when a run needs them.
+          Every board on a connected site is registered when it is connected.
         </p>
       </header>
 
