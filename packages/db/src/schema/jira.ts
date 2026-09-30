@@ -206,7 +206,7 @@ export const jiraIssue = pgTable(
     key: text("key").notNull(),
     /** `new`, `indeterminate` or `done`, normalised by `toIssueDto`. */
     statusCategory: text("status_category").notNull(),
-    /** Jira's own created time. What "the oldest backlog tickets" sorts on. */
+    /** Jira's own created time, which is what a ticket's age is counted from. */
     remoteCreatedAt: timestamp("remote_created_at", {
       withTimezone: true,
     }).notNull(),

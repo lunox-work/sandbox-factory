@@ -22,6 +22,7 @@
  * error.
  */
 
+import { CATEGORIES } from "sandbox-factory";
 import { z } from "zod";
 
 /**
@@ -69,6 +70,51 @@ const statusSchema = z
   .loose();
 
 /**
+ * A sprint as an issue names it: the one it sits in now (`sprint`) or one
+ * that closed around it (`closedSprints`). Only the Agile endpoints send
+ * these, and only for boards that have sprints.
+ */
+const issueSprintSchema = z
+  .object({
+    id: z.number().optional(),
+    name: z.string().optional(),
+    state: z.string().optional(),
+    startDate: z.string().nullish(),
+    endDate: z.string().nullish(),
+  })
+  .loose();
+
+/** The ticket at the other end of a link: its key and whether it is open. */
+const linkedIssueSchema = z
+  .object({
+    key: z.string().optional(),
+    fields: z.object({ status: statusSchema.optional() }).loose().optional(),
+  })
+  .loose();
+
+/**
+ * One link. Exactly one of `outwardIssue` and `inwardIssue` is present, and
+ * which one says the direction: `outwardIssue` is the ticket this one acts
+ * on ("blocks"), `inwardIssue` the ticket acting on this one ("is blocked
+ * by").
+ */
+const issueLinkSchema = z
+  .object({
+    type: z.object({ name: z.string().optional() }).loose().optional(),
+    outwardIssue: linkedIssueSchema.optional(),
+    inwardIssue: linkedIssueSchema.optional(),
+  })
+  .loose();
+
+const fixVersionSchema = z
+  .object({
+    name: z.string().optional(),
+    releaseDate: z.string().nullish(),
+    released: z.boolean().optional(),
+  })
+  .loose();
+
+/**
  * The fields block of an issue. Every member is optional: this is the part of
  * the payload a project administrator controls.
  *
@@ -92,6 +138,26 @@ const issueFieldsSchema = z
     created: z.string().nullish(),
     updated: z.string().nullish(),
     duedate: z.string().nullish(),
+    /*
+      What selection reads, and only when it asks for them. Each falls back
+      to absent on a shape it does not recognise rather than failing: these
+      decide whether a ticket is offered, and one site's odd `votes` field
+      must not cost a whole page of tickets.
+    */
+    sprint: issueSprintSchema.nullish().catch(undefined),
+    closedSprints: z.array(issueSprintSchema).nullish().catch(undefined),
+    votes: z
+      .object({ votes: z.number().optional() })
+      .loose()
+      .nullish()
+      .catch(undefined),
+    watches: z
+      .object({ watchCount: z.number().optional() })
+      .loose()
+      .nullish()
+      .catch(undefined),
+    issuelinks: z.array(issueLinkSchema).nullish().catch(undefined),
+    fixVersions: z.array(fixVersionSchema).nullish().catch(undefined),
   })
   .loose();
 
@@ -284,6 +350,54 @@ export const jiraIssueDetailDtoSchema = jiraIssueDtoSchema.extend({
 });
 
 /**
+ * An issue with what selection needs to decide whether to offer it: its
+ * sprint history, how many people follow it, what it is linked to, and the
+ * releases it is slated for.
+ *
+ * A superset of `jiraIssueDtoSchema`, and like it, **no description and no
+ * comments**: every field here is a count, a date or a name. It is read only
+ * by the run that classifies a board, so ordinary lists do not pay for it.
+ */
+export const jiraIssueSignalsDtoSchema = jiraIssueDtoSchema.extend({
+  /** The sprint it sits in now. Null on a board without sprints. */
+  sprint: z.object({ name: z.string(), state: z.string() }).nullable(),
+  /** Sprints that closed with the ticket unfinished in them. */
+  closedSprints: z.array(
+    z.object({
+      name: z.string(),
+      startDate: z.string().nullable(),
+      endDate: z.string().nullable(),
+    }),
+  ),
+  votes: z.number().nullable(),
+  watchers: z.number().nullable(),
+  links: z.array(
+    z.object({
+      /** The link type's name: `Blocks`, `Duplicate`, `Relates`. */
+      type: z.string(),
+      /** `outward` is this ticket acting on the other one. */
+      direction: z.enum(["inward", "outward"]),
+      key: z.string().nullable(),
+      statusCategory: jiraStatusCategorySchema,
+    }),
+  ),
+  /** Fix versions. Named apart from the detail DTO's list of bare names. */
+  releases: z.array(
+    z.object({
+      name: z.string(),
+      releaseDate: z.string().nullable(),
+      released: z.boolean(),
+    }),
+  ),
+});
+
+export const jiraIssueSignalsPageDtoSchema = z.object({
+  issues: z.array(jiraIssueSignalsDtoSchema),
+  total: z.number().optional(),
+  nextStartAt: z.number().optional(),
+});
+
+/**
  * A page of issues, with whichever cursor the underlying API paginates by.
  *
  * Both cursors are optional and at most one is ever set: the Agile endpoints
@@ -328,28 +442,96 @@ export const jiraSiteDtoSchema = z.object({
 /* Which backlog tickets a run takes                                          */
 /* -------------------------------------------------------------------------- */
 
+/** A category threshold: whole, non-negative, and no more than a century. */
+const thresholdSchema = z.number().int().min(0).max(36_500);
+
+/**
+ * Per-category settings, built from the category registry.
+ *
+ * Generated rather than written out, so a category or threshold added to the
+ * registry is settable with no change here. Two variants, because the same
+ * shape is read in two situations:
+ *
+ * - **Stored** settings are read with unknown keys *dropped*. A board
+ *   configured against last month's categories must keep working when one is
+ *   renamed or retired, so a stale id or threshold is ignored, not an error.
+ * - An **update** from a client is *strict*: a misspelt category or threshold
+ *   is refused, because silently ignoring it would look like it was saved.
+ *   `null` clears an override back to the registry's default.
+ */
+function categoriesSchema(mode: "stored" | "update") {
+  const strict = mode === "update";
+  const shape = <T extends z.ZodRawShape>(fields: T) =>
+    strict ? z.strictObject(fields) : z.object(fields);
+  return shape(
+    Object.fromEntries(
+      CATEGORIES.map((category) => [
+        category.id,
+        shape({
+          enabled: z.boolean().optional(),
+          thresholds: shape(
+            Object.fromEntries(
+              Object.keys(category.defaults).map((name) => [
+                name,
+                strict
+                  ? thresholdSchema.nullable().optional()
+                  : thresholdSchema.optional().catch(undefined),
+              ]),
+            ),
+          ).optional(),
+        }).optional(),
+      ]),
+    ),
+  );
+}
+
+/**
+ * An optional setting that reads a stored `null` as absent.
+ *
+ * An update clears a setting by sending `null`, and the store removes the
+ * key. Rows written before it did hold the null itself, and a plain
+ * `.optional()` would refuse them, failing the board's every read.
+ */
+function clearable<T extends z.ZodType>(schema: T) {
+  return schema.nullish().transform((value) => value ?? undefined);
+}
+
 /**
  * The selection settings stored on a board.
  *
- * "The oldest tickets still in the backlog" selects for the worst-specified
- * work on a board: a ticket that has sat for two years is often a one-liner, a
- * duplicate, or something the team quietly decided not to do. These settings
- * are the levers for that — `maxAgeDays` excludes the truly abandoned, and
- * `minSpecChars` marks a ticket `unsized` without spending a model call on it.
+ * A run takes **every** open ticket that fits at least one category in the
+ * registry (`sandbox-factory`'s `CATEGORIES`), not a fixed number of the
+ * oldest. These settings are the levers around that: which tickets are
+ * candidates at all (`issueTypes`, the age window, `unassignedOnly`), how
+ * each category is tuned (`categories`), and an optional ceiling on what one
+ * run may spend (`ticketCap`).
  *
- * Every field has a default, and the whole object defaults to `{}`, so a board
- * registered before a field existed keeps working. That is why this is `jsonb`
- * with a schema rather than columns: the settings are expected to grow, and
- * each addition would otherwise be a migration.
+ * Every field has a default, and the whole object defaults to `{}`, so a
+ * board registered before a field existed keeps working. That is why this is
+ * `jsonb` with a schema rather than columns: the settings are expected to
+ * grow, and each addition would otherwise be a migration.
+ *
+ * **`maxTickets` and `excludeAssigned` are gone, under new names on
+ * purpose.** Boards registered while a run took the ten oldest tickets have
+ * `maxTickets: 10` and `excludeAssigned: true` written into their rows,
+ * because registration stores resolved defaults. Reusing those names would
+ * leave every such board capped at ten. Unknown keys are dropped on parse,
+ * so the old values are simply never read.
  */
 export const boardSelectionSchema = z.object({
-  /** Tickets per run. Also the ceiling on what one run costs in model calls. */
-  maxTickets: z.number().int().min(1).max(50).default(10),
   /**
-   * Skip tickets someone is already assigned to. A bounty on a ticket with an
-   * owner is a conflict, not an opportunity.
+   * A ceiling on tickets per run, for a client who wants to bound what one
+   * run costs in model calls. Absent, which is the default, means every
+   * ticket that matches.
    */
-  excludeAssigned: z.boolean().default(true),
+  ticketCap: clearable(z.number().int().min(1).max(5_000)),
+  /**
+   * Consider only tickets nobody is assigned to. Off by default: the
+   * categories that need an unowned ticket say so themselves, and the ones
+   * that do not (a ticket carried through four sprints usually has an
+   * owner) would otherwise never match.
+   */
+  unassignedOnly: z.boolean().default(false),
   /**
    * Issue types to consider. Empty means "anything that is not an epic or a
    * sub-task", which the JQL excludes structurally: an epic is a container for
@@ -358,17 +540,16 @@ export const boardSelectionSchema = z.object({
   issueTypes: z.array(z.string()).default([]),
   /** Ignore tickets newer than this; 0 considers everything. */
   minAgeDays: z.number().int().min(0).default(0),
-  /**
-   * Ignore tickets older than this. Undefined considers everything, which is
-   * the setting most likely to need changing after a first real run.
-   */
-  maxAgeDays: z.number().int().min(1).optional(),
+  /** Ignore tickets older than this. Undefined considers everything. */
+  maxAgeDays: clearable(z.number().int().min(1)),
   /**
    * Below this many characters of summary plus description, a ticket is
    * `unsized` without calling the model. A one-line title cannot carry a
    * bounty, and pricing it anyway is how a dispute starts.
    */
   minSpecChars: z.number().int().min(0).default(0),
+  /** Per-category overrides, by category id. Empty means every default. */
+  categories: categoriesSchema("stored").default({}),
 });
 
 /** A board as the UI lists it. */
@@ -395,18 +576,24 @@ export const registerBoardSchema = z.object({
  * A selection update: every field genuinely optional.
  *
  * **Not `boardSelectionSchema.partial()`.** A `.default()` survives
- * `.partial()`, so parsing `{ maxTickets: 5 }` through that would return every
+ * `.partial()`, so parsing `{ ticketCap: 5 }` through that would return every
  * other field at its default — and an edit to one setting would silently reset
  * the rest. Written out so "absent" means "leave it alone".
  */
 export const boardSelectionUpdateSchema = z.object({
-  maxTickets: z.number().int().min(1).max(50).optional(),
-  excludeAssigned: z.boolean().optional(),
+  /** Null removes the ceiling; undefined leaves it as it is. */
+  ticketCap: z.number().int().min(1).max(5_000).nullable().optional(),
+  unassignedOnly: z.boolean().optional(),
   issueTypes: z.array(z.string()).optional(),
   minAgeDays: z.number().int().min(0).optional(),
   /** Null clears the bound; undefined leaves it as it is. */
   maxAgeDays: z.number().int().min(1).nullable().optional(),
   minSpecChars: z.number().int().min(0).optional(),
+  /**
+   * Merged category by category and threshold by threshold, so tuning one
+   * number leaves every other category as it was. See `categoriesSchema`.
+   */
+  categories: categoriesSchema("update").optional(),
 });
 
 /**
@@ -441,6 +628,10 @@ export type TokenResponse = z.infer<typeof tokenResponseSchema>;
 export type AccessibleResource = z.infer<typeof accessibleResourceSchema>;
 
 export type JiraIssueDto = z.infer<typeof jiraIssueDtoSchema>;
+export type JiraIssueSignalsDto = z.infer<typeof jiraIssueSignalsDtoSchema>;
+export type JiraIssueSignalsPageDto = z.infer<
+  typeof jiraIssueSignalsPageDtoSchema
+>;
 export type JiraIssuePageDto = z.infer<typeof jiraIssuePageDtoSchema>;
 export type JiraBoardDto = z.infer<typeof jiraBoardDtoSchema>;
 export type JiraSprintDto = z.infer<typeof jiraSprintDtoSchema>;

@@ -109,10 +109,44 @@ export const bountyRunOutcomeSchema = z.object({
   outputTokens: z.number().int().nonnegative().optional(),
 });
 
+/** Why a backlog run picked a ticket: one category it fits, and the case. */
+export const bountyCategoryMatchSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  reason: z.string().min(1),
+});
+
+/**
+ * A board's proposals by category: what the category view above the list
+ * is drawn from. Every category in the registry is present, in registry
+ * order, with a zero when nothing on the board fits it. A ticket picked for
+ * two categories counts in both, so the counts can sum past `total`.
+ */
+export const proposalCategoriesDtoSchema = z.object({
+  /** Every proposal on the board, categorised or not. */
+  total: z.number().int().nonnegative(),
+  /**
+   * The proposals in no category at all: a ticket somebody picked by hand,
+   * or one sized before there were categories.
+   */
+  uncategorized: z.number().int().nonnegative(),
+  categories: z.array(
+    z.object({
+      id: z.string().min(1),
+      label: z.string().min(1),
+      /** Why a ticket like this is worth outsourcing. */
+      why: z.string(),
+      count: z.number().int().nonnegative(),
+    }),
+  ),
+});
+
 export const bountyRunPlannedIssueSchema = z.object({
   externalIssueId: z.string().min(1),
   issueKey: z.string().min(1),
   summary: z.string(),
+  /** Absent on plans recorded before categories existed. */
+  categories: z.array(bountyCategoryMatchSchema).optional(),
 });
 
 export const bountyRunDtoSchema = z.object({
@@ -250,6 +284,8 @@ export type RateCardSnapshotDto = z.infer<typeof rateCardSnapshotSchema>;
 export type RateCardDto = z.infer<typeof rateCardDtoSchema>;
 export type SizingResult = z.infer<typeof sizingResultSchema>;
 export type BountyRunOutcome = z.infer<typeof bountyRunOutcomeSchema>;
+export type BountyCategoryMatch = z.infer<typeof bountyCategoryMatchSchema>;
+export type ProposalCategoriesDto = z.infer<typeof proposalCategoriesDtoSchema>;
 export type BountyRunPlannedIssue = z.infer<typeof bountyRunPlannedIssueSchema>;
 export type BountyRunDto = z.infer<typeof bountyRunDtoSchema>;
 export type BountyProposalDto = z.infer<typeof bountyProposalDtoSchema>;

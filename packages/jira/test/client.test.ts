@@ -1,15 +1,19 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { jiraIssueResponseSchema } from "@sandbox-factory/shared";
+
 import {
   ApiTokenCredential,
   DETAIL_FIELDS,
   ISSUE_FIELDS,
   JiraApiError,
   JiraClient,
+  SELECTION_FIELDS,
   toBoardDto,
   toIssueDetailDto,
   toIssueDto,
+  toIssueSignalsDto,
   toSprintDto,
 } from "../src/index.js";
 
@@ -525,16 +529,190 @@ test("the list reads never ask Jira for a description", async () => {
   const { client: jira, urls } = client([
     { body: { issues: [] } },
     { body: { issues: [] } },
+    { body: { issues: [] } },
     { body: { values: [] } },
   ]);
 
   await jira.boardIssues(42);
   await jira.backlogIssues(42);
+  await jira.boardIssueSignals(42);
   await jira.search("project = ACME");
 
   for (const url of urls) {
     assert.ok(!url.includes("description"), `${url} requested a description`);
   }
+});
+
+/* The selection read: signals, and still no ticket text. */
+
+test("SELECTION_FIELDS adds signals to the list fields and no ticket text", () => {
+  for (const field of ISSUE_FIELDS) {
+    assert.ok(SELECTION_FIELDS.includes(field), `missing ${field}`);
+  }
+  for (const field of [
+    "sprint",
+    "closedSprints",
+    "votes",
+    "watches",
+    "issuelinks",
+    "fixVersions",
+  ]) {
+    assert.ok(SELECTION_FIELDS.includes(field), `missing ${field}`);
+  }
+  // Both carry what people wrote. Comment counts wait on a read that does
+  // not return the comments.
+  assert.ok(!SELECTION_FIELDS.includes("description"));
+  assert.ok(!SELECTION_FIELDS.includes("comment"));
+  // And ordinary lists do not pay for the signals.
+  assert.ok(!ISSUE_FIELDS.includes("issuelinks"));
+});
+
+test("boardIssueSignals reads the board endpoint, not the backlog", async () => {
+  // The backlog endpoint leaves out every ticket in a sprint, which hides
+  // the ones carried from sprint to sprint.
+  const { client: jira, urls } = client([
+    { body: { issues: [rawIssue], total: 3 } },
+  ]);
+
+  const page = await jira.boardIssueSignals(42, {
+    jql: "statusCategory != Done",
+    startAt: 1,
+    maxResults: 1,
+  });
+
+  assert.match(urls[0] ?? "", /\/rest\/agile\/1\.0\/board\/42\/issue\?/);
+  assert.match(urls[0] ?? "", /closedSprints/);
+  assert.match(urls[0] ?? "", /issuelinks/);
+  assert.match(urls[0] ?? "", /startAt=1/);
+  assert.equal(page.nextStartAt, 2);
+  assert.equal(page.total, 3);
+  // A ticket Jira sent no signals for still maps, with none.
+  assert.deepEqual(page.issues[0]?.closedSprints, []);
+  assert.equal(page.issues[0]?.sprint, null);
+  assert.equal(page.issues[0]?.key, "ACME-1");
+});
+
+test("toIssueSignalsDto maps sprints, demand, links and releases", () => {
+  const open = { statusCategory: { key: "new" } };
+  const dto = toIssueSignalsDto(
+    jiraIssueResponseSchema.parse({
+      ...rawIssue,
+      fields: {
+        ...rawIssue.fields,
+        sprint: { id: 9, name: "Sprint 9", state: "future" },
+        closedSprints: [
+          {
+            id: 7,
+            name: "Sprint 7",
+            state: "closed",
+            startDate: "2026-03-09T09:00:00.000Z",
+            endDate: "2026-03-23T09:00:00.000Z",
+          },
+          { id: 8 },
+        ],
+        votes: { votes: 4, hasVoted: false },
+        watches: { watchCount: 9, isWatching: true },
+        issuelinks: [
+          {
+            type: {
+              name: "Blocks",
+              inward: "is blocked by",
+              outward: "blocks",
+            },
+            outwardIssue: { key: "ACME-2", fields: { status: open } },
+          },
+          {
+            type: { name: "Duplicate" },
+            inwardIssue: {
+              key: "ACME-3",
+              fields: { status: { statusCategory: { key: "done" } } },
+            },
+          },
+          // No type name, and a linked ticket with no status: still a link.
+          { outwardIssue: {} },
+          // Neither side: malformed, and dropped.
+          { type: { name: "Relates" } },
+        ],
+        fixVersions: [
+          { name: "2.1", releaseDate: "2026-10-10", released: false },
+          { id: "10002" },
+        ],
+      },
+    }),
+    { siteUrl: "https://acme.atlassian.net" },
+  );
+
+  assert.deepEqual(dto.sprint, { name: "Sprint 9", state: "future" });
+  assert.deepEqual(dto.closedSprints, [
+    {
+      name: "Sprint 7",
+      startDate: "2026-03-09T09:00:00.000Z",
+      endDate: "2026-03-23T09:00:00.000Z",
+    },
+    { name: "", startDate: null, endDate: null },
+  ]);
+  assert.equal(dto.votes, 4);
+  assert.equal(dto.watchers, 9);
+  assert.deepEqual(dto.links, [
+    {
+      type: "Blocks",
+      direction: "outward",
+      key: "ACME-2",
+      statusCategory: "new",
+    },
+    {
+      type: "Duplicate",
+      direction: "inward",
+      key: "ACME-3",
+      statusCategory: "done",
+    },
+    { type: "", direction: "outward", key: null, statusCategory: "unknown" },
+  ]);
+  assert.deepEqual(dto.releases, [
+    { name: "2.1", releaseDate: "2026-10-10", released: false },
+    { name: "", releaseDate: null, released: false },
+  ]);
+  // The shared fields are the list DTO's own.
+  assert.equal(dto.url, "https://acme.atlassian.net/browse/ACME-1");
+  assert.equal(dto.assignee, "Ada Lovelace");
+});
+
+test("a signal field in a shape Jira does not document costs only itself", () => {
+  // These decide whether a ticket is offered. One site's odd `votes` must
+  // not fail the page and hide every other ticket on it.
+  const dto = toIssueSignalsDto(
+    jiraIssueResponseSchema.parse({
+      id: "1",
+      key: "ACME-1",
+      fields: {
+        summary: "Still here",
+        sprint: "Sprint 9",
+        closedSprints: "none",
+        votes: 4,
+        watches: [],
+        issuelinks: {},
+        fixVersions: "2.1",
+      },
+    }),
+  );
+
+  assert.equal(dto.summary, "Still here");
+  assert.equal(dto.sprint, null);
+  assert.deepEqual(dto.closedSprints, []);
+  assert.equal(dto.votes, null);
+  assert.equal(dto.watchers, null);
+  assert.deepEqual(dto.links, []);
+  assert.deepEqual(dto.releases, []);
+
+  // A current sprint that does not say its state is still a current sprint.
+  const bare = toIssueSignalsDto(
+    jiraIssueResponseSchema.parse({
+      id: "2",
+      key: "ACME-2",
+      fields: { sprint: { id: 3 } },
+    }),
+  );
+  assert.deepEqual(bare.sprint, { name: "", state: "unknown" });
 });
 
 /* The detail read: the second of the two calls that see ticket text. */

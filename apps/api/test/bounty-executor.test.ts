@@ -9,10 +9,18 @@ import type {
   StoredBountyRun,
 } from "@sandbox-factory/db";
 import { JiraApiError, type JiraIssueSpec } from "@sandbox-factory/jira";
-import type { JiraIssueDto } from "@sandbox-factory/shared";
+import type {
+  JiraIssueDto,
+  JiraIssueSignalsDto,
+} from "@sandbox-factory/shared";
 
 import { BountyExecutor } from "../src/bounty/executor.js";
-import { FakeSizer, SizerError } from "../src/sizing/sizer.js";
+import {
+  FakeSizer,
+  SizerError,
+  type SizingInput,
+  type SizingRequestOptions,
+} from "../src/sizing/sizer.js";
 
 const rateCard = {
   currency: "USD",
@@ -35,11 +43,11 @@ function run(overrides: Partial<StoredBountyRun> = {}): StoredBountyRun {
     requestId: "28bb313f-252a-4a1d-b656-558a215b604b",
     status: "queued",
     selection: {
-      maxTickets: 10,
-      excludeAssigned: true,
+      unassignedOnly: false,
       issueTypes: [],
       minAgeDays: 0,
       minSpecChars: 0,
+      categories: {},
     },
     rateCard,
     requestedModel: "requested-model",
@@ -82,6 +90,28 @@ function issue(
   };
 }
 
+/**
+ * A candidate as the selection read returns it. The harness's tickets are
+ * old, untouched and unowned, so with no sprint history each one is "left
+ * behind" and a backlog run picks it.
+ */
+function signals(
+  candidate: JiraIssueDto & Partial<JiraIssueSignalsDto>,
+): JiraIssueSignalsDto {
+  return {
+    sprint: null,
+    closedSprints: [],
+    votes: null,
+    watchers: null,
+    links: [],
+    releases: [],
+    ...candidate,
+  };
+}
+
+/** The deadline the fake store sets once a plan is recorded. */
+const PLAN_DEADLINE = "2026-09-22T00:30:00.000Z";
+
 function spec(
   id: string,
   overrides: Partial<JiraIssueSpec> = {},
@@ -100,7 +130,7 @@ function spec(
 }
 
 function harness(options: {
-  candidates?: JiraIssueDto[];
+  candidates?: (JiraIssueDto & Partial<JiraIssueSignalsDto>)[];
   specs?: Record<string, JiraIssueSpec | Error>;
   sizer?: FakeSizer;
   createStatus?: "created" | "duplicate" | "lost-lease" | "not-found";
@@ -108,6 +138,8 @@ function harness(options: {
   runOverrides?: Partial<StoredBountyRun>;
   planHeld?: boolean;
   issueError?: Error;
+  /** The plan of the run a re-priced proposal came from. */
+  originPlanned?: StoredBountyRun["planned"];
 }) {
   const current = run(options.runOverrides);
   const plans: unknown[] = [];
@@ -117,7 +149,14 @@ function harness(options: {
   const removed: string[] = [];
   const startedWritebacks: string[] = [];
   const runs = {
-    get: () => Promise.resolve(current),
+    get: (_org: string, id: string) =>
+      Promise.resolve(
+        id === "brn_origin"
+          ? options.originPlanned === undefined
+            ? null
+            : run({ id: "brn_origin", planned: options.originPlanned })
+          : current,
+      ),
     claim: () =>
       Promise.resolve(
         run({
@@ -128,9 +167,25 @@ function harness(options: {
         }),
       ),
     heartbeat: () => Promise.resolve(true),
-    recordPlan: (_org: string, _id: string, _lease: string, plan: unknown) => {
+    recordPlan: (
+      _org: string,
+      _id: string,
+      _lease: string,
+      plan: StoredBountyRun["planned"],
+    ) => {
       plans.push(plan);
-      return Promise.resolve(options.planHeld ?? true);
+      // As the store does: the run back, with the deadline its plan set.
+      return Promise.resolve(
+        (options.planHeld ?? true)
+          ? run({
+              ...options.runOverrides,
+              status: "running",
+              planned: plan,
+              startedAt: "2026-09-22T00:00:00.000Z",
+              deadlineAt: PLAN_DEADLINE,
+            })
+          : null,
+      );
     },
     recordOutcome: (
       _org: string,
@@ -208,6 +263,7 @@ function harness(options: {
     get: () =>
       Promise.resolve({
         id: "bpr_source",
+        runId: "brn_origin",
         jiraIssueId: "jri_1",
         revision: options.runOverrides?.sourceRevision ?? 1,
       }),
@@ -245,9 +301,9 @@ function harness(options: {
       });
     },
   } as unknown as BountyProposalStore;
-  const candidates = options.candidates ?? [issue("1")];
+  const candidates = (options.candidates ?? [issue("1")]).map(signals);
   const client = {
-    backlogIssues: () =>
+    boardIssueSignals: () =>
       Promise.resolve({ issues: candidates, total: candidates.length }),
     boardIssues: () => Promise.resolve({ issues: [], total: 0 }),
     issue: (id: string) =>
@@ -312,6 +368,98 @@ test("a run records what it will size before sizing any of it", async () => {
   assert.ok(plan.every(({ issueKey }) => issueKey.length > 0));
 });
 
+test("a backlog run plans each ticket with the reason it was picked", async () => {
+  // The reason is stored with the plan, which is where a proposal's row
+  // later reads it from.
+  const state = harness({
+    candidates: [
+      issue("1"),
+      // Owned and recent: fits no category, so the run does not take it.
+      issue("2", {
+        assignee: "Ada Lovelace",
+        created: "2026-09-20T00:00:00.000Z",
+        updated: "2026-09-20T00:00:00.000Z",
+      }),
+    ],
+  });
+  await state.executor.execute("org_1", "brn_1");
+
+  assert.deepEqual(state.plans, [
+    [
+      {
+        externalIssueId: "1",
+        issueKey: "APP-1",
+        summary: "Issue 1",
+        categories: [
+          {
+            id: "left-behind",
+            label: "Left behind",
+            reason: "Open 264 days, never in a sprint, unassigned",
+          },
+        ],
+      },
+    ],
+  ]);
+  assert.equal(state.sizer.calls.length, 1);
+  assert.deepEqual(state.finishes[0]?.details, {
+    candidatesScanned: 2,
+    skippedLive: 0,
+    scanLimitReached: false,
+  });
+});
+
+test("a run sizes every ticket that fits, however many", async () => {
+  // There is no count to stop at: sixty fit, sixty are sized.
+  const many = Array.from({ length: 60 }, (_, index) => issue(String(index)));
+  const state = harness({
+    candidates: many,
+    sizer: new FakeSizer(
+      "fake",
+      "jira-size-v1",
+      many.map(() => ({
+        result: {
+          complexity: "S" as const,
+          confidence: "high" as const,
+          rationale: "Small.",
+        },
+        actualModel: "actual-model",
+        usage: { inputTokens: 1, outputTokens: 1 },
+      })),
+    ),
+  });
+  await state.executor.execute("org_1", "brn_1");
+
+  assert.equal((state.plans[0] as unknown[]).length, 60);
+  assert.equal(state.outcomes.length, 60);
+  assert.equal(state.finishes[0]?.status, "succeeded");
+});
+
+test("tickets are sized against the deadline the plan set, not the claim's", async () => {
+  // Recording the plan moves the deadline out by its size. Sizing against
+  // the one the run was claimed with would cut a long run short.
+  class RecordingSizer extends FakeSizer {
+    readonly deadlines: (Date | undefined)[] = [];
+    override size(input: SizingInput, options?: SizingRequestOptions) {
+      this.deadlines.push(options?.deadlineAt);
+      return super.size(input);
+    }
+  }
+  const recording = new RecordingSizer("fake", "jira-size-v1", [
+    {
+      result: { complexity: "S", confidence: "high", rationale: "Small." },
+      actualModel: "actual-model",
+      usage: { inputTokens: 1, outputTokens: 1 },
+    },
+  ]);
+  const state = harness({ sizer: recording });
+  await state.executor.execute("org_1", "brn_1");
+
+  assert.deepEqual(
+    recording.deadlines.map((deadline) => deadline?.toISOString()),
+    [PLAN_DEADLINE],
+  );
+});
+
 test("a run that lost its lease before planning sizes nothing", async () => {
   const state = harness({ planHeld: false });
   await state.executor.execute("org_1", "brn_1");
@@ -332,8 +480,16 @@ test("an issue run sizes the one ticket it names, read fresh from Jira", async (
 
   assert.equal(state.finishes[0]?.status, "succeeded");
   assert.equal(state.sizer.calls.length, 1);
+  // Picked by a person, so there is no category to give as the reason.
   assert.deepEqual(state.plans, [
-    [{ externalIssueId: "7", issueKey: "APP-7", summary: "Fresh 7" }],
+    [
+      {
+        externalIssueId: "7",
+        issueKey: "APP-7",
+        summary: "Fresh 7",
+        categories: [],
+      },
+    ],
   ]);
   assert.equal(
     (state.outcomes[0] as { proposalId?: string }).proposalId,
@@ -493,8 +649,21 @@ test("the first fatal code survives the cancellation it triggers", async () => {
 });
 
 test("invalid Jira dates fail one ticket without inventing timestamps", async () => {
+  // Picked for what they block, which needs no date. A ticket whose dates
+  // cannot be read has no age, so it is never picked for being old.
+  const links = [
+    {
+      type: "Blocks",
+      direction: "outward" as const,
+      key: "APP-9",
+      statusCategory: "new" as const,
+    },
+  ];
   const state = harness({
-    candidates: [issue("1", { created: null }), issue("2", { updated: "bad" })],
+    candidates: [
+      { ...issue("1", { created: null }), links },
+      { ...issue("2", { updated: "bad" }), links },
+    ],
     sizer: new FakeSizer("fake", "jira-size-v1", []),
   });
   await state.executor.execute("org_1", "brn_1");
@@ -536,7 +705,6 @@ test("re-price sizes only its source issue and updates it in place", async () =>
       kind: "reprice",
       sourceProposalId: "bpr_source",
       sourceRevision: 1,
-      selection: { ...run().selection, maxTickets: 1 },
     },
   });
   await state.executor.execute("org_1", "brn_1");
@@ -548,6 +716,61 @@ test("re-price sizes only its source issue and updates it in place", async () =>
     "bpr_source",
   );
   assert.deepEqual(state.startedWritebacks, ["bwo_withdrawn"]);
+});
+
+test("a re-priced proposal keeps the reason its ticket was picked for", async () => {
+  // A re-price moves the proposal onto the re-price run, and a proposal's
+  // reasons are read from its run's plan. Without carrying them over,
+  // "Re-analyze" would take the ticket out of its category.
+  const categories = [
+    {
+      id: "holding-others-up",
+      label: "Holding others up",
+      reason: "Blocks 3 open tickets, unassigned",
+    },
+  ];
+  const reprice = {
+    kind: "reprice" as const,
+    sourceProposalId: "bpr_source",
+    sourceRevision: 1,
+  };
+  const state = harness({
+    candidates: [],
+    runOverrides: reprice,
+    originPlanned: [
+      { externalIssueId: "9", issueKey: "APP-9", summary: "Another" },
+      { externalIssueId: "1", issueKey: "APP-1", summary: "Old", categories },
+    ],
+  });
+  await state.executor.execute("org_1", "brn_1");
+
+  assert.equal(state.finishes[0]?.status, "succeeded");
+  assert.deepEqual(
+    (state.plans[0] as { categories: unknown }[]).map(
+      (planned) => planned.categories,
+    ),
+    [categories],
+  );
+
+  // The run it came from is gone, or never planned the ticket, or planned
+  // it before categories existed: no reason to carry, and no failure.
+  for (const originPlanned of [
+    undefined,
+    [],
+    [{ externalIssueId: "1", issueKey: "APP-1", summary: "Old" }],
+  ]) {
+    const bare = harness({
+      candidates: [],
+      runOverrides: reprice,
+      ...(originPlanned === undefined ? {} : { originPlanned }),
+    });
+    await bare.executor.execute("org_1", "brn_1");
+    assert.equal(bare.finishes[0]?.status, "succeeded");
+    assert.deepEqual(
+      (bare.plans[0] as { categories: unknown }[])[0]?.categories,
+      [],
+    );
+  }
 });
 
 test("XS model sizing uses the distinct XS snapshot price", async () => {

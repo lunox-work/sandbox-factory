@@ -1,15 +1,19 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { CATEGORIES } from "sandbox-factory";
+
 import {
   accessibleResourceSchema,
   boardSelectionSchema,
+  boardSelectionUpdateSchema,
   jiraBoardPageResponseSchema,
   jiraBoardSummarySchema,
   jiraBoardResponseSchema,
   jiraIssueDtoSchema,
   jiraIssuePageResponseSchema,
   jiraIssueResponseSchema,
+  jiraIssueSignalsDtoSchema,
   jiraSiteDtoSchema,
   jiraSprintPageResponseSchema,
   jiraStatusCategorySchema,
@@ -175,30 +179,188 @@ test("a site DTO carries the cloudId every REST call embeds", () => {
 
 /* The board selection settings, which decide which tickets a run prices. */
 
-test("board selection defaults to the plan's values", () => {
+test("board selection defaults to every match, with nothing filtered", () => {
   const selection = boardSelectionSchema.parse({});
 
-  assert.equal(selection.maxTickets, 10);
-  assert.equal(selection.excludeAssigned, true);
+  // No count limit: a run takes every ticket that fits a category.
+  assert.equal(selection.ticketCap, undefined);
+  assert.equal(selection.unassignedOnly, false);
   assert.equal(selection.minSpecChars, 0);
   assert.equal(selection.maxAgeDays, undefined);
+  assert.deepEqual(selection.categories, {});
 });
 
-test("maxTickets is bounded at both ends", () => {
-  // It is the ceiling on what one run costs in model calls, so an unbounded
-  // value is a spending decision made by whoever edits a board.
+test("settings from before categories are dropped, not honoured", () => {
+  // Registration stored resolved defaults, so older boards hold these two.
+  // Reading them would leave every such board capped at ten tickets.
+  const selection = boardSelectionSchema.parse({
+    maxTickets: 10,
+    excludeAssigned: true,
+    minAgeDays: 7,
+  });
+
+  assert.equal("maxTickets" in selection, false);
+  assert.equal("excludeAssigned" in selection, false);
+  assert.equal(selection.ticketCap, undefined);
+  assert.equal(selection.unassignedOnly, false);
+  assert.equal(selection.minAgeDays, 7);
+});
+
+test("ticketCap is optional, and bounded when it is set", () => {
+  assert.equal(boardSelectionSchema.parse({ ticketCap: 25 }).ticketCap, 25);
+  for (const ticketCap of [0, 5_001, 1.5]) {
+    assert.equal(boardSelectionSchema.safeParse({ ticketCap }).success, false);
+  }
+});
+
+test("every category and threshold in the registry can be set", () => {
+  // The schema is generated from the registry, so adding a category there
+  // is all it takes for a board to be able to tune it.
+  for (const category of CATEGORIES) {
+    const thresholds = Object.fromEntries(
+      Object.keys(category.defaults).map((name) => [name, 7]),
+    );
+    const parsed = boardSelectionSchema.parse({
+      categories: { [category.id]: { enabled: false, thresholds } },
+    });
+    assert.deepEqual(parsed.categories[category.id], {
+      enabled: false,
+      thresholds,
+    });
+  }
+});
+
+test("stored category settings survive a category being renamed or retired", () => {
+  // A board tuned last month must still load after the registry changes.
+  const parsed = boardSelectionSchema.parse({
+    categories: {
+      "a-retired-category": { enabled: false },
+      "left-behind": {
+        enabled: true,
+        thresholds: { minAgeDays: 30, aRetiredThreshold: 5, minQuietDays: -4 },
+      },
+    },
+  });
+
+  assert.deepEqual(Object.keys(parsed.categories), ["left-behind"]);
+  // As it is stored: JSON, where an unusable threshold is simply absent.
+  assert.deepEqual(JSON.parse(JSON.stringify(parsed.categories)), {
+    "left-behind": { enabled: true, thresholds: { minAgeDays: 30 } },
+  });
+});
+
+test("an update refuses a category or threshold that does not exist", () => {
+  // Dropping it silently would look like it had been saved.
+  const update = (categories: unknown) =>
+    boardSelectionUpdateSchema.safeParse({ categories }).success;
+
   assert.equal(
-    boardSelectionSchema.safeParse({ maxTickets: 0 }).success,
+    update({ "left-behind": { thresholds: { minAgeDays: 30 } } }),
+    true,
+  );
+  assert.equal(update({ "left-behind": { enabled: false } }), true);
+  // Null clears an override back to the registry's default.
+  assert.equal(
+    update({ "left-behind": { thresholds: { minAgeDays: null } } }),
+    true,
+  );
+  assert.equal(update({ "no-such-category": { enabled: false } }), false);
+  assert.equal(
+    update({ "left-behind": { thresholds: { minAge: 30 } } }),
     false,
   );
   assert.equal(
-    boardSelectionSchema.safeParse({ maxTickets: 51 }).success,
+    update({ "left-behind": { thresholds: { minAgeDays: -1 } } }),
     false,
   );
   assert.equal(
-    boardSelectionSchema.safeParse({ maxTickets: 1.5 }).success,
+    update({ "left-behind": { thresholds: { minAgeDays: 1.5 } } }),
     false,
   );
+  assert.equal(update({ "left-behind": { colour: "red" } }), false);
+});
+
+test("an update can remove the ticket cap", () => {
+  assert.equal(
+    boardSelectionUpdateSchema.parse({ ticketCap: null }).ticketCap,
+    null,
+  );
+  assert.equal(
+    boardSelectionUpdateSchema.safeParse({ ticketCap: 0 }).success,
+    false,
+  );
+});
+
+test("the signals DTO carries counts, dates and names, and no ticket text", () => {
+  const parsed = jiraIssueSignalsDtoSchema.parse({
+    id: "1",
+    key: "ACME-1",
+    summary: "Ship the thing",
+    status: "To Do",
+    statusCategory: "new",
+    assignee: null,
+    priority: "Low",
+    issueType: "Bug",
+    labels: [],
+    projectKey: "ACME",
+    parentKey: null,
+    created: "2026-01-01T00:00:00.000Z",
+    updated: "2026-01-02T00:00:00.000Z",
+    dueDate: null,
+    url: null,
+    sprint: null,
+    closedSprints: [{ name: "Sprint 7", startDate: null, endDate: null }],
+    votes: 2,
+    watchers: null,
+    links: [
+      {
+        type: "Blocks",
+        direction: "outward",
+        key: "ACME-2",
+        statusCategory: "new",
+      },
+    ],
+    releases: [{ name: "2.1", releaseDate: "2026-10-10", released: false }],
+  });
+
+  assert.equal(parsed.closedSprints.length, 1);
+  assert.equal("description" in jiraIssueSignalsDtoSchema.shape, false);
+  assert.equal("comments" in jiraIssueSignalsDtoSchema.shape, false);
+});
+
+test("an issue's signal fields parse, and an odd one falls back to absent", () => {
+  const parsed = jiraIssueResponseSchema.parse({
+    id: "1",
+    key: "ACME-1",
+    fields: {
+      sprint: null,
+      closedSprints: [{ id: 7, name: "Sprint 7", state: "closed" }],
+      votes: "four",
+      watches: { watchCount: 9 },
+      issuelinks: [
+        { type: { name: "Blocks" }, outwardIssue: { key: "ACME-2" } },
+      ],
+      fixVersions: [{ name: "2.1", releaseDate: "2026-10-10" }],
+    },
+  });
+
+  assert.equal(parsed.fields?.sprint, null);
+  assert.equal(parsed.fields?.closedSprints?.[0]?.name, "Sprint 7");
+  assert.equal(parsed.fields?.votes, undefined);
+  assert.equal(parsed.fields?.watches?.watchCount, 9);
+  assert.equal(parsed.fields?.issuelinks?.[0]?.outwardIssue?.key, "ACME-2");
+  assert.equal(parsed.fields?.fixVersions?.[0]?.name, "2.1");
+});
+
+test("a stored null on a clearable setting reads as absent", () => {
+  // Clearing a bound once stored the null itself. Such a row must still load.
+  const selection = boardSelectionSchema.parse({
+    ticketCap: null,
+    maxAgeDays: null,
+  });
+
+  assert.equal(selection.ticketCap, undefined);
+  assert.equal(selection.maxAgeDays, undefined);
 });
 
 test("age bounds refuse nonsense", () => {
@@ -235,7 +397,7 @@ test("an update is a selection, and an empty body is refused", () => {
   // write-back flag is not a board setting any more: whether approvals post
   // back is the site's grant, asked for when the site is connected.
   assert.equal(
-    updateBoardSchema.safeParse({ selection: { maxTickets: 5 } }).success,
+    updateBoardSchema.safeParse({ selection: { ticketCap: 5 } }).success,
     true,
   );
   assert.equal(
@@ -246,11 +408,12 @@ test("an update is a selection, and an empty body is refused", () => {
 });
 
 test("a partial selection update does not reimpose the defaults", () => {
-  // Editing `maxTickets` alone must not silently reset `excludeAssigned`.
-  const parsed = updateBoardSchema.parse({ selection: { maxTickets: 5 } });
+  // Editing `ticketCap` alone must not silently reset `unassignedOnly`.
+  const parsed = updateBoardSchema.parse({ selection: { ticketCap: 5 } });
 
-  assert.equal(parsed.selection?.maxTickets, 5);
-  assert.equal(parsed.selection?.excludeAssigned, undefined);
+  assert.equal(parsed.selection?.ticketCap, 5);
+  assert.equal(parsed.selection?.unassignedOnly, undefined);
+  assert.equal(parsed.selection?.categories, undefined);
 });
 
 test("a board summary carries the settings, not the tickets", () => {
@@ -265,6 +428,6 @@ test("a board summary carries the settings, not the tickets", () => {
     createdAt: "2026-09-21T00:00:00.000Z",
   });
 
-  assert.equal(summary.selection.maxTickets, 10);
+  assert.equal(summary.selection.ticketCap, undefined);
   assert.equal("writebackEnabled" in summary, false);
 });

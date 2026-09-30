@@ -158,11 +158,11 @@ describe("bounty database concurrency", () => {
         startedBy: "user_bounty",
         requestId: "7b1f5a36-6c51-4d7e-9a57-3d0f2c1e8b41",
         selection: {
-          maxTickets: 10,
-          excludeAssigned: true,
+          unassignedOnly: false,
           issueTypes: [],
           minAgeDays: 0,
           minSpecChars: 0,
+          categories: {},
         },
         rateCard,
         requestedModel: "model-test",
@@ -227,14 +227,48 @@ describe("bounty database concurrency", () => {
         ),
         true,
       );
-      assert.equal(
-        await runs.recordOutcome("org_bounty", "run_lease", "lease_1", {
-          externalIssueId: "1003",
-          issueKey: "DEMO-3",
+      // An outcome needs a plan to belong to: before one is recorded there
+      // is no ticket it could be the outcome of.
+      const outcome = (externalIssueId: string) =>
+        runs.recordOutcome("org_bounty", "run_lease", "lease_1", {
+          externalIssueId,
+          issueKey: `DEMO-${externalIssueId}`,
           status: "proposed",
-        }),
-        true,
+        });
+      assert.equal(await outcome("1003"), false);
+
+      // The plan is stored with its reasons, and moves the deadline out by
+      // its size. 60 tickets, because the bound on outcomes used to be a
+      // fixed 50 and a run now takes every ticket that matches.
+      const plan = Array.from({ length: 60 }, (_, index) => ({
+        externalIssueId: String(2000 + index),
+        issueKey: `DEMO-${2000 + index}`,
+        summary: `Ticket ${index}`,
+        categories: [
+          {
+            id: "left-behind",
+            label: "Left behind",
+            reason: "Open 412 days, never in a sprint, unassigned",
+          },
+        ],
+      }));
+      const planned = await runs.recordPlan(
+        "org_bounty",
+        "run_lease",
+        "lease_1",
+        plan,
       );
+      assert.deepEqual(planned?.planned, plan);
+      assert.ok(
+        Date.parse(planned?.deadlineAt ?? "") >
+          Date.parse(claimed?.deadlineAt ?? "") + 60 * 19_000,
+      );
+
+      for (const ticket of plan) {
+        assert.equal(await outcome(ticket.externalIssueId), true);
+      }
+      // One outcome per planned ticket, and no more.
+      assert.equal(await outcome("9999"), false);
 
       const created = await proposals.createForLease("org_bounty", "lease_1", {
         runId: "run_lease",
@@ -296,7 +330,7 @@ describe("bounty database concurrency", () => {
         { candidatesScanned: 1 },
       );
       assert.equal(finished?.status, "succeeded");
-      assert.equal(finished?.outcomes.length, 1);
+      assert.equal(finished?.outcomes.length, plan.length);
     } finally {
       await connection.close();
     }
@@ -378,5 +412,136 @@ describe("bounty database concurrency", () => {
     );
     await sql`update bounty_proposal set status = 'approved' where id = 'proposal_states'`;
     await sql`delete from bounty_proposal where id = 'proposal_states'`;
+  });
+  test("proposals are counted and filtered by the category their ticket was picked for", async () => {
+    // The category lives in the run's plan, as jsonb, and both reads reach
+    // into it in SQL. The fake database returns whatever it is handed, so
+    // only a real Postgres can say whether the filter and the per-proposal
+    // read select what they claim to.
+    await sql`
+      insert into jira_board (id, organization_id, connection_id, external_id, name, board_type)
+      values ('board_categories', 'org_bounty', 'conn_bounty', '43', 'Categories', 'scrum')
+    `;
+    await sql`
+      insert into jira_issue (
+        id, organization_id, board_id, external_id, key, status_category,
+        remote_created_at, remote_updated_at
+      ) values
+        ('issue_cat_1', 'org_bounty', 'board_categories', '3001', 'CAT-1', 'new', now(), now()),
+        ('issue_cat_2', 'org_bounty', 'board_categories', '3002', 'CAT-2', 'new', now(), now()),
+        ('issue_cat_3', 'org_bounty', 'board_categories', '3003', 'CAT-3', 'new', now(), now()),
+        ('issue_cat_4', 'org_bounty', 'board_categories', '3004', 'CAT-4', 'new', now(), now())
+    `;
+    const match = (id: string, label: string) => ({ id, label, reason: "r" });
+    const leftBehind = match("left-behind", "Left behind");
+    const paperCuts = match("paper-cuts", "Paper cuts");
+    const planned = [
+      {
+        externalIssueId: "3001",
+        issueKey: "CAT-1",
+        summary: "One",
+        categories: [leftBehind, paperCuts],
+      },
+      {
+        externalIssueId: "3002",
+        issueKey: "CAT-2",
+        summary: "Two",
+        categories: [paperCuts],
+      },
+      // Picked by hand: an empty list. And a plan entry from before
+      // categories existed: no list at all.
+      {
+        externalIssueId: "3003",
+        issueKey: "CAT-3",
+        summary: "Three",
+        categories: [],
+      },
+      { externalIssueId: "3004", issueKey: "CAT-4", summary: "Four" },
+      // In the plan, in a category, and never proposed: not counted.
+      {
+        externalIssueId: "3999",
+        issueKey: "CAT-999",
+        summary: "None",
+        categories: [leftBehind],
+      },
+    ];
+    await sql`
+      insert into bounty_run (
+        id, organization_id, board_id, started_by, request_id, status,
+        selection, rate_card, requested_model, prompt_version, planned
+      ) values (
+        'run_categories', 'org_bounty', 'board_categories', 'user_bounty',
+        'request-categories', 'succeeded', ${sql.json(selection)},
+        ${sql.json(rateCard)}, 'model-test', 'v1', ${sql.json(planned)}
+      )
+    `;
+    for (const n of [1, 2, 3, 4]) {
+      await insertProposal(
+        `proposal_cat_${n}`,
+        "run_categories",
+        `issue_cat_${n}`,
+      );
+    }
+
+    const connection = createConnection({ url: scratchUrl(), max: 2 });
+    try {
+      const proposals = createBountyProposalStore(connection.db);
+
+      assert.deepEqual(
+        await proposals.categoryCounts("org_bounty", "board_categories"),
+        {
+          total: 4,
+          uncategorized: 2,
+          counts: { "left-behind": 1, "paper-cuts": 2 },
+        },
+      );
+
+      const keys = async (category?: string) =>
+        (
+          await proposals.listForBoard("org_bounty", "board_categories", {
+            ...(category === undefined ? {} : { category }),
+          })
+        )
+          .map(({ issueKey }) => issueKey)
+          .sort();
+      assert.deepEqual(await keys(), ["CAT-1", "CAT-2", "CAT-3", "CAT-4"]);
+      assert.deepEqual(await keys("paper-cuts"), ["CAT-1", "CAT-2"]);
+      assert.deepEqual(await keys("left-behind"), ["CAT-1"]);
+      assert.deepEqual(await keys("deadline-exposed"), []);
+      // The id is data inside a JSON parameter, not SQL.
+      assert.deepEqual(await keys(`x"}] or true --`), []);
+
+      // In no category: the empty list and the missing one, which is the
+      // two the count above calls uncategorized.
+      assert.deepEqual(
+        (
+          await proposals.listForBoard("org_bounty", "board_categories", {
+            uncategorized: true,
+          })
+        )
+          .map(({ issueKey }) => issueKey)
+          .sort(),
+        ["CAT-3", "CAT-4"],
+      );
+
+      // A filtered row still carries its own reasons.
+      const [first] = await proposals.listForBoard(
+        "org_bounty",
+        "board_categories",
+        { category: "left-behind" },
+      );
+      assert.deepEqual(
+        first?.categories.map(({ id }) => id),
+        ["left-behind", "paper-cuts"],
+      );
+
+      // Another organization sees none of it.
+      assert.deepEqual(
+        await proposals.categoryCounts("org_other", "board_categories"),
+        { total: 0, uncategorized: 0, counts: {} },
+      );
+    } finally {
+      await connection.close();
+    }
   });
 });

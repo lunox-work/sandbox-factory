@@ -2304,3 +2304,746 @@ test("a refresh after a decision asks Jira for no title it already has", async (
   expect(server.titleReads()).toBe(1);
   expect(within(list).getByText("Second ticket")).toBeDefined();
 });
+
+/* Why a ticket was picked, and lists longer than one page. */
+
+/**
+ * A board with `count` stored proposals, served a page at a time as the API
+ * does: newest first, with a cursor while more remain. Titles are answered
+ * at once, and every request is recorded.
+ */
+const SIX_CATEGORIES = [
+  ["left-behind", "Left behind", "The team won't reach this."],
+  ["always-next-sprint", "Always next sprint", "Only capacity is missing."],
+  ["quietly-wanted", "Quietly wanted", "Demand the priority hides."],
+  ["holding-others-up", "Holding others up", "One bounty unblocks several."],
+  ["paper-cuts", "Paper cuts", "Small bugs agents fix reliably."],
+  ["deadline-exposed", "Deadline exposed", "The deadline justifies paying."],
+] as const;
+
+function pagedBoard(
+  count: number,
+  categoriesFor: (n: number) => { id: string }[] = () => [],
+  options: { categoriesFail?: boolean } = {},
+) {
+  const calls: string[] = [];
+  const approved = new Set<number>();
+  const row = (n: number) => ({
+    id: `bpr_${n}`,
+    issueKey: `APP-${n}`,
+    modelRationale: "A few files.",
+    complexity: "M",
+    amountMinor: 200,
+    currency: "USD",
+    modelComplexity: "M",
+    modelConfidence: "high",
+    actualModel: "deepseek-v4-pro",
+    status: approved.has(n) ? "approved" : "proposed",
+    revision: approved.has(n) ? 2 : 1,
+    sizedTitle: `Ticket ${n}`,
+    categories: categoriesFor(n),
+  });
+  const fetchMock = vi.fn((input: string) => {
+    const url = String(input);
+    calls.push(url);
+    if (url.includes("/proposal-titles?")) {
+      return Promise.resolve(new Response(""));
+    }
+    if (url.includes("/runs")) {
+      return Promise.resolve(
+        Response.json({ runs: [], sizingAvailable: true }),
+      );
+    }
+    if (url.endsWith("/approve")) {
+      const n = Number(/bpr_(\d+)/.exec(url)?.[1]);
+      approved.add(n);
+      return Promise.resolve(Response.json({ proposal: row(n) }));
+    }
+    if (url.includes("/proposals/bpr_")) {
+      const n = Number(/bpr_(\d+)/.exec(url)?.[1]);
+      return Promise.resolve(
+        Response.json({
+          // As the detail route answers: the stored proposal, which does
+          // not carry the list's `categories`.
+          proposal: { ...row(n), categories: undefined },
+          freshness: { freshness: "current", checkedAt: "now" },
+          writebackOperations: [],
+        }),
+      );
+    }
+    const everything = Array.from({ length: count }, (_, index) => index + 1);
+    if (url.includes("/proposal-categories")) {
+      if (options.categoriesFail === true) {
+        return Promise.resolve(new Response("", { status: 500 }));
+      }
+      return Promise.resolve(
+        Response.json({
+          total: count,
+          uncategorized: everything.filter((n) => categoriesFor(n).length === 0)
+            .length,
+          categories: SIX_CATEGORIES.map(([id, label, why]) => ({
+            id,
+            label,
+            why,
+            count: everything.filter((n) =>
+              categoriesFor(n).some((category) => category.id === id),
+            ).length,
+          })),
+        }),
+      );
+    }
+    const query = new URL(url, "http://localhost").searchParams;
+    const limit = Number(query.get("limit") ?? 25);
+    const after = Number(/bpr_(\d+)$/.exec(query.get("cursor") ?? "")?.[1]);
+    const wanted = query.get("category");
+    const all = everything.filter((n) =>
+      wanted === null
+        ? true
+        : wanted === "uncategorized"
+          ? categoriesFor(n).length === 0
+          : categoriesFor(n).some((category) => category.id === wanted),
+    );
+    const from = Number.isNaN(after) ? 0 : all.indexOf(after) + 1;
+    const page = all.slice(from, from + limit);
+    const last = page.at(-1);
+    return Promise.resolve(
+      Response.json({
+        proposals: page.map(row),
+        nextCursor:
+          page.length === limit && last !== undefined
+            ? `2026-09-30T00:00:00.000Z|bpr_${last}`
+            : null,
+      }),
+    );
+  });
+  return {
+    fetchMock,
+    calls,
+    listReads: () => calls.filter((url) => url.includes("/proposals?")),
+    titleReads: () => calls.filter((url) => url.includes("/proposal-titles?")),
+  };
+}
+
+const leftBehindMatch = {
+  id: "left-behind",
+  label: "Left behind",
+  reason: "Open 412 days, never in a sprint, unassigned",
+};
+const paperCutMatch = {
+  id: "paper-cuts",
+  label: "Paper cuts",
+  reason: "Low-priority bug, open 412 days",
+};
+
+/** The categories whose icons are drawn inside an element, in order. */
+function iconsIn(element: Element) {
+  return [...element.querySelectorAll("svg[data-category-icon]")].map((svg) =>
+    svg.getAttribute("data-category-icon"),
+  );
+}
+
+test("a row says why its ticket was picked, and the peek lists every reason", async () => {
+  const server = pagedBoard(3, (n) =>
+    n === 1 ? [leftBehindMatch, paperCutMatch] : n === 2 ? [paperCutMatch] : [],
+  );
+  vi.stubGlobal("fetch", server.fetchMock);
+  renderStreamedBoard();
+  const list = await screen.findByTestId("proposal-list");
+  const rows = within(list).getAllByRole("listitem");
+
+  // The first category and its reason, and that there is another.
+  expect(within(rows[0]!).getByTestId("category-line").textContent).toBe(
+    "Left behind · Open 412 days, never in a sprint, unassigned · +1 more",
+  );
+  expect(within(rows[1]!).getByTestId("category-line").textContent).toBe(
+    "Paper cuts · Low-priority bug, open 412 days",
+  );
+  // A ticket someone added by hand has no reason to give, and says nothing.
+  expect(within(rows[2]!).queryByTestId("category-line")).toBeNull();
+
+  await userEvent.click(within(rows[0]!).getByRole("button"));
+  const panel = await screen.findByTestId("proposal-panel");
+  const why = await within(panel).findByTestId("proposal-categories");
+  expect(within(why).getByText("Why this ticket")).toBeDefined();
+  expect(
+    within(why)
+      .getAllByRole("listitem")
+      .map((item) => item.textContent),
+  ).toEqual([
+    "Left behindOpen 412 days, never in a sprint, unassigned",
+    "Paper cutsLow-priority bug, open 412 days",
+  ]);
+  // Each reason under its category's icon, on the row and in the peek.
+  expect(iconsIn(within(rows[0]!).getByTestId("category-line"))).toEqual([
+    "left-behind",
+  ]);
+  expect(iconsIn(within(rows[1]!).getByTestId("category-line"))).toEqual([
+    "paper-cuts",
+  ]);
+  expect(iconsIn(why)).toEqual(["left-behind", "paper-cuts"]);
+  // Still there once the proposal's own read has landed over the row.
+  expect(
+    await within(panel).findByText("Unchanged since sizing"),
+  ).toBeDefined();
+  expect(within(panel).getByTestId("proposal-categories")).toBeDefined();
+});
+
+test("a proposal for a hand-picked ticket shows no reason in the peek", async () => {
+  const server = pagedBoard(1);
+  vi.stubGlobal("fetch", server.fetchMock);
+  renderStreamedBoard();
+  const list = await screen.findByTestId("proposal-list");
+
+  await userEvent.click(within(list).getByRole("button"));
+  const panel = await screen.findByTestId("proposal-panel");
+  expect(
+    await within(panel).findByText("Unchanged since sizing"),
+  ).toBeDefined();
+  expect(within(panel).queryByTestId("proposal-categories")).toBeNull();
+});
+
+test("a board with more proposals than a page offers the rest", async () => {
+  // A run sizes every ticket that fits, so a board can hold hundreds.
+  const server = pagedBoard(120);
+  vi.stubGlobal("fetch", server.fetchMock);
+  renderStreamedBoard();
+  const list = await screen.findByTestId("proposal-list");
+
+  expect(within(list).getAllByRole("listitem")).toHaveLength(50);
+  expect(server.listReads()).toEqual([
+    "/api/v1/orgs/org_1/proposals?boardId=jrb_1&limit=50",
+  ]);
+
+  await userEvent.click(screen.getByRole("button", { name: "Show more" }));
+  await waitFor(() =>
+    expect(within(list).getAllByRole("listitem")).toHaveLength(100),
+  );
+  // The second page continues from the first page's cursor.
+  expect(server.listReads().at(-1)).toBe(
+    "/api/v1/orgs/org_1/proposals?boardId=jrb_1&limit=50&cursor=2026-09-30T00%3A00%3A00.000Z%7Cbpr_50",
+  );
+  expect(within(list).getByText("Ticket 100")).toBeDefined();
+
+  await userEvent.click(screen.getByRole("button", { name: "Show more" }));
+  await waitFor(() =>
+    expect(within(list).getAllByRole("listitem")).toHaveLength(120),
+  );
+  // The board has no more: the offer goes away.
+  expect(screen.queryByRole("button", { name: "Show more" })).toBeNull();
+});
+
+test("a board that fits in one page offers nothing more", async () => {
+  const server = pagedBoard(50);
+  vi.stubGlobal("fetch", server.fetchMock);
+  renderStreamedBoard();
+  const list = await screen.findByTestId("proposal-list");
+
+  // Exactly a page: the API hands back a cursor, and the next read is empty.
+  expect(within(list).getAllByRole("listitem")).toHaveLength(50);
+  await userEvent.click(screen.getByRole("button", { name: "Show more" }));
+  await waitFor(() =>
+    expect(screen.queryByRole("button", { name: "Show more" })).toBeNull(),
+  );
+  expect(within(list).getAllByRole("listitem")).toHaveLength(50);
+});
+
+test("a refresh keeps every page that was open", async () => {
+  const server = pagedBoard(120);
+  vi.stubGlobal("fetch", server.fetchMock);
+  renderStreamedBoard();
+  const list = await screen.findByTestId("proposal-list");
+  await userEvent.click(screen.getByRole("button", { name: "Show more" }));
+  await waitFor(() =>
+    expect(within(list).getAllByRole("listitem")).toHaveLength(100),
+  );
+
+  // Approving re-reads the list. It must not fold back to the first page
+  // and take the row being decided out from under the peek.
+  await userEvent.click(
+    within(list).getByRole("button", { name: /Ticket 80/ }),
+  );
+  const panel = await screen.findByTestId("proposal-panel");
+  const approve = await within(panel).findByRole("button", {
+    name: "Approve",
+  });
+  await waitFor(() =>
+    expect((approve as HTMLButtonElement).disabled).toBe(false),
+  );
+  const before = server.listReads().length;
+  await userEvent.click(approve);
+
+  // Two reads, because two pages were open. `hidden`, because the open
+  // peek is modal and hides the list behind it from the accessibility tree.
+  await waitFor(() =>
+    expect(server.listReads().length).toBeGreaterThanOrEqual(before + 2),
+  );
+  await waitFor(() =>
+    expect(within(panel).getByText("Approved")).toBeDefined(),
+  );
+  expect(within(list).getAllByRole("listitem", { hidden: true })).toHaveLength(
+    100,
+  );
+  expect(within(list).getByText("Ticket 80")).toBeDefined();
+});
+
+test("titles are asked for in batches the route accepts", async () => {
+  // The titles route takes at most fifty ids. A list holding more untitled
+  // rows than that must not send them all in one refused request.
+  const server = pagedBoard(120);
+  vi.stubGlobal("fetch", server.fetchMock);
+  renderStreamedBoard();
+  const list = await screen.findByTestId("proposal-list");
+  await userEvent.click(screen.getByRole("button", { name: "Show more" }));
+  await waitFor(() =>
+    expect(within(list).getAllByRole("listitem")).toHaveLength(100),
+  );
+
+  await waitFor(() =>
+    expect(server.titleReads().length).toBeGreaterThanOrEqual(2),
+  );
+  for (const url of server.titleReads()) {
+    const ids = new URL(url, "http://localhost").searchParams.get("ids") ?? "";
+    expect(ids.split(",").length).toBeLessThanOrEqual(50);
+  }
+});
+
+test("a run in progress says why each ticket is in its plan", async () => {
+  const planned = [
+    {
+      externalIssueId: "1",
+      issueKey: "APP-1",
+      summary: "Ticket 1",
+      categories: [
+        {
+          id: "holding-others-up",
+          label: "Holding others up",
+          reason: "Blocks 3 open tickets, unassigned",
+        },
+      ],
+    },
+    // A plan recorded before categories existed has none, and still lists.
+    { externalIssueId: "2", issueKey: "APP-2", summary: "Ticket 2" },
+  ];
+  const running = { id: "brn_1", status: "running", planned, outcomes: [] };
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((url: string) => {
+      if (url.endsWith("/runs/brn_1"))
+        return Promise.resolve(Response.json({ run: running }));
+      if (url.includes("/runs"))
+        return Promise.resolve(
+          Response.json({ runs: [running], sizingAvailable: true }),
+        );
+      return Promise.resolve(Response.json({ proposals: [] }));
+    }),
+  );
+  renderStreamedBoard();
+
+  const stream = await screen.findByTestId("sizing-active");
+  const rows = within(stream).getAllByRole("listitem");
+  expect(within(rows[0]!).getByTestId("category-line").textContent).toBe(
+    "Holding others up · Blocks 3 open tickets, unassigned",
+  );
+  expect(within(rows[1]!).queryByTestId("category-line")).toBeNull();
+  expect(within(rows[1]!).getByText("Ticket 2")).toBeDefined();
+});
+
+/* The category view above the table. */
+
+/** Odd tickets are left behind, every third is a paper cut, n=7 is neither. */
+function categorisedBoard(count = 12, options = {}) {
+  return pagedBoard(
+    count,
+    (n) => [
+      ...(n % 2 === 1 && n !== 7 ? [leftBehindMatch] : []),
+      ...(n % 3 === 0 ? [paperCutMatch] : []),
+    ],
+    options,
+  );
+}
+
+function tile(name: RegExp) {
+  return within(screen.getByTestId("category-nav")).getByRole("button", {
+    name,
+  }) as HTMLButtonElement;
+}
+
+function rowKeys(list: HTMLElement) {
+  return within(list)
+    .getAllByRole("listitem")
+    .map((row) => /APP-\d+/.exec(row.textContent ?? "")?.[0]);
+}
+
+test("the categories sit above the table with how many proposals each has", async () => {
+  const server = categorisedBoard();
+  vi.stubGlobal("fetch", server.fetchMock);
+  renderStreamedBoard();
+  const nav = await screen.findByTestId("category-nav");
+
+  // All, then the six in the order the API gives them, then the rest.
+  expect(
+    within(nav)
+      .getAllByRole("button")
+      .map((button) => button.getAttribute("aria-label")),
+  ).toEqual([
+    "All, 12 proposals",
+    "Left behind, 5 proposals",
+    "Always next sprint, 0 proposals",
+    "Quietly wanted, 0 proposals",
+    "Holding others up, 0 proposals",
+    "Paper cuts, 4 proposals",
+    "Deadline exposed, 0 proposals",
+    "Uncategorized, 5 proposals",
+  ]);
+  // Nothing is narrowed yet: All is the pressed one, and no why-text shows.
+  expect(tile(/^All/).getAttribute("aria-pressed")).toBe("true");
+  expect(tile(/^Left behind/).getAttribute("aria-pressed")).toBe("false");
+  expect(screen.queryByTestId("category-why")).toBeNull();
+  // A category with nothing in it is shown, and is nowhere to go.
+  expect(tile(/^Quietly wanted/).disabled).toBe(true);
+  expect(tile(/^Paper cuts/).disabled).toBe(false);
+  // The strip comes before the table it narrows.
+  const list = screen.getByTestId("proposal-list");
+  expect(
+    nav.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
+  expect(rowKeys(list)).toHaveLength(12);
+});
+
+test("each tile carries its own category's icon", async () => {
+  const server = categorisedBoard();
+  vi.stubGlobal("fetch", server.fetchMock);
+  renderStreamedBoard();
+  const nav = await screen.findByTestId("category-nav");
+
+  // One per category, each its own, in the order of the tiles. The names
+  // asserted above are untouched: the icons are not read aloud.
+  expect(
+    within(nav)
+      .getAllByRole("button")
+      .slice(1, -1)
+      .map((button) => iconsIn(button)),
+  ).toEqual(SIX_CATEGORIES.map(([id]) => [id]));
+  // "All" and "Uncategorized" are not categories, and still have an icon
+  // each so the row keeps its shape.
+  for (const name of [/^All/, /^Uncategorized/]) {
+    expect(tile(name).querySelector("svg")).not.toBeNull();
+    expect(iconsIn(tile(name))).toEqual([]);
+  }
+});
+
+test("pressing a category shows its tickets, says why, and can be undone", async () => {
+  const server = categorisedBoard();
+  vi.stubGlobal("fetch", server.fetchMock);
+  renderStreamedBoard();
+  await screen.findByTestId("category-nav");
+
+  await userEvent.click(tile(/^Paper cuts/));
+  // The list is read again for that category, from the first page.
+  await waitFor(() =>
+    expect(server.listReads().at(-1)).toBe(
+      "/api/v1/orgs/org_1/proposals?boardId=jrb_1&limit=50&category=paper-cuts",
+    ),
+  );
+  await waitFor(() =>
+    expect(rowKeys(screen.getByTestId("proposal-list"))).toEqual([
+      "APP-3",
+      "APP-6",
+      "APP-9",
+      "APP-12",
+    ]),
+  );
+  expect(tile(/^Paper cuts/).getAttribute("aria-pressed")).toBe("true");
+  expect(tile(/^All/).getAttribute("aria-pressed")).toBe("false");
+  expect(screen.getByTestId("category-why").textContent).toBe(
+    "Paper cuts. Small bugs agents fix reliably.",
+  );
+  // The view is in the URL, so it can be linked.
+  expect(window.location.search).toBe("?category=paper-cuts");
+
+  // Straight to another category.
+  await userEvent.click(tile(/^Left behind/));
+  await waitFor(() =>
+    expect(rowKeys(screen.getByTestId("proposal-list"))).toEqual([
+      "APP-1",
+      "APP-3",
+      "APP-5",
+      "APP-9",
+      "APP-11",
+    ]),
+  );
+  expect(window.location.search).toBe("?category=left-behind");
+
+  // Pressing the category that is showing lets go of it...
+  await userEvent.click(tile(/^Left behind/));
+  await waitFor(() =>
+    expect(rowKeys(screen.getByTestId("proposal-list"))).toHaveLength(12),
+  );
+  expect(window.location.search).toBe("");
+  expect(screen.queryByTestId("category-why")).toBeNull();
+
+  // ...and so does All.
+  await userEvent.click(tile(/^Paper cuts/));
+  await waitFor(() =>
+    expect(rowKeys(screen.getByTestId("proposal-list"))).toHaveLength(4),
+  );
+  await userEvent.click(tile(/^All/));
+  await waitFor(() =>
+    expect(rowKeys(screen.getByTestId("proposal-list"))).toHaveLength(12),
+  );
+  expect(server.listReads().at(-1)).toBe(
+    "/api/v1/orgs/org_1/proposals?boardId=jrb_1&limit=50",
+  );
+});
+
+test("the tickets in no category have a tile of their own, after the six", async () => {
+  // Even tickets that are not a multiple of three, and APP-7: picked by
+  // hand, or sized before there were categories.
+  const server = categorisedBoard();
+  vi.stubGlobal("fetch", server.fetchMock);
+  renderStreamedBoard();
+  await screen.findByTestId("category-nav");
+
+  await userEvent.click(tile(/^Uncategorized/));
+  await waitFor(() =>
+    expect(server.listReads().at(-1)).toBe(
+      "/api/v1/orgs/org_1/proposals?boardId=jrb_1&limit=50&category=uncategorized",
+    ),
+  );
+  const list = screen.getByTestId("proposal-list");
+  await waitFor(() =>
+    expect(rowKeys(list)).toEqual([
+      "APP-2",
+      "APP-4",
+      "APP-7",
+      "APP-8",
+      "APP-10",
+    ]),
+  );
+  expect(tile(/^Uncategorized/).getAttribute("aria-pressed")).toBe("true");
+  expect(window.location.search).toBe("?category=uncategorized");
+  // It is not in the registry, so what it means is the page's to say.
+  expect(screen.getByTestId("category-why").textContent).toBe(
+    "Uncategorized. Picked by hand, or sized before there were categories.",
+  );
+  // None of these rows has a reason to give.
+  expect(within(list).queryByTestId("category-line")).toBeNull();
+
+  // Pressed again, it lets go like any other tile.
+  await userEvent.click(tile(/^Uncategorized/));
+  await waitFor(() => expect(rowKeys(list)).toHaveLength(12));
+  expect(window.location.search).toBe("");
+});
+
+test("a board with every ticket in a category still shows the empty tile", async () => {
+  const server = pagedBoard(4, () => [leftBehindMatch]);
+  vi.stubGlobal("fetch", server.fetchMock);
+  renderStreamedBoard();
+  await screen.findByTestId("category-nav");
+
+  expect(tile(/^Uncategorized/).getAttribute("aria-label")).toBe(
+    "Uncategorized, 0 proposals",
+  );
+  expect(tile(/^Uncategorized/).disabled).toBe(true);
+});
+
+test("a row in a category leads with that category's reason", async () => {
+  // APP-3 and APP-9 are both left behind and paper cuts. Under "Paper
+  // cuts" a row that led with "Left behind" would be answering a question
+  // nobody asked.
+  const server = categorisedBoard();
+  vi.stubGlobal("fetch", server.fetchMock);
+  renderStreamedBoard();
+  await screen.findByTestId("category-nav");
+  const lineOf = (key: string) =>
+    within(screen.getByTestId("proposal-list"))
+      .getAllByRole("listitem")
+      .find((row) => row.textContent?.includes(`${key}Ticket`))
+      ?.querySelector('[data-testid="category-line"]');
+  const reasonOf = (key: string) => lineOf(key)?.textContent;
+
+  // With nothing chosen, the first reason the run gave.
+  expect(reasonOf("APP-3")).toBe(
+    "Left behind · Open 412 days, never in a sprint, unassigned · +1 more",
+  );
+  expect(iconsIn(lineOf("APP-3")!)).toEqual(["left-behind"]);
+
+  await userEvent.click(tile(/^Paper cuts/));
+  await waitFor(() =>
+    expect(rowKeys(screen.getByTestId("proposal-list"))).toHaveLength(4),
+  );
+  expect(reasonOf("APP-3")).toBe(
+    "Paper cuts · Low-priority bug, open 412 days · +1 more",
+  );
+  // The icon is the leading reason's, so it changes with it.
+  expect(iconsIn(lineOf("APP-3")!)).toEqual(["paper-cuts"]);
+  // A row with only the one reason reads as it always did.
+  expect(reasonOf("APP-6")).toBe(
+    "Paper cuts · Low-priority bug, open 412 days",
+  );
+});
+
+test("a link to a category opens on it, and Back leaves it", async () => {
+  window.history.replaceState(null, "", "/?category=paper-cuts");
+  const server = categorisedBoard();
+  vi.stubGlobal("fetch", server.fetchMock);
+  renderStreamedBoard();
+
+  const list = await screen.findByTestId("proposal-list");
+  expect(rowKeys(list)).toEqual(["APP-3", "APP-6", "APP-9", "APP-12"]);
+  expect(tile(/^Paper cuts/).getAttribute("aria-pressed")).toBe("true");
+  // Only ever read narrowed: the whole board was not fetched first.
+  expect(server.listReads()).toEqual([
+    "/api/v1/orgs/org_1/proposals?boardId=jrb_1&limit=50&category=paper-cuts",
+  ]);
+
+  // The browser going back to the page without the category.
+  act(() => {
+    window.history.replaceState(null, "", "/");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  });
+  await waitFor(() =>
+    expect(rowKeys(screen.getByTestId("proposal-list"))).toHaveLength(12),
+  );
+  expect(tile(/^All/).getAttribute("aria-pressed")).toBe("true");
+});
+
+test("a category keeps its place while one of its proposals is open", async () => {
+  const server = categorisedBoard();
+  vi.stubGlobal("fetch", server.fetchMock);
+  renderStreamedBoard();
+  await screen.findByTestId("category-nav");
+  await userEvent.click(tile(/^Paper cuts/));
+  await waitFor(() =>
+    expect(rowKeys(screen.getByTestId("proposal-list"))).toHaveLength(4),
+  );
+
+  await userEvent.click(
+    within(screen.getByTestId("proposal-list")).getByRole("button", {
+      name: /Ticket 6/,
+    }),
+  );
+  await screen.findByTestId("proposal-panel");
+  // Both are in the URL: the proposal that is open, in the view it is in.
+  const params = new URLSearchParams(window.location.search);
+  expect(params.get("category")).toBe("paper-cuts");
+  expect(params.get("proposal")).toBe("bpr_6");
+});
+
+test("a long category pages like the whole list, within the category", async () => {
+  // 130 tickets, every other one left behind: 65 in the category.
+  const server = pagedBoard(130, (n) => (n % 2 === 1 ? [leftBehindMatch] : []));
+  vi.stubGlobal("fetch", server.fetchMock);
+  renderStreamedBoard();
+  await screen.findByTestId("category-nav");
+
+  await userEvent.click(tile(/^Left behind/));
+  await waitFor(() =>
+    expect(rowKeys(screen.getByTestId("proposal-list"))).toHaveLength(50),
+  );
+  await userEvent.click(screen.getByRole("button", { name: "Show more" }));
+  await waitFor(() =>
+    expect(rowKeys(screen.getByTestId("proposal-list"))).toHaveLength(65),
+  );
+  // The next page stays in the category, from the category's own cursor.
+  expect(server.listReads().at(-1)).toBe(
+    "/api/v1/orgs/org_1/proposals?boardId=jrb_1&limit=50&category=left-behind&cursor=2026-09-30T00%3A00%3A00.000Z%7Cbpr_99",
+  );
+  expect(screen.queryByRole("button", { name: "Show more" })).toBeNull();
+
+  // Another category starts from its first page, not where this one got to.
+  await userEvent.click(tile(/^All/));
+  await waitFor(() =>
+    expect(rowKeys(screen.getByTestId("proposal-list"))).toHaveLength(50),
+  );
+});
+
+test("a board with no proposals shows no categories", async () => {
+  const server = categorisedBoard(0);
+  vi.stubGlobal("fetch", server.fetchMock);
+  renderStreamedBoard();
+
+  expect(await screen.findByText("No proposals yet.")).toBeDefined();
+  expect(screen.queryByTestId("category-nav")).toBeNull();
+});
+
+test("a category link that leads nowhere says so and can be left", async () => {
+  // A category retired since the link was made: nothing fits it.
+  window.history.replaceState(null, "", "/?category=retired-last-month");
+  const server = categorisedBoard();
+  vi.stubGlobal("fetch", server.fetchMock);
+  renderStreamedBoard();
+
+  expect(
+    await screen.findByText("No proposals in this category."),
+  ).toBeDefined();
+  // None of the six is the one showing, so All is the way out.
+  await userEvent.click(tile(/^All/));
+  await waitFor(() =>
+    expect(rowKeys(screen.getByTestId("proposal-list"))).toHaveLength(12),
+  );
+});
+
+test("a malformed category in the URL is ignored, not sent", async () => {
+  window.history.replaceState(null, "", "/?category=Paper%20Cuts");
+  const server = categorisedBoard();
+  vi.stubGlobal("fetch", server.fetchMock);
+  renderStreamedBoard();
+
+  const list = await screen.findByTestId("proposal-list");
+  expect(rowKeys(list)).toHaveLength(12);
+  expect(server.listReads()).toEqual([
+    "/api/v1/orgs/org_1/proposals?boardId=jrb_1&limit=50",
+  ]);
+});
+
+test("the list still loads when the category counts cannot be read", async () => {
+  const server = categorisedBoard(12, { categoriesFail: true });
+  vi.stubGlobal("fetch", server.fetchMock);
+  renderStreamedBoard();
+
+  const list = await screen.findByTestId("proposal-list");
+  expect(rowKeys(list)).toHaveLength(12);
+  expect(screen.queryByTestId("category-nav")).toBeNull();
+});
+
+test("a narrowed list without its counts still says so and can be widened", async () => {
+  window.history.replaceState(null, "", "/?category=paper-cuts");
+  const server = categorisedBoard(12, { categoriesFail: true });
+  vi.stubGlobal("fetch", server.fetchMock);
+  renderStreamedBoard();
+
+  const list = await screen.findByTestId("proposal-list");
+  expect(rowKeys(list)).toHaveLength(4);
+  expect(screen.getByText(/Showing one category/)).toBeDefined();
+  await userEvent.click(screen.getByRole("button", { name: "Show all" }));
+  await waitFor(() =>
+    expect(rowKeys(screen.getByTestId("proposal-list"))).toHaveLength(12),
+  );
+});
+
+test("the counts move with the list when a decision re-reads it", async () => {
+  const server = categorisedBoard();
+  vi.stubGlobal("fetch", server.fetchMock);
+  renderStreamedBoard();
+  await screen.findByTestId("category-nav");
+  const countReads = () =>
+    server.calls.filter((url) => url.includes("/proposal-categories")).length;
+  expect(countReads()).toBe(1);
+
+  await userEvent.click(
+    within(screen.getByTestId("proposal-list")).getByRole("button", {
+      name: /Ticket 3/,
+    }),
+  );
+  const panel = await screen.findByTestId("proposal-panel");
+  const approve = await within(panel).findByRole("button", {
+    name: "Approve",
+  });
+  await waitFor(() =>
+    expect((approve as HTMLButtonElement).disabled).toBe(false),
+  );
+  await userEvent.click(approve);
+
+  await waitFor(() => expect(countReads()).toBeGreaterThanOrEqual(2));
+});

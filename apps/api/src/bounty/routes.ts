@@ -24,12 +24,15 @@ import {
 import type {
   BountyRunPlannedIssue,
   JiraIssueDto,
+  ProposalCategoriesDto,
 } from "@sandbox-factory/shared";
 import type { Hono } from "hono";
 import { stream } from "hono/streaming";
 import {
+  CATEGORIES,
   DEFAULT_RATE_CARD,
   priceFor,
+  UNCATEGORIZED,
   validateRateCard,
   type PricedComplexity,
 } from "sandbox-factory";
@@ -259,6 +262,8 @@ export async function startRun(
       externalIssueId: found.id,
       issueKey: found.key,
       summary: found.summary,
+      // Picked by a person, not by a category.
+      categories: [],
     };
   }
 
@@ -660,6 +665,43 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
     return run === null ? c.json({ error: "Not found" }, 404) : c.json({ run });
   });
 
+  /*
+    A board's proposals by category, for the view above the list.
+
+    Counted in the store rather than by the page from the rows it has,
+    because the list is paged: a board a run sized three hundred tickets on
+    shows fifty at a time. The six categories, their order, their labels and
+    the why-text all come from the registry here, so the page names none of
+    them and a category added to the registry appears without a change to
+    it. The proposals in no category are counted beside them, so the page
+    can offer those as a view too. Any member may read it, as any member
+    may read the list.
+  */
+  app.get(
+    "/api/v1/orgs/:orgId/jira/boards/:id/proposal-categories",
+    async (c) => {
+      const { organizationId } = c.get("member");
+      const boardId = c.req.param("id");
+      if ((await options.boards.get(organizationId, boardId)) === null) {
+        return c.json({ error: "Not found" }, 404);
+      }
+      const { total, uncategorized, counts } =
+        await options.proposals.categoryCounts(organizationId, boardId);
+      const body: ProposalCategoriesDto = {
+        total,
+        uncategorized,
+        categories: CATEGORIES.map(({ id, label, why }) => ({
+          id,
+          label,
+          why,
+          // `Object.hasOwn`: the ids are keys of stored JSON's making.
+          count: Object.hasOwn(counts, id) ? (counts[id] ?? 0) : 0,
+        })),
+      };
+      return c.json(body);
+    },
+  );
+
   app.get("/api/v1/orgs/:orgId/proposals", async (c) => {
     const { organizationId } = c.get("member");
     const boardId = c.req.query("boardId");
@@ -671,6 +713,8 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
     }
     const status = proposalStatus(c.req.query("status"));
     if (status === null) return c.json({ error: "Invalid status." }, 400);
+    const category = proposalCategory(c.req.query("category"));
+    if (category === null) return c.json({ error: "Invalid category." }, 400);
     const limit = boundedLimit(c.req.query("limit"));
     const cursor = proposalCursor(c.req.query("cursor"));
     if (cursor === null) return c.json({ error: "Invalid cursor." }, 400);
@@ -687,6 +731,13 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
       {
         limit,
         ...(status === undefined ? {} : { status }),
+        // The reserved id asks for the tickets in no category, which is a
+        // different question of the store than any category's.
+        ...(category === undefined
+          ? {}
+          : category === UNCATEGORIZED
+            ? { uncategorized: true }
+            : { category }),
         ...(cursor === undefined ? {} : { cursor }),
       },
     );
@@ -1023,10 +1074,9 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
       sourceProposalId: proposal.id,
       sourceRevision: proposal.revision,
       requestId: parsed.data.requestId,
-      selection: {
-        ...boardSelectionSchema.parse(board.selection),
-        maxTickets: 1,
-      },
+      // A re-price sizes the one ticket its proposal names; the selection
+      // is snapshotted for `minSpecChars`, and nothing is selected with it.
+      selection: boardSelectionSchema.parse(board.selection),
       rateCard: {
         currency: card.currency,
         xsMinor: card.xsMinor,
@@ -1297,6 +1347,23 @@ function proposalStatus(
 ): "proposed" | "approved" | undefined | null {
   if (value === undefined || value === "") return undefined;
   return value === "proposed" || value === "approved" ? value : null;
+}
+
+/**
+ * The `category` filter: a category id, or undefined for none. The id
+ * may be `UNCATEGORIZED`, which has a category id's shape by design.
+ *
+ * Checked for shape only. An id no category has is not an error: it is a
+ * category with nothing in it, which is what a retired one looks like to a
+ * link that still names it.
+ */
+function proposalCategory(
+  value: string | undefined,
+): string | undefined | null {
+  if (value === undefined || value === "") return undefined;
+  return /^[a-z0-9]+(-[a-z0-9]+)*$/.test(value) && value.length <= 64
+    ? value
+    : null;
 }
 
 /** Whether a Jira update for the proposal is still unresolved. */

@@ -1,7 +1,9 @@
 import type {
+  BountyCategoryMatch,
   BountyProposalDto,
   BountyRunDto,
   BountyWritebackDto,
+  ProposalCategoriesDto,
   RateCardDto,
 } from "@sandbox-factory/shared";
 import {
@@ -9,6 +11,7 @@ import {
   maximumRateCardMinor,
   formatMinorUnits,
   PRICED_BOUNTY_COMPLEXITIES,
+  UNCATEGORIZED,
 } from "sandbox-factory";
 import {
   ChevronDown,
@@ -16,8 +19,10 @@ import {
   ChevronUp,
   Circle,
   CircleCheck,
+  CircleDashed,
   CircleX,
   ExternalLink,
+  Layers,
   Loader2,
   Minus,
   Plus,
@@ -53,6 +58,7 @@ import { CurrencySelect } from "@/components/CurrencySelect";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
+import { CategoryIcon } from "./CategoryIcon";
 import { IssueSpec, IssueSpecSkeleton } from "./IssueSpec";
 import { JiraIcon, ModelIcon } from "./ProviderIcon";
 import type { JiraIssueDetail } from "./useJira";
@@ -63,6 +69,12 @@ type EnrichedProposal = BountyProposalDto & {
    * so a row has something to call itself before Jira answers.
    */
   sizedTitle?: string | null;
+  /**
+   * Why the run picked the ticket: each category it fit, with the reason.
+   * Stored with the run like the title. Empty for a ticket someone added by
+   * hand, and absent on a row read by id rather than from the list.
+   */
+  categories?: BountyCategoryMatch[];
   freshness?: "current" | "stale" | "missing" | "unknown";
   checkedAt?: string;
   code?: string;
@@ -99,6 +111,249 @@ interface ProposalDetail {
     code?: string;
   };
   writebackOperations: BountyWritebackDto[];
+}
+
+/**
+ * How many proposals the list reads at a time. A run sizes every ticket
+ * that fits a category, so a board can hold hundreds: the list shows this
+ * many and offers the rest, rather than reading them all on every refresh.
+ */
+const PROPOSAL_PAGE = 50;
+
+/** The most ids one titles stream may ask for; the route refuses more. */
+const TITLE_BATCH = 50;
+
+/**
+ * Why a ticket was picked, on one line: one category and its reason, and
+ * how many more it fits. The peek lists them all.
+ *
+ * `lead` is the category the list is narrowed to, if any. A ticket in two
+ * categories leads with that one, so every row under "Deadline exposed"
+ * says its deadline rather than whichever reason happened to come first.
+ */
+function CategoryLine({
+  categories,
+  lead,
+  wrapOnPhone = false,
+}: {
+  categories: readonly BountyCategoryMatch[] | undefined;
+  lead?: string | null;
+  /**
+   * Let the line wrap below the `sm` breakpoint. A proposal row stacks on a
+   * phone and its title wraps, so a reason cut to "Deadline exposed ·…"
+   * beside it would drop the one part worth reading.
+   */
+  wrapOnPhone?: boolean;
+}) {
+  const all = categories ?? [];
+  const first = all.find(({ id }) => id === lead) ?? all[0];
+  if (first === undefined) return null;
+  const rest = all.filter((category) => category !== first);
+  return (
+    <span
+      className={`text-muted-foreground block text-xs ${wrapOnPhone ? "sm:truncate" : "truncate"}`}
+      data-testid="category-line"
+      title={(categories ?? [])
+        .map(({ label, reason }) => `${label}: ${reason}`)
+        .join("\n")}
+    >
+      <span className="text-foreground/80 font-medium">
+        {/* At the text's own size, and dropped a hair to sit on its line. */}
+        <CategoryIcon
+          category={first.id}
+          className="mr-1 inline-block size-3 align-[-0.125em]"
+        />
+        {first.label}
+      </span>
+      {" · "}
+      {first.reason}
+      {rest.length > 0 && ` · +${rest.length} more`}
+    </span>
+  );
+}
+
+/** `?category=` as the page will use it: a category id, or none. */
+function categoryFromUrl(): string | null {
+  const value = new URLSearchParams(window.location.search).get("category");
+  // The same shape the API accepts. Anything else is not a category, and
+  // sending it on would turn a mistyped link into a failed list.
+  return value !== null && /^[a-z0-9]+(-[a-z0-9]+)*$/.test(value)
+    ? value
+    : null;
+}
+
+/**
+ * A board's category summary, or null for a body that is not one: the view
+ * is drawn only from a response it can read in full.
+ */
+function categorySummary(value: unknown): ProposalCategoriesDto | null {
+  if (typeof value !== "object" || value === null) return null;
+  const { total, uncategorized, categories } = value as Record<string, unknown>;
+  if (
+    typeof total !== "number" ||
+    typeof uncategorized !== "number" ||
+    !Array.isArray(categories)
+  )
+    return null;
+  const usable = categories.every(
+    (entry: unknown) =>
+      typeof entry === "object" &&
+      entry !== null &&
+      typeof (entry as Record<string, unknown>)["id"] === "string" &&
+      typeof (entry as Record<string, unknown>)["label"] === "string" &&
+      typeof (entry as Record<string, unknown>)["count"] === "number",
+  );
+  return usable ? (value as ProposalCategoriesDto) : null;
+}
+
+/**
+ * One way into the list: every proposal, one category's, or the ones in no
+ * category.
+ */
+function CategoryTile({
+  label,
+  count,
+  icon,
+  pressed,
+  disabled = false,
+  hint,
+  onPress,
+}: {
+  label: string;
+  count: number;
+  /** Decoration: the label names the tile, so the icon is not read aloud. */
+  icon: ReactElement;
+  pressed: boolean;
+  disabled?: boolean;
+  hint?: string;
+  onPress: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={pressed}
+      // Said in reading order. The tile shows the number first because that
+      // is what the eye is scanning for, which reads aloud as "7 Left behind".
+      aria-label={`${label}, ${count} ${count === 1 ? "proposal" : "proposals"}`}
+      disabled={disabled}
+      title={hint}
+      onClick={onPress}
+      className={`focus-visible:ring-ring/50 flex h-full w-full flex-col items-start gap-1 rounded-lg border px-3 py-2.5 text-left transition-colors focus-visible:ring-[3px] focus-visible:outline-none disabled:pointer-events-none disabled:opacity-45 ${
+        pressed ? "bg-muted border-foreground/30" : "hover:bg-muted/50"
+      }`}
+    >
+      {/*
+        The count where the eye lands, and the icon across from it: what
+        tells one tile from the next before either label is read.
+      */}
+      <span className="flex w-full items-start justify-between gap-2">
+        <span className="text-lg leading-none font-semibold tabular-nums">
+          {count}
+        </span>
+        <span
+          className={`shrink-0 [&>svg]:size-4 ${pressed ? "text-foreground" : "text-muted-foreground"}`}
+        >
+          {icon}
+        </span>
+      </span>
+      <span
+        className={`text-xs leading-tight ${pressed ? "text-foreground font-medium" : "text-muted-foreground"}`}
+      >
+        {label}
+      </span>
+    </button>
+  );
+}
+
+/**
+ * The board's proposals by the reason each ticket was picked, above the
+ * list they narrow.
+ *
+ * A run takes a ticket because it fits a category, so the categories are
+ * the natural way to walk what a run produced: all the blockers, then all
+ * the paper cuts. Each tile says how many the board has and, pressed, makes
+ * the list below show those. The six are always the same six in the same
+ * order, a category with nothing in it shown but not pressable, so a tile
+ * does not move when a count reaches zero.
+ *
+ * After them, the tickets no run picked for a reason, which would
+ * otherwise be reachable only by reading the whole list for the rows with
+ * nothing under their title. It is the one tile the page names itself: it
+ * is not in the registry the other six come from.
+ *
+ * A ticket picked for two categories is counted in both, which is why the
+ * tiles can sum past "All".
+ */
+function CategoryNav({
+  summary,
+  selected,
+  onSelect,
+}: {
+  summary: ProposalCategoriesDto;
+  selected: string | null;
+  onSelect: (category: string | null) => void;
+}) {
+  const tiles = [
+    ...summary.categories,
+    {
+      id: UNCATEGORIZED,
+      label: "Uncategorized",
+      why: "Picked by hand, or sized before there were categories.",
+      count: summary.uncategorized,
+    },
+  ];
+  const active = tiles.find(({ id }) => id === selected);
+  return (
+    <nav
+      aria-label="Proposals by category"
+      className="flex flex-col gap-2"
+      data-testid="category-nav"
+    >
+      <ul className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-8">
+        <li>
+          <CategoryTile
+            label="All"
+            count={summary.total}
+            // Not a category, so not one of their icons: the whole pile.
+            icon={<Layers aria-hidden="true" focusable="false" />}
+            pressed={selected === null}
+            onPress={() => onSelect(null)}
+          />
+        </li>
+        {tiles.map((category) => (
+          <li key={category.id}>
+            <CategoryTile
+              label={category.label}
+              count={category.count}
+              icon={
+                category.id === UNCATEGORIZED ? (
+                  // No category, so no category's icon: an empty outline.
+                  <CircleDashed aria-hidden="true" focusable="false" />
+                ) : (
+                  <CategoryIcon category={category.id} />
+                )
+              }
+              pressed={selected === category.id}
+              // An empty category is nowhere to go — unless it is the one
+              // being shown, which must stay pressable to be left.
+              disabled={category.count === 0 && selected !== category.id}
+              hint={category.why}
+              onPress={() =>
+                onSelect(selected === category.id ? null : category.id)
+              }
+            />
+          </li>
+        ))}
+      </ul>
+      {/* What the chosen category is for, where a tooltip would hide it. */}
+      {active !== undefined && active.why !== "" && (
+        <p className="text-muted-foreground text-xs" data-testid="category-why">
+          <span className="text-foreground font-medium">{active.label}.</span>{" "}
+          {active.why}
+        </p>
+      )}
+    </nav>
+  );
 }
 
 function canManage(role: string): boolean {
@@ -512,6 +767,26 @@ export function BoardBounties({
 }) {
   const [runs, setRuns] = useState<BountyRunDto[]>([]);
   const [proposals, setProposals] = useState<EnrichedProposal[]>([]);
+  /*
+    How many rows the list is holding open, and whether the board has more.
+    A ref for the count: a refresh re-reads that many, and "Show more"
+    raises it, so a decision made with three pages open does not fold the
+    list back to one.
+  */
+  const wantedRows = useRef(PROPOSAL_PAGE);
+  const [moreProposals, setMoreProposals] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  /*
+    The category the list is narrowed to, if any, and the board's counts per
+    category. `?category=` like `?proposal=`: a view can be linked, and Back
+    returns to the one before. `switching` is the moment between pressing a
+    tile and its rows landing, when the rows on screen are the last view's.
+  */
+  const [category, setCategory] = useState<string | null>(categoryFromUrl);
+  const [categories, setCategories] = useState<ProposalCategoriesDto | null>(
+    null,
+  );
+  const [switching, setSwitching] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(() =>
     new URLSearchParams(window.location.search).get("proposal"),
   );
@@ -576,35 +851,73 @@ export function BoardBounties({
   */
   const loadList = useCallback(async () => {
     const generation = ++requestGeneration.current;
+    // Page after page until the list holds as many rows as it has open, or
+    // the board runs out. Each page is one local read.
+    const readProposals = async () => {
+      const rows: EnrichedProposal[] = [];
+      let cursor: string | null = null;
+      do {
+        const response: Response = await fetch(
+          `${base}/proposals?boardId=${encodeURIComponent(boardId)}&limit=${PROPOSAL_PAGE}${
+            category === null ? "" : `&category=${encodeURIComponent(category)}`
+          }${cursor === null ? "" : `&cursor=${encodeURIComponent(cursor)}`}`,
+          { credentials: "include" },
+        );
+        if (!response.ok) throw new Error();
+        const body = (await response.json()) as {
+          proposals?: EnrichedProposal[];
+          nextCursor?: string | null;
+        };
+        rows.push(...(body.proposals ?? []));
+        cursor = body.nextCursor ?? null;
+      } while (cursor !== null && rows.length < wantedRows.current);
+      return { rows, more: cursor !== null };
+    };
+    // The counts behind the category view, re-read with the list so a
+    // decision or a landed result moves both together. Optional: a board
+    // whose counts cannot be read still lists its proposals, without the
+    // view.
+    const readCategories = async () => {
+      try {
+        const response = await fetch(
+          `${base}/jira/boards/${encodeURIComponent(boardId)}/proposal-categories`,
+          { credentials: "include" },
+        );
+        return response.ok ? categorySummary(await response.json()) : null;
+      } catch {
+        return null;
+      }
+    };
     try {
-      const [runResponse, proposalResponse] = await Promise.all([
+      const [runResponse, listed, summary] = await Promise.all([
         fetch(`${base}/jira/boards/${encodeURIComponent(boardId)}/runs`, {
           credentials: "include",
         }),
-        fetch(`${base}/proposals?boardId=${encodeURIComponent(boardId)}`, {
-          credentials: "include",
-        }),
+        readProposals(),
+        readCategories(),
       ]);
-      if (!runResponse.ok || !proposalResponse.ok) throw new Error();
+      if (!runResponse.ok) throw new Error();
       const runBody = (await runResponse.json()) as {
         runs: BountyRunDto[];
         sizingAvailable: boolean;
       };
-      const proposalBody = (await proposalResponse.json()) as {
-        proposals: EnrichedProposal[];
-      };
       if (generation !== requestGeneration.current) return;
       setRuns(runBody.runs ?? []);
       setSizingAvailable(runBody.sizingAvailable);
-      setProposals(proposalBody.proposals ?? []);
+      setProposals(listed.rows);
+      setMoreProposals(listed.more);
+      setCategories(summary);
       setError(null);
     } catch {
       if (generation === requestGeneration.current)
         setError("Could not load bounty runs and proposals.");
     } finally {
-      if (generation === requestGeneration.current) setLoading(false);
+      if (generation === requestGeneration.current) {
+        setLoading(false);
+        setSwitching(false);
+      }
     }
-  }, [base, boardId]);
+  }, [base, boardId, category]);
 
   /*
     What a mutation, a landed run result or a search re-reads: the list, and
@@ -613,6 +926,17 @@ export function BoardBounties({
   const refresh = useCallback(async () => {
     setDetailVersion((version) => version + 1);
     await loadList();
+  }, [loadList]);
+
+  /** Another page of rows, kept open across the refreshes that follow. */
+  const showMore = useCallback(async () => {
+    wantedRows.current += PROPOSAL_PAGE;
+    setLoadingMore(true);
+    try {
+      await loadList();
+    } finally {
+      setLoadingMore(false);
+    }
   }, [loadList]);
 
   /*
@@ -624,7 +948,18 @@ export function BoardBounties({
   useEffect(() => {
     setLoading(true);
     setProposals([]);
+    setMoreProposals(false);
+    setCategories(null);
+    wantedRows.current = PROPOSAL_PAGE;
   }, [boardId]);
+  /*
+    A category is a different list, so it starts at one page. Unlike a board
+    change it does not blank the page: the tiles are what was just pressed,
+    and the rows stay, dimmed, until the category's own arrive.
+  */
+  useEffect(() => {
+    wantedRows.current = PROPOSAL_PAGE;
+  }, [category]);
   useEffect(() => {
     void loadList();
     return () => {
@@ -667,45 +1002,51 @@ export function BoardBounties({
   }, [base, boardId, selectedId, detailVersion]);
 
   /*
-    Titles for the rows that have none yet, one stream for all of them. Each
-    row fills in as its line arrives rather than when the slowest ticket
-    answers. A row the stream ended without is left untitled and unrecorded,
-    so the next refresh asks for it again.
+    Titles for the rows that have none yet. Each row fills in as its line
+    arrives rather than when the slowest ticket answers. A row the stream
+    ended without is left untitled and unrecorded, so the next refresh asks
+    for it again.
+
+    One stream for all of them, up to what the route accepts in one request;
+    a list holding more untitled rows than that opens a stream per batch.
   */
   useEffect(() => {
-    const wanted = proposals
+    const untitled = proposals
       .map(({ id }) => id)
       .filter(
         (id) => !titled.current.has(id) && !titleRequests.current.has(id),
       );
-    if (wanted.length === 0) return;
-    for (const id of wanted) titleRequests.current.add(id);
-    setTitlesPending((current) => new Set([...current, ...wanted]));
-    const controller = new AbortController();
-    titleStreams.current.add(controller);
-    fetch(
-      `${base}/jira/boards/${encodeURIComponent(boardId)}/proposal-titles?ids=${wanted.map(encodeURIComponent).join(",")}`,
-      { credentials: "include", signal: controller.signal },
-    )
-      .then((response) =>
-        response.ok && response.body !== null
-          ? readNdjson(response.body, (value) => {
-              const title = titleLine(value);
-              if (title === null) return;
-              titled.current.add(title.id);
-              setTitles((current) => ({ ...current, [title.id]: title }));
-            })
-          : undefined,
+    if (untitled.length === 0) return;
+    for (const id of untitled) titleRequests.current.add(id);
+    setTitlesPending((current) => new Set([...current, ...untitled]));
+    for (let start = 0; start < untitled.length; start += TITLE_BATCH) {
+      const wanted = untitled.slice(start, start + TITLE_BATCH);
+      const controller = new AbortController();
+      titleStreams.current.add(controller);
+      fetch(
+        `${base}/jira/boards/${encodeURIComponent(boardId)}/proposal-titles?ids=${wanted.map(encodeURIComponent).join(",")}`,
+        { credentials: "include", signal: controller.signal },
       )
-      .catch(() => {})
-      .finally(() => {
-        titleStreams.current.delete(controller);
-        for (const id of wanted) titleRequests.current.delete(id);
-        setTitlesPending(
-          (current) =>
-            new Set([...current].filter((id) => !wanted.includes(id))),
-        );
-      });
+        .then((response) =>
+          response.ok && response.body !== null
+            ? readNdjson(response.body, (value) => {
+                const title = titleLine(value);
+                if (title === null) return;
+                titled.current.add(title.id);
+                setTitles((current) => ({ ...current, [title.id]: title }));
+              })
+            : undefined,
+        )
+        .catch(() => {})
+        .finally(() => {
+          titleStreams.current.delete(controller);
+          for (const id of wanted) titleRequests.current.delete(id);
+          setTitlesPending(
+            (current) =>
+              new Set([...current].filter((id) => !wanted.includes(id))),
+          );
+        });
+    }
   }, [base, boardId, proposals]);
 
   // Streams still reading when the list goes away are stopped, so Jira is
@@ -811,11 +1152,29 @@ export function BoardBounties({
     }
   }, []);
 
+  /** Narrow the list to one category, or to none. */
+  const selectCategory = useCallback((next: string | null) => {
+    const params = new URLSearchParams(window.location.search);
+    if ((params.get("category") ?? null) === next) return;
+    if (next === null) params.delete("category");
+    else params.set("category", next);
+    const query = params.toString();
+    window.history.pushState(
+      null,
+      "",
+      window.location.pathname + (query === "" ? "" : `?${query}`),
+    );
+    setSwitching(true);
+    setCategory(next);
+  }, []);
+
   useEffect(() => {
     const sync = () => {
       const next = new URLSearchParams(window.location.search).get("proposal");
       if (next === null || next === "") closeProposal(false);
       else setSelectedId(next);
+      // Back and forward move between category views too.
+      setCategory(categoryFromUrl());
     };
     window.addEventListener("popstate", sync);
     return () => window.removeEventListener("popstate", sync);
@@ -1013,17 +1372,49 @@ export function BoardBounties({
       )}
 
       {/*
+        The categories, over the list they narrow. Absent on a board with no
+        proposals, where a row of zeros would say nothing. If the counts could
+        not be read while a link has the list narrowed, the narrowing still
+        has to be visible and undoable, so it is said in a line instead.
+      */}
+      {categories !== null && categories.total > 0 ? (
+        <CategoryNav
+          summary={categories}
+          selected={category}
+          onSelect={selectCategory}
+        />
+      ) : (
+        category !== null && (
+          <p className="text-muted-foreground flex flex-wrap items-center gap-x-2 text-xs">
+            Showing one category.
+            <button
+              type="button"
+              className="text-foreground underline underline-offset-2"
+              onClick={() => selectCategory(null)}
+            >
+              Show all
+            </button>
+          </p>
+        )
+      )}
+
+      {/*
         The list at full width, with the proposal opening over it rather than
         beside it or inside it. See `PeekPanel` for why. A row carries only
         what a scan needs — which ticket, at what size, for how much — and
         everything a decision needs is in the peek.
       */}
-      <div className="overflow-hidden rounded-lg border">
+      <div
+        aria-busy={switching}
+        className={`overflow-hidden rounded-lg border transition-opacity ${switching ? "opacity-60" : ""}`}
+      >
         {visibleProposals.length === 0 ? (
           <p className="text-muted-foreground px-4 py-10 text-center text-sm">
-            {active === undefined
-              ? "No proposals yet."
-              : "Proposals appear here as tickets are sized."}
+            {category !== null
+              ? "No proposals in this category."
+              : active === undefined
+                ? "No proposals yet."
+                : "Proposals appear here as tickets are sized."}
           </p>
         ) : (
           <>
@@ -1057,19 +1448,32 @@ export function BoardBounties({
                         <span className="text-muted-foreground shrink-0 font-mono text-xs sm:w-20">
                           {name.key}
                         </span>
-                        <span className="min-w-0 text-sm sm:flex-1 sm:truncate">
-                          {name.title ??
-                            (name.pending ? (
-                              // Held open at a title's width, so the row does
-                              // not reflow when its line arrives.
-                              <span
-                                aria-hidden="true"
-                                data-testid="title-pending"
-                                className="skeleton inline-block h-3 w-40 max-w-full rounded align-middle"
-                              />
-                            ) : (
-                              "Jira ticket"
-                            ))}
+                        {/*
+                          The title, and under it why the run picked the
+                          ticket: that is what makes a row more than an old
+                          ticket with a price, so it is on the row rather
+                          than only in the peek.
+                        */}
+                        <span className="flex min-w-0 flex-col sm:flex-1">
+                          <span className="min-w-0 text-sm sm:truncate">
+                            {name.title ??
+                              (name.pending ? (
+                                // Held open at a title's width, so the row
+                                // does not reflow when its line arrives.
+                                <span
+                                  aria-hidden="true"
+                                  data-testid="title-pending"
+                                  className="skeleton inline-block h-3 w-40 max-w-full rounded align-middle"
+                                />
+                              ) : (
+                                "Jira ticket"
+                              ))}
+                          </span>
+                          <CategoryLine
+                            categories={proposal.categories}
+                            lead={category}
+                            wrapOnPhone
+                          />
                         </span>
                       </span>
                       <span className="flex shrink-0 items-center gap-3 sm:contents">
@@ -1099,6 +1503,20 @@ export function BoardBounties({
                 );
               })}
             </ul>
+            {moreProposals && (
+              <div className="flex justify-center border-t px-3 py-2">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  disabled={loadingMore}
+                  onClick={() => void showMore()}
+                >
+                  {loadingMore && <Loader2 className="animate-spin" />}
+                  Show more
+                </Button>
+              </div>
+            )}
           </>
         )}
       </div>
@@ -1479,7 +1897,7 @@ function SizingStream({
       <div className="flex items-center gap-2 px-3 py-2.5 text-sm">
         <Loader2 className="text-muted-foreground size-4 animate-spin" />
         {total === 0 ? (
-          <span>Picking tickets from the backlog…</span>
+          <span>Picking tickets from the board…</span>
         ) : (
           <span>
             Sizing {total} ticket{total === 1 ? "" : "s"}
@@ -1501,7 +1919,12 @@ function SizingStream({
               style={{ width: `${(done.size / total) * 100}%` }}
             />
           </div>
-          <ul className="divide-y text-sm">
+          {/*
+            Scrolls within itself: a run sizes every ticket that fits a
+            category, and a plan of hundreds must not push the proposals
+            it is producing off the page.
+          */}
+          <ul className="max-h-96 divide-y overflow-y-auto text-sm">
             {run.planned.map((ticket) => {
               const outcome = done.get(ticket.externalIssueId);
               const proposal =
@@ -1538,10 +1961,13 @@ function SizingStream({
                   <span className="w-20 shrink-0 font-mono text-xs">
                     {ticket.issueKey}
                   </span>
-                  <span
-                    className={`min-w-0 flex-1 truncate ${outcome === undefined && !sizing ? "text-muted-foreground" : ""}`}
-                  >
-                    {ticket.summary}
+                  <span className="flex min-w-0 flex-1 flex-col">
+                    <span
+                      className={`truncate ${outcome === undefined && !sizing ? "text-muted-foreground" : ""}`}
+                    >
+                      {ticket.summary}
+                    </span>
+                    <CategoryLine categories={ticket.categories} />
                   </span>
                   {proposal !== undefined ? (
                     <button
@@ -1809,6 +2235,37 @@ function ProposalPeek({
                 )}
               </div>
             </div>
+
+            {/*
+              Why the run offered this ticket at all, before why it is the
+              size it is: the first is the case for outsourcing it, the
+              second for the price. Absent for a ticket someone added by
+              hand, which needs no case made.
+            */}
+            {proposal.categories !== undefined &&
+              proposal.categories.length > 0 && (
+                <div data-testid="proposal-categories">
+                  <p className="text-muted-foreground mb-1.5 text-xs font-medium">
+                    Why this ticket
+                  </p>
+                  <ul className="flex flex-col gap-1.5">
+                    {proposal.categories.map((category) => (
+                      <li
+                        key={category.id}
+                        className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-sm"
+                      >
+                        <Badge variant="outline" className="shrink-0">
+                          <CategoryIcon category={category.id} />
+                          {category.label}
+                        </Badge>
+                        <span className="leading-relaxed">
+                          {category.reason}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
 
             <div>
               <p className="text-muted-foreground mb-1.5 text-xs font-medium">

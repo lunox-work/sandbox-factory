@@ -21,12 +21,13 @@ export { generateId, ID_PREFIXES } from "./mapping.js";
 export type { IdPrefix } from "./mapping.js";
 export { runMigrations } from "./migrate.js";
 export type { MigrateOptions } from "./migrate.js";
-export { createJiraBoardStore } from "./jira-boards.js";
+export { createJiraBoardStore, mergeSelection } from "./jira-boards.js";
 export type {
   JiraBoardStore,
   JiraBoardSummary,
   RegisterBoardInput,
   StoredBoardSelection,
+  StoredCategorySettings,
   SyncBoardInput,
   UpdateBoardInput,
 } from "./jira-boards.js";
@@ -42,7 +43,7 @@ export type {
   RateCardStore,
   StoredRateCard,
 } from "./rate-cards.js";
-export { createBountyRunStore } from "./bounty-runs.js";
+export { createBountyRunStore, runDeadline } from "./bounty-runs.js";
 export type {
   BountyRunStore,
   CreateBountyRunInput,

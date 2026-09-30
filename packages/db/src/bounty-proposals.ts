@@ -1,6 +1,7 @@
 import type {
   BountyComplexity,
   BountySizingResult,
+  CategoryMatch,
   RateCardSnapshot,
   PricedComplexity,
   SizingConfidence,
@@ -55,6 +56,12 @@ export type ListedBountyProposal = StoredBountyProposal & {
    * differ.
    */
   readonly sizedTitle: string | null;
+  /**
+   * Why the run picked the ticket: the categories it fit and the reason for
+   * each, from the same plan entry. Empty for a ticket someone picked by
+   * hand, and for a run from before categories existed.
+   */
+  readonly categories: readonly CategoryMatch[];
 };
 
 export interface BountyProposalStore {
@@ -81,8 +88,34 @@ export interface BountyProposalStore {
       status?: "proposed" | "approved";
       cursor?: { readonly createdAt: string; readonly id: string };
       limit?: number;
+      /** Only proposals whose ticket was picked for this category. */
+      category?: string;
+      /** Only proposals whose ticket was picked for no category at all. */
+      uncategorized?: boolean;
     },
   ): Promise<ListedBountyProposal[]>;
+  /**
+   * How many of a board's proposals fall in each category, by category id,
+   * how many fall in none, and how many proposals the board has in all.
+   *
+   * Counted here rather than from a page of the list, because the list is
+   * paged and a count of fifty rows says nothing about a board of three
+   * hundred. A ticket picked for two categories counts in both, so the
+   * counts can sum to more than `total`.
+   *
+   * `uncategorized` is the proposals with no category recorded at all,
+   * which is what `listForBoard`'s `uncategorized` lists. A ticket whose
+   * only category has since left the registry is not one of them: it still
+   * has its reason, under an id nothing offers as a view.
+   */
+  categoryCounts(
+    organizationId: string,
+    boardId: string,
+  ): Promise<{
+    readonly total: number;
+    readonly uncategorized: number;
+    readonly counts: Readonly<Record<string, number>>;
+  }>;
   liveExternalIds(
     organizationId: string,
     boardId: string,
@@ -432,6 +465,37 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
             options.status === undefined
               ? undefined
               : eq(bountyProposal.status, options.status),
+            // Why a ticket was picked lives on its run's plan, so the filter
+            // looks there: the plan entry for this ticket, holding a
+            // category with this id. `@>` is jsonb containment, and the id
+            // travels as a bound parameter inside the JSON it is matched
+            // against, never as SQL.
+            options.category === undefined
+              ? undefined
+              : sql`exists (
+                  select 1
+                  from jsonb_array_elements(${bountyRun.planned}) as planned_issue
+                  where planned_issue->>'externalIssueId' = ${jiraIssue.externalId}
+                    and coalesce(planned_issue->'categories', '[]'::jsonb)
+                      @> ${JSON.stringify([{ id: options.category }])}::jsonb
+                )`,
+            // The other side of the same question: no plan entry for this
+            // ticket holding any category. "Holding one" is an entry of
+            // `categories` with a string id, the same test `categoryCounts`
+            // applies, so the tile's number and its list agree. The path is
+            // lax, so a plan with no `categories`, or one that is not a
+            // list, has none rather than being an error.
+            options.uncategorized !== true
+              ? undefined
+              : sql`not exists (
+                  select 1
+                  from jsonb_array_elements(${bountyRun.planned}) as planned_issue
+                  where planned_issue->>'externalIssueId' = ${jiraIssue.externalId}
+                    and jsonb_path_exists(
+                      planned_issue,
+                      '$.categories[*].id ? (@.type() == "string")'
+                    )
+                )`,
             options.cursor === undefined
               ? undefined
               : or(
@@ -452,14 +516,56 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
         .orderBy(desc(bountyProposal.createdAt), desc(bountyProposal.id))
         .limit(limit);
       return rows.map(({ row, issueKey, externalId, planned }) => {
-        const summary = planned.find(
+        const entry = planned.find(
           (issue) => issue.externalIssueId === externalId,
-        )?.summary;
+        );
+        const summary = entry?.summary;
         return {
           ...toDto(row, issueKey),
           sizedTitle: summary === undefined || summary === "" ? null : summary,
+          categories: entry?.categories ?? [],
         };
       });
+    },
+
+    async categoryCounts(organizationId, boardId) {
+      // One row per proposal, carrying only that ticket's categories: the
+      // plan entry is picked out in SQL, so a run's whole plan is not sent
+      // once for every proposal it produced.
+      const rows = await db
+        .select({
+          categories: sql<readonly { readonly id?: unknown }[] | null>`(
+            select planned_issue->'categories'
+            from jsonb_array_elements(${bountyRun.planned}) as planned_issue
+            where planned_issue->>'externalIssueId' = ${jiraIssue.externalId}
+            limit 1
+          )`,
+        })
+        .from(bountyProposal)
+        .innerJoin(bountyRun, eq(bountyProposal.runId, bountyRun.id))
+        .innerJoin(jiraIssue, eq(bountyProposal.jiraIssueId, jiraIssue.id))
+        .where(
+          and(
+            eq(bountyProposal.organizationId, organizationId),
+            eq(bountyRun.boardId, boardId),
+          ),
+        );
+
+      const counts: Record<string, number> = {};
+      let uncategorized = 0;
+      for (const { categories } of rows) {
+        // Once per proposal, even if a plan somehow named a category twice.
+        // A plan from before categories has no list, and a ticket someone
+        // picked by hand has an empty one: both are in no category.
+        const ids = new Set(
+          (Array.isArray(categories) ? categories : [])
+            .map((category) => category?.id)
+            .filter((id): id is string => typeof id === "string"),
+        );
+        if (ids.size === 0) uncategorized += 1;
+        for (const id of ids) counts[id] = (counts[id] ?? 0) + 1;
+      }
+      return { total: rows.length, uncategorized, counts };
     },
 
     async liveExternalIds(organizationId, boardId, externalIds) {

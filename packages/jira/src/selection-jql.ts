@@ -1,20 +1,18 @@
 /**
- * Which tickets a run prices: the oldest still sitting in a board's backlog.
+ * Which tickets a run considers: the coarse filter Jira applies before the
+ * categories are tested.
  *
- * Two Jira concepts are in play and they are not interchangeable:
+ * Selection happens in two steps, and this is only the first. Most of what a
+ * category looks for cannot be said in JQL at all: how many sprints a ticket
+ * was carried through, how many open tickets it blocks, how many people
+ * watch it. So the JQL here only narrows a board to its **candidates** —
+ * open work of a kind that can carry a bounty — and every candidate is then
+ * classified in code against the category registry in `sandbox-factory`.
  *
- * - **The backlog endpoint** (`/board/{id}/backlog`) returns incomplete issues
- *   *not in an active or future sprint*. That is the real backlog, and it is
- *   what a Scrum board — or a Kanban board with the backlog feature enabled —
- *   answers.
- * - **A plain Kanban board has no backlog at all.** Its first column *is* the
- *   backlog, so the endpoint either errors or returns nothing, and the tickets
- *   have to be read through `/board/{id}/issue` filtered to the To Do
- *   category instead.
- *
- * `backlogJql` builds the filter; `backlogSource` decides which endpoint to
- * ask. The ordering is always `created ASC`, which is the whole point: oldest
- * first.
+ * The query is always run against `/board/{id}/issue`, for every kind of
+ * board. The backlog endpoint would be the natural choice for a Scrum board,
+ * but it returns only tickets outside every sprint, which hides precisely the
+ * tickets that keep being planned and never finished.
  */
 
 import type { BoardSelection } from "@sandbox-factory/shared";
@@ -26,20 +24,6 @@ import type { BoardSelection } from "@sandbox-factory/shared";
  * the person who knows a ticket should not be priced is looking at the ticket.
  */
 export const SKIP_LABEL = "bounty-skip";
-
-/** Which endpoint serves a board's backlog. */
-export type BacklogSource = "backlog" | "board-issues";
-
-/**
- * Which endpoint to read, from the board's type.
- *
- * `unknown` takes the backlog endpoint: most boards are Scrum, and the caller
- * falls back to `board-issues` if it answers with an error. Guessing the other
- * way would silently read sprint-assigned tickets as though they were backlog.
- */
-export function backlogSource(boardType: string): BacklogSource {
-  return boardType.toLowerCase() === "kanban" ? "board-issues" : "backlog";
-}
 
 /**
  * Escapes a value for a JQL string literal.
@@ -53,31 +37,22 @@ function quote(value: string): string {
   return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
 
-export interface BacklogJqlOptions {
+export interface SelectionJqlOptions {
   /** Restrict to one project. The agile endpoints already scope to a board. */
   projectKey?: string | undefined;
-  /**
-   * For `board-issues`, which does not filter to the backlog by itself: a
-   * plain Kanban board's incomplete work is everything not Done.
-   */
-  source?: BacklogSource;
   /** Injectable so a run's window does not shift while it executes. */
   now?: Date;
 }
 
-/**
- * The JQL a run appends to the endpoint's own board filter.
- *
- * Note what is *not* here: `statusCategory != Done` for the backlog endpoint.
- * That endpoint returns incomplete issues by definition, and restating it
- * would be a claim that could drift from what Jira means by it.
- */
-export function backlogJql(
-  selection: BoardSelection,
-  options: BacklogJqlOptions = {},
+/** The JQL a run appends to the board's own filter. */
+export function selectionJql(
+  selection: Pick<
+    BoardSelection,
+    "issueTypes" | "unassignedOnly" | "minAgeDays" | "maxAgeDays"
+  >,
+  options: SelectionJqlOptions = {},
 ): string {
   const clauses: string[] = [];
-  const source = options.source ?? "backlog";
 
   if (options.projectKey !== undefined && options.projectKey !== "") {
     clauses.push(`project = ${quote(options.projectKey)}`);
@@ -94,12 +69,12 @@ export function backlogJql(
     );
   }
 
-  if (source === "board-issues") {
-    // The backlog endpoint means "incomplete" on its own; this one does not.
-    clauses.push('statusCategory = "To Do"');
-  }
+  // `/board/{id}/issue` returns everything on the board, finished work
+  // included. "Not done" rather than "to do": a ticket started three sprints
+  // ago and never finished is still open work.
+  clauses.push("statusCategory != Done");
 
-  if (selection.excludeAssigned) {
+  if (selection.unassignedOnly) {
     clauses.push("assignee is EMPTY");
   }
 
@@ -115,9 +90,10 @@ export function backlogJql(
     clauses.push(`created >= ${quote(isoDate(now, -selection.maxAgeDays))}`);
   }
 
-  // The ordering is the feature. Oldest first, and `key ASC` breaks ties so a
-  // run twice over an unchanged board reads the same tickets in the same
-  // order — several tickets created in the same minute are common after an
+  // The order no longer decides *which* tickets are taken: every match is.
+  // It is kept because paging needs a stable one, and `key ASC` breaks ties
+  // so a run twice over an unchanged board plans the same tickets in the
+  // same order — several created in the same minute is common after an
   // import.
   return `${clauses.join(" AND ")} ORDER BY created ASC, key ASC`;
 }
