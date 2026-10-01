@@ -41,6 +41,7 @@ function row(overrides: Partial<BountyProposalRow> = {}): BountyProposalRow {
     currency: "USD",
     status: "proposed",
     revision: 1,
+    specRevision: null,
     decidedBy: null,
     decidedAt: null,
     decisionDeliveryPolicy: null,
@@ -66,6 +67,30 @@ const input = {
   promptVersion: "jira-size-v1",
   amountMinor: 200,
   currency: "USD",
+} as const;
+
+/** A spec as a run hands it over: no proposal id, no revision. */
+const spec = {
+  specHash: "a".repeat(64),
+  specHashVersion: 1,
+  draft: {
+    feature: "CSV export",
+    background: [],
+    scenarios: [
+      {
+        id: "s1",
+        kind: "happy",
+        title: "The filtered table is exported",
+        steps: [{ keyword: "Then", text: "a CSV file is downloaded" }],
+        origin: "draft",
+      },
+    ],
+    openQuestions: [],
+    assumptions: [],
+  },
+  origin: "draft",
+  actualModel: "drafting-model",
+  promptVersion: "draft-v1",
 } as const;
 
 test("creates only after both owner-scoped parents are found", async () => {
@@ -124,6 +149,69 @@ test("creates under a live lease and classifies fencing outcomes", async () => {
     ),
     { status: "duplicate" },
   );
+});
+
+test("a proposal created with a spec stores it as revision 1 in the same transaction", async () => {
+  const running = { id: "brn_1", boardId: "jrb_1" } as BountyRunRow;
+  const fake = createSequencedFakeDb([
+    [running],
+    [{ key: "APP-1" }],
+    [row({ specRevision: 1 })],
+    [],
+  ]);
+  const result = await createBountyProposalStore(fake.db).createForLease(
+    "org_1",
+    "lease",
+    { ...input, spec },
+  );
+
+  assert.equal(result.status, "created");
+  if (result.status === "created") {
+    assert.equal(result.proposal.specRevision, 1);
+  }
+  // The proposal says which revision it goes with, and the revision is
+  // written after it, for it, by the run that drafted it.
+  assert.equal(fake.calls[2]?.values?.["specRevision"], 1);
+  const stored = fake.calls[3];
+  assert.equal(stored?.kind, "insert");
+  assert.match(String(stored?.values?.["id"]), /^bsp_/);
+  assert.equal(stored?.values?.["organizationId"], "org_1");
+  assert.equal(stored?.values?.["proposalId"], "bpr_1");
+  assert.equal(stored?.values?.["revision"], 1);
+  assert.equal(stored?.values?.["runId"], "brn_1");
+  assert.equal(stored?.values?.["origin"], "draft");
+  assert.equal(stored?.values?.["actualModel"], "drafting-model");
+  assert.equal(stored?.values?.["promptVersion"], "draft-v1");
+  assert.deepEqual(stored?.values?.["draft"], spec.draft);
+});
+
+test("a proposal created without a spec points at none", async () => {
+  const running = { id: "brn_1", boardId: "jrb_1" } as BountyRunRow;
+  const fake = createSequencedFakeDb([[running], [{ key: "APP-1" }], [row()]]);
+  const result = await createBountyProposalStore(fake.db).createForLease(
+    "org_1",
+    "lease",
+    input,
+  );
+
+  assert.equal(result.status, "created");
+  assert.equal(fake.calls[2]?.values?.["specRevision"], null);
+  assert.equal(fake.calls.filter(({ kind }) => kind === "insert").length, 1);
+});
+
+test("a ticket that already has a live proposal gets no spec", async () => {
+  // The proposal insert lost to the live one, so there is nothing for a
+  // spec to belong to.
+  const running = { id: "brn_1", boardId: "jrb_1" } as BountyRunRow;
+  const fake = createSequencedFakeDb([[running], [{ key: "APP-1" }], []]);
+  assert.deepEqual(
+    await createBountyProposalStore(fake.db).createForLease("org_1", "lease", {
+      ...input,
+      spec,
+    }),
+    { status: "duplicate" },
+  );
+  assert.equal(fake.calls.filter(({ kind }) => kind === "insert").length, 1);
 });
 
 test("gets and lists proposals with issue display keys", async () => {
@@ -536,6 +624,85 @@ test("re-price updates the source in place, fenced by its run lease and source r
     ).status,
     "lost-lease",
   );
+});
+
+test("re-price with a spec writes the next revision and points the proposal at it", async () => {
+  const repriced = row({ revision: 2, runId: "brn_2", specRevision: 3 });
+  const fake = createSequencedFakeDb([
+    [{ id: "brn_2", boardId: "jrb_1" } as BountyRunRow],
+    [row({ specRevision: 2 })],
+    // The proposal's latest spec revision, read while its row is locked.
+    [{ revision: 2 }],
+    [repriced],
+    [],
+    [{ row: repriced, issueKey: "APP-1" }],
+  ]);
+  const result = await createBountyProposalStore(fake.db).repriceForLease(
+    "org_1",
+    "lease_1",
+    "bpr_1",
+    1,
+    { ...input, runId: "brn_2", spec },
+  );
+
+  assert.equal(result.status, "repriced");
+  if (result.status === "repriced") {
+    assert.equal(result.proposal.specRevision, 3);
+  }
+  assert.equal(fake.calls[2]?.kind, "select");
+  assert.equal(fake.calls[2]?.filtered, true);
+  assert.equal(fake.calls[2]?.limited, 1);
+  assert.equal(fake.calls[3]?.values?.["specRevision"], 3);
+  const stored = fake.calls[4];
+  assert.equal(stored?.kind, "insert");
+  assert.equal(stored?.values?.["proposalId"], "bpr_1");
+  assert.equal(stored?.values?.["revision"], 3);
+  assert.equal(stored?.values?.["runId"], "brn_2");
+});
+
+test("re-price starts a spec at revision 1 for a proposal that had none", async () => {
+  const repriced = row({ revision: 2, runId: "brn_2", specRevision: 1 });
+  const fake = createSequencedFakeDb([
+    [{ id: "brn_2", boardId: "jrb_1" } as BountyRunRow],
+    [row()],
+    [],
+    [repriced],
+    [],
+    [{ row: repriced, issueKey: "APP-1" }],
+  ]);
+  await createBountyProposalStore(fake.db).repriceForLease(
+    "org_1",
+    "lease_1",
+    "bpr_1",
+    1,
+    { ...input, runId: "brn_2", spec },
+  );
+
+  assert.equal(fake.calls[3]?.values?.["specRevision"], 1);
+  assert.equal(fake.calls[4]?.values?.["revision"], 1);
+});
+
+test("re-price without a spec clears the pointer and writes no revision", async () => {
+  // The earlier revisions were drafted from a ticket this size no longer
+  // goes with, so the proposal stops pointing at any of them.
+  const repriced = row({ revision: 2, runId: "brn_2" });
+  const fake = createSequencedFakeDb([
+    [{ id: "brn_2", boardId: "jrb_1" } as BountyRunRow],
+    [row({ specRevision: 2 })],
+    [repriced],
+    [{ row: repriced, issueKey: "APP-1" }],
+  ]);
+  const result = await createBountyProposalStore(fake.db).repriceForLease(
+    "org_1",
+    "lease_1",
+    "bpr_1",
+    1,
+    { ...input, runId: "brn_2" },
+  );
+
+  assert.equal(result.status, "repriced");
+  assert.equal(fake.calls[2]?.values?.["specRevision"], null);
+  assert.ok(!fake.calls.some(({ kind }) => kind === "insert"));
 });
 
 test("re-price queues a withdrawal for a posted approval in the same transaction", async () => {

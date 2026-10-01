@@ -1,11 +1,13 @@
 /**
  * Reading a ticket's spec, and fingerprinting what was read.
  *
- * Kept apart from `client.ts` because the spec is the one thing this package
- * reads that the platform deliberately does not store. `ISSUE_FIELDS` — what
- * every list read asks for — does not include `description`, so a board read
- * cannot pull ticket text even by accident; only `issueSpec` can, one ticket
- * at a time, and the caller has to ask for it by name.
+ * Kept apart from `client.ts` because the description is the one thing this
+ * package reads that the platform does not keep as it is: a run hashes it,
+ * sizes from it and drafts a spec from it, and what is stored is the hash
+ * and what was derived. `ISSUE_FIELDS` — what every list read asks for —
+ * does not include `description`, so a board read cannot pull ticket text
+ * even by accident; only `issueSpec` can, one ticket at a time, and the
+ * caller has to ask for it by name.
  */
 
 import { adfToTextResult } from "./adf.js";
@@ -17,6 +19,15 @@ export interface JiraIssueSpec {
   /** The description, flattened from ADF. Empty when the ticket has none. */
   readonly descriptionText: string;
   readonly issueType: string;
+  /**
+   * The ticket's Jira components, by name: the one signal Jira gives for
+   * free about which part of the product a ticket touches. Read for the
+   * spec draft, and **not part of either hash**: a component edit does not
+   * make a proposal stale.
+   */
+  readonly components: readonly string[];
+  /** The ticket's labels. Like `components`, read but not hashed. */
+  readonly labels: readonly string[];
   /** Jira's own `updated`, for ordering and for staleness reporting. */
   readonly updated: string | null;
   /** True when ADF depth or length limits omitted any sizing input. */
@@ -41,6 +52,8 @@ export const SPEC_FIELDS: readonly string[] = [
   "summary",
   "description",
   "issuetype",
+  "components",
+  "labels",
   "updated",
 ];
 
@@ -108,6 +121,8 @@ export async function toIssueSpec(
     summary?: unknown;
     description?: unknown;
     issuetype?: { name?: unknown } | null;
+    components?: unknown;
+    labels?: unknown;
     updated?: unknown;
   },
 ): Promise<JiraIssueSpec> {
@@ -120,6 +135,8 @@ export async function toIssueSpec(
     summary,
     descriptionText: description.text,
     issueType,
+    components: names(fields.components),
+    labels: strings(fields.labels),
     updated: typeof fields.updated === "string" ? fields.updated : null,
     inputTruncated: description.truncated,
     specHash: await specHash(summary, description.text),
@@ -129,4 +146,25 @@ export async function toIssueSpec(
       issueType,
     ),
   };
+}
+
+/** The strings of a list that may be missing or malformed. */
+function strings(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === "string")
+    : [];
+}
+
+/** The `name` of each entry, which is how Jira sends components. */
+function names(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.flatMap((entry: unknown) =>
+        typeof entry === "object" &&
+        entry !== null &&
+        "name" in entry &&
+        typeof entry.name === "string"
+          ? [entry.name]
+          : [],
+      )
+    : [];
 }

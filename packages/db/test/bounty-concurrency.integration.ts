@@ -14,8 +14,10 @@ import postgres from "postgres";
 import {
   createBountyProposalStore,
   createBountyRunStore,
+  createBountySpecStore,
   createBountyWritebackStore,
   createConnection,
+  type NewBountySpec,
 } from "../src/index.js";
 import { runMigrations } from "../src/migrate.js";
 
@@ -539,6 +541,220 @@ describe("bounty database concurrency", () => {
       assert.deepEqual(
         await proposals.categoryCounts("org_other", "board_categories"),
         { total: 0, uncategorized: 0, counts: {} },
+      );
+    } finally {
+      await connection.close();
+    }
+  });
+
+  test("a spec is written with its proposal, revised by a re-price, and goes with it", async () => {
+    // The proposal and its spec are two tables written in one transaction,
+    // under a lease checked in SQL, with a jsonb column and three checks.
+    // The fake database sees none of that.
+    await sql`
+      insert into jira_board (id, organization_id, connection_id, external_id, name, board_type)
+      values ('board_spec', 'org_bounty', 'conn_bounty', '44', 'Specs', 'scrum')
+    `;
+    await sql`
+      insert into jira_issue (
+        id, organization_id, board_id, external_id, key, status_category,
+        remote_created_at, remote_updated_at
+      ) values
+        ('issue_spec', 'org_bounty', 'board_spec', '4001', 'SPEC-1', 'new', now(), now()),
+        ('issue_spec_lost', 'org_bounty', 'board_spec', '4002', 'SPEC-2', 'new', now(), now())
+    `;
+    const queueRun = (
+      id: string,
+      source: { proposalId: string; revision: number } | null,
+    ) => sql`
+      insert into bounty_run (
+        id, organization_id, board_id, started_by, request_id, status, kind,
+        source_proposal_id, source_revision,
+        selection, rate_card, requested_model, prompt_version
+      ) values (
+        ${id}, 'org_bounty', 'board_spec', 'user_bounty', ${`request-${id}`},
+        'queued', ${source === null ? "backlog" : "reprice"},
+        ${source?.proposalId ?? null}, ${source?.revision ?? null},
+        ${sql.json(selection)}, ${sql.json(rateCard)}, 'model-test', 'v1'
+      )
+    `;
+    const spec = (title: string): NewBountySpec => ({
+      specHash: "d".repeat(64),
+      specHashVersion: 1,
+      draft: {
+        feature: "CSV export",
+        background: ["a signed-in analyst"],
+        scenarios: [
+          {
+            id: "s1",
+            kind: "happy",
+            title,
+            steps: [
+              { keyword: "When", text: "they press Export" },
+              { keyword: "Then", text: "a CSV file is downloaded" },
+            ],
+            origin: "draft",
+          },
+        ],
+        openQuestions: ["Is there a row limit?"],
+        assumptions: [],
+      },
+      origin: "draft",
+      actualModel: "model-test",
+      promptVersion: "draft-v1",
+    });
+    const input = (runId: string, jiraIssueId: string) => ({
+      runId,
+      jiraIssueId,
+      specHash: "d".repeat(64),
+      specHashVersion: 1,
+      rateCard,
+      sizing: {
+        complexity: "M" as const,
+        confidence: "high" as const,
+        rationale: "A bounded medium change.",
+      },
+      inputTruncated: false,
+      actualModel: "model-test",
+      promptVersion: "v1",
+      amountMinor: 200,
+      currency: "USD",
+    });
+    const specRows = async () =>
+      Number(
+        (await sql`select count(*)::int as count from bounty_spec`)[0]?.[
+          "count"
+        ],
+      );
+
+    const connection = createConnection({ url: scratchUrl(), max: 2 });
+    try {
+      const runs = createBountyRunStore(connection.db);
+      const proposals = createBountyProposalStore(connection.db);
+      const specs = createBountySpecStore(connection.db);
+
+      // Revision 1, with the proposal.
+      await queueRun("run_spec_a", null);
+      await runs.claim("org_bounty", "run_spec_a", "lease_a", new Date());
+      const first = spec("The filtered table is exported");
+      const created = await proposals.createForLease("org_bounty", "lease_a", {
+        ...input("run_spec_a", "issue_spec"),
+        spec: first,
+      });
+      assert.equal(created.status, "created");
+      if (created.status !== "created") return;
+      const proposalId = created.proposal.id;
+      assert.equal(created.proposal.specRevision, 1);
+
+      const stored = await specs.get("org_bounty", proposalId, 1);
+      assert.match(stored?.id ?? "", /^bsp_/);
+      assert.deepEqual(stored?.draft, first.draft);
+      assert.equal(stored?.runId, "run_spec_a");
+      assert.equal(stored?.createdBy, null);
+      assert.equal(stored?.promptVersion, "draft-v1");
+
+      // A worker that lost its lease writes neither the proposal nor a spec.
+      const before = await specRows();
+      const lost = await proposals.createForLease("org_bounty", "stale", {
+        ...input("run_spec_a", "issue_spec_lost"),
+        spec: first,
+      });
+      assert.equal(lost.status, "lost-lease");
+      assert.equal(await specRows(), before);
+
+      // A second proposal for the same ticket is refused, and so is its spec.
+      const duplicate = await proposals.createForLease(
+        "org_bounty",
+        "lease_a",
+        { ...input("run_spec_a", "issue_spec"), spec: first },
+      );
+      assert.equal(duplicate.status, "duplicate");
+      assert.equal(await specRows(), before);
+      await runs.finish("org_bounty", "run_spec_a", "lease_a", "succeeded");
+
+      // A re-price that drafts again: revision 2, and the proposal follows.
+      await queueRun("run_spec_b", { proposalId, revision: 1 });
+      await runs.claim("org_bounty", "run_spec_b", "lease_b", new Date());
+      const second = spec("The visible rows are exported");
+      const repriced = await proposals.repriceForLease(
+        "org_bounty",
+        "lease_b",
+        proposalId,
+        1,
+        { ...input("run_spec_b", "issue_spec"), spec: second },
+      );
+      assert.equal(repriced.status, "repriced");
+      if (repriced.status !== "repriced") return;
+      assert.equal(repriced.proposal.specRevision, 2);
+      assert.deepEqual(
+        (await specs.get("org_bounty", proposalId, 2))?.draft,
+        second.draft,
+      );
+      // The revision it replaced is still there to read.
+      assert.deepEqual(
+        (await specs.get("org_bounty", proposalId, 1))?.draft,
+        first.draft,
+      );
+      assert.deepEqual(
+        (await specs.listRevisions("org_bounty", proposalId)).map(
+          ({ revision, scenarioCount, openQuestionCount }) => ({
+            revision,
+            scenarioCount,
+            openQuestionCount,
+          }),
+        ),
+        [
+          { revision: 2, scenarioCount: 1, openQuestionCount: 1 },
+          { revision: 1, scenarioCount: 1, openQuestionCount: 1 },
+        ],
+      );
+      await runs.finish("org_bounty", "run_spec_b", "lease_b", "succeeded");
+
+      // A re-price that drafts nothing: no pointer, the history kept.
+      await queueRun("run_spec_c", { proposalId, revision: 2 });
+      await runs.claim("org_bounty", "run_spec_c", "lease_c", new Date());
+      const cleared = await proposals.repriceForLease(
+        "org_bounty",
+        "lease_c",
+        proposalId,
+        2,
+        input("run_spec_c", "issue_spec"),
+      );
+      assert.equal(cleared.status, "repriced");
+      if (cleared.status !== "repriced") return;
+      assert.equal(cleared.proposal.specRevision, null);
+      assert.equal(
+        (await specs.listRevisions("org_bounty", proposalId)).length,
+        2,
+      );
+      await runs.finish("org_bounty", "run_spec_c", "lease_c", "succeeded");
+
+      // Another organization reads none of it.
+      assert.equal(await specs.get("org_other", proposalId, 1), null);
+      assert.deepEqual(await specs.listRevisions("org_other", proposalId), []);
+
+      // What the table itself refuses: a second row for a revision, and an
+      // origin it does not know.
+      const insertSpec = (id: string, revision: number, origin: string) => sql`
+        insert into bounty_spec (
+          id, organization_id, proposal_id, revision, spec_hash,
+          spec_hash_version, draft, origin
+        ) values (
+          ${id}, 'org_bounty', ${proposalId}, ${revision}, ${"d".repeat(64)},
+          1, ${JSON.stringify(first.draft)}::jsonb, ${origin}
+        )
+      `;
+      await assert.rejects(insertSpec("bsp_again", 2, "draft"));
+      await assert.rejects(insertSpec("bsp_origin", 3, "rewrite"));
+      await assert.rejects(insertSpec("bsp_zero", 0, "draft"));
+
+      // Removing the proposal takes every revision of its spec with it.
+      const removed = await proposals.remove("org_bounty", proposalId, 3);
+      assert.equal(removed.ok, true);
+      assert.equal(
+        (await sql`select 1 from bounty_spec where proposal_id = ${proposalId}`)
+          .length,
+        0,
       );
     } finally {
       await connection.close();

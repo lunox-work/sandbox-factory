@@ -218,6 +218,13 @@
       "when": 1790136570847,
       "tag": "0030_handle_claims",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1790780142124,
+      "tag": "0031_bounty_spec",
+      "breakpoints": true
     }
   ]
 }

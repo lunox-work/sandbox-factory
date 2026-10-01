@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type {
   BountyProposalStore,
   BountyRunStore,
+  BountySpecStore,
   BountyWritebackStore,
   JiraBoardStore,
   JiraConnectionStore,
@@ -25,6 +26,7 @@ import type {
   BountyRunPlannedIssue,
   JiraIssueDto,
   ProposalCategoriesDto,
+  ProposalSpecRevisionsResponse,
 } from "@sandbox-factory/shared";
 import type { Hono } from "hono";
 import { stream } from "hono/streaming";
@@ -50,6 +52,7 @@ export interface BountyRouteOptions {
   readonly runs: BountyRunStore;
   readonly boards: JiraBoardStore;
   readonly proposals: BountyProposalStore;
+  readonly specs: BountySpecStore;
   readonly issues: JiraIssueStore;
   readonly connections?: JiraConnectionStore;
   readonly writebacks?: BountyWritebackStore;
@@ -805,6 +808,59 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
     });
   });
 
+  /*
+    The proposal's spec: the revision its size goes with. A stored read, so
+    it answers without Jira, which is why it is not part of the proposal's
+    own read above. Any member may read it, as any member may read the
+    proposal. `spec` is null for a proposal with none, which is an answer
+    and not an error: a proposal from before specs, or a ticket too large or
+    too thin to draft from.
+
+    `?revision=` reads an earlier revision of the same proposal's spec.
+  */
+  app.get("/api/v1/orgs/:orgId/proposals/:id/spec", async (c) => {
+    const { organizationId } = c.get("member");
+    const proposal = await options.proposals.get(
+      organizationId,
+      c.req.param("id"),
+    );
+    if (proposal === null) return c.json({ error: "Not found" }, 404);
+    const revision = specRevision(c.req.query("revision"));
+    if (revision === null) return c.json({ error: "Invalid revision." }, 400);
+    const wanted = revision ?? proposal.specRevision;
+    const spec =
+      wanted === null
+        ? null
+        : await options.specs.get(organizationId, proposal.id, wanted);
+    // A revision that was asked for by number and is not there is a miss;
+    // a proposal that simply has no spec is not.
+    if (spec === null && revision !== undefined) {
+      return c.json({ error: "Not found" }, 404);
+    }
+    return c.json({ spec });
+  });
+
+  /* Every revision the spec has had, newest first, without the scenarios. */
+  app.get("/api/v1/orgs/:orgId/proposals/:id/spec/revisions", async (c) => {
+    const { organizationId } = c.get("member");
+    const proposal = await options.proposals.get(
+      organizationId,
+      c.req.param("id"),
+    );
+    if (proposal === null) return c.json({ error: "Not found" }, 404);
+    const revisions = await options.specs.listRevisions(
+      organizationId,
+      proposal.id,
+    );
+    const body: ProposalSpecRevisionsResponse = {
+      revisions: revisions.map((revision) => ({
+        ...revision,
+        current: revision.revision === proposal.specRevision,
+      })),
+    };
+    return c.json(body);
+  });
+
   app.post("/api/v1/orgs/:orgId/proposals/:id/approve", async (c) => {
     const parsed = proposalMutationSchema.safeParse(
       await c.req.json().catch(() => null),
@@ -1364,6 +1420,15 @@ function proposalCategory(
   return /^[a-z0-9]+(-[a-z0-9]+)*$/.test(value) && value.length <= 64
     ? value
     : null;
+}
+
+/**
+ * The `revision` of a spec read: a positive whole number, or undefined for
+ * the revision the proposal points at. Null for anything else.
+ */
+function specRevision(value: string | undefined): number | undefined | null {
+  if (value === undefined || value === "") return undefined;
+  return /^[1-9]\d{0,8}$/.test(value) ? Number(value) : null;
 }
 
 /** Whether a Jira update for the proposal is still unresolved. */

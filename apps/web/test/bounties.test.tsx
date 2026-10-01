@@ -2488,6 +2488,159 @@ test("a row says why its ticket was picked, and the peek lists every reason", as
   expect(within(panel).getByTestId("proposal-categories")).toBeDefined();
 });
 
+/** A board of two proposals: one with a drafted spec, one from before specs. */
+function specBoard() {
+  const calls: string[] = [];
+  const row = (n: number) => ({
+    id: `bpr_${n}`,
+    issueKey: `APP-${n}`,
+    modelRationale: "A few files.",
+    complexity: "M",
+    amountMinor: 200,
+    currency: "USD",
+    modelComplexity: "M",
+    modelConfidence: "high",
+    actualModel: "deepseek-v4-pro",
+    status: "proposed",
+    revision: 1,
+    specRevision: n === 1 ? 3 : null,
+    sizedTitle: `Ticket ${n}`,
+    categories: [],
+  });
+  const fetchMock = vi.fn((input: string) => {
+    const url = String(input);
+    calls.push(url);
+    if (url.includes("/proposal-titles?")) {
+      return Promise.resolve(new Response(""));
+    }
+    if (url.includes("/runs")) {
+      return Promise.resolve(
+        Response.json({ runs: [], sizingAvailable: true }),
+      );
+    }
+    if (/\/proposals\/bpr_\d+\/spec$/.test(url)) {
+      return Promise.resolve(
+        Response.json({
+          spec: {
+            id: "bsp_1",
+            proposalId: "bpr_1",
+            revision: 3,
+            draft: {
+              feature: "CSV export of a filtered table",
+              background: [],
+              scenarios: [
+                {
+                  id: "s1",
+                  kind: "happy",
+                  title: "The filtered rows are exported",
+                  steps: [{ keyword: "Then", text: "a CSV is downloaded" }],
+                  origin: "draft",
+                },
+                {
+                  id: "s2",
+                  kind: "boundary",
+                  title: "An empty table exports its header",
+                  steps: [{ keyword: "Then", text: "the file has one line" }],
+                  origin: "draft",
+                },
+              ],
+              openQuestions: [],
+              assumptions: [],
+            },
+          },
+        }),
+      );
+    }
+    if (url.includes("/proposals/bpr_")) {
+      const n = Number(/bpr_(\d+)/.exec(url)?.[1]);
+      return Promise.resolve(
+        Response.json({
+          proposal: row(n),
+          freshness: { freshness: "current", checkedAt: "now" },
+          writebackOperations: [],
+        }),
+      );
+    }
+    if (url.includes("/proposal-categories")) {
+      return Promise.resolve(new Response("", { status: 500 }));
+    }
+    return Promise.resolve(
+      Response.json({ proposals: [row(1), row(2)], nextCursor: null }),
+    );
+  });
+  return {
+    fetchMock,
+    specReads: () => calls.filter((url) => url.endsWith("/spec")),
+  };
+}
+
+test("the scenarios have a tab of their own, read when the peek opens", async () => {
+  const server = specBoard();
+  vi.stubGlobal("fetch", server.fetchMock);
+  renderStreamedBoard();
+  const list = await screen.findByTestId("proposal-list");
+  // The list reads no spec: it is the open proposal's.
+  expect(server.specReads()).toEqual([]);
+
+  await userEvent.click(within(list).getByRole("button", { name: /Ticket 1/ }));
+  const panel = await screen.findByTestId("proposal-panel");
+  // Between the decision and the ticket, and counted once the spec is in:
+  // read with the peek, not when the tab is pressed, so it opens on it.
+  expect(
+    within(panel)
+      .getAllByRole("tab")
+      .map((tab) => tab.textContent?.replace(/\d+$/, "")),
+  ).toEqual(["Bounty", "Scenarios", "Spec"]);
+  await waitFor(() =>
+    expect(
+      within(panel).getByRole("tab", { name: /^Scenarios/ }).textContent,
+    ).toBe("Scenarios2"),
+  );
+  expect(server.specReads()).toEqual([
+    "/api/v1/orgs/org_1/proposals/bpr_1/spec",
+  ]);
+  // Not on the Bounty tab any more, which keeps to the decision.
+  expect(within(panel).queryByTestId("proposal-spec")).toBeNull();
+
+  await userEvent.click(within(panel).getByRole("tab", { name: /^Scenarios/ }));
+  const spec = within(panel).getByTestId("proposal-spec");
+  expect(
+    within(spec).getByText("CSV export of a filtered table"),
+  ).toBeDefined();
+  expect(within(spec).getByText("2 scenarios · revision 3")).toBeDefined();
+  expect(
+    within(spec).getByRole("region", { name: "Happy path" }),
+  ).toBeDefined();
+  expect(within(spec).getByRole("region", { name: "Boundary" })).toBeDefined();
+  // Opening the tab asked for nothing more.
+  expect(server.specReads()).toHaveLength(1);
+  // The Spec tab is still the Jira ticket, and is a different thing.
+  expect(within(panel).getByRole("tab", { name: "Spec" })).toBeDefined();
+});
+
+test("a proposal sized before specs has an uncounted tab saying so, without asking", async () => {
+  const server = specBoard();
+  vi.stubGlobal("fetch", server.fetchMock);
+  renderStreamedBoard();
+  const list = await screen.findByTestId("proposal-list");
+
+  await userEvent.click(within(list).getByRole("button", { name: /Ticket 2/ }));
+  const panel = await screen.findByTestId("proposal-panel");
+  // The stored reasoning is still what explains the size.
+  expect(within(panel).getByText("A few files.")).toBeDefined();
+  expect(
+    await within(panel).findByText("Unchanged since sizing"),
+  ).toBeDefined();
+  const tab = within(panel).getByRole("tab", { name: /^Scenarios/ });
+  expect(tab.textContent).toBe("Scenarios");
+
+  await userEvent.click(tab);
+  expect(within(panel).getByTestId("spec-empty").textContent).toBe(
+    "No scenarios were drafted for this proposal. Re-analyze, on the Bounty tab, drafts them from the ticket as it is now.",
+  );
+  expect(server.specReads()).toEqual([]);
+});
+
 test("a proposal for a hand-picked ticket shows no reason in the peek", async () => {
   const server = pagedBoard(1);
   vi.stubGlobal("fetch", server.fetchMock);

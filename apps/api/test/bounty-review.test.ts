@@ -41,6 +41,7 @@ function proposal(
     currency: "USD",
     status: "proposed",
     revision: 1,
+    specRevision: null,
     decidedAt: null,
     decidedBy: null,
     decisionDeliveryPolicy: null,

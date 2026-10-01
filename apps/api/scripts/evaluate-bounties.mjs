@@ -1,7 +1,7 @@
 import { PRICED_BOUNTY_COMPLEXITIES } from "sandbox-factory";
 import { readFile } from "node:fs/promises";
 
-import { AnthropicSizer } from "../dist/sizing/index.js";
+import { AnthropicCaller, sizeBountyTool } from "../dist/sizing/index.js";
 
 const path = process.argv[2];
 if (!path) {
@@ -35,7 +35,7 @@ const examples = (await readFile(path, "utf8"))
   });
 if (examples.length === 0) throw new Error("The evaluation file is empty.");
 
-const sizer = new AnthropicSizer({ apiKey, model });
+const caller = new AnthropicCaller({ apiKey, model });
 let exact = 0;
 let sizedPairs = 0;
 let withinOne = 0;
@@ -48,7 +48,7 @@ let outputTokens = 0;
 
 for (const example of examples) {
   try {
-    const result = await sizer.size({
+    const result = await caller.call(sizeBountyTool, {
       summary: example.summary,
       descriptionText: example.descriptionText,
       issueType: example.issueType,
@@ -81,7 +81,7 @@ console.log(
   JSON.stringify(
     {
       model,
-      promptVersion: sizer.promptVersion,
+      promptVersion: sizeBountyTool.promptVersion,
       sampleCount: examples.length,
       evaluatedCount: evaluated,
       technicalFailures,

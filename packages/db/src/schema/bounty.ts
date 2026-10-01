@@ -22,6 +22,7 @@ import type {
   BountySelection,
   RateCardSnapshot,
   PricedComplexity,
+  SpecDraft,
 } from "sandbox-factory";
 
 import { user } from "./auth.js";
@@ -172,6 +173,10 @@ export const bountyProposal = pgTable(
     currency: text("currency"),
     status: text("status").notNull().default("proposed"),
     revision: integer("revision").notNull().default(1),
+    // The `bounty_spec` revision this size goes with. Null for a proposal
+    // with no spec: one from before specs, or a ticket nothing was drafted
+    // from. A re-price moves it, or clears it when it drafts nothing.
+    specRevision: integer("spec_revision"),
     decidedBy: text("decided_by").references(() => user.id, {
       onDelete: "set null",
     }),
@@ -212,6 +217,10 @@ export const bountyProposal = pgTable(
     ),
     check("bounty_proposal_revision_check", sql`${table.revision} > 0`),
     check(
+      "bounty_proposal_spec_revision_check",
+      sql`${table.specRevision} IS NULL OR ${table.specRevision} > 0`,
+    ),
+    check(
       "bounty_proposal_hash_check",
       sql`length(${table.specHash}) = 64 AND ${table.specHashVersion} > 0`,
     ),
@@ -226,6 +235,72 @@ export const bountyProposal = pgTable(
     check(
       "bounty_proposal_approved_sized_check",
       sql`${table.status} <> 'approved' OR (${table.complexity} <> 'unsized' AND NOT ${table.inputTruncated})`,
+    ),
+  ],
+);
+
+/** How a spec revision came to be. */
+export const BOUNTY_SPEC_ORIGINS = [
+  "draft",
+  "expand",
+  "trim",
+  "answer",
+] as const;
+export type BountySpecOrigin = (typeof BOUNTY_SPEC_ORIGINS)[number];
+
+/**
+ * A proposal's spec, one row per revision: the ticket's behaviour as
+ * scenarios, with the questions it left open.
+ *
+ * **This is text derived from a ticket, and it is kept.** It is private to
+ * the organization, like the proposal it hangs from, and it goes when the
+ * proposal does. A revision is never edited: a change is a new row, so what
+ * a size was computed from stays readable after the spec has moved on.
+ */
+export const bountySpec = pgTable(
+  "bounty_spec",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    proposalId: text("proposal_id")
+      .notNull()
+      .references(() => bountyProposal.id, { onDelete: "cascade" }),
+    revision: integer("revision").notNull(),
+    // The ticket this revision was drafted from, hashed as the proposal
+    // hashes it, so a revision drafted from an older ticket can be told.
+    specHash: text("spec_hash").notNull(),
+    specHashVersion: integer("spec_hash_version").notNull(),
+    draft: jsonb("draft").$type<SpecDraft>().notNull(),
+    origin: text("origin").notNull(),
+    // The reviewer's ask, for a revision that came from one.
+    instruction: text("instruction"),
+    // Null when a run drafted it rather than a person.
+    createdBy: text("created_by").references(() => user.id, {
+      onDelete: "set null",
+    }),
+    runId: text("run_id").references(() => bountyRun.id, {
+      onDelete: "set null",
+    }),
+    actualModel: text("actual_model"),
+    promptVersion: text("prompt_version"),
+    createdAt: ts("created_at").notNull().defaultNow(),
+  },
+  (table) => [
+    unique("bounty_spec_proposal_revision_unique").on(
+      table.proposalId,
+      table.revision,
+    ),
+    index("bounty_spec_organization_id_idx").on(table.organizationId),
+    check("bounty_spec_revision_check", sql`${table.revision} > 0`),
+    check(
+      "bounty_spec_origin_check",
+      sql`${table.origin} in ('draft', 'expand', 'trim', 'answer')`,
+    ),
+    check(
+      "bounty_spec_hash_check",
+      sql`length(${table.specHash}) = 64 AND ${table.specHashVersion} > 0`,
     ),
   ],
 );
@@ -294,5 +369,7 @@ export type BountyRunRow = typeof bountyRun.$inferSelect;
 export type NewBountyRunRow = typeof bountyRun.$inferInsert;
 export type BountyProposalRow = typeof bountyProposal.$inferSelect;
 export type NewBountyProposalRow = typeof bountyProposal.$inferInsert;
+export type BountySpecRow = typeof bountySpec.$inferSelect;
+export type NewBountySpecRow = typeof bountySpec.$inferInsert;
 export type BountyWritebackRow = typeof bountyWriteback.$inferSelect;
 export type NewBountyWritebackRow = typeof bountyWriteback.$inferInsert;

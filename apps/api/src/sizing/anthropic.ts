@@ -1,22 +1,15 @@
-import { BOUNTY_COMPLEXITIES } from "sandbox-factory";
 import Anthropic from "@anthropic-ai/sdk";
-import { sizingResultSchema } from "@sandbox-factory/shared";
 
-import { JIRA_SIZE_PROMPT_VERSION, JIRA_SIZE_SYSTEM_PROMPT } from "./prompt.js";
+import type { JsonSchema, StructuredCall } from "./caller.js";
 import {
-  SizerError,
-  type SizedTicket,
-  type Sizer,
-  type SizingInput,
-  type SizingRequestOptions,
-} from "./sizer.js";
-
-const TOOL_NAME = "size_bounty";
-const MAX_ATTEMPTS = 2;
-const ATTEMPT_TIMEOUT_MS = 45_000;
+  RetryingCaller,
+  type ProviderReply,
+  type RetryingCallerOptions,
+} from "./retrying.js";
 
 interface ProviderMessage {
   readonly model: string;
+  readonly stop_reason?: string | null;
   readonly content: readonly {
     readonly type: string;
     readonly name?: string;
@@ -35,25 +28,16 @@ interface MessagesClient {
   ): Promise<ProviderMessage>;
 }
 
-export interface AnthropicSizerOptions {
+export interface AnthropicCallerOptions extends RetryingCallerOptions {
   readonly apiKey?: string;
-  readonly model: string;
   readonly messages?: MessagesClient;
-  readonly now?: () => number;
-  readonly sleep?: (milliseconds: number) => Promise<void>;
-  readonly attemptTimeoutMs?: number;
 }
 
-export class AnthropicSizer implements Sizer {
-  readonly model: string;
-  readonly promptVersion = JIRA_SIZE_PROMPT_VERSION;
+export class AnthropicCaller extends RetryingCaller {
   readonly #messages: MessagesClient;
-  readonly #now: () => number;
-  readonly #sleep: (milliseconds: number) => Promise<void>;
-  readonly #attemptTimeoutMs: number;
 
-  constructor(options: AnthropicSizerOptions) {
-    this.model = options.model;
+  constructor(options: AnthropicCallerOptions) {
+    super(options);
     this.#messages =
       options.messages ??
       (new Anthropic({
@@ -61,198 +45,107 @@ export class AnthropicSizer implements Sizer {
         // The workflow owns the complete two-request budget.
         maxRetries: 0,
       }).messages as unknown as MessagesClient);
-    this.#now = options.now ?? Date.now;
-    this.#sleep =
-      options.sleep ??
-      ((milliseconds) =>
-        new Promise((resolve) => setTimeout(resolve, milliseconds)));
-    this.#attemptTimeoutMs = options.attemptTimeoutMs ?? ATTEMPT_TIMEOUT_MS;
   }
 
-  async size(
-    input: SizingInput,
-    options: SizingRequestOptions = {},
-  ): Promise<SizedTicket> {
-    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
-      if (isAborted(options.signal)) {
-        throw new SizerError("sizing_cancelled", false);
-      }
-
-      const attemptSignal = this.#attemptSignal(options);
-      try {
-        const message = await this.#messages.create(
-          this.#request(input, attempt > 0),
-          { signal: attemptSignal.signal },
-        );
-        const parsed = parseMessage(message);
-        if (parsed !== null) return parsed;
-        if (attempt === MAX_ATTEMPTS - 1) {
-          throw new SizerError("sizing_invalid_output", false);
-        }
-      } catch (error) {
-        if (error instanceof SizerError) throw error;
-        if (isAborted(options.signal)) {
-          throw new SizerError("sizing_cancelled", false);
-        }
-        if (attemptSignal.timedOut()) {
-          if (attempt === MAX_ATTEMPTS - 1) {
-            throw new SizerError("sizing_timeout", false);
-          }
-        } else if (isConfigurationError(error)) {
-          throw new SizerError("sizing_configuration", true);
-        } else if (!isTransient(error) || attempt === MAX_ATTEMPTS - 1) {
-          throw new SizerError("sizing_provider", false);
-        }
-
-        await this.#waitForRetry(error, options);
-      } finally {
-        attemptSignal.cleanup();
-      }
-    }
-
-    throw new SizerError("sizing_invalid_output", false);
-  }
-
-  #request(input: SizingInput, retry: boolean): Record<string, unknown> {
-    return {
-      model: this.model,
-      max_tokens: 1_024,
-      system: JIRA_SIZE_SYSTEM_PROMPT,
-      messages: [
-        {
-          role: "user",
-          content: `${retry ? "The previous result was invalid. Return exactly one valid tool call.\n\n" : ""}Ticket data:\n${JSON.stringify(input)}`,
-        },
-      ],
-      tools: [
-        {
-          name: TOOL_NAME,
-          description: "Return the ticket size and a short private rationale.",
-          strict: true,
-          input_schema: {
-            type: "object",
-            additionalProperties: false,
-            properties: {
-              complexity: { enum: [...BOUNTY_COMPLEXITIES] },
-              confidence: { enum: ["low", "medium", "high"] },
-              // Strict tool schemas reject minLength/maxLength with a 400, so
-              // the limits are described here and enforced by
-              // `sizingResultSchema` on the way back.
-              rationale: {
-                type: "string",
-                description: "Non-empty, at most 500 characters.",
-              },
-              unsizedReason: {
-                type: "string",
-                description: "Non-empty, at most 120 characters.",
-              },
-            },
-            required: ["complexity", "confidence", "rationale"],
+  protected override async send<I, O>(
+    tool: StructuredCall<I, O>,
+    message: string,
+    signal: AbortSignal,
+  ): Promise<ProviderReply> {
+    const reply = await this.#messages.create(
+      {
+        model: this.model,
+        max_tokens: tool.maxTokens,
+        system: tool.system,
+        messages: [{ role: "user", content: message }],
+        tools: [
+          {
+            name: tool.name,
+            description: tool.description,
+            strict: true,
+            input_schema: toStrictSchema(tool.schema),
           },
+        ],
+        tool_choice: {
+          type: "tool",
+          name: tool.name,
+          disable_parallel_tool_use: true,
         },
-      ],
-      tool_choice: {
-        type: "tool",
-        name: TOOL_NAME,
-        disable_parallel_tool_use: true,
       },
-    };
-  }
-
-  #attemptSignal(options: SizingRequestOptions): {
-    signal: AbortSignal;
-    timedOut: () => boolean;
-    cleanup: () => void;
-  } {
-    const controller = new AbortController();
-    const remaining =
-      options.deadlineAt === undefined
-        ? this.#attemptTimeoutMs
-        : Math.max(0, options.deadlineAt.getTime() - this.#now());
-    let didTimeOut = remaining === 0;
-    const timer = setTimeout(
-      () => {
-        didTimeOut = true;
-        controller.abort();
-      },
-      Math.min(this.#attemptTimeoutMs, remaining),
+      { signal },
     );
-    const cancel = () => controller.abort();
-    options.signal?.addEventListener("abort", cancel, { once: true });
-    if (didTimeOut) controller.abort();
+    const toolUses = reply.content.filter(({ type }) => type === "tool_use");
     return {
-      signal: controller.signal,
-      timedOut: () => didTimeOut,
-      cleanup: () => {
-        clearTimeout(timer);
-        options.signal?.removeEventListener("abort", cancel);
+      outcome:
+        // Checked first: a call the limit cut short still arrives as a
+        // tool_use block, with whatever of its input had been written.
+        reply.stop_reason === "max_tokens"
+          ? { kind: "cut-off" }
+          : toolUses.length === 1 && toolUses[0]?.name === tool.name
+            ? { kind: "call", args: toolUses[0].input }
+            : { kind: "no-call" },
+      actualModel: reply.model,
+      usage: {
+        inputTokens: reply.usage.input_tokens,
+        outputTokens: reply.usage.output_tokens,
       },
     };
   }
+}
 
-  async #waitForRetry(
-    error: unknown,
-    options: SizingRequestOptions,
-  ): Promise<void> {
-    const retryAfter = retryAfterMs(error);
-    const delay = retryAfter ?? 500;
-    const remaining =
-      options.deadlineAt === undefined
-        ? Number.POSITIVE_INFINITY
-        : options.deadlineAt.getTime() - this.#now();
-    if (delay >= remaining) {
-      throw new SizerError("sizing_timeout", false);
+/** The limits a strict tool schema refuses, and how each reads as prose. */
+const LIMITS: Readonly<Record<string, (value: unknown) => string>> = {
+  minLength: (value) =>
+    value === 1 ? "Non-empty" : `At least ${value} characters`,
+  maxLength: (value) => `at most ${value} characters`,
+  minItems: (value) => `at least ${value} ${value === 1 ? "item" : "items"}`,
+  maxItems: (value) => `at most ${value} items`,
+  minimum: (value) => `at least ${value}`,
+  maximum: (value) => `at most ${value}`,
+};
+
+/**
+ * A tool's schema as Anthropic's strict mode accepts it.
+ *
+ * Strict schemas reject string, number and array limits with a 400, so each
+ * limit is moved out of the schema and into the field's description, where
+ * the model still reads it. The tool's `parse` is what enforces it on the
+ * way back.
+ */
+export function toStrictSchema(schema: JsonSchema): JsonSchema {
+  const strict: Record<string, unknown> = {};
+  const limits: string[] = [];
+  for (const [keyword, value] of Object.entries(schema)) {
+    const limit = Object.hasOwn(LIMITS, keyword) ? LIMITS[keyword] : undefined;
+    if (limit !== undefined) {
+      limits.push(limit(value));
+    } else if (keyword === "properties" && isSchema(value)) {
+      strict[keyword] = Object.fromEntries(
+        Object.entries(value).map(([name, property]) => [
+          name,
+          isSchema(property) ? toStrictSchema(property) : property,
+        ]),
+      );
+    } else if (keyword === "items" && isSchema(value)) {
+      strict[keyword] = toStrictSchema(value);
+    } else {
+      strict[keyword] = value;
     }
-    await this.#sleep(Math.min(delay, 30_000));
   }
-}
-
-function parseMessage(message: ProviderMessage): SizedTicket | null {
-  const toolUses = message.content.filter(({ type }) => type === "tool_use");
-  if (toolUses.length !== 1 || toolUses[0]?.name !== TOOL_NAME) return null;
-  const parsed = sizingResultSchema.safeParse(toolUses[0].input);
-  if (!parsed.success) return null;
-  return {
-    result: parsed.data,
-    actualModel: message.model,
-    usage: {
-      inputTokens: message.usage.input_tokens,
-      outputTokens: message.usage.output_tokens,
-    },
-  };
-}
-
-function statusOf(error: unknown): number | undefined {
-  return typeof error === "object" &&
-    error !== null &&
-    "status" in error &&
-    typeof error.status === "number"
-    ? error.status
-    : undefined;
-}
-
-function isAborted(signal: AbortSignal | undefined): boolean {
-  return signal?.aborted === true;
-}
-
-function isConfigurationError(error: unknown): boolean {
-  const status = statusOf(error);
-  return status === 400 || status === 401 || status === 403 || status === 404;
-}
-
-function isTransient(error: unknown): boolean {
-  const status = statusOf(error);
-  return (
-    status === undefined || status === 408 || status === 429 || status >= 500
-  );
-}
-
-function retryAfterMs(error: unknown): number | undefined {
-  if (typeof error !== "object" || error === null || !("headers" in error)) {
-    return undefined;
+  if (limits.length > 0) {
+    const sentence = `${capitalize(limits.join(", "))}.`;
+    strict["description"] =
+      typeof schema["description"] === "string"
+        ? `${schema["description"]} ${sentence}`
+        : sentence;
   }
-  const headers = error.headers;
-  if (!(headers instanceof Headers)) return undefined;
-  const seconds = Number(headers.get("retry-after"));
-  return Number.isFinite(seconds) && seconds >= 0 ? seconds * 1_000 : undefined;
+  return strict;
+}
+
+function isSchema(value: unknown): value is JsonSchema {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function capitalize(value: string): string {
+  return value.charAt(0).toUpperCase() + value.slice(1);
 }

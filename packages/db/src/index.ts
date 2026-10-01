@@ -54,10 +54,18 @@ export { createBountyProposalStore } from "./bounty-proposals.js";
 export type {
   BountyProposalStore,
   CreateBountyProposalInput,
+  LeasedBountyProposalInput,
   ListedBountyProposal,
   ProposalMutationResult,
   StoredBountyProposal,
 } from "./bounty-proposals.js";
+export { createBountySpecStore } from "./bounty-specs.js";
+export type {
+  BountySpecStore,
+  NewBountySpec,
+  StoredBountySpec,
+  StoredBountySpecRevision,
+} from "./bounty-specs.js";
 export { createBountyWritebackStore } from "./bounty-writebacks.js";
 export type {
   BountyWritebackStore,

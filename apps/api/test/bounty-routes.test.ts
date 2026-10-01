@@ -174,6 +174,7 @@ function harness(
       liveProposalIds: () =>
         Promise.resolve(new Map(Object.entries(options.live ?? {}))),
     } as never,
+    specs: {} as never,
     issues: { get: () => Promise.resolve(null) } as never,
     ...(sizing
       ? {
@@ -399,6 +400,7 @@ function reviewProposal(
     currency: "USD",
     status: "proposed",
     revision: 1,
+    specRevision: null,
     decidedAt: null,
     decidedBy: null,
     decisionDeliveryPolicy: null,
@@ -454,6 +456,7 @@ function reviewHarness(hash = "a".repeat(64)) {
       rateCards: { get: () => Promise.resolve(card) } as never,
       runs: {} as never,
       proposals,
+      specs: {} as never,
       issues: {
         get: () =>
           Promise.resolve({ id: "jri_1", boardId: "jrb_1", externalId: "100" }),
@@ -511,6 +514,221 @@ test("the proposal list is stored rows alone and never waits on Jira", async () 
   assert.equal(body.proposals[0]?.freshness, undefined);
   assert.equal(body.proposals[0]?.descriptionText, undefined);
   assert.equal(state.specReads(), 0);
+});
+
+/* A proposal's spec: the revision its size goes with, and its history. */
+
+const storedSpec = {
+  id: "bsp_2",
+  organizationId: "org_1",
+  proposalId: "bpr_1",
+  revision: 2,
+  specHash: "a".repeat(64),
+  specHashVersion: 1,
+  draft: {
+    feature: "CSV export",
+    background: [],
+    scenarios: [
+      {
+        id: "s1",
+        kind: "happy" as const,
+        title: "The filtered table is exported",
+        steps: [{ keyword: "Then" as const, text: "a CSV file is downloaded" }],
+        origin: "draft" as const,
+      },
+    ],
+    openQuestions: ["Is there a row limit?"],
+    assumptions: [],
+  },
+  origin: "draft" as const,
+  instruction: null,
+  createdBy: null,
+  runId: "brn_1",
+  actualModel: "drafting-model",
+  promptVersion: "draft-v1",
+  createdAt: "2026-09-30T00:00:00.000Z",
+};
+
+/** A proposal pointing at `specRevision`, over a spec store that records. */
+function specHarness(
+  options: {
+    specRevision?: number | null;
+    role?: string;
+    found?: boolean;
+  } = {},
+) {
+  const reads: unknown[][] = [];
+  const proposal = reviewProposal({
+    specRevision: options.specRevision === undefined ? 2 : options.specRevision,
+  });
+  const app = createApp({
+    corsOrigins: ["https://app.test"],
+    auth: fakeAuth(),
+    organizations: {
+      roleOf: () => Promise.resolve(options.role ?? "member"),
+    } as never,
+    bounty: {
+      rateCards: {} as never,
+      runs: {} as never,
+      boards: {} as never,
+      issues: {} as never,
+      proposals: {
+        get: (organizationId: string, id: string) =>
+          Promise.resolve(
+            organizationId === "org_1" && id === "bpr_1" ? proposal : null,
+          ),
+      } as never,
+      specs: {
+        get: (...args: unknown[]) => {
+          reads.push(args);
+          return Promise.resolve(
+            options.found === false
+              ? null
+              : { ...storedSpec, revision: args[2] as number },
+          );
+        },
+        listRevisions: (...args: unknown[]) => {
+          reads.push(args);
+          return Promise.resolve([
+            {
+              revision: 2,
+              origin: "draft" as const,
+              scenarioCount: 1,
+              openQuestionCount: 1,
+              createdBy: null,
+              createdAt: "2026-09-30T01:00:00.000Z",
+            },
+            {
+              revision: 1,
+              origin: "draft" as const,
+              scenarioCount: 4,
+              openQuestionCount: 0,
+              createdBy: null,
+              createdAt: "2026-09-30T00:00:00.000Z",
+            },
+          ]);
+        },
+      } as never,
+    },
+  });
+  return { app, reads };
+}
+
+const specPath = "/api/v1/orgs/org_1/proposals/bpr_1/spec";
+
+test("the spec read answers with the revision the proposal points at", async () => {
+  // Any member may read it, as any member may read the proposal.
+  const state = specHarness();
+  const response = await state.app.request(specPath, { headers });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { spec: storedSpec });
+  // Owner first, then the proposal, then the revision it points at.
+  assert.deepEqual(state.reads, [["org_1", "bpr_1", 2]]);
+});
+
+test("a proposal with no spec answers null without asking the store", async () => {
+  // One sized before specs existed, or from a ticket nothing was drafted
+  // from: an answer, not a miss.
+  const state = specHarness({ specRevision: null });
+  const response = await state.app.request(specPath, { headers });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { spec: null });
+  assert.deepEqual(state.reads, []);
+});
+
+test("a pointer to a revision that is not there still answers null", async () => {
+  const state = specHarness({ found: false });
+  const response = await state.app.request(specPath, { headers });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { spec: null });
+});
+
+test("an earlier revision is read by number, and a missing one is a 404", async () => {
+  const state = specHarness();
+  const earlier = await state.app.request(`${specPath}?revision=1`, {
+    headers,
+  });
+  assert.equal(earlier.status, 200);
+  assert.equal(
+    ((await earlier.json()) as { spec: { revision: number } }).spec.revision,
+    1,
+  );
+  assert.deepEqual(state.reads, [["org_1", "bpr_1", 1]]);
+
+  // Readable by number even when the proposal points at none.
+  const unpointed = specHarness({ specRevision: null });
+  assert.equal(
+    (await unpointed.app.request(`${specPath}?revision=1`, { headers })).status,
+    200,
+  );
+
+  const missing = specHarness({ found: false });
+  assert.equal(
+    (await missing.app.request(`${specPath}?revision=9`, { headers })).status,
+    404,
+  );
+});
+
+test("a revision that is not a positive whole number is refused", async () => {
+  const state = specHarness();
+  for (const revision of ["0", "-1", "1.5", "abc", "1e3", "9999999999"]) {
+    const response = await state.app.request(
+      `${specPath}?revision=${revision}`,
+      { headers },
+    );
+    assert.equal(response.status, 400, revision);
+  }
+  assert.deepEqual(state.reads, []);
+  // An empty value is no value: the pointer is used.
+  assert.equal(
+    (await state.app.request(`${specPath}?revision=`, { headers })).status,
+    200,
+  );
+});
+
+test("a spec's revisions are listed newest first, marking the current one", async () => {
+  const state = specHarness();
+  const response = await state.app.request(`${specPath}/revisions`, {
+    headers,
+  });
+
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as {
+    revisions: { revision: number; current: boolean; scenarioCount: number }[];
+  };
+  assert.deepEqual(
+    body.revisions.map(({ revision, current, scenarioCount }) => ({
+      revision,
+      current,
+      scenarioCount,
+    })),
+    [
+      { revision: 2, current: true, scenarioCount: 1 },
+      { revision: 1, current: false, scenarioCount: 4 },
+    ],
+  );
+  assert.deepEqual(state.reads, [["org_1", "bpr_1"]]);
+
+  // With no pointer, no revision is the current one.
+  const unpointed = specHarness({ specRevision: null });
+  const listed = (await (
+    await unpointed.app.request(`${specPath}/revisions`, { headers })
+  ).json()) as { revisions: { current: boolean }[] };
+  assert.ok(listed.revisions.every(({ current }) => !current));
+});
+
+test("another proposal's spec is a 404, and the store is never asked", async () => {
+  const state = specHarness();
+  for (const path of [
+    "/api/v1/orgs/org_1/proposals/bpr_other/spec",
+    "/api/v1/orgs/org_1/proposals/bpr_other/spec/revisions",
+  ]) {
+    assert.equal((await state.app.request(path, { headers })).status, 404);
+  }
+  assert.deepEqual(state.reads, []);
 });
 
 /* The category view above the list: counts, and the list by category. */
@@ -1007,6 +1225,7 @@ function titlesHarness(
     bounty: {
       rateCards: {} as never,
       runs: {} as never,
+      specs: {} as never,
       proposals: {
         issuesForProposals: (
           _organizationId: string,

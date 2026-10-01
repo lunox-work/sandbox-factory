@@ -102,8 +102,10 @@ export interface BountyRunStore {
 const RUN_BASE_MS = 10 * 60_000;
 /**
  * The allowance each planned ticket adds. A ticket costs one Jira read and
- * one model call, and three are sized at a time, so this is several times
- * what one needs. It is a bound on a stuck run, not a target.
+ * two model calls, the spec draft and the size, which together took 18 to
+ * 29 seconds on the dev board. Three tickets are sized at a time, so this
+ * is about twice what one needs. It is a bound on a stuck run, not a
+ * target.
  */
 const RUN_PER_TICKET_MS = 20_000;
 

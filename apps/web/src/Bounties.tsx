@@ -60,6 +60,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 import { CategoryIcon } from "./CategoryIcon";
 import { IssueSpec, IssueSpecSkeleton } from "./IssueSpec";
+import { ProposalSpec, scenarioTotal, useProposalSpec } from "./ProposalSpec";
 import { JiraIcon, ModelIcon } from "./ProviderIcon";
 import type { JiraIssueDetail } from "./useJira";
 
@@ -1562,6 +1563,7 @@ export function BoardBounties({
           )
         ) : (
           <ProposalPeek
+            base={base}
             proposal={selected}
             ticket={ticket}
             ticketError={ticketError}
@@ -2012,13 +2014,15 @@ function capitalize(value: string): string {
 }
 
 /**
- * The open proposal, in two tabs.
+ * The open proposal, in three tabs.
  *
  * Bounty is the decision — one card of what the proposal is, with each
  * action beside the fact it changes (for those who may act), the model's
- * reasoning as prose, and where delivery to Jira stands. Spec is the ticket
- * itself, read live, so the decision is made against what Jira says now
- * rather than what was stored at sizing time.
+ * reasoning as prose, and where delivery to Jira stands. Scenarios is what
+ * the ticket was taken to ask for when it was sized, with the count in the
+ * tab once it is known. Spec is the ticket itself, read live, so the
+ * decision is made against what Jira says now rather than what was stored
+ * at sizing time.
  *
  * Two states. Proposed: Re-analyze (the re-price) beside the status, the
  * resize as the size itself level with the amount, and Approve after the
@@ -2029,6 +2033,7 @@ function capitalize(value: string): string {
  * unapprove do not.
  */
 function ProposalPeek({
+  base,
   proposal,
   ticket,
   ticketError,
@@ -2038,6 +2043,8 @@ function ProposalPeek({
   mutate,
   onRemoved,
 }: {
+  /** The organization's API root, for the reads the peek makes itself. */
+  base: string;
   proposal: EnrichedProposal;
   ticket: JiraIssueDetail | null;
   ticketError: string | null;
@@ -2058,6 +2065,9 @@ function ProposalPeek({
   const priced = proposal.amountMinor !== null;
   const open = proposal.status === "proposed";
   const key = proposal.liveKey ?? proposal.issueKey;
+  // Read when the peek opens, like the ticket, so the tab opens on it.
+  const spec = useProposalSpec(base, proposal.id, proposal.specRevision);
+  const scenarios = scenarioTotal(spec.read);
   // The model pill and the XL warning drop a row when the notes are shown.
   const lowerRow =
     proposal.sizedBy === "reviewer" ? "sm:row-start-3" : "sm:row-start-2";
@@ -2072,6 +2082,14 @@ function ProposalPeek({
         <div className="flex flex-wrap items-center justify-between gap-3">
           <TabsList>
             <TabsTrigger value="bounty">Bounty</TabsTrigger>
+            <TabsTrigger value="scenarios">
+              Scenarios
+              {scenarios !== null && (
+                <span className="text-muted-foreground text-xs tabular-nums">
+                  {scenarios}
+                </span>
+              )}
+            </TabsTrigger>
             <TabsTrigger value="spec">Spec</TabsTrigger>
           </TabsList>
           {url !== null && (
@@ -2375,6 +2393,19 @@ function ProposalPeek({
               </div>
             )}
           </div>
+        </TabsContent>
+
+        {/*
+          What the ticket was taken to ask for when it was sized: after the
+          decision, which it supports, and before the ticket it was drafted
+          from.
+        */}
+        <TabsContent value="scenarios" className="mt-2">
+          <ProposalSpec
+            read={spec.read}
+            onRetry={spec.retry}
+            canAnalyze={canDecide}
+          />
         </TabsContent>
 
         <TabsContent value="spec" className="mt-2">

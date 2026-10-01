@@ -8,6 +8,11 @@ import type {
 } from "sandbox-factory";
 import { and, desc, eq, gt, inArray, lt, or, sql } from "drizzle-orm";
 
+import {
+  insertSpecRevision,
+  nextSpecRevision,
+  type NewBountySpec,
+} from "./bounty-specs.js";
 import { isUniqueViolation, type Database } from "./errors.js";
 import { jiraWriteGranted, splitScopes } from "./jira-connections.js";
 import { generateId } from "./mapping.js";
@@ -37,6 +42,15 @@ export interface CreateBountyProposalInput {
   readonly promptVersion: string;
   readonly amountMinor: number | null;
   readonly currency: string | null;
+}
+
+/**
+ * What a run writes under its lease: the proposal, and the spec drafted for
+ * it when there is one. The two are one transaction, so a proposal never
+ * points at a spec revision that was not stored.
+ */
+export interface LeasedBountyProposalInput extends CreateBountyProposalInput {
+  readonly spec?: NewBountySpec;
 }
 
 export type ProposalMutationResult =
@@ -69,10 +83,14 @@ export interface BountyProposalStore {
     organizationId: string,
     input: CreateBountyProposalInput,
   ): Promise<StoredBountyProposal | null>;
+  /**
+   * A run's new proposal, fenced by its lease. A spec on the input is
+   * stored as the proposal's revision 1 in the same transaction.
+   */
   createForLease(
     organizationId: string,
     leaseToken: string,
-    input: CreateBountyProposalInput,
+    input: LeasedBountyProposalInput,
   ): Promise<
     | { readonly status: "created"; readonly proposal: StoredBountyProposal }
     | { readonly status: "duplicate" | "lost-lease" | "not-found" }
@@ -176,13 +194,17 @@ export interface BountyProposalStore {
    * `createForLease`. When the source was approved and its approval comment
    * is on the ticket, a `withdrawn` write-back is queued in the same
    * transaction and its id returned.
+   *
+   * A spec on the input becomes the proposal's next spec revision, and the
+   * proposal points at it. Without one the pointer is cleared: the earlier
+   * revisions stay, but none of them is what this size goes with.
    */
   repriceForLease(
     organizationId: string,
     leaseToken: string,
     sourceProposalId: string,
     sourceRevision: number,
-    input: CreateBountyProposalInput,
+    input: LeasedBountyProposalInput,
   ): Promise<
     | {
         readonly status: "repriced";
@@ -220,6 +242,8 @@ export interface StoredBountyProposal {
   readonly currency: string | null;
   readonly status: "proposed" | "approved" | "rejected" | "superseded";
   readonly revision: number;
+  /** The spec revision this size goes with, or null when there is none. */
+  readonly specRevision: number | null;
   readonly decidedAt: string | null;
   readonly decidedBy: string | null;
   readonly decisionDeliveryPolicy: "off" | "requested" | null;
@@ -255,6 +279,7 @@ function toDto(row: BountyProposalRow, issueKey: string): StoredBountyProposal {
     currency: row.currency,
     status: row.status as StoredBountyProposal["status"],
     revision: row.revision,
+    specRevision: row.specRevision,
     decidedAt: row.decidedAt?.toISOString() ?? null,
     decidedBy: row.decidedBy,
     decisionDeliveryPolicy:
@@ -301,9 +326,11 @@ async function mutationMiss(
 function insertValues(
   organizationId: string,
   input: CreateBountyProposalInput,
+  specRevision: number | null = null,
 ) {
   return {
     id: generateId("bpr"),
+    specRevision,
     organizationId,
     runId: input.runId,
     jiraIssueId: input.jiraIssueId,
@@ -428,16 +455,31 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
 
         const rows = (await tx
           .insert(bountyProposal)
-          .values(insertValues(organizationId, input))
+          .values(
+            insertValues(
+              organizationId,
+              input,
+              input.spec === undefined ? null : 1,
+            ),
+          )
           .onConflictDoNothing()
           .returning()) as BountyProposalRow[];
         const created = rows[0];
-        return created === undefined
-          ? ({ status: "duplicate" } as const)
-          : ({
-              status: "created",
-              proposal: toDto(created, issue.key),
-            } as const);
+        if (created === undefined) return { status: "duplicate" } as const;
+        // After the proposal, which it references, and only when there is
+        // one: a ticket that already has a live proposal gets no spec.
+        if (input.spec !== undefined) {
+          await insertSpecRevision(
+            tx,
+            organizationId,
+            { proposalId: created.id, runId: input.runId, revision: 1 },
+            input.spec,
+          );
+        }
+        return {
+          status: "created",
+          proposal: toDto(created, issue.key),
+        } as const;
       });
     },
 
@@ -824,6 +866,13 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
           );
         }
 
+        // The source row is locked above, so the revision read here is
+        // still the latest when the new one is written below.
+        const specRevision =
+          input.spec === undefined
+            ? null
+            : await nextSpecRevision(tx, organizationId, sourceProposalId);
+
         // The same row, sized again: the id is what links and Jira comments
         // point at, and a decision made earlier does not carry over.
         const values = insertValues(organizationId, input);
@@ -849,6 +898,7 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
             currency: values.currency,
             status: "proposed",
             revision: sourceRevision + 1,
+            specRevision,
             decidedBy: null,
             decidedAt: null,
             decisionDeliveryPolicy: null,
@@ -864,6 +914,18 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
           .returning()) as BountyProposalRow[];
         if (repriced[0] === undefined) {
           throw new Error("Failed to re-price bounty proposal.");
+        }
+        if (input.spec !== undefined && specRevision !== null) {
+          await insertSpecRevision(
+            tx,
+            organizationId,
+            {
+              proposalId: sourceProposalId,
+              runId: input.runId,
+              revision: specRevision,
+            },
+            input.spec,
+          );
         }
         const found = await first(tx, organizationId, sourceProposalId);
         if (found === undefined)

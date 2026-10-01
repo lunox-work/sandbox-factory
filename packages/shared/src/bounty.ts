@@ -214,6 +214,12 @@ export const bountyProposalDtoSchema = z.object({
   currency: z.string().length(3).nullable(),
   status: bountyProposalStatusSchema,
   revision: z.number().int().positive(),
+  /**
+   * The spec revision this size goes with. Null when the proposal has no
+   * spec: one sized before specs existed, or one whose ticket could not be
+   * drafted from.
+   */
+  specRevision: z.number().int().positive().nullable(),
   decidedAt: z.iso.datetime().nullable(),
   decidedBy: z.string().nullable(),
   decisionDeliveryPolicy: z.enum(["off", "requested"]).nullable(),

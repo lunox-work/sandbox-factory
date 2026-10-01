@@ -3,7 +3,13 @@ import { test } from "node:test";
 
 import { getTableConfig } from "drizzle-orm/pg-core";
 
-import { bountyProposal, bountyRun, rateCard } from "../src/schema/bounty.js";
+import {
+  BOUNTY_SPEC_ORIGINS,
+  bountyProposal,
+  bountyRun,
+  bountySpec,
+  rateCard,
+} from "../src/schema/bounty.js";
 
 test("one active run is allowed per board", () => {
   const index = getTableConfig(bountyRun).indexes.find(
@@ -33,7 +39,7 @@ test("one live proposal is allowed per board-local issue pointer", () => {
 });
 
 test("commercial rows carry non-null organization ownership", () => {
-  for (const table of [rateCard, bountyRun, bountyProposal]) {
+  for (const table of [rateCard, bountyRun, bountyProposal, bountySpec]) {
     const owner = getTableConfig(table).columns.find(
       ({ name }) => name === "organization_id",
     );
@@ -53,8 +59,55 @@ test("proposal constraints pin money, lifecycle and review invariants", () => {
   }
 });
 
+test("a spec has one row per revision and goes with its proposal", () => {
+  const config = getTableConfig(bountySpec);
+  const unique = config.uniqueConstraints.find(
+    ({ name }) => name === "bounty_spec_proposal_revision_unique",
+  );
+  assert.deepEqual(
+    unique?.columns.map(({ name }) => name),
+    ["proposal_id", "revision"],
+  );
+
+  // Derived ticket text must not outlive the proposal or the organization
+  // it was drafted for; who or what drafted it may go without taking it.
+  const onDelete = Object.fromEntries(
+    config.foreignKeys.map((key) => [
+      key.reference().columns[0]?.name,
+      key.onDelete,
+    ]),
+  );
+  assert.deepEqual(onDelete, {
+    organization_id: "cascade",
+    proposal_id: "cascade",
+    created_by: "set null",
+    run_id: "set null",
+  });
+
+  const checks = config.checks.map(({ name }) => name);
+  for (const expected of [
+    "bounty_spec_revision_check",
+    "bounty_spec_origin_check",
+    "bounty_spec_hash_check",
+  ]) {
+    assert.ok(checks.includes(expected), expected);
+  }
+  assert.deepEqual(BOUNTY_SPEC_ORIGINS, ["draft", "expand", "trim", "answer"]);
+});
+
+test("a proposal's spec pointer is optional and positive", () => {
+  const config = getTableConfig(bountyProposal);
+  const column = config.columns.find(({ name }) => name === "spec_revision");
+  assert.equal(column?.notNull, false);
+  assert.ok(
+    config.checks.some(
+      ({ name }) => name === "bounty_proposal_spec_revision_check",
+    ),
+  );
+});
+
 test("all commercial foreign-key thunks resolve", () => {
-  for (const table of [rateCard, bountyRun, bountyProposal]) {
+  for (const table of [rateCard, bountyRun, bountyProposal, bountySpec]) {
     for (const key of getTableConfig(table).foreignKeys) {
       const reference = key.reference();
       assert.ok(reference.foreignTable);

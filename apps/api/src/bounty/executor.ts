@@ -5,6 +5,7 @@ import type {
   BountyRunStore,
   JiraBoardStore,
   JiraIssueStore,
+  NewBountySpec,
   StoredBountyRun,
 } from "@sandbox-factory/db";
 import {
@@ -20,8 +21,14 @@ import {
   type CategoryMatch,
 } from "sandbox-factory";
 
-import type { Sizer } from "../sizing/sizer.js";
-import { SizerError } from "../sizing/sizer.js";
+import {
+  SizerError,
+  type SizingRequestOptions,
+  type SizingUsage,
+  type StructuredCaller,
+} from "../sizing/caller.js";
+import { draftSpecTool } from "../sizing/tools/draft-spec.js";
+import { sizeBountyTool } from "../sizing/tools/size-bounty.js";
 import { selectBacklog, type BacklogPageReader } from "./selection.js";
 
 const HEARTBEAT_MS = 15_000;
@@ -55,7 +62,8 @@ export interface BountyExecutorOptions {
   readonly runs: BountyRunStore;
   readonly proposals: BountyProposalStore;
   readonly issues: JiraIssueStore;
-  readonly sizer: Sizer;
+  /** The model behind every call a run makes: the spec draft and the size. */
+  readonly caller: StructuredCaller;
   readonly clientFor: (
     organizationId: string,
     connectionId: string,
@@ -390,9 +398,11 @@ export class BountyExecutor {
 
     let sizing: BountySizingResult;
     let actualModel = run.requestedModel;
-    let inputTokens: number | undefined;
-    let outputTokens: number | undefined;
+    let drafted: NewBountySpec | undefined;
+    // What each model call spent, for the calls that were made.
+    const spent: SizingUsage[] = [];
     let technicalFailure = false;
+    let draftFailure = false;
     if (spec.inputTruncated) {
       sizing = fixedUnsized(
         "spec_too_large",
@@ -407,31 +417,63 @@ export class BountyExecutor {
         "The ticket does not contain enough detail to size.",
       );
     } else {
+      const request: SizingRequestOptions = {
+        signal,
+        ...(run.deadlineAt === null
+          ? {}
+          : { deadlineAt: new Date(run.deadlineAt) }),
+      };
+
+      /*
+        The spec first, from the same read the size is made from. Nothing
+        prices from it yet, so a draft that fails costs the ticket its spec
+        and not its proposal: the size is still asked for, and the outcome
+        says the spec is missing. What stops a run for the size stops it
+        here too, since the next call would meet the same refusal.
+      */
       try {
-        const sized = await this.#options.sizer.size(
+        const draft = await this.#options.caller.call(
+          draftSpecTool,
+          {
+            summary: spec.summary,
+            descriptionText: spec.descriptionText,
+            issueType: spec.issueType,
+            components: spec.components,
+            labels: spec.labels,
+          },
+          request,
+        );
+        spent.push(draft.usage);
+        drafted = {
+          specHash: spec.pricingSpecHash,
+          specHashVersion: SPEC_HASH_VERSION,
+          draft: draft.result,
+          origin: "draft",
+          actualModel: draft.actualModel,
+          promptVersion: draftSpecTool.promptVersion,
+        };
+      } catch (error) {
+        const fatalCode = fatalCodeOf(error);
+        if (fatalCode !== undefined) return { fatalCode };
+        draftFailure = true;
+      }
+
+      try {
+        const sized = await this.#options.caller.call(
+          sizeBountyTool,
           {
             summary: spec.summary,
             descriptionText: spec.descriptionText,
             issueType: spec.issueType,
           },
-          {
-            signal,
-            ...(run.deadlineAt === null
-              ? {}
-              : { deadlineAt: new Date(run.deadlineAt) }),
-          },
+          request,
         );
         sizing = sized.result;
         actualModel = sized.actualModel;
-        inputTokens = sized.usage.inputTokens;
-        outputTokens = sized.usage.outputTokens;
+        spent.push(sized.usage);
       } catch (error) {
-        if (error instanceof SizerError && error.stopsRun) {
-          return { fatalCode: error.code };
-        }
-        if (error instanceof SizerError && error.code === "sizing_cancelled") {
-          return { fatalCode: "worker_lost" };
-        }
+        const fatalCode = fatalCodeOf(error);
+        if (fatalCode !== undefined) return { fatalCode };
         technicalFailure = true;
         sizing = fixedUnsized(
           "sizing_failed",
@@ -440,13 +482,18 @@ export class BountyExecutor {
       }
     }
 
-    if (technicalFailure && run.kind === "reprice") {
+    /*
+      A re-price replaces what the proposal holds, so it is all or nothing:
+      a size without its spec, or no size at all, leaves the proposal as it
+      was for the reviewer to try again.
+    */
+    if ((technicalFailure || draftFailure) && run.kind === "reprice") {
       return {
         value: {
           ...base,
           jiraIssueId: pointer.id,
           status: "failed",
-          code: "sizing_failed",
+          code: technicalFailure ? "sizing_failed" : "spec_failed",
         },
       };
     }
@@ -456,7 +503,7 @@ export class BountyExecutor {
       runId: run.id,
       jiraIssueId: pointer.id,
       specHash: spec.pricingSpecHash,
-      specHashVersion: 1,
+      specHashVersion: SPEC_HASH_VERSION,
       rateCard: run.rateCard,
       sizing,
       inputTruncated: spec.inputTruncated,
@@ -464,6 +511,7 @@ export class BountyExecutor {
       promptVersion: run.promptVersion,
       amountMinor,
       currency: amountMinor === null ? null : run.rateCard.currency,
+      ...(drafted === undefined ? {} : { spec: drafted }),
     };
     const created =
       run.kind === "reprice" &&
@@ -517,13 +565,41 @@ export class BountyExecutor {
           : sizing.complexity === "unsized"
             ? "unsized"
             : "proposed",
-        ...(technicalFailure ? { code: "sizing_failed" } : {}),
+        // The proposal stands either way; the code says what it lacks.
+        ...(technicalFailure
+          ? { code: "sizing_failed" }
+          : draftFailure
+            ? { code: "spec_failed" }
+            : {}),
         actualModel,
-        ...(inputTokens === undefined ? {} : { inputTokens }),
-        ...(outputTokens === undefined ? {} : { outputTokens }),
+        // Both calls, so a ticket's cost is what it took to propose it.
+        ...(spent.length === 0
+          ? {}
+          : {
+              inputTokens: sum(spent.map(({ inputTokens }) => inputTokens)),
+              outputTokens: sum(spent.map(({ outputTokens }) => outputTokens)),
+            }),
       },
     };
   }
+}
+
+function sum(values: readonly number[]): number {
+  return values.reduce((total, value) => total + value, 0);
+}
+
+/** The version of `pricingSpecHash`: summary, description and issue type. */
+const SPEC_HASH_VERSION = 1;
+
+/**
+ * The code a run ends with when a model call's failure is not the ticket's:
+ * a provider that refuses every call, or a run that was cancelled under it.
+ * Undefined for a failure only this ticket bears.
+ */
+function fatalCodeOf(error: unknown): string | undefined {
+  if (!(error instanceof SizerError)) return undefined;
+  if (error.stopsRun) return error.code;
+  return error.code === "sizing_cancelled" ? "worker_lost" : undefined;
 }
 
 function fixedUnsized(reason: string, rationale: string): BountySizingResult {
