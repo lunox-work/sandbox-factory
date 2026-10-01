@@ -107,6 +107,12 @@ services:
       ATLASSIAN_CLIENT_SECRET: ${ATLASSIAN_CLIENT_SECRET:-}
       JIRA_CLIENT_ID: ${JIRA_CLIENT_ID:-}
       JIRA_CLIENT_SECRET: ${JIRA_CLIENT_SECRET:-}
+      GITHUB_APP_ID: ${GITHUB_APP_ID:-}
+      GITHUB_APP_SLUG: ${GITHUB_APP_SLUG:-}
+      GITHUB_APP_PRIVATE_KEY: ${GITHUB_APP_PRIVATE_KEY:-}
+      GITHUB_APP_WEBHOOK_SECRET: ${GITHUB_APP_WEBHOOK_SECRET:-}
+      GITHUB_APP_CLIENT_ID: ${GITHUB_APP_CLIENT_ID:-}
+      GITHUB_APP_CLIENT_SECRET: ${GITHUB_APP_CLIENT_SECRET:-}
       TOKEN_ENCRYPTION_KEY: ${TOKEN_ENCRYPTION_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       SIZING_MODEL: ${SIZING_MODEL:-}
@@ -131,6 +137,7 @@ services:
       - /repo/apps/extension/node_modules
       - /repo/packages/core/node_modules
       - /repo/packages/db/node_modules
+      - /repo/packages/github/node_modules
       - /repo/packages/jira/node_modules
       - /repo/packages/shared/node_modules
       - /repo/packages/client/node_modules
@@ -172,6 +179,7 @@ services:
       - /repo/apps/extension/node_modules
       - /repo/packages/core/node_modules
       - /repo/packages/db/node_modules
+      - /repo/packages/github/node_modules
       - /repo/packages/jira/node_modules
       - /repo/packages/shared/node_modules
       - /repo/packages/client/node_modules
@@ -210,6 +218,12 @@ services:
       ATLASSIAN_CLIENT_SECRET: ${ATLASSIAN_CLIENT_SECRET:-}
       JIRA_CLIENT_ID: ${JIRA_CLIENT_ID:-}
       JIRA_CLIENT_SECRET: ${JIRA_CLIENT_SECRET:-}
+      GITHUB_APP_ID: ${GITHUB_APP_ID:-}
+      GITHUB_APP_SLUG: ${GITHUB_APP_SLUG:-}
+      GITHUB_APP_PRIVATE_KEY: ${GITHUB_APP_PRIVATE_KEY:-}
+      GITHUB_APP_WEBHOOK_SECRET: ${GITHUB_APP_WEBHOOK_SECRET:-}
+      GITHUB_APP_CLIENT_ID: ${GITHUB_APP_CLIENT_ID:-}
+      GITHUB_APP_CLIENT_SECRET: ${GITHUB_APP_CLIENT_SECRET:-}
       TOKEN_ENCRYPTION_KEY: ${TOKEN_ENCRYPTION_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       SIZING_MODEL: ${SIZING_MODEL:-}

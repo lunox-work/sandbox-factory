@@ -21,13 +21,15 @@ export const CONNECTION_TABS = ["home", "jira", "github", "slack"] as const;
 export type ConnectionTab = (typeof CONNECTION_TABS)[number];
 
 /**
- * Which Connections tab a query string names. A Jira outcome in the query
- * means the OAuth round trip has just come back, and the banner that explains
- * it is on the Jira tab, so that tab opens whatever else the query says.
+ * Which Connections tab a query string names. A Jira or GitHub outcome in the
+ * query means that flow's round trip has just come back, and the banner that
+ * explains it is on that tool's tab, so the tab opens whatever else the query
+ * says.
  */
 export function connectionTabForSearch(search: string): ConnectionTab {
   const params = new URLSearchParams(search);
   if (params.has("jira")) return "jira";
+  if (params.has("github")) return "github";
   const value = params.get("connection");
   return CONNECTION_TABS.some((tab) => tab === value)
     ? (value as ConnectionTab)

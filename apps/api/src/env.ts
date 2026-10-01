@@ -3,7 +3,9 @@
  * rather than at the first request with a confusing one.
  */
 
+import { readPrivateKey } from "@sandbox-factory/github";
 import { unknownBuildInfo, type BuildInfoDto } from "@sandbox-factory/shared";
+import type { KeyObject } from "node:crypto";
 import { z } from "zod";
 
 /**
@@ -91,6 +93,37 @@ const envSchema = z.object({
    */
   JIRA_CLIENT_ID: z.preprocess(unsetSecret, z.string().min(1).optional()),
   JIRA_CLIENT_SECRET: z.preprocess(unsetSecret, z.string().min(1).optional()),
+  /**
+   * The GitHub App: connecting a client's repositories. Not the sign-in pair
+   * above, which is a plain OAuth app that only says who someone is.
+   *
+   * Optional as a set of six, like the Jira pair: `githubAppConfig` returns
+   * undefined unless every one is present, and the GitHub routes and the
+   * webhook are then not mounted while everything else is served.
+   *
+   * `GITHUB_APP_PRIVATE_KEY` is base64 of the PEM (an environment value cannot
+   * carry the PEM's newlines through ECS cleanly); a raw PEM is accepted too,
+   * for local use. It is parsed at boot, below, so a mangled key fails here
+   * rather than at the first token.
+   */
+  GITHUB_APP_ID: z.preprocess(
+    unsetSecret,
+    z.string().regex(/^\d+$/, "GITHUB_APP_ID must be numeric.").optional(),
+  ),
+  GITHUB_APP_SLUG: z.preprocess(unsetSecret, z.string().min(1).optional()),
+  GITHUB_APP_PRIVATE_KEY: z.preprocess(
+    unsetSecret,
+    z.string().min(1).optional(),
+  ),
+  GITHUB_APP_WEBHOOK_SECRET: z.preprocess(
+    unsetSecret,
+    z.string().min(1).optional(),
+  ),
+  GITHUB_APP_CLIENT_ID: z.preprocess(unsetSecret, z.string().min(1).optional()),
+  GITHUB_APP_CLIENT_SECRET: z.preprocess(
+    unsetSecret,
+    z.string().min(1).optional(),
+  ),
   /**
    * Encrypts the Jira tokens in `jira_connection`. `openssl rand -base64 32`.
    *
@@ -197,6 +230,20 @@ export function buildInfo(env: Env): BuildInfoDto {
 export function parseEnv(source: NodeJS.ProcessEnv = process.env): Env {
   const result = envSchema
     .superRefine((env, context) => {
+      // A key that cannot be read would otherwise fail at the first token
+      // mint, long after a deploy was declared healthy.
+      if (env.GITHUB_APP_PRIVATE_KEY !== undefined) {
+        try {
+          readPrivateKey(env.GITHUB_APP_PRIVATE_KEY);
+        } catch (error) {
+          context.addIssue({
+            code: "custom",
+            path: ["GITHUB_APP_PRIVATE_KEY"],
+            message: (error as Error).message,
+          });
+        }
+      }
+
       // Half a key pair signs every request wrongly, and the first upload is
       // a worse place to find out than boot.
       if (
@@ -238,6 +285,67 @@ export function jiraOAuthConfig(
   return {
     clientId: env.JIRA_CLIENT_ID,
     clientSecret: env.JIRA_CLIENT_SECRET,
+  };
+}
+
+/** The six values that make up the GitHub App, in `.env.example` order. */
+export const GITHUB_APP_KEYS = [
+  "GITHUB_APP_ID",
+  "GITHUB_APP_SLUG",
+  "GITHUB_APP_PRIVATE_KEY",
+  "GITHUB_APP_WEBHOOK_SECRET",
+  "GITHUB_APP_CLIENT_ID",
+  "GITHUB_APP_CLIENT_SECRET",
+] as const;
+
+/**
+ * The GitHub App values that are missing, when some but not all are set;
+ * empty when the set is whole or entirely absent.
+ *
+ * Part of the set leaves GitHub off, like none of it, but reads as
+ * "configured" to whoever set it — a typo in one secret would silently
+ * unmount the webhook. Boot logs this list rather than refusing to start,
+ * because GitHub is optional and everything else should still be served.
+ */
+export function githubAppMissing(env: Env): string[] {
+  const missing = GITHUB_APP_KEYS.filter((key) => env[key] === undefined);
+  return missing.length === GITHUB_APP_KEYS.length ? [] : missing;
+}
+
+/** The GitHub App's configuration, once every part of it is present. */
+export interface GithubAppConfig {
+  readonly appId: string;
+  readonly slug: string;
+  readonly privateKey: KeyObject;
+  readonly webhookSecret: string;
+  readonly clientId: string;
+  readonly clientSecret: string;
+}
+
+/**
+ * The GitHub App, or undefined unless all six values are set. Part of an App
+ * is no App: without the key nothing can be minted, without the client pair
+ * nobody can connect, and without the webhook secret every delivery would be
+ * refused. `parseEnv` has already refused a key it cannot read.
+ */
+export function githubAppConfig(env: Env): GithubAppConfig | undefined {
+  if (
+    env.GITHUB_APP_ID === undefined ||
+    env.GITHUB_APP_SLUG === undefined ||
+    env.GITHUB_APP_PRIVATE_KEY === undefined ||
+    env.GITHUB_APP_WEBHOOK_SECRET === undefined ||
+    env.GITHUB_APP_CLIENT_ID === undefined ||
+    env.GITHUB_APP_CLIENT_SECRET === undefined
+  ) {
+    return undefined;
+  }
+  return {
+    appId: env.GITHUB_APP_ID,
+    slug: env.GITHUB_APP_SLUG,
+    privateKey: readPrivateKey(env.GITHUB_APP_PRIVATE_KEY),
+    webhookSecret: env.GITHUB_APP_WEBHOOK_SECRET,
+    clientId: env.GITHUB_APP_CLIENT_ID,
+    clientSecret: env.GITHUB_APP_CLIENT_SECRET,
   };
 }
 

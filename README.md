@@ -16,6 +16,7 @@ handle is.
 | [`packages/shared`](./packages/shared)   | Zod schemas for the wire format                   |
 | [`packages/client`](./packages/client)   | Typed API client, used by web **and** extension   |
 | [`packages/jira`](./packages/jira)       | Atlassian OAuth and the Jira REST client          |
+| [`packages/github`](./packages/github)   | The GitHub App: tokens, REST client, webhooks     |
 | [`packages/db`](./packages/db)           | Drizzle schema, migrations, Postgres and S3 store |
 | [`apps/api`](./apps/api)                 | Hono HTTP API                                     |
 | [`apps/web`](./apps/web)                 | Vite + React dashboard                            |
@@ -52,6 +53,11 @@ paste in its id and secret:
 The redirect URI must match exactly. A mismatch is rejected on the provider's
 page, not in your logs. Atlassian needs a little more setup — see the notes in
 [`.env.example`](./.env.example).
+
+Connecting a client's repositories is optional and needs a **GitHub App** of its
+own, separate from the sign-in OAuth app above. Without its six `GITHUB_APP_*`
+values everything else runs and the GitHub tab says it is not set up. How to
+register one is in [docs/github-apps.md](./docs/github-apps.md).
 
 Just looking around? `npm run verify` runs the whole test suite and needs none
 of this.

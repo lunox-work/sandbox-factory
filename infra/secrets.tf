@@ -25,9 +25,19 @@ locals {
     # connecting Jira break each other.
     JIRA_CLIENT_ID     = "Atlassian OAuth client ID (Jira connection app)"
     JIRA_CLIENT_SECRET = "Atlassian OAuth client secret (Jira connection app)"
-    # Encrypts the Jira tokens in `jira_connection`. Rotating it means
-    # re-encrypting those rows, not just replacing the value: the `key_id`
-    # column records which key wrote each row so both can be readable at once.
+    # The GitHub App, for connecting a client's repositories. Not the sign-in
+    # OAuth app above: that one only says who someone is. All six or none;
+    # with any left as the placeholder the GitHub routes stay unmounted.
+    GITHUB_APP_ID             = "GitHub App ID (numeric, from the App's settings page)"
+    GITHUB_APP_SLUG           = "GitHub App slug, as in github.com/apps/<slug>"
+    GITHUB_APP_PRIVATE_KEY    = "GitHub App private key: base64 of the PEM GitHub generates"
+    GITHUB_APP_WEBHOOK_SECRET = "GitHub App webhook secret. openssl rand -hex 32"
+    GITHUB_APP_CLIENT_ID      = "GitHub App client ID (the App's own OAuth half)"
+    GITHUB_APP_CLIENT_SECRET  = "GitHub App client secret (the App's own OAuth half)"
+    # Encrypts the tokens in `jira_connection` and `github_grant`. Rotating
+    # it means re-encrypting both tables' rows, not just replacing the value:
+    # each has a `key_id` column recording which key wrote the row, so both
+    # keys can be readable at once.
     TOKEN_ENCRYPTION_KEY = "AES-256 key for stored Jira tokens. openssl rand -base64 32"
     ANTHROPIC_API_KEY    = "Anthropic API key for optional Jira sizing"
     SIZING_MODEL         = "Explicit Anthropic model identifier for Jira sizing"

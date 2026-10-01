@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
+import { generateKeyPairSync } from "node:crypto";
 import { test } from "node:test";
 
 import {
   buildInfo,
   deepseekSizingConfig,
+  GITHUB_APP_KEYS,
+  githubAppConfig,
+  githubAppMissing,
   jiraOAuthConfig,
   objectStoreConfig,
   parseEnv,
@@ -478,5 +482,106 @@ test("either provider pair on its own makes sizing available", () => {
       }),
     ),
     true,
+  );
+});
+
+/** A real RSA key, as base64 of the PEM: how the App's key is stored. */
+const appKeyPem = generateKeyPairSync("rsa", { modulusLength: 2048 })
+  .privateKey.export({ type: "pkcs1", format: "pem" })
+  .toString();
+const githubApp = {
+  GITHUB_APP_ID: "123456",
+  GITHUB_APP_SLUG: "sandbox-factory",
+  GITHUB_APP_PRIVATE_KEY: Buffer.from(appKeyPem).toString("base64"),
+  GITHUB_APP_WEBHOOK_SECRET: "webhook-secret",
+  GITHUB_APP_CLIENT_ID: "Iv1.app",
+  GITHUB_APP_CLIENT_SECRET: "app-secret",
+};
+
+test("the GitHub App is optional, and off unless all six values are set", () => {
+  assert.equal(githubAppConfig(parseEnv(required)), undefined);
+  for (const key of Object.keys(githubApp)) {
+    const partial: Record<string, string> = { ...githubApp };
+    delete partial[key];
+    assert.equal(
+      githubAppConfig(parseEnv({ ...required, ...partial })),
+      undefined,
+      `configured without ${key}`,
+    );
+  }
+});
+
+test("a partly set App names what is missing; none or all names nothing", () => {
+  // Off either way, but a partial set reads as "configured" to whoever set
+  // it, so boot says which values are absent.
+  const partial: Record<string, string> = { ...githubApp };
+  delete partial["GITHUB_APP_WEBHOOK_SECRET"];
+  delete partial["GITHUB_APP_CLIENT_SECRET"];
+
+  assert.deepEqual(githubAppMissing(parseEnv({ ...required, ...partial })), [
+    "GITHUB_APP_WEBHOOK_SECRET",
+    "GITHUB_APP_CLIENT_SECRET",
+  ]);
+  assert.deepEqual(githubAppMissing(parseEnv(required)), []);
+  assert.deepEqual(
+    githubAppMissing(parseEnv({ ...required, ...githubApp })),
+    [],
+  );
+  assert.deepEqual([...GITHUB_APP_KEYS].sort(), Object.keys(githubApp).sort());
+});
+
+test("a PEM pasted with its newlines escaped boots", () => {
+  const escaped = appKeyPem.trimEnd().split("\n").join("\\n");
+
+  const config = githubAppConfig(
+    parseEnv({ ...required, ...githubApp, GITHUB_APP_PRIVATE_KEY: escaped }),
+  );
+
+  assert.equal(config?.privateKey.asymmetricKeyType, "rsa");
+});
+
+test("the GitHub App config reads the key from base64 or from the PEM", () => {
+  const fromBase64 = githubAppConfig(parseEnv({ ...required, ...githubApp }));
+  const fromPem = githubAppConfig(
+    parseEnv({ ...required, ...githubApp, GITHUB_APP_PRIVATE_KEY: appKeyPem }),
+  );
+
+  assert.equal(fromBase64?.appId, "123456");
+  assert.equal(fromBase64?.slug, "sandbox-factory");
+  assert.equal(fromBase64?.privateKey.asymmetricKeyType, "rsa");
+  assert.equal(fromPem?.privateKey.asymmetricKeyType, "rsa");
+  // Distinct from the sign-in pair, which is a different OAuth app.
+  assert.notEqual(fromBase64?.clientId, required.GITHUB_CLIENT_ID);
+});
+
+test("an unreadable App key fails at boot, without echoing the value", () => {
+  assert.throws(
+    () =>
+      parseEnv({
+        ...required,
+        ...githubApp,
+        GITHUB_APP_PRIVATE_KEY: "bm90LWEta2V5",
+      }),
+    (error: Error) =>
+      /GITHUB_APP_PRIVATE_KEY/.test(error.message) &&
+      !error.message.includes("bm90LWEta2V5"),
+  );
+});
+
+test("a non-numeric App id is refused", () => {
+  assert.throws(
+    () => parseEnv({ ...required, ...githubApp, GITHUB_APP_ID: "sandbox" }),
+    /GITHUB_APP_ID must be numeric/,
+  );
+});
+
+test("the Terraform placeholder leaves the GitHub App unset", () => {
+  const placeholders = Object.fromEntries(
+    Object.keys(githubApp).map((key) => [key, "REPLACE_ME"]),
+  );
+
+  assert.equal(
+    githubAppConfig(parseEnv({ ...required, ...placeholders })),
+    undefined,
   );
 });

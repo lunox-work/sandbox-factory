@@ -69,6 +69,12 @@ SECRET_KEYS=(
   ATLASSIAN_CLIENT_SECRET
   JIRA_CLIENT_ID
   JIRA_CLIENT_SECRET
+  GITHUB_APP_ID
+  GITHUB_APP_SLUG
+  GITHUB_APP_PRIVATE_KEY
+  GITHUB_APP_WEBHOOK_SECRET
+  GITHUB_APP_CLIENT_ID
+  GITHUB_APP_CLIENT_SECRET
   TOKEN_ENCRYPTION_KEY
   ANTHROPIC_API_KEY
   SIZING_MODEL
@@ -98,12 +104,28 @@ secret_hint() {
        A second app on purpose: an Atlassian grant is per app and a new grant
        overwrites the old one's scopes, so sharing one with sign-in would make
        the two flows break each other." ;;
+    GITHUB_APP_ID|GITHUB_APP_SLUG)
+      echo "github.com/organizations/lunox-work/settings/apps -> the App -> General.
+       Neither is a secret and neither changes; set once from the App's page." ;;
+    GITHUB_APP_PRIVATE_KEY)
+      echo "The App's page -> Private keys -> Generate a private key, then
+       base64 < downloaded.pem | tr -d '\\n'. Push it, wait for the deploy, then
+       delete the old key on GitHub: both are valid until you do." ;;
+    GITHUB_APP_WEBHOOK_SECRET)
+      echo "Generate locally: openssl rand -hex 32. Set it on the App's page
+       (Webhook -> Secret) in the same minute you push it: deliveries signed
+       with the other value answer 401 until both agree, and GitHub does not
+       redeliver them on its own." ;;
+    GITHUB_APP_CLIENT_ID|GITHUB_APP_CLIENT_SECRET)
+      echo "The App's page -> General -> Client secrets -> Generate a new client
+       secret. The client ID never changes. NOT the sign-in OAuth app's pair." ;;
     TOKEN_ENCRYPTION_KEY)
       echo "Generate locally: openssl rand -base64 32
-       NOT a drop-in rotation: it decrypts the tokens in jira_connection, so
-       replacing it alone leaves every stored Jira token unreadable and every
-       connection has to be made again. Re-encrypt those rows first — key_id
-       records which key wrote each one so both can be readable while you do." ;;
+       NOT a drop-in rotation: it decrypts the tokens in jira_connection and
+       github_grant, so replacing it alone leaves every stored Jira token and
+       GitHub grant unreadable, and every connection has to be made again.
+       Re-encrypt both tables' rows first — key_id records which key wrote
+       each one so both can be readable while you do." ;;
     ANTHROPIC_API_KEY)
       echo "console.anthropic.com -> Settings -> API keys.
        Optional; sizing stays unavailable until SIZING_MODEL is also set." ;;

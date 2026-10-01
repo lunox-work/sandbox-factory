@@ -16,7 +16,7 @@ import { READ_SCOPES, WRITE_SCOPES } from "@sandbox-factory/jira";
 
 import type { Auth } from "../src/auth.js";
 import type { JiraRouteOptions } from "../src/jira/routes.js";
-import { signState } from "../src/jira/state.js";
+import { signState } from "../src/connect-state.js";
 import { createApp } from "../src/routes.js";
 
 /**
@@ -208,10 +208,13 @@ function fakeBoards(
 ): JiraBoardStore & {
   registered: RegisterBoardInput[];
   synced: SyncBoardInput[];
+  /** Each `markMissing`: the connection, and the board ids Jira listed. */
+  missing: { connectionId: string; seen: readonly string[] }[];
   updates: unknown[];
 } {
   const registered: RegisterBoardInput[] = [];
   const synced: SyncBoardInput[] = [];
+  const missing: { connectionId: string; seen: readonly string[] }[] = [];
   const updates: unknown[] = [];
   const board: JiraBoardSummary = {
     id: "jrb_1",
@@ -234,6 +237,7 @@ function fakeBoards(
   return {
     registered,
     synced,
+    missing,
     updates,
     list: () => Promise.resolve([board]),
     get: (_organizationId, id) =>
@@ -249,6 +253,10 @@ function fakeBoards(
     sync: (_organizationId, input) => {
       synced.push(input);
       return Promise.resolve({ ...board, ...input });
+    },
+    markMissing: (_organizationId, connectionId, seen) => {
+      missing.push({ connectionId, seen });
+      return Promise.resolve([]);
     },
     update: (_organizationId, id, input) => {
       if (id !== board.id) {
@@ -499,7 +507,7 @@ test("a withheld write scope is reported as a missing permission, not a failure"
       boards: {},
     }),
   });
-  const state = signState(SECRET, {
+  const state = signState(SECRET, "jira", {
     organizationId: "org_1",
     userId: dana.id,
     returnTo: "/o/acme/jira",
@@ -591,7 +599,7 @@ test("an absolute returnTo cannot redirect off-site", async () => {
 
 test("the callback stores a connection and reports success", async () => {
   const { app, connections } = appWith({ fetch: fakeAtlassian() });
-  const state = signState(SECRET, {
+  const state = signState(SECRET, "jira", {
     organizationId: "org_1",
     userId: dana.id,
     returnTo: "/settings/jira",
@@ -619,7 +627,7 @@ test("connecting a site registers every board on it", async () => {
   // Connecting is the decision. Asking again, board by board, was asking the
   // person to repeat a choice they had already made.
   const { app, boards } = appWith({ fetch: fakeAtlassian({ boards: {} }) });
-  const state = signState(SECRET, {
+  const state = signState(SECRET, "jira", {
     organizationId: "org_1",
     userId: dana.id,
     returnTo: "/settings/jira",
@@ -673,7 +681,7 @@ test("connecting a site sizes its boards", async () => {
       return Promise.resolve();
     },
   });
-  const state = signState(SECRET, {
+  const state = signState(SECRET, "jira", {
     organizationId: "org_1",
     userId: dana.id,
     returnTo: "/settings/jira",
@@ -703,7 +711,7 @@ test("every sync offers every board it saw, leaving once-only to the sizer", asy
       return Promise.resolve();
     },
   });
-  const state = signState(SECRET, {
+  const state = signState(SECRET, "jira", {
     organizationId: "org_1",
     userId: dana.id,
     returnTo: "/settings/jira",
@@ -723,7 +731,7 @@ test("a board that cannot be sized does not fail the connection", async () => {
     boards: boardsAlreadyHolding([]),
     startSizing: () => Promise.reject(new Error("sizer down")),
   });
-  const state = signState(SECRET, {
+  const state = signState(SECRET, "jira", {
     organizationId: "org_1",
     userId: dana.id,
     returnTo: "/settings/jira",
@@ -745,7 +753,7 @@ test("a site whose boards cannot be read is still connected", async () => {
   // site is usable for everything else; refusing the connection over it would
   // lose the grant as well as the boards.
   const { app, connections, boards } = appWith({ fetch: fakeAtlassian() });
-  const state = signState(SECRET, {
+  const state = signState(SECRET, "jira", {
     organizationId: "org_1",
     userId: dana.id,
     returnTo: "/settings/jira",
@@ -768,7 +776,7 @@ test("the callback takes the organization from the state, not the query", async 
   // The attack this prevents: swapping the organization for one the caller is
   // not a member of, after the membership check has already happened.
   const { app, connections } = appWith({ fetch: fakeAtlassian() });
-  const state = signState(SECRET, {
+  const state = signState(SECRET, "jira", {
     organizationId: "org_1",
     userId: dana.id,
     returnTo: "/settings/jira",
@@ -785,7 +793,7 @@ test("the callback takes the organization from the state, not the query", async 
 test("a state from another session is refused and stores nothing", async () => {
   const { app, connections } = appWith({ fetch: fakeAtlassian() });
   // Signed for a different user than the session the callback arrives on.
-  const state = signState(SECRET, {
+  const state = signState(SECRET, "jira", {
     organizationId: "org_1",
     userId: stranger.id,
     returnTo: "/settings/jira",
@@ -805,7 +813,7 @@ test("a state from another session is refused and stores nothing", async () => {
 
 test("a forged state is refused", async () => {
   const { app, connections } = appWith({ fetch: fakeAtlassian() });
-  const state = signState("a-different-secret-that-is-long-enough", {
+  const state = signState("a-different-secret-that-is-long-enough", "jira", {
     organizationId: "org_evil",
     userId: dana.id,
     returnTo: "/settings/jira",
@@ -870,7 +878,7 @@ test("a failed token exchange redirects rather than throwing a 500", async () =>
       tokenBody: { error: "invalid_grant" },
     }),
   });
-  const state = signState(SECRET, {
+  const state = signState(SECRET, "jira", {
     organizationId: "org_1",
     userId: dana.id,
     returnTo: "/settings/jira",
@@ -895,7 +903,7 @@ test("a grant with no Jira site says so rather than appearing to succeed", async
   const { app, connections } = appWith({
     fetch: fakeAtlassian({ sites: [] }),
   });
-  const state = signState(SECRET, {
+  const state = signState(SECRET, "jira", {
     organizationId: "org_1",
     userId: dana.id,
     returnTo: "/settings/jira",
@@ -922,7 +930,7 @@ test("missing granular scopes are named rather than left to be diagnosed", async
       scope: "read:jira-work read:jira-user offline_access",
     }),
   });
-  const state = signState(SECRET, {
+  const state = signState(SECRET, "jira", {
     organizationId: "org_1",
     userId: dana.id,
     returnTo: "/settings/jira",
@@ -942,7 +950,7 @@ test("missing granular scopes are named rather than left to be diagnosed", async
 
 test("the callback returns to where the flow started", async () => {
   const { app } = appWith({ fetch: fakeAtlassian() });
-  const state = signState(SECRET, {
+  const state = signState(SECRET, "jira", {
     organizationId: "org_1",
     userId: dana.id,
     returnTo: "/orgs/acme/jira",
@@ -1053,7 +1061,7 @@ test("a callback with a valid state but no code is an error, not a crash", async
   // Should not happen — Atlassian sends either `code` or `error` — but a
   // hand-built URL reaches this, and it must not throw out of the handler.
   const { app, connections } = appWith({ fetch: fakeAtlassian() });
-  const state = signState(SECRET, {
+  const state = signState(SECRET, "jira", {
     organizationId: "org_1",
     userId: dana.id,
     returnTo: "/settings/jira",
@@ -1081,7 +1089,7 @@ test("an unexpected failure is not swallowed as a failed connection", async () =
   const broken = fakeConnections();
   broken.upsert = () => Promise.reject(new Error("database is on fire"));
   const { app } = appWith({ fetch: fakeAtlassian(), connections: broken });
-  const state = signState(SECRET, {
+  const state = signState(SECRET, "jira", {
     organizationId: "org_1",
     userId: dana.id,
     returnTo: "/settings/jira",
@@ -1110,7 +1118,7 @@ test("a user demoted mid-flow cannot finish the connection", async () => {
     fetch: fakeAtlassian(),
     roleNow: () => role,
   });
-  const state = signState(SECRET, {
+  const state = signState(SECRET, "jira", {
     organizationId: "org_1",
     userId: dana.id,
     returnTo: "/settings/jira",
@@ -1135,7 +1143,7 @@ test("a user removed from the organization mid-flow is refused", async () => {
     fetch: fakeAtlassian(),
     roleNow: () => role,
   });
-  const state = signState(SECRET, {
+  const state = signState(SECRET, "jira", {
     organizationId: "org_1",
     userId: dana.id,
     returnTo: "/settings/jira",
@@ -1165,7 +1173,7 @@ test("the refusal happens before the authorization code is spent", async () => {
       return new Response("{}", { status: 200 });
     }) as typeof globalThis.fetch,
   });
-  const state = signState(SECRET, {
+  const state = signState(SECRET, "jira", {
     organizationId: "org_1",
     userId: dana.id,
     returnTo: "/settings/jira",
@@ -1185,7 +1193,7 @@ test("an admin who kept their role still completes the flow", async () => {
     role: "admin",
     fetch: fakeAtlassian(),
   });
-  const state = signState(SECRET, {
+  const state = signState(SECRET, "jira", {
     organizationId: "org_1",
     userId: dana.id,
     returnTo: "/settings/jira",
@@ -1339,6 +1347,21 @@ test("a re-sync reports new boards and offers every board for sizing", async () 
   assert.deepEqual(started, ["jrb_42", "jrb_43"]);
 });
 
+test("a re-sync hides the boards Jira no longer lists", async () => {
+  // A board deleted in Jira kept showing here, because a sync only ever
+  // added rows. The store is handed every board Jira listed and hides the
+  // rest of this connection's.
+  const { app, boards } = appWith({ fetch: fakeJiraApi() });
+
+  const response = await app.request(
+    "/api/v1/orgs/org_1/jira/connections/jrc_1/sync",
+    { method: "POST", headers: signedIn },
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(boards.missing, [{ connectionId: "jrc_1", seen: ["42"] }]);
+});
+
 test("a plain member may sync, because it records pointers and nothing else", async () => {
   // It reads no ticket and changes no setting on a site the organization
   // already holds a grant for.
@@ -1378,7 +1401,7 @@ test("syncing a dead connection asks for a reconnect", async () => {
 test("syncing when the app lacks the Agile scopes says so, not reconnect", async () => {
   // "Reconnect" is a loop that ends where it started: the grant is live, and
   // the missing scope is the Atlassian app's own.
-  const { app } = appWith({
+  const { app, boards } = appWith({
     fetch: fakeJiraApi({
       status: 401,
       errorBody: { code: 401, message: "Unauthorized; scope does not match" },
@@ -1392,6 +1415,8 @@ test("syncing when the app lacks the Agile scopes says so, not reconnect", async
 
   assert.equal(response.status, 502);
   assert.equal(((await response.json()) as { code: string }).code, "scope");
+  // A read that failed is not a list of zero boards: nothing is hidden.
+  assert.equal(boards.missing.length, 0);
 });
 
 test("registering a board takes its name and type from Jira, not the body", async () => {

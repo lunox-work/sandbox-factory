@@ -15,6 +15,8 @@
  * - `schema/organizations.ts` — the second principal, its membership, and the
  *   handle namespace both principals share.
  * - `schema/jira.ts` — connections to a client's Atlassian site.
+ * - `schema/github.ts` — installations of the GitHub App, the grants that
+ *   linked them, and the repositories registered from them.
  *
  * `auth.ts` and `organizations.ts` import each other; see the note in
  * `organizations.ts` for why the foreign-key thunks make that safe.
@@ -62,6 +64,16 @@ export type {
   NewJiraConnectionRow,
   NewJiraIssueRow,
 } from "./schema/jira.js";
+
+export { githubConnection, githubGrant, githubRepo } from "./schema/github.js";
+export type {
+  GithubConnectionRow,
+  GithubGrantRow,
+  GithubRepoRow,
+  NewGithubConnectionRow,
+  NewGithubGrantRow,
+  NewGithubRepoRow,
+} from "./schema/github.js";
 
 export {
   BOUNTY_SPEC_ORIGINS,

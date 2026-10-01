@@ -9,6 +9,8 @@ Instructions for coding agents. Humans: see [CONTRIBUTING.md](./CONTRIBUTING.md)
 | `packages/core`    | `sandbox-factory`           | not yet    |
 | `packages/shared`  | `@sandbox-factory/shared`   | no         |
 | `packages/db`      | `@sandbox-factory/db`       | no         |
+| `packages/jira`    | `@sandbox-factory/jira`     | no         |
+| `packages/github`  | `@sandbox-factory/github`   | no         |
 | `packages/client`  | `@sandbox-factory/client`   | no         |
 | `apps/api`         | `@sandbox-factory/api`      | no         |
 | `apps/web`         | `@sandbox-factory/web`      | no         |
@@ -101,12 +103,14 @@ where the two overlap.
   Docker stopped. Test `packages/db` against `packages/db/test/fake-db.ts`.
   Whether the SQL actually applies is verified with `make migrate`.
   - **The exception: rules that live in SQL.** `email-single-owner.test.ts`
-    (migrations 0007-0011) and `handle-registry.test.ts` (0029-0030) test
-    triggers and indexes a fake cannot execute. Both skip when no Postgres is
+    (migrations 0007-0011), `handle-registry.test.ts` (0029-0030) and
+    `github-pointer.test.ts` (0034-0038) test triggers, constraints and
+    guarded `WHERE`s a fake cannot execute. All skip when no Postgres is
     reachable, so `verify` still passes with Docker stopped, and CI runs them
     against its Postgres service. They create and drop only their own
-    fixed-name scratch databases, and the handle suite refuses a non-local
-    server outside CI. Add to this list only for SQL-enforced rules.
+    fixed-name scratch databases, and the handle and GitHub suites refuse a
+    non-local server outside CI. Add to this list only for SQL-enforced
+    rules.
 - Tests run against compiled output (`dist-test/`), not sources. Do not add a
   runner that executes TypeScript directly.
 - Coverage thresholds are per workspace: 90% packages, 80% `apps/api`. New code

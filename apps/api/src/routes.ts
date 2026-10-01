@@ -36,6 +36,11 @@ import {
   sizeIfNeverSized,
   type BountyRouteOptions,
 } from "./bounty/routes.js";
+import { mountGithubRoutes, type GithubRouteOptions } from "./github/routes.js";
+import {
+  mountGithubWebhook,
+  type GithubWebhookOptions,
+} from "./github/webhook.js";
 import { mountJiraRoutes, type JiraRouteOptions } from "./jira/routes.js";
 
 export interface AppOptions {
@@ -62,6 +67,19 @@ export interface AppOptions {
    * that block's membership guard.
    */
   jira?: Omit<JiraRouteOptions, "roleOf"> | undefined;
+  /**
+   * GitHub connection routes and the webhook. Optional for the same reasons
+   * as `jira`: the GitHub App is a credential a deployment may not have, and
+   * without it everything else is still served. The routes need
+   * `organizations` for the membership guard; the webhook does not.
+   */
+  github?:
+    | (Omit<GithubRouteOptions, "roleOf"> &
+        Pick<
+          GithubWebhookOptions,
+          "webhookSecret" | "background" | "onBackgroundError" | "log"
+        >)
+    | undefined;
   /** Commercial routes. Rate-card reads remain mounted without model config. */
   bounty?: BountyRouteOptions | undefined;
   /**
@@ -135,6 +153,7 @@ export function createApp({
   profiles,
   organizations,
   jira,
+  github,
   bounty,
   avatars,
   buildInfo = unknownBuildInfo,
@@ -204,6 +223,15 @@ export function createApp({
    */
   if (avatars !== undefined) {
     mountAvatarReadRoute(app, { avatars });
+  }
+
+  /**
+   * GitHub's webhook deliveries. Outside `/api/v1`, because GitHub has no
+   * session: a delivery is authenticated by its signature instead, checked
+   * over the raw body before anything is parsed. See `github/webhook.ts`.
+   */
+  if (github !== undefined) {
+    mountGithubWebhook(app, github);
   }
 
   /**
@@ -531,6 +559,35 @@ export function createApp({
               }) => sizeIfNeverSized(bounty, input),
             }),
       });
+    }
+    /**
+     * Connecting a client's GitHub, on the same terms as Jira above: the
+     * connect, list and register routes sit behind the membership guard,
+     * and the callback behind the session guard only, taking its
+     * organization from the signed state.
+     */
+    if (github !== undefined) {
+      mountGithubRoutes(app, {
+        ...github,
+        roleOf: (userId, organizationId) =>
+          organizations.roleOf(userId, organizationId),
+      });
+    } else {
+      /*
+        Without the App, an explicit 503 rather than the 404 an unmounted
+        route would give: the web app reads this code as "not set up here"
+        and shows GitHub as unavailable, where a 404 would read as a failed
+        load. Behind the membership guard, so a non-member still gets 404.
+      */
+      app.all("/api/v1/orgs/:orgId/github/*", (c) =>
+        c.json(
+          {
+            error: "GitHub is not set up on this server.",
+            code: "unconfigured",
+          },
+          503,
+        ),
+      );
     }
     if (bounty !== undefined) {
       mountBountyRoutes(app, bounty);

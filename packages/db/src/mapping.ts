@@ -32,6 +32,10 @@ export const ID_PREFIXES = [
   "bsp",
   /** One durable Jira write intent. */
   "bwo",
+  /** GitHub: connection (an installation), a person's grant, a repository. */
+  "ghc",
+  "ghg",
+  "ghr",
 ] as const;
 
 export type IdPrefix = (typeof ID_PREFIXES)[number];

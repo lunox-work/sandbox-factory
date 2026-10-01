@@ -17,6 +17,7 @@
     "@better-auth/core": "^1.7.6",
     "@hono/node-server": "^2.1.1",
     "@sandbox-factory/db": "*",
+    "@sandbox-factory/github": "*",
     "@sandbox-factory/jira": "*",
     "@sandbox-factory/shared": "*",
     "better-auth": "^1.7.5",

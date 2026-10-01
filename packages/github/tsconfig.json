@@ -1,0 +1,15 @@
+{
+  "extends": "@sandbox-factory/tsconfig/node.json",
+  "_comment": [
+    "node.json, NOT base.json with `types: []` as packages/jira uses. The App",
+    "authenticates with an RS256 JWT and verifies webhooks with HMAC-SHA256,",
+    "both through `node:crypto`, and nothing outside the API and the worker",
+    "ever holds the App's key or webhook secret — so there is no browser or",
+    "extension bundle for this package to stay out of."
+  ],
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist"
+  },
+  "include": ["src"]
+}

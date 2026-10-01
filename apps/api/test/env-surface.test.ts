@@ -50,6 +50,14 @@ test("the API reads exactly the documented environment variables", () => {
       // The second Atlassian app, for connecting a client's Jira site.
       "JIRA_CLIENT_ID",
       "JIRA_CLIENT_SECRET",
+      // The GitHub App, for connecting a client's repositories. Optional as a
+      // set; a separate app from the sign-in pair above.
+      "GITHUB_APP_ID",
+      "GITHUB_APP_SLUG",
+      "GITHUB_APP_PRIVATE_KEY",
+      "GITHUB_APP_WEBHOOK_SECRET",
+      "GITHUB_APP_CLIENT_ID",
+      "GITHUB_APP_CLIENT_SECRET",
       // Encrypts the stored Jira tokens. Unlike the values above it is not a
       // credential for another service: it is the only thing standing between
       // a leaked `jira_connection` row and a live grant on a client's Jira.
@@ -92,6 +100,7 @@ test("nothing the server runs reads process.env behind env.ts's back", () => {
     "apps/api/src",
     "packages/core/src",
     "packages/db/src",
+    "packages/github/src",
     "packages/shared/src",
   ]
     .flatMap((dir) => sourceFiles(join(root, dir)))

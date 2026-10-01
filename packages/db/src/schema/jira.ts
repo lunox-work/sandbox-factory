@@ -151,6 +151,18 @@ export const jiraBoard = pgTable(
      * here, as `step`.
      */
     pricing: jsonb("pricing").notNull().default({}),
+    /**
+     * When a sync of the connection last failed to find this board, or null
+     * while Jira lists it. A missing board is left out of the board list but
+     * not deleted.
+     *
+     * Hidden rather than deleted because Jira answers the same way for a
+     * board that was deleted and a board the grant can no longer see. A
+     * delete would cascade to the board's runs and proposals, approved ones
+     * included, and a lost permission would wipe them. A hidden board comes
+     * back, with its history, when a sync finds it again.
+     */
+    missingSince: timestamp("missing_since", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

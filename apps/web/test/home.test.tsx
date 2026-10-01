@@ -530,3 +530,25 @@ test("a listed site opens its organization's Jira tab", async () => {
   // not carry.
   expect(onOpen).toHaveBeenCalledWith(acme);
 });
+
+test("a GitHub flow that could not be tied to a workspace still says so here", async () => {
+  // The callback sends a failed state, or an install begun on GitHub's own
+  // App page, to the root: there is no workspace to send it back to.
+  window.history.replaceState(null, "", "/?github=state");
+  render(
+    <Home
+      organizations={[personal]}
+      organizationsLoading={false}
+      activeOrganization={null}
+      onOpen={vi.fn()}
+    />,
+  );
+
+  const banner = await screen.findByTestId("github-outcome");
+  expect(
+    within(banner).getByText("That connection could not be verified"),
+  ).toBeDefined();
+  // Home has no Connect button, so the words point to where there is one.
+  expect(within(banner).getByText(/choose GitHub/)).toBeDefined();
+  expect(window.location.search).toBe("");
+});
