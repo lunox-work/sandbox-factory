@@ -138,6 +138,18 @@ export const SPEC_LIMITS = {
   assumptions: 8,
 } as const;
 
+/**
+ * What makes two scenarios the same one across revisions: their kind and
+ * their title, read without case or spacing. Ids are stable only within a
+ * revision, so they cannot say it.
+ */
+export function scenarioKey(scenario: {
+  readonly kind: string;
+  readonly title: string;
+}): string {
+  return `${scenario.kind}\u0000${scenario.title.replace(/\s+/g, " ").trim().toLowerCase()}`;
+}
+
 export interface ScenarioCounts {
   readonly total: number;
   /** Every kind is present, zero when the spec has none of it. */

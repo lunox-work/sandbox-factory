@@ -1,4 +1,5 @@
 import {
+  RESPEC_LIMITS,
   SCENARIO_KINDS,
   SCENARIO_ORIGINS,
   SCENARIO_WEIGHTS,
@@ -35,9 +36,12 @@ export const scenarioStepSchema = z.object({
   text: oneLine(SPEC_LIMITS.stepChars),
 });
 
+/** "s1" to "s999", stable within a spec revision. */
+export const scenarioIdSchema = z.string().regex(/^s[1-9]\d{0,2}$/);
+
 export const scenarioSchema = z.object({
   /** "s1", stable within a spec revision. */
-  id: z.string().regex(/^s[1-9]\d{0,2}$/),
+  id: scenarioIdSchema,
   kind: scenarioKindSchema,
   title: oneLine(SPEC_LIMITS.titleChars),
   steps: z.array(scenarioStepSchema).min(1).max(SPEC_LIMITS.steps),
@@ -120,6 +124,8 @@ export const bountySpecDtoSchema = z.object({
 export const bountySpecRevisionDtoSchema = z.object({
   revision: z.number().int().positive(),
   origin: bountySpecOriginSchema,
+  /** What the reviewer asked for, for a revision that came from a request. */
+  instruction: z.string().nullable(),
   scenarioCount: z.number().int().nonnegative(),
   openQuestionCount: z.number().int().nonnegative(),
   createdBy: z.string().nullable(),
@@ -141,7 +147,89 @@ export const proposalSpecRevisionsResponseSchema = z.object({
   revisions: z.array(bountySpecRevisionDtoSchema),
 });
 
+/**
+ * What a reviewer may ask of a spec: core's `RespecRequest`, checked. Each
+ * names what it changes in the revision it was made against; whether
+ * those exist there is the route's to check (`checkRespec`).
+ */
+export const respecRequestSchema = z
+  .discriminatedUnion("mode", [
+    z.object({
+      mode: z.literal("expand"),
+      kinds: z
+        .array(scenarioKindSchema)
+        .min(1)
+        .max(SCENARIO_KINDS.length)
+        .optional(),
+      instruction: z
+        .string()
+        .trim()
+        .min(1)
+        .max(RESPEC_LIMITS.instructionChars)
+        .optional(),
+    }),
+    z.object({
+      mode: z.literal("answer"),
+      answers: z
+        .array(
+          z.object({
+            question: oneLine(SPEC_LIMITS.noteChars),
+            answer: z.string().trim().min(1).max(RESPEC_LIMITS.answerChars),
+          }),
+        )
+        .min(1)
+        .max(SPEC_LIMITS.openQuestions),
+    }),
+    z.object({
+      mode: z.literal("trim"),
+      removeScenarioIds: z
+        .array(scenarioIdSchema)
+        .min(1)
+        .max(SPEC_LIMITS.scenarios),
+    }),
+  ])
+  .superRefine((request, ctx) => {
+    const repeated = (values: readonly string[]) =>
+      new Set(values).size !== values.length;
+    if (
+      request.mode === "expand" &&
+      request.kinds === undefined &&
+      request.instruction === undefined
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["kinds"],
+        message: "An expansion needs a kind or an instruction.",
+      });
+    }
+    if (request.mode === "expand" && repeated(request.kinds ?? [])) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["kinds"],
+        message: "Each kind once.",
+      });
+    }
+    if (
+      request.mode === "answer" &&
+      repeated(request.answers.map(({ question }) => question))
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["answers"],
+        message: "Each question once.",
+      });
+    }
+    if (request.mode === "trim" && repeated(request.removeScenarioIds)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["removeScenarioIds"],
+        message: "Each scenario once.",
+      });
+    }
+  });
+
 export type ScenarioWeightDto = z.infer<typeof scenarioWeightSchema>;
+export type RespecRequestDto = z.infer<typeof respecRequestSchema>;
 export type ScenarioStepDto = z.infer<typeof scenarioStepSchema>;
 export type ScenarioDto = z.infer<typeof scenarioSchema>;
 export type SpecDraftDto = z.infer<typeof specDraftSchema>;

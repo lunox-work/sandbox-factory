@@ -6,11 +6,14 @@ import { stepUp, type SpecDraft } from "sandbox-factory";
 import {
   bountyComplexitySchema,
   bountyProposalDtoSchema,
+  bountyRunKindSchema,
+  bountyRunOutcomeSchema,
   createRunSchema,
   pricedComplexitySchema,
   resizeProposalSchema,
   putRateCardSchema,
   rateCardSnapshotSchema,
+  respecProposalSchema,
   sizingResultSchema,
   stepResultSchema,
 } from "../src/bounty.js";
@@ -249,6 +252,50 @@ test("a proposal carries its step, null when there is none", () => {
   assert.equal(
     bountyProposalDtoSchema.safeParse({ ...proposal, modelComplexity: "S+" })
       .success,
+    false,
+  );
+});
+
+test("a respec names the proposal revision, its request and what it asks", () => {
+  const body = {
+    expectedRevision: 3,
+    requestId: "28bb313f-252a-4a1d-b656-558a215b604b",
+    request: { mode: "trim", removeScenarioIds: ["s2"] },
+  };
+  assert.deepEqual(respecProposalSchema.parse(body), body);
+  assert.equal(
+    respecProposalSchema.safeParse({ ...body, request: undefined }).success,
+    false,
+  );
+  assert.equal(
+    respecProposalSchema.safeParse({ ...body, requestId: "again" }).success,
+    false,
+  );
+  // A respec run, and what its outcome says the change did.
+  assert.equal(bountyRunKindSchema.parse("respec"), "respec");
+  assert.deepEqual(
+    bountyRunOutcomeSchema.parse({
+      externalIssueId: "10001",
+      issueKey: "NOX-1",
+      status: "proposed",
+      previousComplexity: "S",
+      pointsDelta: -4,
+    }),
+    {
+      externalIssueId: "10001",
+      issueKey: "NOX-1",
+      status: "proposed",
+      previousComplexity: "S",
+      pointsDelta: -4,
+    },
+  );
+  assert.equal(
+    bountyRunOutcomeSchema.safeParse({
+      externalIssueId: "10001",
+      issueKey: "NOX-1",
+      status: "proposed",
+      pointsDelta: 1.5,
+    }).success,
     false,
   );
 });

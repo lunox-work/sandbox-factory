@@ -72,6 +72,7 @@ import {
   WeightBadge,
 } from "./ProposalSpec";
 import { JiraIcon, ModelIcon } from "./ProviderIcon";
+import { useRespec } from "./SpecChanges";
 import type { JiraIssueDetail } from "./useJira";
 
 type EnrichedProposal = BountyProposalDto & {
@@ -1072,10 +1073,12 @@ export function BoardBounties({
     };
   }, []);
   // The board's own sizing run. A one-ticket run someone added is followed
-  // by the search that started it, not shown as the board's stream.
+  // by the search that started it, and a change to one proposal's spec by
+  // the proposal's peek: neither is shown as the board's stream.
   const active = runs.find(
     (run) =>
       run.kind !== "issue" &&
+      run.kind !== "respec" &&
       (run.status === "queued" || run.status === "running"),
   );
   /*
@@ -1600,6 +1603,7 @@ export function BoardBounties({
             canDecide={canManage(role)}
             busy={busy}
             mutate={mutate}
+            onChanged={refresh}
             onRemoved={() => closeProposal(true)}
           />
         )}
@@ -2098,6 +2102,7 @@ function ProposalPeek({
   canDecide,
   busy,
   mutate,
+  onChanged,
   onRemoved,
 }: {
   /** The organization's API root, for the reads the peek makes itself. */
@@ -2113,6 +2118,8 @@ function ProposalPeek({
     body: object,
     options?: { apply?: boolean },
   ) => Promise<boolean>;
+  /** Reads the proposal again, after a change to its spec has landed. */
+  onChanged: () => Promise<void>;
   onRemoved: () => void;
 }) {
   const url = ticket?.url ?? proposal.liveUrl ?? null;
@@ -2126,6 +2133,15 @@ function ProposalPeek({
   const spec = useProposalSpec(base, proposal.id, proposal.specRevision);
   const scenarios = scenarioTotal(spec.read);
   const step = proposal.step ?? null;
+  // A reviewer's changes to the spec, and the run each one starts.
+  const respec = useRespec(base, proposal.id, proposal.revision, onChanged);
+  // What a change moves is the step, so a proposal without one has nothing
+  // to change; an approved one is unapproved first.
+  const canChange =
+    canDecide &&
+    open &&
+    step !== null &&
+    (proposal.specRevision ?? null) !== null;
   // The size a resize replaces: the step's base when there is a step, so a
   // reviewer sees which whole size the half size stands on.
   const sizeBase = step?.base ?? proposal.complexity;
@@ -2504,6 +2520,14 @@ function ProposalPeek({
               // spec's added weight has moved it on since.
               reviewerSize: proposal.sizedBy === "reviewer" ? sizeBase : null,
             }}
+            history={{
+              base,
+              proposalId: proposal.id,
+              specRevision: proposal.specRevision ?? null,
+            }}
+            {...(canChange
+              ? { changes: { control: respec, size: proposal.complexity } }
+              : {})}
           />
         </TabsContent>
 

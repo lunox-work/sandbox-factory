@@ -14,6 +14,7 @@ function row(overrides: Partial<BountyRunRow> = {}): BountyRunRow {
     kind: "backlog",
     sourceProposalId: null,
     sourceRevision: null,
+    respec: null,
     requestId: "28bb313f-252a-4a1d-b656-558a215b604b",
     status: "queued",
     selection: {
@@ -150,6 +151,104 @@ test("a replayed one-ticket request must name the same ticket", async () => {
       planned: [
         { externalIssueId: "10008", issueKey: "APP-8", summary: "Other" },
       ],
+    }),
+    { ok: false, reason: "request-conflict" },
+  );
+});
+
+test("a spec change waits for nothing on the board, only for a change to its proposal", async () => {
+  const respec = { mode: "trim", removeScenarioIds: ["s2"] } as const;
+  const change = {
+    ...input,
+    kind: "respec",
+    sourceProposalId: "bpr_1",
+    sourceRevision: 3,
+    respec,
+  } as const;
+  // No board activity read: the proposal's is the only one asked about.
+  const free = createSequencedFakeDb([
+    [],
+    [{ id: "jrb_1" }],
+    [],
+    [
+      row({
+        kind: "respec",
+        sourceProposalId: "bpr_1",
+        sourceRevision: 3,
+        respec,
+      }),
+    ],
+  ]);
+  const created = await createBountyRunStore(free.db).create("org_1", change);
+  assert.equal(created.ok, true);
+  if (created.ok) assert.deepEqual(created.run.respec, respec);
+  assert.equal(free.calls[3]?.kind, "insert");
+  assert.deepEqual(free.calls[3]?.values?.["respec"], respec);
+  assert.equal(free.calls[3]?.values?.["kind"], "respec");
+
+  const busy = createSequencedFakeDb([
+    [],
+    [{ id: "jrb_1" }],
+    [row({ id: "brn_9", kind: "reprice", sourceProposalId: "bpr_1" })],
+  ]);
+  assert.deepEqual(
+    await createBountyRunStore(busy.db).create("org_1", change),
+    {
+      ok: false,
+      reason: "active",
+      runId: "brn_9",
+    },
+  );
+});
+
+test("a re-price waits for the board's run, then for a change to its proposal", async () => {
+  const reprice = {
+    ...input,
+    kind: "reprice",
+    sourceProposalId: "bpr_1",
+    sourceRevision: 3,
+  } as const;
+  const fake = createSequencedFakeDb([
+    [],
+    [{ id: "jrb_1" }],
+    [],
+    [row({ id: "brn_8", kind: "respec", sourceProposalId: "bpr_1" })],
+  ]);
+  assert.deepEqual(
+    await createBountyRunStore(fake.db).create("org_1", reprice),
+    {
+      ok: false,
+      reason: "active",
+      runId: "brn_8",
+    },
+  );
+});
+
+test("a replayed spec change must ask the same thing", async () => {
+  const respec = { mode: "expand", kinds: ["boundary"] } as const;
+  const existing = row({
+    kind: "respec",
+    sourceProposalId: "bpr_1",
+    sourceRevision: 3,
+    respec,
+  });
+  const change = {
+    ...input,
+    kind: "respec",
+    sourceProposalId: "bpr_1",
+    sourceRevision: 3,
+  } as const;
+  const same = createSequencedFakeDb([[existing]]);
+  assert.equal(
+    (await createBountyRunStore(same.db).create("org_1", { ...change, respec }))
+      .ok,
+    true,
+  );
+  const other = createSequencedFakeDb([[existing]]);
+  assert.deepEqual(
+    await createBountyRunStore(other.db).create("org_1", {
+      ...change,
+      respec: { mode: "expand", kinds: ["recovery"] },
     }),
     { ok: false, reason: "request-conflict" },
   );

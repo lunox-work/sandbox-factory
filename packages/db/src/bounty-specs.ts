@@ -1,5 +1,5 @@
 import { countScenarios, type SpecDraft } from "sandbox-factory";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, lte } from "drizzle-orm";
 
 import type { Database } from "./errors.js";
 import { generateId } from "./mapping.js";
@@ -7,7 +7,8 @@ import { bountySpec } from "./schema.js";
 import type { BountySpecOrigin, BountySpecRow } from "./schema.js";
 
 /**
- * A spec a run drafted, handed over with the proposal it belongs to.
+ * A spec a run drafted or changed, handed over with the proposal it
+ * belongs to.
  *
  * It carries no proposal id and no revision: the proposal store decides
  * both inside the transaction that writes the proposal, so a spec is never
@@ -19,8 +20,11 @@ export interface NewBountySpec {
   readonly specHashVersion: number;
   readonly draft: SpecDraft;
   readonly origin: BountySpecOrigin;
-  readonly actualModel: string;
-  readonly promptVersion: string;
+  /** The model and prompt that wrote it; null for a trim, which asks none. */
+  readonly actualModel: string | null;
+  readonly promptVersion: string | null;
+  /** What the reviewer asked for, for a revision that came from a request. */
+  readonly instruction?: string | null;
 }
 
 export interface StoredBountySpec {
@@ -44,6 +48,7 @@ export interface StoredBountySpec {
 export interface StoredBountySpecRevision {
   readonly revision: number;
   readonly origin: BountySpecOrigin;
+  readonly instruction: string | null;
   readonly scenarioCount: number;
   readonly openQuestionCount: number;
   readonly createdBy: string | null;
@@ -62,6 +67,17 @@ export interface BountySpecStore {
     organizationId: string,
     proposalId: string,
   ): Promise<StoredBountySpecRevision[]>;
+  /**
+   * The revision a proposal's size was set against: the newest drafted one
+   * (`origin` draft) at or before `atRevision`. Every sizing drafts one and
+   * a reviewer's change never does, so it is what the scenario step counts
+   * from. Null when there is none.
+   */
+  sizedRevision(
+    organizationId: string,
+    proposalId: string,
+    atRevision: number,
+  ): Promise<StoredBountySpec | null>;
 }
 
 function toDto(row: BountySpecRow): StoredBountySpec {
@@ -87,9 +103,9 @@ function toDto(row: BountySpecRow): StoredBountySpec {
  * The revision a proposal's next spec takes: one past its latest, or 1.
  *
  * Only safe where the proposal row is already locked, which is the case in
- * the one place a second revision is written, a re-price. The table's
- * unique constraint on proposal and revision is what holds if that ever
- * stops being true.
+ * both places a later revision is written, a re-price and a spec change.
+ * The table's unique constraint on proposal and revision is what holds if
+ * that ever stops being true.
  */
 export async function nextSpecRevision(
   db: Database,
@@ -121,6 +137,8 @@ export async function insertSpecRevision(
     readonly proposalId: string;
     readonly runId: string;
     readonly revision: number;
+    /** The person whose request made it; absent when a run drafted it. */
+    readonly createdBy?: string | null;
   },
   spec: NewBountySpec,
 ): Promise<void> {
@@ -133,6 +151,8 @@ export async function insertSpecRevision(
     specHashVersion: spec.specHashVersion,
     draft: spec.draft,
     origin: spec.origin,
+    instruction: spec.instruction ?? null,
+    createdBy: target.createdBy ?? null,
     runId: target.runId,
     actualModel: spec.actualModel,
     promptVersion: spec.promptVersion,
@@ -169,11 +189,29 @@ export function createBountySpecStore(db: Database): BountySpecStore {
       return rows.map((row) => ({
         revision: row.revision,
         origin: row.origin as BountySpecOrigin,
+        instruction: row.instruction,
         scenarioCount: countScenarios(row.draft).total,
         openQuestionCount: row.draft.openQuestions.length,
         createdBy: row.createdBy,
         createdAt: row.createdAt.toISOString(),
       }));
+    },
+
+    async sizedRevision(organizationId, proposalId, atRevision) {
+      const rows = (await db
+        .select()
+        .from(bountySpec)
+        .where(
+          and(
+            eq(bountySpec.organizationId, organizationId),
+            eq(bountySpec.proposalId, proposalId),
+            eq(bountySpec.origin, "draft"),
+            lte(bountySpec.revision, atRevision),
+          ),
+        )
+        .orderBy(desc(bountySpec.revision))
+        .limit(1)) as BountySpecRow[];
+      return rows[0] === undefined ? null : toDto(rows[0]);
     },
   };
 }

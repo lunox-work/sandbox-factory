@@ -3,10 +3,13 @@ import { randomUUID } from "node:crypto";
 import type {
   BountyProposalStore,
   BountyRunStore,
+  BountySpecStore,
   JiraBoardStore,
   JiraIssueStore,
   NewBountySpec,
+  StoredBountyProposal,
   StoredBountyRun,
+  JiraIssuePointer,
 } from "@sandbox-factory/db";
 import {
   JiraApiError,
@@ -15,16 +18,27 @@ import {
 } from "@sandbox-factory/jira";
 import {
   boardPricingSchema,
+  specDraftSchema,
   type JiraIssueDto,
   type JiraIssuePageDto,
 } from "@sandbox-factory/shared";
 import {
+  answerSpec,
+  checkRespec,
+  describeRespec,
+  expandSpec,
+  pointsDelta,
   priceFor,
   resolveStepSettings,
+  sameSpec,
   stepUp,
+  trimSpec,
   type BountyRunOutcome,
   type BountySizingResult,
   type CategoryMatch,
+  type RespecRequest,
+  type SpecDraft,
+  type StepResult,
   type StepSettings,
 } from "sandbox-factory";
 
@@ -35,6 +49,11 @@ import {
   type StructuredCaller,
 } from "../sizing/caller.js";
 import { draftSpecTool } from "../sizing/tools/draft-spec.js";
+import {
+  answerSpecTool,
+  expandSpecTool,
+  REVISE_SPEC_PROMPT_VERSION,
+} from "../sizing/tools/revise-spec.js";
 import { sizeBountyTool } from "../sizing/tools/size-bounty.js";
 import { selectBacklog, type BacklogPageReader } from "./selection.js";
 
@@ -69,6 +88,8 @@ export interface BountyExecutorOptions {
   readonly runs: BountyRunStore;
   readonly proposals: BountyProposalStore;
   readonly issues: JiraIssueStore;
+  /** The spec revisions a `respec` run changes. */
+  readonly specs: BountySpecStore;
   /** The model behind every call a run makes: the spec draft and the size. */
   readonly caller: StructuredCaller;
   readonly clientFor: (
@@ -139,6 +160,17 @@ export class BountyExecutor {
         await runs.finish(organizationId, runId, leaseToken, "failed", {
           fatalErrorCode: clientResult.reason,
         });
+        return;
+      }
+
+      if (run.kind === "respec") {
+        await this.#respec(
+          organizationId,
+          run,
+          leaseToken,
+          clientResult.client,
+          controller.signal,
+        );
         return;
       }
 
@@ -363,6 +395,267 @@ export class BountyExecutor {
     } finally {
       (this.#options.clearInterval ?? clearInterval)(heartbeat);
     }
+  }
+
+  /**
+   * A reviewer's change to one proposal's spec: the spec revised as asked,
+   * then the size moved by the scenario step, from the base and with the
+   * settings the proposal's step already holds. The model's size is not
+   * asked for again: the base is "what the ticket asks for", and what the
+   * reviewer added to the spec is the step's to count.
+   *
+   * One ticket, so no workers: a plan of one, its outcome, and the run's
+   * end. The outcome carries the size before the change and the points it
+   * moved, for the line the reviewer reads when it lands.
+   */
+  async #respec(
+    organizationId: string,
+    claimed: StoredBountyRun,
+    leaseToken: string,
+    client: RunJiraClient,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const { runs, proposals, issues } = this.#options;
+    const source =
+      claimed.sourceProposalId === null
+        ? null
+        : await proposals.get(organizationId, claimed.sourceProposalId);
+    const pointer =
+      source === null
+        ? null
+        : await issues.get(organizationId, source.jiraIssueId);
+    if (
+      claimed.respec === null ||
+      pointer === null ||
+      !respeccable(source, claimed)
+    ) {
+      await runs.finish(organizationId, claimed.id, leaseToken, "failed", {
+        fatalErrorCode: "proposal_changed",
+      });
+      return;
+    }
+    const run = await runs.recordPlan(organizationId, claimed.id, leaseToken, [
+      {
+        externalIssueId: pointer.externalId,
+        issueKey: pointer.key,
+        summary: "",
+      },
+    ]);
+    if (run === null) return;
+
+    const outcome = await this.#respecOutcome(
+      organizationId,
+      run,
+      leaseToken,
+      source,
+      pointer,
+      claimed.respec,
+      client,
+      signal,
+    );
+    if (outcome.value === undefined) {
+      await runs.finish(organizationId, run.id, leaseToken, "failed", {
+        fatalErrorCode: outcome.fatalCode,
+      });
+      return;
+    }
+    const recorded = await runs.recordOutcome(
+      organizationId,
+      run.id,
+      leaseToken,
+      outcome.value,
+    );
+    await runs.finish(
+      organizationId,
+      run.id,
+      leaseToken,
+      !recorded || outcome.value.status === "failed" ? "failed" : "succeeded",
+      recorded ? {} : { fatalErrorCode: "worker_lost" },
+    );
+  }
+
+  async #respecOutcome(
+    organizationId: string,
+    run: StoredBountyRun,
+    leaseToken: string,
+    source: Respeccable,
+    pointer: JiraIssuePointer,
+    request: RespecRequest,
+    client: RunJiraClient,
+    signal: AbortSignal,
+  ): Promise<
+    | { readonly value: BountyRunOutcome; readonly fatalCode?: undefined }
+    | { readonly value?: undefined; readonly fatalCode: string }
+  > {
+    const base = {
+      externalIssueId: pointer.externalId,
+      issueKey: pointer.key,
+      jiraIssueId: pointer.id,
+      proposalId: source.id,
+    };
+    const failed = (code: string) => ({
+      value: { ...base, status: "failed" as const, code },
+    });
+
+    const { specs } = this.#options;
+    const [current, sized] = await Promise.all([
+      specs.get(organizationId, source.id, source.specRevision),
+      specs.sizedRevision(organizationId, source.id, source.specRevision),
+    ]);
+    if (current === null || sized === null) return failed("spec_missing");
+    // Checked when it was asked for, against the revision this run reads,
+    // which the source revision above has already held still.
+    if (checkRespec(request, current.draft) !== null) {
+      return failed("respec_invalid");
+    }
+
+    let next: SpecDraft;
+    let model: { actualModel: string; usage: SizingUsage } | null = null;
+    if (request.mode === "trim") {
+      next = trimSpec(current.draft, request.removeScenarioIds);
+    } else {
+      /*
+        The ticket, read again: the model needs to know what the scenarios
+        are about, and the read says whether the ticket still says what it
+        said when the proposal was sized. A change made of a ticket that
+        has moved on would grow a spec the next re-price throws away.
+      */
+      let ticket: JiraIssueSpec;
+      try {
+        ticket = await client.issueSpec(pointer.externalId);
+      } catch (error) {
+        if (error instanceof JiraApiError && error.isNotFound) {
+          await this.#options.issues.markRemoved(organizationId, pointer.id);
+          return failed("issue_unavailable");
+        }
+        const code = jiraCode(error);
+        return code === "reconnect" || code === "scope"
+          ? { fatalCode: code }
+          : failed(code);
+      }
+      if (
+        source.specHashVersion !== SPEC_HASH_VERSION ||
+        ticket.pricingSpecHash !== source.specHash
+      ) {
+        return failed("proposal_stale");
+      }
+      const options: SizingRequestOptions = {
+        signal,
+        ...(run.deadlineAt === null
+          ? {}
+          : { deadlineAt: new Date(run.deadlineAt) }),
+      };
+      const input = {
+        ticket: {
+          summary: ticket.summary,
+          descriptionText: ticket.descriptionText,
+          issueType: ticket.issueType,
+          components: ticket.components,
+          labels: ticket.labels,
+        },
+        spec: current.draft,
+      };
+      try {
+        if (request.mode === "expand") {
+          const answer = await this.#options.caller.call(
+            expandSpecTool,
+            { ...input, request },
+            options,
+          );
+          next = expandSpec(current.draft, answer.result);
+          model = answer;
+        } else {
+          const answer = await this.#options.caller.call(
+            answerSpecTool,
+            { ...input, request },
+            options,
+          );
+          next = answerSpec(
+            current.draft,
+            answer.result,
+            request.answers.map(({ question }) => question),
+          );
+          model = answer;
+        }
+      } catch (error) {
+        const fatalCode = fatalCodeOf(error);
+        return fatalCode === undefined ? failed("spec_failed") : { fatalCode };
+      }
+    }
+
+    const spent =
+      model === null
+        ? {}
+        : {
+            actualModel: model.actualModel,
+            inputTokens: model.usage.inputTokens,
+            outputTokens: model.usage.outputTokens,
+          };
+    // Merged here rather than written by the model, so checked again as the
+    // spec a reader will be shown.
+    if (!specDraftSchema.safeParse(next).success) {
+      return { value: { ...failed("spec_failed").value, ...spent } };
+    }
+    if (sameSpec(next, current.draft)) {
+      return {
+        value: { ...base, status: "skipped", code: "nothing_added", ...spent },
+      };
+    }
+    const step = stepUp(
+      source.step.base,
+      sized.draft,
+      next,
+      source.step.settings,
+    );
+    if (step === null) {
+      return { value: { ...failed("spec_unweighed").value, ...spent } };
+    }
+    const amountMinor = priceFor(step.complexity, run.rateCard);
+    if (amountMinor === null) return failed("spec_unweighed");
+
+    const written = await this.#options.proposals.respecForLease(
+      organizationId,
+      leaseToken,
+      source.id,
+      source.revision,
+      {
+        runId: run.id,
+        fromSpecRevision: source.specRevision,
+        spec: {
+          specHash: source.specHash,
+          specHashVersion: source.specHashVersion,
+          draft: next,
+          origin: request.mode,
+          instruction: describeRespec(request, current.draft),
+          actualModel: model?.actualModel ?? null,
+          promptVersion: model === null ? null : REVISE_SPEC_PROMPT_VERSION,
+        },
+        step,
+        amountMinor,
+        currency: run.rateCard.currency,
+      },
+    );
+    if (written.status === "lost-lease") return { fatalCode: "worker_lost" };
+    if (written.status !== "respecced") {
+      return {
+        value: {
+          ...base,
+          status: "skipped",
+          code: written.status === "changed" ? "proposal_changed" : "not_found",
+          ...spent,
+        },
+      };
+    }
+    return {
+      value: {
+        ...base,
+        status: "proposed",
+        previousComplexity: written.previousComplexity,
+        pointsDelta:
+          pointsDelta(current.draft, next, step.settings.weightPoints) ?? 0,
+        ...spent,
+      },
+    };
   }
 
   async #processIssue(
@@ -627,6 +920,29 @@ export class BountyExecutor {
       },
     };
   }
+}
+
+/**
+ * A proposal a spec change can be made to, and the step that moves its
+ * size. The route checks the same before starting the run; this is the
+ * proposal as the run finds it.
+ */
+type Respeccable = StoredBountyProposal & {
+  readonly step: StepResult;
+  readonly specRevision: number;
+};
+
+function respeccable(
+  proposal: StoredBountyProposal | null,
+  run: StoredBountyRun,
+): proposal is Respeccable {
+  return (
+    proposal !== null &&
+    proposal.revision === run.sourceRevision &&
+    proposal.status === "proposed" &&
+    proposal.step !== null &&
+    proposal.specRevision !== null
+  );
 }
 
 function sum(values: readonly number[]): number {

@@ -105,6 +105,19 @@ export interface BountySizingResult {
 export type BountyOutcomeStatus = "proposed" | "unsized" | "failed" | "skipped";
 
 /**
+ * What a run does: size a board's backlog, re-price one proposal, size one
+ * ticket someone picked, or change one proposal's spec and move its size by
+ * the scenario step (`respec`).
+ */
+export const BOUNTY_RUN_KINDS = [
+  "backlog",
+  "reprice",
+  "issue",
+  "respec",
+] as const;
+export type BountyRunKind = (typeof BOUNTY_RUN_KINDS)[number];
+
+/**
  * A ticket a run chose to size, recorded before sizing starts, so a page
  * opened mid-run can show what is still to come as well as what is done.
  */
@@ -129,6 +142,13 @@ export interface BountyRunOutcome {
   readonly actualModel?: string;
   readonly inputTokens?: number;
   readonly outputTokens?: number;
+  /**
+   * A respec's outcome only: the size before the change, and how many
+   * points the change moved the spec by (negative for a trim). The size
+   * after it is the proposal's.
+   */
+  readonly previousComplexity?: BountyComplexity;
+  readonly pointsDelta?: number;
 }
 
 export type RateCardValidation =

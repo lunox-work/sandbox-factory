@@ -21,6 +21,7 @@ import {
   proposalMutationSchema,
   repriceProposalSchema,
   resizeProposalSchema,
+  respecProposalSchema,
 } from "@sandbox-factory/shared";
 import type {
   BountyRunPlannedIssue,
@@ -32,12 +33,15 @@ import type { Hono } from "hono";
 import { stream } from "hono/streaming";
 import {
   CATEGORIES,
+  checkRespec,
   DEFAULT_RATE_CARD,
   priceFor,
   rebaseStep,
+  SPEC_LIMITS,
   UNCATEGORIZED,
   validateRateCard,
   type PricedComplexity,
+  type RespecRefusal,
 } from "sandbox-factory";
 
 import type {
@@ -46,6 +50,7 @@ import type {
   RunJiraClient,
 } from "./executor.js";
 import type { BountyDelivery } from "./delivery.js";
+import { REVISE_SPEC_PROMPT_VERSION } from "../sizing/tools/revise-spec.js";
 import { freshProposal, mapConcurrent, proposalTitle } from "./review.js";
 
 export interface BountyRouteOptions {
@@ -1194,6 +1199,153 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
     return c.json({ run: created.run }, 202);
   });
 
+  /**
+   * A change to a proposal's spec: more scenarios, answers to its open
+   * questions, or scenarios taken out. Every change is a run, as a re-price
+   * is, so it is followed the same way and fenced by the same lease; a
+   * trim asks no model but is still one, for the lease.
+   *
+   * Refused before the run when it could only fail: an approved proposal
+   * (unapprove first: an approval is made on a size), a proposal with no
+   * weighed spec (nothing for the step to move; re-analyze first), a
+   * request the current revision cannot take, or a ticket that changed
+   * since it was sized, whose spec the next re-price would replace.
+   */
+  app.post("/api/v1/orgs/:orgId/proposals/:id/respec", async (c) => {
+    const parsed = respecProposalSchema.safeParse(
+      await c.req.json().catch(() => null),
+    );
+    if (!parsed.success) return c.json({ error: "Invalid spec change." }, 400);
+    const { organizationId, role } = c.get("member");
+    const denied = requireAdmin(role);
+    if (denied !== null) return c.json(denied, 403);
+    if (
+      options.executor === undefined ||
+      options.requestedModel === undefined ||
+      options.clientFor === undefined
+    ) {
+      return c.json(
+        {
+          code: "sizing_unavailable",
+          error: "Sizing is not configured for this deployment.",
+        },
+        503,
+      );
+    }
+    const proposal = await options.proposals.get(
+      organizationId,
+      c.req.param("id"),
+    );
+    if (proposal === null) return c.json({ error: "Not found" }, 404);
+    if (proposal.revision !== parsed.data.expectedRevision) {
+      return c.json(
+        {
+          code: "proposal_changed",
+          error: "The proposal changed. Reload it before continuing.",
+          proposal,
+        },
+        409,
+      );
+    }
+    if (proposal.status !== "proposed") {
+      return c.json(
+        {
+          code: "proposal_approved",
+          error: "Unapprove the proposal before changing its scenarios.",
+        },
+        409,
+      );
+    }
+    const current =
+      proposal.step === null || proposal.specRevision === null
+        ? null
+        : await options.specs.get(
+            organizationId,
+            proposal.id,
+            proposal.specRevision,
+          );
+    if (current === null) {
+      return c.json(
+        {
+          code: "respec_unavailable",
+          error:
+            "This proposal has no weighed scenarios to change. Re-analyze it first.",
+        },
+        409,
+      );
+    }
+    const { request } = parsed.data;
+    const refusal = checkRespec(request, current.draft);
+    if (refusal !== null) {
+      return c.json({ code: refusal, error: RESPEC_REFUSALS[refusal] }, 409);
+    }
+    const fresh = await freshProposal(
+      {
+        proposals: options.proposals,
+        issues: options.issues,
+        boards: options.boards,
+        clientFor: options.clientFor,
+      },
+      organizationId,
+      proposal,
+    );
+    if (fresh.freshness !== "current") {
+      const stale = fresh.freshness === "stale";
+      return c.json(
+        {
+          code: stale ? "proposal_stale" : "spec_unavailable",
+          error: stale
+            ? "The ticket changed since it was sized. Re-analyze it before changing its scenarios."
+            : "The ticket could not be checked.",
+          freshness: fresh.freshness,
+        },
+        409,
+      );
+    }
+    const pointer = await options.issues.get(
+      organizationId,
+      proposal.jiraIssueId,
+    );
+    const board =
+      pointer === null
+        ? null
+        : await options.boards.get(organizationId, pointer.boardId);
+    if (board === null) return c.json({ error: "Not found" }, 404);
+    const created = await options.runs.create(organizationId, {
+      boardId: board.id,
+      startedBy: c.get("user").id,
+      kind: "respec",
+      sourceProposalId: proposal.id,
+      sourceRevision: proposal.revision,
+      respec: request,
+      requestId: parsed.data.requestId,
+      // Nothing is selected; the column holds every run's snapshot.
+      selection: boardSelectionSchema.parse(board.selection),
+      // The proposal's own card: a spec change moves the size, not the
+      // rates, as a resize does.
+      rateCard: proposal.rateCard,
+      requestedModel: options.requestedModel,
+      promptVersion: REVISE_SPEC_PROMPT_VERSION,
+    });
+    if (!created.ok) {
+      return c.json(
+        created.reason === "active"
+          ? {
+              code: "run_active",
+              error: "This proposal is already being changed.",
+              runId: created.runId,
+            }
+          : {
+              code: "proposal_changed",
+              error: "Could not change the scenarios.",
+            },
+        409,
+      );
+    }
+    if (created.created) options.executor.start(organizationId, created.run.id);
+    return c.json({ run: created.run }, 202);
+  });
+
   app.post("/api/v1/orgs/:orgId/writebacks/:id/retry", async (c) => {
     const { organizationId, role } = c.get("member");
     const denied = requireAdmin(role);
@@ -1411,6 +1563,17 @@ async function approveWithFreshSpec(
     ),
   );
 }
+
+/** What each refused spec change is told. */
+const RESPEC_REFUSALS: Readonly<Record<RespecRefusal, string>> = {
+  spec_full: `The spec already has ${SPEC_LIMITS.scenarios} scenarios. Remove some before adding more.`,
+  unknown_question:
+    "That question is no longer open. Reload the scenarios and try again.",
+  unknown_scenario:
+    "That scenario is no longer in the spec. Reload the scenarios and try again.",
+  spec_emptied:
+    "A spec needs a scenario or an open question. Keep at least one.",
+};
 
 function proposalMutationResponse(
   c: any,

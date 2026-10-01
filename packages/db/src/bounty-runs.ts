@@ -1,10 +1,22 @@
 import type {
+  BountyRunKind,
   BountyRunOutcome,
   BountyRunPlannedIssue,
   BountySelection,
   RateCardSnapshot,
+  RespecRequest,
 } from "sandbox-factory";
-import { and, desc, eq, gt, lt, ne, or, sql } from "drizzle-orm";
+import {
+  and,
+  desc,
+  eq,
+  gt,
+  inArray,
+  lt,
+  notInArray,
+  or,
+  sql,
+} from "drizzle-orm";
 
 import { isUniqueViolation, type Database } from "./errors.js";
 import { generateId } from "./mapping.js";
@@ -14,11 +26,13 @@ import type { BountyRunRow } from "./schema.js";
 export interface CreateBountyRunInput {
   readonly boardId: string;
   readonly startedBy: string;
-  readonly kind?: "backlog" | "reprice" | "issue";
+  readonly kind?: BountyRunKind;
   /** The ticket an `issue` run sizes, stored as its plan from the start. */
   readonly planned?: readonly BountyRunPlannedIssue[];
   readonly sourceProposalId?: string;
   readonly sourceRevision?: number;
+  /** What a `respec` run is to do to its proposal's spec. */
+  readonly respec?: RespecRequest;
   readonly requestId: string;
   readonly selection: BountySelection;
   readonly rateCard: RateCardSnapshot;
@@ -127,9 +141,11 @@ export interface StoredBountyRun {
   readonly id: string;
   readonly organizationId: string;
   readonly boardId: string;
-  readonly kind: "backlog" | "reprice" | "issue";
+  readonly kind: BountyRunKind;
   readonly sourceProposalId: string | null;
   readonly sourceRevision: number | null;
+  /** What a `respec` run was asked to do; null for every other kind. */
+  readonly respec: RespecRequest | null;
   readonly requestId: string;
   readonly status: "queued" | "running" | "succeeded" | "partial" | "failed";
   readonly selection: BountySelection;
@@ -156,6 +172,7 @@ function toDto(row: BountyRunRow): StoredBountyRun {
     kind: row.kind as StoredBountyRun["kind"],
     sourceProposalId: row.sourceProposalId,
     sourceRevision: row.sourceRevision,
+    respec: row.respec ?? null,
     requestId: row.requestId,
     status: row.status as StoredBountyRun["status"],
     selection: row.selection,
@@ -195,23 +212,57 @@ async function firstByRequest(
   return rows[0];
 }
 
-async function activeForBoard(
+/**
+ * The run in flight that a new one would have to wait for, as the two
+ * partial unique indexes on `bounty_run` decide it: a board's own run (a
+ * backlog or a re-price), or, for a run that changes one proposal, the
+ * re-price or spec change already changing it.
+ *
+ * A one-ticket run waits for neither. A spec change does not wait for the
+ * board, since a backlog run never touches a proposal that exists.
+ */
+async function activeFor(
   db: Database,
   organizationId: string,
-  boardId: string,
+  input: CreateBountyRunInput,
 ): Promise<BountyRunRow | undefined> {
-  const rows = (await db
-    .select()
-    .from(bountyRun)
-    .where(
-      and(
-        eq(bountyRun.organizationId, organizationId),
-        eq(bountyRun.boardId, boardId),
-        or(eq(bountyRun.status, "queued"), eq(bountyRun.status, "running")),
-        ne(bountyRun.kind, "issue"),
-      ),
-    )) as BountyRunRow[];
-  return rows[0];
+  const kind = input.kind ?? "backlog";
+  const inFlight = or(
+    eq(bountyRun.status, "queued"),
+    eq(bountyRun.status, "running"),
+  );
+  if (kind === "reprice" || kind === "backlog") {
+    const rows = (await db
+      .select()
+      .from(bountyRun)
+      .where(
+        and(
+          eq(bountyRun.organizationId, organizationId),
+          eq(bountyRun.boardId, input.boardId),
+          inFlight,
+          notInArray(bountyRun.kind, ["issue", "respec"]),
+        ),
+      )) as BountyRunRow[];
+    if (rows[0] !== undefined) return rows[0];
+  }
+  if (
+    (kind === "reprice" || kind === "respec") &&
+    input.sourceProposalId !== undefined
+  ) {
+    const rows = (await db
+      .select()
+      .from(bountyRun)
+      .where(
+        and(
+          eq(bountyRun.organizationId, organizationId),
+          eq(bountyRun.sourceProposalId, input.sourceProposalId),
+          inFlight,
+          inArray(bountyRun.kind, ["reprice", "respec"]),
+        ),
+      )) as BountyRunRow[];
+    if (rows[0] !== undefined) return rows[0];
+  }
+  return undefined;
 }
 
 function sameRequest(row: BountyRunRow, input: CreateBountyRunInput): boolean {
@@ -220,7 +271,9 @@ function sameRequest(row: BountyRunRow, input: CreateBountyRunInput): boolean {
     row.kind === (input.kind ?? "backlog") &&
     row.sourceProposalId === (input.sourceProposalId ?? null) &&
     row.sourceRevision === (input.sourceRevision ?? null) &&
-    row.planned[0]?.externalIssueId === input.planned?.[0]?.externalIssueId
+    row.planned[0]?.externalIssueId === input.planned?.[0]?.externalIssueId &&
+    // A spec change replayed under its request id must ask the same thing.
+    JSON.stringify(row.respec ?? null) === JSON.stringify(input.respec ?? null)
   );
 }
 
@@ -250,10 +303,7 @@ export function createBountyRunStore(db: Database): BountyRunStore {
       if (ownedBoard[0] === undefined)
         return { ok: false, reason: "not-found" };
 
-      const active =
-        input.kind === "issue"
-          ? undefined
-          : await activeForBoard(db, organizationId, input.boardId);
+      const active = await activeFor(db, organizationId, input);
       if (active !== undefined) {
         return { ok: false, reason: "active", runId: active.id };
       }
@@ -269,6 +319,7 @@ export function createBountyRunStore(db: Database): BountyRunStore {
             kind: input.kind ?? "backlog",
             sourceProposalId: input.sourceProposalId ?? null,
             sourceRevision: input.sourceRevision ?? null,
+            respec: input.respec ?? null,
             requestId: input.requestId,
             selection: input.selection,
             rateCard: input.rateCard,
@@ -293,11 +344,7 @@ export function createBountyRunStore(db: Database): BountyRunStore {
             ? { ok: true, run: toDto(racedRequest), created: false }
             : { ok: false, reason: "request-conflict" };
         }
-        const racedActive = await activeForBoard(
-          db,
-          organizationId,
-          input.boardId,
-        );
+        const racedActive = await activeFor(db, organizationId, input);
         if (racedActive !== undefined) {
           return { ok: false, reason: "active", runId: racedActive.id };
         }

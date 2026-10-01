@@ -4,6 +4,7 @@ import { test } from "node:test";
 import type {
   BountyProposalStore,
   BountyRunStore,
+  BountySpecStore,
   JiraBoardStore,
   JiraIssueStore,
   StoredBountyRun,
@@ -83,6 +84,7 @@ function run(overrides: Partial<StoredBountyRun> = {}): StoredBountyRun {
     kind: "backlog",
     sourceProposalId: null,
     sourceRevision: null,
+    respec: null,
     requestId: "28bb313f-252a-4a1d-b656-558a215b604b",
     status: "queued",
     selection: {
@@ -390,6 +392,8 @@ function harness(options: {
     runs,
     proposals,
     issues,
+    // No run here changes a spec: a respec run has its own tests.
+    specs: {} as BountySpecStore,
     caller,
     clientFor: () => Promise.resolve({ ok: true, client }),
     now: () => new Date("2026-09-22T00:00:00.000Z"),

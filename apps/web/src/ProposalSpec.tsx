@@ -18,6 +18,11 @@
  * spec, so each kind's group shows its total. A spec drafted before
  * weights shows none of this, and says how to get them.
  *
+ * A reviewer who may change the spec does it here: more scenarios of a
+ * kind or for an instruction, answers to the open questions, or a scenario
+ * taken out (`SpecChanges.tsx`). Each change is a new revision, and the
+ * revisions before it stay readable, read-only, from the picker.
+ *
  * The read is split from the view so the peek can start it when it opens,
  * as it does the ticket's, and a switch to the tab is instant. It is a
  * stored read and answers without Jira, which is why it does not ride on
@@ -25,7 +30,11 @@
  * changed.
  */
 
-import type { BountySpecDto } from "@sandbox-factory/shared";
+import type {
+  BountySpecDto,
+  BountySpecRevisionDto,
+  RespecRequestDto,
+} from "@sandbox-factory/shared";
 import {
   countScenarios,
   groupScenarios,
@@ -37,12 +46,24 @@ import {
   type Scenario,
   type ScenarioWeight,
 } from "sandbox-factory";
-import { ChevronRight, RefreshCw } from "lucide-react";
+import { ChevronRight, RefreshCw, X } from "lucide-react";
 import { useCallback, useEffect, useId, useState } from "react";
 
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { LoadingLine } from "@/components/Message";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+
+import {
+  AnswerForm,
+  expandLabel,
+  ExpandMenu,
+  InstructionForm,
+  RespecStatus,
+  RevisionPicker,
+  useSpecRevisions,
+  type RespecControl,
+} from "./SpecChanges";
 
 /** How a scenario that the first draft did not write came to be there. */
 const ORIGIN_LABEL: Record<Exclude<Scenario["origin"], "draft">, string> = {
@@ -140,11 +161,14 @@ export function WeightBadge({
  *
  * `specRevision` is the revision the proposal points at. Null, or absent on
  * a row from before specs, means there is none, and nothing is asked for.
+ * `revision`, when given, reads that revision instead, by number: an
+ * earlier one, from the picker.
  */
 export function useProposalSpec(
   base: string,
   proposalId: string,
   specRevision: number | null | undefined,
+  revision?: number,
 ): { readonly read: SpecRead; readonly retry: () => void } {
   const wanted = specRevision ?? null;
   /*
@@ -152,7 +176,7 @@ export function useProposalSpec(
     a re-price that moves this one to a new revision, must not show the last
     read's scenarios under the new one while its own is on the way.
   */
-  const key = `${proposalId}:${wanted ?? ""}`;
+  const key = `${proposalId}:${wanted ?? ""}:${revision ?? ""}`;
   const [read, setRead] = useState<{ key: string } & SpecRead>({
     key,
     state: "loading",
@@ -163,7 +187,8 @@ export function useProposalSpec(
     if (wanted === null) return;
     let live = true;
     setRead({ key, state: "loading" });
-    fetch(`${base}/proposals/${encodeURIComponent(proposalId)}/spec`, {
+    const query = revision === undefined ? "" : `?revision=${revision}`;
+    fetch(`${base}/proposals/${encodeURIComponent(proposalId)}/spec${query}`, {
       credentials: "include",
     })
       .then(async (response) => {
@@ -177,7 +202,7 @@ export function useProposalSpec(
     return () => {
       live = false;
     };
-  }, [base, proposalId, wanted, key, attempt]);
+  }, [base, proposalId, wanted, revision, key, attempt]);
 
   const retry = useCallback(() => setAttempt((value) => value + 1), []);
   return {
@@ -257,12 +282,29 @@ export function scenarioTotal(read: SpecRead): number | null {
     : null;
 }
 
+/** Where the spec's earlier revisions are read from. */
+export interface SpecHistory {
+  readonly base: string;
+  readonly proposalId: string;
+  /** The revision the proposal points at: the current one. */
+  readonly specRevision: number | null;
+}
+
+/** The ways to change the spec, for a reader who may change it. */
+export interface SpecChanges {
+  readonly control: RespecControl;
+  /** The proposal's size now, which a landed change is read against. */
+  readonly size: string;
+}
+
 export function ProposalSpec({
   read,
   onRetry,
   canAnalyze,
   weightPoints = WEIGHT_POINTS,
   sizeReason,
+  history,
+  changes,
 }: {
   read: SpecRead;
   onRetry: () => void;
@@ -275,18 +317,47 @@ export function ProposalSpec({
   weightPoints?: WeightPoints;
   /** Why the proposal is its size, shown above the scenarios. */
   sizeReason?: SizeReason;
+  /** Where to read earlier revisions; without it there is no picker. */
+  history?: SpecHistory;
+  /**
+   * The controls that change the spec. Absent for a reader who may not, and
+   * for a proposal whose spec cannot be changed (approved, or with no step).
+   */
+  changes?: SpecChanges;
 }) {
-  const spec = read.state === "ready" ? read.spec : null;
+  const current = history?.specRevision ?? null;
+  // The revision on show, when it is not the current one.
+  const [viewing, setViewing] = useState<number | null>(null);
+  // A change that lands moves the current revision: show it.
+  useEffect(() => setViewing(null), [current]);
+  const revisions = useSpecRevisions(
+    history?.base ?? "",
+    history?.proposalId ?? "",
+    history === undefined ? null : current,
+  );
+  const earlier = useProposalSpec(
+    history?.base ?? "",
+    history?.proposalId ?? "",
+    viewing,
+    viewing ?? undefined,
+  );
+  const shown = viewing === null ? read : earlier.read;
+  const spec = shown.state === "ready" ? shown.spec : null;
 
   return (
     <div data-testid="proposal-spec" className="flex flex-col gap-4">
       {sizeReason !== undefined && <SizeReasonBlock reason={sizeReason} />}
-      {read.state === "loading" ? (
+      {shown.state === "loading" ? (
         <LoadingLine>Loading scenarios…</LoadingLine>
-      ) : read.state === "failed" ? (
+      ) : shown.state === "failed" ? (
         <div className="flex flex-wrap items-center gap-3">
           <p className="text-sm">The scenarios could not be loaded.</p>
-          <Button type="button" variant="outline" size="sm" onClick={onRetry}>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={viewing === null ? onRetry : earlier.retry}
+          >
             <RefreshCw />
             Try again
           </Button>
@@ -302,38 +373,152 @@ export function ProposalSpec({
           spec={spec}
           canAnalyze={canAnalyze}
           weightPoints={weightPoints}
+          revisions={revisions}
+          current={current}
+          onView={(revision) =>
+            setViewing(revision === current ? null : revision)
+          }
+          changes={viewing === null ? changes : undefined}
         />
       )}
     </div>
   );
 }
 
+/** How a revision that a reviewer asked for introduces what was asked. */
+const ASKED: Readonly<Record<string, string>> = {
+  expand: "Asked for",
+  answer: "Answered",
+};
+
 function SpecBody({
   spec,
   canAnalyze,
   weightPoints,
+  revisions,
+  current,
+  onView,
+  changes,
 }: {
   spec: BountySpecDto;
   canAnalyze: boolean;
   weightPoints: WeightPoints;
+  /** Every revision, when there is more than one; else empty. */
+  revisions: readonly BountySpecRevisionDto[];
+  /** The revision the proposal points at. */
+  current: number | null;
+  onView: (revision: number) => void;
+  changes: SpecChanges | undefined;
 }) {
   const { draft } = spec;
   const groups = groupScenarios(draft);
   // Null when any scenario has no weight: drafted before weights existed.
   const points = pointsOf(draft, weightPoints);
+  const earlier = current !== null && spec.revision !== current;
+  const [form, setForm] = useState<"answer" | "instruction" | null>(null);
+  const working = changes?.control.state.phase === "working";
+  const ask = (change: RespecRequestDto, label: string) => {
+    setForm(null);
+    changes?.control.request(change, label);
+  };
   return (
     <div className="flex flex-col gap-4">
       {/* What the ticket is about, and which revision of the spec this is. */}
-      <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-        <p className="text-sm leading-relaxed font-medium">{draft.feature}</p>
-        <p className="text-muted-foreground text-xs">
-          {plural(countScenarios(draft).total, "scenario")}
-          {points !== null &&
-            draft.scenarios.length > 0 &&
-            ` · ${plural(points, "point")}`}{" "}
-          · revision {spec.revision}
-        </p>
+      <div className="flex flex-col gap-1">
+        <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+          <p className="text-sm leading-relaxed font-medium">{draft.feature}</p>
+          <p className="text-muted-foreground text-xs">
+            {plural(countScenarios(draft).total, "scenario")}
+            {points !== null &&
+              draft.scenarios.length > 0 &&
+              ` · ${plural(points, "point")}`}{" "}
+            ·{" "}
+            {revisions.length > 1 ? (
+              <RevisionPicker
+                revisions={revisions}
+                viewing={spec.revision}
+                onView={onView}
+              />
+            ) : (
+              `revision ${spec.revision}`
+            )}
+          </p>
+        </div>
+        {/* What the reviewer asked for, on a revision that came from it. */}
+        {spec.origin !== "draft" && spec.instruction !== null && (
+          <p
+            className="text-muted-foreground text-xs whitespace-pre-line"
+            data-testid="spec-instruction"
+          >
+            {ASKED[spec.origin] === undefined
+              ? spec.instruction
+              : `${ASKED[spec.origin]}: ${spec.instruction}`}
+          </p>
+        )}
       </div>
+
+      {earlier && (
+        <div
+          className="bg-muted/40 flex flex-wrap items-center justify-between gap-2 rounded-md px-3 py-2"
+          data-testid="spec-earlier"
+        >
+          <p className="text-muted-foreground text-xs">
+            An earlier revision. The size goes with revision {current}.
+          </p>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => onView(current)}
+          >
+            Show current
+          </Button>
+        </div>
+      )}
+
+      {changes !== undefined && (
+        <div className="flex flex-col gap-2" data-testid="spec-changes">
+          <div className="flex flex-wrap items-center gap-2">
+            <ExpandMenu
+              disabled={working}
+              canAnswer={draft.openQuestions.length > 0}
+              onKind={(kind) =>
+                ask({ mode: "expand", kinds: [kind] }, expandLabel(kind))
+              }
+              onAnswer={() => setForm("answer")}
+              onInstruction={() => setForm("instruction")}
+            />
+          </div>
+          {form === "answer" && (
+            <AnswerForm
+              questions={draft.openQuestions}
+              disabled={working}
+              onCancel={() => setForm(null)}
+              onSubmit={(answers) =>
+                ask(
+                  { mode: "answer", answers },
+                  answers.length === 1
+                    ? "Revising the spec for your answer…"
+                    : "Revising the spec for your answers…",
+                )
+              }
+            />
+          )}
+          {form === "instruction" && (
+            <InstructionForm
+              disabled={working}
+              onCancel={() => setForm(null)}
+              onSubmit={(instruction) =>
+                ask(
+                  { mode: "expand", instruction },
+                  "Writing the scenarios you asked for…",
+                )
+              }
+            />
+          )}
+          <RespecStatus state={changes.control.state} size={changes.size} />
+        </div>
+      )}
 
       {points === null && (
         <p
@@ -381,6 +566,16 @@ function SpecBody({
                   key={scenario.id}
                   scenario={scenario}
                   weightPoints={weightPoints}
+                  {...(changes === undefined
+                    ? {}
+                    : {
+                        removing: working,
+                        onRemove: () =>
+                          ask(
+                            { mode: "trim", removeScenarioIds: [scenario.id] },
+                            `Removing “${scenario.title}”…`,
+                          ),
+                      })}
                 />
               ))}
             </ul>
@@ -408,19 +603,55 @@ function SpecBody({
 function ScenarioRow({
   scenario,
   weightPoints,
+  removing = false,
+  onRemove,
 }: {
   scenario: Scenario;
   weightPoints: WeightPoints;
+  /** A change is running: the remove control waits for it. */
+  removing?: boolean;
+  /** Takes the scenario out; absent for a reader who may not. */
+  onRemove?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const steps = useId();
   return (
-    <li>
+    <li className="relative">
+      {onRemove !== undefined && (
+        <span className="absolute top-0 -right-1.5 flex min-h-[2.125rem] items-center">
+          <ConfirmDialog
+            trigger={
+              <button
+                type="button"
+                aria-label={`Remove scenario: ${scenario.title}`}
+                title="Remove"
+                disabled={removing}
+                className="text-muted-foreground hover:text-foreground hover:bg-muted/60 focus-visible:ring-ring/50 flex size-6 cursor-pointer items-center justify-center rounded-md outline-none focus-visible:ring-[3px] disabled:pointer-events-none disabled:opacity-50"
+              >
+                <X className="size-3.5" />
+              </button>
+            }
+            title="Remove this scenario?"
+            description={
+              <>
+                “{scenario.title}” is taken out of the spec as a new revision.
+                Points added since sizing come off the size; a scenario from the
+                first draft never takes it below the model&rsquo;s size.
+              </>
+            }
+            confirmLabel="Remove scenario"
+            busy={removing}
+            onConfirm={onRemove}
+          />
+        </span>
+      )}
       <button
         type="button"
         aria-expanded={open}
         aria-controls={steps}
-        className="hover:bg-muted/60 focus-visible:ring-ring/50 -mx-1.5 flex w-[calc(100%+0.75rem)] cursor-pointer items-start gap-1.5 rounded-md px-1.5 py-1 text-left text-sm outline-none focus-visible:ring-[3px]"
+        className={`hover:bg-muted/60 focus-visible:ring-ring/50 -mx-1.5 flex w-[calc(100%+0.75rem)] cursor-pointer items-start gap-1.5 rounded-md px-1.5 py-1 text-left text-sm outline-none focus-visible:ring-[3px] ${
+          onRemove === undefined ? "" : "pr-7"
+        }`}
         onClick={() => setOpen((value) => !value)}
       >
         <ChevronRight

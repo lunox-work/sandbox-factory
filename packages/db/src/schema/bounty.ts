@@ -22,6 +22,7 @@ import type {
   BountySelection,
   RateCardSnapshot,
   PricedComplexity,
+  RespecRequest,
   SpecDraft,
   StepResult,
 } from "sandbox-factory";
@@ -82,6 +83,9 @@ export const bountyRun = pgTable(
       { onDelete: "set null" },
     ),
     sourceRevision: integer("source_revision"),
+    // What a `respec` run was asked to do to its proposal's spec. Null for
+    // every other kind, and required for that one.
+    respec: jsonb("respec").$type<RespecRequest>(),
     requestId: text("request_id").notNull(),
     status: text("status").notNull().default("queued"),
     selection: jsonb("selection").$type<BountySelection>().notNull(),
@@ -118,15 +122,24 @@ export const bountyRun = pgTable(
       .on(table.boardId)
       // A one-ticket run someone asked for is not counted: it must not wait
       // behind a board's backlog run, and the proposal store already refuses
-      // a second live proposal for the same ticket.
+      // a second live proposal for the same ticket. Nor is a spec change on
+      // one proposal, which a backlog run never touches.
       .where(
-        sql`${table.status} in ('queued', 'running') and ${table.kind} <> 'issue'`,
+        sql`${table.status} in ('queued', 'running') and ${table.kind} not in ('issue', 'respec')`,
+      ),
+    // One change in flight per proposal: a re-price and a spec change both
+    // rewrite it, and the second would only find it changed when it came to
+    // write, after paying for its model call.
+    uniqueIndex("bounty_run_proposal_active_unique")
+      .on(table.sourceProposalId)
+      .where(
+        sql`${table.status} in ('queued', 'running') and ${table.kind} in ('reprice', 'respec')`,
       ),
     index("bounty_run_organization_id_idx").on(table.organizationId),
     index("bounty_run_board_created_idx").on(table.boardId, table.createdAt),
     check(
       "bounty_run_kind_check",
-      sql`${table.kind} in ('backlog', 'reprice', 'issue')`,
+      sql`${table.kind} in ('backlog', 'reprice', 'issue', 'respec')`,
     ),
     check(
       "bounty_run_status_check",
@@ -136,7 +149,11 @@ export const bountyRun = pgTable(
       "bounty_run_source_check",
       // A reprice run's source may be deleted later, and `ON DELETE SET NULL`
       // clears the pointer; requiring it here would make that delete fail.
-      sql`(${table.kind} in ('backlog', 'issue') AND ${table.sourceProposalId} IS NULL AND ${table.sourceRevision} IS NULL) OR (${table.kind} = 'reprice' AND ${table.sourceRevision} > 0)`,
+      sql`(${table.kind} in ('backlog', 'issue') AND ${table.sourceProposalId} IS NULL AND ${table.sourceRevision} IS NULL) OR (${table.kind} in ('reprice', 'respec') AND ${table.sourceRevision} > 0)`,
+    ),
+    check(
+      "bounty_run_respec_check",
+      sql`(${table.kind} = 'respec') = (${table.respec} IS NOT NULL)`,
     ),
   ],
 );

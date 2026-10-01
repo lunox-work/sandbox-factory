@@ -4,6 +4,7 @@ import { test } from "node:test";
 import { getTableConfig, type PgTable } from "drizzle-orm/pg-core";
 import {
   BOUNTY_COMPLEXITIES,
+  BOUNTY_RUN_KINDS,
   MODEL_BOUNTY_COMPLEXITIES,
 } from "sandbox-factory";
 
@@ -149,6 +150,30 @@ test("a proposal's step is optional, and its version goes with it", () => {
   assert.ok(
     config.checks.some(({ name }) => name === "bounty_proposal_step_check"),
   );
+});
+
+test("a respec run carries its request, and a proposal has one change in flight", () => {
+  assert.deepEqual(checkValues(bountyRun, "bounty_run_kind_check"), [
+    ...BOUNTY_RUN_KINDS,
+  ]);
+  const config = getTableConfig(bountyRun);
+  const column = config.columns.find(({ name }) => name === "respec");
+  assert.equal(column?.notNull, false);
+  assert.ok(
+    config.checks.some(({ name }) => name === "bounty_run_respec_check"),
+  );
+  const index = config.indexes.find(
+    ({ config: indexConfig }) =>
+      indexConfig.name === "bounty_run_proposal_active_unique",
+  );
+  assert.equal(index?.config.unique, true);
+  assert.deepEqual(
+    index?.config.columns.map((indexed) =>
+      "name" in indexed ? indexed.name : null,
+    ),
+    ["source_proposal_id"],
+  );
+  assert.notEqual(index?.config.where, undefined);
 });
 
 test("all commercial foreign-key thunks resolve", () => {

@@ -692,6 +692,56 @@ test("members see proposals without review or run controls", async () => {
   expect(within(panel).queryByTestId("proposal-actions")).toBeNull();
 });
 
+test("a spec change running on one proposal is not the board's stream", async () => {
+  // The peek that asked for it follows it; the board has nothing to size.
+  const respec = {
+    id: "brn_9",
+    kind: "respec",
+    status: "running",
+    planned: [{ externalIssueId: "1", issueKey: "APP-1", summary: "" }],
+    outcomes: [],
+  };
+  const urls: string[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((url: string) => {
+      urls.push(url);
+      if (url.includes("/runs"))
+        return Promise.resolve(
+          Response.json({ runs: [respec], sizingAvailable: true }),
+        );
+      return Promise.resolve(
+        Response.json({
+          proposals: [
+            {
+              id: "bpr_1",
+              issueKey: "APP-1",
+              liveTitle: "Ticket 1",
+              complexity: "M",
+              amountMinor: 10500,
+              currency: "USD",
+              status: "proposed",
+              revision: 1,
+            },
+          ],
+        }),
+      );
+    }),
+  );
+  render(
+    <BoardBounties
+      organizationId="org_1"
+      boardId="jrb_1"
+      role="owner"
+      writeGranted
+      readIssue={() => Promise.resolve(null)}
+    />,
+  );
+  await screen.findByText("Ticket 1");
+  expect(screen.queryByTestId("sizing-active")).toBeNull();
+  expect(urls.some((url) => url.endsWith("/runs/brn_9"))).toBe(false);
+});
+
 test("a board opened mid-run streams the run ticket by ticket", async () => {
   // Connecting a site sizes its boards in the background, so a board is
   // often opened while that is still going.

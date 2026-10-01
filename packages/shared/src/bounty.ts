@@ -1,5 +1,6 @@
 import {
   BOUNTY_COMPLEXITIES,
+  BOUNTY_RUN_KINDS,
   maximumRateCardMinor,
   MODEL_BOUNTY_COMPLEXITIES,
   PRICED_BOUNTY_COMPLEXITIES,
@@ -9,7 +10,11 @@ import {
 } from "sandbox-factory";
 import { z } from "zod";
 
-import { scenarioKindSchema, scenarioWeightSchema } from "./spec.js";
+import {
+  respecRequestSchema,
+  scenarioKindSchema,
+  scenarioWeightSchema,
+} from "./spec.js";
 
 /** Any size a proposal can hold, half sizes included, or `unsized`. */
 export const bountyComplexitySchema = z.enum(BOUNTY_COMPLEXITIES);
@@ -98,7 +103,8 @@ export const sizingResultSchema = z
     }
   });
 
-export const bountyRunKindSchema = z.enum(["backlog", "reprice", "issue"]);
+/** What a run does: core's `BOUNTY_RUN_KINDS`. */
+export const bountyRunKindSchema = z.enum(BOUNTY_RUN_KINDS);
 export const bountyRunStatusSchema = z.enum([
   "queued",
   "running",
@@ -123,6 +129,13 @@ export const bountyRunOutcomeSchema = z.object({
   actualModel: z.string().min(1).max(200).optional(),
   inputTokens: z.number().int().nonnegative().optional(),
   outputTokens: z.number().int().nonnegative().optional(),
+  /**
+   * A respec's only: the size before the change, and the points the change
+   * moved the spec by, negative for a trim. The size after is the
+   * proposal's.
+   */
+  previousComplexity: bountyComplexitySchema.optional(),
+  pointsDelta: z.number().int().optional(),
 });
 
 /** Why a backlog run picked a ticket: one category it fits, and the case. */
@@ -172,6 +185,8 @@ export const bountyRunDtoSchema = z.object({
   kind: bountyRunKindSchema,
   sourceProposalId: z.string().nullable(),
   sourceRevision: z.number().int().positive().nullable(),
+  /** What a `respec` run was asked to do; null for every other kind. */
+  respec: respecRequestSchema.nullable(),
   requestId: z.uuid(),
   status: bountyRunStatusSchema,
   selection: z.record(z.string(), z.unknown()),
@@ -307,6 +322,14 @@ export const resizeProposalSchema = proposalMutationSchema.extend({
 });
 export const repriceProposalSchema = proposalMutationSchema.extend({
   requestId: z.uuid(),
+});
+/**
+ * A change to a proposal's spec: grow it, answer its questions or trim
+ * it. Like a re-price it starts a run, named by `requestId`, against the
+ * proposal revision the reviewer saw.
+ */
+export const respecProposalSchema = repriceProposalSchema.extend({
+  request: respecRequestSchema,
 });
 
 export const proposalFreshnessDtoSchema = z.object({

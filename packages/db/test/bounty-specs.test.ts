@@ -108,6 +108,7 @@ test("lists a spec's revisions newest first, as counts rather than scenarios", a
     {
       revision: 2,
       origin: "expand",
+      instruction: "More boundaries",
       scenarioCount: 2,
       openQuestionCount: 1,
       createdBy: "user_1",
@@ -116,6 +117,7 @@ test("lists a spec's revisions newest first, as counts rather than scenarios", a
     {
       revision: 1,
       origin: "draft",
+      instruction: null,
       scenarioCount: 0,
       openQuestionCount: 0,
       createdBy: null,
@@ -175,9 +177,58 @@ test("a revision is written for its owner, proposal and run", async () => {
       specHashVersion: 1,
       draft,
       origin: "draft",
+      instruction: null,
+      createdBy: null,
       runId: "brn_1",
       actualModel: "drafting-model",
       promptVersion: "draft-v1",
     },
+  );
+});
+
+test("a reviewer's revision records who asked and what, and a trim names no model", async () => {
+  const fake = createFakeDb([]);
+  await insertSpecRevision(
+    fake.db,
+    "org_1",
+    { proposalId: "bpr_1", runId: "brn_2", revision: 3, createdBy: "user_1" },
+    {
+      specHash: "b".repeat(64),
+      specHashVersion: 1,
+      draft,
+      origin: "trim",
+      instruction: "Removed An empty table exports only its header",
+      actualModel: null,
+      promptVersion: null,
+    },
+  );
+  const values = fake.calls[0]?.values;
+  assert.equal(values?.["origin"], "trim");
+  assert.equal(values?.["createdBy"], "user_1");
+  assert.equal(
+    values?.["instruction"],
+    "Removed An empty table exports only its header",
+  );
+  assert.equal(values?.["actualModel"], null);
+  assert.equal(values?.["promptVersion"], null);
+});
+
+test("the sized revision is the newest drafted one, read for its owner and proposal", async () => {
+  const fake = createFakeDb([row({ revision: 2 })]);
+  const sized = await createBountySpecStore(fake.db).sizedRevision(
+    "org_1",
+    "bpr_1",
+    5,
+  );
+  assert.equal(sized?.revision, 2);
+  assert.equal(sized?.origin, "draft");
+  assert.equal(fake.calls[0]?.filtered, true);
+  assert.equal(fake.calls[0]?.ordered, true);
+  assert.equal(fake.calls[0]?.limited, 1);
+
+  const none = createFakeDb([]);
+  assert.equal(
+    await createBountySpecStore(none.db).sizedRevision("org_1", "bpr_1", 5),
+    null,
   );
 });

@@ -48,6 +48,7 @@ const run: StoredBountyRun = {
   kind: "backlog",
   sourceProposalId: null,
   sourceRevision: null,
+  respec: null,
   requestId,
   status: "queued",
   selection: {

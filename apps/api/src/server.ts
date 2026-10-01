@@ -201,6 +201,7 @@ const bountyExecutor =
         runs: bountyRuns,
         proposals: bountyProposals,
         issues: jiraIssues,
+        specs: bountySpecs,
         caller,
         clientFor: runClientFor,
         ...(bountyDelivery === undefined

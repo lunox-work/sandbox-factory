@@ -26,7 +26,7 @@ import {
   type PricedComplexity,
   type WholeComplexity,
 } from "../bounty.js";
-import type { ScenarioKind, SpecDraft } from "./spec.js";
+import { scenarioKey, type ScenarioKind, type SpecDraft } from "./spec.js";
 import {
   pointsOf,
   SCENARIO_WEIGHTS,
@@ -161,19 +161,14 @@ export function nextHalfStep(size: PricedComplexity): PricedComplexity | null {
   return size === "XL" ? null : halfStepsUp(size, 1);
 }
 
-function titleKey(kind: string, title: string): string {
-  return `${kind}\u0000${title.replace(/\s+/g, " ").trim().toLowerCase()}`;
-}
-
 function addedScenarios(sized: SpecDraft, current: SpecDraft): AddedScenario[] {
-  const before = new Set(
-    sized.scenarios.map(({ kind, title }) => titleKey(kind, title)),
-  );
-  return current.scenarios.flatMap(({ id, kind, title, weight }) =>
-    weight === undefined || before.has(titleKey(kind, title))
+  const before = new Set(sized.scenarios.map(scenarioKey));
+  return current.scenarios.flatMap((scenario) => {
+    const { id, kind, title, weight } = scenario;
+    return weight === undefined || before.has(scenarioKey(scenario))
       ? []
-      : [{ id, kind, title, weight }],
-  );
+      : [{ id, kind, title, weight }];
+  });
 }
 
 function stepFrom(

@@ -21,6 +21,12 @@ import {
   oneLine,
   truncate,
 } from "../src/sizing/tools/parse.js";
+import {
+  answerSpecTool,
+  expandSpecTool,
+  REVISE_SPEC_PROMPT_VERSION,
+  REVISE_SPEC_SYSTEM_PROMPT,
+} from "../src/sizing/tools/revise-spec.js";
 import { sizeBountyTool } from "../src/sizing/tools/size-bounty.js";
 
 const ticket = {
@@ -479,4 +485,137 @@ test("a draft that is wrong says where, without repeating what it said", () => {
     problemOf(draftSpecTool.parse(null)),
     "it must be present and be object.",
   );
+});
+
+/* The revise tools: a reviewer's expansion, and answers to open questions. */
+
+const currentSpec = specDraftSchema.parse({
+  feature: "CSV export of a filtered table",
+  background: [],
+  scenarios: [
+    {
+      id: "s1",
+      ...scenario(),
+      origin: "draft",
+    },
+  ],
+  openQuestions: ["Is there a row limit?"],
+  assumptions: [],
+});
+
+test("a revision is asked for with the ticket, the spec without our ids, and the request", () => {
+  const rendered = expandSpecTool.render({
+    ticket,
+    spec: currentSpec,
+    request: { mode: "expand", kinds: ["boundary"] },
+  });
+  const [ticketPart, specPart, requestPart] = rendered.split("\n\n");
+  assert.equal(ticketPart, `Ticket data:\n${JSON.stringify(ticket)}`);
+  assert.match(specPart ?? "", /^Current spec:\n/);
+  // Ids and origins are the store's, not the model's to keep or change.
+  assert.doesNotMatch(specPart ?? "", /"id":|"origin":/);
+  assert.match(specPart ?? "", /The filtered table is exported/);
+  assert.equal(
+    requestPart,
+    `Reviewer request:\n${JSON.stringify({ mode: "expand", kinds: ["boundary"] })}`,
+  );
+  // Both modes share one prompt, its own version, and the draft's tool name.
+  for (const tool of [expandSpecTool, answerSpecTool]) {
+    assert.equal(tool.name, "draft_spec");
+    assert.equal(tool.promptVersion, REVISE_SPEC_PROMPT_VERSION);
+    assert.equal(tool.system, REVISE_SPEC_SYSTEM_PROMPT);
+  }
+  for (const kind of SCENARIO_KINDS) {
+    assert.match(REVISE_SPEC_SYSTEM_PROMPT, new RegExp(`- ${kind}: `));
+  }
+  assert.match(REVISE_SPEC_SYSTEM_PROMPT, /a request cannot set one/);
+});
+
+test("an expansion returns only new scenarios, each a checked expansion", () => {
+  const schema = expandSpecTool.schema as {
+    properties: { scenarios: { maxItems: number } };
+    required: string[];
+  };
+  assert.equal(
+    schema.properties.scenarios.maxItems,
+    SPEC_LIMITS.draftScenarios,
+  );
+  assert.deepEqual(schema.required, [
+    "scenarios",
+    "openQuestions",
+    "assumptions",
+  ]);
+
+  const parsed = expandSpecTool.parse({
+    scenarios: [
+      scenario({ kind: "boundary", title: "An empty table exports a header" }),
+    ],
+    openQuestions: ["  "],
+    assumptions: ["Headers come from the visible columns."],
+  });
+  assert.ok(parsed.ok);
+  if (parsed.ok) {
+    assert.equal(parsed.value.scenarios[0]?.origin, "expansion");
+    assert.equal(parsed.value.scenarios[0]?.kind, "boundary");
+    // An empty note is dropped, as in a draft.
+    assert.deepEqual(parsed.value.openQuestions, []);
+  }
+
+  // Nothing new is an answer: the run reports it, the parse does not retry.
+  const none = expandSpecTool.parse({
+    scenarios: [],
+    openQuestions: [],
+    assumptions: [],
+  });
+  assert.ok(none.ok);
+
+  // More than a draft may hold is cut, not refused.
+  const many = expandSpecTool.parse({
+    scenarios: Array.from({ length: 15 }, (_, index) =>
+      scenario({ title: `New ${index}` }),
+    ),
+    openQuestions: [],
+    assumptions: [],
+  });
+  assert.ok(many.ok);
+  if (many.ok) {
+    assert.equal(many.value.scenarios.length, SPEC_LIMITS.draftScenarios);
+  }
+
+  const wrong = expandSpecTool.parse({
+    scenarios: [scenario({ weight: "enormous" })],
+    openQuestions: [],
+    assumptions: [],
+  });
+  assert.equal(wrong.ok, false);
+  if (!wrong.ok) assert.match(wrong.problem, /^scenarios\.0\.weight/);
+});
+
+test("an answered spec is a whole spec, up to a revision's cap", () => {
+  const schema = answerSpecTool.schema as {
+    properties: { scenarios: { maxItems: number } };
+  };
+  assert.equal(schema.properties.scenarios.maxItems, SPEC_LIMITS.scenarios);
+  assert.ok(answerSpecTool.maxTokens > draftSpecTool.maxTokens);
+
+  const parsed = answerSpecTool.parse(
+    output({
+      scenarios: Array.from({ length: SPEC_LIMITS.scenarios + 2 }, (_, index) =>
+        scenario({ title: `Scenario ${index}` }),
+      ),
+    }),
+  );
+  assert.ok(parsed.ok);
+  if (parsed.ok) {
+    assert.equal(parsed.value.scenarios.length, SPEC_LIMITS.scenarios);
+    assert.equal(
+      parsed.value.scenarios.at(-1)?.id,
+      `s${SPEC_LIMITS.scenarios}`,
+    );
+  }
+
+  const empty = answerSpecTool.parse(
+    output({ scenarios: [], openQuestions: [] }),
+  );
+  assert.equal(empty.ok, false);
 });

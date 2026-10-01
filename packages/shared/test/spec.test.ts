@@ -10,6 +10,7 @@ import {
   bountySpecRevisionDtoSchema,
   proposalSpecResponseSchema,
   proposalSpecRevisionsResponseSchema,
+  respecRequestSchema,
   scenarioSchema,
   specDraftSchema,
 } from "../src/spec.js";
@@ -201,6 +202,7 @@ test("a revision listing carries counts, not scenarios", () => {
   const revision = {
     revision: 2,
     origin: "draft",
+    instruction: null,
     scenarioCount: 7,
     openQuestionCount: 0,
     createdBy: null,
@@ -217,4 +219,59 @@ test("a revision listing carries counts, not scenarios", () => {
       .success,
     false,
   );
+});
+
+test("a spec change asks for kinds or an instruction, answers or removals", () => {
+  const valid = [
+    { mode: "expand", kinds: ["boundary", "recovery"] },
+    { mode: "expand", instruction: "Cover a recruiter on a phone." },
+    { mode: "expand", kinds: ["permission"], instruction: "Guests too." },
+    {
+      mode: "answer",
+      answers: [
+        { question: "Which timezone is the slot shown in?", answer: "UTC." },
+      ],
+    },
+    { mode: "trim", removeScenarioIds: ["s1", "s12"] },
+  ];
+  for (const request of valid) {
+    assert.ok(respecRequestSchema.safeParse(request).success, request.mode);
+  }
+  // An instruction is trimmed, and an answer too.
+  assert.deepEqual(
+    respecRequestSchema.parse({ mode: "expand", instruction: "  More.  " }),
+    { mode: "expand", instruction: "More." },
+  );
+
+  const invalid = [
+    {},
+    { mode: "rewrite" },
+    // Nothing to expand by.
+    { mode: "expand" },
+    { mode: "expand", kinds: [] },
+    { mode: "expand", kinds: ["boundary", "boundary"] },
+    { mode: "expand", kinds: ["sideways"] },
+    { mode: "expand", instruction: "   " },
+    { mode: "expand", instruction: "x".repeat(501) },
+    { mode: "answer", answers: [] },
+    { mode: "answer", answers: [{ question: "Who?", answer: " " }] },
+    { mode: "answer", answers: [{ question: "Who?\nWhy?", answer: "Me." }] },
+    {
+      mode: "answer",
+      answers: [
+        { question: "Who?", answer: "Me." },
+        { question: "Who?", answer: "You." },
+      ],
+    },
+    { mode: "trim", removeScenarioIds: [] },
+    { mode: "trim", removeScenarioIds: ["s0"] },
+    { mode: "trim", removeScenarioIds: ["s1", "s1"] },
+  ];
+  for (const request of invalid) {
+    assert.equal(
+      respecRequestSchema.safeParse(request).success,
+      false,
+      JSON.stringify(request),
+    );
+  }
 });

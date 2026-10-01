@@ -61,6 +61,24 @@ export interface LeasedBountyProposalInput extends CreateBountyProposalInput {
   readonly spec?: NewBountySpec;
 }
 
+/**
+ * What a spec change writes under its run's lease: the changed spec as the
+ * proposal's next revision, and the size and price the step makes of it.
+ */
+export interface RespecBountyProposalInput {
+  readonly runId: string;
+  readonly spec: NewBountySpec;
+  /**
+   * The spec revision the change was made of. Still the proposal's, or
+   * the proposal is `changed`: a change made of an older revision would
+   * undo whatever came between.
+   */
+  readonly fromSpecRevision: number;
+  readonly step: StepResult;
+  readonly amountMinor: number;
+  readonly currency: string;
+}
+
 export type ProposalMutationResult =
   | { readonly ok: true; readonly proposal: StoredBountyProposal }
   | {
@@ -230,6 +248,33 @@ export interface BountyProposalStore {
         readonly status:
           "lost-lease" | "not-found" | "changed" | "writeback-busy";
       }
+  >;
+  /**
+   * A spec change's result: the proposal's next spec revision, and the
+   * size the scenario step makes of it, priced. Fenced by the run's lease
+   * and the source revision like a re-price, and only for a proposal still
+   * proposed: an approval is made on a size, and the size must not move
+   * under it.
+   *
+   * Everything else stays: the model's size and reasoning, who set the
+   * base, and the run the proposal was sized by, which is where its reasons
+   * for being picked are read from. The new revision records the spec
+   * change's run and the person who asked for it.
+   */
+  respecForLease(
+    organizationId: string,
+    leaseToken: string,
+    sourceProposalId: string,
+    sourceRevision: number,
+    input: RespecBountyProposalInput,
+  ): Promise<
+    | {
+        readonly status: "respecced";
+        readonly proposal: StoredBountyProposal;
+        /** The size before the change, for the run's outcome. */
+        readonly previousComplexity: BountyComplexity;
+      }
+    | { readonly status: "lost-lease" | "not-found" | "changed" }
   >;
 }
 
@@ -1003,6 +1048,110 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
           ...(writebackOperationId === undefined
             ? {}
             : { writebackOperationId }),
+        } as const;
+      });
+    },
+
+    async respecForLease(
+      organizationId,
+      leaseToken,
+      sourceProposalId,
+      sourceRevision,
+      input,
+    ) {
+      return db.transaction(async (transaction) => {
+        const tx = transaction as unknown as Database;
+        const now = new Date();
+        const claimed = (await tx
+          .update(bountyRun)
+          .set({ updatedAt: sql`${bountyRun.updatedAt}` })
+          .where(
+            and(
+              eq(bountyRun.organizationId, organizationId),
+              eq(bountyRun.id, input.runId),
+              eq(bountyRun.status, "running"),
+              eq(bountyRun.kind, "respec"),
+              eq(bountyRun.sourceProposalId, sourceProposalId),
+              eq(bountyRun.sourceRevision, sourceRevision),
+              eq(bountyRun.leaseToken, leaseToken),
+              gt(bountyRun.leaseExpiresAt, now),
+              gt(bountyRun.deadlineAt, now),
+            ),
+          )
+          .returning()) as BountyRunRow[];
+        const run = claimed[0];
+        if (run === undefined) return { status: "lost-lease" } as const;
+
+        // The row lock, and the check that nothing moved it since the
+        // change was asked for: not its revision, not its spec, and not an
+        // approval.
+        const locked = (await tx
+          .update(bountyProposal)
+          .set({ updatedAt: sql`${bountyProposal.updatedAt}` })
+          .where(
+            and(
+              eq(bountyProposal.organizationId, organizationId),
+              eq(bountyProposal.id, sourceProposalId),
+              eq(bountyProposal.status, "proposed"),
+              eq(bountyProposal.revision, sourceRevision),
+              eq(bountyProposal.specRevision, input.fromSpecRevision),
+            ),
+          )
+          .returning()) as BountyProposalRow[];
+        const source = locked[0];
+        if (source === undefined) {
+          const current = await first(tx, organizationId, sourceProposalId);
+          return {
+            status: current === undefined ? "not-found" : "changed",
+          } as const;
+        }
+
+        const specRevision = await nextSpecRevision(
+          tx,
+          organizationId,
+          sourceProposalId,
+        );
+        const updated = (await tx
+          .update(bountyProposal)
+          .set({
+            complexity: input.step.complexity,
+            step: input.step,
+            stepVersion: input.step.stepVersion,
+            amountMinor: input.amountMinor,
+            currency: input.currency,
+            specRevision,
+            revision: sourceRevision + 1,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(bountyProposal.organizationId, organizationId),
+              eq(bountyProposal.id, sourceProposalId),
+              eq(bountyProposal.revision, sourceRevision),
+            ),
+          )
+          .returning()) as BountyProposalRow[];
+        if (updated[0] === undefined) {
+          throw new Error("Failed to change the proposal's spec.");
+        }
+        await insertSpecRevision(
+          tx,
+          organizationId,
+          {
+            proposalId: sourceProposalId,
+            runId: input.runId,
+            revision: specRevision,
+            createdBy: run.startedBy,
+          },
+          input.spec,
+        );
+        const found = await first(tx, organizationId, sourceProposalId);
+        if (found === undefined)
+          throw new Error("Respecced proposal vanished.");
+        return {
+          status: "respecced",
+          proposal: toDto(found.row, found.issueKey),
+          previousComplexity: source.complexity as BountyComplexity,
         } as const;
       });
     },
