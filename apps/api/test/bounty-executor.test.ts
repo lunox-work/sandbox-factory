@@ -187,6 +187,8 @@ function harness(options: {
   originPlanned?: StoredBountyRun["planned"];
   /** The board's pricing settings, as stored. */
   pricing?: unknown;
+  /** How many sub-tasks an `issue` run's ticket has when read again. */
+  pickedSubtasks?: number;
 }) {
   const current = run(options.runOverrides);
   const plans: unknown[] = [];
@@ -356,7 +358,12 @@ function harness(options: {
     boardIssues: () => Promise.resolve({ issues: [], total: 0 }),
     issue: (id: string) =>
       options.issueError === undefined
-        ? Promise.resolve(issue(id, { summary: `Fresh ${id}` }))
+        ? Promise.resolve(
+            issue(id, {
+              summary: `Fresh ${id}`,
+              subtaskCount: options.pickedSubtasks ?? 0,
+            }),
+          )
         : Promise.reject(options.issueError),
     issueSpec: (id: string) => {
       const answer = options.specs?.[id] ?? spec(id);
@@ -549,6 +556,23 @@ test("an issue run sizes the one ticket it names, read fresh from Jira", async (
     (state.outcomes[0] as { proposalId?: string }).proposalId,
     "bpr_1",
   );
+});
+
+test("an issue run whose ticket was split into sub-tasks since it was picked sizes nothing", async () => {
+  const state = harness({
+    runOverrides: {
+      kind: "issue",
+      planned: [{ externalIssueId: "7", issueKey: "APP-7", summary: "Old" }],
+    },
+    pickedSubtasks: 2,
+  });
+  await state.executor.execute("org_1", "brn_1");
+
+  assert.deepEqual(state.finishes, [
+    { status: "failed", details: { fatalErrorCode: "issue_has_subtasks" } },
+  ]);
+  assert.equal(state.caller.calls.length, 0);
+  assert.equal(state.proposalInputs.length, 0);
 });
 
 test("an issue run without a ticket, or whose ticket is gone, fails", async () => {

@@ -84,6 +84,11 @@ export interface BountySelection {
   readonly minAgeDays: number;
   readonly maxAgeDays?: number | undefined;
   readonly minSpecChars: number;
+  /**
+   * How many of the oldest open tickets a run sizes when nothing fits a
+   * category; 0 turns that off. Absent on runs from before the fallback.
+   */
+  readonly fallbackOldest?: number | undefined;
   /** Per-category overrides, by category id. See `selection/categories`. */
   readonly categories: CategoryConfig;
 }

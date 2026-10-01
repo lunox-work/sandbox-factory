@@ -1204,6 +1204,42 @@ test("adding a ticket starts a one-ticket run for it", async () => {
   assert.deepEqual(state.jql, ["issue = 7"]);
 });
 
+test("a ticket split into sub-tasks is listed but cannot be added", async () => {
+  const parent = { ...ticket("7", "Rework billing"), subtaskCount: 3 };
+  const search = harness({ boardIssues: [parent, ticket("8")] });
+  const listed = (await (
+    await search.app.request(
+      "/api/v1/orgs/org_1/jira/boards/jrb_1/search?q=billing",
+      { headers },
+    )
+  ).json()) as { issues: { key: string; subtaskCount: number }[] };
+  // Found, so a person learns why it is not offered, with its count.
+  assert.deepEqual(
+    listed.issues.map(({ key, subtaskCount }) => [key, subtaskCount]),
+    [
+      ["APP-7", 3],
+      ["APP-8", 0],
+    ],
+  );
+
+  const add = harness({ boardIssues: [parent] });
+  const response = await add.app.request(
+    "/api/v1/orgs/org_1/jira/boards/jrb_1/issues",
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ requestId, issueId: "7" }),
+    },
+  );
+  assert.equal(response.status, 409);
+  assert.deepEqual(await response.json(), {
+    code: "has_subtasks",
+    error: "APP-7 is split into sub-tasks. Size its sub-tasks instead.",
+  });
+  assert.deepEqual(add.starts, []);
+  assert.deepEqual(add.created, []);
+});
+
 test("adding a ticket that already has a proposal opens that one instead", async () => {
   const state = harness({
     boardIssues: [ticket("7")],

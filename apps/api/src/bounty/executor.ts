@@ -222,8 +222,19 @@ export class BountyExecutor {
             });
             return;
           }
+          const picked = await clientResult.client.issue(
+            target.externalIssueId,
+          );
+          // Split into sub-tasks since it was picked: priced through them,
+          // as a backlog run would, never itself.
+          if ((picked.subtaskCount ?? 0) > 0) {
+            await runs.finish(organizationId, runId, leaseToken, "failed", {
+              fatalErrorCode: "issue_has_subtasks",
+            });
+            return;
+          }
           selected = {
-            issues: [await clientResult.client.issue(target.externalIssueId)],
+            issues: [picked],
             candidatesScanned: 1,
             skippedLive: 0,
             scanLimitReached: false,

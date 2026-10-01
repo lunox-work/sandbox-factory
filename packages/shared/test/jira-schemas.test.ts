@@ -189,6 +189,31 @@ test("board selection defaults to every match, with nothing filtered", () => {
   assert.equal(selection.minSpecChars, 0);
   assert.equal(selection.maxAgeDays, undefined);
   assert.deepEqual(selection.categories, {});
+  // When nothing fits, the ten oldest rather than nothing.
+  assert.equal(selection.fallbackOldest, 10);
+});
+
+test("the oldest-first fallback can be resized or turned off, within bounds", () => {
+  assert.equal(
+    boardSelectionSchema.parse({ fallbackOldest: 0 }).fallbackOldest,
+    0,
+  );
+  assert.equal(
+    updateBoardSchema.parse({ selection: { fallbackOldest: 25 } }).selection
+      ?.fallbackOldest,
+    25,
+  );
+  for (const fallbackOldest of [-1, 1.5, 101]) {
+    assert.equal(
+      updateBoardSchema.safeParse({ selection: { fallbackOldest } }).success,
+      false,
+    );
+  }
+  // Older boards' `maxTickets: 10` is not read as the fallback's number.
+  assert.equal(
+    boardSelectionSchema.parse({ maxTickets: 3 }).fallbackOldest,
+    10,
+  );
 });
 
 test("settings from before categories are dropped, not honoured", () => {

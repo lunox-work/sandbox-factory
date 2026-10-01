@@ -1634,6 +1634,16 @@ interface TicketResult {
   summary: string;
   status: string;
   issueType: string;
+  /** How many sub-tasks it is split into. Absent from an older API. */
+  subtaskCount?: number;
+}
+
+/**
+ * Whether a found ticket can be sized. One split into sub-tasks is priced
+ * through them, never itself, so it is listed, to say why, but not offered.
+ */
+function addable(ticket: TicketResult): boolean {
+  return (ticket.subtaskCount ?? 0) === 0;
 }
 
 /**
@@ -1644,7 +1654,8 @@ interface TicketResult {
  * The search reads the board live from Jira and lists only tickets not yet
  * on the platform — one with a proposal is already in the list below.
  * Picking one starts a run for that ticket alone, follows it, and opens the
- * proposal the moment it lands.
+ * proposal the moment it lands. A ticket split into sub-tasks is shown but
+ * cannot be picked: its sub-tasks are what is sized.
  */
 function TicketSearch({
   base,
@@ -1815,9 +1826,10 @@ function TicketSearch({
           onChange={(event) => setQuery(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === "Escape") setQuery("");
-            if (event.key === "Enter" && results?.[0] !== undefined) {
+            const first = results?.find(addable);
+            if (event.key === "Enter" && first !== undefined) {
               event.preventDefault();
-              void pick(results[0]);
+              void pick(first);
             }
           }}
         />
@@ -1844,7 +1856,8 @@ function TicketSearch({
                 <li key={ticket.id}>
                   <button
                     type="button"
-                    className="hover:bg-muted/50 flex w-full items-center gap-3 px-3 py-2 text-left text-sm"
+                    className="hover:bg-muted/50 flex w-full items-center gap-3 px-3 py-2 text-left text-sm disabled:pointer-events-none disabled:opacity-60"
+                    disabled={!addable(ticket)}
                     onClick={() => void pick(ticket)}
                   >
                     <span className="w-20 shrink-0 font-mono text-xs">
@@ -1856,10 +1869,17 @@ function TicketSearch({
                     <span className="text-muted-foreground hidden shrink-0 text-xs sm:inline">
                       {ticket.status}
                     </span>
-                    <span className="text-primary flex shrink-0 items-center gap-1 text-xs font-medium">
-                      <Plus className="size-3.5" />
-                      Add
-                    </span>
+                    {addable(ticket) ? (
+                      <span className="text-primary flex shrink-0 items-center gap-1 text-xs font-medium">
+                        <Plus className="size-3.5" />
+                        Add
+                      </span>
+                    ) : (
+                      <span className="text-muted-foreground shrink-0 text-xs">
+                        {plural(ticket.subtaskCount ?? 0, "sub-task")}: size
+                        those
+                      </span>
+                    )}
                   </button>
                 </li>
               ))}

@@ -72,6 +72,7 @@ export function toIssueDto(
     labels: fields.labels ?? [],
     projectKey: fields.project?.key ?? null,
     parentKey: fields.parent?.key ?? null,
+    subtaskCount: Array.isArray(fields.subtasks) ? fields.subtasks.length : 0,
     created: fields.created ?? null,
     updated: fields.updated ?? null,
     dueDate: fields.duedate ?? null,
@@ -235,6 +236,8 @@ export const ISSUE_FIELDS: readonly string[] = [
   "duedate",
   "parent",
   "project",
+  // Counted, to tell a ticket split into sub-tasks from one that is not.
+  "subtasks",
 ];
 
 /**

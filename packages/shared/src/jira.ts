@@ -139,6 +139,8 @@ const issueFieldsSchema = z
     labels: z.array(z.string()).optional(),
     project: namedSchema.optional(),
     parent: z.object({ key: z.string().optional() }).loose().nullish(),
+    // Only counted, never read: whether a ticket is split into sub-tasks.
+    subtasks: z.array(z.unknown()).nullish().catch(undefined),
     created: z.string().nullish(),
     updated: z.string().nullish(),
     duedate: z.string().nullish(),
@@ -311,6 +313,12 @@ export const jiraIssueDtoSchema = z.object({
   labels: z.array(z.string()),
   projectKey: z.string().nullable(),
   parentKey: z.string().nullable(),
+  /**
+   * How many sub-tasks the ticket is split into. A ticket with any is
+   * priced through its sub-tasks, never itself. Optional so a response
+   * from before it was read still parses; absent reads as none.
+   */
+  subtaskCount: z.number().int().nonnegative().optional(),
   created: z.string().nullable(),
   updated: z.string().nullable(),
   dueDate: z.string().nullable(),
@@ -500,6 +508,9 @@ function clearable<T extends z.ZodType>(schema: T) {
   return schema.nullish().transform((value) => value ?? undefined);
 }
 
+/** The most tickets the oldest-first fallback may take in one run. */
+const FALLBACK_OLDEST_MAX = 100;
+
 /**
  * The selection settings stored on a board.
  *
@@ -537,9 +548,10 @@ export const boardSelectionSchema = z.object({
    */
   unassignedOnly: z.boolean().default(false),
   /**
-   * Issue types to consider. Empty means "anything that is not an epic or a
-   * sub-task", which the JQL excludes structurally: an epic is a container for
-   * work rather than work, and a sub-task is priced with its parent.
+   * Issue types to consider. Empty means "anything that is not an epic",
+   * which the JQL excludes structurally: an epic is a container for work
+   * rather than work. Sub-tasks are considered; a ticket split into
+   * sub-tasks is not, whatever its type, since its sub-tasks are the work.
    */
   issueTypes: z.array(z.string()).default([]),
   /** Ignore tickets newer than this; 0 considers everything. */
@@ -552,6 +564,14 @@ export const boardSelectionSchema = z.object({
    * bounty, and pricing it anyway is how a dispute starts.
    */
   minSpecChars: z.number().int().min(0).default(0),
+  /**
+   * When nothing on the board fits a category, or everything that does
+   * already has a proposal, a run sizes this many of the oldest open
+   * tickets instead, rather than nothing. 0 turns the fallback off. The
+   * name is new on purpose: `maxTickets`, which older boards still hold,
+   * is never read.
+   */
+  fallbackOldest: z.number().int().min(0).max(FALLBACK_OLDEST_MAX).default(10),
   /** Per-category overrides, by category id. Empty means every default. */
   categories: categoriesSchema("stored").default({}),
 });
@@ -651,6 +671,7 @@ export const boardSelectionUpdateSchema = z.object({
   /** Null clears the bound; undefined leaves it as it is. */
   maxAgeDays: z.number().int().min(1).nullable().optional(),
   minSpecChars: z.number().int().min(0).optional(),
+  fallbackOldest: z.number().int().min(0).max(FALLBACK_OLDEST_MAX).optional(),
   /**
    * Merged category by category and threshold by threshold, so tuning one
    * number leaves every other category as it was. See `categoriesSchema`.

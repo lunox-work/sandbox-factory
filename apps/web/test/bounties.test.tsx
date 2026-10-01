@@ -1013,6 +1013,49 @@ test("a refused add is said, and Enter picks the first result", async () => {
   );
 });
 
+test("a ticket split into sub-tasks is listed but cannot be added, and Enter passes over it", async () => {
+  const requests = searchingBoard({
+    results: [
+      {
+        id: "10006",
+        key: "APP-6",
+        summary: "Rework login",
+        status: "To Do",
+        issueType: "Story",
+        subtaskCount: 3,
+      },
+      { ...addLogin, subtaskCount: 0 },
+    ],
+    add: {
+      status: 409,
+      body: { error: "This Jira connection needs reconnecting." },
+    },
+  });
+  const box = await screen.findByRole("searchbox", {
+    name: "Find a ticket to size",
+  });
+  await userEvent.type(box, "login");
+  const results = await screen.findByTestId("ticket-results");
+  const parent = await within(results).findByRole("button", { name: /APP-6/ });
+
+  // Said why, in place of the offer to add it.
+  expect((parent as HTMLButtonElement).disabled).toBe(true);
+  expect(parent.textContent).toContain("3 sub-tasks: size those");
+  expect(parent.textContent).not.toContain("Add");
+  expect(
+    within(results).getByRole("button", { name: /APP-7/ }).textContent,
+  ).toContain("Add");
+
+  // Enter takes the first ticket that can be added, not the parent above it.
+  await userEvent.type(box, "{Enter}");
+  await screen.findByRole("alert");
+  const added = requests.filter(({ url }) =>
+    url.endsWith("/jira/boards/jrb_1/issues"),
+  );
+  expect(added).toHaveLength(1);
+  expect(added[0]?.body).toContain('"issueId":"10007"');
+});
+
 test("members get no ticket search, since adding sizes and spends", async () => {
   vi.stubGlobal(
     "fetch",

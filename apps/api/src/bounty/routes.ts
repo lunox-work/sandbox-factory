@@ -90,6 +90,11 @@ export type StartRunResult =
     }
   | {
       readonly ok: false;
+      readonly reason: "has-subtasks";
+      readonly issueKey: string;
+    }
+  | {
+      readonly ok: false;
       readonly reason:
         | "sizing-unavailable"
         | "not-found"
@@ -262,6 +267,11 @@ export async function startRun(
     if (proposalId !== undefined) {
       return { ok: false, reason: "live-proposal", proposalId };
     }
+    // The same rule as a backlog run: a ticket split into sub-tasks is
+    // priced through them, never itself.
+    if ((found.subtaskCount ?? 0) > 0) {
+      return { ok: false, reason: "has-subtasks", issueKey: found.key };
+    }
     planned = {
       externalIssueId: found.id,
       issueKey: found.key,
@@ -423,8 +433,10 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
           },
           409,
         );
+      // Only a run for one picked ticket meets these.
       case "not-found":
       case "live-proposal":
+      case "has-subtasks":
         return c.json({ error: "Not found" }, 404);
     }
   });
@@ -514,6 +526,9 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
           summary: issue.summary,
           status: issue.status,
           issueType: issue.issueType,
+          // Listed so a person finds it, but it cannot be added: see
+          // `startRun`.
+          subtaskCount: issue.subtaskCount ?? 0,
         })),
     });
   });
@@ -559,6 +574,14 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
     switch (started.reason) {
       case "live-proposal":
         return c.json({ proposalId: started.proposalId });
+      case "has-subtasks":
+        return c.json(
+          {
+            code: "has_subtasks",
+            error: `${started.issueKey} is split into sub-tasks. Size its sub-tasks instead.`,
+          },
+          409,
+        );
       case "sizing-unavailable":
         return c.json(
           {

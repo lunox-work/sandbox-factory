@@ -37,6 +37,7 @@ export interface StoredBoardSelection {
   readonly minAgeDays?: number;
   readonly maxAgeDays?: number | null;
   readonly minSpecChars?: number;
+  readonly fallbackOldest?: number;
   readonly categories?: Readonly<
     Record<string, StoredCategorySettings | undefined>
   >;
