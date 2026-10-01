@@ -11,6 +11,9 @@ import {
   createBountyProposalStore,
   createBountySpecStore,
   createEmailStore,
+  createGithubConnectionStore,
+  createGithubGrantStore,
+  createGithubRepoStore,
   createJiraBoardStore,
   createJiraConnectionStore,
   createJiraIssueStore,
@@ -21,6 +24,7 @@ import {
   createTokenCipher,
 } from "@sandbox-factory/db";
 
+import { InstallationTokens } from "@sandbox-factory/github";
 import { buildBanner } from "@sandbox-factory/shared";
 
 import { createAuth } from "./auth.js";
@@ -32,11 +36,14 @@ import {
   appUrl,
   buildInfo,
   deepseekSizingConfig,
+  githubAppConfig,
+  githubAppMissing,
   jiraOAuthConfig,
   objectStoreConfig,
   parseEnv,
   sizingConfig,
 } from "./env.js";
+import { GithubReconciler } from "./github/reconcile.js";
 import { resolveImageDigest } from "./image-digest.js";
 import { jiraClientFor, jiraClientsFor } from "./jira/credential.js";
 import { createApp } from "./routes.js";
@@ -60,10 +67,8 @@ const connection = createConnection({ url: env.DATABASE_URL });
 const emails = createEmailStore(connection.db);
 const profiles = createProfileStore(connection.db);
 const organizations = createOrganizationStore(connection.db);
-const jiraConnections = createJiraConnectionStore(
-  connection.db,
-  createTokenCipher(env.TOKEN_ENCRYPTION_KEY),
-);
+const tokenCipher = createTokenCipher(env.TOKEN_ENCRYPTION_KEY);
+const jiraConnections = createJiraConnectionStore(connection.db, tokenCipher);
 const jiraBoards = createJiraBoardStore(connection.db);
 const bountyRuns = createBountyRunStore(connection.db);
 const bountyProposals = createBountyProposalStore(connection.db);
@@ -229,6 +234,54 @@ const jira =
       };
 
 /**
+ * The GitHub App, if all six of its values are set; see `githubAppConfig`.
+ *
+ * One installation-token cache for the process, shared by the routes, the
+ * webhook and the sweep, so a token minted for one is reused by the others
+ * rather than minted again. Tokens live only here, in memory.
+ */
+const githubApp = githubAppConfig(env);
+const githubMissing = githubAppMissing(env);
+if (githubMissing.length > 0) {
+  console.warn(
+    `GitHub is off: ${githubMissing.join(", ")} unset while the rest of the App is set.`,
+  );
+}
+const github =
+  githubApp === undefined
+    ? undefined
+    : {
+        connections: createGithubConnectionStore(connection.db),
+        grants: createGithubGrantStore(connection.db, tokenCipher),
+        repos: createGithubRepoStore(connection.db),
+        installations: new InstallationTokens({
+          appId: githubApp.appId,
+          privateKey: githubApp.privateKey,
+        }),
+        appSlug: githubApp.slug,
+        clientId: githubApp.clientId,
+        clientSecret: githubApp.clientSecret,
+        webhookSecret: githubApp.webhookSecret,
+        // The same secret Jira's state is signed with; `purpose` in the
+        // state is what keeps the two flows' states apart.
+        secret: env.BETTER_AUTH_SECRET,
+        apiUrl: env.BETTER_AUTH_URL,
+        appUrl: appUrl(env),
+        onBackgroundError: (code: string, error: unknown) =>
+          console.error(code, error),
+      };
+const githubReconciler =
+  github === undefined
+    ? undefined
+    : new GithubReconciler({
+        repos: github.repos,
+        connections: github.connections,
+        installations: github.installations,
+        onError: (code, detail) =>
+          console.error(detail === undefined ? code : `${code} ${detail}`),
+      });
+
+/**
  * Avatar storage, when a bucket is configured: SeaweedFS locally, S3 in
  * production. Undefined leaves the upload routes unmounted and everyone on
  * their identicon or provider picture.
@@ -246,6 +299,7 @@ const app = createApp({
   profiles,
   organizations,
   jira,
+  github,
   bounty: {
     rateCards,
     runs: bountyRuns,
@@ -282,6 +336,7 @@ const bountyWatchdog = new BountyWatchdog({
   onError: (code) => console.error(code),
 });
 bountyWatchdog.start();
+githubReconciler?.start();
 
 const server = serve({ fetch: app.fetch, port: env.PORT }, (info) => {
   // First log line names the build. Logs outlive the deployment, whereas
@@ -295,8 +350,11 @@ const server = serve({ fetch: app.fetch, port: env.PORT }, (info) => {
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.on(signal, () => {
     bountyWatchdog.stop();
-    server.close(() => {
-      void connection.close().then(() => process.exit(0));
+    // The sweep finishes the repository it is on before the pool closes.
+    void Promise.resolve(githubReconciler?.stop()).then(() => {
+      server.close(() => {
+        void connection.close().then(() => process.exit(0));
+      });
     });
   });
 }

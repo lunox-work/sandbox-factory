@@ -239,6 +239,41 @@
       "when": 1790828064322,
       "tag": "0033_respec_runs",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1790847013813,
+      "tag": "0034_github_pointer",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1790868371438,
+      "tag": "0035_jira_board_missing_since",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1790870393749,
+      "tag": "0036_github_connection_state",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1790870407719,
+      "tag": "0037_github_repo_owner_fk",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1790870408298,
+      "tag": "0038_github_grant_follows_member",
+      "breakpoints": true
     }
   ]
 }

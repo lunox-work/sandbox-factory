@@ -1,10 +1,11 @@
 /**
  * Encryption for stored third-party tokens.
  *
- * Only `jira_connection` uses this today, and the reason it exists at all is
- * that a Jira refresh token is a live credential against a client's data:
- * with refresh-token rotation, a leaked row works until the next refresh, and
- * once write-back is enabled (M7) it can edit their tickets. That is worth
+ * `jira_connection` and `github_grant` use this — every rotation of the key
+ * must re-encrypt both — and the reason it exists at all is that each holds
+ * a refresh token that is a live credential against a client's data. A
+ * leaked Jira row works until the next refresh, and once write-back is
+ * enabled (M7) it can edit their tickets. That is worth
  * more than a row of Better Auth's `account` table, which holds identity
  * tokens for this app's own sign-in — which is why those stay plaintext and
  * these do not.

@@ -89,6 +89,30 @@ export type {
   JiraConnectionSummary,
   JiraConnectionTokens,
 } from "./jira-connections.js";
+export { createGithubConnectionStore } from "./github-connections.js";
+export type {
+  GithubConnectionPatch,
+  GithubConnectionStore,
+  GithubConnectionSummary,
+  GithubFlaggedConnection,
+  GithubInstallationInput,
+  GithubLinkResult,
+} from "./github-connections.js";
+export { createGithubGrantStore } from "./github-grants.js";
+export type {
+  GithubGrantInput,
+  GithubGrantStore,
+  GithubGrantSummary,
+  GithubGrantTokens,
+} from "./github-grants.js";
+export { createGithubRepoStore } from "./github-repos.js";
+export type {
+  DueGithubRepo,
+  GithubRepoMetadata,
+  GithubRepoStore,
+  GithubRepoSummary,
+  RegisterGithubRepoInput,
+} from "./github-repos.js";
 export { createOrganizationStore } from "./organizations.js";
 export type {
   Membership,

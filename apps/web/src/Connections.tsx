@@ -23,9 +23,11 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
+import { GithubConnections } from "./Github";
 import { JiraConnections } from "./Jira";
 import { JiraIcon, ProviderIcon, SlackIcon } from "./ProviderIcon";
 import { connectionTabForSearch, type ConnectionTab } from "./routes";
+import { useGithub } from "./useGithub";
 import { useJira, type JiraBoard } from "./useJira";
 
 /** A tool on the rail. `ready` is false for the ones not built yet. */
@@ -48,7 +50,7 @@ const TOOLS: Tool[] = [
     value: "github",
     label: "GitHub",
     icon: <ProviderIcon provider="github" />,
-    ready: false,
+    ready: true,
   },
   { value: "slack", label: "Slack", icon: <SlackIcon />, ready: false },
 ];
@@ -197,6 +199,9 @@ export function Connections({
                 onOpenBoard={onOpenBoard}
               />
             </TabsContent>
+            <TabsContent value="github">
+              <GithubConnections organizationId={organizationId} role={role} />
+            </TabsContent>
             {TOOLS.filter((tool) => !tool.ready).map((tool) => (
               <TabsContent key={tool.value} value={tool.value}>
                 <ComingSoon tool={tool} />
@@ -298,7 +303,7 @@ function SquareTab({
 /**
  * The overview: how much each tool has connected, and the way into it.
  *
- * Reads Jira's connections itself rather than sharing the Jira tab's read.
+ * Reads each tool's connections itself rather than sharing the tab's read.
  * Only one tab is mounted at a time, so opening this after disconnecting a
  * site on the Jira tab reads the list again rather than showing a count from
  * before the change.
@@ -310,11 +315,43 @@ function Overview({
   organizationId: string;
   onSelect: (tab: ConnectionTab) => void;
 }) {
-  const { connections, loading, error } = useJira(organizationId);
-  // Healthy ones only, matching what the home screen counts: a connection
-  // that cannot be read is not one the organization can use.
-  const active = connections.filter((entry) => entry.healthy).length;
-  const broken = connections.length - active;
+  const jira = useJira(organizationId);
+  const github = useGithub(organizationId);
+  /*
+    Healthy ones only, matching what the home screen counts: a connection
+    that cannot be read is not one the organization can use. Each tool's
+    noun is its own — Jira connects sites, GitHub connects accounts.
+  */
+  const tally = (
+    read: {
+      connections: { healthy: boolean }[];
+      loading: boolean;
+      error: string | null;
+    },
+    noun: string,
+  ) => {
+    const active = read.connections.filter((entry) => entry.healthy).length;
+    return {
+      loading: read.loading,
+      error: read.error,
+      active,
+      broken: read.connections.length - active,
+      caption: `active ${noun}${active === 1 ? "" : "s"}`,
+    };
+  };
+  /*
+    A server without the GitHub App answers that it is not set up, which is
+    neither a count nor a failure: the tile says so and the total leaves it
+    out, so Jira's count is not reported as a failed load.
+  */
+  const counts: Partial<Record<Tool["value"], ReturnType<typeof tally>>> = {
+    jira: tally(jira, "site"),
+    ...(github.unconfigured ? {} : { github: tally(github, "account") }),
+  };
+  const read = Object.values(counts);
+  const loading = read.some((entry) => entry.loading);
+  const failed = read.some((entry) => entry.error !== null);
+  const active = read.reduce((sum, entry) => sum + entry.active, 0);
 
   return (
     <div className="flex flex-col gap-5">
@@ -327,38 +364,43 @@ function Overview({
         <p className="text-muted-foreground mt-1.5 text-sm">
           {loading
             ? "\u00a0"
-            : error !== null
+            : failed
               ? "Could not load this workspace\u2019s connections."
               : `${active} active connection${active === 1 ? "" : "s"} across ${TOOLS.length} tools.`}
         </p>
       </header>
 
       <ul className="grid gap-3 sm:grid-cols-3">
-        {TOOLS.map((tool) => (
-          <li key={tool.value}>
-            <SummaryTile
-              tool={tool}
-              count={
-                tool.value !== "jira" || loading
-                  ? undefined
-                  : error !== null
-                    ? null
-                    : active
-              }
-              caption={
-                !tool.ready
-                  ? "Coming soon"
-                  : `active site${active === 1 ? "" : "s"}`
-              }
-              warning={
-                tool.value === "jira" && broken > 0
-                  ? `${broken} need${broken === 1 ? "s" : ""} reconnecting`
-                  : undefined
-              }
-              onOpen={() => onSelect(tool.value)}
-            />
-          </li>
-        ))}
+        {TOOLS.map((tool) => {
+          const count = counts[tool.value];
+          return (
+            <li key={tool.value}>
+              <SummaryTile
+                tool={tool}
+                count={
+                  count === undefined || count.loading
+                    ? undefined
+                    : count.error !== null
+                      ? null
+                      : count.active
+                }
+                caption={
+                  tool.value === "github" && github.unconfigured
+                    ? "Not set up on this server"
+                    : !tool.ready || count === undefined
+                      ? "Coming soon"
+                      : count.caption
+                }
+                warning={
+                  count !== undefined && count.broken > 0
+                    ? `${count.broken} need${count.broken === 1 ? "s" : ""} reconnecting`
+                    : undefined
+                }
+                onOpen={() => onSelect(tool.value)}
+              />
+            </li>
+          );
+        })}
       </ul>
     </div>
   );

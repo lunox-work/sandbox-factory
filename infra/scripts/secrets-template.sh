@@ -144,6 +144,22 @@ ATLASSIAN_CLIENT_SECRET=$(value_of ATLASSIAN_CLIENT_SECRET)
 JIRA_CLIENT_ID=$(value_of JIRA_CLIENT_ID)
 JIRA_CLIENT_SECRET=$(value_of JIRA_CLIENT_SECRET)
 
+# The GitHub App, for connecting a client's repositories. Optional: all six or
+# none, and the GitHub routes stay unmounted until all six are set. Never
+# copied from .env.development — production has its own App, because a
+# webhook URL can point at one place only. See docs/github-apps.md for how it
+# is registered.
+#
+# Base64 of the PEM GitHub generates, on one line:
+#   base64 < sandbox-factory.<date>.private-key.pem | tr -d '\\n'
+# The webhook secret: openssl rand -hex 32, set on the App's page as well.
+GITHUB_APP_ID=
+GITHUB_APP_SLUG=
+GITHUB_APP_PRIVATE_KEY=
+GITHUB_APP_WEBHOOK_SECRET=
+GITHUB_APP_CLIENT_ID=
+GITHUB_APP_CLIENT_SECRET=
+
 # Optional bounty sizing. The model remains explicit so a deploy cannot change
 # model behavior merely by updating application code.
 ANTHROPIC_API_KEY=$(value_of ANTHROPIC_API_KEY)

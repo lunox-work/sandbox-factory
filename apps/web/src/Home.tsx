@@ -33,6 +33,7 @@ import { ArrowRight, Link2, TriangleAlert } from "lucide-react";
 import type { MembershipDto } from "@sandbox-factory/shared";
 
 import { ErrorBanner, LoadingLine } from "@/components/Message";
+import { OutcomeNotice } from "@/components/OutcomeNotice";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -43,8 +44,10 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 
+import { describeGithubOutcome } from "./Github";
 import { JiraIcon } from "./ProviderIcon";
 import { useConnections, type ConnectionGroup } from "./useConnections";
+import { useGithubOutcome } from "./useGithub";
 import { useJiraOutcome } from "./useJira";
 import { ConnectionRow, OutcomeBanner } from "./Jira";
 import { isPlainLeftClick, pathForScreen } from "./routes";
@@ -216,6 +219,12 @@ export function Home({
    * but a flow started here returns here, and must still report what happened.
    */
   const { outcome, missingScopes, dismiss } = useJiraOutcome();
+  /*
+   * GitHub's flow lands here when it cannot be tied to a workspace — a state
+   * that expired, or an install begun on GitHub's own App page — since
+   * there is no workspace to send it back to. It must still say so.
+   */
+  const github = useGithubOutcome();
 
   // Organizations with nothing to show are left out; see the note at the top.
   const visible = groups.filter(hasSomethingToShow);
@@ -239,6 +248,13 @@ export function Home({
           outcome={outcome}
           missingScopes={missingScopes}
           onDismiss={dismiss}
+        />
+      )}
+      {github.outcome !== null && (
+        <OutcomeNotice
+          {...describeGithubOutcome(github.outcome, "home")}
+          onDismiss={github.dismiss}
+          testId="github-outcome"
         />
       )}
 

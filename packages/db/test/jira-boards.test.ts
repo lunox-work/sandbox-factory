@@ -20,6 +20,7 @@ function boardRow(overrides: Partial<JiraBoardRow> = {}): JiraBoardRow {
     projectKey: "ACME",
     selection: { ticketCap: 10, unassignedOnly: true },
     pricing: {},
+    missingSince: null,
     createdAt: new Date("2026-09-21T00:00:00.000Z"),
     updatedAt: new Date("2026-09-21T00:00:00.000Z"),
     ...overrides,
@@ -101,6 +102,57 @@ test("sync leaves the settings of a board already registered alone", async () =>
   assert.equal(conflict["projectKey"], "ACME");
   // Ours are not touched at all.
   assert.equal("selection" in conflict, false);
+});
+
+test("a board sync finds again is listed again", async () => {
+  const { store: boards, calls } = store([
+    boardRow({ missingSince: new Date("2026-09-30T00:00:00.000Z") }),
+  ]);
+
+  await boards.sync("org_1", {
+    connectionId: "jrc_1",
+    externalId: "42",
+    name: "Acme board",
+    boardType: "scrum",
+  });
+
+  assert.equal(calls[0]?.values?.["missingSince"], null);
+  assert.equal(calls[0]?.conflictSet?.["missingSince"], null);
+});
+
+test("registering a board lists it again", async () => {
+  const { store: boards, calls } = store([boardRow()]);
+
+  await boards.register("org_1", {
+    connectionId: "jrc_1",
+    externalId: "42",
+    name: "Acme board",
+    boardType: "scrum",
+  });
+
+  assert.equal(calls[0]?.conflictSet?.["missingSince"], null);
+});
+
+test("markMissing hides the boards a sync did not see and returns their ids", async () => {
+  const { store: boards, calls } = store([{ id: "jrb_1" }, { id: "jrb_2" }]);
+
+  const hidden = await boards.markMissing("org_1", "jrc_1", ["42"]);
+
+  assert.deepEqual(hidden, ["jrb_1", "jrb_2"]);
+  const call = calls[0];
+  assert.equal(call?.kind, "update");
+  // Hidden, not deleted: the runs and proposals hang off the row.
+  assert.equal(
+    calls.some(({ kind }) => kind === "delete"),
+    false,
+  );
+  assert.ok(call?.values?.["missingSince"] instanceof Date);
+  assert.equal(call?.filtered, true);
+});
+
+test("markMissing reports nothing when every board was seen", async () => {
+  const { store: boards } = store([]);
+  assert.deepEqual(await boards.markMissing("org_1", "jrc_1", []), []);
 });
 
 test("a board seen for the first time by sync still gets a row", async () => {

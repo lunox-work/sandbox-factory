@@ -25,6 +25,8 @@ apps/api        apps/web        apps/extension
 | `packages/shared` | `core`, `zod`    | `client`, any app, `node:*` |
 | `packages/client` | `core`, `shared` | any app, `node:*`, `vscode` |
 | `packages/db`     | `core`           | `client`, any app           |
+| `packages/jira`   | `shared`         | `client`, any app, `node:*` |
+| `packages/github` | `shared`         | `client`, any app           |
 | `apps/*`          | any package      | another app                 |
 
 Three of these are enforced or load-bearing:
@@ -290,8 +292,80 @@ transport, at which point `sendInvitationEmail` is one function and the in-app
 flow stays as the fallback; a crop tool, a sweeper for avatar objects orphaned
 by a failed delete, and more than one avatar size (see [Avatars](#avatars)).
 
+## GitHub
+
+One GitHub App, used two ways, and neither is the sign-in OAuth app, which
+asks for `read:user user:email` and only says who someone is.
+
+- **Installation tokens** do everything unattended: listing what an
+  installation can see, reading a repository and its branch head. They are
+  minted from the App's key (`packages/github/src/installation-tokens.ts`),
+  cached in memory until five minutes before they expire, and **never
+  stored**. One cache per API process, shared by the routes, the webhook and
+  the reconcile sweep.
+- **The App's user-to-server half** runs the connect flow. The person's grant
+  is kept in `github_grant`, encrypted like Jira's tokens, and used for one
+  thing: proving which installations the person may link (below). It lives
+  as long as their membership: a trigger on `member` (migration 0038) drops
+  it however the membership ends, since the organization plugin's `leave`
+  route runs no hook.
+
+**The callback's `installation_id` is untrusted.** It is a small integer
+anyone can type, and the signed state proves only that the person started a
+flow for their own organization. An installation is linked only when it is in
+that person's own installation list, whether its id came from the query or
+from the picker. `github_connection.installation_id` is unique across the
+table, so an installation belongs to one organization; another
+organization's attempt is `claimed`, and the conditional upsert in
+`GithubConnectionStore.link` writes nothing.
+
+**Being in that list is not authority.** GitHub lists every installation
+covering a repository the person can reach at all, so an outside
+collaborator on one repository sees the whole organization's installation.
+`apps/api/src/github/authority.ts` checks again before anything is linked: a
+personal account's installation must be the person's own account, and an
+organization's must cover no repository the person cannot already read
+(their per-installation repository count equals the installation's). That
+needs no App permission beyond Contents and Metadata; proving the person
+administers the organization would need Members: read.
+
+**The flow starts at the OAuth authorize URL, not the install page.** The
+install page returns to the callback only for a fresh install, so
+reconnecting an installation that already exists would strand the person on
+GitHub's settings page. The callback sends them to the install page only when
+their list holds nothing to link.
+
+**Repositories are pointers.** A `github_repo` row is GitHub's numeric id
+(which survives renames), a name, and the commit its default branch points at.
+Two writers keep that commit current: the webhook (`POST
+/api/github/webhook`, outside the session guard, signature checked over the
+raw bytes before parsing), and a reconcile sweep every five minutes for
+repositories not read in fifteen, which sends `If-None-Match` so a quiet
+repository costs nothing against the rate limit. A push only moves the head
+when its `pushed_at` is no older than the one recorded, so a late delivery
+cannot move it backwards; one in the same second leaves the row due for the
+next sweep, which reads the branch itself. No write but `register` and
+`revive` brings a `gone` repository back.
+
+**A delivery is applied before it is answered.** GitHub does not retry a
+failed delivery on its own and records any 2xx as delivered, so the
+database writes run first and a failure answers 500, which GitHub shows as
+failed and lets someone redeliver. Only the head re-read after a
+default-branch change is left until after the 202.
+
+**The sweep tells the App's failures from an installation's.** A 401 to the
+App's JWT (a deleted key, a wrong App id, a skewed clock) stops the sweep and
+flags nothing, since every installation would answer the same. A rate limit
+skips only that installation, as GitHub's limits are per installation. A
+connection flagged unhealthy is probed with the JWT on each sweep until it
+recovers or GitHub says it is gone, which sets `uninstalled_at` and is final:
+a reinstall is a new installation id. Reconnecting clears either.
+
+Both connect flows sign their `state` with the same secret, so the state
+carries a `purpose` (`apps/api/src/connect-state.ts`) and each callback
+refuses the other's.
+
 ## Not yet built
 
-- **`packages/integrations`** — GitHub and Jira clients, depending on `shared`.
 - **The extension's sign-in** — the client's `getToken` callback is the seam,
   reading VS Code's encrypted secret storage. The API already accepts the token.

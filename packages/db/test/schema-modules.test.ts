@@ -19,6 +19,7 @@ import type { PgTable } from "drizzle-orm/pg-core";
 import * as schema from "../src/schema.js";
 import * as authSchema from "../src/schema/auth.js";
 import * as bountySchema from "../src/schema/bounty.js";
+import * as githubSchema from "../src/schema/github.js";
 import * as jiraSchema from "../src/schema/jira.js";
 import * as organizationSchema from "../src/schema/organizations.js";
 
@@ -35,6 +36,7 @@ test("the barrel re-exports every table each module declares", () => {
     organizationSchema,
     jiraSchema,
     bountySchema,
+    githubSchema,
   ]) {
     for (const [name, value] of Object.entries(module)) {
       assert.equal(

@@ -907,6 +907,8 @@ test("a personal workspace points at the account page for its picture", async ()
 function showConnections(
   connections: Array<{ healthy: boolean }> = [],
   path = "/o/acme/settings",
+  /** How the server answers GitHub: normally, not set up, or broken. */
+  github: "ok" | "unconfigured" | "failed" = "ok",
 ) {
   window.history.replaceState(null, "", path);
   vi.stubGlobal(
@@ -932,6 +934,26 @@ function showConnections(
       }
       if (String(url).includes("/jira/boards")) {
         return new Response(JSON.stringify({ boards: [] }));
+      }
+      if (String(url).includes("/github/") && github === "unconfigured") {
+        return new Response(
+          JSON.stringify({
+            error: "GitHub is not set up on this server.",
+            code: "unconfigured",
+          }),
+          { status: 503 },
+        );
+      }
+      if (String(url).includes("/github/") && github === "failed") {
+        return new Response(JSON.stringify({ error: "nope" }), {
+          status: 500,
+        });
+      }
+      if (String(url).includes("/github/connections")) {
+        return new Response(JSON.stringify({ connections: [] }));
+      }
+      if (String(url).includes("/github/repositories")) {
+        return new Response(JSON.stringify({ repositories: [] }));
       }
       if (String(url).endsWith("/sync")) {
         return new Response(JSON.stringify({ added: [] }));
@@ -1072,18 +1094,43 @@ test("the return from Atlassian opens on the Jira tab and reports it", async () 
   ).toBe("true");
 });
 
-test("GitHub and Slack say they are coming soon, and offer nothing to press", async () => {
+test("Slack says it is coming soon, and offers nothing to press", async () => {
   // Named rather than left out: the rail is about which tools this
   // organization connects, and "not yet" is still an answer.
   showConnections();
 
-  for (const name of ["GitHub", "Slack"] as const) {
-    await openConnection(name);
-    // Named by its square, which Radix wires up as the panel's label.
-    const panel = screen.getByRole("tabpanel", { name });
-    expect(within(panel).getByText("Coming soon")).toBeDefined();
-    expect(within(panel).queryByRole("button")).toBeNull();
-  }
+  await openConnection("Slack");
+  // Named by its square, which Radix wires up as the panel's label.
+  const panel = screen.getByRole("tabpanel", { name: "Slack" });
+  expect(within(panel).getByText("Coming soon")).toBeDefined();
+  expect(within(panel).queryByRole("button")).toBeNull();
+});
+
+test("the GitHub tab is live, and an owner can connect from it", async () => {
+  showConnections();
+
+  await openConnection("GitHub");
+
+  const panel = screen.getByRole("tabpanel", { name: "GitHub" });
+  expect(
+    await within(panel).findByText("No GitHub accounts connected yet."),
+  ).toBeDefined();
+  expect(
+    within(panel).getByRole("button", { name: "Connect GitHub" }),
+  ).toBeDefined();
+  expect(within(panel).queryByText("Coming soon")).toBeNull();
+  expect(window.location.search).toBe("?connection=github");
+});
+
+test("the return from GitHub opens on the GitHub tab and reports it", async () => {
+  showConnections([], "/o/acme/settings?connection=github&github=connected");
+
+  expect(await screen.findByText("GitHub connected")).toBeDefined();
+  expect(
+    within(connectionTabs())
+      .getByRole("tab", { name: "GitHub" })
+      .getAttribute("aria-selected"),
+  ).toBe("true");
 });
 
 test("without a router there is no connections section", async () => {
@@ -1452,4 +1499,32 @@ test("the name field takes the focus", () => {
   render(<CreateOrganization onCreated={vi.fn()} onCancel={vi.fn()} />);
 
   expect(document.activeElement).toBe(screen.getByLabelText("Workspace name"));
+});
+
+test("a server without the GitHub App shows it as not set up, not as a failed load", async () => {
+  // Without the App the API answers 503 `unconfigured`; read as a failure,
+  // it would hide Jira's count behind "Could not load".
+  showConnections([{ healthy: true }], "/o/acme/settings", "unconfigured");
+
+  expect(
+    await screen.findByText("1 active connection across 3 tools."),
+  ).toBeDefined();
+  expect(screen.getByText("Not set up on this server")).toBeDefined();
+
+  await openConnection("GitHub");
+  expect(
+    await screen.findByText(/GitHub is not set up on this server yet/),
+  ).toBeDefined();
+  expect(screen.queryByRole("button", { name: "Connect GitHub" })).toBeNull();
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
+test("a GitHub read that does fail is still reported as one", async () => {
+  showConnections([{ healthy: true }], "/o/acme/settings", "failed");
+
+  expect(
+    await screen.findByText(
+      "Could not load this workspace\u2019s connections.",
+    ),
+  ).toBeDefined();
 });

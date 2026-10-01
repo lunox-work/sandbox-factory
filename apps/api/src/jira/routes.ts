@@ -48,8 +48,14 @@ import {
   type JiraClientFailure,
   type JiraFailureTarget,
 } from "./credential.js";
-import { signState, verifyState } from "./state.js";
 import { InvalidBoardIdError, selectBacklog } from "../bounty/selection.js";
+import {
+  isAtLeastAdmin,
+  redirectTarget,
+  safePath,
+  signState,
+  verifyState,
+} from "../connect-state.js";
 
 /** What the routes need. Supplied by `createApp`, faked in tests. */
 export interface JiraRouteOptions {
@@ -108,28 +114,6 @@ export interface JiraAppEnv {
   };
 }
 
-/**
- * Where a finished flow sends the browser.
- *
- * Always the web app, never a URL from the request: `returnTo` is carried in
- * the signed state, and even then only its path is used. An open redirect here
- * would be reachable by anyone who can start a flow.
- */
-function redirectTarget(
-  appUrl: string,
-  path: string,
-  params: Record<string, string>,
-): string {
-  const url = new URL(appUrl);
-  // A path from the state, not an origin. `new URL(path, appUrl)` would honour
-  // an absolute URL and send the browser off-site.
-  url.pathname = path.startsWith("/") ? path : `/${path}`;
-  for (const [key, value] of Object.entries(params)) {
-    url.searchParams.set(key, value);
-  }
-  return url.toString();
-}
-
 export function mountJiraRoutes<Env extends JiraAppEnv>(
   app: Hono<Env>,
   options: JiraRouteOptions,
@@ -171,6 +155,14 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
    * is a pointer with default settings that reads nothing until it is
    * previewed or run. So the callback calls this once per granted site, and
    * the site's page calls it on open to pick up boards created since.
+   *
+   * It is also where boards go. A board Jira no longer lists for this
+   * connection is marked missing, which drops it from the list without
+   * deleting its runs and proposals. Jira cannot tell us whether the board
+   * was deleted or the grant lost sight of it, and only the first would
+   * justify losing them. A board that reappears is listed again by `sync`.
+   * Reached only once `boards()` has returned the whole list: a failed read
+   * throws before anything is hidden.
    *
    * The store's `sync` rather than its `register`: this runs against boards
    * somebody has already configured, so it refreshes what is Jira's to state
@@ -220,6 +212,11 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
         }),
       );
     }
+    await boards.markMissing(
+      organizationId,
+      connectionId,
+      visible.map(({ id }) => String(id)),
+    );
     return {
       ok: true,
       boards: recorded,
@@ -280,11 +277,11 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
     }
 
     const returnTo = c.req.query("returnTo") ?? "/settings/jira";
-    const state = signState(secret, {
+    const state = signState(secret, "jira", {
       organizationId,
       userId: c.get("user").id,
       // Only the path survives; see `redirectTarget`.
-      returnTo: safePath(returnTo),
+      returnTo: safePath(returnTo, "/settings/jira"),
       ...(now === undefined ? {} : { issuedAt: now() }),
     });
 
@@ -325,6 +322,7 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
 
     const verified = verifyState(
       secret,
+      "jira",
       c.req.query("state"),
       c.get("user").id,
       now?.(),
@@ -552,7 +550,10 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
     }
   });
 
-  /** The boards this organization has registered. Local rows, no Jira call. */
+  /**
+   * The boards this organization has registered, less any the last sync
+   * found missing. Local rows, no Jira call.
+   */
   app.get("/api/v1/orgs/:orgId/jira/boards", async (c) => {
     return c.json({
       boards: await boards.list(c.get("member").organizationId),
@@ -844,38 +845,6 @@ async function jiraFailure(
     return c.json({ error: "Jira refused that request.", code: "jira" }, 502);
   }
   throw error;
-}
-
-/**
- * Whether a role may connect or disconnect.
- *
- * A member may hold several comma-separated roles — the organization plugin
- * splits on `,` when it checks permissions — so any one of them being high
- * enough is enough.
- */
-function isAtLeastAdmin(role: string): boolean {
-  return role
-    .split(",")
-    .map((entry) => entry.trim())
-    .some((entry) => entry === "owner" || entry === "admin");
-}
-
-/**
- * Reduces a caller-supplied `returnTo` to a path within the web app.
- *
- * Anything absolute, protocol-relative or otherwise odd becomes the default.
- * This is the open-redirect guard: `returnTo` reaches us as a query parameter
- * on a route anyone signed in can call.
- */
-function safePath(value: string): string {
-  if (!value.startsWith("/") || value.startsWith("//")) {
-    return "/settings/jira";
-  }
-  // No scheme, no host, no backslash (which some browsers normalise to `/`).
-  if (/[\\:]/.test(value)) {
-    return "/settings/jira";
-  }
-  return value;
 }
 
 /**

@@ -10,7 +10,7 @@
  * tickets are read from Jira when a run needs them.
  */
 
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, isNull, notInArray } from "drizzle-orm";
 
 import { generateId } from "./mapping.js";
 import { jiraBoard, jiraConnection } from "./schema.js";
@@ -199,6 +199,10 @@ export interface UpdateBoardInput {
 }
 
 export interface JiraBoardStore {
+  /**
+   * The boards Jira still lists. A board marked missing is left out; `get`
+   * and `forRun` still find it, so its runs and proposals stay reachable.
+   */
   list(organizationId: string): Promise<JiraBoardSummary[]>;
   get(
     organizationId: string,
@@ -227,11 +231,26 @@ export interface JiraBoardStore {
    *
    * `register` overwrites the selection because a caller passing one is asking
    * for it. A sync passes none and means none.
+   *
+   * A board marked missing is listed again: Jira has just reported it.
    */
   sync(
     organizationId: string,
     input: SyncBoardInput,
   ): Promise<JiraBoardSummary>;
+  /**
+   * Hides a connection's boards that a sync did not see, and returns their
+   * ids. `seenExternalIds` is every board Jira listed for the connection, so
+   * an empty list hides them all.
+   *
+   * The rows are kept, with their runs and proposals; `missing_since` on the
+   * table says why. A board already hidden keeps the time it went missing.
+   */
+  markMissing(
+    organizationId: string,
+    connectionId: string,
+    seenExternalIds: readonly string[],
+  ): Promise<string[]>;
   /**
    * Edits the settings. A selection or pricing update is **merged**, not
    * replaced, so changing one setting cannot silently reset the others.
@@ -296,7 +315,12 @@ export function createJiraBoardStore(db: Database): JiraBoardStore {
       const rows = (await db
         .select()
         .from(jiraBoard)
-        .where(eq(jiraBoard.organizationId, organizationId))
+        .where(
+          and(
+            eq(jiraBoard.organizationId, organizationId),
+            isNull(jiraBoard.missingSince),
+          ),
+        )
         .orderBy(desc(jiraBoard.createdAt))) as JiraBoardRow[];
       return rows.map(toSummary);
     },
@@ -315,6 +339,8 @@ export function createJiraBoardStore(db: Database): JiraBoardStore {
         boardType: input.boardType,
         projectKey: input.projectKey ?? null,
         selection: input.selection ?? {},
+        // The route reads the board from Jira's list before registering it.
+        missingSince: null,
         updatedAt: new Date(),
       };
 
@@ -342,6 +368,7 @@ export function createJiraBoardStore(db: Database): JiraBoardStore {
         name: input.name,
         boardType: input.boardType,
         projectKey: input.projectKey ?? null,
+        missingSince: null,
         updatedAt: new Date(),
       };
 
@@ -407,6 +434,25 @@ export function createJiraBoardStore(db: Database): JiraBoardStore {
         .returning()) as JiraBoardRow[];
 
       return row === undefined ? null : toSummary(row);
+    },
+
+    async markMissing(organizationId, connectionId, seenExternalIds) {
+      const now = new Date();
+      const hidden = (await db
+        .update(jiraBoard)
+        .set({ missingSince: now, updatedAt: now })
+        .where(
+          and(
+            eq(jiraBoard.organizationId, organizationId),
+            eq(jiraBoard.connectionId, connectionId),
+            isNull(jiraBoard.missingSince),
+            // Drizzle renders an empty list as `true`, so nothing seen hides
+            // every board on the connection.
+            notInArray(jiraBoard.externalId, [...seenExternalIds]),
+          ),
+        )
+        .returning({ id: jiraBoard.id })) as { id: string }[];
+      return hidden.map(({ id }) => id);
     },
 
     async remove(organizationId, boardId) {

@@ -148,5 +148,8 @@ export * from "./spec.js";
 /** The Jira wire contract, for `packages/jira` and the routes that use it. */
 export * from "./jira.js";
 
+/** The GitHub wire contract, for `packages/github` and the routes that use it. */
+export * from "./github.js";
+
 /** Default avatars, computed from an account id rather than stored. */
 export * from "./identicon.js";

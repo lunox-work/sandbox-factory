@@ -47,6 +47,12 @@ KEYS=(
   ATLASSIAN_CLIENT_SECRET
   JIRA_CLIENT_ID
   JIRA_CLIENT_SECRET
+  GITHUB_APP_ID
+  GITHUB_APP_SLUG
+  GITHUB_APP_PRIVATE_KEY
+  GITHUB_APP_WEBHOOK_SECRET
+  GITHUB_APP_CLIENT_ID
+  GITHUB_APP_CLIENT_SECRET
   TOKEN_ENCRYPTION_KEY
   ANTHROPIC_API_KEY
   SIZING_MODEL
@@ -54,12 +60,13 @@ KEYS=(
   DEEPSEEK_SIZING_MODEL
 )
 
-# Pairs a deployment may leave out entirely: each is a feature that is off
-# until both halves exist. A full push skips a pair with neither value, rather
-# than failing, and still refuses one with only half. Naming a key in --only
-# always requires its value.
-OPTIONAL_PAIRS=(
+# Sets a deployment may leave out entirely: each is a feature that is off
+# until every part exists. A full push skips a set with no value at all,
+# rather than failing, and still refuses one only partly filled. Naming a key
+# in --only always requires its value. Most are pairs; the GitHub App is six.
+OPTIONAL_SETS=(
   "JIRA_CLIENT_ID JIRA_CLIENT_SECRET"
+  "GITHUB_APP_ID GITHUB_APP_SLUG GITHUB_APP_PRIVATE_KEY GITHUB_APP_WEBHOOK_SECRET GITHUB_APP_CLIENT_ID GITHUB_APP_CLIENT_SECRET"
   "ANTHROPIC_API_KEY SIZING_MODEL"
   "DEEPSEEK_API_KEY DEEPSEEK_SIZING_MODEL"
 )
@@ -144,10 +151,17 @@ done
 
 skipped=()
 if ((${#ONLY_KEYS[@]} == 0 && ${#missing[@]} > 0)); then
-  for pair in "${OPTIONAL_PAIRS[@]}"; do
-    read -r first second <<<"$pair"
-    if in_list "$first" "${missing[@]}" && in_list "$second" "${missing[@]}"; then
-      skipped+=("$first" "$second")
+  for group in "${OPTIONAL_SETS[@]}"; do
+    read -ra members <<<"$group"
+    all_missing=1
+    for member in "${members[@]}"; do
+      if ! in_list "$member" "${missing[@]}"; then
+        all_missing=0
+        break
+      fi
+    done
+    if ((all_missing)); then
+      skipped+=("${members[@]}")
     fi
   done
   if ((${#skipped[@]} > 0)); then
@@ -166,10 +180,11 @@ if ((${#missing[@]} > 0)); then
   echo "Every key named in a push must have a value; nothing empty is written." >&2
   echo "Generate a signing or encryption key with: openssl rand -base64 32" >&2
   echo >&2
-  echo "Optional pairs, each all-or-nothing: JIRA_CLIENT_ID/_SECRET," >&2
-  echo "ANTHROPIC_API_KEY/SIZING_MODEL and DEEPSEEK_API_KEY/DEEPSEEK_SIZING_MODEL." >&2
-  echo "A full push skips a pair with neither value; fill in the other half of" >&2
-  echo "a partial one, or drop it from --only rather than pushing a blank." >&2
+  echo "Optional sets, each all-or-nothing: JIRA_CLIENT_ID/_SECRET, the six" >&2
+  echo "GITHUB_APP_* keys, ANTHROPIC_API_KEY/SIZING_MODEL and" >&2
+  echo "DEEPSEEK_API_KEY/DEEPSEEK_SIZING_MODEL. A full push skips a set with no" >&2
+  echo "value at all; fill in the rest of a partial one, or drop it from --only" >&2
+  echo "rather than pushing a blank." >&2
   exit 1
 fi
 

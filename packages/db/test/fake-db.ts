@@ -19,6 +19,12 @@ export interface FakeCall {
    * refreshed. A fake that dropped this would let that distinction vanish.
    */
   readonly conflictSet?: Record<string, unknown>;
+  /**
+   * Whether the conflict branch carried its own `WHERE` (`setWhere`). The
+   * guard that keeps an upsert from taking over another owner's row, which
+   * is otherwise invisible here.
+   */
+  readonly conflictGuarded?: boolean;
   readonly ordered?: boolean;
   /**
    * Whether a `where` was applied at all. Owner scoping is otherwise invisible
@@ -43,7 +49,7 @@ function chain(
   response: FakeResponse,
   onOrder?: () => void,
   onWhere?: () => void,
-  onConflict?: (set: Record<string, unknown>) => void,
+  onConflict?: (set: Record<string, unknown>, guarded: boolean) => void,
   onLimit?: (limit: number) => void,
   onConflictNothing?: () => void,
 ): unknown {
@@ -56,8 +62,11 @@ function chain(
     returning: () => result,
     set: () => result,
     values: () => result,
-    onConflictDoUpdate: (config: { set?: Record<string, unknown> }) => {
-      onConflict?.(config.set ?? {});
+    onConflictDoUpdate: (config: {
+      set?: Record<string, unknown>;
+      setWhere?: unknown;
+    }) => {
+      onConflict?.(config.set ?? {}, config.setWhere !== undefined);
       return result;
     },
     onConflictDoNothing: () => {
@@ -124,7 +133,11 @@ function createFakeDbWith(rowsForQuery: RowsProvider): FakeDb {
           response,
           undefined,
           markFiltered(call),
-          (set) => Object.assign(call, { conflictSet: set }),
+          (set, guarded) =>
+            Object.assign(call, {
+              conflictSet: set,
+              ...(guarded ? { conflictGuarded: true } : {}),
+            }),
           undefined,
           () => Object.assign(call, { ignoredConflict: true }),
         );

@@ -1,0 +1,1 @@
+ALTER TABLE "jira_board" ADD COLUMN "missing_since" timestamp with time zone;

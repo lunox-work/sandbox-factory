@@ -117,6 +117,42 @@ else
   fail=1
 fi
 
+# --- The GitHub App: optional, and all six or none -------------------------
+#
+# `githubAppConfig` in apps/api/src/env.ts returns undefined unless every one
+# is set, which leaves the GitHub routes and the webhook unmounted. Like the
+# Jira pair, a partly filled set is the mistake worth catching: it reads as
+# "configured" to a person and as "off" to the API.
+github_keys=(GITHUB_APP_ID GITHUB_APP_SLUG GITHUB_APP_PRIVATE_KEY
+             GITHUB_APP_WEBHOOK_SECRET GITHUB_APP_CLIENT_ID GITHUB_APP_CLIENT_SECRET)
+github_set=0
+for k in "${github_keys[@]}"; do
+  v="$(read_value "$k" || true)"
+  [[ -n "$v" && "$v" != REPLACE_ME ]] && github_set=$((github_set + 1))
+done
+if (( github_set == ${#github_keys[@]} )); then
+  for k in "${github_keys[@]}"; do
+    v="$(read_value "$k")"
+    note "$k" "ok (${#v} chars)"
+  done
+  # The key is parsed at boot; a PEM pasted without base64 is accepted there
+  # too, but cannot be pushed through Secrets Manager with its newlines.
+  key="$(read_value GITHUB_APP_PRIVATE_KEY)"
+  if ! printf %s "$key" | base64 -d 2>/dev/null | grep -q "PRIVATE KEY"; then
+    note GITHUB_APP_PRIVATE_KEY "BAD — not base64 of a PEM private key"; fail=1
+  fi
+elif (( github_set == 0 )); then
+  note GITHUB_APP_ID "unset — GitHub routes stay unmounted (optional)"
+else
+  for k in "${github_keys[@]}"; do
+    v="$(read_value "$k" || true)"
+    [[ "$v" == REPLACE_ME ]] && v=""
+    note "$k" "$([[ -n "$v" ]] && echo "set (${#v} chars)" || echo EMPTY)"
+  done
+  echo "  -> set all six or none: githubAppConfig needs every one." >&2
+  fail=1
+fi
+
 # --- Sizing provider: optional, and both values or neither -----------------
 anthropic_key="$(read_value ANTHROPIC_API_KEY || true)"
 sizing_model="$(read_value SIZING_MODEL || true)"
