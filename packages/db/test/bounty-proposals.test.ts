@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { stepUp, type SpecDraft } from "sandbox-factory";
+
 import { createBountyProposalStore } from "../src/bounty-proposals.js";
 import type {
   BountyProposalRow,
@@ -42,6 +44,8 @@ function row(overrides: Partial<BountyProposalRow> = {}): BountyProposalRow {
     status: "proposed",
     revision: 1,
     specRevision: null,
+    step: null,
+    stepVersion: null,
     decidedBy: null,
     decidedAt: null,
     decisionDeliveryPolicy: null,
@@ -185,6 +189,56 @@ test("a proposal created with a spec stores it as revision 1 in the same transac
   assert.deepEqual(stored?.values?.["draft"], spec.draft);
 });
 
+/** A weighed draft and the same draft grown by a heavy scenario. */
+const weighed: SpecDraft = {
+  ...spec.draft,
+  scenarios: [{ ...spec.draft.scenarios[0], weight: "light" }],
+};
+const grown: SpecDraft = {
+  ...weighed,
+  scenarios: [
+    ...weighed.scenarios,
+    {
+      id: "s2",
+      kind: "recovery",
+      title: "A failed export can be retried",
+      steps: [{ keyword: "Then", text: "the export runs again" }],
+      origin: "expansion",
+      weight: "heavy",
+    },
+  ],
+};
+
+test("a proposal created with a step is priced at the step's size and keeps it", async () => {
+  const step = stepUp("M", weighed, grown);
+  assert.ok(step !== null);
+  const running = { id: "brn_1", boardId: "jrb_1" } as BountyRunRow;
+  const stored = row({
+    complexity: "M+",
+    amountMinor: 250,
+    step,
+    stepVersion: step.stepVersion,
+  });
+  const fake = createSequencedFakeDb([[running], [{ key: "APP-1" }], [stored]]);
+  const result = await createBountyProposalStore(fake.db).createForLease(
+    "org_1",
+    "lease",
+    { ...input, amountMinor: 250, step },
+  );
+
+  const values = fake.calls[2]?.values;
+  // The model's size is kept apart from the size the step made of it.
+  assert.equal(values?.["modelComplexity"], "M");
+  assert.equal(values?.["complexity"], "M+");
+  assert.equal(values?.["amountMinor"], 250);
+  assert.deepEqual(values?.["step"], step);
+  assert.equal(values?.["stepVersion"], "step-v1");
+  assert.equal(result.status, "created");
+  if (result.status === "created") {
+    assert.deepEqual(result.proposal.step, step);
+  }
+});
+
 test("a proposal created without a spec points at none", async () => {
   const running = { id: "brn_1", boardId: "jrb_1" } as BountyRunRow;
   const fake = createSequencedFakeDb([[running], [{ key: "APP-1" }], [row()]]);
@@ -197,6 +251,11 @@ test("a proposal created without a spec points at none", async () => {
   assert.equal(result.status, "created");
   assert.equal(fake.calls[2]?.values?.["specRevision"], null);
   assert.equal(fake.calls.filter(({ kind }) => kind === "insert").length, 1);
+  // No step either: the size is the model's own.
+  assert.equal(fake.calls[2]?.values?.["complexity"], "M");
+  assert.equal(fake.calls[2]?.values?.["step"], null);
+  assert.equal(fake.calls[2]?.values?.["stepVersion"], null);
+  if (result.status === "created") assert.equal(result.proposal.step, null);
 });
 
 test("a ticket that already has a live proposal gets no spec", async () => {
@@ -502,6 +561,44 @@ test("withdraws and resizes through expected-revision filters", async () => {
     ).ok,
     true,
   );
+  // Without a step the proposal is left with none.
+  assert.equal(resizeFake.calls[0]?.values?.["complexity"], "L");
+  assert.equal(resizeFake.calls[0]?.values?.["step"], null);
+  assert.equal(resizeFake.calls[0]?.values?.["stepVersion"], null);
+  assert.equal(resizeFake.calls[0]?.values?.["sizedBy"], "reviewer");
+});
+
+test("a resize with a step writes the rebased step and the size it comes to", async () => {
+  const step = stepUp("L", weighed, grown);
+  assert.ok(step !== null);
+  const resized = row({
+    revision: 2,
+    complexity: "L+",
+    amountMinor: 350,
+    step,
+    stepVersion: step.stepVersion,
+  });
+  const fake = createSequencedFakeDb([
+    [resized],
+    [{ row: resized, issueKey: "APP-1" }],
+  ]);
+  const result = await createBountyProposalStore(fake.db).resize(
+    "org_1",
+    "bpr_1",
+    1,
+    "usr_1",
+    "L+",
+    350,
+    "USD",
+    step,
+  );
+  assert.equal(result.ok, true);
+  const values = fake.calls[0]?.values;
+  assert.equal(values?.["complexity"], "L+");
+  assert.equal(values?.["amountMinor"], 350);
+  assert.deepEqual(values?.["step"], step);
+  assert.equal(values?.["stepVersion"], "step-v1");
+  if (result.ok) assert.equal(result.proposal.step?.base, "L");
 });
 
 test("a missed mutation distinguishes not found from changed", async () => {
@@ -609,6 +706,9 @@ test("re-price updates the source in place, fenced by its run lease and source r
   assert.equal(update?.["decidedBy"], null);
   assert.equal(update?.["runId"], "brn_2");
   assert.equal(update?.["revision"], 2);
+  // A re-price sized without a step clears the one the proposal had.
+  assert.equal(update?.["step"], null);
+  assert.equal(update?.["stepVersion"], null);
   assert.ok(!fake.calls.some(({ kind }) => kind === "insert"));
 
   const lost = createFakeDb([]);
@@ -658,6 +758,40 @@ test("re-price with a spec writes the next revision and points the proposal at i
   assert.equal(stored?.values?.["proposalId"], "bpr_1");
   assert.equal(stored?.values?.["revision"], 3);
   assert.equal(stored?.values?.["runId"], "brn_2");
+});
+
+test("re-price writes the fresh step with the fresh size", async () => {
+  const step = stepUp("S", weighed, weighed);
+  assert.ok(step !== null);
+  const repriced = row({
+    revision: 2,
+    runId: "brn_2",
+    step,
+    stepVersion: "step-v1",
+  });
+  const fake = createSequencedFakeDb([
+    [{ id: "brn_2", boardId: "jrb_1" } as BountyRunRow],
+    [row()],
+    [repriced],
+    [{ row: repriced, issueKey: "APP-1" }],
+  ]);
+  await createBountyProposalStore(fake.db).repriceForLease(
+    "org_1",
+    "lease_1",
+    "bpr_1",
+    1,
+    {
+      ...input,
+      runId: "brn_2",
+      sizing: { ...input.sizing, complexity: "S" },
+      amountMinor: 100,
+      step,
+    },
+  );
+  const update = fake.calls[2]?.values;
+  assert.equal(update?.["complexity"], "S");
+  assert.deepEqual(update?.["step"], step);
+  assert.equal(update?.["stepVersion"], "step-v1");
 });
 
 test("re-price starts a spec at revision 1 for a proposal that had none", async () => {

@@ -2,10 +2,14 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  BOUNTY_COMPLEXITIES,
   formatMinorUnits,
+  MODEL_BOUNTY_COMPLEXITIES,
   parseMinorUnits,
+  PRICED_BOUNTY_COMPLEXITIES,
   priceFor,
   validateRateCard,
+  WHOLE_BOUNTY_COMPLEXITIES,
 } from "../src/bounty.js";
 
 const usd = new Set(["USD"]);
@@ -97,6 +101,53 @@ test("maps sizes to the card and leaves unsized unpriced", () => {
   assert.equal(priceFor("L", card), 3);
   assert.equal(priceFor("XL", card), 4);
   assert.equal(priceFor("unsized", card), null);
+});
+
+test("prices a half size at the midpoint of its neighbours, to a whole minor unit", () => {
+  const card = {
+    currency: "USD",
+    xsMinor: 1_000,
+    sMinor: 5_800,
+    mMinor: 10_500,
+    lMinor: 15_300,
+    xlMinor: 20_000,
+  };
+  assert.equal(priceFor("XS+", card), 3_400);
+  // 8,150 exactly, and 12,900 and 17,650: the default card has no halves.
+  assert.equal(priceFor("S+", card), 8_150);
+  assert.equal(priceFor("M+", card), 12_900);
+  assert.equal(priceFor("L+", card), 17_650);
+  // An odd gap rounds half up rather than leaving a fraction of a cent.
+  assert.equal(priceFor("S+", { ...card, sMinor: 1, mMinor: 2 }), 2);
+  // Every half size sits between its neighbours, so the order holds.
+  const prices = PRICED_BOUNTY_COMPLEXITIES.map((size) => priceFor(size, card));
+  assert.deepEqual(
+    prices,
+    [...prices].sort((a, b) => (a ?? 0) - (b ?? 0)),
+  );
+});
+
+test("the model and the resize keep the five whole sizes; pricing has nine", () => {
+  assert.deepEqual(WHOLE_BOUNTY_COMPLEXITIES, ["XS", "S", "M", "L", "XL"]);
+  assert.deepEqual(MODEL_BOUNTY_COMPLEXITIES, [
+    ...WHOLE_BOUNTY_COMPLEXITIES,
+    "unsized",
+  ]);
+  assert.deepEqual(PRICED_BOUNTY_COMPLEXITIES, [
+    "XS",
+    "XS+",
+    "S",
+    "S+",
+    "M",
+    "M+",
+    "L",
+    "L+",
+    "XL",
+  ]);
+  assert.deepEqual(BOUNTY_COMPLEXITIES, [
+    ...PRICED_BOUNTY_COMPLEXITIES,
+    "unsized",
+  ]);
 });
 
 test("parses decimal money exactly and rejects excess precision", () => {

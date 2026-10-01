@@ -34,6 +34,7 @@ import {
   CATEGORIES,
   DEFAULT_RATE_CARD,
   priceFor,
+  rebaseStep,
   UNCATEGORIZED,
   validateRateCard,
   type PricedComplexity,
@@ -900,7 +901,18 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
         409,
       );
     }
-    const amountMinor = priceFor(parsed.data.complexity, proposal.rateCard);
+    /*
+      The reviewer's size is the base, and the step stays on top: weight a
+      reviewer added to the spec is never silently absorbed by a manual
+      size. The revision check above is what makes the step read here the
+      one being replaced.
+    */
+    const step =
+      proposal.step === null
+        ? null
+        : rebaseStep(proposal.step, parsed.data.complexity);
+    const complexity = step?.complexity ?? parsed.data.complexity;
+    const amountMinor = priceFor(complexity, proposal.rateCard);
     return proposalMutationResponse(
       c,
       await options.proposals.resize(
@@ -908,9 +920,10 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
         proposal.id,
         parsed.data.expectedRevision,
         c.get("user").id,
-        parsed.data.complexity,
+        complexity,
         amountMinor!,
         proposal.rateCard.currency,
+        step,
       ),
     );
   });

@@ -23,6 +23,7 @@ import type {
   RateCardSnapshot,
   PricedComplexity,
   SpecDraft,
+  StepResult,
 } from "sandbox-factory";
 
 import { user } from "./auth.js";
@@ -177,6 +178,13 @@ export const bountyProposal = pgTable(
     // with no spec: one from before specs, or a ticket nothing was drafted
     // from. A re-price moves it, or clears it when it drafts nothing.
     specRevision: integer("spec_revision"),
+    // How the weight added to the spec since it was sized moved the size:
+    // `complexity` is `step.complexity` when there is one. Stored as
+    // computed, so the explanation is not recomputed against settings that
+    // may have changed since. Null when there was nothing to step from: an
+    // unsized ticket, no spec, or a spec drafted before weights.
+    step: jsonb("step").$type<StepResult>(),
+    stepVersion: text("step_version"),
     decidedBy: text("decided_by").references(() => user.id, {
       onDelete: "set null",
     }),
@@ -195,9 +203,15 @@ export const bountyProposal = pgTable(
       "bounty_proposal_model_complexity_check",
       sql`${table.modelComplexity} in ('XS', 'S', 'M', 'L', 'XL', 'unsized')`,
     ),
+    // The model answers whole sizes only; a half size is where the step
+    // lands, so only the effective size may hold one.
     check(
       "bounty_proposal_complexity_check",
-      sql`${table.complexity} in ('XS', 'S', 'M', 'L', 'XL', 'unsized')`,
+      sql`${table.complexity} in ('XS', 'XS+', 'S', 'S+', 'M', 'M+', 'L', 'L+', 'XL', 'unsized')`,
+    ),
+    check(
+      "bounty_proposal_step_check",
+      sql`(${table.step} IS NULL) = (${table.stepVersion} IS NULL)`,
     ),
     check(
       "bounty_proposal_confidence_check",

@@ -7,6 +7,17 @@
  * tab, which is the Jira ticket read live. This is the other side of it:
  * what was made of the ticket when it was sized.
  *
+ * The tab opens on why the ticket is the size it is: the sizing model's
+ * size and reasoning, or, when a reviewer overrode it, the reviewer's size
+ * with the model's original size and reasoning under it. That reasoning is
+ * the proposal's, not the spec's, so it shows whatever state the spec is in.
+ *
+ * Each scenario wears its weight: how much work it adds, in the drafting
+ * model's judgement, with the model's reason when the scenario is opened.
+ * The points are what the scenario step counts when a reviewer grows the
+ * spec, so each kind's group shows its total. A spec drafted before
+ * weights shows none of this, and says how to get them.
+ *
  * The read is split from the view so the peek can start it when it opens,
  * as it does the ticket's, and a switch to the tab is instant. It is a
  * stored read and answers without Jira, which is why it does not ride on
@@ -15,7 +26,17 @@
  */
 
 import type { BountySpecDto } from "@sandbox-factory/shared";
-import { countScenarios, groupScenarios, type Scenario } from "sandbox-factory";
+import {
+  countScenarios,
+  groupScenarios,
+  pointsOf,
+  pointsOfScenarios,
+  SCENARIO_WEIGHT_DEFINITIONS,
+  SCENARIO_WEIGHTS,
+  WEIGHT_POINTS,
+  type Scenario,
+  type ScenarioWeight,
+} from "sandbox-factory";
 import { ChevronRight, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useId, useState } from "react";
 
@@ -53,8 +74,65 @@ function specFrom(body: unknown): BountySpecDto | null {
     : null;
 }
 
-function plural(count: number, one: string): string {
+export function plural(count: number, one: string): string {
   return `${count} ${one}${count === 1 ? "" : "s"}`;
+}
+
+/** What each weight counts for, as the step that will count them reads it. */
+export type WeightPoints = Readonly<Record<ScenarioWeight, number>>;
+
+const WEIGHT_LABEL: Readonly<Record<string, string>> = Object.fromEntries(
+  SCENARIO_WEIGHT_DEFINITIONS.map(({ id, label }) => [id, label]),
+);
+
+/** What one weight counts for, or undefined for a weight the rubric dropped. */
+function pointsFor(
+  weight: ScenarioWeight,
+  weightPoints: WeightPoints,
+): number | undefined {
+  return Object.hasOwn(weightPoints, weight) ? weightPoints[weight] : undefined;
+}
+
+/**
+ * A scenario's weight as a badge: its name and what it counts for, after
+ * a small rising mark filled to the weight, so a list of them reads by
+ * shape before it is read by word. The reason, when there is one, is the
+ * badge's tooltip.
+ */
+export function WeightBadge({
+  weight,
+  points,
+  reason,
+}: {
+  weight: ScenarioWeight;
+  /** What the weight counts for in the step; left off when not known. */
+  points?: number | undefined;
+  reason?: string | undefined;
+}) {
+  const rank = SCENARIO_WEIGHTS.indexOf(weight) + 1;
+  return (
+    <Badge
+      variant="outline"
+      className="text-muted-foreground shrink-0 gap-1.5 font-normal"
+      title={reason}
+      data-weight={weight}
+    >
+      <span aria-hidden="true" className="flex items-end gap-px">
+        {["h-1.5", "h-2", "h-2.5"].map((height, index) => (
+          <span
+            key={height}
+            className={`w-0.5 rounded-full ${height} ${
+              index < rank ? "bg-foreground/70" : "bg-foreground/15"
+            }`}
+          />
+        ))}
+      </span>
+      {WEIGHT_LABEL[weight] ?? weight}
+      {points !== undefined && (
+        <span className="tabular-nums">· {plural(points, "pt")}</span>
+      )}
+    </Badge>
+  );
 }
 
 /**
@@ -113,6 +191,65 @@ export function useProposalSpec(
   };
 }
 
+/** Why the proposal is the size it is, for the head of the tab. */
+export interface SizeReason {
+  /** The sizing model's answer: a whole size, or "unsized". */
+  readonly modelSize: string;
+  /** The model's reasoning for that answer. */
+  readonly rationale: string;
+  /** The size a reviewer set over the model's, or null when none did. */
+  readonly reviewerSize: string | null;
+}
+
+/** A size as it reads inside a sentence. */
+function SizeName({ size }: { size: string }) {
+  return <span className="font-mono font-semibold">{size}</span>;
+}
+
+/**
+ * Why this size: who set it, and the model's reasoning. When a reviewer
+ * overrode the model, the override leads and the model's own size and
+ * reasoning follow, so what the model thought is never lost behind it.
+ */
+function SizeReasonBlock({ reason }: { reason: SizeReason }) {
+  const unsized = reason.modelSize === "unsized";
+  return (
+    <section
+      aria-label="Why this size"
+      data-testid="spec-size-reason"
+      className="bg-muted/40 flex flex-col gap-1 rounded-md px-3 py-2.5"
+    >
+      {reason.reviewerSize === null ? (
+        <p className="text-xs font-medium">
+          {unsized ? (
+            "Left unsized by the model"
+          ) : (
+            <>
+              Sized <SizeName size={reason.modelSize} /> by the model
+            </>
+          )}
+        </p>
+      ) : (
+        <>
+          <p className="text-xs font-medium">
+            Overridden to <SizeName size={reason.reviewerSize} /> by a reviewer
+          </p>
+          <p className="text-muted-foreground text-xs">
+            {unsized ? (
+              "The model left it unsized:"
+            ) : (
+              <>
+                The model sized it <SizeName size={reason.modelSize} />:
+              </>
+            )}
+          </p>
+        </>
+      )}
+      <p className="text-sm leading-relaxed">{reason.rationale}</p>
+    </section>
+  );
+}
+
 /** How many scenarios the tab holds, once that is known; null until then. */
 export function scenarioTotal(read: SpecRead): number | null {
   return read.state === "ready" && read.spec !== null
@@ -124,16 +261,26 @@ export function ProposalSpec({
   read,
   onRetry,
   canAnalyze,
+  weightPoints = WEIGHT_POINTS,
+  sizeReason,
 }: {
   read: SpecRead;
   onRetry: () => void;
   /** Whether the reader can have the ticket analyzed again. */
   canAnalyze: boolean;
+  /**
+   * What each weight counts for: the settings the proposal's step was
+   * computed with, so the totals here are the ones the size counted.
+   */
+  weightPoints?: WeightPoints;
+  /** Why the proposal is its size, shown above the scenarios. */
+  sizeReason?: SizeReason;
 }) {
   const spec = read.state === "ready" ? read.spec : null;
 
   return (
-    <div data-testid="proposal-spec">
+    <div data-testid="proposal-spec" className="flex flex-col gap-4">
+      {sizeReason !== undefined && <SizeReasonBlock reason={sizeReason} />}
       {read.state === "loading" ? (
         <LoadingLine>Loading scenarios…</LoadingLine>
       ) : read.state === "failed" ? (
@@ -151,25 +298,54 @@ export function ProposalSpec({
             " Re-analyze, on the Bounty tab, drafts them from the ticket as it is now."}
         </p>
       ) : (
-        <SpecBody spec={spec} />
+        <SpecBody
+          spec={spec}
+          canAnalyze={canAnalyze}
+          weightPoints={weightPoints}
+        />
       )}
     </div>
   );
 }
 
-function SpecBody({ spec }: { spec: BountySpecDto }) {
+function SpecBody({
+  spec,
+  canAnalyze,
+  weightPoints,
+}: {
+  spec: BountySpecDto;
+  canAnalyze: boolean;
+  weightPoints: WeightPoints;
+}) {
   const { draft } = spec;
   const groups = groupScenarios(draft);
+  // Null when any scenario has no weight: drafted before weights existed.
+  const points = pointsOf(draft, weightPoints);
   return (
     <div className="flex flex-col gap-4">
       {/* What the ticket is about, and which revision of the spec this is. */}
       <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
         <p className="text-sm leading-relaxed font-medium">{draft.feature}</p>
         <p className="text-muted-foreground text-xs">
-          {plural(countScenarios(draft).total, "scenario")} · revision{" "}
-          {spec.revision}
+          {plural(countScenarios(draft).total, "scenario")}
+          {points !== null &&
+            draft.scenarios.length > 0 &&
+            ` · ${plural(points, "point")}`}{" "}
+          · revision {spec.revision}
         </p>
       </div>
+
+      {points === null && (
+        <p
+          className="text-muted-foreground text-sm"
+          data-testid="spec-unweighed"
+        >
+          Drafted before scenarios carried weights, so a scenario added to this
+          spec cannot move the size.
+          {canAnalyze &&
+            " Re-analyze, on the Bounty tab, drafts it again with weights."}
+        </p>
+      )}
 
       {draft.background.length > 0 && (
         <section aria-label="Background">
@@ -183,22 +359,34 @@ function SpecBody({ spec }: { spec: BountySpecDto }) {
         </section>
       )}
 
-      {groups.map((group) => (
-        <section key={group.kind} aria-label={group.label}>
-          {/* The count is what a reader compares across kinds. */}
-          <h4 className="mb-1 flex items-baseline gap-1.5 text-xs font-medium">
-            {group.label}
-            <span className="text-muted-foreground tabular-nums">
-              {group.scenarios.length}
-            </span>
-          </h4>
-          <ul className="flex flex-col">
-            {group.scenarios.map((scenario) => (
-              <ScenarioRow key={scenario.id} scenario={scenario} />
-            ))}
-          </ul>
-        </section>
-      ))}
+      {groups.map((group) => {
+        const groupPoints = pointsOfScenarios(group.scenarios, weightPoints);
+        return (
+          <section key={group.kind} aria-label={group.label}>
+            {/*
+              The kind, and at the right edge, over its scenarios' pills,
+              what the step counts of it.
+            */}
+            <h4 className="mb-1 flex items-baseline justify-between gap-3 text-xs font-medium">
+              {group.label}
+              {groupPoints !== null && (
+                <span className="text-muted-foreground font-normal tabular-nums">
+                  {plural(groupPoints, "pt")}
+                </span>
+              )}
+            </h4>
+            <ul className="flex flex-col">
+              {group.scenarios.map((scenario) => (
+                <ScenarioRow
+                  key={scenario.id}
+                  scenario={scenario}
+                  weightPoints={weightPoints}
+                />
+              ))}
+            </ul>
+          </section>
+        );
+      })}
 
       {draft.scenarios.length === 0 && (
         <p className="text-muted-foreground text-sm">
@@ -217,7 +405,13 @@ function SpecBody({ spec }: { spec: BountySpecDto }) {
  * a spec of a dozen scenarios reads as a list of what is covered before it
  * reads as forty lines of Given and Then.
  */
-function ScenarioRow({ scenario }: { scenario: Scenario }) {
+function ScenarioRow({
+  scenario,
+  weightPoints,
+}: {
+  scenario: Scenario;
+  weightPoints: WeightPoints;
+}) {
   const [open, setOpen] = useState(false);
   const steps = useId();
   return (
@@ -236,14 +430,31 @@ function ScenarioRow({ scenario }: { scenario: Scenario }) {
           }`}
         />
         <span className="min-w-0 flex-1 leading-relaxed">{scenario.title}</span>
-        {scenario.origin !== "draft" && (
-          <Badge variant="outline" className="shrink-0">
-            {ORIGIN_LABEL[scenario.origin]}
-          </Badge>
-        )}
+        {/* Centred on each other, level with the title's first line. */}
+        <span className="flex min-h-[1.625rem] shrink-0 items-center gap-1.5">
+          {scenario.origin !== "draft" && (
+            <Badge variant="outline" className="shrink-0">
+              {ORIGIN_LABEL[scenario.origin]}
+            </Badge>
+          )}
+          {scenario.weight !== undefined && (
+            <WeightBadge
+              weight={scenario.weight}
+              points={pointsFor(scenario.weight, weightPoints)}
+              reason={scenario.weightReason}
+            />
+          )}
+        </span>
       </button>
       {open && (
-        <div id={steps} className="pt-0.5 pb-2 pl-5">
+        <div id={steps} className="flex flex-col gap-1.5 pt-0.5 pb-2 pl-5">
+          {/* Why it weighs what it does, before what it does. */}
+          {scenario.weightReason !== undefined && (
+            <p className="text-muted-foreground text-xs">
+              {WEIGHT_LABEL[scenario.weight ?? ""] ?? "Weighed"}:{" "}
+              {scenario.weightReason}
+            </p>
+          )}
           <Steps steps={scenario.steps} />
         </div>
       )}

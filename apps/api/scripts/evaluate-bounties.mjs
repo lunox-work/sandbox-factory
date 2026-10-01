@@ -1,7 +1,11 @@
-import { PRICED_BOUNTY_COMPLEXITIES } from "sandbox-factory";
+import { SCENARIO_WEIGHTS, WHOLE_BOUNTY_COMPLEXITIES } from "sandbox-factory";
 import { readFile } from "node:fs/promises";
 
-import { AnthropicCaller, sizeBountyTool } from "../dist/sizing/index.js";
+import {
+  AnthropicCaller,
+  draftSpecTool,
+  sizeBountyTool,
+} from "../dist/sizing/index.js";
 
 const path = process.argv[2];
 if (!path) {
@@ -17,7 +21,29 @@ if (!apiKey || !model) {
   );
 }
 
-const sizes = PRICED_BOUNTY_COMPLEXITIES;
+// The model answers whole sizes, so that is what a label is in.
+const sizes = WHOLE_BOUNTY_COMPLEXITIES;
+
+/**
+ * An example may label scenario weights: `scenarios` is a list of
+ * `{ "title": "words", "weight": "heavy" }`, each matched to the first
+ * drafted scenario whose title contains the words, ignoring case. A
+ * labelled scenario the draft did not write is counted as unmatched, not as
+ * a disagreement: the weight is what is being measured, not the draft.
+ */
+function validScenarioLabels(scenarios) {
+  return (
+    scenarios === undefined ||
+    (Array.isArray(scenarios) &&
+      scenarios.every(
+        (label) =>
+          typeof label?.title === "string" &&
+          label.title.trim() !== "" &&
+          SCENARIO_WEIGHTS.includes(label.weight),
+      ))
+  );
+}
+
 const examples = (await readFile(path, "utf8"))
   .split(/\r?\n/u)
   .filter(Boolean)
@@ -27,7 +53,8 @@ const examples = (await readFile(path, "utf8"))
       typeof value.summary !== "string" ||
       typeof value.descriptionText !== "string" ||
       typeof value.issueType !== "string" ||
-      ![...sizes, "unsized"].includes(value.label)
+      ![...sizes, "unsized"].includes(value.label) ||
+      !validScenarioLabels(value.scenarios)
     ) {
       throw new Error(`Invalid example on line ${index + 1}.`);
     }
@@ -45,6 +72,11 @@ let correctUnsized = 0;
 let technicalFailures = 0;
 let inputTokens = 0;
 let outputTokens = 0;
+let labelledWeights = 0;
+let matchedWeights = 0;
+let agreedWeights = 0;
+let withinOneWeight = 0;
+let draftFailures = 0;
 
 for (const example of examples) {
   try {
@@ -72,6 +104,39 @@ for (const example of examples) {
   } catch {
     technicalFailures += 1;
   }
+
+  if (example.scenarios === undefined) continue;
+  labelledWeights += example.scenarios.length;
+  try {
+    const drafted = await caller.call(draftSpecTool, {
+      summary: example.summary,
+      descriptionText: example.descriptionText,
+      issueType: example.issueType,
+      components: example.components ?? [],
+      labels: example.labels ?? [],
+    });
+    inputTokens += drafted.usage?.inputTokens ?? 0;
+    outputTokens += drafted.usage?.outputTokens ?? 0;
+    for (const label of example.scenarios) {
+      const words = label.title.trim().toLowerCase();
+      const match = drafted.result.scenarios.find(({ title }) =>
+        title.toLowerCase().includes(words),
+      );
+      if (match?.weight === undefined) continue;
+      matchedWeights += 1;
+      if (match.weight === label.weight) agreedWeights += 1;
+      if (
+        Math.abs(
+          SCENARIO_WEIGHTS.indexOf(match.weight) -
+            SCENARIO_WEIGHTS.indexOf(label.weight),
+        ) <= 1
+      ) {
+        withinOneWeight += 1;
+      }
+    }
+  } catch {
+    draftFailures += 1;
+  }
 }
 
 const evaluated = examples.length - technicalFailures;
@@ -90,6 +155,12 @@ console.log(
       sizedPairCount: sizedPairs,
       unsizedPrecision: ratio(correctUnsized, predictedUnsized),
       unsizedRecall: ratio(correctUnsized, trueUnsized),
+      draftPromptVersion: draftSpecTool.promptVersion,
+      draftFailures,
+      labelledWeightCount: labelledWeights,
+      matchedWeightCount: matchedWeights,
+      weightAgreement: ratio(agreedWeights, matchedWeights),
+      withinOneWeightAgreement: ratio(withinOneWeight, matchedWeights),
       inputTokens,
       outputTokens,
     },

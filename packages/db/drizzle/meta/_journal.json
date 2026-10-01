@@ -225,6 +225,13 @@
       "when": 1790780142124,
       "tag": "0031_bounty_spec",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1790817236793,
+      "tag": "0032_board_pricing_and_step",
+      "breakpoints": true
     }
   ]
 }

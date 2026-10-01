@@ -35,6 +35,8 @@ const draft: SpecDraft = {
       title: "The change works",
       steps: [{ keyword: "Then", text: "the acceptance criteria hold" }],
       origin: "draft",
+      weight: "moderate",
+      weightReason: "the ticket's core change",
     },
   ],
   openQuestions: [],
@@ -183,6 +185,8 @@ function harness(options: {
   issueError?: Error;
   /** The plan of the run a re-priced proposal came from. */
   originPlanned?: StoredBountyRun["planned"];
+  /** The board's pricing settings, as stored. */
+  pricing?: unknown;
 }) {
   const current = run(options.runOverrides);
   const plans: unknown[] = [];
@@ -260,6 +264,7 @@ function harness(options: {
     boardType: "scrum",
     projectKey: "APP",
     selection: current.selection,
+    pricing: options.pricing,
     createdAt: "2026-01-01T00:00:00.000Z",
   };
   const boards = {
@@ -638,8 +643,108 @@ test("a run drafts the spec first and stores it with the proposal", async () => 
     draft,
     origin: "draft",
     actualModel: "drafting-model",
-    promptVersion: "draft-v1",
+    promptVersion: "draft-v2",
   });
+});
+
+test("a sized ticket is written with a step of zero, priced at its own size", async () => {
+  const state = harness({});
+  await state.executor.execute("org_1", "brn_1");
+
+  const written = state.proposalInputs[0] as {
+    amountMinor: number;
+    step: Record<string, unknown> | null;
+  };
+  // A fresh draft has added nothing: the step is there to be moved later.
+  assert.deepEqual(written.step, {
+    base: "M",
+    complexity: "M",
+    steps: 0,
+    addedPoints: 0,
+    added: [],
+    nextStepIn: 4,
+    settings: {
+      pointsPerStep: 4,
+      weightPoints: { light: 1, moderate: 2, heavy: 4 },
+    },
+    stepVersion: "step-v1",
+  });
+  assert.equal(written.amountMinor, 200);
+});
+
+test("the step is counted with the board's own pricing settings", async () => {
+  const state = harness({
+    pricing: { step: { pointsPerStep: 6, weightPoints: { heavy: 9 } } },
+  });
+  await state.executor.execute("org_1", "brn_1");
+
+  const { step } = state.proposalInputs[0] as {
+    step: { nextStepIn: number; settings: unknown };
+  };
+  assert.equal(step.nextStepIn, 6);
+  assert.deepEqual(step.settings, {
+    pointsPerStep: 6,
+    weightPoints: { light: 1, moderate: 2, heavy: 9 },
+  });
+
+  // Settings it cannot read are the defaults, not a failed run.
+  const garbled = harness({ pricing: "not settings" });
+  await garbled.executor.execute("org_1", "brn_1");
+  assert.equal(garbled.finishes[0]?.status, "succeeded");
+});
+
+test("there is no step without a base or without weights to count", async () => {
+  const sized = {
+    result: {
+      complexity: "S" as const,
+      confidence: "high" as const,
+      rationale: "Small.",
+    },
+    actualModel: "actual-model",
+    usage: { inputTokens: 1, outputTokens: 1 },
+  };
+  const unsized = harness({
+    caller: sizing([
+      {
+        result: {
+          complexity: "unsized",
+          confidence: "low",
+          rationale: "Too vague.",
+          unsizedReason: "missing requirements",
+        },
+        actualModel: "actual-model",
+        usage: { inputTokens: 1, outputTokens: 1 },
+      },
+    ]),
+  });
+  const failedDraft = harness({
+    caller: sizing([sized], [new Error("private")]),
+  });
+  // A draft with no weights, as a provider that ignored the schema might
+  // still somehow produce: no step, rather than a step of nothing.
+  const weightless = harness({
+    caller: sizing([sized], () => ({
+      ...drafted(),
+      result: {
+        ...draft,
+        scenarios: draft.scenarios.map(
+          ({ weight: _weight, weightReason: _reason, ...scenario }) => scenario,
+        ),
+      },
+    })),
+  });
+  for (const state of [unsized, failedDraft, weightless]) {
+    await state.executor.execute("org_1", "brn_1");
+    const written = state.proposalInputs[0] as {
+      step: unknown;
+      amountMinor: number | null;
+    };
+    assert.equal(written.step, null);
+  }
+  assert.equal(
+    (failedDraft.proposalInputs[0] as { amountMinor: number }).amountMinor,
+    100,
+  );
 });
 
 test("a draft that fails costs the ticket its spec, not its proposal", async () => {

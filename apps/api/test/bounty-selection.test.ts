@@ -79,6 +79,7 @@ function board(overrides: Partial<JiraBoardSummary> = {}): JiraBoardSummary {
     boardType: "scrum",
     projectKey: "APP",
     selection: {},
+    pricing: {},
     createdAt: "2026-01-01T00:00:00.000Z",
     ...overrides,
   };

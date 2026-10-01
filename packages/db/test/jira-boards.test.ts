@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { createJiraBoardStore, mergeSelection } from "../src/jira-boards.js";
+import {
+  createJiraBoardStore,
+  mergePricing,
+  mergeSelection,
+} from "../src/jira-boards.js";
 import type { JiraBoardRow } from "../src/schema.js";
 import { createFakeDb } from "./fake-db.js";
 
@@ -15,6 +19,7 @@ function boardRow(overrides: Partial<JiraBoardRow> = {}): JiraBoardRow {
     boardType: "scrum",
     projectKey: "ACME",
     selection: { ticketCap: 10, unassignedOnly: true },
+    pricing: {},
     createdAt: new Date("2026-09-21T00:00:00.000Z"),
     updatedAt: new Date("2026-09-21T00:00:00.000Z"),
     ...overrides,
@@ -339,4 +344,73 @@ test("a null selection column reads as empty settings", async () => {
   const listed = await boards.list("org_1");
 
   assert.deepEqual(listed[0]?.selection, {});
+});
+
+test("a pricing update is merged setting by setting, and null clears", () => {
+  const existing = {
+    step: { pointsPerStep: 6, weightPoints: { light: 0, heavy: 5 } },
+  };
+  assert.deepEqual(
+    mergePricing(existing, {
+      step: { weightPoints: { heavy: null, moderate: 3 } },
+    }),
+    { step: { pointsPerStep: 6, weightPoints: { light: 0, moderate: 3 } } },
+  );
+  assert.deepEqual(mergePricing(existing, { step: { pointsPerStep: null } }), {
+    step: { weightPoints: { light: 0, heavy: 5 } },
+  });
+  // Every override cleared leaves an empty step: every default.
+  assert.deepEqual(
+    mergePricing(
+      { step: { pointsPerStep: 6 } },
+      { step: { pointsPerStep: null, weightPoints: { light: undefined } } },
+    ),
+    { step: {} },
+  );
+  // No step in the update leaves the pricing as it was.
+  assert.equal(mergePricing(existing, {}), existing);
+  assert.deepEqual(mergePricing({}, { step: { pointsPerStep: 2 } }), {
+    step: { pointsPerStep: 2 },
+  });
+});
+
+test("an update stores merged pricing and leaves the selection alone", async () => {
+  const { store: boards, calls } = store([
+    boardRow({ pricing: { step: { pointsPerStep: 6 } } }),
+  ]);
+  const updated = await boards.update("org_1", "jrb_1", {
+    pricing: { step: { weightPoints: { heavy: 8 } } },
+  });
+  const values = calls[1]?.values ?? {};
+  assert.deepEqual(values["pricing"], {
+    step: { pointsPerStep: 6, weightPoints: { heavy: 8 } },
+  });
+  assert.deepEqual(values["selection"], {
+    ticketCap: 10,
+    unassignedOnly: true,
+  });
+  // The board the store hands back carries its pricing.
+  assert.deepEqual(updated?.pricing, { step: { pointsPerStep: 6 } });
+});
+
+test("a selection update leaves the pricing alone, and a null column reads as empty", async () => {
+  const { store: boards, calls } = store([
+    boardRow({ pricing: null as unknown as Record<string, never> }),
+  ]);
+  const updated = await boards.update("org_1", "jrb_1", {
+    selection: { ticketCap: 3 },
+  });
+  assert.equal(calls[1]?.values?.["pricing"], null);
+  assert.deepEqual(updated?.pricing, {});
+
+  // A pricing update over a null column starts from no overrides.
+  const fresh = store([
+    boardRow({ pricing: null as unknown as Record<string, never> }),
+  ]);
+  await fresh.store.update("org_1", "jrb_1", {
+    pricing: { step: { pointsPerStep: 2 } },
+  });
+  assert.deepEqual(fresh.calls[1]?.values?.["pricing"], {
+    step: { pointsPerStep: 2 },
+  });
 });

@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { renderGherkin, SCENARIO_KINDS, SPEC_LIMITS } from "sandbox-factory";
+import {
+  renderGherkin,
+  SCENARIO_KINDS,
+  SCENARIO_WEIGHTS,
+  SPEC_LIMITS,
+  WEIGHT_REASON_CHARS,
+} from "sandbox-factory";
 import { specDraftSchema } from "@sandbox-factory/shared";
 import { z } from "zod";
 
@@ -34,6 +40,8 @@ function scenario(overrides: Record<string, unknown> = {}) {
       { keyword: "When", text: "the analyst presses Export" },
       { keyword: "Then", text: "a CSV file with three rows is downloaded" },
     ],
+    weight: "moderate",
+    weightReason: "a new export endpoint",
     ...overrides,
   };
 }
@@ -188,6 +196,11 @@ test("a size result that is wrong says which field", () => {
       "complexity must be one of: XS, S, M, L, XL, unsized.",
     ],
     [
+      // A half size is where the step lands, never the model's answer.
+      { complexity: "S+", confidence: "high", rationale: "r" },
+      "complexity must be one of: XS, S, M, L, XL, unsized.",
+    ],
+    [
       { complexity: "M", confidence: "high", rationale: "   " },
       "rationale must be at least 1 character.",
     ],
@@ -207,8 +220,9 @@ test("a size result that is wrong says which field", () => {
 test("the draft tool's prompt names every kind and its own limits", () => {
   assert.equal(draftSpecTool.name, "draft_spec");
   assert.equal(draftSpecTool.promptVersion, DRAFT_SPEC_PROMPT_VERSION);
-  for (const kind of SCENARIO_KINDS) {
-    assert.ok(draftSpecTool.system.includes(`- ${kind}: `), kind);
+  assert.equal(draftSpecTool.promptVersion, "draft-v2");
+  for (const id of [...SCENARIO_KINDS, ...SCENARIO_WEIGHTS]) {
+    assert.ok(draftSpecTool.system.includes(`- ${id}: `), id);
   }
   assert.ok(
     draftSpecTool.system.includes(
@@ -242,10 +256,13 @@ test("the draft schema caps a draft, and renders for a strict provider", () => {
     SPEC_LIMITS.draftScenarios,
   );
   // The model gives neither ids nor origins: both are assigned on parse.
+  // It does give a weight, and a reason for it.
   assert.deepEqual(schema.properties.scenarios.items.required, [
     "kind",
     "title",
     "steps",
+    "weight",
+    "weightReason",
   ]);
   assert.deepEqual(schema.required, [
     "feature",
@@ -259,6 +276,53 @@ test("the draft schema caps a draft, and renders for a strict provider", () => {
   assert.doesNotMatch(strict, /minLength|maxLength|minItems|maxItems/);
   assert.match(strict, /At most 12 items\./);
   assert.match(strict, /"enum":\["happy","boundary","unhappy"/);
+  assert.match(strict, /"enum":\["light","moderate","heavy"\]/);
+});
+
+test("a scenario keeps the model's weight and its reason, cleaned and cut", () => {
+  const parsed = draftSpecTool.parse(
+    output({
+      scenarios: [
+        scenario({
+          weight: "heavy",
+          weightReason: `  a new\njob ${"w".repeat(200)}`,
+        }),
+        scenario({ title: "No reason", weight: "light", weightReason: "  " }),
+        scenario({ title: "Reason left out", weightReason: undefined }),
+      ],
+    }),
+  );
+  assert.equal(parsed.ok, true);
+  if (!parsed.ok) return;
+  const [heavy, light, moderate] = parsed.value.scenarios;
+  assert.equal(heavy?.weight, "heavy");
+  assert.equal(heavy?.weightReason?.length, WEIGHT_REASON_CHARS);
+  assert.ok(heavy?.weightReason?.startsWith("a new job w"));
+  // A reason is a courtesy: an empty or missing one is dropped, not retried.
+  assert.equal(light?.weight, "light");
+  assert.equal(light !== undefined && "weightReason" in light, false);
+  assert.equal(moderate?.weight, "moderate");
+  assert.equal(moderate !== undefined && "weightReason" in moderate, false);
+  assert.deepEqual(specDraftSchema.parse(parsed.value), parsed.value);
+});
+
+test("a scenario without a weight is retried, naming the field", () => {
+  assert.equal(
+    problemOf(
+      draftSpecTool.parse(
+        output({ scenarios: [scenario({ weight: undefined })] }),
+      ),
+    ),
+    "scenarios.0.weight must be one of: light, moderate, heavy.",
+  );
+  assert.equal(
+    problemOf(
+      draftSpecTool.parse(
+        output({ scenarios: [scenario({ weight: "huge" })] }),
+      ),
+    ),
+    "scenarios.0.weight must be one of: light, moderate, heavy.",
+  );
 });
 
 test("a draft is stored with ids and origins the model did not choose", () => {

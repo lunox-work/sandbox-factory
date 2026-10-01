@@ -13,12 +13,19 @@ import {
   JiraAuthError,
   type JiraIssueSpec,
 } from "@sandbox-factory/jira";
-import type { JiraIssueDto, JiraIssuePageDto } from "@sandbox-factory/shared";
+import {
+  boardPricingSchema,
+  type JiraIssueDto,
+  type JiraIssuePageDto,
+} from "@sandbox-factory/shared";
 import {
   priceFor,
+  resolveStepSettings,
+  stepUp,
   type BountyRunOutcome,
   type BountySizingResult,
   type CategoryMatch,
+  type StepSettings,
 } from "sandbox-factory";
 
 import {
@@ -261,6 +268,17 @@ export class BountyExecutor {
       );
       if (planned === null) return;
 
+      /*
+        How the board counts scenario weight, read once for the run. Every
+        step this run writes is zero, since a fresh draft has added
+        nothing, but it is written with the settings that will count what
+        a reviewer adds to it.
+      */
+      const pricing = boardPricingSchema.safeParse(registered.board.pricing);
+      const stepSettings = resolveStepSettings(
+        pricing.success ? pricing.data.step : {},
+      );
+
       const outcomes: BountyRunOutcome[] = [];
       let nextIndex = 0;
       let fatalCode: string | undefined;
@@ -281,6 +299,7 @@ export class BountyExecutor {
             candidate,
             clientResult.client,
             controller.signal,
+            stepSettings,
           );
           if (outcome.fatalCode !== undefined) {
             // The first fatal code is the cause. Aborting the controller
@@ -342,6 +361,7 @@ export class BountyExecutor {
     candidate: RunCandidate,
     client: RunJiraClient,
     signal: AbortSignal,
+    stepSettings: StepSettings,
   ): Promise<{ value?: BountyRunOutcome; fatalCode?: string }> {
     const base = {
       externalIssueId: candidate.id,
@@ -498,7 +518,20 @@ export class BountyExecutor {
       };
     }
 
-    const amountMinor = priceFor(sizing.complexity, run.rateCard);
+    /*
+      The step, against the draft the size was made beside. Both are fresh,
+      so it is always zero; it is written so a proposal has one shape to
+      read, and so a later change to the spec has a step to move. None for
+      an unsized ticket, which has no base, or one with no draft.
+    */
+    const step =
+      drafted === undefined || sizing.complexity === "unsized"
+        ? null
+        : stepUp(sizing.complexity, drafted.draft, drafted.draft, stepSettings);
+    const amountMinor = priceFor(
+      step?.complexity ?? sizing.complexity,
+      run.rateCard,
+    );
     const input = {
       runId: run.id,
       jiraIssueId: pointer.id,
@@ -511,6 +544,7 @@ export class BountyExecutor {
       promptVersion: run.promptVersion,
       amountMinor,
       currency: amountMinor === null ? null : run.rateCard.currency,
+      step,
       ...(drafted === undefined ? {} : { spec: drafted }),
     };
     const created =

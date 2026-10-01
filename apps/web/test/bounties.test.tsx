@@ -2641,6 +2641,248 @@ test("a proposal sized before specs has an uncounted tab saying so, without aski
   expect(server.specReads()).toEqual([]);
 });
 
+/** A step of S → S+: a heavy and a light scenario added since sizing. */
+const step = {
+  base: "S",
+  complexity: "S+",
+  steps: 1,
+  addedPoints: 5,
+  added: [
+    {
+      id: "s3",
+      kind: "recovery",
+      title: "A failed export is retried",
+      weight: "heavy",
+    },
+    { id: "s4", kind: "boundary", title: "An empty table", weight: "light" },
+  ],
+  nextStepIn: 3,
+  settings: {
+    pointsPerStep: 4,
+    weightPoints: { light: 1, moderate: 2, heavy: 4 },
+  },
+  stepVersion: "step-v1",
+};
+
+/**
+ * A board of two proposals: one whose spec grew a step since it was sized,
+ * one sized before scenarios were weighed. Answers a resize as the server
+ * would, the step rebased on the reviewer's size.
+ */
+function steppedBoard() {
+  const posts: { url: string; body: unknown }[] = [];
+  const rows: Record<string, Record<string, unknown>> = {
+    bpr_1: {
+      id: "bpr_1",
+      issueKey: "APP-1",
+      modelRationale: "One form and its validation.",
+      complexity: "S+",
+      amountMinor: 8150,
+      currency: "USD",
+      modelComplexity: "S",
+      modelConfidence: "high",
+      actualModel: "claude-sonnet-5",
+      status: "proposed",
+      sizedBy: "model",
+      revision: 1,
+      specRevision: 2,
+      step,
+      sizedTitle: "Ticket 1",
+      categories: [],
+    },
+    bpr_2: {
+      id: "bpr_2",
+      issueKey: "APP-2",
+      modelRationale: "A few files.",
+      complexity: "M",
+      amountMinor: 10500,
+      currency: "USD",
+      modelComplexity: "M",
+      modelConfidence: "high",
+      actualModel: "claude-sonnet-5",
+      status: "proposed",
+      sizedBy: "model",
+      revision: 1,
+      specRevision: null,
+      step: null,
+      sizedTitle: "Ticket 2",
+      categories: [],
+    },
+  };
+  const fetchMock = vi.fn((input: string, init?: RequestInit) => {
+    const url = String(input);
+    if (init?.method === "POST") {
+      const body = JSON.parse(String(init.body)) as { complexity: string };
+      posts.push({ url, body });
+      const resized = {
+        ...rows["bpr_1"],
+        complexity: "M+",
+        amountMinor: 12900,
+        sizedBy: "reviewer",
+        revision: 2,
+        step: { ...step, base: body.complexity, complexity: "M+" },
+      };
+      rows["bpr_1"] = resized;
+      return Promise.resolve(Response.json({ proposal: resized }));
+    }
+    if (url.includes("/proposal-titles?")) {
+      return Promise.resolve(new Response(""));
+    }
+    if (url.includes("/runs")) {
+      return Promise.resolve(
+        Response.json({ runs: [], sizingAvailable: true }),
+      );
+    }
+    if (/\/spec$/.test(url)) {
+      return Promise.resolve(Response.json({ spec: null }));
+    }
+    const id = /proposals\/(bpr_\d+)/.exec(url)?.[1];
+    if (id !== undefined) {
+      return Promise.resolve(
+        Response.json({
+          proposal: rows[id],
+          freshness: { freshness: "current", checkedAt: "now" },
+          writebackOperations: [],
+        }),
+      );
+    }
+    if (url.includes("/proposal-categories")) {
+      return Promise.resolve(new Response("", { status: 500 }));
+    }
+    return Promise.resolve(
+      Response.json({
+        proposals: [rows["bpr_1"], rows["bpr_2"]],
+        nextCursor: null,
+      }),
+    );
+  });
+  return { fetchMock, posts };
+}
+
+test("a half size shows on its whole size's card, and the row stays at five", async () => {
+  const server = steppedBoard();
+  vi.stubGlobal("fetch", server.fetchMock);
+  renderStreamedBoard();
+  const list = await screen.findByTestId("proposal-list");
+  await userEvent.click(within(list).getByRole("button", { name: /Ticket 1/ }));
+  const panel = await screen.findByTestId("proposal-panel");
+  const resize = await within(panel).findByRole("group", { name: "Resize" });
+
+  // S+ is the S card, reading "S+": no card of its own, no "+" elsewhere.
+  expect(
+    within(resize)
+      .getAllByRole("button")
+      .map((button) => button.textContent),
+  ).toEqual(["XS", "S+", "M", "L", "XL"]);
+  // It is the size in force, and the whole size the step stands on.
+  const base = within(resize).getByRole("button", { name: "S+" });
+  expect(base.getAttribute("aria-pressed")).toBe("true");
+  expect((base as HTMLButtonElement).disabled).toBe(true);
+  expect(within(panel).getByText(money(8150, "USD"))).toBeDefined();
+});
+
+test("the step says how the added weight moved the size, and what the next step needs", async () => {
+  const server = steppedBoard();
+  vi.stubGlobal("fetch", server.fetchMock);
+  renderStreamedBoard();
+  const list = await screen.findByTestId("proposal-list");
+  await userEvent.click(within(list).getByRole("button", { name: /Ticket 1/ }));
+  const panel = await screen.findByTestId("proposal-panel");
+
+  const block = await within(panel).findByTestId("proposal-step");
+  expect(block.querySelector("p + p")?.textContent).toBe(
+    "S → S+: 5 points added since it was sized (1 heavy, 1 light). M needs 3 more.",
+  );
+  expect(
+    within(block)
+      .getAllByRole("listitem")
+      .map((item) => item.textContent),
+  ).toEqual([
+    "A failed export is retriedHeavy· 4 pts",
+    "An empty tableLight· 1 pt",
+  ]);
+  // A weighed size needs no nudge.
+  expect(within(panel).queryByTestId("proposal-unweighed")).toBeNull();
+  // The model's own reasoning still comes first.
+  expect(within(panel).getByText("One form and its validation.")).toBeDefined();
+
+  // And it heads the Scenarios tab, with the size the model gave.
+  await userEvent.click(within(panel).getByRole("tab", { name: /^Scenarios/ }));
+  const reason = within(panel).getByRole("region", { name: "Why this size" });
+  expect(reason.querySelector("p")?.textContent).toBe("Sized S by the model");
+});
+
+test("a resize sets the base, and the step stays on top", async () => {
+  const server = steppedBoard();
+  vi.stubGlobal("fetch", server.fetchMock);
+  renderStreamedBoard();
+  const list = await screen.findByTestId("proposal-list");
+  await userEvent.click(within(list).getByRole("button", { name: /Ticket 1/ }));
+  const panel = await screen.findByTestId("proposal-panel");
+  const resize = await within(panel).findByRole("group", { name: "Resize" });
+
+  await userEvent.click(within(resize).getByRole("button", { name: "M" }));
+  expect(server.posts).toEqual([
+    {
+      url: "/api/v1/orgs/org_1/proposals/bpr_1/resize",
+      body: { expectedRevision: 1, complexity: "M" },
+    },
+  ]);
+  // M, then the heavy and the light on top of it: the M card reads M+,
+  // and S is back to a plain S.
+  await waitFor(() =>
+    expect(
+      within(resize)
+        .getAllByRole("button")
+        .map((button) => button.textContent),
+    ).toEqual(["XS", "S", "M+", "L", "XL"]),
+  );
+  expect(
+    within(resize)
+      .getByRole("button", { name: "M+" })
+      .getAttribute("aria-pressed"),
+  ).toBe("true");
+  expect(within(panel).getByText("the model said S")).toBeDefined();
+  expect(within(panel).getByText("M set by a reviewer")).toBeDefined();
+  expect(within(panel).getByTestId("proposal-step").textContent).toMatch(
+    /^Added to the specM → M\+: /,
+  );
+
+  // The Scenarios tab leads with the override, and keeps what the model
+  // said and why.
+  await userEvent.click(within(panel).getByRole("tab", { name: /^Scenarios/ }));
+  const reason = within(panel).getByRole("region", { name: "Why this size" });
+  expect(
+    [...reason.querySelectorAll("p")].map((line) => line.textContent),
+  ).toEqual([
+    "Overridden to M by a reviewer",
+    "The model sized it S:",
+    "One form and its validation.",
+  ]);
+});
+
+test("a size with no weighed scenarios is marked on its row and explained in the peek", async () => {
+  const server = steppedBoard();
+  vi.stubGlobal("fetch", server.fetchMock);
+  renderStreamedBoard();
+  const list = await screen.findByTestId("proposal-list");
+
+  const rows = within(list).getAllByRole("button");
+  const marked = rows.map(
+    (row) => row.querySelector("[data-unweighed]")?.textContent ?? null,
+  );
+  expect(marked).toEqual([null, "M"]);
+
+  await userEvent.click(within(list).getByRole("button", { name: /Ticket 2/ }));
+  const panel = await screen.findByTestId("proposal-panel");
+  expect(
+    (await within(panel).findByTestId("proposal-unweighed")).textContent,
+  ).toBe(
+    "This size has no weighed scenarios, so a scenario added later cannot move it. Re-analyze drafts and weighs them.",
+  );
+  expect(within(panel).queryByTestId("proposal-step")).toBeNull();
+});
+
 test("a proposal for a hand-picked ticket shows no reason in the peek", async () => {
   const server = pagedBoard(1);
   vi.stubGlobal("fetch", server.fetchMock);

@@ -22,7 +22,11 @@
  * error.
  */
 
-import { CATEGORIES } from "sandbox-factory";
+import {
+  CATEGORIES,
+  SCENARIO_WEIGHTS,
+  STEP_SETTING_LIMITS,
+} from "sandbox-factory";
 import { z } from "zod";
 
 /**
@@ -552,6 +556,62 @@ export const boardSelectionSchema = z.object({
   categories: categoriesSchema("stored").default({}),
 });
 
+/* -------------------------------------------------------------------------- */
+/* How a board prices what a run sizes                                        */
+/* -------------------------------------------------------------------------- */
+
+const pointsPerStepSchema = z
+  .number()
+  .int()
+  .min(STEP_SETTING_LIMITS.minPointsPerStep)
+  .max(STEP_SETTING_LIMITS.maxPoints);
+const weightPointsSchema = z
+  .number()
+  .int()
+  .min(STEP_SETTING_LIMITS.minWeightPoints)
+  .max(STEP_SETTING_LIMITS.maxPoints);
+
+/**
+ * A board's overrides of the scenario step (`pricing/step` in core): the
+ * points per half step, and what each weight counts for.
+ *
+ * Read as `categoriesSchema` reads categories. **Stored**, an unknown or
+ * out-of-range key is dropped, so a board saved against an older rubric
+ * keeps pricing. An **update** is strict, so a misspelt weight is refused
+ * rather than silently not saved, and `null` clears an override back to
+ * the default.
+ */
+function stepSchema(mode: "stored" | "update") {
+  const strict = mode === "update";
+  const shape = <T extends z.ZodRawShape>(fields: T) =>
+    strict ? z.strictObject(fields) : z.object(fields);
+  const setting = <T extends z.ZodType>(schema: T) =>
+    strict ? schema.nullable().optional() : schema.optional().catch(undefined);
+  const weightPoints = shape(
+    Object.fromEntries(
+      SCENARIO_WEIGHTS.map((weight) => [weight, setting(weightPointsSchema)]),
+    ),
+  ).optional();
+  return shape({
+    pointsPerStep: setting(pointsPerStepSchema),
+    weightPoints: strict ? weightPoints : weightPoints.catch(undefined),
+  });
+}
+
+/**
+ * The pricing settings stored on a board. Every field has a default, as
+ * the selection's do, and the whole object defaults to `{}`.
+ */
+export const boardPricingSchema = z.object({
+  /** The scenario step. Empty means every default. */
+  step: stepSchema("stored").default({}).catch({}),
+});
+
+/** A pricing update, merged setting by setting like a selection update. */
+export const boardPricingUpdateSchema = z.object({
+  step: stepSchema("update").optional(),
+});
+
 /** A board as the UI lists it. */
 export const jiraBoardSummarySchema = z.object({
   id: z.string(),
@@ -561,6 +621,8 @@ export const jiraBoardSummarySchema = z.object({
   boardType: z.string(),
   projectKey: z.string().nullable(),
   selection: boardSelectionSchema,
+  /** Defaulted, so a response from before board pricing still parses. */
+  pricing: boardPricingSchema.default({ step: {} }),
   createdAt: z.iso.datetime(),
 });
 
@@ -597,17 +659,27 @@ export const boardSelectionUpdateSchema = z.object({
 });
 
 /**
- * Body for editing a board: its selection settings.
+ * Body for editing a board: its selection settings, its pricing settings,
+ * or both. At least one, so an empty body is refused rather than read as a
+ * save that changed nothing.
  *
  * Nothing else is a board's to set. Whether approvals post back to Jira is
  * the site's grant, asked for when the site is connected, not a switch here.
  */
-export const updateBoardSchema = z.object({
-  selection: boardSelectionUpdateSchema,
-});
+export const updateBoardSchema = z
+  .object({
+    selection: boardSelectionUpdateSchema.optional(),
+    pricing: boardPricingUpdateSchema.optional(),
+  })
+  .refine(
+    (body) => body.selection !== undefined || body.pricing !== undefined,
+    { message: "Provide selection or pricing settings." },
+  );
 
 export type BoardSelection = z.infer<typeof boardSelectionSchema>;
 export type BoardSelectionUpdate = z.infer<typeof boardSelectionUpdateSchema>;
+export type BoardPricing = z.infer<typeof boardPricingSchema>;
+export type BoardPricingUpdate = z.infer<typeof boardPricingUpdateSchema>;
 export type JiraBoardSummaryDto = z.infer<typeof jiraBoardSummarySchema>;
 export type RegisterBoardInput = z.infer<typeof registerBoardSchema>;
 export type UpdateBoardInput = z.infer<typeof updateBoardSchema>;

@@ -2,9 +2,11 @@ import type {
   BountyComplexity,
   BountySizingResult,
   CategoryMatch,
+  ModelComplexity,
   RateCardSnapshot,
   PricedComplexity,
   SizingConfidence,
+  StepResult,
 } from "sandbox-factory";
 import { and, desc, eq, gt, inArray, lt, or, sql } from "drizzle-orm";
 
@@ -42,6 +44,12 @@ export interface CreateBountyProposalInput {
   readonly promptVersion: string;
   readonly amountMinor: number | null;
   readonly currency: string | null;
+  /**
+   * The scenario step, when the size has one. The proposal's `complexity`
+   * is then the step's, and `amountMinor` must be its price; without one
+   * it is the model's own size.
+   */
+  readonly step?: StepResult | null;
 }
 
 /**
@@ -170,6 +178,12 @@ export interface BountyProposalStore {
     proposalId: string,
     expectedRevision: number,
   ): Promise<ProposalMutationResult>;
+  /**
+   * A reviewer's size. `complexity` and `amountMinor` are what it comes to:
+   * the reviewer's own size, or, when `step` is given (the proposal's step
+   * rebased on that size), the step's. Without `step` the proposal is left
+   * with none.
+   */
   resize(
     organizationId: string,
     proposalId: string,
@@ -178,6 +192,7 @@ export interface BountyProposalStore {
     complexity: PricedComplexity,
     amountMinor: number,
     currency: string,
+    step?: StepResult | null,
   ): Promise<ProposalMutationResult>;
   /**
    * Deletes a proposed proposal, so the ticket has none and a later run may
@@ -227,7 +242,7 @@ export interface StoredBountyProposal {
   readonly specHash: string;
   readonly specHashVersion: number;
   readonly rateCard: RateCardSnapshot;
-  readonly modelComplexity: BountyComplexity;
+  readonly modelComplexity: ModelComplexity;
   readonly modelConfidence: SizingConfidence;
   readonly modelRationale: string;
   readonly unsizedReason: string | null;
@@ -244,6 +259,8 @@ export interface StoredBountyProposal {
   readonly revision: number;
   /** The spec revision this size goes with, or null when there is none. */
   readonly specRevision: number | null;
+  /** How the spec's added weight moved the size, or null when nothing could. */
+  readonly step: StepResult | null;
   readonly decidedAt: string | null;
   readonly decidedBy: string | null;
   readonly decisionDeliveryPolicy: "off" | "requested" | null;
@@ -264,7 +281,7 @@ function toDto(row: BountyProposalRow, issueKey: string): StoredBountyProposal {
       ...row.rateCard,
       xsMinor: row.rateCard.xsMinor ?? row.rateCard.sMinor,
     },
-    modelComplexity: row.modelComplexity as BountyComplexity,
+    modelComplexity: row.modelComplexity as ModelComplexity,
     modelConfidence: row.modelConfidence as SizingConfidence,
     modelRationale: row.modelRationale,
     unsizedReason: row.unsizedReason,
@@ -280,6 +297,7 @@ function toDto(row: BountyProposalRow, issueKey: string): StoredBountyProposal {
     status: row.status as StoredBountyProposal["status"],
     revision: row.revision,
     specRevision: row.specRevision,
+    step: row.step ?? null,
     decidedAt: row.decidedAt?.toISOString() ?? null,
     decidedBy: row.decidedBy,
     decisionDeliveryPolicy:
@@ -344,7 +362,9 @@ function insertValues(
     inputTruncated: input.inputTruncated,
     actualModel: input.actualModel,
     promptVersion: input.promptVersion,
-    complexity: input.sizing.complexity,
+    complexity: input.step?.complexity ?? input.sizing.complexity,
+    step: input.step ?? null,
+    stepVersion: input.step?.stepVersion ?? null,
     amountMinor: input.amountMinor,
     currency: input.currency,
   };
@@ -730,12 +750,15 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
       complexity,
       amountMinor,
       currency,
+      step = null,
     ) {
       const now = new Date();
       const rows = (await db
         .update(bountyProposal)
         .set({
           complexity,
+          step,
+          stepVersion: step?.stepVersion ?? null,
           sizedBy: "reviewer",
           resizedBy,
           resizedAt: now,
@@ -891,6 +914,8 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
             actualModel: values.actualModel,
             promptVersion: values.promptVersion,
             complexity: values.complexity,
+            step: values.step,
+            stepVersion: values.stepVersion,
             sizedBy: "model",
             resizedBy: null,
             resizedAt: null,

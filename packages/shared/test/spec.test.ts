@@ -3,6 +3,8 @@ import { test } from "node:test";
 
 import { SPEC_LIMITS } from "sandbox-factory";
 
+import { WEIGHT_REASON_CHARS } from "sandbox-factory";
+
 import {
   bountySpecDtoSchema,
   bountySpecRevisionDtoSchema,
@@ -58,6 +60,25 @@ test("kinds, keywords and origins are closed sets", () => {
     { ...scenario, kind: "sad" },
     { ...scenario, origin: "model" },
     { ...scenario, steps: [{ keyword: "Whenever", text: "it rains" }] },
+  ]) {
+    assert.equal(scenarioSchema.safeParse(bad).success, false);
+  }
+});
+
+test("a weight is optional, so a spec drafted before weights still reads", () => {
+  // `draft-v1` rows carry no weight at all.
+  assert.deepEqual(scenarioSchema.parse(scenario), scenario);
+  const weighed = {
+    ...scenario,
+    weight: "heavy",
+    weightReason: "a new delivery job",
+  };
+  assert.deepEqual(scenarioSchema.parse(weighed), weighed);
+  for (const bad of [
+    { ...scenario, weight: "huge" },
+    { ...weighed, weightReason: "" },
+    { ...weighed, weightReason: "two\nlines" },
+    { ...weighed, weightReason: "x".repeat(WEIGHT_REASON_CHARS + 1) },
   ]) {
     assert.equal(scenarioSchema.safeParse(bad).success, false);
   }

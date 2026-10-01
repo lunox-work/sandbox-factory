@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { getTableConfig } from "drizzle-orm/pg-core";
+import { getTableConfig, type PgTable } from "drizzle-orm/pg-core";
+import {
+  BOUNTY_COMPLEXITIES,
+  MODEL_BOUNTY_COMPLEXITIES,
+} from "sandbox-factory";
 
 import {
   BOUNTY_SPEC_ORIGINS,
@@ -103,6 +107,47 @@ test("a proposal's spec pointer is optional and positive", () => {
     config.checks.some(
       ({ name }) => name === "bounty_proposal_spec_revision_check",
     ),
+  );
+});
+
+/** The quoted values a check constraint lists, in order. */
+function checkValues(table: PgTable, name: string): string[] {
+  const check = getTableConfig(table).checks.find(
+    (candidate) => candidate.name === name,
+  );
+  assert.ok(check !== undefined, name);
+  const text = check.value.queryChunks
+    .map((chunk) =>
+      typeof chunk === "object" &&
+      chunk !== null &&
+      "value" in chunk &&
+      Array.isArray(chunk.value)
+        ? chunk.value.join("")
+        : "",
+    )
+    .join("");
+  return [...text.matchAll(/'([^']+)'/g)].map((match) => match[1] ?? "");
+}
+
+test("the size checks are the core enums: half sizes for the price, never for the model", () => {
+  assert.deepEqual(
+    checkValues(bountyProposal, "bounty_proposal_complexity_check"),
+    [...BOUNTY_COMPLEXITIES],
+  );
+  assert.deepEqual(
+    checkValues(bountyProposal, "bounty_proposal_model_complexity_check"),
+    [...MODEL_BOUNTY_COMPLEXITIES],
+  );
+});
+
+test("a proposal's step is optional, and its version goes with it", () => {
+  const config = getTableConfig(bountyProposal);
+  for (const name of ["step", "step_version"]) {
+    const column = config.columns.find((candidate) => candidate.name === name);
+    assert.equal(column?.notNull, false, name);
+  }
+  assert.ok(
+    config.checks.some(({ name }) => name === "bounty_proposal_step_check"),
   );
 });
 

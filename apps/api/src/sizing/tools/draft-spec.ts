@@ -1,8 +1,11 @@
 import {
   SCENARIO_KIND_DEFINITIONS,
   SCENARIO_KINDS,
+  SCENARIO_WEIGHT_DEFINITIONS,
+  SCENARIO_WEIGHTS,
   SPEC_LIMITS,
   STEP_KEYWORDS,
+  WEIGHT_REASON_CHARS,
   type SpecDraft,
 } from "sandbox-factory";
 import { specDraftSchema } from "@sandbox-factory/shared";
@@ -20,7 +23,11 @@ export interface DraftInput {
   readonly labels: readonly string[];
 }
 
-export const DRAFT_SPEC_PROMPT_VERSION = "draft-v1";
+/**
+ * `draft-v2` weighs every scenario. A spec stored under `draft-v1` has no
+ * weights, and so no scenario step until its proposal is re-priced.
+ */
+export const DRAFT_SPEC_PROMPT_VERSION = "draft-v2";
 
 export const DRAFT_SPEC_SYSTEM_PROMPT = `You turn one Jira ticket into a behaviour specification: Gherkin scenarios that a reviewer reads before the work is priced, and that someone later builds against.
 
@@ -29,6 +36,9 @@ You see only the ticket the application supplies: its summary, description, issu
 Scenario kinds:
 ${SCENARIO_KIND_DEFINITIONS.map(({ id, covers }) => `- ${id}: ${covers}.`).join("\n")}
 
+Scenario weights, for how much work a scenario adds on top of what the ticket's other scenarios already need:
+${SCENARIO_WEIGHT_DEFINITIONS.map(({ id, covers }) => `- ${id}: ${covers}.`).join("\n")}
+
 What to write:
 - Be exhaustive over behaviour, not over wording. Cover every kind that applies to this ticket, and write a further scenario of a kind only when it describes a different behaviour. At most ${SPEC_LIMITS.draftScenarios} scenarios.
 - Leave out a kind that plainly does not apply. When the ticket does not say enough to tell whether a kind applies, ask that as an open question instead of inventing the scenario.
@@ -36,6 +46,7 @@ What to write:
 - background holds the state every scenario starts from, as Given steps written like any other step but without the keyword. It is not a place for the ticket's requirements. Leave it empty when the scenarios share no starting state.
 - openQuestions are what the ticket leaves undecided that would change a scenario depending on the answer, each written as a full question that its author could answer in a sentence. Do not ask how the work will be carried out, and do not ask what a scenario already assumes. A clear ticket has none, and few tickets need more than three.
 - assumptions are the decisions a scenario rests on where the ticket was silent, each a full sentence, and only those a reviewer might disagree with.
+- Give every scenario a weight, judged from the behaviour it describes as you cannot see the code, and a weightReason: one short phrase naming what makes it that weight, such as "a new retry job" or "one more check on the same form". Weigh the main happy path by the core work the ticket asks for.
 - A ticket that describes no behaviour at all gets no scenarios, and open questions saying what is missing.
 
 Write in your own words. Do not quote the ticket. Do not carry over a person's name, a customer's name, a URL, a hostname, an email address, a credential or a token that appears in it: name the role or the thing instead, such as "a recruiter" or "the payments provider".
@@ -89,6 +100,15 @@ const draftOutputSchema = z.object({
           )
           .min(1)
           .transform((steps) => steps.slice(0, SPEC_LIMITS.steps)),
+        weight: z.enum(SCENARIO_WEIGHTS),
+        // The reason is a courtesy to the reader, not part of the price: a
+        // missing or empty one is dropped rather than retried for.
+        weightReason: z
+          .string()
+          .optional()
+          .transform((value) =>
+            value === undefined ? "" : clean(WEIGHT_REASON_CHARS)(value),
+          ),
       }),
     )
     .transform((scenarios) => scenarios.slice(0, SPEC_LIMITS.draftScenarios)),
@@ -104,7 +124,8 @@ const line = (maxLength: number, description?: string) => ({
 });
 
 /**
- * The first link of the pricing chain: the ticket's behaviour as scenarios.
+ * The first link of the pricing chain: the ticket's behaviour as scenarios,
+ * each with the weight of the work it adds.
  *
  * The model returns neither scenario ids nor origins. Both are facts about
  * the stored spec, so they are assigned here: `s1` onwards in the order
@@ -154,8 +175,17 @@ export const draftSpecTool: StructuredCall<DraftInput, SpecDraft> = {
                 required: ["keyword", "text"],
               },
             },
+            weight: {
+              enum: [...SCENARIO_WEIGHTS],
+              description:
+                "How much work the scenario adds on top of the others.",
+            },
+            weightReason: line(
+              WEIGHT_REASON_CHARS,
+              "What makes it that weight, in one short phrase.",
+            ),
           },
-          required: ["kind", "title", "steps"],
+          required: ["kind", "title", "steps", "weight", "weightReason"],
         },
       },
       openQuestions: {
@@ -191,11 +221,14 @@ export const draftSpecTool: StructuredCall<DraftInput, SpecDraft> = {
     }
     const draft = specDraftSchema.safeParse({
       ...output.data,
-      scenarios: output.data.scenarios.map((scenario, index) => ({
-        id: `s${index + 1}`,
-        ...scenario,
-        origin: "draft",
-      })),
+      scenarios: output.data.scenarios.map(
+        ({ weightReason, ...scenario }, index) => ({
+          id: `s${index + 1}`,
+          ...scenario,
+          origin: "draft",
+          ...(weightReason === "" ? {} : { weightReason }),
+        }),
+      ),
     });
     return draft.success
       ? { ok: true, value: draft.data }

@@ -1,8 +1,10 @@
 import {
   SCENARIO_KINDS,
   SCENARIO_ORIGINS,
+  SCENARIO_WEIGHTS,
   SPEC_LIMITS,
   STEP_KEYWORDS,
+  WEIGHT_REASON_CHARS,
 } from "sandbox-factory";
 import { z } from "zod";
 
@@ -26,6 +28,7 @@ const oneLine = (maxChars: number) =>
 export const scenarioKindSchema = z.enum(SCENARIO_KINDS);
 export const stepKeywordSchema = z.enum(STEP_KEYWORDS);
 export const scenarioOriginSchema = z.enum(SCENARIO_ORIGINS);
+export const scenarioWeightSchema = z.enum(SCENARIO_WEIGHTS);
 
 export const scenarioStepSchema = z.object({
   keyword: stepKeywordSchema,
@@ -39,6 +42,12 @@ export const scenarioSchema = z.object({
   title: oneLine(SPEC_LIMITS.titleChars),
   steps: z.array(scenarioStepSchema).min(1).max(SPEC_LIMITS.steps),
   origin: scenarioOriginSchema,
+  /**
+   * Optional so a spec drafted before weights (`draft-v1`) still reads.
+   * Every scenario a `draft-v2` call writes has one.
+   */
+  weight: scenarioWeightSchema.optional(),
+  weightReason: oneLine(WEIGHT_REASON_CHARS).optional(),
 });
 
 export const specDraftSchema = z
@@ -132,6 +141,7 @@ export const proposalSpecRevisionsResponseSchema = z.object({
   revisions: z.array(bountySpecRevisionDtoSchema),
 });
 
+export type ScenarioWeightDto = z.infer<typeof scenarioWeightSchema>;
 export type ScenarioStepDto = z.infer<typeof scenarioStepSchema>;
 export type ScenarioDto = z.infer<typeof scenarioSchema>;
 export type SpecDraftDto = z.infer<typeof specDraftSchema>;

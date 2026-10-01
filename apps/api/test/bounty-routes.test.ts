@@ -12,7 +12,7 @@ import type {
 
 import { JiraApiError } from "@sandbox-factory/jira";
 import type { JiraIssueDto } from "@sandbox-factory/shared";
-import { DEFAULT_RATE_CARD } from "sandbox-factory";
+import { DEFAULT_RATE_CARD, stepUp, type SpecDraft } from "sandbox-factory";
 
 import type { Auth } from "../src/auth.js";
 import type {
@@ -401,6 +401,7 @@ function reviewProposal(
     status: "proposed",
     revision: 1,
     specRevision: null,
+    step: null,
     decidedAt: null,
     decidedBy: null,
     decisionDeliveryPolicy: null,
@@ -410,8 +411,11 @@ function reviewProposal(
   };
 }
 
-function reviewHarness(hash = "a".repeat(64)) {
-  let current = reviewProposal();
+function reviewHarness(
+  hash = "a".repeat(64),
+  overrides: Partial<StoredBountyProposal> = {},
+) {
+  let current = reviewProposal(overrides);
   let specReads = 0;
   const proposals = {
     get: () => Promise.resolve(current),
@@ -434,13 +438,16 @@ function reviewHarness(hash = "a".repeat(64)) {
       _p: string,
       _r: number,
       _u: string,
-      complexity: "XS" | "S" | "M" | "L" | "XL",
+      complexity: StoredBountyProposal["complexity"],
       amountMinor: number,
+      _currency: string,
+      step: StoredBountyProposal["step"] = null,
     ) => {
       current = {
         ...current,
         complexity,
         amountMinor,
+        step,
         sizedBy: "reviewer",
         revision: 2,
       };
@@ -992,6 +999,76 @@ test("reviewers can resize a proposal to XS using its snapshot", async () => {
   assert.equal(response.status, 200);
   assert.equal(state.current().complexity, "XS");
   assert.equal(state.current().amountMinor, card.xsMinor);
+});
+
+test("a resize sets the base and the step stays on top", async () => {
+  // A spec that grew a heavy scenario after it was sized at M.
+  const sized: SpecDraft = {
+    feature: "Export",
+    background: [],
+    scenarios: [
+      {
+        id: "s1",
+        kind: "happy",
+        title: "Exported",
+        steps: [{ keyword: "Then", text: "a file is downloaded" }],
+        origin: "draft",
+        weight: "moderate",
+      },
+    ],
+    openQuestions: [],
+    assumptions: [],
+  };
+  const grown: SpecDraft = {
+    ...sized,
+    scenarios: [
+      ...sized.scenarios,
+      {
+        id: "s2",
+        kind: "recovery",
+        title: "Retried",
+        steps: [{ keyword: "Then", text: "the export runs again" }],
+        origin: "expansion",
+        weight: "heavy",
+      },
+    ],
+  };
+  const step = stepUp("M", sized, grown);
+  assert.ok(step !== null);
+  const state = reviewHarness(undefined, {
+    complexity: "M+",
+    amountMinor: 250,
+    step,
+  });
+  const response = await state.app.request(
+    "/api/v1/orgs/org_1/proposals/bpr_1/resize",
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ expectedRevision: 1, complexity: "S" }),
+    },
+  );
+  assert.equal(response.status, 200);
+  // The reviewer said S; the heavy scenario still counts, so S+, priced
+  // between S and M on the proposal's own card.
+  assert.equal(state.current().complexity, "S+");
+  assert.equal(state.current().amountMinor, 150);
+  assert.equal(state.current().step?.base, "S");
+  assert.equal(state.current().step?.addedPoints, 4);
+});
+
+test("a resize refuses a half size: those are only where a step lands", async () => {
+  const state = reviewHarness();
+  const response = await state.app.request(
+    "/api/v1/orgs/org_1/proposals/bpr_1/resize",
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ expectedRevision: 1, complexity: "S+" }),
+    },
+  );
+  assert.equal(response.status, 400);
+  assert.equal(state.current().complexity, "M");
 });
 
 function ticket(id: string, summary = `Ticket ${id}`): JiraIssueDto {

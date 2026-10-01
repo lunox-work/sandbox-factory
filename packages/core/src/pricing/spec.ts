@@ -16,6 +16,8 @@
  * `label` and `covers` are free to change.
  */
 
+import type { ScenarioWeight } from "./weight.js";
+
 export interface ScenarioKindDefinition {
   /** Stable, stored. Kebab-case. */
   readonly id: string;
@@ -93,6 +95,13 @@ export interface Scenario {
   readonly title: string;
   readonly steps: readonly ScenarioStep[];
   readonly origin: ScenarioOrigin;
+  /**
+   * How much work the scenario adds, in the drafting model's judgement
+   * (`weight.ts`). Absent on a spec drafted before weights (`draft-v1`).
+   */
+  readonly weight?: ScenarioWeight;
+  /** Why it weighs that, in one short phrase. */
+  readonly weightReason?: string;
 }
 
 export interface SpecDraft {

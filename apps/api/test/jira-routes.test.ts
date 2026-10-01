@@ -227,6 +227,7 @@ function fakeBoards(
       minSpecChars: 0,
       categories: {},
     },
+    pricing: {},
     createdAt: "2026-09-21T00:00:00.000Z",
     ...overrides,
   };
@@ -1507,6 +1508,41 @@ test("clearing maxAgeDays survives as a null rather than being dropped", async (
   });
 
   assert.deepEqual(boards.updates, [{ selection: { maxAgeDays: null } }]);
+});
+
+test("a board's pricing can be edited alone, and is passed on as sent", async () => {
+  const { app, boards } = appWith();
+  const pricing = {
+    step: { pointsPerStep: 6, weightPoints: { heavy: null, light: 0 } },
+  };
+
+  const response = await app.request("/api/v1/orgs/org_1/jira/boards/jrb_1", {
+    method: "PATCH",
+    headers: { ...signedIn, "content-type": "application/json" },
+    body: JSON.stringify({ pricing }),
+  });
+
+  assert.equal(response.status, 200);
+  // No selection key at all: the store leaves what is absent alone.
+  assert.deepEqual(boards.updates, [{ pricing }]);
+});
+
+test("a pricing setting that does not exist, or is out of range, is refused", async () => {
+  const { app, boards } = appWith();
+
+  for (const step of [
+    { pointsPerStep: 0 },
+    { weightPoints: { huge: 3 } },
+    { pointsPerHalfStep: 4 },
+  ]) {
+    const response = await app.request("/api/v1/orgs/org_1/jira/boards/jrb_1", {
+      method: "PATCH",
+      headers: { ...signedIn, "content-type": "application/json" },
+      body: JSON.stringify({ pricing: { step } }),
+    });
+    assert.equal(response.status, 400);
+  }
+  assert.deepEqual(boards.updates, []);
 });
 
 test("write-back is not a board setting", async () => {

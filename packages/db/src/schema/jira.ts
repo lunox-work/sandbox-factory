@@ -145,6 +145,12 @@ export const jiraBoard = pgTable(
      * migration.
      */
     selection: jsonb("selection").notNull().default({}),
+    /**
+     * How a run prices what it sizes; `boardPricingSchema` in
+     * `packages/shared` is the shape. The scenario step's overrides live
+     * here, as `step`.
+     */
+    pricing: jsonb("pricing").notNull().default({}),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

@@ -2,7 +2,38 @@
 
 import type { CategoryConfig, CategoryMatch } from "./selection/categories.js";
 
-export const PRICED_BOUNTY_COMPLEXITIES = ["XS", "S", "M", "L", "XL"] as const;
+/**
+ * The five sizes a ticket is judged in: the model's answer, and a
+ * reviewer's resize. The rate card has a row for each.
+ */
+export const WHOLE_BOUNTY_COMPLEXITIES = ["XS", "S", "M", "L", "XL"] as const;
+export type WholeComplexity = (typeof WHOLE_BOUNTY_COMPLEXITIES)[number];
+
+/** What the sizing model may answer: a whole size, or none. */
+export const MODEL_BOUNTY_COMPLEXITIES = [
+  ...WHOLE_BOUNTY_COMPLEXITIES,
+  "unsized",
+] as const;
+export type ModelComplexity = (typeof MODEL_BOUNTY_COMPLEXITIES)[number];
+
+/**
+ * Every size a proposal can be priced at, in order: the whole sizes with a
+ * half step between each pair. A "+" size is never anyone's answer; it is
+ * where a whole size lands when a reviewer has added weight to the spec
+ * (`pricing/step`), and it prices between its neighbours. There is no
+ * `XL+`: XL already means "consider splitting".
+ */
+export const PRICED_BOUNTY_COMPLEXITIES = [
+  "XS",
+  "XS+",
+  "S",
+  "S+",
+  "M",
+  "M+",
+  "L",
+  "L+",
+  "XL",
+] as const;
 export const BOUNTY_COMPLEXITIES = [
   ...PRICED_BOUNTY_COMPLEXITIES,
   "unsized",
@@ -60,7 +91,7 @@ export interface BountySelection {
 export type SizingConfidence = "low" | "medium" | "high";
 
 export interface BountySizingResult {
-  readonly complexity: BountyComplexity;
+  readonly complexity: ModelComplexity;
   readonly confidence: SizingConfidence;
   readonly rationale: string;
   readonly unsizedReason?: string;
@@ -148,19 +179,35 @@ export function validateRateCard(
   return { ok: true, rateCard: { ...input, currency } };
 }
 
+/**
+ * What a size costs on a card. A "+" size is the midpoint of its two
+ * neighbours, rounded to a whole minor unit: derived from the card rather
+ * than stored on it, so the card keeps its five rows, and a snapshot taken
+ * before half sizes existed prices them too.
+ */
 export function priceFor(
   complexity: BountyComplexity,
   rateCard: RateCardValues,
 ): number | null {
+  const midpoint = (lower: number, upper: number) =>
+    Math.round((lower + upper) / 2);
   switch (complexity) {
     case "XS":
       return rateCard.xsMinor;
+    case "XS+":
+      return midpoint(rateCard.xsMinor, rateCard.sMinor);
     case "S":
       return rateCard.sMinor;
+    case "S+":
+      return midpoint(rateCard.sMinor, rateCard.mMinor);
     case "M":
       return rateCard.mMinor;
+    case "M+":
+      return midpoint(rateCard.mMinor, rateCard.lMinor);
     case "L":
       return rateCard.lMinor;
+    case "L+":
+      return midpoint(rateCard.lMinor, rateCard.xlMinor);
     case "XL":
       return rateCard.xlMinor;
     case "unsized":

@@ -1,4 +1,7 @@
-import { BOUNTY_COMPLEXITIES, type BountySizingResult } from "sandbox-factory";
+import {
+  MODEL_BOUNTY_COMPLEXITIES,
+  type BountySizingResult,
+} from "sandbox-factory";
 import { sizingResultSchema } from "@sandbox-factory/shared";
 
 import type { StructuredCall } from "../caller.js";
@@ -37,7 +40,9 @@ export const sizeBountyTool: StructuredCall<SizingInput, BountySizingResult> = {
     type: "object",
     additionalProperties: false,
     properties: {
-      complexity: { enum: [...BOUNTY_COMPLEXITIES] },
+      // Whole sizes only: a half size is where the scenario step lands,
+      // never the model's answer.
+      complexity: { enum: [...MODEL_BOUNTY_COMPLEXITIES] },
       confidence: { enum: ["low", "medium", "high"] },
       rationale: { type: "string", minLength: 1, maxLength: RATIONALE_CHARS },
       unsizedReason: {

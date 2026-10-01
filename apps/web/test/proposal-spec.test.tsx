@@ -7,6 +7,7 @@ import {
   ProposalSpec,
   scenarioTotal,
   useProposalSpec,
+  type SizeReason,
 } from "../src/ProposalSpec";
 
 afterEach(() => {
@@ -22,14 +23,26 @@ function Wired({
   proposalId,
   specRevision,
   canAnalyze,
+  weightPoints,
+  sizeReason,
 }: {
   base: string;
   proposalId: string;
   specRevision: number | null | undefined;
   canAnalyze: boolean;
+  weightPoints?: { light: number; moderate: number; heavy: number };
+  sizeReason?: SizeReason;
 }) {
   const { read, retry } = useProposalSpec(base, proposalId, specRevision);
-  return <ProposalSpec read={read} onRetry={retry} canAnalyze={canAnalyze} />;
+  return (
+    <ProposalSpec
+      read={read}
+      onRetry={retry}
+      canAnalyze={canAnalyze}
+      {...(weightPoints === undefined ? {} : { weightPoints })}
+      {...(sizeReason === undefined ? {} : { sizeReason })}
+    />
+  );
 }
 
 function scenario(id: string, kind: string, title: string, overrides = {}) {
@@ -111,14 +124,14 @@ function block(
   );
 }
 
-/** Each group's heading text, as "Label count". */
+/** Each group's heading text: the label, then a count or points. */
 function headings(container: HTMLElement) {
   return within(container)
     .getAllByRole("heading", { level: 4 })
     .map((heading) => heading.textContent);
 }
 
-test("scenarios are grouped by kind, in the kinds' order, each group counted", async () => {
+test("scenarios are grouped by kind, in the kinds' order", async () => {
   const calls = server(() => Response.json({ spec: spec() }));
   block();
   const panel = await screen.findByTestId("proposal-spec");
@@ -126,12 +139,13 @@ test("scenarios are grouped by kind, in the kinds' order, each group counted", a
 
   expect(calls).toEqual([`${BASE}/proposals/bpr_1/spec`]);
   // Happy before boundary before unhappy, whatever order they were drafted
-  // in, then what the ticket left open and what the draft assumed.
+  // in, then what the ticket left open and what the draft assumed. A kind
+  // is not counted: unweighed, it has no points to show either.
   expect(headings(panel)).toEqual([
     "Background",
-    "Happy path2",
-    "Boundary1",
-    "Unhappy path2",
+    "Happy path",
+    "Boundary",
+    "Unhappy path",
     "Open questions1",
     "Assumptions2",
   ]);
@@ -248,7 +262,7 @@ test("a spec with one scenario and nothing else shows only that", async () => {
   const panel = await screen.findByTestId("proposal-spec");
   await within(panel).findByText("The label is corrected");
 
-  expect(headings(panel)).toEqual(["Happy path1"]);
+  expect(headings(panel)).toEqual(["Happy path"]);
   expect(within(panel).getByText("1 scenario · revision 1")).toBeDefined();
 });
 
@@ -445,4 +459,187 @@ test("the tab's count is the spec's scenarios, and unknown until it is read", ()
       spec: spec() as unknown as BountySpecDto,
     }),
   ).toBe(5);
+});
+
+/** The default spec with a weight on every scenario, as `draft-v2` writes it. */
+function weighedSpec() {
+  const weights: Record<string, [string, string]> = {
+    s1: ["moderate", "its own error path"],
+    s2: ["heavy", "a new delivery job"],
+    s3: ["light", "one more check on the same slot list"],
+    s4: ["heavy", "a scheduled reminder"],
+    s5: ["moderate", "a new validation"],
+  };
+  const base = spec({}, { promptVersion: "draft-v2" });
+  return {
+    ...base,
+    draft: {
+      ...base.draft,
+      scenarios: base.draft.scenarios.map((scenario) => {
+        const [weight, weightReason] = weights[scenario.id] ?? ["light", ""];
+        return { ...scenario, weight, weightReason };
+      }),
+    },
+  };
+}
+
+test("each scenario wears its weight and points, each group and the spec their totals", async () => {
+  server(() => Response.json({ spec: weighedSpec() }));
+  block({ canAnalyze: true });
+  const panel = await screen.findByTestId("proposal-spec");
+  await within(panel).findByText("Interview invitation delivery");
+
+  // 2 + 4 + 1 + 4 + 2 on the default points.
+  expect(
+    within(panel).getByText("5 scenarios · 13 points · revision 1"),
+  ).toBeDefined();
+  // Points, not counts: the kind's total, over its scenarios' points.
+  expect(headings(panel)).toEqual([
+    "Background",
+    "Happy path8 pts",
+    "Boundary1 pt",
+    "Unhappy path4 pts",
+    "Open questions1",
+    "Assumptions2",
+  ]);
+  const happy = within(panel).getByRole("region", { name: "Happy path" });
+  expect(
+    [...happy.querySelectorAll("[data-weight]")].map((badge) =>
+      badge.getAttribute("data-weight"),
+    ),
+  ).toEqual(["heavy", "heavy"]);
+  expect(
+    within(happy)
+      .getAllByRole("button")
+      .map((button) => button.textContent),
+  ).toEqual([
+    "An invitation is deliveredHeavy· 4 pts",
+    "A reminder follows the invitationHeavy· 4 pts",
+  ]);
+  const boundary = within(panel).getByRole("region", { name: "Boundary" });
+  expect(within(boundary).getByRole("button").textContent).toBe(
+    "The last free slotAddedLight· 1 pt",
+  );
+  // Weighed: nothing to nudge about.
+  expect(within(panel).queryByTestId("spec-unweighed")).toBeNull();
+
+  // The reason is the badge's tooltip, and leads the opened scenario.
+  const delivered = within(panel).getByRole("button", {
+    name: /An invitation is delivered/,
+  });
+  expect(delivered.querySelector("[data-weight]")?.getAttribute("title")).toBe(
+    "a new delivery job",
+  );
+  await userEvent.click(delivered);
+  expect(within(panel).getByText("Heavy: a new delivery job")).toBeDefined();
+});
+
+test("the points are counted the way the proposal's step counts them", async () => {
+  server(() => Response.json({ spec: weighedSpec() }));
+  block({ weightPoints: { light: 0, moderate: 1, heavy: 10 } });
+  const panel = await screen.findByTestId("proposal-spec");
+  expect(
+    await within(panel).findByText("5 scenarios · 22 points · revision 1"),
+  ).toBeDefined();
+  expect(headings(panel)).toContain("Happy path20 pts");
+  const boundary = within(panel).getByRole("region", { name: "Boundary" });
+  expect(within(boundary).getByRole("button").textContent).toBe(
+    "The last free slotAddedLight· 0 pts",
+  );
+});
+
+test("a spec drafted before weights says so, and how to weigh it", async () => {
+  server(() => Response.json({ spec: spec() }));
+  const view = block({ canAnalyze: true });
+  const panel = await screen.findByTestId("proposal-spec");
+  await within(panel).findByText("Interview invitation delivery");
+
+  expect(within(panel).getByText("5 scenarios · revision 1")).toBeDefined();
+  expect(within(panel).getByTestId("spec-unweighed").textContent).toMatch(
+    /Re-analyze, on the Bounty tab, drafts it again with weights\./,
+  );
+  expect(panel.querySelector("[data-weight]")).toBeNull();
+  expect(headings(panel)).toContain("Happy path");
+  view.unmount();
+
+  // A member is told why, without an action they cannot take.
+  server(() => Response.json({ spec: spec() }));
+  block({ canAnalyze: false });
+  const read = await screen.findByTestId("spec-unweighed");
+  expect(read.textContent).not.toMatch(/Re-analyze/);
+});
+
+test("the tab opens on why the model sized the ticket as it did", async () => {
+  server(() => Response.json({ spec: weighedSpec() }));
+  block({
+    sizeReason: {
+      modelSize: "M",
+      rationale: "A delivery job and a reminder, each with its own failure.",
+      reviewerSize: null,
+    },
+  });
+  const panel = await screen.findByTestId("proposal-spec");
+  const reason = within(panel).getByRole("region", { name: "Why this size" });
+  expect(
+    [...reason.querySelectorAll("p")].map((line) => line.textContent),
+  ).toEqual([
+    "Sized M by the model",
+    "A delivery job and a reminder, each with its own failure.",
+  ]);
+  // Above the scenarios, and there before they have loaded.
+  await within(panel).findByText("Interview invitation delivery");
+  expect(panel.firstElementChild).toBe(reason);
+});
+
+test("an overridden size says so, and keeps the model's own size and reasoning", async () => {
+  server(() => Response.json({ spec: null }));
+  block({
+    sizeReason: {
+      modelSize: "S",
+      rationale: "One form and its validation.",
+      reviewerSize: "L",
+    },
+  });
+  const panel = await screen.findByTestId("proposal-spec");
+  const reason = within(panel).getByRole("region", { name: "Why this size" });
+  expect(
+    [...reason.querySelectorAll("p")].map((line) => line.textContent),
+  ).toEqual([
+    "Overridden to L by a reviewer",
+    "The model sized it S:",
+    "One form and its validation.",
+  ]);
+  // The proposal's reasoning stands even with no spec to show under it.
+  expect(await within(panel).findByTestId("spec-empty")).toBeDefined();
+});
+
+test("a ticket the model left unsized says that instead of a size", async () => {
+  server(() => Response.json({ spec: null }));
+  const view = block({
+    sizeReason: {
+      modelSize: "unsized",
+      rationale: "The partner and its API are not named.",
+      reviewerSize: null,
+    },
+  });
+  expect(
+    within(await screen.findByTestId("spec-size-reason")).getAllByText(
+      /unsized/,
+    )[0]?.textContent,
+  ).toBe("Left unsized by the model");
+  view.unmount();
+
+  server(() => Response.json({ spec: null }));
+  block({
+    sizeReason: {
+      modelSize: "unsized",
+      rationale: "The partner and its API are not named.",
+      reviewerSize: "M",
+    },
+  });
+  expect(
+    within(await screen.findByTestId("spec-size-reason")).getByText(
+      "The model left it unsized:",
+    ),
+  ).toBeDefined();
 });
