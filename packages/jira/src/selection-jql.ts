@@ -58,10 +58,11 @@ export function selectionJql(
     clauses.push(`project = ${quote(options.projectKey)}`);
   }
 
-  // Epics are containers for work rather than work; sub-tasks are priced with
-  // their parent. `subTaskIssueTypes()` is a JQL function, so it covers
-  // whatever a site calls its sub-task types.
-  clauses.push("issuetype not in (Epic, subTaskIssueTypes())");
+  // Epics are containers for work rather than work. Sub-tasks are work, and
+  // are what a ticket split into them is priced through: the parent is left
+  // out after the read, by its sub-task count, since JQL cannot ask whether
+  // a ticket has sub-tasks.
+  clauses.push("issuetype not in (Epic)");
 
   if (selection.issueTypes.length > 0) {
     clauses.push(

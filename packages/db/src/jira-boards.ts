@@ -37,6 +37,7 @@ export interface StoredBoardSelection {
   readonly minAgeDays?: number;
   readonly maxAgeDays?: number | null;
   readonly minSpecChars?: number;
+  readonly fallbackOldest?: number;
   readonly categories?: Readonly<
     Record<string, StoredCategorySettings | undefined>
   >;
@@ -111,6 +112,56 @@ export function mergeSelection(
   return merged;
 }
 
+/**
+ * A board's scenario-step overrides, as stored. Absent means the default;
+ * in an update, `null` removes an override.
+ */
+export interface StoredStepSettings {
+  readonly pointsPerStep?: number | null | undefined;
+  readonly weightPoints?:
+    Readonly<Record<string, number | null | undefined>> | undefined;
+}
+
+/** The pricing settings, as stored. Validated by Zod at the HTTP edge. */
+export interface StoredBoardPricing {
+  readonly step?: StoredStepSettings | undefined;
+}
+
+/**
+ * A board's pricing with an update laid over it, at every level a caller
+ * can address: the step's points per half step, and each weight's points
+ * on its own. `null` removes an override, so it falls back to the default.
+ */
+export function mergePricing(
+  existing: StoredBoardPricing,
+  update: StoredBoardPricing,
+): StoredBoardPricing {
+  if (update.step === undefined) return existing;
+  const before = existing.step ?? {};
+  const step: Record<string, unknown> = {};
+  const pointsPerStep =
+    update.step.pointsPerStep === undefined
+      ? before.pointsPerStep
+      : update.step.pointsPerStep;
+  if (pointsPerStep !== undefined && pointsPerStep !== null) {
+    step["pointsPerStep"] = pointsPerStep;
+  }
+  const weightPoints: Record<string, number> = {};
+  for (const source of [before.weightPoints, update.step.weightPoints]) {
+    for (const [weight, value] of Object.entries(source ?? {})) {
+      if (value === null) {
+        delete weightPoints[weight];
+      } else if (value !== undefined) {
+        weightPoints[weight] = value;
+      }
+    }
+  }
+  if (Object.keys(weightPoints).length > 0) {
+    step["weightPoints"] = weightPoints;
+  }
+  return { ...existing, step };
+}
+
 export interface JiraBoardSummary {
   readonly id: string;
   readonly connectionId: string;
@@ -119,6 +170,7 @@ export interface JiraBoardSummary {
   readonly boardType: string;
   readonly projectKey: string | null;
   readonly selection: StoredBoardSelection;
+  readonly pricing: StoredBoardPricing;
   readonly createdAt: string;
 }
 
@@ -143,6 +195,7 @@ export type SyncBoardInput = Omit<RegisterBoardInput, "selection">;
 
 export interface UpdateBoardInput {
   readonly selection?: StoredBoardSelection;
+  readonly pricing?: StoredBoardPricing;
 }
 
 export interface JiraBoardStore {
@@ -180,8 +233,8 @@ export interface JiraBoardStore {
     input: SyncBoardInput,
   ): Promise<JiraBoardSummary>;
   /**
-   * Edits the settings. A selection update is **merged**, not replaced, so
-   * changing one setting cannot silently reset the others.
+   * Edits the settings. A selection or pricing update is **merged**, not
+   * replaced, so changing one setting cannot silently reset the others.
    */
   update(
     organizationId: string,
@@ -217,6 +270,7 @@ export function createJiraBoardStore(db: Database): JiraBoardStore {
       boardType: row.boardType,
       projectKey: row.projectKey,
       selection: (row.selection ?? {}) as StoredBoardSelection,
+      pricing: (row.pricing ?? {}) as StoredBoardPricing,
       createdAt: row.createdAt.toISOString(),
     };
   }
@@ -329,10 +383,19 @@ export function createJiraBoardStore(db: Database): JiraBoardStore {
               input.selection,
             );
 
+      const pricing =
+        input.pricing === undefined
+          ? (existing.pricing as StoredBoardPricing)
+          : mergePricing(
+              (existing.pricing ?? {}) as StoredBoardPricing,
+              input.pricing,
+            );
+
       const [row] = (await db
         .update(jiraBoard)
         .set({
           selection,
+          pricing,
           updatedAt: new Date(),
         })
         .where(

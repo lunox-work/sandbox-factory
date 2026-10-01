@@ -2,12 +2,19 @@ import type {
   BountyComplexity,
   BountySizingResult,
   CategoryMatch,
+  ModelComplexity,
   RateCardSnapshot,
   PricedComplexity,
   SizingConfidence,
+  StepResult,
 } from "sandbox-factory";
 import { and, desc, eq, gt, inArray, lt, or, sql } from "drizzle-orm";
 
+import {
+  insertSpecRevision,
+  nextSpecRevision,
+  type NewBountySpec,
+} from "./bounty-specs.js";
 import { isUniqueViolation, type Database } from "./errors.js";
 import { jiraWriteGranted, splitScopes } from "./jira-connections.js";
 import { generateId } from "./mapping.js";
@@ -37,6 +44,39 @@ export interface CreateBountyProposalInput {
   readonly promptVersion: string;
   readonly amountMinor: number | null;
   readonly currency: string | null;
+  /**
+   * The scenario step, when the size has one. The proposal's `complexity`
+   * is then the step's, and `amountMinor` must be its price; without one
+   * it is the model's own size.
+   */
+  readonly step?: StepResult | null;
+}
+
+/**
+ * What a run writes under its lease: the proposal, and the spec drafted for
+ * it when there is one. The two are one transaction, so a proposal never
+ * points at a spec revision that was not stored.
+ */
+export interface LeasedBountyProposalInput extends CreateBountyProposalInput {
+  readonly spec?: NewBountySpec;
+}
+
+/**
+ * What a spec change writes under its run's lease: the changed spec as the
+ * proposal's next revision, and the size and price the step makes of it.
+ */
+export interface RespecBountyProposalInput {
+  readonly runId: string;
+  readonly spec: NewBountySpec;
+  /**
+   * The spec revision the change was made of. Still the proposal's, or
+   * the proposal is `changed`: a change made of an older revision would
+   * undo whatever came between.
+   */
+  readonly fromSpecRevision: number;
+  readonly step: StepResult;
+  readonly amountMinor: number;
+  readonly currency: string;
 }
 
 export type ProposalMutationResult =
@@ -69,10 +109,14 @@ export interface BountyProposalStore {
     organizationId: string,
     input: CreateBountyProposalInput,
   ): Promise<StoredBountyProposal | null>;
+  /**
+   * A run's new proposal, fenced by its lease. A spec on the input is
+   * stored as the proposal's revision 1 in the same transaction.
+   */
   createForLease(
     organizationId: string,
     leaseToken: string,
-    input: CreateBountyProposalInput,
+    input: LeasedBountyProposalInput,
   ): Promise<
     | { readonly status: "created"; readonly proposal: StoredBountyProposal }
     | { readonly status: "duplicate" | "lost-lease" | "not-found" }
@@ -152,6 +196,12 @@ export interface BountyProposalStore {
     proposalId: string,
     expectedRevision: number,
   ): Promise<ProposalMutationResult>;
+  /**
+   * A reviewer's size. `complexity` and `amountMinor` are what it comes to:
+   * the reviewer's own size, or, when `step` is given (the proposal's step
+   * rebased on that size), the step's. Without `step` the proposal is left
+   * with none.
+   */
   resize(
     organizationId: string,
     proposalId: string,
@@ -160,6 +210,7 @@ export interface BountyProposalStore {
     complexity: PricedComplexity,
     amountMinor: number,
     currency: string,
+    step?: StepResult | null,
   ): Promise<ProposalMutationResult>;
   /**
    * Deletes a proposed proposal, so the ticket has none and a later run may
@@ -176,13 +227,17 @@ export interface BountyProposalStore {
    * `createForLease`. When the source was approved and its approval comment
    * is on the ticket, a `withdrawn` write-back is queued in the same
    * transaction and its id returned.
+   *
+   * A spec on the input becomes the proposal's next spec revision, and the
+   * proposal points at it. Without one the pointer is cleared: the earlier
+   * revisions stay, but none of them is what this size goes with.
    */
   repriceForLease(
     organizationId: string,
     leaseToken: string,
     sourceProposalId: string,
     sourceRevision: number,
-    input: CreateBountyProposalInput,
+    input: LeasedBountyProposalInput,
   ): Promise<
     | {
         readonly status: "repriced";
@@ -193,6 +248,33 @@ export interface BountyProposalStore {
         readonly status:
           "lost-lease" | "not-found" | "changed" | "writeback-busy";
       }
+  >;
+  /**
+   * A spec change's result: the proposal's next spec revision, and the
+   * size the scenario step makes of it, priced. Fenced by the run's lease
+   * and the source revision like a re-price, and only for a proposal still
+   * proposed: an approval is made on a size, and the size must not move
+   * under it.
+   *
+   * Everything else stays: the model's size and reasoning, who set the
+   * base, and the run the proposal was sized by, which is where its reasons
+   * for being picked are read from. The new revision records the spec
+   * change's run and the person who asked for it.
+   */
+  respecForLease(
+    organizationId: string,
+    leaseToken: string,
+    sourceProposalId: string,
+    sourceRevision: number,
+    input: RespecBountyProposalInput,
+  ): Promise<
+    | {
+        readonly status: "respecced";
+        readonly proposal: StoredBountyProposal;
+        /** The size before the change, for the run's outcome. */
+        readonly previousComplexity: BountyComplexity;
+      }
+    | { readonly status: "lost-lease" | "not-found" | "changed" }
   >;
 }
 
@@ -205,7 +287,7 @@ export interface StoredBountyProposal {
   readonly specHash: string;
   readonly specHashVersion: number;
   readonly rateCard: RateCardSnapshot;
-  readonly modelComplexity: BountyComplexity;
+  readonly modelComplexity: ModelComplexity;
   readonly modelConfidence: SizingConfidence;
   readonly modelRationale: string;
   readonly unsizedReason: string | null;
@@ -220,6 +302,10 @@ export interface StoredBountyProposal {
   readonly currency: string | null;
   readonly status: "proposed" | "approved" | "rejected" | "superseded";
   readonly revision: number;
+  /** The spec revision this size goes with, or null when there is none. */
+  readonly specRevision: number | null;
+  /** How the spec's added weight moved the size, or null when nothing could. */
+  readonly step: StepResult | null;
   readonly decidedAt: string | null;
   readonly decidedBy: string | null;
   readonly decisionDeliveryPolicy: "off" | "requested" | null;
@@ -240,7 +326,7 @@ function toDto(row: BountyProposalRow, issueKey: string): StoredBountyProposal {
       ...row.rateCard,
       xsMinor: row.rateCard.xsMinor ?? row.rateCard.sMinor,
     },
-    modelComplexity: row.modelComplexity as BountyComplexity,
+    modelComplexity: row.modelComplexity as ModelComplexity,
     modelConfidence: row.modelConfidence as SizingConfidence,
     modelRationale: row.modelRationale,
     unsizedReason: row.unsizedReason,
@@ -255,6 +341,8 @@ function toDto(row: BountyProposalRow, issueKey: string): StoredBountyProposal {
     currency: row.currency,
     status: row.status as StoredBountyProposal["status"],
     revision: row.revision,
+    specRevision: row.specRevision,
+    step: row.step ?? null,
     decidedAt: row.decidedAt?.toISOString() ?? null,
     decidedBy: row.decidedBy,
     decisionDeliveryPolicy:
@@ -301,9 +389,11 @@ async function mutationMiss(
 function insertValues(
   organizationId: string,
   input: CreateBountyProposalInput,
+  specRevision: number | null = null,
 ) {
   return {
     id: generateId("bpr"),
+    specRevision,
     organizationId,
     runId: input.runId,
     jiraIssueId: input.jiraIssueId,
@@ -317,7 +407,9 @@ function insertValues(
     inputTruncated: input.inputTruncated,
     actualModel: input.actualModel,
     promptVersion: input.promptVersion,
-    complexity: input.sizing.complexity,
+    complexity: input.step?.complexity ?? input.sizing.complexity,
+    step: input.step ?? null,
+    stepVersion: input.step?.stepVersion ?? null,
     amountMinor: input.amountMinor,
     currency: input.currency,
   };
@@ -428,16 +520,31 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
 
         const rows = (await tx
           .insert(bountyProposal)
-          .values(insertValues(organizationId, input))
+          .values(
+            insertValues(
+              organizationId,
+              input,
+              input.spec === undefined ? null : 1,
+            ),
+          )
           .onConflictDoNothing()
           .returning()) as BountyProposalRow[];
         const created = rows[0];
-        return created === undefined
-          ? ({ status: "duplicate" } as const)
-          : ({
-              status: "created",
-              proposal: toDto(created, issue.key),
-            } as const);
+        if (created === undefined) return { status: "duplicate" } as const;
+        // After the proposal, which it references, and only when there is
+        // one: a ticket that already has a live proposal gets no spec.
+        if (input.spec !== undefined) {
+          await insertSpecRevision(
+            tx,
+            organizationId,
+            { proposalId: created.id, runId: input.runId, revision: 1 },
+            input.spec,
+          );
+        }
+        return {
+          status: "created",
+          proposal: toDto(created, issue.key),
+        } as const;
       });
     },
 
@@ -688,12 +795,15 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
       complexity,
       amountMinor,
       currency,
+      step = null,
     ) {
       const now = new Date();
       const rows = (await db
         .update(bountyProposal)
         .set({
           complexity,
+          step,
+          stepVersion: step?.stepVersion ?? null,
           sizedBy: "reviewer",
           resizedBy,
           resizedAt: now,
@@ -824,6 +934,13 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
           );
         }
 
+        // The source row is locked above, so the revision read here is
+        // still the latest when the new one is written below.
+        const specRevision =
+          input.spec === undefined
+            ? null
+            : await nextSpecRevision(tx, organizationId, sourceProposalId);
+
         // The same row, sized again: the id is what links and Jira comments
         // point at, and a decision made earlier does not carry over.
         const values = insertValues(organizationId, input);
@@ -842,6 +959,8 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
             actualModel: values.actualModel,
             promptVersion: values.promptVersion,
             complexity: values.complexity,
+            step: values.step,
+            stepVersion: values.stepVersion,
             sizedBy: "model",
             resizedBy: null,
             resizedAt: null,
@@ -849,6 +968,7 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
             currency: values.currency,
             status: "proposed",
             revision: sourceRevision + 1,
+            specRevision,
             decidedBy: null,
             decidedAt: null,
             decisionDeliveryPolicy: null,
@@ -864,6 +984,18 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
           .returning()) as BountyProposalRow[];
         if (repriced[0] === undefined) {
           throw new Error("Failed to re-price bounty proposal.");
+        }
+        if (input.spec !== undefined && specRevision !== null) {
+          await insertSpecRevision(
+            tx,
+            organizationId,
+            {
+              proposalId: sourceProposalId,
+              runId: input.runId,
+              revision: specRevision,
+            },
+            input.spec,
+          );
         }
         const found = await first(tx, organizationId, sourceProposalId);
         if (found === undefined)
@@ -916,6 +1048,110 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
           ...(writebackOperationId === undefined
             ? {}
             : { writebackOperationId }),
+        } as const;
+      });
+    },
+
+    async respecForLease(
+      organizationId,
+      leaseToken,
+      sourceProposalId,
+      sourceRevision,
+      input,
+    ) {
+      return db.transaction(async (transaction) => {
+        const tx = transaction as unknown as Database;
+        const now = new Date();
+        const claimed = (await tx
+          .update(bountyRun)
+          .set({ updatedAt: sql`${bountyRun.updatedAt}` })
+          .where(
+            and(
+              eq(bountyRun.organizationId, organizationId),
+              eq(bountyRun.id, input.runId),
+              eq(bountyRun.status, "running"),
+              eq(bountyRun.kind, "respec"),
+              eq(bountyRun.sourceProposalId, sourceProposalId),
+              eq(bountyRun.sourceRevision, sourceRevision),
+              eq(bountyRun.leaseToken, leaseToken),
+              gt(bountyRun.leaseExpiresAt, now),
+              gt(bountyRun.deadlineAt, now),
+            ),
+          )
+          .returning()) as BountyRunRow[];
+        const run = claimed[0];
+        if (run === undefined) return { status: "lost-lease" } as const;
+
+        // The row lock, and the check that nothing moved it since the
+        // change was asked for: not its revision, not its spec, and not an
+        // approval.
+        const locked = (await tx
+          .update(bountyProposal)
+          .set({ updatedAt: sql`${bountyProposal.updatedAt}` })
+          .where(
+            and(
+              eq(bountyProposal.organizationId, organizationId),
+              eq(bountyProposal.id, sourceProposalId),
+              eq(bountyProposal.status, "proposed"),
+              eq(bountyProposal.revision, sourceRevision),
+              eq(bountyProposal.specRevision, input.fromSpecRevision),
+            ),
+          )
+          .returning()) as BountyProposalRow[];
+        const source = locked[0];
+        if (source === undefined) {
+          const current = await first(tx, organizationId, sourceProposalId);
+          return {
+            status: current === undefined ? "not-found" : "changed",
+          } as const;
+        }
+
+        const specRevision = await nextSpecRevision(
+          tx,
+          organizationId,
+          sourceProposalId,
+        );
+        const updated = (await tx
+          .update(bountyProposal)
+          .set({
+            complexity: input.step.complexity,
+            step: input.step,
+            stepVersion: input.step.stepVersion,
+            amountMinor: input.amountMinor,
+            currency: input.currency,
+            specRevision,
+            revision: sourceRevision + 1,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(bountyProposal.organizationId, organizationId),
+              eq(bountyProposal.id, sourceProposalId),
+              eq(bountyProposal.revision, sourceRevision),
+            ),
+          )
+          .returning()) as BountyProposalRow[];
+        if (updated[0] === undefined) {
+          throw new Error("Failed to change the proposal's spec.");
+        }
+        await insertSpecRevision(
+          tx,
+          organizationId,
+          {
+            proposalId: sourceProposalId,
+            runId: input.runId,
+            revision: specRevision,
+            createdBy: run.startedBy,
+          },
+          input.spec,
+        );
+        const found = await first(tx, organizationId, sourceProposalId);
+        if (found === undefined)
+          throw new Error("Respecced proposal vanished.");
+        return {
+          status: "respecced",
+          proposal: toDto(found.row, found.issueKey),
+          previousComplexity: source.complexity as BountyComplexity,
         } as const;
       });
     },

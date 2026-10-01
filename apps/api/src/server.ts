@@ -9,6 +9,7 @@ import {
   createBountyWritebackStore,
   createConnection,
   createBountyProposalStore,
+  createBountySpecStore,
   createEmailStore,
   createJiraBoardStore,
   createJiraConnectionStore,
@@ -40,11 +41,11 @@ import { resolveImageDigest } from "./image-digest.js";
 import { jiraClientFor, jiraClientsFor } from "./jira/credential.js";
 import { createApp } from "./routes.js";
 import {
-  AnthropicSizer,
-  DeepSeekSizer,
-  FallbackSizer,
+  AnthropicCaller,
+  DeepSeekCaller,
+  FallbackCaller,
   JIRA_SIZE_PROMPT_VERSION,
-  type Sizer,
+  type StructuredCaller,
 } from "./sizing/index.js";
 
 const env = parseEnv();
@@ -66,6 +67,7 @@ const jiraConnections = createJiraConnectionStore(
 const jiraBoards = createJiraBoardStore(connection.db);
 const bountyRuns = createBountyRunStore(connection.db);
 const bountyProposals = createBountyProposalStore(connection.db);
+const bountySpecs = createBountySpecStore(connection.db);
 const jiraIssues = createJiraIssueStore(connection.db);
 const rateCards = createRateCardStore(connection.db);
 const bountyWritebacks = createBountyWritebackStore(connection.db);
@@ -114,20 +116,21 @@ const sizing = sizingConfig(env);
 const deepseekSizing = deepseekSizingConfig(env);
 
 /**
- * The sizer, or undefined when neither provider is configured. With both, the
- * DeepSeek adapter answers whenever an Anthropic call fails; with one, that
- * one serves sizing alone. Each sized ticket records the model that actually
- * answered, so a handover stays visible after the fact.
+ * The model a run calls, or undefined when neither provider is configured.
+ * With both, the DeepSeek adapter answers whenever an Anthropic call fails;
+ * with one, that one serves alone. Every spec and every sized ticket records
+ * the model that actually answered, so a handover stays visible after the
+ * fact.
  */
-const sizer: Sizer | undefined = (() => {
+const caller: StructuredCaller | undefined = (() => {
   const anthropic =
     sizing === undefined
       ? undefined
-      : new AnthropicSizer({ apiKey: sizing.apiKey, model: sizing.model });
+      : new AnthropicCaller({ apiKey: sizing.apiKey, model: sizing.model });
   const deepseek =
     deepseekSizing === undefined
       ? undefined
-      : new DeepSeekSizer({
+      : new DeepSeekCaller({
           apiKey: deepseekSizing.apiKey,
           model: deepseekSizing.model,
           ...(deepseekSizing.baseUrl === undefined
@@ -136,7 +139,7 @@ const sizer: Sizer | undefined = (() => {
         });
 
   if (anthropic !== undefined && deepseek !== undefined) {
-    return new FallbackSizer({
+    return new FallbackCaller({
       primary: anthropic,
       fallback: deepseek,
       onFallback: (code) => console.warn(`sizing_fallback ${code}`),
@@ -191,14 +194,15 @@ const bountyDelivery =
         onBackgroundError: (code) => console.error(code),
       });
 const bountyExecutor =
-  sizer === undefined || jiraClientOptions === undefined
+  caller === undefined || jiraClientOptions === undefined
     ? undefined
     : new BountyExecutor({
         boards: jiraBoards,
         runs: bountyRuns,
         proposals: bountyProposals,
         issues: jiraIssues,
-        sizer,
+        specs: bountySpecs,
+        caller,
         clientFor: runClientFor,
         ...(bountyDelivery === undefined
           ? {}
@@ -247,6 +251,7 @@ const app = createApp({
     runs: bountyRuns,
     boards: jiraBoards,
     proposals: bountyProposals,
+    specs: bountySpecs,
     issues: jiraIssues,
     connections: jiraConnections,
     writebacks: bountyWritebacks,
@@ -259,10 +264,10 @@ const app = createApp({
       ? {}
       : {
           executor: bountyExecutor,
-          // The sizer's own model, not the Anthropic pair's: on a
+          // The caller's own model, not the Anthropic pair's: on a
           // DeepSeek-only deploy that pair is unset, and a missing
           // `requestedModel` makes every run refuse to start.
-          requestedModel: sizer?.model,
+          requestedModel: caller?.model,
           promptVersion: JIRA_SIZE_PROMPT_VERSION,
         }),
   },

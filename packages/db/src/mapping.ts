@@ -26,9 +26,10 @@ export const ID_PREFIXES = [
   "jrc",
   "jrb",
   "jri",
-  /** Commercials: bounty run, bounty proposal. */
+  /** Commercials: bounty run, bounty proposal, a revision of its spec. */
   "brn",
   "bpr",
+  "bsp",
   /** One durable Jira write intent. */
   "bwo",
 ] as const;

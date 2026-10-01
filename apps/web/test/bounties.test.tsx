@@ -692,6 +692,56 @@ test("members see proposals without review or run controls", async () => {
   expect(within(panel).queryByTestId("proposal-actions")).toBeNull();
 });
 
+test("a spec change running on one proposal is not the board's stream", async () => {
+  // The peek that asked for it follows it; the board has nothing to size.
+  const respec = {
+    id: "brn_9",
+    kind: "respec",
+    status: "running",
+    planned: [{ externalIssueId: "1", issueKey: "APP-1", summary: "" }],
+    outcomes: [],
+  };
+  const urls: string[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((url: string) => {
+      urls.push(url);
+      if (url.includes("/runs"))
+        return Promise.resolve(
+          Response.json({ runs: [respec], sizingAvailable: true }),
+        );
+      return Promise.resolve(
+        Response.json({
+          proposals: [
+            {
+              id: "bpr_1",
+              issueKey: "APP-1",
+              liveTitle: "Ticket 1",
+              complexity: "M",
+              amountMinor: 10500,
+              currency: "USD",
+              status: "proposed",
+              revision: 1,
+            },
+          ],
+        }),
+      );
+    }),
+  );
+  render(
+    <BoardBounties
+      organizationId="org_1"
+      boardId="jrb_1"
+      role="owner"
+      writeGranted
+      readIssue={() => Promise.resolve(null)}
+    />,
+  );
+  await screen.findByText("Ticket 1");
+  expect(screen.queryByTestId("sizing-active")).toBeNull();
+  expect(urls.some((url) => url.endsWith("/runs/brn_9"))).toBe(false);
+});
+
 test("a board opened mid-run streams the run ticket by ticket", async () => {
   // Connecting a site sizes its boards in the background, so a board is
   // often opened while that is still going.
@@ -1011,6 +1061,49 @@ test("a refused add is said, and Enter picks the first result", async () => {
   expect((await screen.findByRole("alert")).textContent).toBe(
     "This Jira connection needs reconnecting.",
   );
+});
+
+test("a ticket split into sub-tasks is listed but cannot be added, and Enter passes over it", async () => {
+  const requests = searchingBoard({
+    results: [
+      {
+        id: "10006",
+        key: "APP-6",
+        summary: "Rework login",
+        status: "To Do",
+        issueType: "Story",
+        subtaskCount: 3,
+      },
+      { ...addLogin, subtaskCount: 0 },
+    ],
+    add: {
+      status: 409,
+      body: { error: "This Jira connection needs reconnecting." },
+    },
+  });
+  const box = await screen.findByRole("searchbox", {
+    name: "Find a ticket to size",
+  });
+  await userEvent.type(box, "login");
+  const results = await screen.findByTestId("ticket-results");
+  const parent = await within(results).findByRole("button", { name: /APP-6/ });
+
+  // Said why, in place of the offer to add it.
+  expect((parent as HTMLButtonElement).disabled).toBe(true);
+  expect(parent.textContent).toContain("3 sub-tasks: size those");
+  expect(parent.textContent).not.toContain("Add");
+  expect(
+    within(results).getByRole("button", { name: /APP-7/ }).textContent,
+  ).toContain("Add");
+
+  // Enter takes the first ticket that can be added, not the parent above it.
+  await userEvent.type(box, "{Enter}");
+  await screen.findByRole("alert");
+  const added = requests.filter(({ url }) =>
+    url.endsWith("/jira/boards/jrb_1/issues"),
+  );
+  expect(added).toHaveLength(1);
+  expect(added[0]?.body).toContain('"issueId":"10007"');
 });
 
 test("members get no ticket search, since adding sizes and spends", async () => {
@@ -2486,6 +2579,401 @@ test("a row says why its ticket was picked, and the peek lists every reason", as
     await within(panel).findByText("Unchanged since sizing"),
   ).toBeDefined();
   expect(within(panel).getByTestId("proposal-categories")).toBeDefined();
+});
+
+/** A board of two proposals: one with a drafted spec, one from before specs. */
+function specBoard() {
+  const calls: string[] = [];
+  const row = (n: number) => ({
+    id: `bpr_${n}`,
+    issueKey: `APP-${n}`,
+    modelRationale: "A few files.",
+    complexity: "M",
+    amountMinor: 200,
+    currency: "USD",
+    modelComplexity: "M",
+    modelConfidence: "high",
+    actualModel: "deepseek-v4-pro",
+    status: "proposed",
+    revision: 1,
+    specRevision: n === 1 ? 3 : null,
+    sizedTitle: `Ticket ${n}`,
+    categories: [],
+  });
+  const fetchMock = vi.fn((input: string) => {
+    const url = String(input);
+    calls.push(url);
+    if (url.includes("/proposal-titles?")) {
+      return Promise.resolve(new Response(""));
+    }
+    if (url.includes("/runs")) {
+      return Promise.resolve(
+        Response.json({ runs: [], sizingAvailable: true }),
+      );
+    }
+    if (/\/proposals\/bpr_\d+\/spec$/.test(url)) {
+      return Promise.resolve(
+        Response.json({
+          spec: {
+            id: "bsp_1",
+            proposalId: "bpr_1",
+            revision: 3,
+            draft: {
+              feature: "CSV export of a filtered table",
+              background: [],
+              scenarios: [
+                {
+                  id: "s1",
+                  kind: "happy",
+                  title: "The filtered rows are exported",
+                  steps: [{ keyword: "Then", text: "a CSV is downloaded" }],
+                  origin: "draft",
+                },
+                {
+                  id: "s2",
+                  kind: "boundary",
+                  title: "An empty table exports its header",
+                  steps: [{ keyword: "Then", text: "the file has one line" }],
+                  origin: "draft",
+                },
+              ],
+              openQuestions: [],
+              assumptions: [],
+            },
+          },
+        }),
+      );
+    }
+    if (url.includes("/proposals/bpr_")) {
+      const n = Number(/bpr_(\d+)/.exec(url)?.[1]);
+      return Promise.resolve(
+        Response.json({
+          proposal: row(n),
+          freshness: { freshness: "current", checkedAt: "now" },
+          writebackOperations: [],
+        }),
+      );
+    }
+    if (url.includes("/proposal-categories")) {
+      return Promise.resolve(new Response("", { status: 500 }));
+    }
+    return Promise.resolve(
+      Response.json({ proposals: [row(1), row(2)], nextCursor: null }),
+    );
+  });
+  return {
+    fetchMock,
+    specReads: () => calls.filter((url) => url.endsWith("/spec")),
+  };
+}
+
+test("the scenarios have a tab of their own, read when the peek opens", async () => {
+  const server = specBoard();
+  vi.stubGlobal("fetch", server.fetchMock);
+  renderStreamedBoard();
+  const list = await screen.findByTestId("proposal-list");
+  // The list reads no spec: it is the open proposal's.
+  expect(server.specReads()).toEqual([]);
+
+  await userEvent.click(within(list).getByRole("button", { name: /Ticket 1/ }));
+  const panel = await screen.findByTestId("proposal-panel");
+  // Between the decision and the ticket, and counted once the spec is in:
+  // read with the peek, not when the tab is pressed, so it opens on it.
+  expect(
+    within(panel)
+      .getAllByRole("tab")
+      .map((tab) => tab.textContent?.replace(/\d+$/, "")),
+  ).toEqual(["Bounty", "Scenarios", "Spec"]);
+  await waitFor(() =>
+    expect(
+      within(panel).getByRole("tab", { name: /^Scenarios/ }).textContent,
+    ).toBe("Scenarios2"),
+  );
+  expect(server.specReads()).toEqual([
+    "/api/v1/orgs/org_1/proposals/bpr_1/spec",
+  ]);
+  // Not on the Bounty tab any more, which keeps to the decision.
+  expect(within(panel).queryByTestId("proposal-spec")).toBeNull();
+
+  await userEvent.click(within(panel).getByRole("tab", { name: /^Scenarios/ }));
+  const spec = within(panel).getByTestId("proposal-spec");
+  expect(
+    within(spec).getByText("CSV export of a filtered table"),
+  ).toBeDefined();
+  expect(within(spec).getByText("2 scenarios · revision 3")).toBeDefined();
+  expect(
+    within(spec).getByRole("region", { name: "Happy path" }),
+  ).toBeDefined();
+  expect(within(spec).getByRole("region", { name: "Boundary" })).toBeDefined();
+  // Opening the tab asked for nothing more.
+  expect(server.specReads()).toHaveLength(1);
+  // The Spec tab is still the Jira ticket, and is a different thing.
+  expect(within(panel).getByRole("tab", { name: "Spec" })).toBeDefined();
+});
+
+test("a proposal sized before specs has an uncounted tab saying so, without asking", async () => {
+  const server = specBoard();
+  vi.stubGlobal("fetch", server.fetchMock);
+  renderStreamedBoard();
+  const list = await screen.findByTestId("proposal-list");
+
+  await userEvent.click(within(list).getByRole("button", { name: /Ticket 2/ }));
+  const panel = await screen.findByTestId("proposal-panel");
+  // The stored reasoning is still what explains the size.
+  expect(within(panel).getByText("A few files.")).toBeDefined();
+  expect(
+    await within(panel).findByText("Unchanged since sizing"),
+  ).toBeDefined();
+  const tab = within(panel).getByRole("tab", { name: /^Scenarios/ });
+  expect(tab.textContent).toBe("Scenarios");
+
+  await userEvent.click(tab);
+  expect(within(panel).getByTestId("spec-empty").textContent).toBe(
+    "No scenarios were drafted for this proposal. Re-analyze, on the Bounty tab, drafts them from the ticket as it is now.",
+  );
+  expect(server.specReads()).toEqual([]);
+});
+
+/** A step of S → S+: a heavy and a light scenario added since sizing. */
+const step = {
+  base: "S",
+  complexity: "S+",
+  steps: 1,
+  addedPoints: 5,
+  added: [
+    {
+      id: "s3",
+      kind: "recovery",
+      title: "A failed export is retried",
+      weight: "heavy",
+    },
+    { id: "s4", kind: "boundary", title: "An empty table", weight: "light" },
+  ],
+  nextStepIn: 3,
+  settings: {
+    pointsPerStep: 4,
+    weightPoints: { light: 1, moderate: 2, heavy: 4 },
+  },
+  stepVersion: "step-v1",
+};
+
+/**
+ * A board of two proposals: one whose spec grew a step since it was sized,
+ * one sized before scenarios were weighed. Answers a resize as the server
+ * would, the step rebased on the reviewer's size.
+ */
+function steppedBoard() {
+  const posts: { url: string; body: unknown }[] = [];
+  const rows: Record<string, Record<string, unknown>> = {
+    bpr_1: {
+      id: "bpr_1",
+      issueKey: "APP-1",
+      modelRationale: "One form and its validation.",
+      complexity: "S+",
+      amountMinor: 8150,
+      currency: "USD",
+      modelComplexity: "S",
+      modelConfidence: "high",
+      actualModel: "claude-sonnet-5",
+      status: "proposed",
+      sizedBy: "model",
+      revision: 1,
+      specRevision: 2,
+      step,
+      sizedTitle: "Ticket 1",
+      categories: [],
+    },
+    bpr_2: {
+      id: "bpr_2",
+      issueKey: "APP-2",
+      modelRationale: "A few files.",
+      complexity: "M",
+      amountMinor: 10500,
+      currency: "USD",
+      modelComplexity: "M",
+      modelConfidence: "high",
+      actualModel: "claude-sonnet-5",
+      status: "proposed",
+      sizedBy: "model",
+      revision: 1,
+      specRevision: null,
+      step: null,
+      sizedTitle: "Ticket 2",
+      categories: [],
+    },
+  };
+  const fetchMock = vi.fn((input: string, init?: RequestInit) => {
+    const url = String(input);
+    if (init?.method === "POST") {
+      const body = JSON.parse(String(init.body)) as { complexity: string };
+      posts.push({ url, body });
+      const resized = {
+        ...rows["bpr_1"],
+        complexity: "M+",
+        amountMinor: 12900,
+        sizedBy: "reviewer",
+        revision: 2,
+        step: { ...step, base: body.complexity, complexity: "M+" },
+      };
+      rows["bpr_1"] = resized;
+      return Promise.resolve(Response.json({ proposal: resized }));
+    }
+    if (url.includes("/proposal-titles?")) {
+      return Promise.resolve(new Response(""));
+    }
+    if (url.includes("/runs")) {
+      return Promise.resolve(
+        Response.json({ runs: [], sizingAvailable: true }),
+      );
+    }
+    if (/\/spec$/.test(url)) {
+      return Promise.resolve(Response.json({ spec: null }));
+    }
+    const id = /proposals\/(bpr_\d+)/.exec(url)?.[1];
+    if (id !== undefined) {
+      return Promise.resolve(
+        Response.json({
+          proposal: rows[id],
+          freshness: { freshness: "current", checkedAt: "now" },
+          writebackOperations: [],
+        }),
+      );
+    }
+    if (url.includes("/proposal-categories")) {
+      return Promise.resolve(new Response("", { status: 500 }));
+    }
+    return Promise.resolve(
+      Response.json({
+        proposals: [rows["bpr_1"], rows["bpr_2"]],
+        nextCursor: null,
+      }),
+    );
+  });
+  return { fetchMock, posts };
+}
+
+test("a half size shows on its whole size's card, and the row stays at five", async () => {
+  const server = steppedBoard();
+  vi.stubGlobal("fetch", server.fetchMock);
+  renderStreamedBoard();
+  const list = await screen.findByTestId("proposal-list");
+  await userEvent.click(within(list).getByRole("button", { name: /Ticket 1/ }));
+  const panel = await screen.findByTestId("proposal-panel");
+  const resize = await within(panel).findByRole("group", { name: "Resize" });
+
+  // S+ is the S card, reading "S+": no card of its own, no "+" elsewhere.
+  expect(
+    within(resize)
+      .getAllByRole("button")
+      .map((button) => button.textContent),
+  ).toEqual(["XS", "S+", "M", "L", "XL"]);
+  // It is the size in force, and the whole size the step stands on.
+  const base = within(resize).getByRole("button", { name: "S+" });
+  expect(base.getAttribute("aria-pressed")).toBe("true");
+  expect((base as HTMLButtonElement).disabled).toBe(true);
+  expect(within(panel).getByText(money(8150, "USD"))).toBeDefined();
+});
+
+test("the step says how the added weight moved the size, and what the next step needs", async () => {
+  const server = steppedBoard();
+  vi.stubGlobal("fetch", server.fetchMock);
+  renderStreamedBoard();
+  const list = await screen.findByTestId("proposal-list");
+  await userEvent.click(within(list).getByRole("button", { name: /Ticket 1/ }));
+  const panel = await screen.findByTestId("proposal-panel");
+
+  const block = await within(panel).findByTestId("proposal-step");
+  expect(block.querySelector("p + p")?.textContent).toBe(
+    "S → S+: 5 points added since it was sized (1 heavy, 1 light). M needs 3 more.",
+  );
+  expect(
+    within(block)
+      .getAllByRole("listitem")
+      .map((item) => item.textContent),
+  ).toEqual([
+    "A failed export is retriedHeavy· 4 pts",
+    "An empty tableLight· 1 pt",
+  ]);
+  // A weighed size needs no nudge.
+  expect(within(panel).queryByTestId("proposal-unweighed")).toBeNull();
+  // The model's own reasoning still comes first.
+  expect(within(panel).getByText("One form and its validation.")).toBeDefined();
+
+  // And it heads the Scenarios tab, with the size the model gave.
+  await userEvent.click(within(panel).getByRole("tab", { name: /^Scenarios/ }));
+  const reason = within(panel).getByRole("region", { name: "Why this size" });
+  expect(reason.querySelector("p")?.textContent).toBe("Sized S by the model");
+});
+
+test("a resize sets the base, and the step stays on top", async () => {
+  const server = steppedBoard();
+  vi.stubGlobal("fetch", server.fetchMock);
+  renderStreamedBoard();
+  const list = await screen.findByTestId("proposal-list");
+  await userEvent.click(within(list).getByRole("button", { name: /Ticket 1/ }));
+  const panel = await screen.findByTestId("proposal-panel");
+  const resize = await within(panel).findByRole("group", { name: "Resize" });
+
+  await userEvent.click(within(resize).getByRole("button", { name: "M" }));
+  expect(server.posts).toEqual([
+    {
+      url: "/api/v1/orgs/org_1/proposals/bpr_1/resize",
+      body: { expectedRevision: 1, complexity: "M" },
+    },
+  ]);
+  // M, then the heavy and the light on top of it: the M card reads M+,
+  // and S is back to a plain S.
+  await waitFor(() =>
+    expect(
+      within(resize)
+        .getAllByRole("button")
+        .map((button) => button.textContent),
+    ).toEqual(["XS", "S", "M+", "L", "XL"]),
+  );
+  expect(
+    within(resize)
+      .getByRole("button", { name: "M+" })
+      .getAttribute("aria-pressed"),
+  ).toBe("true");
+  expect(within(panel).getByText("the model said S")).toBeDefined();
+  expect(within(panel).getByText("M set by a reviewer")).toBeDefined();
+  expect(within(panel).getByTestId("proposal-step").textContent).toMatch(
+    /^Added to the specM → M\+: /,
+  );
+
+  // The Scenarios tab leads with the override, and keeps what the model
+  // said and why.
+  await userEvent.click(within(panel).getByRole("tab", { name: /^Scenarios/ }));
+  const reason = within(panel).getByRole("region", { name: "Why this size" });
+  expect(
+    [...reason.querySelectorAll("p")].map((line) => line.textContent),
+  ).toEqual([
+    "Overridden to M by a reviewer",
+    "The model sized it S:",
+    "One form and its validation.",
+  ]);
+});
+
+test("a size with no weighed scenarios is marked on its row and explained in the peek", async () => {
+  const server = steppedBoard();
+  vi.stubGlobal("fetch", server.fetchMock);
+  renderStreamedBoard();
+  const list = await screen.findByTestId("proposal-list");
+
+  const rows = within(list).getAllByRole("button");
+  const marked = rows.map(
+    (row) => row.querySelector("[data-unweighed]")?.textContent ?? null,
+  );
+  expect(marked).toEqual([null, "M"]);
+
+  await userEvent.click(within(list).getByRole("button", { name: /Ticket 2/ }));
+  const panel = await screen.findByTestId("proposal-panel");
+  expect(
+    (await within(panel).findByTestId("proposal-unweighed")).textContent,
+  ).toBe(
+    "This size has no weighed scenarios, so a scenario added later cannot move it. Re-analyze drafts and weighs them.",
+  );
+  expect(within(panel).queryByTestId("proposal-step")).toBeNull();
 });
 
 test("a proposal for a hand-picked ticket shows no reason in the peek", async () => {

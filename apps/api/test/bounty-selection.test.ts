@@ -79,6 +79,7 @@ function board(overrides: Partial<JiraBoardSummary> = {}): JiraBoardSummary {
     boardType: "scrum",
     projectKey: "APP",
     selection: {},
+    pricing: {},
     createdAt: "2026-01-01T00:00:00.000Z",
     ...overrides,
   };
@@ -148,10 +149,99 @@ test("a ticket that fits no category is not selected, however old", async () => 
     updated: "2024-01-01T00:00:00.000Z",
     sprint: { name: "Sprint 9", state: "active" },
   });
-  const result = await select(reader([{ issues: [owned], total: 1 }]));
+  // Something else fits, so the oldest-first fallback stays out of it.
+  const result = await select(
+    reader([{ issues: [owned, leftBehind("2")], total: 2 }]),
+  );
 
-  assert.deepEqual(result.issues, []);
+  assert.deepEqual(
+    result.issues.map(({ key }) => key),
+    ["APP-2"],
+  );
   assert.equal(result.unmatched, 1);
+  assert.equal(result.fallback, false);
+});
+
+/** `count` tickets that fit no category, oldest first, as the JQL orders them. */
+function unfitting(count: number, from = 0): JiraIssueSignalsDto[] {
+  return Array.from({ length: count }, (_, index) =>
+    issue(String(from + index)),
+  );
+}
+
+test("when nothing fits a category, the ten oldest open tickets are taken instead", async () => {
+  const result = await select(reader([{ issues: unfitting(15), total: 15 }]));
+
+  assert.equal(result.fallback, true);
+  assert.deepEqual(
+    result.issues.map(({ id }) => id),
+    ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"],
+  );
+  // Picked for their age, not for a category: uncategorized, like a
+  // ticket picked by hand.
+  assert.ok(result.issues.every(({ categories }) => categories.length === 0));
+  assert.equal(result.unmatched, 15);
+  assert.equal(result.ticketCapReached, false);
+});
+
+test("the fallback passes over tickets already proposed, asking a page at a time", async () => {
+  // The oldest hundred are all proposed already: the next oldest are taken.
+  const asked: number[] = [];
+  const result = await select(
+    reader([{ issues: unfitting(150), total: 150 }]),
+    {
+      proposals: {
+        liveExternalIds: (_org, _board, ids) => {
+          asked.push(ids.length);
+          return Promise.resolve(new Set(ids.filter((id) => Number(id) < 100)));
+        },
+      },
+    },
+  );
+
+  assert.deepEqual(asked, [100, 50]);
+  assert.equal(result.issues[0]?.id, "100");
+  assert.equal(result.issues.length, 10);
+  // Not counted as skipped: skippedLive is about tickets that fit.
+  assert.equal(result.skippedLive, 0);
+});
+
+test("the fallback also covers a board whose fitting tickets are all proposed", async () => {
+  const result = await select(
+    reader([{ issues: [leftBehind("1"), ...unfitting(3, 10)], total: 4 }]),
+    {
+      proposals: {
+        liveExternalIds: (_org, _board, ids) =>
+          Promise.resolve(new Set(ids.filter((id) => id === "1"))),
+      },
+    },
+  );
+
+  assert.equal(result.skippedLive, 1);
+  assert.equal(result.fallback, true);
+  assert.deepEqual(
+    result.issues.map(({ id }) => id),
+    ["10", "11", "12"],
+  );
+});
+
+test("the fallback takes the board's number, within its cap, and 0 turns it off", async () => {
+  const pick = async (selection: Record<string, unknown>) =>
+    select(reader([{ issues: unfitting(20), total: 20 }]), {
+      board: board({ selection }),
+    });
+
+  assert.equal((await pick({ fallbackOldest: 3 })).issues.length, 3);
+  assert.equal(
+    (await pick({ fallbackOldest: 50, ticketCap: 4 })).issues.length,
+    4,
+  );
+  const off = await pick({ fallbackOldest: 0 });
+  assert.deepEqual(off.issues, []);
+  assert.equal(off.fallback, false);
+  // A board with nothing on it has nothing to fall back to.
+  const empty = await select(reader([{ issues: [], total: 0 }]));
+  assert.equal(empty.fallback, false);
 });
 
 test("each selected ticket carries why it was picked", async () => {
@@ -285,6 +375,40 @@ test("a board's category settings decide what fits", async () => {
   assert.equal("always-next-sprint" in tuned.matched, false);
 });
 
+test("a ticket split into sub-tasks is left out, and its sub-tasks are offered", async () => {
+  // All three would be left behind; only the parent is not work of its own.
+  const parent = { ...leftBehind("1"), subtaskCount: 2 };
+  const subtask = {
+    ...leftBehind("2"),
+    issueType: "Sub-task",
+    parentKey: "APP-1",
+  };
+  const childless = { ...leftBehind("3"), subtaskCount: 0 };
+  const client = reader([{ issues: [parent, subtask, childless], total: 3 }]);
+  const asked: string[][] = [];
+
+  const result = await select(client, {
+    proposals: {
+      liveExternalIds: (_org, _board, ids) => {
+        asked.push([...ids]);
+        return Promise.resolve(new Set<string>());
+      },
+    },
+  });
+
+  assert.deepEqual(
+    result.issues.map(({ key }) => key),
+    ["APP-2", "APP-3"],
+  );
+  assert.equal(result.skippedParents, 1);
+  // Left out before any category was tried: it is neither a match nor a
+  // miss, and the proposal store is not asked about it.
+  assert.equal(result.matched["left-behind"], 2);
+  assert.equal(result.unmatched, 0);
+  assert.equal(result.candidatesScanned, 3);
+  assert.deepEqual(asked, [["2", "3"]]);
+});
+
 test("tickets with a live proposal are left out, and only fitting ones are asked about", async () => {
   const asked: string[][] = [];
   const result = await select(
@@ -317,7 +441,9 @@ test("tickets with a live proposal are left out, and only fitting ones are asked
 
 test("a page with nothing fitting asks the proposal store nothing", async () => {
   let asked = 0;
+  // The fallback off: it is the one thing that asks about unfitting tickets.
   await select(reader([{ issues: [issue("1")], total: 1 }]), {
+    board: board({ selection: { fallbackOldest: 0 } }),
     proposals: {
       liveExternalIds: () => {
         asked += 1;

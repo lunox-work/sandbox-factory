@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { stepUp, type SpecDraft } from "sandbox-factory";
+
 import { createBountyProposalStore } from "../src/bounty-proposals.js";
 import type {
   BountyProposalRow,
@@ -41,6 +43,9 @@ function row(overrides: Partial<BountyProposalRow> = {}): BountyProposalRow {
     currency: "USD",
     status: "proposed",
     revision: 1,
+    specRevision: null,
+    step: null,
+    stepVersion: null,
     decidedBy: null,
     decidedAt: null,
     decisionDeliveryPolicy: null,
@@ -66,6 +71,30 @@ const input = {
   promptVersion: "jira-size-v1",
   amountMinor: 200,
   currency: "USD",
+} as const;
+
+/** A spec as a run hands it over: no proposal id, no revision. */
+const spec = {
+  specHash: "a".repeat(64),
+  specHashVersion: 1,
+  draft: {
+    feature: "CSV export",
+    background: [],
+    scenarios: [
+      {
+        id: "s1",
+        kind: "happy",
+        title: "The filtered table is exported",
+        steps: [{ keyword: "Then", text: "a CSV file is downloaded" }],
+        origin: "draft",
+      },
+    ],
+    openQuestions: [],
+    assumptions: [],
+  },
+  origin: "draft",
+  actualModel: "drafting-model",
+  promptVersion: "draft-v1",
 } as const;
 
 test("creates only after both owner-scoped parents are found", async () => {
@@ -124,6 +153,124 @@ test("creates under a live lease and classifies fencing outcomes", async () => {
     ),
     { status: "duplicate" },
   );
+});
+
+test("a proposal created with a spec stores it as revision 1 in the same transaction", async () => {
+  const running = { id: "brn_1", boardId: "jrb_1" } as BountyRunRow;
+  const fake = createSequencedFakeDb([
+    [running],
+    [{ key: "APP-1" }],
+    [row({ specRevision: 1 })],
+    [],
+  ]);
+  const result = await createBountyProposalStore(fake.db).createForLease(
+    "org_1",
+    "lease",
+    { ...input, spec },
+  );
+
+  assert.equal(result.status, "created");
+  if (result.status === "created") {
+    assert.equal(result.proposal.specRevision, 1);
+  }
+  // The proposal says which revision it goes with, and the revision is
+  // written after it, for it, by the run that drafted it.
+  assert.equal(fake.calls[2]?.values?.["specRevision"], 1);
+  const stored = fake.calls[3];
+  assert.equal(stored?.kind, "insert");
+  assert.match(String(stored?.values?.["id"]), /^bsp_/);
+  assert.equal(stored?.values?.["organizationId"], "org_1");
+  assert.equal(stored?.values?.["proposalId"], "bpr_1");
+  assert.equal(stored?.values?.["revision"], 1);
+  assert.equal(stored?.values?.["runId"], "brn_1");
+  assert.equal(stored?.values?.["origin"], "draft");
+  assert.equal(stored?.values?.["actualModel"], "drafting-model");
+  assert.equal(stored?.values?.["promptVersion"], "draft-v1");
+  assert.deepEqual(stored?.values?.["draft"], spec.draft);
+});
+
+/** A weighed draft and the same draft grown by a heavy scenario. */
+const weighed: SpecDraft = {
+  ...spec.draft,
+  scenarios: [{ ...spec.draft.scenarios[0], weight: "light" }],
+};
+const grown: SpecDraft = {
+  ...weighed,
+  scenarios: [
+    ...weighed.scenarios,
+    {
+      id: "s2",
+      kind: "recovery",
+      title: "A failed export can be retried",
+      steps: [{ keyword: "Then", text: "the export runs again" }],
+      origin: "expansion",
+      weight: "heavy",
+    },
+  ],
+};
+
+test("a proposal created with a step is priced at the step's size and keeps it", async () => {
+  const step = stepUp("M", weighed, grown);
+  assert.ok(step !== null);
+  const running = { id: "brn_1", boardId: "jrb_1" } as BountyRunRow;
+  const stored = row({
+    complexity: "M+",
+    amountMinor: 250,
+    step,
+    stepVersion: step.stepVersion,
+  });
+  const fake = createSequencedFakeDb([[running], [{ key: "APP-1" }], [stored]]);
+  const result = await createBountyProposalStore(fake.db).createForLease(
+    "org_1",
+    "lease",
+    { ...input, amountMinor: 250, step },
+  );
+
+  const values = fake.calls[2]?.values;
+  // The model's size is kept apart from the size the step made of it.
+  assert.equal(values?.["modelComplexity"], "M");
+  assert.equal(values?.["complexity"], "M+");
+  assert.equal(values?.["amountMinor"], 250);
+  assert.deepEqual(values?.["step"], step);
+  assert.equal(values?.["stepVersion"], "step-v1");
+  assert.equal(result.status, "created");
+  if (result.status === "created") {
+    assert.deepEqual(result.proposal.step, step);
+  }
+});
+
+test("a proposal created without a spec points at none", async () => {
+  const running = { id: "brn_1", boardId: "jrb_1" } as BountyRunRow;
+  const fake = createSequencedFakeDb([[running], [{ key: "APP-1" }], [row()]]);
+  const result = await createBountyProposalStore(fake.db).createForLease(
+    "org_1",
+    "lease",
+    input,
+  );
+
+  assert.equal(result.status, "created");
+  assert.equal(fake.calls[2]?.values?.["specRevision"], null);
+  assert.equal(fake.calls.filter(({ kind }) => kind === "insert").length, 1);
+  // No step either: the size is the model's own.
+  assert.equal(fake.calls[2]?.values?.["complexity"], "M");
+  assert.equal(fake.calls[2]?.values?.["step"], null);
+  assert.equal(fake.calls[2]?.values?.["stepVersion"], null);
+  if (result.status === "created") assert.equal(result.proposal.step, null);
+});
+
+test("a ticket that already has a live proposal gets no spec", async () => {
+  // The proposal insert lost to the live one, so there is nothing for a
+  // spec to belong to.
+  const running = { id: "brn_1", boardId: "jrb_1" } as BountyRunRow;
+  const fake = createSequencedFakeDb([[running], [{ key: "APP-1" }], []]);
+  assert.deepEqual(
+    await createBountyProposalStore(fake.db).createForLease("org_1", "lease", {
+      ...input,
+      spec,
+    }),
+    { status: "duplicate" },
+  );
+  assert.equal(fake.calls.filter(({ kind }) => kind === "insert").length, 1);
 });
 
 test("gets and lists proposals with issue display keys", async () => {
@@ -414,6 +561,44 @@ test("withdraws and resizes through expected-revision filters", async () => {
     ).ok,
     true,
   );
+  // Without a step the proposal is left with none.
+  assert.equal(resizeFake.calls[0]?.values?.["complexity"], "L");
+  assert.equal(resizeFake.calls[0]?.values?.["step"], null);
+  assert.equal(resizeFake.calls[0]?.values?.["stepVersion"], null);
+  assert.equal(resizeFake.calls[0]?.values?.["sizedBy"], "reviewer");
+});
+
+test("a resize with a step writes the rebased step and the size it comes to", async () => {
+  const step = stepUp("L", weighed, grown);
+  assert.ok(step !== null);
+  const resized = row({
+    revision: 2,
+    complexity: "L+",
+    amountMinor: 350,
+    step,
+    stepVersion: step.stepVersion,
+  });
+  const fake = createSequencedFakeDb([
+    [resized],
+    [{ row: resized, issueKey: "APP-1" }],
+  ]);
+  const result = await createBountyProposalStore(fake.db).resize(
+    "org_1",
+    "bpr_1",
+    1,
+    "usr_1",
+    "L+",
+    350,
+    "USD",
+    step,
+  );
+  assert.equal(result.ok, true);
+  const values = fake.calls[0]?.values;
+  assert.equal(values?.["complexity"], "L+");
+  assert.equal(values?.["amountMinor"], 350);
+  assert.deepEqual(values?.["step"], step);
+  assert.equal(values?.["stepVersion"], "step-v1");
+  if (result.ok) assert.equal(result.proposal.step?.base, "L");
 });
 
 test("a missed mutation distinguishes not found from changed", async () => {
@@ -521,6 +706,9 @@ test("re-price updates the source in place, fenced by its run lease and source r
   assert.equal(update?.["decidedBy"], null);
   assert.equal(update?.["runId"], "brn_2");
   assert.equal(update?.["revision"], 2);
+  // A re-price sized without a step clears the one the proposal had.
+  assert.equal(update?.["step"], null);
+  assert.equal(update?.["stepVersion"], null);
   assert.ok(!fake.calls.some(({ kind }) => kind === "insert"));
 
   const lost = createFakeDb([]);
@@ -536,6 +724,119 @@ test("re-price updates the source in place, fenced by its run lease and source r
     ).status,
     "lost-lease",
   );
+});
+
+test("re-price with a spec writes the next revision and points the proposal at it", async () => {
+  const repriced = row({ revision: 2, runId: "brn_2", specRevision: 3 });
+  const fake = createSequencedFakeDb([
+    [{ id: "brn_2", boardId: "jrb_1" } as BountyRunRow],
+    [row({ specRevision: 2 })],
+    // The proposal's latest spec revision, read while its row is locked.
+    [{ revision: 2 }],
+    [repriced],
+    [],
+    [{ row: repriced, issueKey: "APP-1" }],
+  ]);
+  const result = await createBountyProposalStore(fake.db).repriceForLease(
+    "org_1",
+    "lease_1",
+    "bpr_1",
+    1,
+    { ...input, runId: "brn_2", spec },
+  );
+
+  assert.equal(result.status, "repriced");
+  if (result.status === "repriced") {
+    assert.equal(result.proposal.specRevision, 3);
+  }
+  assert.equal(fake.calls[2]?.kind, "select");
+  assert.equal(fake.calls[2]?.filtered, true);
+  assert.equal(fake.calls[2]?.limited, 1);
+  assert.equal(fake.calls[3]?.values?.["specRevision"], 3);
+  const stored = fake.calls[4];
+  assert.equal(stored?.kind, "insert");
+  assert.equal(stored?.values?.["proposalId"], "bpr_1");
+  assert.equal(stored?.values?.["revision"], 3);
+  assert.equal(stored?.values?.["runId"], "brn_2");
+});
+
+test("re-price writes the fresh step with the fresh size", async () => {
+  const step = stepUp("S", weighed, weighed);
+  assert.ok(step !== null);
+  const repriced = row({
+    revision: 2,
+    runId: "brn_2",
+    step,
+    stepVersion: "step-v1",
+  });
+  const fake = createSequencedFakeDb([
+    [{ id: "brn_2", boardId: "jrb_1" } as BountyRunRow],
+    [row()],
+    [repriced],
+    [{ row: repriced, issueKey: "APP-1" }],
+  ]);
+  await createBountyProposalStore(fake.db).repriceForLease(
+    "org_1",
+    "lease_1",
+    "bpr_1",
+    1,
+    {
+      ...input,
+      runId: "brn_2",
+      sizing: { ...input.sizing, complexity: "S" },
+      amountMinor: 100,
+      step,
+    },
+  );
+  const update = fake.calls[2]?.values;
+  assert.equal(update?.["complexity"], "S");
+  assert.deepEqual(update?.["step"], step);
+  assert.equal(update?.["stepVersion"], "step-v1");
+});
+
+test("re-price starts a spec at revision 1 for a proposal that had none", async () => {
+  const repriced = row({ revision: 2, runId: "brn_2", specRevision: 1 });
+  const fake = createSequencedFakeDb([
+    [{ id: "brn_2", boardId: "jrb_1" } as BountyRunRow],
+    [row()],
+    [],
+    [repriced],
+    [],
+    [{ row: repriced, issueKey: "APP-1" }],
+  ]);
+  await createBountyProposalStore(fake.db).repriceForLease(
+    "org_1",
+    "lease_1",
+    "bpr_1",
+    1,
+    { ...input, runId: "brn_2", spec },
+  );
+
+  assert.equal(fake.calls[3]?.values?.["specRevision"], 1);
+  assert.equal(fake.calls[4]?.values?.["revision"], 1);
+});
+
+test("re-price without a spec clears the pointer and writes no revision", async () => {
+  // The earlier revisions were drafted from a ticket this size no longer
+  // goes with, so the proposal stops pointing at any of them.
+  const repriced = row({ revision: 2, runId: "brn_2" });
+  const fake = createSequencedFakeDb([
+    [{ id: "brn_2", boardId: "jrb_1" } as BountyRunRow],
+    [row({ specRevision: 2 })],
+    [repriced],
+    [{ row: repriced, issueKey: "APP-1" }],
+  ]);
+  const result = await createBountyProposalStore(fake.db).repriceForLease(
+    "org_1",
+    "lease_1",
+    "bpr_1",
+    1,
+    { ...input, runId: "brn_2" },
+  );
+
+  assert.equal(result.status, "repriced");
+  assert.equal(fake.calls[2]?.values?.["specRevision"], null);
+  assert.ok(!fake.calls.some(({ kind }) => kind === "insert"));
 });
 
 test("re-price queues a withdrawal for a posted approval in the same transaction", async () => {
@@ -700,6 +1001,120 @@ test("re-price completion distinguishes a vanished source from a changed one", a
     ).status,
     "changed",
   );
+});
+
+test("a spec change writes the next revision and the stepped size, and nothing else", async () => {
+  const sizedStep = stepUp("M", weighed, weighed);
+  const step = stepUp("M", weighed, grown);
+  assert.ok(sizedStep !== null && step !== null);
+  const source = row({
+    revision: 4,
+    specRevision: 2,
+    step: sizedStep,
+    stepVersion: "step-v1",
+  });
+  const respecced = row({
+    revision: 5,
+    specRevision: 3,
+    complexity: "M+",
+    amountMinor: 250,
+    step,
+    stepVersion: "step-v1",
+  });
+  const fake = createSequencedFakeDb([
+    [{ id: "brn_3", boardId: "jrb_1", startedBy: "user_1" } as BountyRunRow],
+    [source],
+    // The proposal's latest spec revision, read while its row is locked.
+    [{ revision: 2 }],
+    [respecced],
+    [],
+    [{ row: respecced, issueKey: "APP-1" }],
+  ]);
+  const result = await createBountyProposalStore(fake.db).respecForLease(
+    "org_1",
+    "lease_1",
+    "bpr_1",
+    4,
+    {
+      runId: "brn_3",
+      fromSpecRevision: 2,
+      spec: {
+        ...spec,
+        draft: grown,
+        origin: "expand",
+        instruction: "More recovery scenarios",
+        promptVersion: "revise-v1",
+      },
+      step,
+      amountMinor: 250,
+      currency: "USD",
+    },
+  );
+
+  assert.equal(result.status, "respecced");
+  if (result.status === "respecced") {
+    assert.equal(result.proposal.complexity, "M+");
+    assert.equal(result.proposal.specRevision, 3);
+    // What the outcome reports the change from.
+    assert.equal(result.previousComplexity, "M");
+  }
+  assert.ok(fake.calls.slice(0, 4).every(({ filtered }) => filtered));
+  // The size and its price move, with the spec pointer and the revision.
+  assert.deepEqual(fake.calls[3]?.values, {
+    complexity: "M+",
+    step,
+    stepVersion: "step-v1",
+    amountMinor: 250,
+    currency: "USD",
+    specRevision: 3,
+    revision: 5,
+    updatedAt: fake.calls[3]?.values?.["updatedAt"],
+  });
+  // The revision records the change's run and the person who asked.
+  const stored = fake.calls[4]?.values;
+  assert.equal(fake.calls[4]?.kind, "insert");
+  assert.equal(stored?.["revision"], 3);
+  assert.equal(stored?.["runId"], "brn_3");
+  assert.equal(stored?.["createdBy"], "user_1");
+  assert.equal(stored?.["origin"], "expand");
+  assert.equal(stored?.["instruction"], "More recovery scenarios");
+});
+
+test("a spec change is fenced by its lease and refused once the proposal moved", async () => {
+  const step = stepUp("M", weighed, grown);
+  assert.ok(step !== null);
+  const change = {
+    runId: "brn_3",
+    fromSpecRevision: 2,
+    spec: { ...spec, draft: grown, origin: "expand" },
+    step,
+    amountMinor: 250,
+    currency: "USD",
+  } as const;
+  const store = (fake: ReturnType<typeof createSequencedFakeDb>) =>
+    createBountyProposalStore(fake.db).respecForLease(
+      "org_1",
+      "lease_1",
+      "bpr_1",
+      4,
+      change,
+    );
+
+  const lost = createSequencedFakeDb([[]]);
+  assert.equal((await store(lost)).status, "lost-lease");
+
+  const running = { id: "brn_3", boardId: "jrb_1" } as BountyRunRow;
+  const missing = createSequencedFakeDb([[running], [], []]);
+  assert.equal((await store(missing)).status, "not-found");
+
+  // Approved, revised or re-specced since: the lock finds nothing to hold.
+  const changed = createSequencedFakeDb([
+    [running],
+    [],
+    [{ row: row({ revision: 5, status: "approved" }), issueKey: "APP-1" }],
+  ]);
+  assert.equal((await store(changed)).status, "changed");
+  assert.ok(!changed.calls.some(({ kind }) => kind === "insert"));
 });
 
 test("legacy snapshot reads add XS without changing historical rates", async () => {

@@ -22,6 +22,9 @@ import type {
   BountySelection,
   RateCardSnapshot,
   PricedComplexity,
+  RespecRequest,
+  SpecDraft,
+  StepResult,
 } from "sandbox-factory";
 
 import { user } from "./auth.js";
@@ -80,6 +83,9 @@ export const bountyRun = pgTable(
       { onDelete: "set null" },
     ),
     sourceRevision: integer("source_revision"),
+    // What a `respec` run was asked to do to its proposal's spec. Null for
+    // every other kind, and required for that one.
+    respec: jsonb("respec").$type<RespecRequest>(),
     requestId: text("request_id").notNull(),
     status: text("status").notNull().default("queued"),
     selection: jsonb("selection").$type<BountySelection>().notNull(),
@@ -116,15 +122,24 @@ export const bountyRun = pgTable(
       .on(table.boardId)
       // A one-ticket run someone asked for is not counted: it must not wait
       // behind a board's backlog run, and the proposal store already refuses
-      // a second live proposal for the same ticket.
+      // a second live proposal for the same ticket. Nor is a spec change on
+      // one proposal, which a backlog run never touches.
       .where(
-        sql`${table.status} in ('queued', 'running') and ${table.kind} <> 'issue'`,
+        sql`${table.status} in ('queued', 'running') and ${table.kind} not in ('issue', 'respec')`,
+      ),
+    // One change in flight per proposal: a re-price and a spec change both
+    // rewrite it, and the second would only find it changed when it came to
+    // write, after paying for its model call.
+    uniqueIndex("bounty_run_proposal_active_unique")
+      .on(table.sourceProposalId)
+      .where(
+        sql`${table.status} in ('queued', 'running') and ${table.kind} in ('reprice', 'respec')`,
       ),
     index("bounty_run_organization_id_idx").on(table.organizationId),
     index("bounty_run_board_created_idx").on(table.boardId, table.createdAt),
     check(
       "bounty_run_kind_check",
-      sql`${table.kind} in ('backlog', 'reprice', 'issue')`,
+      sql`${table.kind} in ('backlog', 'reprice', 'issue', 'respec')`,
     ),
     check(
       "bounty_run_status_check",
@@ -134,7 +149,11 @@ export const bountyRun = pgTable(
       "bounty_run_source_check",
       // A reprice run's source may be deleted later, and `ON DELETE SET NULL`
       // clears the pointer; requiring it here would make that delete fail.
-      sql`(${table.kind} in ('backlog', 'issue') AND ${table.sourceProposalId} IS NULL AND ${table.sourceRevision} IS NULL) OR (${table.kind} = 'reprice' AND ${table.sourceRevision} > 0)`,
+      sql`(${table.kind} in ('backlog', 'issue') AND ${table.sourceProposalId} IS NULL AND ${table.sourceRevision} IS NULL) OR (${table.kind} in ('reprice', 'respec') AND ${table.sourceRevision} > 0)`,
+    ),
+    check(
+      "bounty_run_respec_check",
+      sql`(${table.kind} = 'respec') = (${table.respec} IS NOT NULL)`,
     ),
   ],
 );
@@ -172,6 +191,17 @@ export const bountyProposal = pgTable(
     currency: text("currency"),
     status: text("status").notNull().default("proposed"),
     revision: integer("revision").notNull().default(1),
+    // The `bounty_spec` revision this size goes with. Null for a proposal
+    // with no spec: one from before specs, or a ticket nothing was drafted
+    // from. A re-price moves it, or clears it when it drafts nothing.
+    specRevision: integer("spec_revision"),
+    // How the weight added to the spec since it was sized moved the size:
+    // `complexity` is `step.complexity` when there is one. Stored as
+    // computed, so the explanation is not recomputed against settings that
+    // may have changed since. Null when there was nothing to step from: an
+    // unsized ticket, no spec, or a spec drafted before weights.
+    step: jsonb("step").$type<StepResult>(),
+    stepVersion: text("step_version"),
     decidedBy: text("decided_by").references(() => user.id, {
       onDelete: "set null",
     }),
@@ -190,9 +220,15 @@ export const bountyProposal = pgTable(
       "bounty_proposal_model_complexity_check",
       sql`${table.modelComplexity} in ('XS', 'S', 'M', 'L', 'XL', 'unsized')`,
     ),
+    // The model answers whole sizes only; a half size is where the step
+    // lands, so only the effective size may hold one.
     check(
       "bounty_proposal_complexity_check",
-      sql`${table.complexity} in ('XS', 'S', 'M', 'L', 'XL', 'unsized')`,
+      sql`${table.complexity} in ('XS', 'XS+', 'S', 'S+', 'M', 'M+', 'L', 'L+', 'XL', 'unsized')`,
+    ),
+    check(
+      "bounty_proposal_step_check",
+      sql`(${table.step} IS NULL) = (${table.stepVersion} IS NULL)`,
     ),
     check(
       "bounty_proposal_confidence_check",
@@ -212,6 +248,10 @@ export const bountyProposal = pgTable(
     ),
     check("bounty_proposal_revision_check", sql`${table.revision} > 0`),
     check(
+      "bounty_proposal_spec_revision_check",
+      sql`${table.specRevision} IS NULL OR ${table.specRevision} > 0`,
+    ),
+    check(
       "bounty_proposal_hash_check",
       sql`length(${table.specHash}) = 64 AND ${table.specHashVersion} > 0`,
     ),
@@ -226,6 +266,72 @@ export const bountyProposal = pgTable(
     check(
       "bounty_proposal_approved_sized_check",
       sql`${table.status} <> 'approved' OR (${table.complexity} <> 'unsized' AND NOT ${table.inputTruncated})`,
+    ),
+  ],
+);
+
+/** How a spec revision came to be. */
+export const BOUNTY_SPEC_ORIGINS = [
+  "draft",
+  "expand",
+  "trim",
+  "answer",
+] as const;
+export type BountySpecOrigin = (typeof BOUNTY_SPEC_ORIGINS)[number];
+
+/**
+ * A proposal's spec, one row per revision: the ticket's behaviour as
+ * scenarios, with the questions it left open.
+ *
+ * **This is text derived from a ticket, and it is kept.** It is private to
+ * the organization, like the proposal it hangs from, and it goes when the
+ * proposal does. A revision is never edited: a change is a new row, so what
+ * a size was computed from stays readable after the spec has moved on.
+ */
+export const bountySpec = pgTable(
+  "bounty_spec",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    proposalId: text("proposal_id")
+      .notNull()
+      .references(() => bountyProposal.id, { onDelete: "cascade" }),
+    revision: integer("revision").notNull(),
+    // The ticket this revision was drafted from, hashed as the proposal
+    // hashes it, so a revision drafted from an older ticket can be told.
+    specHash: text("spec_hash").notNull(),
+    specHashVersion: integer("spec_hash_version").notNull(),
+    draft: jsonb("draft").$type<SpecDraft>().notNull(),
+    origin: text("origin").notNull(),
+    // The reviewer's ask, for a revision that came from one.
+    instruction: text("instruction"),
+    // Null when a run drafted it rather than a person.
+    createdBy: text("created_by").references(() => user.id, {
+      onDelete: "set null",
+    }),
+    runId: text("run_id").references(() => bountyRun.id, {
+      onDelete: "set null",
+    }),
+    actualModel: text("actual_model"),
+    promptVersion: text("prompt_version"),
+    createdAt: ts("created_at").notNull().defaultNow(),
+  },
+  (table) => [
+    unique("bounty_spec_proposal_revision_unique").on(
+      table.proposalId,
+      table.revision,
+    ),
+    index("bounty_spec_organization_id_idx").on(table.organizationId),
+    check("bounty_spec_revision_check", sql`${table.revision} > 0`),
+    check(
+      "bounty_spec_origin_check",
+      sql`${table.origin} in ('draft', 'expand', 'trim', 'answer')`,
+    ),
+    check(
+      "bounty_spec_hash_check",
+      sql`length(${table.specHash}) = 64 AND ${table.specHashVersion} > 0`,
     ),
   ],
 );
@@ -294,5 +400,7 @@ export type BountyRunRow = typeof bountyRun.$inferSelect;
 export type NewBountyRunRow = typeof bountyRun.$inferInsert;
 export type BountyProposalRow = typeof bountyProposal.$inferSelect;
 export type NewBountyProposalRow = typeof bountyProposal.$inferInsert;
+export type BountySpecRow = typeof bountySpec.$inferSelect;
+export type NewBountySpecRow = typeof bountySpec.$inferInsert;
 export type BountyWritebackRow = typeof bountyWriteback.$inferSelect;
 export type NewBountyWritebackRow = typeof bountyWriteback.$inferInsert;

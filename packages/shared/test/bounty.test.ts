@@ -1,12 +1,21 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { stepUp, type SpecDraft } from "sandbox-factory";
+
 import {
+  bountyComplexitySchema,
+  bountyProposalDtoSchema,
+  bountyRunKindSchema,
+  bountyRunOutcomeSchema,
   createRunSchema,
+  pricedComplexitySchema,
   resizeProposalSchema,
   putRateCardSchema,
   rateCardSnapshotSchema,
+  respecProposalSchema,
   sizingResultSchema,
+  stepResultSchema,
 } from "../src/bounty.js";
 
 test("rate cards normalize currency and require monotonic safe amounts", () => {
@@ -120,5 +129,173 @@ test("USD write limits preserve historical rate-card snapshots", () => {
     rateCardSnapshotSchema.safeParse({ ...card, xlMinor: 200000, revision: 1 })
       .success,
     true,
+  );
+});
+
+test("half sizes are prices, never the model's answer or a resize", () => {
+  for (const size of ["XS+", "S+", "M+", "L+"]) {
+    assert.equal(pricedComplexitySchema.safeParse(size).success, true);
+    assert.equal(bountyComplexitySchema.safeParse(size).success, true);
+    assert.equal(
+      sizingResultSchema.safeParse({
+        complexity: size,
+        confidence: "high",
+        rationale: "Between two sizes.",
+      }).success,
+      false,
+    );
+    assert.equal(
+      resizeProposalSchema.safeParse({ complexity: size, expectedRevision: 1 })
+        .success,
+      false,
+    );
+  }
+  // There is no size past XL to step into.
+  assert.equal(pricedComplexitySchema.safeParse("XL+").success, false);
+});
+
+const sized: SpecDraft = {
+  feature: "Invitations",
+  background: [],
+  scenarios: [
+    {
+      id: "s1",
+      kind: "happy",
+      title: "Sent",
+      steps: [{ keyword: "Then", text: "it is sent" }],
+      origin: "draft",
+      weight: "light",
+    },
+  ],
+  openQuestions: [],
+  assumptions: [],
+};
+
+test("a step as core computes it is a step the wire carries", () => {
+  const grown: SpecDraft = {
+    ...sized,
+    scenarios: [
+      ...sized.scenarios,
+      {
+        id: "s2",
+        kind: "recovery",
+        title: "Retried",
+        steps: [{ keyword: "Then", text: "it is sent again" }],
+        origin: "expansion",
+        weight: "heavy",
+      },
+    ],
+  };
+  const step = stepUp("S", sized, grown);
+  assert.deepEqual(stepResultSchema.parse(step), step);
+  // A base is a whole size: a half size is only ever where a step lands.
+  assert.equal(
+    stepResultSchema.safeParse({ ...step, base: "S+" }).success,
+    false,
+  );
+  assert.equal(
+    stepResultSchema.safeParse({
+      ...step,
+      settings: { ...step?.settings, pointsPerStep: 0 },
+    }).success,
+    false,
+  );
+});
+
+test("a proposal carries its step, null when there is none", () => {
+  const proposal = {
+    id: "bpr_1",
+    organizationId: "org_1",
+    runId: "brn_1",
+    jiraIssueId: "jis_1",
+    issueKey: "APP-1",
+    specHash: "a".repeat(64),
+    specHashVersion: 1,
+    rateCard: {
+      currency: "USD",
+      xsMinor: 1,
+      sMinor: 2,
+      mMinor: 3,
+      lMinor: 4,
+      xlMinor: 5,
+      revision: 1,
+    },
+    modelComplexity: "S",
+    modelConfidence: "high",
+    modelRationale: "One form.",
+    unsizedReason: null,
+    inputTruncated: false,
+    actualModel: "model",
+    promptVersion: "jira-size-v2",
+    complexity: "S+",
+    sizedBy: "model",
+    resizedBy: null,
+    resizedAt: null,
+    amountMinor: 3,
+    currency: "USD",
+    status: "proposed",
+    revision: 1,
+    specRevision: 2,
+    step: stepUp("S", sized, sized),
+    decidedAt: null,
+    decidedBy: null,
+    decisionDeliveryPolicy: null,
+    createdAt: "2026-10-01T00:00:00.000Z",
+    updatedAt: "2026-10-01T00:00:00.000Z",
+  };
+  assert.equal(bountyProposalDtoSchema.safeParse(proposal).success, true);
+  assert.equal(
+    bountyProposalDtoSchema.safeParse({ ...proposal, step: null }).success,
+    true,
+  );
+  // The model's own size stays whole whatever the step made of it.
+  assert.equal(
+    bountyProposalDtoSchema.safeParse({ ...proposal, modelComplexity: "S+" })
+      .success,
+    false,
+  );
+});
+
+test("a respec names the proposal revision, its request and what it asks", () => {
+  const body = {
+    expectedRevision: 3,
+    requestId: "28bb313f-252a-4a1d-b656-558a215b604b",
+    request: { mode: "trim", removeScenarioIds: ["s2"] },
+  };
+  assert.deepEqual(respecProposalSchema.parse(body), body);
+  assert.equal(
+    respecProposalSchema.safeParse({ ...body, request: undefined }).success,
+    false,
+  );
+  assert.equal(
+    respecProposalSchema.safeParse({ ...body, requestId: "again" }).success,
+    false,
+  );
+  // A respec run, and what its outcome says the change did.
+  assert.equal(bountyRunKindSchema.parse("respec"), "respec");
+  assert.deepEqual(
+    bountyRunOutcomeSchema.parse({
+      externalIssueId: "10001",
+      issueKey: "NOX-1",
+      status: "proposed",
+      previousComplexity: "S",
+      pointsDelta: -4,
+    }),
+    {
+      externalIssueId: "10001",
+      issueKey: "NOX-1",
+      status: "proposed",
+      previousComplexity: "S",
+      pointsDelta: -4,
+    },
+  );
+  assert.equal(
+    bountyRunOutcomeSchema.safeParse({
+      externalIssueId: "10001",
+      issueKey: "NOX-1",
+      status: "proposed",
+      pointsDelta: 1.5,
+    }).success,
+    false,
   );
 });

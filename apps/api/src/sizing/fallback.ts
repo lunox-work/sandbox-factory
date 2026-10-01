@@ -1,21 +1,21 @@
 import {
   SizerError,
-  type SizedTicket,
-  type Sizer,
-  type SizingInput,
   type SizingRequestOptions,
-} from "./sizer.js";
+  type StructuredCall,
+  type StructuredCaller,
+  type StructuredResult,
+} from "./caller.js";
 
-export interface FallbackSizerOptions {
-  readonly primary: Sizer;
-  readonly fallback: Sizer;
+export interface FallbackCallerOptions {
+  readonly primary: StructuredCaller;
+  readonly fallback: StructuredCaller;
   /** Called once per handover, with the primary's code. Never a provider body. */
   readonly onFallback?: (code: SizerError["code"]) => void;
 }
 
 /**
- * Two providers behind one `Sizer`: the primary answers, and its failures hand
- * the same ticket to the fallback.
+ * Two providers behind one `StructuredCaller`: the primary answers, and its
+ * failures hand the same call to the fallback.
  *
  * `sizing_cancelled` is the one code that does not hand over. It means the run
  * itself was aborted or its deadline is spent, so a second provider would be
@@ -28,32 +28,29 @@ export interface FallbackSizerOptions {
  * `stopsRun` contract honest: the run stops only if the provider that actually
  * had the last word says it should.
  */
-export class FallbackSizer implements Sizer {
-  readonly #primary: Sizer;
-  readonly #fallback: Sizer;
+export class FallbackCaller implements StructuredCaller {
+  readonly #primary: StructuredCaller;
+  readonly #fallback: StructuredCaller;
   readonly #onFallback: ((code: SizerError["code"]) => void) | undefined;
 
-  constructor(options: FallbackSizerOptions) {
+  constructor(options: FallbackCallerOptions) {
     this.#primary = options.primary;
     this.#fallback = options.fallback;
     this.#onFallback = options.onFallback;
   }
 
-  /** The primary's model. `actualModel` on each sized ticket records the truth. */
+  /** The primary's model. `actualModel` on each result records the truth. */
   get model(): string {
     return this.#primary.model;
   }
 
-  get promptVersion(): string {
-    return this.#primary.promptVersion;
-  }
-
-  async size(
-    input: SizingInput,
+  async call<I, O>(
+    tool: StructuredCall<I, O>,
+    input: I,
     options: SizingRequestOptions = {},
-  ): Promise<SizedTicket> {
+  ): Promise<StructuredResult<O>> {
     try {
-      return await this.#primary.size(input, options);
+      return await this.#primary.call(tool, input, options);
     } catch (error) {
       if (error instanceof SizerError && error.code === "sizing_cancelled") {
         throw error;
@@ -62,7 +59,7 @@ export class FallbackSizer implements Sizer {
         throw new SizerError("sizing_cancelled", false);
       }
       if (error instanceof SizerError) this.#onFallback?.(error.code);
-      return await this.#fallback.size(input, options);
+      return await this.#fallback.call(tool, input, options);
     }
   }
 }

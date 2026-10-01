@@ -6,6 +6,17 @@
  * registry (`sandbox-factory`'s `CATEGORIES`), with the reason it fit. What
  * a category is, and what it looks for, is decided there and nowhere here:
  * this file pages, classifies, and leaves out tickets already proposed.
+ *
+ * A ticket split into sub-tasks is never offered: its sub-tasks are the
+ * work, and they are offered in its place, so nothing is priced twice. JQL
+ * cannot ask whether a ticket has sub-tasks, so this is decided here, by
+ * the count every read carries.
+ *
+ * **When nothing is left to take**, because no ticket fits a category or
+ * every one that does already has a proposal, a run falls back to the
+ * oldest open tickets that fit none (`fallbackOldest`, ten by default), so
+ * a board is never sized to nothing. Those carry no category: they are
+ * "uncategorized", as a ticket picked by hand is.
  */
 
 import type {
@@ -44,7 +55,10 @@ export interface BacklogPageReader {
 
 /** A ticket a run will size, with why it was picked. */
 export type SelectedIssue = JiraIssueSignalsDto & {
-  /** Every category it fits, in registry order. Never empty. */
+  /**
+   * Every category it fits, in registry order. Empty only for a ticket the
+   * oldest-first fallback took.
+   */
   readonly categories: readonly CategoryMatch[];
 };
 
@@ -66,10 +80,20 @@ export interface BacklogSelectionResult {
   readonly candidatesScanned: number;
   /** Matching tickets left out because they already have a live proposal. */
   readonly skippedLive: number;
+  /**
+   * Scanned tickets left out because they are split into sub-tasks, before
+   * any category was tried: they are in neither `matched` nor `unmatched`.
+   */
+  readonly skippedParents: number;
   /** The scan stopped at its ceiling with tickets on the board still unread. */
   readonly scanLimitReached: boolean;
   /** The board's `ticketCap` stopped the selection before the board ended. */
   readonly ticketCapReached: boolean;
+  /**
+   * Nothing was left to take by category, so `issues` are the oldest open
+   * tickets that fit none.
+   */
+  readonly fallback: boolean;
   readonly total?: number;
 }
 
@@ -112,10 +136,13 @@ export async function selectBacklog(
   const cap = selection.ticketCap ?? Number.POSITIVE_INFINITY;
 
   const selected: SelectedIssue[] = [];
+  // In the order read, which is oldest first: what the fallback takes from.
+  const unfitting: JiraIssueSignalsDto[] = [];
   const seen = new Set<string>();
   let startAt = 0;
   let candidatesScanned = 0;
   let skippedLive = 0;
+  let skippedParents = 0;
   let unmatched = 0;
   let knownTotal: number | undefined;
   let exhausted = false;
@@ -149,9 +176,14 @@ export async function selectBacklog(
     for (const issue of page.issues) {
       if (seen.has(issue.id)) continue;
       seen.add(issue.id);
+      if ((issue.subtaskCount ?? 0) > 0) {
+        skippedParents += 1;
+        continue;
+      }
       const matches = classify(factsFor(issue, now));
       if (matches.length === 0) {
         unmatched += 1;
+        unfitting.push(issue);
         continue;
       }
       for (const { id } of matches) {
@@ -190,6 +222,40 @@ export async function selectBacklog(
     }
   }
 
+  // Before the fallback, which takes tickets only when the cap took none.
+  const ticketCapReached = capped || (!exhausted && selected.length >= cap);
+
+  /*
+    The fallback: nothing was taken by category, so the oldest tickets that
+    fit none are taken instead. Asked about in pages, oldest first, so a
+    board whose oldest tickets are already proposed still yields its next
+    oldest, and the proposal store is never handed the whole scan at once.
+  */
+  const fallbackLimit = Math.min(selection.fallbackOldest, cap);
+  let fallback = false;
+  if (selected.length === 0 && fallbackLimit > 0) {
+    for (
+      let from = 0;
+      from < unfitting.length && selected.length < fallbackLimit;
+      from += PAGE_SIZE
+    ) {
+      const chunk = unfitting.slice(from, from + PAGE_SIZE);
+      const live =
+        proposals === undefined
+          ? new Set<string>()
+          : await proposals.liveExternalIds(
+              organizationId,
+              board.id,
+              chunk.map((issue) => issue.id),
+            );
+      for (const issue of chunk) {
+        if (selected.length >= fallbackLimit) break;
+        if (!live.has(issue.id)) selected.push({ ...issue, categories: [] });
+      }
+    }
+    fallback = selected.length > 0;
+  }
+
   return {
     jql,
     selection,
@@ -199,10 +265,12 @@ export async function selectBacklog(
     unmatched,
     candidatesScanned,
     skippedLive,
+    skippedParents,
     scanLimitReached: !exhausted && candidatesScanned >= scanLimit,
     // Either a fitting ticket was turned away, or the cap was met with the
     // board unfinished and whatever remained unread.
-    ticketCapReached: capped || (!exhausted && selected.length >= cap),
+    ticketCapReached,
+    fallback,
     ...(knownTotal === undefined ? {} : { total: knownTotal }),
   };
 }

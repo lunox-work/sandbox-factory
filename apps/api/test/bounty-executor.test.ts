@@ -4,6 +4,7 @@ import { test } from "node:test";
 import type {
   BountyProposalStore,
   BountyRunStore,
+  BountySpecStore,
   JiraBoardStore,
   JiraIssueStore,
   StoredBountyRun,
@@ -13,14 +14,57 @@ import type {
   JiraIssueDto,
   JiraIssueSignalsDto,
 } from "@sandbox-factory/shared";
+import type { BountySizingResult, SpecDraft } from "sandbox-factory";
 
 import { BountyExecutor } from "../src/bounty/executor.js";
 import {
-  FakeSizer,
+  FakeCaller,
   SizerError,
-  type SizingInput,
   type SizingRequestOptions,
-} from "../src/sizing/sizer.js";
+  type StructuredCall,
+  type StructuredResult,
+} from "../src/sizing/caller.js";
+
+/** What the harness's tickets are drafted as, unless a test says otherwise. */
+const draft: SpecDraft = {
+  feature: "Issue behaviour",
+  background: [],
+  scenarios: [
+    {
+      id: "s1",
+      kind: "happy",
+      title: "The change works",
+      steps: [{ keyword: "Then", text: "the acceptance criteria hold" }],
+      origin: "draft",
+      weight: "moderate",
+      weightReason: "the ticket's core change",
+    },
+  ],
+  openQuestions: [],
+  assumptions: [],
+};
+
+function drafted(): StructuredResult<SpecDraft> {
+  return {
+    result: draft,
+    actualModel: "drafting-model",
+    usage: { inputTokens: 100, outputTokens: 40 },
+  };
+}
+
+type Answer<T> = StructuredResult<T> | Error;
+
+/**
+ * A caller that sizes from a queue, which is what most tests here are
+ * about, and drafts every ticket it is asked to unless given drafts of its
+ * own.
+ */
+function sizing(
+  sizes: Answer<BountySizingResult>[],
+  drafts: Answer<SpecDraft>[] | (() => Answer<SpecDraft>) = drafted,
+): FakeCaller {
+  return new FakeCaller("fake", { size_bounty: sizes, draft_spec: drafts });
+}
 
 const rateCard = {
   currency: "USD",
@@ -40,6 +84,7 @@ function run(overrides: Partial<StoredBountyRun> = {}): StoredBountyRun {
     kind: "backlog",
     sourceProposalId: null,
     sourceRevision: null,
+    respec: null,
     requestId: "28bb313f-252a-4a1d-b656-558a215b604b",
     status: "queued",
     selection: {
@@ -121,6 +166,8 @@ function spec(
     summary: `Issue ${id}`,
     descriptionText: "Clear acceptance criteria.",
     issueType: "Story",
+    components: [],
+    labels: [],
     updated: "2026-01-02T00:00:00.000Z",
     inputTruncated: false,
     specHash: "a".repeat(64),
@@ -132,7 +179,7 @@ function spec(
 function harness(options: {
   candidates?: (JiraIssueDto & Partial<JiraIssueSignalsDto>)[];
   specs?: Record<string, JiraIssueSpec | Error>;
-  sizer?: FakeSizer;
+  caller?: FakeCaller;
   createStatus?: "created" | "duplicate" | "lost-lease" | "not-found";
   writebackOperationId?: string;
   runOverrides?: Partial<StoredBountyRun>;
@@ -140,6 +187,10 @@ function harness(options: {
   issueError?: Error;
   /** The plan of the run a re-priced proposal came from. */
   originPlanned?: StoredBountyRun["planned"];
+  /** The board's pricing settings, as stored. */
+  pricing?: unknown;
+  /** How many sub-tasks an `issue` run's ticket has when read again. */
+  pickedSubtasks?: number;
 }) {
   const current = run(options.runOverrides);
   const plans: unknown[] = [];
@@ -217,6 +268,7 @@ function harness(options: {
     boardType: "scrum",
     projectKey: "APP",
     selection: current.selection,
+    pricing: options.pricing,
     createdAt: "2026-01-01T00:00:00.000Z",
   };
   const boards = {
@@ -308,7 +360,12 @@ function harness(options: {
     boardIssues: () => Promise.resolve({ issues: [], total: 0 }),
     issue: (id: string) =>
       options.issueError === undefined
-        ? Promise.resolve(issue(id, { summary: `Fresh ${id}` }))
+        ? Promise.resolve(
+            issue(id, {
+              summary: `Fresh ${id}`,
+              subtaskCount: options.pickedSubtasks ?? 0,
+            }),
+          )
         : Promise.reject(options.issueError),
     issueSpec: (id: string) => {
       const answer = options.specs?.[id] ?? spec(id);
@@ -317,9 +374,9 @@ function harness(options: {
         : Promise.resolve(answer);
     },
   };
-  const sizer =
-    options.sizer ??
-    new FakeSizer("fake", "jira-size-v1", [
+  const caller =
+    options.caller ??
+    sizing([
       {
         result: {
           complexity: "M",
@@ -335,7 +392,9 @@ function harness(options: {
     runs,
     proposals,
     issues,
-    sizer,
+    // No run here changes a spec: a respec run has its own tests.
+    specs: {} as BountySpecStore,
+    caller,
     clientFor: () => Promise.resolve({ ok: true, client }),
     now: () => new Date("2026-09-22T00:00:00.000Z"),
     leaseToken: () => "lease_1",
@@ -351,7 +410,7 @@ function harness(options: {
     proposalInputs,
     removed,
     startedWritebacks,
-    sizer,
+    caller,
   };
 }
 
@@ -400,7 +459,7 @@ test("a backlog run plans each ticket with the reason it was picked", async () =
       },
     ],
   ]);
-  assert.equal(state.sizer.calls.length, 1);
+  assert.equal(state.caller.inputsFor("size_bounty").length, 1);
   assert.deepEqual(state.finishes[0]?.details, {
     candidatesScanned: 2,
     skippedLive: 0,
@@ -413,9 +472,7 @@ test("a run sizes every ticket that fits, however many", async () => {
   const many = Array.from({ length: 60 }, (_, index) => issue(String(index)));
   const state = harness({
     candidates: many,
-    sizer: new FakeSizer(
-      "fake",
-      "jira-size-v1",
+    caller: sizing(
       many.map(() => ({
         result: {
           complexity: "S" as const,
@@ -437,26 +494,34 @@ test("a run sizes every ticket that fits, however many", async () => {
 test("tickets are sized against the deadline the plan set, not the claim's", async () => {
   // Recording the plan moves the deadline out by its size. Sizing against
   // the one the run was claimed with would cut a long run short.
-  class RecordingSizer extends FakeSizer {
+  class RecordingCaller extends FakeCaller {
     readonly deadlines: (Date | undefined)[] = [];
-    override size(input: SizingInput, options?: SizingRequestOptions) {
+    override call<I, O>(
+      tool: StructuredCall<I, O>,
+      input: I,
+      options?: SizingRequestOptions,
+    ) {
       this.deadlines.push(options?.deadlineAt);
-      return super.size(input);
+      return super.call(tool, input);
     }
   }
-  const recording = new RecordingSizer("fake", "jira-size-v1", [
-    {
-      result: { complexity: "S", confidence: "high", rationale: "Small." },
-      actualModel: "actual-model",
-      usage: { inputTokens: 1, outputTokens: 1 },
-    },
-  ]);
-  const state = harness({ sizer: recording });
+  const recording = new RecordingCaller("fake", {
+    draft_spec: [drafted()],
+    size_bounty: [
+      {
+        result: { complexity: "S", confidence: "high", rationale: "Small." },
+        actualModel: "actual-model",
+        usage: { inputTokens: 1, outputTokens: 1 },
+      },
+    ],
+  });
+  const state = harness({ caller: recording });
   await state.executor.execute("org_1", "brn_1");
 
+  // The draft and the size, both.
   assert.deepEqual(
     recording.deadlines.map((deadline) => deadline?.toISOString()),
-    [PLAN_DEADLINE],
+    [PLAN_DEADLINE, PLAN_DEADLINE],
   );
 });
 
@@ -464,7 +529,7 @@ test("a run that lost its lease before planning sizes nothing", async () => {
   const state = harness({ planHeld: false });
   await state.executor.execute("org_1", "brn_1");
 
-  assert.equal(state.sizer.calls.length, 0);
+  assert.equal(state.caller.inputsFor("size_bounty").length, 0);
   assert.equal(state.outcomes.length, 0);
   assert.equal(state.finishes.length, 0);
 });
@@ -479,7 +544,7 @@ test("an issue run sizes the one ticket it names, read fresh from Jira", async (
   await state.executor.execute("org_1", "brn_1");
 
   assert.equal(state.finishes[0]?.status, "succeeded");
-  assert.equal(state.sizer.calls.length, 1);
+  assert.equal(state.caller.inputsFor("size_bounty").length, 1);
   // Picked by a person, so there is no category to give as the reason.
   assert.deepEqual(state.plans, [
     [
@@ -495,6 +560,23 @@ test("an issue run sizes the one ticket it names, read fresh from Jira", async (
     (state.outcomes[0] as { proposalId?: string }).proposalId,
     "bpr_1",
   );
+});
+
+test("an issue run whose ticket was split into sub-tasks since it was picked sizes nothing", async () => {
+  const state = harness({
+    runOverrides: {
+      kind: "issue",
+      planned: [{ externalIssueId: "7", issueKey: "APP-7", summary: "Old" }],
+    },
+    pickedSubtasks: 2,
+  });
+  await state.executor.execute("org_1", "brn_1");
+
+  assert.deepEqual(state.finishes, [
+    { status: "failed", details: { fatalErrorCode: "issue_has_subtasks" } },
+  ]);
+  assert.equal(state.caller.calls.length, 0);
+  assert.equal(state.proposalInputs.length, 0);
 });
 
 test("an issue run without a ticket, or whose ticket is gone, fails", async () => {
@@ -513,7 +595,7 @@ test("an issue run without a ticket, or whose ticket is gone, fails", async () =
   });
   await gone.executor.execute("org_1", "brn_1");
   assert.equal(gone.finishes[0]?.status, "failed");
-  assert.equal(gone.sizer.calls.length, 0);
+  assert.equal(gone.caller.calls.length, 0);
 });
 
 test("a run persists sized drafts with snapshot pricing and usage", async () => {
@@ -537,15 +619,259 @@ test("a run persists sized drafts with snapshot pricing and usage", async () => 
       jiraIssueId: "jri_1",
       proposalId: "bpr_1",
       status: "proposed",
+      // The model that sized it; the spec records its own.
       actualModel: "actual-model",
-      inputTokens: 10,
-      outputTokens: 5,
+      // The draft's tokens and the size's, together.
+      inputTokens: 110,
+      outputTokens: 45,
     },
   ]);
 });
 
+test("a run drafts the spec first and stores it with the proposal", async () => {
+  const state = harness({
+    specs: {
+      "1": spec("1", { components: ["Reports"], labels: ["export"] }),
+    },
+  });
+  await state.executor.execute("org_1", "brn_1");
+
+  // The spec before the size, each from the same read of the ticket. The
+  // draft also reads what Jira says the ticket touches; the size is asked
+  // exactly as it was before there were specs.
+  assert.deepEqual(state.caller.calls, [
+    {
+      tool: "draft_spec",
+      input: {
+        summary: "Issue 1",
+        descriptionText: "Clear acceptance criteria.",
+        issueType: "Story",
+        components: ["Reports"],
+        labels: ["export"],
+      },
+    },
+    {
+      tool: "size_bounty",
+      input: {
+        summary: "Issue 1",
+        descriptionText: "Clear acceptance criteria.",
+        issueType: "Story",
+      },
+    },
+  ]);
+  // One write carries both, hashed from the same ticket.
+  const written = state.proposalInputs[0] as {
+    specHash: string;
+    specHashVersion: number;
+    spec: unknown;
+  };
+  assert.deepEqual(written.spec, {
+    specHash: written.specHash,
+    specHashVersion: written.specHashVersion,
+    draft,
+    origin: "draft",
+    actualModel: "drafting-model",
+    promptVersion: "draft-v2",
+  });
+});
+
+test("a sized ticket is written with a step of zero, priced at its own size", async () => {
+  const state = harness({});
+  await state.executor.execute("org_1", "brn_1");
+
+  const written = state.proposalInputs[0] as {
+    amountMinor: number;
+    step: Record<string, unknown> | null;
+  };
+  // A fresh draft has added nothing: the step is there to be moved later.
+  assert.deepEqual(written.step, {
+    base: "M",
+    complexity: "M",
+    steps: 0,
+    addedPoints: 0,
+    added: [],
+    nextStepIn: 4,
+    settings: {
+      pointsPerStep: 4,
+      weightPoints: { light: 1, moderate: 2, heavy: 4 },
+    },
+    stepVersion: "step-v1",
+  });
+  assert.equal(written.amountMinor, 200);
+});
+
+test("the step is counted with the board's own pricing settings", async () => {
+  const state = harness({
+    pricing: { step: { pointsPerStep: 6, weightPoints: { heavy: 9 } } },
+  });
+  await state.executor.execute("org_1", "brn_1");
+
+  const { step } = state.proposalInputs[0] as {
+    step: { nextStepIn: number; settings: unknown };
+  };
+  assert.equal(step.nextStepIn, 6);
+  assert.deepEqual(step.settings, {
+    pointsPerStep: 6,
+    weightPoints: { light: 1, moderate: 2, heavy: 9 },
+  });
+
+  // Settings it cannot read are the defaults, not a failed run.
+  const garbled = harness({ pricing: "not settings" });
+  await garbled.executor.execute("org_1", "brn_1");
+  assert.equal(garbled.finishes[0]?.status, "succeeded");
+});
+
+test("there is no step without a base or without weights to count", async () => {
+  const sized = {
+    result: {
+      complexity: "S" as const,
+      confidence: "high" as const,
+      rationale: "Small.",
+    },
+    actualModel: "actual-model",
+    usage: { inputTokens: 1, outputTokens: 1 },
+  };
+  const unsized = harness({
+    caller: sizing([
+      {
+        result: {
+          complexity: "unsized",
+          confidence: "low",
+          rationale: "Too vague.",
+          unsizedReason: "missing requirements",
+        },
+        actualModel: "actual-model",
+        usage: { inputTokens: 1, outputTokens: 1 },
+      },
+    ]),
+  });
+  const failedDraft = harness({
+    caller: sizing([sized], [new Error("private")]),
+  });
+  // A draft with no weights, as a provider that ignored the schema might
+  // still somehow produce: no step, rather than a step of nothing.
+  const weightless = harness({
+    caller: sizing([sized], () => ({
+      ...drafted(),
+      result: {
+        ...draft,
+        scenarios: draft.scenarios.map(
+          ({ weight: _weight, weightReason: _reason, ...scenario }) => scenario,
+        ),
+      },
+    })),
+  });
+  for (const state of [unsized, failedDraft, weightless]) {
+    await state.executor.execute("org_1", "brn_1");
+    const written = state.proposalInputs[0] as {
+      step: unknown;
+      amountMinor: number | null;
+    };
+    assert.equal(written.step, null);
+  }
+  assert.equal(
+    (failedDraft.proposalInputs[0] as { amountMinor: number }).amountMinor,
+    100,
+  );
+});
+
+test("a draft that fails costs the ticket its spec, not its proposal", async () => {
+  for (const failure of [
+    new Error("private provider detail"),
+    new SizerError("sizing_invalid_output", false),
+    new SizerError("sizing_timeout", false),
+  ]) {
+    const state = harness({
+      caller: sizing(
+        [
+          {
+            result: {
+              complexity: "S",
+              confidence: "high",
+              rationale: "Small.",
+            },
+            actualModel: "actual-model",
+            usage: { inputTokens: 2, outputTokens: 2 },
+          },
+        ],
+        [failure],
+      ),
+    });
+    await state.executor.execute("org_1", "brn_1");
+
+    // Proposed and priced as ever, and the run is not a failure for it.
+    assert.equal(state.finishes[0]?.status, "succeeded");
+    assert.equal("spec" in (state.proposalInputs[0] as object), false);
+    assert.equal(
+      (state.proposalInputs[0] as { amountMinor: number }).amountMinor,
+      100,
+    );
+    assert.deepEqual(state.outcomes, [
+      {
+        externalIssueId: "1",
+        issueKey: "APP-1",
+        jiraIssueId: "jri_1",
+        proposalId: "bpr_1",
+        status: "proposed",
+        code: "spec_failed",
+        actualModel: "actual-model",
+        inputTokens: 2,
+        outputTokens: 2,
+      },
+    ]);
+  }
+});
+
+test("a ticket that fails both calls is a sizing failure", async () => {
+  const state = harness({
+    caller: sizing([new Error("private")], [new Error("private")]),
+  });
+  await state.executor.execute("org_1", "brn_1");
+
+  assert.equal("spec" in (state.proposalInputs[0] as object), false);
+  assert.deepEqual(
+    state.outcomes.map((value) => {
+      const { status, code, inputTokens } = value as Record<string, unknown>;
+      return { status, code, inputTokens };
+    }),
+    [{ status: "failed", code: "sizing_failed", inputTokens: undefined }],
+  );
+});
+
+test("a draft that stops the run stops it before the size is asked for", async () => {
+  for (const [failure, fatalErrorCode] of [
+    [new SizerError("sizing_configuration", true), "sizing_configuration"],
+    [new SizerError("sizing_cancelled", false), "worker_lost"],
+  ] as const) {
+    const state = harness({ caller: sizing([], [failure]) });
+    await state.executor.execute("org_1", "brn_1");
+
+    assert.equal(state.finishes[0]?.status, "failed");
+    assert.equal(
+      (state.finishes[0]?.details as { fatalErrorCode: string }).fatalErrorCode,
+      fatalErrorCode,
+    );
+    assert.deepEqual(state.caller.inputsFor("size_bounty"), []);
+    assert.equal(state.proposalInputs.length, 0);
+    assert.deepEqual(state.outcomes, []);
+  }
+});
+
+test("a size cancelled under the run ends it as a lost worker", async () => {
+  const state = harness({
+    caller: sizing([new SizerError("sizing_cancelled", false)]),
+  });
+  await state.executor.execute("org_1", "brn_1");
+
+  assert.equal(
+    (state.finishes[0]?.details as { fatalErrorCode: string }).fatalErrorCode,
+    "worker_lost",
+  );
+  assert.equal(state.proposalInputs.length, 0);
+});
+
 test("short and truncated specs become unsized without model calls", async () => {
-  const sizer = new FakeSizer("fake", "jira-size-v1", []);
+  const caller = sizing([]);
   const state = harness({
     candidates: [issue("1"), issue("2")],
     specs: {
@@ -555,17 +881,25 @@ test("short and truncated specs become unsized without model calls", async () =>
     runOverrides: {
       selection: { ...run().selection, minSpecChars: 20 },
     },
-    sizer,
+    caller,
   });
   await state.executor.execute("org_1", "brn_1");
 
-  assert.equal(sizer.calls.length, 0);
+  // Neither a size nor a draft: there is nothing safe to draft from.
+  assert.equal(caller.calls.length, 0);
   assert.deepEqual(
     state.proposalInputs.map(
       (value) =>
         (value as { sizing: { unsizedReason?: string } }).sizing.unsizedReason,
     ),
     ["insufficient_spec", "spec_too_large"],
+  );
+  assert.ok(
+    state.proposalInputs.every((value) => !("spec" in (value as object))),
+  );
+  // No call, so no tokens to report.
+  assert.ok(
+    state.outcomes.every((value) => !("inputTokens" in (value as object))),
   );
   assert.deepEqual(
     state.outcomes.map((value) => (value as { status: string }).status),
@@ -574,7 +908,7 @@ test("short and truncated specs become unsized without model calls", async () =>
 });
 
 test("one technical sizing failure creates an unsized draft and a partial run", async () => {
-  const sizer = new FakeSizer("fake", "jira-size-v1", [
+  const caller = sizing([
     new Error("private provider detail"),
     {
       result: {
@@ -588,7 +922,7 @@ test("one technical sizing failure creates an unsized draft and a partial run", 
   ]);
   const state = harness({
     candidates: [issue("1"), issue("2")],
-    sizer,
+    caller,
   });
   await state.executor.execute("org_1", "brn_1");
 
@@ -609,9 +943,7 @@ test("one technical sizing failure creates an unsized draft and a partial run", 
 
 test("provider configuration failure is fatal and creates no draft", async () => {
   const state = harness({
-    sizer: new FakeSizer("fake", "jira-size-v1", [
-      new SizerError("sizing_configuration", true),
-    ]),
+    caller: sizing([new SizerError("sizing_configuration", true)]),
   });
   await state.executor.execute("org_1", "brn_1");
 
@@ -632,7 +964,7 @@ test("the first fatal code survives the cancellation it triggers", async () => {
   // must stay the configuration stop, not the `worker_lost` from the cascade.
   const state = harness({
     candidates: [issue("1"), issue("2"), issue("3")],
-    sizer: new FakeSizer("fake", "jira-size-v1", [
+    caller: sizing([
       new SizerError("sizing_configuration", true),
       new SizerError("sizing_cancelled", false),
       new SizerError("sizing_cancelled", false),
@@ -664,7 +996,7 @@ test("invalid Jira dates fail one ticket without inventing timestamps", async ()
       { ...issue("1", { created: null }), links },
       { ...issue("2", { updated: "bad" }), links },
     ],
-    sizer: new FakeSizer("fake", "jira-size-v1", []),
+    caller: sizing([]),
   });
   await state.executor.execute("org_1", "brn_1");
 
@@ -689,12 +1021,12 @@ test("a lost lease fences the proposal and fails the run", async () => {
 });
 
 test("an empty backlog succeeds without model calls", async () => {
-  const sizer = new FakeSizer("fake", "jira-size-v1", []);
-  const state = harness({ candidates: [], sizer });
+  const caller = sizing([]);
+  const state = harness({ candidates: [], caller });
   await state.executor.execute("org_1", "brn_1");
 
   assert.equal(state.finishes[0]?.status, "succeeded");
-  assert.equal(sizer.calls.length, 0);
+  assert.equal(caller.calls.length, 0);
 });
 
 test("re-price sizes only its source issue and updates it in place", async () => {
@@ -716,6 +1048,81 @@ test("re-price sizes only its source issue and updates it in place", async () =>
     "bpr_source",
   );
   assert.deepEqual(state.startedWritebacks, ["bwo_withdrawn"]);
+  // Drafted again, from the ticket as it is now.
+  assert.deepEqual(
+    (state.proposalInputs[0] as { spec: { draft: unknown } }).spec.draft,
+    draft,
+  );
+});
+
+test("a re-price that cannot draft leaves the proposal as it was", async () => {
+  // All or nothing: a new size with no spec would clear the pointer to a
+  // spec that may still be right.
+  const state = harness({
+    candidates: [],
+    runOverrides: {
+      kind: "reprice",
+      sourceProposalId: "bpr_source",
+      sourceRevision: 1,
+    },
+    caller: sizing(
+      [
+        {
+          result: { complexity: "S", confidence: "high", rationale: "Small." },
+          actualModel: "actual-model",
+          usage: { inputTokens: 2, outputTokens: 2 },
+        },
+      ],
+      [new SizerError("sizing_provider", false)],
+    ),
+  });
+  await state.executor.execute("org_1", "brn_1");
+
+  assert.equal(state.proposalInputs.length, 0);
+  assert.equal(state.finishes[0]?.status, "failed");
+  assert.deepEqual(state.outcomes, [
+    {
+      externalIssueId: "1",
+      issueKey: "APP-1",
+      jiraIssueId: "jri_1",
+      status: "failed",
+      code: "spec_failed",
+    },
+  ]);
+});
+
+test("a re-price that cannot size leaves the proposal as it was", async () => {
+  const state = harness({
+    candidates: [],
+    runOverrides: {
+      kind: "reprice",
+      sourceProposalId: "bpr_source",
+      sourceRevision: 1,
+    },
+    caller: sizing([new SizerError("sizing_provider", false)]),
+  });
+  await state.executor.execute("org_1", "brn_1");
+
+  assert.equal(state.proposalInputs.length, 0);
+  assert.equal((state.outcomes[0] as { code: string }).code, "sizing_failed");
+});
+
+test("a re-price of a ticket now too large to draft from carries no spec", async () => {
+  // No draft is asked for, so the proposal store clears the pointer.
+  const state = harness({
+    candidates: [],
+    specs: { "1": spec("1", { inputTruncated: true }) },
+    runOverrides: {
+      kind: "reprice",
+      sourceProposalId: "bpr_source",
+      sourceRevision: 1,
+    },
+  });
+  await state.executor.execute("org_1", "brn_1");
+
+  assert.equal(state.caller.calls.length, 0);
+  assert.equal(state.proposalInputs.length, 1);
+  assert.equal("spec" in (state.proposalInputs[0] as object), false);
 });
 
 test("a re-priced proposal keeps the reason its ticket was picked for", async () => {
@@ -776,7 +1183,7 @@ test("a re-priced proposal keeps the reason its ticket was picked for", async ()
 test("XS model sizing uses the distinct XS snapshot price", async () => {
   const state = harness({
     runOverrides: { rateCard: { ...rateCard, xsMinor: 50 } },
-    sizer: new FakeSizer("fake", "jira-size-v2", [
+    caller: sizing([
       {
         result: {
           complexity: "XS",

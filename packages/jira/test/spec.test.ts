@@ -72,6 +72,50 @@ test("SPEC_FIELDS asks for the description, and the list reads do not", () => {
   // `description`, so a board read cannot pull ticket text by accident.
   assert.ok(SPEC_FIELDS.includes("description"));
   assert.ok(SPEC_FIELDS.includes("summary"));
+  // What the spec draft reads beside the text.
+  assert.ok(SPEC_FIELDS.includes("components"));
+  assert.ok(SPEC_FIELDS.includes("labels"));
+});
+
+test("toIssueSpec reads components and labels, and hashes neither", async () => {
+  const fields = {
+    summary: "Add export",
+    description: "Adds CSV.",
+    issuetype: { name: "Story" },
+  };
+  const bare = await toIssueSpec("ACME-1", fields);
+  const tagged = await toIssueSpec("ACME-1", {
+    ...fields,
+    components: [{ id: "10000", name: "Reports" }, { name: "Billing" }],
+    labels: ["export", "q4"],
+  });
+
+  assert.deepEqual(bare.components, []);
+  assert.deepEqual(bare.labels, []);
+  assert.deepEqual(tagged.components, ["Reports", "Billing"]);
+  assert.deepEqual(tagged.labels, ["export", "q4"]);
+  // A component edit must not turn a priced proposal stale: the price hash
+  // is still version 1, summary, description and issue type.
+  assert.equal(tagged.pricingSpecHash, bare.pricingSpecHash);
+  assert.equal(tagged.specHash, bare.specHash);
+});
+
+test("malformed components and labels are dropped, not thrown on", async () => {
+  const spec = await toIssueSpec("ACME-1", {
+    summary: "Add export",
+    components: [null, "Reports", { name: 7 }, {}, { name: "Billing" }],
+    labels: ["export", 7, null, { name: "q4" }],
+  });
+  assert.deepEqual(spec.components, ["Billing"]);
+  assert.deepEqual(spec.labels, ["export"]);
+
+  const absent = await toIssueSpec("ACME-1", {
+    summary: "Add export",
+    components: "Reports",
+    labels: { 0: "export" },
+  });
+  assert.deepEqual(absent.components, []);
+  assert.deepEqual(absent.labels, []);
 });
 
 test("toIssueSpec flattens the description and hashes what it read", async () => {

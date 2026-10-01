@@ -5,6 +5,7 @@ import { CATEGORIES } from "sandbox-factory";
 
 import {
   accessibleResourceSchema,
+  boardPricingSchema,
   boardSelectionSchema,
   boardSelectionUpdateSchema,
   jiraBoardPageResponseSchema,
@@ -188,6 +189,31 @@ test("board selection defaults to every match, with nothing filtered", () => {
   assert.equal(selection.minSpecChars, 0);
   assert.equal(selection.maxAgeDays, undefined);
   assert.deepEqual(selection.categories, {});
+  // When nothing fits, the ten oldest rather than nothing.
+  assert.equal(selection.fallbackOldest, 10);
+});
+
+test("the oldest-first fallback can be resized or turned off, within bounds", () => {
+  assert.equal(
+    boardSelectionSchema.parse({ fallbackOldest: 0 }).fallbackOldest,
+    0,
+  );
+  assert.equal(
+    updateBoardSchema.parse({ selection: { fallbackOldest: 25 } }).selection
+      ?.fallbackOldest,
+    25,
+  );
+  for (const fallbackOldest of [-1, 1.5, 101]) {
+    assert.equal(
+      updateBoardSchema.safeParse({ selection: { fallbackOldest } }).success,
+      false,
+    );
+  }
+  // Older boards' `maxTickets: 10` is not read as the fallback's number.
+  assert.equal(
+    boardSelectionSchema.parse({ maxTickets: 3 }).fallbackOldest,
+    10,
+  );
 });
 
 test("settings from before categories are dropped, not honoured", () => {
@@ -430,4 +456,52 @@ test("a board summary carries the settings, not the tickets", () => {
 
   assert.equal(summary.selection.ticketCap, undefined);
   assert.equal("writebackEnabled" in summary, false);
+  // A summary from before board pricing reads as every default.
+  assert.deepEqual(summary.pricing, { step: {} });
+});
+
+test("an update may set pricing alone, and pricing updates are strict", () => {
+  const parsed = updateBoardSchema.parse({
+    pricing: { step: { pointsPerStep: 6, weightPoints: { heavy: null } } },
+  });
+  assert.equal(parsed.selection, undefined);
+  assert.deepEqual(parsed.pricing, {
+    step: { pointsPerStep: 6, weightPoints: { heavy: null } },
+  });
+  for (const step of [
+    { pointsPerStep: 0 },
+    { pointsPerStep: 1.5 },
+    { pointsPerSteps: 4 },
+    { weightPoints: { huge: 9 } },
+    { weightPoints: { light: -1 } },
+  ]) {
+    assert.equal(
+      updateBoardSchema.safeParse({ pricing: { step } }).success,
+      false,
+      JSON.stringify(step),
+    );
+  }
+});
+
+test("stored pricing drops what it cannot read rather than failing the board", () => {
+  assert.deepEqual(boardPricingSchema.parse({}), { step: {} });
+  const { step } = boardPricingSchema.parse({
+    step: {
+      pointsPerStep: 0,
+      weightPoints: { light: 3, retired: 2, heavy: "lots" },
+    },
+  });
+  assert.equal(step.pointsPerStep, undefined);
+  assert.equal(step.weightPoints?.["light"], 3);
+  assert.equal(step.weightPoints?.["heavy"], undefined);
+  assert.equal(
+    step.weightPoints !== undefined && "retired" in step.weightPoints,
+    false,
+  );
+  assert.equal(
+    boardPricingSchema.parse({ step: { weightPoints: "heavy" } }).step
+      .weightPoints,
+    undefined,
+  );
+  assert.deepEqual(boardPricingSchema.parse({ step: 7 }), { step: {} });
 });

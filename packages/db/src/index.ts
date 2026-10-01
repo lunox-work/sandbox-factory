@@ -21,13 +21,19 @@ export { generateId, ID_PREFIXES } from "./mapping.js";
 export type { IdPrefix } from "./mapping.js";
 export { runMigrations } from "./migrate.js";
 export type { MigrateOptions } from "./migrate.js";
-export { createJiraBoardStore, mergeSelection } from "./jira-boards.js";
+export {
+  createJiraBoardStore,
+  mergePricing,
+  mergeSelection,
+} from "./jira-boards.js";
 export type {
   JiraBoardStore,
   JiraBoardSummary,
   RegisterBoardInput,
+  StoredBoardPricing,
   StoredBoardSelection,
   StoredCategorySettings,
+  StoredStepSettings,
   SyncBoardInput,
   UpdateBoardInput,
 } from "./jira-boards.js";
@@ -54,10 +60,18 @@ export { createBountyProposalStore } from "./bounty-proposals.js";
 export type {
   BountyProposalStore,
   CreateBountyProposalInput,
+  LeasedBountyProposalInput,
   ListedBountyProposal,
   ProposalMutationResult,
   StoredBountyProposal,
 } from "./bounty-proposals.js";
+export { createBountySpecStore } from "./bounty-specs.js";
+export type {
+  BountySpecStore,
+  NewBountySpec,
+  StoredBountySpec,
+  StoredBountySpecRevision,
+} from "./bounty-specs.js";
 export { createBountyWritebackStore } from "./bounty-writebacks.js";
 export type {
   BountyWritebackStore,

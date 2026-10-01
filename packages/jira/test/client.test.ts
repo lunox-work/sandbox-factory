@@ -438,6 +438,34 @@ test("mapping fills in what a sparse Jira instance omits", () => {
   assert.equal(issue.issueType, "Task");
   assert.deepEqual(issue.labels, []);
   assert.equal(issue.url, null);
+  // No sub-tasks field is no sub-tasks.
+  assert.equal(issue.subtaskCount, 0);
+});
+
+test("a ticket's sub-tasks are counted, not carried", () => {
+  const issue = toIssueDto({
+    id: "1",
+    key: "ACME-5",
+    fields: {
+      subtasks: [
+        { id: "2", key: "ACME-6", fields: { summary: "Write the migration" } },
+        { id: "3", key: "ACME-7", fields: { summary: "Backfill" } },
+      ],
+    },
+  });
+  assert.equal(issue.subtaskCount, 2);
+  assert.equal(JSON.stringify(issue).includes("Backfill"), false);
+  // Every read asks for them, so every list can tell a parent.
+  assert.ok(ISSUE_FIELDS.includes("subtasks"));
+  // A shape it does not know is no sub-tasks, not a failed page.
+  assert.equal(
+    toIssueDto({
+      id: "1",
+      key: "ACME-8",
+      fields: { subtasks: "many" },
+    } as never).subtaskCount,
+    0,
+  );
 });
 
 test("an unrecognised status category is never guessed at", () => {

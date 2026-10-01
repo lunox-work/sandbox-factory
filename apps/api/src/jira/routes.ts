@@ -641,18 +641,26 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
 
     const parsed = updateBoardSchema.safeParse(await c.req.json());
     if (!parsed.success) {
-      return c.json({ error: "Provide selection settings." }, 400);
+      return c.json({ error: "Provide selection or pricing settings." }, 400);
     }
 
+    const { selection, pricing } = parsed.data;
     const updated = await boards.update(organizationId, c.req.param("id"), {
-      selection: Object.fromEntries(
-        // `maxAgeDays: null` clears the bound, and the store merges, so an
-        // undefined-stripping spread would drop the clear. Nulls are kept;
-        // only genuinely absent keys are removed.
-        Object.entries(parsed.data.selection).filter(
-          ([, value]) => value !== undefined,
-        ),
-      ),
+      ...(selection === undefined
+        ? {}
+        : {
+            selection: Object.fromEntries(
+              // `maxAgeDays: null` clears the bound, and the store merges, so
+              // an undefined-stripping spread would drop the clear. Nulls are
+              // kept; only genuinely absent keys are removed.
+              Object.entries(selection).filter(
+                ([, value]) => value !== undefined,
+              ),
+            ),
+          }),
+      // Merged by the store, which skips what is absent and clears what is
+      // null at every level, so it goes through as parsed.
+      ...(pricing === undefined ? {} : { pricing }),
     });
 
     if (updated === null) {

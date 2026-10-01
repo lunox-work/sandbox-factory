@@ -77,6 +77,8 @@ function proposal(): StoredBountyProposal {
     currency: "USD",
     status: "approved",
     revision: 2,
+    specRevision: null,
+    step: null,
     decidedAt: "2026-09-22T00:00:00.000Z",
     decidedBy: "usr_1",
     decisionDeliveryPolicy: "requested",

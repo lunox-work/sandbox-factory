@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type {
   BountyProposalStore,
   BountyRunStore,
+  BountySpecStore,
   BountyWritebackStore,
   JiraBoardStore,
   JiraConnectionStore,
@@ -20,21 +21,27 @@ import {
   proposalMutationSchema,
   repriceProposalSchema,
   resizeProposalSchema,
+  respecProposalSchema,
 } from "@sandbox-factory/shared";
 import type {
   BountyRunPlannedIssue,
   JiraIssueDto,
   ProposalCategoriesDto,
+  ProposalSpecRevisionsResponse,
 } from "@sandbox-factory/shared";
 import type { Hono } from "hono";
 import { stream } from "hono/streaming";
 import {
   CATEGORIES,
+  checkRespec,
   DEFAULT_RATE_CARD,
   priceFor,
+  rebaseStep,
+  SPEC_LIMITS,
   UNCATEGORIZED,
   validateRateCard,
   type PricedComplexity,
+  type RespecRefusal,
 } from "sandbox-factory";
 
 import type {
@@ -43,6 +50,7 @@ import type {
   RunJiraClient,
 } from "./executor.js";
 import type { BountyDelivery } from "./delivery.js";
+import { REVISE_SPEC_PROMPT_VERSION } from "../sizing/tools/revise-spec.js";
 import { freshProposal, mapConcurrent, proposalTitle } from "./review.js";
 
 export interface BountyRouteOptions {
@@ -50,6 +58,7 @@ export interface BountyRouteOptions {
   readonly runs: BountyRunStore;
   readonly boards: JiraBoardStore;
   readonly proposals: BountyProposalStore;
+  readonly specs: BountySpecStore;
   readonly issues: JiraIssueStore;
   readonly connections?: JiraConnectionStore;
   readonly writebacks?: BountyWritebackStore;
@@ -83,6 +92,11 @@ export type StartRunResult =
       readonly ok: false;
       readonly reason: "live-proposal";
       readonly proposalId: string;
+    }
+  | {
+      readonly ok: false;
+      readonly reason: "has-subtasks";
+      readonly issueKey: string;
     }
   | {
       readonly ok: false;
@@ -258,6 +272,11 @@ export async function startRun(
     if (proposalId !== undefined) {
       return { ok: false, reason: "live-proposal", proposalId };
     }
+    // The same rule as a backlog run: a ticket split into sub-tasks is
+    // priced through them, never itself.
+    if ((found.subtaskCount ?? 0) > 0) {
+      return { ok: false, reason: "has-subtasks", issueKey: found.key };
+    }
     planned = {
       externalIssueId: found.id,
       issueKey: found.key,
@@ -419,8 +438,10 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
           },
           409,
         );
+      // Only a run for one picked ticket meets these.
       case "not-found":
       case "live-proposal":
+      case "has-subtasks":
         return c.json({ error: "Not found" }, 404);
     }
   });
@@ -510,6 +531,9 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
           summary: issue.summary,
           status: issue.status,
           issueType: issue.issueType,
+          // Listed so a person finds it, but it cannot be added: see
+          // `startRun`.
+          subtaskCount: issue.subtaskCount ?? 0,
         })),
     });
   });
@@ -555,6 +579,14 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
     switch (started.reason) {
       case "live-proposal":
         return c.json({ proposalId: started.proposalId });
+      case "has-subtasks":
+        return c.json(
+          {
+            code: "has_subtasks",
+            error: `${started.issueKey} is split into sub-tasks. Size its sub-tasks instead.`,
+          },
+          409,
+        );
       case "sizing-unavailable":
         return c.json(
           {
@@ -805,6 +837,59 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
     });
   });
 
+  /*
+    The proposal's spec: the revision its size goes with. A stored read, so
+    it answers without Jira, which is why it is not part of the proposal's
+    own read above. Any member may read it, as any member may read the
+    proposal. `spec` is null for a proposal with none, which is an answer
+    and not an error: a proposal from before specs, or a ticket too large or
+    too thin to draft from.
+
+    `?revision=` reads an earlier revision of the same proposal's spec.
+  */
+  app.get("/api/v1/orgs/:orgId/proposals/:id/spec", async (c) => {
+    const { organizationId } = c.get("member");
+    const proposal = await options.proposals.get(
+      organizationId,
+      c.req.param("id"),
+    );
+    if (proposal === null) return c.json({ error: "Not found" }, 404);
+    const revision = specRevision(c.req.query("revision"));
+    if (revision === null) return c.json({ error: "Invalid revision." }, 400);
+    const wanted = revision ?? proposal.specRevision;
+    const spec =
+      wanted === null
+        ? null
+        : await options.specs.get(organizationId, proposal.id, wanted);
+    // A revision that was asked for by number and is not there is a miss;
+    // a proposal that simply has no spec is not.
+    if (spec === null && revision !== undefined) {
+      return c.json({ error: "Not found" }, 404);
+    }
+    return c.json({ spec });
+  });
+
+  /* Every revision the spec has had, newest first, without the scenarios. */
+  app.get("/api/v1/orgs/:orgId/proposals/:id/spec/revisions", async (c) => {
+    const { organizationId } = c.get("member");
+    const proposal = await options.proposals.get(
+      organizationId,
+      c.req.param("id"),
+    );
+    if (proposal === null) return c.json({ error: "Not found" }, 404);
+    const revisions = await options.specs.listRevisions(
+      organizationId,
+      proposal.id,
+    );
+    const body: ProposalSpecRevisionsResponse = {
+      revisions: revisions.map((revision) => ({
+        ...revision,
+        current: revision.revision === proposal.specRevision,
+      })),
+    };
+    return c.json(body);
+  });
+
   app.post("/api/v1/orgs/:orgId/proposals/:id/approve", async (c) => {
     const parsed = proposalMutationSchema.safeParse(
       await c.req.json().catch(() => null),
@@ -844,7 +929,18 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
         409,
       );
     }
-    const amountMinor = priceFor(parsed.data.complexity, proposal.rateCard);
+    /*
+      The reviewer's size is the base, and the step stays on top: weight a
+      reviewer added to the spec is never silently absorbed by a manual
+      size. The revision check above is what makes the step read here the
+      one being replaced.
+    */
+    const step =
+      proposal.step === null
+        ? null
+        : rebaseStep(proposal.step, parsed.data.complexity);
+    const complexity = step?.complexity ?? parsed.data.complexity;
+    const amountMinor = priceFor(complexity, proposal.rateCard);
     return proposalMutationResponse(
       c,
       await options.proposals.resize(
@@ -852,9 +948,10 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
         proposal.id,
         parsed.data.expectedRevision,
         c.get("user").id,
-        parsed.data.complexity,
+        complexity,
         amountMinor!,
         proposal.rateCard.currency,
+        step,
       ),
     );
   });
@@ -1102,6 +1199,153 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
     return c.json({ run: created.run }, 202);
   });
 
+  /**
+   * A change to a proposal's spec: more scenarios, answers to its open
+   * questions, or scenarios taken out. Every change is a run, as a re-price
+   * is, so it is followed the same way and fenced by the same lease; a
+   * trim asks no model but is still one, for the lease.
+   *
+   * Refused before the run when it could only fail: an approved proposal
+   * (unapprove first: an approval is made on a size), a proposal with no
+   * weighed spec (nothing for the step to move; re-analyze first), a
+   * request the current revision cannot take, or a ticket that changed
+   * since it was sized, whose spec the next re-price would replace.
+   */
+  app.post("/api/v1/orgs/:orgId/proposals/:id/respec", async (c) => {
+    const parsed = respecProposalSchema.safeParse(
+      await c.req.json().catch(() => null),
+    );
+    if (!parsed.success) return c.json({ error: "Invalid spec change." }, 400);
+    const { organizationId, role } = c.get("member");
+    const denied = requireAdmin(role);
+    if (denied !== null) return c.json(denied, 403);
+    if (
+      options.executor === undefined ||
+      options.requestedModel === undefined ||
+      options.clientFor === undefined
+    ) {
+      return c.json(
+        {
+          code: "sizing_unavailable",
+          error: "Sizing is not configured for this deployment.",
+        },
+        503,
+      );
+    }
+    const proposal = await options.proposals.get(
+      organizationId,
+      c.req.param("id"),
+    );
+    if (proposal === null) return c.json({ error: "Not found" }, 404);
+    if (proposal.revision !== parsed.data.expectedRevision) {
+      return c.json(
+        {
+          code: "proposal_changed",
+          error: "The proposal changed. Reload it before continuing.",
+          proposal,
+        },
+        409,
+      );
+    }
+    if (proposal.status !== "proposed") {
+      return c.json(
+        {
+          code: "proposal_approved",
+          error: "Unapprove the proposal before changing its scenarios.",
+        },
+        409,
+      );
+    }
+    const current =
+      proposal.step === null || proposal.specRevision === null
+        ? null
+        : await options.specs.get(
+            organizationId,
+            proposal.id,
+            proposal.specRevision,
+          );
+    if (current === null) {
+      return c.json(
+        {
+          code: "respec_unavailable",
+          error:
+            "This proposal has no weighed scenarios to change. Re-analyze it first.",
+        },
+        409,
+      );
+    }
+    const { request } = parsed.data;
+    const refusal = checkRespec(request, current.draft);
+    if (refusal !== null) {
+      return c.json({ code: refusal, error: RESPEC_REFUSALS[refusal] }, 409);
+    }
+    const fresh = await freshProposal(
+      {
+        proposals: options.proposals,
+        issues: options.issues,
+        boards: options.boards,
+        clientFor: options.clientFor,
+      },
+      organizationId,
+      proposal,
+    );
+    if (fresh.freshness !== "current") {
+      const stale = fresh.freshness === "stale";
+      return c.json(
+        {
+          code: stale ? "proposal_stale" : "spec_unavailable",
+          error: stale
+            ? "The ticket changed since it was sized. Re-analyze it before changing its scenarios."
+            : "The ticket could not be checked.",
+          freshness: fresh.freshness,
+        },
+        409,
+      );
+    }
+    const pointer = await options.issues.get(
+      organizationId,
+      proposal.jiraIssueId,
+    );
+    const board =
+      pointer === null
+        ? null
+        : await options.boards.get(organizationId, pointer.boardId);
+    if (board === null) return c.json({ error: "Not found" }, 404);
+    const created = await options.runs.create(organizationId, {
+      boardId: board.id,
+      startedBy: c.get("user").id,
+      kind: "respec",
+      sourceProposalId: proposal.id,
+      sourceRevision: proposal.revision,
+      respec: request,
+      requestId: parsed.data.requestId,
+      // Nothing is selected; the column holds every run's snapshot.
+      selection: boardSelectionSchema.parse(board.selection),
+      // The proposal's own card: a spec change moves the size, not the
+      // rates, as a resize does.
+      rateCard: proposal.rateCard,
+      requestedModel: options.requestedModel,
+      promptVersion: REVISE_SPEC_PROMPT_VERSION,
+    });
+    if (!created.ok) {
+      return c.json(
+        created.reason === "active"
+          ? {
+              code: "run_active",
+              error: "This proposal is already being changed.",
+              runId: created.runId,
+            }
+          : {
+              code: "proposal_changed",
+              error: "Could not change the scenarios.",
+            },
+        409,
+      );
+    }
+    if (created.created) options.executor.start(organizationId, created.run.id);
+    return c.json({ run: created.run }, 202);
+  });
+
   app.post("/api/v1/orgs/:orgId/writebacks/:id/retry", async (c) => {
     const { organizationId, role } = c.get("member");
     const denied = requireAdmin(role);
@@ -1320,6 +1564,17 @@ async function approveWithFreshSpec(
   );
 }
 
+/** What each refused spec change is told. */
+const RESPEC_REFUSALS: Readonly<Record<RespecRefusal, string>> = {
+  spec_full: `The spec already has ${SPEC_LIMITS.scenarios} scenarios. Remove some before adding more.`,
+  unknown_question:
+    "That question is no longer open. Reload the scenarios and try again.",
+  unknown_scenario:
+    "That scenario is no longer in the spec. Reload the scenarios and try again.",
+  spec_emptied:
+    "A spec needs a scenario or an open question. Keep at least one.",
+};
+
 function proposalMutationResponse(
   c: any,
   result: Awaited<ReturnType<BountyProposalStore["approve"]>>,
@@ -1364,6 +1619,15 @@ function proposalCategory(
   return /^[a-z0-9]+(-[a-z0-9]+)*$/.test(value) && value.length <= 64
     ? value
     : null;
+}
+
+/**
+ * The `revision` of a spec read: a positive whole number, or undefined for
+ * the revision the proposal points at. Null for anything else.
+ */
+function specRevision(value: string | undefined): number | undefined | null {
+  if (value === undefined || value === "") return undefined;
+  return /^[1-9]\d{0,8}$/.test(value) ? Number(value) : null;
 }
 
 /** Whether a Jira update for the proposal is still unresolved. */

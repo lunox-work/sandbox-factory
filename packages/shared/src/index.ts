@@ -142,6 +142,9 @@ export * from "./build-info.js";
 /** Bounty pricing, sizing, run and proposal contracts. */
 export * from "./bounty.js";
 
+/** A proposal's spec: the ticket's behaviour as Gherkin scenarios. */
+export * from "./spec.js";
+
 /** The Jira wire contract, for `packages/jira` and the routes that use it. */
 export * from "./jira.js";
 

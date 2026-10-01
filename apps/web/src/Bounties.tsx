@@ -5,13 +5,17 @@ import type {
   BountyWritebackDto,
   ProposalCategoriesDto,
   RateCardDto,
+  StepResultDto,
 } from "@sandbox-factory/shared";
 import {
   DEFAULT_RATE_CARD,
   maximumRateCardMinor,
   formatMinorUnits,
-  PRICED_BOUNTY_COMPLEXITIES,
+  nextHalfStep,
+  SCENARIO_WEIGHTS,
   UNCATEGORIZED,
+  WEIGHT_POINTS,
+  WHOLE_BOUNTY_COMPLEXITIES,
 } from "sandbox-factory";
 import {
   ChevronDown,
@@ -60,7 +64,15 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 import { CategoryIcon } from "./CategoryIcon";
 import { IssueSpec, IssueSpecSkeleton } from "./IssueSpec";
+import {
+  plural,
+  ProposalSpec,
+  scenarioTotal,
+  useProposalSpec,
+  WeightBadge,
+} from "./ProposalSpec";
 import { JiraIcon, ModelIcon } from "./ProviderIcon";
+import { useRespec } from "./SpecChanges";
 import type { JiraIssueDetail } from "./useJira";
 
 type EnrichedProposal = BountyProposalDto & {
@@ -1061,10 +1073,12 @@ export function BoardBounties({
     };
   }, []);
   // The board's own sizing run. A one-ticket run someone added is followed
-  // by the search that started it, not shown as the board's stream.
+  // by the search that started it, and a change to one proposal's spec by
+  // the proposal's peek: neither is shown as the board's stream.
   const active = runs.find(
     (run) =>
       run.kind !== "issue" &&
+      run.kind !== "respec" &&
       (run.status === "queued" || run.status === "running"),
   );
   /*
@@ -1489,9 +1503,26 @@ export function BoardBounties({
                           </Badge>
                         </span>
                         <span className="sm:w-12 sm:shrink-0">
-                          <Badge variant="outline" className="font-mono">
-                            {proposal.complexity}
-                          </Badge>
+                          {/*
+                            A dashed size is one with no weighed spec
+                            behind it: sized before weights, or with no
+                            draft at all. Re-analyzing weighs it, which a
+                            reviewer finds these rows to do.
+                          */}
+                          {unweighed(proposal) ? (
+                            <Badge
+                              variant="outline"
+                              className="border-dashed font-mono"
+                              title="No weighed scenarios: re-analyze to weigh them"
+                              data-unweighed=""
+                            >
+                              {proposal.complexity}
+                            </Badge>
+                          ) : (
+                            <Badge variant="outline" className="font-mono">
+                              {proposal.complexity}
+                            </Badge>
+                          )}
                         </span>
                         <span className="text-sm tabular-nums sm:w-24 sm:shrink-0 sm:text-right">
                           {money(proposal.amountMinor, proposal.currency)}
@@ -1562,6 +1593,7 @@ export function BoardBounties({
           )
         ) : (
           <ProposalPeek
+            base={base}
             proposal={selected}
             ticket={ticket}
             ticketError={ticketError}
@@ -1571,6 +1603,7 @@ export function BoardBounties({
             canDecide={canManage(role)}
             busy={busy}
             mutate={mutate}
+            onChanged={refresh}
             onRemoved={() => closeProposal(true)}
           />
         )}
@@ -1605,6 +1638,16 @@ interface TicketResult {
   summary: string;
   status: string;
   issueType: string;
+  /** How many sub-tasks it is split into. Absent from an older API. */
+  subtaskCount?: number;
+}
+
+/**
+ * Whether a found ticket can be sized. One split into sub-tasks is priced
+ * through them, never itself, so it is listed, to say why, but not offered.
+ */
+function addable(ticket: TicketResult): boolean {
+  return (ticket.subtaskCount ?? 0) === 0;
 }
 
 /**
@@ -1615,7 +1658,8 @@ interface TicketResult {
  * The search reads the board live from Jira and lists only tickets not yet
  * on the platform — one with a proposal is already in the list below.
  * Picking one starts a run for that ticket alone, follows it, and opens the
- * proposal the moment it lands.
+ * proposal the moment it lands. A ticket split into sub-tasks is shown but
+ * cannot be picked: its sub-tasks are what is sized.
  */
 function TicketSearch({
   base,
@@ -1786,9 +1830,10 @@ function TicketSearch({
           onChange={(event) => setQuery(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === "Escape") setQuery("");
-            if (event.key === "Enter" && results?.[0] !== undefined) {
+            const first = results?.find(addable);
+            if (event.key === "Enter" && first !== undefined) {
               event.preventDefault();
-              void pick(results[0]);
+              void pick(first);
             }
           }}
         />
@@ -1815,7 +1860,8 @@ function TicketSearch({
                 <li key={ticket.id}>
                   <button
                     type="button"
-                    className="hover:bg-muted/50 flex w-full items-center gap-3 px-3 py-2 text-left text-sm"
+                    className="hover:bg-muted/50 flex w-full items-center gap-3 px-3 py-2 text-left text-sm disabled:pointer-events-none disabled:opacity-60"
+                    disabled={!addable(ticket)}
                     onClick={() => void pick(ticket)}
                   >
                     <span className="w-20 shrink-0 font-mono text-xs">
@@ -1827,10 +1873,17 @@ function TicketSearch({
                     <span className="text-muted-foreground hidden shrink-0 text-xs sm:inline">
                       {ticket.status}
                     </span>
-                    <span className="text-primary flex shrink-0 items-center gap-1 text-xs font-medium">
-                      <Plus className="size-3.5" />
-                      Add
-                    </span>
+                    {addable(ticket) ? (
+                      <span className="text-primary flex shrink-0 items-center gap-1 text-xs font-medium">
+                        <Plus className="size-3.5" />
+                        Add
+                      </span>
+                    ) : (
+                      <span className="text-muted-foreground shrink-0 text-xs">
+                        {plural(ticket.subtaskCount ?? 0, "sub-task")}: size
+                        those
+                      </span>
+                    )}
                   </button>
                 </li>
               ))}
@@ -2012,13 +2065,25 @@ function capitalize(value: string): string {
 }
 
 /**
- * The open proposal, in two tabs.
+ * A size with no step behind it: its spec was drafted before scenarios
+ * were weighed, or it has none. A scenario added later cannot move it until
+ * the proposal is re-analyzed. An unsized proposal has no size to move.
+ */
+function unweighed(proposal: Pick<BountyProposalDto, "complexity" | "step">) {
+  // `?? null`: a row from an API that predates steps carries none at all.
+  return proposal.complexity !== "unsized" && (proposal.step ?? null) === null;
+}
+
+/**
+ * The open proposal, in three tabs.
  *
  * Bounty is the decision — one card of what the proposal is, with each
  * action beside the fact it changes (for those who may act), the model's
- * reasoning as prose, and where delivery to Jira stands. Spec is the ticket
- * itself, read live, so the decision is made against what Jira says now
- * rather than what was stored at sizing time.
+ * reasoning as prose, and where delivery to Jira stands. Scenarios is what
+ * the ticket was taken to ask for when it was sized, with the count in the
+ * tab once it is known. Spec is the ticket itself, read live, so the
+ * decision is made against what Jira says now rather than what was stored
+ * at sizing time.
  *
  * Two states. Proposed: Re-analyze (the re-price) beside the status, the
  * resize as the size itself level with the amount, and Approve after the
@@ -2029,6 +2094,7 @@ function capitalize(value: string): string {
  * unapprove do not.
  */
 function ProposalPeek({
+  base,
   proposal,
   ticket,
   ticketError,
@@ -2036,8 +2102,11 @@ function ProposalPeek({
   canDecide,
   busy,
   mutate,
+  onChanged,
   onRemoved,
 }: {
+  /** The organization's API root, for the reads the peek makes itself. */
+  base: string;
   proposal: EnrichedProposal;
   ticket: JiraIssueDetail | null;
   ticketError: string | null;
@@ -2049,6 +2118,8 @@ function ProposalPeek({
     body: object,
     options?: { apply?: boolean },
   ) => Promise<boolean>;
+  /** Reads the proposal again, after a change to its spec has landed. */
+  onChanged: () => Promise<void>;
   onRemoved: () => void;
 }) {
   const url = ticket?.url ?? proposal.liveUrl ?? null;
@@ -2058,6 +2129,22 @@ function ProposalPeek({
   const priced = proposal.amountMinor !== null;
   const open = proposal.status === "proposed";
   const key = proposal.liveKey ?? proposal.issueKey;
+  // Read when the peek opens, like the ticket, so the tab opens on it.
+  const spec = useProposalSpec(base, proposal.id, proposal.specRevision);
+  const scenarios = scenarioTotal(spec.read);
+  const step = proposal.step ?? null;
+  // A reviewer's changes to the spec, and the run each one starts.
+  const respec = useRespec(base, proposal.id, proposal.revision, onChanged);
+  // What a change moves is the step, so a proposal without one has nothing
+  // to change; an approved one is unapproved first.
+  const canChange =
+    canDecide &&
+    open &&
+    step !== null &&
+    (proposal.specRevision ?? null) !== null;
+  // The size a resize replaces: the step's base when there is a step, so a
+  // reviewer sees which whole size the half size stands on.
+  const sizeBase = step?.base ?? proposal.complexity;
   // The model pill and the XL warning drop a row when the notes are shown.
   const lowerRow =
     proposal.sizedBy === "reviewer" ? "sm:row-start-3" : "sm:row-start-2";
@@ -2072,6 +2159,14 @@ function ProposalPeek({
         <div className="flex flex-wrap items-center justify-between gap-3">
           <TabsList>
             <TabsTrigger value="bounty">Bounty</TabsTrigger>
+            <TabsTrigger value="scenarios">
+              Scenarios
+              {scenarios !== null && (
+                <span className="text-muted-foreground text-xs tabular-nums">
+                  {scenarios}
+                </span>
+              )}
+            </TabsTrigger>
             <TabsTrigger value="spec">Spec</TabsTrigger>
           </TabsList>
           {url !== null && (
@@ -2179,6 +2274,13 @@ function ProposalPeek({
                       with the current size drawn as the larger one. That
                       card is disabled, since it is not a change, but kept
                       solid rather than faded — it is the fact being shown.
+
+                      Five cards, one per whole size. A half size is where
+                      the scenario step lands, never a reviewer's choice,
+                      so it has no card of its own: it is shown on the
+                      card of the whole size below it, which reads "S+"
+                      while it is the size in force. A reviewer sets the
+                      whole size the step stands on.
                     */
                     <div
                       role="group"
@@ -2188,14 +2290,18 @@ function ProposalPeek({
                       {proposal.complexity === "unsized" && (
                         <SizeCard size="unsized" current />
                       )}
-                      {PRICED_BOUNTY_COMPLEXITIES.map((size) => {
-                        const current = proposal.complexity === size;
+                      {WHOLE_BOUNTY_COMPLEXITIES.map((size) => {
+                        const current =
+                          proposal.complexity === size ||
+                          proposal.complexity === `${size}+`;
+                        const isBase = sizeBase === size;
                         return (
                           <SizeCard
                             key={size}
-                            size={size}
+                            size={current ? proposal.complexity : size}
                             current={current}
-                            disabled={busy || current}
+                            pressed={isBase}
+                            disabled={busy || isBase}
                             onClick={() =>
                               void mutate(
                                 `/proposals/${proposal.id}/resize`,
@@ -2217,7 +2323,11 @@ function ProposalPeek({
                 {proposal.sizedBy === "reviewer" && (
                   <div className="text-muted-foreground flex items-baseline justify-between gap-x-6 text-xs sm:col-span-2 sm:row-start-2">
                     <span>the model said {proposal.modelComplexity}</span>
-                    <span className="text-right">set by a reviewer</span>
+                    <span className="text-right">
+                      {step !== null && step.steps > 0
+                        ? `${step.base} set by a reviewer`
+                        : "set by a reviewer"}
+                    </span>
                   </div>
                 )}
                 {/*
@@ -2267,6 +2377,10 @@ function ProposalPeek({
                 </div>
               )}
 
+            {/*
+              Why this size, in two parts: what the model made of the
+              ticket, and then what the spec's added weight made of that.
+            */}
             <div>
               <p className="text-muted-foreground mb-1.5 text-xs font-medium">
                 Why this size
@@ -2274,7 +2388,18 @@ function ProposalPeek({
               <p className="text-sm leading-relaxed">
                 {proposal.modelRationale}
               </p>
+              {canDecide && unweighed(proposal) && (
+                <p
+                  className="text-muted-foreground mt-1.5 text-xs"
+                  data-testid="proposal-unweighed"
+                >
+                  This size has no weighed scenarios, so a scenario added later
+                  cannot move it. Re-analyze drafts and weighs them.
+                </p>
+              )}
             </div>
+
+            {step !== null && <StepBlock step={step} />}
 
             {/* A rule before the decision: what follows is the act, not the record. */}
             <Separator />
@@ -2377,6 +2502,35 @@ function ProposalPeek({
           </div>
         </TabsContent>
 
+        {/*
+          What the ticket was taken to ask for when it was sized: after the
+          decision, which it supports, and before the ticket it was drafted
+          from.
+        */}
+        <TabsContent value="scenarios" className="mt-2">
+          <ProposalSpec
+            read={spec.read}
+            onRetry={spec.retry}
+            canAnalyze={canDecide}
+            weightPoints={step?.settings.weightPoints ?? WEIGHT_POINTS}
+            sizeReason={{
+              modelSize: proposal.modelComplexity,
+              rationale: proposal.modelRationale,
+              // The size the reviewer chose: the step's base when the
+              // spec's added weight has moved it on since.
+              reviewerSize: proposal.sizedBy === "reviewer" ? sizeBase : null,
+            }}
+            history={{
+              base,
+              proposalId: proposal.id,
+              specRevision: proposal.specRevision ?? null,
+            }}
+            {...(canChange
+              ? { changes: { control: respec, size: proposal.complexity } }
+              : {})}
+          />
+        </TabsContent>
+
         <TabsContent value="spec" className="mt-2">
           {ticketError !== null ? (
             <div className="flex min-h-48 flex-col items-start justify-center gap-3">
@@ -2403,12 +2557,67 @@ function ProposalPeek({
 }
 
 /**
+ * How the weight added to the spec since it was sized moved the size: the
+ * half steps it climbed, the points behind them and what the next half
+ * step needs, then the scenarios that brought the points. Nothing when no
+ * weight was added, which is every fresh sizing.
+ */
+function StepBlock({ step }: { step: StepResultDto }) {
+  if (step.addedPoints === 0) return null;
+  const next = nextHalfStep(step.complexity);
+  // Heaviest first: the scenarios that moved the size most lead.
+  const tally = [...SCENARIO_WEIGHTS].reverse().flatMap((weight) => {
+    const count = step.added.filter((added) => added.weight === weight).length;
+    return count === 0 ? [] : [`${count} ${weight}`];
+  });
+  return (
+    <div data-testid="proposal-step">
+      <p className="text-muted-foreground mb-1.5 text-xs font-medium">
+        Added to the spec
+      </p>
+      <p className="text-sm leading-relaxed">
+        {step.steps > 0 && (
+          <span className="font-mono font-medium">
+            {step.base} → {step.complexity}:{" "}
+          </span>
+        )}
+        {plural(step.addedPoints, "point")} added since it was sized
+        {tally.length > 0 && ` (${tally.join(", ")})`}.
+        {next !== null &&
+          step.nextStepIn !== null &&
+          ` ${next} needs ${step.nextStepIn} more.`}
+      </p>
+      {step.added.length > 0 && (
+        <ul className="mt-2 flex flex-col gap-1">
+          {step.added.map((scenario) => (
+            <li
+              key={scenario.id}
+              className="flex items-baseline justify-between gap-3 text-sm"
+            >
+              <span className="min-w-0 flex-1 leading-relaxed">
+                {scenario.title}
+              </span>
+              <span className="flex shrink-0 self-center">
+                <WeightBadge
+                  weight={scenario.weight}
+                  points={step.settings.weightPoints[scenario.weight]}
+                />
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/**
  * One size as a card. The current size is the larger card, drawn solid; the
  * others are small and quiet, and become buttons when `onClick` is given.
  * Without it the card is a plain label, which is what a member or an
  * approved proposal sees: the size, without the offer to change it.
  *
- * A resize does not swap elements, it swaps classes on the same five cards
+ * A resize does not swap elements, it swaps classes on the same cards
  * once the server answers, so the change is animated rather than snapped:
  * the old size shrinks and fades to quiet while the new one grows and
  * fills, on one eased curve. Everything that differs between the two
@@ -2434,16 +2643,20 @@ function ProposalPeek({
 function SizeCard({
   size,
   current,
+  pressed = current,
   disabled,
   onClick,
 }: {
   size: string;
   current: boolean;
+  /** Whether the button stands for the size in force; the current one by default. */
+  pressed?: boolean;
   disabled?: boolean;
   onClick?: () => void;
 }) {
   // Square: the minimum width is the height, and the padding is small
-  // enough that "XS" and "XL" fit inside it. Only "unsized" grows wider.
+  // enough that "XS" and "XL" fit inside it. "unsized" and a half size
+  // such as "XS+" grow wider.
   const shape = current
     ? "bg-primary text-primary-foreground border-primary h-12 min-w-12 px-2 text-lg font-extrabold shadow-sm"
     : "bg-card text-muted-foreground hover:text-foreground hover:border-foreground/30 h-7 min-w-7 px-1 text-xs";
@@ -2456,7 +2669,7 @@ function SizeCard({
       type="button"
       className={`${className} outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 active:scale-[0.98] motion-reduce:active:scale-100`}
       disabled={disabled}
-      aria-pressed={current}
+      aria-pressed={pressed}
       onClick={onClick}
     >
       {size}

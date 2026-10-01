@@ -22,10 +22,12 @@ test("the order is stable, so two runs page the same tickets the same way", () =
   assert.match(jql(), /ORDER BY created ASC, key ASC$/);
 });
 
-test("epics and sub-tasks are excluded structurally", () => {
-  // An epic is a container for work rather than work; a sub-task is priced
-  // with its parent.
-  assert.match(jql(), /issuetype not in \(Epic, subTaskIssueTypes\(\)\)/);
+test("epics are excluded structurally, and sub-tasks are candidates", () => {
+  // An epic is a container for work rather than work. A sub-task is work:
+  // it is what a ticket split into sub-tasks is priced through, so the JQL
+  // leaves it in, and the parent is left out after the read.
+  assert.match(jql(), /issuetype not in \(Epic\)/);
+  assert.doesNotMatch(jql(), /subTaskIssueTypes/);
 });
 
 test("assigned tickets are candidates unless the board says otherwise", () => {

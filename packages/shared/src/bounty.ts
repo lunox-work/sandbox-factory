@@ -1,12 +1,33 @@
 import {
   BOUNTY_COMPLEXITIES,
+  BOUNTY_RUN_KINDS,
   maximumRateCardMinor,
+  MODEL_BOUNTY_COMPLEXITIES,
   PRICED_BOUNTY_COMPLEXITIES,
+  SCENARIO_WEIGHTS,
+  STEP_SETTING_LIMITS,
+  WHOLE_BOUNTY_COMPLEXITIES,
 } from "sandbox-factory";
 import { z } from "zod";
 
+import {
+  respecRequestSchema,
+  scenarioKindSchema,
+  scenarioWeightSchema,
+} from "./spec.js";
+
+/** Any size a proposal can hold, half sizes included, or `unsized`. */
 export const bountyComplexitySchema = z.enum(BOUNTY_COMPLEXITIES);
+/** Any size a proposal can be priced at, half sizes included. */
 export const pricedComplexitySchema = z.enum(PRICED_BOUNTY_COMPLEXITIES);
+/**
+ * The five sizes a person or the model judges in. The model never answers
+ * a half size and a resize never sets one: a half size is only ever where
+ * the scenario step lands.
+ */
+export const wholeComplexitySchema = z.enum(WHOLE_BOUNTY_COMPLEXITIES);
+/** What the sizing model may answer: a whole size, or `unsized`. */
+export const modelComplexitySchema = z.enum(MODEL_BOUNTY_COMPLEXITIES);
 export const sizingConfidenceSchema = z.enum(["low", "medium", "high"]);
 
 const minorAmountSchema = z
@@ -60,7 +81,7 @@ export const putRateCardSchema = rateCardValuesSchema
 
 export const sizingResultSchema = z
   .object({
-    complexity: bountyComplexitySchema,
+    complexity: modelComplexitySchema,
     confidence: sizingConfidenceSchema,
     rationale: z.string().trim().min(1).max(500),
     unsizedReason: z.string().trim().min(1).max(120).optional(),
@@ -82,7 +103,8 @@ export const sizingResultSchema = z
     }
   });
 
-export const bountyRunKindSchema = z.enum(["backlog", "reprice", "issue"]);
+/** What a run does: core's `BOUNTY_RUN_KINDS`. */
+export const bountyRunKindSchema = z.enum(BOUNTY_RUN_KINDS);
 export const bountyRunStatusSchema = z.enum([
   "queued",
   "running",
@@ -107,6 +129,13 @@ export const bountyRunOutcomeSchema = z.object({
   actualModel: z.string().min(1).max(200).optional(),
   inputTokens: z.number().int().nonnegative().optional(),
   outputTokens: z.number().int().nonnegative().optional(),
+  /**
+   * A respec's only: the size before the change, and the points the change
+   * moved the spec by, negative for a trim. The size after is the
+   * proposal's.
+   */
+  previousComplexity: bountyComplexitySchema.optional(),
+  pointsDelta: z.number().int().optional(),
 });
 
 /** Why a backlog run picked a ticket: one category it fits, and the case. */
@@ -156,6 +185,8 @@ export const bountyRunDtoSchema = z.object({
   kind: bountyRunKindSchema,
   sourceProposalId: z.string().nullable(),
   sourceRevision: z.number().int().positive().nullable(),
+  /** What a `respec` run was asked to do; null for every other kind. */
+  respec: respecRequestSchema.nullable(),
   requestId: z.uuid(),
   status: bountyRunStatusSchema,
   selection: z.record(z.string(), z.unknown()),
@@ -182,6 +213,49 @@ export const addIssueSchema = z.object({
   issueId: z.string().regex(/^\d{1,18}$/),
 });
 
+const stepPointsSchema = z
+  .number()
+  .int()
+  .min(STEP_SETTING_LIMITS.minWeightPoints)
+  .max(STEP_SETTING_LIMITS.maxPoints);
+
+/** The settings a step was computed with: `pricing/step` in core. */
+export const stepSettingsSchema = z.object({
+  pointsPerStep: z
+    .number()
+    .int()
+    .min(STEP_SETTING_LIMITS.minPointsPerStep)
+    .max(STEP_SETTING_LIMITS.maxPoints),
+  weightPoints: z.object(
+    Object.fromEntries(
+      SCENARIO_WEIGHTS.map((weight) => [weight, stepPointsSchema]),
+    ) as Record<(typeof SCENARIO_WEIGHTS)[number], typeof stepPointsSchema>,
+  ),
+});
+
+/**
+ * How the weight a reviewer added to the spec moved the size: the base,
+ * the half steps it climbed and the scenarios behind them. Stored on the
+ * proposal as computed, so it reads the same after the settings change.
+ */
+export const stepResultSchema = z.object({
+  base: wholeComplexitySchema,
+  complexity: pricedComplexitySchema,
+  steps: z.number().int().nonnegative(),
+  addedPoints: z.number().int().nonnegative(),
+  added: z.array(
+    z.object({
+      id: z.string().min(1),
+      kind: scenarioKindSchema,
+      title: z.string().min(1),
+      weight: scenarioWeightSchema,
+    }),
+  ),
+  nextStepIn: z.number().int().positive().nullable(),
+  settings: stepSettingsSchema,
+  stepVersion: z.string().min(1),
+});
+
 export const bountyProposalStatusSchema = z.enum(["proposed", "approved"]);
 export const proposalFreshnessSchema = z.enum([
   "current",
@@ -199,7 +273,7 @@ export const bountyProposalDtoSchema = z.object({
   specHash: z.string().length(64),
   specHashVersion: z.number().int().positive(),
   rateCard: rateCardSnapshotSchema,
-  modelComplexity: bountyComplexitySchema,
+  modelComplexity: modelComplexitySchema,
   modelConfidence: sizingConfidenceSchema,
   modelRationale: z.string().max(500),
   unsizedReason: z.string().nullable(),
@@ -214,6 +288,18 @@ export const bountyProposalDtoSchema = z.object({
   currency: z.string().length(3).nullable(),
   status: bountyProposalStatusSchema,
   revision: z.number().int().positive(),
+  /**
+   * The spec revision this size goes with. Null when the proposal has no
+   * spec: one sized before specs existed, or one whose ticket could not be
+   * drafted from.
+   */
+  specRevision: z.number().int().positive().nullable(),
+  /**
+   * The scenario step `complexity` came from. Null when there is none to
+   * take: an unsized ticket, a proposal with no spec, or one whose spec was
+   * drafted before weights. Then `complexity` is the base itself.
+   */
+  step: stepResultSchema.nullable(),
   decidedAt: z.iso.datetime().nullable(),
   decidedBy: z.string().nullable(),
   decisionDeliveryPolicy: z.enum(["off", "requested"]).nullable(),
@@ -226,11 +312,24 @@ export const bountyProposalDtoSchema = z.object({
 export const proposalMutationSchema = z.object({
   expectedRevision: z.number().int().positive(),
 });
+/**
+ * A reviewer's size. Whole sizes only: it sets the base, and the step
+ * still applies on top, so a reviewer who says M on a spec that grew a
+ * heavy scenario gets M+.
+ */
 export const resizeProposalSchema = proposalMutationSchema.extend({
-  complexity: pricedComplexitySchema,
+  complexity: wholeComplexitySchema,
 });
 export const repriceProposalSchema = proposalMutationSchema.extend({
   requestId: z.uuid(),
+});
+/**
+ * A change to a proposal's spec: grow it, answer its questions or trim
+ * it. Like a re-price it starts a run, named by `requestId`, against the
+ * proposal revision the reviewer saw.
+ */
+export const respecProposalSchema = repriceProposalSchema.extend({
+  request: respecRequestSchema,
 });
 
 export const proposalFreshnessDtoSchema = z.object({
@@ -283,6 +382,8 @@ export type RateCardValuesDto = z.infer<typeof rateCardValuesSchema>;
 export type RateCardSnapshotDto = z.infer<typeof rateCardSnapshotSchema>;
 export type RateCardDto = z.infer<typeof rateCardDtoSchema>;
 export type SizingResult = z.infer<typeof sizingResultSchema>;
+export type StepSettingsDto = z.infer<typeof stepSettingsSchema>;
+export type StepResultDto = z.infer<typeof stepResultSchema>;
 export type BountyRunOutcome = z.infer<typeof bountyRunOutcomeSchema>;
 export type BountyCategoryMatch = z.infer<typeof bountyCategoryMatchSchema>;
 export type ProposalCategoriesDto = z.infer<typeof proposalCategoriesDtoSchema>;

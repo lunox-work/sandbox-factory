@@ -1,18 +1,10 @@
-import { BOUNTY_COMPLEXITIES } from "sandbox-factory";
-import { sizingResultSchema } from "@sandbox-factory/shared";
-
-import { JIRA_SIZE_PROMPT_VERSION, JIRA_SIZE_SYSTEM_PROMPT } from "./prompt.js";
+import type { StructuredCall } from "./caller.js";
 import {
-  SizerError,
-  type SizedTicket,
-  type Sizer,
-  type SizingInput,
-  type SizingRequestOptions,
-} from "./sizer.js";
+  RetryingCaller,
+  type ProviderReply,
+  type RetryingCallerOptions,
+} from "./retrying.js";
 
-const TOOL_NAME = "size_bounty";
-const MAX_ATTEMPTS = 2;
-const ATTEMPT_TIMEOUT_MS = 45_000;
 const DEFAULT_BASE_URL = "https://api.deepseek.com";
 
 /**
@@ -25,6 +17,7 @@ const DEFAULT_BASE_URL = "https://api.deepseek.com";
 interface CompletionResponse {
   readonly model: string;
   readonly choices: readonly {
+    readonly finish_reason?: string | null;
     readonly message?: {
       readonly tool_calls?: readonly {
         readonly function?: {
@@ -51,175 +44,74 @@ export interface CompletionsClient {
   ): Promise<CompletionResponse>;
 }
 
-export interface DeepSeekSizerOptions {
+export interface DeepSeekCallerOptions extends RetryingCallerOptions {
   readonly apiKey?: string;
-  readonly model: string;
   readonly baseUrl?: string;
   readonly completions?: CompletionsClient;
-  readonly now?: () => number;
-  readonly sleep?: (milliseconds: number) => Promise<void>;
-  readonly attemptTimeoutMs?: number;
 }
 
 /**
- * The fallback provider, behind the same `Sizer` contract as `AnthropicSizer`
- * and with the same two-attempt budget, deadline handling, and fixed error
- * codes. Nothing upstream can tell the two apart except by `actualModel`,
- * which is recorded per sized ticket.
+ * The fallback provider, behind the same `StructuredCaller` contract as
+ * `AnthropicCaller` and, through `RetryingCaller`, with the same two-attempt
+ * budget, deadline handling, and fixed error codes. Nothing upstream can
+ * tell the two apart except by `actualModel`, which is recorded with every
+ * result.
  */
-export class DeepSeekSizer implements Sizer {
-  readonly model: string;
-  readonly promptVersion = JIRA_SIZE_PROMPT_VERSION;
+export class DeepSeekCaller extends RetryingCaller {
   readonly #completions: CompletionsClient;
-  readonly #now: () => number;
-  readonly #sleep: (milliseconds: number) => Promise<void>;
-  readonly #attemptTimeoutMs: number;
 
-  constructor(options: DeepSeekSizerOptions) {
-    this.model = options.model;
+  constructor(options: DeepSeekCallerOptions) {
+    super(options);
     this.#completions =
       options.completions ??
       fetchCompletions(options.baseUrl ?? DEFAULT_BASE_URL, options.apiKey);
-    this.#now = options.now ?? Date.now;
-    this.#sleep =
-      options.sleep ??
-      ((milliseconds) =>
-        new Promise((resolve) => setTimeout(resolve, milliseconds)));
-    this.#attemptTimeoutMs = options.attemptTimeoutMs ?? ATTEMPT_TIMEOUT_MS;
   }
 
-  async size(
-    input: SizingInput,
-    options: SizingRequestOptions = {},
-  ): Promise<SizedTicket> {
-    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
-      if (isAborted(options.signal)) {
-        throw new SizerError("sizing_cancelled", false);
-      }
-
-      const attemptSignal = this.#attemptSignal(options);
-      try {
-        const completion = await this.#completions.create(
-          this.#request(input, attempt > 0),
-          { signal: attemptSignal.signal },
-        );
-        const parsed = parseCompletion(completion);
-        if (parsed !== null) return parsed;
-        if (attempt === MAX_ATTEMPTS - 1) {
-          throw new SizerError("sizing_invalid_output", false);
-        }
-      } catch (error) {
-        if (error instanceof SizerError) throw error;
-        if (isAborted(options.signal)) {
-          throw new SizerError("sizing_cancelled", false);
-        }
-        if (attemptSignal.timedOut()) {
-          if (attempt === MAX_ATTEMPTS - 1) {
-            throw new SizerError("sizing_timeout", false);
-          }
-        } else if (isConfigurationError(error)) {
-          throw new SizerError("sizing_configuration", true);
-        } else if (!isTransient(error) || attempt === MAX_ATTEMPTS - 1) {
-          throw new SizerError("sizing_provider", false);
-        }
-
-        await this.#waitForRetry(error, options);
-      } finally {
-        attemptSignal.cleanup();
-      }
-    }
-
-    throw new SizerError("sizing_invalid_output", false);
-  }
-
-  #request(input: SizingInput, retry: boolean): Record<string, unknown> {
-    return {
-      model: this.model,
-      max_tokens: 1_024,
-      // DeepSeek's current models (deepseek-v4-pro, deepseek-flash) run in
-      // thinking mode by default, and thinking mode rejects a forced
-      // `tool_choice` with 400 "Thinking mode does not support this
-      // tool_choice" — which `isConfigurationError` would turn into a run
-      // stop. Sizing is one bounded classification, so thinking buys nothing
-      // here and would otherwise spend the `max_tokens` budget on reasoning.
-      thinking: { type: "disabled" },
-      messages: [
-        { role: "system", content: JIRA_SIZE_SYSTEM_PROMPT },
-        {
-          role: "user",
-          content: `${retry ? "The previous result was invalid. Return exactly one valid tool call.\n\n" : ""}Ticket data:\n${JSON.stringify(input)}`,
-        },
-      ],
-      tools: [
-        {
-          type: "function",
-          function: {
-            name: TOOL_NAME,
-            description:
-              "Return the ticket size and a short private rationale.",
-            parameters: {
-              type: "object",
-              additionalProperties: false,
-              properties: {
-                complexity: { enum: [...BOUNTY_COMPLEXITIES] },
-                confidence: { enum: ["low", "medium", "high"] },
-                rationale: { type: "string", minLength: 1, maxLength: 500 },
-                unsizedReason: { type: "string", minLength: 1, maxLength: 120 },
-              },
-              required: ["complexity", "confidence", "rationale"],
+  protected override async send<I, O>(
+    tool: StructuredCall<I, O>,
+    message: string,
+    signal: AbortSignal,
+  ): Promise<ProviderReply> {
+    const completion = await this.#completions.create(
+      {
+        model: this.model,
+        max_tokens: tool.maxTokens,
+        // DeepSeek's current models (deepseek-v4-pro, deepseek-flash) run in
+        // thinking mode by default, and thinking mode rejects a forced
+        // `tool_choice` with 400 "Thinking mode does not support this
+        // tool_choice" — which a caller classifies as a configuration
+        // error, a run stop. Each call here is one bounded extraction, so
+        // thinking buys nothing and would otherwise spend the `max_tokens`
+        // budget on reasoning.
+        thinking: { type: "disabled" },
+        messages: [
+          { role: "system", content: tool.system },
+          { role: "user", content: message },
+        ],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: tool.name,
+              description: tool.description,
+              // The schema as the tool declares it: unlike Anthropic's
+              // strict mode, this endpoint takes the limits as written.
+              parameters: tool.schema,
             },
           },
-        },
-      ],
-      tool_choice: { type: "function", function: { name: TOOL_NAME } },
-    };
-  }
-
-  #attemptSignal(options: SizingRequestOptions): {
-    signal: AbortSignal;
-    timedOut: () => boolean;
-    cleanup: () => void;
-  } {
-    const controller = new AbortController();
-    const remaining =
-      options.deadlineAt === undefined
-        ? this.#attemptTimeoutMs
-        : Math.max(0, options.deadlineAt.getTime() - this.#now());
-    let didTimeOut = remaining === 0;
-    const timer = setTimeout(
-      () => {
-        didTimeOut = true;
-        controller.abort();
+        ],
+        tool_choice: { type: "function", function: { name: tool.name } },
       },
-      Math.min(this.#attemptTimeoutMs, remaining),
+      { signal },
     );
-    const cancel = () => controller.abort();
-    options.signal?.addEventListener("abort", cancel, { once: true });
-    if (didTimeOut) controller.abort();
     return {
-      signal: controller.signal,
-      timedOut: () => didTimeOut,
-      cleanup: () => {
-        clearTimeout(timer);
-        options.signal?.removeEventListener("abort", cancel);
+      outcome: outcomeOf(completion, tool.name),
+      actualModel: completion.model,
+      usage: {
+        inputTokens: completion.usage.prompt_tokens,
+        outputTokens: completion.usage.completion_tokens,
       },
     };
-  }
-
-  async #waitForRetry(
-    error: unknown,
-    options: SizingRequestOptions,
-  ): Promise<void> {
-    const retryAfter = retryAfterMs(error);
-    const delay = retryAfter ?? 500;
-    const remaining =
-      options.deadlineAt === undefined
-        ? Number.POSITIVE_INFINITY
-        : options.deadlineAt.getTime() - this.#now();
-    if (delay >= remaining) {
-      throw new SizerError("sizing_timeout", false);
-    }
-    await this.#sleep(Math.min(delay, 30_000));
   }
 }
 
@@ -265,66 +157,24 @@ class ProviderHttpError extends Error {
   }
 }
 
-function parseCompletion(completion: CompletionResponse): SizedTicket | null {
-  const toolCalls = completion.choices[0]?.message?.tool_calls ?? [];
-  if (toolCalls.length !== 1) return null;
+function outcomeOf(
+  completion: CompletionResponse,
+  toolName: string,
+): ProviderReply["outcome"] {
+  const choice = completion.choices[0];
+  if (choice?.finish_reason === "length") return { kind: "cut-off" };
+  const toolCalls = choice?.message?.tool_calls ?? [];
+  if (toolCalls.length !== 1) return { kind: "no-call" };
   const call = toolCalls[0]?.function;
-  if (call?.name !== TOOL_NAME || typeof call.arguments !== "string") {
-    return null;
+  if (call?.name !== toolName || typeof call.arguments !== "string") {
+    return { kind: "no-call" };
   }
 
-  let args: unknown;
   try {
-    args = JSON.parse(call.arguments);
+    return { kind: "call", args: JSON.parse(call.arguments) };
   } catch {
-    // A truncated or non-JSON argument string is an invalid result, not a
-    // crash: the caller's retry handles it like any other malformed output.
-    return null;
+    // A non-JSON argument string is an invalid result, not a crash: the
+    // caller's retry handles it like any other malformed output.
+    return { kind: "no-call" };
   }
-
-  const parsed = sizingResultSchema.safeParse(args);
-  if (!parsed.success) return null;
-  return {
-    result: parsed.data,
-    actualModel: completion.model,
-    usage: {
-      inputTokens: completion.usage.prompt_tokens,
-      outputTokens: completion.usage.completion_tokens,
-    },
-  };
-}
-
-function statusOf(error: unknown): number | undefined {
-  return typeof error === "object" &&
-    error !== null &&
-    "status" in error &&
-    typeof error.status === "number"
-    ? error.status
-    : undefined;
-}
-
-function isAborted(signal: AbortSignal | undefined): boolean {
-  return signal?.aborted === true;
-}
-
-function isConfigurationError(error: unknown): boolean {
-  const status = statusOf(error);
-  return status === 400 || status === 401 || status === 403 || status === 404;
-}
-
-function isTransient(error: unknown): boolean {
-  const status = statusOf(error);
-  return (
-    status === undefined || status === 408 || status === 429 || status >= 500
-  );
-}
-
-function retryAfterMs(error: unknown): number | undefined {
-  if (typeof error !== "object" || error === null || !("headers" in error)) {
-    return undefined;
-  }
-  const headers = error.headers;
-  if (!(headers instanceof Headers)) return undefined;
-  const seconds = Number(headers.get("retry-after"));
-  return Number.isFinite(seconds) && seconds >= 0 ? seconds * 1_000 : undefined;
 }

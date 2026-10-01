@@ -64,18 +64,23 @@ export type {
 } from "./schema/jira.js";
 
 export {
+  BOUNTY_SPEC_ORIGINS,
   bountyProposal,
   bountyRun,
+  bountySpec,
   bountyWriteback,
   rateCard,
 } from "./schema/bounty.js";
 export type {
   BountyProposalRow,
   BountyRunRow,
+  BountySpecOrigin,
+  BountySpecRow,
   BountyWritebackPayload,
   BountyWritebackRow,
   NewBountyProposalRow,
   NewBountyRunRow,
+  NewBountySpecRow,
   NewBountyWritebackRow,
   NewRateCardRow,
   RateCardRow,
