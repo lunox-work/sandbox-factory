@@ -82,6 +82,7 @@ function proposal(): StoredBountyProposal {
     decidedAt: "2026-09-22T00:00:00.000Z",
     decidedBy: "usr_1",
     decisionDeliveryPolicy: "requested",
+    repoSnapshotId: null,
     createdAt: "2026-09-22T00:00:00.000Z",
     updatedAt: "2026-09-22T00:00:00.000Z",
   };

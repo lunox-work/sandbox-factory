@@ -27,7 +27,9 @@ import {
   GithubAppAuthError,
   GithubInstallationUnavailable,
   GithubNetworkError,
+  GithubNotFound,
   GithubRateLimited,
+  readFailure,
 } from "./errors.js";
 import { API_URL, readJson, request, restHeaders } from "./http.js";
 
@@ -259,10 +261,12 @@ export class InstallationTokens {
       },
     );
     if (!response.ok) {
-      const error = this.#appRefusal(
+      const refused = await readFailure(
         response,
-        await failure(response, "an installation token", this.#now),
+        "an installation token",
+        this.#now,
       );
+      const error = this.#appRefusal(response, refused.error);
       // A 403 or 404 is about the installation: suspended, or uninstalled.
       // A 401 is about the App and a rate limit or an outage about neither;
       // each keeps its own type so a caller does not flag the connection.
@@ -273,6 +277,20 @@ export class InstallationTokens {
         throw new GithubInstallationUnavailable(
           response.status,
           `GitHub will not mint a token for installation ${installationId} (${response.status}).`,
+        );
+      }
+      // A token narrowed to a repository the installation no longer covers
+      // is refused with 422, as is one asking for a permission it lacks.
+      // Only the first says the repository is gone for us, and only GitHub's
+      // message tells them apart; it is the 404 an unnarrowed read of that
+      // repository would have answered, so it reads as one.
+      if (
+        response.status === 422 &&
+        narrowing.repositoryIds !== undefined &&
+        /repositor/i.test(refused.message ?? "")
+      ) {
+        throw new GithubNotFound(
+          `GitHub found no such repository in installation ${installationId}.`,
         );
       }
       throw error;

@@ -72,6 +72,7 @@ export async function authorityOver(
     covered = await installationClient(
       installations,
       installationId,
+      { kind: "discovery" },
       fetchImpl,
     ).installationRepositoryCount();
   } catch (error) {

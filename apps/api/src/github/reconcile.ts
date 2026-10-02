@@ -15,6 +15,13 @@
  * not seen uninstalled, so a flag left by a lost `unsuspend` delivery or by a
  * refusal that has passed clears itself rather than waiting for a reconnect.
  *
+ * Every repository it reads also asks for a snapshot of its head, which is
+ * a no-op when one exists: that is what retakes a snapshot whose job was
+ * lost to a restart or a failure, as it re-reads a head whose webhook was.
+ *
+ * Each repository is read with a token narrowed to it and to reads, so the
+ * sweep holds no token that could reach another repository it is reading.
+ *
  * Every API task runs one. Two tasks reading the same repository in the same
  * minute cost a second conditional request, which is cheaper than any lock.
  * Within a task, a sweep never starts while the last one is still running.
@@ -28,13 +35,13 @@ import {
   GithubApiError,
   GithubAppAuthError,
   GithubAuthError,
-  type GithubClient,
   GithubInstallationUnavailable,
   GithubRateLimited,
   type InstallationTokens,
 } from "@sandbox-factory/github";
 
 import { installationClient } from "./credential.js";
+import type { GithubSnapshotter } from "./snapshot.js";
 import { syncRepo } from "./sync.js";
 
 /** How often the sweep wakes. */
@@ -53,6 +60,8 @@ export interface GithubReconcilerOptions {
     "update" | "flaggedForProbe"
   >;
   readonly installations: InstallationTokens;
+  /** Asked for a snapshot of every repository read; absent, none are taken. */
+  readonly snapshotter?: Pick<GithubSnapshotter, "schedule"> | undefined;
   readonly fetch?: typeof globalThis.fetch;
   readonly now?: () => Date;
   readonly setInterval?: typeof globalThis.setInterval;
@@ -132,7 +141,6 @@ export class GithubReconciler {
       RECONCILE_BATCH,
     );
 
-    const clients = new Map<string, GithubClient>();
     /** Installations not to read again this sweep: limited, or refused. */
     const skipped = new Set<string>();
     let read = 0;
@@ -142,24 +150,28 @@ export class GithubReconciler {
     for (const repo of due) {
       if (this.#stopping) break;
       if (skipped.has(repo.installationId)) continue;
-      let client = clients.get(repo.installationId);
-      if (client === undefined) {
-        client = installationClient(
-          installations,
-          repo.installationId,
-          this.#options.fetch,
-        );
-        clients.set(repo.installationId, client);
-      }
+      const client = installationClient(
+        installations,
+        repo.installationId,
+        { kind: "repository", repositoryId: repo.externalId },
+        this.#options.fetch,
+      );
 
       try {
-        await syncRepo(repos, client, {
+        const outcome = await syncRepo(repos, client, {
           organizationId: repo.organizationId,
           repoId: repo.id,
           externalId: repo.externalId,
           headEtag: repo.headEtag,
         });
         read += 1;
+        if (outcome === "ok" || outcome === "unchanged") {
+          this.#options.snapshotter?.schedule({
+            organizationId: repo.organizationId,
+            repoId: repo.id,
+            installationId: repo.installationId,
+          });
+        }
       } catch (error) {
         failed += 1;
         if (error instanceof GithubAppAuthError) {

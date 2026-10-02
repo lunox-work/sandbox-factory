@@ -36,6 +36,8 @@ export const ID_PREFIXES = [
   "ghc",
   "ghg",
   "ghr",
+  /** A repository snapshot: one commit's tree and the facts drawn from it. */
+  "rsn",
 ] as const;
 
 export type IdPrefix = (typeof ID_PREFIXES)[number];

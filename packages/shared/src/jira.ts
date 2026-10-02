@@ -643,6 +643,12 @@ export const jiraBoardSummarySchema = z.object({
   selection: boardSelectionSchema,
   /** Defaulted, so a response from before board pricing still parses. */
   pricing: boardPricingSchema.default({ step: {} }),
+  /**
+   * The registered GitHub repository this board's tickets are about, whose
+   * newest snapshot the sizing draft reads an outline of. Null when none is
+   * linked, or once the repository is removed.
+   */
+  sourceRepoId: z.string().nullable().default(null),
   createdAt: z.iso.datetime(),
 });
 
@@ -681,8 +687,8 @@ export const boardSelectionUpdateSchema = z.object({
 
 /**
  * Body for editing a board: its selection settings, its pricing settings,
- * or both. At least one, so an empty body is refused rather than read as a
- * save that changed nothing.
+ * the repository its tickets are about, or any of them. At least one, so an
+ * empty body is refused rather than read as a save that changed nothing.
  *
  * Nothing else is a board's to set. Whether approvals post back to Jira is
  * the site's grant, asked for when the site is connected, not a switch here.
@@ -691,10 +697,18 @@ export const updateBoardSchema = z
   .object({
     selection: boardSelectionUpdateSchema.optional(),
     pricing: boardPricingUpdateSchema.optional(),
+    /**
+     * A registered source repository of the same organization, or null to
+     * unlink. Undefined leaves the link as it is.
+     */
+    sourceRepoId: z.string().min(1).nullable().optional(),
   })
   .refine(
-    (body) => body.selection !== undefined || body.pricing !== undefined,
-    { message: "Provide selection or pricing settings." },
+    (body) =>
+      body.selection !== undefined ||
+      body.pricing !== undefined ||
+      body.sourceRepoId !== undefined,
+    { message: "Provide selection, pricing or repository settings." },
   );
 
 export type BoardSelection = z.infer<typeof boardSelectionSchema>;

@@ -3,9 +3,10 @@
  *
  * One GitHub App, used two ways:
  *
- * - **Installation tokens** for everything unattended — listing, reading and
- *   (later) fetching a client's repositories. Minted from the App's JWT,
- *   cached in memory, never stored.
+ * - **Installation tokens** for everything unattended — listing and reading
+ *   a client's repositories and their trees, and (later) fetching them.
+ *   Minted from the App's JWT, cached in memory, never stored, and narrowed
+ *   to what each call needs.
  * - **User-to-server tokens** for the connect flow, where they prove which
  *   installations the person linking one may see.
  *
@@ -16,11 +17,12 @@
 
 export { appJwt, readPrivateKey } from "./app-jwt.js";
 export type { AppJwtOptions } from "./app-jwt.js";
-export { GithubClient } from "./client.js";
+export { GithubClient, TREE_TIMEOUT_MS } from "./client.js";
 export type { BranchHead, GithubClientOptions, RateLimit } from "./client.js";
 export {
   errorFor,
   failure,
+  readFailure,
   GithubApiError,
   GithubAppAuthError,
   GithubAuthError,

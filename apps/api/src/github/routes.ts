@@ -40,6 +40,9 @@ import type {
   GithubConnectionSummary,
   GithubGrantStore,
   GithubRepoStore,
+  RepoSnapshotStore,
+  RepoSnapshotSummary,
+  StoredRepoSnapshot,
 } from "@sandbox-factory/db";
 import {
   authorizeUrl,
@@ -61,6 +64,10 @@ import {
   githubInstallationSettingsUrl,
   linkInstallationRequestSchema,
   registerRepoRequestSchema,
+  type RepoSnapshotDetailDto,
+  type RepoSnapshotDto,
+  type RepoTreePageDto,
+  repoTreeQuerySchema,
 } from "@sandbox-factory/shared";
 import type { Context, Hono } from "hono";
 
@@ -77,6 +84,7 @@ import {
   noteGrantFailure,
   userClientFor,
 } from "./credential.js";
+import type { GithubSnapshotter } from "./snapshot.js";
 import { repoMetadata, syncRepo } from "./sync.js";
 
 /** What the routes need. Supplied by `createApp`, faked in tests. */
@@ -86,6 +94,16 @@ export interface GithubRouteOptions {
   repos: GithubRepoStore;
   /** The App's installation-token cache, shared with the webhook and sweep. */
   installations: InstallationTokens;
+  /**
+   * Repository snapshots, when object storage is configured to hold their
+   * trees. Absent, none are taken and the snapshot routes answer 503.
+   */
+  snapshots?:
+    | {
+        readonly store: RepoSnapshotStore;
+        readonly snapshotter: GithubSnapshotter;
+      }
+    | undefined;
   /** The caller's current role, re-read in the callback. */
   roleOf: (
     userId: string,
@@ -126,6 +144,7 @@ export function mountGithubRoutes<Env extends GithubAppEnv>(
     grants,
     repos,
     installations,
+    snapshots,
     roleOf,
     appSlug,
     clientId,
@@ -498,8 +517,19 @@ export function mountGithubRoutes<Env extends GithubAppEnv>(
         403,
       );
     }
-    const removed = await connections.remove(organizationId, c.req.param("id"));
+    const result =
+      snapshots === undefined
+        ? {
+            removed: await connections.remove(
+              organizationId,
+              c.req.param("id"),
+            ),
+            treeKeys: [],
+          }
+        : await connections.removeWithTrees(organizationId, c.req.param("id"));
+    const { removed } = result;
     if (!removed) return c.json({ error: "Not found" }, 404);
+    await snapshots?.snapshotter.removeObjects(result.treeKeys);
     return c.body(null, 204);
   });
 
@@ -524,6 +554,7 @@ export function mountGithubRoutes<Env extends GithubAppEnv>(
         const { repositories } = await installationClient(
           installations,
           connection.installationId,
+          { kind: "discovery" },
           fetchImpl,
         ).installationRepositories();
         const registered = new Map(
@@ -554,7 +585,8 @@ export function mountGithubRoutes<Env extends GithubAppEnv>(
    * Register a repository. Only one the installation can see — checked
    * against the installation's own listing, so a public repository outside
    * it cannot be registered by id. The head is read before answering, so a
-   * new row comes back `ok` with a commit.
+   * new row comes back `ok` with a commit; its snapshot follows in the
+   * background, since a large tree takes longer than a click should.
    */
   app.post(
     "/api/v1/orgs/:orgId/github/connections/:id/repositories",
@@ -579,13 +611,13 @@ export function mountGithubRoutes<Env extends GithubAppEnv>(
       if (connection === null) return c.json({ error: "Not found" }, 404);
       if (!connection.healthy) return unhealthy(c);
 
-      const client = installationClient(
-        installations,
-        connection.installationId,
-        fetchImpl,
-      );
       try {
-        const { repositories } = await client.installationRepositories();
+        const { repositories } = await installationClient(
+          installations,
+          connection.installationId,
+          { kind: "discovery" },
+          fetchImpl,
+        ).installationRepositories();
         const repository = repositories.find(
           (candidate) => String(candidate.id) === parsed.data.externalId,
         );
@@ -598,9 +630,14 @@ export function mountGithubRoutes<Env extends GithubAppEnv>(
           externalId: String(repository.id),
           role: parsed.data.role,
         });
-        await syncRepo(
+        const outcome = await syncRepo(
           repos,
-          client,
+          installationClient(
+            installations,
+            connection.installationId,
+            { kind: "repository", repositoryId: registered.externalId },
+            fetchImpl,
+          ),
           {
             organizationId,
             repoId: registered.id,
@@ -609,6 +646,13 @@ export function mountGithubRoutes<Env extends GithubAppEnv>(
           },
           repository,
         );
+        if (outcome === "ok" || outcome === "unchanged") {
+          snapshots?.snapshotter.schedule({
+            organizationId,
+            repoId: registered.id,
+            installationId: connection.installationId,
+          });
+        }
         return c.json(
           {
             repository:
@@ -637,9 +681,81 @@ export function mountGithubRoutes<Env extends GithubAppEnv>(
         403,
       );
     }
-    const removed = await repos.remove(organizationId, c.req.param("id"));
+    const repoId = c.req.param("id");
+    // Read before the cascade takes the rows, so the trees can go too.
+    const trees =
+      snapshots === undefined
+        ? []
+        : (
+            await snapshots.store.list(organizationId, repoId, REMOVE_TREES_MAX)
+          ).map(({ treeKey }) => treeKey);
+    const removed = await repos.remove(organizationId, repoId);
     if (!removed) return c.json({ error: "Not found" }, 404);
+    await snapshots?.snapshotter.removeObjects(trees);
     return c.body(null, 204);
+  });
+
+  /**
+   * A repository's snapshots, newest first. Any member may read them, as
+   * they may read the repository list: paths and counts, never contents.
+   */
+  app.get(
+    "/api/v1/orgs/:orgId/github/repositories/:id/snapshots",
+    async (c) => {
+      if (snapshots === undefined) return snapshotsUnconfigured(c);
+      const { organizationId } = c.get("member");
+      const repoId = c.req.param("id");
+      if ((await repos.get(organizationId, repoId)) === null) {
+        return c.json({ error: "Not found" }, 404);
+      }
+      const listed = await snapshots.store.list(
+        organizationId,
+        repoId,
+        SNAPSHOT_LIST_MAX,
+      );
+      return c.json({ snapshots: listed.map(toSnapshotDto) });
+    },
+  );
+
+  /** One snapshot with its facts. */
+  app.get("/api/v1/orgs/:orgId/github/snapshots/:id", async (c) => {
+    if (snapshots === undefined) return snapshotsUnconfigured(c);
+    const found = await snapshots.store.get(
+      c.get("member").organizationId,
+      c.req.param("id"),
+    );
+    if (found === null) return c.json({ error: "Not found" }, 404);
+    return c.json({ snapshot: toSnapshotDetailDto(found) });
+  });
+
+  /**
+   * A snapshot's file list, a page at a time, in path order: optionally
+   * only under one directory, resuming after the last path of the previous
+   * page. Read from the bucket, not from GitHub, so it describes the
+   * snapshot's commit whatever the branch has done since.
+   */
+  app.get("/api/v1/orgs/:orgId/github/snapshots/:id/tree", async (c) => {
+    if (snapshots === undefined) return snapshotsUnconfigured(c);
+    const query = repoTreeQuerySchema.safeParse(c.req.query());
+    if (!query.success) {
+      return c.json({ error: "Invalid prefix, cursor or limit." }, 400);
+    }
+    const found = await snapshots.store.get(
+      c.get("member").organizationId,
+      c.req.param("id"),
+    );
+    if (found === null) return c.json({ error: "Not found" }, 404);
+    const tree = await snapshots.snapshotter.tree(found.treeKey);
+    if (tree === null) {
+      return c.json(
+        {
+          error: "The file list for this snapshot could not be read.",
+          code: "tree_unavailable",
+        },
+        502,
+      );
+    }
+    return c.json(treePage(tree.entries, tree.truncated, query.data));
   });
 
   /**
@@ -745,6 +861,91 @@ export function mountGithubRoutes<Env extends GithubAppEnv>(
     }
     return githubFailure(c, error);
   }
+}
+
+/** The most snapshots one listing returns. */
+const SNAPSHOT_LIST_MAX = 50;
+/**
+ * The most snapshots whose trees go when a repository is removed. Past it
+ * the rest are left in the bucket, which costs storage and nothing else.
+ */
+const REMOVE_TREES_MAX = 1_000;
+
+function snapshotsUnconfigured(c: Context): Response {
+  return c.json(
+    {
+      error:
+        "Repository snapshots need object storage, which is not set up here.",
+      code: "unconfigured",
+    },
+    503,
+  );
+}
+
+/**
+ * One page of a stored tree. Entries are stored in path order, so a page is
+ * the entries under `prefix` that sort after `cursor`, up to `limit`.
+ */
+export function treePage(
+  entries: readonly RepoTreePageDto["entries"][number][],
+  truncated: boolean,
+  query: {
+    prefix?: string | undefined;
+    cursor?: string | undefined;
+    limit: number;
+  },
+): RepoTreePageDto {
+  const prefix = (query.prefix ?? "").replace(/^\/+|\/+$/g, "");
+  const cursor = query.cursor;
+  const page: RepoTreePageDto["entries"] = [];
+  let more = false;
+  for (const entry of entries) {
+    if (
+      prefix !== "" &&
+      entry.path !== prefix &&
+      !entry.path.startsWith(`${prefix}/`)
+    ) {
+      continue;
+    }
+    if (cursor !== undefined && entry.path <= cursor) continue;
+    if (page.length === query.limit) {
+      more = true;
+      break;
+    }
+    page.push(entry);
+  }
+  return {
+    entries: page,
+    nextCursor: more ? (page.at(-1)?.path ?? null) : null,
+    truncated,
+  };
+}
+
+/** The wire shape: the bucket key left out. */
+export function toSnapshotDto(snapshot: RepoSnapshotSummary): RepoSnapshotDto {
+  return {
+    id: snapshot.id,
+    repoId: snapshot.repoId,
+    commitSha: snapshot.commitSha,
+    ref: snapshot.ref,
+    treeSha: snapshot.treeSha,
+    treeTruncated: snapshot.treeTruncated,
+    fileCount: snapshot.fileCount,
+    totalBytes: snapshot.totalBytes,
+    languages: { ...snapshot.languages },
+    createdAt: snapshot.createdAt,
+  };
+}
+
+function toSnapshotDetailDto(
+  snapshot: StoredRepoSnapshot,
+): RepoSnapshotDetailDto {
+  return {
+    ...toSnapshotDto(snapshot),
+    repoFullName: snapshot.repoFullName,
+    // The same shape; core's is merely the read-only spelling of it.
+    facts: snapshot.facts as RepoSnapshotDetailDto["facts"],
+  };
 }
 
 function unhealthy(c: Context): Response {

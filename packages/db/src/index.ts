@@ -113,6 +113,14 @@ export type {
   GithubRepoSummary,
   RegisterGithubRepoInput,
 } from "./github-repos.js";
+export { createRepoSnapshotStore } from "./repo-snapshots.js";
+export type {
+  CreateRepoSnapshotResult,
+  NewRepoSnapshot,
+  RepoSnapshotStore,
+  RepoSnapshotSummary,
+  StoredRepoSnapshot,
+} from "./repo-snapshots.js";
 export { createOrganizationStore } from "./organizations.js";
 export type {
   Membership,

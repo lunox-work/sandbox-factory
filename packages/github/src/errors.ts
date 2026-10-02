@@ -180,6 +180,19 @@ export async function failure(
   what: string,
   now: () => number = Date.now,
 ): Promise<GithubApiError> {
+  return (await readFailure(response, what, now)).error;
+}
+
+/**
+ * `failure`, with GitHub's own `message` beside the error, for the one
+ * caller that tells two refusals with the same status apart by it: see
+ * `InstallationTokens`. Never shown to anyone; it can name a repository.
+ */
+export async function readFailure(
+  response: Response,
+  what: string,
+  now: () => number = Date.now,
+): Promise<{ error: GithubApiError; message: string | undefined }> {
   let message: string | undefined;
   try {
     const text = await response.text();
@@ -195,7 +208,7 @@ export async function failure(
   } catch {
     // No body, or not JSON: the status and headers decide alone.
   }
-  return errorFor(response, what, now, message);
+  return { error: errorFor(response, what, now, message), message };
 }
 
 /**

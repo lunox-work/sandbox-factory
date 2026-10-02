@@ -663,3 +663,107 @@ test("a head re-read that fails after the answer is reported, not thrown", async
 
   assert.deepEqual(errors, ["github_webhook_failed"]);
 });
+
+/** A snapshotter that records what it was asked for. */
+function scheduled() {
+  const asked: {
+    organizationId: string;
+    repoId: string;
+    installationId: string;
+  }[] = [];
+  return {
+    asked,
+    snapshotter: {
+      schedule: (target: (typeof asked)[number]) => void asked.push(target),
+    },
+  };
+}
+
+test("a push that moves the head asks for a snapshot of it", async () => {
+  const { repoId, options } = await setup();
+  const { asked, snapshotter } = scheduled();
+
+  await handleGithubEvent({ ...options, snapshotter }, "push", push());
+
+  assert.deepEqual(asked, [
+    { organizationId: "org_1", repoId, installationId: "9" },
+  ]);
+});
+
+test("a push the head refused, or for another branch, asks for none", async () => {
+  const { options } = await setup();
+  const { asked, snapshotter } = scheduled();
+  await handleGithubEvent(
+    { ...options, snapshotter },
+    "push",
+    push({
+      after: SHA_C,
+      repository: { ...push().repository, pushed_at: 1_790_834_400 },
+    }),
+  );
+  asked.length = 0;
+
+  // Older than the head just recorded: refused, so no snapshot either.
+  await handleGithubEvent({ ...options, snapshotter }, "push", push());
+  await handleGithubEvent(
+    { ...options, snapshotter },
+    "push",
+    push({ ref: "refs/heads/feature" }),
+  );
+  assert.deepEqual(asked, []);
+});
+
+test("a new default branch's head is read with the repository's own token, then snapshotted", async () => {
+  const { repoId, options, fetch } = await setup();
+  const { asked, snapshotter } = scheduled();
+  const work: Promise<unknown>[] = [];
+
+  await handleGithubEvent(
+    { ...options, snapshotter, background: (promise) => work.push(promise) },
+    "repository",
+    repositoryEvent("edited", {
+      repository: {
+        id: 1296269,
+        full_name: "acme/widgets",
+        default_branch: "trunk",
+        pushed_at: "2026-10-01T00:00:00Z",
+      },
+      changes: { default_branch: { from: "main" } },
+    }),
+  );
+  await Promise.all(work);
+
+  assert.deepEqual(asked, [
+    { organizationId: "org_1", repoId, installationId: "9" },
+  ]);
+  assert.deepEqual(fetch.mints, [
+    {
+      installationId: "9",
+      repositoryIds: [1296269],
+      permissions: { contents: "read", metadata: "read" },
+    },
+  ]);
+});
+
+test("a new default branch that cannot be read asks for no snapshot", async () => {
+  const { options } = await setup();
+  const { asked, snapshotter } = scheduled();
+  const work: Promise<unknown>[] = [];
+
+  await handleGithubEvent(
+    { ...options, snapshotter, background: (promise) => work.push(promise) },
+    "repository",
+    repositoryEvent("edited", {
+      repository: {
+        id: 1296269,
+        full_name: "acme/widgets",
+        default_branch: "nowhere",
+        pushed_at: "2026-10-01T00:00:00Z",
+      },
+      changes: { default_branch: { from: "main" } },
+    }),
+  );
+  await Promise.all(work);
+
+  assert.deepEqual(asked, []);
+});

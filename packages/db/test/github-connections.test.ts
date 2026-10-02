@@ -3,7 +3,7 @@ import { test } from "node:test";
 
 import { createGithubConnectionStore } from "../src/github-connections.js";
 import type { GithubConnectionRow } from "../src/schema.js";
-import { createFakeDb } from "./fake-db.js";
+import { createFakeDb, createSequencedFakeDb } from "./fake-db.js";
 
 function connectionRow(
   overrides: Partial<GithubConnectionRow> = {},
@@ -231,4 +231,35 @@ test("remove deletes the owner's row", async () => {
   assert.equal(await store.remove("org_1", "ghc_1"), true);
   assert.equal(fake.calls[0]?.kind, "delete");
   assert.equal(fake.calls[0]?.filtered, true);
+});
+
+test("disconnect locks registration and snapshot writers before collecting every tree", async () => {
+  const fake = createSequencedFakeDb([
+    [{ id: "ghc_1" }],
+    [{ id: "ghr_1" }],
+    [{ treeKey: "trees/one" }, { treeKey: "trees/two" }],
+    [],
+  ]);
+  assert.deepEqual(
+    await createGithubConnectionStore(fake.db).removeWithTrees(
+      "org_1",
+      "ghc_1",
+    ),
+    { removed: true, treeKeys: ["trees/one", "trees/two"] },
+  );
+  assert.equal(fake.calls[0]?.lock, "update");
+  assert.equal(fake.calls[1]?.lock, "update");
+  assert.ok(fake.calls.every(({ filtered }) => filtered));
+  assert.equal(fake.calls[2]?.limited, undefined);
+  assert.equal(fake.calls[3]?.kind, "delete");
+
+  const missing = createFakeDb([]);
+  assert.deepEqual(
+    await createGithubConnectionStore(missing.db).removeWithTrees(
+      "org_2",
+      "ghc_1",
+    ),
+    { removed: false, treeKeys: [] },
+  );
+  assert.equal(missing.calls.length, 1);
 });

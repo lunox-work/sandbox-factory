@@ -1,5 +1,5 @@
 /**
- * The GitHub tables' rules that live in SQL (migrations 0034-0038), against
+ * The GitHub tables' rules that live in SQL (migrations 0034-0039), against
  * a real Postgres. The fake records calls but cannot run a `WHERE`, an
  * `ON CONFLICT … WHERE`, a foreign key or a trigger, so a guard written
  * wrongly — or not at all — passes there. These are the ones it would hide:
@@ -11,7 +11,10 @@
  * - a re-grant moves the revision on, fencing a refresh from the old grant;
  * - a repository cannot sit under one organization on another's connection;
  * - a grant goes when the membership does, however it ends;
- * - deleting an organization takes all three tables with it.
+ * - deleting an organization takes all three tables with it;
+ * - a snapshot is one per commit, and a `gone` repository takes no new one;
+ * - pruning keeps the newest and whatever a proposal was drafted beside;
+ * - a board links only a repository of its own organization.
  *
  * Skips when no server is reachable, as `handle-registry.test.ts` does, and
  * refuses a server that is not local outside CI, since it drops and
@@ -25,14 +28,21 @@ import postgres from "postgres";
 
 import {
   createConnection,
+  createBountyProposalStore,
   createGithubConnectionStore,
   createGithubGrantStore,
   createGithubRepoStore,
+  createJiraBoardStore,
+  createRepoSnapshotStore,
   createTokenCipher,
   type GithubConnectionStore,
   type GithubGrantStore,
   type GithubRepoStore,
+  type JiraBoardStore,
+  type NewRepoSnapshot,
+  type RepoSnapshotStore,
 } from "../src/index.js";
+import { treeFacts } from "sandbox-factory";
 import { runMigrations } from "../src/migrate.js";
 
 const ADMIN_URL =
@@ -121,6 +131,8 @@ describe("GitHub pointers in Postgres", { skip }, () => {
   let connections: GithubConnectionStore;
   let grants: GithubGrantStore;
   let repos: GithubRepoStore;
+  let snapshots: RepoSnapshotStore;
+  let boards: JiraBoardStore;
 
   before(async () => {
     await admin(`drop database if exists ${SCRATCH_DB}`);
@@ -134,6 +146,8 @@ describe("GitHub pointers in Postgres", { skip }, () => {
       createTokenCipher(Buffer.alloc(32, 7).toString("base64")),
     );
     repos = createGithubRepoStore(connection.db);
+    snapshots = createRepoSnapshotStore(connection.db);
+    boards = createJiraBoardStore(connection.db);
 
     for (const id of ["u_a", "u_b"]) {
       await sql`
@@ -352,6 +366,219 @@ describe("GitHub pointers in Postgres", { skip }, () => {
     const relinked = await connections.link("o_a", installation("601"));
     assert.equal(
       relinked.status === "linked" ? relinked.connection.uninstalledAt : "",
+      null,
+    );
+  });
+
+  /** What a snapshot of `sha` records; the facts are from a one-file tree. */
+  function snapshotOf(repoId: string, sha: string): NewRepoSnapshot {
+    return {
+      repoId,
+      commitSha: sha,
+      ref: "refs/heads/main",
+      treeSha: `tree-${sha}`,
+      treeKey: `trees/${repoId}/${sha}.json.gz`,
+      treeTruncated: false,
+      fileCount: 1,
+      totalBytes: 10,
+      languages: { TypeScript: 10 },
+      facts: treeFacts([{ path: "src/a.ts", size: 10 }]),
+    };
+  }
+
+  test("a snapshot is one per commit, and a gone repository takes no new one", async () => {
+    const { repo } = await repoUnder("o_a", "900");
+    const first = await snapshots.create("o_a", snapshotOf(repo.id, "c1"));
+    assert.equal(first.status, "created");
+    // The webhook and the sweep seeing the same head: the second is a no-op.
+    assert.equal(
+      (await snapshots.create("o_a", snapshotOf(repo.id, "c1"))).status,
+      "exists",
+    );
+    // Another organization cannot write under this repository.
+    assert.equal(
+      (await snapshots.create("o_b", snapshotOf(repo.id, "c2"))).status,
+      "refused",
+    );
+    assert.equal(
+      await snapshots.get(
+        "o_b",
+        first.status === "created" ? first.snapshot.id : "",
+      ),
+      null,
+    );
+
+    await repos.markGone("o_a", [repo.id]);
+    assert.equal(
+      (await snapshots.create("o_a", snapshotOf(repo.id, "c3"))).status,
+      "refused",
+    );
+    // What was taken before stays readable.
+    const [only] = await snapshots.list("o_a", repo.id, 10);
+    assert.equal(only?.commitSha, "c1");
+  });
+
+  test("the current snapshot is the head's, whenever it was taken", async () => {
+    const { repo } = await repoUnder("o_a", "910");
+    await repos.recordSync("o_a", repo.id, metadata, {
+      sha: "head",
+      etag: null,
+    });
+    await snapshots.create("o_a", snapshotOf(repo.id, "head"));
+    // An older head's snapshot finishing later is not the current one.
+    await snapshots.create("o_a", snapshotOf(repo.id, "older"));
+    assert.equal((await snapshots.current("o_a", repo.id))?.commitSha, "head");
+    assert.equal(await snapshots.current("o_b", repo.id), null);
+  });
+
+  test("proposal persistence tolerates a snapshot deleted during drafting and checks its owner", async () => {
+    await sql`insert into jira_connection (id, organization_id, cloud_id, site_url, site_name) values ('jrc_sf', 'o_a', 'cloud-sf', 'https://acme.example', 'Acme')`;
+    await sql`insert into jira_board (id, organization_id, connection_id, external_id, name, board_type) values ('jrb_sf', 'o_a', 'jrc_sf', '1', 'Board', 'scrum')`;
+    const rateCard = {
+      currency: "USD",
+      xsMinor: 1,
+      sMinor: 1,
+      mMinor: 1,
+      lMinor: 1,
+      xlMinor: 1,
+      revision: 1,
+    };
+    for (const [kind, owner, installationId] of [
+      ["live", "o_a", "911"],
+      ["deleted", "o_a", "912"],
+      ["foreign", "o_b", "913"],
+    ] as const) {
+      const { repo } = await repoUnder(owner, installationId);
+      const captured = await snapshots.create(owner, snapshotOf(repo.id, kind));
+      assert.equal(captured.status, "created");
+      if (captured.status !== "created") throw new Error("not created");
+      if (kind === "deleted") await repos.remove(owner, repo.id);
+      const runId = `brn_sf_${kind}`;
+      const issueId = `jri_sf_${kind}`;
+      await sql`insert into jira_issue (id, organization_id, board_id, external_id, key, status_category, remote_created_at, remote_updated_at) values (${issueId}, 'o_a', 'jrb_sf', ${kind}, 'ACME-1', 'new', now(), now())`;
+      await sql`insert into bounty_run (id, organization_id, board_id, kind, request_id, selection, rate_card, requested_model, prompt_version, status, lease_token, lease_expires_at, deadline_at) values (${runId}, 'o_a', 'jrb_sf', 'issue', ${kind}, ${sql.json({})}, ${sql.json(rateCard)}, 'model', 'v', 'running', 'lease', now() + interval '1 hour', now() + interval '1 hour')`;
+      const result = await createBountyProposalStore(
+        connection.db,
+      ).createForLease("o_a", "lease", {
+        runId,
+        jiraIssueId: issueId,
+        repoSnapshotId: captured.snapshot.id,
+        specHash: "a".repeat(64),
+        specHashVersion: 1,
+        rateCard,
+        sizing: { complexity: "M", confidence: "high", rationale: "why" },
+        inputTruncated: false,
+        actualModel: "model",
+        promptVersion: "v",
+        amountMinor: 1,
+        currency: "USD",
+      });
+      assert.equal(result.status, "created");
+      if (result.status === "created") {
+        assert.equal(
+          result.proposal.repoSnapshotId,
+          kind === "live" ? captured.snapshot.id : null,
+        );
+      }
+    }
+  });
+
+  test("disconnect returns all snapshot tree keys before the cascade", async () => {
+    const { repo, connection: linked } = await repoUnder("o_a", "914");
+    await snapshots.create("o_a", snapshotOf(repo.id, "one"));
+    await snapshots.create("o_a", snapshotOf(repo.id, "two"));
+    assert.deepEqual(await connections.removeWithTrees("o_b", linked.id), {
+      removed: false,
+      treeKeys: [],
+    });
+    const removed = await connections.removeWithTrees("o_a", linked.id);
+    assert.equal(removed.removed, true);
+    assert.deepEqual(removed.treeKeys.sort(), [
+      `trees/${repo.id}/one.json.gz`,
+      `trees/${repo.id}/two.json.gz`,
+    ]);
+    assert.equal(await repos.get("o_a", repo.id), null);
+    assert.deepEqual(await snapshots.list("o_a", repo.id, 10), []);
+  });
+
+  test("pruning keeps the newest and whatever a proposal was drafted beside", async () => {
+    const { repo } = await repoUnder("o_a", "920");
+    const ids: string[] = [];
+    for (const sha of ["s1", "s2", "s3", "s4"]) {
+      const created = await snapshots.create("o_a", snapshotOf(repo.id, sha));
+      if (created.status !== "created") throw new Error("not created");
+      ids.push(created.snapshot.id);
+      // Distinct creation times, oldest first.
+      await sql`update repo_snapshot set created_at = now() - make_interval(mins => ${10 - ids.length}) where id = ${created.snapshot.id}`;
+    }
+    // A proposal drafted beside the oldest.
+    await sql`insert into jira_connection (id, organization_id, cloud_id, site_url, site_name) values ('jrc_p', 'o_a', 'cloud', 'https://acme.example', 'Acme')`;
+    await sql`insert into jira_board (id, organization_id, connection_id, external_id, name, board_type) values ('jrb_p', 'o_a', 'jrc_p', '1', 'Board', 'scrum')`;
+    await sql`insert into jira_issue (id, organization_id, board_id, external_id, key, status_category, remote_created_at, remote_updated_at) values ('jri_p', 'o_a', 'jrb_p', '10', 'ACME-1', 'new', now(), now())`;
+    const rateCard = sql.json({
+      currency: "USD",
+      xsMinor: 1,
+      sMinor: 1,
+      mMinor: 1,
+      lMinor: 1,
+      xlMinor: 1,
+      revision: 1,
+    });
+    await sql`insert into bounty_run (id, organization_id, board_id, request_id, selection, rate_card, requested_model, prompt_version) values ('brn_p', 'o_a', 'jrb_p', 'req', ${sql.json({})}, ${rateCard}, 'model', 'v')`;
+    await sql`insert into bounty_proposal (id, organization_id, run_id, jira_issue_id, spec_hash, rate_card, model_complexity, model_confidence, model_rationale, actual_model, prompt_version, complexity, amount_minor, currency, repo_snapshot_id) values ('bpr_p', 'o_a', 'brn_p', 'jri_p', ${"a".repeat(64)}, ${rateCard}, 'M', 'high', 'why', 'model', 'v', 'M', 100, 'USD', ${ids[0] ?? ""})`;
+
+    // Someone else's prune touches nothing.
+    assert.deepEqual(await snapshots.prune("o_b", repo.id, 0), []);
+    const removed = await snapshots.prune("o_a", repo.id, 2);
+    // s1 is referenced, s4 and s3 are the newest two unreferenced; s2 goes.
+    assert.deepEqual(removed, [`trees/${repo.id}/s2.json.gz`]);
+    assert.deepEqual(
+      (await snapshots.list("o_a", repo.id, 10)).map(
+        ({ commitSha }) => commitSha,
+      ),
+      ["s4", "s3", "s1"],
+    );
+
+    // Removing the repository takes its snapshots and clears the pointer.
+    assert.equal(await repos.remove("o_a", repo.id), true);
+    const [proposal] =
+      await sql`select repo_snapshot_id from bounty_proposal where id = 'bpr_p'`;
+    assert.equal(proposal?.["repo_snapshot_id"], null);
+  });
+
+  test("a board links only a repository of its own organization", async () => {
+    const own = await repoUnder("o_a", "930");
+    const foreign = await repoUnder("o_b", "940");
+    await sql`insert into jira_connection (id, organization_id, cloud_id, site_url, site_name) values ('jrc_l', 'o_a', 'cloud-l', 'https://acme.example', 'Acme')`;
+    await sql`insert into jira_board (id, organization_id, connection_id, external_id, name, board_type) values ('jrb_l', 'o_a', 'jrc_l', '1', 'Board', 'scrum')`;
+
+    assert.equal(
+      await boards.update("o_a", "jrb_l", { sourceRepoId: foreign.repo.id }),
+      null,
+    );
+    assert.equal(
+      await boards.update("o_a", "jrb_l", { sourceRepoId: "ghr_nonexistent" }),
+      null,
+    );
+    assert.equal((await boards.get("o_a", "jrb_l"))?.sourceRepoId, null);
+
+    const linked = await boards.update("o_a", "jrb_l", {
+      sourceRepoId: own.repo.id,
+    });
+    assert.equal(linked?.sourceRepoId, own.repo.id);
+    // An edit that does not name the repository leaves the link alone.
+    assert.equal(
+      (await boards.update("o_a", "jrb_l", { pricing: {} }))?.sourceRepoId,
+      own.repo.id,
+    );
+
+    // Removing the repository unlinks the board rather than failing.
+    assert.equal(await repos.remove("o_a", own.repo.id), true);
+    assert.equal((await boards.get("o_a", "jrb_l"))?.sourceRepoId, null);
+    // And null unlinks explicitly.
+    assert.equal(
+      (await boards.update("o_a", "jrb_l", { sourceRepoId: null }))
+        ?.sourceRepoId,
       null,
     );
   });

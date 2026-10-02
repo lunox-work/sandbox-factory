@@ -60,7 +60,7 @@ resource "aws_s3_bucket_policy" "web" {
   policy = data.aws_iam_policy_document.web.json
 }
 
-# ---- private objects: uploaded avatars -------------------------------------
+# ---- private objects: uploaded avatars, repository trees -------------------
 #
 # The API's object store (packages/db/src/objects.ts). Locally the same code
 # talks to SeaweedFS; here it talks to this bucket with no endpoint and no
@@ -68,7 +68,9 @@ resource "aws_s3_bucket_policy" "web" {
 # because S3, unlike SeaweedFS, does not create a bucket on first write.
 #
 # Named "private" rather than "avatars": it is the private bucket the sandbox
-# context plan describes, and later artifacts share it under other prefixes.
+# context plan describes, and other data shares it under other prefixes —
+# `trees/` holds repository snapshots' file lists (paths and sizes, never
+# contents), and later analysis artifacts follow.
 # Never public — the API streams every avatar itself (`/api/avatars/*`), which
 # is what keeps the read path identical to local development.
 

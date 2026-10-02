@@ -10,6 +10,7 @@ import {
   GithubNotFound,
   GithubRateLimited,
   REQUEST_TIMEOUT_MS,
+  TREE_TIMEOUT_MS,
 } from "../src/index.js";
 import { fakeFetch, json, type Recorded } from "./helpers.js";
 
@@ -367,4 +368,76 @@ test("a body of the wrong shape is an error rather than a half-read object", asy
   const { client } = clientWith(() => json({ id: "one" }));
 
   await assert.rejects(client.repository("1"), GithubApiError);
+});
+
+test("a recursive tree is read at a commit, truncation reported", async () => {
+  const { client, fetch } = clientWith(() =>
+    json({
+      sha: "tree1",
+      truncated: true,
+      tree: [
+        { path: "src/a.ts", mode: "100644", type: "blob", sha: "b1", size: 4 },
+      ],
+    }),
+  );
+
+  const tree = await client.tree("acme/my repo", "abc123", {
+    recursive: true,
+  });
+
+  assert.equal(tree.sha, "tree1");
+  assert.equal(tree.truncated, true);
+  assert.equal(tree.tree[0]?.path, "src/a.ts");
+  assert.equal(
+    fetch.calls[0]?.url,
+    "https://api.github.com/repos/acme/my%20repo/git/trees/abc123?recursive=1",
+  );
+});
+
+test("a tree is one level unless asked for every level", async () => {
+  const { client, fetch } = clientWith(() => json({ sha: "t", tree: [] }));
+  await client.tree("acme/app", "abc");
+  assert.equal(
+    fetch.calls[0]?.url,
+    "https://api.github.com/repos/acme/app/git/trees/abc",
+  );
+});
+
+test("a tree that takes longer than an ordinary read is given its own timeout", async () => {
+  const client = new GithubClient({
+    token: () => Promise.resolve("ghs_token"),
+    fetch: () => Promise.reject(new DOMException("timed out", "TimeoutError")),
+  });
+
+  await assert.rejects(
+    client.tree("acme/app", "abc", { recursive: true }),
+    new RegExp(`within ${TREE_TIMEOUT_MS / 1000} seconds`),
+  );
+});
+
+test("a tree GitHub no longer has is GithubNotFound", async () => {
+  const { client } = clientWith(() => json({ message: "Not Found" }, 404));
+  await assert.rejects(client.tree("acme/app", "gone"), GithubNotFound);
+});
+
+test("languages are read as bytes per language", async () => {
+  const { client, fetch } = clientWith(() =>
+    json({ TypeScript: 900, Shell: 12 }),
+  );
+
+  assert.deepEqual(await client.languages("acme/app"), {
+    TypeScript: 900,
+    Shell: 12,
+  });
+  assert.equal(
+    fetch.calls[0]?.url,
+    "https://api.github.com/repos/acme/app/languages",
+  );
+});
+
+test("a tree or languages answer of the wrong shape is an error", async () => {
+  const { client } = clientWith(() => json({ unexpected: true }));
+  await assert.rejects(client.tree("acme/app", "abc"), GithubApiError);
+  const languages = clientWith(() => json({ TypeScript: "lots" }));
+  await assert.rejects(languages.client.languages("acme/app"), GithubApiError);
 });

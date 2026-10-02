@@ -21,6 +21,7 @@ function boardRow(overrides: Partial<JiraBoardRow> = {}): JiraBoardRow {
     selection: { ticketCap: 10, unassignedOnly: true },
     pricing: {},
     missingSince: null,
+    sourceRepoId: null,
     createdAt: new Date("2026-09-21T00:00:00.000Z"),
     updatedAt: new Date("2026-09-21T00:00:00.000Z"),
     ...overrides,
@@ -465,4 +466,33 @@ test("a selection update leaves the pricing alone, and a null column reads as em
   assert.deepEqual(fresh.calls[1]?.values?.["pricing"], {
     step: { pointsPerStep: 2 },
   });
+});
+
+test("an update can link a source repository, and the summary carries it", async () => {
+  const { store: boards, calls } = store([boardRow({ sourceRepoId: "ghr_1" })]);
+
+  const updated = await boards.update("org_1", "jrb_1", {
+    sourceRepoId: "ghr_1",
+  });
+
+  assert.equal(updated?.sourceRepoId, "ghr_1");
+  assert.equal(calls[1]?.values?.["sourceRepoId"], "ghr_1");
+  assert.equal(calls[1]?.filtered, true);
+});
+
+test("null unlinks, and an update that does not name the repository leaves it", async () => {
+  const unlink = store([boardRow()]);
+  await unlink.store.update("org_1", "jrb_1", { sourceRepoId: null });
+  assert.equal(unlink.calls[1]?.values?.["sourceRepoId"], null);
+
+  const untouched = store([boardRow({ sourceRepoId: "ghr_1" })]);
+  await untouched.store.update("org_1", "jrb_1", { pricing: {} });
+  assert.equal("sourceRepoId" in (untouched.calls[1]?.values ?? {}), false);
+});
+
+test("a board row from before repository links reads as unlinked", async () => {
+  const legacy: Record<string, unknown> = { ...boardRow() };
+  delete legacy["sourceRepoId"];
+  const { store: boards } = store([legacy]);
+  assert.equal((await boards.get("org_1", "jrb_1"))?.sourceRepoId, null);
 });

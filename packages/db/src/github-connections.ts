@@ -22,7 +22,7 @@ import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
 
 import type { Database } from "./errors.js";
 import { generateId } from "./mapping.js";
-import { githubConnection } from "./schema.js";
+import { githubConnection, githubRepo, repoSnapshot } from "./schema.js";
 import type { GithubConnectionRow } from "./schema.js";
 
 /** A connection as the API reads it. No token material exists to omit. */
@@ -117,6 +117,11 @@ export interface GithubConnectionStore {
    * App stays installed on GitHub until the client removes it there.
    */
   remove(organizationId: string, connectionId: string): Promise<boolean>;
+  /** Deletes the connection and returns every cascaded snapshot's object key. */
+  removeWithTrees(
+    organizationId: string,
+    connectionId: string,
+  ): Promise<{ readonly removed: boolean; readonly treeKeys: string[] }>;
 }
 
 export function createGithubConnectionStore(
@@ -274,6 +279,46 @@ export function createGithubConnectionStore(
         )
         .returning();
       return rows.length > 0;
+    },
+
+    async removeWithTrees(organizationId, connectionId) {
+      return db.transaction(async (transaction) => {
+        const tx = transaction as unknown as Database;
+        const owner = and(
+          eq(githubConnection.organizationId, organizationId),
+          eq(githubConnection.id, connectionId),
+        );
+        // Block new registrations, then wait for snapshot writers already
+        // holding a repository. Keys are read after those writers commit.
+        const held = await tx
+          .select({ id: githubConnection.id })
+          .from(githubConnection)
+          .where(owner)
+          .for("update");
+        if (held.length === 0) return { removed: false, treeKeys: [] };
+        await tx
+          .select({ id: githubRepo.id })
+          .from(githubRepo)
+          .where(
+            and(
+              eq(githubRepo.organizationId, organizationId),
+              eq(githubRepo.connectionId, connectionId),
+            ),
+          )
+          .for("update");
+        const trees = await tx
+          .select({ treeKey: repoSnapshot.treeKey })
+          .from(repoSnapshot)
+          .innerJoin(githubRepo, eq(githubRepo.id, repoSnapshot.repoId))
+          .where(
+            and(
+              eq(githubRepo.organizationId, organizationId),
+              eq(githubRepo.connectionId, connectionId),
+            ),
+          );
+        await tx.delete(githubConnection).where(owner);
+        return { removed: true, treeKeys: trees.map(({ treeKey }) => treeKey) };
+      });
     },
   };
 }

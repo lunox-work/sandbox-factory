@@ -18,6 +18,10 @@ import type {
   GithubGrantSummary,
   GithubRepoStore,
   GithubRepoSummary,
+  ObjectStore,
+  RepoSnapshotStore,
+  RepoSnapshotSummary,
+  StoredRepoSnapshot,
 } from "@sandbox-factory/db";
 import { InstallationTokens } from "@sandbox-factory/github";
 
@@ -176,6 +180,10 @@ export function memoryGithub(): MemoryGithub {
       });
       return Promise.resolve(true);
     },
+    removeWithTrees: async (organizationId, id) => ({
+      removed: await connections.remove(organizationId, id),
+      treeKeys: [],
+    }),
     remove: (organizationId, id) => {
       if (ownedConnection(organizationId, id) === undefined) {
         return Promise.resolve(false);
@@ -497,6 +505,163 @@ export async function seedRepo(
   return repo.id;
 }
 
+/* ---- snapshots and objects ----------------------------------------------- */
+
+type SnapshotRow = StoredRepoSnapshot & { organizationId: string };
+
+/**
+ * The snapshot store over a `memoryGithub`'s repositories, keeping the
+ * real one's rules: owner through the repository, one row per commit, no
+ * new row for a `gone` repository, and pruning that spares what a proposal
+ * references (`referenced`, which a test fills in).
+ */
+export function memorySnapshots(stores: MemoryGithub): RepoSnapshotStore & {
+  rows: Map<string, SnapshotRow>;
+  referenced: Set<string>;
+} {
+  const rows = new Map<string, SnapshotRow>();
+  const referenced = new Set<string>();
+  stores.connections.removeWithTrees = async (organizationId, connectionId) => {
+    const trees = [...rows.values()].filter((row) => {
+      const repo = stores.repos.rows.get(row.repoId);
+      return (
+        repo?.organizationId === organizationId &&
+        repo.connectionId === connectionId
+      );
+    });
+    const removed = await stores.connections.remove(
+      organizationId,
+      connectionId,
+    );
+    if (!removed) return { removed, treeKeys: [] };
+    for (const row of trees) rows.delete(row.id);
+    return { removed, treeKeys: trees.map(({ treeKey }) => treeKey) };
+  };
+  let sequence = 0;
+  const repoOf = (organizationId: string, repoId: string) => {
+    const repo = stores.repos.rows.get(repoId);
+    return repo?.organizationId === organizationId ? repo : undefined;
+  };
+  const summary = ({
+    organizationId: _o,
+    repoFullName: _n,
+    facts: _f,
+    ...rest
+  }: SnapshotRow): RepoSnapshotSummary => rest;
+  const stored = ({ organizationId: _o, ...rest }: SnapshotRow) => {
+    const repo = stores.repos.rows.get(rest.repoId);
+    return { ...rest, repoFullName: repo?.fullName ?? rest.repoFullName };
+  };
+  const newestFirst = (left: SnapshotRow, right: SnapshotRow) =>
+    right.createdAt.localeCompare(left.createdAt) ||
+    right.id.localeCompare(left.id);
+  const ofRepo = (organizationId: string, repoId: string) =>
+    [...rows.values()]
+      .filter(
+        (row) =>
+          row.repoId === repoId &&
+          repoOf(organizationId, repoId) !== undefined &&
+          stores.repos.rows.has(row.repoId),
+      )
+      .sort(newestFirst);
+
+  return {
+    rows,
+    referenced,
+    list: (organizationId, repoId, limit) =>
+      Promise.resolve(
+        ofRepo(organizationId, repoId).slice(0, limit).map(summary),
+      ),
+    get: (organizationId, snapshotId) => {
+      const row = rows.get(snapshotId);
+      return Promise.resolve(
+        row === undefined || repoOf(organizationId, row.repoId) === undefined
+          ? null
+          : stored(row),
+      );
+    },
+    findByCommit: (organizationId, repoId, commitSha) => {
+      const row = ofRepo(organizationId, repoId).find(
+        (candidate) => candidate.commitSha === commitSha,
+      );
+      return Promise.resolve(row === undefined ? null : summary(row));
+    },
+    current: (organizationId, repoId) => {
+      const head = repoOf(organizationId, repoId)?.headSha;
+      const all = ofRepo(organizationId, repoId);
+      const row =
+        all.find((candidate) => candidate.commitSha === head) ?? all[0];
+      return Promise.resolve(row === undefined ? null : stored(row));
+    },
+    create: (organizationId, input) => {
+      const repo = repoOf(organizationId, input.repoId);
+      if (repo === undefined || repo.syncStatus === "gone") {
+        return Promise.resolve({ status: "refused" as const });
+      }
+      if (
+        [...rows.values()].some(
+          (row) =>
+            row.repoId === input.repoId && row.commitSha === input.commitSha,
+        )
+      ) {
+        return Promise.resolve({ status: "exists" as const });
+      }
+      sequence += 1;
+      const row: SnapshotRow = {
+        ...input,
+        languages: { ...input.languages },
+        id: `rsn_${sequence}`,
+        organizationId,
+        repoFullName: repo.fullName,
+        // Later snapshots sort newer even within one fake instant.
+        createdAt: new Date(NOW + sequence * 1000).toISOString(),
+      };
+      rows.set(row.id, row);
+      return Promise.resolve({
+        status: "created" as const,
+        snapshot: summary(row),
+      });
+    },
+    prune: (organizationId, repoId, keep) => {
+      const surplus = ofRepo(organizationId, repoId)
+        .filter((row) => !referenced.has(row.id))
+        .slice(Math.max(0, keep));
+      for (const row of surplus) rows.delete(row.id);
+      return Promise.resolve(surplus.map((row) => row.treeKey));
+    },
+  };
+}
+
+/** Object storage in memory, with the keys each call touched. */
+export function memoryObjects(): ObjectStore & {
+  objects: Map<string, Uint8Array>;
+  removed: string[];
+  failRemove?: boolean;
+} {
+  const objects = new Map<string, Uint8Array>();
+  const store = {
+    objects,
+    removed: [] as string[],
+    failRemove: false as boolean | undefined,
+    put: (key: string, body: Uint8Array) => {
+      objects.set(key, body);
+      return Promise.resolve();
+    },
+    get: (key: string) => Promise.resolve(objects.get(key)),
+    exists: (key: string) => Promise.resolve(objects.has(key)),
+    remove: (key: string) => {
+      if (store.failRemove === true) {
+        return Promise.reject(new Error("bucket unavailable"));
+      }
+      store.removed.push(key);
+      objects.delete(key);
+      return Promise.resolve();
+    },
+    signedUrl: (key: string) => Promise.resolve(`https://bucket.test/${key}`),
+  };
+  return store;
+}
+
 /* ---- GitHub, faked -------------------------------------------------------- */
 
 export interface FakeInstallation {
@@ -550,6 +715,33 @@ export interface GithubWorld {
   deletedRepos?: number[];
   /** ETags that still match, so the ref read answers 304. */
   freshEtags?: string[];
+  /**
+   * Recursive trees by `owner/repo@sha`. Absent is 404, as for a commit
+   * GitHub no longer has.
+   */
+  trees?: Record<
+    string,
+    {
+      sha: string;
+      truncated?: boolean;
+      tree: {
+        path: string;
+        mode: string;
+        type: string;
+        sha: string;
+        size?: number;
+      }[];
+    }
+  >;
+  /** Languages by `owner/repo`; absent is `{}`. */
+  languages?: Record<string, Record<string, number>>;
+  /**
+   * Repository ids the installation no longer covers: a mint narrowed to
+   * one answers 422, as GitHub does.
+   */
+  outsideInstallation?: number[];
+  /** Status the tree endpoint answers with instead, e.g. 500. */
+  treeStatus?: number;
 }
 
 export function world(overrides: Partial<GithubWorld> = {}): GithubWorld {
@@ -582,10 +774,19 @@ function json(
 }
 
 /** GitHub at `fetch`, answering from a mutable world. Records every URL. */
+/** One token mint, with the narrowing it asked for. */
+export interface RecordedMint {
+  readonly installationId: string;
+  readonly repositoryIds?: number[];
+  readonly permissions?: Record<string, string>;
+}
+
 export function fakeGithub(state: GithubWorld): typeof globalThis.fetch & {
   urls: string[];
+  mints: RecordedMint[];
 } {
   const urls: string[] = [];
+  const mints: RecordedMint[] = [];
   const impl = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input));
     urls.push(`${init?.method ?? "GET"} ${url.toString()}`);
@@ -632,11 +833,39 @@ export function fakeGithub(state: GithubWorld): typeof globalThis.fetch & {
     }
     const mint = app;
     if (mint !== null) {
+      const body = (
+        typeof init?.body === "string" ? JSON.parse(init.body) : {}
+      ) as {
+        repository_ids?: number[];
+        permissions?: Record<string, string>;
+      };
+      mints.push({
+        installationId: mint[1] ?? "",
+        ...(body.repository_ids === undefined
+          ? {}
+          : { repositoryIds: body.repository_ids }),
+        ...(body.permissions === undefined
+          ? {}
+          : { permissions: body.permissions }),
+      });
       if (state.uninstalled?.includes(Number(mint[1]))) {
         return json({ message: "Not Found" }, 404);
       }
       if (suspended) {
         return json({ message: "This installation has been suspended" }, 403);
+      }
+      if (
+        body.repository_ids?.some((repositoryId) =>
+          state.outsideInstallation?.includes(repositoryId),
+        ) === true
+      ) {
+        return json(
+          {
+            message:
+              "There is at least one repository that does not exist or is not accessible to the parent installation.",
+          },
+          422,
+        );
       }
       return json(
         {
@@ -729,8 +958,58 @@ export function fakeGithub(state: GithubWorld): typeof globalThis.fetch & {
         { etag: `W/"${head.slice(0, 1)}"` },
       );
     }
+    const tree = /^\/repos\/([^/]+\/[^/]+)\/git\/trees\/([^/]+)$/.exec(path);
+    if (tree !== null) {
+      if (state.treeStatus !== undefined) {
+        return json({ message: "nope" }, state.treeStatus);
+      }
+      const found = state.trees?.[`${tree[1]}@${tree[2]}`];
+      return found === undefined
+        ? json({ message: "Not Found" }, 404)
+        : json({ ...found, url: "https://api.github.com/..." });
+    }
+    const languages = /^\/repos\/([^/]+\/[^/]+)\/languages$/.exec(path);
+    if (languages !== null) {
+      return json(state.languages?.[languages[1] ?? ""] ?? {});
+    }
     throw new Error(`unexpected request to ${url.toString()}`);
-  }) as typeof globalThis.fetch & { urls: string[] };
+  }) as typeof globalThis.fetch & { urls: string[]; mints: RecordedMint[] };
   impl.urls = urls;
+  impl.mints = mints;
   return impl;
+}
+
+/** A small tree for `acme/widgets` at `sha`, with a directory and a submodule. */
+export function widgetsTree(sha: string) {
+  return {
+    [`acme/widgets@${sha}`]: {
+      sha: `tree-${sha.slice(0, 7)}`,
+      truncated: false,
+      tree: [
+        { path: "src", mode: "040000", type: "tree", sha: "t1" },
+        {
+          path: "src/index.ts",
+          mode: "100644",
+          type: "blob",
+          sha: "b1",
+          size: 120,
+        },
+        {
+          path: "src/index.test.ts",
+          mode: "100644",
+          type: "blob",
+          sha: "b2",
+          size: 80,
+        },
+        {
+          path: "package-lock.json",
+          mode: "100644",
+          type: "blob",
+          sha: "b3",
+          size: 40,
+        },
+        { path: "vendor/lib", mode: "160000", type: "commit", sha: "c1" },
+      ],
+    },
+  };
 }

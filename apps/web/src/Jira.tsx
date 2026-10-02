@@ -52,6 +52,7 @@ import { cn } from "@/lib/utils";
 
 import { JiraIcon } from "./ProviderIcon";
 import { isPlainLeftClick, pathForScreen } from "./routes";
+import { BoardRepository } from "./BoardRepository";
 import { BoardBounties } from "./Bounties";
 
 import {
@@ -698,7 +699,8 @@ export function JiraBoard({
    */
   header?: ReactNode;
 }) {
-  const { boards, error, issue } = useJiraBoards(organizationId);
+  const { boards, error, issue, linkRepository } =
+    useJiraBoards(organizationId);
   const { connections, connect } = useJira(organizationId);
   const { outcome, missingScopes, dismiss } = useJiraOutcome();
 
@@ -752,6 +754,15 @@ export function JiraBoard({
         <BoardsError
           error={error}
           onReconnect={canManage(role ?? "") ? () => connect() : undefined}
+        />
+      )}
+
+      {board !== null && (
+        <BoardRepository
+          organizationId={organizationId}
+          sourceRepoId={board.sourceRepoId ?? null}
+          canManage={canManage(role ?? "")}
+          onLink={(repoId) => linkRepository(board.id, repoId)}
         />
       )}
 

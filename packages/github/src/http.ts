@@ -42,7 +42,8 @@ export async function readJson(response: Response): Promise<unknown> {
 }
 
 /**
- * `fetch` with the timeout above, and with a request that never got an
+ * `fetch` with the timeout above (or a longer one for a read known to be
+ * large), and with a request that never got an
  * answer reported as `GithubNetworkError` rather than undici's bare
  * `TypeError`, so every caller's handling of GitHub's failures covers it.
  */
@@ -50,11 +51,12 @@ export async function request(
   fetchImpl: typeof globalThis.fetch,
   url: string,
   init: RequestInit,
+  timeoutMs: number = REQUEST_TIMEOUT_MS,
 ): Promise<Response> {
   try {
     return await fetchImpl(url, {
       ...init,
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (error) {
     const timedOut =
@@ -62,7 +64,7 @@ export async function request(
       (error.name === "TimeoutError" || error.name === "AbortError");
     throw new GithubNetworkError(
       timedOut
-        ? `GitHub did not answer within ${REQUEST_TIMEOUT_MS / 1000} seconds.`
+        ? `GitHub did not answer within ${timeoutMs / 1000} seconds.`
         : "Could not reach GitHub.",
     );
   }

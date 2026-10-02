@@ -96,6 +96,14 @@ export interface BountyExecutorOptions {
     organizationId: string,
     connectionId: string,
   ) => Promise<RunClientResult>;
+  /**
+   * The outline of a board's source repository, from its current snapshot,
+   * or null when it has none yet. Absent, no draft is shown one.
+   */
+  readonly outlineFor?: (
+    organizationId: string,
+    repoId: string,
+  ) => Promise<RepositoryOutlineRead | null>;
   readonly now?: () => Date;
   readonly leaseToken?: () => string;
   readonly setInterval?: typeof globalThis.setInterval;
@@ -109,6 +117,12 @@ export interface BountyExecutorOptions {
    * thrown value, for the operator's log — it is never sent to a client.
    */
   readonly onBackgroundError?: (code: string, error?: unknown) => void;
+}
+
+/** An outline to draft beside, and the snapshot it was drawn from. */
+export interface RepositoryOutlineRead {
+  readonly snapshotId: string;
+  readonly text: string;
 }
 
 export class BountyExecutor {
@@ -321,6 +335,17 @@ export class BountyExecutor {
       const stepSettings = resolveStepSettings(
         pricing.success ? pricing.data.step : {},
       );
+      /*
+        The repository the board's tickets are about, read once for the
+        run like the settings above: every ticket is drafted beside the
+        same snapshot. One that cannot be read leaves the drafts without
+        it rather than failing the run; the outline helps a weight, it is
+        not what a size stands on.
+      */
+      const outline = await this.#outline(
+        organizationId,
+        registered.board.sourceRepoId,
+      );
 
       const outcomes: BountyRunOutcome[] = [];
       let nextIndex = 0;
@@ -343,6 +368,7 @@ export class BountyExecutor {
             clientResult.client,
             controller.signal,
             stepSettings,
+            outline,
           );
           if (outcome.fatalCode !== undefined) {
             // The first fatal code is the cause. Aborting the controller
@@ -394,6 +420,21 @@ export class BountyExecutor {
       });
     } finally {
       (this.#options.clearInterval ?? clearInterval)(heartbeat);
+    }
+  }
+
+  /** The board's repository outline, or null when there is none to read. */
+  async #outline(
+    organizationId: string,
+    repoId: string | null,
+  ): Promise<RepositoryOutlineRead | null> {
+    const read = this.#options.outlineFor;
+    if (repoId === null || read === undefined) return null;
+    try {
+      return await read(organizationId, repoId);
+    } catch (error) {
+      this.#options.onBackgroundError?.("bounty_outline_unavailable", error);
+      return null;
     }
   }
 
@@ -666,6 +707,7 @@ export class BountyExecutor {
     client: RunJiraClient,
     signal: AbortSignal,
     stepSettings: StepSettings,
+    outline: RepositoryOutlineRead | null,
   ): Promise<{ value?: BountyRunOutcome; fatalCode?: string }> {
     const base = {
       externalIssueId: candidate.id,
@@ -764,6 +806,7 @@ export class BountyExecutor {
             issueType: spec.issueType,
             components: spec.components,
             labels: spec.labels,
+            ...(outline === null ? {} : { repositoryOutline: outline.text }),
           },
           request,
         );
@@ -849,6 +892,9 @@ export class BountyExecutor {
       amountMinor,
       currency: amountMinor === null ? null : run.rateCard.currency,
       step,
+      // What the spec was drafted beside; nothing when there is no spec.
+      repoSnapshotId:
+        drafted === undefined || outline === null ? null : outline.snapshotId,
       ...(drafted === undefined ? {} : { spec: drafted }),
     };
     const created =

@@ -147,6 +147,70 @@ test("a refused mint is GithubInstallationUnavailable, never GithubNotFound", as
   }
 });
 
+test("a mint narrowed to a repository the installation lost is GithubNotFound", async () => {
+  const tokens = tokensWith(
+    fakeFetch(() =>
+      json(
+        {
+          message:
+            "There is at least one repository that does not exist or is not accessible to the parent installation.",
+        },
+        422,
+      ),
+    ),
+  );
+
+  await assert.rejects(
+    tokens.token("9", {
+      repositoryIds: [42],
+      permissions: { contents: "read" },
+    }),
+    (error: Error) => {
+      assert.ok(error instanceof GithubNotFound);
+      // The repository's id is not in what a caller might show.
+      assert.ok(!error.message.includes("42"));
+      return true;
+    },
+  );
+});
+
+test("any other 422 on a mint stays a plain API error", async () => {
+  // A permission the installation does not hold says nothing about the
+  // repository, so it must not mark one gone.
+  const refused = () =>
+    tokensWith(
+      fakeFetch(() =>
+        json(
+          {
+            message:
+              "The permissions requested are not granted to this installation.",
+          },
+          422,
+        ),
+      ),
+    );
+  for (const narrowing of [
+    { repositoryIds: [42], permissions: { contents: "write" } },
+    { permissions: { contents: "write" } },
+  ]) {
+    await assert.rejects(refused().token("9", narrowing), (error: Error) => {
+      assert.ok(error instanceof GithubApiError);
+      assert.ok(!(error instanceof GithubNotFound));
+      assert.equal((error as GithubApiError).status, 422);
+      return true;
+    });
+  }
+  // Without the repository narrowing, even a message naming repositories
+  // is not read as one gone.
+  const unnarrowed = tokensWith(
+    fakeFetch(() => json({ message: "repository trouble" }, 422)),
+  );
+  await assert.rejects(unnarrowed.token("9"), (error: Error) => {
+    assert.ok(!(error instanceof GithubNotFound));
+    return true;
+  });
+});
+
 test("a 401 is the App's own credential refused, not the installation", async () => {
   // A deleted key, a wrong App id, a clock off by minutes: every
   // installation would answer the same, so none of them may be flagged.
