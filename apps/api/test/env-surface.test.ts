@@ -32,6 +32,7 @@ test("the API reads exactly the documented environment variables", () => {
       // pointing at another one reveals nothing new.
       "DATABASE_URL",
       "S3_ENDPOINT",
+      "S3_PUBLIC_ENDPOINT",
       "S3_BUCKET",
       "S3_ACCESS_KEY_ID",
       "S3_SECRET_ACCESS_KEY",
@@ -69,6 +70,11 @@ test("the API reads exactly the documented environment variables", () => {
       "DEEPSEEK_API_KEY",
       "DEEPSEEK_SIZING_MODEL",
       "DEEPSEEK_BASE_URL",
+      "WORKER_TASK_DEFINITION",
+      "WORKER_CLUSTER",
+      "WORKER_SUBNETS",
+      "WORKER_SECURITY_GROUP",
+      "MAX_ACTIVE_RUNS_PER_ORG",
       // Reporting only.
       "BUILD_VERSION",
       "BUILD_SHA",

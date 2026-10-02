@@ -14,7 +14,12 @@ import type { TreeFacts } from "sandbox-factory";
 
 import type { Database } from "./errors.js";
 import { generateId } from "./mapping.js";
-import { bountyProposal, githubRepo, repoSnapshot } from "./schema.js";
+import {
+  analysisRun,
+  bountyProposal,
+  githubRepo,
+  repoSnapshot,
+} from "./schema.js";
 import type { RepoSnapshotRow } from "./schema.js";
 
 /** A snapshot as lists show it: everything but the facts. */
@@ -109,7 +114,7 @@ export interface RepoSnapshotStore {
 }
 
 /** No proposal points at the snapshot. Raw so it costs the fake no query. */
-const unreferenced = sql`not exists (select 1 from ${bountyProposal} where ${bountyProposal.repoSnapshotId} = ${repoSnapshot.id})`;
+const unreferenced = sql`not exists (select 1 from ${bountyProposal} where ${bountyProposal.repoSnapshotId} = ${repoSnapshot.id}) and not exists (select 1 from ${analysisRun} where ${analysisRun.snapshotId} = ${repoSnapshot.id})`;
 
 export function createRepoSnapshotStore(db: Database): RepoSnapshotStore {
   const owned = (organizationId: string) =>

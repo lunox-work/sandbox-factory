@@ -56,6 +56,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Separator } from "@/components/ui/separator";
 
+import { RepositoryAnalysis } from "./RepositoryAnalysis";
 import { ProviderIcon } from "./ProviderIcon";
 import {
   fetchAvailableInstallations,
@@ -677,6 +678,7 @@ function InstallationCard({
         {unhealthy !== null && <p className="text-sm">{unhealthy.detail}</p>}
 
         <RegisteredRepos
+          organizationId={organizationId}
           repos={repos}
           loading={reposLoading}
           failed={reposFailed}
@@ -724,12 +726,14 @@ const SYNC_LABELS: Record<GithubRepoDto["syncStatus"], string> = {
 
 /** The registered repositories: where each one's default branch points. */
 function RegisteredRepos({
+  organizationId,
   repos,
   loading,
   failed,
   manageable,
   onRemove,
 }: {
+  organizationId: string;
   repos: GithubRepoDto[];
   loading: boolean;
   /** The read failed; the page says so once, above, for every card. */
@@ -739,6 +743,7 @@ function RegisteredRepos({
     repoId: string,
   ) => Promise<{ ok: true } | { ok: false; error: string }>;
 }) {
+  const [analyzing, setAnalyzing] = useState<GithubRepoDto | null>(null);
   const [removing, setRemoving] = useState<GithubRepoDto | null>(null);
 
   // Never "none registered" before the list is known: that is a zero
@@ -774,6 +779,9 @@ function RegisteredRepos({
               </th>
               <th scope="col" className="px-1 pb-2 font-medium">
                 Last synced
+              </th>
+              <th scope="col" className="px-1 pb-2 font-medium">
+                Analysis
               </th>
               {manageable && (
                 <th scope="col" className="px-1 pb-2">
@@ -831,6 +839,16 @@ function RegisteredRepos({
                         timeStyle: "short",
                       })}
                 </td>
+                <td className="px-1 py-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    aria-label={`Analysis for ${repo.fullName}`}
+                    onClick={() => setAnalyzing(repo)}
+                  >
+                    Analysis
+                  </Button>
+                </td>
                 {manageable && (
                   <td className="px-1 py-2 text-right">
                     <Button
@@ -848,6 +866,15 @@ function RegisteredRepos({
           </tbody>
         </table>
       </div>
+      {analyzing !== null && (
+        <RepositoryAnalysis
+          key={analyzing.id}
+          organizationId={organizationId}
+          repo={analyzing}
+          manageable={manageable}
+          onClose={() => setAnalyzing(null)}
+        />
+      )}
       {manageable && (
         <ConfirmDialog
           open={removing !== null}

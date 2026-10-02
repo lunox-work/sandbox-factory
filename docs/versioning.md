@@ -138,9 +138,22 @@ something to enable by accident; the ARN belongs in `SECURITY.md` once it is on.
 The attestation covers the image, not the environment it was started with.
 `apps/api/src/env.ts` lists every variable the API reads and
 `apps/api/test/env-surface.test.ts` pins that list, so widening it is a reviewed
-change. None of them enables request logging or alters what is collected or
-stored — there is no log-level or debug variable to set, and adding one means
+change. None of them enables request logging — there is no log-level or debug variable to set, and adding one means
 updating that test.
+
+`S3_PUBLIC_ENDPOINT` optionally signs downloads against a browser-reachable S3
+gateway. Compose sets localhost while server storage calls use its internal
+SeaweedFS hostname; AWS leaves it unset.
+
+The analysis API additionally reads `WORKER_TASK_DEFINITION`, `WORKER_CLUSTER`,
+`WORKER_SUBNETS`, and `WORKER_SECURITY_GROUP` to launch the private source worker.
+They must be set together; omitted, Compose's worker polls the database.
+`MAX_ACTIVE_RUNS_PER_ORG` bounds queued and running analyses (default 3).
+The worker reads storage and GitHub App credentials plus `WORKER_MODE`,
+`MAX_TARBALL_BYTES` (default 200 MiB) and `MAX_FILES` (default 20,000).
+These limits change accepted workload size. Parser subprocesses receive none of
+the platform credentials. Analysis logs contain fixed lifecycle messages and
+public error codes, never raw subprocess output.
 
 ### Limits worth stating plainly
 

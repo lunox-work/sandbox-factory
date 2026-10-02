@@ -20,9 +20,10 @@
 
 import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
 
+import { collectRepositoryObjects } from "./artifacts.js";
 import type { Database } from "./errors.js";
 import { generateId } from "./mapping.js";
-import { githubConnection, githubRepo, repoSnapshot } from "./schema.js";
+import { githubConnection, githubRepo } from "./schema.js";
 import type { GithubConnectionRow } from "./schema.js";
 
 /** A connection as the API reads it. No token material exists to omit. */
@@ -117,11 +118,15 @@ export interface GithubConnectionStore {
    * App stays installed on GitHub until the client removes it there.
    */
   remove(organizationId: string, connectionId: string): Promise<boolean>;
-  /** Deletes the connection and returns every cascaded snapshot's object key. */
+  /** Deletes the connection and returns cascaded tree, artifact and log keys. */
   removeWithTrees(
     organizationId: string,
     connectionId: string,
-  ): Promise<{ readonly removed: boolean; readonly treeKeys: string[] }>;
+  ): Promise<{
+    readonly removed: boolean;
+    readonly treeKeys: string[];
+    readonly objectKeys?: string[];
+  }>;
 }
 
 export function createGithubConnectionStore(
@@ -306,18 +311,13 @@ export function createGithubConnectionStore(
             ),
           )
           .for("update");
-        const trees = await tx
-          .select({ treeKey: repoSnapshot.treeKey })
-          .from(repoSnapshot)
-          .innerJoin(githubRepo, eq(githubRepo.id, repoSnapshot.repoId))
-          .where(
-            and(
-              eq(githubRepo.organizationId, organizationId),
-              eq(githubRepo.connectionId, connectionId),
-            ),
-          );
+        const keys = await collectRepositoryObjects(
+          tx,
+          organizationId,
+          eq(githubRepo.connectionId, connectionId),
+        );
         await tx.delete(githubConnection).where(owner);
-        return { removed: true, treeKeys: trees.map(({ treeKey }) => treeKey) };
+        return { removed: true, ...keys };
       });
     },
   };

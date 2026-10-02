@@ -42,6 +42,10 @@ import {
   type GithubWebhookOptions,
 } from "./github/webhook.js";
 import { mountJiraRoutes, type JiraRouteOptions } from "./jira/routes.js";
+import {
+  mountAnalysisRoutes,
+  type AnalysisRouteOptions,
+} from "./analysis/routes.js";
 
 export interface AppOptions {
   corsOrigins: readonly string[];
@@ -82,6 +86,7 @@ export interface AppOptions {
     | undefined;
   /** Commercial routes. Rate-card reads remain mounted without model config. */
   bounty?: BountyRouteOptions | undefined;
+  analysis?: AnalysisRouteOptions | undefined;
   /**
    * Uploaded avatars. Optional for the same reason as `jira`: without object
    * storage configured the upload routes are not mounted and answer 404,
@@ -155,6 +160,7 @@ export function createApp({
   jira,
   github,
   bounty,
+  analysis,
   avatars,
   buildInfo = unknownBuildInfo,
   originVerify,
@@ -570,6 +576,14 @@ export function createApp({
      * organization from the signed state.
      */
     if (github !== undefined) {
+      if (analysis !== undefined) mountAnalysisRoutes(app, analysis);
+      else
+        app.all("/api/v1/orgs/:orgId/github/repositories/:id/runs", (c) =>
+          c.json(
+            { error: "Analysis needs object storage.", code: "unconfigured" },
+            503,
+          ),
+        );
       mountGithubRoutes(app, {
         ...github,
         roleOf: (userId, organizationId) =>

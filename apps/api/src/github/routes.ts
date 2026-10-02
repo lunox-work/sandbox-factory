@@ -529,7 +529,11 @@ export function mountGithubRoutes<Env extends GithubAppEnv>(
         : await connections.removeWithTrees(organizationId, c.req.param("id"));
     const { removed } = result;
     if (!removed) return c.json({ error: "Not found" }, 404);
-    await snapshots?.snapshotter.removeObjects(result.treeKeys);
+    await snapshots?.snapshotter.removeObjects(
+      "objectKeys" in result
+        ? (result.objectKeys ?? result.treeKeys)
+        : result.treeKeys,
+    );
     return c.body(null, 204);
   });
 
@@ -682,6 +686,12 @@ export function mountGithubRoutes<Env extends GithubAppEnv>(
       );
     }
     const repoId = c.req.param("id");
+    if (repos.removeWithObjects !== undefined) {
+      const result = await repos.removeWithObjects(organizationId, repoId);
+      if (!result.removed) return c.json({ error: "Not found" }, 404);
+      await snapshots?.snapshotter.removeObjects(result.objectKeys);
+      return c.body(null, 204);
+    }
     // Read before the cascade takes the rows, so the trees can go too.
     const trees =
       snapshots === undefined

@@ -19,6 +19,20 @@ const unsetSecret = (value: unknown) =>
 
 const envSchema = z.object({
   PORT: z.coerce.number().int().positive().default(4000),
+  WORKER_TASK_DEFINITION: z.preprocess(
+    unsetSecret,
+    z.string().min(1).optional(),
+  ),
+  WORKER_CLUSTER: z.preprocess(unsetSecret, z.string().min(1).optional()),
+  WORKER_SUBNETS: z.preprocess(unsetSecret, z.string().min(1).optional()),
+  WORKER_SECURITY_GROUP: z.preprocess(
+    unsetSecret,
+    z.string().min(1).optional(),
+  ),
+  MAX_ACTIVE_RUNS_PER_ORG: z.preprocess(
+    unsetSecret,
+    z.coerce.number().int().min(1).max(50).default(3),
+  ),
   CORS_ORIGINS: z
     .string()
     .default("http://localhost:5173")
@@ -48,6 +62,7 @@ const envSchema = z.object({
     unsetSecret,
     z.url({ protocol: /^https?$/ }).optional(),
   ),
+  S3_PUBLIC_ENDPOINT: z.preprocess(unsetSecret, z.url().optional()),
   S3_BUCKET: z.preprocess(unsetSecret, z.string().min(1).optional()),
   S3_ACCESS_KEY_ID: z.preprocess(unsetSecret, z.string().min(1).optional()),
   S3_SECRET_ACCESS_KEY: z.preprocess(unsetSecret, z.string().min(1).optional()),
@@ -405,6 +420,7 @@ export function objectStoreConfig(env: Env):
       bucket: string;
       region: string;
       endpoint?: string;
+      publicEndpoint?: string;
       credentials?: { accessKeyId: string; secretAccessKey: string };
     }
   | undefined {
@@ -415,6 +431,9 @@ export function objectStoreConfig(env: Env):
     bucket: env.S3_BUCKET,
     region: env.S3_REGION,
     ...(env.S3_ENDPOINT === undefined ? {} : { endpoint: env.S3_ENDPOINT }),
+    ...(env.S3_PUBLIC_ENDPOINT === undefined
+      ? {}
+      : { publicEndpoint: env.S3_PUBLIC_ENDPOINT }),
     ...(env.S3_ACCESS_KEY_ID === undefined ||
     env.S3_SECRET_ACCESS_KEY === undefined
       ? {}
@@ -424,5 +443,34 @@ export function objectStoreConfig(env: Env):
             secretAccessKey: env.S3_SECRET_ACCESS_KEY,
           },
         }),
+  };
+}
+
+/** Local polling needs no ECS configuration; partial production wiring fails at boot. */
+export function workerLaunchConfig(env: ReturnType<typeof parseEnv>) {
+  const values = [
+    env.WORKER_TASK_DEFINITION,
+    env.WORKER_CLUSTER,
+    env.WORKER_SUBNETS,
+    env.WORKER_SECURITY_GROUP,
+  ];
+  if (values.every((value) => value === undefined)) return undefined;
+  if (
+    env.WORKER_TASK_DEFINITION === undefined ||
+    env.WORKER_CLUSTER === undefined ||
+    env.WORKER_SUBNETS === undefined ||
+    env.WORKER_SECURITY_GROUP === undefined
+  )
+    throw new Error("All worker launch settings must be configured together.");
+  const subnets = env.WORKER_SUBNETS.split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (subnets.length === 0)
+    throw new Error("The worker needs at least one subnet.");
+  return {
+    taskDefinition: env.WORKER_TASK_DEFINITION,
+    cluster: env.WORKER_CLUSTER,
+    subnets,
+    securityGroup: env.WORKER_SECURITY_GROUP,
   };
 }

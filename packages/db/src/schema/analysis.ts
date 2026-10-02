@@ -25,8 +25,15 @@ import {
 } from "drizzle-orm/pg-core";
 
 import type { TreeFacts } from "sandbox-factory";
+import type {
+  AnalysisParams,
+  AnalysisStatus,
+  AnalysisErrorCode,
+  ArtifactKind,
+} from "sandbox-factory";
 
 import { githubRepo } from "./github.js";
+import { user } from "./auth.js";
 
 const ts = (name: string) => timestamp(name, { withTimezone: true });
 
@@ -76,3 +83,63 @@ export const repoSnapshot = pgTable(
 
 export type RepoSnapshotRow = typeof repoSnapshot.$inferSelect;
 export type NewRepoSnapshotRow = typeof repoSnapshot.$inferInsert;
+
+export const analysisRun = pgTable(
+  "analysis_run",
+  {
+    id: text("id").primaryKey(),
+    snapshotId: text("snapshot_id")
+      .notNull()
+      .references(() => repoSnapshot.id, { onDelete: "cascade" }),
+    tool: text("tool").notNull(),
+    toolVersion: text("tool_version").notNull(),
+    params: jsonb("params").$type<AnalysisParams>().notNull(),
+    paramsHash: text("params_hash").notNull(),
+    status: text("status").$type<AnalysisStatus>().notNull().default("queued"),
+    attempt: integer("attempt").notNull().default(0),
+    maxAttempts: integer("max_attempts").notNull().default(2),
+    requestedBy: text("requested_by").references(() => user.id, {
+      onDelete: "set null",
+    }),
+    leaseToken: text("lease_token"),
+    leaseExpiresAt: ts("lease_expires_at"),
+    heartbeatAt: ts("heartbeat_at"),
+    deadlineAt: ts("deadline_at"),
+    errorCode: text("error_code").$type<AnalysisErrorCode>(),
+    errorDetail: text("error_detail"),
+    logKey: text("log_key"),
+    startedAt: ts("started_at"),
+    finishedAt: ts("finished_at"),
+    createdAt: ts("created_at").notNull().defaultNow(),
+  },
+  (t) => [
+    unique("analysis_run_cache_unique").on(
+      t.snapshotId,
+      t.tool,
+      t.toolVersion,
+      t.paramsHash,
+    ),
+    index("analysis_run_status_created_at_idx").on(t.status, t.createdAt),
+  ],
+);
+
+export const artifact = pgTable(
+  "artifact",
+  {
+    id: text("id").primaryKey(),
+    runId: text("run_id")
+      .notNull()
+      .references(() => analysisRun.id, { onDelete: "cascade" }),
+    kind: text("kind").$type<ArtifactKind>().notNull(),
+    path: text("path").notNull(),
+    objectKey: text("object_key").notNull(),
+    contentType: text("content_type").notNull(),
+    sizeBytes: bigint("size_bytes", { mode: "number" }).notNull(),
+    sha256: text("sha256").notNull(),
+    meta: jsonb("meta").$type<Record<string, unknown>>(),
+    createdAt: ts("created_at").notNull().defaultNow(),
+  },
+  (t) => [unique("artifact_run_path_unique").on(t.runId, t.path)],
+);
+export type AnalysisRunRow = typeof analysisRun.$inferSelect;
+export type ArtifactRow = typeof artifact.$inferSelect;

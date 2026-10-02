@@ -87,6 +87,7 @@ services:
       # Required. Host and port are the compose service, not localhost.
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/sandbox_factory
       S3_ENDPOINT: http://seaweedfs:8333
+      S3_PUBLIC_ENDPOINT: http://localhost:${S3_PORT:-8333}
       S3_BUCKET: sandbox-factory
       S3_ACCESS_KEY_ID: sandbox
       S3_SECRET_ACCESS_KEY: sandboxsecret
@@ -113,6 +114,7 @@ services:
       GITHUB_APP_WEBHOOK_SECRET: ${GITHUB_APP_WEBHOOK_SECRET:-}
       GITHUB_APP_CLIENT_ID: ${GITHUB_APP_CLIENT_ID:-}
       GITHUB_APP_CLIENT_SECRET: ${GITHUB_APP_CLIENT_SECRET:-}
+      MAX_ACTIVE_RUNS_PER_ORG: ${MAX_ACTIVE_RUNS_PER_ORG:-3}
       TOKEN_ENCRYPTION_KEY: ${TOKEN_ENCRYPTION_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       SIZING_MODEL: ${SIZING_MODEL:-}
@@ -132,6 +134,7 @@ services:
       # into the host's node_modules — after which the host's own build of
       # that workspace fails. A new workspace needs a line here and below.
       - /repo/node_modules
+      - /repo/apps/worker/node_modules
       - /repo/apps/api/node_modules
       - /repo/apps/web/node_modules
       - /repo/apps/extension/node_modules
@@ -174,6 +177,7 @@ services:
       - .:/repo
       # Every workspace, for the reason given on api-dev.
       - /repo/node_modules
+      - /repo/apps/worker/node_modules
       - /repo/apps/api/node_modules
       - /repo/apps/web/node_modules
       - /repo/apps/extension/node_modules
@@ -185,6 +189,50 @@ services:
       - /repo/packages/client/node_modules
     depends_on:
       - api-dev
+
+  worker:
+    profiles: [dev, prod]
+    build:
+      context: .
+      dockerfile: apps/worker/Dockerfile
+      target: dev
+    image: sandbox-factory-worker:local
+    restart: on-failure
+    working_dir: /repo
+    command: >
+      sh -c 'if [ -z "$$GITHUB_APP_ID" ]; then echo "Worker disabled: GitHub App is not configured"; exit 0; fi; npm ci --ignore-scripts
+      && npx turbo run build --filter=@sandbox-factory/worker
+      && npm start --workspace @sandbox-factory/worker'
+    stop_grace_period: 90s
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/sandbox_factory
+      S3_ENDPOINT: http://seaweedfs:8333
+      S3_BUCKET: sandbox-factory
+      S3_ACCESS_KEY_ID: sandbox
+      S3_SECRET_ACCESS_KEY: sandboxsecret
+      GITHUB_APP_ID: ${GITHUB_APP_ID:-}
+      GITHUB_APP_PRIVATE_KEY: ${GITHUB_APP_PRIVATE_KEY:-}
+      WORKER_MODE: poll
+      MAX_TARBALL_BYTES: ${MAX_TARBALL_BYTES:-209715200}
+      MAX_FILES: ${MAX_FILES:-20000}
+    volumes:
+      - .:/repo
+      - /repo/node_modules
+      - /repo/apps/worker/node_modules
+      - /repo/apps/api/node_modules
+      - /repo/apps/web/node_modules
+      - /repo/apps/extension/node_modules
+      - /repo/packages/core/node_modules
+      - /repo/packages/db/node_modules
+      - /repo/packages/github/node_modules
+      - /repo/packages/jira/node_modules
+      - /repo/packages/shared/node_modules
+      - /repo/packages/client/node_modules
+    depends_on:
+      postgres:
+        condition: service_healthy
+      seaweedfs:
+        condition: service_healthy
 
   # ---- prod ---------------------------------------------------------------
 
@@ -204,6 +252,7 @@ services:
       CORS_ORIGINS: http://localhost:${WEB_PROD_PORT:-8080}
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/sandbox_factory
       S3_ENDPOINT: http://seaweedfs:8333
+      S3_PUBLIC_ENDPOINT: http://localhost:${S3_PORT:-8333}
       S3_BUCKET: sandbox-factory
       S3_ACCESS_KEY_ID: sandbox
       S3_SECRET_ACCESS_KEY: sandboxsecret
@@ -224,6 +273,7 @@ services:
       GITHUB_APP_WEBHOOK_SECRET: ${GITHUB_APP_WEBHOOK_SECRET:-}
       GITHUB_APP_CLIENT_ID: ${GITHUB_APP_CLIENT_ID:-}
       GITHUB_APP_CLIENT_SECRET: ${GITHUB_APP_CLIENT_SECRET:-}
+      MAX_ACTIVE_RUNS_PER_ORG: ${MAX_ACTIVE_RUNS_PER_ORG:-3}
       TOKEN_ENCRYPTION_KEY: ${TOKEN_ENCRYPTION_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       SIZING_MODEL: ${SIZING_MODEL:-}

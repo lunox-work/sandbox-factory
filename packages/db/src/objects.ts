@@ -18,6 +18,7 @@ import {
   S3Client,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import type { Readable } from "node:stream";
 
 export interface ObjectStoreOptions {
   /**
@@ -25,6 +26,8 @@ export interface ObjectStoreOptions {
    * talks to AWS S3 in `region`.
    */
   readonly endpoint?: string | undefined;
+  /** Public gateway used only to sign browser downloads, e.g. localhost in Compose. */
+  readonly publicEndpoint?: string | undefined;
   readonly bucket: string;
   /**
    * Static keys. Omitted, the SDK's default credential chain supplies them —
@@ -39,6 +42,7 @@ export interface ObjectStoreOptions {
 
 export interface PutOptions {
   readonly contentType?: string;
+  readonly signal?: AbortSignal;
 }
 
 export interface ObjectStore {
@@ -48,13 +52,24 @@ export interface ObjectStore {
   remove(key: string): Promise<void>;
   /** A time-limited direct-download URL, so payloads bypass the API. */
   signedUrl(key: string, expiresInSeconds?: number): Promise<string>;
+  /** Large analysis artifacts bypass whole-file buffers. Optional for legacy doubles. */
+  putStream?(
+    key: string,
+    body: Readable,
+    sizeBytes: number,
+    options?: PutOptions,
+  ): Promise<void>;
 }
 
 export function createObjectStore(options: ObjectStoreOptions): ObjectStore {
   const { bucket } = options;
-  const client = new S3Client({
+  const config = {
     region: options.region ?? "us-east-1",
     forcePathStyle: true,
+    // Older S3 gateways do not decode the SDK's optional aws-chunked checksum trailers.
+    ...(options.endpoint === undefined
+      ? {}
+      : { requestChecksumCalculation: "WHEN_REQUIRED" as const }),
     ...(options.endpoint === undefined ? {} : { endpoint: options.endpoint }),
     ...(options.credentials === undefined
       ? {}
@@ -64,9 +79,28 @@ export function createObjectStore(options: ObjectStoreOptions): ObjectStore {
             secretAccessKey: options.credentials.secretAccessKey,
           },
         }),
-  });
+  };
+  const client = new S3Client(config);
+  const signer =
+    options.publicEndpoint === undefined
+      ? client
+      : new S3Client({ ...config, endpoint: options.publicEndpoint });
 
   return {
+    async putStream(key, body, sizeBytes, putOptions) {
+      await client.send(
+        new PutObjectCommand({
+          Bucket: bucket,
+          Key: key,
+          Body: body,
+          ContentLength: sizeBytes,
+          ...(putOptions?.contentType === undefined
+            ? {}
+            : { ContentType: putOptions.contentType }),
+        }),
+        { abortSignal: putOptions?.signal },
+      );
+    },
     async put(key, body, putOptions) {
       await client.send(
         new PutObjectCommand({
@@ -117,7 +151,7 @@ export function createObjectStore(options: ObjectStoreOptions): ObjectStore {
 
     async signedUrl(key, expiresInSeconds = 900) {
       return await getSignedUrl(
-        client,
+        signer,
         new GetObjectCommand({ Bucket: bucket, Key: key }),
         { expiresIn: expiresInSeconds },
       );

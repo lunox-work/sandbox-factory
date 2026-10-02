@@ -6,6 +6,8 @@
 import { serve } from "@hono/node-server";
 import {
   createBountyRunStore,
+  createAnalysisRunStore,
+  createArtifactStore,
   createBountyWritebackStore,
   createConnection,
   createBountyProposalStore,
@@ -42,8 +44,11 @@ import {
   jiraOAuthConfig,
   objectStoreConfig,
   parseEnv,
+  workerLaunchConfig,
   sizingConfig,
 } from "./env.js";
+import { WorkerLauncher } from "./github/launcher.js";
+import { AnalysisWatchdog } from "./analysis/watchdog.js";
 import { GithubReconciler } from "./github/reconcile.js";
 import { GithubSnapshotter } from "./github/snapshot.js";
 import { resolveImageDigest } from "./image-digest.js";
@@ -336,6 +341,33 @@ const githubReconciler =
 const avatars =
   objects === undefined ? undefined : createAvatarService({ store: objects });
 
+const analysisRuns = createAnalysisRunStore(connection.db);
+const workerLauncher = new WorkerLauncher({
+  runs: analysisRuns,
+  config: workerLaunchConfig(env),
+});
+const analysis =
+  github === undefined || objects === undefined
+    ? undefined
+    : {
+        runs: analysisRuns,
+        artifacts: createArtifactStore(connection.db),
+        repos: githubRepos,
+        snapshots: repoSnapshots,
+        objects,
+        ensureWorker: () => workerLauncher.ensureWorker(),
+        maxActive: env.MAX_ACTIVE_RUNS_PER_ORG,
+        onLaunchError: () => console.error("analysis_worker_launch_failed"),
+      };
+const analysisWatchdog =
+  analysis === undefined
+    ? undefined
+    : new AnalysisWatchdog({
+        runs: analysisRuns,
+        ensureWorker: () => workerLauncher.ensureWorker(),
+        onError: () => console.error("analysis_watchdog_failed"),
+      });
+
 const app = createApp({
   corsOrigins: env.CORS_ORIGINS,
   auth,
@@ -344,6 +376,7 @@ const app = createApp({
   organizations,
   jira,
   github,
+  analysis,
   bounty: {
     rateCards,
     runs: bountyRuns,
@@ -380,6 +413,7 @@ const bountyWatchdog = new BountyWatchdog({
   onError: (code) => console.error(code),
 });
 bountyWatchdog.start();
+analysisWatchdog?.start();
 githubReconciler?.start();
 
 const server = serve({ fetch: app.fetch, port: env.PORT }, (info) => {
@@ -398,6 +432,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
     // is written, before the pool closes.
     void Promise.all([
       githubReconciler?.stop(),
+      analysisWatchdog?.stop(),
       githubSnapshotter?.stop(),
     ]).then(() => {
       server.close(() => {

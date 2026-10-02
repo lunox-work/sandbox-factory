@@ -76,8 +76,13 @@ export type {
   NewGithubRepoRow,
 } from "./schema/github.js";
 
-export { repoSnapshot } from "./schema/analysis.js";
-export type { NewRepoSnapshotRow, RepoSnapshotRow } from "./schema/analysis.js";
+export { repoSnapshot, analysisRun, artifact } from "./schema/analysis.js";
+export type {
+  NewRepoSnapshotRow,
+  RepoSnapshotRow,
+  AnalysisRunRow,
+  ArtifactRow,
+} from "./schema/analysis.js";
 
 export {
   BOUNTY_SPEC_ORIGINS,

@@ -5,7 +5,7 @@ protection on `main`.
 
 | Workflow              | Does                                                                    |
 | --------------------- | ----------------------------------------------------------------------- |
-| `ci.yml`              | Lint, format, build, test on Node 22 and 24                             |
+| `ci.yml`              | Lint, format, build, test on Node 22 and 24; worker image smoke         |
 | `autofix.yml`         | Pushes `npm run format` fixes to same-repository PRs                    |
 | `codeql.yml`          | Security analysis — the `Analyze` check                                 |
 | `auto-merge.yml`      | Arms auto-merge on every PR                                             |
@@ -24,7 +24,7 @@ one active ruleset, no bypass actors, no force-push/deletion, linear history
 and squash-only PR merges. These contexts are required, from their expected
 GitHub Apps:
 
-- `Test (Node 22)`, `Test (Node 24)`, `Analyze`: GitHub Actions.
+- `Test (Node 22)`, `Test (Node 24)`, `Worker image smoke`, `Analyze`: GitHub Actions.
 - `CodeQL`: GitHub Advanced Security (the findings result, not just the scanner job).
 
 **A PR merges once CI passes.** No approving review is required, review
@@ -57,8 +57,12 @@ Each job runs `npm ci --ignore-scripts` → `npm run lint` → `npm run format:c
 the pre-push hook runs. Keep them identical.
 
 CI then does three things `verify` does not: it runs against a **Postgres
-service container**, asserts the database-backed tests actually ran rather than
-skipping, and asserts the build recorded its commit.
+service container and a SeaweedFS fixture**, asserts the database-backed tests actually ran rather than
+skipping, and asserts the build recorded its commit. The S3 regression uploads
+a stream and downloads its signed URL, checking exact bytes and hash. It catches
+gateway incompatibilities such as optional AWS checksum trailer framing. Turbo
+passes the database URL and test S3 endpoint into the test tasks and their cache
+keys.
 
 - **Format is a separate gate from lint.** `npm run lint` is `tsc --noEmit`.
   Unformatted Markdown fails CI as hard as unformatted TypeScript.
@@ -76,6 +80,15 @@ skipping, and asserts the build recorded its commit.
   Vitest without thresholds. Do not lower one to make a PR pass — add the test.
 - **`--ignore-scripts`** skips husky's `prepare`, which fails outside a git work
   tree.
+
+The `Worker image smoke` job builds the pinned ARM64 worker image and runs the
+real Graphify fixture pipeline without credentials. It is in the checked-in
+required-check policy; apply that policy when enabling Phase 3 so a Python
+regression cannot merge while only the Node tests pass. The prerequisite DNS
+change must be applied before any worker launches; CD checks both the event
+filter and the Lambda's configured API service group before registering a worker
+revision. Worker tags are immutable, and rollback dispatches reuse existing
+worker images instead of rebuilding them.
 
 ## CodeQL and Scorecard
 

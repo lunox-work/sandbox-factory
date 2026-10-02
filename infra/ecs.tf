@@ -63,6 +63,11 @@ resource "aws_ecs_task_definition" "api" {
       # S3_ENDPOINT means AWS itself, and no keys means the task role.
       { name = "S3_BUCKET", value = aws_s3_bucket.private.bucket },
       { name = "S3_REGION", value = var.region },
+      { name = "WORKER_TASK_DEFINITION", value = "${local.name}-worker" },
+      { name = "WORKER_CLUSTER", value = aws_ecs_cluster.main.name },
+      { name = "WORKER_SUBNETS", value = join(",", aws_subnet.public[*].id) },
+      { name = "WORKER_SECURITY_GROUP", value = aws_security_group.worker.id },
+      { name = "MAX_ACTIVE_RUNS_PER_ORG", value = "3" },
       # BUILD_SHA is deliberately absent, do not add it: CD sets the real sha
       # on every deploy, and a copy here would revert to "bootstrap" on any
       # apply that did not pass -var api_image_tag=<sha>.
@@ -146,4 +151,46 @@ resource "aws_ecs_service" "api" {
   lifecycle {
     ignore_changes = [task_definition, desired_count]
   }
+}
+
+variable "worker_image_tag" {
+  description = "Immutable worker commit tag. CD registers new revisions directly."
+  type        = string
+  default     = "bootstrap"
+}
+resource "aws_cloudwatch_log_group" "worker" {
+  name              = "/ecs/${local.name}-worker"
+  retention_in_days = var.log_retention_days
+}
+resource "aws_ecs_task_definition" "worker" {
+  # CD owns registered container revisions; an unrelated apply must not make bootstrap latest.
+  lifecycle { ignore_changes = [container_definitions] }
+
+  family                   = "${local.name}-worker"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = "1024"
+  memory                   = "2048"
+  execution_role_arn       = aws_iam_role.task_execution.arn
+  task_role_arn            = aws_iam_role.worker.arn
+  runtime_platform {
+    operating_system_family = "LINUX"
+    cpu_architecture        = "ARM64"
+  }
+  container_definitions = jsonencode([{
+    name        = "worker"
+    image       = "${aws_ecr_repository.worker.repository_url}:${var.worker_image_tag}"
+    essential   = true
+    stopTimeout = 120
+    environment = [
+      { name = "NODE_ENV", value = "production" },
+      { name = "S3_BUCKET", value = aws_s3_bucket.private.bucket },
+      { name = "S3_REGION", value = var.region },
+      { name = "WORKER_MODE", value = "once" },
+      { name = "MAX_TARBALL_BYTES", value = "209715200" },
+      { name = "MAX_FILES", value = "20000" },
+    ]
+    secrets          = [for key in ["DATABASE_URL", "GITHUB_APP_ID", "GITHUB_APP_PRIVATE_KEY"] : { name = key, valueFrom = aws_secretsmanager_secret.app[key].arn }]
+    logConfiguration = { logDriver = "awslogs", options = { "awslogs-group" = aws_cloudwatch_log_group.worker.name, "awslogs-region" = var.region, "awslogs-stream-prefix" = "worker" } }
+  }])
 }

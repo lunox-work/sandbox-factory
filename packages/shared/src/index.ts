@@ -150,6 +150,7 @@ export * from "./jira.js";
 
 /** The GitHub wire contract, for `packages/github` and the routes that use it. */
 export * from "./github.js";
+export * from "./analysis.js";
 
 /** Default avatars, computed from an account id rather than stored. */
 export * from "./identicon.js";

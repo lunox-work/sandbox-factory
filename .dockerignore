@@ -42,3 +42,6 @@ Dockerfile
 **/Dockerfile
 docker-compose.yml
 .dockerignore
+
+**/__pycache__
+**/*.pyc

@@ -43,10 +43,11 @@ resource "aws_lambda_function" "origin_dns" {
 
   environment {
     variables = {
-      HOSTED_ZONE_ID = var.hosted_zone_id
-      RECORD_NAME    = local.origin_record
-      CLUSTER        = aws_ecs_cluster.main.name
-      TTL            = "15"
+      HOSTED_ZONE_ID    = var.hosted_zone_id
+      RECORD_NAME       = local.origin_record
+      CLUSTER           = aws_ecs_cluster.main.name
+      API_SERVICE_GROUP = "service:${aws_ecs_service.api.name}"
+      TTL               = "15"
     }
   }
 }
@@ -149,6 +150,7 @@ resource "aws_cloudwatch_event_rule" "task_state" {
     detail-type = ["ECS Task State Change"]
     detail = {
       clusterArn = [aws_ecs_cluster.main.arn]
+      group      = ["service:${aws_ecs_service.api.name}"]
       # RUNNING publishes a new IP; STOPPED prompts a re-read that drops one
       # no longer serving.
       lastStatus = ["RUNNING", "STOPPED"]

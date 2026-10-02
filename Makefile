@@ -91,7 +91,7 @@ export BUILD_SHA BUILD_REF BUILD_DIRTY
 # recreate unconditionally.
 .docker-deps-stamp: package-lock.json
 	@test ! -f $@ || echo "lockfile changed — recreating the dev containers"
-	@test ! -f $@ || $(COMPOSE) --profile dev rm -fsv web-dev api-dev
+	@test ! -f $@ || $(COMPOSE) --profile dev rm -fsv web-dev api-dev worker
 	@touch $@
 
 up: .docker-deps-stamp ## Start Postgres + API + web in containers (source mounted)
@@ -151,7 +151,7 @@ reset: ## Stop everything and DELETE the database and object-storage volumes
 # containers are named so neither is left holding a stale tree; they keep
 # separate volumes, so recreating one says nothing about the other.
 relink: ## Recreate the dev containers' node_modules after a dependency change
-	$(COMPOSE) --profile dev rm -fsv web-dev api-dev
+	$(COMPOSE) --profile dev rm -fsv web-dev api-dev worker
 	$(COMPOSE) --profile dev up -d
 	@touch .docker-deps-stamp
 	@echo "dependencies are reinstalling inside the containers — give it a minute"
@@ -242,3 +242,7 @@ clean: ## Remove build output and caches (keeps node_modules)
 	rm -rf .turbo
 	rm -rf packages/*/dist packages/*/dist-test
 	rm -rf apps/*/dist apps/*/dist-test
+
+.PHONY: worker-smoke
+worker-smoke: ## Build the worker image and run the real fixture pipeline
+	npm run worker:smoke
