@@ -55,7 +55,12 @@ test("module detection: grouped roots by child, others by first segment", () => 
 test("normalizePath strips leading and trailing slashes", () => {
   assert.equal(normalizePath(" ./packages/db/ "), "packages/db");
   assert.equal(normalizePath("/src"), "src");
+  assert.equal(normalizePath("src//"), "src");
+  assert.equal(normalizePath("///"), "");
   assert.equal(normalizePath(""), "");
+  // Inner slashes are kept, and a long run of them stays linear to scan.
+  const inner = `a${"/".repeat(20_000)}b`;
+  assert.equal(normalizePath(inner), inner);
 });
 
 test("extensions: lower-cased, hidden files and bare names have none", () => {

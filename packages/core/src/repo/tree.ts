@@ -142,10 +142,12 @@ const ROOTS = new Set(MODULE_ROOTS);
 
 /** A path without a leading `./` or `/` and without a trailing `/`. */
 export function normalizePath(path: string): string {
-  return path
-    .trim()
-    .replace(/^(?:\.\/|\/)+/, "")
-    .replace(/\/+$/, "");
+  const trimmed = path.trim().replace(/^(?:\.\/|\/)+/, "");
+  // A scan rather than /\/+$/, which backtracks quadratically on a long run
+  // of slashes that does not end the string; paths come from GitHub's trees.
+  let end = trimmed.length;
+  while (end > 0 && trimmed[end - 1] === "/") end -= 1;
+  return trimmed.slice(0, end);
 }
 
 /**
