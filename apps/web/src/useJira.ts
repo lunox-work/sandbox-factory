@@ -237,6 +237,11 @@ export interface JiraBoard {
       { enabled?: boolean; thresholds?: Record<string, number> }
     >;
   };
+  /**
+   * The registered GitHub repository the board's tickets are about. Absent
+   * from a server older than repository links, which reads as unlinked.
+   */
+  sourceRepoId?: string | null;
   createdAt: string;
 }
 
@@ -384,6 +389,14 @@ export interface JiraBoards {
   preview: (boardId: string) => Promise<BacklogPreview | null>;
   /** One ticket in full. Read live, stored nowhere. */
   issue: (boardId: string, issueKey: string) => Promise<JiraIssueDetail | null>;
+  /**
+   * Links the repository a board's tickets are about, or unlinks it with
+   * null. Resolves to null once saved, or to what to say when it was not.
+   */
+  linkRepository: (
+    boardId: string,
+    repoId: string | null,
+  ) => Promise<string | null>;
   refresh: () => Promise<void>;
 }
 
@@ -512,6 +525,45 @@ export function useJiraBoards(organizationId: string | undefined): JiraBoards {
     [base],
   );
 
+  const linkRepository = useCallback(
+    async (boardId: string, repoId: string | null) => {
+      if (base === undefined) return "Could not link that repository.";
+      try {
+        const res = await fetch(
+          `${base}/boards/${encodeURIComponent(boardId)}`,
+          {
+            method: "PATCH",
+            credentials: "include",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ sourceRepoId: repoId }),
+          },
+        );
+        if (!res.ok) {
+          return res.status === 404
+            ? "That repository is no longer registered here."
+            : res.status === 403
+              ? "Only an owner or admin may change the repository."
+              : "Could not link that repository.";
+        }
+        const body = (await res.json().catch(() => null)) as {
+          board?: JiraBoard;
+        } | null;
+        const saved = body?.board;
+        if (saved !== undefined) {
+          setBoards((current) =>
+            current.map((board) => (board.id === saved.id ? saved : board)),
+          );
+        } else {
+          await refresh();
+        }
+        return null;
+      } catch {
+        return "Could not reach the server.";
+      }
+    },
+    [base, refresh],
+  );
+
   return {
     boards,
     loading,
@@ -519,6 +571,7 @@ export function useJiraBoards(organizationId: string | undefined): JiraBoards {
     sync,
     preview,
     issue,
+    linkRepository,
     refresh,
   };
 }

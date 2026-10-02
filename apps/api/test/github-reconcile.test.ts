@@ -453,3 +453,78 @@ test("stop lets the repository in hand finish, then ends the sweep", async () =>
     1,
   );
 });
+
+test("every repository is read with a token narrowed to it, and reads only", async () => {
+  const state = twoInstallations();
+  const stores = memoryGithub();
+  const acme = await seedConnection(stores, "org_1", "9");
+  await seedRepo(stores, "org_1", acme);
+  await seedRepo(stores, "org_1", acme, {
+    externalId: "3",
+    fullName: "acme/other",
+  });
+  const fetch = fakeGithub(state);
+  const reconciler = new GithubReconciler({
+    repos: stores.repos,
+    connections: stores.connections,
+    installations: installationTokens(fetch),
+    fetch,
+    now: () => LATER,
+  });
+
+  await reconciler.sweep();
+
+  // Two repositories of one installation: two tokens, one each.
+  assert.deepEqual(
+    fetch.mints.map(({ repositoryIds }) => repositoryIds),
+    [[1296269], [3]],
+  );
+  assert.ok(
+    fetch.mints.every(
+      ({ permissions }) =>
+        permissions?.["contents"] === "read" &&
+        permissions["metadata"] === "read" &&
+        Object.keys(permissions).length === 2,
+    ),
+  );
+});
+
+test("a repository the installation no longer covers goes gone", async () => {
+  const { stores, repoId, reconciler } = await setup(
+    world({ outsideInstallation: [1296269] }),
+  );
+
+  await reconciler.sweep();
+
+  assert.equal((await stores.repos.get("org_1", repoId))?.syncStatus, "gone");
+});
+
+test("each repository read asks for a snapshot; one that failed asks for none", async () => {
+  const asked: string[] = [];
+  const snapshotter = {
+    schedule: ({ repoId }: { repoId: string }) => void asked.push(repoId),
+  };
+  const read = await setup();
+  const reconciler = new GithubReconciler({
+    repos: read.stores.repos,
+    connections: read.stores.connections,
+    installations: installationTokens(read.fetch),
+    snapshotter,
+    fetch: read.fetch,
+    now: () => LATER,
+  });
+  await reconciler.sweep();
+  assert.deepEqual(asked, [read.repoId]);
+
+  asked.length = 0;
+  const failing = await setup(world({ heads: {} }));
+  await new GithubReconciler({
+    repos: failing.stores.repos,
+    connections: failing.stores.connections,
+    installations: installationTokens(failing.fetch),
+    snapshotter,
+    fetch: failing.fetch,
+    now: () => LATER,
+  }).sweep();
+  assert.deepEqual(asked, []);
+});

@@ -16,7 +16,10 @@ import type {
 } from "@sandbox-factory/shared";
 import type { BountySizingResult, SpecDraft } from "sandbox-factory";
 
-import { BountyExecutor } from "../src/bounty/executor.js";
+import {
+  BountyExecutor,
+  type BountyExecutorOptions,
+} from "../src/bounty/executor.js";
 import {
   FakeCaller,
   SizerError,
@@ -191,6 +194,11 @@ function harness(options: {
   pricing?: unknown;
   /** How many sub-tasks an `issue` run's ticket has when read again. */
   pickedSubtasks?: number;
+  /** The repository the board names, if any. */
+  sourceRepoId?: string | null;
+  /** What the outline read answers; absent, the executor has no reader. */
+  outlineFor?: BountyExecutorOptions["outlineFor"];
+  onBackgroundError?: BountyExecutorOptions["onBackgroundError"];
 }) {
   const current = run(options.runOverrides);
   const plans: unknown[] = [];
@@ -269,6 +277,7 @@ function harness(options: {
     projectKey: "APP",
     selection: current.selection,
     pricing: options.pricing,
+    sourceRepoId: options.sourceRepoId ?? null,
     createdAt: "2026-01-01T00:00:00.000Z",
   };
   const boards = {
@@ -396,6 +405,12 @@ function harness(options: {
     specs: {} as BountySpecStore,
     caller,
     clientFor: () => Promise.resolve({ ok: true, client }),
+    ...(options.outlineFor === undefined
+      ? {}
+      : { outlineFor: options.outlineFor }),
+    ...(options.onBackgroundError === undefined
+      ? {}
+      : { onBackgroundError: options.onBackgroundError }),
     now: () => new Date("2026-09-22T00:00:00.000Z"),
     leaseToken: () => "lease_1",
     onWritebackCreated: (_organizationId, operationId) => {
@@ -671,8 +686,96 @@ test("a run drafts the spec first and stores it with the proposal", async () => 
     draft,
     origin: "draft",
     actualModel: "drafting-model",
-    promptVersion: "draft-v2",
+    promptVersion: "draft-v3",
   });
+});
+
+test("a board with a source repository drafts beside its outline and records the snapshot", async () => {
+  const asked: string[] = [];
+  const state = harness({
+    sourceRepoId: "ghr_1",
+    outlineFor: (_organizationId, repoId) => {
+      asked.push(repoId);
+      return Promise.resolve({ snapshotId: "rsn_1", text: "- src: 3 files" });
+    },
+    candidates: [issue("1"), issue("2")],
+  });
+  await state.executor.execute("org_1", "brn_1");
+
+  // Read once for the run, however many tickets it sizes.
+  assert.deepEqual(asked, ["ghr_1"]);
+  const drafts = state.caller.calls.filter(
+    ({ tool }) => tool === "draft_spec",
+  ) as { input: { repositoryOutline?: string } }[];
+  assert.equal(drafts.length, 2);
+  for (const call of drafts) {
+    assert.equal(call.input.repositoryOutline, "- src: 3 files");
+  }
+  // The size is asked exactly as before: it is never shown the outline.
+  for (const call of state.caller.calls.filter(
+    ({ tool }) => tool === "size_bounty",
+  )) {
+    assert.equal("repositoryOutline" in (call.input as object), false);
+  }
+  for (const input of state.proposalInputs) {
+    assert.equal(
+      (input as { repoSnapshotId: unknown }).repoSnapshotId,
+      "rsn_1",
+    );
+  }
+});
+
+test("no repository, no snapshot yet, or no reader: drafts as before", async () => {
+  for (const options of [
+    { sourceRepoId: null, outlineFor: () => Promise.reject(new Error("no")) },
+    { sourceRepoId: "ghr_1", outlineFor: () => Promise.resolve(null) },
+    { sourceRepoId: "ghr_1" },
+  ]) {
+    const state = harness(options);
+    await state.executor.execute("org_1", "brn_1");
+    const draft = state.caller.calls.find(({ tool }) => tool === "draft_spec");
+    assert.equal("repositoryOutline" in (draft?.input as object), false);
+    assert.equal(
+      (state.proposalInputs[0] as { repoSnapshotId: unknown }).repoSnapshotId,
+      null,
+    );
+  }
+});
+
+test("an outline that cannot be read is reported and the run drafts without it", async () => {
+  const reported: string[] = [];
+  const state = harness({
+    sourceRepoId: "ghr_1",
+    outlineFor: () => Promise.reject(new Error("database down")),
+    onBackgroundError: (code) => void reported.push(code),
+  });
+  await state.executor.execute("org_1", "brn_1");
+
+  assert.deepEqual(reported, ["bounty_outline_unavailable"]);
+  assert.equal(state.finishes[0]?.status, "succeeded");
+});
+
+test("a proposal whose draft failed records no snapshot, outline or not", async () => {
+  const state = harness({
+    sourceRepoId: "ghr_1",
+    outlineFor: () => Promise.resolve({ snapshotId: "rsn_1", text: "outline" }),
+    caller: sizing(
+      [
+        {
+          result: { complexity: "M", confidence: "high", rationale: "Some." },
+          actualModel: "actual-model",
+          usage: { inputTokens: 1, outputTokens: 1 },
+        },
+      ],
+      [new SizerError("sizing_invalid_output", false)],
+    ),
+  });
+  await state.executor.execute("org_1", "brn_1");
+
+  assert.equal(
+    (state.proposalInputs[0] as { repoSnapshotId: unknown }).repoSnapshotId,
+    null,
+  );
 });
 
 test("a sized ticket is written with a step of zero, priced at its own size", async () => {

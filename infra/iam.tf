@@ -47,16 +47,25 @@ resource "aws_iam_role" "task" {
   assume_role_policy = data.aws_iam_policy_document.ecs_assume.json
 }
 
-# Avatars only: the prefix the API writes. `ListBucket` is on the bucket, not
-# the prefix, and carries no prefix condition on purpose — without it S3
-# answers a missing key with 403 instead of 404, and `isNotFound` in
-# packages/db/src/objects.ts would turn every never-uploaded avatar into a 500.
-# A GET that misses carries no `s3:prefix`, so a condition would not match.
+# The prefixes the API writes, one statement each: avatars, and repository
+# snapshots' file lists (`trees/<repoId>/<sha>/<objectId>.json.gz`, written when a head is
+# snapshotted, read back for the paged tree route, deleted when pruned).
+# `ListBucket` is on the bucket, not the prefix, and carries no prefix
+# condition on purpose — without it S3 answers a missing key with 403 instead
+# of 404, and `isNotFound` in packages/db/src/objects.ts would turn every
+# never-uploaded avatar into a 500. A GET that misses carries no `s3:prefix`,
+# so a condition would not match.
 data "aws_iam_policy_document" "task_objects" {
   statement {
     sid       = "AvatarObjects"
     actions   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
     resources = ["${aws_s3_bucket.private.arn}/avatars/*"]
+  }
+
+  statement {
+    sid       = "SnapshotTrees"
+    actions   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
+    resources = ["${aws_s3_bucket.private.arn}/trees/*"]
   }
 
   statement {

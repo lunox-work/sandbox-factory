@@ -27,6 +27,7 @@ import type {
   StepResult,
 } from "sandbox-factory";
 
+import { repoSnapshot } from "./analysis.js";
 import { user } from "./auth.js";
 import { jiraBoard, jiraIssue } from "./jira.js";
 import { organization } from "./organizations.js";
@@ -202,6 +203,12 @@ export const bountyProposal = pgTable(
     // unsized ticket, no spec, or a spec drafted before weights.
     step: jsonb("step").$type<StepResult>(),
     stepVersion: text("step_version"),
+    // The repository snapshot whose outline the spec was drafted beside.
+    // Null when the board named no repository or it had no snapshot yet;
+    // a pruned snapshot clears it rather than taking the proposal with it.
+    repoSnapshotId: text("repo_snapshot_id").references(() => repoSnapshot.id, {
+      onDelete: "set null",
+    }),
     decidedBy: text("decided_by").references(() => user.id, {
       onDelete: "set null",
     }),
@@ -216,6 +223,8 @@ export const bountyProposal = pgTable(
       .where(sql`${table.status} in ('proposed', 'approved')`),
     index("bounty_proposal_organization_id_idx").on(table.organizationId),
     index("bounty_proposal_run_id_idx").on(table.runId),
+    // Pruning asks whether a snapshot is still referenced.
+    index("bounty_proposal_repo_snapshot_id_idx").on(table.repoSnapshotId),
     check(
       "bounty_proposal_model_complexity_check",
       sql`${table.modelComplexity} in ('XS', 'S', 'M', 'L', 'XL', 'unsized')`,

@@ -6,7 +6,8 @@
  * token and a user token is only where the token comes from, so the client
  * takes a `TokenProvider` and never learns which it holds:
  *
- *   installation   `tokens.provider(installationId)` — the repository calls
+ *   installation   `tokens.provider(installationId, narrowing)` — the
+ *                  repository calls, `tree` and `languages`
  *   user           `credential.token` — `user`, `userInstallations`,
  *                  `userInstallationRepositoryCount`
  *
@@ -17,10 +18,14 @@
 import {
   type GithubInstallationResponse,
   githubInstallationPageResponseSchema,
+  type GithubLanguagesResponse,
+  githubLanguagesResponseSchema,
   githubRefResponseSchema,
   type GithubRepositoryResponse,
   githubRepositoryPageResponseSchema,
   githubRepositoryResponseSchema,
+  type GithubTreeResponse,
+  githubTreeResponseSchema,
   type GithubUserResponse,
   githubUserResponseSchema,
 } from "@sandbox-factory/shared";
@@ -42,6 +47,13 @@ export interface GithubClientOptions {
    */
   maxPages?: number;
 }
+
+/**
+ * How long a recursive tree may take. GitHub caps one at 7 MB of JSON, which
+ * a slow minute can take longer than `REQUEST_TIMEOUT_MS` to send; nothing
+ * waits on it but a background snapshot.
+ */
+export const TREE_TIMEOUT_MS = 60_000;
 
 /** The rate limit as of the last response that reported one. */
 export interface RateLimit {
@@ -209,8 +221,44 @@ export class GithubClient {
     };
   }
 
-  async #get(path: string, what: string): Promise<Response> {
-    const response = await this.#send(path, {});
+  /**
+   * The tree at a commit (or any tree-ish), every level of it when
+   * `recursive`. `truncated` is GitHub's cap cutting the listing short,
+   * which the caller records rather than treating as a failure: the entries
+   * it did list are still true. Needs `contents: read`.
+   *
+   * A 404 is a commit GitHub no longer has (a force-push dropped it) or a
+   * repository this token cannot see.
+   */
+  async tree(
+    fullName: string,
+    sha: string,
+    options: { readonly recursive?: boolean } = {},
+  ): Promise<GithubTreeResponse> {
+    const query = options.recursive === true ? "?recursive=1" : "";
+    const response = await this.#get(
+      `/repos/${segments(fullName)}/git/trees/${encodeURIComponent(sha)}${query}`,
+      "tree",
+      TREE_TIMEOUT_MS,
+    );
+    return this.#parse(response, githubTreeResponseSchema, "tree");
+  }
+
+  /** Bytes of code per language, as GitHub's linguist counts them. */
+  async languages(fullName: string): Promise<GithubLanguagesResponse> {
+    const response = await this.#get(
+      `/repos/${segments(fullName)}/languages`,
+      "languages",
+    );
+    return this.#parse(response, githubLanguagesResponseSchema, "languages");
+  }
+
+  async #get(
+    path: string,
+    what: string,
+    timeoutMs?: number,
+  ): Promise<Response> {
+    const response = await this.#send(path, {}, timeoutMs);
     if (!response.ok) throw await failure(response, what, this.#now);
     return response;
   }
@@ -272,14 +320,18 @@ export class GithubClient {
   async #send(
     pathOrUrl: string,
     extraHeaders: Record<string, string>,
+    timeoutMs?: number,
   ): Promise<Response> {
     const token = await this.#token();
     const url = pathOrUrl.startsWith("/")
       ? `${this.#apiUrl}${pathOrUrl}`
       : pathOrUrl;
-    const response = await request(this.#fetch, url, {
-      headers: { ...restHeaders(`Bearer ${token}`), ...extraHeaders },
-    });
+    const response = await request(
+      this.#fetch,
+      url,
+      { headers: { ...restHeaders(`Bearer ${token}`), ...extraHeaders } },
+      timeoutMs,
+    );
     this.#noteRateLimit(response.headers);
     return response;
   }

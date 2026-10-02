@@ -231,6 +231,7 @@ function fakeBoards(
       categories: {},
     },
     pricing: {},
+    sourceRepoId: null,
     createdAt: "2026-09-21T00:00:00.000Z",
     ...overrides,
   };
@@ -259,7 +260,9 @@ function fakeBoards(
       return Promise.resolve([]);
     },
     update: (_organizationId, id, input) => {
-      if (id !== board.id) {
+      // The store's own answer for a repository another organization
+      // registered; the SQL behind it is tested in `packages/db`.
+      if (id !== board.id || input.sourceRepoId === "ghr_other_org") {
         return Promise.resolve(null);
       }
       updates.push(input);
@@ -1533,6 +1536,48 @@ test("clearing maxAgeDays survives as a null rather than being dropped", async (
   });
 
   assert.deepEqual(boards.updates, [{ selection: { maxAgeDays: null } }]);
+});
+
+test("a board's source repository can be linked and unlinked alone", async () => {
+  const { app, boards } = appWith();
+
+  for (const sourceRepoId of ["ghr_1", null]) {
+    const response = await app.request("/api/v1/orgs/org_1/jira/boards/jrb_1", {
+      method: "PATCH",
+      headers: { ...signedIn, "content-type": "application/json" },
+      body: JSON.stringify({ sourceRepoId }),
+    });
+    assert.equal(response.status, 200);
+  }
+  assert.deepEqual(boards.updates, [
+    { sourceRepoId: "ghr_1" },
+    { sourceRepoId: null },
+  ]);
+});
+
+test("linking a repository another organization registered is a 404", async () => {
+  const { app } = appWith();
+
+  const response = await app.request("/api/v1/orgs/org_1/jira/boards/jrb_1", {
+    method: "PATCH",
+    headers: { ...signedIn, "content-type": "application/json" },
+    body: JSON.stringify({ sourceRepoId: "ghr_other_org" }),
+  });
+
+  assert.equal(response.status, 404);
+});
+
+test("an empty body or an empty repository id is refused", async () => {
+  const { app, boards } = appWith();
+  for (const body of [{}, { sourceRepoId: "" }]) {
+    const response = await app.request("/api/v1/orgs/org_1/jira/boards/jrb_1", {
+      method: "PATCH",
+      headers: { ...signedIn, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    assert.equal(response.status, 400);
+  }
+  assert.deepEqual(boards.updates, []);
 });
 
 test("a board's pricing can be edited alone, and is passed on as sent", async () => {

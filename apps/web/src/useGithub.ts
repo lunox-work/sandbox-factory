@@ -17,6 +17,7 @@ import type {
   GithubGrantDto,
   GithubInstallationRepositoryDto,
   GithubRepoDto,
+  RepoSnapshotDetailDto,
 } from "@sandbox-factory/shared";
 import { GITHUB_CONNECT_OUTCOMES } from "@sandbox-factory/shared";
 import { useCallback, useEffect, useState } from "react";
@@ -405,4 +406,45 @@ export function useGithubRepos(
   );
 
   return { ...state, refresh, register, remove };
+}
+
+/**
+ * One repository snapshot, for a line that names the commit something was
+ * read at. Null while it loads, and when it cannot be read — gone, pruned,
+ * or GitHub not set up here — since every caller has something to show
+ * without it.
+ */
+export function useRepoSnapshot(
+  /** The organization's API root, `/api/v1/orgs/<id>`. */
+  organizationBase: string,
+  snapshotId: string | null,
+): RepoSnapshotDetailDto | null {
+  const [snapshot, setSnapshot] = useState<RepoSnapshotDetailDto | null>(null);
+
+  useEffect(() => {
+    setSnapshot(null);
+    if (snapshotId === null) return;
+    let live = true;
+    void (async () => {
+      try {
+        const res = await fetch(
+          `${organizationBase}/github/snapshots/${encodeURIComponent(snapshotId)}`,
+          { credentials: "include" },
+        );
+        if (!res.ok) return;
+        const body = (await res.json()) as {
+          snapshot?: RepoSnapshotDetailDto;
+        } | null;
+        if (live && body?.snapshot !== undefined) setSnapshot(body.snapshot);
+      } catch {
+        // A courtesy line: without it the page says nothing about the
+        // repository, which is true of every proposal drafted before one.
+      }
+    })();
+    return () => {
+      live = false;
+    };
+  }, [organizationBase, snapshotId]);
+
+  return snapshot;
 }

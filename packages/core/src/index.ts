@@ -7,11 +7,12 @@
  * handle has to be decided in exactly one place, and `packages/shared` refines
  * these rules rather than restating them. The commercial rules (`bounty`),
  * the categories that decide which tickets a run offers (`selection`) and
- * the chain that explains a ticket's size (`pricing`) live here for the same
- * reason.
+ * the chain that explains a ticket's size (`pricing`) and what a repository's
+ * file list says about it (`repo`) live here for the same reason.
  */
 
 export * from "./handle.js";
 export * from "./bounty.js";
 export * from "./selection/index.js";
 export * from "./pricing/index.js";
+export * from "./repo/index.js";

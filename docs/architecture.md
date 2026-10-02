@@ -298,11 +298,25 @@ One GitHub App, used two ways, and neither is the sign-in OAuth app, which
 asks for `read:user user:email` and only says who someone is.
 
 - **Installation tokens** do everything unattended: listing what an
-  installation can see, reading a repository and its branch head. They are
-  minted from the App's key (`packages/github/src/installation-tokens.ts`),
-  cached in memory until five minutes before they expire, and **never
-  stored**. One cache per API process, shared by the routes, the webhook and
-  the reconcile sweep.
+  installation can see, reading a repository, its branch head and its tree.
+  They are minted from the App's key
+  (`packages/github/src/installation-tokens.ts`), cached in memory until five
+  minutes before they expire, and **never stored**. One cache per API
+  process, shared by the routes, the webhook, the reconcile sweep and the
+  snapshotter.
+
+**Every installation token is narrowed to what its call is for.**
+`installationClient` in `apps/api/src/github/credential.ts` takes a scope,
+and there are two, both read-only: `discovery` (installation-wide,
+`metadata: read`) lists and counts what an installation covers;
+`repository` (one repository by GitHub's numeric id, `contents: read` and
+`metadata: read`) reads that repository's pointer, tree and languages. So a
+wider grant the App takes on later cannot reach these calls, and a token
+minted for one repository cannot read its neighbours. A mint narrowed to a
+repository the installation no longer covers is refused with 422, which
+reads as `GithubNotFound` and marks the repository `gone`, exactly as the
+unnarrowed read used to.
+
 - **The App's user-to-server half** runs the connect flow. The person's grant
   is kept in `github_grant`, encrypted like Jira's tokens, and used for one
   thing: proving which installations the person may link (below). It lives
@@ -346,6 +360,39 @@ when its `pushed_at` is no older than the one recorded, so a late delivery
 cannot move it backwards; one in the same second leaves the row due for the
 next sweep, which reads the branch itself. No write but `register` and
 `revive` brings a `gone` repository back.
+
+**Every head is snapshotted.** Registering a repository, a push that moves
+its head, a new default branch and every sweep read ask
+`apps/api/src/github/snapshot.ts` for a snapshot of the head, which is a
+no-op once one exists for that `(repository, commit)`. Taking one reads the
+recursive tree and the language totals with a repository-scoped token,
+writes the file list (paths, sizes, Git object ids; never contents) gzipped
+to `trees/<repoId>/<sha>/<objectId>.json.gz` in the private bucket, computes
+`TreeFacts` (`packages/core/src/repo/tree.ts`: modules, sizes, extensions,
+tests, lockfiles, migrations, infrastructure), and inserts a
+`repo_snapshot` row. The commit is read once, at the start, so a row always
+describes the commit it names; a newer head is a newer row. The work is
+queued off the request path, a few at a time, and a job that fails is
+retried by the next sweep, which asks again for every repository it reads.
+A `gone` repository takes no new snapshot, checked again under a row lock
+when the row is written. The newest 20 unreferenced snapshots per
+repository are kept; one a proposal was drafted beside is kept however old.
+Each snapshot attempt uses a unique object key, so delayed pruning cannot delete
+a recreated snapshot of the same commit. Unsuccessful attempts remove their own
+objects, and disconnecting an installation collects all tree keys before the
+database cascade. Proposal writes lock surviving owned snapshots until commit
+and omit a snapshot deleted during drafting. Pruning waits for these writers
+before rechecking references.
+Snapshots need object storage: without a bucket none are taken and the
+snapshot routes answer 503.
+
+**A board can name the repository its tickets are about**
+(`jira_board.source_repo_id`, same organization only, checked in the
+update's `WHERE`). Sizing then drafts each spec beside an outline of that
+repository's current snapshot — module names with file counts and file
+types, capped at 60 lines (`apps/api/src/sizing/outline.ts`) — and records
+the snapshot on the proposal (`bounty_proposal.repo_snapshot_id`). The size
+call is never shown it.
 
 **A delivery is applied before it is answered.** GitHub does not retry a
 failed delivery on its own and records any 2xx as delivered, so the

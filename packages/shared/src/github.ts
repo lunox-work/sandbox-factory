@@ -16,6 +16,7 @@
  * call and never stored at all.
  */
 
+import { TREE_FACTS_VERSION } from "sandbox-factory";
 import { z } from "zod";
 
 /* -------------------------------------------------------------------------- */
@@ -114,6 +115,37 @@ export const githubRefResponseSchema = z
     object: z.object({ sha: z.string() }).loose(),
   })
   .loose();
+
+/**
+ * One entry of `GET /repos/{o}/{r}/git/trees/{sha}?recursive=1`: a file
+ * (`blob`), a directory (`tree`) or a submodule (`commit`). Only a blob has
+ * a `size`.
+ */
+export const githubTreeEntryResponseSchema = z
+  .object({
+    path: z.string(),
+    mode: z.string(),
+    type: z.string(),
+    sha: z.string(),
+    size: z.number().optional(),
+  })
+  .loose();
+
+/**
+ * A recursive tree. `sha` is the root tree's own, whatever commit it was
+ * asked for by. `truncated` is GitHub's cap (100,000 entries or 7 MB) cutting
+ * the listing short.
+ */
+export const githubTreeResponseSchema = z
+  .object({
+    sha: z.string(),
+    truncated: z.boolean().optional(),
+    tree: z.array(githubTreeEntryResponseSchema),
+  })
+  .loose();
+
+/** `GET /repos/{o}/{r}/languages`: bytes of code per language. */
+export const githubLanguagesResponseSchema = z.record(z.string(), z.number());
 
 /** `POST /app/installations/{id}/access_tokens`. */
 export const githubInstallationTokenResponseSchema = z
@@ -322,6 +354,105 @@ export const githubRepoDtoSchema = z.strictObject({
   createdAt: z.string(),
 });
 
+/**
+ * One file of a stored tree. Blobs and submodules only: directories are
+ * implied by the paths under them. `sha` is Git's object id, which is what
+ * later pins a copied file to the bytes it was read at; a submodule's is the
+ * commit it points at, and its `size` is zero.
+ */
+export const storedTreeEntrySchema = z.strictObject({
+  path: z.string().min(1),
+  type: z.enum(["blob", "commit"]),
+  mode: z.string(),
+  sha: z.string(),
+  size: z.number().int().nonnegative(),
+});
+
+export const STORED_TREE_VERSION = 1;
+
+/**
+ * What `trees/<repoId>/<sha>/<objectId>.json.gz` holds, gzipped: a snapshot's full file
+ * list, sorted by path. Paths and sizes only, never contents.
+ */
+export const storedTreeSchema = z.strictObject({
+  version: z.literal(STORED_TREE_VERSION),
+  commitSha: z.string(),
+  treeSha: z.string(),
+  truncated: z.boolean(),
+  entries: z.array(storedTreeEntrySchema),
+});
+
+const countsSchema = z.record(z.string(), z.number().int().nonnegative());
+
+/** `TreeFacts` from `packages/core`, as stored and sent. */
+export const treeFactsDtoSchema = z.strictObject({
+  version: z.literal(TREE_FACTS_VERSION),
+  fileCount: z.number().int().nonnegative(),
+  totalBytes: z.number().int().nonnegative(),
+  truncated: z.boolean(),
+  testFiles: z.number().int().nonnegative(),
+  modules: z.array(
+    z.strictObject({
+      path: z.string(),
+      files: z.number().int().nonnegative(),
+      bytes: z.number().int().nonnegative(),
+      testFiles: z.number().int().nonnegative(),
+      extensions: countsSchema,
+    }),
+  ),
+  extensions: countsSchema,
+  lockfiles: z.array(z.string()),
+  migrationDirectories: z.array(z.string()),
+  infraDirectories: z.array(z.string()),
+});
+
+/**
+ * One snapshot of a registered repository: the commit its default branch
+ * was at, and what the tree there holds. Immutable once written — the
+ * repository's head moves on, and each new head is a new snapshot.
+ */
+export const repoSnapshotDtoSchema = z.strictObject({
+  id: z.string(),
+  repoId: z.string(),
+  commitSha: z.string(),
+  /** The branch it was taken from, as `refs/heads/<name>`. */
+  ref: z.string(),
+  treeSha: z.string(),
+  treeTruncated: z.boolean(),
+  fileCount: z.number().int().nonnegative(),
+  totalBytes: z.number().int().nonnegative(),
+  /** Bytes per language, as GitHub counts them. */
+  languages: z.record(z.string(), z.number()),
+  createdAt: z.string(),
+});
+
+/** One snapshot with its facts, and the repository it is of. */
+export const repoSnapshotDetailDtoSchema = repoSnapshotDtoSchema.extend({
+  repoFullName: z.string(),
+  facts: treeFactsDtoSchema,
+});
+
+/** The most entries one page of a stored tree holds. */
+export const TREE_PAGE_MAX = 1_000;
+
+/** `GET .../github/snapshots/:id/tree?prefix=&cursor=&limit=`. */
+export const repoTreeQuerySchema = z.object({
+  /** A directory: only paths under it. Absent or empty: the whole tree. */
+  prefix: z.string().max(1_000).optional(),
+  /** The last path of the previous page. */
+  cursor: z.string().max(4_096).optional(),
+  limit: z.coerce.number().int().min(1).max(TREE_PAGE_MAX).default(500),
+});
+
+/** One page of a stored tree, in path order. */
+export const repoTreePageDtoSchema = z.strictObject({
+  entries: z.array(storedTreeEntrySchema),
+  /** Pass back as `cursor` for the next page; null on the last. */
+  nextCursor: z.string().nullable(),
+  /** Whether GitHub cut the listing short when the snapshot was taken. */
+  truncated: z.boolean(),
+});
+
 /** A numeric id from GitHub, carried as a string. */
 const numericIdSchema = z
   .string()
@@ -394,6 +525,13 @@ export type GithubRepositoryResponse = z.infer<
   typeof githubRepositoryResponseSchema
 >;
 export type GithubUserResponse = z.infer<typeof githubUserResponseSchema>;
+export type GithubTreeResponse = z.infer<typeof githubTreeResponseSchema>;
+export type GithubTreeEntryResponse = z.infer<
+  typeof githubTreeEntryResponseSchema
+>;
+export type GithubLanguagesResponse = z.infer<
+  typeof githubLanguagesResponseSchema
+>;
 export type GithubInstallationEvent = z.infer<
   typeof githubInstallationEventSchema
 >;
@@ -413,6 +551,13 @@ export type GithubInstallationRepositoryDto = z.infer<
   typeof githubInstallationRepositoryDtoSchema
 >;
 export type GithubRepoDto = z.infer<typeof githubRepoDtoSchema>;
+export type StoredTreeEntry = z.infer<typeof storedTreeEntrySchema>;
+export type StoredTree = z.infer<typeof storedTreeSchema>;
+export type TreeFactsDto = z.infer<typeof treeFactsDtoSchema>;
+export type RepoSnapshotDto = z.infer<typeof repoSnapshotDtoSchema>;
+export type RepoSnapshotDetailDto = z.infer<typeof repoSnapshotDetailDtoSchema>;
+export type RepoTreeQuery = z.infer<typeof repoTreeQuerySchema>;
+export type RepoTreePageDto = z.infer<typeof repoTreePageDtoSchema>;
 export type RegisterRepoRequest = z.infer<typeof registerRepoRequestSchema>;
 export type LinkInstallationRequest = z.infer<
   typeof linkInstallationRequestSchema

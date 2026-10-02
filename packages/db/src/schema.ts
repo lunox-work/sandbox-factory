@@ -17,6 +17,7 @@
  * - `schema/jira.ts` — connections to a client's Atlassian site.
  * - `schema/github.ts` — installations of the GitHub App, the grants that
  *   linked them, and the repositories registered from them.
+ * - `schema/analysis.ts` — what is known about a repository at one commit.
  *
  * `auth.ts` and `organizations.ts` import each other; see the note in
  * `organizations.ts` for why the foreign-key thunks make that safe.
@@ -74,6 +75,9 @@ export type {
   NewGithubGrantRow,
   NewGithubRepoRow,
 } from "./schema/github.js";
+
+export { repoSnapshot } from "./schema/analysis.js";
+export type { NewRepoSnapshotRow, RepoSnapshotRow } from "./schema/analysis.js";
 
 export {
   BOUNTY_SPEC_ORIGINS,

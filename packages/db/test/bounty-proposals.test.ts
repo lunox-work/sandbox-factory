@@ -46,6 +46,7 @@ function row(overrides: Partial<BountyProposalRow> = {}): BountyProposalRow {
     specRevision: null,
     step: null,
     stepVersion: null,
+    repoSnapshotId: null,
     decidedBy: null,
     decidedAt: null,
     decisionDeliveryPolicy: null,
@@ -153,6 +154,63 @@ test("creates under a live lease and classifies fencing outcomes", async () => {
     ),
     { status: "duplicate" },
   );
+});
+
+test("proposal writes keep only surviving owner-scoped snapshots", async () => {
+  for (const available of [true, false]) {
+    const snapshot = available ? [{ id: "rsn_1" }] : [];
+    const snapshotId = available ? "rsn_1" : null;
+    const created = createSequencedFakeDb([
+      snapshot,
+      [{ id: "brn_1", boardId: "jrb_1" } as BountyRunRow],
+      [{ key: "APP-1" }],
+      [row({ repoSnapshotId: snapshotId })],
+    ]);
+    const result = await createBountyProposalStore(created.db).createForLease(
+      "org_1",
+      "lease",
+      { ...input, repoSnapshotId: "rsn_1" },
+    );
+    assert.equal(result.status, "created");
+    assert.equal(created.calls[0]?.filtered, true);
+    assert.equal(created.calls[0]?.lock, "key share");
+    assert.equal(created.calls[3]?.values?.["repoSnapshotId"], snapshotId);
+
+    const direct = createSequencedFakeDb([
+      [{ runId: "brn_1", issueKey: "APP-1" }],
+      snapshot,
+      [row({ repoSnapshotId: snapshotId })],
+    ]);
+    await createBountyProposalStore(direct.db).create("org_1", {
+      ...input,
+      repoSnapshotId: "rsn_1",
+    });
+    assert.equal(direct.calls[1]?.lock, "key share");
+    assert.equal(direct.calls[2]?.values?.["repoSnapshotId"], snapshotId);
+
+    const repriced = row({
+      revision: 2,
+      runId: "brn_2",
+      repoSnapshotId: snapshotId,
+    });
+    const reprice = createSequencedFakeDb([
+      snapshot,
+      [{ id: "brn_2", boardId: "jrb_1" } as BountyRunRow],
+      [row()],
+      [repriced],
+      [{ row: repriced, issueKey: "APP-1" }],
+    ]);
+    const revised = await createBountyProposalStore(reprice.db).repriceForLease(
+      "org_1",
+      "lease",
+      "bpr_1",
+      1,
+      { ...input, runId: "brn_2", repoSnapshotId: "rsn_1" },
+    );
+    assert.equal(revised.status, "repriced");
+    assert.equal(reprice.calls[0]?.lock, "key share");
+    assert.equal(reprice.calls[3]?.values?.["repoSnapshotId"], snapshotId);
+  }
 });
 
 test("a proposal created with a spec stores it as revision 1 in the same transaction", async () => {

@@ -15,9 +15,17 @@ import {
   githubRepositoryResponseSchema,
   githubTimestamp,
   githubWebhookEnvelopeSchema,
+  githubLanguagesResponseSchema,
+  githubTreeResponseSchema,
   linkInstallationRequestSchema,
   registerRepoRequestSchema,
+  repoSnapshotDetailDtoSchema,
+  repoTreeQuerySchema,
+  storedTreeSchema,
+  TREE_PAGE_MAX,
+  treeFactsDtoSchema,
 } from "../src/index.js";
+import { treeFacts } from "sandbox-factory";
 
 /*
  * As with Jira, the response schemas are worth testing for what they let
@@ -229,4 +237,98 @@ test("an installation's settings page differs for users and organizations", () =
 test("the signature header is the SHA-256 one", () => {
   // `x-hub-signature` is SHA-1 and GitHub keeps sending it for compatibility.
   assert.equal(GITHUB_WEBHOOK_HEADERS.signature, "x-hub-signature-256");
+});
+
+test("a recursive tree parses with directories, submodules and extra fields", () => {
+  const parsed = githubTreeResponseSchema.parse({
+    sha: "tree1",
+    url: "https://api.github.com/...",
+    truncated: false,
+    tree: [
+      { path: "src", mode: "040000", type: "tree", sha: "t2" },
+      {
+        path: "src/a.ts",
+        mode: "100644",
+        type: "blob",
+        sha: "b1",
+        size: 12,
+        url: "https://api.github.com/...",
+      },
+      { path: "vendor/lib", mode: "160000", type: "commit", sha: "c1" },
+    ],
+  });
+  assert.equal(parsed.tree.length, 3);
+  assert.equal(parsed.tree[1]?.size, 12);
+  // `truncated` is optional: an older answer without it still parses.
+  assert.equal(
+    githubTreeResponseSchema.safeParse({ sha: "t", tree: [] }).success,
+    true,
+  );
+});
+
+test("languages are bytes per name", () => {
+  assert.deepEqual(
+    githubLanguagesResponseSchema.parse({ TypeScript: 1200, CSS: 40 }),
+    { TypeScript: 1200, CSS: 40 },
+  );
+  assert.equal(
+    githubLanguagesResponseSchema.safeParse({ TypeScript: "many" }).success,
+    false,
+  );
+});
+
+test("a stored tree is strict and carries blobs and submodules only", () => {
+  const tree = {
+    version: 1,
+    commitSha: "c",
+    treeSha: "t",
+    truncated: false,
+    entries: [
+      { path: "a.ts", type: "blob", mode: "100644", sha: "b", size: 3 },
+    ],
+  };
+  assert.equal(storedTreeSchema.safeParse(tree).success, true);
+  assert.equal(
+    storedTreeSchema.safeParse({
+      ...tree,
+      entries: [
+        { path: "src", type: "tree", mode: "040000", sha: "t", size: 0 },
+      ],
+    }).success,
+    false,
+  );
+});
+
+test("the facts DTO accepts exactly what core computes", () => {
+  const facts = treeFacts([
+    { path: "packages/db/src/a.ts", size: 10 },
+    { path: "package-lock.json", size: 5 },
+  ]);
+  assert.deepEqual(treeFactsDtoSchema.parse(facts), facts);
+  assert.equal(
+    repoSnapshotDetailDtoSchema.safeParse({
+      id: "rsn_1",
+      repoId: "ghr_1",
+      commitSha: "c",
+      ref: "refs/heads/main",
+      treeSha: "t",
+      treeTruncated: false,
+      fileCount: 2,
+      totalBytes: 15,
+      languages: { TypeScript: 10 },
+      createdAt: "2026-10-02T00:00:00.000Z",
+      repoFullName: "acme/app",
+      facts,
+    }).success,
+    true,
+  );
+});
+
+test("a tree page query defaults its limit and refuses one past the cap", () => {
+  assert.equal(repoTreeQuerySchema.parse({}).limit, 500);
+  assert.equal(repoTreeQuerySchema.parse({ limit: "20" }).limit, 20);
+  assert.equal(
+    repoTreeQuerySchema.safeParse({ limit: String(TREE_PAGE_MAX + 1) }).success,
+    false,
+  );
 });

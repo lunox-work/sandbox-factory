@@ -1,18 +1,54 @@
-import { SCENARIO_WEIGHTS, WHOLE_BOUNTY_COMPLEXITIES } from "sandbox-factory";
-import { readFile } from "node:fs/promises";
+import {
+  SCENARIO_WEIGHTS,
+  treeFacts,
+  WHOLE_BOUNTY_COMPLEXITIES,
+} from "sandbox-factory";
+import { execFileSync } from "node:child_process";
+import { readFile, stat } from "node:fs/promises";
+import { join } from "node:path";
 
 import {
   AnthropicCaller,
   draftSpecTool,
+  repositoryOutline,
   sizeBountyTool,
 } from "../dist/sizing/index.js";
 
-const path = process.argv[2];
+const [path, ...flags] = process.argv.slice(2);
 if (!path) {
   throw new Error(
-    "Pass an explicit JSONL path: npm run evaluate:bounties -w @sandbox-factory/api -- <file>",
+    "Pass an explicit JSONL path: npm run evaluate:bounties -w @sandbox-factory/api -- <file> [--outline-repo <checkout>]",
   );
 }
+
+/**
+ * `--outline-repo <checkout>`: a local clone of the repository the examples
+ * are about. Its tracked files are outlined as a snapshot of them would be,
+ * and every labelled example is drafted twice, without and with it, so the
+ * weight agreement can be compared. An example may carry its own
+ * `repositoryOutline` text instead.
+ */
+async function outlineOfCheckout(directory) {
+  const paths = execFileSync("git", ["-C", directory, "ls-files", "-z"], {
+    encoding: "utf8",
+    maxBuffer: 256 * 1024 * 1024,
+  })
+    .split("\0")
+    .filter(Boolean);
+  const entries = [];
+  for (const file of paths) {
+    const size = await stat(join(directory, file))
+      .then((info) => info.size)
+      .catch(() => 0);
+    entries.push({ path: file, size });
+  }
+  return repositoryOutline(treeFacts(entries));
+}
+const outlineFlag = flags.indexOf("--outline-repo");
+const sharedOutline =
+  outlineFlag === -1
+    ? undefined
+    : await outlineOfCheckout(flags[outlineFlag + 1] ?? "");
 const apiKey = process.env.ANTHROPIC_API_KEY;
 const model = process.env.SIZING_MODEL;
 if (!apiKey || !model) {
@@ -77,6 +113,15 @@ let matchedWeights = 0;
 let agreedWeights = 0;
 let withinOneWeight = 0;
 let draftFailures = 0;
+// The same counts for the drafts shown a repository outline.
+let outlineDrafts = 0;
+let outlineMatchedWeights = 0;
+let outlineAgreedWeights = 0;
+let outlineWithinOneWeight = 0;
+let outlineDraftFailures = 0;
+let pairedWeights = 0;
+let pairedBaselineAgreedWeights = 0;
+let pairedOutlineAgreedWeights = 0;
 
 for (const example of examples) {
   try {
@@ -107,35 +152,86 @@ for (const example of examples) {
 
   if (example.scenarios === undefined) continue;
   labelledWeights += example.scenarios.length;
-  try {
-    const drafted = await caller.call(draftSpecTool, {
-      summary: example.summary,
-      descriptionText: example.descriptionText,
-      issueType: example.issueType,
-      components: example.components ?? [],
-      labels: example.labels ?? [],
-    });
-    inputTokens += drafted.usage?.inputTokens ?? 0;
-    outputTokens += drafted.usage?.outputTokens ?? 0;
+  const ticket = {
+    summary: example.summary,
+    descriptionText: example.descriptionText,
+    issueType: example.issueType,
+    components: example.components ?? [],
+    labels: example.labels ?? [],
+  };
+  /** Each labelled weight against the draft: [matched, agreed, withinOne]. */
+  const matchFor = (scenarios, label) =>
+    scenarios.find(({ title }) =>
+      title.toLowerCase().includes(label.title.trim().toLowerCase()),
+    );
+  const compare = (scenarios, counterpart) => {
+    const counts = [0, 0, 0];
     for (const label of example.scenarios) {
-      const words = label.title.trim().toLowerCase();
-      const match = drafted.result.scenarios.find(({ title }) =>
-        title.toLowerCase().includes(words),
-      );
+      const match = matchFor(scenarios, label);
       if (match?.weight === undefined) continue;
-      matchedWeights += 1;
-      if (match.weight === label.weight) agreedWeights += 1;
+      if (
+        counterpart !== undefined &&
+        matchFor(counterpart, label)?.weight === undefined
+      )
+        continue;
+      counts[0] += 1;
+      if (match.weight === label.weight) counts[1] += 1;
       if (
         Math.abs(
           SCENARIO_WEIGHTS.indexOf(match.weight) -
             SCENARIO_WEIGHTS.indexOf(label.weight),
         ) <= 1
       ) {
-        withinOneWeight += 1;
+        counts[2] += 1;
       }
     }
+    return counts;
+  };
+  let baselineScenarios;
+  try {
+    const drafted = await caller.call(draftSpecTool, ticket);
+    baselineScenarios = drafted.result.scenarios;
+    inputTokens += drafted.usage?.inputTokens ?? 0;
+    outputTokens += drafted.usage?.outputTokens ?? 0;
+    const [matched, agreed, within] = compare(drafted.result.scenarios);
+    matchedWeights += matched;
+    agreedWeights += agreed;
+    withinOneWeight += within;
   } catch {
     draftFailures += 1;
+  }
+
+  const outline = example.repositoryOutline ?? sharedOutline;
+  if (outline === undefined) continue;
+  outlineDrafts += 1;
+  try {
+    const drafted = await caller.call(draftSpecTool, {
+      ...ticket,
+      repositoryOutline: outline,
+    });
+    inputTokens += drafted.usage?.inputTokens ?? 0;
+    outputTokens += drafted.usage?.outputTokens ?? 0;
+    const [matched, agreed, within] = compare(drafted.result.scenarios);
+    outlineMatchedWeights += matched;
+    outlineAgreedWeights += agreed;
+    outlineWithinOneWeight += within;
+    // The delta uses successful pairs of the same labelled scenarios.
+    // Missing outlines, failed calls and unmatched titles cannot skew it.
+    if (baselineScenarios !== undefined) {
+      const [paired, baselineAgreed] = compare(
+        baselineScenarios,
+        drafted.result.scenarios,
+      );
+      const [, outlineAgreed] = compare(
+        drafted.result.scenarios,
+        baselineScenarios,
+      );
+      pairedWeights += paired;
+      pairedBaselineAgreedWeights += baselineAgreed;
+      pairedOutlineAgreedWeights += outlineAgreed;
+    }
+  } catch {
+    outlineDraftFailures += 1;
   }
 }
 
@@ -161,6 +257,32 @@ console.log(
       matchedWeightCount: matchedWeights,
       weightAgreement: ratio(agreedWeights, matchedWeights),
       withinOneWeightAgreement: ratio(withinOneWeight, matchedWeights),
+      // With an outline: the same examples drafted again beside it. The
+      // delta is what the PR records; negative means the outline hurt.
+      outlineDraftCount: outlineDrafts,
+      outlineDraftFailures,
+      outlineMatchedWeightCount: outlineMatchedWeights,
+      outlineWeightAgreement: ratio(
+        outlineAgreedWeights,
+        outlineMatchedWeights,
+      ),
+      outlineWithinOneWeightAgreement: ratio(
+        outlineWithinOneWeight,
+        outlineMatchedWeights,
+      ),
+      pairedWeightCount: pairedWeights,
+      pairedBaselineWeightAgreement: ratio(
+        pairedBaselineAgreedWeights,
+        pairedWeights,
+      ),
+      pairedOutlineWeightAgreement: ratio(
+        pairedOutlineAgreedWeights,
+        pairedWeights,
+      ),
+      outlineWeightAgreementDelta: ratio(
+        pairedOutlineAgreedWeights - pairedBaselineAgreedWeights,
+        pairedWeights,
+      ),
       inputTokens,
       outputTokens,
     },

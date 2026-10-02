@@ -9,6 +9,7 @@
  *
  * - An **installation** client, for a client's repositories. Its token is
  *   minted from the App's key and never stored; nothing here persists it.
+ *   Every one names what it is for, and its token is narrowed to that.
  * - A **user** client, for the connect flow, over the person's own grant.
  */
 
@@ -17,19 +18,67 @@ import {
   GithubAuthError,
   GithubClient,
   GithubOAuthError,
+  type InstallationNarrowing,
   type InstallationTokens,
   type TokenSource,
   UserCredential,
 } from "@sandbox-factory/github";
 
-/** A client acting as an installation. Cheap: the token is cached by `tokens`. */
+/**
+ * What an installation client is for, which decides what its token can
+ * reach. Reads only: a client that writes belongs to the sandbox plan and
+ * will be its own kind, so that widening the App's grant for it later
+ * cannot hand write access to any call made here.
+ *
+ * - `discovery` — installation-wide, metadata only: listing what an
+ *   installation covers, and counting it for the authority check.
+ * - `repository` — one repository, contents and metadata: reading its
+ *   pointer, its tree and its languages. Narrowed by GitHub's numeric id,
+ *   so a token minted for one repository cannot read its neighbours.
+ */
+export type InstallationScope =
+  | { readonly kind: "discovery" }
+  | { readonly kind: "repository"; readonly repositoryId: string };
+
+/** What a `discovery` token may do. */
+export const DISCOVERY_PERMISSIONS: Readonly<Record<string, string>> = {
+  metadata: "read",
+};
+
+/** What a `repository` token may do. */
+export const REPOSITORY_READ_PERMISSIONS: Readonly<Record<string, string>> = {
+  contents: "read",
+  metadata: "read",
+};
+
+/** The narrowing a scope mints its token with. */
+export function narrowingFor(scope: InstallationScope): InstallationNarrowing {
+  if (scope.kind === "discovery") {
+    return { permissions: DISCOVERY_PERMISSIONS };
+  }
+  const repositoryId = Number(scope.repositoryId);
+  if (!Number.isSafeInteger(repositoryId) || repositoryId <= 0) {
+    // Ids are checked where they enter; this is a bug, not a request.
+    throw new Error("A repository scope needs GitHub's numeric id.");
+  }
+  return {
+    repositoryIds: [repositoryId],
+    permissions: REPOSITORY_READ_PERMISSIONS,
+  };
+}
+
+/**
+ * A client acting as an installation, for one stated purpose. Cheap: the
+ * token is cached by `tokens`, apart for each narrowing.
+ */
 export function installationClient(
   tokens: InstallationTokens,
   installationId: string,
+  scope: InstallationScope,
   fetchImpl?: typeof globalThis.fetch,
 ): GithubClient {
   return new GithubClient({
-    token: tokens.provider(installationId),
+    token: tokens.provider(installationId, narrowingFor(scope)),
     ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }),
   });
 }

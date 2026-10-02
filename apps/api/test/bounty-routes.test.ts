@@ -406,6 +406,7 @@ function reviewProposal(
     decidedAt: null,
     decidedBy: null,
     decisionDeliveryPolicy: null,
+    repoSnapshotId: null,
     createdAt: run.createdAt,
     updatedAt: run.createdAt,
     ...overrides,

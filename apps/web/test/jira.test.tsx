@@ -1697,3 +1697,233 @@ test("a date-only due date is that calendar day west of UTC too", () => {
     else process.env.TZ = zone;
   }
 });
+
+/* -------------------------------------------------------------------------- */
+/* The repository a board's tickets are about                                 */
+/* -------------------------------------------------------------------------- */
+
+const widgets = {
+  id: "ghr_1",
+  connectionId: "ghc_1",
+  role: "source",
+  externalId: "1296269",
+  fullName: "acme/widgets",
+  defaultBranch: "main",
+  isPrivate: true,
+  sizeKb: 120,
+  headSha: "a".repeat(40),
+  pushedAt: null,
+  lastSyncedAt: null,
+  syncStatus: "ok",
+  syncError: null,
+  createdAt: "2026-10-01T00:00:00.000Z",
+};
+
+/**
+ * `routedFetch`, with the organization's registered repositories, the
+ * board's own PATCH, and one snapshot. Everything else falls through.
+ */
+function withRepositories(
+  options: {
+    linked?: string | null;
+    repositories?: unknown[];
+    repositoryStatus?: number;
+    patchStatus?: number;
+    snapshot?: unknown;
+  } = {},
+) {
+  const inner = routedFetch({
+    boards: {
+      body: { boards: [{ ...board, sourceRepoId: options.linked ?? null }] },
+    },
+    proposals: {
+      body: {
+        proposals: [{ ...proposal(1), repoSnapshotId: "rsn_1" }, proposal(2)],
+      },
+    },
+  });
+  return vi.fn((input: string, init?: RequestInit) => {
+    const url = String(input);
+    const json = (body: unknown, status = 200) =>
+      Promise.resolve(
+        new Response(JSON.stringify(body), {
+          status,
+          headers: { "content-type": "application/json" },
+        }),
+      );
+    if (url.endsWith("/github/repositories")) {
+      return json(
+        { repositories: options.repositories ?? [widgets] },
+        options.repositoryStatus ?? 200,
+      );
+    }
+    if (url.includes("/github/snapshots/")) {
+      return options.snapshot === undefined
+        ? json({ error: "Not found" }, 404)
+        : json({ snapshot: options.snapshot });
+    }
+    if (init?.method === "PATCH" && url.endsWith("/jira/boards/jrb_1")) {
+      const { sourceRepoId } = JSON.parse(String(init.body)) as {
+        sourceRepoId: string | null;
+      };
+      return options.patchStatus !== undefined
+        ? json({ error: "Not found" }, options.patchStatus)
+        : json({ board: { ...board, sourceRepoId } });
+    }
+    return inner(input, init);
+  });
+}
+
+test("an owner links the repository a board's tickets are about", async () => {
+  const fetchMock = withRepositories();
+  vi.stubGlobal("fetch", fetchMock);
+  renderBoard("jrb_1", "owner");
+
+  const section = await screen.findByTestId("board-repository");
+  await userEvent.click(
+    within(section).getByRole("button", { name: /no repository/i }),
+  );
+  await userEvent.click(
+    await screen.findByRole("menuitem", { name: /acme\/widgets/ }),
+  );
+
+  await waitFor(() =>
+    expect(
+      within(screen.getByTestId("board-repository")).getByRole("button", {
+        name: /acme\/widgets/,
+      }),
+    ).toBeDefined(),
+  );
+  const patch = fetchMock.mock.calls.find(
+    ([, init]) => (init as RequestInit | undefined)?.method === "PATCH",
+  );
+  expect(JSON.parse(String((patch?.[1] as RequestInit).body))).toEqual({
+    sourceRepoId: "ghr_1",
+  });
+  expect(
+    screen.getByText(/drafted with an outline of this repository/i),
+  ).toBeDefined();
+});
+
+test("an owner can unlink, and a refused link is said", async () => {
+  vi.stubGlobal(
+    "fetch",
+    withRepositories({ linked: "ghr_1", patchStatus: 404 }),
+  );
+  renderBoard("jrb_1", "owner");
+
+  const section = await screen.findByTestId("board-repository");
+  await userEvent.click(
+    within(section).getByRole("button", { name: /acme\/widgets/ }),
+  );
+  await userEvent.click(
+    await screen.findByRole("menuitem", { name: /no repository/i }),
+  );
+
+  expect((await screen.findByRole("alert")).textContent).toMatch(
+    /no longer registered/,
+  );
+});
+
+test("a member sees the linked repository but cannot change it", async () => {
+  vi.stubGlobal("fetch", withRepositories({ linked: "ghr_1" }));
+  renderBoard("jrb_1", "member");
+
+  const section = await screen.findByTestId("board-repository");
+  expect(within(section).getByText("acme/widgets")).toBeDefined();
+  expect(within(section).queryByRole("button")).toBeNull();
+});
+
+test("no control for a member with nothing linked, or an owner with nothing registered", async () => {
+  for (const [role, repositories] of [
+    ["member", [widgets]],
+    ["owner", []],
+    ["owner", [{ ...widgets, syncStatus: "gone" }]],
+  ] as const) {
+    vi.stubGlobal(
+      "fetch",
+      withRepositories({ repositories: [...repositories] }),
+    );
+    const { unmount } = renderBoard("jrb_1", role);
+    await screen.findByTestId("proposal-list");
+    expect(screen.queryByTestId("board-repository")).toBeNull();
+    unmount();
+  }
+});
+
+test("a linked repository that was removed is still named as such", async () => {
+  vi.stubGlobal(
+    "fetch",
+    withRepositories({ linked: "ghr_removed", repositories: [] }),
+  );
+  renderBoard("jrb_1", "member");
+
+  expect(
+    await within(await screen.findByTestId("board-repository")).findByText(
+      /a removed repository/i,
+    ),
+  ).toBeDefined();
+});
+
+test("a failed repository read does not claim the linked repository was removed", async () => {
+  vi.stubGlobal(
+    "fetch",
+    withRepositories({ linked: "ghr_1", repositoryStatus: 500 }),
+  );
+  renderBoard("jrb_1", "member");
+  const section = await screen.findByTestId("board-repository");
+  expect(within(section).getByText("Repository unavailable")).toBeDefined();
+  expect(within(section).queryByText(/a removed repository/i)).toBeNull();
+  expect(within(section).getByRole("alert").textContent).toMatch(
+    /could not load the registered repositories/i,
+  );
+});
+
+test("a spec drafted beside an outline names the commit it came from", async () => {
+  vi.stubGlobal(
+    "fetch",
+    withRepositories({
+      snapshot: {
+        id: "rsn_1",
+        repoId: "ghr_1",
+        commitSha: "abc1234def5678",
+        ref: "refs/heads/main",
+        treeSha: "t",
+        treeTruncated: false,
+        fileCount: 3,
+        totalBytes: 30,
+        languages: {},
+        createdAt: "2026-10-01T00:00:00.000Z",
+        repoFullName: "acme/widgets",
+        facts: {},
+      },
+    }),
+  );
+  renderBoard();
+  await userEvent.click(await screen.findByText("Ticket 1"));
+  const panel = await screen.findByTestId("proposal-panel");
+  await userEvent.click(within(panel).getByRole("tab", { name: /scenarios/i }));
+
+  const line = await within(panel).findByTestId("spec-outline-source");
+  expect(line.textContent).toMatch(
+    /repository outline from acme\/widgets at abc1234$/,
+  );
+});
+
+test("a spec drafted without an outline, or whose snapshot is gone, says nothing of one", async () => {
+  vi.stubGlobal("fetch", withRepositories());
+  renderBoard();
+  for (const title of ["Ticket 1", "Ticket 2"]) {
+    await userEvent.click(await screen.findByText(title));
+    const panel = await screen.findByTestId("proposal-panel");
+    await userEvent.click(
+      within(panel).getByRole("tab", { name: /scenarios/i }),
+    );
+    await within(panel).findByTestId("spec-size-reason");
+    expect(within(panel).queryByTestId("spec-outline-source")).toBeNull();
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() =>
+      expect(screen.queryByTestId("proposal-panel")).toBeNull(),
+    );
+  }
+});

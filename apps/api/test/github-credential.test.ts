@@ -194,6 +194,7 @@ test("an installation client works with the default fetch wiring", () => {
   const client = installationClient(
     installationTokens(fakeGithub(world())),
     "9",
+    { kind: "discovery" },
   );
 
   assert.equal(client.rateLimit, undefined);

@@ -22,9 +22,11 @@ import {
   bountyProposal,
   bountyRun,
   bountyWriteback,
+  githubRepo,
   jiraBoard,
   jiraConnection,
   jiraIssue,
+  repoSnapshot,
 } from "./schema.js";
 import type {
   BountyProposalRow,
@@ -50,6 +52,12 @@ export interface CreateBountyProposalInput {
    * it is the model's own size.
    */
   readonly step?: StepResult | null;
+  /**
+   * The repository snapshot the spec was drafted beside, when the board
+   * named a repository that had one. Its organization is the board's,
+   * which the caller read it through.
+   */
+  readonly repoSnapshotId?: string | null;
 }
 
 /**
@@ -306,6 +314,8 @@ export interface StoredBountyProposal {
   readonly specRevision: number | null;
   /** How the spec's added weight moved the size, or null when nothing could. */
   readonly step: StepResult | null;
+  /** The repository snapshot the spec was drafted beside, if any. */
+  readonly repoSnapshotId: string | null;
   readonly decidedAt: string | null;
   readonly decidedBy: string | null;
   readonly decisionDeliveryPolicy: "off" | "requested" | null;
@@ -343,6 +353,7 @@ function toDto(row: BountyProposalRow, issueKey: string): StoredBountyProposal {
     revision: row.revision,
     specRevision: row.specRevision,
     step: row.step ?? null,
+    repoSnapshotId: row.repoSnapshotId ?? null,
     decidedAt: row.decidedAt?.toISOString() ?? null,
     decidedBy: row.decidedBy,
     decisionDeliveryPolicy:
@@ -410,9 +421,33 @@ function insertValues(
     complexity: input.step?.complexity ?? input.sizing.complexity,
     step: input.step ?? null,
     stepVersion: input.step?.stepVersion ?? null,
+    repoSnapshotId: input.repoSnapshotId ?? null,
     amountMinor: input.amountMinor,
     currency: input.currency,
   };
+}
+
+/** Keep a surviving owned snapshot still until the proposal write commits. */
+async function snapshotForWrite(
+  tx: Database,
+  organizationId: string,
+  snapshotId: string | null | undefined,
+): Promise<string | null> {
+  if (snapshotId == null) return null;
+  const [snapshot] = await tx
+    .select({ id: repoSnapshot.id })
+    .from(repoSnapshot)
+    .innerJoin(githubRepo, eq(githubRepo.id, repoSnapshot.repoId))
+    .where(
+      and(
+        eq(githubRepo.organizationId, organizationId),
+        eq(repoSnapshot.id, snapshotId),
+      ),
+    )
+    .for("key share", { of: repoSnapshot });
+  // Repository deletion or pruning during the model call is optional
+  // context disappearing, not a reason to discard the completed draft.
+  return snapshot?.id ?? null;
 }
 
 /** Each ticket's live proposal, for the tickets that have one. */
@@ -449,42 +484,55 @@ async function liveProposalIds(
 export function createBountyProposalStore(db: Database): BountyProposalStore {
   return {
     async create(organizationId, input) {
-      const parents = await db
-        .select({ runId: bountyRun.id, issueKey: jiraIssue.key })
-        .from(bountyRun)
-        .innerJoin(
-          jiraIssue,
-          and(
-            eq(jiraIssue.id, input.jiraIssueId),
-            eq(jiraIssue.organizationId, organizationId),
-            eq(jiraIssue.boardId, bountyRun.boardId),
-          ),
-        )
-        .where(
-          and(
-            eq(bountyRun.organizationId, organizationId),
-            eq(bountyRun.id, input.runId),
-          ),
-        );
-      const parent = parents[0];
-      if (parent === undefined) return null;
+      return db.transaction(async (transaction) => {
+        const tx = transaction as unknown as Database;
+        const parents = await tx
+          .select({ runId: bountyRun.id, issueKey: jiraIssue.key })
+          .from(bountyRun)
+          .innerJoin(
+            jiraIssue,
+            and(
+              eq(jiraIssue.id, input.jiraIssueId),
+              eq(jiraIssue.organizationId, organizationId),
+              eq(jiraIssue.boardId, bountyRun.boardId),
+            ),
+          )
+          .where(
+            and(
+              eq(bountyRun.organizationId, organizationId),
+              eq(bountyRun.id, input.runId),
+            ),
+          );
+        const parent = parents[0];
+        if (parent === undefined) return null;
 
-      try {
-        const rows = (await db
-          .insert(bountyProposal)
-          .values(insertValues(organizationId, input))
-          .returning()) as BountyProposalRow[];
-        return rows[0] === undefined ? null : toDto(rows[0], parent.issueKey);
-      } catch (error) {
-        // Another worker or process may have won the one-live-proposal race.
-        if (isUniqueViolation(error)) return null;
-        throw error;
-      }
+        const repoSnapshotId = await snapshotForWrite(
+          tx,
+          organizationId,
+          input.repoSnapshotId,
+        );
+        try {
+          const rows = (await tx
+            .insert(bountyProposal)
+            .values(insertValues(organizationId, { ...input, repoSnapshotId }))
+            .returning()) as BountyProposalRow[];
+          return rows[0] === undefined ? null : toDto(rows[0], parent.issueKey);
+        } catch (error) {
+          // Another worker or process may have won the one-live-proposal race.
+          if (isUniqueViolation(error)) return null;
+          throw error;
+        }
+      });
     },
 
     async createForLease(organizationId, leaseToken, input) {
       return db.transaction(async (transaction) => {
         const tx = transaction as unknown as Database;
+        const repoSnapshotId = await snapshotForWrite(
+          tx,
+          organizationId,
+          input.repoSnapshotId,
+        );
         const now = new Date();
         // This UPDATE is the row lock. A watchdog cannot fail the run between
         // this lease check and the proposal insert in the same transaction.
@@ -523,7 +571,7 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
           .values(
             insertValues(
               organizationId,
-              input,
+              { ...input, repoSnapshotId },
               input.spec === undefined ? null : 1,
             ),
           )
@@ -859,6 +907,13 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
     ) {
       return db.transaction(async (transaction) => {
         const tx = transaction as unknown as Database;
+        // Snapshot before proposal locks: cascading snapshot deletion also
+        // locks proposals, so both paths acquire these locks in that order.
+        const repoSnapshotId = await snapshotForWrite(
+          tx,
+          organizationId,
+          input.repoSnapshotId,
+        );
         const now = new Date();
         const claimed = (await tx
           .update(bountyRun)
@@ -943,7 +998,10 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
 
         // The same row, sized again: the id is what links and Jira comments
         // point at, and a decision made earlier does not carry over.
-        const values = insertValues(organizationId, input);
+        const values = insertValues(organizationId, {
+          ...input,
+          repoSnapshotId,
+        });
         const repriced = (await tx
           .update(bountyProposal)
           .set({
@@ -961,6 +1019,8 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
             complexity: values.complexity,
             step: values.step,
             stepVersion: values.stepVersion,
+            // The draft is new, and so is what it was drafted beside.
+            repoSnapshotId: values.repoSnapshotId,
             sizedBy: "model",
             resizedBy: null,
             resizedAt: null,

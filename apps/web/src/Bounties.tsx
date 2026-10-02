@@ -73,6 +73,7 @@ import {
 } from "./ProposalSpec";
 import { JiraIcon, ModelIcon } from "./ProviderIcon";
 import { useRespec } from "./SpecChanges";
+import { useRepoSnapshot } from "./useGithub";
 import type { JiraIssueDetail } from "./useJira";
 
 type EnrichedProposal = BountyProposalDto & {
@@ -2131,6 +2132,8 @@ function ProposalPeek({
   const key = proposal.liveKey ?? proposal.issueKey;
   // Read when the peek opens, like the ticket, so the tab opens on it.
   const spec = useProposalSpec(base, proposal.id, proposal.specRevision);
+  // The commit the spec's repository outline came from, when it had one.
+  const outline = useRepoSnapshot(base, proposal.repoSnapshotId ?? null);
   const scenarios = scenarioTotal(spec.read);
   const step = proposal.step ?? null;
   // A reviewer's changes to the spec, and the run each one starts.
@@ -2519,6 +2522,13 @@ function ProposalPeek({
               // The size the reviewer chose: the step's base when the
               // spec's added weight has moved it on since.
               reviewerSize: proposal.sizedBy === "reviewer" ? sizeBase : null,
+              outline:
+                outline === null
+                  ? null
+                  : {
+                      repoFullName: outline.repoFullName,
+                      commitSha: outline.commitSha,
+                    },
             }}
             history={{
               base,

@@ -224,6 +224,14 @@ export interface SizeReason {
   readonly rationale: string;
   /** The size a reviewer set over the model's, or null when none did. */
   readonly reviewerSize: string | null;
+  /**
+   * The repository snapshot the spec was drafted beside, when it was.
+   * Null for a draft that was shown no outline, or one not loaded yet.
+   */
+  readonly outline?: {
+    readonly repoFullName: string;
+    readonly commitSha: string;
+  } | null;
 }
 
 /** A size as it reads inside a sentence. */
@@ -271,6 +279,21 @@ function SizeReasonBlock({ reason }: { reason: SizeReason }) {
         </>
       )}
       <p className="text-sm leading-relaxed">{reason.rationale}</p>
+      {reason.outline != null && (
+        <p
+          className="text-muted-foreground text-xs"
+          data-testid="spec-outline-source"
+        >
+          Drafted with the repository outline from{" "}
+          <span title={reason.outline.repoFullName}>
+            {reason.outline.repoFullName}
+          </span>{" "}
+          at{" "}
+          <code className="font-mono" title={reason.outline.commitSha}>
+            {reason.outline.commitSha.slice(0, 7)}
+          </code>
+        </p>
+      )}
     </section>
   );
 }

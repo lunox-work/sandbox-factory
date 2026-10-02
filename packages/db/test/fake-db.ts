@@ -34,6 +34,7 @@ export interface FakeCall {
   readonly filtered?: boolean;
   readonly limited?: number;
   readonly ignoredConflict?: boolean;
+  readonly lock?: string;
 }
 
 export interface FakeDb {
@@ -52,6 +53,7 @@ function chain(
   onConflict?: (set: Record<string, unknown>, guarded: boolean) => void,
   onLimit?: (limit: number) => void,
   onConflictNothing?: () => void,
+  onLock?: (mode: string) => void,
 ): unknown {
   const result: Record<string, unknown> = {
     from: () => result,
@@ -81,6 +83,11 @@ function chain(
     },
     limit: (limit: number) => {
       onLimit?.(limit);
+      return result;
+    },
+    offset: () => result,
+    for: (mode: string) => {
+      onLock?.(mode);
       return result;
     },
     then: (
@@ -122,6 +129,8 @@ function createFakeDbWith(rowsForQuery: RowsProvider): FakeDb {
         markFiltered(call),
         undefined,
         (limit) => Object.assign(call, { limited: limit }),
+        undefined,
+        (mode) => Object.assign(call, { lock: mode }),
       );
     },
     insert: () => ({

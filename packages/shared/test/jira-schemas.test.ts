@@ -433,6 +433,40 @@ test("an update is a selection, and an empty body is refused", () => {
   assert.equal(updateBoardSchema.safeParse({}).success, false);
 });
 
+test("an update may name the board's source repository, or clear it", () => {
+  assert.equal(
+    updateBoardSchema.parse({ sourceRepoId: "ghr_1" }).sourceRepoId,
+    "ghr_1",
+  );
+  // Null unlinks; absent leaves the link as it is.
+  assert.equal(
+    updateBoardSchema.parse({ sourceRepoId: null }).sourceRepoId,
+    null,
+  );
+  assert.equal(
+    "sourceRepoId" in updateBoardSchema.parse({ pricing: {} }),
+    false,
+  );
+  assert.equal(
+    updateBoardSchema.safeParse({ sourceRepoId: "" }).success,
+    false,
+  );
+});
+
+test("a board listed before repository links reads as unlinked", () => {
+  const parsed = jiraBoardSummarySchema.parse({
+    id: "jrb_1",
+    connectionId: "jrc_1",
+    externalId: "7",
+    name: "Board",
+    boardType: "scrum",
+    projectKey: null,
+    selection: {},
+    createdAt: "2026-10-01T00:00:00.000Z",
+  });
+  assert.equal(parsed.sourceRepoId, null);
+});
+
 test("a partial selection update does not reimpose the defaults", () => {
   // Editing `ticketCap` alone must not silently reset `unassignedOnly`.
   const parsed = updateBoardSchema.parse({ selection: { ticketCap: 5 } });

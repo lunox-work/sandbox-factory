@@ -14,6 +14,7 @@ import {
   createGithubConnectionStore,
   createGithubGrantStore,
   createGithubRepoStore,
+  createRepoSnapshotStore,
   createJiraBoardStore,
   createJiraConnectionStore,
   createJiraIssueStore,
@@ -44,6 +45,7 @@ import {
   sizingConfig,
 } from "./env.js";
 import { GithubReconciler } from "./github/reconcile.js";
+import { GithubSnapshotter } from "./github/snapshot.js";
 import { resolveImageDigest } from "./image-digest.js";
 import { jiraClientFor, jiraClientsFor } from "./jira/credential.js";
 import { createApp } from "./routes.js";
@@ -52,6 +54,7 @@ import {
   DeepSeekCaller,
   FallbackCaller,
   JIRA_SIZE_PROMPT_VERSION,
+  repositoryOutline,
   type StructuredCaller,
 } from "./sizing/index.js";
 
@@ -70,6 +73,8 @@ const organizations = createOrganizationStore(connection.db);
 const tokenCipher = createTokenCipher(env.TOKEN_ENCRYPTION_KEY);
 const jiraConnections = createJiraConnectionStore(connection.db, tokenCipher);
 const jiraBoards = createJiraBoardStore(connection.db);
+/** Read by sizing for a board's repository outline, and by the GitHub routes. */
+const repoSnapshots = createRepoSnapshotStore(connection.db);
 const bountyRuns = createBountyRunStore(connection.db);
 const bountyProposals = createBountyProposalStore(connection.db);
 const bountySpecs = createBountySpecStore(connection.db);
@@ -209,6 +214,17 @@ const bountyExecutor =
         specs: bountySpecs,
         caller,
         clientFor: runClientFor,
+        outlineFor: async (organizationId, repoId) => {
+          const snapshot = await repoSnapshots.current(organizationId, repoId);
+          return snapshot === null
+            ? null
+            : {
+                snapshotId: snapshot.id,
+                text: repositoryOutline(snapshot.facts, {
+                  languages: snapshot.languages,
+                }),
+              };
+        },
         ...(bountyDelivery === undefined
           ? {}
           : {
@@ -234,6 +250,15 @@ const jira =
       };
 
 /**
+ * Object storage, when a bucket is configured: SeaweedFS locally, S3 in
+ * production. It holds uploaded avatars and repository snapshots' file
+ * lists; undefined leaves the avatar upload routes unmounted, everyone on
+ * their identicon or provider picture, and no snapshots taken.
+ */
+const storage = objectStoreConfig(env);
+const objects = storage === undefined ? undefined : createObjectStore(storage);
+
+/**
  * The GitHub App, if all six of its values are set; see `githubAppConfig`.
  *
  * One installation-token cache for the process, shared by the routes, the
@@ -247,17 +272,42 @@ if (githubMissing.length > 0) {
     `GitHub is off: ${githubMissing.join(", ")} unset while the rest of the App is set.`,
   );
 }
-const github =
+const githubRepos = createGithubRepoStore(connection.db);
+const githubInstallations =
   githubApp === undefined
+    ? undefined
+    : new InstallationTokens({
+        appId: githubApp.appId,
+        privateKey: githubApp.privateKey,
+      });
+/**
+ * Repository snapshots, when there is both an App to read trees with and a
+ * bucket to keep them in. One queue for the process, fed by the register
+ * route, the webhook and the sweep.
+ */
+const githubSnapshotter =
+  githubInstallations === undefined || objects === undefined
+    ? undefined
+    : new GithubSnapshotter({
+        repos: githubRepos,
+        snapshots: repoSnapshots,
+        objects,
+        installations: githubInstallations,
+        onError: (code, detail) =>
+          console.error(detail === undefined ? code : `${code} ${detail}`),
+      });
+const github =
+  githubApp === undefined || githubInstallations === undefined
     ? undefined
     : {
         connections: createGithubConnectionStore(connection.db),
         grants: createGithubGrantStore(connection.db, tokenCipher),
-        repos: createGithubRepoStore(connection.db),
-        installations: new InstallationTokens({
-          appId: githubApp.appId,
-          privateKey: githubApp.privateKey,
-        }),
+        repos: githubRepos,
+        installations: githubInstallations,
+        snapshots:
+          githubSnapshotter === undefined
+            ? undefined
+            : { store: repoSnapshots, snapshotter: githubSnapshotter },
         appSlug: githubApp.slug,
         clientId: githubApp.clientId,
         clientSecret: githubApp.clientSecret,
@@ -277,20 +327,14 @@ const githubReconciler =
         repos: github.repos,
         connections: github.connections,
         installations: github.installations,
+        snapshotter: githubSnapshotter,
         onError: (code, detail) =>
           console.error(detail === undefined ? code : `${code} ${detail}`),
       });
 
-/**
- * Avatar storage, when a bucket is configured: SeaweedFS locally, S3 in
- * production. Undefined leaves the upload routes unmounted and everyone on
- * their identicon or provider picture.
- */
-const storage = objectStoreConfig(env);
+/** Avatar uploads, in the bucket above. */
 const avatars =
-  storage === undefined
-    ? undefined
-    : createAvatarService({ store: createObjectStore(storage) });
+  objects === undefined ? undefined : createAvatarService({ store: objects });
 
 const app = createApp({
   corsOrigins: env.CORS_ORIGINS,
@@ -350,8 +394,12 @@ const server = serve({ fetch: app.fetch, port: env.PORT }, (info) => {
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.on(signal, () => {
     bountyWatchdog.stop();
-    // The sweep finishes the repository it is on before the pool closes.
-    void Promise.resolve(githubReconciler?.stop()).then(() => {
+    // The sweep finishes the repository it is on, and a snapshot in hand
+    // is written, before the pool closes.
+    void Promise.all([
+      githubReconciler?.stop(),
+      githubSnapshotter?.stop(),
+    ]).then(() => {
       server.close(() => {
         void connection.close().then(() => process.exit(0));
       });

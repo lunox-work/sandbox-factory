@@ -231,7 +231,10 @@ export function createApp({
    * over the raw body before anything is parsed. See `github/webhook.ts`.
    */
   if (github !== undefined) {
-    mountGithubWebhook(app, github);
+    mountGithubWebhook(app, {
+      ...github,
+      snapshotter: github.snapshots?.snapshotter,
+    });
   }
 
   /**

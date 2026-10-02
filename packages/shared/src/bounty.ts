@@ -295,6 +295,12 @@ export const bountyProposalDtoSchema = z.object({
    */
   specRevision: z.number().int().positive().nullable(),
   /**
+   * The repository snapshot whose outline the spec was drafted beside, or
+   * null when the board named no repository, its repository had no snapshot
+   * yet, or the snapshot has since been pruned.
+   */
+  repoSnapshotId: z.string().nullable().default(null),
+  /**
    * The scenario step `complexity` came from. Null when there is none to
    * take: an unsized ticket, a proposal with no spec, or one whose spec was
    * drafted before weights. Then `complexity` is the base itself.

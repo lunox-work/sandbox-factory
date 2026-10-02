@@ -47,12 +47,18 @@ import type { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 
 import { installationClient } from "./credential.js";
+import type { GithubSnapshotter } from "./snapshot.js";
 import { syncRepo } from "./sync.js";
 
 export interface GithubWebhookOptions {
   connections: GithubConnectionStore;
   repos: GithubRepoStore;
   installations: InstallationTokens;
+  /**
+   * Asked for a snapshot when a push moves a head or a new default branch
+   * is read. It queues the work, so the answer is not held for it.
+   */
+  snapshotter?: Pick<GithubSnapshotter, "schedule"> | undefined;
   webhookSecret: string;
   fetch?: typeof globalThis.fetch;
   now?: () => number;
@@ -164,15 +170,16 @@ export async function handleGithubEvent(
     return "unknown-installation";
   }
 
+  const known: Owner = { ...owner, installationId: String(installationId) };
   switch (event) {
     case "installation":
-      return onInstallation(options, owner, payload);
+      return onInstallation(options, known, payload);
     case "installation_repositories":
-      return onInstallationRepositories(options, owner, payload);
+      return onInstallationRepositories(options, known, payload);
     case "push":
-      return onPush(options, owner, payload);
+      return onPush(options, known, payload);
     case "repository":
-      return onRepository(options, owner, payload);
+      return onRepository(options, known, payload);
     default:
       return "ignored";
   }
@@ -181,6 +188,8 @@ export async function handleGithubEvent(
 interface Owner {
   readonly organizationId: string;
   readonly connectionId: string;
+  /** The delivery's, which `ownerOf` has just tied to this connection. */
+  readonly installationId: string;
 }
 
 /**
@@ -290,7 +299,7 @@ async function onInstallationRepositories(
  */
 async function onPush(
   options: GithubWebhookOptions,
-  { organizationId, connectionId }: Owner,
+  { organizationId, connectionId, installationId }: Owner,
   payload: unknown,
 ): Promise<WebhookOutcome> {
   const parsed = githubPushEventSchema.safeParse(payload);
@@ -318,10 +327,18 @@ async function onPush(
   if (repo.defaultBranch !== defaultBranch) {
     await options.repos.update(organizationId, repo.id, { defaultBranch });
   }
-  await options.repos.setHead(organizationId, repo.id, {
+  const moved = await options.repos.setHead(organizationId, repo.id, {
     headSha: push.after,
     pushedAt: githubTimestamp(push.repository.pushed_at),
   });
+  // Not for a late delivery the head refused, nor for a gone repository.
+  if (moved) {
+    options.snapshotter?.schedule({
+      organizationId,
+      repoId: repo.id,
+      installationId,
+    });
+  }
   return "applied";
 }
 
@@ -385,6 +402,7 @@ async function onRepository(
           installationClient(
             options.installations,
             connection.installationId,
+            { kind: "repository", repositoryId: repo.externalId },
             options.fetch,
           ),
           {
@@ -396,7 +414,15 @@ async function onRepository(
           },
           // The delivery carries the whole repository; no need to read it.
           repository,
-        ),
+        ).then((outcome) => {
+          if (outcome === "ok" || outcome === "unchanged") {
+            options.snapshotter?.schedule({
+              organizationId,
+              repoId: repo.id,
+              installationId: connection.installationId,
+            });
+          }
+        }),
       );
       return "applied";
     }
