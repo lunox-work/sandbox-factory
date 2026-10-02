@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
+import { renameSync, writeFileSync } from "node:fs";
 import { mkdtemp, writeFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -206,6 +207,62 @@ test("stream uploads compute hashes and stop invalid paths or cancelled work", a
     abort.abort();
     await assert.rejects(
       uploadArtifacts(state.objects, "r", "l", [file], abort.signal, []),
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+test("uploads keep the measured file when its path is replaced mid-upload", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "artifact-replace-"));
+  const path = join(directory, "file");
+  await writeFile(path, "hello");
+  const file: ArtifactFile = {
+    path: "graph.json",
+    absolutePath: path,
+    kind: "graph_json",
+    contentType: "application/json",
+    meta: null,
+  };
+  try {
+    const streamedState = stores();
+    let streamed = "";
+    streamedState.objects.putStream = async (_key, body, size) => {
+      // Synchronous, so the swap lands before any lazily opened stream opens.
+      writeFileSync(`${path}.next`, "replaced and longer");
+      renameSync(`${path}.next`, path);
+      assert.equal(size, 5);
+      for await (const chunk of body) streamed += String(chunk);
+    };
+    const [streamedArtifact] = await uploadArtifacts(
+      streamedState.objects,
+      "run",
+      "lease",
+      [file],
+      new AbortController().signal,
+      [],
+    );
+    assert.equal(streamed, "hello");
+    assert.equal(streamedArtifact?.sizeBytes, 5);
+
+    // Without streaming, the body is read through the same handle, and an
+    // empty file uploads as zero bytes.
+    await writeFile(path, "");
+    const bufferedState = stores();
+    const [empty] = await uploadArtifacts(
+      bufferedState.objects,
+      "run",
+      "lease",
+      [file],
+      new AbortController().signal,
+      [],
+    );
+    assert.equal(
+      bufferedState.bytes.get("runs/run/lease/graph.json")?.byteLength,
+      0,
+    );
+    assert.equal(
+      empty?.sha256,
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     );
   } finally {
     await rm(directory, { recursive: true, force: true });

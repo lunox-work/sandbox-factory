@@ -160,8 +160,31 @@ resource "aws_cloudwatch_event_target" "worker_failed" {
   rule = aws_cloudwatch_event_rule.worker_failed.name
   arn  = aws_sns_topic.alarms.arn
 }
-data "aws_iam_policy_document" "worker_alarm_publish" {
+# The topic's whole policy: setting one replaces AWS's default, whose
+# account-wide grant is what let the CloudWatch alarms above publish. Without
+# the first statement every alarm would fire into a topic that refuses it.
+data "aws_iam_policy_document" "alarms_publish" {
   statement {
+    sid       = "CloudWatchAlarms"
+    actions   = ["sns:Publish"]
+    resources = [aws_sns_topic.alarms.arn]
+    principals {
+      type        = "Service"
+      identifiers = ["cloudwatch.amazonaws.com"]
+    }
+    condition {
+      test     = "ArnLike"
+      variable = "aws:SourceArn"
+      values   = ["arn:aws:cloudwatch:*:${data.aws_caller_identity.current.account_id}:alarm:*"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [data.aws_caller_identity.current.account_id]
+    }
+  }
+  statement {
+    sid       = "WorkerFailedRule"
     actions   = ["sns:Publish"]
     resources = [aws_sns_topic.alarms.arn]
     principals {
@@ -175,7 +198,7 @@ data "aws_iam_policy_document" "worker_alarm_publish" {
     }
   }
 }
-resource "aws_sns_topic_policy" "worker_alarm_publish" {
+resource "aws_sns_topic_policy" "alarms" {
   arn    = aws_sns_topic.alarms.arn
-  policy = data.aws_iam_policy_document.worker_alarm_publish.json
+  policy = data.aws_iam_policy_document.alarms_publish.json
 }
