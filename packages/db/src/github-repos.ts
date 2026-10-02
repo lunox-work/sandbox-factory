@@ -26,6 +26,7 @@ import {
   sql,
 } from "drizzle-orm";
 
+import { collectRepositoryObjects } from "./artifacts.js";
 import type { Database } from "./errors.js";
 import { generateId } from "./mapping.js";
 import { githubConnection, githubRepo } from "./schema.js";
@@ -160,6 +161,11 @@ export interface GithubRepoStore {
    * oldest first. Cross-organization; see the file comment.
    */
   dueForSync(staleBefore: Date, limit: number): Promise<DueGithubRepo[]>;
+  /** Transactional cascade with private object keys. Optional for legacy stores. */
+  removeWithObjects?(
+    organizationId: string,
+    repoId: string,
+  ): Promise<{ removed: boolean; objectKeys: string[] }>;
   remove(organizationId: string, repoId: string): Promise<boolean>;
 }
 
@@ -410,6 +416,24 @@ export function createGithubRepoStore(db: Database): GithubRepoStore {
       );
     },
 
+    async removeWithObjects(owner, id) {
+      return db.transaction(async (transaction) => {
+        const tx = transaction as unknown as Database;
+        const rows = await tx
+          .select({ id: githubRepo.id })
+          .from(githubRepo)
+          .where(owned(owner, id))
+          .for("update");
+        if (rows.length === 0) return { removed: false, objectKeys: [] };
+        const keys = await collectRepositoryObjects(
+          tx,
+          owner,
+          eq(githubRepo.id, id),
+        );
+        await tx.delete(githubRepo).where(owned(owner, id));
+        return { removed: true, objectKeys: keys.objectKeys };
+      });
+    },
     async remove(organizationId, repoId) {
       const rows = await db
         .delete(githubRepo)

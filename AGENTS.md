@@ -255,7 +255,7 @@ The rules `ship.sh` encodes; [docs/ci.md](./docs/ci.md) has the detail.
 - **Tags are the version of record, not `package.json`**, which nothing bumps.
 - **A PR auto-merges once CI passes.** CodeRabbit is advisory: its findings
   and open threads do not block the merge.
-- Required contexts: `Test (Node 22)`, `Test (Node 24)`, `Analyze`, `CodeQL`.
+- Required contexts: `Test (Node 22)`, `Test (Node 24)`, `Worker image smoke`, `Analyze`, `CodeQL`.
   Renaming a required context blocks merging until protection is updated. See
   `.github/main-ruleset.json` and `docs/ci.md`.
 - Never hand-edit `CHANGELOG.md`.

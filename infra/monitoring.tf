@@ -146,3 +146,36 @@ resource "aws_cloudwatch_metric_alarm" "platform_down" {
   alarm_actions = [aws_sns_topic.alarms.arn]
   ok_actions    = [aws_sns_topic.alarms.arn]
 }
+
+resource "aws_cloudwatch_event_rule" "worker_failed" {
+  name        = "${local.name}-worker-failed"
+  description = "A source analysis worker exited with a nonzero code"
+  event_pattern = jsonencode({
+    source        = ["aws.ecs"]
+    "detail-type" = ["ECS Task State Change"]
+    detail        = { clusterArn = [aws_ecs_cluster.main.arn], lastStatus = ["STOPPED"], group = ["family:${local.name}-worker"], containers = { exitCode = [{ "anything-but" = [0] }] } }
+  })
+}
+resource "aws_cloudwatch_event_target" "worker_failed" {
+  rule = aws_cloudwatch_event_rule.worker_failed.name
+  arn  = aws_sns_topic.alarms.arn
+}
+data "aws_iam_policy_document" "worker_alarm_publish" {
+  statement {
+    actions   = ["sns:Publish"]
+    resources = [aws_sns_topic.alarms.arn]
+    principals {
+      type        = "Service"
+      identifiers = ["events.amazonaws.com"]
+    }
+    condition {
+      test     = "ArnEquals"
+      variable = "aws:SourceArn"
+      values   = [aws_cloudwatch_event_rule.worker_failed.arn]
+    }
+  }
+}
+resource "aws_sns_topic_policy" "worker_alarm_publish" {
+  arn    = aws_sns_topic.alarms.arn
+  policy = data.aws_iam_policy_document.worker_alarm_publish.json
+}

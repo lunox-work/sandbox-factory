@@ -41,3 +41,17 @@ resource "aws_vpc_security_group_egress_rule" "tasks_all" {
   cidr_ipv4         = "0.0.0.0/0"
   ip_protocol       = "-1"
 }
+
+# Source analysis has no listener and accepts no inbound traffic.
+resource "aws_security_group" "worker" {
+  name        = "${local.name}-worker"
+  description = "Source analysis worker, egress only"
+  vpc_id      = aws_vpc.main.id
+  tags        = { Name = "${local.name}-worker" }
+}
+resource "aws_vpc_security_group_egress_rule" "worker_all" {
+  security_group_id = aws_security_group.worker.id
+  description       = "GitHub archives, Neon, S3, ECR and CloudWatch"
+  cidr_ipv4         = "0.0.0.0/0"
+  ip_protocol       = "-1"
+}

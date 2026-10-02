@@ -70,6 +70,18 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Start the S3 compatibility fixture
+        run: |
+          docker run -d --name analysis-test-objects -p 8333:8333             -e AWS_ACCESS_KEY_ID=sandbox -e AWS_SECRET_ACCESS_KEY=sandboxsecret             --health-cmd 'wget -q -O /dev/null http://127.0.0.1:8333'             --health-interval 2s --health-retries 30             chrislusf/seaweedfs:3.80 server -dir=/tmp -s3 -s3.port=8333             -master.volumeSizeLimitMB=128 -volume.max=8
+          for attempt in $(seq 1 30); do
+            if [ "$(docker inspect --format '{{.State.Health.Status}}' analysis-test-objects)" = healthy ]; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs analysis-test-objects
+          exit 1
+
       # Enforces the coverage thresholds each workspace sets in its own `test`
       # script.
       - name: Test and coverage
@@ -110,3 +122,15 @@ jobs:
             echo "::error::expected at least 8 database-backed tests, saw ${ran:-0} — Postgres unreachable, or the suite lost tests"
             exit 1
           fi
+
+  worker-smoke:
+    name: Worker image smoke
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Run pinned Graphify and archive fixture in the real worker image
+        run: npm run worker:smoke

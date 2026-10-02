@@ -28,6 +28,8 @@ import postgres from "postgres";
 
 import {
   createConnection,
+  createAnalysisRunStore,
+  createArtifactStore,
   createBountyProposalStore,
   createGithubConnectionStore,
   createGithubGrantStore,
@@ -581,5 +583,158 @@ describe("GitHub pointers in Postgres", { skip }, () => {
         ?.sourceRepoId,
       null,
     );
+  });
+  test("analysis claims are exclusive, writes are fenced, artifacts are private and runs prevent pruning", async () => {
+    const { repo } = await repoUnder("o_a", "960");
+    const snapshot = await snapshots.create("o_a", {
+      repoId: repo.id,
+      commitSha: "9".repeat(40),
+      ref: "refs/heads/main",
+      treeSha: "8".repeat(40),
+      treeKey: "trees/analysis.json.gz",
+      treeTruncated: false,
+      fileCount: 1,
+      totalBytes: 1,
+      languages: {},
+      facts: treeFacts([{ path: "a.ts", size: 1 }]),
+    });
+    assert.equal(snapshot.status, "created");
+    if (snapshot.status !== "created") throw new Error("snapshot missing");
+    const runs = createAnalysisRunStore(connection.db);
+    const artifacts = createArtifactStore(connection.db);
+    const input = { requestedBy: "u_a", params: { deadlineMinutes: 30 } };
+    const queued = await runs.enqueue("o_a", snapshot.snapshot.id, input);
+    assert.equal(queued.ok, true);
+    if (!queued.ok) throw new Error("run missing");
+    assert.equal(
+      (await runs.enqueue("o_a", snapshot.snapshot.id, input)).ok,
+      true,
+    );
+    assert.equal((await runs.list("o_a", repo.id)).length, 1);
+    assert.equal(await runs.get("o_b", queued.run.id), null);
+    assert.deepEqual(
+      await runs.enqueue("o_b", snapshot.snapshot.id, {
+        ...input,
+        requestedBy: "u_b",
+      }),
+      { ok: false, reason: "not-found" },
+    );
+    assert.deepEqual(await snapshots.prune("o_a", repo.id, 0), []);
+    const now = new Date();
+    const claims = await Promise.all([
+      runs.claimNext("first", now),
+      runs.claimNext("second", now),
+    ]);
+    assert.equal(claims.filter(Boolean).length, 1);
+    const claimed = claims.find((claim) => claim !== null);
+    if (!claimed) throw new Error("lease missing");
+    assert.equal(
+      await runs.heartbeat("o_b", claimed.id, claimed.leaseToken, now),
+      false,
+    );
+    assert.equal(
+      await runs.finish("o_a", claimed.id, "stale", [], "log", now),
+      false,
+    );
+    const item = {
+      kind: "graph_json" as const,
+      path: "graph.json",
+      objectKey: "runs/analysis/graph.json",
+      contentType: "application/json",
+      sizeBytes: 2,
+      sha256: "a".repeat(64),
+      meta: null,
+    };
+    assert.equal(
+      await runs.finish(
+        "o_a",
+        claimed.id,
+        claimed.leaseToken,
+        [item],
+        "logs/analysis.log",
+        now,
+      ),
+      true,
+    );
+    const listed = await artifacts.list("o_a", claimed.id);
+    assert.equal(listed.length, 1);
+    assert.equal(await artifacts.get("o_b", listed[0]?.id ?? "missing"), null);
+    assert.equal((await runs.get("o_a", claimed.id))?.status, "succeeded");
+    assert.equal(await runs.logKey("o_a", claimed.id), "logs/analysis.log");
+    const removed = await repos.removeWithObjects!("o_a", repo.id);
+    assert.equal(removed.removed, true);
+    assert.deepEqual(
+      removed.objectKeys.sort(),
+      [
+        "trees/analysis.json.gz",
+        "runs/analysis/graph.json",
+        "logs/analysis.log",
+      ].sort(),
+    );
+    assert.deepEqual(await repos.removeWithObjects!("o_b", repo.id), {
+      removed: false,
+      objectKeys: [],
+    });
+  });
+
+  test("analysis retries obey the limit and concurrent enqueues cannot overspend", async () => {
+    const { repo } = await repoUnder("o_a", "970");
+    const snapshotsForRuns = [];
+    for (const digit of ["a", "b", "c", "d"]) {
+      const result = await snapshots.create("o_a", {
+        repoId: repo.id,
+        commitSha: digit.repeat(40),
+        ref: "refs/heads/main",
+        treeSha: "8".repeat(40),
+        treeKey: `trees/${digit}`,
+        treeTruncated: false,
+        fileCount: 1,
+        totalBytes: 1,
+        languages: {},
+        facts: treeFacts([{ path: "a.ts", size: 1 }]),
+      });
+      if (result.status !== "created") throw new Error("missing snapshot");
+      snapshotsForRuns.push(result.snapshot.id);
+    }
+    const runs = createAnalysisRunStore(connection.db);
+    const outcomes = await Promise.all(
+      snapshotsForRuns.map((id) =>
+        runs.enqueue("o_a", id, {
+          requestedBy: "u_a",
+          params: { deadlineMinutes: 30 },
+          maxActive: 1,
+        }),
+      ),
+    );
+    assert.equal(outcomes.filter((result) => result.ok).length, 1);
+    const first = await runs.claimNext("lease-1", new Date());
+    if (!first) throw new Error("missing lease");
+    const expiredAt = new Date(Date.now() + 61_000);
+    assert.equal(await runs.failExpired("o_b", expiredAt), 0);
+    assert.equal(await runs.failExpired("o_a", expiredAt), 1);
+    assert.equal((await runs.get("o_a", first.id))?.attempt, 1);
+    const second = await runs.claimNext("lease-2", new Date());
+    assert.equal(second?.id, first.id);
+    assert.equal(
+      await runs.fail(
+        "o_a",
+        first.id,
+        "lease-1",
+        "tool_failed",
+        null,
+        new Date(),
+      ),
+      false,
+    );
+    await runs.failExpired("o_a", expiredAt);
+    await runs.claimNext("lease-3", new Date());
+    await runs.failExpired("o_a", expiredAt);
+    assert.equal((await runs.get("o_a", first.id))?.status, "failed");
+    const cached = await runs.enqueue("o_a", first.snapshotId, {
+      requestedBy: "u_a",
+      params: { deadlineMinutes: 30 },
+    });
+    assert.equal(cached.ok && cached.created, false);
+    await repos.remove("o_a", repo.id);
   });
 });

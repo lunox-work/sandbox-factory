@@ -237,7 +237,15 @@ test("disconnect locks registration and snapshot writers before collecting every
   const fake = createSequencedFakeDb([
     [{ id: "ghc_1" }],
     [{ id: "ghr_1" }],
-    [{ treeKey: "trees/one" }, { treeKey: "trees/two" }],
+    [
+      { id: "rsn_1", treeKey: "trees/one" },
+      { id: "rsn_2", treeKey: "trees/two" },
+    ],
+    [
+      { id: "arn_1", logKey: "logs/one" },
+      { id: "arn_2", logKey: null },
+    ],
+    [{ objectKey: "runs/one/graph.json" }],
     [],
   ]);
   assert.deepEqual(
@@ -245,13 +253,17 @@ test("disconnect locks registration and snapshot writers before collecting every
       "org_1",
       "ghc_1",
     ),
-    { removed: true, treeKeys: ["trees/one", "trees/two"] },
+    {
+      removed: true,
+      treeKeys: ["trees/one", "trees/two"],
+      objectKeys: ["trees/one", "trees/two", "runs/one/graph.json", "logs/one"],
+    },
   );
   assert.equal(fake.calls[0]?.lock, "update");
   assert.equal(fake.calls[1]?.lock, "update");
   assert.ok(fake.calls.every(({ filtered }) => filtered));
   assert.equal(fake.calls[2]?.limited, undefined);
-  assert.equal(fake.calls[3]?.kind, "delete");
+  assert.equal(fake.calls[5]?.kind, "delete");
 
   const missing = createFakeDb([]);
   assert.deepEqual(

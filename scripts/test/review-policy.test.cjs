@@ -17,7 +17,13 @@ test("required checks are the CI contexts, without bypass actors", () => {
   assert.equal(checks.strict_required_status_checks_policy, false);
   assert.deepEqual(
     checks.required_status_checks.map((c) => c.context),
-    ["Test (Node 22)", "Test (Node 24)", "Analyze", "CodeQL"],
+    [
+      "Test (Node 22)",
+      "Test (Node 24)",
+      "Worker image smoke",
+      "Analyze",
+      "CodeQL",
+    ],
   );
   assert.ok(
     checks.required_status_checks.every(

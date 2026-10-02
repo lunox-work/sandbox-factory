@@ -69,6 +69,12 @@ data "aws_iam_policy_document" "task_objects" {
   }
 
   statement {
+    sid       = "AnalysisArtifacts"
+    actions   = ["s3:GetObject", "s3:DeleteObject"]
+    resources = ["${aws_s3_bucket.private.arn}/runs/*", "${aws_s3_bucket.private.arn}/logs/*"]
+  }
+
+  statement {
     sid       = "MissingKeyIs404"
     actions   = ["s3:ListBucket"]
     resources = [aws_s3_bucket.private.arn]
@@ -79,4 +85,60 @@ resource "aws_iam_role_policy" "task_objects" {
   name   = "avatar-objects"
   role   = aws_iam_role.task.id
   policy = data.aws_iam_policy_document.task_objects.json
+}
+
+resource "aws_iam_role" "worker" {
+  name               = "${local.name}-worker"
+  assume_role_policy = data.aws_iam_policy_document.ecs_assume.json
+}
+
+data "aws_iam_policy_document" "worker_objects" {
+  statement {
+    actions   = ["s3:GetObject"]
+    resources = ["${aws_s3_bucket.private.arn}/trees/*"]
+  }
+  statement {
+    # Read/delete permit hashing diagnostics and cleanup of fenced attempts.
+    actions   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
+    resources = ["${aws_s3_bucket.private.arn}/runs/*", "${aws_s3_bucket.private.arn}/logs/*"]
+  }
+  statement {
+    actions   = ["s3:ListBucket"]
+    resources = [aws_s3_bucket.private.arn]
+  }
+}
+resource "aws_iam_role_policy" "worker_objects" {
+  name   = "analysis-objects"
+  role   = aws_iam_role.worker.id
+  policy = data.aws_iam_policy_document.worker_objects.json
+}
+
+data "aws_iam_policy_document" "launch_worker" {
+  statement {
+    actions   = ["ecs:RunTask"]
+    resources = ["arn:aws:ecs:${var.region}:${data.aws_caller_identity.current.account_id}:task-definition/${local.name}-worker:*"]
+    condition {
+      test     = "ArnEquals"
+      variable = "ecs:cluster"
+      values   = [aws_ecs_cluster.main.arn]
+    }
+  }
+  statement {
+    actions   = ["iam:PassRole"]
+    resources = [aws_iam_role.worker.arn, aws_iam_role.task_execution.arn]
+    condition {
+      test     = "StringEquals"
+      variable = "iam:PassedToService"
+      values   = ["ecs-tasks.amazonaws.com"]
+    }
+  }
+  statement {
+    actions   = ["ecs:DescribeTasks"]
+    resources = ["*"]
+  }
+}
+resource "aws_iam_role_policy" "launch_worker" {
+  name   = "launch-analysis-worker"
+  role   = aws_iam_role.task.id
+  policy = data.aws_iam_policy_document.launch_worker.json
 }

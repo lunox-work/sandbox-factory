@@ -426,6 +426,10 @@ export const repoSnapshotDtoSchema = z.strictObject({
   createdAt: z.string(),
 });
 
+export const repoSnapshotListSchema = z.object({
+  snapshots: z.array(repoSnapshotDtoSchema),
+});
+
 /** One snapshot with its facts, and the repository it is of. */
 export const repoSnapshotDetailDtoSchema = repoSnapshotDtoSchema.extend({
   repoFullName: z.string(),

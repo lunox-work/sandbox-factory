@@ -3,6 +3,7 @@ import { generateKeyPairSync } from "node:crypto";
 import { test } from "node:test";
 
 import {
+  workerLaunchConfig,
   buildInfo,
   deepseekSizingConfig,
   GITHUB_APP_KEYS,
@@ -582,6 +583,50 @@ test("the Terraform placeholder leaves the GitHub App unset", () => {
 
   assert.equal(
     githubAppConfig(parseEnv({ ...required, ...placeholders })),
+    undefined,
+  );
+});
+
+test("worker launch config is optional locally and complete in production", () => {
+  assert.equal(workerLaunchConfig(parseEnv(required)), undefined);
+  assert.throws(
+    () =>
+      workerLaunchConfig(parseEnv({ ...required, WORKER_CLUSTER: "cluster" })),
+    /All worker/,
+  );
+  const config = {
+    ...required,
+    WORKER_CLUSTER: "cluster",
+    WORKER_TASK_DEFINITION: "worker",
+    WORKER_SUBNETS: "one, two",
+    WORKER_SECURITY_GROUP: "egress",
+  };
+  assert.deepEqual(workerLaunchConfig(parseEnv(config)), {
+    cluster: "cluster",
+    taskDefinition: "worker",
+    subnets: ["one", "two"],
+    securityGroup: "egress",
+  });
+  assert.throws(
+    () => workerLaunchConfig(parseEnv({ ...config, WORKER_SUBNETS: ", ," })),
+    /subnet/,
+  );
+  assert.throws(() => parseEnv({ ...required, MAX_ACTIVE_RUNS_PER_ORG: "0" }));
+});
+
+test("public S3 URLs can use a browser-reachable gateway distinct from API storage", () => {
+  const env = parseEnv({
+    ...required,
+    S3_BUCKET: "private",
+    S3_ENDPOINT: "http://seaweedfs:8333",
+    S3_PUBLIC_ENDPOINT: "http://localhost:18333",
+  });
+  assert.equal(
+    objectStoreConfig(env)?.publicEndpoint,
+    "http://localhost:18333",
+  );
+  assert.equal(
+    objectStoreConfig(parseEnv({ ...required, S3_PUBLIC_ENDPOINT: "" })),
     undefined,
   );
 });

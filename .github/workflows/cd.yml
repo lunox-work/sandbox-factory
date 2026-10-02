@@ -143,6 +143,9 @@ jobs:
           resolve ecr aws ecr describe-repositories \
             --repository-names "$PROJECT-api" \
             --query 'repositories[0].repositoryUri' --output text
+          resolve worker_ecr aws ecr describe-repositories \
+            --repository-names "$PROJECT-worker" \
+            --query 'repositories[0].repositoryUri' --output text
           resolve bucket aws s3api list-buckets \
             --query "Buckets[?starts_with(Name, '$PROJECT-web-')].Name | [0]" --output text
           resolve distribution aws cloudfront list-distributions \
@@ -404,6 +407,46 @@ jobs:
           # Stored in the repository's attestation store, which is where `gh
           # attestation verify` looks by default.
           push-to-registry: false
+
+      - name: Check whether the worker image already exists
+        id: worker_image
+        run: |
+          if aws ecr describe-images --repository-name "$PROJECT-worker"               --image-ids "imageTag=${{ steps.commit.outputs.sha }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          elif [ "${{ steps.provenance.outputs.attestable }}" != "true" ]; then
+            echo "::error::the requested worker image does not exist; refusing to rebuild a rollback"
+            exit 1
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build and push the worker image
+        if: steps.worker_image.outputs.exists != 'true'
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: apps/worker/Dockerfile
+          platforms: linux/arm64
+          push: true
+          tags: ${{ steps.infra.outputs.worker_ecr }}:${{ steps.commit.outputs.sha }}
+          cache-from: type=gha,scope=worker
+          cache-to: type=gha,mode=max,scope=worker
+
+      - name: Verify the origin discovery prerequisite
+        run: |
+          aws events describe-rule --name "$PROJECT-task-state" --query EventPattern             --output text | jq -e --arg group "service:$PROJECT-api" '.detail.group == [$group]'
+          group="$(aws lambda get-function-configuration --function-name "$PROJECT-origin-dns"             --query 'Environment.Variables.API_SERVICE_GROUP' --output text)"
+          test "$group" = "service:$PROJECT-api" || { echo "::error::apply API-only origin discovery before deploying workers"; exit 1; }
+
+      - name: Register the worker revision
+        run: |
+          aws ecs describe-task-definition --task-definition "$PROJECT-worker"             --query taskDefinition --output json > worker-current.json
+          jq --arg image "${{ steps.infra.outputs.worker_ecr }}:${{ steps.commit.outputs.sha }}" '
+            .containerDefinitions[0].image = $image
+            | del(.taskDefinitionArn, .revision, .status, .requiresAttributes,
+                  .compatibilities, .registeredAt, .registeredBy, .deregisteredAt)
+          ' worker-current.json > worker-taskdef.json
+          aws ecs register-task-definition --cli-input-json file://worker-taskdef.json             --query taskDefinition.taskDefinitionArn --output text
 
       # ---- migrate, then deploy --------------------------------------------
 

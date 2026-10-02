@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { Readable } from "node:stream";
 import { test } from "node:test";
 
 import { NoSuchKey, NotFound, S3Client } from "@aws-sdk/client-s3";
@@ -209,4 +210,38 @@ test("isNotFound rejects other errors and non-objects", () => {
   assert.equal(isNotFound(new Error("nope")), false);
   assert.equal(isNotFound(null), false);
   assert.equal(isNotFound("404"), false);
+});
+
+test("stream upload sends its exact length without buffering", async () => {
+  const seen: Record<string, unknown>[] = [];
+  const restore = stubSend(async (command) => {
+    seen.push((command as { input: Record<string, unknown> }).input);
+    return {};
+  });
+  try {
+    const store = createObjectStore(options);
+    await store.putStream!("runs/run/graph.json", Readable.from("{}"), 2, {
+      contentType: "application/json",
+    });
+    await store.putStream!("runs/run/report", Readable.from("text"), 4);
+  } finally {
+    restore();
+  }
+  assert.equal(seen[0]?.["ContentLength"], 2);
+  assert.equal(seen[0]?.["ContentType"], "application/json");
+  assert.equal(seen[1]?.["ContentType"], undefined);
+});
+
+test("browser URLs use the public gateway while API traffic retains its internal endpoint", async () => {
+  const store = createObjectStore({
+    ...options,
+    endpoint: "http://seaweedfs:8333",
+    publicEndpoint: "http://localhost:18333",
+  });
+  const url = await store.signedUrl("runs/run/graph.html");
+  assert.match(
+    url,
+    /^http:\/\/localhost:18333\/sandbox-factory\/runs\/run\/graph.html/,
+  );
+  assert.match(url, /X-Amz-Signature=/);
 });

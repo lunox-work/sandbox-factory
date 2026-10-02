@@ -11,10 +11,15 @@ WORKDIR /repo
 
 COPY package.json package-lock.json ./
 COPY tooling/tsconfig/package.json ./tooling/tsconfig/
+COPY tooling/coverage-guard/package.json ./tooling/coverage-guard/
 COPY packages/core/package.json ./packages/core/
+COPY packages/db/package.json ./packages/db/
+COPY packages/github/package.json ./packages/github/
+COPY packages/jira/package.json ./packages/jira/
 COPY packages/shared/package.json ./packages/shared/
 COPY packages/client/package.json ./packages/client/
 COPY apps/api/package.json ./apps/api/
+COPY apps/worker/package.json ./apps/worker/
 COPY apps/web/package.json ./apps/web/
 COPY apps/extension/package.json ./apps/extension/
 

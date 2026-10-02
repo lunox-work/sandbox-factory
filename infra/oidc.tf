@@ -99,7 +99,7 @@ data "aws_iam_policy_document" "github_deploy" {
       "ecr:PutImage",
       "ecr:UploadLayerPart",
     ]
-    resources = [aws_ecr_repository.api.arn]
+    resources = [aws_ecr_repository.api.arn, aws_ecr_repository.worker.arn]
   }
 
   # cd.yml looks up the registry, bucket and distribution in the live account
@@ -117,6 +117,16 @@ data "aws_iam_policy_document" "github_deploy" {
       "ec2:DescribeSecurityGroups",
     ]
     resources = ["*"]
+  }
+
+  statement {
+    sid       = "VerifyWorkerPrerequisite"
+    actions   = ["events:DescribeRule"]
+    resources = [aws_cloudwatch_event_rule.task_state.arn]
+  }
+  statement {
+    actions   = ["lambda:GetFunctionConfiguration"]
+    resources = [aws_lambda_function.origin_dns.arn]
   }
 
   # Split in two: RegisterTaskDefinition and the Describe/List calls take no
@@ -160,6 +170,7 @@ data "aws_iam_policy_document" "github_deploy" {
     resources = [
       aws_iam_role.task_execution.arn,
       aws_iam_role.task.arn,
+      aws_iam_role.worker.arn,
     ]
 
     condition {

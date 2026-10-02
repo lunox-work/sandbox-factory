@@ -158,3 +158,13 @@ export type {
 } from "./schema.js";
 export { NotFoundError } from "./errors.js";
 export type { Database } from "./errors.js";
+export { createAnalysisRunStore } from "./analysis-runs.js";
+export type {
+  AnalysisRunStore,
+  StoredAnalysisRun,
+  ClaimedAnalysisRun,
+  EnqueueAnalysisResult,
+  NewArtifact,
+} from "./analysis-runs.js";
+export { createArtifactStore } from "./artifacts.js";
+export type { ArtifactStore, StoredArtifact } from "./artifacts.js";

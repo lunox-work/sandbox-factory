@@ -1,8 +1,8 @@
 """
 Keep the CloudFront origin record pointed at the running task's public IP.
 
-Invoked on every ECS task state change. It lists the running tasks, reads each
-public IP off its ENI, and writes them to one A record. See infra/discovery.tf
+Invoked on API service task state changes. It reads the running API tasks'
+public IPs off their ENIs and writes them to one A record. See infra/discovery.tf
 for why neither Service Discovery nor a load balancer does this job.
 
 An event it cannot act on (no running task, superseded by a newer event) is
@@ -22,6 +22,7 @@ route53 = boto3.client("route53")
 ZONE_ID = os.environ["HOSTED_ZONE_ID"]
 RECORD_NAME = os.environ["RECORD_NAME"]
 CLUSTER = os.environ["CLUSTER"]
+API_SERVICE_GROUP = os.environ.get("API_SERVICE_GROUP", "service:sandbox-factory-api")
 TTL = int(os.environ.get("TTL", "15"))
 
 
@@ -45,7 +46,7 @@ def _public_ip(task: dict) -> str | None:
 
 
 def _running_task_ips() -> list[str]:
-    """Public IPs of every RUNNING task in the cluster.
+    """Public IPs of RUNNING tasks belonging to the API service.
 
     Read from the API, not the event: by the time this runs, the event's task
     may be gone and another may have started.
@@ -58,7 +59,7 @@ def _running_task_ips() -> list[str]:
     described = ecs.describe_tasks(cluster=CLUSTER, tasks=arns)
     ips = []
     for task in described.get("tasks", []):
-        if task.get("lastStatus") != "RUNNING":
+        if task.get("lastStatus") != "RUNNING" or task.get("group") != API_SERVICE_GROUP:
             continue
         ip = _public_ip(task)
         if ip is not None:

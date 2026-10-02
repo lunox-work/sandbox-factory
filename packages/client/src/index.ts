@@ -13,7 +13,16 @@
  * cannot share the web app's cookie.
  */
 
-import { errorSchema } from "@sandbox-factory/shared";
+import {
+  errorSchema,
+  analysisRunListSchema,
+  analysisRunResponseSchema,
+  artifactListSchema,
+  artifactUrlSchema,
+  repoSnapshotListSchema,
+  repoSnapshotDetailDtoSchema,
+} from "@sandbox-factory/shared";
+import type { EnqueueAnalysisInput } from "@sandbox-factory/shared";
 
 export interface ClientOptions {
   /** Base URL, e.g. `https://api.lunox.work`. Trailing slashes are fine. */
@@ -134,5 +143,68 @@ export class ApiClient {
     }
 
     return payload;
+  }
+}
+
+/** Private repository analysis, available to both browser and extension clients. */
+export class GithubAnalysisClient extends ApiClient {
+  #base(owner: string) {
+    return `/api/v1/orgs/${encodeURIComponent(owner)}/github`;
+  }
+  async snapshots(owner: string, repoId: string) {
+    return repoSnapshotListSchema.parse(
+      await this.request(
+        `${this.#base(owner)}/repositories/${encodeURIComponent(repoId)}/snapshots`,
+      ),
+    ).snapshots;
+  }
+  async snapshot(owner: string, snapshotId: string) {
+    const response = (await this.request(
+      `${this.#base(owner)}/snapshots/${encodeURIComponent(snapshotId)}`,
+    )) as { snapshot?: unknown };
+    return repoSnapshotDetailDtoSchema.parse(response.snapshot);
+  }
+  async runs(owner: string, repoId: string) {
+    return analysisRunListSchema.parse(
+      await this.request(
+        `${this.#base(owner)}/repositories/${encodeURIComponent(repoId)}/runs`,
+      ),
+    ).runs;
+  }
+  async run(owner: string, runId: string) {
+    return analysisRunResponseSchema.parse(
+      await this.request(
+        `${this.#base(owner)}/runs/${encodeURIComponent(runId)}`,
+      ),
+    ).run;
+  }
+  async enqueue(owner: string, repoId: string, input: EnqueueAnalysisInput) {
+    return analysisRunResponseSchema.parse(
+      await this.request(
+        `${this.#base(owner)}/repositories/${encodeURIComponent(repoId)}/runs`,
+        { method: "POST", body: JSON.stringify(input) },
+      ),
+    ).run;
+  }
+  async artifacts(owner: string, runId: string) {
+    return artifactListSchema.parse(
+      await this.request(
+        `${this.#base(owner)}/runs/${encodeURIComponent(runId)}/artifacts`,
+      ),
+    ).artifacts;
+  }
+  async artifactUrl(owner: string, artifactId: string) {
+    return artifactUrlSchema.parse(
+      await this.request(
+        `${this.#base(owner)}/artifacts/${encodeURIComponent(artifactId)}/url`,
+      ),
+    ).url;
+  }
+  async logUrl(owner: string, runId: string) {
+    return artifactUrlSchema.parse(
+      await this.request(
+        `${this.#base(owner)}/runs/${encodeURIComponent(runId)}/log/url`,
+      ),
+    ).url;
   }
 }
