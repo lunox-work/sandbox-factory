@@ -1,14 +1,14 @@
 # sandbox-factory
 
-> Connect a client's Jira site, price its backlog, and get the work done.
+> Write tickets or import them from Jira, price the work, and build task sandboxes.
 
 [![CI](https://github.com/lunox-work/sandbox-factory/actions/workflows/ci.yml/badge.svg)](https://github.com/lunox-work/sandbox-factory/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 
-A monorepo holding the API, the web app, the VS Code extension, and the packages
-they share. The domain rules live in one package and every surface imports them,
-so the browser, the editor, and the server cannot disagree about what a valid
-handle is.
+A monorepo holding the API, web app, analysis worker, VS Code extension, and
+shared packages. Tickets work on their own; Jira and GitHub connections add
+issue tracking and repository context. Shared domain rules cover handles,
+selection, pricing, analysis, and sandbox contracts.
 
 | Workspace                                | What it is                                        |
 | ---------------------------------------- | ------------------------------------------------- |
@@ -19,6 +19,7 @@ handle is.
 | [`packages/github`](./packages/github)   | The GitHub App: tokens, REST client, webhooks     |
 | [`packages/db`](./packages/db)           | Drizzle schema, migrations, Postgres and S3 store |
 | [`apps/api`](./apps/api)                 | Hono HTTP API                                     |
+| [`apps/worker`](./apps/worker)           | Private repository analysis and sandbox builds    |
 | [`apps/web`](./apps/web)                 | Vite + React dashboard                            |
 | [`apps/extension`](./apps/extension)     | VS Code extension                                 |
 | [`tooling/tsconfig`](./tooling/tsconfig) | The shared TypeScript strictness contract         |
@@ -72,16 +73,16 @@ Then open this repo in VS Code and press <kbd>F5</kbd>. A second window opens
 with the extension loaded — the sandbox-factory icon is in its activity bar.
 
 The extension is a bundle the editor loads, so it runs on your machine rather
-than in Docker and `make ext` needs Node 22+. It opens a sandbox task (a
-local clone or a URL to clone), shows what the task is, and runs its install,
-app and test commands in VS Code terminals when you ask, in a trusted
-workspace only. **Show Version** reports the extension's and the API's builds.
+than in Docker and `make ext` needs Node 22.12+ within 22.x, or 24+. It opens a
+sandbox task (a local clone or a URL to clone), shows what the task is, and runs
+its install, app and test commands in VS Code terminals when you ask, in a
+trusted workspace only. **Show Version** reports the extension's and the API's builds.
 
 ## Develop it
 
-Needs **Node.js 22+**. `make dev` runs the API and web app directly on your
-machine — faster than the containers, and what you want day to day. It still
-needs Postgres: `make migrate` starts it and applies the schema.
+Needs **Node.js 22.12+ within 22.x, or 24+**. `make dev` runs the API and web app
+directly on your machine — faster than the containers, and what you want day to
+day. It still needs Postgres: `make migrate` starts it and applies the schema.
 
 | Command             | What it does                                       |
 | ------------------- | -------------------------------------------------- |
@@ -168,16 +169,20 @@ is the real identifier.
 
 ## Documentation
 
-| Document                                       | Covers                                              |
-| ---------------------------------------------- | --------------------------------------------------- |
-| [CONTRIBUTING.md](./CONTRIBUTING.md)           | Dev setup and pull request process                  |
-| [AGENTS.md](./AGENTS.md)                       | Rules for coding agents                             |
-| [docs/architecture.md](./docs/architecture.md) | Workspace layout, dependency rules, auth            |
-| [docs/ci.md](./docs/ci.md)                     | Workflows, branch protection, releases              |
-| [docs/versioning.md](./docs/versioning.md)     | Build provenance, and verifying a release           |
-| [docs/github-apps.md](./docs/github-apps.md)   | Installed apps and settings that live outside files |
-| [scripts/README.md](./scripts/README.md)       | `ship.sh` and `rotate-token.sh`                     |
-| [infra/README.md](./infra/README.md)           | The AWS deployment                                  |
+Start with the [documentation index](./docs/README.md) to find the smallest
+relevant reading set for your task.
+
+| Document                                         | Covers                                              |
+| ------------------------------------------------ | --------------------------------------------------- |
+| [CONTRIBUTING.md](./CONTRIBUTING.md)             | Dev setup and pull request process                  |
+| [AGENTS.md](./AGENTS.md)                         | Rules for coding agents                             |
+| [docs/architecture.md](./docs/architecture.md)   | Dependencies, auth, tickets, pricing, analysis      |
+| [docs/ci.md](./docs/ci.md)                       | Workflows, branch protection, releases              |
+| [docs/versioning.md](./docs/versioning.md)       | Build provenance, and verifying a release           |
+| [docs/github-apps.md](./docs/github-apps.md)     | Installed apps and settings that live outside files |
+| [scripts/README.md](./scripts/README.md)         | `ship.sh` and `rotate-token.sh`                     |
+| [infra/README.md](./infra/README.md)             | The AWS deployment                                  |
+| [apps/worker/README.md](./apps/worker/README.md) | Analysis adapters, artifacts, evaluation limits     |
 
 ## Contributing and security
 

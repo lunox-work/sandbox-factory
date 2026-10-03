@@ -1,9 +1,9 @@
 # Private repository analysis worker
 
-Five adapters run here. Graphify (Phase 3) analyzes an immutable repository
+Five adapters run here. Graphify analyzes an immutable repository
 snapshot with `graphifyy==0.4.18`, pinned parser packages and NetworkX 3.4.2.
-Slice (Phase 5) reads a graphify run's graph and the same source to describe
-the files one task needs and their boundary. Sandbox build (sandbox plan 5B)
+Slice reads a graphify run's graph and the same source to describe
+the files one task needs and their boundary. Sandbox build
 turns a slice and a version's private transform into a runnable project and
 checks its baseline in an evaluation job. Scope and fixtures are agent runs:
 a model reads the source to propose a slice for a ticket, and to write
@@ -131,11 +131,13 @@ a temporary directory and child processes with a scrubbed environment. It
 is the development provider, **not an isolation boundary**, so a worker
 uses it only with `EVALUATION_PROVIDER=local-process` (the compose file
 sets it). The default, `none`, fails every build with `evaluation_failed`
-before anything is generated. Hosted evaluation of contributor code needs
-a provider qualified under Decision 5 of the sandbox plan, and every record
-names which provider ran. A succeeded, ready build records its harness hash
-and toolchain digest on the draft after the run commits, and only while
-the draft still points at that build.
+before anything is generated. Hosted execution of untrusted contributor code
+needs an isolated evaluation provider; none is implemented. The provider
+contract is in
+[`packages/core/src/sandbox/build.ts`](../../packages/core/src/sandbox/build.ts),
+and every record names which provider ran. A succeeded, ready build records
+its harness hash and toolchain digest on the draft after the run commits,
+and only while the draft still points at that build.
 
 Outputs: `build-manifest.json` (every generated file hashed and classified,
 public or private; harness, public-test, private-test and public-project

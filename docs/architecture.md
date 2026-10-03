@@ -2,21 +2,14 @@
 
 ## Dependency direction
 
-Dependencies point downward only. Nothing below imports from above.
+Dependencies point from apps into packages. Main paths below omit the
+`packages/` prefix; apps also import `shared` and `core` directly.
 
 ```
-apps/api        apps/web        apps/extension
-     │    │          │                │
-     │    │          └────────┬───────┘
-     │    │                   │
-     │    │         packages/client
-     │    │                   │
-     │    └───────┬───────────┘
-     │            │
-     │    packages/shared
-     │            │
-     │            │
-  packages/db ────┴──── packages/core
+apps/web, apps/extension → client → shared → core
+apps/api, apps/worker    → db → core
+apps/api                → jira → shared
+apps/api, apps/worker    → github → shared
 ```
 
 | Workspace         | May import       | Must never import           |
@@ -43,12 +36,20 @@ Three of these are enforced or load-bearing:
   live in shared packages.
 
 `packages/db` sits beside `shared`: it depends on `core` and nothing else in the
-repo. Only `apps/api` imports it.
+repo. Both `apps/api` and `apps/worker` import it.
 
 ## Domain rules live in `packages/core`
 
-[`packages/core`](../packages/core/src/index.ts) owns what a valid public
-handle is. Everything else asks it: `apps/api` calls `normalizeHandle()` before
+[`packages/core`](../packages/core/src/index.ts) owns the shared domain rules:
+
+| Area                                              | Source under `packages/core/src/`     |
+| ------------------------------------------------- | ------------------------------------- |
+| Public handles and ticket text                    | `handle.ts`, `ticket.ts`              |
+| Ticket selection and pricing                      | `selection/`, `pricing/`, `bounty.ts` |
+| Repository facts and slices                       | `repo/`, `analysis.ts`, `slice/`      |
+| Sandbox provenance, generation, and task contract | `sandbox/`                            |
+
+For handles, `apps/api` calls `normalizeHandle()` before
 storing one and maps the refusal to a 400; `apps/web` calls `isValidHandle()`
 and `toHandleStem()` in the rename forms.
 
@@ -88,10 +89,10 @@ owner-scoped stores, and an S3 object store.
 
 The store contracts and `NotFoundError` live in this package, not in
 `apps/api`, because a package may not import an app.
-[`apps/api/src/store.ts`](../apps/api/src/store.ts) re-exports both.
+[`packages/db/src/index.ts`](../packages/db/src/index.ts) exports them for callers.
 
-`createInMemoryStore` is a **test double**, not a fallback. The server requires
-`DATABASE_URL` and will not boot without it.
+Tests use fake stores and database fixtures. The server requires `DATABASE_URL`
+and has no in-memory fallback.
 
 Object storage is SeaweedFS' S3 gateway locally and an S3 bucket in
 production, through one code path: only the plain object calls are used, and
@@ -360,6 +361,28 @@ The web app's Tickets page (`/o/:slug/tickets`) lists the organization's
 tickets, writes and edits them, proposes them, and lists every proposal
 from any source in the same peek a board uses.
 
+## Pricing
+
+[`apps/api/src/bounty/executor.ts`](../apps/api/src/bounty/executor.ts)
+coordinates drafting and sizing. The sizing model sees the ticket text and
+returns a whole size (`XS` through `XL`, or `unsized`), never a price.
+`priceFor` in `packages/core/src/bounty.ts` applies the organization's saved
+rate-card snapshot; a `+` size uses the rounded midpoint between adjacent
+prices, in minor currency units. Unsized tickets have no price.
+
+Spec revisions add half steps for net scenario weight gained since the sized
+draft (`packages/core/src/pricing/step.ts`). Light, moderate, and heavy scenarios
+default to 1, 2, and 4 points, with four points per half step; board overrides
+are snapshotted with the run. Trimming can reduce the step, never below its
+base, and XL is the cap. A fresh draft starts at step zero.
+
+Manual resize changes the base while preserving the step and saved card.
+Respec keeps the base, card, and step settings without another sizing call;
+reprice uses the current card and starts fresh. Complexity profiles are
+background evidence and do not set the price. Provider wiring is in
+`apps/api/src/server.ts`: Anthropic first with DeepSeek as fallback when both
+are configured, or either provider alone. See `.env.example` for configuration.
+
 ## GitHub
 
 One GitHub App, used two ways, and neither is the sign-in OAuth app, which
@@ -492,9 +515,10 @@ artifacts in the private bucket under `runs/<runId>/`. A slice names the
 graphify run it reads and is handed to a worker only after that run has
 finished. The walk and the record shapes are pure code in
 `packages/core/src/slice`; `apps/worker/README.md` states the output contract.
-A slice is a proposal: `stubCoverage: "full"` with no blockers lets it reach
-the sandbox plan's gates, and anything less is diagnostic output that cannot
-be published.
+A slice is a proposal: `stubCoverage: "full"` with no blockers lets it proceed
+to the provenance checks in
+[`packages/core/src/sandbox/provenance.ts`](../packages/core/src/sandbox/provenance.ts).
+Anything less remains diagnostic output and cannot produce a ready sandbox.
 
 **Agents propose; deterministic code decides.** A `scope` run gives a model
 read-only tools over the extracted source and the ticket's approved spec,
