@@ -321,6 +321,13 @@ function Signed({
       From `sm` up the row is painted the rail's colour and the content sits
       in it as an inset rounded panel, a thin margin on every side but the
       rail's, so the rail and the frame around the panel are one surface.
+
+      The panel scrolls without drawing a scrollbar. One came and went as a
+      page grew past the panel's height or fell back under it (a settings
+      tab opened, a list arriving), and where scrollbars take up width it
+      nudged the centred column sideways each time. The wheel, trackpad and
+      keyboard still scroll it. Both rules, because Safari before 18.2
+      ignores `scrollbar-width`.
     */
     <div className="flex min-h-dvh flex-col sm:bg-sidebar sm:h-dvh sm:flex-row sm:overflow-hidden">
       <SideNav
@@ -362,7 +369,7 @@ function Signed({
       />
       <div
         ref={contentRef}
-        className={`min-w-0 flex-1 pb-[calc(4rem+env(safe-area-inset-bottom))] sm:bg-background sm:my-2 sm:mr-2 sm:overflow-y-auto sm:rounded-[6px] sm:border sm:pb-0 ${
+        className={`min-w-0 flex-1 pb-[calc(4rem+env(safe-area-inset-bottom))] sm:bg-background sm:my-2 sm:mr-2 sm:overflow-y-auto sm:scrollbar-none sm:[&::-webkit-scrollbar]:hidden sm:rounded-[6px] sm:border sm:pb-0 ${
           screen === "home" ? "" : "[&>main]:!pt-4 sm:[&>main]:!pt-6"
         }`}
       >
