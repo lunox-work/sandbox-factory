@@ -13,12 +13,13 @@
     "smoke": "node scripts/smoke.mjs"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.128.0",
     "@sandbox-factory/db": "*",
     "@sandbox-factory/github": "*",
     "@sandbox-factory/shared": "*",
     "sandbox-factory": "*",
-    "zod": "^4.1.12",
-    "typescript-compiler": "npm:typescript@5.9.3"
+    "typescript-compiler": "npm:typescript@5.9.3",
+    "zod": "^4.1.12"
   },
   "devDependencies": {
     "@sandbox-factory/coverage": "*",

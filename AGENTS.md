@@ -127,8 +127,12 @@ where the two overlap.
   `pipefail`, so a failing run would exit 0.
 - `apps/web` uses Vitest with Testing Library, faking the server at the `fetch`
   and auth-client boundary. Check a UI test fails before the fix.
-- `apps/extension` has a placeholder runner. Adding real logic there means
-  adding a real runner in the same change.
+- `apps/extension` tests with `node:test` over `dist-test` like every other
+  workspace, compiled by `tsconfig.test.json`. Command logic lives in
+  `commands.ts`, `task.ts` and `origin.ts` against the `Host` interface in
+  `host.ts`, so it runs under a fake host; only `extension.ts` imports
+  `vscode`, and it is excluded from coverage with `build.js` and the
+  type-only `host.js`. Keep logic out of `extension.ts`.
 
 ### TypeScript
 
@@ -138,9 +142,11 @@ where the two overlap.
 - `strict` and `noUncheckedIndexedAccess` are on: indexing yields `T |
 undefined`. Narrow it rather than using `!`.
 - Import extensions differ by resolution mode, and both are correct. `NodeNext`
-  (`core`, `shared`, `client`, `db`, `api`) writes `./store.js`; `Bundler`
-  (`web`, `extension`) writes `./tree`. Moving a file between them means
-  adjusting its imports.
+  (`core`, `shared`, `client`, `db`, `api`, `worker`) writes `./store.js`;
+  `web` (`Bundler`) writes `./tree`. `extension` is bundled under `Bundler`
+  but its tests compile under `NodeNext`, so it writes `./commands.js`, which
+  `Bundler` resolves too. Moving a file between them means adjusting its
+  imports.
 - Do not add `@types/node` to `packages/client` — its `types: []` is what keeps
   `node:` imports out of the browser and extension bundles.
 

@@ -109,6 +109,7 @@ export { createGithubRepoStore } from "./github-repos.js";
 export type {
   DueGithubRepo,
   GithubRepoMetadata,
+  GithubRepoRole,
   GithubRepoStore,
   GithubRepoSummary,
   RegisterGithubRepoInput,
@@ -156,7 +157,7 @@ export type {
   UserRow,
   VerificationRow,
 } from "./schema.js";
-export { NotFoundError } from "./errors.js";
+export { NotFoundError, RepositoryInUseError } from "./errors.js";
 export type { Database } from "./errors.js";
 export { createAnalysisRunStore } from "./analysis-runs.js";
 export type {
@@ -168,3 +169,18 @@ export type {
 } from "./analysis-runs.js";
 export { createArtifactStore } from "./artifacts.js";
 export type { ArtifactStore, StoredArtifact } from "./artifacts.js";
+export { createSandboxStore, sandboxSlug } from "./sandboxes.js";
+export type {
+  BuildOutput,
+  CreateSandboxResult,
+  CreateVersionResult,
+  NewSandboxVersion,
+  ReplayContext,
+  SandboxStore,
+  SandboxVersionPatch,
+  StoredSandbox,
+  StoredSandboxVersion,
+  StoredVersionSource,
+  StoredVersionWithSource,
+  UpdateVersionResult,
+} from "./sandboxes.js";

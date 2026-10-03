@@ -163,6 +163,34 @@ test("a 404 is flagged as not found", async () => {
   });
 });
 
+test("a route's error code reaches the caller, and is null when it gave none", async () => {
+  const coded = stubFetch({
+    status: 409,
+    body: {
+      error: "The active analysis limit has been reached.",
+      code: "run_limit",
+    },
+  });
+  await assert.rejects(
+    new ProbeClient({ baseUrl: "https://api.test", fetch: coded.fetch }).get(
+      "/api/v1/x",
+    ),
+    (error: unknown) => {
+      assert.ok(error instanceof ApiError);
+      assert.equal(error.code, "run_limit");
+      assert.equal(error.status, 409);
+      return true;
+    },
+  );
+  const plain = stubFetch({ status: 404, body: { error: "Not found." } });
+  await assert.rejects(
+    new ProbeClient({ baseUrl: "https://api.test", fetch: plain.fetch }).get(
+      "/api/v1/x",
+    ),
+    (error: unknown) => error instanceof ApiError && error.code === null,
+  );
+});
+
 test("a 401 is flagged as unauthorized", async () => {
   const { fetch } = stubFetch({
     status: 401,

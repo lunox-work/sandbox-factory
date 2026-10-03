@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { isUniqueViolation, NotFoundError } from "../src/errors.js";
+import {
+  guardRepositoryDelete,
+  isForeignKeyViolation,
+  isUniqueViolation,
+  NotFoundError,
+  RepositoryInUseError,
+} from "../src/errors.js";
 
 test("NotFoundError names the id it was raised for", () => {
   // The id reaches the log and, through the route's error handler, the 404
@@ -50,4 +56,33 @@ test("isUniqueViolation sees through the error Drizzle wraps around the driver's
     }),
     false,
   );
+});
+
+test("isForeignKeyViolation recognises 23503, wrapped or not", () => {
+  assert.equal(isForeignKeyViolation({ code: "23503" }), true);
+  assert.equal(isForeignKeyViolation({ cause: { code: "23503" } }), true);
+  assert.equal(isForeignKeyViolation({ code: "23505" }), false);
+  assert.equal(isForeignKeyViolation(undefined), false);
+});
+
+test("a repository delete refused by sandbox provenance becomes RepositoryInUseError", async () => {
+  // Only sandbox tables reference repositories without a cascade, so the
+  // route can say why instead of answering 500.
+  const refused = guardRepositoryDelete(async () => {
+    throw Object.assign(new Error("Failed query: delete ..."), {
+      cause: { code: "23503" },
+    });
+  });
+  await assert.rejects(refused, RepositoryInUseError);
+  await refused.catch((error: RepositoryInUseError) => {
+    assert.equal(error.code, "repository_in_use");
+    assert.match(error.message, /sandbox/);
+  });
+  await assert.rejects(
+    guardRepositoryDelete(async () => {
+      throw new Error("connection reset");
+    }),
+    /connection reset/,
+  );
+  assert.equal(await guardRepositoryDelete(async () => 3), 3);
 });

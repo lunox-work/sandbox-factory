@@ -43,6 +43,8 @@ import {
   type JiraBoardStore,
   type NewRepoSnapshot,
   type RepoSnapshotStore,
+  createSandboxStore,
+  RepositoryInUseError,
 } from "../src/index.js";
 import { treeFacts } from "sandbox-factory";
 import { runMigrations } from "../src/migrate.js";
@@ -736,5 +738,36 @@ describe("GitHub pointers in Postgres", { skip }, () => {
     });
     assert.equal(cached.ok && cached.created, false);
     await repos.remove("o_a", repo.id);
+  });
+
+  test("a repository a sandbox is built from is not removed, alone or with its connection", async () => {
+    const { repo, connection: linked } = await repoUnder("o_a", "995");
+    const sandboxes = createSandboxStore(connection.db);
+    const created = await sandboxes.create("o_a", {
+      sourceRepoId: repo.id,
+      jiraIssueIds: [],
+    });
+    assert.equal(created.ok, true);
+    await assert.rejects(
+      repos.removeWithObjects!("o_a", repo.id),
+      RepositoryInUseError,
+    );
+    await assert.rejects(repos.remove("o_a", repo.id), RepositoryInUseError);
+    await assert.rejects(
+      connections.removeWithTrees("o_a", linked.id),
+      RepositoryInUseError,
+    );
+    await assert.rejects(
+      connections.remove("o_a", linked.id),
+      RepositoryInUseError,
+    );
+    // Every refusal rolled back: the repository is still there.
+    assert.equal((await repos.get("o_a", repo.id))?.id, repo.id);
+    if (created.ok)
+      await sql`delete from sandbox where id = ${created.sandbox.id}`;
+    assert.equal(
+      (await repos.removeWithObjects!("o_a", repo.id)).removed,
+      true,
+    );
   });
 });

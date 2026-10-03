@@ -19,10 +19,26 @@ import {
   analysisRunResponseSchema,
   artifactListSchema,
   artifactUrlSchema,
+  enqueueSliceResponseSchema,
+  repositoryProposalListSchema,
+  repoTreePageDtoSchema,
   repoSnapshotListSchema,
   repoSnapshotDetailDtoSchema,
+  replayResponseSchema,
+  sandboxListSchema,
+  sandboxResponseSchema,
+  sandboxVersionListSchema,
+  sandboxVersionResponseSchema,
 } from "@sandbox-factory/shared";
-import type { EnqueueAnalysisInput } from "@sandbox-factory/shared";
+import type {
+  CreateSandboxInput,
+  CreateSandboxVersionInput,
+  EnqueueAnalysisInput,
+  EnqueueFixturesInput,
+  EnqueueScopeInput,
+  EnqueueSliceInput,
+  UpdateSandboxVersionInput,
+} from "@sandbox-factory/shared";
 
 export interface ClientOptions {
   /** Base URL, e.g. `https://api.lunox.work`. Trailing slashes are fine. */
@@ -49,6 +65,8 @@ export class ApiError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    /** The route's stable reason (`run_limit`, `graph_failed`, …), if it gave one. */
+    readonly code: string | null = null,
   ) {
     super(message);
     this.name = "ApiError";
@@ -139,6 +157,7 @@ export class ApiClient {
         parsed.success
           ? parsed.data.error
           : `HTTP ${response.status} from ${path}`,
+        parsed.success ? (parsed.data.code ?? null) : null,
       );
     }
 
@@ -186,6 +205,64 @@ export class GithubAnalysisClient extends ApiClient {
       ),
     ).run;
   }
+  /** A slice run on a repository's snapshot, queued behind its graph run. */
+  async enqueueSlice(owner: string, repoId: string, input: EnqueueSliceInput) {
+    return enqueueSliceResponseSchema.parse(
+      await this.request(
+        `${this.#base(owner)}/repositories/${encodeURIComponent(repoId)}/slices`,
+        { method: "POST", body: JSON.stringify(input) },
+      ),
+    );
+  }
+  /** A scope agent run for one proposal, queued behind the snapshot's graph run. */
+  async enqueueScope(owner: string, repoId: string, input: EnqueueScopeInput) {
+    return enqueueSliceResponseSchema.parse(
+      await this.request(
+        `${this.#base(owner)}/repositories/${encodeURIComponent(repoId)}/scope`,
+        { method: "POST", body: JSON.stringify(input) },
+      ),
+    );
+  }
+  /** A fixtures agent run for a succeeded slice run. */
+  async enqueueFixtures(
+    owner: string,
+    sliceRunId: string,
+    input: EnqueueFixturesInput,
+  ) {
+    return analysisRunResponseSchema.parse(
+      await this.request(
+        `${this.#base(owner)}/runs/${encodeURIComponent(sliceRunId)}/fixtures`,
+        { method: "POST", body: JSON.stringify(input) },
+      ),
+    ).run;
+  }
+  /** Proposals with a spec, on the boards linked to the repository. */
+  async repositoryProposals(owner: string, repoId: string) {
+    return repositoryProposalListSchema.parse(
+      await this.request(
+        `${this.#base(owner)}/repositories/${encodeURIComponent(repoId)}/proposals`,
+      ),
+    ).proposals;
+  }
+  /** One page of a snapshot's file list, optionally under a directory. */
+  async tree(
+    owner: string,
+    snapshotId: string,
+    query: { prefix?: string; cursor?: string; limit?: number } = {},
+  ) {
+    const search = new URLSearchParams();
+    if (query.prefix !== undefined && query.prefix !== "")
+      search.set("prefix", query.prefix);
+    if (query.cursor !== undefined) search.set("cursor", query.cursor);
+    if (query.limit !== undefined) search.set("limit", String(query.limit));
+    const encoded = search.toString();
+    const suffix = encoded === "" ? "" : `?${encoded}`;
+    return repoTreePageDtoSchema.parse(
+      await this.request(
+        `${this.#base(owner)}/snapshots/${encodeURIComponent(snapshotId)}/tree${suffix}`,
+      ),
+    );
+  }
   async artifacts(owner: string, runId: string) {
     return artifactListSchema.parse(
       await this.request(
@@ -206,5 +283,91 @@ export class GithubAnalysisClient extends ApiClient {
         `${this.#base(owner)}/runs/${encodeURIComponent(runId)}/log/url`,
       ),
     ).url;
+  }
+}
+
+/**
+ * Sandboxes and their versions, for the owner console. Everything here is
+ * behind membership; the private provenance (`source`) comes back only for
+ * owners and admins and is never shown to a contributor.
+ */
+export class SandboxClient extends GithubAnalysisClient {
+  #sandboxes(owner: string) {
+    return `/api/v1/orgs/${encodeURIComponent(owner)}/sandboxes`;
+  }
+  async sandboxes(owner: string) {
+    return sandboxListSchema.parse(await this.request(this.#sandboxes(owner)))
+      .sandboxes;
+  }
+  async sandbox(owner: string, sandboxId: string) {
+    return sandboxResponseSchema.parse(
+      await this.request(
+        `${this.#sandboxes(owner)}/${encodeURIComponent(sandboxId)}`,
+      ),
+    ).sandbox;
+  }
+  async createSandbox(owner: string, input: CreateSandboxInput) {
+    return sandboxResponseSchema.parse(
+      await this.request(this.#sandboxes(owner), {
+        method: "POST",
+        body: JSON.stringify(input),
+      }),
+    ).sandbox;
+  }
+  async sandboxVersions(owner: string, sandboxId: string) {
+    return sandboxVersionListSchema.parse(
+      await this.request(
+        `${this.#sandboxes(owner)}/${encodeURIComponent(sandboxId)}/versions`,
+      ),
+    ).versions;
+  }
+  /** A draft version cut from a succeeded slice run. */
+  async createSandboxVersion(
+    owner: string,
+    sandboxId: string,
+    input: CreateSandboxVersionInput,
+  ) {
+    return sandboxVersionResponseSchema.parse(
+      await this.request(
+        `${this.#sandboxes(owner)}/${encodeURIComponent(sandboxId)}/versions`,
+        { method: "POST", body: JSON.stringify(input) },
+      ),
+    );
+  }
+  async sandboxVersion(owner: string, versionId: string) {
+    return sandboxVersionResponseSchema.parse(
+      await this.request(
+        `${this.#sandboxes(owner)}/versions/${encodeURIComponent(versionId)}`,
+      ),
+    );
+  }
+  async updateSandboxVersion(
+    owner: string,
+    versionId: string,
+    input: UpdateSandboxVersionInput,
+  ) {
+    return sandboxVersionResponseSchema.parse(
+      await this.request(
+        `${this.#sandboxes(owner)}/versions/${encodeURIComponent(versionId)}`,
+        { method: "PATCH", body: JSON.stringify(input) },
+      ),
+    );
+  }
+  /** Queues the build run for a draft; the run is read like any analysis run. */
+  async buildSandboxVersion(owner: string, versionId: string) {
+    return analysisRunResponseSchema.parse(
+      await this.request(
+        `${this.#sandboxes(owner)}/versions/${encodeURIComponent(versionId)}/build`,
+        { method: "POST" },
+      ),
+    ).run;
+  }
+  /** What replaying the version would use, or why it cannot be replayed. */
+  async sandboxReplay(owner: string, versionId: string) {
+    return replayResponseSchema.parse(
+      await this.request(
+        `${this.#sandboxes(owner)}/versions/${encodeURIComponent(versionId)}/replay`,
+      ),
+    );
   }
 }

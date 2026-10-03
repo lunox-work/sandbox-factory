@@ -17,7 +17,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import type { ErrorHandler } from "hono";
 
-import { NotFoundError } from "@sandbox-factory/db";
+import { NotFoundError, RepositoryInUseError } from "@sandbox-factory/db";
 import type {
   EmailStore,
   OrganizationStore,
@@ -46,6 +46,10 @@ import {
   mountAnalysisRoutes,
   type AnalysisRouteOptions,
 } from "./analysis/routes.js";
+import {
+  mountSandboxRoutes,
+  type SandboxRouteOptions,
+} from "./sandbox/routes.js";
 
 export interface AppOptions {
   corsOrigins: readonly string[];
@@ -87,6 +91,12 @@ export interface AppOptions {
   /** Commercial routes. Rate-card reads remain mounted without model config. */
   bounty?: BountyRouteOptions | undefined;
   analysis?: AnalysisRouteOptions | undefined;
+  /**
+   * Sandbox versions: private provenance cut from slice runs. Needs the
+   * same object storage and worker as analysis, so it is mounted only when
+   * `analysis` is; without it the routes answer 503 behind the guard.
+   */
+  sandbox?: SandboxRouteOptions | undefined;
   /**
    * Uploaded avatars. Optional for the same reason as `jira`: without object
    * storage configured the upload routes are not mounted and answer 404,
@@ -161,6 +171,7 @@ export function createApp({
   github,
   bounty,
   analysis,
+  sandbox,
   avatars,
   buildInfo = unknownBuildInfo,
   originVerify,
@@ -609,6 +620,17 @@ export function createApp({
     if (bounty !== undefined) {
       mountBountyRoutes(app, bounty);
     }
+    if (sandbox !== undefined) mountSandboxRoutes(app, sandbox);
+    else
+      app.all("/api/v1/orgs/:orgId/sandboxes/*", (c) =>
+        c.json(
+          {
+            error: "Sandboxes need GitHub and object storage.",
+            code: "unconfigured",
+          },
+          503,
+        ),
+      );
 
     /** A team's picture; behind the membership guard above. */
     if (avatars !== undefined) {
@@ -630,6 +652,9 @@ export function createApp({
 const errorHandler: ErrorHandler<AppEnv> = (error, c) => {
   if (error instanceof NotFoundError) {
     return c.json({ error: error.message }, 404);
+  }
+  if (error instanceof RepositoryInUseError) {
+    return c.json({ error: error.message, code: error.code }, 409);
   }
   // Unexpected: log it, but do not leak internals to the caller.
   console.error(error);

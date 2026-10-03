@@ -40,6 +40,9 @@ export const ID_PREFIXES = [
   "rsn",
   "arn",
   "art",
+  /** Sandboxes: a task cut from a repository, and one immutable version of it. */
+  "sbx",
+  "sbv",
 ] as const;
 
 export type IdPrefix = (typeof ID_PREFIXES)[number];

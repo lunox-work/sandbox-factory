@@ -8,6 +8,8 @@ import {
   githubRepoDtoSchema,
 } from "@sandbox-factory/shared";
 
+import { RepositoryInUseError } from "@sandbox-factory/db";
+
 import type { Auth } from "../src/auth.js";
 import { signState, verifyState } from "../src/connect-state.js";
 import { createApp } from "../src/routes.js";
@@ -1053,6 +1055,36 @@ test("removing a repository deletes the owner's row only", async () => {
 
   assert.equal((await remove()).status, 204);
   assert.equal((await remove()).status, 404);
+});
+
+test("a repository or connection a sandbox is built from answers 409, not 500", async () => {
+  const stores = memoryGithub();
+  const connectionId = await seedConnection(stores, "org_1", "9");
+  const repoId = await seedRepo(stores, "org_1", connectionId);
+  const inUse = async (): Promise<never> => {
+    throw new RepositoryInUseError();
+  };
+  // Whichever removal the route picks, the store refuses the same way.
+  stores.repos.remove = inUse;
+  stores.repos.removeWithObjects = inUse;
+  stores.connections.remove = inUse;
+  stores.connections.removeWithTrees = inUse;
+  const { app } = appWith({ stores });
+  for (const path of [
+    `repositories/${repoId}`,
+    `connections/${connectionId}`,
+  ]) {
+    const response = await app.request(`/api/v1/orgs/org_1/github/${path}`, {
+      method: "DELETE",
+      headers: signedIn,
+    });
+    assert.equal(response.status, 409);
+    assert.deepEqual(await response.json(), {
+      error: new RepositoryInUseError().message,
+      code: "repository_in_use",
+    });
+  }
+  assert.equal(stores.repos.rows.has(repoId), true);
 });
 
 test("an unknown or unhealthy connection is answered before GitHub is asked", async () => {

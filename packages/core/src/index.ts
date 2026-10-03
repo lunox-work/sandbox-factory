@@ -17,3 +17,5 @@ export * from "./selection/index.js";
 export * from "./pricing/index.js";
 export * from "./repo/index.js";
 export * from "./analysis.js";
+export * from "./slice/index.js";
+export * from "./sandbox/index.js";

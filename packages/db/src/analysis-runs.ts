@@ -1,10 +1,19 @@
 import { createHash } from "node:crypto";
 import { and, desc, eq, gt, lte, ne, or, sql } from "drizzle-orm";
-import { canonicalJson, GRAPHIFY_TOOL_VERSION } from "sandbox-factory";
+import {
+  ANALYSIS_TOOLS,
+  canonicalJson,
+  isFixturesParams,
+  isScopeParams,
+  isSliceParams,
+  toolOfParams,
+  toolVersionOf,
+} from "sandbox-factory";
 import type {
   AnalysisParams,
   AnalysisStatus,
   AnalysisErrorCode,
+  AnalysisTool,
   ArtifactKind,
 } from "sandbox-factory";
 import type { Database } from "./errors.js";
@@ -23,7 +32,7 @@ export interface StoredAnalysisRun {
   readonly id: string;
   readonly snapshotId: string;
   readonly repoId: string;
-  readonly tool: "graphify";
+  readonly tool: AnalysisTool;
   readonly toolVersion: string;
   readonly params: AnalysisParams;
   readonly status: AnalysisStatus;
@@ -61,12 +70,30 @@ export type EnqueueAnalysisResult =
       created: boolean;
       obsoleteLogKey?: string;
     }
-  | { ok: false; reason: "not-found" | "run_limit" };
+  | {
+      ok: false;
+      reason: "not-found" | "run_limit" | "graph_mismatch" | "slice_mismatch";
+    };
 export interface AnalysisRunStore {
+  /**
+   * One run per `(snapshot, tool, version, params)`: an existing run that
+   * is not a retryable failure is returned as is. A slice run names the
+   * graphify run it reads in `params.graphRunId`, which must be a graphify
+   * run on the same snapshot; the worker claims it once that run is over.
+   * A scope run reads a graph the same way and waits the same way. A
+   * fixtures run names a slice run that must already have succeeded on the
+   * same snapshot, so it needs no wait. A sandbox build names a succeeded
+   * slice run; the API checks that before enqueueing.
+   */
   enqueue(
     organizationId: string,
     snapshotId: string,
-    input: { params: AnalysisParams; requestedBy: string; maxActive?: number },
+    input: {
+      tool?: AnalysisTool;
+      params: AnalysisParams;
+      requestedBy: string;
+      maxActive?: number;
+    },
   ): Promise<EnqueueAnalysisResult>;
   get(organizationId: string, runId: string): Promise<StoredAnalysisRun | null>;
   list(
@@ -111,12 +138,26 @@ export interface AnalysisRunStore {
   queueState(now: Date): Promise<{ queued: boolean; freshWorker: boolean }>;
   logKey(organizationId: string, runId: string): Promise<string | null>;
 }
+/**
+ * `tool` is free text. A row this build does not know (written by a newer
+ * deploy, then rolled back) is skipped by reads and never claimed, rather
+ * than failing every listing of its repository.
+ */
+const knownTool = (tool: string): AnalysisTool | undefined =>
+  ANALYSIS_TOOLS.find((name) => name === tool);
+/** Literal list for the claim query; the names are compile-time constants. */
+const KNOWN_TOOLS_SQL = sql.raw(
+  ANALYSIS_TOOLS.map((name) => `'${name}'`).join(", "),
+);
 function toRun(row: AnalysisRunRow, repoId: string): StoredAnalysisRun {
+  const tool = knownTool(row.tool);
+  if (tool === undefined)
+    throw new Error(`Unknown analysis tool ${row.tool} on run ${row.id}.`);
   return {
     id: row.id,
     snapshotId: row.snapshotId,
     repoId,
-    tool: "graphify",
+    tool,
     toolVersion: row.toolVersion,
     params: row.params,
     status: row.status,
@@ -184,13 +225,50 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
         const repoId = snapshots[0]?.repoId;
         if (repoId === undefined)
           return { ok: false, reason: "not-found" } as const;
+        const tool = input.tool ?? "graphify";
+        if (toolOfParams(input.params) !== tool)
+          throw new Error("Analysis parameters do not match the tool.");
+        if (isSliceParams(input.params) || isScopeParams(input.params)) {
+          // The graph a slice or a scope reads must describe the very same commit.
+          const graph = await tx
+            .select({ id: analysisRun.id })
+            .from(analysisRun)
+            .where(
+              and(
+                eq(analysisRun.id, input.params.graphRunId),
+                eq(analysisRun.snapshotId, snapshotId),
+                eq(analysisRun.tool, "graphify"),
+              ),
+            )
+            .limit(1);
+          if (graph.length === 0)
+            return { ok: false, reason: "graph_mismatch" } as const;
+        }
+        if (isFixturesParams(input.params)) {
+          // Fixtures are written for a finished slice of the very same commit.
+          const slice = await tx
+            .select({ id: analysisRun.id })
+            .from(analysisRun)
+            .where(
+              and(
+                eq(analysisRun.id, input.params.sliceRunId),
+                eq(analysisRun.snapshotId, snapshotId),
+                eq(analysisRun.tool, "slice"),
+                eq(analysisRun.status, "succeeded"),
+              ),
+            )
+            .limit(1);
+          if (slice.length === 0)
+            return { ok: false, reason: "slice_mismatch" } as const;
+        }
+        const toolVersion = toolVersionOf(tool);
         const paramsHash = createHash("sha256")
           .update(canonicalJson(input.params))
           .digest("hex");
         const cache = and(
           eq(analysisRun.snapshotId, snapshotId),
-          eq(analysisRun.tool, "graphify"),
-          eq(analysisRun.toolVersion, GRAPHIFY_TOOL_VERSION),
+          eq(analysisRun.tool, tool),
+          eq(analysisRun.toolVersion, toolVersion),
           eq(analysisRun.paramsHash, paramsHash),
         );
         const existing = (
@@ -227,8 +305,8 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
                 .values({
                   id: generateId("arn"),
                   snapshotId,
-                  tool: "graphify",
-                  toolVersion: GRAPHIFY_TOOL_VERSION,
+                  tool,
+                  toolVersion,
                   params: input.params,
                   paramsHash,
                   requestedBy: input.requestedBy,
@@ -267,7 +345,9 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
           and(eq(githubRepo.organizationId, owner), eq(analysisRun.id, id)),
         )
       )[0];
-      return row === undefined ? null : toRun(row.run, row.repoId);
+      return row === undefined || knownTool(row.run.tool) === undefined
+        ? null
+        : toRun(row.run, row.repoId);
     },
     async list(owner, repoId, limit = 25) {
       const rows = await joined()
@@ -276,7 +356,9 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
         )
         .orderBy(desc(analysisRun.createdAt), desc(analysisRun.id))
         .limit(Math.min(50, Math.max(1, limit)));
-      return rows.map((row) => toRun(row.run, row.repoId));
+      return rows
+        .filter((row) => knownTool(row.run.tool) !== undefined)
+        .map((row) => toRun(row.run, row.repoId));
     },
     async claimNext(token, now) {
       const rows = await db
@@ -291,7 +373,10 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
           finishedAt: null,
         })
         .where(
-          sql`${analysisRun.id} = (select a.id from analysis_run a join repo_snapshot s on s.id = a.snapshot_id join github_repo r on r.id = s.repo_id where a.status = 'queued' order by a.created_at, a.id for update of a skip locked limit 1)`,
+          // A slice or a scope waits for the graphify run it reads to finish
+          // either way; the worker then fails it cleanly if that run did not
+          // succeed.
+          sql`${analysisRun.id} = (select a.id from analysis_run a join repo_snapshot s on s.id = a.snapshot_id join github_repo r on r.id = s.repo_id where a.status = 'queued' and a.tool in (${KNOWN_TOOLS_SQL}) and (a.tool not in ('slice', 'scope') or not exists (select 1 from analysis_run g where g.id = a.params->>'graphRunId' and g.status in ('queued', 'running'))) order by a.created_at, a.id for update of a skip locked limit 1)`,
         )
         .returning();
       const run = rows[0];

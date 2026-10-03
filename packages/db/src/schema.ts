@@ -18,6 +18,8 @@
  * - `schema/github.ts` — installations of the GitHub App, the grants that
  *   linked them, and the repositories registered from them.
  * - `schema/analysis.ts` — what is known about a repository at one commit.
+ * - `schema/sandbox.ts` — tasks cut from a repository, their versions and
+ *   the private provenance behind each.
  *
  * `auth.ts` and `organizations.ts` import each other; see the note in
  * `organizations.ts` for why the foreign-key thunks make that safe.
@@ -106,3 +108,18 @@ export type {
   NewRateCardRow,
   RateCardRow,
 } from "./schema/bounty.js";
+
+export {
+  sandbox,
+  sandboxJiraIssue,
+  sandboxSource,
+  sandboxVersion,
+  sandboxVersionSource,
+} from "./schema/sandbox.js";
+export type {
+  SandboxJiraIssueRow,
+  SandboxRow,
+  SandboxSourceRow,
+  SandboxVersionRow,
+  SandboxVersionSourceRow,
+} from "./schema/sandbox.js";

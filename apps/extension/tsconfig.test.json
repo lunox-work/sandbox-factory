@@ -1,0 +1,19 @@
+{
+  "extends": "./tsconfig.json",
+  "_comment": [
+    "The test build. The bundle is esbuild's; this emits CommonJS for",
+    "node:test over the command logic, which never imports vscode.",
+    "verbatimModuleSyntax is off here only because the emitted format is",
+    "CommonJS while the sources are written as ESM for the bundler."
+  ],
+  "compilerOptions": {
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "noEmit": false,
+    "verbatimModuleSyntax": false,
+    "rootDir": ".",
+    "outDir": "dist-test",
+    "types": ["node", "vscode"]
+  },
+  "include": ["src", "test"]
+}

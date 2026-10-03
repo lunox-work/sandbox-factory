@@ -24,6 +24,26 @@
   "contributes": {
     "commands": [
       {
+        "command": "sandboxFactory.openTask",
+        "title": "sandbox-factory: Open Task"
+      },
+      {
+        "command": "sandboxFactory.showTask",
+        "title": "sandbox-factory: Show Task"
+      },
+      {
+        "command": "sandboxFactory.installDependencies",
+        "title": "sandbox-factory: Install Dependencies"
+      },
+      {
+        "command": "sandboxFactory.runApp",
+        "title": "sandbox-factory: Run App"
+      },
+      {
+        "command": "sandboxFactory.runTests",
+        "title": "sandbox-factory: Run Public Tests"
+      },
+      {
         "command": "sandboxFactory.signIn",
         "title": "sandbox-factory: Set API Token"
       },
@@ -38,15 +58,16 @@
         "sandboxFactory.apiBaseUrl": {
           "type": "string",
           "default": "http://localhost:4000",
-          "description": "Base URL of the sandbox-factory API."
+          "scope": "application",
+          "description": "Base URL of the sandbox-factory API. A user or application setting: a workspace value is ignored so a repository cannot redirect authenticated requests."
         }
       }
     }
   },
   "scripts": {
     "build": "node esbuild.js --production",
-    "lint": "tsc -p tsconfig.json --noEmit",
-    "test": "echo \"No extension tests yet \u2014 add @vscode/test-electron when the first command earns one.\"",
+    "lint": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "test": "rm -rf dist-test && tsc -p tsconfig.test.json && node --experimental-test-coverage --test-coverage-lines=80 --test-coverage-branches=80 --test-coverage-functions=80 --test-coverage-include=\"dist-test/src/**\" --test-coverage-exclude=\"dist-test/src/extension.js\" --test-coverage-exclude=\"dist-test/src/build.js\" --test dist-test/test/*.test.js > dist-test/coverage.txt; status=$?; cat dist-test/coverage.txt; [ $status -eq 0 ] && assert-all-covered dist-test/src dist-test/coverage.txt extension.js build.js host.js",
     "dev": "node esbuild.js --watch",
     "package": "vsce package --no-dependencies"
   },
@@ -56,10 +77,17 @@
     "sandbox-factory": "*"
   },
   "devDependencies": {
+    "@sandbox-factory/coverage": "*",
     "@sandbox-factory/tsconfig": "*",
     "@types/node": "^26.6.3",
     "@types/vscode": "^1.85.0",
     "esbuild": "^0.28.2",
     "typescript": "^7.0.2"
+  },
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "Open Task and Show Task work anywhere. Install Dependencies, Run App and Run Public Tests run the task's npm scripts and need a trusted workspace."
+    }
   }
 }

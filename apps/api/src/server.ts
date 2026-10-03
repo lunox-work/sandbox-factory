@@ -24,6 +24,7 @@ import {
   createOrganizationStore,
   createProfileStore,
   createRateCardStore,
+  createSandboxStore,
   createTokenCipher,
 } from "@sandbox-factory/db";
 
@@ -355,6 +356,28 @@ const analysis =
         repos: githubRepos,
         snapshots: repoSnapshots,
         objects,
+        tree: (treeKey: string) =>
+          githubSnapshotter === undefined
+            ? Promise.resolve(null)
+            : githubSnapshotter.tree(treeKey),
+        ensureWorker: () => workerLauncher.ensureWorker(),
+        maxActive: env.MAX_ACTIVE_RUNS_PER_ORG,
+        onLaunchError: () => console.error("analysis_worker_launch_failed"),
+        proposals: bountyProposals,
+        specs: bountySpecs,
+        boards: jiraBoards,
+      };
+/** Sandbox versions, on the same footing as analysis: object storage and a worker. */
+const sandbox =
+  analysis === undefined
+    ? undefined
+    : {
+        sandboxes: createSandboxStore(connection.db),
+        runs: analysisRuns,
+        artifacts: analysis.artifacts,
+        objects: analysis.objects,
+        proposals: bountyProposals,
+        specs: bountySpecs,
         ensureWorker: () => workerLauncher.ensureWorker(),
         maxActive: env.MAX_ACTIVE_RUNS_PER_ORG,
         onLaunchError: () => console.error("analysis_worker_launch_failed"),
@@ -377,6 +400,7 @@ const app = createApp({
   jira,
   github,
   analysis,
+  sandbox,
   bounty: {
     rateCards,
     runs: bountyRuns,

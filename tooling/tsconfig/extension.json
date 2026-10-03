@@ -7,9 +7,9 @@
     "",
     "moduleResolution is Bundler because esbuild resolves the imports, not",
     "node: the removed node10 mode is what TypeScript 7 rejects, and Bundler",
-    "is the mode that matches how this code is actually built. It also means",
-    "imports here are written without the .js extension that NodeNext",
-    "requires elsewhere in the repo.",
+    "is the mode that matches how this code is actually built. Imports",
+    "still carry the .js extension: the tests compile under NodeNext, and",
+    "Bundler resolves ./x.js to x.ts as well.",
     "",
     "noEmit because esbuild produces the bundle (format: cjs,",
     "external: ['vscode']); tsc only type-checks."

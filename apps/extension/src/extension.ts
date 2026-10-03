@@ -3,15 +3,14 @@
  * It reaches the API through @sandbox-factory/client, the same client the web
  * app uses, so an endpoint change lands in both at once.
  *
- * **This is a shell.** The todo tree and its commands were removed with the
- * todo domain; what remains is everything a feature needs and would otherwise
- * have to rebuild — activation, the output channel, the secret-backed token,
- * a configured client, the version command and the reload-on-config-change
- * handler. `Show Version` is deliberately kept as a working command: it proves
- * the extension activates and can reach the API, which is the first thing to
- * check when the next feature does not.
+ * This file is the adapter: it wires the `vscode` API into the `Host` the
+ * commands in `commands.ts` are written against, and registers them. The
+ * logic is tested there without an extension host; nothing here decides
+ * what runs.
  */
 
+import { execFile } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import { ApiClient, ApiError } from "@sandbox-factory/client";
 import {
   buildBanner,
@@ -23,13 +22,13 @@ import {
 } from "@sandbox-factory/shared";
 import * as vscode from "vscode";
 
-import { extensionBuild } from "./build";
+import { extensionBuild } from "./build.js";
+import { createTaskCommands } from "./commands.js";
+import type { Host } from "./host.js";
+import { resolveApiOrigin, tokenKeyFor } from "./origin.js";
 
-/**
- * Key for the bearer token in `context.secrets`, which VS Code encrypts. A
- * setting would put it in plaintext settings.json.
- */
-const TOKEN_KEY = "sandboxFactory.token";
+/** Global state: the task folder `Open Task` is reopening the window into. */
+const OPENED_FOLDER_KEY = "sandboxFactory.openedFolder";
 
 export function activate(context: vscode.ExtensionContext): void {
   // An output channel, not a notification: it must still be there when someone
@@ -38,21 +37,114 @@ export function activate(context: vscode.ExtensionContext): void {
   output.appendLine(buildBanner("sandbox-factory", extensionBuild));
 
   /**
-   * The API client, ready for the first feature to call.
-   *
-   * Built here rather than where it is first needed so the token and base URL
-   * are read in one place. `void` marks it as deliberately unused for now —
-   * removing it would mean rebuilding the auth wiring from scratch.
+   * The API origin, from user or application settings only, and the token
+   * bound to it. A repository's workspace settings cannot redirect an
+   * authenticated request to another host.
    */
+  const resolved = resolveApiOrigin(
+    vscode.workspace
+      .getConfiguration("sandboxFactory")
+      .inspect<string>("apiBaseUrl"),
+  );
+  if (resolved.overrideIgnored)
+    output.appendLine(
+      "Ignoring a workspace-level sandboxFactory.apiBaseUrl: the API address is a user setting.",
+    );
+  if (resolved.invalid)
+    output.appendLine(
+      `sandboxFactory.apiBaseUrl is not an http(s) URL; using ${resolved.origin}.`,
+    );
+  const origin = resolved.origin;
+  const tokenKey = tokenKeyFor(origin);
+
   const client = new ApiClient({
-    baseUrl: baseUrl(),
+    baseUrl: origin,
     getToken: () =>
-      context.secrets.get(TOKEN_KEY).then((token) => token ?? null),
+      context.secrets.get(tokenKey).then((token) => token ?? null),
   });
   void client;
 
+  const host: Host = {
+    workspaceFolders: () =>
+      (vscode.workspace.workspaceFolders ?? []).map(
+        (folder) => folder.uri.fsPath,
+      ),
+    isTrusted: () => vscode.workspace.isTrusted,
+    // Absent is `null`; a file that exists but cannot be read is an error
+    // the command reports, not "no sandbox-task.json".
+    readFile: (path) =>
+      readFile(path, "utf8").catch((error: NodeJS.ErrnoException) =>
+        error.code === "ENOENT" || error.code === "ENOTDIR"
+          ? null
+          : Promise.reject(error),
+      ),
+    pick: (items, placeHolder) =>
+      Promise.resolve(vscode.window.showQuickPick([...items], { placeHolder })),
+    input: (prompt, placeHolder) =>
+      Promise.resolve(
+        vscode.window.showInputBox({
+          prompt,
+          placeHolder,
+          ignoreFocusOut: true,
+        }),
+      ),
+    pickFolder: async (title) => {
+      const picked = await vscode.window.showOpenDialog({
+        title,
+        canSelectFiles: false,
+        canSelectFolders: true,
+        canSelectMany: false,
+      });
+      return picked?.[0]?.fsPath;
+    },
+    clone: (url, destination) =>
+      new Promise<void>((resolve, reject) => {
+        execFile("git", ["clone", "--", url, destination], (error) =>
+          error === null ? resolve() : reject(error),
+        );
+      }),
+    openFolder: async (path) => {
+      await vscode.commands.executeCommand(
+        "vscode.openFolder",
+        vscode.Uri.file(path),
+        {
+          forceNewWindow: false,
+        },
+      );
+    },
+    rememberOpened: (folder) =>
+      Promise.resolve(context.globalState.update(OPENED_FOLDER_KEY, folder)),
+    openedFolder: () => context.globalState.get<string>(OPENED_FOLDER_KEY),
+    runInTerminal: (name, cwd, command) => {
+      const terminal = vscode.window.createTerminal({ name, cwd });
+      terminal.show(true);
+      terminal.sendText(command, true);
+    },
+    info: (message) => void vscode.window.showInformationMessage(message),
+    warn: (message) => void vscode.window.showWarningMessage(message),
+    error: (message) => void vscode.window.showErrorMessage(message),
+    log: (line) => output.appendLine(line),
+  };
+  const tasks = createTaskCommands(host);
+  void tasks.announceOpened();
+
   context.subscriptions.push(
     output,
+    vscode.commands.registerCommand("sandboxFactory.openTask", () =>
+      tasks.openTask(),
+    ),
+    vscode.commands.registerCommand("sandboxFactory.showTask", () =>
+      tasks.showTask(),
+    ),
+    vscode.commands.registerCommand("sandboxFactory.installDependencies", () =>
+      tasks.installDependencies(),
+    ),
+    vscode.commands.registerCommand("sandboxFactory.runApp", () =>
+      tasks.runApp(),
+    ),
+    vscode.commands.registerCommand("sandboxFactory.runTests", () =>
+      tasks.runTests(),
+    ),
 
     /**
      * Reports this build and the API's. The two can drift by days: the
@@ -60,11 +152,11 @@ export function activate(context: vscode.ExtensionContext): void {
      * accepts it.
      */
     vscode.commands.registerCommand("sandboxFactory.showVersion", async () => {
-      const api = await fetchApiBuild();
+      const api = await fetchApiBuild(origin);
       output.appendLine(buildBanner("sandbox-factory", extensionBuild));
       output.appendLine(
         api === undefined
-          ? `API at ${baseUrl()} did not report a version.`
+          ? `API at ${origin} did not report a version.`
           : buildBanner("API", api),
       );
       output.show(true);
@@ -84,17 +176,14 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
 
     /**
-     * Stores the bearer token the API issues, which is how this extension
-     * authenticates: it has no cookie jar, so the session the web app keeps in
-     * a cookie reaches here as a token the user pastes in.
-     *
-     * Kept with no feature calling it yet because it writes to `secrets`, and
-     * the wrong storage for a credential is the kind of shortcut that gets
-     * taken when a feature is mid-flight.
+     * Stores the bearer token the API issues, bound to the configured
+     * origin. The extension has no cookie jar, so the session the web app
+     * keeps in a cookie reaches here as a token the user pastes in; usable
+     * sign-in arrives with contributor submission.
      */
     vscode.commands.registerCommand("sandboxFactory.signIn", async () => {
       const token = await vscode.window.showInputBox({
-        prompt: "Paste an API token",
+        prompt: `Paste an API token for ${origin}`,
         password: true,
         ignoreFocusOut: true,
       });
@@ -102,15 +191,15 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
       if (token === "") {
-        await context.secrets.delete(TOKEN_KEY);
+        await context.secrets.delete(tokenKey);
         void vscode.window.showInformationMessage(
           "sandbox-factory: token cleared.",
         );
         return;
       }
-      await context.secrets.store(TOKEN_KEY, token);
+      await context.secrets.store(tokenKey, token);
       void vscode.window.showInformationMessage(
-        "sandbox-factory: token saved.",
+        `sandbox-factory: token saved for ${origin}.`,
       );
     }),
 
@@ -122,13 +211,16 @@ export function activate(context: vscode.ExtensionContext): void {
             "sandbox-factory: API URL changed. Reload to apply.",
             "Reload",
           )
-          .then((choice) => {
-            if (choice === "Reload") {
-              void vscode.commands.executeCommand(
-                "workbench.action.reloadWindow",
-              );
-            }
-          });
+          .then(
+            (choice) => {
+              if (choice === "Reload") {
+                void vscode.commands.executeCommand(
+                  "workbench.action.reloadWindow",
+                );
+              }
+            },
+            () => {},
+          );
       }
     }),
   );
@@ -145,9 +237,11 @@ export function deactivate(): void {
  * Not routed through `ApiClient`: /version sits outside /api/v1 and needs no
  * session, and that client sends credentials on every call.
  */
-async function fetchApiBuild(): Promise<BuildInfoDto | undefined> {
+async function fetchApiBuild(
+  origin: string,
+): Promise<BuildInfoDto | undefined> {
   try {
-    const response = await fetch(new URL("/version", baseUrl()));
+    const response = await fetch(new URL("/version", origin));
     if (!response.ok) {
       return undefined;
     }
@@ -158,19 +252,10 @@ async function fetchApiBuild(): Promise<BuildInfoDto | undefined> {
   }
 }
 
-function baseUrl(): string {
-  return vscode.workspace
-    .getConfiguration("sandboxFactory")
-    .get<string>("apiBaseUrl", "http://localhost:4000");
-}
-
 /**
- * Runs an API call and reports failure readably.
- *
- * Unused while the shell has no data commands, but kept and exported: it
- * encodes the two cases every call has to handle — a 401 means the token is
- * stale, a 404 means someone else already changed it — and rediscovering that
- * per command is how inconsistent error messages happen.
+ * Runs an API call and reports failure readably: a 401 means the token is
+ * stale, a 404 means someone else already changed it. Kept for the data
+ * commands that submission adds.
  */
 export async function run(
   action: () => Promise<unknown>,
