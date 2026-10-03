@@ -13,6 +13,7 @@ import { parseWorkerEnv } from "../src/env.js";
 import { uploadArtifacts } from "../src/upload.js";
 import { AnalysisError } from "../src/errors.js";
 import { run, stores } from "./helpers.js";
+import type { StoredArtifact } from "@sandbox-factory/db";
 import type { ToolAdapter, ArtifactFile } from "../src/tools/adapter.js";
 const source = { maxBytes: 5000, maxFiles: 5, token: async () => "token" };
 const tool: ToolAdapter = {
@@ -50,6 +51,172 @@ test("success uploads attempt-scoped artifacts, commits, and removes source", as
   assert.equal(state.bytes.size, 2);
   assert.ok(state.bytes.has("runs/arn_1/lease_1/graph.json"));
   await assert.rejects(stat(directory));
+});
+test("a run for another tool or version never executes", async () => {
+  for (const claimed of [
+    { ...run, tool: "slice" as const },
+    { ...run, toolVersion: "other" },
+  ]) {
+    const state = stores();
+    await executeRun(claimed, { ...state, tool, source, fetchSource });
+    assert.deepEqual(state.calls, ["tool_failed"]);
+  }
+});
+test("tools read earlier runs through owner-scoped inputs", async () => {
+  const state = stores();
+  const seen: string[] = [];
+  state.runs.get = async (owner, id) => {
+    seen.push(`run ${owner} ${id}`);
+    return { ...run, id, status: "succeeded" };
+  };
+  await state.objects.put("runs/other/graph.json", Buffer.from("{}"));
+  const reading: ToolAdapter = {
+    ...tool,
+    run: async (input) => {
+      assert.equal((await input.inputs.getRun("arn_graph"))?.id, "arn_graph");
+      assert.deepEqual(await input.inputs.listArtifacts("arn_graph"), []);
+      // Object keys are global; one no owner-scoped listing returned is not read.
+      assert.equal(
+        await input.inputs.readArtifact("runs/other/graph.json"),
+        undefined,
+      );
+      assert.deepEqual(input.run, {
+        snapshotId: run.snapshotId,
+        commitSha: run.commitSha,
+      });
+      return tool.run(input);
+    },
+  };
+  await executeRun(run, { ...state, tool: reading, source, fetchSource });
+  assert.deepEqual(seen, ["run org_1 arn_graph"]);
+  assert.deepEqual(state.calls, ["finish"]);
+  const listed: string[] = [];
+  await executeRun(run, {
+    ...state,
+    tool: {
+      ...tool,
+      run: async (input) => {
+        await input.inputs.listArtifacts("arn_graph");
+        assert.equal(
+          Buffer.from(
+            (await input.inputs.readArtifact("runs/other/graph.json")) ?? [],
+          ).toString(),
+          "{}",
+        );
+        return tool.run(input);
+      },
+    },
+    artifacts: {
+      list: async (owner, id) => {
+        listed.push(`${owner} ${id}`);
+        return [
+          { objectKey: "runs/other/graph.json" },
+        ] as unknown as StoredArtifact[];
+      },
+    },
+    source,
+    fetchSource,
+  });
+  assert.deepEqual(listed, ["org_1 arn_graph"]);
+});
+
+test("a committed run hands its files to the tool; a failing hook does not undo the success", async () => {
+  const recorded: string[] = [];
+  const sandboxes = {
+    getVersion: async (owner: string, id: string) => {
+      recorded.push(`get ${owner} ${id}`);
+      return null;
+    },
+    recordBuildOutput: async (
+      owner: string,
+      versionId: string,
+      runId: string,
+      output: { harnessSha256: string },
+    ) => {
+      recorded.push(
+        `record ${owner} ${versionId} ${runId} ${output.harnessSha256}`,
+      );
+      return true;
+    },
+  };
+  const hooked = (fail: boolean): ToolAdapter => ({
+    ...tool,
+    run: async (input) => {
+      assert.equal(await input.inputs.getVersion("sbv_1"), null);
+      return tool.run(input);
+    },
+    committed: async ({ runId, files, inputs }) => {
+      recorded.push(`committed ${runId} ${files.map((f) => f.path).join()}`);
+      await inputs.recordBuildOutput("sbv_1", runId, {
+        harnessSha256: "h",
+        toolchainDigest: "d",
+      });
+      if (fail) throw new Error("database went away");
+    },
+  });
+  const state = stores();
+  await executeRun(run, {
+    ...state,
+    sandboxes,
+    tool: hooked(false),
+    source,
+    fetchSource,
+  });
+  assert.deepEqual(recorded, [
+    "get org_1 sbv_1",
+    "committed arn_1 graph.json",
+    "record org_1 sbv_1 arn_1 h",
+  ]);
+  const failing = stores();
+  const errors: unknown[] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => errors.push(args);
+  try {
+    await executeRun(run, {
+      ...failing,
+      sandboxes,
+      tool: hooked(true),
+      source,
+      fetchSource,
+    });
+  } finally {
+    console.error = original;
+  }
+  assert.deepEqual(failing.calls, ["finish"]);
+  assert.equal(errors.length, 1);
+  assert.ok(failing.bytes.has("runs/arn_1/lease_1/graph.json"));
+  // A lost commit never reaches the hook.
+  const lost = stores();
+  lost.runs.finish = async () => false;
+  recorded.length = 0;
+  await executeRun(run, {
+    ...lost,
+    sandboxes,
+    tool: hooked(false),
+    source,
+    fetchSource,
+  });
+  assert.deepEqual(recorded, ["get org_1 sbv_1"]);
+  // Without a sandbox store the inputs answer nothing rather than throw.
+  await executeRun(run, {
+    ...stores(),
+    tool: {
+      ...tool,
+      run: async (input) => {
+        assert.equal(await input.inputs.getVersion("sbv_1"), null);
+        assert.equal(
+          await input.inputs.recordBuildOutput("sbv_1", "arn_1", {
+            harnessSha256: "h",
+            toolchainDigest: "d",
+          }),
+          false,
+        );
+        return tool.run(input);
+      },
+    },
+    source,
+    fetchSource,
+  });
 });
 test("known losing attempts clean artifacts and logs", async () => {
   const state = stores();
@@ -328,6 +495,18 @@ test("worker validates credentials, modes, and bounded limits", () => {
   assert.throws(() => parseWorkerEnv({ ...env, S3_ACCESS_KEY_ID: "lone" }));
   assert.throws(() => parseWorkerEnv({ ...env, MAX_FILES: "0" }));
   assert.throws(() => parseWorkerEnv({ ...env, WORKER_MODE: "forever" }));
+  // Builds run in-process only on a worker that opts in.
+  assert.equal(parseWorkerEnv(env).EVALUATION_PROVIDER, "none");
+  assert.equal(
+    parseWorkerEnv({ ...env, EVALUATION_PROVIDER: "local-process" })
+      .EVALUATION_PROVIDER,
+    "local-process",
+  );
+  assert.equal(
+    parseWorkerEnv({ ...env, EVALUATION_PROVIDER: "" }).EVALUATION_PROVIDER,
+    "none",
+  );
+  assert.throws(() => parseWorkerEnv({ ...env, EVALUATION_PROVIDER: "e2b" }));
 });
 
 test("source tokens use repository-scoped read permissions", async () => {

@@ -75,9 +75,11 @@ Extend these rather than copying compiler options. Path settings (`rootDir`,
 `outDir`, `include`) stay in the extending config.
 
 Import extensions follow the resolution mode. `NodeNext` (`core`, `shared`,
-`client`, `db`, `api`) writes `from "./store.js"` for `store.ts`; `Bundler`
-(`web`, `extension`) writes `from "./tree"`. A file moved between them needs its
-imports adjusted.
+`client`, `db`, `api`, `worker`) writes `from "./store.js"` for `store.ts`;
+`web` (`Bundler`) writes `from "./tree"`. `extension` is bundled under
+`Bundler` but its tests compile under `NodeNext`, so it writes the `.js` form,
+which `Bundler` resolves too. A file moved between them needs its imports
+adjusted.
 
 ## The database layer
 
@@ -411,6 +413,53 @@ a reinstall is a new installation id. Reconnecting clears either.
 Both connect flows sign their `state` with the same secret, so the state
 carries a `purpose` (`apps/api/src/connect-state.ts`) and each callback
 refuses the other's.
+
+**Analysis runs are private and cached.** A `graphify` run maps a snapshot's
+structure in a Fargate worker; a `slice` run reads that map and the same
+source to cut the files one task needs and describe their boundary (the stubs
+it imports from outside, the public surface outside code imports from it, the
+externals to mock). Both are `analysis_run` rows keyed by `(snapshot, tool,
+version, params)`, reached only through the repository's owner, with their
+artifacts in the private bucket under `runs/<runId>/`. A slice names the
+graphify run it reads and is handed to a worker only after that run has
+finished. The walk and the record shapes are pure code in
+`packages/core/src/slice`; `apps/worker/README.md` states the output contract.
+A slice is a proposal: `stubCoverage: "full"` with no blockers lets it reach
+the sandbox plan's gates, and anything less is diagnostic output that cannot
+be published.
+
+**Agents propose; deterministic code decides.** A `scope` run gives a model
+read-only tools over the extracted source and the ticket's approved spec,
+and it proposes a slice request: entry points and a budget chosen so the
+cuts fall on input/output seams. Its `check_scope` tool runs the very slice
+computation the `slice` tool runs, and an answer is recorded only when that
+computation agrees with it. The proposal fills the slice picker; a person
+starts the slice. A `fixtures` run, for a succeeded slice, writes default
+behaviour for mocked calls and the `npm run dev` walkthrough, type-checked
+against the slice's own stubs; a version copies them into its transform,
+and the build aliases them and runs the walkthrough in its baseline. The
+source is read only during a run: transcripts and tool results are never
+stored, only the structured answer, its token usage and fixed log lines.
+Agent runs need `ANTHROPIC_API_KEY` and `AGENT_MODEL` on the worker; without
+a key they fail `agent_unavailable` and nothing else changes.
+
+**Sandbox versions pin their provenance.** A version is cut from a succeeded
+slice. Its private source row records the slice's manifest and contract
+hashes, the transform (alias rules, dependency choices, hidden tests) and a
+snapshot of the approved task; fixtures, when attached, are part of the
+transform too. A transform change clears every piece of evidence gathered
+for the old one. A `sandbox_build` run, another
+`analysis_run`, generates the standalone project and runs its baseline
+through an evaluation provider. Only a worker started with
+`EVALUATION_PROVIDER=local-process` runs builds, and that provider is not an
+isolation boundary. A repository a sandbox is built from cannot be removed,
+alone or with its connection, because replay needs its snapshot.
+
+**The extension runs a task locally.** It reads `sandbox-task.json` from a
+clone for display only and runs the fixed command table from
+`packages/core` in VS Code terminals, only when invoked, in a trusted
+workspace. The API address is a user or application setting; a workspace
+value is ignored, and the stored token is keyed by origin.
 
 ## Not yet built
 

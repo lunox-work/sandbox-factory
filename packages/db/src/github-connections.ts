@@ -21,6 +21,7 @@
 import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
 
 import { collectRepositoryObjects } from "./artifacts.js";
+import { guardRepositoryDelete } from "./errors.js";
 import type { Database } from "./errors.js";
 import { generateId } from "./mapping.js";
 import { githubConnection, githubRepo } from "./schema.js";
@@ -115,7 +116,9 @@ export interface GithubConnectionStore {
   ): Promise<boolean>;
   /**
    * Deletes the row, and with it every repository registered from it. The
-   * App stays installed on GitHub until the client removes it there.
+   * App stays installed on GitHub until the client removes it there. Both
+   * removals throw `RepositoryInUseError` while a sandbox is built from one
+   * of those repositories.
    */
   remove(organizationId: string, connectionId: string): Promise<boolean>;
   /** Deletes the connection and returns cascaded tree, artifact and log keys. */
@@ -274,15 +277,17 @@ export function createGithubConnectionStore(
     },
 
     async remove(organizationId, connectionId) {
-      const rows = await db
-        .delete(githubConnection)
-        .where(
-          and(
-            eq(githubConnection.organizationId, organizationId),
-            eq(githubConnection.id, connectionId),
-          ),
-        )
-        .returning();
+      const rows = await guardRepositoryDelete(() =>
+        db
+          .delete(githubConnection)
+          .where(
+            and(
+              eq(githubConnection.organizationId, organizationId),
+              eq(githubConnection.id, connectionId),
+            ),
+          )
+          .returning(),
+      );
       return rows.length > 0;
     },
 
@@ -316,7 +321,9 @@ export function createGithubConnectionStore(
           organizationId,
           eq(githubRepo.connectionId, connectionId),
         );
-        await tx.delete(githubConnection).where(owner);
+        await guardRepositoryDelete(() =>
+          tx.delete(githubConnection).where(owner),
+        );
         return { removed: true, ...keys };
       });
     },

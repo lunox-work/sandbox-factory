@@ -3,16 +3,30 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
   AnalysisRunStore,
+  ArtifactStore,
   ClaimedAnalysisRun,
   ObjectStore,
+  SandboxStore,
 } from "@sandbox-factory/db";
 import { fetchSource } from "./fetch-source.js";
 import { AnalysisError } from "./errors.js";
 import { uploadArtifacts } from "./upload.js";
-import type { ToolAdapter } from "./tools/adapter.js";
+import type { AgentTask, ToolAdapter, ToolInputs } from "./tools/adapter.js";
 
 export interface RunOptions {
   readonly runs: AnalysisRunStore;
+  /** Earlier runs' artifacts, read owner-scoped for tools that build on them. */
+  readonly artifacts?: Pick<ArtifactStore, "list">;
+  /** Sandbox versions, owner-scoped, for the build adapter. */
+  readonly sandboxes?: Pick<SandboxStore, "getVersion" | "recordBuildOutput">;
+  /** Proposal specs, owner-scoped, for the agent adapters. */
+  readonly tasks?: {
+    get(
+      organizationId: string,
+      proposalId: string,
+      specRevision: number,
+    ): Promise<AgentTask | null>;
+  };
   readonly objects: ObjectStore;
   readonly tool: ToolAdapter;
   readonly source: Omit<Parameters<typeof fetchSource>[2], "signal">;
@@ -37,6 +51,40 @@ export async function executeRun(
   let logRetained = false;
   let stage: "source" | "tool" = "source";
   const shutdown = () => abort.abort(new AnalysisError("cancelled"));
+  // Object keys are not owner-scoped; only those an owner-scoped listing
+  // returned may be read.
+  const listedKeys = new Set<string>();
+  const inputs: ToolInputs = {
+    getRun: (id) => options.runs.get(run.organizationId, id),
+    listArtifacts: async (id) => {
+      if (options.artifacts === undefined) return [];
+      const listed = await options.artifacts.list(run.organizationId, id);
+      for (const artifact of listed) listedKeys.add(artifact.objectKey);
+      return listed;
+    },
+    readArtifact: (key) =>
+      listedKeys.has(key)
+        ? options.objects.get(key)
+        : Promise.resolve(undefined),
+    getVersion: (id) =>
+      options.sandboxes === undefined
+        ? Promise.resolve(null)
+        : options.sandboxes.getVersion(run.organizationId, id),
+    getTask: (proposalId, specRevision) =>
+      options.tasks === undefined
+        ? Promise.resolve(null)
+        : options.tasks.get(run.organizationId, proposalId, specRevision),
+    recordBuildOutput: (versionId, buildRunId, output) =>
+      options.sandboxes === undefined
+        ? Promise.resolve(false)
+        : options.sandboxes.recordBuildOutput(
+            run.organizationId,
+            versionId,
+            buildRunId,
+            output,
+            now(),
+          ),
+  };
   options.shutdown?.addEventListener("abort", shutdown, { once: true });
   if (options.shutdown?.aborted) shutdown();
   const deadline = setTimeout(
@@ -56,7 +104,10 @@ export async function executeRun(
       });
   }, options.heartbeatMs ?? 15_000);
   try {
-    if (run.toolVersion !== options.tool.version)
+    if (
+      run.tool !== options.tool.name ||
+      run.toolVersion !== options.tool.version
+    )
       throw new AnalysisError("tool_failed");
     const source = await (options.fetchSource ?? fetchSource)(run, directory, {
       ...options.source,
@@ -68,6 +119,8 @@ export async function executeRun(
       sourceDir: source,
       outDir: join(directory, "out"),
       params: run.params,
+      run: { snapshotId: run.snapshotId, commitSha: run.commitSha },
+      inputs,
       signal: abort.signal,
       log: (line) => {
         if (lines.length < 100) lines.push(line);
@@ -105,6 +158,12 @@ export async function executeRun(
     );
     commitUncertain = false;
     logRetained = committed;
+    if (committed && options.tool.committed !== undefined)
+      await options.tool
+        .committed({ runId: run.id, files, inputs })
+        .catch((error: unknown) =>
+          console.error(`Run ${run.id}: after-commit step failed.`, error),
+        );
   } catch (error) {
     const failure = abort.signal.aborted ? abort.signal.reason : error;
     const code =

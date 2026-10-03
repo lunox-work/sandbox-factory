@@ -28,16 +28,40 @@ const run: StoredAnalysisRun = {
   deadlineAt: stamp,
   createdAt: stamp,
 };
+const sliceRun: StoredAnalysisRun = {
+  ...run,
+  id: "arn_slice",
+  tool: "slice",
+  status: "queued",
+  params: {
+    deadlineMinutes: 30,
+    graphRunId: run.id,
+    entryPoints: ["src/main.ts"],
+    budget: { maxFiles: 40, maxDepth: 3 },
+    includeInferred: false,
+  },
+};
 function fixture(role = "owner") {
   let launches = 0;
   const keys: string[] = [];
   let limit = false;
+  const enqueued: { tool: string; params: unknown }[] = [];
   const options = {
     runs: {
-      enqueue: async () =>
-        limit
+      enqueue: async (
+        _owner: string,
+        _snapshot: string,
+        input: { tool?: string; params: unknown },
+      ) => {
+        enqueued.push({ tool: input.tool ?? "graphify", params: input.params });
+        return limit
           ? { ok: false, reason: "run_limit" }
-          : { ok: true, created: false, run },
+          : {
+              ok: true,
+              created: false,
+              run: input.tool === "slice" ? sliceRun : run,
+            };
+      },
       list: async () => [run],
       get: async (owner: string, id: string) =>
         owner === "org_1" && id === run.id ? run : null,
@@ -49,14 +73,43 @@ function fixture(role = "owner") {
         owner === "org_1" && id === "ghr_1" ? { id } : null,
     },
     snapshots: {
-      current: async () => ({ id: "rsn_1", repoId: "ghr_1" }),
+      current: async () => ({
+        id: "rsn_1",
+        repoId: "ghr_1",
+        treeKey: "trees/1",
+      }),
       get: async (_owner: string, id: string) =>
         id === "rsn_1"
-          ? { id, repoId: "ghr_1" }
+          ? { id, repoId: "ghr_1", treeKey: "trees/1" }
           : id === "other-repo"
-            ? { id, repoId: "ghr_other" }
+            ? { id, repoId: "ghr_other", treeKey: "trees/2" }
             : null,
     },
+    tree: async (key: string) =>
+      key === "trees/1"
+        ? {
+            version: 1,
+            commitSha: "a".repeat(40),
+            treeSha: "b".repeat(40),
+            truncated: false,
+            entries: [
+              {
+                path: "src/main.ts",
+                type: "blob",
+                mode: "100644",
+                sha: "c",
+                size: 1,
+              },
+              {
+                path: "src/util.ts",
+                type: "blob",
+                mode: "100644",
+                sha: "d",
+                size: 1,
+              },
+            ],
+          }
+        : null,
     artifacts: {
       list: async () => [
         {
@@ -114,12 +167,178 @@ function fixture(role = "owner") {
     request,
     options,
     keys,
+    enqueued,
     setLimit: () => {
       limit = true;
     },
     launches: () => launches,
   };
 }
+test("a slice checks its entry points against the tree and queues behind the graph run", async () => {
+  const f = fixture();
+  const response = await f.request("repositories/ghr_1/slices", {
+    entryPoints: ["src/util.ts", "src", "src/main.ts"],
+    budget: { maxFiles: 5 },
+  });
+  assert.equal(response.status, 202);
+  const body = (await response.json()) as {
+    run: StoredAnalysisRun;
+    graphRun: StoredAnalysisRun;
+  };
+  assert.equal(body.run.id, "arn_slice");
+  assert.equal(body.graphRun.id, "arn_1");
+  assert.deepEqual(f.enqueued, [
+    { tool: "graphify", params: { deadlineMinutes: 30 } },
+    {
+      tool: "slice",
+      params: {
+        deadlineMinutes: 30,
+        graphRunId: "arn_1",
+        entryPoints: ["src", "src/main.ts", "src/util.ts"],
+        budget: { maxFiles: 5, maxDepth: 3 },
+        includeInferred: false,
+      },
+    },
+  ]);
+  assert.equal(f.launches(), 1);
+  assert.equal(
+    (
+      await fixture("member").request("repositories/ghr_1/slices", {
+        entryPoints: ["src/main.ts"],
+      })
+    ).status,
+    403,
+  );
+  assert.equal(
+    (await f.request("repositories/ghr_1/slices", { entryPoints: [] })).status,
+    400,
+  );
+  assert.equal(
+    (
+      await f.request("repositories/missing/slices", {
+        entryPoints: ["src/main.ts"],
+      })
+    ).status,
+    404,
+  );
+  assert.equal(
+    (
+      await f.request("repositories/ghr_1/slices", {
+        entryPoints: ["src/main.ts"],
+        snapshotId: "other-repo",
+      })
+    ).status,
+    404,
+  );
+  const unknown = await f.request("repositories/ghr_1/slices", {
+    entryPoints: ["lib/x.ts", "src/main.ts"],
+  });
+  assert.equal(unknown.status, 400);
+  assert.deepEqual(
+    ((await unknown.json()) as { entryPoints: string[] }).entryPoints,
+    ["lib/x.ts"],
+  );
+  f.options.snapshots.current = async () =>
+    ({ id: "rsn_2", repoId: "ghr_1", treeKey: "trees/none" }) as never;
+  assert.equal(
+    (
+      await f.request("repositories/ghr_1/slices", {
+        entryPoints: ["src/main.ts"],
+      })
+    ).status,
+    502,
+  );
+  f.options.snapshots.current = async () =>
+    ({ id: "rsn_1", repoId: "ghr_1", treeKey: "trees/1" }) as never;
+  f.setLimit();
+  assert.equal(
+    (
+      await f.request("repositories/ghr_1/slices", {
+        entryPoints: ["src/main.ts"],
+      })
+    ).status,
+    409,
+  );
+});
+test("a slice reports a failed or mismatched graph run and cleans obsolete logs", async () => {
+  const f = fixture();
+  const removed: string[] = [];
+  Object.assign(f.options.objects, {
+    remove: async (key: string) => {
+      removed.push(key);
+    },
+  });
+  f.options.runs.enqueue = async (_owner, _snapshot, input) =>
+    input.tool === "slice"
+      ? { ok: false, reason: "graph_mismatch" }
+      : {
+          ok: true,
+          created: true,
+          run: { ...run, status: "queued" },
+          obsoleteLogKey: "logs/old.log",
+        };
+  const mismatch = await f.request("repositories/ghr_1/slices", {
+    entryPoints: ["src/main.ts"],
+  });
+  assert.equal(mismatch.status, 409);
+  assert.equal(
+    ((await mismatch.json()) as { code: string }).code,
+    "graph_mismatch",
+  );
+  assert.deepEqual(removed, ["logs/old.log"]);
+  f.options.runs.enqueue = async () => ({
+    ok: true,
+    created: false,
+    run: { ...run, status: "failed" },
+  });
+  const failed = await f.request("repositories/ghr_1/slices", {
+    entryPoints: ["src/main.ts"],
+  });
+  assert.equal(failed.status, 409);
+  assert.equal(
+    ((await failed.json()) as { code: string }).code,
+    "graph_failed",
+  );
+  f.options.runs.enqueue = async () => ({ ok: false, reason: "not-found" });
+  assert.equal(
+    (
+      await f.request("repositories/ghr_1/slices", {
+        entryPoints: ["src/main.ts"],
+      })
+    ).status,
+    404,
+  );
+  f.options.runs.enqueue = async (_owner, _snapshot, input) =>
+    input.tool === "slice"
+      ? { ok: false, reason: "not-found" }
+      : { ok: true, created: false, run };
+  assert.equal(
+    (
+      await f.request("repositories/ghr_1/slices", {
+        entryPoints: ["src/main.ts"],
+      })
+    ).status,
+    404,
+  );
+  f.options.runs.enqueue = async (_owner, _snapshot, input) =>
+    input.tool === "slice"
+      ? {
+          ok: true,
+          created: true,
+          run: sliceRun,
+          obsoleteLogKey: "logs/slice.log",
+        }
+      : { ok: true, created: false, run };
+  assert.equal(
+    (
+      await f.request("repositories/ghr_1/slices", {
+        entryPoints: ["src/main.ts"],
+      })
+    ).status,
+    202,
+  );
+  assert.deepEqual(removed, ["logs/old.log", "logs/slice.log"]);
+});
 test("enqueue validates scope, role, parameters, cache result, and active cap", async () => {
   const f = fixture();
   for (let i = 0; i < 2; i++) {

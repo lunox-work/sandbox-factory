@@ -124,6 +124,8 @@ export const inviteMemberSchema = z
 
 export const errorSchema = z.object({
   error: z.string(),
+  /** A stable reason a caller can branch on, where the route gives one. */
+  code: z.string().optional(),
 });
 
 export type ErrorDto = z.infer<typeof errorSchema>;
@@ -151,6 +153,9 @@ export * from "./jira.js";
 /** The GitHub wire contract, for `packages/github` and the routes that use it. */
 export * from "./github.js";
 export * from "./analysis.js";
+
+/** Sandbox versions: owner-side provenance and build contracts. */
+export * from "./sandbox.js";
 
 /** Default avatars, computed from an account id rather than stored. */
 export * from "./identicon.js";

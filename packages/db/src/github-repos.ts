@@ -27,16 +27,20 @@ import {
 } from "drizzle-orm";
 
 import { collectRepositoryObjects } from "./artifacts.js";
+import { guardRepositoryDelete } from "./errors.js";
 import type { Database } from "./errors.js";
 import { generateId } from "./mapping.js";
 import { githubConnection, githubRepo } from "./schema.js";
 import type { GithubRepoRow } from "./schema.js";
 
 /** A registered repository, as the UI lists it. */
+/** `source` is read for analysis; `sandbox` is written to by publication. */
+export type GithubRepoRole = "source" | "sandbox";
+
 export interface GithubRepoSummary {
   readonly id: string;
   readonly connectionId: string;
-  readonly role: "source";
+  readonly role: GithubRepoRole;
   readonly externalId: string;
   readonly fullName: string;
   readonly defaultBranch: string;
@@ -161,7 +165,11 @@ export interface GithubRepoStore {
    * oldest first. Cross-organization; see the file comment.
    */
   dueForSync(staleBefore: Date, limit: number): Promise<DueGithubRepo[]>;
-  /** Transactional cascade with private object keys. Optional for legacy stores. */
+  /**
+   * Transactional cascade with private object keys. Optional for legacy
+   * stores. Both removals throw `RepositoryInUseError` while a sandbox is
+   * built from the repository.
+   */
   removeWithObjects?(
     organizationId: string,
     repoId: string,
@@ -430,15 +438,16 @@ export function createGithubRepoStore(db: Database): GithubRepoStore {
           owner,
           eq(githubRepo.id, id),
         );
-        await tx.delete(githubRepo).where(owned(owner, id));
+        await guardRepositoryDelete(() =>
+          tx.delete(githubRepo).where(owned(owner, id)),
+        );
         return { removed: true, objectKeys: keys.objectKeys };
       });
     },
     async remove(organizationId, repoId) {
-      const rows = await db
-        .delete(githubRepo)
-        .where(owned(organizationId, repoId))
-        .returning();
+      const rows = await guardRepositoryDelete(() =>
+        db.delete(githubRepo).where(owned(organizationId, repoId)).returning(),
+      );
       return rows.length > 0;
     },
   };
@@ -467,8 +476,9 @@ function toSummary(row: GithubRepoRow): GithubRepoSummary {
   return {
     id: row.id,
     connectionId: row.connectionId,
-    // `source` is the only role this phase writes; see `shared`.
-    role: "source",
+    // Registration writes `source`; publication (sandbox plan 5D) writes
+    // `sandbox`. Anything else is read as `source` rather than invented.
+    role: row.role === "sandbox" ? "sandbox" : "source",
     externalId: row.externalId,
     fullName: row.fullName,
     defaultBranch: row.defaultBranch,

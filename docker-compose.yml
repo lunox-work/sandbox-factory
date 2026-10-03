@@ -213,6 +213,12 @@ services:
       GITHUB_APP_ID: ${GITHUB_APP_ID:-}
       GITHUB_APP_PRIVATE_KEY: ${GITHUB_APP_PRIVATE_KEY:-}
       WORKER_MODE: poll
+      # Development only: builds run their baseline as local processes.
+      EVALUATION_PROVIDER: local-process
+      # The scope and fixtures agents. The key is the one sizing uses; without
+      # it agent runs fail with agent_unavailable and nothing else changes.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      AGENT_MODEL: ${AGENT_MODEL:-claude-opus-5-5}
       MAX_TARBALL_BYTES: ${MAX_TARBALL_BYTES:-209715200}
       MAX_FILES: ${MAX_FILES:-20000}
     volumes:

@@ -441,8 +441,24 @@ jobs:
       - name: Register the worker revision
         run: |
           aws ecs describe-task-definition --task-definition "$PROJECT-worker"             --query taskDefinition --output json > worker-current.json
-          jq --arg image "${{ steps.infra.outputs.worker_ecr }}:${{ steps.commit.outputs.sha }}" '
+          # The agents' key is the API's sizing secret: read its ARN from the
+          # API's revision rather than granting this role another lookup.
+          anthropic="$(aws ecs describe-task-definition --task-definition "$PROJECT-api" \
+            --query "taskDefinition.containerDefinitions[0].secrets[?name=='ANTHROPIC_API_KEY'].valueFrom | [0]" \
+            --output text)"
+          jq --arg image "${{ steps.infra.outputs.worker_ecr }}:${{ steps.commit.outputs.sha }}" \
+            --arg anthropic "$anthropic" '
             .containerDefinitions[0].image = $image
+            | .containerDefinitions[0].environment =
+                ((.containerDefinitions[0].environment // [])
+                 | map(select(.name != "AGENT_MODEL"))
+                 + [{name: "AGENT_MODEL", value: "claude-opus-5-5"}])
+            | if $anthropic == "" or $anthropic == "None" then .
+              else .containerDefinitions[0].secrets =
+                ((.containerDefinitions[0].secrets // [])
+                 | map(select(.name != "ANTHROPIC_API_KEY"))
+                 + [{name: "ANTHROPIC_API_KEY", valueFrom: $anthropic}])
+              end
             | del(.taskDefinitionArn, .revision, .status, .requiresAttributes,
                   .compatibilities, .registeredAt, .registeredBy, .deregisteredAt)
           ' worker-current.json > worker-taskdef.json

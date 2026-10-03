@@ -27,6 +27,20 @@ export const run: ClaimedAnalysisRun = {
   installationId: "9",
   sizeKb: 1,
 };
+/** The run context and empty inputs a tool test does not care about. */
+export function toolContext() {
+  return {
+    run: { snapshotId: run.snapshotId, commitSha: run.commitSha },
+    inputs: {
+      getRun: async () => null,
+      listArtifacts: async () => [],
+      readArtifact: async () => undefined,
+      getVersion: async () => null,
+      getTask: async () => null,
+      recordBuildOutput: async () => false,
+    },
+  };
+}
 export function stores() {
   const bytes = new Map<string, Uint8Array>();
   const calls: string[] = [];

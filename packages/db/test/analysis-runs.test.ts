@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { GRAPHIFY_TOOL_VERSION } from "sandbox-factory";
+import {
+  FIXTURES_TOOL_VERSION,
+  GRAPHIFY_TOOL_VERSION,
+  SANDBOX_BUILD_RUN_VERSION,
+  SCOPE_TOOL_VERSION,
+  SLICE_TOOL_VERSION,
+} from "sandbox-factory";
 import { createAnalysisRunStore } from "../src/analysis-runs.js";
 import { createArtifactStore } from "../src/artifacts.js";
 import type { AnalysisRunRow, ArtifactRow } from "../src/schema.js";
@@ -61,6 +67,192 @@ test("enqueue locks owner and snapshot, normalizes cache key and writes one queu
   assert.equal(fake.calls[0]?.lock, "update");
   assert.equal(fake.calls[1]?.lock, "key share");
   assert.match(String(fake.calls[4]?.values?.["paramsHash"]), /^[a-f0-9]{64}$/);
+});
+test("a slice run needs a graphify run on the same snapshot and waits for it", async () => {
+  const params = {
+    deadlineMinutes: 30,
+    graphRunId: "graph",
+    entryPoints: ["src/main.ts"],
+    budget: { maxFiles: 40, maxDepth: 3 },
+    includeInferred: false,
+  };
+  const fake = createSequencedFakeDb([
+    [{ id: "owner" }],
+    [{ repoId: "repo" }],
+    [{ id: "graph" }],
+    [],
+    [],
+    [row({ tool: "slice", toolVersion: SLICE_TOOL_VERSION, params })],
+  ]);
+  const result = await createAnalysisRunStore(fake.db).enqueue(
+    "owner",
+    "snapshot",
+    { tool: "slice", params, requestedBy: "user" },
+  );
+  assert.equal(result.ok && result.run.tool, "slice");
+  assert.equal(fake.calls[5]?.values?.["tool"], "slice");
+  assert.equal(fake.calls[5]?.values?.["toolVersion"], SLICE_TOOL_VERSION);
+  const mismatch = createSequencedFakeDb([
+    [{ id: "owner" }],
+    [{ repoId: "repo" }],
+    [],
+  ]);
+  assert.deepEqual(
+    await createAnalysisRunStore(mismatch.db).enqueue("owner", "snapshot", {
+      tool: "slice",
+      params,
+      requestedBy: "user",
+    }),
+    { ok: false, reason: "graph_mismatch" },
+  );
+  await assert.rejects(
+    createAnalysisRunStore(
+      createSequencedFakeDb([[{ id: "owner" }], [{ repoId: "repo" }]]).db,
+    ).enqueue("owner", "snapshot", { tool: "slice", ...input }),
+    /do not match/,
+  );
+  const build = {
+    deadlineMinutes: 30,
+    sliceRunId: "slice",
+    sandboxVersionId: "sbv_1",
+    manifestSha256: "m".repeat(64),
+    contractSha256: "c".repeat(64),
+    transformConfigSha256: "t".repeat(64),
+    approvedTaskSha256: "a".repeat(64),
+  };
+  const built = createSequencedFakeDb([
+    [{ id: "owner" }],
+    [{ repoId: "repo" }],
+    [],
+    [],
+    [
+      row({
+        tool: "sandbox_build",
+        toolVersion: SANDBOX_BUILD_RUN_VERSION,
+        params: build,
+      }),
+    ],
+  ]);
+  const buildResult = await createAnalysisRunStore(built.db).enqueue(
+    "owner",
+    "snapshot",
+    {
+      tool: "sandbox_build",
+      params: build,
+      requestedBy: "user",
+    },
+  );
+  assert.equal(buildResult.ok && buildResult.run.tool, "sandbox_build");
+  assert.equal(
+    built.calls[4]?.values?.["toolVersion"],
+    SANDBOX_BUILD_RUN_VERSION,
+  );
+  await assert.rejects(
+    createAnalysisRunStore(
+      createSequencedFakeDb([[{ id: "owner" }], [{ repoId: "repo" }]]).db,
+    ).enqueue("owner", "snapshot", {
+      tool: "graphify",
+      params: build,
+      requestedBy: "user",
+    }),
+    /do not match/,
+  );
+  // A row from a newer deploy is skipped by reads instead of failing them.
+  const unknown = {
+    run: row({ tool: "deepwiki" }),
+    repoId: "repo",
+    organizationId: "owner",
+  };
+  const mixed = createAnalysisRunStore(
+    createFakeDb([unknown, { ...unknown, run: row() }]).db,
+  );
+  assert.equal(
+    await createAnalysisRunStore(createFakeDb([unknown]).db).get(
+      "owner",
+      "run",
+    ),
+    null,
+  );
+  assert.deepEqual(
+    (await mixed.list("owner", "repo")).map((run) => run.tool),
+    ["graphify"],
+  );
+  // The claim query only takes known tools; were one to slip through, the
+  // mapping still refuses it rather than inventing a tool.
+  await assert.rejects(
+    createAnalysisRunStore(
+      createSequencedFakeDb([
+        [row({ tool: "deepwiki", status: "running" })],
+        [{ repoId: "repo" }],
+      ]).db,
+    ).claimNext("lease", now),
+    /Unknown analysis tool/,
+  );
+});
+test("agent runs check the run they build on: a scope reads a graph, fixtures a finished slice", async () => {
+  const task = {
+    deadlineMinutes: 30,
+    proposalId: "p1",
+    specRevision: 2,
+    specHash: "h",
+  };
+  const scope = { ...task, agent: "scope" as const, graphRunId: "graph" };
+  const scoped = createSequencedFakeDb([
+    [{ id: "owner" }],
+    [{ repoId: "repo" }],
+    [{ id: "graph" }],
+    [],
+    [],
+    [row({ tool: "scope", toolVersion: SCOPE_TOOL_VERSION, params: scope })],
+  ]);
+  const result = await createAnalysisRunStore(scoped.db).enqueue(
+    "owner",
+    "snapshot",
+    { tool: "scope", params: scope, requestedBy: "user" },
+  );
+  assert.equal(result.ok && result.run.tool, "scope");
+  assert.equal(scoped.calls[5]?.values?.["toolVersion"], SCOPE_TOOL_VERSION);
+  assert.deepEqual(
+    await createAnalysisRunStore(
+      createSequencedFakeDb([[{ id: "owner" }], [{ repoId: "repo" }], []]).db,
+    ).enqueue("owner", "snapshot", {
+      tool: "scope",
+      params: scope,
+      requestedBy: "user",
+    }),
+    { ok: false, reason: "graph_mismatch" },
+  );
+  const fixtures = { ...task, agent: "fixtures" as const, sliceRunId: "slice" };
+  const written = createSequencedFakeDb([
+    [{ id: "owner" }],
+    [{ repoId: "repo" }],
+    [{ id: "slice" }],
+    [],
+    [],
+    [
+      row({
+        tool: "fixtures",
+        toolVersion: FIXTURES_TOOL_VERSION,
+        params: fixtures,
+      }),
+    ],
+  ]);
+  const fixtureResult = await createAnalysisRunStore(written.db).enqueue(
+    "owner",
+    "snapshot",
+    { tool: "fixtures", params: fixtures, requestedBy: "user" },
+  );
+  assert.equal(fixtureResult.ok && fixtureResult.run.tool, "fixtures");
+  assert.deepEqual(
+    await createAnalysisRunStore(
+      createSequencedFakeDb([[{ id: "owner" }], [{ repoId: "repo" }], []]).db,
+    ).enqueue("owner", "snapshot", {
+      tool: "fixtures",
+      params: fixtures,
+      requestedBy: "user",
+    }),
+    { ok: false, reason: "slice_mismatch" },
+  );
 });
 test("enqueue refuses missing ownership, snapshot and the spend cap", async () => {
   for (const responses of [[], [[{ id: "owner" }], []]]) {

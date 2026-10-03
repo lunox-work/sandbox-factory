@@ -251,11 +251,12 @@ export const GITHUB_WEBHOOK_HEADERS = {
 /* -------------------------------------------------------------------------- */
 
 /**
- * What a registered repository is for. Only `source` in this phase: the
- * repository a client's tickets are about. `sandbox` arrives with the
- * sandbox phase, and widening this enum is the change that admits it.
+ * `source` is a client repository read for analysis; `sandbox` is a
+ * destination a published version is written to. Registration from a
+ * connection accepts `source` only; a `sandbox` repository arrives through
+ * the publication gate of the sandbox plan.
  */
-export const GITHUB_REPO_ROLES = ["source"] as const;
+export const GITHUB_REPO_ROLES = ["source", "sandbox"] as const;
 export const githubRepoRoleSchema = z.enum(GITHUB_REPO_ROLES);
 
 /**
@@ -462,10 +463,14 @@ const numericIdSchema = z
   .string()
   .regex(/^[1-9]\d{0,18}$/, "Expected a GitHub id.");
 
-/** `POST .../github/connections/:id/repositories`. */
+/**
+ * `POST .../github/connections/:id/repositories`. Registration from a
+ * connection creates source repositories only; a `sandbox` destination is
+ * created by publication, never by this request.
+ */
 export const registerRepoRequestSchema = z.object({
   externalId: numericIdSchema,
-  role: githubRepoRoleSchema,
+  role: z.literal("source"),
 });
 
 /** `POST .../github/connections`: the picker's submit. */

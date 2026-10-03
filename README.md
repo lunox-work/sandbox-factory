@@ -72,8 +72,10 @@ Then open this repo in VS Code and press <kbd>F5</kbd>. A second window opens
 with the extension loaded — the sandbox-factory icon is in its activity bar.
 
 The extension is a bundle the editor loads, so it runs on your machine rather
-than in Docker and `make ext` needs Node 22+. It is a shell today — activation,
-the API client and **Show Version** — kept ready for the first editor feature.
+than in Docker and `make ext` needs Node 22+. It opens a sandbox task (a
+local clone or a URL to clone), shows what the task is, and runs its install,
+app and test commands in VS Code terminals when you ask, in a trusted
+workspace only. **Show Version** reports the extension's and the API's builds.
 
 ## Develop it
 

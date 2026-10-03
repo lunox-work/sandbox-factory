@@ -189,8 +189,11 @@ resource "aws_ecs_task_definition" "worker" {
       { name = "WORKER_MODE", value = "once" },
       { name = "MAX_TARBALL_BYTES", value = "209715200" },
       { name = "MAX_FILES", value = "20000" },
+      # The scope and fixtures agents; the key is sizing's. CD carries both
+      # onto the active revision, since container definitions are ignored here.
+      { name = "AGENT_MODEL", value = "claude-opus-5-5" },
     ]
-    secrets          = [for key in ["DATABASE_URL", "GITHUB_APP_ID", "GITHUB_APP_PRIVATE_KEY"] : { name = key, valueFrom = aws_secretsmanager_secret.app[key].arn }]
+    secrets          = [for key in ["DATABASE_URL", "GITHUB_APP_ID", "GITHUB_APP_PRIVATE_KEY", "ANTHROPIC_API_KEY"] : { name = key, valueFrom = aws_secretsmanager_secret.app[key].arn }]
     logConfiguration = { logDriver = "awslogs", options = { "awslogs-group" = aws_cloudwatch_log_group.worker.name, "awslogs-region" = var.region, "awslogs-stream-prefix" = "worker" } }
   }])
 }

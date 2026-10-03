@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { artifactKind, createGraphifyAdapter } from "../src/tools/graphify.js";
 import { AnalysisError } from "../src/errors.js";
+import { toolContext } from "./helpers.js";
 test("Graphify output paths map to artifact kinds", () => {
   assert.deepEqual(
     [
@@ -43,6 +44,7 @@ test("adapter captures all outputs and attaches the manifest to the graph", asyn
       },
     });
     const files = await adapter.run({
+      ...toolContext(),
       sourceDir: root,
       outDir: out,
       params: { deadlineMinutes: 30 },
@@ -61,6 +63,7 @@ test("adapter captures all outputs and attaches the manifest to the graph", asyn
 test("missing required outputs and symlink outputs fail closed", async () => {
   const root = await mkdtemp(join(tmpdir(), "graph-invalid-"));
   const input = {
+    ...toolContext(),
     sourceDir: root,
     outDir: root,
     params: { deadlineMinutes: 30 },
