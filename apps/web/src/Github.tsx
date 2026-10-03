@@ -1,3 +1,7 @@
+import { ApiError } from "@sandbox-factory/client";
+import { useQuery } from "@tanstack/react-query";
+import { rankAtLeast } from "sandbox-factory";
+import { clients, queryKeys, useUserId } from "./data/query";
 /**
  * The GitHub tab of an organization's settings: the accounts where the App
  * is installed and linked here, and the repositories registered from them.
@@ -20,7 +24,6 @@ import type {
   GithubAvailableInstallationDto,
   GithubConnectionDto,
   GithubConnectOutcome,
-  GithubInstallationRepositoryDto,
   GithubRepoDto,
 } from "@sandbox-factory/shared";
 import {
@@ -56,11 +59,9 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Separator } from "@/components/ui/separator";
 
-import { RepositoryAnalysis } from "./RepositoryAnalysis";
 import { ProviderIcon } from "./ProviderIcon";
+import { RepositoryAnalysis } from "./RepositoryAnalysis";
 import {
-  fetchAvailableInstallations,
-  fetchInstallationRepositories,
   linkInstallation,
   useGithub,
   useGithubOutcome,
@@ -69,10 +70,7 @@ import {
 
 /** Roles that may connect, register and remove, matching the API's floor. */
 function canManage(role: string): boolean {
-  return role
-    .split(",")
-    .map((entry) => entry.trim())
-    .some((entry) => entry === "owner" || entry === "admin");
+  return rankAtLeast(role, "admin");
 }
 
 /**
@@ -319,43 +317,36 @@ function InstallationPicker({
   onLinked: () => Promise<void>;
   onClose: () => void;
 }) {
-  const [state, setState] = useState<
-    | { status: "loading" }
-    | { status: "error"; error: string; code?: string }
-    | {
-        status: "ready";
-        login: string;
-        installations: GithubAvailableInstallationDto[];
-      }
-  >({ status: "loading" });
+  const userId = useUserId();
+  const query = useQuery({
+    queryKey: queryKeys.resource(userId, organizationId, "github-available"),
+    queryFn: ({ signal }) => clients.github.available(organizationId, signal),
+  });
+  const state =
+    query.data !== undefined
+      ? {
+          status: "ready" as const,
+          login: query.data.grant.githubLogin,
+          installations: query.data.installations,
+        }
+      : query.isError
+        ? {
+            status: "error" as const,
+            error:
+              query.error instanceof ApiError
+                ? query.error.message
+                : "Could not reach the server.",
+            code:
+              query.error instanceof ApiError
+                ? (query.error.code ?? undefined)
+                : undefined,
+          }
+        : { status: "loading" as const };
   const [linking, setLinking] = useState<string | null>(null);
   const [linkError, setLinkError] = useState<{
     error: string;
     code?: string;
   } | null>(null);
-
-  useEffect(() => {
-    let live = true;
-    void fetchAvailableInstallations(organizationId).then((result) => {
-      if (!live) return;
-      setState(
-        result.ok
-          ? {
-              status: "ready",
-              login: result.value.grant.githubLogin,
-              installations: result.value.installations,
-            }
-          : {
-              status: "error",
-              error: result.error,
-              ...(result.code === undefined ? {} : { code: result.code }),
-            },
-      );
-    });
-    return () => {
-      live = false;
-    };
-  }, [organizationId]);
 
   async function choose(installationId: string) {
     setLinking(installationId);
@@ -918,11 +909,33 @@ function RepositoryPicker({
   onUnhealthy: () => void;
   onClose: () => void;
 }) {
-  const [state, setState] = useState<
-    | { status: "loading" }
-    | { status: "error"; error: string }
-    | { status: "ready"; repositories: GithubInstallationRepositoryDto[] }
-  >({ status: "loading" });
+  const userId = useUserId();
+  const query = useQuery({
+    queryKey: queryKeys.resource(
+      userId,
+      organizationId,
+      "github-installation-repositories",
+      connectionId,
+    ),
+    queryFn: ({ signal }) =>
+      clients.github.installationRepositories(
+        organizationId,
+        connectionId,
+        signal,
+      ),
+  });
+  const state =
+    query.data !== undefined
+      ? { status: "ready" as const, repositories: query.data }
+      : query.isError
+        ? {
+            status: "error" as const,
+            error:
+              query.error instanceof ApiError
+                ? query.error.message
+                : "Could not reach the server.",
+          }
+        : { status: "loading" as const };
   const [registering, setRegistering] = useState<string | null>(null);
   const [registerError, setRegisterError] = useState<string | null>(null);
   // Read through a ref: the card passes a fresh function on every render,
@@ -933,25 +946,12 @@ function RepositoryPicker({
   });
 
   const load = useCallback(async () => {
-    const result = await fetchInstallationRepositories(
-      organizationId,
-      connectionId,
-    );
-    if (!result.ok && result.code === "unhealthy") {
-      unhealthyRef.current();
-      return;
-    }
-    setState(
-      result.ok
-        ? { status: "ready", repositories: result.value }
-        : { status: "error", error: result.error },
-    );
-  }, [organizationId, connectionId]);
-
+    await query.refetch();
+  }, [query.refetch]);
   useEffect(() => {
-    void load();
-  }, [load]);
-
+    if (query.error instanceof ApiError && query.error.code === "unhealthy")
+      unhealthyRef.current();
+  }, [query.error]);
   async function register(externalId: string) {
     setRegistering(externalId);
     setRegisterError(null);

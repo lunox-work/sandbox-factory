@@ -1,7 +1,7 @@
 import { countScenarios, type SpecDraft } from "sandbox-factory";
 import { and, desc, eq, lte } from "drizzle-orm";
 
-import type { Database } from "./errors.js";
+import type { Database, Transaction } from "./errors.js";
 import { generateId } from "./mapping.js";
 import { bountySpec } from "./schema.js";
 import type { BountySpecOrigin, BountySpecRow } from "./schema.js";
@@ -108,7 +108,7 @@ function toDto(row: BountySpecRow): StoredBountySpec {
  * that ever stops being true.
  */
 export async function nextSpecRevision(
-  db: Database,
+  db: Transaction,
   organizationId: string,
   proposalId: string,
 ): Promise<number> {
@@ -131,7 +131,7 @@ export async function nextSpecRevision(
  * writes the proposal and under the run lease it has already checked.
  */
 export async function insertSpecRevision(
-  db: Database,
+  db: Transaction,
   organizationId: string,
   target: {
     readonly proposalId: string;

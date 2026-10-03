@@ -1,3 +1,4 @@
+import { pushLocation, subscribeLocation } from "./navigation/location";
 /**
  * An organization's connections: the tools it reads work from, managed in
  * place on its settings page.
@@ -76,8 +77,7 @@ function useConnectionTab(): [ConnectionTab, (next: string) => void] {
 
   useEffect(() => {
     const sync = () => setTab(connectionTabForSearch(window.location.search));
-    window.addEventListener("popstate", sync);
-    return () => window.removeEventListener("popstate", sync);
+    return subscribeLocation(sync);
   }, []);
 
   const select = useCallback((next: string) => {
@@ -93,10 +93,10 @@ function useConnectionTab(): [ConnectionTab, (next: string) => void] {
       params.set("connection", chosen);
     }
     const query = params.toString();
-    window.history.pushState(
-      null,
-      "",
-      window.location.pathname + (query === "" ? "" : `?${query}`),
+    pushLocation(
+      window.location.pathname +
+        (query === "" ? "" : `?${query}`) +
+        (window.location.hash ?? ""),
     );
   }, []);
 

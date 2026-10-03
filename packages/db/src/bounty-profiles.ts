@@ -7,7 +7,7 @@ import type {
 } from "sandbox-factory";
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
 
-import { snapshotForWrite } from "./bounty-proposals.js";
+import { snapshotForWrite } from "./snapshot-write.js";
 import type { Database } from "./errors.js";
 import { generateId } from "./mapping.js";
 import { bountyProfile, bountyProposal } from "./schema.js";
@@ -122,7 +122,7 @@ export function createBountyProfileStore(db: Database): BountyProfileStore {
   return {
     async request(owner, input) {
       return db.transaction(async (transaction) => {
-        const tx = transaction as unknown as Database;
+        const tx = transaction;
         // The proposal id comes from a run, but the owner boundary is still
         // checked here rather than trusted: another organization's proposal
         // is not profiled.

@@ -5,7 +5,7 @@
  * interpreting SQL: the target is the store's own logic, not Postgres.
  */
 
-import type { Database } from "../src/errors.js";
+import type { Database, Transaction } from "../src/errors.js";
 
 export interface FakeCall {
   readonly kind: "select" | "insert" | "update" | "delete";
@@ -39,6 +39,7 @@ export interface FakeCall {
 
 export interface FakeDb {
   readonly db: Database;
+  readonly tx: Transaction;
   readonly calls: FakeCall[];
 }
 
@@ -170,7 +171,11 @@ function createFakeDbWith(rowsForQuery: RowsProvider): FakeDb {
       work(db),
   };
 
-  return { db: db as unknown as Database, calls };
+  return {
+    db: db as unknown as Database,
+    tx: db as unknown as Transaction,
+    calls,
+  };
 }
 
 export function createFakeDb(rows: readonly unknown[]): FakeDb {

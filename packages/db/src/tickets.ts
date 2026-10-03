@@ -270,7 +270,7 @@ export async function insertTicket(
   for (let attempt = 1; ; attempt += 1) {
     try {
       return await db.transaction(async (transaction) => {
-        const tx = transaction as unknown as Database;
+        const tx = transaction;
         const rows = (await tx
           .insert(ticket)
           .values({
@@ -561,7 +561,7 @@ export function createTicketStore(db: Database): TicketStore {
     remove(organizationId, ticketId) {
       return db.transaction(
         async (transaction): Promise<"removed" | "not-found" | "in-use"> => {
-          const tx = transaction as unknown as Database;
+          const tx = transaction;
           const owned = and(
             eq(ticket.organizationId, organizationId),
             eq(ticket.id, ticketId),

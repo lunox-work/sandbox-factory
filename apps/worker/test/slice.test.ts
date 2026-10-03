@@ -750,6 +750,8 @@ test("import facts cover every import syntax, and helpers name paths and package
     stubPathFor("packages/x/src/y.tsx"),
     "stubs/packages/x/src/y.d.ts",
   );
+  assert.equal(declarationPathFor("lib/already.d.ts"), "lib/already.d.ts");
+  assert.equal(declarationPathFor("lib/already.d.mts"), "lib/already.d.mts");
   assert.equal(declarationPathFor("lib/z.mts"), "lib/z.d.mts");
   assert.equal(declarationPathFor("lib/w.cjs"), "lib/w.d.cts");
   assert.equal(declarationPathFor("data/config.json"), "data/config.json.d.ts");

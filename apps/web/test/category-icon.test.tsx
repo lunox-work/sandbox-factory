@@ -7,7 +7,7 @@
  * than shipping the fallback.
  */
 
-import { render } from "@testing-library/react";
+import { render } from "./render";
 import { CATEGORIES } from "sandbox-factory";
 import { expect, test } from "vitest";
 

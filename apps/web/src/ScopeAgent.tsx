@@ -1,3 +1,5 @@
+import { useQuery } from "@tanstack/react-query";
+import { queryKeys, useUserId } from "./data/query";
 /**
  * The agent runs in the analysis panel: choosing the proposal an agent
  * works for, and reading what it answered.
@@ -9,17 +11,13 @@
  * same way and shown for review before it is attached to a version.
  */
 
-import type { GithubAnalysisClient } from "@sandbox-factory/client";
-import { ApiError } from "@sandbox-factory/client";
-import type {
-  FixtureSetDto,
-  RepositoryProposalDto,
-  ScopeProposalDto,
-} from "@sandbox-factory/shared";
-import { useEffect, useState } from "react";
+import { ErrorBanner, LoadingLine } from "@/components/Message";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { ErrorBanner, LoadingLine } from "@/components/Message";
+import type { GithubAnalysisClient } from "@sandbox-factory/client";
+import { ApiError } from "@sandbox-factory/client";
+import type { FixtureSetDto, ScopeProposalDto } from "@sandbox-factory/shared";
+import { useEffect, useState } from "react";
 
 type Usage = ScopeProposalDto["usage"];
 
@@ -60,32 +58,28 @@ export function AgentProposalPicker({
   onStart: (proposalId: string) => void;
   onCancel: () => void;
 }) {
-  const [proposals, setProposals] = useState<RepositoryProposalDto[] | null>(
-    null,
-  );
+  const userId = useUserId();
+  const query = useQuery({
+    queryKey: queryKeys.resource(
+      userId,
+      organizationId,
+      "repository-proposals",
+      repoId,
+    ),
+    queryFn: ({ signal }) =>
+      client.repositoryProposals(organizationId, repoId, signal),
+  });
+  const proposals = query.data ?? null;
   const [chosen, setChosen] = useState("");
-  const [error, setError] = useState<string | null>(null);
   useEffect(() => {
-    let active = true;
-    void client
-      .repositoryProposals(organizationId, repoId)
-      .then((result) => {
-        if (!active) return;
-        setProposals(result);
-        setChosen(result[0]?.id ?? "");
-      })
-      .catch((caught: unknown) => {
-        if (active)
-          setError(
-            caught instanceof ApiError
-              ? caught.message
-              : "Proposals could not be loaded.",
-          );
-      });
-    return () => {
-      active = false;
-    };
-  }, [client, organizationId, repoId]);
+    setChosen(query.data?.[0]?.id ?? "");
+  }, [query.data]);
+  const error =
+    query.error === null
+      ? null
+      : query.error instanceof ApiError
+        ? query.error.message
+        : "Proposals could not be loaded.";
   if (error !== null)
     return <ErrorBanner className="mt-0">{error}</ErrorBanner>;
   if (proposals === null) return <LoadingLine />;

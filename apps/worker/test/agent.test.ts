@@ -652,3 +652,29 @@ test("a key needs a named model, a model alone does nothing, and limits are boun
   );
   assert.throws(() => parseWorkerEnv({ ...base, AGENT_MAX_TURNS: "500" }));
 });
+
+test("text-only replies cannot continue after exhausting the token budget", async () => {
+  const model = scripted(
+    Array.from({ length: 3 }, () =>
+      turn([{ type: "text", text: "thinking" }], "end_turn", {
+        inputTokens: 10,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+      }),
+    ),
+  );
+  const result = await runAgent({
+    model,
+    system: "test",
+    prompt: "test",
+    tools: [submit(() => true)],
+    submitTool: "submit",
+    limits: { maxTurns: 10, maxTokens: 5 },
+    signal,
+    log: () => {},
+  });
+  assert.equal(model.requests.length, 1);
+  assert.equal(result.stopped, "budget");
+  assert.equal(result.usage.inputTokens, 10);
+});

@@ -1,3 +1,4 @@
+import { enqueueAnalysis } from "../analysis/enqueue.js";
 /**
  * Profiles each proposal sized beside a repository: the scope agent picks
  * the slice for its spec, the slice is cut, and the complexity profile is
@@ -309,17 +310,23 @@ export class BountyProfiler {
     snapshotId: string,
     input: Pick<Parameters<AnalysisRunStore["enqueue"]>[2], "tool" | "params">,
   ): Promise<StoredAnalysisRun | "full" | null> {
-    const result = await this.#options.runs.enqueue(owner, snapshotId, {
-      ...input,
-      requestedBy: null,
-      maxActive: Math.max(1, (this.#options.maxActive ?? 3) - 1),
-    });
+    const result = await enqueueAnalysis(
+      {
+        runs: this.#options.runs,
+        removeObject: this.#options.removeObject,
+        onQueued: () => {
+          this.#wanted = true;
+        },
+      },
+      owner,
+      snapshotId,
+      {
+        ...input,
+        requestedBy: null,
+        maxActive: Math.max(1, (this.#options.maxActive ?? 3) - 1),
+      },
+    );
     if (!result.ok) return result.reason === "run_limit" ? "full" : null;
-    // Wanted even when the next enqueue of the same step meets the cap: a
-    // graph queued for a scope that has to wait still needs running.
-    if (result.run.status === "queued") this.#wanted = true;
-    if (result.obsoleteLogKey !== undefined)
-      await this.#options.removeObject(result.obsoleteLogKey).catch(() => {});
     return result.run;
   }
 

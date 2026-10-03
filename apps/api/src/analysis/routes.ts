@@ -10,25 +10,26 @@ import type {
   StoredAnalysisRun,
   StoredArtifact,
 } from "@sandbox-factory/db";
-import {
-  analysisRunResponseSchema,
-  analysisRunListSchema,
-  artifactListSchema,
-  enqueueAnalysisSchema,
-  enqueueFixturesSchema,
-  enqueueScopeSchema,
-  enqueueSliceSchema,
-  enqueueSliceResponseSchema,
-  GRAPH_DEADLINE_MINUTES,
-  repositoryProposalListSchema,
-} from "@sandbox-factory/shared";
 import type {
   RepositoryProposalDto,
   StoredTree,
 } from "@sandbox-factory/shared";
+import {
+  analysisRunListSchema,
+  analysisRunResponseSchema,
+  artifactListSchema,
+  enqueueAnalysisSchema,
+  enqueueFixturesSchema,
+  enqueueScopeSchema,
+  enqueueSliceResponseSchema,
+  enqueueSliceSchema,
+  GRAPH_DEADLINE_MINUTES,
+  repositoryProposalListSchema,
+} from "@sandbox-factory/shared";
 import type { Context, Hono } from "hono";
-import { rankAtLeast } from "../routes.js";
-import type { AuthVariables } from "../routes.js";
+import { rankAtLeast } from "../access.js";
+import type { AuthVariables } from "../http-context.js";
+import { enqueueAnalysis } from "./enqueue.js";
 
 export interface AnalysisRouteOptions {
   readonly runs: AnalysisRunStore;
@@ -76,12 +77,20 @@ export function mountAnalysisRoutes(
     snapshotId: string,
     deadlineMinutes: number,
   ): Promise<{ run: StoredAnalysisRun } | { response: Response }> {
-    const graph = await options.runs.enqueue(owner, snapshotId, {
-      tool: "graphify",
-      params: { deadlineMinutes },
-      requestedBy: c.get("user").id,
-      maxActive: options.maxActive ?? 3,
-    });
+    const graph = await enqueueAnalysis(
+      {
+        runs: options.runs,
+        removeObject: (key) => options.objects.remove(key),
+      },
+      owner,
+      snapshotId,
+      {
+        tool: "graphify",
+        params: { deadlineMinutes },
+        requestedBy: c.get("user").id,
+        maxActive: options.maxActive ?? 3,
+      },
+    );
     if (!graph.ok)
       return {
         response:
@@ -89,8 +98,6 @@ export function mountAnalysisRoutes(
             ? runLimit(c)
             : c.json({ error: "Not found." }, 404),
       };
-    if (graph.obsoleteLogKey !== undefined)
-      await options.objects.remove(graph.obsoleteLogKey).catch(() => {});
     if (graph.run.status === "failed")
       return {
         response: c.json(
@@ -154,11 +161,19 @@ export function mountAnalysisRoutes(
         : await options.snapshots.get(owner, body.data.snapshotId);
     if (snapshot === null || snapshot.repoId !== repoId)
       return c.json({ error: "No source snapshot is available." }, 404);
-    const result = await options.runs.enqueue(owner, snapshot.id, {
-      params: body.data.params,
-      requestedBy: c.get("user").id,
-      maxActive: options.maxActive ?? 3,
-    });
+    const result = await enqueueAnalysis(
+      {
+        runs: options.runs,
+        removeObject: (key) => options.objects.remove(key),
+      },
+      owner,
+      snapshot.id,
+      {
+        params: body.data.params,
+        requestedBy: c.get("user").id,
+        maxActive: options.maxActive ?? 3,
+      },
+    );
     if (!result.ok)
       return result.reason === "run_limit"
         ? c.json(
@@ -169,8 +184,6 @@ export function mountAnalysisRoutes(
             409,
           )
         : c.json({ error: "Not found." }, 404);
-    if (result.obsoleteLogKey !== undefined)
-      await options.objects.remove(result.obsoleteLogKey).catch(() => {});
     await options.ensureWorker().catch(() => options.onLaunchError?.());
     return c.json(analysisRunResponseSchema.parse({ run: result.run }), 202);
   });
@@ -233,18 +246,28 @@ export function mountAnalysisRoutes(
       body.data.deadlineMinutes,
     );
     if ("response" in graph) return graph.response;
-    const result = await options.runs.enqueue(owner, snapshot.id, {
-      tool: "slice",
-      params: {
-        deadlineMinutes: body.data.deadlineMinutes,
-        graphRunId: graph.run.id,
-        entryPoints,
-        budget: body.data.budget,
-        includeInferred: body.data.includeInferred,
+    const result = await enqueueAnalysis(
+      {
+        runs: options.runs,
+        removeObject: (key) => options.objects.remove(key),
       },
-      requestedBy,
-      maxActive,
-    });
+      owner,
+      snapshot.id,
+      {
+        tool: "slice",
+        params: {
+          deadlineMinutes: body.data.deadlineMinutes,
+          graphRunId: graph.run.id,
+          entryPoints,
+          budget: body.data.budget,
+          includeInferred: body.data.includeInferred,
+        },
+        requestedBy,
+        maxActive,
+      },
+    );
+    if (!result.ok && graph.run.status === "queued")
+      await options.ensureWorker().catch(() => options.onLaunchError?.());
     if (!result.ok)
       return result.reason === "run_limit"
         ? c.json(
@@ -264,8 +287,6 @@ export function mountAnalysisRoutes(
               409,
             )
           : c.json({ error: "Not found." }, 404);
-    if (result.obsoleteLogKey !== undefined)
-      await options.objects.remove(result.obsoleteLogKey).catch(() => {});
     await options.ensureWorker().catch(() => options.onLaunchError?.());
     return c.json(
       enqueueSliceResponseSchema.parse({
@@ -315,17 +336,27 @@ export function mountAnalysisRoutes(
       GRAPH_DEADLINE_MINUTES,
     );
     if ("response" in graph) return graph.response;
-    const result = await options.runs.enqueue(owner, snapshot.id, {
-      tool: "scope",
-      params: {
-        deadlineMinutes: body.data.deadlineMinutes,
-        agent: "scope",
-        graphRunId: graph.run.id,
-        ...task,
+    const result = await enqueueAnalysis(
+      {
+        runs: options.runs,
+        removeObject: (key) => options.objects.remove(key),
       },
-      requestedBy: c.get("user").id,
-      maxActive: options.maxActive ?? 3,
-    });
+      owner,
+      snapshot.id,
+      {
+        tool: "scope",
+        params: {
+          deadlineMinutes: body.data.deadlineMinutes,
+          agent: "scope",
+          graphRunId: graph.run.id,
+          ...task,
+        },
+        requestedBy: c.get("user").id,
+        maxActive: options.maxActive ?? 3,
+      },
+    );
+    if (!result.ok && graph.run.status === "queued")
+      await options.ensureWorker().catch(() => options.onLaunchError?.());
     if (!result.ok)
       return result.reason === "run_limit"
         ? runLimit(c)
@@ -339,8 +370,6 @@ export function mountAnalysisRoutes(
               409,
             )
           : c.json({ error: "Not found." }, 404);
-    if (result.obsoleteLogKey !== undefined)
-      await options.objects.remove(result.obsoleteLogKey).catch(() => {});
     await options.ensureWorker().catch(() => options.onLaunchError?.());
     return c.json(
       enqueueSliceResponseSchema.parse({
@@ -377,17 +406,25 @@ export function mountAnalysisRoutes(
       body.data.specRevision,
     );
     if (task === null) return noSpec(c);
-    const result = await options.runs.enqueue(owner, slice.snapshotId, {
-      tool: "fixtures",
-      params: {
-        deadlineMinutes: body.data.deadlineMinutes,
-        agent: "fixtures",
-        sliceRunId: slice.id,
-        ...task,
+    const result = await enqueueAnalysis(
+      {
+        runs: options.runs,
+        removeObject: (key) => options.objects.remove(key),
       },
-      requestedBy: c.get("user").id,
-      maxActive: options.maxActive ?? 3,
-    });
+      owner,
+      slice.snapshotId,
+      {
+        tool: "fixtures",
+        params: {
+          deadlineMinutes: body.data.deadlineMinutes,
+          agent: "fixtures",
+          sliceRunId: slice.id,
+          ...task,
+        },
+        requestedBy: c.get("user").id,
+        maxActive: options.maxActive ?? 3,
+      },
+    );
     if (!result.ok)
       return result.reason === "run_limit"
         ? runLimit(c)
@@ -400,8 +437,6 @@ export function mountAnalysisRoutes(
               409,
             )
           : c.json({ error: "Not found." }, 404);
-    if (result.obsoleteLogKey !== undefined)
-      await options.objects.remove(result.obsoleteLogKey).catch(() => {});
     await options.ensureWorker().catch(() => options.onLaunchError?.());
     return c.json(analysisRunResponseSchema.parse({ run: result.run }), 202);
   });

@@ -313,6 +313,8 @@ function fixture(
   overrides: Partial<{
     frozen: boolean;
     corrupt: boolean;
+    manifest: unknown;
+    contract: unknown;
     unparsable: boolean;
     limit: boolean;
     sliceStatus: string;
@@ -323,6 +325,8 @@ function fixture(
     seam: boolean;
   }> = {},
 ) {
+  const manifestText = JSON.stringify(overrides.manifest ?? manifest);
+  const contractText = JSON.stringify(overrides.contract ?? contract);
   const created: unknown[] = [];
   const patches: unknown[] = [];
   const builds: unknown[] = [];
@@ -1156,4 +1160,43 @@ test("a draft copies, writes or drops fixtures, and a changed set rehashes the t
     { fixtureRunId: "arn_fixtures" },
   );
   assert.equal(unreadable.status, 502);
+});
+
+test("hashed but malformed nested slice artifacts and unsupported versions are unavailable", async () => {
+  for (const overrides of [
+    { manifest: { ...manifest, schemaVersion: 2 } },
+    {
+      manifest: {
+        ...manifest,
+        included: [{ ...manifest.included[0], path: 12 }],
+      },
+    },
+    {
+      contract: {
+        ...contract,
+        outbound: [{ module: "lib/db.ts", symbols: null }],
+      },
+    },
+    { contract: { ...contract, schemaVersion: 2 } },
+  ]) {
+    const response = await fixture("owner", overrides).request(
+      "POST",
+      "/sbx_1/versions",
+      {
+        sliceRunId: "arn_slice",
+        title: "Draft",
+        specSummary: "Summary",
+        complexity: "M",
+        tags: [],
+        aliasRules: [],
+        dependencyChoices: {},
+        acceptanceTests: [],
+      },
+    );
+    assert.equal(response.status, 502);
+    assert.equal(
+      ((await response.json()) as { code: string }).code,
+      "artifacts_unavailable",
+    );
+  }
 });

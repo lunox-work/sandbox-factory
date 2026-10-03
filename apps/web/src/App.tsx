@@ -1,3 +1,9 @@
+import { ServerDataProvider } from "./data/query";
+import {
+  useLocation,
+  pushLocation,
+  replaceLocation,
+} from "./navigation/location";
 import { useEffect, useRef, useState } from "react";
 
 import { LoadingLine } from "@/components/Message";
@@ -51,13 +57,15 @@ export function App() {
    * another's data.
    */
   return (
-    <Signed
-      key={session.user.id}
-      userId={session.user.id}
-      name={session.user.name}
-      email={session.user.email}
-      image={session.user.image}
-    />
+    <ServerDataProvider key={session.user.id} userId={session.user.id}>
+      <Signed
+        key={session.user.id}
+        userId={session.user.id}
+        name={session.user.name}
+        email={session.user.email}
+        image={session.user.image}
+      />
+    </ServerDataProvider>
   );
 }
 
@@ -77,12 +85,10 @@ function Signed({
   const shouldFocusPage = useRef(false);
   const restorePageScroll = useRef(false);
   const scrollPositions = useRef(new Map<string, number>());
-  // A value rather than a router: a handful of screens, each with a path.
-  // Read from the path so a reload, a bookmark, or the return from a provider
-  // link all land on the screen the URL names.
-  const [screen, setScreen] = useState<Screen>(() =>
-    screenForPath(window.location.pathname),
-  );
+  const location = useLocation();
+  const screen = screenForPath(location.pathname);
+  const connectionId = connectionForPath(location.pathname);
+  const boardId = boardForPath(location.pathname);
 
   // An old `/organizations` or `/o/acme/jira` link opens the page, then the
   // address bar is brought up to date. Replaced rather than pushed: it is the
@@ -93,37 +99,16 @@ function Signed({
       window.location.search,
     );
     if (current !== undefined) {
-      window.history.replaceState(
-        window.history.state,
-        "",
-        current + window.location.hash,
-      );
+      replaceLocation(current + location.hash);
     }
-  }, []);
+  }, [location]);
 
   /**
    * The organization the app is showing. The handle in the URL wins over the
    * remembered choice, so `/o/acme/settings` opens Acme even when another was
    * active last.
    */
-  const organizations = useOrganizations(slugForPath(window.location.pathname));
-
-  /**
-   * The connected site the board on screen is on, from the URL.
-   *
-   * Held in state beside the screen rather than read from `window.location`
-   * at render time, for the same reason the screen is: a `popstate` has to
-   * change both together, and a value read during render would not re-render
-   * when the URL changed under it.
-   */
-  const [connectionId, setConnectionId] = useState<string | undefined>(() =>
-    connectionForPath(window.location.pathname),
-  );
-
-  /** The board `org-jira-board` is showing, from the URL's last segment. */
-  const [boardId, setBoardId] = useState<string | undefined>(() =>
-    boardForPath(window.location.pathname),
-  );
+  const organizations = useOrganizations(slugForPath(location.pathname));
 
   /**
    * The name of the board on screen, reported up by `JiraBoard` so the trail
@@ -148,9 +133,6 @@ function Signed({
     function onPopState() {
       shouldFocusPage.current = true;
       restorePageScroll.current = true;
-      setScreen(screenForPath(window.location.pathname));
-      setConnectionId(connectionForPath(window.location.pathname));
-      setBoardId(boardForPath(window.location.pathname));
     }
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
@@ -231,7 +213,7 @@ function Signed({
     } else {
       window.scrollTo({ top });
     }
-  }, [boardId, connectionId, screen]);
+  }, [location.pathname, location.search]);
 
   /**
    * `slug` names the organization a path should carry, for the rows on the
@@ -273,15 +255,10 @@ function Signed({
         contentScrolls ? contentRef.current.scrollTop : window.scrollY,
       );
     }
-    window.history.pushState(
-      null,
-      "",
+    shouldFocusPage.current = true;
+    pushLocation(
       pathForScreen(next, slug ?? organizations.active?.slug, id, board, tab),
     );
-    shouldFocusPage.current = true;
-    setScreen(next);
-    setConnectionId(id);
-    setBoardId(board);
   }
 
   /*

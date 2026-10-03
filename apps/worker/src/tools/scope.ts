@@ -1,3 +1,4 @@
+import { SEAM_KINDS } from "sandbox-factory";
 /**
  * The scope adapter: an agent reads the source at the run's commit and
  * proposes the slice for one ticket.
@@ -224,16 +225,7 @@ export function createScopeAdapter(settings: AgentSettings): ToolAdapter {
                   module: { type: "string" },
                   kind: {
                     type: "string",
-                    enum: [
-                      "database",
-                      "network",
-                      "sdk",
-                      "filesystem",
-                      "queue",
-                      "clock",
-                      "config",
-                      "other",
-                    ],
+                    enum: [...SEAM_KINDS],
                   },
                   reason: {
                     type: "string",

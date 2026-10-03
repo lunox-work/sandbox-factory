@@ -6,7 +6,7 @@
  * the list could not be loaded — and that a row leads somewhere.
  */
 
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "./render";
 import { expect, test, vi } from "vitest";
 
 import { Organizations } from "../src/Organizations";

@@ -91,6 +91,11 @@ jobs:
           # server, not the one named here.
           DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
 
+      - name: Bounty concurrency integration
+        run: npm run test:bounty-concurrency --workspace @sandbox-factory/db
+        env:
+          DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
+
       # Provenance injection fails *quietly*: a bad `define`, an undeclared
       # turbo env var or a renamed field just stamps the artifact "unknown". The
       # build above ran with no BUILD_* set (the local-dev path), so this

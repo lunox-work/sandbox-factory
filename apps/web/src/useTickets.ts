@@ -1,7 +1,17 @@
+import { ApiError } from "@sandbox-factory/client";
+import {
+  activeRunConflictSchema,
+  createTicketSchema,
+  ticketResponseSchema,
+  updateTicketSchema,
+} from "@sandbox-factory/shared";
+import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
+import { observeUntil, terminalRun } from "./data/observe";
+import { clients, queryKeys, useUserId } from "./data/query";
 /**
  * The organization's tickets: read a page at a time, written, changed,
- * deleted and proposed. Plain `fetch` with the session cookie, like the
- * other hooks here; every read and write is scoped by the organization in
+ * deleted and proposed through the feature client; every read and write
+ * is scoped by the organization in
  * the path, and the server decides what the caller may do.
  */
 
@@ -10,7 +20,7 @@ import type {
   TicketDto,
   TicketSummaryDto,
 } from "@sandbox-factory/shared";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback } from "react";
 
 /** How many tickets a page reads; the route's largest. */
 const PAGE = 50;
@@ -64,13 +74,6 @@ export interface Tickets {
   propose: (ticketId: string, signal?: AbortSignal) => Promise<ProposeResult>;
 }
 
-async function errorOf(response: Response, fallback: string): Promise<string> {
-  const body = (await response.json().catch(() => null)) as {
-    error?: unknown;
-  } | null;
-  return typeof body?.error === "string" ? body.error : fallback;
-}
-
 /** What a sizing run that ended without a proposal is told as. */
 function runFailure(run: BountyRunDto): string {
   const code = run.outcomes[0]?.code ?? run.fatalErrorCode;
@@ -92,82 +95,74 @@ function runFailure(run: BountyRunDto): string {
 }
 
 export function useTickets(organizationId: string): Tickets {
-  const base = `/api/v1/orgs/${encodeURIComponent(organizationId)}`;
-  const [tickets, setTickets] = useState<TicketSummaryDto[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [cursor, setCursor] = useState<string | null>(null);
-  /*
-    How many rows the list holds open, so a refresh after a write re-reads
-    as many as were showing rather than folding back to one page.
-  */
-  const wanted = useRef(PAGE);
-  const generation = useRef(0);
-
+  const userId = useUserId();
+  const queryClient = useQueryClient();
+  const key = queryKeys.resource(userId, organizationId, "tickets");
+  const query = useInfiniteQuery({
+    queryKey: key,
+    initialPageParam: undefined as string | undefined,
+    queryFn: ({ pageParam, signal }) =>
+      clients.tickets.tickets(
+        organizationId,
+        {
+          limit: PAGE,
+          ...(pageParam === undefined ? {} : { cursor: pageParam }),
+        },
+        signal,
+      ),
+    getNextPageParam: (page) => page.nextCursor ?? undefined,
+  });
+  const tickets = query.data?.pages.flatMap((page) => page.tickets) ?? [];
+  const loading = query.isPending;
+  const error = query.isError ? "Could not load the tickets." : null;
   const load = useCallback(async () => {
-    const current = ++generation.current;
-    try {
-      const rows: TicketSummaryDto[] = [];
-      let next: string | null = null;
-      do {
-        const response: Response = await fetch(
-          `${base}/tickets?limit=${PAGE}${
-            next === null ? "" : `&cursor=${encodeURIComponent(next)}`
-          }`,
-          { credentials: "include" },
-        );
-        if (!response.ok) throw new Error();
-        const body = (await response.json()) as {
-          tickets: TicketSummaryDto[];
-          nextCursor: string | null;
-        };
-        rows.push(...body.tickets);
-        next = body.nextCursor;
-      } while (next !== null && rows.length < wanted.current);
-      if (current !== generation.current) return;
-      setTickets(rows);
-      setCursor(next);
-      setError(null);
-    } catch {
-      if (current === generation.current) {
-        setError("Could not load the tickets.");
-      }
-    } finally {
-      if (current === generation.current) setLoading(false);
-    }
-  }, [base]);
-
-  useEffect(() => {
-    void load();
-    return () => {
-      generation.current += 1;
-    };
-  }, [load]);
-
+    await Promise.all(
+      [
+        "tickets",
+        "ticket-detail",
+        "proposals",
+        "proposal-detail",
+        "proposal-categories",
+        "repository-proposals",
+        "proposal-spec",
+        "proposal-spec-revisions",
+        "profile",
+      ].map((resource) =>
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.resource(userId, organizationId, resource),
+        }),
+      ),
+    );
+  }, [queryClient, userId, organizationId]);
   const loadMore = useCallback(async () => {
-    wanted.current += PAGE;
-    await load();
-  }, [load]);
-
+    await query.fetchNextPage();
+  }, [query.fetchNextPage]);
   const read = useCallback(
-    async (ticketId: string): Promise<TicketRead> => {
+    async (id: string): Promise<TicketRead> => {
       try {
-        const response = await fetch(
-          `${base}/tickets/${encodeURIComponent(ticketId)}`,
-          { credentials: "include" },
-        );
-        if (!response.ok) {
-          return { ok: false, notFound: response.status === 404 };
-        }
-        const { ticket } = (await response.json()) as { ticket: TicketDto };
-        return { ok: true, ticket };
-      } catch {
-        return { ok: false, notFound: false };
+        return {
+          ok: true,
+          ticket: await queryClient.fetchQuery({
+            queryKey: queryKeys.resource(
+              userId,
+              organizationId,
+              "ticket-detail",
+              id,
+            ),
+            queryFn: ({ signal }) =>
+              clients.tickets.ticket(organizationId, id, signal),
+            staleTime: 0,
+          }),
+        };
+      } catch (error) {
+        return {
+          ok: false,
+          notFound: error instanceof ApiError && error.isNotFound,
+        };
       }
     },
-    [base],
+    [organizationId, queryClient, userId],
   );
-
   const write = useCallback(
     async (
       path: string,
@@ -176,31 +171,32 @@ export function useTickets(organizationId: string): Tickets {
       fallback: string,
     ): Promise<TicketWrite> => {
       try {
-        const response = await fetch(`${base}${path}`, {
-          method,
-          credentials: "include",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(body),
-        });
-        if (!response.ok) {
-          const failed = (await response
-            .clone()
-            .json()
-            .catch(() => null)) as { ticket?: TicketDto } | null;
-          return {
-            ok: false,
-            error: await errorOf(response, fallback),
-            ...(failed?.ticket === undefined ? {} : { ticket: failed.ticket }),
-          };
-        }
-        const { ticket } = (await response.json()) as { ticket: TicketDto };
+        const ticket =
+          method === "POST"
+            ? await clients.tickets.createTicket(
+                organizationId,
+                createTicketSchema.parse(body),
+              )
+            : await clients.tickets.updateTicket(
+                organizationId,
+                decodeURIComponent(path.split("/").at(-1) ?? ""),
+                updateTicketSchema.parse(body),
+              );
         await load();
         return { ok: true, ticket };
-      } catch {
-        return { ok: false, error: "Could not reach the server." };
+      } catch (error) {
+        const current =
+          error instanceof ApiError
+            ? ticketResponseSchema.safeParse(error.details)
+            : null;
+        return {
+          ok: false,
+          error: error instanceof ApiError ? error.message : fallback,
+          ...(current?.success ? { ticket: current.data.ticket } : {}),
+        };
       }
     },
-    [base, load],
+    [organizationId, load],
   );
 
   const create = useCallback(
@@ -227,111 +223,94 @@ export function useTickets(organizationId: string): Tickets {
   const remove = useCallback(
     async (ticketId: string) => {
       try {
-        const response = await fetch(
-          `${base}/tickets/${encodeURIComponent(ticketId)}`,
-          { method: "DELETE", credentials: "include" },
-        );
-        if (!response.ok) {
-          return errorOf(response, "The ticket could not be deleted.");
-        }
+        await clients.tickets.deleteTicket(organizationId, ticketId);
         await load();
         return null;
-      } catch {
-        return "Could not reach the server.";
+      } catch (error) {
+        return error instanceof ApiError
+          ? error.message
+          : "Could not reach the server.";
       }
     },
-    [base, load],
+    [organizationId, load],
   );
 
   const propose = useCallback(
     async (ticketId: string, signal?: AbortSignal): Promise<ProposeResult> => {
       const readRun = async (runId: string) => {
-        const polled = await fetch(
-          `${base}/runs/${encodeURIComponent(runId)}`,
-          {
-            credentials: "include",
-            ...(signal === undefined ? {} : { signal }),
-          },
-        );
-        return polled.ok
-          ? ((await polled.json()) as { run: BountyRunDto }).run
-          : null;
+        return queryClient.fetchQuery({
+          queryKey: queryKeys.resource(
+            userId,
+            organizationId,
+            "bounty-run",
+            runId,
+          ),
+          queryFn: ({ signal: querySignal }) =>
+            clients.runs.run(
+              organizationId,
+              runId,
+              signal === undefined
+                ? querySignal
+                : AbortSignal.any([signal, querySignal]),
+            ),
+          staleTime: 0,
+        });
       };
       try {
-        const response = await fetch(
-          `${base}/tickets/${encodeURIComponent(ticketId)}/propose`,
-          {
-            method: "POST",
-            credentials: "include",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ requestId: crypto.randomUUID() }),
-            ...(signal === undefined ? {} : { signal }),
-          },
-        );
-        const started = (await response.json().catch(() => null)) as {
-          run?: BountyRunDto;
-          proposalId?: string;
-          code?: string;
-          runId?: string;
-          error?: unknown;
-        } | null;
-        /*
-          A run already sizing this ticket — started from another tab, or by
-          a row this page has since let go of — is followed like a new one,
-          as a spec change already under way is.
-        */
-        const active =
-          started?.code === "run_active" && typeof started.runId === "string"
-            ? started.runId
-            : null;
-        if (!response.ok && active === null) {
-          return {
-            ok: false,
-            error:
-              typeof started?.error === "string"
-                ? started.error
-                : "The ticket could not be proposed.",
-          };
+        let started: Awaited<ReturnType<typeof clients.tickets.proposeTicket>> =
+          {};
+        let active: string | null = null;
+        try {
+          started = await clients.tickets.proposeTicket(
+            organizationId,
+            ticketId,
+            crypto.randomUUID(),
+            signal,
+          );
+        } catch (error) {
+          const conflict =
+            error instanceof ApiError
+              ? activeRunConflictSchema.safeParse(error.details)
+              : null;
+          if (conflict?.success) active = conflict.data.runId;
+          else if (error instanceof ApiError)
+            return { ok: false, error: error.message };
+          else throw error;
         }
         if (started?.proposalId !== undefined) {
           return { ok: true, proposalId: started.proposalId };
         }
-        let run = active === null ? started?.run : await readRun(active);
-        // Followed until its one outcome lands or it ends without one.
-        while (run !== undefined) {
-          if (run === null) {
-            return { ok: false, error: "Lost track of the sizing run." };
-          }
-          const landed = run.outcomes[0]?.proposalId;
-          if (landed !== undefined) {
-            await load();
-            return { ok: true, proposalId: landed };
-          }
-          if (run.status !== "queued" && run.status !== "running") {
-            await load();
-            return { ok: false, error: runFailure(run) };
-          }
-          await new Promise((resolve) =>
-            window.setTimeout(resolve, PROPOSE_POLL_MS),
-          );
-          if (signal?.aborted) return { ok: false, error: "Stopped." };
-          run = await readRun(run.id);
-        }
-        return { ok: false, error: "The ticket could not be proposed." };
+        const initial = active === null ? started?.run : await readRun(active);
+        if (initial === undefined)
+          return { ok: false, error: "The ticket could not be proposed." };
+        const run = await observeUntil({
+          initial,
+          read: readRun,
+          id: (run) => run.id,
+          terminal: (run) =>
+            run.outcomes[0]?.proposalId !== undefined || terminalRun(run),
+          interval: PROPOSE_POLL_MS,
+          ...(signal === undefined ? {} : { signal }),
+        });
+        await load();
+        const landed = run.outcomes[0]?.proposalId;
+        return landed === undefined
+          ? { ok: false, error: runFailure(run) }
+          : { ok: true, proposalId: landed };
       } catch {
         return signal?.aborted
           ? { ok: false, error: "Stopped." }
           : { ok: false, error: "Could not reach the server." };
       }
     },
-    [base, load],
+    [load, queryClient, userId, organizationId],
   );
 
   return {
     tickets,
     loading,
     error,
-    more: cursor !== null,
+    more: query.hasNextPage,
     loadMore,
     refresh: load,
     read,

@@ -7,13 +7,7 @@
  * a draft after a cancel.
  */
 
-import {
-  act,
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-} from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "./render";
 import { expect, test, vi } from "vitest";
 
 import { EditableField } from "../src/components/EditableField";

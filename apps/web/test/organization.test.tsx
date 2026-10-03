@@ -12,14 +12,7 @@
  * would refuse is not offered.
  */
 
-import {
-  act,
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-  within,
-} from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "./render";
 import type { MembershipDto } from "@sandbox-factory/shared";
 import { beforeEach, expect, test, vi } from "vitest";
 

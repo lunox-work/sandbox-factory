@@ -293,7 +293,7 @@ export function createGithubConnectionStore(
 
     async removeWithTrees(organizationId, connectionId) {
       return db.transaction(async (transaction) => {
-        const tx = transaction as unknown as Database;
+        const tx = transaction;
         const owner = and(
           eq(githubConnection.organizationId, organizationId),
           eq(githubConnection.id, connectionId),

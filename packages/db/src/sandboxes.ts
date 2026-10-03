@@ -360,7 +360,7 @@ export function createSandboxStore(db: Database): SandboxStore {
   return {
     async create(owner, input) {
       return db.transaction(async (transaction) => {
-        const tx = transaction as unknown as Database;
+        const tx = transaction;
         const repo = (
           await tx
             .select({
@@ -453,7 +453,7 @@ export function createSandboxStore(db: Database): SandboxStore {
     },
     async createVersion(owner, sandboxId, input, now = new Date()) {
       return db.transaction(async (transaction) => {
-        const tx = transaction as unknown as Database;
+        const tx = transaction;
         const parent = (
           await sandboxes(tx)
             .where(
@@ -570,7 +570,7 @@ export function createSandboxStore(db: Database): SandboxStore {
     },
     async updateDraft(owner, versionId, patch, now = new Date()) {
       return db.transaction(async (transaction) => {
-        const tx = transaction as unknown as Database;
+        const tx = transaction;
         const current = await lockVersion(tx, owner, versionId);
         if (current === undefined)
           return { ok: false, reason: "not-found" } as const;
@@ -663,7 +663,7 @@ export function createSandboxStore(db: Database): SandboxStore {
       now = new Date(),
     ) {
       return db.transaction(async (transaction) => {
-        const tx = transaction as unknown as Database;
+        const tx = transaction;
         const current = await lockVersion(tx, owner, versionId);
         if (current === undefined)
           return { ok: false, reason: "not-found" } as const;
@@ -695,7 +695,7 @@ export function createSandboxStore(db: Database): SandboxStore {
       now = new Date(),
     ) {
       return db.transaction(async (transaction) => {
-        const tx = transaction as unknown as Database;
+        const tx = transaction;
         const current = await lockVersion(tx, owner, versionId);
         if (
           current === undefined ||

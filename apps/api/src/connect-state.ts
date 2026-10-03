@@ -198,12 +198,7 @@ function asState(value: unknown): ConnectState | undefined {
  * when it checks permissions — so any one of them being high enough is
  * enough.
  */
-export function isAtLeastAdmin(role: string): boolean {
-  return role
-    .split(",")
-    .map((entry) => entry.trim())
-    .some((entry) => entry === "owner" || entry === "admin");
-}
+export { isAtLeastAdmin } from "./access.js";
 
 /**
  * Reduces a caller-supplied `returnTo` to a path within the web app, or to

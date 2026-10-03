@@ -1,13 +1,7 @@
-import {
-  act,
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-  within,
-} from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
+import { bountyJson } from "./api-fixtures";
+import { act, fireEvent, render, screen, waitFor, within } from "./render";
 
 import {
   BoardBounties,
@@ -103,7 +97,7 @@ const savedRateCard = {
 test("rate card uses persistent price pins and five draggable handles, with exact minor-unit saves", async () => {
   const fetchMock = vi.fn((_url: string, init?: RequestInit) =>
     Promise.resolve(
-      Response.json({
+      bountyJson({
         rateCard:
           init?.method === "PUT"
             ? {
@@ -151,7 +145,7 @@ test("rate card uses persistent price pins and five draggable handles, with exac
 test("persistent price editors stay separate from circular handles and validate on Enter", async () => {
   const fetchMock = vi.fn((_url: string, init?: RequestInit) =>
     Promise.resolve(
-      Response.json({
+      bountyJson({
         rateCard:
           init?.method === "PUT"
             ? {
@@ -202,7 +196,7 @@ test("persistent price editors stay separate from circular handles and validate 
 test("interior sliders support keyboard steps and cannot cross each other or endpoints", async () => {
   vi.stubGlobal(
     "fetch",
-    vi.fn(() => Promise.resolve(Response.json({ rateCard: savedRateCard }))),
+    vi.fn(() => Promise.resolve(bountyJson({ rateCard: savedRateCard }))),
   );
   render(<RateCardEditor organizationId="org_1" role="admin" />);
   const medium = await screen.findByRole("slider", { name: "M rate" });
@@ -223,7 +217,7 @@ test("interior sliders support keyboard steps and cannot cross each other or end
 test("dragging M changes only its rate and stops at L", async () => {
   const fetchMock = vi.fn((_url: string, init?: RequestInit) =>
     Promise.resolve(
-      Response.json({
+      bountyJson({
         rateCard:
           init?.method === "PUT"
             ? {
@@ -278,7 +272,7 @@ test("dragging M changes only its rate and stops at L", async () => {
 test("new cards autofill evenly spaced whole rates and autosave in the selected currency", async () => {
   const fetchMock = vi.fn((_url: string, init?: RequestInit) =>
     Promise.resolve(
-      Response.json({
+      bountyJson({
         rateCard:
           init?.method === "PUT"
             ? { ...JSON.parse(String(init.body)), revision: 1 }
@@ -350,7 +344,7 @@ test("new cards autofill evenly spaced whole rates and autosave in the selected 
 test("endpoint editors accept grouped integers and keep invalid or cancelled edits out of the slider", async () => {
   vi.stubGlobal(
     "fetch",
-    vi.fn(() => Promise.resolve(Response.json({ rateCard: savedRateCard }))),
+    vi.fn(() => Promise.resolve(bountyJson({ rateCard: savedRateCard }))),
   );
   render(<RateCardEditor organizationId="org_1" role="admin" />);
   await editEndpoint("XL", "1,000");
@@ -372,7 +366,7 @@ test.each(["1.25", "1.00", "1,234.5", "0"])(
   async (amount) => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(() => Promise.resolve(Response.json({ rateCard: savedRateCard }))),
+      vi.fn(() => Promise.resolve(bountyJson({ rateCard: savedRateCard }))),
     );
     render(<RateCardEditor organizationId="org_1" role="admin" />);
     await editEndpoint("XS", amount);
@@ -394,7 +388,7 @@ test.each(["1.25", "1.00", "1,234.5", "0"])(
 test("members cannot edit endpoints or move the interior sliders", async () => {
   vi.stubGlobal(
     "fetch",
-    vi.fn(() => Promise.resolve(Response.json({ rateCard: savedRateCard }))),
+    vi.fn(() => Promise.resolve(bountyJson({ rateCard: savedRateCard }))),
   );
   render(<RateCardEditor organizationId="org_1" role="member" />);
   expect(
@@ -421,7 +415,7 @@ test("equal endpoints keep the sliders disabled and all five whole amounts visib
     "fetch",
     vi.fn(() =>
       Promise.resolve(
-        Response.json({
+        bountyJson({
           rateCard: {
             ...savedRateCard,
             xsMinor: 10000,
@@ -451,7 +445,7 @@ test("autosave serializes requests and keeps the latest change while a save is p
     "fetch",
     vi.fn((_url: string, init?: RequestInit) => {
       if (init?.method !== "PUT")
-        return Promise.resolve(Response.json({ rateCard: savedRateCard }));
+        return Promise.resolve(bountyJson({ rateCard: savedRateCard }));
       return new Promise<Response>((resolve) =>
         requests.push({ body: JSON.parse(String(init.body)), resolve }),
       );
@@ -469,7 +463,7 @@ test("autosave serializes requests and keeps the latest change while a save is p
   expect(first.body.expectedRevision).toBe(1);
   await act(async () =>
     first.resolve(
-      Response.json({
+      bountyJson({
         rateCard: { ...savedRateCard, ...first.body, revision: 2 },
       }),
     ),
@@ -484,7 +478,7 @@ test("autosave serializes requests and keeps the latest change while a save is p
   });
   await act(async () =>
     second.resolve(
-      Response.json({
+      bountyJson({
         rateCard: { ...savedRateCard, ...second.body, revision: 3 },
       }),
     ),
@@ -498,7 +492,7 @@ test("autosave serializes requests and keeps the latest change while a save is p
 test("changing currency autosaves existing whole amounts with the new minor-unit scale", async () => {
   const fetchMock = vi.fn((_url: string, init?: RequestInit) =>
     Promise.resolve(
-      Response.json({
+      bountyJson({
         rateCard:
           init?.method === "PUT"
             ? {
@@ -546,11 +540,11 @@ test("failed autosaves retain the edited rates and can be retried", async () => 
     "fetch",
     vi.fn((_url: string, init?: RequestInit) => {
       if (init?.method !== "PUT")
-        return Promise.resolve(Response.json({ rateCard: savedRateCard }));
+        return Promise.resolve(bountyJson({ rateCard: savedRateCard }));
       writes++;
       if (writes === 1) return Promise.reject(new Error("offline"));
       return Promise.resolve(
-        Response.json({
+        bountyJson({
           rateCard: {
             ...savedRateCard,
             ...JSON.parse(String(init.body)),
@@ -584,11 +578,11 @@ test("revision conflicts reload the latest rates and keep an explanation visible
     vi.fn((_url: string, init?: RequestInit) => {
       if (init?.method === "PUT")
         return Promise.resolve(
-          Response.json({ error: "conflict" }, { status: 409 }),
+          bountyJson({ error: "conflict" }, { status: 409 }),
         );
       reads++;
       return Promise.resolve(
-        Response.json({
+        bountyJson({
           rateCard:
             reads === 1
               ? savedRateCard
@@ -614,7 +608,7 @@ test("members see proposals without review or run controls", async () => {
     vi.fn((url: string) => {
       if (url.includes("/runs"))
         return Promise.resolve(
-          Response.json({
+          bountyJson({
             runs: [
               {
                 id: "brn_1",
@@ -657,14 +651,14 @@ test("members see proposals without review or run controls", async () => {
       };
       if (url.includes("/proposals/bpr_1?")) {
         return Promise.resolve(
-          Response.json({
+          bountyJson({
             proposal,
             freshness: { freshness: "current", checkedAt: "now" },
             writebackOperations: [],
           }),
         );
       }
-      return Promise.resolve(Response.json({ proposals: [proposal] }));
+      return Promise.resolve(bountyJson({ proposals: [proposal] }));
     }),
   );
   render(
@@ -708,10 +702,10 @@ test("a spec change running on one proposal is not the board's stream", async ()
       urls.push(url);
       if (url.includes("/runs"))
         return Promise.resolve(
-          Response.json({ runs: [respec], sizingAvailable: true }),
+          bountyJson({ runs: [respec], sizingAvailable: true }),
         );
       return Promise.resolve(
-        Response.json({
+        bountyJson({
           proposals: [
             {
               id: "bpr_1",
@@ -781,12 +775,12 @@ test("a board opened mid-run streams the run ticket by ticket", async () => {
       urls.push(url);
       const run = finished ? { ...running, status: "succeeded" } : running;
       if (url.endsWith("/runs/brn_1"))
-        return Promise.resolve(Response.json({ run }));
+        return Promise.resolve(bountyJson({ run }));
       if (url.includes("/runs"))
         return Promise.resolve(
-          Response.json({ runs: [run], sizingAvailable: true }),
+          bountyJson({ runs: [run], sizingAvailable: true }),
         );
-      return Promise.resolve(Response.json({ proposals: [proposal] }));
+      return Promise.resolve(bountyJson({ proposals: [proposal] }));
     }),
   );
   render(
@@ -831,13 +825,13 @@ test("a run that has not picked its tickets yet says so", async () => {
     vi.fn((url: string) =>
       Promise.resolve(
         url.includes("/runs")
-          ? Response.json({
+          ? bountyJson({
               runs: [
                 { id: "brn_1", status: "queued", planned: [], outcomes: [] },
               ],
               sizingAvailable: true,
             })
-          : Response.json({ proposals: [] }),
+          : bountyJson({ proposals: [] }),
       ),
     ),
   );
@@ -884,30 +878,28 @@ function searchingBoard(options: {
     vi.fn((url: string, init?: RequestInit) => {
       requests.push({ url, body: init?.body as string | undefined });
       if (url.includes("/search?"))
-        return Promise.resolve(Response.json({ issues: options.results }));
+        return Promise.resolve(bountyJson({ issues: options.results }));
       if (url.endsWith("/issues"))
         return Promise.resolve(
-          Response.json(options.add?.body ?? {}, {
+          bountyJson(options.add?.body ?? {}, {
             status: options.add?.status ?? 202,
           }),
         );
       if (url.endsWith("/runs/brn_7"))
         return Promise.resolve(
-          Response.json({ run: runs.length > 1 ? runs.shift() : runs[0] }),
+          bountyJson({ run: runs.length > 1 ? runs.shift() : runs[0] }),
         );
       if (url.includes("/runs"))
-        return Promise.resolve(
-          Response.json({ runs: [], sizingAvailable: true }),
-        );
+        return Promise.resolve(bountyJson({ runs: [], sizingAvailable: true }));
       if (url.includes("/proposals/bpr_7?"))
         return Promise.resolve(
-          Response.json({
+          bountyJson({
             proposal,
             freshness: { freshness: "current", checkedAt: "now" },
             writebackOperations: [],
           }),
         );
-      return Promise.resolve(Response.json({ proposals: [proposal] }));
+      return Promise.resolve(bountyJson({ proposals: [proposal] }));
     }),
   );
   render(
@@ -1112,8 +1104,8 @@ test("members get no ticket search, since adding sizes and spends", async () => 
     vi.fn((url: string) =>
       Promise.resolve(
         url.includes("/runs")
-          ? Response.json({ runs: [], sizingAvailable: true })
-          : Response.json({ proposals: [] }),
+          ? bountyJson({ runs: [], sizingAvailable: true })
+          : bountyJson({ proposals: [] }),
       ),
     ),
   );
@@ -1152,20 +1144,18 @@ test("proposal detail links survive navigation", async () => {
     vi.fn((url: string) => {
       urls.push(url);
       if (url.includes("/runs")) {
-        return Promise.resolve(
-          Response.json({ runs: [], sizingAvailable: true }),
-        );
+        return Promise.resolve(bountyJson({ runs: [], sizingAvailable: true }));
       }
       if (url.includes("/proposals/bpr_1?")) {
         return Promise.resolve(
-          Response.json({
+          bountyJson({
             proposal,
             freshness: { freshness: "current", checkedAt: "now" },
             writebackOperations: [],
           }),
         );
       }
-      return Promise.resolve(Response.json({ proposals: [proposal] }));
+      return Promise.resolve(bountyJson({ proposals: [proposal] }));
     }),
   );
   render(
@@ -1199,16 +1189,14 @@ test("a shared link to a proposal that is gone says so instead of loading foreve
     "fetch",
     vi.fn((url: string) => {
       if (url.includes("/runs")) {
-        return Promise.resolve(
-          Response.json({ runs: [], sizingAvailable: true }),
-        );
+        return Promise.resolve(bountyJson({ runs: [], sizingAvailable: true }));
       }
       if (url.includes("/proposals/bpr_gone?")) {
         return Promise.resolve(
-          Response.json({ error: "not_found" }, { status: 404 }),
+          bountyJson({ error: "not_found" }, { status: 404 }),
         );
       }
-      return Promise.resolve(Response.json({ proposals: [] }));
+      return Promise.resolve(bountyJson({ proposals: [] }));
     }),
   );
   render(
@@ -1234,17 +1222,15 @@ test("a proposal that could not be read offers another try", async () => {
     "fetch",
     vi.fn((url: string) => {
       if (url.includes("/runs")) {
-        return Promise.resolve(
-          Response.json({ runs: [], sizingAvailable: true }),
-        );
+        return Promise.resolve(bountyJson({ runs: [], sizingAvailable: true }));
       }
       if (url.includes("/proposals/bpr_1?")) {
         detailCalls += 1;
         return Promise.resolve(
-          Response.json({ error: "internal" }, { status: 500 }),
+          bountyJson({ error: "internal" }, { status: 500 }),
         );
       }
-      return Promise.resolve(Response.json({ proposals: [] }));
+      return Promise.resolve(bountyJson({ proposals: [] }));
     }),
   );
   render(
@@ -1272,7 +1258,7 @@ test("a proposal that could not be read offers another try", async () => {
 test("S is draggable between XS and M, and XS edits autosave the five-point range", async () => {
   const fetchMock = vi.fn((_url: string, init?: RequestInit) =>
     Promise.resolve(
-      Response.json({
+      bountyJson({
         rateCard:
           init?.method === "PUT"
             ? {
@@ -1311,7 +1297,7 @@ test("S is draggable between XS and M, and XS edits autosave the five-point rang
 test("persistent editors save on blur and Escape discards unfinished changes", async () => {
   const fetchMock = vi.fn((_url: string, init?: RequestInit) =>
     Promise.resolve(
-      Response.json({
+      bountyJson({
         rateCard:
           init?.method === "PUT"
             ? {
@@ -1346,7 +1332,7 @@ test("persistent editors save on blur and Escape discards unfinished changes", a
 test("cancelled drags restore the prior value and a subsequent drag still saves", async () => {
   const fetchMock = vi.fn((_url: string, init?: RequestInit) =>
     Promise.resolve(
-      Response.json({
+      bountyJson({
         rateCard:
           init?.method === "PUT"
             ? {
@@ -1389,7 +1375,7 @@ test("cancelled drags restore the prior value and a subsequent drag still saves"
 test("Saved only appears after a write and expires after the latest save", async () => {
   const fetchMock = vi.fn((_url: string, init?: RequestInit) =>
     Promise.resolve(
-      Response.json({
+      bountyJson({
         rateCard:
           init?.method === "PUT"
             ? {
@@ -1442,7 +1428,7 @@ test("Saved only appears after a write and expires after the latest save", async
 test("XS and XL drag independently, stop at adjacent sizes, and save on release", async () => {
   const fetchMock = vi.fn((_url: string, init?: RequestInit) =>
     Promise.resolve(
-      Response.json({
+      bountyJson({
         rateCard:
           init?.method === "PUT"
             ? {
@@ -1539,7 +1525,7 @@ test("XL keeps its scale stable while dragging and reveals more range after rele
     "fetch",
     vi.fn((_url: string, init?: RequestInit) =>
       Promise.resolve(
-        Response.json({
+        bountyJson({
           rateCard:
             init?.method === "PUT"
               ? {
@@ -1584,7 +1570,7 @@ test.each([300, 499, 900])(
   "handles stay separated on the rail at %ipx without changing equal prices",
   async (width) => {
     const fetchMock = vi.fn(() =>
-      Promise.resolve(Response.json({ rateCard: savedRateCard })),
+      Promise.resolve(bountyJson({ rateCard: savedRateCard })),
     );
     vi.stubGlobal("fetch", fetchMock);
     vi.spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue(
@@ -1622,7 +1608,7 @@ test.each([300, 499, 900])(
 test("XL commits the final release position before expanding its range", async () => {
   const fetchMock = vi.fn((_url: string, init?: RequestInit) =>
     Promise.resolve(
-      Response.json({
+      bountyJson({
         rateCard:
           init?.method === "PUT"
             ? {
@@ -1666,7 +1652,7 @@ test("XL commits the final release position before expanding its range", async (
 test("XL can cancel after capture loss and accepts the next drag", async () => {
   const fetchMock = vi.fn((_url: string, init?: RequestInit) =>
     Promise.resolve(
-      Response.json({
+      bountyJson({
         rateCard:
           init?.method === "PUT"
             ? {
@@ -1711,7 +1697,7 @@ test("XL can cancel after capture loss and accepts the next drag", async () => {
 test("XL can repeatedly extend its range with off-center grabs and quick releases", async () => {
   const fetchMock = vi.fn((_url: string, init?: RequestInit) =>
     Promise.resolve(
-      Response.json({
+      bountyJson({
         rateCard:
           init?.method === "PUT"
             ? {
@@ -1756,7 +1742,7 @@ test("XL can repeatedly extend its range with off-center grabs and quick release
 test("USD XL rejects typed amounts above 1,000 and stops dragging at the cap", async () => {
   const fetchMock = vi.fn((_url: string, init?: RequestInit) =>
     Promise.resolve(
-      Response.json({
+      bountyJson({
         rateCard:
           init?.method === "PUT"
             ? {
@@ -1808,7 +1794,7 @@ test("USD XL rejects typed amounts above 1,000 and stops dragging at the cap", a
 test("switching an oversized card to USD requires lowering XL before saving", async () => {
   const fetchMock = vi.fn(() =>
     Promise.resolve(
-      Response.json({
+      bountyJson({
         rateCard: {
           ...savedRateCard,
           currency: "JPY",
@@ -1840,7 +1826,7 @@ test("rail returns to the middle 80% after growing and shrinking either endpoint
     "fetch",
     vi.fn((_url: string, init?: RequestInit) =>
       Promise.resolve(
-        Response.json({
+        bountyJson({
           rateCard:
             init?.method === "PUT"
               ? {
@@ -1879,7 +1865,7 @@ test("a collapsed whole-number range still has draggable runway", async () => {
     "fetch",
     vi.fn((_url: string, init?: RequestInit) =>
       Promise.resolve(
-        Response.json({
+        bountyJson({
           rateCard:
             init?.method === "PUT"
               ? {
@@ -1921,7 +1907,7 @@ test.each([
   async (size, initial, next) => {
     const fetchMock = vi.fn((_url: string, init?: RequestInit) =>
       Promise.resolve(
-        Response.json({
+        bountyJson({
           rateCard:
             init?.method === "PUT"
               ? {
@@ -1976,7 +1962,7 @@ test("an earlier save response cannot undo a newer endpoint drag", async () => {
     "fetch",
     vi.fn((_url: string, init?: RequestInit) => {
       if (init?.method !== "PUT")
-        return Promise.resolve(Response.json({ rateCard: savedRateCard }));
+        return Promise.resolve(bountyJson({ rateCard: savedRateCard }));
       return new Promise<Response>((resolve) =>
         requests.push({ body: JSON.parse(String(init.body)), resolve }),
       );
@@ -2004,10 +1990,10 @@ test("an earlier save response cannot undo a newer endpoint drag", async () => {
   };
   drag("XL", 400, 450, 400);
   drag("XS", 100, 50, 450);
-  expect(requests).toHaveLength(1);
+  await waitFor(() => expect(requests).toHaveLength(1));
   await act(async () =>
     requests[0]!.resolve(
-      Response.json({
+      bountyJson({
         rateCard: { ...savedRateCard, ...requests[0]!.body, revision: 2 },
       }),
     ),
@@ -2018,7 +2004,7 @@ test("an earlier save response cannot undo a newer endpoint drag", async () => {
   expect(requests[1]!.body).toMatchObject({ xsMinor: 5000, xlMinor: 45000 });
   await act(async () =>
     requests[1]!.resolve(
-      Response.json({
+      bountyJson({
         rateCard: { ...savedRateCard, ...requests[1]!.body, revision: 3 },
       }),
     ),
@@ -2029,7 +2015,7 @@ test("an earlier save response cannot undo a newer endpoint drag", async () => {
 
 test("leaving the window cancels a drag and removes its release listener", async () => {
   const fetchMock = vi.fn(() =>
-    Promise.resolve(Response.json({ rateCard: savedRateCard })),
+    Promise.resolve(bountyJson({ rateCard: savedRateCard })),
   );
   vi.stubGlobal("fetch", fetchMock);
   vi.spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue(
@@ -2066,7 +2052,7 @@ test.each([
   async (size, initial, pointerAmount, expected) => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(() => Promise.resolve(Response.json({ rateCard: savedRateCard }))),
+      vi.fn(() => Promise.resolve(bountyJson({ rateCard: savedRateCard }))),
     );
     vi.spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue(
       new DOMRect(0, 0, 499, 32),
@@ -2098,7 +2084,7 @@ test.each([
 test("manual rates keep arbitrary whole numbers while keyboard adjustments snap to five", async () => {
   const fetchMock = vi.fn((_url: string, init?: RequestInit) =>
     Promise.resolve(
-      Response.json({
+      bountyJson({
         rateCard:
           init?.method === "PUT"
             ? {
@@ -2137,7 +2123,7 @@ test("manual rates keep arbitrary whole numbers while keyboard adjustments snap 
 test("keyboard adjustments land on the grid whichever way an off-grid rate moves", async () => {
   const fetchMock = vi.fn((_url: string, init?: RequestInit) =>
     Promise.resolve(
-      Response.json({
+      bountyJson({
         rateCard:
           init?.method === "PUT"
             ? {
@@ -2216,13 +2202,11 @@ function streamedBoard(storedTitles: Record<number, string> = {}) {
       return Promise.resolve({ ok: true, status: 200, body } as Response);
     }
     if (url.includes("/runs")) {
-      return Promise.resolve(
-        Response.json({ runs: [], sizingAvailable: true }),
-      );
+      return Promise.resolve(bountyJson({ runs: [], sizingAvailable: true }));
     }
     if (url.endsWith("/approve")) {
       return Promise.resolve(
-        Response.json({
+        bountyJson({
           proposal: stored(1, { status: "approved", revision: 2 }),
         }),
       );
@@ -2230,7 +2214,7 @@ function streamedBoard(storedTitles: Record<number, string> = {}) {
     if (url.includes("/proposals/bpr_")) {
       const n = Number(/bpr_(\d+)/.exec(url)?.[1]);
       return detailGate.then(() =>
-        Response.json({
+        bountyJson({
           proposal: stored(n),
           freshness: {
             freshness: "current",
@@ -2242,9 +2226,7 @@ function streamedBoard(storedTitles: Record<number, string> = {}) {
         }),
       );
     }
-    return Promise.resolve(
-      Response.json({ proposals: [stored(1), stored(2)] }),
-    );
+    return Promise.resolve(bountyJson({ proposals: [stored(1), stored(2)] }));
   });
   const titleReads = () =>
     calls.filter((url) => url.includes("/proposal-titles?")).length;
@@ -2443,19 +2425,17 @@ function pagedBoard(
       return Promise.resolve(new Response(""));
     }
     if (url.includes("/runs")) {
-      return Promise.resolve(
-        Response.json({ runs: [], sizingAvailable: true }),
-      );
+      return Promise.resolve(bountyJson({ runs: [], sizingAvailable: true }));
     }
     if (url.endsWith("/approve")) {
       const n = Number(/bpr_(\d+)/.exec(url)?.[1]);
       approved.add(n);
-      return Promise.resolve(Response.json({ proposal: row(n) }));
+      return Promise.resolve(bountyJson({ proposal: row(n) }));
     }
     if (url.includes("/proposals/bpr_")) {
       const n = Number(/bpr_(\d+)/.exec(url)?.[1]);
       return Promise.resolve(
-        Response.json({
+        bountyJson({
           // As the detail route answers: the stored proposal, which does
           // not carry the list's `categories`.
           proposal: { ...row(n), categories: undefined },
@@ -2470,7 +2450,7 @@ function pagedBoard(
         return Promise.resolve(new Response("", { status: 500 }));
       }
       return Promise.resolve(
-        Response.json({
+        bountyJson({
           total: count,
           uncategorized: everything.filter((n) => categoriesFor(n).length === 0)
             .length,
@@ -2500,7 +2480,7 @@ function pagedBoard(
     const page = all.slice(from, from + limit);
     const last = page.at(-1);
     return Promise.resolve(
-      Response.json({
+      bountyJson({
         proposals: page.map(row),
         nextCursor:
           page.length === limit && last !== undefined
@@ -2607,13 +2587,11 @@ function specBoard() {
       return Promise.resolve(new Response(""));
     }
     if (url.includes("/runs")) {
-      return Promise.resolve(
-        Response.json({ runs: [], sizingAvailable: true }),
-      );
+      return Promise.resolve(bountyJson({ runs: [], sizingAvailable: true }));
     }
     if (/\/proposals\/bpr_\d+\/spec$/.test(url)) {
       return Promise.resolve(
-        Response.json({
+        bountyJson({
           spec: {
             id: "bsp_1",
             proposalId: "bpr_1",
@@ -2647,7 +2625,7 @@ function specBoard() {
     if (url.includes("/proposals/bpr_")) {
       const n = Number(/bpr_(\d+)/.exec(url)?.[1]);
       return Promise.resolve(
-        Response.json({
+        bountyJson({
           proposal: row(n),
           freshness: { freshness: "current", checkedAt: "now" },
           writebackOperations: [],
@@ -2658,7 +2636,7 @@ function specBoard() {
       return Promise.resolve(new Response("", { status: 500 }));
     }
     return Promise.resolve(
-      Response.json({ proposals: [row(1), row(2)], nextCursor: null }),
+      bountyJson({ proposals: [row(1), row(2)], nextCursor: null }),
     );
   });
   return {
@@ -2816,23 +2794,21 @@ function steppedBoard() {
         step: { ...step, base: body.complexity, complexity: "M+" },
       };
       rows["bpr_1"] = resized;
-      return Promise.resolve(Response.json({ proposal: resized }));
+      return Promise.resolve(bountyJson({ proposal: resized }));
     }
     if (url.includes("/proposal-titles?")) {
       return Promise.resolve(new Response(""));
     }
     if (url.includes("/runs")) {
-      return Promise.resolve(
-        Response.json({ runs: [], sizingAvailable: true }),
-      );
+      return Promise.resolve(bountyJson({ runs: [], sizingAvailable: true }));
     }
     if (/\/spec$/.test(url)) {
-      return Promise.resolve(Response.json({ spec: null }));
+      return Promise.resolve(bountyJson({ spec: null }));
     }
     const id = /proposals\/(bpr_\d+)/.exec(url)?.[1];
     if (id !== undefined) {
       return Promise.resolve(
-        Response.json({
+        bountyJson({
           proposal: rows[id],
           freshness: { freshness: "current", checkedAt: "now" },
           writebackOperations: [],
@@ -2843,7 +2819,7 @@ function steppedBoard() {
       return Promise.resolve(new Response("", { status: 500 }));
     }
     return Promise.resolve(
-      Response.json({
+      bountyJson({
         proposals: [rows["bpr_1"], rows["bpr_2"]],
         nextCursor: null,
       }),
@@ -3117,12 +3093,12 @@ test("a run in progress says why each ticket is in its plan", async () => {
     "fetch",
     vi.fn((url: string) => {
       if (url.endsWith("/runs/brn_1"))
-        return Promise.resolve(Response.json({ run: running }));
+        return Promise.resolve(bountyJson({ run: running }));
       if (url.includes("/runs"))
         return Promise.resolve(
-          Response.json({ runs: [running], sizingAvailable: true }),
+          bountyJson({ runs: [running], sizingAvailable: true }),
         );
-      return Promise.resolve(Response.json({ proposals: [] }));
+      return Promise.resolve(bountyJson({ proposals: [] }));
     }),
   );
   renderStreamedBoard();
@@ -3279,7 +3255,8 @@ test("pressing a category shows its tickets, says why, and can be undone", async
   await waitFor(() =>
     expect(rowKeys(screen.getByTestId("proposal-list"))).toHaveLength(12),
   );
-  expect(server.listReads().at(-1)).toBe(
+  // Returning to a fresh view shares its cached page.
+  expect(server.listReads()).toContain(
     "/api/v1/orgs/org_1/proposals?boardId=jrb_1&limit=50",
   );
 });

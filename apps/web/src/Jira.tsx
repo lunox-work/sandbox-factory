@@ -1,3 +1,4 @@
+import { rankAtLeast } from "sandbox-factory";
 /**
  * Connected Jira sites, for one organization.
  *
@@ -67,10 +68,7 @@ import {
 
 /** Roles that may connect or disconnect, matching the API's own floor. */
 function canManage(role: string): boolean {
-  return role
-    .split(",")
-    .map((entry) => entry.trim())
-    .some((entry) => entry === "owner" || entry === "admin");
+  return rankAtLeast(role, "admin");
 }
 
 /**

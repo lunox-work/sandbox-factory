@@ -202,7 +202,7 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
   return {
     async enqueue(owner, snapshotId, input) {
       return db.transaction(async (transaction) => {
-        const tx = transaction as unknown as Database;
+        const tx = transaction;
         // Serialize the organization-wide spend cap, across different repositories.
         const principal = await tx
           .select({ id: organization.id })
@@ -420,7 +420,7 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
     },
     async finish(owner, id, token, artifacts, logKey, now) {
       return db.transaction(async (transaction) => {
-        const tx = transaction as unknown as Database;
+        const tx = transaction;
         const rows = await tx
           .update(analysisRun)
           .set({

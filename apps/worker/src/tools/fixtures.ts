@@ -37,7 +37,7 @@ import {
 } from "../agent/repo-tools.js";
 import type { ArtifactFile, ToolAdapter, ToolRunInput } from "./adapter.js";
 import { checkFixtures } from "./fixtures-check.js";
-import { nearestCompilerOptions } from "./sandbox-build.js";
+import { nearestCompilerOptions } from "./compiler-config.js";
 import { loadSliceRun, readIncludedSource } from "./slice-run.js";
 
 /** Candidate sets one run may check before it must submit. */

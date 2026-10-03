@@ -93,7 +93,7 @@ export function createJiraIssueStore(db: Database): JiraIssueStore {
 
     async upsert(organizationId, boardId, input, content) {
       return db.transaction(async (transaction) => {
-        const tx = transaction as unknown as Database;
+        const tx = transaction;
         const owned = await tx
           .select({ id: jiraBoard.id })
           .from(jiraBoard)

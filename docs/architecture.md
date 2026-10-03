@@ -60,6 +60,54 @@ takes its owner's handle — so what counts as valid has to be decided once.
 `packages/shared` refines core's rules in `handleSchema` rather than restating
 them, so a change to the rules cannot leave the two disagreeing.
 
+## Browser state and application services
+
+Better Auth owns the session and its organization writes. Authenticated web
+content gets a user-scoped `ServerDataProvider` in `apps/web/src/data/query.tsx`.
+TanStack Query owns memberships, invitations, integration lists, repositories,
+members, account resources, tickets, pricing, proposal details/specs and analysis
+resources. Keys include user and owner before resource identifiers, filters and
+pages. Account changes recreate the cache; obsolete reads receive cancellation.
+Queries do not retry automatically, refetch on focus or reconnect. Stored reads
+are fresh for 30 seconds; intentional live Jira checks and run observation are
+explicit. Mutations invalidate affected resource families, and infinite lists
+retain the pages already opened when refreshed. Forms, dialogs, workflow inputs
+and URL selections remain local.
+
+`navigation/location.ts` publishes a stable pathname/search/hash snapshot for
+browser history and application push/replace. URL-owned workspaces are resolved
+from memberships before rendering owner-scoped content. Core's `roles.ts` parses
+held role combinations; response schemas accept held role strings while role
+assignment inputs keep their single-role allowlist.
+
+Feature clients in `packages/client/src` share `transport.ts`, validate shared
+success envelopes and preserve status, reason codes and conflict payloads.
+Reads accept abort signals, including body consumption. Proposal titles use a
+separate incremental NDJSON path. Query hooks and the observation lifecycle live
+in the web app. Observation requests do not overlap, stop on terminal results
+or tracking errors, and offer deliberate retry. Rate-card autosave serializes
+writes and retains the latest queued draft, revision conflicts and failed edits.
+Its controller is in `features/pricing/useRateCardAutosave.ts`; proposal lists,
+categories, peeks, search, titles and sizing progress are in `features/bounties`.
+
+API context and access rules live in `http-context.ts` and `access.ts`.
+`bounty/start-run.ts`, `bounty/approve-proposal.ts` and
+`sandbox/version-service.ts` take explicit owner/input/dependencies; routes keep
+membership checks, request parsing and HTTP mapping. `analysis/enqueue.ts` shares
+queue/log cleanup while callers retain interactive or profiler capacity policy.
+Database transaction types are inferred from Drizzle; transaction-only helpers
+state that requirement. Worker slice/build/fixtures share `tools/compiler-config.ts`
+for resolved compiler options and raw JSON-compatible configuration. The resolver
+separates active recursion from cached inherited configurations.
+
+Shared slice artifact schemas validate supported version 1 shapes after consumers
+verify original-byte hashes. Unsupported versions and malformed nested data use
+the existing artifact-unavailable outcomes. Jira's `transport.ts` bounds headers,
+bodies, OAuth and credential refresh, composes cancellation and aborts retry
+waits. GET retries remain bounded; writes dispatch once. Shared refresh owns its
+own deadline and persists rotated tokens before use, independent of one waiter's
+cancellation.
+
 ## TypeScript configuration
 
 [`tooling/tsconfig`](../tooling/tsconfig) holds the strictness contract in
@@ -536,8 +584,15 @@ Agent runs need `ANTHROPIC_API_KEY` and `AGENT_MODEL` on the worker; without
 a key they fail `agent_unavailable` and nothing else changes.
 
 **A sized ticket is profiled from the code it touches.** When a spec is
-drafted beside its ticket's repository snapshot, the executor asks for that
-spec revision's complexity profile (`bounty_profile`, one row per revision).
+drafted beside its ticket's surviving repository snapshot and profiling is
+configured, the proposal/spec transaction inserts the pending profile intent
+(`bounty_profile`, one row per revision). It freezes issue type and priority
+from the sized ticket, with the owner, spec hash and locked snapshot. An intent
+insert failure rolls back the proposal and spec. The post-commit callback only
+wakes the profiler: a later sweep discovers committed intent without it. The
+unique proposal/revision constraint makes requests idempotent. Snapshot-less
+or disabled profiling retains the existing behavior; respec does not implicitly
+request profiles, and historical rows are not backfilled.
 `apps/api/src/bounty/profiler.ts` sweeps the rows in flight every 30
 seconds, since the worker reports a finished run only to the database: it
 enqueues the snapshot's graph and a `scope` run for the spec (no person

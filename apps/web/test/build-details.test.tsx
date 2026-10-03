@@ -13,7 +13,7 @@
 
 import { releaseTag } from "@sandbox-factory/shared";
 import type { BuildInfoDto } from "@sandbox-factory/shared";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "./render";
 import { beforeEach, expect, test, vi } from "vitest";
 
 import { fetchApiBuild, logBuild, webBuild } from "../src/build";

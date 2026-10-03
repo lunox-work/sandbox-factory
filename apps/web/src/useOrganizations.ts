@@ -1,3 +1,5 @@
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { clients, queryKeys, useUserId } from "./data/query";
 /**
  * Which organizations the signed-in person belongs to, and which one the app
  * is currently showing.
@@ -7,7 +9,8 @@
  *
  * The active organization is held here *and* pushed to the server with
  * `setActive`, for two different jobs: this copy decides what the current tab
- * renders, and the server's copy is what a reload restores. They are allowed
+ * renders, and the server's copy records a preference for other consumers. Reloads
+ * currently choose the URL-owned workspace or the first membership. They are allowed
  * to differ between tabs, which is why nothing reads the server's copy to
  * decide what may be shown — see `requireMembership` in the API.
  */
@@ -60,11 +63,18 @@ export function useOrganizations(
    */
   preferredSlug?: string | undefined,
 ): Organizations {
-  const [state, setState] = useState<State>({
-    organizations: [],
-    loading: true,
-    error: null,
+  const userId = useUserId();
+  const queryClient = useQueryClient();
+  const key = queryKeys.me(userId, "memberships");
+  const query = useQuery({
+    queryKey: key,
+    queryFn: ({ signal }) => clients.memberships.memberships(signal),
   });
+  const state: State = {
+    organizations: query.data ?? [],
+    loading: query.isPending,
+    error: query.isError ? "Could not load your workspaces." : null,
+  };
   const [activeId, setActiveId] = useState<string | null>(null);
   /**
    * Whether the person has deliberately stepped out of every organization.
@@ -77,38 +87,10 @@ export function useOrganizations(
   const [deselected, setDeselected] = useState(false);
 
   const refresh = useCallback(async () => {
-    try {
-      const res = await fetch("/api/v1/me/orgs", { credentials: "include" });
-      if (!res.ok) {
-        setState({
-          organizations: [],
-          loading: false,
-          error: "Could not load your workspaces.",
-        });
-        return;
-      }
-      const body = (await res.json()) as {
-        organizations?: MembershipDto[];
-      } | null;
-      setState({
-        // Defaulted, not trusted: a 200 carrying the wrong shape should leave
-        // the switcher empty rather than throw through the whole app shell.
-        organizations: body?.organizations ?? [],
-        loading: false,
-        error: null,
-      });
-    } catch {
-      setState({
-        organizations: [],
-        loading: false,
-        error: "Could not load your workspaces.",
-      });
-    }
-  }, []);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+    await queryClient.invalidateQueries({
+      queryKey: queryKeys.me(userId, "memberships"),
+    });
+  }, [queryClient, userId]);
 
   // Settle on one organization once the list arrives: the one the URL names,
   // else the first. Runs again when the list changes, so leaving the active
@@ -180,7 +162,11 @@ export function useOrganizations(
   // null while `deselected`, so there is one rule about what is shown rather
   // than two that could disagree.
   const active =
-    state.organizations.find((entry) => entry.id === activeId) ?? null;
+    state.organizations.find((entry) =>
+      preferredSlug === undefined
+        ? entry.id === activeId
+        : entry.slug === preferredSlug,
+    ) ?? null;
   const notFound =
     !state.loading &&
     preferredSlug !== undefined &&

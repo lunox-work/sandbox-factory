@@ -38,6 +38,8 @@ export const handleSchema = z
 export const ORGANIZATION_ROLES = ["owner", "admin", "member"] as const;
 
 export const organizationRoleSchema = z.enum(ORGANIZATION_ROLES);
+/** Responses reflect held roles, including unknown plugin roles that grant no local access. */
+export const heldOrganizationRolesSchema = z.string();
 
 /**
  * What an organization is: one person's own account, or a team.
@@ -72,7 +74,7 @@ export const organizationSummarySchema = z.object({
 });
 
 export const membershipSchema = organizationSummarySchema.extend({
-  role: organizationRoleSchema,
+  role: heldOrganizationRolesSchema,
 });
 
 export const membershipListSchema = z.object({
@@ -84,7 +86,7 @@ export const organizationMemberSchema = z.object({
   /** The `member` row id, which is what remove and role changes take. */
   id: z.string().min(1),
   userId: z.string().min(1),
-  role: organizationRoleSchema,
+  role: heldOrganizationRolesSchema,
   name: z.string(),
   username: z.string().nullable(),
   image: z.string().nullable(),
@@ -98,7 +100,7 @@ export const organizationMemberListSchema = z.object({
 export const pendingInvitationSchema = z.object({
   id: z.string().min(1),
   organization: organizationSummarySchema,
-  role: organizationRoleSchema,
+  role: heldOrganizationRolesSchema,
   expiresAt: z.iso.datetime(),
 });
 
@@ -165,3 +167,8 @@ export * from "./sandbox.js";
 
 /** Default avatars, computed from an account id rather than stored. */
 export * from "./identicon.js";
+
+export * from "./web-api.js";
+
+export * from "./slice-artifacts.js";
+export { normalizeSpecText } from "sandbox-factory";

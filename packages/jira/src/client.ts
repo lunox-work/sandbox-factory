@@ -1,3 +1,4 @@
+import { withDeadline, abortableSleep } from "./transport.js";
 /**
  * The Jira read client. One class, used by all three integration mechanics:
  * the HTTP routes in `apps/api`, the MCP tools in `apps/api/src/mcp`, and the
@@ -103,6 +104,7 @@ export interface JiraClientOptions {
    * instance.
    */
   maxRetries?: number;
+  timeoutMs?: number;
   /** Injectable for tests, so a retry does not really wait. */
   sleep?: (ms: number) => Promise<void>;
 }
@@ -114,6 +116,7 @@ export interface JiraComment {
 
 /** The options shared by the three Agile issue endpoints. */
 interface IssuePageOptions {
+  signal?: AbortSignal;
   jql?: string;
   startAt?: number;
   maxResults?: number;
@@ -124,21 +127,21 @@ export class JiraClient {
   readonly #siteUrl: string | undefined;
   readonly #fetch: typeof globalThis.fetch;
   readonly #maxRetries: number;
-  readonly #sleep: (ms: number) => Promise<void>;
+  readonly #sleep: ((ms: number) => Promise<void>) | undefined;
+  readonly #timeoutMs: number | undefined;
 
   constructor(options: JiraClientOptions) {
     this.#credential = options.credential;
     this.#siteUrl = options.siteUrl;
     this.#fetch = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.#maxRetries = options.maxRetries ?? 2;
-    this.#sleep =
-      options.sleep ??
-      ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
+    this.#sleep = options.sleep;
+    this.#timeoutMs = options.timeoutMs;
   }
 
   /** Every board the credential can see, following pagination to the end. */
   async boards(
-    options: { projectKeyOrId?: string } = {},
+    options: { projectKeyOrId?: string; signal?: AbortSignal } = {},
   ): Promise<JiraBoardDto[]> {
     const collected: JiraBoardDto[] = [];
     let startAt = 0;
@@ -152,7 +155,10 @@ export class JiraClient {
       if (options.projectKeyOrId !== undefined) {
         query.set("projectKeyOrId", options.projectKeyOrId);
       }
-      const payload = await this.#get(`/rest/agile/1.0/board?${query}`);
+      const payload = await this.#get(
+        `/rest/agile/1.0/board?${query}`,
+        options.signal,
+      );
       const page = jiraBoardPageResponseSchema.parse(payload);
       collected.push(...page.values.map(toBoardDto));
       // `isLast` is authoritative when present; the short-page check covers the
@@ -225,7 +231,10 @@ export class JiraClient {
   /** A board's sprints, newest state first as Jira orders them. */
   async sprints(
     boardId: number,
-    options: { state?: "future" | "active" | "closed" } = {},
+    options: {
+      state?: "future" | "active" | "closed";
+      signal?: AbortSignal;
+    } = {},
   ): Promise<JiraSprintDto[]> {
     const query = new URLSearchParams({ maxResults: String(MAX_PAGE_SIZE) });
     if (options.state !== undefined) {
@@ -233,6 +242,7 @@ export class JiraClient {
     }
     const payload = await this.#get(
       `/rest/agile/1.0/board/${boardId}/sprint?${query}`,
+      options.signal,
     );
     // A Kanban board has no sprints and answers 400, not an empty list. That is
     // a question about the board's type, not a failure, so it is normalised.
@@ -249,7 +259,11 @@ export class JiraClient {
    */
   async search(
     jql: string,
-    options: { maxResults?: number; nextPageToken?: string } = {},
+    options: {
+      maxResults?: number;
+      nextPageToken?: string;
+      signal?: AbortSignal;
+    } = {},
   ): Promise<JiraIssuePageDto> {
     const query = new URLSearchParams({
       jql,
@@ -259,7 +273,10 @@ export class JiraClient {
     if (options.nextPageToken !== undefined) {
       query.set("nextPageToken", options.nextPageToken);
     }
-    const payload = await this.#get(`/rest/api/3/search/jql?${query}`);
+    const payload = await this.#get(
+      `/rest/api/3/search/jql?${query}`,
+      options.signal,
+    );
     const page = jiraIssuePageResponseSchema.parse(payload);
     return {
       issues: page.issues.map((issue) =>
@@ -273,10 +290,11 @@ export class JiraClient {
   }
 
   /** One issue by key (`ACME-123`) or numeric id. */
-  async issue(keyOrId: string): Promise<JiraIssueDto> {
+  async issue(keyOrId: string, signal?: AbortSignal): Promise<JiraIssueDto> {
     const query = new URLSearchParams({ fields: ISSUE_FIELDS.join(",") });
     const payload = await this.#get(
       `/rest/api/3/issue/${encodeURIComponent(keyOrId)}?${query}`,
+      signal,
     );
     return toIssueDto(jiraIssueResponseSchema.parse(payload), {
       siteUrl: this.#siteUrl,
@@ -292,10 +310,14 @@ export class JiraClient {
    * cannot pull ticket text; this is the call that exists so they do not have
    * to. Nothing it returns is stored.
    */
-  async issueDetail(keyOrId: string): Promise<JiraIssueDetailDto> {
+  async issueDetail(
+    keyOrId: string,
+    signal?: AbortSignal,
+  ): Promise<JiraIssueDetailDto> {
     const query = new URLSearchParams({ fields: DETAIL_FIELDS.join(",") });
     const payload = await this.#get(
       `/rest/api/3/issue/${encodeURIComponent(keyOrId)}?${query}`,
+      signal,
     );
     return toIssueDetailDto(jiraIssueResponseSchema.parse(payload), {
       siteUrl: this.#siteUrl,
@@ -331,7 +353,10 @@ export class JiraClient {
   }
 
   /** Comments are read only for explicit recovery of an ambiguous write. */
-  async comments(keyOrId: string): Promise<JiraComment[]> {
+  async comments(
+    keyOrId: string,
+    signal?: AbortSignal,
+  ): Promise<JiraComment[]> {
     const comments: JiraComment[] = [];
     let startAt = 0;
     for (;;) {
@@ -341,6 +366,7 @@ export class JiraClient {
       });
       const payload = await this.#get(
         `/rest/api/3/issue/${encodeURIComponent(keyOrId)}/comment?${query}`,
+        signal,
       );
       const record =
         typeof payload === "object" && payload !== null
@@ -385,7 +411,7 @@ export class JiraClient {
     if (options.jql !== undefined && options.jql !== "") {
       query.set("jql", options.jql);
     }
-    const payload = await this.#get(`${path}?${query}`);
+    const payload = await this.#get(`${path}?${query}`, options.signal);
     const page = jiraIssuePageResponseSchema.parse(payload);
     const issues = page.issues.map((issue) =>
       map(issue, { siteUrl: this.#siteUrl }),
@@ -408,31 +434,44 @@ export class JiraClient {
   async #get(path: string, signal?: AbortSignal): Promise<unknown> {
     let attempt = 0;
     for (;;) {
-      // A retry's sleep does not listen to the signal; stop before the next try.
-      signal?.throwIfAborted();
-      // Re-read inside the loop: a retry after a 401 refresh needs the new
-      // token, and the credential may have rotated it since the last attempt.
-      const authorization = await this.#credential.authorize();
-      const response = await this.#fetch(
-        `${this.#credential.baseUrl()}${path}`,
-        {
-          headers: { Authorization: authorization, Accept: "application/json" },
-          ...(signal === undefined ? {} : { signal }),
+      const result = await withDeadline(
+        async (deadline) => {
+          const authorization = await this.#credential.authorize(deadline);
+          deadline.throwIfAborted();
+          const response = await this.#fetch(
+            `${this.#credential.baseUrl()}${path}`,
+            {
+              headers: {
+                Authorization: authorization,
+                Accept: "application/json",
+              },
+              signal: deadline,
+            },
+          );
+          if (response.ok)
+            return {
+              kind: "success" as const,
+              payload: (await response.json()) as unknown,
+            };
+          if (
+            (response.status === 429 || response.status >= 500) &&
+            attempt < this.#maxRetries
+          ) {
+            // Release the body before retrying; cancellation and consumption share the deadline.
+            await response.body?.cancel();
+            return {
+              kind: "retry" as const,
+              delay: retryDelayMs(response, attempt),
+            };
+          }
+          throw await toApiError(response);
         },
+        signal,
+        this.#timeoutMs,
       );
-
-      if (response.ok) {
-        return response.json();
-      }
-
-      const retryable = response.status === 429 || response.status >= 500;
-      if (retryable && attempt < this.#maxRetries) {
-        await this.#sleep(retryDelayMs(response, attempt));
-        attempt += 1;
-        continue;
-      }
-
-      throw await toApiError(response);
+      if (result.kind === "success") return result.payload;
+      await abortableSleep(result.delay, signal, this.#sleep);
+      attempt += 1;
     }
   }
 }

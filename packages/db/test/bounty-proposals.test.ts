@@ -1302,3 +1302,71 @@ test("legacy snapshot reads add XS without changing historical rates", async () 
   assert.equal(record?.rateCard.sMinor, 100);
   assert.equal(record?.rateCard.revision, 1);
 });
+
+test("profile intent uses the surviving locked snapshot and frozen ticket metadata", async () => {
+  const running = {
+    id: "brn_1",
+    boardId: "jrb_1",
+    ticketId: null,
+  } as BountyRunRow;
+  for (const snapshot of [[], [{ id: "rsn_1" }]]) {
+    const fake = createSequencedFakeDb([
+      snapshot,
+      [running],
+      [TICKET],
+      [
+        row({
+          specRevision: 1,
+          repoSnapshotId: snapshot.length ? "rsn_1" : null,
+        }),
+      ],
+      [],
+      [],
+    ]);
+    const result = await createBountyProposalStore(fake.db).createForLease(
+      "org_1",
+      "lease",
+      {
+        ...input,
+        spec,
+        repoSnapshotId: "rsn_1",
+        profileIntent: { issueType: "Bug", priority: "High" },
+      },
+    );
+    assert.equal(result.status, "created");
+    const intents = fake.calls.filter((call) =>
+      String(call.values?.["id"]).startsWith("bpf_"),
+    );
+    assert.equal(intents.length, snapshot.length);
+    if (snapshot.length) {
+      assert.equal(intents[0]?.values?.["organizationId"], "org_1");
+      assert.equal(intents[0]?.values?.["proposalId"], "bpr_1");
+      assert.equal(intents[0]?.values?.["specRevision"], 1);
+      assert.equal(intents[0]?.values?.["specHash"], spec.specHash);
+      assert.equal(intents[0]?.values?.["snapshotId"], "rsn_1");
+      assert.deepEqual(intents[0]?.values?.["ticket"], {
+        issueType: "Bug",
+        priority: "High",
+      });
+      assert.equal(intents[0]?.ignoredConflict, true);
+    }
+  }
+  const disabled = createSequencedFakeDb([
+    [{ id: "rsn_1" }],
+    [running],
+    [TICKET],
+    [row({ specRevision: 1 })],
+    [],
+  ]);
+  await createBountyProposalStore(disabled.db).createForLease(
+    "org_1",
+    "lease",
+    { ...input, spec, repoSnapshotId: "rsn_1" },
+  );
+  assert.equal(
+    disabled.calls.filter((call) =>
+      String(call.values?.["id"]).startsWith("bpf_"),
+    ).length,
+    0,
+  );
+});

@@ -13,6 +13,7 @@ import postgres from "postgres";
 import { stepUp, trimSpec, type SpecDraft } from "sandbox-factory";
 
 import {
+  createBountyProfileStore,
   createBountyProposalStore,
   createBountyRunStore,
   createBountySpecStore,
@@ -618,6 +619,9 @@ describe("bounty database concurrency", () => {
       ["issue_spec", "board_spec", "4001", "SPEC-1"],
       ["issue_spec_lost", "board_spec", "4002", "SPEC-2"],
     ]);
+    await sql`insert into github_connection (id, organization_id, installation_id, account_login, account_type, repository_selection, permissions) values ('ghc_profile', 'org_bounty', '991', 'example', 'Organization', 'all', '{}')`;
+    await sql`insert into github_repo (id, organization_id, connection_id, role, external_id, full_name, default_branch) values ('ghr_profile', 'org_bounty', 'ghc_profile', 'source', '992', 'example/source', 'main')`;
+    await sql`insert into repo_snapshot (id, repo_id, commit_sha, ref, tree_sha, tree_key, file_count, total_bytes, languages, facts) values ('rsn_profile', 'ghr_profile', 'abc', 'refs/heads/main', 'tree', 'tree-key', 1, 1, '{}', '{}')`;
     const queueRun = (
       id: string,
       source: { proposalId: string; revision: number } | null,
@@ -660,6 +664,8 @@ describe("bounty database concurrency", () => {
     });
     const input = (runId: string, ticketId: string) => ({
       runId,
+      repoSnapshotId: "rsn_profile",
+      profileIntent: { issueType: "Bug", priority: "High" },
       ticketId,
       specHash: "d".repeat(64),
       specHashVersion: 1,
@@ -692,6 +698,49 @@ describe("bounty database concurrency", () => {
       await queueRun("run_spec_a", null);
       await runs.claim("org_bounty", "run_spec_a", "lease_a", new Date());
       const first = spec("The filtered table is exported");
+      // Intent is required when enabled: a failed insert rolls back the
+      // proposal and spec too, including the lease-fenced write.
+      await sql.unsafe(
+        "create function reject_profile_intent() returns trigger language plpgsql as $$ begin raise exception 'intent rejected'; end $$",
+      );
+      await sql.unsafe(
+        "create trigger reject_profile before insert on bounty_profile for each row execute function reject_profile_intent()",
+      );
+      try {
+        await assert.rejects(
+          proposals.createForLease("org_bounty", "lease_a", {
+            ...input("run_spec_a", "issue_spec"),
+            spec: first,
+          }),
+        );
+        assert.equal(
+          Number(
+            (
+              await sql`select count(*)::int as n from bounty_proposal where run_id = 'run_spec_a'`
+            )[0]?.["n"],
+          ),
+          0,
+        );
+        assert.equal(
+          Number(
+            (
+              await sql`select count(*)::int as n from bounty_spec where run_id = 'run_spec_a'`
+            )[0]?.["n"],
+          ),
+          0,
+        );
+        assert.equal(
+          Number(
+            (await sql`select count(*)::int as n from bounty_profile`)[0]?.[
+              "n"
+            ],
+          ),
+          0,
+        );
+      } finally {
+        await sql.unsafe("drop trigger reject_profile on bounty_profile");
+        await sql.unsafe("drop function reject_profile_intent()");
+      }
       const created = await proposals.createForLease("org_bounty", "lease_a", {
         ...input("run_spec_a", "issue_spec"),
         spec: first,
@@ -701,6 +750,35 @@ describe("bounty database concurrency", () => {
       const proposalId = created.proposal.id;
       assert.equal(created.proposal.specRevision, 1);
 
+      // A new process can discover work without the post-commit wake-up.
+      const profiles = createBountyProfileStore(connection.db);
+      assert.ok(
+        (await profiles.organizationsWithPending()).includes("org_bounty"),
+      );
+      const pending = (await profiles.pending("org_bounty")).find(
+        (row) => row.proposalId === proposalId,
+      );
+      assert.equal(pending?.specRevision, 1);
+      assert.equal(pending?.specHash, first.specHash);
+      assert.equal(pending?.snapshotId, "rsn_profile");
+      assert.deepEqual(pending?.ticket, { issueType: "Bug", priority: "High" });
+      await profiles.request("org_bounty", {
+        proposalId,
+        specRevision: 1,
+        specHash: first.specHash,
+        snapshotId: "rsn_profile",
+        ticket: { issueType: "Task", priority: null },
+      });
+      assert.equal(
+        (await profiles.pending("org_bounty")).filter(
+          (row) => row.proposalId === proposalId,
+        ).length,
+        1,
+      );
+      assert.deepEqual(
+        (await profiles.latest("org_bounty", proposalId))?.ticket,
+        { issueType: "Bug", priority: "High" },
+      );
       const stored = await specs.get("org_bounty", proposalId, 1);
       assert.match(stored?.id ?? "", /^bsp_/);
       assert.deepEqual(stored?.draft, first.draft);
@@ -744,6 +822,16 @@ describe("bounty database concurrency", () => {
       assert.deepEqual(
         (await specs.get("org_bounty", proposalId, 2))?.draft,
         second.draft,
+      );
+      assert.equal(
+        (await profiles.latest("org_bounty", proposalId))?.specRevision,
+        2,
+      );
+      assert.equal(
+        (await profiles.pending("org_bounty")).filter(
+          (row) => row.proposalId === proposalId,
+        ).length,
+        2,
       );
       // The revision it replaced is still there to read.
       assert.deepEqual(

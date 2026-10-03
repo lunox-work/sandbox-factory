@@ -9,13 +9,7 @@
  * what a person sees given a server response.
  */
 
-import {
-  act,
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-} from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "./render";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
 const listAccounts = vi.fn();

@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "./render";
 import { userEvent } from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
 
@@ -178,6 +178,16 @@ function server(
         repositories: [
           {
             id: "ghr_1",
+            connectionId: "ghc_1",
+            externalId: "1",
+            defaultBranch: "main",
+            isPrivate: true,
+            sizeKb: null,
+            headSha: null,
+            pushedAt: null,
+            lastSyncedAt: null,
+            syncError: null,
+            createdAt: "2026-09-30T00:00:00.000Z",
             fullName: "acme/app",
             role: "source",
             syncStatus: "ok",

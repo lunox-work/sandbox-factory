@@ -7,7 +7,7 @@
  * its own here, because the peek has no `Trigger` to return focus to.
  */
 
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "./render";
 import { userEvent } from "@testing-library/user-event";
 import { useState } from "react";
 import { expect, test, vi } from "vitest";

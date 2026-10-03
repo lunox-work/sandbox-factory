@@ -27,7 +27,7 @@ import {
 } from "@sandbox-factory/shared";
 import type { Hono } from "hono";
 
-import { isAtLeastAdmin } from "../connect-state.js";
+import { isAtLeastAdmin } from "../access.js";
 import { boundedLimit, rowCursor } from "../paging.js";
 
 export interface TicketRouteOptions {

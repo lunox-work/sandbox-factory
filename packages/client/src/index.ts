@@ -1,3 +1,5 @@
+import { ApiClient } from "./transport.js";
+export { ApiClient, ApiError, type ClientOptions } from "./transport.js";
 /**
  * The typed API client, shared by the web dashboard and the VS Code extension.
  *
@@ -14,7 +16,6 @@
  */
 
 import {
-  errorSchema,
   analysisRunListSchema,
   analysisRunResponseSchema,
   artifactListSchema,
@@ -40,160 +41,39 @@ import type {
   UpdateSandboxVersionInput,
 } from "@sandbox-factory/shared";
 
-export interface ClientOptions {
-  /** Base URL, e.g. `https://api.lunox.work`. Trailing slashes are fine. */
-  baseUrl: string;
-  /**
-   * Returns the bearer token, or null when signed out. A function so the
-   * token is read lazily and can change without rebuilding the client.
-   * `PromiseLike`, not `Promise`, so VS Code's `Thenable` from
-   * `context.secrets.get` satisfies it.
-   */
-  getToken?: () => string | null | PromiseLike<string | null>;
-  /** Injectable for tests; defaults to the platform's global fetch. */
-  fetch?: typeof globalThis.fetch;
-  /**
-   * Whether to send cookies. Defaults to `"include"`: the web app uses a
-   * session cookie and the API is a different origin in production, where
-   * fetch's default `"same-origin"` would drop it and make every call a 401.
-   */
-  credentials?: RequestCredentials;
-}
-
-/** An error carrying the HTTP status, so callers can branch on 401 vs 404. */
-export class ApiError extends Error {
-  constructor(
-    readonly status: number,
-    message: string,
-    /** The route's stable reason (`run_limit`, `graph_failed`, …), if it gave one. */
-    readonly code: string | null = null,
-  ) {
-    super(message);
-    this.name = "ApiError";
-  }
-
-  /** The caller is signed out or the token expired. */
-  get isUnauthorized(): boolean {
-    return this.status === 401;
-  }
-
-  /**
-   * The resource is gone, usually removed from another client; callers
-   * generally drop it from their local list rather than show an error.
-   */
-  get isNotFound(): boolean {
-    return this.status === 404;
-  }
-}
-
-/**
- * Strips trailing slashes in linear time. Do not simplify to
- * `replace(/\/+$/, "")`: that is quadratic on a long run of slashes not at the
- * end (80k took ~2.3s), and `baseUrl` comes from callers of a published
- * package. Pinned by the slash tests in client.test.ts.
- */
-function trimTrailingSlashes(value: string): string {
-  let end = value.length;
-  while (end > 0 && value[end - 1] === "/") {
-    end -= 1;
-  }
-  return value.slice(0, end);
-}
-
-export class ApiClient {
-  readonly #baseUrl: string;
-  readonly #getToken: () => string | null | PromiseLike<string | null>;
-  readonly #fetch: typeof globalThis.fetch;
-  readonly #credentials: RequestCredentials;
-
-  constructor(options: ClientOptions) {
-    this.#baseUrl = trimTrailingSlashes(options.baseUrl);
-    this.#getToken = options.getToken ?? (() => null);
-    this.#credentials = options.credentials ?? "include";
-    // Bound to globalThis: an unbound global fetch throws "Illegal invocation"
-    // in browsers.
-    this.#fetch = options.fetch ?? globalThis.fetch.bind(globalThis);
-  }
-
-  /**
-   * One request, authenticated and parsed. `protected` rather than private:
-   * this is the seam a subclass builds endpoints on, and the reason the
-   * transport lives in a package rather than in each surface.
-   */
-  protected async request(path: string, init?: RequestInit): Promise<unknown> {
-    const token = await this.#getToken();
-    const headers = new Headers(init?.headers);
-    headers.set("Accept", "application/json");
-    if (init?.body !== undefined) {
-      headers.set("Content-Type", "application/json");
-    }
-    if (token !== null && token !== "") {
-      headers.set("Authorization", `Bearer ${token}`);
-    }
-
-    const response = await this.#fetch(`${this.#baseUrl}${path}`, {
-      ...init,
-      credentials: this.#credentials,
-      headers,
-    });
-    const text = await response.text();
-
-    let payload: unknown = undefined;
-    if (text !== "") {
-      try {
-        payload = JSON.parse(text);
-      } catch {
-        throw new ApiError(
-          response.status,
-          `Expected JSON from ${path}, got: ${text.slice(0, 200)}`,
-        );
-      }
-    }
-
-    if (!response.ok) {
-      const parsed = errorSchema.safeParse(payload);
-      throw new ApiError(
-        response.status,
-        parsed.success
-          ? parsed.data.error
-          : `HTTP ${response.status} from ${path}`,
-        parsed.success ? (parsed.data.code ?? null) : null,
-      );
-    }
-
-    return payload;
-  }
-}
-
 /** Private repository analysis, available to both browser and extension clients. */
 export class GithubAnalysisClient extends ApiClient {
   #base(owner: string) {
     return `/api/v1/orgs/${encodeURIComponent(owner)}/github`;
   }
-  async snapshots(owner: string, repoId: string) {
+  async snapshots(owner: string, repoId: string, signal?: AbortSignal) {
     return repoSnapshotListSchema.parse(
       await this.request(
         `${this.#base(owner)}/repositories/${encodeURIComponent(repoId)}/snapshots`,
+        { signal },
       ),
     ).snapshots;
   }
-  async snapshot(owner: string, snapshotId: string) {
+  async snapshot(owner: string, snapshotId: string, signal?: AbortSignal) {
     const response = (await this.request(
       `${this.#base(owner)}/snapshots/${encodeURIComponent(snapshotId)}`,
+      { signal },
     )) as { snapshot?: unknown };
     return repoSnapshotDetailDtoSchema.parse(response.snapshot);
   }
-  async runs(owner: string, repoId: string) {
+  async runs(owner: string, repoId: string, signal?: AbortSignal) {
     return analysisRunListSchema.parse(
       await this.request(
         `${this.#base(owner)}/repositories/${encodeURIComponent(repoId)}/runs`,
+        { signal },
       ),
     ).runs;
   }
-  async run(owner: string, runId: string) {
+  async run(owner: string, runId: string, signal?: AbortSignal) {
     return analysisRunResponseSchema.parse(
       await this.request(
         `${this.#base(owner)}/runs/${encodeURIComponent(runId)}`,
+        { signal },
       ),
     ).run;
   }
@@ -237,10 +117,15 @@ export class GithubAnalysisClient extends ApiClient {
     ).run;
   }
   /** Proposals with a spec, on the boards linked to the repository. */
-  async repositoryProposals(owner: string, repoId: string) {
+  async repositoryProposals(
+    owner: string,
+    repoId: string,
+    signal?: AbortSignal,
+  ) {
     return repositoryProposalListSchema.parse(
       await this.request(
         `${this.#base(owner)}/repositories/${encodeURIComponent(repoId)}/proposals`,
+        { signal },
       ),
     ).proposals;
   }
@@ -249,6 +134,7 @@ export class GithubAnalysisClient extends ApiClient {
     owner: string,
     snapshotId: string,
     query: { prefix?: string; cursor?: string; limit?: number } = {},
+    signal?: AbortSignal,
   ) {
     const search = new URLSearchParams();
     if (query.prefix !== undefined && query.prefix !== "")
@@ -260,27 +146,31 @@ export class GithubAnalysisClient extends ApiClient {
     return repoTreePageDtoSchema.parse(
       await this.request(
         `${this.#base(owner)}/snapshots/${encodeURIComponent(snapshotId)}/tree${suffix}`,
+        { signal },
       ),
     );
   }
-  async artifacts(owner: string, runId: string) {
+  async artifacts(owner: string, runId: string, signal?: AbortSignal) {
     return artifactListSchema.parse(
       await this.request(
         `${this.#base(owner)}/runs/${encodeURIComponent(runId)}/artifacts`,
+        { signal },
       ),
     ).artifacts;
   }
-  async artifactUrl(owner: string, artifactId: string) {
+  async artifactUrl(owner: string, artifactId: string, signal?: AbortSignal) {
     return artifactUrlSchema.parse(
       await this.request(
         `${this.#base(owner)}/artifacts/${encodeURIComponent(artifactId)}/url`,
+        { signal },
       ),
     ).url;
   }
-  async logUrl(owner: string, runId: string) {
+  async logUrl(owner: string, runId: string, signal?: AbortSignal) {
     return artifactUrlSchema.parse(
       await this.request(
         `${this.#base(owner)}/runs/${encodeURIComponent(runId)}/log/url`,
+        { signal },
       ),
     ).url;
   }
@@ -295,14 +185,16 @@ export class SandboxClient extends GithubAnalysisClient {
   #sandboxes(owner: string) {
     return `/api/v1/orgs/${encodeURIComponent(owner)}/sandboxes`;
   }
-  async sandboxes(owner: string) {
-    return sandboxListSchema.parse(await this.request(this.#sandboxes(owner)))
-      .sandboxes;
+  async sandboxes(owner: string, signal?: AbortSignal) {
+    return sandboxListSchema.parse(
+      await this.request(this.#sandboxes(owner), { signal }),
+    ).sandboxes;
   }
-  async sandbox(owner: string, sandboxId: string) {
+  async sandbox(owner: string, sandboxId: string, signal?: AbortSignal) {
     return sandboxResponseSchema.parse(
       await this.request(
         `${this.#sandboxes(owner)}/${encodeURIComponent(sandboxId)}`,
+        { signal },
       ),
     ).sandbox;
   }
@@ -314,10 +206,15 @@ export class SandboxClient extends GithubAnalysisClient {
       }),
     ).sandbox;
   }
-  async sandboxVersions(owner: string, sandboxId: string) {
+  async sandboxVersions(
+    owner: string,
+    sandboxId: string,
+    signal?: AbortSignal,
+  ) {
     return sandboxVersionListSchema.parse(
       await this.request(
         `${this.#sandboxes(owner)}/${encodeURIComponent(sandboxId)}/versions`,
+        { signal },
       ),
     ).versions;
   }
@@ -334,10 +231,11 @@ export class SandboxClient extends GithubAnalysisClient {
       ),
     );
   }
-  async sandboxVersion(owner: string, versionId: string) {
+  async sandboxVersion(owner: string, versionId: string, signal?: AbortSignal) {
     return sandboxVersionResponseSchema.parse(
       await this.request(
         `${this.#sandboxes(owner)}/versions/${encodeURIComponent(versionId)}`,
+        { signal },
       ),
     );
   }
@@ -363,11 +261,19 @@ export class SandboxClient extends GithubAnalysisClient {
     ).run;
   }
   /** What replaying the version would use, or why it cannot be replayed. */
-  async sandboxReplay(owner: string, versionId: string) {
+  async sandboxReplay(owner: string, versionId: string, signal?: AbortSignal) {
     return replayResponseSchema.parse(
       await this.request(
         `${this.#sandboxes(owner)}/versions/${encodeURIComponent(versionId)}/replay`,
+        { signal },
       ),
     );
   }
 }
+
+export * from "./memberships.js";
+export * from "./tickets.js";
+export * from "./jira.js";
+export * from "./github.js";
+export * from "./pricing.js";
+export * from "./runs.js";

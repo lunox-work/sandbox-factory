@@ -1,3 +1,7 @@
+import {
+  sliceManifestSchema,
+  boundaryContractSchema,
+} from "@sandbox-factory/shared";
 /**
  * A succeeded slice run, read back for the tools that build on it.
  *
@@ -71,12 +75,12 @@ export async function loadSliceRun(
   let manifest: SliceManifest;
   let contract: BoundaryContract;
   try {
-    manifest = JSON.parse(
-      await readVerified(manifestArtifact),
-    ) as SliceManifest;
-    contract = JSON.parse(
-      await readVerified(contractArtifact),
-    ) as BoundaryContract;
+    manifest = sliceManifestSchema.parse(
+      JSON.parse(await readVerified(manifestArtifact)),
+    );
+    contract = boundaryContractSchema.parse(
+      JSON.parse(await readVerified(contractArtifact)),
+    );
   } catch (error) {
     if (error instanceof AnalysisError) throw error;
     throw new AnalysisError("slice_unavailable");

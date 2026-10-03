@@ -56,6 +56,10 @@ Each job runs `npm ci --ignore-scripts` → `npm run lint` → `npm run format:c
 → `npm run build` → `npm test` — the same sequence as `npm run verify`, which
 the pre-push hook runs. Keep them identical.
 
+CI also runs `npm run test:bounty-concurrency --workspace @sandbox-factory/db`
+sequentially after ordinary tests, against its disposable Postgres service.
+This scratch-database suite fails when Postgres is unavailable.
+
 CI then does three things `verify` does not: it runs against a **Postgres
 service container and a SeaweedFS fixture**, asserts the database-backed tests actually ran rather than
 skipping, and asserts the build recorded its commit. The S3 regression uploads

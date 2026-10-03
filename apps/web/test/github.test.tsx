@@ -10,14 +10,7 @@
  * The server is faked at `fetch`, routed by method and path.
  */
 
-import {
-  act,
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-  within,
-} from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "./render";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import { GithubConnections } from "../src/Github";

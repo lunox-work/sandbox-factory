@@ -29,6 +29,9 @@ cannot verify, preserving the service-free local verification path.
   in a test. Never put the test command on the left of a pipe: npm scripts
   do not enable `pipefail`, so failures can be hidden.
 - Web uses Vitest and Testing Library with fakes at the fetch/auth-client boundary.
+  `apps/web/test/render.tsx` supplies an isolated query client per render/hook.
+  Complete wire fixtures exercise response validation; cache ownership and
+  non-overlapping observation regressions live in `server-data.test.tsx`.
   Confirm a UI regression test fails before the fix.
 - Extension tests use `node:test` with a fake `Host`. Keep logic in `commands.ts`,
   `task.ts` and `origin.ts`; only `extension.ts` imports `vscode`. That entry point,
@@ -69,3 +72,14 @@ reuse the volumes and may leave dependencies stale.
 Do not repair dependencies with `docker compose down -v`: Postgres and SeaweedFS
 have no profile restriction, so that also deletes persistent data. The targeted
 recreation used by Make preserves those services' volumes.
+
+Bounty concurrency checks run separately with
+`npm run test:bounty-concurrency --workspace @sandbox-factory/db` and an explicit
+`DATABASE_URL` for a disposable Postgres service. Unlike ordinary tests this
+suite fails when Postgres is unavailable; CI runs it sequentially after `npm test`.
+
+The concurrency suite also verifies atomic proposal/spec/profile-intent commit,
+rollback on an intent insertion failure, idempotency and discovery by a later
+sweep. The regular DB tests retain service-free fakes. For local S3 verification,
+use the CI SeaweedFS fixture and set `TEST_S3_ENDPOINT` to its disposable localhost
+port; never derive integration configuration from production environment files.

@@ -11,14 +11,7 @@
  * `app.test.tsx`.
  */
 
-import {
-  act,
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-  within,
-} from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "./render";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import { EntityAvatar } from "../src/components/Avatar";
@@ -1247,6 +1240,7 @@ test("a pending invitation marks the avatar", async () => {
   pendingInvitations = [
     {
       id: "inv_1",
+      expiresAt: "2026-12-01T00:00:00.000Z",
       role: "member",
       organization: { id: "org_9", name: "Globex", slug: "globex" },
     },
@@ -1268,3 +1262,23 @@ test("no mark when nothing is waiting", async () => {
   });
   expect(screen.queryByRole("button", { name: /invitation/ })).toBeNull();
 });
+
+for (const destination of ["settings", "tickets"]) {
+  test(`history changes workspace on the same ${destination} screen`, async () => {
+    window.history.replaceState(null, "", `/o/acme/${destination}`);
+    render(<App />);
+    const menu = await openSwitcher();
+    fireEvent.click(within(menu).getByRole("menuitem", { name: /Globex/ }));
+    await screen.findByRole("button", { name: "Switch workspace — Globex" });
+    for (const slug of ["acme", "globex", "acme"]) {
+      act(() => {
+        window.history.replaceState(null, "", `/o/${slug}/${destination}`);
+        window.dispatchEvent(new PopStateEvent("popstate"));
+      });
+      await screen.findByRole("button", {
+        name: `Switch workspace — ${slug === "acme" ? "Acme" : "Globex"}`,
+      });
+      expect(window.location.pathname).toBe(`/o/${slug}/${destination}`);
+    }
+  });
+}

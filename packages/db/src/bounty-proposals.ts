@@ -1,3 +1,6 @@
+import { snapshotForWrite } from "./snapshot-write.js";
+export { snapshotForWrite } from "./snapshot-write.js";
+import { insertProfileIntent } from "./profile-intent.js";
 import type {
   BountyComplexity,
   BountySizingResult,
@@ -16,18 +19,20 @@ import {
   nextSpecRevision,
   type NewBountySpec,
 } from "./bounty-specs.js";
-import { isUniqueViolation, type Database } from "./errors.js";
+import {
+  isUniqueViolation,
+  type Database,
+  type QueryExecutor,
+} from "./errors.js";
 import { jiraWriteGranted, splitScopes } from "./jira-connections.js";
 import { generateId } from "./mapping.js";
 import {
   bountyProposal,
   bountyRun,
   bountyWriteback,
-  githubRepo,
   jiraBoard,
   jiraConnection,
   jiraIssue,
-  repoSnapshot,
   ticket,
 } from "./schema.js";
 import type {
@@ -70,6 +75,8 @@ export interface CreateBountyProposalInput {
  */
 export interface LeasedBountyProposalInput extends CreateBountyProposalInput {
   readonly spec?: NewBountySpec;
+  /** Frozen sizing content, supplied only when profiling is configured. */
+  readonly profileIntent?: import("sandbox-factory").ProfileTicket;
 }
 
 /**
@@ -412,7 +419,7 @@ function toDto(row: BountyProposalRow, name: TicketName): StoredBountyProposal {
 }
 
 async function first(
-  db: Database,
+  db: QueryExecutor,
   organizationId: string,
   proposalId: string,
 ): Promise<{ row: BountyProposalRow; name: TicketName } | undefined> {
@@ -446,7 +453,7 @@ interface NameRow {
  * board.
  */
 async function ticketForRun(
-  db: Database,
+  db: QueryExecutor,
   organizationId: string,
   run: Pick<BountyRunRow, "ticketId" | "boardId">,
   ticketId: string,
@@ -468,7 +475,7 @@ async function ticketForRun(
 }
 
 async function mutationMiss(
-  db: Database,
+  db: QueryExecutor,
   organizationId: string,
   proposalId: string,
   expectedRevision: number,
@@ -521,35 +528,9 @@ function insertValues(
  */
 const proposalCreatedMs = sql`date_trunc('milliseconds', ${bountyProposal.createdAt})`;
 
-/**
- * Keep a surviving owned snapshot still until the write that names it
- * commits. Null for a snapshot that is gone or another organization's.
- */
-export async function snapshotForWrite(
-  tx: Database,
-  organizationId: string,
-  snapshotId: string | null | undefined,
-): Promise<string | null> {
-  if (snapshotId == null) return null;
-  const [snapshot] = await tx
-    .select({ id: repoSnapshot.id })
-    .from(repoSnapshot)
-    .innerJoin(githubRepo, eq(githubRepo.id, repoSnapshot.repoId))
-    .where(
-      and(
-        eq(githubRepo.organizationId, organizationId),
-        eq(repoSnapshot.id, snapshotId),
-      ),
-    )
-    .for("key share", { of: repoSnapshot });
-  // Repository deletion or pruning during the model call is optional
-  // context disappearing, not a reason to discard the completed draft.
-  return snapshot?.id ?? null;
-}
-
 /** Each ticket's live proposal, for the tickets that have one. */
 async function liveProposalIds(
-  db: Database,
+  db: QueryExecutor,
   organizationId: string,
   boardId: string,
   externalIds: readonly string[],
@@ -582,7 +563,7 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
   return {
     async create(organizationId, input) {
       return db.transaction(async (transaction) => {
-        const tx = transaction as unknown as Database;
+        const tx = transaction;
         const runs = (await tx
           .select()
           .from(bountyRun)
@@ -623,7 +604,7 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
 
     async createForLease(organizationId, leaseToken, input) {
       return db.transaction(async (transaction) => {
-        const tx = transaction as unknown as Database;
+        const tx = transaction;
         const repoSnapshotId = await snapshotForWrite(
           tx,
           organizationId,
@@ -679,6 +660,15 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
             { proposalId: created.id, runId: input.runId, revision: 1 },
             input.spec,
           );
+          if (input.profileIntent !== undefined && repoSnapshotId !== null) {
+            await insertProfileIntent(tx, organizationId, {
+              proposalId: created.id,
+              specRevision: 1,
+              specHash: input.spec.specHash,
+              snapshotId: repoSnapshotId,
+              ticket: input.profileIntent,
+            });
+          }
         }
         return {
           status: "created",
@@ -1020,7 +1010,7 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
       input,
     ) {
       return db.transaction(async (transaction) => {
-        const tx = transaction as unknown as Database;
+        const tx = transaction;
         // Snapshot before proposal locks: cascading snapshot deletion also
         // locks proposals, so both paths acquire these locks in that order.
         const repoSnapshotId = await snapshotForWrite(
@@ -1170,6 +1160,15 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
             },
             input.spec,
           );
+          if (input.profileIntent !== undefined && repoSnapshotId !== null) {
+            await insertProfileIntent(tx, organizationId, {
+              proposalId: sourceProposalId,
+              specRevision,
+              specHash: input.spec.specHash,
+              snapshotId: repoSnapshotId,
+              ticket: input.profileIntent,
+            });
+          }
         }
         const found = await first(tx, organizationId, sourceProposalId);
         if (found === undefined)
@@ -1236,7 +1235,7 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
       input,
     ) {
       return db.transaction(async (transaction) => {
-        const tx = transaction as unknown as Database;
+        const tx = transaction;
         const now = new Date();
         const claimed = (await tx
           .update(bountyRun)

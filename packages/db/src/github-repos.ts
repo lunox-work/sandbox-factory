@@ -426,7 +426,7 @@ export function createGithubRepoStore(db: Database): GithubRepoStore {
 
     async removeWithObjects(owner, id) {
       return db.transaction(async (transaction) => {
-        const tx = transaction as unknown as Database;
+        const tx = transaction;
         const rows = await tx
           .select({ id: githubRepo.id })
           .from(githubRepo)

@@ -138,19 +138,19 @@ test("a proposal with no spec lists no revisions", async () => {
 
 test("the next revision is one past the latest, or the first", async () => {
   const some = createFakeDb([{ revision: 4 }]);
-  assert.equal(await nextSpecRevision(some.db, "org_1", "bpr_1"), 5);
+  assert.equal(await nextSpecRevision(some.tx, "org_1", "bpr_1"), 5);
   assert.equal(some.calls[0]?.filtered, true);
   assert.equal(some.calls[0]?.ordered, true);
   assert.equal(some.calls[0]?.limited, 1);
 
   const none = createFakeDb([]);
-  assert.equal(await nextSpecRevision(none.db, "org_1", "bpr_1"), 1);
+  assert.equal(await nextSpecRevision(none.tx, "org_1", "bpr_1"), 1);
 });
 
 test("a revision is written for its owner, proposal and run", async () => {
   const fake = createFakeDb([]);
   await insertSpecRevision(
-    fake.db,
+    fake.tx,
     "org_1",
     { proposalId: "bpr_1", runId: "brn_1", revision: 2 },
     {
@@ -189,7 +189,7 @@ test("a revision is written for its owner, proposal and run", async () => {
 test("a reviewer's revision records who asked and what, and a trim names no model", async () => {
   const fake = createFakeDb([]);
   await insertSpecRevision(
-    fake.db,
+    fake.tx,
     "org_1",
     { proposalId: "bpr_1", runId: "brn_2", revision: 3, createdBy: "user_1" },
     {

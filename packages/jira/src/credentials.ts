@@ -1,3 +1,4 @@
+import { waitFor, withDeadline } from "./transport.js";
 /**
  * How a request proves who it is — the seam that lets one REST client serve all
  * three integration mechanics.
@@ -29,7 +30,7 @@ export interface Credential {
    * The `Authorization` header value for the next request. Async because the
    * OAuth credential may refresh first.
    */
-  authorize(): Promise<string>;
+  authorize(signal?: AbortSignal): Promise<string>;
   /**
    * The REST root this credential addresses, with no trailing slash. The two
    * credential types use genuinely different hosts, not just different auth.
@@ -66,6 +67,7 @@ export interface OAuthCredentialOptions {
    * hour-long lifetime makes a minute's slack free.
    */
   refreshSkewSeconds?: number;
+  timeoutMs?: number;
 }
 
 /** The options once the defaults are filled in, so `#options` has no holes. */
@@ -99,8 +101,9 @@ export class OAuthCredential implements Credential {
     };
   }
 
-  async authorize(): Promise<string> {
-    const tokens = await this.#current();
+  async authorize(signal?: AbortSignal): Promise<string> {
+    signal?.throwIfAborted();
+    const tokens = await waitFor(this.#current(), signal);
     return `Bearer ${tokens.accessToken}`;
   }
 
@@ -112,7 +115,11 @@ export class OAuthCredential implements Credential {
 
   /** The stored pair, refreshed first if it is at or near expiry. */
   async #current(): Promise<TokenPair> {
-    const stored = await this.#options.tokens.load();
+    const stored = await withDeadline(
+      () => this.#options.tokens.load(),
+      undefined,
+      this.#options.timeoutMs,
+    );
     if (!this.#isStale(stored)) {
       return stored;
     }
@@ -125,11 +132,17 @@ export class OAuthCredential implements Credential {
     }
 
     // Collapse concurrent refreshes; see the class comment.
-    this.#inFlight ??= this.#refresh(stored.refreshToken)
-      .catch((error: unknown) => this.#recover(error))
-      .finally(() => {
-        this.#inFlight = undefined;
-      });
+    const refreshToken = stored.refreshToken;
+    this.#inFlight ??= withDeadline(
+      (signal) =>
+        this.#refresh(refreshToken, signal).catch((error: unknown) =>
+          this.#recover(error),
+        ),
+      undefined,
+      this.#options.timeoutMs,
+    ).finally(() => {
+      this.#inFlight = undefined;
+    });
     return this.#inFlight;
   }
 
@@ -162,13 +175,18 @@ export class OAuthCredential implements Credential {
     return latest;
   }
 
-  async #refresh(refreshToken: string): Promise<TokenPair> {
+  async #refresh(
+    refreshToken: string,
+    signal: AbortSignal,
+  ): Promise<TokenPair> {
     const renewed = await refreshTokens({
       clientId: this.#options.clientId,
       clientSecret: this.#options.clientSecret,
       refreshToken,
       fetch: this.#options.fetch,
       now: this.#options.now,
+      signal,
+      timeoutMs: this.#options.timeoutMs,
     });
     // Persisted before it is handed out: the new refresh token has already
     // invalidated the old one at Atlassian, so losing it here strands the
@@ -239,7 +257,8 @@ export class ApiTokenCredential implements Credential {
     this.#baseUrl = stripTrailingSlashes(siteUrl);
   }
 
-  authorize(): Promise<string> {
+  authorize(signal?: AbortSignal): Promise<string> {
+    signal?.throwIfAborted();
     return Promise.resolve(this.#header);
   }
 

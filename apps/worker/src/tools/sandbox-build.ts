@@ -15,8 +15,9 @@
  */
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import ts from "typescript-compiler";
+import { dirname, join } from "node:path";
+import { nearestCompilerOptions } from "./compiler-config.js";
+export { nearestCompilerOptions } from "./compiler-config.js";
 import {
   EVALUATION_LIMITS,
   PRIVATE_TESTS_DIR,
@@ -113,64 +114,6 @@ export function buildArtifactKind(path: string): ArtifactFile["kind"] {
   if (path.startsWith("project/")) return "project_file";
   if (path.startsWith("private/")) return "private_test";
   return "other";
-}
-
-/**
- * The raw compiler options of the tsconfig nearest the first included file,
- * with its relative `extends` chain merged in base-first, as `tsc` reads it.
- * Raw, so enum values stay the strings a generated tsconfig can carry. A
- * base outside the root, or a package base (a snapshot has no
- * `node_modules`), is skipped.
- */
-export function nearestCompilerOptions(
-  root: string,
-  file: string,
-): Record<string, unknown> | undefined {
-  const inside = (path: string) => {
-    const rel = relative(root, path);
-    return !rel.startsWith("..") && !isAbsolute(rel);
-  };
-  const seen = new Set<string>();
-  const optionsOf = (path: string): Record<string, unknown> => {
-    if (seen.has(path) || !inside(path) || !ts.sys.fileExists(path)) return {};
-    seen.add(path);
-    const config = ts.readConfigFile(path, ts.sys.readFile).config as
-      { extends?: unknown; compilerOptions?: unknown } | undefined;
-    const bases =
-      typeof config?.extends === "string"
-        ? [config.extends]
-        : Array.isArray(config?.extends)
-          ? config.extends.filter(
-              (base): base is string => typeof base === "string",
-            )
-          : [];
-    let merged: Record<string, unknown> = {};
-    for (const base of bases) {
-      if (!base.startsWith(".")) continue;
-      const target = resolve(dirname(path), base);
-      merged = {
-        ...merged,
-        ...optionsOf(
-          target.endsWith(".json") || ts.sys.fileExists(target)
-            ? target
-            : `${target}.json`,
-        ),
-      };
-    }
-    const own = config?.compilerOptions;
-    return own !== null && typeof own === "object"
-      ? { ...merged, ...(own as Record<string, unknown>) }
-      : merged;
-  };
-  for (let dir = dirname(resolve(root, file)); ; dir = dirname(dir)) {
-    if (!inside(dir)) return undefined;
-    const candidate = join(dir, "tsconfig.json");
-    if (ts.sys.fileExists(candidate)) {
-      const options = optionsOf(candidate);
-      return Object.keys(options).length > 0 ? options : undefined;
-    }
-    if (relative(root, dir) === "") return undefined;
-  }
 }
 
 async function runBaseline(

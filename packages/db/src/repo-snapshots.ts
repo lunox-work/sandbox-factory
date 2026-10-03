@@ -174,7 +174,7 @@ export function createRepoSnapshotStore(db: Database): RepoSnapshotStore {
 
     async create(organizationId, input) {
       return db.transaction(async (transaction) => {
-        const tx = transaction as unknown as Database;
+        const tx = transaction;
         // This UPDATE is the row lock: a `markGone` waits for the insert,
         // or the insert sees the repository already gone.
         const live = await tx
@@ -235,7 +235,7 @@ export function createRepoSnapshotStore(db: Database): RepoSnapshotStore {
       if (surplus.length === 0) return [];
 
       return db.transaction(async (transaction) => {
-        const tx = transaction as unknown as Database;
+        const tx = transaction;
         // Wait for a proposal writer holding KEY SHARE, then check references
         // in a fresh statement snapshot. A DELETE that checks before waiting
         // can otherwise miss the proposal that commits while it is blocked.

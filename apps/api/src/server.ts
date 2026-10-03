@@ -251,8 +251,8 @@ const bountyExecutor =
             }),
         // Declared below, with the analysis it needs; called only once a
         // run is under way, by which time it is set or known to be absent.
-        onProposalDrafted: (organizationId, input) =>
-          void bountyProfiler?.request(organizationId, input),
+        profilingEnabled: () => bountyProfiler !== undefined,
+        onProposalDrafted: () => bountyProfiler?.kick(),
         onBackgroundError: (code, error) => console.error(code, error),
       });
 const jira =

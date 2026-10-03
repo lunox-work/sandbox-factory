@@ -1,3 +1,11 @@
+import { ApiError } from "@sandbox-factory/client";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  clients,
+  queryKeys,
+  useInvitationsQuery,
+  useUserId,
+} from "./data/query";
 /**
  * Account settings: your handle, and the providers you sign in with.
  *
@@ -6,10 +14,12 @@
  */
 
 import { Building2, Check, Link2, Unlink } from "lucide-react";
-import type { PendingInvitationDto } from "@sandbox-factory/shared";
-import { normalizeHandle } from "sandbox-factory";
 import { useCallback, useEffect, useState } from "react";
+import { normalizeHandle } from "sandbox-factory";
 
+import { AvatarField } from "@/components/AvatarField";
+import { EditableField } from "@/components/EditableField";
+import { ErrorBanner } from "@/components/Message";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -19,32 +29,10 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { AvatarField } from "@/components/AvatarField";
-import { EditableField } from "@/components/EditableField";
-import { ErrorBanner } from "@/components/Message";
 
 import { PROVIDERS, authClient, useSession, type ProviderId } from "./auth";
 import { removeAvatar, uploadAvatar, type AvatarResult } from "./avatars";
 import { ProviderIcon } from "./ProviderIcon";
-
-interface ProvenEmail {
-  id: string;
-  email: string;
-  /** Every provider that vouched for this address, often more than one. */
-  providers: string[];
-  isPrimary: boolean;
-}
-
-interface LinkedAccount {
-  /**
-   * Better Auth's row id. `unlinkAccount` matches on this, not on `accountId`
-   * below — passing that one 400s.
-   */
-  id: string;
-  providerId: string;
-  /** The user's id at the provider, e.g. a GitHub numeric id. Display only. */
-  accountId: string;
-}
 
 export function Account({
   /** Called after an invitation is accepted, so the switcher picks it up. */
@@ -75,17 +63,16 @@ export function Account({
   organizationCount?: number | undefined;
   onOpenOrganizations?: (() => void) | undefined;
 } = {}) {
-  const [emails, setEmails] = useState<ProvenEmail[]>([]);
-  const [invitations, setInvitations] = useState<PendingInvitationDto[]>([]);
-  const [accounts, setAccounts] = useState<LinkedAccount[]>([]);
-  const [username, setUsername] = useState<string | null>(null);
+  const invitationQuery = useInvitationsQuery();
+  const invitations = invitationQuery.data ?? [];
+  const queryClient = useQueryClient();
+  const userId = useUserId();
   /*
    * Held here rather than read straight from the session: saving updates the
    * row, but the session this screen already has is a cached copy, so the
    * field would otherwise snap back to the old name on the next render.
    */
   const [name, setName] = useState("");
-  const [accountId, setAccountId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   /*
@@ -102,45 +89,40 @@ export function Account({
    */
   const [picture, setPicture] = useState<string | null | undefined>(undefined);
 
+  const emailsQuery = useQuery({
+    queryKey: queryKeys.me(userId, "emails"),
+    queryFn: ({ signal }) => clients.memberships.emails(signal),
+  });
+  const accountQuery = useQuery({
+    queryKey: queryKeys.me(userId, "account"),
+    queryFn: ({ signal }) => clients.memberships.account(signal),
+  });
+  const linkedQuery = useQuery({
+    queryKey: queryKeys.me(userId, "linked-accounts"),
+    queryFn: async () => {
+      const result = await authClient.listAccounts();
+      if (result.error) throw new Error(result.error.message);
+      return result.data ?? [];
+    },
+  });
+  const emails = emailsQuery.data ?? [];
+  const accounts = linkedQuery.data ?? [];
+  const username = accountQuery.data?.username ?? null;
+  const accountId = accountQuery.data?.id ?? null;
   const refresh = useCallback(async () => {
-    try {
-      const [emailRes, meRes, accountRes, inviteRes] = await Promise.all([
-        fetch("/api/v1/me/emails", { credentials: "include" }),
-        fetch("/api/v1/me", { credentials: "include" }),
-        authClient.listAccounts(),
-        fetch("/api/v1/me/invitations", { credentials: "include" }),
-      ]);
-      if (emailRes.ok) {
-        const body = (await emailRes.json()) as {
-          emails?: ProvenEmail[];
-        } | null;
-        setEmails(body?.emails ?? []);
-      }
-      if (meRes.ok) {
-        const body = (await meRes.json()) as {
-          user: { id: string; username: string | null };
-        };
-        setUsername(body.user.username);
-        setAccountId(body.user.id);
-      }
-      if (inviteRes.ok) {
-        const body = (await inviteRes.json()) as {
-          invitations?: PendingInvitationDto[];
-        } | null;
-        // Defaulted, not trusted: a 200 carrying the wrong shape should show
-        // no invitations rather than break the whole settings page.
-        setInvitations(body?.invitations ?? []);
-      }
-      setAccounts((accountRes.data ?? []) as unknown as LinkedAccount[]);
-      setError(null);
-    } catch {
-      setError("Could not load your account.");
-    }
-  }, []);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+    await Promise.all(
+      ["emails", "account", "linked-accounts", "invitations"].map((resource) =>
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.me(userId, resource),
+        }),
+      ),
+    );
+    setError(null);
+  }, [queryClient, userId]);
+  const loadError =
+    emailsQuery.isError || accountQuery.isError || linkedQuery.isError
+      ? "Could not load your account."
+      : null;
 
   // Seeded from the session, which is where the name lives until it is saved.
   const sessionName = session?.user.name;
@@ -175,23 +157,16 @@ export function Account({
    * Runs an action on one address and reloads, showing the server's reason
    * verbatim if it refuses.
    */
-  async function actOnEmail(path: string, method: string) {
+  async function actOnEmail(id: string) {
     setBusy(true);
     setError(null);
     try {
-      const res = await fetch(path, { method, credentials: "include" });
-      if (!res.ok && res.status !== 204) {
-        const body = (await res.json().catch(() => null)) as {
-          error?: string;
-        } | null;
-        // Return rather than refresh: `refresh` clears the error on success,
-        // which would wipe the message just set.
-        setError(body?.error ?? "That did not work.");
-        return;
-      }
+      await clients.memberships.makeEmailPrimary(id);
       await refresh();
-    } catch {
-      setError("That did not work.");
+    } catch (error) {
+      setError(
+        error instanceof ApiError ? error.message : "That did not work.",
+      );
     } finally {
       setBusy(false);
     }
@@ -238,6 +213,9 @@ export function Account({
       }
       await refresh();
       if (action === "accept") {
+        await queryClient.invalidateQueries({
+          queryKey: queryKeys.me(userId, "memberships"),
+        });
         onJoined?.();
       } else {
         onDeclined?.();
@@ -260,7 +238,9 @@ export function Account({
         Your handle, and the accounts you sign in with.
       </p>
 
-      {error !== null && <ErrorBanner>{error}</ErrorBanner>}
+      {(error ?? loadError) !== null && (
+        <ErrorBanner>{error ?? loadError}</ErrorBanner>
+      )}
 
       <div className="mt-8 flex flex-col gap-6">
         <UsernameForm
@@ -277,7 +257,11 @@ export function Account({
           onOpenOrganizations={onOpenOrganizations}
           busy={busy}
           onSaved={(next) => {
-            setUsername(next);
+            queryClient.setQueryData<
+              Awaited<ReturnType<typeof clients.memberships.account>>
+            >(queryKeys.me(userId, "account"), (current) =>
+              current === undefined ? current : { ...current, username: next },
+            );
             onRenamed?.();
           }}
           onNameSaved={(next) => {
@@ -376,12 +360,7 @@ export function Account({
                       variant="outline"
                       size="sm"
                       disabled={busy}
-                      onClick={() =>
-                        void actOnEmail(
-                          `/api/v1/me/emails/${entry.id}/primary`,
-                          "POST",
-                        )
-                      }
+                      onClick={() => void actOnEmail(entry.id)}
                     >
                       Make primary
                     </Button>
@@ -544,23 +523,11 @@ function UsernameForm({
   async function saveName(next: string): Promise<string | void> {
     onBusy(true);
     try {
-      const res = await fetch("/api/v1/me/name", {
-        method: "PUT",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: next }),
-      });
-      const body = (await res.json().catch(() => null)) as {
-        name?: string;
-        error?: string;
-      } | null;
-      if (res.ok && body?.name !== undefined) {
-        onNameSaved(body.name);
-        return;
-      }
-      return body?.error ?? "Could not save that name.";
-    } catch {
-      return "Could not save that name.";
+      onNameSaved(await clients.memberships.saveName(next));
+    } catch (error) {
+      return error instanceof ApiError
+        ? error.message
+        : "Could not save that name.";
     } finally {
       onBusy(false);
     }
@@ -586,23 +553,11 @@ function UsernameForm({
   async function saveUsername(next: string): Promise<string | void> {
     onBusy(true);
     try {
-      const res = await fetch("/api/v1/me/username", {
-        method: "PUT",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username: next }),
-      });
-      const body = (await res.json().catch(() => null)) as {
-        username?: string;
-        error?: string;
-      } | null;
-      if (res.ok && body?.username !== undefined) {
-        onSaved(body.username);
-        return;
-      }
-      return body?.error ?? "Could not save that username.";
-    } catch {
-      return "Could not save that username.";
+      onSaved(await clients.memberships.saveUsername(next));
+    } catch (error) {
+      return error instanceof ApiError
+        ? error.message
+        : "Could not save that username.";
     } finally {
       onBusy(false);
     }

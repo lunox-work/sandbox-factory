@@ -1,3 +1,7 @@
+import { useQuery } from "@tanstack/react-query";
+import { clients, queryKeys, useUserId } from "./data/query";
+import { plural } from "./lib/format";
+export { plural } from "./lib/format";
 /**
  * A proposal's drafted spec, read-only: what the ticket asks for as
  * scenarios, grouped by kind, with the questions the ticket left open and
@@ -35,6 +39,8 @@ import type {
   BountySpecRevisionDto,
   RespecRequestDto,
 } from "@sandbox-factory/shared";
+import { ChevronRight, RefreshCw, X } from "lucide-react";
+import { useEffect, useId, useState } from "react";
 import {
   countScenarios,
   groupScenarios,
@@ -46,8 +52,6 @@ import {
   type Scenario,
   type ScenarioWeight,
 } from "sandbox-factory";
-import { ChevronRight, RefreshCw, X } from "lucide-react";
-import { useCallback, useEffect, useId, useState } from "react";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { LoadingLine } from "@/components/Message";
@@ -81,24 +85,6 @@ export type SpecRead =
  * draw. Checked for the shape the tab reads, since a response is not
  * trusted to be one: a body that is not a spec is no spec, not a crash.
  */
-function specFrom(body: unknown): BountySpecDto | null {
-  if (typeof body !== "object" || body === null) return null;
-  const spec = (body as { spec?: unknown }).spec;
-  if (typeof spec !== "object" || spec === null) return null;
-  const draft = (spec as { draft?: unknown }).draft;
-  if (typeof draft !== "object" || draft === null) return null;
-  const { feature, background, scenarios, openQuestions, assumptions } =
-    draft as Record<string, unknown>;
-  return typeof feature === "string" &&
-    [background, scenarios, openQuestions, assumptions].every(Array.isArray)
-    ? (spec as BountySpecDto)
-    : null;
-}
-
-export function plural(count: number, one: string): string {
-  return `${count.toLocaleString("en-US")} ${one}${count === 1 ? "" : "s"}`;
-}
-
 /** What each weight counts for, as the step that will count them reads it. */
 export type WeightPoints = Readonly<Record<ScenarioWeight, number>>;
 
@@ -170,49 +156,33 @@ export function useProposalSpec(
   specRevision: number | null | undefined,
   revision?: number,
 ): { readonly read: SpecRead; readonly retry: () => void } {
-  const wanted = specRevision ?? null;
-  /*
-    Keyed by what it was read for. A peek that moves to another proposal, or
-    a re-price that moves this one to a new revision, must not show the last
-    read's scenarios under the new one while its own is on the way.
-  */
-  const key = `${proposalId}:${wanted ?? ""}:${revision ?? ""}`;
-  const [read, setRead] = useState<{ key: string } & SpecRead>({
-    key,
-    state: "loading",
+  const owner = decodeURIComponent(base.split("/").at(-1) ?? "");
+  const userId = useUserId();
+  const query = useQuery({
+    queryKey: queryKeys.resource(
+      userId,
+      owner,
+      "proposal-spec",
+      proposalId,
+      specRevision,
+      revision,
+    ),
+    enabled: specRevision != null,
+    queryFn: ({ signal }) =>
+      clients.pricing.spec(owner, proposalId, signal, revision),
   });
-  const [attempt, setAttempt] = useState(0);
-
-  useEffect(() => {
-    if (wanted === null) return;
-    let live = true;
-    setRead({ key, state: "loading" });
-    const query = revision === undefined ? "" : `?revision=${revision}`;
-    fetch(`${base}/proposals/${encodeURIComponent(proposalId)}/spec${query}`, {
-      credentials: "include",
-    })
-      .then(async (response) => {
-        if (!response.ok) throw new Error();
-        const spec = specFrom(await response.json());
-        if (live) setRead({ key, state: "ready", spec });
-      })
-      .catch(() => {
-        if (live) setRead({ key, state: "failed" });
-      });
-    return () => {
-      live = false;
-    };
-  }, [base, proposalId, wanted, revision, key, attempt]);
-
-  const retry = useCallback(() => setAttempt((value) => value + 1), []);
   return {
     read:
-      wanted === null
+      specRevision == null
         ? { state: "ready", spec: null }
-        : read.key === key
-          ? read
-          : { state: "loading" },
-    retry,
+        : query.isError
+          ? { state: "failed" }
+          : query.data === undefined
+            ? { state: "loading" }
+            : { state: "ready", spec: query.data.spec },
+    retry: () => {
+      void query.refetch();
+    },
   };
 }
 

@@ -1,5 +1,5 @@
 import type { BountySpecDto } from "@sandbox-factory/shared";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "./render";
 import { userEvent } from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
 
@@ -319,7 +319,7 @@ test("a pointer the server has no spec for reads as none", async () => {
   expect(await screen.findByTestId("spec-empty")).toBeDefined();
 });
 
-test("a response that is not a spec is no spec, not a crash", async () => {
+test("a malformed spec response shows a retryable failure", async () => {
   for (const body of [
     null,
     "spec",
@@ -332,13 +332,15 @@ test("a response that is not a spec is no spec, not a crash", async () => {
   ]) {
     server(() => Response.json(body));
     const view = block();
-    expect(await screen.findByTestId("spec-empty")).toBeDefined();
+    expect(
+      await screen.findByRole("button", { name: /try again/i }),
+    ).toBeDefined();
     view.unmount();
   }
 });
 
 test("the block says it is loading until the spec lands", async () => {
-  let release = (_response: Response) => {};
+  let release: ((response: Response) => void) | undefined;
   server(
     () =>
       new Promise<Response>((resolve) => {
@@ -353,7 +355,8 @@ test("the block says it is loading until the spec lands", async () => {
   );
   expect(within(panel).queryByTestId("spec-empty")).toBeNull();
 
-  release(Response.json({ spec: spec() }));
+  await waitFor(() => expect(release).not.toBeUndefined());
+  release?.(Response.json({ spec: spec() }));
   expect(
     await within(panel).findByText("Interview invitation delivery"),
   ).toBeDefined();

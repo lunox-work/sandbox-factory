@@ -1,3 +1,4 @@
+import { withDeadline } from "./transport.js";
 /**
  * Atlassian OAuth 2.0 (3LO) — the authorization-code flow, plus refresh.
  *
@@ -162,6 +163,8 @@ export interface ExchangeOptions {
   /** The `code` query parameter from the callback. */
   code: string;
   fetch?: typeof globalThis.fetch;
+  signal?: AbortSignal;
+  timeoutMs?: number;
   /** Injectable for tests; defaults to `Date.now`. */
   now?: () => number;
 }
@@ -174,6 +177,8 @@ export async function exchangeCode({
   code,
   fetch: fetchImpl,
   now,
+  signal,
+  timeoutMs,
 }: ExchangeOptions): Promise<TokenPair> {
   return requestToken(
     {
@@ -185,6 +190,8 @@ export async function exchangeCode({
     },
     fetchImpl,
     now,
+    signal,
+    timeoutMs,
   );
 }
 
@@ -193,6 +200,8 @@ export interface RefreshOptions {
   clientSecret: string;
   refreshToken: string;
   fetch?: typeof globalThis.fetch;
+  signal?: AbortSignal;
+  timeoutMs?: number;
   now?: () => number;
 }
 
@@ -209,6 +218,8 @@ export async function refreshTokens({
   refreshToken,
   fetch: fetchImpl,
   now,
+  signal,
+  timeoutMs,
 }: RefreshOptions): Promise<TokenPair> {
   return requestToken(
     {
@@ -219,6 +230,8 @@ export async function refreshTokens({
     },
     fetchImpl,
     now,
+    signal,
+    timeoutMs,
   );
 }
 
@@ -227,60 +240,77 @@ async function requestToken(
   body: Record<string, string>,
   fetchImpl: typeof globalThis.fetch = globalThis.fetch,
   now: () => number = Date.now,
+  signal?: AbortSignal,
+  timeoutMs?: number,
 ): Promise<TokenPair> {
-  const response = await fetchImpl(`${AUTH_HOST}/oauth/token`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
-    body: JSON.stringify(body),
-  });
+  return withDeadline(
+    async (deadline) => {
+      const response = await fetchImpl(`${AUTH_HOST}/oauth/token`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify(body),
+        signal: deadline,
+      });
 
-  const text = await response.text();
-  let payload: unknown = undefined;
-  if (text !== "") {
-    try {
-      payload = JSON.parse(text);
-    } catch {
-      throw new JiraAuthError(
-        response.status,
-        `Expected JSON from the Atlassian token endpoint, got: ${text.slice(0, 200)}`,
-      );
-    }
-  }
+      const text = await response.text();
+      let payload: unknown = undefined;
+      if (text !== "") {
+        try {
+          payload = JSON.parse(text);
+        } catch {
+          throw new JiraAuthError(
+            response.status,
+            `Expected JSON from the Atlassian token endpoint, got: ${text.slice(0, 200)}`,
+          );
+        }
+      }
 
-  if (!response.ok) {
-    // Atlassian reports failures as `{ error, error_description }`. Read them
-    // defensively: an edge proxy can answer with a different shape.
-    const error = payload as
-      { error?: unknown; error_description?: unknown } | undefined;
-    const code = typeof error?.error === "string" ? error.error : undefined;
-    const description =
-      typeof error?.error_description === "string"
-        ? error.error_description
-        : `HTTP ${response.status} from the Atlassian token endpoint.`;
-    throw new JiraAuthError(response.status, description, code);
-  }
+      if (!response.ok) {
+        // Atlassian reports failures as `{ error, error_description }`. Read them
+        // defensively: an edge proxy can answer with a different shape.
+        const error = payload as
+          { error?: unknown; error_description?: unknown } | undefined;
+        const code = typeof error?.error === "string" ? error.error : undefined;
+        const description =
+          typeof error?.error_description === "string"
+            ? error.error_description
+            : `HTTP ${response.status} from the Atlassian token endpoint.`;
+        throw new JiraAuthError(response.status, description, code);
+      }
 
-  const parsed = tokenResponseSchema.safeParse(payload);
-  if (!parsed.success) {
-    throw new JiraAuthError(
-      response.status,
-      "The Atlassian token endpoint returned an unexpected shape.",
-    );
-  }
+      const parsed = tokenResponseSchema.safeParse(payload);
+      if (!parsed.success) {
+        throw new JiraAuthError(
+          response.status,
+          "The Atlassian token endpoint returned an unexpected shape.",
+        );
+      }
 
-  return {
-    accessToken: parsed.data.access_token,
-    refreshToken: parsed.data.refresh_token,
-    // Resolved to an absolute instant here, once, so nothing downstream has to
-    // remember when the response arrived.
-    expiresAt: new Date(now() + parsed.data.expires_in * 1000).toISOString(),
-    scopes: parsed.data.scope === undefined ? [] : parsed.data.scope.split(" "),
-  };
+      return {
+        accessToken: parsed.data.access_token,
+        refreshToken: parsed.data.refresh_token,
+        // Resolved to an absolute instant here, once, so nothing downstream has to
+        // remember when the response arrived.
+        expiresAt: new Date(
+          now() + parsed.data.expires_in * 1000,
+        ).toISOString(),
+        scopes:
+          parsed.data.scope === undefined ? [] : parsed.data.scope.split(" "),
+      };
+    },
+    signal,
+    timeoutMs,
+  );
 }
 
 export interface AccessibleSitesOptions {
   accessToken: string;
   fetch?: typeof globalThis.fetch;
+  signal?: AbortSignal;
+  timeoutMs?: number;
 }
 
 /**
@@ -294,42 +324,51 @@ export interface AccessibleSitesOptions {
 export async function accessibleSites({
   accessToken,
   fetch: fetchImpl = globalThis.fetch,
+  signal,
+  timeoutMs,
 }: AccessibleSitesOptions): Promise<JiraSiteDto[]> {
-  const response = await fetchImpl(
-    "https://api.atlassian.com/oauth/token/accessible-resources",
-    {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        Accept: "application/json",
-      },
+  return withDeadline(
+    async (deadline) => {
+      const response = await fetchImpl(
+        "https://api.atlassian.com/oauth/token/accessible-resources",
+        {
+          signal: deadline,
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            Accept: "application/json",
+          },
+        },
+      );
+
+      if (!response.ok) {
+        throw new JiraAuthError(
+          response.status,
+          `Could not list Atlassian sites (HTTP ${response.status}).`,
+        );
+      }
+
+      const payload: unknown = await response.json();
+      const parsed = accessibleResourceSchema.array().safeParse(payload);
+      if (!parsed.success) {
+        throw new JiraAuthError(
+          response.status,
+          "Atlassian returned an unexpected shape for accessible resources.",
+        );
+      }
+
+      // Keep only Jira. A token scoped for Confluence too lists those sites here,
+      // and offering one as a board source produces 404s on every later call.
+      return parsed.data
+        .filter((site) => site.scopes.some((scope) => scope.includes(":jira")))
+        .map((site) => ({
+          cloudId: site.id,
+          url: site.url,
+          name: site.name,
+          avatarUrl: site.avatarUrl,
+          scopes: site.scopes,
+        }));
     },
+    signal,
+    timeoutMs,
   );
-
-  if (!response.ok) {
-    throw new JiraAuthError(
-      response.status,
-      `Could not list Atlassian sites (HTTP ${response.status}).`,
-    );
-  }
-
-  const payload: unknown = await response.json();
-  const parsed = accessibleResourceSchema.array().safeParse(payload);
-  if (!parsed.success) {
-    throw new JiraAuthError(
-      response.status,
-      "Atlassian returned an unexpected shape for accessible resources.",
-    );
-  }
-
-  // Keep only Jira. A token scoped for Confluence too lists those sites here,
-  // and offering one as a board source produces 404s on every later call.
-  return parsed.data
-    .filter((site) => site.scopes.some((scope) => scope.includes(":jira")))
-    .map((site) => ({
-      cloudId: site.id,
-      url: site.url,
-      name: site.name,
-      avatarUrl: site.avatarUrl,
-      scopes: site.scopes,
-    }));
 }

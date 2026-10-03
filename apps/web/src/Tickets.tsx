@@ -1,3 +1,5 @@
+import { rankAtLeast } from "sandbox-factory";
+import { pushLocation, subscribeLocation } from "./navigation/location";
 /**
  * The organization's tickets, and the proposals made from them.
  *
@@ -65,9 +67,7 @@ const ISSUE_TYPES = ["Task", "Bug", "Story"] as const;
 const PRIORITIES = ["Highest", "High", "Medium", "Low", "Lowest"] as const;
 
 function canManage(role: string): boolean {
-  return role
-    .split(",")
-    .some((entry) => ["owner", "admin"].includes(entry.trim()));
+  return rankAtLeast(role, "admin");
 }
 
 export function Tickets({
@@ -106,8 +106,7 @@ export function Tickets({
       setTab(tabFromUrl());
       setOpenId(new URLSearchParams(window.location.search).get("ticket"));
     };
-    window.addEventListener("popstate", sync);
-    return () => window.removeEventListener("popstate", sync);
+    return subscribeLocation(sync);
   }, []);
 
   const pushParams = useCallback(
@@ -115,10 +114,10 @@ export function Tickets({
       const params = new URLSearchParams(window.location.search);
       change(params);
       const query = params.toString();
-      window.history.pushState(
-        null,
-        "",
-        window.location.pathname + (query === "" ? "" : `?${query}`),
+      pushLocation(
+        window.location.pathname +
+          (query === "" ? "" : `?${query}`) +
+          (window.location.hash ?? ""),
       );
     },
     [],

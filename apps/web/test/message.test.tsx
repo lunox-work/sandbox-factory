@@ -8,7 +8,7 @@
  * repeating them would only have to be rewritten alongside it.
  */
 
-import { render, screen } from "@testing-library/react";
+import { render, screen } from "./render";
 import { expect, test } from "vitest";
 
 import { ErrorBanner, FormStatus } from "../src/components/Message";

@@ -1,5 +1,5 @@
 import type { BountyProfileDto } from "@sandbox-factory/shared";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "./render";
 import { afterEach, expect, test, vi } from "vitest";
 
 import {
@@ -95,9 +95,13 @@ test("a ready profile lists the evidence, one row per feature", async () => {
   render(<Wired />);
 
   const rows = await screen.findByTestId("profile-rows");
-  expect(fetch).toHaveBeenCalledWith(`${BASE}/proposals/bpr_1/profile`, {
-    credentials: "include",
-  });
+  expect(fetch).toHaveBeenCalledWith(
+    `${BASE}/proposals/bpr_1/profile`,
+    expect.objectContaining({
+      credentials: "include",
+      signal: expect.any(AbortSignal),
+    }),
+  );
   const text = (label: string) =>
     within(rows).getByText(label).nextElementSibling?.textContent;
   expect(text("Ticket")).toBe("Bug, priority High");

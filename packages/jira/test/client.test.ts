@@ -853,6 +853,7 @@ test("issueSpec hands its signal to fetch and stops retrying once it aborts", as
     .catch((caught: unknown) => caught);
 
   assert.equal(signals.length, 1);
-  assert.equal(signals[0], controller.signal);
+  assert.ok(signals[0] instanceof AbortSignal);
+  assert.equal(controller.signal.aborted, true);
   assert.ok(error instanceof Error && error.name === "AbortError");
 });

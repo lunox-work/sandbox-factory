@@ -178,6 +178,8 @@ export interface BountyExecutorOptions {
    * snapshot, to measure its complexity profile from that snapshot's code.
    * Must not throw: the proposal is already written.
    */
+  /** Resolved by server composition independently of the wake-up callback. */
+  readonly profilingEnabled?: () => boolean;
   readonly onProposalDrafted?: (
     organizationId: string,
     input: NewBountyProfile,
@@ -1133,6 +1135,14 @@ export class BountyExecutor {
       repoSnapshotId:
         drafted === undefined || outline === null ? null : outline.snapshotId,
       ...(drafted === undefined ? {} : { spec: drafted }),
+      ...(this.#options.profilingEnabled?.() === true
+        ? {
+            profileIntent: {
+              issueType: content.issueType,
+              priority: content.priority,
+            },
+          }
+        : {}),
     };
     const created =
       run.kind === "reprice" &&
@@ -1180,13 +1190,20 @@ export class BountyExecutor {
       outline !== null &&
       created.proposal.specRevision !== null
     ) {
-      this.#options.onProposalDrafted?.(organizationId, {
-        proposalId: created.proposal.id,
-        specRevision: created.proposal.specRevision,
-        specHash: drafted.specHash,
-        snapshotId: outline.snapshotId,
-        ticket: { issueType: content.issueType, priority: content.priority },
-      });
+      try {
+        this.#options.onProposalDrafted?.(organizationId, {
+          proposalId: created.proposal.id,
+          specRevision: created.proposal.specRevision,
+          specHash: drafted.specHash,
+          snapshotId: outline.snapshotId,
+          ticket: { issueType: content.issueType, priority: content.priority },
+        });
+      } catch (error) {
+        this.#options.onBackgroundError?.(
+          "bounty_profile_wakeup_failed",
+          error,
+        );
+      }
     }
 
     return {

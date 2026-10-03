@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { act, render, renderHook, screen, within } from "./render";
 import { userEvent } from "@testing-library/user-event";
 import { useState } from "react";
 import { afterEach, expect, test, vi } from "vitest";
@@ -60,6 +60,33 @@ function finished(outcome: object | null, overrides: object = {}) {
   return {
     run: {
       id: "brn_respec",
+      organizationId: "org_1",
+      boardId: null,
+      ticketId: null,
+      sourceProposalId: "bpr_1",
+      sourceRevision: 4,
+      respec: null,
+      requestId: "00000000-0000-4000-8000-000000000001",
+      selection: {},
+      rateCard: {
+        currency: "USD",
+        xsMinor: 100,
+        sMinor: 200,
+        mMinor: 400,
+        lMinor: 800,
+        xlMinor: 1600,
+        revision: 1,
+      },
+      requestedModel: "test",
+      promptVersion: "test",
+      planned: [],
+      candidatesScanned: 0,
+      skippedLive: 0,
+      scanLimitReached: false,
+      startedAt: null,
+      deadlineAt: null,
+      finishedAt: null,
+      createdAt: "2026-10-02T00:00:00.000Z",
       kind: "respec",
       status: "succeeded",
       outcomes: outcome === null ? [] : [outcome],
@@ -110,7 +137,9 @@ function server(
       if (url.endsWith("/respec")) {
         return Promise.resolve(
           options.respec?.() ??
-            Response.json({ run: { id: "brn_respec" } }, { status: 202 }),
+            Response.json(finished(null, { status: "queued" }), {
+              status: 202,
+            }),
         );
       }
       if (url.includes("/runs/")) {
@@ -536,4 +565,36 @@ test("a spec at its first revision has no history to read", async () => {
   expect(requests.some(({ url }) => url.endsWith("/spec/revisions"))).toBe(
     false,
   );
+});
+
+test("a late spec-change POST cannot attach its run after changing workspace or proposal", async () => {
+  let release: ((response: Response) => void) | undefined;
+  const fetch = vi.fn(
+    () =>
+      new Promise<Response>((resolve) => {
+        release = resolve;
+      }),
+  );
+  vi.stubGlobal("fetch", fetch);
+  const onLanded = vi.fn();
+  const hook = renderHook(
+    ({ base, proposalId }) => useRespec(base, proposalId, 4, onLanded),
+    { initialProps: { base: BASE, proposalId: "bpr_1" } },
+  );
+  await act(async () => {
+    hook.result.current.request(
+      { mode: "expand", kinds: ["boundary"] },
+      "Changing",
+    );
+  });
+  expect(fetch).toHaveBeenCalledTimes(1);
+  hook.rerender({ base: "/api/v1/orgs/org_2", proposalId: "bpr_2" });
+  await act(async () => {
+    release?.(
+      Response.json(finished(null, { status: "queued" }), { status: 202 }),
+    );
+  });
+  expect(hook.result.current.state.phase).toBe("idle");
+  expect(onLanded).not.toHaveBeenCalled();
+  expect(fetch).toHaveBeenCalledTimes(1);
 });

@@ -1,3 +1,4 @@
+import { isAtLeastAdmin } from "../access.js";
 /**
  * Connecting a client's GitHub: the App's connect flow, the installations it
  * links, and the repositories registered from them.
@@ -72,7 +73,6 @@ import {
 import type { Context, Hono } from "hono";
 
 import {
-  isAtLeastAdmin,
   redirectTarget,
   safePath,
   signState,

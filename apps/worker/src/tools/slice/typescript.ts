@@ -1,3 +1,10 @@
+import { declarationPath as declarationPathFor } from "sandbox-factory";
+import { loadConfig, type LoadedConfig } from "../compiler-config.js";
+export {
+  declarationPath as declarationPathFor,
+  packageNameOf,
+} from "sandbox-factory";
+export { loadConfig } from "../compiler-config.js";
 /**
  * Signature extraction for TypeScript and JavaScript, with the compiler API.
  *
@@ -13,10 +20,10 @@
  * the source directory and the compiler's own library files.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
-import ts from "typescript-compiler";
 import type { BoundaryModule, CutEdge, SliceBlocker } from "sandbox-factory";
+import ts from "typescript-compiler";
 
 export const TYPESCRIPT_EXTRACTOR_VERSION = `typescript@${ts.version}`;
 export const ALL = "*";
@@ -91,24 +98,10 @@ export function isNodeBuiltin(specifier: string): boolean {
   const root = specifier.split("/")[0] ?? specifier;
   return NODE_BUILTINS.includes(root);
 }
-/** `@scope/name/sub` → `@scope/name`; `name/sub` → `name`. */
-export function packageNameOf(specifier: string): string {
-  const parts = specifier.split("/");
-  return specifier.startsWith("@")
-    ? parts.slice(0, 2).join("/")
-    : (parts[0] ?? specifier);
-}
 /** The stub's artifact path for a module: `stubs/<path>.d.ts`. */
 export function stubPathFor(module: string): string {
   return `stubs/${declarationPathFor(module)}`;
 }
-/** Where a stub stands in for its module: the same path, as a declaration. */
-export function declarationPathFor(module: string): string {
-  const match = /\.([cm]?)[jt]sx?$/.exec(module);
-  if (match === null) return `${module}.d.ts`;
-  return `${module.slice(0, -match[0].length)}.d.${match[1]}ts`;
-}
-
 export interface ImportFact {
   readonly specifier: string;
   readonly names: RequestedNames;
@@ -220,63 +213,6 @@ export function boundedHost(root: string, options: ts.CompilerOptions) {
   host.getCurrentDirectory = () => root;
   host.writeFile = () => {};
   return host;
-}
-
-export interface LoadedConfig {
-  readonly path: string | null;
-  readonly options: ts.CompilerOptions;
-  readonly errors: readonly string[];
-}
-
-/** The nearest `tsconfig.json` above a file, read without following `extends` outside the root. */
-export function loadConfig(root: string, file: string): LoadedConfig {
-  let config: string | undefined;
-  for (let dir = dirname(resolve(root, file)); ; dir = dirname(dir)) {
-    const rel = relative(root, dir);
-    if (rel.startsWith("..") || isAbsolute(rel)) break;
-    const candidate = resolve(dir, "tsconfig.json");
-    if (existsSync(candidate)) {
-      config = candidate;
-      break;
-    }
-    if (rel === "") break;
-  }
-  const defaults: ts.CompilerOptions = {
-    module: ts.ModuleKind.NodeNext,
-    moduleResolution: ts.ModuleResolutionKind.NodeNext,
-    allowJs: true,
-    resolveJsonModule: true,
-  };
-  if (config === undefined)
-    return { path: null, options: defaults, errors: [] };
-  const inside = (path: string) => {
-    const rel = relative(root, resolve(path));
-    return !isAbsolute(rel) && !rel.startsWith("..");
-  };
-  const read = (path: string) =>
-    inside(path) && existsSync(path) ? readFileSync(path, "utf8") : undefined;
-  const loaded = ts.readConfigFile(config, read);
-  const parsed = ts.parseJsonConfigFileContent(
-    loaded.config ?? {},
-    {
-      fileExists: (path) => inside(path) && existsSync(path),
-      readFile: read,
-      readDirectory: () => [],
-      useCaseSensitiveFileNames: true,
-    },
-    dirname(config),
-    undefined,
-    config,
-  );
-  const errors = [
-    ...(loaded.error === undefined ? [] : [loaded.error]),
-    ...parsed.errors.filter((error) => error.code !== 18003),
-  ].map((error) => ts.flattenDiagnosticMessageText(error.messageText, " "));
-  return {
-    path: relative(root, config).replaceAll("\\", "/"),
-    options: { ...defaults, ...parsed.options },
-    errors,
-  };
 }
 
 /** Options for declaration emit: the source's, with output settings forced. */
