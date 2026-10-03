@@ -700,10 +700,10 @@ function UsernameForm({
             onClick={onOpenOrganizations}
             className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 group/orgs mt-5 flex w-fit items-center gap-1.5 rounded-sm text-sm transition-colors focus-visible:ring-[3px] focus-visible:outline-none"
           >
-            {/* The mark the avatar menu's own "Organizations" item uses, so
-                the two ways to this page read as the same destination. Sized
-                here, where it sits inline with text, rather than by the
-                menu's own item styling. */}
+            {/* The mark the rail's own Workspaces row uses, so the two ways
+                to this page read as the same destination. Sized here, where
+                it sits inline with text, rather than by the rail's own
+                styling. */}
             <Building2 className="size-4" strokeWidth={1.6} />
             {/* The underline is on the words, not the button: through the
                 button it would run under the icon too. */}

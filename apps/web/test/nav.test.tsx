@@ -201,6 +201,14 @@ function railHome(): HTMLElement {
 }
 const AVATAR = /Account and settings/;
 
+/** The rail's Workspaces row, at its foot above the avatar. */
+function railWorkspaces(): HTMLElement {
+  return within(screen.getByRole("navigation", { name: "Main" })).getByRole(
+    "link",
+    { name: "Workspaces" },
+  );
+}
+
 function signedIn(image?: string | null) {
   useSession.mockReturnValue({
     data: {
@@ -609,13 +617,12 @@ test("an old /organizations link still opens its page, under the new path", asyn
   }
 });
 
-test("the account menu reaches the organizations page", async () => {
-  // One item, not a switcher: the list is a page because it carries names,
+test("the rail reaches the organizations page", async () => {
+  // A row, not a switcher: the list is a page because it carries names,
   // handles and roles, and the actions on a row need room beside them.
   render(<App />);
 
-  await openMenu();
-  fireEvent.click(screen.getByRole("menuitem", { name: /Workspaces/ }));
+  fireEvent.click(railWorkspaces());
 
   expect(
     await screen.findByRole("heading", { name: "Workspaces", level: 1 }),
@@ -1140,13 +1147,34 @@ test("the switcher reaches the full list", async () => {
 
 // ---- organizations, and what is waiting -----------------------------------
 
-test("the rail has no organizations destination", () => {
-  // The switcher at its head is where organizations are chosen; a second
-  // way in beside it said the same thing twice.
+test("the workspaces destination sits directly above the avatar", () => {
+  // At the foot with the account rather than among the destinations: like
+  // the account, it is about who you are rather than the work on the page.
   render(<App />);
 
-  const rail = screen.getByRole("navigation", { name: "Main" });
-  expect(within(rail).queryByRole("link", { name: "Workspaces" })).toBeNull();
+  const workspaces = railWorkspaces();
+  expect(workspaces.getAttribute("href")).toBe("/workspaces");
+
+  // The very next control in the rail is the avatar: below it, and nothing
+  // in between.
+  const controls = [
+    ...screen
+      .getByRole("navigation", { name: "Main" })
+      .querySelectorAll("a, button"),
+  ];
+  expect(controls[controls.indexOf(workspaces) + 1]).toBe(
+    screen.getByRole("button", { name: AVATAR }),
+  );
+});
+
+test("the account menu no longer carries workspaces", async () => {
+  // The rail has a row for it now; two ways to one screen side by side
+  // invite the wrong one.
+  render(<App />);
+
+  await openMenu();
+
+  expect(screen.queryByRole("menuitem", { name: /Workspaces/ })).toBeNull();
 });
 
 test("home is not marked while you are inside an organization", async () => {
@@ -1157,10 +1185,10 @@ test("home is not marked while you are inside an organization", async () => {
   expect(railHome().getAttribute("aria-current")).toBeNull();
 });
 
-test("the avatar is marked on the screens its menu leads to", async () => {
-  // Account and the organizations list are reached from the avatar's menu;
-  // without this the rail marks nothing while you are on them.
-  for (const path of ["/account", "/workspaces", "/workspaces/new"]) {
+test("the avatar is marked on the screen its menu leads to", async () => {
+  // Account is reached from the avatar's menu; without this the rail marks
+  // nothing while you are on it.
+  for (const path of ["/account"]) {
     window.history.replaceState(null, "", path);
     const { unmount } = render(<App />);
 
@@ -1175,9 +1203,34 @@ test("the avatar is marked on the screens its menu leads to", async () => {
   }
 });
 
+test("the workspaces row is marked on the list and the create form", async () => {
+  // The create form sits beneath the list, so it keeps the list's row lit.
+  for (const path of ["/workspaces", "/workspaces/new"]) {
+    window.history.replaceState(null, "", path);
+    const { unmount } = render(<App />);
+
+    await screen.findByRole("button", { name: AVATAR });
+    expect(railWorkspaces().getAttribute("aria-current"), path).toBe("page");
+    expect(railHome().getAttribute("aria-current"), path).toBeNull();
+    unmount();
+  }
+});
+
+test("the workspaces row is not marked elsewhere", async () => {
+  for (const path of ["/", "/account", "/o/acme/jira"]) {
+    window.history.replaceState(null, "", path);
+    const { unmount } = render(<App />);
+
+    await screen.findByRole("button", { name: AVATAR });
+    expect(railWorkspaces().getAttribute("aria-current"), path).toBeNull();
+    unmount();
+  }
+});
+
 test("the avatar is not marked elsewhere", async () => {
-  // Home is the rail's own; an organization's pages are the switcher's.
-  for (const path of ["/", "/o/acme/jira"]) {
+  // Home is the rail's own; an organization's pages are the switcher's; the
+  // workspaces list has its own row.
+  for (const path of ["/", "/o/acme/jira", "/workspaces", "/workspaces/new"]) {
     window.history.replaceState(null, "", path);
     const { unmount } = render(<App />);
 

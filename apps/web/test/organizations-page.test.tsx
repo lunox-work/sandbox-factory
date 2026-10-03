@@ -1,10 +1,9 @@
 /**
  * Tests for the organizations list page.
  *
- * The page the avatar menu's one "Organizations" item lands on. What matters
- * here is that it is honest about what you belong to — including when that is
- * nothing, or when the list could not be loaded — and that a row leads
- * somewhere.
+ * The page the rail's Workspaces row lands on. What matters here is that it
+ * is honest about what you belong to — including when that is nothing, or when
+ * the list could not be loaded — and that a row leads somewhere.
  */
 
 import { fireEvent, render, screen } from "@testing-library/react";

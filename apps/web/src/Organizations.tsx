@@ -4,7 +4,8 @@
  *
  * A page rather than a menu, because this is a list that carries real content
  * — names, handles, roles — and the actions on a row (open, settings) need
- * room to sit beside it. The avatar menu holds one item that lands here.
+ * room to sit beside it. The rail's Workspaces row, above the avatar, lands
+ * here.
  *
  * The personal organization is listed first, under the person's own name:
  * it is the one everybody has, and it is theirs rather than shared. Its row is
