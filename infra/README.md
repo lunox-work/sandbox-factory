@@ -92,8 +92,9 @@ on `containerInsights` in `ecs.tf` to arm it. Green here does not mean up.
 
 ## First deploy
 
-Prerequisites: AWS CLI configured, Terraform >= 1.5, the three OAuth apps
-registered, and a Neon project.
+Prerequisites: AWS CLI configured, Terraform >= 1.11 (see
+[More than one machine](#more-than-one-machine) for why Homebrew's own formula
+is not enough), the three OAuth apps registered, and a Neon project.
 
 ### 0. Neon
 
@@ -196,6 +197,38 @@ whether it is serving the commit it just built.
 | Roll back            | re-run the Deploy workflow against an older commit SHA                                |
 | Scale up             | `api_desired_count = 2`, then apply                                                   |
 | Outgrow the database | upgrade the Neon plan, or point `DATABASE_URL` at RDS                                 |
+
+## More than one machine
+
+State lives in the bucket and the configuration in git, so a second machine
+needs only three things:
+
+1. **Terraform from HashiCorp's tap.** Homebrew's own `terraform` formula
+   stopped at 1.5.7 after the licence change, and `versions.tf` rejects it.
+
+   ```bash
+   brew install hashicorp/tap/terraform
+   ```
+
+2. **AWS credentials for the account.** Give each machine its own access key, so
+   a lost one can be revoked without locking out the other.
+3. **`make tf-init`.**
+
+`.env.production` is gitignored too. Copy it across only if that machine will
+run `make secrets-push`.
+
+**Pull `main` before every apply.** The state lock stops two runs overlapping;
+it does not stop a machine with an older checkout from applying its older
+configuration and quietly reverting what the other one applied.
+
+**A stuck lock.** A run that dies mid-flight (the lid closed, a second Ctrl-C)
+can leave its lock behind, and every later run fails with
+`Error acquiring the state lock` and a lock ID. Check nothing is still running
+on either machine, then:
+
+```bash
+terraform -chdir=infra force-unlock <lock id>
+```
 
 ## Things worth knowing before changing this
 

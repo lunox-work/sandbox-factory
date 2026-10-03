@@ -33,7 +33,7 @@ jobs:
 
       - uses: hashicorp/setup-terraform@v4
         with:
-          terraform_version: "1.9.8"
+          terraform_version: "1.16.4"
 
       - name: Check formatting
         run: terraform fmt -check -recursive -diff
@@ -73,7 +73,7 @@ jobs:
 
       - uses: hashicorp/setup-terraform@v4
         with:
-          terraform_version: "1.9.8"
+          terraform_version: "1.16.4"
 
       - name: Plan
         id: plan

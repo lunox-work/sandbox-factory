@@ -6,7 +6,9 @@
 # a one-variable change.
 
 terraform {
-  required_version = ">= 1.5.0"
+  # 1.11 is where S3 native state locking (`use_lockfile` in backend.hcl) went
+  # GA. An older binary must fail here rather than run without the lock.
+  required_version = ">= 1.11.0"
 
   required_providers {
     aws = {
