@@ -281,19 +281,23 @@ async function openMenu(login = "acme") {
   return screen.findByRole("menu");
 }
 
-test("a linked account is listed with its repositories' pointers", async () => {
+test("a linked account lists its repositories as rows, without sync columns", async () => {
   renderTab();
 
   expect(await screen.findByText("acme")).toBeDefined();
-  const table = await screen.findByRole("table", {
+  const list = await screen.findByRole("list", {
     name: "Registered repositories",
   });
-  expect(within(table).getByText("acme/widgets")).toBeDefined();
-  // The short sha: the pointer, as a person reads one.
-  expect(within(table).getByText("0123456")).toBeDefined();
-  expect(within(table).getByText("Up to date")).toBeDefined();
-  expect(within(table).getByLabelText("Private")).toBeDefined();
+  expect(within(list).getByText("acme/widgets")).toBeDefined();
+  expect(within(list).getByLabelText("Private")).toBeDefined();
+  expect(within(list).queryByText("0123456")).toBeNull();
+  expect(within(list).queryByText("Up to date")).toBeNull();
+  expect(within(list).queryByText("main")).toBeNull();
 });
+
+async function openRepository() {
+  fireEvent.click(await screen.findByRole("button", { name: /acme\/widgets/ }));
+}
 
 test("connect navigates to the API, carrying where to come back to", async () => {
   renderTab();
@@ -315,7 +319,7 @@ test("connect navigates to the API, carrying where to come back to", async () =>
 test("a plain member can read but is offered nothing the API would refuse", async () => {
   renderTab("member");
 
-  await screen.findByRole("table", { name: "Registered repositories" });
+  await screen.findByRole("list", { name: "Registered repositories" });
   expect(screen.queryByRole("button", { name: /Connect/ })).toBeNull();
   expect(screen.queryByRole("button", { name: "Add a repository" })).toBeNull();
   expect(screen.queryByRole("button", { name: /Remove/ })).toBeNull();
@@ -323,13 +327,13 @@ test("a plain member can read but is offered nothing the API would refuse", asyn
     screen.getByText("Only an owner or admin can connect GitHub."),
   ).toBeDefined();
 
-  const menu = await openMenu();
+  // The link is in the subtitle for everyone; the menu is for managers only.
   expect(
-    within(menu).getByRole("menuitem", { name: /Manage on GitHub/ }),
+    screen.getByRole("link", {
+      name: "https://github.com/organizations/acme",
+    }),
   ).toBeDefined();
-  expect(
-    within(menu).queryByRole("menuitem", { name: /Disconnect/ }),
-  ).toBeNull();
+  expect(screen.queryByRole("button", { name: "acme options" })).toBeNull();
 });
 
 test("a successful connection is announced, and the outcome stripped from the URL", async () => {
@@ -424,7 +428,9 @@ test("a repository is registered from what the installation can see", async () =
   renderTab();
 
   fireEvent.click(
-    await screen.findByRole("button", { name: "Add a repository" }),
+    within(await openMenu()).getByRole("menuitem", {
+      name: "Add a repository",
+    }),
   );
   const picker = await screen.findByRole("region", {
     name: "Repositories this account can see",
@@ -438,7 +444,7 @@ test("a repository is registered from what the installation can see", async () =
     within(picker).getByRole("button", { name: "Register acme/gadgets" }),
   );
 
-  const table = await screen.findByRole("table", {
+  const table = await screen.findByRole("list", {
     name: "Registered repositories",
   });
   expect(await within(table).findByText("acme/gadgets")).toBeDefined();
@@ -455,7 +461,9 @@ test("a refused registration says why and registers nothing", async () => {
   renderTab();
 
   fireEvent.click(
-    await screen.findByRole("button", { name: "Add a repository" }),
+    within(await openMenu()).getByRole("menuitem", {
+      name: "Add a repository",
+    }),
   );
   const picker = await screen.findByRole("region", {
     name: "Repositories this account can see",
@@ -469,7 +477,7 @@ test("a refused registration says why and registers nothing", async () => {
   expect(
     await within(picker).findByText("GitHub refused that request."),
   ).toBeDefined();
-  const table = screen.getByRole("table", { name: "Registered repositories" });
+  const table = screen.getByRole("list", { name: "Registered repositories" });
   expect(within(table).queryByText("acme/gadgets")).toBeNull();
 });
 
@@ -497,6 +505,7 @@ test("disconnecting asks first, and says the App stays installed on GitHub", asy
 test("removing a repository asks first", async () => {
   renderTab();
 
+  await openRepository();
   fireEvent.click(
     await screen.findByRole("button", { name: "Remove acme/widgets" }),
   );
@@ -518,7 +527,7 @@ test("an uninstalled account is flagged, and offers no registering", async () =>
   renderTab();
 
   expect(await screen.findByText("Uninstalled")).toBeDefined();
-  expect(await screen.findByText("Gone")).toBeDefined();
+  expect(await screen.findByText("acme/widgets")).toBeDefined();
   expect(screen.queryByRole("button", { name: "Add a repository" })).toBeNull();
 });
 
@@ -534,13 +543,10 @@ test("a repository that failed to sync shows the reason", async () => {
   ];
   renderTab();
 
-  const table = await screen.findByRole("table", {
-    name: "Registered repositories",
-  });
+  await openRepository();
   expect(
-    await within(table).findByText("The repository has no commits yet."),
+    await screen.findByText("The repository has no commits yet."),
   ).toBeDefined();
-  expect(within(table).getByText("Never")).toBeDefined();
 });
 
 test("a failed load says so rather than rendering an empty list", async () => {
@@ -695,7 +701,9 @@ test("an installation GitHub turned down mid-register re-reads the accounts", as
   renderTab();
 
   fireEvent.click(
-    await screen.findByRole("button", { name: "Add a repository" }),
+    within(await openMenu()).getByRole("menuitem", {
+      name: "Add a repository",
+    }),
   );
   fireEvent.click(
     await screen.findByRole("button", { name: "Register acme/gadgets" }),

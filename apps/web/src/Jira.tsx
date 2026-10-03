@@ -376,21 +376,6 @@ function BoardRow({
         <span className="min-w-0 flex-1 truncate text-sm font-medium">
           {board.name}
         </span>
-        {/*
-          Pills at the end of the row rather than a second line under the
-          name: they are labels to scan down, and a line of their own made
-          every row twice as tall as the name needed.
-        */}
-        <span className="flex shrink-0 items-center gap-1.5">
-          {board.projectKey !== null && (
-            <Badge variant="secondary" className="font-mono">
-              {board.projectKey}
-            </Badge>
-          )}
-          <Badge variant="outline" className="text-muted-foreground capitalize">
-            {board.boardType}
-          </Badge>
-        </span>
         <ChevronRight className="text-muted-foreground size-4 shrink-0" />
       </a>
     </li>

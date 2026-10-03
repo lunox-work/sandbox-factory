@@ -27,8 +27,11 @@ import type {
   GithubRepoDto,
 } from "@sandbox-factory/shared";
 import {
+  ArrowLeft,
+  ChevronRight,
   EllipsisVertical,
   ExternalLink,
+  FolderGit2,
   Link2,
   Loader2,
   Lock,
@@ -186,7 +189,9 @@ export function GithubConnections({
   const repos = useGithubRepos(organizationId);
   const { outcome, dismiss } = useGithubOutcome();
   const [picking, setPicking] = useState(false);
+  const [openRepoId, setOpenRepoId] = useState<string | null>(null);
   const manageable = canManage(role);
+  const openRepo = repos.repos.find((repo) => repo.id === openRepoId);
 
   // `pick` is a question, not just news: open the picker for it.
   useEffect(() => {
@@ -197,8 +202,8 @@ export function GithubConnections({
     <header>
       <h3 className="leading-none font-semibold">GitHub</h3>
       <p className="text-muted-foreground mt-1.5 text-sm">
-        Repositories registered here are tracked by the commit their default
-        branch points at. Nothing of their contents is stored.
+        Registered repositories are tracked by commit. Their contents are never
+        stored.
       </p>
     </header>
   );
@@ -213,6 +218,18 @@ export function GithubConnections({
           here.
         </p>
       </div>
+    );
+  }
+
+  if (openRepo !== undefined) {
+    return (
+      <RepositoryPage
+        organizationId={organizationId}
+        repo={openRepo}
+        manageable={manageable}
+        onBack={() => setOpenRepoId(null)}
+        onRemove={(repoId) => repos.remove(repoId)}
+      />
     );
   }
 
@@ -269,7 +286,7 @@ export function GithubConnections({
             onRegister={(externalId) =>
               repos.register(connection.id, externalId)
             }
-            onRemoveRepo={(repoId) => repos.remove(repoId)}
+            onOpenRepo={(repo) => setOpenRepoId(repo.id)}
             onDisconnect={async () => {
               const result = await disconnect(connection.id);
               if (result.ok) await repos.refresh();
@@ -538,7 +555,7 @@ function InstallationCard({
   manageable,
   onUnhealthy,
   onRegister,
-  onRemoveRepo,
+  onOpenRepo,
   onDisconnect,
 }: {
   organizationId: string;
@@ -553,9 +570,7 @@ function InstallationCard({
   onRegister: (
     externalId: string,
   ) => Promise<{ ok: true } | { ok: false; error: string; code?: string }>;
-  onRemoveRepo: (
-    repoId: string,
-  ) => Promise<{ ok: true } | { ok: false; error: string }>;
+  onOpenRepo: (repo: GithubRepoDto) => void;
   /** Resolves to an error to show in the question, or nothing on success. */
   onDisconnect: () => Promise<string | undefined>;
 }) {
@@ -582,54 +597,57 @@ function InstallationCard({
               )}
             </CardTitle>
             <CardDescription>
-              {connection.accountType === "Organization"
-                ? "Organization"
-                : "Personal account"}
-              {" · "}
-              {connection.repositorySelection === "all"
-                ? "the App can see all repositories"
-                : "the App can see selected repositories"}
-            </CardDescription>
-          </div>
-        </div>
-
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="-my-1 -mr-2 shrink-0"
-              aria-label={`${connection.accountLogin} options`}
-            >
-              <EllipsisVertical className="size-4" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-52">
-            <DropdownMenuItem asChild>
               <a
                 href={connection.settingsUrl}
                 target="_blank"
                 rel="noreferrer noopener"
+                className="inline-flex max-w-full items-center gap-1 align-bottom hover:underline"
               >
-                <ExternalLink />
-                Manage on GitHub
+                <span className="truncate">
+                  {connection.settingsUrl.replace(
+                    /\/settings\/installations\/\d+$/,
+                    "",
+                  )}
+                </span>
+                <ExternalLink className="size-3 shrink-0" />
               </a>
-            </DropdownMenuItem>
-            {manageable && (
-              <>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  variant="destructive"
-                  disabled={disconnecting}
-                  onSelect={() => setConfirming(true)}
-                >
-                  <Trash2 />
-                  Disconnect
-                </DropdownMenuItem>
-              </>
-            )}
-          </DropdownMenuContent>
-        </DropdownMenu>
+            </CardDescription>
+          </div>
+        </div>
+
+        {manageable && (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="-my-1 -mr-2 shrink-0"
+                aria-label={`${connection.accountLogin} options`}
+              >
+                <EllipsisVertical className="size-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-52">
+              {connection.healthy && (
+                <>
+                  <DropdownMenuItem onSelect={() => setAdding(true)}>
+                    <Plus />
+                    Add a repository
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                </>
+              )}
+              <DropdownMenuItem
+                variant="destructive"
+                disabled={disconnecting}
+                onSelect={() => setConfirming(true)}
+              >
+                <Trash2 />
+                Disconnect
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
 
         {manageable && (
           <ConfirmDialog
@@ -669,74 +687,42 @@ function InstallationCard({
         {unhealthy !== null && <p className="text-sm">{unhealthy.detail}</p>}
 
         <RegisteredRepos
-          organizationId={organizationId}
           repos={repos}
           loading={reposLoading}
           failed={reposFailed}
-          manageable={manageable}
-          onRemove={onRemoveRepo}
+          onOpen={onOpenRepo}
         />
 
-        {manageable &&
-          connection.healthy &&
-          (adding ? (
-            <RepositoryPicker
-              organizationId={organizationId}
-              connectionId={connection.id}
-              onRegister={onRegister}
-              onUnhealthy={() => {
-                setAdding(false);
-                onUnhealthy();
-              }}
-              onClose={() => setAdding(false)}
-            />
-          ) : (
-            <div>
-              <Button
-                variant="outline"
-                size="sm"
-                className="gap-2"
-                onClick={() => setAdding(true)}
-              >
-                <Plus className="size-4" />
-                Add a repository
-              </Button>
-            </div>
-          ))}
+        {manageable && connection.healthy && adding && (
+          <RepositoryPicker
+            organizationId={organizationId}
+            connectionId={connection.id}
+            onRegister={onRegister}
+            onUnhealthy={() => {
+              setAdding(false);
+              onUnhealthy();
+            }}
+            onClose={() => setAdding(false)}
+          />
+        )}
       </CardContent>
     </Card>
   );
 }
 
-const SYNC_LABELS: Record<GithubRepoDto["syncStatus"], string> = {
-  pending: "Waiting",
-  ok: "Up to date",
-  error: "Error",
-  gone: "Gone",
-};
-
-/** The registered repositories: where each one's default branch points. */
+/** The registered repositories, each a way into the repository's own page. */
 function RegisteredRepos({
-  organizationId,
   repos,
   loading,
   failed,
-  manageable,
-  onRemove,
+  onOpen,
 }: {
-  organizationId: string;
   repos: GithubRepoDto[];
   loading: boolean;
   /** The read failed; the page says so once, above, for every card. */
   failed: boolean;
-  manageable: boolean;
-  onRemove: (
-    repoId: string,
-  ) => Promise<{ ok: true } | { ok: false; error: string }>;
+  onOpen: (repo: GithubRepoDto) => void;
 }) {
-  const [analyzing, setAnalyzing] = useState<GithubRepoDto | null>(null);
-  const [removing, setRemoving] = useState<GithubRepoDto | null>(null);
-
   // Never "none registered" before the list is known: that is a zero
   // nobody counted.
   if (repos.length === 0 && loading) return <LoadingLine />;
@@ -750,139 +736,131 @@ function RegisteredRepos({
   }
 
   return (
-    <>
-      <div className="-mx-1 overflow-x-auto">
-        <table className="w-full text-sm">
-          <caption className="sr-only">Registered repositories</caption>
-          <thead>
-            <tr className="text-muted-foreground text-left text-xs">
-              <th scope="col" className="px-1 pb-2 font-medium">
-                Repository
-              </th>
-              <th scope="col" className="px-1 pb-2 font-medium">
-                Branch
-              </th>
-              <th scope="col" className="px-1 pb-2 font-medium">
-                Head
-              </th>
-              <th scope="col" className="px-1 pb-2 font-medium">
-                Status
-              </th>
-              <th scope="col" className="px-1 pb-2 font-medium">
-                Last synced
-              </th>
-              <th scope="col" className="px-1 pb-2 font-medium">
-                Analysis
-              </th>
-              {manageable && (
-                <th scope="col" className="px-1 pb-2">
-                  <span className="sr-only">Actions</span>
-                </th>
-              )}
-            </tr>
-          </thead>
-          <tbody className="divide-y">
-            {repos.map((repo) => (
-              <tr key={repo.id}>
-                <td className="px-1 py-2">
-                  <span className="flex items-center gap-1.5">
-                    <span className="truncate font-medium">
-                      {repo.fullName}
-                    </span>
-                    {repo.isPrivate && (
-                      <Lock
-                        className="text-muted-foreground size-3 shrink-0"
-                        aria-label="Private"
-                      />
-                    )}
-                  </span>
-                </td>
-                <td className="text-muted-foreground px-1 py-2">
-                  {repo.defaultBranch}
-                </td>
-                <td className="px-1 py-2 font-mono text-xs">
-                  {repo.headSha === null ? "—" : repo.headSha.slice(0, 7)}
-                </td>
-                <td className="px-1 py-2">
-                  <Badge
-                    variant={
-                      repo.syncStatus === "ok"
-                        ? "secondary"
-                        : repo.syncStatus === "pending"
-                          ? "outline"
-                          : "destructive"
-                    }
-                    title={repo.syncError ?? undefined}
-                  >
-                    {SYNC_LABELS[repo.syncStatus]}
-                  </Badge>
-                  {repo.syncError !== null && (
-                    <span className="text-muted-foreground mt-1 block text-xs">
-                      {repo.syncError}
-                    </span>
-                  )}
-                </td>
-                <td className="text-muted-foreground px-1 py-2">
-                  {repo.lastSyncedAt === null
-                    ? "Never"
-                    : new Date(repo.lastSyncedAt).toLocaleString(undefined, {
-                        dateStyle: "medium",
-                        timeStyle: "short",
-                      })}
-                </td>
-                <td className="px-1 py-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    aria-label={`Analysis for ${repo.fullName}`}
-                    onClick={() => setAnalyzing(repo)}
-                  >
-                    Analysis
-                  </Button>
-                </td>
-                {manageable && (
-                  <td className="px-1 py-2 text-right">
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      aria-label={`Remove ${repo.fullName}`}
-                      onClick={() => setRemoving(repo)}
-                    >
-                      <Trash2 className="size-4" />
-                    </Button>
-                  </td>
-                )}
-              </tr>
-            ))}
-          </tbody>
-        </table>
+    <ul aria-label="Registered repositories" className="-mx-3 flex flex-col">
+      {repos.map((repo) => (
+        <li key={repo.id}>
+          <button
+            type="button"
+            className="focus-visible:ring-ring/50 hover:bg-muted/60 focus-visible:bg-muted/60 flex w-full items-center gap-3 rounded-lg px-3 py-1.5 text-left transition-colors focus-visible:ring-2 focus-visible:outline-none"
+            onClick={() => onOpen(repo)}
+          >
+            <span className="text-muted-foreground size-4 shrink-0">
+              <FolderGit2 className="size-full" />
+            </span>
+            <span className="min-w-0 flex-1 truncate text-sm font-medium">
+              {repo.fullName}
+            </span>
+            {repo.isPrivate && (
+              <Lock
+                className="text-muted-foreground size-3 shrink-0"
+                aria-label="Private"
+              />
+            )}
+            <ChevronRight className="text-muted-foreground size-4 shrink-0" />
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/**
+ * One registered repository, as a page of its own inside the GitHub tab: the
+ * actions that used to sit in a table row, now that the row is only a way in.
+ */
+function RepositoryPage({
+  organizationId,
+  repo,
+  manageable,
+  onBack,
+  onRemove,
+}: {
+  organizationId: string;
+  repo: GithubRepoDto;
+  manageable: boolean;
+  onBack: () => void;
+  onRemove: (
+    repoId: string,
+  ) => Promise<{ ok: true } | { ok: false; error: string }>;
+}) {
+  const [analyzing, setAnalyzing] = useState(false);
+  const [removing, setRemoving] = useState(false);
+
+  return (
+    <div className="flex flex-col gap-5">
+      <div>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="-ml-2 gap-1.5"
+          onClick={onBack}
+        >
+          <ArrowLeft className="size-4" />
+          GitHub
+        </Button>
       </div>
-      {analyzing !== null && (
+      <header className="flex items-center gap-3">
+        <span className="size-5 shrink-0">
+          <FolderGit2 className="size-full" />
+        </span>
+        <h3 className="min-w-0 truncate leading-none font-semibold">
+          {repo.fullName}
+        </h3>
+        {repo.isPrivate && (
+          <Lock
+            className="text-muted-foreground size-3.5 shrink-0"
+            aria-label="Private"
+          />
+        )}
+      </header>
+      {repo.syncError !== null && (
+        <ErrorBanner className="mt-0">{repo.syncError}</ErrorBanner>
+      )}
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          variant="outline"
+          aria-label={`Analysis for ${repo.fullName}`}
+          onClick={() => setAnalyzing(true)}
+        >
+          Analysis
+        </Button>
+        {manageable && (
+          <Button
+            variant="outline"
+            className="text-destructive gap-2"
+            aria-label={`Remove ${repo.fullName}`}
+            onClick={() => setRemoving(true)}
+          >
+            <Trash2 className="size-4" />
+            Remove
+          </Button>
+        )}
+      </div>
+      {analyzing && (
         <RepositoryAnalysis
-          key={analyzing.id}
+          key={repo.id}
           organizationId={organizationId}
-          repo={analyzing}
+          repo={repo}
           manageable={manageable}
-          onClose={() => setAnalyzing(null)}
+          onClose={() => setAnalyzing(false)}
         />
       )}
       {manageable && (
         <ConfirmDialog
-          open={removing !== null}
-          onOpenChange={(open) => {
-            if (!open) setRemoving(null);
-          }}
-          title={`Remove ${removing?.fullName ?? "this repository"}?`}
+          open={removing}
+          onOpenChange={setRemoving}
+          title={`Remove ${repo.fullName}?`}
           description="Stops tracking it here. Nothing changes on GitHub, and you can register it again."
           confirmLabel="Remove"
           onConfirm={async () => {
-            if (removing === null) return;
-            const result = await onRemove(removing.id);
-            return result.ok ? undefined : result.error;
+            const result = await onRemove(repo.id);
+            if (!result.ok) return result.error;
+            onBack();
+            return undefined;
           }}
         />
       )}
-    </>
+    </div>
   );
 }
 

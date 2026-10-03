@@ -698,16 +698,15 @@ function renderList(role = "owner") {
   );
 }
 
-test("a registered board is listed with its type and project", async () => {
+test("a registered board is listed without type or project pills", async () => {
   vi.stubGlobal("fetch", routedFetch());
 
   renderList();
 
   expect(await screen.findByText("Acme Board")).toBeDefined();
-  // As pills at the end of the row, not a second line under the name.
   const row = screen.getByRole("link", { name: /acme board/i });
-  expect(within(row).getByText("scrum").dataset.slot).toBe("badge");
-  expect(within(row).getByText("ACME").dataset.slot).toBe("badge");
+  expect(within(row).queryByText("scrum")).toBeNull();
+  expect(within(row).queryByText("ACME")).toBeNull();
 });
 
 test("Re-sync re-reads the site and says what it found", async () => {
