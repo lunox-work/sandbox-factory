@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { ticketSpecHash } from "@sandbox-factory/shared";
+
 import {
   pricingSpecHash,
   SPEC_FIELDS,
@@ -54,6 +56,15 @@ test("an empty spec still hashes", async () => {
   assert.match(await specHash("", ""), /^[0-9a-f]{64}$/);
 });
 
+test("the pricing fingerprint is the ticket's own hash, not a copy", () => {
+  assert.equal(pricingSpecHash, ticketSpecHash);
+});
+
+test("an issue with no type is read as the default type", async () => {
+  const spec = await toIssueSpec("APP-1", { summary: "Untyped" });
+  assert.equal(spec.issueType, "Task");
+});
+
 test("pricing fingerprint includes issue type without changing legacy hashes", async () => {
   const legacy = await specHash("Title", "Description");
   const story = await pricingSpecHash("Title", "Description", "Story");
@@ -75,6 +86,29 @@ test("SPEC_FIELDS asks for the description, and the list reads do not", () => {
   // What the spec draft reads beside the text.
   assert.ok(SPEC_FIELDS.includes("components"));
   assert.ok(SPEC_FIELDS.includes("labels"));
+  // What the complexity profile records about the ticket.
+  assert.ok(SPEC_FIELDS.includes("priority"));
+});
+
+test("toIssueSpec reads the priority's name, and does not hash it", async () => {
+  const fields = { summary: "Add export" };
+  const bare = await toIssueSpec("ACME-1", fields);
+  const urgent = await toIssueSpec("ACME-1", {
+    ...fields,
+    priority: { name: "Highest" },
+  });
+  assert.equal(bare.priority, null);
+  assert.equal(urgent.priority, "Highest");
+  assert.equal(urgent.pricingSpecHash, bare.pricingSpecHash);
+  assert.equal(
+    (await toIssueSpec("ACME-1", { ...fields, priority: { name: 3 } }))
+      .priority,
+    null,
+  );
+  assert.equal(
+    (await toIssueSpec("ACME-1", { ...fields, priority: null })).priority,
+    null,
+  );
 });
 
 test("toIssueSpec reads components and labels, and hashes neither", async () => {

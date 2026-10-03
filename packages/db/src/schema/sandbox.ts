@@ -4,7 +4,7 @@
  *
  * `sandbox` and `sandbox_version` hold public-safe columns only, so a
  * publication receipt can expose them without a filter. `sandbox_source`,
- * `sandbox_jira_issue` and `sandbox_version_source` are private and are
+ * `sandbox_ticket` and `sandbox_version_source` are private and are
  * never joined by a public store: the source repository, the alias table,
  * the approved task with its spec and price, hidden tests and every hash
  * that locates private evidence live there.
@@ -30,7 +30,7 @@ import {
 import type {
   AcceptanceTest,
   AliasRule,
-  ApprovedTaskSnapshot,
+  StoredApprovedTaskSnapshot,
   DependencyChoice,
   SandboxStatus,
   ScopeRecord,
@@ -40,8 +40,8 @@ import type {
 import { analysisRun, repoSnapshot } from "./analysis.js";
 import { user } from "./auth.js";
 import { githubRepo } from "./github.js";
-import { jiraIssue } from "./jira.js";
 import { organization } from "./organizations.js";
+import { ticket } from "./ticket.js";
 
 const ts = (name: string) => timestamp(name, { withTimezone: true });
 const owner = () =>
@@ -78,17 +78,22 @@ export const sandboxSource = pgTable("sandbox_source", {
   updatedAt: ts("updated_at").notNull().defaultNow(),
 });
 
-export const sandboxJiraIssue = pgTable(
-  "sandbox_jira_issue",
+/** The tickets a sandbox is cut for. Private, like its source. */
+export const sandboxTicket = pgTable(
+  "sandbox_ticket",
   {
     sandboxId: text("sandbox_id")
       .notNull()
       .references(() => sandbox.id, { onDelete: "cascade" }),
-    jiraIssueId: text("jira_issue_id")
+    ticketId: text("ticket_id")
       .notNull()
-      .references(() => jiraIssue.id, { onDelete: "cascade" }),
+      .references(() => ticket.id, { onDelete: "cascade" }),
   },
-  (t) => [primaryKey({ columns: [t.sandboxId, t.jiraIssueId] })],
+  (t) => [
+    primaryKey({ columns: [t.sandboxId, t.ticketId] }),
+    // Deleting a ticket takes its links; without it that is a scan.
+    index("sandbox_ticket_ticket_id_idx").on(t.ticketId),
+  ],
 );
 
 export const sandboxVersion = pgTable(
@@ -138,7 +143,9 @@ export const sandboxVersionSource = pgTable("sandbox_version_source", {
   transformConfigSha256: text("transform_config_sha256").notNull(),
   approvedTaskSha256: text("approved_task_sha256").notNull(),
   /** The approved task copied at selection; survives the live proposal. */
-  approvedTask: jsonb("approved_task").$type<ApprovedTaskSnapshot>().notNull(),
+  approvedTask: jsonb("approved_task")
+    .$type<StoredApprovedTaskSnapshot>()
+    .notNull(),
   /** Ordered, scoped rules; never returned publicly. */
   aliasRules: jsonb("alias_rules").$type<AliasRule[]>().notNull(),
   dependencyChoices: jsonb("dependency_choices")
@@ -168,6 +175,6 @@ export const sandboxVersionSource = pgTable("sandbox_version_source", {
 
 export type SandboxRow = typeof sandbox.$inferSelect;
 export type SandboxSourceRow = typeof sandboxSource.$inferSelect;
-export type SandboxJiraIssueRow = typeof sandboxJiraIssue.$inferSelect;
+export type SandboxTicketRow = typeof sandboxTicket.$inferSelect;
 export type SandboxVersionRow = typeof sandboxVersion.$inferSelect;
 export type SandboxVersionSourceRow = typeof sandboxVersionSource.$inferSelect;

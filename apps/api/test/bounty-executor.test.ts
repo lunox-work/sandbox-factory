@@ -8,13 +8,20 @@ import type {
   JiraBoardStore,
   JiraIssueStore,
   StoredBountyRun,
+  StoredTicket,
+  TicketStore,
 } from "@sandbox-factory/db";
 import { JiraApiError, type JiraIssueSpec } from "@sandbox-factory/jira";
 import type {
   JiraIssueDto,
   JiraIssueSignalsDto,
 } from "@sandbox-factory/shared";
-import type { BountySizingResult, SpecDraft } from "sandbox-factory";
+import {
+  ticketSpecHash,
+  type BountySizingResult,
+  type SpecDraft,
+  type TicketContent,
+} from "sandbox-factory";
 
 import {
   BountyExecutor,
@@ -84,6 +91,7 @@ function run(overrides: Partial<StoredBountyRun> = {}): StoredBountyRun {
     id: "brn_1",
     organizationId: "org_1",
     boardId: "jrb_1",
+    ticketId: null,
     kind: "backlog",
     sourceProposalId: null,
     sourceRevision: null,
@@ -157,6 +165,58 @@ function signals(
   };
 }
 
+/**
+ * A ticket as the store reads it. By default the one a board's issue "1"
+ * was imported as, still following it.
+ */
+function ticket(overrides: Partial<StoredTicket> = {}): StoredTicket {
+  return {
+    id: "tkt_1",
+    organizationId: "org_1",
+    number: 1,
+    key: "APP-1",
+    title: "Issue 1",
+    description: "Clear acceptance criteria.",
+    issueType: "Story",
+    priority: "Medium",
+    labels: [],
+    components: [],
+    inputTruncated: false,
+    origin: "jira",
+    repoId: null,
+    createdBy: null,
+    revision: 1,
+    jira: {
+      issueId: "jri_1",
+      boardId: "jrb_1",
+      connectionId: "jrc_1",
+      externalId: "1",
+      key: "APP-1",
+      siteUrl: "https://example.test",
+      removedAt: null,
+    },
+    createdAt: "2026-09-22T00:00:00.000Z",
+    updatedAt: "2026-09-22T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+/** A ticket written here: no Jira issue, no board. */
+function handWritten(overrides: Partial<StoredTicket> = {}): StoredTicket {
+  return ticket({
+    id: "tkt_7",
+    number: 7,
+    key: "T-7",
+    title: "Invitations are not sent",
+    description: "Scheduling an interview sends the candidate one email.",
+    issueType: "Bug",
+    priority: null,
+    origin: "manual",
+    jira: null,
+    ...overrides,
+  });
+}
+
 /** The deadline the fake store sets once a plan is recorded. */
 const PLAN_DEADLINE = "2026-09-22T00:30:00.000Z";
 
@@ -171,6 +231,7 @@ function spec(
     issueType: "Story",
     components: [],
     labels: [],
+    priority: "Medium",
     updated: "2026-01-02T00:00:00.000Z",
     inputTruncated: false,
     specHash: "a".repeat(64),
@@ -192,13 +253,22 @@ function harness(options: {
   originPlanned?: StoredBountyRun["planned"];
   /** The board's pricing settings, as stored. */
   pricing?: unknown;
-  /** How many sub-tasks an `issue` run's ticket has when read again. */
+  /** How many sub-tasks a run's one ticket has when read again. */
   pickedSubtasks?: number;
+  /** Keeping Jira's text on the ticket fails with this. */
+  refreshError?: Error;
   /** The repository the board names, if any. */
   sourceRepoId?: string | null;
+  /** The tickets the store holds, by id; a board's imports are added. */
+  tickets?: StoredTicket[];
+  /** What the Jira client answers for a run's client; absent, a client. */
+  clientResult?: { ok: false; reason: "not-found" | "reconnect" };
+  /** The import answers no pointer, as for a board not the organization's. */
+  importFails?: boolean;
   /** What the outline read answers; absent, the executor has no reader. */
   outlineFor?: BountyExecutorOptions["outlineFor"];
   onBackgroundError?: BountyExecutorOptions["onBackgroundError"];
+  onProposalDrafted?: BountyExecutorOptions["onProposalDrafted"];
 }) {
   const current = run(options.runOverrides);
   const plans: unknown[] = [];
@@ -206,6 +276,8 @@ function harness(options: {
   const finishes: { status: string; details: unknown }[] = [];
   const proposalInputs: unknown[] = [];
   const removed: string[] = [];
+  const refreshed: { ticketId: string; content: TicketContent }[] = [];
+  const imported: TicketContent[] = [];
   const startedWritebacks: string[] = [];
   const runs = {
     get: (_org: string, id: string) =>
@@ -289,24 +361,40 @@ function harness(options: {
         siteUrl: "https://example.test",
       }),
   } as unknown as JiraBoardStore;
+  const held = new Map(
+    (options.tickets ?? [ticket()]).map((stored) => [stored.id, stored]),
+  );
   let pointer = 0;
   const issues = {
-    get: () =>
-      Promise.resolve({
-        id: "jri_1",
-        boardId: "jrb_1",
-        externalId: "1",
-        key: "APP-1",
-        statusCategory: "new",
-        remoteCreatedAt: "2026-01-01T00:00:00.000Z",
-        remoteUpdatedAt: "2026-01-02T00:00:00.000Z",
-        removedAt: null,
-      }),
-    upsert: (_org: string, _board: string, input: { externalId: string }) => {
+    upsert: (
+      _org: string,
+      _board: string,
+      input: { externalId: string },
+      content: TicketContent,
+    ) => {
+      if (options.importFails) return Promise.resolve(null);
       pointer += 1;
+      imported.push(content);
+      const ticketId = `tkt_${pointer}`;
+      held.set(
+        ticketId,
+        ticket({
+          id: ticketId,
+          number: pointer,
+          key: `APP-${input.externalId}`,
+          ...content,
+          jira: {
+            ...ticket().jira!,
+            issueId: `jri_${pointer}`,
+            externalId: input.externalId,
+            key: `APP-${input.externalId}`,
+          },
+        }),
+      );
       return Promise.resolve({
         id: `jri_${pointer}`,
         boardId: "jrb_1",
+        ticketId,
         externalId: input.externalId,
         key: `APP-${input.externalId}`,
         statusCategory: "new",
@@ -319,13 +407,31 @@ function harness(options: {
       removed.push(id);
       return Promise.resolve(true);
     },
+    markRemovedByExternal: (_org: string, _board: string, id: string) => {
+      removed.push(id);
+      return Promise.resolve(true);
+    },
   } as unknown as JiraIssueStore;
+  const tickets = {
+    get: (_org: string, id: string) => Promise.resolve(held.get(id) ?? null),
+    refreshFromJira: (
+      _org: string,
+      ticketId: string,
+      content: TicketContent,
+    ) => {
+      if (options.refreshError !== undefined) {
+        return Promise.reject(options.refreshError);
+      }
+      refreshed.push({ ticketId, content });
+      return Promise.resolve(true);
+    },
+  } as unknown as TicketStore;
   const proposals = {
     get: () =>
       Promise.resolve({
         id: "bpr_source",
         runId: "brn_origin",
-        jiraIssueId: "jri_1",
+        ticketId: options.tickets?.[0]?.id ?? "tkt_1",
         revision: options.runOverrides?.sourceRevision ?? 1,
       }),
     liveExternalIds: () => Promise.resolve(new Set<string>()),
@@ -340,7 +446,10 @@ function harness(options: {
         status === "created"
           ? {
               status,
-              proposal: { id: `bpr_${proposalInputs.length}` },
+              proposal: {
+                id: `bpr_${proposalInputs.length}`,
+                specRevision: "spec" in input ? 1 : null,
+              },
             }
           : { status },
       );
@@ -355,7 +464,7 @@ function harness(options: {
       proposalInputs.push(input);
       return Promise.resolve({
         status: "repriced" as const,
-        proposal: { id: source },
+        proposal: { id: source, specRevision: "spec" in input ? 2 : null },
         ...(options.writebackOperationId === undefined
           ? {}
           : { writebackOperationId: options.writebackOperationId }),
@@ -401,16 +510,21 @@ function harness(options: {
     runs,
     proposals,
     issues,
+    tickets,
     // No run here changes a spec: a respec run has its own tests.
     specs: {} as BountySpecStore,
     caller,
-    clientFor: () => Promise.resolve({ ok: true, client }),
+    clientFor: () =>
+      Promise.resolve(options.clientResult ?? { ok: true, client }),
     ...(options.outlineFor === undefined
       ? {}
       : { outlineFor: options.outlineFor }),
     ...(options.onBackgroundError === undefined
       ? {}
       : { onBackgroundError: options.onBackgroundError }),
+    ...(options.onProposalDrafted === undefined
+      ? {}
+      : { onProposalDrafted: options.onProposalDrafted }),
     now: () => new Date("2026-09-22T00:00:00.000Z"),
     leaseToken: () => "lease_1",
     onWritebackCreated: (_organizationId, operationId) => {
@@ -424,6 +538,8 @@ function harness(options: {
     finishes,
     proposalInputs,
     removed,
+    refreshed,
+    imported,
     startedWritebacks,
     caller,
   };
@@ -631,7 +747,7 @@ test("a run persists sized drafts with snapshot pricing and usage", async () => 
     {
       externalIssueId: "1",
       issueKey: "APP-1",
-      jiraIssueId: "jri_1",
+      ticketId: "tkt_1",
       proposalId: "bpr_1",
       status: "proposed",
       // The model that sized it; the spec records its own.
@@ -778,6 +894,86 @@ test("a proposal whose draft failed records no snapshot, outline or not", async 
   );
 });
 
+test("each spec drafted beside a snapshot asks for its complexity profile", async () => {
+  const asked: unknown[] = [];
+  const state = harness({
+    sourceRepoId: "ghr_1",
+    outlineFor: () => Promise.resolve({ snapshotId: "rsn_1", text: "outline" }),
+    candidates: [issue("1"), issue("2")],
+    specs: { "2": spec("2", { issueType: "Bug", priority: null }) },
+    onProposalDrafted: (organizationId, input) =>
+      void asked.push({ organizationId, ...input }),
+  });
+  await state.executor.execute("org_1", "brn_1");
+
+  assert.deepEqual(asked, [
+    {
+      organizationId: "org_1",
+      proposalId: "bpr_1",
+      specRevision: 1,
+      specHash: spec("1").pricingSpecHash,
+      snapshotId: "rsn_1",
+      ticket: { issueType: "Story", priority: "Medium" },
+    },
+    {
+      organizationId: "org_1",
+      proposalId: "bpr_2",
+      specRevision: 1,
+      specHash: spec("2").pricingSpecHash,
+      snapshotId: "rsn_1",
+      ticket: { issueType: "Bug", priority: null },
+    },
+  ]);
+});
+
+test("a re-price drafted beside a snapshot profiles its new spec revision", async () => {
+  const asked: { proposalId: string; specRevision: number }[] = [];
+  const state = harness({
+    candidates: [],
+    runOverrides: {
+      kind: "reprice",
+      sourceProposalId: "bpr_9",
+      sourceRevision: 1,
+    },
+    sourceRepoId: "ghr_1",
+    outlineFor: () => Promise.resolve({ snapshotId: "rsn_2", text: "outline" }),
+    onProposalDrafted: (_organizationId, input) => void asked.push(input),
+  });
+  await state.executor.execute("org_1", "brn_1");
+  assert.deepEqual(
+    asked.map(({ proposalId, specRevision }) => ({ proposalId, specRevision })),
+    [{ proposalId: "bpr_9", specRevision: 2 }],
+  );
+});
+
+test("no profile is asked for without a snapshot, or without a spec", async () => {
+  const noOutline: unknown[] = [];
+  await harness({
+    sourceRepoId: "ghr_1",
+    outlineFor: () => Promise.resolve(null),
+    onProposalDrafted: (_organizationId, input) => void noOutline.push(input),
+  }).executor.execute("org_1", "brn_1");
+  assert.deepEqual(noOutline, []);
+
+  const noSpec: unknown[] = [];
+  await harness({
+    sourceRepoId: "ghr_1",
+    outlineFor: () => Promise.resolve({ snapshotId: "rsn_1", text: "outline" }),
+    caller: sizing(
+      [
+        {
+          result: { complexity: "M", confidence: "high", rationale: "Some." },
+          actualModel: "actual-model",
+          usage: { inputTokens: 1, outputTokens: 1 },
+        },
+      ],
+      [new SizerError("sizing_invalid_output", false)],
+    ),
+    onProposalDrafted: (_organizationId, input) => void noSpec.push(input),
+  }).executor.execute("org_1", "brn_1");
+  assert.deepEqual(noSpec, []);
+});
+
 test("a sized ticket is written with a step of zero, priced at its own size", async () => {
   const state = harness({});
   await state.executor.execute("org_1", "brn_1");
@@ -913,7 +1109,7 @@ test("a draft that fails costs the ticket its spec, not its proposal", async () 
       {
         externalIssueId: "1",
         issueKey: "APP-1",
-        jiraIssueId: "jri_1",
+        ticketId: "tkt_1",
         proposalId: "bpr_1",
         status: "proposed",
         code: "spec_failed",
@@ -1187,7 +1383,7 @@ test("a re-price that cannot draft leaves the proposal as it was", async () => {
     {
       externalIssueId: "1",
       issueKey: "APP-1",
-      jiraIssueId: "jri_1",
+      ticketId: "tkt_1",
       status: "failed",
       code: "spec_failed",
     },
@@ -1304,4 +1500,379 @@ test("XS model sizing uses the distinct XS snapshot price", async () => {
     (state.proposalInputs[0] as { amountMinor: number }).amountMinor,
     50,
   );
+});
+
+/** A `ticket` run: one of the organization's tickets, sized on its own. */
+function ticketRun(ticketId: string) {
+  return { kind: "ticket" as const, boardId: null, ticketId };
+}
+
+test("a ticket written here is sized with no Jira at all", async () => {
+  const state = harness({
+    tickets: [handWritten()],
+    runOverrides: ticketRun("tkt_7"),
+    // Jira could not be reached, and nothing asks it.
+    clientResult: { ok: false, reason: "reconnect" },
+  });
+  await state.executor.execute("org_1", "brn_1");
+
+  assert.equal(state.finishes[0]?.status, "succeeded");
+  assert.deepEqual(state.plans, [
+    [
+      {
+        externalIssueId: "tkt_7",
+        issueKey: "T-7",
+        summary: "Invitations are not sent",
+        ticketId: "tkt_7",
+        categories: [],
+      },
+    ],
+  ]);
+  assert.deepEqual(state.caller.calls[0], {
+    tool: "draft_spec",
+    input: {
+      summary: "Invitations are not sent",
+      descriptionText: "Scheduling an interview sends the candidate one email.",
+      issueType: "Bug",
+      components: [],
+      labels: [],
+    },
+  });
+  const written = state.proposalInputs[0] as {
+    ticketId: string;
+    specHash: string;
+    specHashVersion: number;
+  };
+  assert.equal(written.ticketId, "tkt_7");
+  // Fingerprinted from the ticket as stored, as a Jira ticket is from Jira.
+  assert.equal(
+    written.specHash,
+    await ticketSpecHash(
+      "Invitations are not sent",
+      "Scheduling an interview sends the candidate one email.",
+      "Bug",
+    ),
+  );
+  assert.equal(written.specHashVersion, 1);
+  assert.deepEqual(state.outcomes[0], {
+    externalIssueId: "tkt_7",
+    issueKey: "T-7",
+    ticketId: "tkt_7",
+    proposalId: "bpr_1",
+    status: "proposed",
+    actualModel: "actual-model",
+    inputTokens: 110,
+    outputTokens: 45,
+  });
+  assert.deepEqual(state.refreshed, []);
+});
+
+test("a ticket is drafted beside its own repository", async () => {
+  const read: string[] = [];
+  const drafted: unknown[] = [];
+  const state = harness({
+    tickets: [handWritten({ repoId: "ghr_9" })],
+    runOverrides: ticketRun("tkt_7"),
+    outlineFor: (_org, repoId) => {
+      read.push(repoId);
+      return Promise.resolve({ snapshotId: "rsn_9", text: "src/ (4 files)" });
+    },
+    onProposalDrafted: (_org, input) => void drafted.push(input),
+  });
+  await state.executor.execute("org_1", "brn_1");
+
+  assert.deepEqual(read, ["ghr_9"]);
+  const draft = state.caller.calls.find(({ tool }) => tool === "draft_spec");
+  assert.equal(
+    (draft?.input as { repositoryOutline?: string }).repositoryOutline,
+    "src/ (4 files)",
+  );
+  assert.equal(
+    (state.proposalInputs[0] as { repoSnapshotId: unknown }).repoSnapshotId,
+    "rsn_9",
+  );
+  assert.deepEqual((drafted[0] as { ticket: unknown }).ticket, {
+    issueType: "Bug",
+    priority: null,
+  });
+});
+
+test("a ticket's repository comes before its board's", async () => {
+  const read: string[] = [];
+  const state = harness({
+    tickets: [ticket({ repoId: "ghr_own" })],
+    runOverrides: ticketRun("tkt_1"),
+    sourceRepoId: "ghr_board",
+    outlineFor: (_org, repoId) => {
+      read.push(repoId);
+      return Promise.resolve(null);
+    },
+  });
+  await state.executor.execute("org_1", "brn_1");
+  assert.deepEqual(read, ["ghr_own"]);
+});
+
+test("a ticket following its Jira issue is read from Jira, and takes what it says", async () => {
+  const fresh = spec("1", {
+    summary: "Invitations go out twice",
+    descriptionText: "Retries send a second email.",
+    components: ["Mailer"],
+  });
+  const state = harness({
+    tickets: [ticket()],
+    runOverrides: ticketRun("tkt_1"),
+    specs: { "1": fresh },
+  });
+  await state.executor.execute("org_1", "brn_1");
+
+  assert.equal(state.finishes[0]?.status, "succeeded");
+  assert.deepEqual(state.refreshed, [
+    {
+      ticketId: "tkt_1",
+      content: {
+        title: "Invitations go out twice",
+        description: "Retries send a second email.",
+        issueType: "Story",
+        priority: "Medium",
+        labels: [],
+        components: ["Mailer"],
+        inputTruncated: false,
+      },
+    },
+  ]);
+  assert.equal(
+    (state.caller.calls[0]?.input as { summary: string }).summary,
+    "Invitations go out twice",
+  );
+  // Planned under Jira's id, as a board's run plans it.
+  assert.equal(
+    (state.plans[0] as { externalIssueId: string }[])[0]?.externalIssueId,
+    "1",
+  );
+});
+
+test("a ticket whose Jira issue has gone keeps its text and is sized from it", async () => {
+  const state = harness({
+    tickets: [ticket()],
+    runOverrides: ticketRun("tkt_1"),
+    specs: { "1": new JiraApiError(404, "gone") },
+  });
+  await state.executor.execute("org_1", "brn_1");
+
+  assert.deepEqual(state.removed, ["jri_1"]);
+  assert.equal(state.finishes[0]?.status, "succeeded");
+  assert.equal(
+    (state.caller.calls[0]?.input as { descriptionText: string })
+      .descriptionText,
+    "Clear acceptance criteria.",
+  );
+});
+
+test("a ticket already known to be gone from Jira is not read again", async () => {
+  const gone = ticket({
+    jira: { ...ticket().jira!, removedAt: "2026-09-30T00:00:00.000Z" },
+  });
+  const state = harness({
+    tickets: [gone],
+    runOverrides: ticketRun("tkt_1"),
+    clientResult: { ok: false, reason: "reconnect" },
+  });
+  await state.executor.execute("org_1", "brn_1");
+  assert.equal(state.finishes[0]?.status, "succeeded");
+  assert.deepEqual(state.refreshed, []);
+});
+
+test("a ticket following Jira is not sized while its site needs reconnecting", async () => {
+  const state = harness({
+    tickets: [ticket()],
+    runOverrides: ticketRun("tkt_1"),
+    clientResult: { ok: false, reason: "reconnect" },
+  });
+  await state.executor.execute("org_1", "brn_1");
+  assert.deepEqual(state.finishes, [
+    { status: "failed", details: { fatalErrorCode: "reconnect" } },
+  ]);
+  assert.equal(state.caller.calls.length, 0);
+});
+
+test("Jira refusing a ticket's read stops the run; failing it fails the ticket", async () => {
+  const refused = harness({
+    tickets: [ticket()],
+    runOverrides: ticketRun("tkt_1"),
+    specs: { "1": new JiraApiError(401, "expired") },
+  });
+  await refused.executor.execute("org_1", "brn_1");
+  assert.equal(
+    (refused.finishes[0]?.details as { fatalErrorCode: string }).fatalErrorCode,
+    "reconnect",
+  );
+
+  const broken = harness({
+    tickets: [ticket()],
+    runOverrides: ticketRun("tkt_1"),
+    specs: { "1": new JiraApiError(500, "down") },
+  });
+  await broken.executor.execute("org_1", "brn_1");
+  assert.deepEqual(broken.outcomes, [
+    {
+      externalIssueId: "1",
+      issueKey: "APP-1",
+      ticketId: "tkt_1",
+      status: "failed",
+      code: "jira_failed",
+    },
+  ]);
+  assert.equal(broken.finishes[0]?.status, "failed");
+});
+
+test("a ticket split into sub-tasks since it was imported sizes nothing", async () => {
+  const state = harness({
+    tickets: [ticket()],
+    runOverrides: ticketRun("tkt_1"),
+    pickedSubtasks: 2,
+  });
+  await state.executor.execute("org_1", "brn_1");
+  assert.deepEqual(state.finishes, [
+    { status: "failed", details: { fatalErrorCode: "issue_has_subtasks" } },
+  ]);
+  assert.equal(state.caller.calls.length, 0);
+  assert.equal(state.proposalInputs.length, 0);
+
+  // A sub-task read that fails is left to the text's own read.
+  const unread = harness({
+    tickets: [ticket()],
+    runOverrides: ticketRun("tkt_1"),
+    issueError: new JiraApiError(500, "down"),
+  });
+  await unread.executor.execute("org_1", "brn_1");
+  assert.equal(unread.finishes[0]?.status, "succeeded");
+});
+
+test("a copy of Jira's text that cannot be kept is not a Jira failure", async () => {
+  const errors: string[] = [];
+  const state = harness({
+    tickets: [ticket()],
+    runOverrides: ticketRun("tkt_1"),
+    refreshError: new Error("database down"),
+    onBackgroundError: (code) => void errors.push(code),
+  });
+  await state.executor.execute("org_1", "brn_1");
+  assert.equal(state.finishes[0]?.status, "succeeded");
+  assert.equal(state.proposalInputs.length, 1);
+  assert.deepEqual(errors, ["bounty_ticket_refresh_failed"]);
+});
+
+test("a ticket that is gone ends its run", async () => {
+  const state = harness({
+    tickets: [],
+    runOverrides: ticketRun("tkt_missing"),
+  });
+  await state.executor.execute("org_1", "brn_1");
+  assert.deepEqual(state.finishes, [
+    { status: "failed", details: { fatalErrorCode: "ticket_unavailable" } },
+  ]);
+  assert.deepEqual(state.plans, []);
+});
+
+test("a re-price of a ticket written here needs no Jira", async () => {
+  const state = harness({
+    tickets: [handWritten()],
+    candidates: [],
+    runOverrides: {
+      kind: "reprice",
+      boardId: null,
+      ticketId: "tkt_7",
+      sourceProposalId: "bpr_source",
+      sourceRevision: 1,
+    },
+    clientResult: { ok: false, reason: "reconnect" },
+  });
+  await state.executor.execute("org_1", "brn_1");
+  assert.equal(state.finishes[0]?.status, "succeeded");
+  assert.equal(
+    (state.outcomes[0] as { proposalId: string }).proposalId,
+    "bpr_source",
+  );
+});
+
+test("a board's issue is imported with what Jira says about it", async () => {
+  const state = harness({
+    specs: {
+      "1": spec("1", { components: ["Reports"], labels: ["export"] }),
+    },
+  });
+  await state.executor.execute("org_1", "brn_1");
+  assert.deepEqual(state.imported, [
+    {
+      title: "Issue 1",
+      description: "Clear acceptance criteria.",
+      issueType: "Story",
+      priority: "Medium",
+      labels: ["export"],
+      components: ["Reports"],
+      inputTruncated: false,
+    },
+  ]);
+  assert.equal(
+    (state.proposalInputs[0] as { ticketId: string }).ticketId,
+    "tkt_1",
+  );
+});
+
+test("a board's issue Jira no longer has is marked and not sized", async () => {
+  const state = harness({ specs: { "1": new JiraApiError(404, "gone") } });
+  await state.executor.execute("org_1", "brn_1");
+  assert.deepEqual(state.removed, ["1"]);
+  assert.deepEqual(state.imported, []);
+  assert.deepEqual(state.outcomes, [
+    {
+      externalIssueId: "1",
+      issueKey: "APP-1",
+      status: "failed",
+      code: "issue_unavailable",
+    },
+  ]);
+});
+
+test("a board's run with no board fails before reading anything", async () => {
+  const state = harness({ runOverrides: { boardId: null } });
+  await state.executor.execute("org_1", "brn_1");
+  assert.deepEqual(state.finishes, [
+    { status: "failed", details: { fatalErrorCode: "board_unavailable" } },
+  ]);
+});
+
+test("a board's issue Jira fails to read fails alone; one it refuses stops the run", async () => {
+  const broken = harness({ specs: { "1": new JiraApiError(500, "down") } });
+  await broken.executor.execute("org_1", "brn_1");
+  assert.deepEqual(broken.outcomes, [
+    {
+      externalIssueId: "1",
+      issueKey: "APP-1",
+      status: "failed",
+      code: "jira_failed",
+    },
+  ]);
+
+  const refused = harness({ specs: { "1": new JiraApiError(403, "no") } });
+  await refused.executor.execute("org_1", "brn_1");
+  assert.deepEqual(refused.outcomes, []);
+  assert.equal(
+    (refused.finishes[0]?.details as { fatalErrorCode: string }).fatalErrorCode,
+    "scope",
+  );
+});
+
+test("a board's issue that could not be imported is not sized", async () => {
+  const state = harness({ importFails: true });
+  await state.executor.execute("org_1", "brn_1");
+  assert.deepEqual(state.outcomes, [
+    {
+      externalIssueId: "1",
+      issueKey: "APP-1",
+      status: "failed",
+      code: "issue_pointer",
+    },
+  ]);
+  assert.deepEqual(state.proposalInputs, []);
 });

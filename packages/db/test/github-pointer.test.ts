@@ -459,13 +459,16 @@ describe("GitHub pointers in Postgres", { skip }, () => {
       if (kind === "deleted") await repos.remove(owner, repo.id);
       const runId = `brn_sf_${kind}`;
       const issueId = `jri_sf_${kind}`;
-      await sql`insert into jira_issue (id, organization_id, board_id, external_id, key, status_category, remote_created_at, remote_updated_at) values (${issueId}, 'o_a', 'jrb_sf', ${kind}, 'ACME-1', 'new', now(), now())`;
+      const ticketId = `tkt_sf_${kind}`;
+      const number = ["live", "deleted", "foreign"].indexOf(kind) + 1;
+      await sql`insert into ticket (id, organization_id, number, title, origin) values (${ticketId}, 'o_a', ${number}, 'Ticket', 'jira')`;
+      await sql`insert into jira_issue (id, organization_id, board_id, external_id, key, ticket_id, status_category, remote_created_at, remote_updated_at) values (${issueId}, 'o_a', 'jrb_sf', ${kind}, 'ACME-1', ${ticketId}, 'new', now(), now())`;
       await sql`insert into bounty_run (id, organization_id, board_id, kind, request_id, selection, rate_card, requested_model, prompt_version, status, lease_token, lease_expires_at, deadline_at) values (${runId}, 'o_a', 'jrb_sf', 'issue', ${kind}, ${sql.json({})}, ${sql.json(rateCard)}, 'model', 'v', 'running', 'lease', now() + interval '1 hour', now() + interval '1 hour')`;
       const result = await createBountyProposalStore(
         connection.db,
       ).createForLease("o_a", "lease", {
         runId,
-        jiraIssueId: issueId,
+        ticketId,
         repoSnapshotId: captured.snapshot.id,
         specHash: "a".repeat(64),
         specHashVersion: 1,
@@ -518,7 +521,8 @@ describe("GitHub pointers in Postgres", { skip }, () => {
     // A proposal drafted beside the oldest.
     await sql`insert into jira_connection (id, organization_id, cloud_id, site_url, site_name) values ('jrc_p', 'o_a', 'cloud', 'https://acme.example', 'Acme')`;
     await sql`insert into jira_board (id, organization_id, connection_id, external_id, name, board_type) values ('jrb_p', 'o_a', 'jrc_p', '1', 'Board', 'scrum')`;
-    await sql`insert into jira_issue (id, organization_id, board_id, external_id, key, status_category, remote_created_at, remote_updated_at) values ('jri_p', 'o_a', 'jrb_p', '10', 'ACME-1', 'new', now(), now())`;
+    await sql`insert into ticket (id, organization_id, number, title, origin) values ('tkt_p', 'o_a', 10, 'Ticket', 'jira')`;
+    await sql`insert into jira_issue (id, organization_id, board_id, external_id, key, ticket_id, status_category, remote_created_at, remote_updated_at) values ('jri_p', 'o_a', 'jrb_p', '10', 'ACME-1', 'tkt_p', 'new', now(), now())`;
     const rateCard = sql.json({
       currency: "USD",
       xsMinor: 1,
@@ -529,7 +533,7 @@ describe("GitHub pointers in Postgres", { skip }, () => {
       revision: 1,
     });
     await sql`insert into bounty_run (id, organization_id, board_id, request_id, selection, rate_card, requested_model, prompt_version) values ('brn_p', 'o_a', 'jrb_p', 'req', ${sql.json({})}, ${rateCard}, 'model', 'v')`;
-    await sql`insert into bounty_proposal (id, organization_id, run_id, jira_issue_id, spec_hash, rate_card, model_complexity, model_confidence, model_rationale, actual_model, prompt_version, complexity, amount_minor, currency, repo_snapshot_id) values ('bpr_p', 'o_a', 'brn_p', 'jri_p', ${"a".repeat(64)}, ${rateCard}, 'M', 'high', 'why', 'model', 'v', 'M', 100, 'USD', ${ids[0] ?? ""})`;
+    await sql`insert into bounty_proposal (id, organization_id, run_id, ticket_id, spec_hash, rate_card, model_complexity, model_confidence, model_rationale, actual_model, prompt_version, complexity, amount_minor, currency, repo_snapshot_id) values ('bpr_p', 'o_a', 'brn_p', 'tkt_p', ${"a".repeat(64)}, ${rateCard}, 'M', 'high', 'why', 'model', 'v', 'M', 100, 'USD', ${ids[0] ?? ""})`;
 
     // Someone else's prune touches nothing.
     assert.deepEqual(await snapshots.prune("o_b", repo.id, 0), []);
@@ -745,7 +749,7 @@ describe("GitHub pointers in Postgres", { skip }, () => {
     const sandboxes = createSandboxStore(connection.db);
     const created = await sandboxes.create("o_a", {
       sourceRepoId: repo.id,
-      jiraIssueIds: [],
+      ticketIds: [],
     });
     assert.equal(created.ok, true);
     await assert.rejects(

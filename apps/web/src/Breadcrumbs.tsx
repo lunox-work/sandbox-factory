@@ -118,6 +118,19 @@ export function trailFor(
       return organization === undefined
         ? []
         : [HOME, ORGANIZATIONS, { label: organization.name }];
+    case "org-tickets":
+      return organization === undefined
+        ? [HOME, ORGANIZATIONS, { label: "Tickets" }]
+        : [
+            HOME,
+            ORGANIZATIONS,
+            {
+              label: organization.name,
+              screen: "org-settings",
+              slug: organization.slug,
+            },
+            { label: "Tickets" },
+          ];
     case "org-jira-board": {
       /*
         No crumb for the site the board is on: a site has no page of its own.
@@ -206,7 +219,9 @@ export function Breadcrumbs({
         // right of the content. Read from the screen rather than taken as a
         // prop: which pages are wide is the trail's own business, and the
         // shell already tells it where it is.
-        screen === "org-jira-board" ? "max-w-5xl" : "max-w-2xl",
+        screen === "org-jira-board" || screen === "org-tickets"
+          ? "max-w-5xl"
+          : "max-w-2xl",
       )}
     >
       <ol className="text-muted-foreground flex flex-wrap items-center gap-1.5 text-sm">

@@ -19,6 +19,7 @@ import {
   enqueueScopeSchema,
   enqueueSliceSchema,
   enqueueSliceResponseSchema,
+  GRAPH_DEADLINE_MINUTES,
   repositoryProposalListSchema,
 } from "@sandbox-factory/shared";
 import type {
@@ -40,15 +41,16 @@ export interface AnalysisRouteOptions {
   readonly ensureWorker: () => Promise<void>;
   readonly maxActive?: number;
   readonly onLaunchError?: () => void;
-  /** The tickets agent runs work for, and the boards linking them to a repository. */
-  readonly proposals: Pick<BountyProposalStore, "get" | "listForBoard">;
+  /** The proposals agent runs work for, and the repository each is about. */
+  readonly proposals: Pick<BountyProposalStore, "get" | "list">;
   readonly specs: Pick<BountySpecStore, "get">;
+  /** For naming the board a proposal's ticket came through. */
   readonly boards: Pick<JiraBoardStore, "list">;
 }
-/** The deadline the console's own graphify runs carry, part of their cache key. */
-const GRAPH_DEADLINE_MINUTES = 30;
 /** Proposals one repository's picker lists, newest first. */
 export const REPOSITORY_PROPOSALS_MAX = 100;
+/** The proposal store's largest page. */
+const REPOSITORY_PROPOSALS_PAGE = 50;
 const publicArtifact = ({ objectKey: _key, ...dto }: StoredArtifact) => dto;
 export function mountAnalysisRoutes(
   app: Hono<{ Variables: AuthVariables }>,
@@ -403,37 +405,53 @@ export function mountAnalysisRoutes(
     await options.ensureWorker().catch(() => options.onLaunchError?.());
     return c.json(analysisRunResponseSchema.parse({ run: result.run }), 202);
   });
-  /** Proposals with a spec, on the boards linked to this repository. */
+  /**
+   * Proposals with a spec whose ticket is about this repository: one that
+   * names it, or one from a board linked to it. Written here or imported,
+   * the same list.
+   */
   app.get(`${base}/repositories/:id/proposals`, async (c) => {
     const owner = c.req.param("orgId");
     const repoId = c.req.param("id");
     if ((await options.repos.get(owner, repoId)) === null)
       return c.json({ error: "Not found." }, 404);
-    const boards = (await options.boards.list(owner)).filter(
-      (board) => board.sourceRepoId === repoId,
+    const boardNames = new Map(
+      (await options.boards.list(owner)).map(({ id, name }) => [id, name]),
     );
     const proposals: RepositoryProposalDto[] = [];
-    for (const board of boards)
-      for (const proposal of await options.proposals.listForBoard(
-        owner,
-        board.id,
-        { limit: 50 },
-      ))
-        if (proposal.specRevision !== null)
-          proposals.push({
-            id: proposal.id,
-            issueKey: proposal.issueKey,
-            title: proposal.sizedTitle,
-            status: proposal.status,
-            specRevision: proposal.specRevision,
-            boardId: board.id,
-            boardName: board.name,
-            createdAt: proposal.createdAt,
-          });
-    proposals.sort(
-      (a, b) =>
-        b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id),
-    );
+    // A page at a time, newest first, until the picker is full.
+    let cursor: { createdAt: string; id: string } | undefined;
+    for (;;) {
+      const page = await options.proposals.list(owner, {
+        repoId,
+        limit: REPOSITORY_PROPOSALS_PAGE,
+        ...(cursor === undefined ? {} : { cursor }),
+      });
+      for (const proposal of page) {
+        if (proposal.specRevision === null) continue;
+        proposals.push({
+          id: proposal.id,
+          issueKey: proposal.issueKey,
+          title: proposal.title,
+          status: proposal.status,
+          specRevision: proposal.specRevision,
+          boardId: proposal.boardId,
+          boardName:
+            proposal.boardId === null
+              ? null
+              : (boardNames.get(proposal.boardId) ?? null),
+          createdAt: proposal.createdAt,
+        });
+      }
+      const last = page.at(-1);
+      if (
+        last === undefined ||
+        page.length < REPOSITORY_PROPOSALS_PAGE ||
+        proposals.length >= REPOSITORY_PROPOSALS_MAX
+      )
+        break;
+      cursor = { createdAt: last.createdAt, id: last.id };
+    }
     return c.json(
       repositoryProposalListSchema.parse({
         proposals: proposals.slice(0, REPOSITORY_PROPOSALS_MAX),

@@ -6,6 +6,7 @@
  * and organizations draw handles from one namespace, so what counts as a valid
  * handle has to be decided in exactly one place, and `packages/shared` refines
  * these rules rather than restating them. The commercial rules (`bounty`),
+ * what a ticket is and how its text is fingerprinted (`ticket`),
  * the categories that decide which tickets a run offers (`selection`) and
  * the chain that explains a ticket's size (`pricing`) and what a repository's
  * file list says about it (`repo`) live here for the same reason.
@@ -13,6 +14,7 @@
 
 export * from "./handle.js";
 export * from "./bounty.js";
+export * from "./ticket.js";
 export * from "./selection/index.js";
 export * from "./pricing/index.js";
 export * from "./repo/index.js";

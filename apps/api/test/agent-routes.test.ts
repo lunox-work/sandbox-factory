@@ -68,12 +68,14 @@ const listed = (
   id: string,
   createdAt: string,
   specRevision: number | null,
+  boardId: string | null,
 ) => ({
   id,
   issueKey: id.toUpperCase(),
-  sizedTitle: `Title ${id}`,
+  title: `Title ${id}`,
   status: "approved",
   specRevision,
+  boardId,
   createdAt,
 });
 
@@ -144,15 +146,16 @@ function fixture(role = "owner") {
             : id === "bpr_unspecced"
               ? { id, specRevision: null }
               : null,
-      listForBoard: async (_owner: string, boardId: string) =>
-        boardId === "jbd_1"
+      // Newest first, as the store pages them, for the repository asked.
+      list: async (_owner: string, options: { repoId?: string }) =>
+        options.repoId === "ghr_1"
           ? [
-              listed("bpr_1", "2026-10-01T00:00:00.000Z", 2),
-              listed("bpr_2", "2026-10-02T00:00:00.000Z", null),
+              listed("bpr_4", "2026-10-04T00:00:00.000Z", 1, null),
+              listed("bpr_3", "2026-10-03T00:00:00.000Z", 1, "jbd_2"),
+              listed("bpr_2", "2026-10-02T00:00:00.000Z", null, "jbd_1"),
+              listed("bpr_1", "2026-10-01T00:00:00.000Z", 2, "jbd_1"),
             ]
-          : boardId === "jbd_2"
-            ? [listed("bpr_3", "2026-10-03T00:00:00.000Z", 1)]
-            : [listed("bpr_9", "2026-10-04T00:00:00.000Z", 1)],
+          : [listed("bpr_9", "2026-10-05T00:00:00.000Z", 1, "jbd_3")],
     },
     specs: {
       get: async (_owner: string, proposalId: string, revision: number) =>
@@ -362,21 +365,27 @@ test("a fixtures run is written for a succeeded slice, on its snapshot", async (
   }
 });
 
-test("a repository's proposals are the specced ones on the boards linked to it, newest first", async () => {
+test("a repository's proposals are the specced ones whose tickets are about it, newest first", async () => {
   const f = fixture("member");
   const response = await f.request("repositories/ghr_1/proposals");
   assert.equal(response.status, 200);
   const body = (await response.json()) as {
-    proposals: { id: string; boardName: string; title: string | null }[];
+    proposals: {
+      id: string;
+      boardName: string | null;
+      title: string | null;
+    }[];
   };
+  // A ticket written here has no board; one from Jira names its own.
   assert.deepEqual(
     body.proposals.map((proposal) => [proposal.id, proposal.boardName]),
     [
+      ["bpr_4", null],
       ["bpr_3", "Ops"],
       ["bpr_1", "Shop"],
     ],
   );
-  assert.equal(body.proposals[1]?.title, "Title bpr_1");
+  assert.equal(body.proposals[2]?.title, "Title bpr_1");
   assert.equal((await f.request("repositories/ghr_9/proposals")).status, 404);
   assert.equal(REPOSITORY_PROPOSALS_MAX, 100);
 });

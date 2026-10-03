@@ -6,10 +6,12 @@ import {
   BOUNTY_COMPLEXITIES,
   BOUNTY_RUN_KINDS,
   MODEL_BOUNTY_COMPLEXITIES,
+  PROFILE_STATUSES,
 } from "sandbox-factory";
 
 import {
   BOUNTY_SPEC_ORIGINS,
+  bountyProfile,
   bountyProposal,
   bountyRun,
   bountySpec,
@@ -35,12 +37,28 @@ test("run request retries are unique inside one organization", () => {
   );
 });
 
-test("one live proposal is allowed per board-local issue pointer", () => {
+test("one live proposal is allowed per ticket", () => {
   const index = getTableConfig(bountyProposal).indexes.find(
     ({ config }) => config.name === "bounty_proposal_live_unique",
   );
   assert.equal(index?.config.unique, true);
   assert.notEqual(index?.config.where, undefined);
+  assert.deepEqual(
+    index?.config.columns.map((column) => (column as { name: string }).name),
+    ["ticket_id"],
+  );
+});
+
+test("one ticket run is allowed per ticket at a time", () => {
+  const index = getTableConfig(bountyRun).indexes.find(
+    ({ config }) => config.name === "bounty_run_ticket_active_unique",
+  );
+  assert.equal(index?.config.unique, true);
+  assert.notEqual(index?.config.where, undefined);
+  assert.deepEqual(
+    index?.config.columns.map((column) => (column as { name: string }).name),
+    ["ticket_id"],
+  );
 });
 
 test("commercial rows carry non-null organization ownership", () => {
@@ -176,8 +194,57 @@ test("a respec run carries its request, and a proposal has one change in flight"
   assert.notEqual(index?.config.where, undefined);
 });
 
+test("a profile has one row per spec revision, and outlives the runs it was measured from", () => {
+  const config = getTableConfig(bountyProfile);
+  const unique = config.uniqueConstraints.find(
+    ({ name }) => name === "bounty_profile_proposal_revision_unique",
+  );
+  assert.deepEqual(
+    unique?.columns.map(({ name }) => name),
+    ["proposal_id", "spec_revision"],
+  );
+  // It goes with its proposal and organization; a pruned snapshot or run
+  // leaves the measured profile standing.
+  const onDelete = Object.fromEntries(
+    config.foreignKeys.map((key) => [
+      key.reference().columns[0]?.name,
+      key.onDelete,
+    ]),
+  );
+  assert.deepEqual(onDelete, {
+    organization_id: "cascade",
+    proposal_id: "cascade",
+    snapshot_id: "set null",
+    scope_run_id: "set null",
+    slice_run_id: "set null",
+  });
+  const checks = config.checks.map(({ name }) => name);
+  for (const expected of [
+    "bounty_profile_status_check",
+    "bounty_profile_ready_check",
+    "bounty_profile_failed_check",
+    "bounty_profile_revision_check",
+  ])
+    assert.ok(checks.includes(expected), expected);
+  // The status check lists exactly the core statuses.
+  assert.deepEqual(checkValues(bountyProfile, "bounty_profile_status_check"), [
+    ...PROFILE_STATUSES,
+  ]);
+  assert.ok(
+    config.indexes.some(
+      (index) => index.config.name === "bounty_profile_status_updated_at_idx",
+    ),
+  );
+});
+
 test("all commercial foreign-key thunks resolve", () => {
-  for (const table of [rateCard, bountyRun, bountyProposal, bountySpec]) {
+  for (const table of [
+    rateCard,
+    bountyRun,
+    bountyProposal,
+    bountySpec,
+    bountyProfile,
+  ]) {
     for (const key of getTableConfig(table).foreignKeys) {
       const reference = key.reference();
       assert.ok(reference.foreignTable);

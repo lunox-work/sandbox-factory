@@ -6,7 +6,7 @@ import type {
   BountyWritebackStore,
   JiraBoardStore,
   JiraConnectionStore,
-  JiraIssueStore,
+  TicketStore,
   StoredBountyProposal,
   StoredBountyWriteback,
 } from "@sandbox-factory/db";
@@ -49,8 +49,9 @@ function proposal(): StoredBountyProposal {
     id: "bpr_1",
     organizationId: "org_1",
     runId: "brn_1",
-    jiraIssueId: "jri_1",
+    ticketId: "tkt_1",
     issueKey: "APP-1",
+    title: "Title",
     specHash: "a".repeat(64),
     specHashVersion: 1,
     rateCard: {
@@ -98,6 +99,9 @@ function harness(
     /** Whether the board's site holds the write grant. Default yes. */
     writeGranted?: boolean;
     boardMissing?: boolean;
+    ticketWithoutJira?: boolean;
+    /** The ticket's Jira issue has gone since the write was queued. */
+    issueRemoved?: boolean;
     claimMiss?: boolean;
     specHash?: string;
     /** The spec read never settles on its own; only its signal ends it. */
@@ -199,15 +203,25 @@ function harness(
     proposals: {
       get: () => Promise.resolve(proposal()),
     } as unknown as BountyProposalStore,
-    issues: {
+    tickets: {
       get: () =>
-        Promise.resolve({
-          id: "jri_1",
-          boardId: "jrb_1",
-          externalId: "100",
-          key: "APP-1",
-        }),
-    } as unknown as JiraIssueStore,
+        Promise.resolve(
+          options.ticketWithoutJira
+            ? { id: "tkt_1", jira: null }
+            : {
+                id: "tkt_1",
+                jira: {
+                  issueId: "jri_1",
+                  boardId: "jrb_1",
+                  externalId: "100",
+                  key: "APP-1",
+                  removedAt: options.issueRemoved
+                    ? "2026-10-01T00:00:00.000Z"
+                    : null,
+                },
+              },
+        ),
+    } as unknown as TicketStore,
     boards: {
       forRun: () =>
         Promise.resolve(
@@ -306,6 +320,18 @@ test("a missing board fails preflight and an already-finished operation is a rea
   const missing = harness({ boardMissing: true });
   assert.equal(
     (await missing.delivery.execute("org_1", "bwo_1"))?.errorCode,
+    "not_found",
+  );
+  // A ticket with no Jira issue has nowhere to be posted, nor one whose
+  // issue has gone since.
+  const unlinked = harness({ ticketWithoutJira: true });
+  assert.equal(
+    (await unlinked.delivery.execute("org_1", "bwo_1"))?.errorCode,
+    "not_found",
+  );
+  const removed = harness({ issueRemoved: true });
+  assert.equal(
+    (await removed.delivery.execute("org_1", "bwo_1"))?.errorCode,
     "not_found",
   );
   const finished = harness({

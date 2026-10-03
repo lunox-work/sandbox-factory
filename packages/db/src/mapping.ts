@@ -22,14 +22,20 @@ export const ID_PREFIXES = [
   /** The personal organization minted at signup, and its sole membership. */
   "org",
   "mbr",
+  /** A ticket: the organization's own record of a piece of work. */
+  "tkt",
   /** Jira: connection, board, issue. */
   "jrc",
   "jrb",
   "jri",
-  /** Commercials: bounty run, bounty proposal, a revision of its spec. */
+  /**
+   * Commercials: bounty run, bounty proposal, a revision of its spec, and
+   * that revision's complexity profile.
+   */
   "brn",
   "bpr",
   "bsp",
+  "bpf",
   /** One durable Jira write intent. */
   "bwo",
   /** GitHub: connection (an installation), a person's grant, a repository. */

@@ -96,7 +96,7 @@ function specFrom(body: unknown): BountySpecDto | null {
 }
 
 export function plural(count: number, one: string): string {
-  return `${count} ${one}${count === 1 ? "" : "s"}`;
+  return `${count.toLocaleString("en-US")} ${one}${count === 1 ? "" : "s"}`;
 }
 
 /** What each weight counts for, as the step that will count them reads it. */

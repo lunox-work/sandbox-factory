@@ -14,6 +14,7 @@ import type {
   AcceptanceTest,
   AliasRule,
   ApprovedTaskSnapshot,
+  StoredApprovedTaskSnapshot,
   DependencyChoice,
   SandboxStatus,
   ScopeRecord,
@@ -26,10 +27,10 @@ import {
   analysisRun,
   artifact,
   githubRepo,
-  jiraIssue,
+  ticket,
   repoSnapshot,
   sandbox,
-  sandboxJiraIssue,
+  sandboxTicket,
   sandboxSource,
   sandboxVersion,
   sandboxVersionSource,
@@ -48,7 +49,8 @@ export interface StoredSandbox {
   readonly publicRepoId: string | null;
   readonly currentVersionId: string | null;
   readonly sourceRepoId: string;
-  readonly jiraIssueIds: readonly string[];
+  /** The tickets the sandbox is cut for. */
+  readonly ticketIds: readonly string[];
   readonly createdAt: string;
   readonly updatedAt: string;
 }
@@ -69,7 +71,7 @@ export interface StoredSandboxVersion {
 }
 export interface StoredVersionSource extends VersionSourceRecord {
   readonly sourceCommitSha: string;
-  readonly approvedTask: ApprovedTaskSnapshot;
+  readonly approvedTask: StoredApprovedTaskSnapshot;
   readonly dependencyChoices: Readonly<Record<string, DependencyChoice>>;
   readonly acceptanceTests: readonly AcceptanceTest[];
   readonly fixtures: VersionFixtures | null;
@@ -90,6 +92,7 @@ export interface NewSandboxVersion {
     readonly contractSha256: string;
     readonly transformConfigSha256: string;
     readonly approvedTaskSha256: string;
+    /** Always the current version: a new version is never frozen as an old one. */
     readonly approvedTask: ApprovedTaskSnapshot;
     readonly aliasRules: readonly AliasRule[];
     readonly dependencyChoices: Readonly<Record<string, DependencyChoice>>;
@@ -129,7 +132,7 @@ export type CreateSandboxResult =
   | { readonly ok: true; readonly sandbox: StoredSandbox }
   | {
       readonly ok: false;
-      readonly reason: "repo_not_found" | "repo_role" | "issue_not_found";
+      readonly reason: "repo_not_found" | "repo_role" | "ticket_not_found";
     };
 export interface StoredVersionWithSource {
   readonly version: StoredSandboxVersion;
@@ -159,7 +162,7 @@ export interface ReplayContext {
 export interface SandboxStore {
   create(
     organizationId: string,
-    input: { sourceRepoId: string; jiraIssueIds: readonly string[] },
+    input: { sourceRepoId: string; ticketIds: readonly string[] },
   ): Promise<CreateSandboxResult>;
   list(organizationId: string): Promise<StoredSandbox[]>;
   get(organizationId: string, sandboxId: string): Promise<StoredSandbox | null>;
@@ -227,7 +230,7 @@ export interface SandboxStore {
 const toSandbox = (
   row: SandboxRow,
   sourceRepoId: string,
-  jiraIssueIds: readonly string[],
+  ticketIds: readonly string[],
 ): StoredSandbox => ({
   id: row.id,
   organizationId: row.organizationId,
@@ -236,7 +239,7 @@ const toSandbox = (
   publicRepoId: row.publicRepoId,
   currentVersionId: row.currentVersionId,
   sourceRepoId,
-  jiraIssueIds: [...jiraIssueIds].sort(),
+  ticketIds: [...ticketIds].sort(),
   createdAt: row.createdAt.toISOString(),
   updatedAt: row.updatedAt.toISOString(),
 });
@@ -306,19 +309,19 @@ export function createSandboxStore(db: Database): SandboxStore {
       .select({ sandbox, sourceRepoId: sandboxSource.sourceRepoId })
       .from(sandbox)
       .innerJoin(sandboxSource, eq(sandboxSource.sandboxId, sandbox.id));
-  const issuesOf = async (tx: Database, sandboxIds: readonly string[]) => {
+  const ticketsOf = async (tx: Database, sandboxIds: readonly string[]) => {
     const byId = new Map<string, string[]>();
     if (sandboxIds.length === 0) return byId;
     const rows = await tx
       .select({
-        sandboxId: sandboxJiraIssue.sandboxId,
-        jiraIssueId: sandboxJiraIssue.jiraIssueId,
+        sandboxId: sandboxTicket.sandboxId,
+        ticketId: sandboxTicket.ticketId,
       })
-      .from(sandboxJiraIssue)
-      .where(inArray(sandboxJiraIssue.sandboxId, [...sandboxIds]));
+      .from(sandboxTicket)
+      .where(inArray(sandboxTicket.sandboxId, [...sandboxIds]));
     for (const row of rows) {
       const list = byId.get(row.sandboxId) ?? [];
-      list.push(row.jiraIssueId);
+      list.push(row.ticketId);
       byId.set(row.sandboxId, list);
     }
     return byId;
@@ -377,19 +380,19 @@ export function createSandboxStore(db: Database): SandboxStore {
           return { ok: false, reason: "repo_not_found" } as const;
         if (repo.role !== "source")
           return { ok: false, reason: "repo_role" } as const;
-        const issueIds = [...new Set(input.jiraIssueIds)].sort();
-        if (issueIds.length > 0) {
+        const ticketIds = [...new Set(input.ticketIds)].sort();
+        if (ticketIds.length > 0) {
           const found = await tx
-            .select({ id: jiraIssue.id })
-            .from(jiraIssue)
+            .select({ id: ticket.id })
+            .from(ticket)
             .where(
               and(
-                eq(jiraIssue.organizationId, owner),
-                inArray(jiraIssue.id, issueIds),
+                eq(ticket.organizationId, owner),
+                inArray(ticket.id, ticketIds),
               ),
             );
-          if (found.length !== issueIds.length)
-            return { ok: false, reason: "issue_not_found" } as const;
+          if (found.length !== ticketIds.length)
+            return { ok: false, reason: "ticket_not_found" } as const;
         }
         const rows = await tx
           .insert(sandbox)
@@ -405,16 +408,16 @@ export function createSandboxStore(db: Database): SandboxStore {
         await tx
           .insert(sandboxSource)
           .values({ sandboxId: row.id, sourceRepoId: input.sourceRepoId });
-        if (issueIds.length > 0)
-          await tx.insert(sandboxJiraIssue).values(
-            issueIds.map((jiraIssueId) => ({
+        if (ticketIds.length > 0)
+          await tx.insert(sandboxTicket).values(
+            ticketIds.map((ticketId) => ({
               sandboxId: row.id,
-              jiraIssueId,
+              ticketId,
             })),
           );
         return {
           ok: true,
-          sandbox: toSandbox(row, input.sourceRepoId, issueIds),
+          sandbox: toSandbox(row, input.sourceRepoId, ticketIds),
         } as const;
       });
     },
@@ -422,7 +425,7 @@ export function createSandboxStore(db: Database): SandboxStore {
       const rows = await sandboxes()
         .where(eq(sandbox.organizationId, owner))
         .orderBy(desc(sandbox.createdAt), desc(sandbox.id));
-      const issues = await issuesOf(
+      const tickets = await ticketsOf(
         db,
         rows.map((row) => row.sandbox.id),
       );
@@ -430,7 +433,7 @@ export function createSandboxStore(db: Database): SandboxStore {
         toSandbox(
           row.sandbox,
           row.sourceRepoId,
-          issues.get(row.sandbox.id) ?? [],
+          tickets.get(row.sandbox.id) ?? [],
         ),
       );
     },
@@ -441,11 +444,11 @@ export function createSandboxStore(db: Database): SandboxStore {
         )
       )[0];
       if (row === undefined) return null;
-      const issues = await issuesOf(db, [row.sandbox.id]);
+      const tickets = await ticketsOf(db, [row.sandbox.id]);
       return toSandbox(
         row.sandbox,
         row.sourceRepoId,
-        issues.get(row.sandbox.id) ?? [],
+        tickets.get(row.sandbox.id) ?? [],
       );
     },
     async createVersion(owner, sandboxId, input, now = new Date()) {

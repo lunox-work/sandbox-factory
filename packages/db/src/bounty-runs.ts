@@ -20,14 +20,23 @@ import {
 
 import { isUniqueViolation, type Database } from "./errors.js";
 import { generateId } from "./mapping.js";
-import { bountyRun, jiraBoard } from "./schema.js";
+import { bountyRun, jiraBoard, ticket } from "./schema.js";
 import type { BountyRunRow } from "./schema.js";
 
 export interface CreateBountyRunInput {
-  readonly boardId: string;
+  /**
+   * The Jira board the run reads: required for a `backlog` or `issue` run,
+   * and the ticket's board, when it has one, for a run about one ticket.
+   */
+  readonly boardId?: string | null;
+  /** The one ticket a `ticket`, `reprice` or `respec` run is about. */
+  readonly ticketId?: string | null;
   readonly startedBy: string;
   readonly kind?: BountyRunKind;
-  /** The ticket an `issue` run sizes, stored as its plan from the start. */
+  /**
+   * The ticket an `issue` or `ticket` run sizes, stored as its plan from
+   * the start.
+   */
   readonly planned?: readonly BountyRunPlannedIssue[];
   readonly sourceProposalId?: string;
   readonly sourceRevision?: number;
@@ -140,7 +149,10 @@ export function runDeadline(now: Date, plannedTickets: number): Date {
 export interface StoredBountyRun {
   readonly id: string;
   readonly organizationId: string;
-  readonly boardId: string;
+  /** The Jira board read, or null for a run about a ticket with none. */
+  readonly boardId: string | null;
+  /** The one ticket a `ticket`, `reprice` or `respec` run is about. */
+  readonly ticketId: string | null;
   readonly kind: BountyRunKind;
   readonly sourceProposalId: string | null;
   readonly sourceRevision: number | null;
@@ -169,6 +181,7 @@ function toDto(row: BountyRunRow): StoredBountyRun {
     id: row.id,
     organizationId: row.organizationId,
     boardId: row.boardId,
+    ticketId: row.ticketId,
     kind: row.kind as StoredBountyRun["kind"],
     sourceProposalId: row.sourceProposalId,
     sourceRevision: row.sourceRevision,
@@ -213,13 +226,15 @@ async function firstByRequest(
 }
 
 /**
- * The run in flight that a new one would have to wait for, as the two
+ * The run in flight that a new one would have to wait for, as the three
  * partial unique indexes on `bounty_run` decide it: a board's own run (a
- * backlog or a re-price), or, for a run that changes one proposal, the
- * re-price or spec change already changing it.
+ * backlog or a re-price), for a run that changes one proposal the re-price
+ * or spec change already changing it, and for a ticket's sizing the one
+ * already sizing it.
  *
- * A one-ticket run waits for neither. A spec change does not wait for the
- * board, since a backlog run never touches a proposal that exists.
+ * An `issue` run waits for none. A spec change does not wait for the
+ * board, since a backlog run never touches a proposal that exists, and a
+ * re-price of a ticket with no board has no board to wait for.
  */
 async function activeFor(
   db: Database,
@@ -231,7 +246,7 @@ async function activeFor(
     eq(bountyRun.status, "queued"),
     eq(bountyRun.status, "running"),
   );
-  if (kind === "reprice" || kind === "backlog") {
+  if ((kind === "reprice" || kind === "backlog") && input.boardId != null) {
     const rows = (await db
       .select()
       .from(bountyRun)
@@ -240,7 +255,21 @@ async function activeFor(
           eq(bountyRun.organizationId, organizationId),
           eq(bountyRun.boardId, input.boardId),
           inFlight,
-          notInArray(bountyRun.kind, ["issue", "respec"]),
+          notInArray(bountyRun.kind, ["issue", "respec", "ticket"]),
+        ),
+      )) as BountyRunRow[];
+    if (rows[0] !== undefined) return rows[0];
+  }
+  if (kind === "ticket" && input.ticketId != null) {
+    const rows = (await db
+      .select()
+      .from(bountyRun)
+      .where(
+        and(
+          eq(bountyRun.organizationId, organizationId),
+          eq(bountyRun.ticketId, input.ticketId),
+          inFlight,
+          eq(bountyRun.kind, "ticket"),
         ),
       )) as BountyRunRow[];
     if (rows[0] !== undefined) return rows[0];
@@ -267,7 +296,8 @@ async function activeFor(
 
 function sameRequest(row: BountyRunRow, input: CreateBountyRunInput): boolean {
   return (
-    row.boardId === input.boardId &&
+    row.boardId === (input.boardId ?? null) &&
+    row.ticketId === (input.ticketId ?? null) &&
     row.kind === (input.kind ?? "backlog") &&
     row.sourceProposalId === (input.sourceProposalId ?? null) &&
     row.sourceRevision === (input.sourceRevision ?? null) &&
@@ -291,17 +321,42 @@ export function createBountyRunStore(db: Database): BountyRunStore {
           : { ok: false, reason: "request-conflict" };
       }
 
-      const ownedBoard = await db
-        .select({ id: jiraBoard.id })
-        .from(jiraBoard)
-        .where(
-          and(
-            eq(jiraBoard.organizationId, organizationId),
-            eq(jiraBoard.id, input.boardId),
-          ),
-        );
-      if (ownedBoard[0] === undefined)
+      const kind = input.kind ?? "backlog";
+      const boardId = input.boardId ?? null;
+      const ticketId = input.ticketId ?? null;
+      // What the scope check in SQL would refuse, refused as a miss.
+      if (
+        ((kind === "backlog" || kind === "issue") && boardId === null) ||
+        (kind === "ticket" && ticketId === null)
+      ) {
         return { ok: false, reason: "not-found" };
+      }
+      if (boardId !== null) {
+        const ownedBoard = await db
+          .select({ id: jiraBoard.id })
+          .from(jiraBoard)
+          .where(
+            and(
+              eq(jiraBoard.organizationId, organizationId),
+              eq(jiraBoard.id, boardId),
+            ),
+          );
+        if (ownedBoard[0] === undefined)
+          return { ok: false, reason: "not-found" };
+      }
+      if (ticketId !== null) {
+        const ownedTicket = await db
+          .select({ id: ticket.id })
+          .from(ticket)
+          .where(
+            and(
+              eq(ticket.organizationId, organizationId),
+              eq(ticket.id, ticketId),
+            ),
+          );
+        if (ownedTicket[0] === undefined)
+          return { ok: false, reason: "not-found" };
+      }
 
       const active = await activeFor(db, organizationId, input);
       if (active !== undefined) {
@@ -314,9 +369,10 @@ export function createBountyRunStore(db: Database): BountyRunStore {
           .values({
             id: generateId("brn"),
             organizationId,
-            boardId: input.boardId,
+            boardId,
+            ticketId,
             startedBy: input.startedBy,
-            kind: input.kind ?? "backlog",
+            kind,
             sourceProposalId: input.sourceProposalId ?? null,
             sourceRevision: input.sourceRevision ?? null,
             respec: input.respec ?? null,

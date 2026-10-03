@@ -34,7 +34,7 @@
  * toggling only moves the edge: nothing the eye was tracking jumps.
  */
 
-import { House } from "lucide-react";
+import { House, Ticket } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import type { MembershipDto } from "@sandbox-factory/shared";
@@ -53,6 +53,8 @@ export type Screen =
   | "org-settings"
   /** One board, on a connected site. Carries a connection id and a board id. */
   | "org-jira-board"
+  /** The organization's tickets, and the proposals made from them. */
+  | "org-tickets"
   | "create-org";
 
 export function SideNav({
@@ -178,6 +180,23 @@ export function SideNav({
               through hover and the current-screen state. */}
           <House strokeWidth={1.6} />
         </RailButton>
+
+        {/*
+          The active workspace's tickets: what a proposal is made from,
+          whichever tool the ticket came from. Only once there is a
+          workspace to have them.
+        */}
+        {organizations.active !== null && (
+          <RailButton
+            label="Tickets"
+            href={`/o/${organizations.active.slug}/tickets`}
+            expanded={expanded}
+            current={screen === "org-tickets"}
+            onClick={() => onNavigate("org-tickets")}
+          >
+            <Ticket strokeWidth={1.6} />
+          </RailButton>
+        )}
 
         {/*
           No Organizations destination: the switcher at the head of the rail

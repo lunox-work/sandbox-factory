@@ -2,13 +2,15 @@
  * Reading a ticket's spec, and fingerprinting what was read.
  *
  * Kept apart from `client.ts` because the description is the one thing this
- * package reads that the platform does not keep as it is: a run hashes it,
- * sizes from it and drafts a spec from it, and what is stored is the hash
- * and what was derived. `ISSUE_FIELDS` — what every list read asks for —
+ * package reads only by name: a run hashes it, sizes from it, drafts a spec
+ * from it and writes it onto the issue's ticket, the platform's own copy.
+ * `ISSUE_FIELDS` — what every list read asks for —
  * does not include `description`, so a board read cannot pull ticket text
  * even by accident; only `issueSpec` can, one ticket at a time, and the
  * caller has to ask for it by name.
  */
+
+import { DEFAULT_ISSUE_TYPE, ticketSpecHash } from "@sandbox-factory/shared";
 
 import { adfToTextResult } from "./adf.js";
 
@@ -28,19 +30,27 @@ export interface JiraIssueSpec {
   readonly components: readonly string[];
   /** The ticket's labels. Like `components`, read but not hashed. */
   readonly labels: readonly string[];
+  /**
+   * Jira's priority name, or null when the site has priorities off. Read
+   * for the complexity profile; like `components`, not hashed.
+   */
+  readonly priority: string | null;
   /** Jira's own `updated`, for ordering and for staleness reporting. */
   readonly updated: string | null;
   /** True when ADF depth or length limits omitted any sizing input. */
   readonly inputTruncated: boolean;
   /**
-   * A fingerprint of `summary` + `descriptionText`.
-   *
-   * The platform stores this and not the text. On review, the live ticket is
-   * re-read and re-hashed: a difference means the spec changed after it was
-   * priced, and the proposal is stale.
+   * A fingerprint of `summary` + `descriptionText`, the first version of
+   * the spec hash. Nothing compares it now: proposals are priced against
+   * `pricingSpecHash`.
    */
   readonly specHash: string;
-  /** Version 1: normalized summary, description and issue type JSON tuple. */
+  /**
+   * Version 1 of the ticket's own hash (`ticketSpecHash`): the normalized
+   * summary, description and issue type as a JSON tuple. On review, the live
+   * ticket is re-read and re-hashed: a difference means the spec changed
+   * after it was priced, and the proposal is stale.
+   */
   readonly pricingSpecHash: string;
 }
 
@@ -54,6 +64,7 @@ export const SPEC_FIELDS: readonly string[] = [
   "issuetype",
   "components",
   "labels",
+  "priority",
   "updated",
 ];
 
@@ -82,20 +93,18 @@ export async function specHash(
   return sha256(canonical);
 }
 
-/** Fingerprints every input that affects pricing, encoded without ambiguity. */
-export function pricingSpecHash(
+/**
+ * Fingerprints every input that affects pricing, encoded without ambiguity.
+ *
+ * The ticket's own hash, not a copy of it: a ticket imported from Jira is
+ * priced from its stored text, and the two must agree byte for byte or a
+ * fresh read would call every proposal stale.
+ */
+export const pricingSpecHash: (
   summary: string,
   descriptionText: string,
   issueType: string,
-): Promise<string> {
-  return sha256(
-    JSON.stringify([
-      normalize(summary),
-      normalize(descriptionText),
-      normalize(issueType),
-    ]),
-  );
-}
+) => Promise<string> = ticketSpecHash;
 
 async function sha256(canonical: string): Promise<string> {
   const bytes = new TextEncoder().encode(canonical);
@@ -123,13 +132,16 @@ export async function toIssueSpec(
     issuetype?: { name?: unknown } | null;
     components?: unknown;
     labels?: unknown;
+    priority?: { name?: unknown } | null;
     updated?: unknown;
   },
 ): Promise<JiraIssueSpec> {
   const summary = typeof fields.summary === "string" ? fields.summary : "";
   const description = adfToTextResult(fields.description);
   const issueType =
-    typeof fields.issuetype?.name === "string" ? fields.issuetype.name : "Task";
+    typeof fields.issuetype?.name === "string"
+      ? fields.issuetype.name
+      : DEFAULT_ISSUE_TYPE;
   return {
     key,
     summary,
@@ -137,6 +149,8 @@ export async function toIssueSpec(
     issueType,
     components: names(fields.components),
     labels: strings(fields.labels),
+    priority:
+      typeof fields.priority?.name === "string" ? fields.priority.name : null,
     updated: typeof fields.updated === "string" ? fields.updated : null,
     inputTruncated: description.truncated,
     specHash: await specHash(summary, description.text),

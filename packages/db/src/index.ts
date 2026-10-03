@@ -37,6 +37,17 @@ export type {
   SyncBoardInput,
   UpdateBoardInput,
 } from "./jira-boards.js";
+export { createTicketStore, followsJira } from "./tickets.js";
+export type {
+  ListedTicket,
+  NewTicket,
+  StoredTicket,
+  TicketChange,
+  TicketJiraLink,
+  TicketMutationResult,
+  TicketProposalSummary,
+  TicketStore,
+} from "./tickets.js";
 export { createJiraIssueStore } from "./jira-issues.js";
 export type {
   JiraIssueInput,
@@ -65,6 +76,16 @@ export type {
   ProposalMutationResult,
   StoredBountyProposal,
 } from "./bounty-proposals.js";
+export {
+  createBountyProfileStore,
+  PENDING_PROFILE_STATUSES,
+} from "./bounty-profiles.js";
+export type {
+  BountyProfileStore,
+  NewBountyProfile,
+  ProfileTransition,
+  StoredBountyProfile,
+} from "./bounty-profiles.js";
 export { createBountySpecStore } from "./bounty-specs.js";
 export type {
   BountySpecStore,

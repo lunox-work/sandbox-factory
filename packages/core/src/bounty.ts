@@ -106,14 +106,20 @@ export type BountyOutcomeStatus = "proposed" | "unsized" | "failed" | "skipped";
 
 /**
  * What a run does: size a board's backlog, re-price one proposal, size one
- * ticket someone picked, or change one proposal's spec and move its size by
- * the scenario step (`respec`).
+ * Jira ticket someone picked from a board (`issue`), size one of the
+ * organization's own tickets (`ticket`), or change one proposal's spec and
+ * move its size by the scenario step (`respec`).
+ *
+ * `backlog` and `issue` read a Jira board, and are the only kinds that need
+ * one. The others start from a ticket, which may have come from Jira or
+ * been written here.
  */
 export const BOUNTY_RUN_KINDS = [
   "backlog",
   "reprice",
   "issue",
   "respec",
+  "ticket",
 ] as const;
 export type BountyRunKind = (typeof BOUNTY_RUN_KINDS)[number];
 
@@ -122,9 +128,19 @@ export type BountyRunKind = (typeof BOUNTY_RUN_KINDS)[number];
  * opened mid-run can show what is still to come as well as what is done.
  */
 export interface BountyRunPlannedIssue {
+  /**
+   * The ticket's id in its source: Jira's issue id for a ticket a board
+   * offered, and the ticket's own id for one written here. A plan entry is
+   * matched to its proposal through this.
+   */
   readonly externalIssueId: string;
   readonly issueKey: string;
   readonly summary: string;
+  /**
+   * The ticket, when it was known as the plan was written. Absent for a
+   * board's tickets, which a run imports only once it reaches them.
+   */
+  readonly ticketId?: string | undefined;
   /**
    * Why a backlog run picked it. Absent on plans recorded before categories
    * existed, and empty for a ticket a person picked by hand.
@@ -135,6 +151,12 @@ export interface BountyRunPlannedIssue {
 export interface BountyRunOutcome {
   readonly externalIssueId: string;
   readonly issueKey: string;
+  /** The ticket the outcome is about, once the run had one. */
+  readonly ticketId?: string;
+  /**
+   * The Jira pointer, on outcomes recorded before tickets existed. Read
+   * from stored runs only; nothing writes it now.
+   */
   readonly jiraIssueId?: string;
   readonly proposalId?: string;
   readonly status: BountyOutcomeStatus;

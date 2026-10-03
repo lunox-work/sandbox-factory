@@ -66,7 +66,7 @@ export const SLICE_TOOL_VERSION = "slice@1";
 /** Bumped when the generated project, harness or baseline rules change meaning. */
 export const SANDBOX_BUILD_RUN_VERSION = "sandbox_build@1";
 /** Bumped when the scope agent's tools, prompt or proposal shape change meaning. */
-export const SCOPE_TOOL_VERSION = "scope@1";
+export const SCOPE_TOOL_VERSION = "scope@2";
 /** Bumped when the fixtures agent's tools, prompt or set shape change meaning. */
 export const FIXTURES_TOOL_VERSION = "fixtures@1";
 export function toolVersionOf(tool: AnalysisTool): string {

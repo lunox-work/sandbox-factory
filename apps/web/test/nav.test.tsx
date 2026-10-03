@@ -114,6 +114,9 @@ vi.stubGlobal(
     if (url.includes("/members")) {
       return Promise.resolve(Response.json({ members: [] }));
     }
+    if (url.includes("/tickets?")) {
+      return Promise.resolve(Response.json({ tickets: [], nextCursor: null }));
+    }
     if (url.includes("/api/v1/me")) {
       return Promise.resolve(
         Response.json({ user: { id: "user_1", username: "alice" } }),
@@ -497,6 +500,31 @@ test("/o/:slug/settings opens that organization directly", async () => {
   await waitFor(() => {
     expect(screen.getByText("acme")).toBeTruthy();
   });
+});
+
+test("the rail leads to the workspace's tickets, and marks them current", async () => {
+  render(<App />);
+  const rail = screen.getByRole("navigation", { name: "Main" });
+  const tickets = await within(rail).findByRole("link", { name: "Tickets" });
+  expect(tickets.getAttribute("href")).toBe("/o/acme/tickets");
+
+  fireEvent.click(tickets);
+  expect(
+    await screen.findByRole("heading", { name: "Tickets", level: 1 }),
+  ).toBeTruthy();
+  expect(window.location.pathname).toBe("/o/acme/tickets");
+  expect(tickets.ariaCurrent).toBe("page");
+  expect(railHome().ariaCurrent).toBeNull();
+  await waitFor(() => expect(document.title).toBe("Tickets · Lunox"));
+});
+
+test("/o/:slug/tickets opens that workspace's tickets directly", async () => {
+  window.history.replaceState(null, "", "/o/acme/tickets");
+  render(<App />);
+  expect(
+    await screen.findByRole("heading", { name: "Tickets", level: 1 }),
+  ).toBeTruthy();
+  expect(await screen.findByText(/No tickets yet/)).toBeTruthy();
 });
 
 test("a trailing slash names the same organization screen", async () => {

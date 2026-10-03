@@ -40,14 +40,14 @@ const versionRow = (
   ...overrides,
 });
 const approvedTask: ApprovedTaskSnapshot = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   title: "Fix it",
   summary: "Summary",
   spec: null,
   pricing: null,
   selectedBy: "user",
   selectedAt: now.toISOString(),
-  jiraIssueIds: [],
+  ticketIds: [],
 };
 const scope: ScopeRecord = {
   editablePaths: ["src/app.ts"],
@@ -110,22 +110,22 @@ const newVersion = {
   },
 };
 
-test("create needs an owned source repository and owned issue pointers, then writes three tables", async () => {
+test("create needs an owned source repository and owned tickets, then writes three tables", async () => {
   const fake = createSequencedFakeDb([
     [{ role: "source", syncStatus: "ok" }],
-    [{ id: "jri_1" }, { id: "jri_2" }],
+    [{ id: "tkt_1" }, { id: "tkt_2" }],
     [sandboxRow()],
     [],
     [],
   ]);
   const result = await createSandboxStore(fake.db).create("owner", {
     sourceRepoId: "ghr_1",
-    jiraIssueIds: ["jri_2", "jri_1", "jri_2"],
+    ticketIds: ["tkt_2", "tkt_1", "tkt_2"],
   });
   assert.equal(result.ok, true);
   if (!result.ok) return;
   assert.equal(result.sandbox.sourceRepoId, "ghr_1");
-  assert.deepEqual(result.sandbox.jiraIssueIds, ["jri_1", "jri_2"]);
+  assert.deepEqual(result.sandbox.ticketIds, ["tkt_1", "tkt_2"]);
   assert.equal(fake.calls[0]?.filtered, true);
   assert.equal(fake.calls[2]?.kind, "insert");
   assert.match(String(fake.calls[2]?.values?.["slug"]), /^[a-f0-9]{12}$/);
@@ -134,33 +134,33 @@ test("create needs an owned source repository and owned issue pointers, then wri
   assert.deepEqual(
     await createSandboxStore(createSequencedFakeDb([[]]).db).create("owner", {
       sourceRepoId: "ghr_x",
-      jiraIssueIds: [],
+      ticketIds: [],
     }),
     { ok: false, reason: "repo_not_found" },
   );
   assert.deepEqual(
     await createSandboxStore(
       createSequencedFakeDb([[{ role: "source", syncStatus: "gone" }]]).db,
-    ).create("owner", { sourceRepoId: "ghr_x", jiraIssueIds: [] }),
+    ).create("owner", { sourceRepoId: "ghr_x", ticketIds: [] }),
     { ok: false, reason: "repo_not_found" },
   );
   assert.deepEqual(
     await createSandboxStore(
       createSequencedFakeDb([[{ role: "sandbox", syncStatus: "ok" }]]).db,
-    ).create("owner", { sourceRepoId: "ghr_pub", jiraIssueIds: [] }),
+    ).create("owner", { sourceRepoId: "ghr_pub", ticketIds: [] }),
     { ok: false, reason: "repo_role" },
   );
   assert.deepEqual(
     await createSandboxStore(
       createSequencedFakeDb([
         [{ role: "source", syncStatus: "ok" }],
-        [{ id: "jri_1" }],
+        [{ id: "tkt_1" }],
       ]).db,
     ).create("owner", {
       sourceRepoId: "ghr_1",
-      jiraIssueIds: ["jri_1", "jri_9"],
+      ticketIds: ["tkt_1", "tkt_9"],
     }),
-    { ok: false, reason: "issue_not_found" },
+    { ok: false, reason: "ticket_not_found" },
   );
   // No issues: the issue lookup and insert are skipped.
   const bare = createSequencedFakeDb([
@@ -170,35 +170,35 @@ test("create needs an owned source repository and owned issue pointers, then wri
   ]);
   const created = await createSandboxStore(bare.db).create("owner", {
     sourceRepoId: "ghr_1",
-    jiraIssueIds: [],
+    ticketIds: [],
   });
   assert.equal(created.ok, true);
   assert.equal(bare.calls.length, 3);
   await assert.rejects(
     createSandboxStore(
       createSequencedFakeDb([[{ role: "source", syncStatus: "ok" }], []]).db,
-    ).create("owner", { sourceRepoId: "ghr_1", jiraIssueIds: [] }),
+    ).create("owner", { sourceRepoId: "ghr_1", ticketIds: [] }),
     /returned no row/,
   );
   assert.match(sandboxSlug(), /^[a-f0-9]{12}$/);
 });
 
-test("list and get join the source and the issue pointers under the owner", async () => {
+test("list and get join the source and the tickets under the owner", async () => {
   const fake = createSequencedFakeDb([
     [
       { sandbox: sandboxRow(), sourceRepoId: "ghr_1" },
       { sandbox: sandboxRow({ id: "sbx_2" }), sourceRepoId: "ghr_2" },
     ],
     [
-      { sandboxId: "sbx_1", jiraIssueId: "jri_b" },
-      { sandboxId: "sbx_1", jiraIssueId: "jri_a" },
+      { sandboxId: "sbx_1", ticketId: "tkt_b" },
+      { sandboxId: "sbx_1", ticketId: "tkt_a" },
     ],
   ]);
   const list = await createSandboxStore(fake.db).list("owner");
   assert.deepEqual(
-    list.map((item) => [item.id, item.sourceRepoId, item.jiraIssueIds]),
+    list.map((item) => [item.id, item.sourceRepoId, item.ticketIds]),
     [
-      ["sbx_1", "ghr_1", ["jri_a", "jri_b"]],
+      ["sbx_1", "ghr_1", ["tkt_a", "tkt_b"]],
       ["sbx_2", "ghr_2", []],
     ],
   );

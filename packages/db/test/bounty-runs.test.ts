@@ -10,6 +10,7 @@ function row(overrides: Partial<BountyRunRow> = {}): BountyRunRow {
     id: "brn_1",
     organizationId: "org_1",
     boardId: "jrb_1",
+    ticketId: null,
     startedBy: "usr_1",
     kind: "backlog",
     sourceProposalId: null,
@@ -125,6 +126,95 @@ test("a one-ticket run does not wait behind the board's active run", async () =>
   assert.equal(result.ok, true);
   assert.deepEqual(fake.calls[2]?.values?.["planned"], planned);
   assert.equal(fake.calls[2]?.values?.["kind"], "issue");
+});
+
+test("a ticket's run needs no board, only the ticket, and waits for its own sizing", async () => {
+  const planned = [
+    {
+      externalIssueId: "tkt_1",
+      issueKey: "T-1",
+      summary: "Add login",
+      ticketId: "tkt_1",
+    },
+  ];
+  const ticketInput = {
+    ...input,
+    boardId: null,
+    ticketId: "tkt_1",
+    kind: "ticket",
+    planned,
+  } as const;
+  // Request lookup, the ticket's ownership, nothing in flight, the insert.
+  const fake = createSequencedFakeDb([
+    [],
+    [{ id: "tkt_1" }],
+    [],
+    [row({ kind: "ticket", boardId: null, ticketId: "tkt_1", planned })],
+  ]);
+  const result = await createBountyRunStore(fake.db).create(
+    "org_1",
+    ticketInput,
+  );
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.equal(result.run.boardId, null);
+    assert.equal(result.run.ticketId, "tkt_1");
+  }
+  assert.equal(fake.calls[3]?.values?.["boardId"], null);
+  assert.equal(fake.calls[3]?.values?.["ticketId"], "tkt_1");
+  assert.equal(fake.calls[3]?.values?.["kind"], "ticket");
+
+  const active = createSequencedFakeDb([
+    [],
+    [{ id: "tkt_1" }],
+    [row({ id: "brn_9", kind: "ticket", ticketId: "tkt_1" })],
+  ]);
+  assert.deepEqual(
+    await createBountyRunStore(active.db).create("org_1", ticketInput),
+    { ok: false, reason: "active", runId: "brn_9" },
+  );
+
+  const foreign = createSequencedFakeDb([[], []]);
+  assert.deepEqual(
+    await createBountyRunStore(foreign.db).create("org_2", ticketInput),
+    { ok: false, reason: "not-found" },
+  );
+});
+
+test("a run is refused without what its kind reads", async () => {
+  for (const missing of [
+    { ...input, boardId: null },
+    { ...input, kind: "issue", boardId: undefined },
+    { ...input, kind: "ticket", ticketId: null },
+  ] as const) {
+    const fake = createSequencedFakeDb([[]]);
+    assert.deepEqual(
+      await createBountyRunStore(fake.db).create("org_1", missing),
+      { ok: false, reason: "not-found" },
+    );
+    // Refused before anything is read but the request id.
+    assert.equal(fake.calls.length, 1);
+  }
+});
+
+test("a re-price of a ticket with no board waits only for its proposal", async () => {
+  const fake = createSequencedFakeDb([
+    [],
+    [{ id: "tkt_1" }],
+    [],
+    [row({ kind: "reprice", boardId: null, ticketId: "tkt_1" })],
+  ]);
+  const result = await createBountyRunStore(fake.db).create("org_1", {
+    ...input,
+    boardId: null,
+    ticketId: "tkt_1",
+    kind: "reprice",
+    sourceProposalId: "bpr_1",
+    sourceRevision: 1,
+  });
+  assert.equal(result.ok, true);
+  // No board to read and no board's run to wait for.
+  assert.equal(fake.calls.length, 4);
 });
 
 test("a replayed one-ticket request must name the same ticket", async () => {

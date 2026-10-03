@@ -82,6 +82,7 @@ const submitInput = z.strictObject({
   ),
   summary: z.string(),
   risks: z.array(z.string()),
+  pattern: z.strictObject({ path: z.string(), reason: z.string() }).nullable(),
 });
 
 const requestProperties = {
@@ -249,6 +250,24 @@ export function createScopeAdapter(settings: AgentSettings): ToolAdapter {
                 "Two to four sentences on what the developer will see and change.",
             },
             risks: { type: "array", items: { type: "string" } },
+            pattern: {
+              type: ["object", "null"],
+              description:
+                "The closest existing code that already does what the ticket asks elsewhere in the repository, for the developer to follow; null when there is none.",
+              properties: {
+                path: {
+                  type: "string",
+                  description: "The repository file that holds the pattern.",
+                },
+                reason: {
+                  type: "string",
+                  description:
+                    "What it does that the ticket's change can copy.",
+                },
+              },
+              required: ["path", "reason"],
+              additionalProperties: false,
+            },
           },
           required: [
             "entryPoints",
@@ -258,6 +277,7 @@ export function createScopeAdapter(settings: AgentSettings): ToolAdapter {
             "seams",
             "summary",
             "risks",
+            "pattern",
           ],
           additionalProperties: false,
         },
@@ -274,9 +294,18 @@ export function createScopeAdapter(settings: AgentSettings): ToolAdapter {
             seams: shaped.data.seams,
             summary: shaped.data.summary,
             risks: shaped.data.risks,
+            pattern: shaped.data.pattern,
           });
           if (!parsed.success) return invalidInput(parsed.error.issues);
           const submission: ScopeSubmission = parsed.data;
+          if (
+            submission.pattern != null &&
+            !index.sizes.has(submission.pattern.path)
+          )
+            return {
+              content: `${submission.pattern.path} is not a file in the repository, so it cannot be the pattern.`,
+              isError: true,
+            };
           const request = sliceRequestOf(submission);
           let analysis: SliceAnalysis;
           try {

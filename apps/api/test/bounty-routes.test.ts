@@ -8,6 +8,7 @@ import type {
   StoredBountyRun,
   StoredBountyProposal,
   StoredRateCard,
+  StoredTicket,
 } from "@sandbox-factory/db";
 
 import { JiraApiError } from "@sandbox-factory/jira";
@@ -45,6 +46,7 @@ const run: StoredBountyRun = {
   id: "brn_1",
   organizationId: "org_1",
   boardId: "jrb_1",
+  ticketId: null,
   kind: "backlog",
   sourceProposalId: null,
   sourceRevision: null,
@@ -98,6 +100,10 @@ function harness(
     live?: Record<string, string>;
     clientReady?: boolean;
     sizing?: boolean;
+    /** The organization's tickets, by id. */
+    tickets?: Record<string, StoredTicket>;
+    /** Each ticket's live proposal, by ticket id. */
+    liveTickets?: Record<string, string>;
   } = {},
 ) {
   const starts: string[] = [];
@@ -171,12 +177,18 @@ function harness(
     boards,
     proposals: {
       get: () => Promise.resolve(null),
-      listForBoard: () => Promise.resolve([]),
+      list: () => Promise.resolve([]),
       liveProposalIds: () =>
         Promise.resolve(new Map(Object.entries(options.live ?? {}))),
+      liveForTicket: (_org: string, ticketId: string) =>
+        Promise.resolve(options.liveTickets?.[ticketId] ?? null),
     } as never,
     specs: {} as never,
     issues: { get: () => Promise.resolve(null) } as never,
+    tickets: {
+      get: (_org: string, id: string) =>
+        Promise.resolve(options.tickets?.[id] ?? null),
+    } as never,
     ...(sizing
       ? {
           executor: {
@@ -381,8 +393,9 @@ function reviewProposal(
     id: "bpr_1",
     organizationId: "org_1",
     runId: "brn_1",
-    jiraIssueId: "jri_1",
+    ticketId: "tkt_1",
     issueKey: "APP-1",
+    title: "Title",
     specHash: "a".repeat(64),
     specHashVersion: 1,
     rateCard: run.rateCard,
@@ -413,16 +426,50 @@ function reviewProposal(
   };
 }
 
+/** The ticket a reviewed proposal prices: imported from board `jrb_1`. */
+function jiraTicket(overrides: Partial<StoredTicket> = {}): StoredTicket {
+  return {
+    id: "tkt_1",
+    organizationId: "org_1",
+    number: 1,
+    key: "APP-1",
+    title: "Title",
+    description: "Current spec",
+    issueType: "Story",
+    priority: null,
+    labels: [],
+    components: [],
+    inputTruncated: false,
+    origin: "jira",
+    repoId: null,
+    createdBy: null,
+    revision: 1,
+    jira: {
+      issueId: "jri_1",
+      boardId: "jrb_1",
+      connectionId: "jrc_1",
+      externalId: "100",
+      key: "APP-1",
+      siteUrl: "https://acme.atlassian.net",
+      removedAt: null,
+    },
+    createdAt: run.createdAt,
+    updatedAt: run.createdAt,
+    ...overrides,
+  };
+}
+
 function reviewHarness(
   hash = "a".repeat(64),
   overrides: Partial<StoredBountyProposal> = {},
+  ticket: StoredTicket = jiraTicket(),
 ) {
   let current = reviewProposal(overrides);
   let specReads = 0;
   const proposals = {
     get: () => Promise.resolve(current),
-    listForBoard: () =>
-      Promise.resolve([{ ...current, sizedTitle: "Title when sized" }]),
+    list: () =>
+      Promise.resolve([{ ...current, categories: [], boardId: "jrb_1" }]),
     approve: () => {
       current = { ...current, status: "approved", revision: 2 };
       return Promise.resolve({ ok: true, proposal: current });
@@ -467,8 +514,11 @@ function reviewHarness(
       proposals,
       specs: {} as never,
       issues: {
-        get: () =>
-          Promise.resolve({ id: "jri_1", boardId: "jrb_1", externalId: "100" }),
+        markRemoved: () => Promise.resolve(true),
+      } as never,
+      tickets: {
+        get: () => Promise.resolve(ticket),
+        refreshFromJira: () => Promise.resolve(true),
       } as never,
       boards: {
         get: () => Promise.resolve(board),
@@ -515,8 +565,8 @@ test("the proposal list is stored rows alone and never waits on Jira", async () 
   assert.equal(body.proposals[0]?.id, "bpr_1");
   assert.equal(body.proposals[0]?.complexity, "M");
   assert.equal(body.proposals[0]?.amountMinor, 200);
-  // ...down to the title the ticket had when it was sized...
-  assert.equal(body.proposals[0]?.sizedTitle, "Title when sized");
+  // ...down to the ticket's title, as the platform holds it...
+  assert.equal(body.proposals[0]?.title, "Title");
   // ...and nothing live is waited for: the title streams in separately, and
   // freshness belongs to the open proposal's detail.
   assert.equal(body.proposals[0]?.liveTitle, undefined);
@@ -581,6 +631,7 @@ function specHarness(
       runs: {} as never,
       boards: {} as never,
       issues: {} as never,
+      tickets: {} as never,
       proposals: {
         get: (organizationId: string, id: string) =>
           Promise.resolve(
@@ -622,6 +673,96 @@ function specHarness(
   });
   return { app, reads };
 }
+
+const profilePath = "/api/v1/orgs/org_1/proposals/bpr_1/profile";
+
+function profileHarness(stored: unknown, withStore = true) {
+  const reads: unknown[][] = [];
+  const proposal = reviewProposal({ specRevision: 2 });
+  const app = createApp({
+    corsOrigins: ["https://app.test"],
+    auth: fakeAuth(),
+    organizations: {
+      roleOf: () => Promise.resolve("member"),
+    } as never,
+    bounty: {
+      rateCards: {} as never,
+      runs: {} as never,
+      boards: {} as never,
+      issues: {} as never,
+      tickets: {} as never,
+      specs: {} as never,
+      proposals: {
+        get: (organizationId: string, id: string) =>
+          Promise.resolve(
+            organizationId === "org_1" && id === "bpr_1" ? proposal : null,
+          ),
+      } as never,
+      ...(withStore
+        ? {
+            profiles: {
+              latest: (...args: unknown[]) => {
+                reads.push(args);
+                return Promise.resolve(stored);
+              },
+            } as never,
+          }
+        : {}),
+    },
+  });
+  return { app, reads };
+}
+
+const storedProfile = {
+  id: "bpf_1",
+  organizationId: "org_1",
+  proposalId: "bpr_1",
+  specRevision: 2,
+  specHash: "a".repeat(64),
+  snapshotId: "rsn_1",
+  ticket: { issueType: "Bug", priority: "High" },
+  status: "scoping",
+  errorCode: null,
+  runErrorCode: null,
+  scopeRunId: "arn_1",
+  sliceRunId: null,
+  profile: null,
+  createdAt: "2026-10-03T00:00:00.000Z",
+  updatedAt: "2026-10-03T00:01:00.000Z",
+};
+
+test("a proposal's profile is read for any member, without its owner or hash", async () => {
+  const state = profileHarness(storedProfile);
+  const response = await state.app.request(profilePath, { headers });
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as { profile: Record<string, unknown> };
+  assert.equal(body.profile["status"], "scoping");
+  assert.equal(body.profile["scopeRunId"], "arn_1");
+  assert.equal("organizationId" in body.profile, false);
+  assert.equal("specHash" in body.profile, false);
+  assert.deepEqual(state.reads, [["org_1", "bpr_1"]]);
+});
+
+test("a proposal never profiled, or a deployment without profiles, answers null", async () => {
+  for (const state of [
+    profileHarness(null),
+    profileHarness(storedProfile, false),
+  ]) {
+    const response = await state.app.request(profilePath, { headers });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { profile: null });
+  }
+});
+
+test("another organization's proposal has no profile to read", async () => {
+  const state = profileHarness(storedProfile);
+  const response = await state.app.request(
+    "/api/v1/orgs/org_1/proposals/bpr_other/profile",
+    { headers },
+  );
+  assert.equal(response.status, 404);
+  assert.deepEqual(state.reads, []);
+});
 
 const specPath = "/api/v1/orgs/org_1/proposals/bpr_1/spec";
 
@@ -755,7 +896,7 @@ function categoryHarness(
   const listed: unknown[] = [];
   Object.assign(state.bounty.proposals, {
     categoryCounts: () => Promise.resolve({ uncategorized: 0, ...counts }),
-    listForBoard: (_org: string, _board: string, options: unknown) => {
+    list: (_org: string, options: unknown) => {
       listed.push(options);
       return Promise.resolve([]);
     },
@@ -853,18 +994,23 @@ test("the list can be narrowed to one category", async () => {
     });
 
   assert.equal((await list("&category=paper-cuts&limit=50")).status, 200);
-  assert.deepEqual(state.listed.at(-1), { limit: 50, category: "paper-cuts" });
+  assert.deepEqual(state.listed.at(-1), {
+    boardId: "jrb_1",
+    limit: 50,
+    category: "paper-cuts",
+  });
 
   // No category, or an empty one, is the whole board.
   await list("");
-  assert.deepEqual(state.listed.at(-1), { limit: 25 });
+  assert.deepEqual(state.listed.at(-1), { boardId: "jrb_1", limit: 25 });
   await list("&category=");
-  assert.deepEqual(state.listed.at(-1), { limit: 25 });
+  assert.deepEqual(state.listed.at(-1), { boardId: "jrb_1", limit: 25 });
 
   // An id no category has is a category with nothing in it, not an error:
   // that is what a retired one looks like to a link that still names it.
   assert.equal((await list("&category=retired-last-month")).status, 200);
   assert.deepEqual(state.listed.at(-1), {
+    boardId: "jrb_1",
     limit: 25,
     category: "retired-last-month",
   });
@@ -880,7 +1026,11 @@ test("the list can be narrowed to the tickets in no category", async () => {
   assert.equal(response.status, 200);
   // Asked of the store as its own question, not as a category by that name:
   // no plan ever records one.
-  assert.deepEqual(state.listed.at(-1), { limit: 50, uncategorized: true });
+  assert.deepEqual(state.listed.at(-1), {
+    boardId: "jrb_1",
+    limit: 50,
+    uncategorized: true,
+  });
 });
 
 test("a malformed category is refused before the store is asked", async () => {
@@ -1351,6 +1501,7 @@ function titlesHarness(
             new Map([...targets].filter(([id]) => ids.includes(id))),
           ),
       } as never,
+      tickets: {} as never,
       issues: {
         markRemoved: (_organizationId: string, issueId: string) => {
           removed.push(issueId);

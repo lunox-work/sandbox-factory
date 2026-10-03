@@ -329,12 +329,14 @@ export const jiraIssueDtoSchema = z.object({
 /**
  * One issue in full, for a person reading it rather than a run pricing it.
  *
- * **This is the one DTO that carries ticket text**, and it exists only for a
- * single-ticket read that a person asked for by name. `jiraIssueDtoSchema`
- * above still has no description, so a board or backlog read cannot pull a
- * client's ticket contents into a list, a log or a cache. The guarantee is
- * about lists and about storage; showing someone the ticket they clicked on
- * is the point of the integration.
+ * **This is the one Jira DTO that carries ticket text**, and it exists only
+ * for a single-ticket read that a person asked for by name.
+ * `jiraIssueDtoSchema` above still has no description, so a board or
+ * backlog read cannot pull a client's ticket contents into a list, a log or
+ * a cache. The guarantee is about lists; a ticket's text is stored on the
+ * ticket (`ticketDtoSchema`), which a run writes from its own read of the
+ * issue, and showing someone the ticket they clicked on is the point of the
+ * integration.
  *
  * Nothing here is persisted. The detail route reads Jira live and returns it.
  *

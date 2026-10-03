@@ -13,7 +13,7 @@ Contributions are accepted under the [MIT License](./LICENSE).
 
 ## Setup
 
-Requires Node.js 22 or newer.
+Requires Node.js 22.12+ within the 22.x line, or 24+ (`package.json` engines).
 
 ```bash
 git clone https://github.com/lunox-work/sandbox-factory.git
@@ -57,9 +57,10 @@ because the type checker enforces the dependency rules.
   — `fix: handle empty input`, `feat: add retry option`, `docs: clarify setup`.
   PRs are squash-merged, so the title becomes the commit and decides the
   release: `fix:` is a patch, `feat:` a minor, `docs:`/`chore:` none.
-- **A green PR merges itself.** Auto-merge arms on every PR and no approval is
-  required. Open a **draft** if you want eyes on it first.
-- Unresolved review threads block the merge, including CodeRabbit's.
+- **Ready same-repository PRs auto-merge once required checks pass**, except
+  Dependabot majors. No approving review is required; CodeRabbit findings and
+  unresolved review threads are advisory. Open a **draft** to hold a change
+  for inspection. Fork PRs need maintainer handling.
 - One logical change per PR. Fill in the template and link the issue it closes.
 - Update affected docs in the same PR.
 

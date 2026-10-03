@@ -14,7 +14,10 @@
  * - `schema/auth.ts` — Better Auth's four tables, plus `user_email`.
  * - `schema/organizations.ts` — the second principal, its membership, and the
  *   handle namespace both principals share.
- * - `schema/jira.ts` — connections to a client's Atlassian site.
+ * - `schema/ticket.ts` — the organization's own tickets, which proposals
+ *   price whether they were written here or imported.
+ * - `schema/jira.ts` — connections to a client's Atlassian site, and the
+ *   issues imported from it as tickets.
  * - `schema/github.ts` — installations of the GitHub App, the grants that
  *   linked them, and the repositories registered from them.
  * - `schema/analysis.ts` — what is known about a repository at one commit.
@@ -58,6 +61,9 @@ export type {
   OrganizationRow,
 } from "./schema/organizations.js";
 
+export { ticket } from "./schema/ticket.js";
+export type { NewTicketRow, TicketRow } from "./schema/ticket.js";
+
 export { jiraBoard, jiraConnection, jiraIssue } from "./schema/jira.js";
 export type {
   JiraBoardRow,
@@ -88,6 +94,7 @@ export type {
 
 export {
   BOUNTY_SPEC_ORIGINS,
+  bountyProfile,
   bountyProposal,
   bountyRun,
   bountySpec,
@@ -95,12 +102,14 @@ export {
   rateCard,
 } from "./schema/bounty.js";
 export type {
+  BountyProfileRow,
   BountyProposalRow,
   BountyRunRow,
   BountySpecOrigin,
   BountySpecRow,
   BountyWritebackPayload,
   BountyWritebackRow,
+  NewBountyProfileRow,
   NewBountyProposalRow,
   NewBountyRunRow,
   NewBountySpecRow,
@@ -111,13 +120,13 @@ export type {
 
 export {
   sandbox,
-  sandboxJiraIssue,
   sandboxSource,
+  sandboxTicket,
   sandboxVersion,
   sandboxVersionSource,
 } from "./schema/sandbox.js";
 export type {
-  SandboxJiraIssueRow,
+  SandboxTicketRow,
   SandboxRow,
   SandboxSourceRow,
   SandboxVersionRow,

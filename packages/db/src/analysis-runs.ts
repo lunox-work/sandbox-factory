@@ -91,7 +91,8 @@ export interface AnalysisRunStore {
     input: {
       tool?: AnalysisTool;
       params: AnalysisParams;
-      requestedBy: string;
+      /** Null for a run nothing but the platform asked for, such as a profile's. */
+      requestedBy: string | null;
       maxActive?: number;
     },
   ): Promise<EnqueueAnalysisResult>;

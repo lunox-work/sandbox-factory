@@ -38,6 +38,15 @@ export interface ScopeEntryPoint {
   readonly path: string;
   readonly reason: string;
 }
+/**
+ * Code already in the repository that does what the ticket asks somewhere
+ * else, so the change can follow it rather than invent one.
+ */
+export interface ScopePattern {
+  /** A repository file path, checked to exist. */
+  readonly path: string;
+  readonly reason: string;
+}
 export interface ScopeSeam {
   /** A cut module's repository path. */
   readonly module: string;
@@ -53,6 +62,11 @@ export interface ScopeSubmission {
   /** What the freelancer will see and do, in a few sentences. */
   readonly summary: string;
   readonly risks: readonly string[];
+  /**
+   * The closest existing pattern to follow, or null when there is none.
+   * Absent on proposals from before `scope@2`.
+   */
+  readonly pattern?: ScopePattern | null;
 }
 /** The slice computation's verdict on exactly the submitted request. */
 export interface ScopeCheck {

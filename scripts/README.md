@@ -71,9 +71,9 @@ because GitHub raises no events for pushes made with the default token. `ci.yml`
 and `cd.yml` trigger on `push` to `main`, so a merge performed with the default
 token lands and **nothing deploys**.
 
-A dead token does not fail loudly — it silently returns the repository to having
-no continuous deployment. That is why `--check` exists and why the workflow logs
-a warning on every fallback.
+An absent or unusable token fails the auto-merge workflow. It never falls back
+to `GITHUB_TOKEN`, so a token failure cannot silently merge without triggering
+CI and CD. Use `--check` to validate the stored token and rotate it when needed.
 
 The token is a fine-grained PAT scoped to this repository, with **Contents** and
 **Pull requests** read and write. Resource owner must be **lunox-work**, not a

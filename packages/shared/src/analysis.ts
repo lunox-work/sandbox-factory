@@ -107,6 +107,12 @@ export const fixturesParamsSchema = z.strictObject({
  * spec revision defaults to the proposal's current one; the graph run is
  * chosen by the API.
  */
+/**
+ * The deadline the console's own graph runs carry. It is part of their
+ * cache key, so every caller that wants the shared graph asks with this.
+ */
+export const GRAPH_DEADLINE_MINUTES = 30;
+
 /** An agent takes many model turns; its runs get longer than a tool's 30 minutes. */
 export const AGENT_DEADLINE_MINUTES = 60;
 export const enqueueScopeSchema = z.strictObject({
@@ -250,8 +256,9 @@ export const sliceBoundarySummarySchema = z.object({
   truncated: z.boolean(),
 });
 /**
- * A proposal an agent run can work for: one with a spec, on a board linked
- * to the repository. `GET .../repositories/:id/proposals`.
+ * A proposal an agent run can work for: one with a spec, whose ticket is
+ * about the repository, by naming it or through its Jira board.
+ * `GET .../repositories/:id/proposals`.
  */
 export const repositoryProposalSchema = z.object({
   id: z.string(),
@@ -259,8 +266,9 @@ export const repositoryProposalSchema = z.object({
   title: z.string().nullable(),
   status: z.string(),
   specRevision: z.number().int().positive(),
-  boardId: z.string(),
-  boardName: z.string(),
+  /** The Jira board it came through, or null for a ticket written here. */
+  boardId: z.string().nullable(),
+  boardName: z.string().nullable(),
   createdAt: z.string(),
 });
 export const repositoryProposalListSchema = z.object({
@@ -297,6 +305,11 @@ export const scopeSubmissionSchema = z.strictObject({
   risks: z
     .array(z.string().min(1).max(SCOPE_LIMITS.reasonChars))
     .max(SCOPE_LIMITS.risks),
+  /** Absent on proposals from before `scope@2`. */
+  pattern: z
+    .strictObject({ path: entryPointSchema, reason })
+    .nullable()
+    .optional(),
 });
 /** `scope-proposal.json`, which its artifact row's `meta` also carries. */
 export const scopeProposalSchema = scopeSubmissionSchema.extend({

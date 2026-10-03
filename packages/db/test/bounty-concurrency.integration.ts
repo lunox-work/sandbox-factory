@@ -18,6 +18,7 @@ import {
   createBountySpecStore,
   createBountyWritebackStore,
   createConnection,
+  createTicketStore,
   type NewBountySpec,
 } from "../src/index.js";
 import { runMigrations } from "../src/migrate.js";
@@ -75,17 +76,13 @@ describe("bounty database concurrency", () => {
       insert into jira_board (id, organization_id, connection_id, external_id, name, board_type)
       values ('board_bounty', 'org_bounty', 'conn_bounty', '42', 'Backlog', 'scrum')
     `;
-    await sql`
-      insert into jira_issue (
-        id, organization_id, board_id, external_id, key, status_category,
-        remote_created_at, remote_updated_at
-      ) values
-        ('issue_race', 'org_bounty', 'board_bounty', '1001', 'DEMO-1', 'new', now(), now()),
-        ('issue_rollback', 'org_bounty', 'board_bounty', '1002', 'DEMO-2', 'new', now(), now()),
-        ('issue_lease', 'org_bounty', 'board_bounty', '1003', 'DEMO-3', 'new', now(), now()),
-        ('issue_states', 'org_bounty', 'board_bounty', '1004', 'DEMO-4', 'new', now(), now()),
-        ('issue_repriced', 'org_bounty', 'board_bounty', '1005', 'DEMO-5', 'new', now(), now())
-    `;
+    await importIssues([
+      ["issue_race", "board_bounty", "1001", "DEMO-1"],
+      ["issue_rollback", "board_bounty", "1002", "DEMO-2"],
+      ["issue_lease", "board_bounty", "1003", "DEMO-3"],
+      ["issue_states", "board_bounty", "1004", "DEMO-4"],
+      ["issue_repriced", "board_bounty", "1005", "DEMO-5"],
+    ]);
   });
 
   after(async () => {
@@ -97,6 +94,39 @@ describe("bounty database concurrency", () => {
       await admin.end();
     }
   });
+
+  /**
+   * Jira issues as a run imports them: each pointer with its ticket. The
+   * ticket takes the pointer's id, so a test names one thing either way.
+   */
+  async function importIssues(
+    rows: readonly (readonly [
+      id: string,
+      boardId: string,
+      externalId: string,
+      key: string,
+    ])[],
+  ) {
+    for (const [id, boardId, externalId, key] of rows) {
+      await sql`
+        insert into ticket (id, organization_id, number, title, origin)
+        values (
+          ${id}, 'org_bounty',
+          (select coalesce(max(number), 0) + 1 from ticket where organization_id = 'org_bounty'),
+          ${key}, 'jira'
+        )
+      `;
+      await sql`
+        insert into jira_issue (
+          id, organization_id, board_id, external_id, key, ticket_id,
+          status_category, remote_created_at, remote_updated_at
+        ) values (
+          ${id}, 'org_bounty', ${boardId}, ${externalId}, ${key}, ${id},
+          'new', now(), now()
+        )
+      `;
+    }
+  }
 
   function insertRun(id: string, requestId: string, status: string) {
     return sql`
@@ -111,15 +141,20 @@ describe("bounty database concurrency", () => {
     `;
   }
 
-  function insertProposal(id: string, runId: string, issueId: string) {
-    return sql`
+  function insertProposal(
+    id: string,
+    runId: string,
+    issueId: string,
+    on: postgres.Sql | postgres.TransactionSql = sql,
+  ) {
+    return on`
       insert into bounty_proposal (
-        id, organization_id, run_id, jira_issue_id, spec_hash, rate_card,
+        id, organization_id, run_id, ticket_id, spec_hash, rate_card,
         model_complexity, model_confidence, model_rationale, actual_model,
         prompt_version, complexity, amount_minor, currency
       ) values (
         ${id}, 'org_bounty', ${runId}, ${issueId}, ${"a".repeat(64)},
-        ${sql.json(rateCard)}, 'M', 'high', 'A bounded medium change.',
+        ${on.json(rateCard)}, 'M', 'high', 'A bounded medium change.',
         'model-test', 'v1', 'M', 200, 'USD'
       )
     `;
@@ -275,7 +310,7 @@ describe("bounty database concurrency", () => {
 
       const created = await proposals.createForLease("org_bounty", "lease_1", {
         runId: "run_lease",
-        jiraIssueId: "issue_lease",
+        ticketId: "issue_lease",
         specHash: "c".repeat(64),
         specHashVersion: 1,
         rateCard,
@@ -425,16 +460,12 @@ describe("bounty database concurrency", () => {
       insert into jira_board (id, organization_id, connection_id, external_id, name, board_type)
       values ('board_categories', 'org_bounty', 'conn_bounty', '43', 'Categories', 'scrum')
     `;
-    await sql`
-      insert into jira_issue (
-        id, organization_id, board_id, external_id, key, status_category,
-        remote_created_at, remote_updated_at
-      ) values
-        ('issue_cat_1', 'org_bounty', 'board_categories', '3001', 'CAT-1', 'new', now(), now()),
-        ('issue_cat_2', 'org_bounty', 'board_categories', '3002', 'CAT-2', 'new', now(), now()),
-        ('issue_cat_3', 'org_bounty', 'board_categories', '3003', 'CAT-3', 'new', now(), now()),
-        ('issue_cat_4', 'org_bounty', 'board_categories', '3004', 'CAT-4', 'new', now(), now())
-    `;
+    await importIssues([
+      ["issue_cat_1", "board_categories", "3001", "CAT-1"],
+      ["issue_cat_2", "board_categories", "3002", "CAT-2"],
+      ["issue_cat_3", "board_categories", "3003", "CAT-3"],
+      ["issue_cat_4", "board_categories", "3004", "CAT-4"],
+    ]);
     const match = (id: string, label: string) => ({ id, label, reason: "r" });
     const leftBehind = match("left-behind", "Left behind");
     const paperCuts = match("paper-cuts", "Paper cuts");
@@ -491,7 +522,9 @@ describe("bounty database concurrency", () => {
       const proposals = createBountyProposalStore(connection.db);
 
       assert.deepEqual(
-        await proposals.categoryCounts("org_bounty", "board_categories"),
+        await proposals.categoryCounts("org_bounty", {
+          boardId: "board_categories",
+        }),
         {
           total: 4,
           uncategorized: 2,
@@ -501,7 +534,8 @@ describe("bounty database concurrency", () => {
 
       const keys = async (category?: string) =>
         (
-          await proposals.listForBoard("org_bounty", "board_categories", {
+          await proposals.list("org_bounty", {
+            boardId: "board_categories",
             ...(category === undefined ? {} : { category }),
           })
         )
@@ -518,7 +552,8 @@ describe("bounty database concurrency", () => {
       // two the count above calls uncategorized.
       assert.deepEqual(
         (
-          await proposals.listForBoard("org_bounty", "board_categories", {
+          await proposals.list("org_bounty", {
+            boardId: "board_categories",
             uncategorized: true,
           })
         )
@@ -528,19 +563,42 @@ describe("bounty database concurrency", () => {
       );
 
       // A filtered row still carries its own reasons.
-      const [first] = await proposals.listForBoard(
-        "org_bounty",
-        "board_categories",
-        { category: "left-behind" },
-      );
+      const [first] = await proposals.list("org_bounty", {
+        boardId: "board_categories",
+        category: "left-behind",
+      });
       assert.deepEqual(
         first?.categories.map(({ id }) => id),
         ["left-behind", "paper-cuts"],
       );
 
+      // Paged one at a time across rows made in one millisecond, none is
+      // skipped: a cursor holds milliseconds, and Postgres microseconds.
+      await sql`
+        update bounty_proposal
+        set created_at = timestamptz '2026-10-03 00:00:00.123Z'
+          + right(id, 1)::int * 100 * interval '1 microsecond'
+        where id like 'proposal_cat_%'
+      `;
+      const paged: string[] = [];
+      let cursor: { createdAt: string; id: string } | undefined;
+      for (;;) {
+        const [row] = await proposals.list("org_bounty", {
+          boardId: "board_categories",
+          limit: 1,
+          ...(cursor === undefined ? {} : { cursor }),
+        });
+        if (row === undefined) break;
+        paged.push(row.issueKey);
+        cursor = { createdAt: row.createdAt, id: row.id };
+      }
+      assert.deepEqual(paged, ["CAT-4", "CAT-3", "CAT-2", "CAT-1"]);
+
       // Another organization sees none of it.
       assert.deepEqual(
-        await proposals.categoryCounts("org_other", "board_categories"),
+        await proposals.categoryCounts("org_other", {
+          boardId: "board_categories",
+        }),
         { total: 0, uncategorized: 0, counts: {} },
       );
     } finally {
@@ -556,14 +614,10 @@ describe("bounty database concurrency", () => {
       insert into jira_board (id, organization_id, connection_id, external_id, name, board_type)
       values ('board_spec', 'org_bounty', 'conn_bounty', '44', 'Specs', 'scrum')
     `;
-    await sql`
-      insert into jira_issue (
-        id, organization_id, board_id, external_id, key, status_category,
-        remote_created_at, remote_updated_at
-      ) values
-        ('issue_spec', 'org_bounty', 'board_spec', '4001', 'SPEC-1', 'new', now(), now()),
-        ('issue_spec_lost', 'org_bounty', 'board_spec', '4002', 'SPEC-2', 'new', now(), now())
-    `;
+    await importIssues([
+      ["issue_spec", "board_spec", "4001", "SPEC-1"],
+      ["issue_spec_lost", "board_spec", "4002", "SPEC-2"],
+    ]);
     const queueRun = (
       id: string,
       source: { proposalId: string; revision: number } | null,
@@ -604,9 +658,9 @@ describe("bounty database concurrency", () => {
       actualModel: "model-test",
       promptVersion: "draft-v1",
     });
-    const input = (runId: string, jiraIssueId: string) => ({
+    const input = (runId: string, ticketId: string) => ({
       runId,
-      jiraIssueId,
+      ticketId,
       specHash: "d".repeat(64),
       specHashVersion: 1,
       rateCard,
@@ -769,13 +823,7 @@ describe("bounty database concurrency", () => {
       insert into jira_board (id, organization_id, connection_id, external_id, name, board_type)
       values ('board_respec', 'org_bounty', 'conn_bounty', '45', 'Respec', 'scrum')
     `;
-    await sql`
-      insert into jira_issue (
-        id, organization_id, board_id, external_id, key, status_category,
-        remote_created_at, remote_updated_at
-      ) values
-        ('issue_respec', 'org_bounty', 'board_respec', '5001', 'RESPEC-1', 'new', now(), now())
-    `;
+    await importIssues([["issue_respec", "board_respec", "5001", "RESPEC-1"]]);
     const draft: SpecDraft = {
       feature: "CSV export",
       background: [],
@@ -862,7 +910,7 @@ describe("bounty database concurrency", () => {
       await runs.claim("org_bounty", "run_respec_sized", "lease_s", new Date());
       const sized = await proposals.createForLease("org_bounty", "lease_s", {
         runId: "run_respec_sized",
-        jiraIssueId: "issue_respec",
+        ticketId: "issue_respec",
         specHash: "e".repeat(64),
         specHashVersion: 1,
         rateCard,
@@ -1060,6 +1108,127 @@ describe("bounty database concurrency", () => {
           )
         ).status,
         "changed",
+      );
+    } finally {
+      await connection.close();
+    }
+  });
+
+  test("a ticket page skips none made in the same millisecond as its last row", async () => {
+    // Postgres keeps microseconds, and a page's cursor milliseconds: three
+    // tickets inside one millisecond, read two to a page, all come back.
+    await sql`
+      insert into organization (id, name, slug)
+      values ('org_paging', 'Paging Org', 'paging-org')
+    `;
+    for (const [id, number, micros] of [
+      ["tkt_ms_a", 1, 100],
+      ["tkt_ms_b", 2, 400],
+      ["tkt_ms_c", 3, 700],
+    ] as const) {
+      // Computed in SQL: a timestamp sent as a parameter goes through a JS
+      // Date, which would cut it to the millisecond before it arrived.
+      await sql`
+        insert into ticket (id, organization_id, number, title, created_at)
+        values (
+          ${id}, 'org_paging', ${number}, ${id},
+          timestamptz '2026-10-03 00:00:00.123Z'
+            + ${micros}::int * interval '1 microsecond'
+        )
+      `;
+    }
+    const connection = createConnection({ url: scratchUrl() });
+    try {
+      const tickets = createTicketStore(connection.db);
+      const seen: string[] = [];
+      let cursor: { createdAt: string; id: string } | undefined;
+      for (;;) {
+        const page = await tickets.list("org_paging", {
+          limit: 2,
+          ...(cursor === undefined ? {} : { cursor }),
+        });
+        seen.push(...page.map(({ id }) => id));
+        const last = page.at(-1);
+        if (page.length < 2 || last === undefined) break;
+        cursor = { createdAt: last.createdAt, id: last.id };
+      }
+      assert.deepEqual(seen, ["tkt_ms_c", "tkt_ms_b", "tkt_ms_a"]);
+    } finally {
+      await connection.close();
+    }
+  });
+
+  test("a ticket delete waits for a proposal being written for it, and keeps both", async () => {
+    await importIssues([
+      ["issue_delete_race", "board_bounty", "1006", "DEMO-6"],
+    ]);
+    await insertRun("run_delete_race", "request-delete-race", "succeeded");
+    const connection = createConnection({ url: scratchUrl() });
+    try {
+      const tickets = createTicketStore(connection.db);
+      let removing: Promise<string> | undefined;
+      // The proposal's insert holds a key-share lock on the ticket until
+      // it commits; the delete is asked for while it is still open.
+      await sql.begin(async (tx) => {
+        await insertProposal(
+          "proposal_delete_race",
+          "run_delete_race",
+          "issue_delete_race",
+          tx,
+        );
+        removing = tickets.remove("org_bounty", "issue_delete_race");
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      });
+      assert.equal(await removing, "in-use");
+      const [kept] = await sql<{ proposals: number; tickets: number }[]>`
+        select
+          (select count(*)::int from bounty_proposal where id = 'proposal_delete_race') as proposals,
+          (select count(*)::int from ticket where id = 'issue_delete_race') as tickets
+      `;
+      assert.deepEqual(kept, { proposals: 1, tickets: 1 });
+
+      // A ticket nothing is built on goes.
+      await importIssues([
+        ["issue_delete_free", "board_bounty", "1007", "DEMO-7"],
+      ]);
+      assert.equal(
+        await tickets.remove("org_bounty", "issue_delete_free"),
+        "removed",
+      );
+      assert.equal(
+        await tickets.remove("org_bounty", "issue_delete_free"),
+        "not-found",
+      );
+    } finally {
+      await connection.close();
+    }
+  });
+
+  test("tickets written at once each take their own number", async () => {
+    await sql`
+      insert into organization (id, name, slug)
+      values ('org_numbers', 'Numbers Org', 'numbers-org')
+    `;
+    const connection = createConnection({ url: scratchUrl() });
+    try {
+      const tickets = createTicketStore(connection.db);
+      const created = await Promise.all(
+        Array.from({ length: 5 }, (_, index) =>
+          tickets.create("org_numbers", "user_bounty", {
+            title: `Ticket ${index}`,
+            description: "",
+            issueType: "Task",
+            priority: null,
+            labels: [],
+            repoId: null,
+          }),
+        ),
+      );
+      assert.deepEqual(
+        created
+          .map((result) => (result.ok ? result.ticket.number : 0))
+          .sort((a, b) => a - b),
+        [1, 2, 3, 4, 5],
       );
     } finally {
       await connection.close();

@@ -10,7 +10,11 @@ import type {
   StoredVersionSource,
 } from "@sandbox-factory/db";
 import { OPERATION_POLICY } from "sandbox-factory";
-import type { BoundaryContract, SliceManifest } from "sandbox-factory";
+import type {
+  ApprovedTaskSnapshot,
+  BoundaryContract,
+  SliceManifest,
+} from "sandbox-factory";
 import {
   approvedTaskHash,
   mountSandboxRoutes,
@@ -217,7 +221,7 @@ const sandbox: StoredSandbox = {
   publicRepoId: null,
   currentVersionId: null,
   sourceRepoId: "ghr_1",
-  jiraIssueIds: ["jri_1"],
+  ticketIds: ["tkt_1"],
   createdAt: stamp,
   updatedAt: stamp,
 };
@@ -246,7 +250,7 @@ const source: StoredVersionSource = {
   transformConfigSha256: "1".repeat(64),
   approvedTaskSha256: "2".repeat(64),
   approvedTask: {
-    schemaVersion: 1,
+    schemaVersion: 2,
     title: "Fix it",
     summary: "Summary",
     spec: {
@@ -280,7 +284,7 @@ const source: StoredVersionSource = {
     },
     selectedBy: "user_1",
     selectedAt: stamp,
-    jiraIssueIds: ["jri_1"],
+    ticketIds: ["tkt_1"],
   },
   aliasRules: [],
   dependencyChoices: {},
@@ -566,7 +570,7 @@ test("sandboxes are created from owned source repositories by admins and listed 
   const f = fixture();
   const created = await f.request("POST", "", {
     sourceRepoId: "ghr_1",
-    jiraIssueIds: ["jri_1"],
+    ticketIds: ["tkt_1"],
   });
   assert.equal(created.status, 201);
   assert.equal(
@@ -630,7 +634,10 @@ test("a version pins the slice artifacts by hash, snapshots the approved task an
   };
   assert.equal(json.version.id, "sbv_1");
   assert.equal(json.source.sourceCommitSha, "a".repeat(40));
-  const input = f.created[0] as { source: StoredVersionSource; tags: string[] };
+  const input = f.created[0] as {
+    source: StoredVersionSource & { approvedTask: ApprovedTaskSnapshot };
+    tags: string[];
+  };
   assert.equal(input.source.manifestSha256, sha(manifestText));
   assert.equal(input.source.contractSha256, sha(contractText));
   assert.equal(input.source.sliceRunId, "arn_slice");
@@ -658,7 +665,9 @@ test("a version pins the slice artifacts by hash, snapshots the approved task an
   );
   assert.equal(input.source.approvedTask.spec?.specRevision, 2);
   assert.equal(input.source.approvedTask.pricing?.amountMinor, 10500);
-  assert.deepEqual(input.source.approvedTask.jiraIssueIds, ["jri_1"]);
+  // A new version names the sandbox's tickets, at the current schema.
+  assert.deepEqual(input.source.approvedTask.ticketIds, ["tkt_1"]);
+  assert.equal(input.source.approvedTask.schemaVersion, 2);
   assert.equal(input.source.approvedTask.selectedBy, "user_1");
   assert.deepEqual(input.source.scope.editablePaths, ["src/app.ts"]);
   assert.deepEqual(

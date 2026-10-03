@@ -10,6 +10,7 @@ import {
   createArtifactStore,
   createBountyWritebackStore,
   createConnection,
+  createBountyProfileStore,
   createBountyProposalStore,
   createBountySpecStore,
   createEmailStore,
@@ -20,6 +21,7 @@ import {
   createJiraBoardStore,
   createJiraConnectionStore,
   createJiraIssueStore,
+  createTicketStore,
   createObjectStore,
   createOrganizationStore,
   createProfileStore,
@@ -34,6 +36,7 @@ import { buildBanner } from "@sandbox-factory/shared";
 import { createAuth } from "./auth.js";
 import { createAvatarService } from "./avatars/service.js";
 import { BountyExecutor } from "./bounty/executor.js";
+import { BountyProfiler } from "./bounty/profiler.js";
 import { BountyDelivery } from "./bounty/delivery.js";
 import { BountyWatchdog } from "./bounty/watchdog.js";
 import {
@@ -84,7 +87,10 @@ const repoSnapshots = createRepoSnapshotStore(connection.db);
 const bountyRuns = createBountyRunStore(connection.db);
 const bountyProposals = createBountyProposalStore(connection.db);
 const bountySpecs = createBountySpecStore(connection.db);
+const bountyProfiles = createBountyProfileStore(connection.db);
 const jiraIssues = createJiraIssueStore(connection.db);
+/** The organization's tickets: what every proposal prices, from any source. */
+const tickets = createTicketStore(connection.db);
 const rateCards = createRateCardStore(connection.db);
 const bountyWritebacks = createBountyWritebackStore(connection.db);
 
@@ -190,7 +196,7 @@ const bountyDelivery =
     : new BountyDelivery({
         writebacks: bountyWritebacks,
         proposals: bountyProposals,
-        issues: jiraIssues,
+        tickets,
         boards: jiraBoards,
         connections: jiraConnections,
         clientsFor: async (organizationId, connectionId) => {
@@ -209,14 +215,20 @@ const bountyDelivery =
         },
         onBackgroundError: (code) => console.error(code),
       });
+/*
+  Sizing needs a model and nothing else: a ticket written here is sized with
+  no Jira configured at all. Only a board's runs, and a ticket still
+  following its Jira issue, need Jira; without it they fail `reconnect`.
+*/
 const bountyExecutor =
-  caller === undefined || jiraClientOptions === undefined
+  caller === undefined
     ? undefined
     : new BountyExecutor({
         boards: jiraBoards,
         runs: bountyRuns,
         proposals: bountyProposals,
         issues: jiraIssues,
+        tickets,
         specs: bountySpecs,
         caller,
         clientFor: runClientFor,
@@ -237,6 +249,10 @@ const bountyExecutor =
               onWritebackCreated: (organizationId, operationId) =>
                 bountyDelivery.start(organizationId, operationId),
             }),
+        // Declared below, with the analysis it needs; called only once a
+        // run is under way, by which time it is set or known to be absent.
+        onProposalDrafted: (organizationId, input) =>
+          void bountyProfiler?.request(organizationId, input),
         onBackgroundError: (code, error) => console.error(code, error),
       });
 const jira =
@@ -382,6 +398,24 @@ const sandbox =
         maxActive: env.MAX_ACTIVE_RUNS_PER_ORG,
         onLaunchError: () => console.error("analysis_worker_launch_failed"),
       };
+/**
+ * Complexity profiles, on the same footing as analysis: each proposal sized
+ * beside a snapshot is scoped and sliced on the worker, then profiled.
+ */
+const bountyProfiler =
+  analysis === undefined
+    ? undefined
+    : new BountyProfiler({
+        profiles: bountyProfiles,
+        runs: analysisRuns,
+        artifacts: analysis.artifacts,
+        snapshots: repoSnapshots,
+        specs: bountySpecs,
+        ensureWorker: () => workerLauncher.ensureWorker(),
+        removeObject: (key) => analysis.objects.remove(key),
+        maxActive: env.MAX_ACTIVE_RUNS_PER_ORG,
+        onError: (code, error) => console.error(code, error),
+      });
 const analysisWatchdog =
   analysis === undefined
     ? undefined
@@ -408,6 +442,8 @@ const app = createApp({
     proposals: bountyProposals,
     specs: bountySpecs,
     issues: jiraIssues,
+    tickets,
+    profiles: bountyProfiles,
     connections: jiraConnections,
     writebacks: bountyWritebacks,
     ...(bountyDelivery === undefined ? {} : { delivery: bountyDelivery }),
@@ -438,6 +474,7 @@ const bountyWatchdog = new BountyWatchdog({
 });
 bountyWatchdog.start();
 analysisWatchdog?.start();
+bountyProfiler?.start();
 githubReconciler?.start();
 
 const server = serve({ fetch: app.fetch, port: env.PORT }, (info) => {
@@ -457,6 +494,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
     void Promise.all([
       githubReconciler?.stop(),
       analysisWatchdog?.stop(),
+      bountyProfiler?.stop(),
       githubSnapshotter?.stop(),
     ]).then(() => {
       server.close(() => {

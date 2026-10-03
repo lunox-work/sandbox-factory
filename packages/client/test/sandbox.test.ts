@@ -9,7 +9,7 @@ const sandbox = {
   publicRepoId: null,
   currentVersionId: null,
   sourceRepoId: "ghr_1",
-  jiraIssueIds: ["jri_1"],
+  ticketIds: ["tkt_1"],
   createdAt: stamp,
   updatedAt: stamp,
 };
@@ -43,6 +43,7 @@ const source = {
   dependencyChoices: {},
   acceptanceTests: [],
   fixtures: null,
+  // A version frozen before tickets, read as it was written.
   approvedTask: {
     schemaVersion: 1,
     title: "Fix it",

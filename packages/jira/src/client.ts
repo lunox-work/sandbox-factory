@@ -311,8 +311,9 @@ export class JiraClient {
    * board or backlog read cannot pull ticket text even by accident; a caller
    * that wants the words has to ask for them one ticket at a time, by name.
    *
-   * The platform stores the returned `specHash` and not the text. Re-reading a
-   * ticket later and comparing hashes is how a proposal is known to be stale.
+   * A run writes the text onto the issue's ticket. Re-reading a ticket later
+   * and comparing `pricingSpecHash` with the one a proposal was priced from
+   * is how the proposal is known to be stale.
    *
    * `signal` bounds the read, retries included, for a caller holding a lease.
    */
