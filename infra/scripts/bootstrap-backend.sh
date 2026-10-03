@@ -6,8 +6,8 @@
 #
 # Run once, by hand, then `terraform init -backend-config=backend.hcl`: the
 # bucket cannot be managed by the state it holds. Versioning is on because
-# losing state is unrecoverable. No state locking, deliberately; the generated
-# backend.hcl says why and when to revisit it.
+# losing state is unrecoverable. Locking uses S3 native lock files, so there is
+# no DynamoDB table to create; the generated backend.hcl says why.
 
 set -euo pipefail
 
@@ -58,13 +58,14 @@ cat > "$(dirname "$0")/../backend.hcl" <<EOF
 bucket       = "$BUCKET"
 key          = "$PROJECT/terraform.tfstate"
 region       = "$REGION"
-encrypt = true
+encrypt      = true
+use_lockfile = true
 
-# State locking is deliberately absent. \`use_lockfile\` (S3 native locking) needs
-# Terraform 1.10+; the older alternative is a DynamoDB table, which is a
-# resource to create and pay for so that a single operator cannot race
-# themselves. Revisit if a second person or CI ever runs \`apply\` — CI only runs
-# \`plan\`, which takes no lock.
+# Locking: \`apply\` is run from more than one machine, so a run holds a lock
+# object (\`<key>.tflock\`) beside the state, and a second run fails instead of
+# racing it. S3 native locking needs Terraform 1.11+ (versions.tf enforces it)
+# and no DynamoDB table. CI's plan never takes the lock: it reads the state
+# with \`state pull\` and plans against a local copy.
 EOF
 
 echo

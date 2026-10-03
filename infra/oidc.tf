@@ -260,7 +260,7 @@ resource "aws_iam_role_policy_attachment" "github_plan_readonly" {
 
 # Addresses the plan role may not refresh. The plan workflow drops them from a
 # local copy of the state before planning (never the bucket, which this role
-# cannot write). `terraform plan -exclude` postdates the pinned 1.9.8; see
+# cannot write). `terraform plan` has no `-exclude` (as of 1.16); see
 # .github/workflows/terraform.yml.
 output "plan_unrefreshable_resources" {
   description = "Resources the read-only plan role cannot refresh, because it is denied their values. The plan workflow excludes them explicitly."
@@ -284,5 +284,6 @@ resource "aws_iam_role_policy" "github_plan_deny_secret_values" {
   policy = data.aws_iam_policy_document.github_plan_deny_secret_values.json
 }
 
-# ReadOnlyAccess covers reading the state file in S3. Locking is not
-# configured (see backend.hcl), so plan needs no write to the bucket.
+# ReadOnlyAccess covers reading the state file in S3. backend.hcl turns on
+# locking, but the plan workflow only runs `state pull`, which takes no lock,
+# and then plans a local copy — so this role still needs no write to the bucket.
