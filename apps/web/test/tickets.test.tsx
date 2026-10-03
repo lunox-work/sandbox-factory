@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
 
@@ -311,7 +311,11 @@ test("a ticket with no title is not sent", async () => {
   );
   const form = await screen.findByTestId("ticket-form");
   // Submitted past the browser's own check, as a script could.
-  form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+  act(() => {
+    form.dispatchEvent(
+      new Event("submit", { bubbles: true, cancelable: true }),
+    );
+  });
   expect(
     await within(form).findByText("A ticket needs a title."),
   ).toBeDefined();
@@ -385,6 +389,51 @@ test("a ticket that already has a proposal opens it without sizing", async () =>
   await userEvent.click(within(list).getByRole("button", { name: "Propose" }));
   await screen.findByTestId("proposal-panel");
   expect(state.calls.some(({ url }) => url.includes("/runs/"))).toBe(false);
+});
+
+test("a ticket already being sized follows the run under way", async () => {
+  const state = server([
+    [
+      "POST",
+      "/tickets/tkt_7/propose",
+      () =>
+        json(
+          {
+            code: "run_active",
+            error: "This ticket is already being sized.",
+            runId: "brn_1",
+          },
+          409,
+        ),
+    ],
+    [
+      "GET",
+      "/runs/brn_1",
+      () =>
+        json({
+          run: run(
+            [
+              {
+                externalIssueId: "tkt_7",
+                issueKey: "T-7",
+                ticketId: "tkt_7",
+                proposalId: "bpr_9",
+                status: "proposed",
+              },
+            ],
+            "succeeded",
+          ),
+        }),
+    ],
+  ]);
+  vi.stubGlobal("fetch", state.fetchMock);
+  render(<Tickets organizationId="org_1" role="admin" />);
+  const list = await screen.findByTestId("ticket-list");
+  await userEvent.click(within(list).getByRole("button", { name: "Propose" }));
+
+  await screen.findByTestId("proposal-panel");
+  expect(window.location.search).toBe("?tab=proposals&proposal=bpr_9");
+  expect(screen.queryByText("This ticket is already being sized.")).toBeNull();
 });
 
 test("a proposal that could not start, or ended without one, says why", async () => {
@@ -502,7 +551,10 @@ test("a stale edit says so and shows the ticket as it is now", async () => {
           {
             code: "ticket_changed",
             error: "The ticket changed. Reload it before saving.",
-            ticket: detail({ revision: 3 }),
+            ticket: detail({
+              revision: 3,
+              title: "Invitations go to the wrong address",
+            }),
           },
           409,
         ),
@@ -516,11 +568,94 @@ test("a stale edit says so and shows the ticket as it is now", async () => {
   const form = await screen.findByTestId("ticket-form");
   await userEvent.type(within(form).getByLabelText("Title"), "!");
   await userEvent.click(within(form).getByRole("button", { name: "Save" }));
+
+  // The form holds their version now, so a second save cannot undo it.
+  const reopened = await screen.findByTestId("ticket-form");
   expect(
-    await within(form).findByText(
-      "The ticket changed. Reload it before saving.",
-    ),
+    await within(reopened).findByText(/Someone changed this ticket/),
   ).toBeDefined();
+  const title = within(reopened).getByLabelText("Title") as HTMLInputElement;
+  expect(title.value).toBe("Invitations go to the wrong address");
+  await userEvent.type(title, "!");
+  await userEvent.click(within(reopened).getByRole("button", { name: "Save" }));
+  await waitFor(() =>
+    expect(
+      state.calls.filter(({ method }) => method === "PATCH").at(-1)?.body,
+    ).toEqual({
+      expectedRevision: 3,
+      title: "Invitations go to the wrong address!",
+    }),
+  );
+});
+
+test("an edit sends only what changed, and nothing when nothing did", async () => {
+  const state = server([
+    [
+      "PATCH",
+      "/tickets/tkt_7",
+      () =>
+        json({
+          ticket: detail({ title: "Invitations are not sent!", revision: 2 }),
+        }),
+    ],
+  ]);
+  vi.stubGlobal("fetch", state.fetchMock);
+  window.history.replaceState(null, "", "/o/acme/tickets?ticket=tkt_7");
+  render(<Tickets organizationId="org_1" role="member" />);
+
+  const panel = await screen.findByTestId("ticket-detail");
+  await userEvent.click(within(panel).getByRole("button", { name: "Edit" }));
+  const unchanged = await screen.findByTestId("ticket-form");
+  await userEvent.click(
+    within(unchanged).getByRole("button", { name: "Save" }),
+  );
+  const again = await screen.findByTestId("ticket-detail");
+  expect(state.calls.some(({ method }) => method === "PATCH")).toBe(false);
+
+  await userEvent.click(within(again).getByRole("button", { name: "Edit" }));
+  const form = await screen.findByTestId("ticket-form");
+  await userEvent.type(within(form).getByLabelText("Title"), "!");
+  await userEvent.click(within(form).getByRole("button", { name: "Save" }));
+  await waitFor(() =>
+    expect(state.calls.find(({ method }) => method === "PATCH")?.body).toEqual({
+      expectedRevision: 1,
+      title: "Invitations are not sent!",
+    }),
+  );
+});
+
+test("labels past the limit are refused before they are sent", async () => {
+  const state = server();
+  vi.stubGlobal("fetch", state.fetchMock);
+  render(<Tickets organizationId="org_1" role="member" />);
+  await screen.findByTestId("ticket-list");
+  await userEvent.click(
+    screen.getAllByRole("button", { name: "New ticket" })[0]!,
+  );
+  const form = await screen.findByTestId("ticket-form");
+  await userEvent.type(within(form).getByLabelText("Title"), "Many labels");
+  await userEvent.click(within(form).getByLabelText("Labels"));
+  await userEvent.paste(
+    Array.from({ length: 21 }, (_, index) => `label${index}`).join(", "),
+  );
+  await userEvent.click(
+    within(form).getByRole("button", { name: "Create ticket" }),
+  );
+  expect(
+    await within(form).findByText("A ticket takes at most 20 labels."),
+  ).toBeDefined();
+
+  const labels = within(form).getByLabelText("Labels");
+  await userEvent.clear(labels);
+  await userEvent.click(labels);
+  await userEvent.paste("x".repeat(65));
+  await userEvent.click(
+    within(form).getByRole("button", { name: "Create ticket" }),
+  );
+  expect(
+    await within(form).findByText("A label is at most 64 characters long."),
+  ).toBeDefined();
+  expect(state.calls.some(({ method }) => method === "POST")).toBe(false);
 });
 
 test("an admin deletes a ticket with no proposal", async () => {
@@ -547,6 +682,39 @@ test("an admin deletes a ticket with no proposal", async () => {
   await waitFor(() => expect(window.location.search).toBe(""));
 });
 
+test("a ticket that cannot be deleted says why, once", async () => {
+  const state = server([
+    [
+      "DELETE",
+      "/tickets/tkt_7",
+      () =>
+        json(
+          {
+            code: "ticket_in_use",
+            error:
+              "This ticket has a proposal or a sandbox, or is being sized, so it cannot be deleted.",
+          },
+          409,
+        ),
+    ],
+  ]);
+  vi.stubGlobal("fetch", state.fetchMock);
+  window.history.replaceState(null, "", "/o/acme/tickets?ticket=tkt_7");
+  render(<Tickets organizationId="org_1" role="admin" />);
+  const panel = await screen.findByTestId("ticket-detail");
+  await userEvent.click(
+    within(panel).getByRole("button", { name: "Delete ticket" }),
+  );
+  await userEvent.click(
+    await screen.findByRole("button", { name: "Delete ticket" }),
+  );
+  await screen.findByText(/is being sized, so it cannot be deleted/);
+  expect(
+    screen.getAllByText(/is being sized, so it cannot be deleted/),
+  ).toHaveLength(1);
+  expect(window.location.search).toBe("?ticket=tkt_7");
+});
+
 test("a ticket that no longer exists says so", async () => {
   vi.stubGlobal(
     "fetch",
@@ -561,6 +729,41 @@ test("a ticket that no longer exists says so", async () => {
   ).toBeDefined();
 });
 
+test("a ticket that could not be read is offered again, not called gone", async () => {
+  let reads = 0;
+  vi.stubGlobal(
+    "fetch",
+    server([
+      [
+        "GET",
+        "/tickets/tkt_7",
+        () => {
+          reads += 1;
+          return reads === 1
+            ? json({ error: "Internal" }, 500)
+            : json({ ticket: detail() });
+        },
+      ],
+    ]).fetchMock,
+  );
+  window.history.replaceState(null, "", "/o/acme/tickets?ticket=tkt_7");
+  render(<Tickets organizationId="org_1" role="member" />);
+  expect(await screen.findByText("Could not load the ticket.")).toBeDefined();
+  expect(screen.queryByText("This ticket no longer exists.")).toBeNull();
+  await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+  expect(await screen.findByTestId("ticket-detail")).toBeDefined();
+});
+
+test("a link to a ticket past the loaded rows still names its panel", async () => {
+  vi.stubGlobal("fetch", server([], []).fetchMock);
+  window.history.replaceState(null, "", "/o/acme/tickets?ticket=tkt_7");
+  render(<Tickets organizationId="org_1" role="member" />);
+  await screen.findByTestId("ticket-detail");
+  const panel = screen.getByTestId("ticket-panel");
+  expect(within(panel).getByText("Invitations are not sent")).toBeDefined();
+  expect(within(panel).getByText("T-7")).toBeDefined();
+});
+
 test("the tabs are in the URL, and Back moves between them", async () => {
   vi.stubGlobal("fetch", server().fetchMock);
   window.history.replaceState(null, "", "/o/acme/tickets");
@@ -571,7 +774,9 @@ test("the tabs are in the URL, and Back moves between them", async () => {
   expect(await screen.findByTestId("proposal-list")).toBeDefined();
 
   window.history.replaceState(null, "", "/o/acme/tickets");
-  window.dispatchEvent(new PopStateEvent("popstate"));
+  act(() => {
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  });
   expect(await screen.findByTestId("ticket-list")).toBeDefined();
 });
 

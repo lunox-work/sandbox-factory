@@ -27,6 +27,9 @@ import {
 } from "@sandbox-factory/shared";
 import type { Hono } from "hono";
 
+import { isAtLeastAdmin } from "../connect-state.js";
+import { boundedLimit, rowCursor } from "../paging.js";
+
 export interface TicketRouteOptions {
   readonly tickets: TicketStore;
   readonly proposals: Pick<BountyProposalStore, "get" | "liveForTicket">;
@@ -49,7 +52,7 @@ export function mountTicketRoutes<Env extends TicketAppEnv>(
   app.get(base, async (c) => {
     const { organizationId } = c.get("member");
     const limit = boundedLimit(c.req.query("limit"));
-    const cursor = ticketCursor(c.req.query("cursor"));
+    const cursor = rowCursor(c.req.query("cursor"));
     if (cursor === null) return c.json({ error: "Invalid cursor." }, 400);
     const tickets = await options.tickets.list(organizationId, {
       limit,
@@ -157,7 +160,10 @@ export function mountTicketRoutes<Env extends TicketAppEnv>(
     }
   });
 
-  /** Only a ticket nothing has been built on: no proposal, no sandbox. */
+  /**
+   * Only a ticket nothing has been built on: no proposal, no sandbox, and
+   * no run sizing it now.
+   */
   app.delete(`${base}/:id`, async (c) => {
     const { organizationId, role } = c.get("member");
     if (!isAtLeastAdmin(role)) {
@@ -177,7 +183,7 @@ export function mountTicketRoutes<Env extends TicketAppEnv>(
           {
             code: "ticket_in_use",
             error:
-              "This ticket has a proposal or a sandbox. Remove those first.",
+              "This ticket has a proposal or a sandbox, or is being sized, so it cannot be deleted.",
           },
           409,
         );
@@ -268,29 +274,4 @@ function repoNotFound(c: { json: (body: unknown, status: 404) => Response }) {
     },
     404,
   );
-}
-
-function boundedLimit(value: string | undefined): number {
-  const parsed = Number(value ?? 25);
-  return Number.isInteger(parsed) ? Math.min(Math.max(parsed, 1), 50) : 25;
-}
-
-function ticketCursor(
-  value: string | undefined,
-): { createdAt: string; id: string } | undefined | null {
-  if (value === undefined || value === "") return undefined;
-  const separator = value.lastIndexOf("|");
-  if (separator <= 0) return null;
-  const createdAt = value.slice(0, separator);
-  const id = value.slice(separator + 1);
-  return Number.isFinite(Date.parse(createdAt)) && id !== ""
-    ? { createdAt, id }
-    : null;
-}
-
-function isAtLeastAdmin(role: string): boolean {
-  return role.split(",").some((entry) => {
-    const normalized = entry.trim();
-    return normalized === "owner" || normalized === "admin";
-  });
 }

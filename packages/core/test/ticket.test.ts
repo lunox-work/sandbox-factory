@@ -5,6 +5,7 @@ import { test } from "node:test";
 import { BOUNTY_RUN_KINDS } from "../src/bounty.js";
 import { DESCRIPTOR_FORBIDDEN_KEYS } from "../src/sandbox/descriptor.js";
 import {
+  clampTicketTitle,
   DEFAULT_ISSUE_TYPE,
   normalizeSpecText,
   TICKET_LIMITS,
@@ -61,4 +62,21 @@ test("declares a ticket's origins, bounds and default type", () => {
   assert.ok(BOUNTY_RUN_KINDS.includes("ticket"));
   // A ticket id is private provenance, like the pointers it replaced.
   assert.ok(DESCRIPTOR_FORBIDDEN_KEYS.includes("ticketIds"));
+});
+
+test("a title past the limit is cut, never through a character", () => {
+  assert.equal(clampTicketTitle("Short"), "Short");
+  const long = "x".repeat(TICKET_LIMITS.title + 10);
+  assert.equal(clampTicketTitle(long).length, TICKET_LIMITS.title);
+  // An emoji is two UTF-16 units; one straddling the limit is left out
+  // whole rather than halved.
+  const straddling = `${"x".repeat(TICKET_LIMITS.title - 1)}\u{1F600}tail`;
+  const cut = clampTicketTitle(straddling);
+  assert.equal(cut, "x".repeat(TICKET_LIMITS.title - 1));
+  assert.equal(clampTicketTitle(cut), cut);
+  const fits = `${"x".repeat(TICKET_LIMITS.title - 2)}\u{1F600}tail`;
+  assert.equal(
+    clampTicketTitle(fits),
+    `${"x".repeat(TICKET_LIMITS.title - 2)}\u{1F600}`,
+  );
 });

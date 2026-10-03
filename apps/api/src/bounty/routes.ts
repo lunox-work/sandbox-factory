@@ -56,6 +56,8 @@ import type {
   RunJiraClient,
 } from "./executor.js";
 import type { BountyDelivery } from "./delivery.js";
+import { isAtLeastAdmin } from "../connect-state.js";
+import { boundedLimit, rowCursor } from "../paging.js";
 import { REVISE_SPEC_PROMPT_VERSION } from "../sizing/tools/revise-spec.js";
 import { freshProposal, mapConcurrent, proposalTitle } from "./review.js";
 
@@ -68,7 +70,7 @@ export interface BountyRouteOptions {
   readonly issues: JiraIssueStore;
   /** The organization's tickets, which every proposal prices. */
   readonly tickets: TicketStore;
-  /** Complexity profiles; absent where no repository analysis is set up. */
+  /** Complexity profiles; absent, a proposal reads as never profiled. */
   readonly profiles?: Pick<BountyProfileStore, "latest">;
   readonly connections?: JiraConnectionStore;
   readonly writebacks?: BountyWritebackStore;
@@ -79,9 +81,11 @@ export interface BountyRouteOptions {
   ) => Promise<string | undefined>;
   readonly executor?: BountyExecutor;
   /**
-   * A Jira site's client. Absent where Jira is not configured: a board's
-   * runs then cannot start, and a ticket from Jira cannot be read, but a
-   * ticket written here is sized and reviewed all the same.
+   * A Jira site's client. Where Jira is not configured it answers
+   * `reconnect`, as for a site that needs reconnecting, and where it is
+   * absent the same is assumed: a board's runs then cannot start, and a
+   * ticket following its issue cannot be read, but every other ticket is
+   * sized and reviewed all the same.
    */
   readonly clientFor?: (
     organizationId: string,
@@ -389,8 +393,14 @@ export async function startTicketRun(
   if (live !== null) {
     return { ok: false, reason: "live-proposal", proposalId: live };
   }
-  if (followsJira(ticket) && options.clientFor === undefined) {
-    return { ok: false, reason: "reconnect" };
+  // Read through its site, as the run will: one that needs reconnecting is
+  // said now, as for a board's run, rather than by a run that fails.
+  if (ticket.jira !== null && followsJira(ticket)) {
+    const ready =
+      options.clientFor === undefined
+        ? null
+        : await options.clientFor(organizationId, ticket.jira.connectionId);
+    if (ready === null || !ready.ok) return { ok: false, reason: "reconnect" };
   }
   const board = await boardOf(options, organizationId, ticket);
   const card = await rateCardFor(options.rateCards, organizationId, input);
@@ -982,7 +992,7 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
     const category = proposalCategory(c.req.query("category"));
     if (category === null) return c.json({ error: "Invalid category." }, 400);
     const limit = boundedLimit(c.req.query("limit"));
-    const cursor = proposalCursor(c.req.query("cursor"));
+    const cursor = rowCursor(c.req.query("cursor"));
     if (cursor === null) return c.json({ error: "Invalid cursor." }, 400);
     /*
       Stored rows only, so the list answers at once. What a row cannot show
@@ -1086,8 +1096,8 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
   /*
     The complexity profile of the proposal's newest profiled spec revision,
     with where it stands while its runs are in flight. Null when it was
-    never profiled: the board had no repository when it was sized, or this
-    deployment has no repository analysis.
+    never profiled: neither its ticket nor its board named a repository
+    when it was sized, or this deployment has no repository analysis.
   */
   app.get("/api/v1/orgs/:orgId/proposals/:id/profile", async (c) => {
     const { organizationId } = c.get("member");
@@ -1884,32 +1894,7 @@ function writebackBusy(
   );
 }
 
-function boundedLimit(value: string | undefined): number {
-  const parsed = Number(value ?? 25);
-  return Number.isInteger(parsed) ? Math.min(Math.max(parsed, 1), 50) : 25;
-}
-
 function pageCursor(value: string | undefined): string | undefined | null {
   if (value === undefined || value === "") return undefined;
   return Number.isFinite(Date.parse(value)) ? value : null;
-}
-
-function proposalCursor(
-  value: string | undefined,
-): { createdAt: string; id: string } | undefined | null {
-  if (value === undefined || value === "") return undefined;
-  const separator = value.lastIndexOf("|");
-  if (separator <= 0) return null;
-  const createdAt = value.slice(0, separator);
-  const id = value.slice(separator + 1);
-  return Number.isFinite(Date.parse(createdAt)) && id !== ""
-    ? { createdAt, id }
-    : null;
-}
-
-function isAtLeastAdmin(role: string): boolean {
-  return role.split(",").some((entry) => {
-    const normalized = entry.trim();
-    return normalized === "owner" || normalized === "admin";
-  });
 }

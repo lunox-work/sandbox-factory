@@ -110,7 +110,7 @@ const newVersion = {
   },
 };
 
-test("create needs an owned source repository and owned issue pointers, then writes three tables", async () => {
+test("create needs an owned source repository and owned tickets, then writes three tables", async () => {
   const fake = createSequencedFakeDb([
     [{ role: "source", syncStatus: "ok" }],
     [{ id: "tkt_1" }, { id: "tkt_2" }],
@@ -183,7 +183,7 @@ test("create needs an owned source repository and owned issue pointers, then wri
   assert.match(sandboxSlug(), /^[a-f0-9]{12}$/);
 });
 
-test("list and get join the source and the issue pointers under the owner", async () => {
+test("list and get join the source and the tickets under the owner", async () => {
   const fake = createSequencedFakeDb([
     [
       { sandbox: sandboxRow(), sourceRepoId: "ghr_1" },

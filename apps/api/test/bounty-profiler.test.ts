@@ -412,7 +412,8 @@ test("a requested profile is scoped, sliced and built from what was measured", a
     specHash: request.specHash,
   });
   assert.equal(scope.requestedBy, null);
-  assert.equal(scope.maxActive, 4);
+  // One slot under the organization's cap of four, kept for a person.
+  assert.equal(scope.maxActive, 3);
   assert.equal(row.scopeRunId, h.runs.of("scope").id);
   assert.ok(h.launches() >= 1);
 
@@ -485,8 +486,10 @@ test("at the organization's analysis cap a profile waits, and the rest of the sw
   );
   // The second row was not even tried once the first met the cap.
   assert.equal(h.runs.enqueued.length, 1);
+  assert.equal(h.launches(), 0);
 
-  // The graph fits but the scope does not: still queued, tried again later.
+  // The graph fits but the scope does not: still queued, tried again later,
+  // and the graph queued meanwhile is run.
   h.runs.refuse.clear();
   h.runs.refuse.set("scope", { ok: false, reason: "run_limit" });
   await h.profiler.sweep();
@@ -494,6 +497,7 @@ test("at the organization's analysis cap a profile waits, and the rest of the sw
     [...h.profiles.rows.values()].every((row) => row.status === "queued"),
     true,
   );
+  assert.equal(h.launches(), 1);
 
   h.runs.refuse.clear();
   await h.profiler.sweep();
@@ -528,6 +532,8 @@ test("a scope that fails, or a graph that already did, fails the profile with th
   await graphFailed.profiler.sweep();
   assert.equal(graphFailed.profiles.only().errorCode, "scope_failed");
   assert.equal(graphFailed.profiles.only().runErrorCode, "tool_failed");
+  // Nothing was left queued, so no worker is started for it.
+  assert.equal(graphFailed.launches(), 0);
 
   const scopeFailed = harness();
   scopeFailed.runs.startAs.set("scope", "failed");
@@ -722,6 +728,24 @@ test("one row's failure does not stop the others, and a failed launch is reporte
   ]);
 });
 
+test("one organization whose rows cannot be read does not stop the others", async () => {
+  const h = harness();
+  await h.profiles.request("org_broken", { ...request, proposalId: "bpr_9" });
+  await h.profiles.request(OWNER, request);
+  const pending = h.profiles.pending;
+  h.profiles.pending = async (owner: string) => {
+    if (owner === "org_broken") throw new Error("database blip");
+    return pending(owner);
+  };
+  await h.profiler.sweep();
+  assert.equal(
+    [...h.profiles.rows.values()].find((row) => row.organizationId === OWNER)
+      ?.status,
+    "scoping",
+  );
+  assert.deepEqual(h.errors, ["bounty_profile_sweep_failed"]);
+});
+
 test("a re-queued run's old log is removed from the bucket", async () => {
   const h = harness();
   h.runs.obsoleteLogKey = "logs/old.txt";
@@ -753,8 +777,20 @@ test("a sweep asked for mid-sweep runs again after it, and the timer starts once
   h.profiles.organizationsWithPending = async () => {
     throw new Error("database down");
   };
-  h.profiler.kick();
+  h.profiler.start();
   await h.profiler.stop();
   await new Promise((resolve) => setImmediate(resolve));
   assert.ok(h.errors.includes("bounty_profile_sweep_failed"));
+
+  // Once stopped, a request still in flight at shutdown starts no sweep.
+  passes = 0;
+  h.profiles.organizationsWithPending = async () => {
+    passes += 1;
+    return discover();
+  };
+  await h.profiler.request(OWNER, request);
+  h.profiler.kick();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(passes, 0);
+  assert.equal(h.profiles.only().status, "queued");
 });

@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { getTableConfig } from "drizzle-orm/pg-core";
 import type { TicketContent } from "sandbox-factory";
 
-import type { TicketRow } from "../src/schema.js";
+import { jiraIssue, ticket, type TicketRow } from "../src/schema.js";
 import {
   createTicketStore,
   followsJira,
@@ -317,7 +318,7 @@ test("a Jira ticket's text is Jira's; its repository is the platform's", async (
   assert.deepEqual(unknownRepo, { ok: false, reason: "repo-not-found" });
 
   const cleared = createSequencedFakeDb([
-    [jiraRow],
+    [{ ...jiraRow, row: ticketRow({ origin: "jira", repoId: "ghr_1" }) }],
     [ticketRow({ origin: "jira", revision: 2 })],
   ]);
   const unset = await createTicketStore(cleared.db).update(
@@ -331,25 +332,80 @@ test("a Jira ticket's text is Jira's; its repository is the platform's", async (
 });
 
 test("a ticket is removed only while nothing is built on it", async () => {
-  const removed = createFakeDb([{ id: "tkt_1" }]);
+  const removed = createSequencedFakeDb([[{ id: "tkt_1" }], [{ id: "tkt_1" }]]);
   assert.equal(
     await createTicketStore(removed.db).remove("org_1", "tkt_1"),
     "removed",
   );
-  assert.equal(removed.calls[0]?.kind, "delete");
+  // Locked before the check, so a proposal written meanwhile is waited for.
+  assert.equal(removed.calls[0]?.kind, "select");
+  assert.equal(removed.calls[0]?.lock, "update");
   assert.equal(removed.calls[0]?.filtered, true);
+  assert.equal(removed.calls[1]?.kind, "delete");
+  assert.equal(removed.calls[1]?.filtered, true);
   assert.equal(
     await createTicketStore(
-      createSequencedFakeDb([[], [{ row: ticketRow(), ...unlinked }]]).db,
+      createSequencedFakeDb([[{ id: "tkt_1" }], []]).db,
     ).remove("org_1", "tkt_1"),
     "in-use",
   );
+  const missing = createSequencedFakeDb([[]]);
   assert.equal(
-    await createTicketStore(createSequencedFakeDb([[], []]).db).remove(
-      "org_1",
-      "tkt_x",
-    ),
+    await createTicketStore(missing.db).remove("org_1", "tkt_x"),
     "not-found",
+  );
+  assert.equal(
+    missing.calls.some(({ kind }) => kind === "delete"),
+    false,
+  );
+});
+
+test("a change to what the ticket already says writes nothing", async () => {
+  const fake = createSequencedFakeDb([
+    [{ row: ticketRow({ repoId: "ghr_1" }), ...unlinked }],
+  ]);
+  const result = await createTicketStore(fake.db).update("org_1", "tkt_1", 1, {
+    title: "Invitations are not sent",
+    labels: ["email"],
+    priority: "High",
+    repoId: "ghr_1",
+  });
+  assert.ok(result.ok);
+  assert.equal(result.ticket.revision, 1);
+  assert.equal(fake.calls.length, 1);
+});
+
+test("a repository removed between the check and the write is not found", async () => {
+  const gone = Object.assign(new Error("fk"), { code: "23503" });
+  const created = await createTicketStore(
+    createSequencedFakeDb([[{ id: "ghr_1" }], gone]).db,
+  ).create("org_1", "user_1", { ...newTicket, repoId: "ghr_1" });
+  assert.deepEqual(created, { ok: false, reason: "repo-not-found" });
+
+  const updated = await createTicketStore(
+    createSequencedFakeDb([
+      [{ row: ticketRow(), ...unlinked }],
+      [{ id: "ghr_1" }],
+      gone,
+    ]).db,
+  ).update("org_1", "tkt_1", 1, { repoId: "ghr_1" });
+  assert.deepEqual(updated, { ok: false, reason: "repo-not-found" });
+
+  // Any other failure is not a missing repository.
+  const down = new Error("connection lost");
+  await assert.rejects(
+    createTicketStore(createSequencedFakeDb([down]).db).create(
+      "org_1",
+      "user_1",
+      newTicket,
+    ),
+    /connection lost/,
+  );
+  await assert.rejects(
+    createTicketStore(
+      createSequencedFakeDb([[{ row: ticketRow(), ...unlinked }], down]).db,
+    ).update("org_1", "tkt_1", 1, { title: "t" }),
+    /connection lost/,
   );
 });
 
@@ -413,5 +469,33 @@ test("a refresh writes Jira's text only when it differs", async () => {
       jiraText,
     ),
     false,
+  );
+});
+
+test("a ticket's number is its organization's, and its columns are checked", () => {
+  const config = getTableConfig(ticket);
+  assert.deepEqual(
+    config.uniqueConstraints
+      .find(({ name }) => name === "ticket_organization_number_unique")
+      ?.columns.map(({ name }) => name),
+    ["organization_id", "number"],
+  );
+  assert.deepEqual(config.checks.map(({ name }) => name).sort(), [
+    "ticket_number_check",
+    "ticket_origin_check",
+    "ticket_revision_check",
+    "ticket_title_check",
+  ]);
+  // Removing a repository clears the link; the ticket stays.
+  const repo = config.foreignKeys.find(
+    (key) => key.reference().columns[0]?.name === "repo_id",
+  );
+  assert.equal(repo?.onDelete, "set null");
+  // One pointer per ticket.
+  assert.deepEqual(
+    getTableConfig(jiraIssue)
+      .uniqueConstraints.find(({ name }) => name === "jira_issue_ticket_unique")
+      ?.columns.map(({ name }) => name),
+    ["ticket_id"],
   );
 });

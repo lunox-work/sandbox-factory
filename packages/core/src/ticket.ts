@@ -19,9 +19,11 @@ export const TICKET_ORIGINS = ["manual", "jira"] as const;
 export type TicketOrigin = (typeof TICKET_ORIGINS)[number];
 
 /**
- * The bounds of a ticket's text. The description's matches the most text a
- * Jira description is flattened to, so a ticket asks a model for no more
- * whichever way it was written.
+ * The bounds of a ticket's text, for one written or edited here. The
+ * description's is also where a Jira description is cut when it is
+ * flattened, so a ticket asks a model for about as much whichever way it
+ * was written. Jira's text is stored as read, and can run past these: a cut
+ * description carries its truncation marker, and Jira bounds no labels.
  */
 export const TICKET_LIMITS = {
   title: 255,
@@ -34,6 +36,17 @@ export const TICKET_LIMITS = {
 
 /** The issue type a ticket has when nobody named one, as Jira's default. */
 export const DEFAULT_ISSUE_TYPE = "Task";
+
+/**
+ * A title from a source the limit does not bound, cut to fit it. Never in
+ * the middle of a surrogate pair: half a character is stored as a
+ * replacement character, which the source's title never matches again, so
+ * every later read would see a change and move the revision.
+ */
+export function clampTicketTitle(title: string): string {
+  const cut = title.slice(0, TICKET_LIMITS.title);
+  return /[\uD800-\uDBFF]$/.test(cut) ? cut.slice(0, -1) : cut;
+}
 
 /** What a ticket says: everything a run sizes it from. */
 export interface TicketContent {

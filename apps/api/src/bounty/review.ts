@@ -27,9 +27,10 @@ export interface ProposalReviewOptions {
   readonly tickets: TicketStore;
   readonly boards: JiraBoardStore;
   /**
-   * A Jira site's client, for a ticket still following its issue. Absent
-   * where Jira is not configured: such a ticket's freshness is then
-   * unknown, and every other ticket's is read as stored.
+   * A Jira site's client, for a ticket still following its issue. Where
+   * Jira is not configured it answers `reconnect`, and where it is absent
+   * the same is assumed: such a ticket's freshness is then unknown, and
+   * every other ticket's is read as stored.
    */
   readonly clientFor?: (
     organizationId: string,
@@ -72,7 +73,9 @@ export async function freshProposal(
         proposal,
         freshness: "unknown",
         checkedAt,
-        code: ready.ok ? "not_found" : ready.reason,
+        // On the wire as every other code is, in snake case.
+        code:
+          ready.ok || ready.reason === "not-found" ? "not_found" : ready.reason,
       };
     }
     try {
@@ -108,12 +111,11 @@ export async function freshProposal(
           code: reviewFailureCode(error),
         };
       }
-      // Gone from Jira: the ticket keeps what it said, and is read so.
+      // Gone from Jira: the ticket keeps what it said, and is read so. Why
+      // the stored text is stale, when it is, says more than where it is.
       await options.issues.markRemoved(organizationId, ticket.jira.issueId);
-      return {
-        ...(await storedFreshness(proposal, checkedAt, ticket)),
-        code: "jira_removed",
-      };
+      const stored = await storedFreshness(proposal, checkedAt, ticket);
+      return { ...stored, code: stored.code ?? "jira_removed" };
     }
   }
   return storedFreshness(proposal, checkedAt, ticket);

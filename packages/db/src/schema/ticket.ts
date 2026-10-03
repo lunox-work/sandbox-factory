@@ -25,6 +25,7 @@ import {
   timestamp,
   unique,
 } from "drizzle-orm/pg-core";
+import type { TicketOrigin } from "sandbox-factory";
 
 import { user } from "./auth.js";
 import { githubRepo } from "./github.js";
@@ -55,7 +56,7 @@ export const ticket = pgTable(
     /** Jira's description was longer than a ticket keeps. */
     inputTruncated: boolean("input_truncated").notNull().default(false),
     /** `manual` or `jira`: where the text came from when it was made. */
-    origin: text("origin").notNull().default("manual"),
+    origin: text("origin").$type<TicketOrigin>().notNull().default("manual"),
     /**
      * The repository the ticket is about, named for it. Null leaves a Jira
      * ticket with its board's repository, and a ticket written here with

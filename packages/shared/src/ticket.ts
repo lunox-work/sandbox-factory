@@ -18,10 +18,11 @@ import {
 } from "./bounty.js";
 
 /**
- * The fingerprint a proposal is priced against, re-exported so
- * `packages/jira` hashes what it reads with the one definition.
+ * The fingerprint a proposal is priced against, and the bounds and default
+ * a ticket's text is held to, re-exported so `packages/jira` reads Jira's
+ * text with the one definition of each.
  */
-export { ticketSpecHash };
+export { DEFAULT_ISSUE_TYPE, TICKET_LIMITS, ticketSpecHash };
 
 export const ticketOriginSchema = z.enum(TICKET_ORIGINS);
 

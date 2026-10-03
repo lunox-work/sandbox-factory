@@ -391,6 +391,21 @@ export class BountyExecutor {
       await fail(scope.fatalCode);
       return;
     }
+    /*
+      The rule an issue run keeps: a ticket split into sub-tasks in Jira
+      since it was imported is priced through them, never itself. A read
+      that fails is left to the text's own read below, which says why.
+    */
+    const { client } = scope.value;
+    if (run.kind === "ticket" && client !== null && ticket.jira !== null) {
+      const picked = await client
+        .issue(ticket.jira.externalId)
+        .catch(() => null);
+      if ((picked?.subtaskCount ?? 0) > 0) {
+        await fail("issue_has_subtasks");
+        return;
+      }
+    }
     await this.#sizeAll(
       organizationId,
       run,
@@ -693,15 +708,9 @@ export class BountyExecutor {
     if (ticket.jira === null || client === null || !followsJira(ticket)) {
       return { value: await stored(ticket) };
     }
+    let spec: JiraIssueSpec;
     try {
-      const spec = await client.issueSpec(ticket.jira.externalId);
-      const content = jiraContent(spec);
-      await this.#options.tickets.refreshFromJira(
-        organizationId,
-        ticket.id,
-        content,
-      );
-      return { value: { content, specHash: spec.pricingSpecHash } };
+      spec = await client.issueSpec(ticket.jira.externalId);
     } catch (error) {
       if (error instanceof JiraApiError && error.isNotFound) {
         await this.#options.issues.markRemoved(
@@ -715,6 +724,19 @@ export class BountyExecutor {
         ? { fatalCode: code }
         : { value: { code } };
     }
+    const content = jiraContent(spec);
+    // Sized from what Jira said whether or not the copy is kept: a copy that
+    // fails to write is not Jira failing, and the next read writes it again.
+    await this.#options.tickets
+      .refreshFromJira(organizationId, ticket.id, content)
+      .catch((error: unknown) => {
+        this.#options.onBackgroundError?.(
+          "bounty_ticket_refresh_failed",
+          error,
+        );
+        return false;
+      });
+    return { value: { content, specHash: spec.pricingSpecHash } };
   }
 
   /**

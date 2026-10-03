@@ -7,6 +7,7 @@ import type {
 } from "sandbox-factory";
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
 
+import { snapshotForWrite } from "./bounty-proposals.js";
 import type { Database } from "./errors.js";
 import { generateId } from "./mapping.js";
 import { bountyProfile, bountyProposal } from "./schema.js";
@@ -136,6 +137,9 @@ export function createBountyProfileStore(db: Database): BountyProfileStore {
           )
           .limit(1);
         if (owned.length === 0) return null;
+        // And so is the snapshot's: a profile measures the owner's code only.
+        const snapshotId = await snapshotForWrite(tx, owner, input.snapshotId);
+        if (snapshotId === null) return null;
         await tx
           .insert(bountyProfile)
           .values({
@@ -144,7 +148,7 @@ export function createBountyProfileStore(db: Database): BountyProfileStore {
             proposalId: input.proposalId,
             specRevision: input.specRevision,
             specHash: input.specHash,
-            snapshotId: input.snapshotId,
+            snapshotId,
             ticket: input.ticket,
           })
           .onConflictDoNothing();

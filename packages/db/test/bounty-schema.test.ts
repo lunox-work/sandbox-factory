@@ -37,12 +37,28 @@ test("run request retries are unique inside one organization", () => {
   );
 });
 
-test("one live proposal is allowed per board-local issue pointer", () => {
+test("one live proposal is allowed per ticket", () => {
   const index = getTableConfig(bountyProposal).indexes.find(
     ({ config }) => config.name === "bounty_proposal_live_unique",
   );
   assert.equal(index?.config.unique, true);
   assert.notEqual(index?.config.where, undefined);
+  assert.deepEqual(
+    index?.config.columns.map((column) => (column as { name: string }).name),
+    ["ticket_id"],
+  );
+});
+
+test("one ticket run is allowed per ticket at a time", () => {
+  const index = getTableConfig(bountyRun).indexes.find(
+    ({ config }) => config.name === "bounty_run_ticket_active_unique",
+  );
+  assert.equal(index?.config.unique, true);
+  assert.notEqual(index?.config.where, undefined);
+  assert.deepEqual(
+    index?.config.columns.map((column) => (column as { name: string }).name),
+    ["ticket_id"],
+  );
 });
 
 test("commercial rows carry non-null organization ownership", () => {

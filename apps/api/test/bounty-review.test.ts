@@ -194,6 +194,17 @@ test("a ticket gone from Jira keeps its text and is reviewed against it", async 
   assert.equal(fresh.code, "jira_removed");
   assert.equal(fresh.liveUrl, undefined);
   assert.deepEqual(missing.removed, ["jri_1"]);
+  // Stale for a reason of its own: that reason is the one given.
+  assert.equal(
+    (
+      await freshProposal(
+        options(new JiraApiError(404, "missing")).value,
+        "org_1",
+        proposal({ specHash: stored, specHashVersion: 2 }),
+      )
+    ).code,
+    "hash_version",
+  );
 
   const unavailable = options(new TypeError("offline"));
   assert.equal(
@@ -254,7 +265,7 @@ test("a Jira ticket cannot be checked without its site", async () => {
   });
   assert.equal(
     (await freshProposal(disconnected.value, "org_1", proposal())).code,
-    "not-found",
+    "not_found",
   );
 });
 

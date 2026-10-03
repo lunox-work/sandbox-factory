@@ -9,13 +9,18 @@ import type {
   TicketContent,
   TicketOrigin,
 } from "sandbox-factory";
-import { TICKET_LIMITS, ticketKey } from "sandbox-factory";
-import { and, desc, eq, lt, or, sql } from "drizzle-orm";
+import { clampTicketTitle, ticketKey } from "sandbox-factory";
+import { and, desc, eq, or, sql } from "drizzle-orm";
 
-import { isUniqueViolation, type Database } from "./errors.js";
+import {
+  isForeignKeyViolation,
+  isUniqueViolation,
+  type Database,
+} from "./errors.js";
 import { generateId } from "./mapping.js";
 import {
   bountyProposal,
+  bountyRun,
   githubRepo,
   jiraBoard,
   jiraConnection,
@@ -131,7 +136,8 @@ export interface TicketStore {
   ): Promise<TicketMutationResult>;
   /**
    * Deletes a ticket nothing has been built on: no proposal, live or
-   * otherwise, and no sandbox. `in-use` otherwise, and the ticket stays.
+   * otherwise, no sandbox, and no run sizing it now. `in-use` otherwise,
+   * and the ticket stays.
    */
   remove(
     organizationId: string,
@@ -216,7 +222,7 @@ function toTicket(row: TicketRow, fields: LinkFields): StoredTicket {
     labels: row.labels,
     components: row.components,
     inputTruncated: row.inputTruncated,
-    origin: row.origin as TicketOrigin,
+    origin: row.origin,
     repoId: row.repoId,
     createdBy: row.createdBy,
     revision: row.revision,
@@ -225,6 +231,14 @@ function toTicket(row: TicketRow, fields: LinkFields): StoredTicket {
     updatedAt: row.updatedAt.toISOString(),
   };
 }
+
+/**
+ * When a ticket was created, to the millisecond. A page's cursor carries its
+ * last row's time as an ISO string, which holds milliseconds, while Postgres
+ * stores microseconds; ordered and compared at the cursor's precision, a
+ * ticket made in the same millisecond as the last row is not skipped.
+ */
+const createdMs = sql`date_trunc('milliseconds', ${ticket.createdAt})`;
 
 /** Whether the ticket's text is its Jira issue's to change. */
 export function followsJira(stored: Pick<StoredTicket, "jira">): boolean {
@@ -287,7 +301,7 @@ export function jiraContentChange(
     title:
       content.title.trim() === ""
         ? current.title
-        : content.title.slice(0, TICKET_LIMITS.title),
+        : clampTicketTitle(content.title),
     description: content.description,
     issueType: content.issueType,
     priority: content.priority,
@@ -381,16 +395,25 @@ export function createTicketStore(db: Database): TicketStore {
       ) {
         return { ok: false, reason: "repo-not-found" };
       }
-      const row = await insertTicket(db, organizationId, {
-        title: input.title,
-        description: input.description,
-        issueType: input.issueType,
-        priority: input.priority,
-        labels: [...input.labels],
-        origin: "manual",
-        repoId: input.repoId,
-        createdBy,
-      });
+      let row: TicketRow;
+      try {
+        row = await insertTicket(db, organizationId, {
+          title: input.title,
+          description: input.description,
+          issueType: input.issueType,
+          priority: input.priority,
+          labels: [...input.labels],
+          origin: "manual",
+          repoId: input.repoId,
+          createdBy,
+        });
+      } catch (error) {
+        // The repository was removed between the check and the insert.
+        if (input.repoId !== null && isForeignKeyViolation(error)) {
+          return { ok: false, reason: "repo-not-found" };
+        }
+        throw error;
+      }
       return { ok: true, ticket: toTicket(row, NO_LINK) };
     },
 
@@ -439,16 +462,10 @@ export function createTicketStore(db: Database): TicketStore {
             eq(ticket.organizationId, organizationId),
             options.cursor === undefined
               ? undefined
-              : or(
-                  lt(ticket.createdAt, new Date(options.cursor.createdAt)),
-                  and(
-                    eq(ticket.createdAt, new Date(options.cursor.createdAt)),
-                    lt(ticket.id, options.cursor.id),
-                  ),
-                ),
+              : sql`(${createdMs}, ${ticket.id}) < (${options.cursor.createdAt}::timestamptz, ${options.cursor.id})`,
           ),
         )
-        .orderBy(desc(ticket.createdAt), desc(ticket.id))
+        .orderBy(desc(createdMs), desc(ticket.id))
         .limit(limit)) as ListedRow[];
       return rows.map(toListed);
     },
@@ -466,41 +483,64 @@ export function createTicketStore(db: Database): TicketStore {
       ) {
         return { ok: false, reason: "jira-owned", current };
       }
+      // A change to what it already says is no change, and keeps the revision.
+      const same =
+        (change.title === undefined || change.title === current.title) &&
+        (change.description === undefined ||
+          change.description === current.description) &&
+        (change.issueType === undefined ||
+          change.issueType === current.issueType) &&
+        (change.priority === undefined ||
+          change.priority === current.priority) &&
+        (change.labels === undefined ||
+          JSON.stringify(change.labels) === JSON.stringify(current.labels)) &&
+        (repoId === undefined || repoId === current.repoId);
+      if (same) return { ok: true, ticket: current };
       if (
         repoId !== undefined &&
         repoId !== null &&
+        repoId !== current.repoId &&
         !(await ownsRepo(db, organizationId, repoId))
       ) {
         return { ok: false, reason: "repo-not-found" };
       }
-      const rows = (await db
-        .update(ticket)
-        .set({
-          ...(change.title === undefined ? {} : { title: change.title }),
-          ...(change.description === undefined
-            ? {}
-            : { description: change.description }),
-          ...(change.issueType === undefined
-            ? {}
-            : { issueType: change.issueType }),
-          ...(change.priority === undefined
-            ? {}
-            : { priority: change.priority }),
-          ...(change.labels === undefined
-            ? {}
-            : { labels: [...change.labels] }),
-          ...(repoId === undefined ? {} : { repoId }),
-          revision: expectedRevision + 1,
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(ticket.organizationId, organizationId),
-            eq(ticket.id, ticketId),
-            eq(ticket.revision, expectedRevision),
-          ),
-        )
-        .returning()) as TicketRow[];
+      let rows: TicketRow[];
+      try {
+        rows = (await db
+          .update(ticket)
+          .set({
+            ...(change.title === undefined ? {} : { title: change.title }),
+            ...(change.description === undefined
+              ? {}
+              : { description: change.description }),
+            ...(change.issueType === undefined
+              ? {}
+              : { issueType: change.issueType }),
+            ...(change.priority === undefined
+              ? {}
+              : { priority: change.priority }),
+            ...(change.labels === undefined
+              ? {}
+              : { labels: [...change.labels] }),
+            ...(repoId === undefined ? {} : { repoId }),
+            revision: expectedRevision + 1,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(ticket.organizationId, organizationId),
+              eq(ticket.id, ticketId),
+              eq(ticket.revision, expectedRevision),
+            ),
+          )
+          .returning()) as TicketRow[];
+      } catch (error) {
+        // The repository was removed between the check and the write.
+        if (repoId != null && isForeignKeyViolation(error)) {
+          return { ok: false, reason: "repo-not-found" };
+        }
+        throw error;
+      }
       const updated = rows[0];
       if (updated === undefined) {
         const latest = await readTicket(db, organizationId, ticketId);
@@ -518,23 +558,44 @@ export function createTicketStore(db: Database): TicketStore {
       };
     },
 
-    async remove(organizationId, ticketId) {
-      const rows = await db
-        .delete(ticket)
-        .where(
-          and(
+    remove(organizationId, ticketId) {
+      return db.transaction(
+        async (transaction): Promise<"removed" | "not-found" | "in-use"> => {
+          const tx = transaction as unknown as Database;
+          const owned = and(
             eq(ticket.organizationId, organizationId),
             eq(ticket.id, ticketId),
-            // A proposal's history, and a sandbox's provenance, are kept.
-            sql`not exists (select 1 from ${bountyProposal} where ${bountyProposal.ticketId} = ${ticket.id})`,
-            sql`not exists (select 1 from ${sandboxTicket} where ${sandboxTicket.ticketId} = ${ticket.id})`,
-          ),
-        )
-        .returning({ id: ticket.id });
-      if (rows[0] !== undefined) return "removed";
-      return (await readTicket(db, organizationId, ticketId)) === null
-        ? "not-found"
-        : "in-use";
+          );
+          /*
+            Locked before the check. A proposal, sandbox link or run being
+            written for the ticket holds a key-share lock on it until it
+            commits, so this waits for it, and the delete — a statement of
+            its own, with a fresh snapshot — then sees it. Checked in the
+            delete alone, a row committed while the delete waited would pass
+            the check and go with the ticket's cascade.
+          */
+          const locked = await tx
+            .select({ id: ticket.id })
+            .from(ticket)
+            .where(owned)
+            .for("update");
+          if (locked[0] === undefined) return "not-found";
+          const rows = await tx
+            .delete(ticket)
+            .where(
+              and(
+                owned,
+                // A proposal's history, and a sandbox's provenance, are kept.
+                sql`not exists (select 1 from ${bountyProposal} where ${bountyProposal.ticketId} = ${ticket.id})`,
+                sql`not exists (select 1 from ${sandboxTicket} where ${sandboxTicket.ticketId} = ${ticket.id})`,
+                // A run sizing it is let finish.
+                sql`not exists (select 1 from ${bountyRun} where ${bountyRun.ticketId} = ${ticket.id} and ${bountyRun.status} in ('queued', 'running'))`,
+              ),
+            )
+            .returning({ id: ticket.id });
+          return rows[0] === undefined ? "in-use" : "removed";
+        },
+      );
     },
 
     async refreshFromJira(organizationId, ticketId, content) {
@@ -589,7 +650,7 @@ function toListed(row: ListedRow): ListedTicket {
     issueType: row.issueType,
     priority: row.priority,
     labels: row.labels,
-    origin: row.origin as TicketOrigin,
+    origin: row.origin,
     repoId: row.repoId,
     revision: row.revision,
     jira,

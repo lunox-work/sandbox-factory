@@ -9,7 +9,7 @@ import type {
   StepResult,
 } from "sandbox-factory";
 import { ticketKey } from "sandbox-factory";
-import { and, desc, eq, gt, inArray, lt, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, or, sql } from "drizzle-orm";
 
 import {
   insertSpecRevision,
@@ -181,17 +181,17 @@ export interface BountyProposalStore {
     boardId: string,
     externalIds: readonly string[],
   ): Promise<Set<string>>;
-  /** The ticket's live proposal, proposed or approved, if it has one. */
-  liveForTicket(
-    organizationId: string,
-    ticketId: string,
-  ): Promise<string | null>;
   /** The same tickets, each with the id of its live proposal. */
   liveProposalIds(
     organizationId: string,
     boardId: string,
     externalIds: readonly string[],
   ): Promise<Map<string, string>>;
+  /** The ticket's live proposal, proposed or approved, if it has one. */
+  liveForTicket(
+    organizationId: string,
+    ticketId: string,
+  ): Promise<string | null>;
   /**
    * The Jira issue behind each of these proposals' tickets, for reading its
    * live title. Only proposals of the owner whose ticket came from this
@@ -513,8 +513,19 @@ function insertValues(
   };
 }
 
-/** Keep a surviving owned snapshot still until the proposal write commits. */
-async function snapshotForWrite(
+/**
+ * When a proposal was created, to the millisecond: the precision of a page's
+ * cursor, which carries an ISO string, where Postgres stores microseconds.
+ * Ordered and compared at the cursor's, a proposal made in the same
+ * millisecond as a page's last row is not skipped.
+ */
+const proposalCreatedMs = sql`date_trunc('milliseconds', ${bountyProposal.createdAt})`;
+
+/**
+ * Keep a surviving owned snapshot still until the write that names it
+ * commits. Null for a snapshot that is gone or another organization's.
+ */
+export async function snapshotForWrite(
   tx: Database,
   organizationId: string,
   snapshotId: string | null | undefined,
@@ -743,22 +754,10 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
                 )`,
             options.cursor === undefined
               ? undefined
-              : or(
-                  lt(
-                    bountyProposal.createdAt,
-                    new Date(options.cursor.createdAt),
-                  ),
-                  and(
-                    eq(
-                      bountyProposal.createdAt,
-                      new Date(options.cursor.createdAt),
-                    ),
-                    lt(bountyProposal.id, options.cursor.id),
-                  ),
-                ),
+              : sql`(${proposalCreatedMs}, ${bountyProposal.id}) < (${options.cursor.createdAt}::timestamptz, ${options.cursor.id})`,
           ),
         )
-        .orderBy(desc(bountyProposal.createdAt), desc(bountyProposal.id))
+        .orderBy(desc(proposalCreatedMs), desc(bountyProposal.id))
         .limit(limit)) as ({
         row: BountyProposalRow;
         externalId: string | null;

@@ -39,9 +39,10 @@ ALTER TABLE "jira_issue" ADD COLUMN "ticket_id" text;--> statement-breakpoint
 -- Backfill: every Jira issue a run imported becomes a ticket, and what
 -- pointed at the issue points at the ticket.
 --
--- Hand-written because drizzle-kit generates schema, not data. The two
--- `ticket_id` columns above are added nullable, filled here, and only then
--- made NOT NULL, which is what the schema declares.
+-- Hand-written because drizzle-kit generates schema, not data. The three
+-- `ticket_id` columns above are added nullable and filled here; the issue's
+-- and the proposal's are only then made NOT NULL, which is what the schema
+-- declares, and a run's stays nullable.
 --
 -- Until now an issue's text lived only in Jira, so there is little to copy.
 -- The title is the one the issue's latest run planned it under, or its key

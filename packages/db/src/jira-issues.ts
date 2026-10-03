@@ -1,5 +1,5 @@
 import type { TicketContent } from "sandbox-factory";
-import { TICKET_LIMITS } from "sandbox-factory";
+import { clampTicketTitle } from "sandbox-factory";
 import { and, eq } from "drizzle-orm";
 
 import type { Database } from "./errors.js";
@@ -210,10 +210,7 @@ export function createJiraIssueStore(db: Database): JiraIssueStore {
 /** What an imported ticket is made with: Jira's text, its key for a title. */
 function importedText(content: TicketContent, key: string) {
   return {
-    title: (content.title.trim() === "" ? key : content.title).slice(
-      0,
-      TICKET_LIMITS.title,
-    ),
+    title: clampTicketTitle(content.title.trim() === "" ? key : content.title),
     description: content.description,
     issueType: content.issueType,
     priority: content.priority,

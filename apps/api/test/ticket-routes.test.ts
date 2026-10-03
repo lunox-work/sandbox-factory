@@ -170,6 +170,8 @@ function harness(
     runCreate?: Record<string, unknown>;
     sizing?: boolean;
     jira?: boolean;
+    /** Whether the Jira site answers; absent, it needs reconnecting. */
+    siteReady?: boolean;
     approved?: unknown[];
   } = {},
 ) {
@@ -257,10 +259,11 @@ function harness(
     ...((options.jira ?? true)
       ? {
           clientFor: () =>
-            Promise.resolve({
-              ok: false as const,
-              reason: "reconnect" as const,
-            }),
+            Promise.resolve(
+              options.siteReady === true
+                ? { ok: true as const, client: {} as never }
+                : { ok: false as const, reason: "reconnect" as const },
+            ),
         }
       : {}),
   };
@@ -522,7 +525,7 @@ test("proposing a ticket written here starts a ticket run, with no board", async
 });
 
 test("proposing a Jira ticket sizes it with its board's settings", async () => {
-  const state = harness({ tickets: [imported()] });
+  const state = harness({ tickets: [imported()], siteReady: true });
   const response = await state.request("POST", "tickets/tkt_1/propose", {
     requestId,
   });
@@ -558,8 +561,10 @@ test("proposing is refused when it could not start", async () => {
     [{ role: "member", tickets: [written()] }, 403, undefined],
     [{ tickets: [] }, 404, undefined],
     [{ sizing: false, tickets: [written()] }, 503, "sizing_unavailable"],
-    // A Jira ticket with no Jira configured cannot be read to size.
+    // A Jira ticket with no Jira configured cannot be read to size, nor
+    // one whose site needs reconnecting: said now, not by a failed run.
     [{ jira: false, tickets: [imported({ id: "tkt_7" })] }, 409, "reconnect"],
+    [{ tickets: [imported({ id: "tkt_7" })] }, 409, "reconnect"],
     [
       {
         tickets: [written()],
@@ -603,7 +608,7 @@ test("proposing is refused when it could not start", async () => {
   );
 });
 
-test("a ticket written here proposes again once Jira is not configured at all", async () => {
+test("a ticket written here is proposed when Jira is not configured at all", async () => {
   // Nothing here needs Jira: the deployment has none.
   const state = harness({ jira: false, tickets: [written()] });
   const response = await state.request("POST", "tickets/tkt_7/propose", {

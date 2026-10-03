@@ -100,6 +100,8 @@ function harness(
     writeGranted?: boolean;
     boardMissing?: boolean;
     ticketWithoutJira?: boolean;
+    /** The ticket's Jira issue has gone since the write was queued. */
+    issueRemoved?: boolean;
     claimMiss?: boolean;
     specHash?: string;
     /** The spec read never settles on its own; only its signal ends it. */
@@ -213,7 +215,9 @@ function harness(
                   boardId: "jrb_1",
                   externalId: "100",
                   key: "APP-1",
-                  removedAt: null,
+                  removedAt: options.issueRemoved
+                    ? "2026-10-01T00:00:00.000Z"
+                    : null,
                 },
               },
         ),
@@ -318,10 +322,16 @@ test("a missing board fails preflight and an already-finished operation is a rea
     (await missing.delivery.execute("org_1", "bwo_1"))?.errorCode,
     "not_found",
   );
-  // A ticket with no Jira issue has nowhere to be posted.
+  // A ticket with no Jira issue has nowhere to be posted, nor one whose
+  // issue has gone since.
   const unlinked = harness({ ticketWithoutJira: true });
   assert.equal(
     (await unlinked.delivery.execute("org_1", "bwo_1"))?.errorCode,
+    "not_found",
+  );
+  const removed = harness({ issueRemoved: true });
+  assert.equal(
+    (await removed.delivery.execute("org_1", "bwo_1"))?.errorCode,
     "not_found",
   );
   const finished = harness({

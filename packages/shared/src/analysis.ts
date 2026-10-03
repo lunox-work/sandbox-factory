@@ -107,6 +107,12 @@ export const fixturesParamsSchema = z.strictObject({
  * spec revision defaults to the proposal's current one; the graph run is
  * chosen by the API.
  */
+/**
+ * The deadline the console's own graph runs carry. It is part of their
+ * cache key, so every caller that wants the shared graph asks with this.
+ */
+export const GRAPH_DEADLINE_MINUTES = 30;
+
 /** An agent takes many model turns; its runs get longer than a tool's 30 minutes. */
 export const AGENT_DEADLINE_MINUTES = 60;
 export const enqueueScopeSchema = z.strictObject({

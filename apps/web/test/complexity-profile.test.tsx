@@ -160,7 +160,7 @@ test("a profile in flight says where it stands and is read again until it lands"
   render(<Wired />);
 
   expect(
-    await screen.findByText(/Waiting for room in the organization/),
+    await screen.findByText(/Waiting for room in the workspace/),
   ).toBeTruthy();
   await act(() => vi.advanceTimersByTimeAsync(PROFILE_POLL_MS));
   expect(await screen.findByText(/Cutting the slice/)).toBeTruthy();
@@ -202,7 +202,7 @@ test("never profiled shows nothing; a read that fails says so", async () => {
   ).toBeTruthy();
 });
 
-test("a proposal not drafted beside a snapshot is never asked about", async () => {
+test("a proposal without a spec is never asked about", async () => {
   const fetch = answer({ profile: stored() });
   const { container } = render(<Wired drafted={false} />);
   await act(async () => {});

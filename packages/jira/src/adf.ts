@@ -20,8 +20,13 @@
  * new Atlassian feature into an outage for the whole board.
  */
 
-/** Hard cap on the produced text. */
-const MAX_LENGTH = 20_000;
+import { TICKET_LIMITS } from "@sandbox-factory/shared";
+
+/**
+ * Hard cap on the produced text: the most a ticket written here may hold,
+ * before the truncation marker is added.
+ */
+const MAX_LENGTH = TICKET_LIMITS.description;
 
 /**
  * How deep the walk will go before giving up on a branch.

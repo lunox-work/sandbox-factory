@@ -208,10 +208,12 @@ export type NewJiraBoardRow = typeof jiraBoard.$inferInsert;
  * names, which is what proposals price; what is here is Jira's identity for
  * it and the facts that answer Jira's own questions — which issues has a run
  * already considered on this board, and when did Jira last say this one
- * changed. A run refreshes both halves together, each time it reads the
- * issue.
+ * changed. A backlog or issue run refreshes both halves together, each time
+ * it reads the issue; a run or a review that reads one ticket by its
+ * pointer refreshes the ticket's text only.
  *
- * Written only by a run that sizes the issue. The backlog preview reads live
+ * Written by a run that sizes the issue, and marked removed by a run or a
+ * review that finds Jira no longer returns it. The backlog preview reads live
  * from Jira and stores nothing, deliberately: a preview that persisted rows
  * would make looking at a board indistinguishable from pricing it.
  *
@@ -236,7 +238,10 @@ export const jiraIssue = pgTable(
      * project, and keying on it would make one ticket look like two.
      */
     externalId: text("external_id").notNull(),
-    /** `ACME-123`. Display only, refreshed whenever the ticket is seen. */
+    /**
+     * `ACME-123`. Display only, refreshed whenever a backlog or issue run
+     * sees the issue.
+     */
     key: text("key").notNull(),
     /**
      * The ticket this issue is imported as, one each: made the first time a

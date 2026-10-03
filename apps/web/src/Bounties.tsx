@@ -1642,9 +1642,14 @@ export function BoardBounties({
             proposal={selected}
             ticket={readIssue === undefined ? null : ticket}
             liveSpec={
-              readIssue === undefined &&
+              /*
+                On a board, the proposal's own read stands in when Jira's
+                fails: a ticket gone from Jira is reviewed as stored.
+              */
               detail !== null &&
-              detail.proposal.id === selected.id
+              detail.proposal.id === selected.id &&
+              (readIssue === undefined ||
+                (ticketError !== null && detail.liveSpec != null))
                 ? (detail.liveSpec ?? null)
                 : undefined
             }
@@ -2197,7 +2202,7 @@ function ProposalPeek({
     base,
     proposal.id,
     proposal.specRevision,
-    proposal.repoSnapshotId != null,
+    (proposal.specRevision ?? null) !== null,
   );
   const scenarios = scenarioTotal(spec.read);
   const step = proposal.step ?? null;

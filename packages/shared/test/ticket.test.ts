@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import * as core from "sandbox-factory";
+
 import {
   createSandboxSchema,
   createTicketSchema,
   proposeTicketSchema,
   ticketDtoSchema,
   ticketListResponseSchema,
+  DEFAULT_ISSUE_TYPE,
+  TICKET_LIMITS,
   ticketSpecHash,
   updateTicketSchema,
 } from "../src/index.js";
@@ -44,7 +48,7 @@ test("a ticket written here needs only a title", () => {
   assert.equal(createTicketSchema.safeParse({}).success, false);
 });
 
-test("a ticket's text is bounded as a Jira description is", () => {
+test("a ticket written here is bounded at the description limit", () => {
   assert.equal(
     createTicketSchema.safeParse({
       title: "t",
@@ -167,6 +171,9 @@ test("a sandbox is cut for tickets", () => {
   );
 });
 
-test("re-exports the one ticket hash", async () => {
+test("re-exports the one ticket hash, bounds and default, not copies", async () => {
+  assert.equal(ticketSpecHash, core.ticketSpecHash);
+  assert.equal(TICKET_LIMITS, core.TICKET_LIMITS);
+  assert.equal(DEFAULT_ISSUE_TYPE, core.DEFAULT_ISSUE_TYPE);
   assert.equal((await ticketSpecHash("a", "b", "Task")).length, 64);
 });

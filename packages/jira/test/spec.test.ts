@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { ticketSpecHash } from "@sandbox-factory/shared";
+
 import {
   pricingSpecHash,
   SPEC_FIELDS,
@@ -52,6 +54,15 @@ test("the field separator cannot be forged from a summary", async () => {
 
 test("an empty spec still hashes", async () => {
   assert.match(await specHash("", ""), /^[0-9a-f]{64}$/);
+});
+
+test("the pricing fingerprint is the ticket's own hash, not a copy", () => {
+  assert.equal(pricingSpecHash, ticketSpecHash);
+});
+
+test("an issue with no type is read as the default type", async () => {
+  const spec = await toIssueSpec("APP-1", { summary: "Untyped" });
+  assert.equal(spec.issueType, "Task");
 });
 
 test("pricing fingerprint includes issue type without changing legacy hashes", async () => {

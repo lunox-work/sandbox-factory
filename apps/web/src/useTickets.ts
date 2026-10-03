@@ -32,6 +32,13 @@ export type TicketWrite =
   | { ok: true; ticket: TicketDto }
   | { ok: false; error: string; ticket?: TicketDto };
 
+/**
+ * One ticket read by id. `notFound` separates a ticket that is gone from a
+ * read that failed and is worth trying again.
+ */
+export type TicketRead =
+  { ok: true; ticket: TicketDto } | { ok: false; notFound: boolean };
+
 export type ProposeResult =
   { ok: true; proposalId: string } | { ok: false; error: string };
 
@@ -42,7 +49,7 @@ export interface Tickets {
   more: boolean;
   loadMore: () => Promise<void>;
   refresh: () => Promise<void>;
-  read: (ticketId: string) => Promise<TicketDto | null>;
+  read: (ticketId: string) => Promise<TicketRead>;
   create: (draft: TicketDraft) => Promise<TicketWrite>;
   update: (
     ticketId: string,
@@ -75,6 +82,8 @@ function runFailure(run: BountyRunDto): string {
       return "The model could not size this ticket. Try again.";
     case "live_proposal":
       return "This ticket already has a proposal.";
+    case "issue_has_subtasks":
+      return "This ticket is split into sub-tasks in Jira. Size its sub-tasks instead.";
     default:
       return code === null || code === undefined
         ? "Sizing finished without a proposal."
@@ -141,16 +150,19 @@ export function useTickets(organizationId: string): Tickets {
   }, [load]);
 
   const read = useCallback(
-    async (ticketId: string) => {
+    async (ticketId: string): Promise<TicketRead> => {
       try {
         const response = await fetch(
           `${base}/tickets/${encodeURIComponent(ticketId)}`,
           { credentials: "include" },
         );
-        if (!response.ok) return null;
-        return ((await response.json()) as { ticket: TicketDto }).ticket;
+        if (!response.ok) {
+          return { ok: false, notFound: response.status === 404 };
+        }
+        const { ticket } = (await response.json()) as { ticket: TicketDto };
+        return { ok: true, ticket };
       } catch {
-        return null;
+        return { ok: false, notFound: false };
       }
     },
     [base],
@@ -233,6 +245,18 @@ export function useTickets(organizationId: string): Tickets {
 
   const propose = useCallback(
     async (ticketId: string, signal?: AbortSignal): Promise<ProposeResult> => {
+      const readRun = async (runId: string) => {
+        const polled = await fetch(
+          `${base}/runs/${encodeURIComponent(runId)}`,
+          {
+            credentials: "include",
+            ...(signal === undefined ? {} : { signal }),
+          },
+        );
+        return polled.ok
+          ? ((await polled.json()) as { run: BountyRunDto }).run
+          : null;
+      };
       try {
         const response = await fetch(
           `${base}/tickets/${encodeURIComponent(ticketId)}/propose`,
@@ -244,22 +268,40 @@ export function useTickets(organizationId: string): Tickets {
             ...(signal === undefined ? {} : { signal }),
           },
         );
-        if (!response.ok) {
-          return {
-            ok: false,
-            error: await errorOf(response, "The ticket could not be proposed."),
-          };
-        }
-        const started = (await response.json()) as {
+        const started = (await response.json().catch(() => null)) as {
           run?: BountyRunDto;
           proposalId?: string;
-        };
-        if (started.proposalId !== undefined) {
+          code?: string;
+          runId?: string;
+          error?: unknown;
+        } | null;
+        /*
+          A run already sizing this ticket — started from another tab, or by
+          a row this page has since let go of — is followed like a new one,
+          as a spec change already under way is.
+        */
+        const active =
+          started?.code === "run_active" && typeof started.runId === "string"
+            ? started.runId
+            : null;
+        if (!response.ok && active === null) {
+          return {
+            ok: false,
+            error:
+              typeof started?.error === "string"
+                ? started.error
+                : "The ticket could not be proposed.",
+          };
+        }
+        if (started?.proposalId !== undefined) {
           return { ok: true, proposalId: started.proposalId };
         }
-        let run = started.run;
+        let run = active === null ? started?.run : await readRun(active);
         // Followed until its one outcome lands or it ends without one.
         while (run !== undefined) {
+          if (run === null) {
+            return { ok: false, error: "Lost track of the sizing run." };
+          }
           const landed = run.outcomes[0]?.proposalId;
           if (landed !== undefined) {
             await load();
@@ -273,17 +315,7 @@ export function useTickets(organizationId: string): Tickets {
             window.setTimeout(resolve, PROPOSE_POLL_MS),
           );
           if (signal?.aborted) return { ok: false, error: "Stopped." };
-          const polled = await fetch(
-            `${base}/runs/${encodeURIComponent(run.id)}`,
-            {
-              credentials: "include",
-              ...(signal === undefined ? {} : { signal }),
-            },
-          );
-          if (!polled.ok) {
-            return { ok: false, error: "Lost track of the sizing run." };
-          }
-          run = ((await polled.json()) as { run: BountyRunDto }).run;
+          run = await readRun(run.id);
         }
         return { ok: false, error: "The ticket could not be proposed." };
       } catch {

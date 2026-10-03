@@ -19,6 +19,7 @@ import {
   enqueueScopeSchema,
   enqueueSliceSchema,
   enqueueSliceResponseSchema,
+  GRAPH_DEADLINE_MINUTES,
   repositoryProposalListSchema,
 } from "@sandbox-factory/shared";
 import type {
@@ -46,8 +47,6 @@ export interface AnalysisRouteOptions {
   /** For naming the board a proposal's ticket came through. */
   readonly boards: Pick<JiraBoardStore, "list">;
 }
-/** The deadline the console's own graphify runs carry, part of their cache key. */
-export const GRAPH_DEADLINE_MINUTES = 30;
 /** Proposals one repository's picker lists, newest first. */
 export const REPOSITORY_PROPOSALS_MAX = 100;
 /** The proposal store's largest page. */

@@ -313,8 +313,12 @@ for nothing). While the issue is there its text is Jira's to change, and
 the API refuses an edit to it (`jira_owned`); its repository is the
 platform's to set. When Jira stops returning the issue, the pointer is
 marked `removed_at` and the ticket keeps the text it last had: it is then
-sized, reviewed and edited as stored, like a ticket written here. Losing a
-board takes its pointers but not its tickets.
+sized, reviewed and edited as stored, like a ticket written here. If a
+board's run finds the issue again, the pointer is restored and Jira's text
+replaces the ticket's once more. Losing a board takes its pointers but not its
+tickets; it does take the runs that read through it, and with them the
+proposals those runs made (`bounty_run.board_id` and
+`bounty_proposal.run_id` cascade).
 
 **Freshness is the ticket's.** `ticketSpecHash` in `packages/core`
 fingerprints a ticket's title, description and type, and
@@ -522,7 +526,9 @@ the spec's open questions and assumptions, the test files in the touched
 modules, migrations and CI, and an existing file the scope agent names as
 the pattern to follow, which the worker checks is a real file. A step that
 meets the organization's analysis cap waits for the next sweep, so a large
-backlog queues behind the cap rather than failing. A failed run fails the
+backlog queues behind the cap rather than failing; the profiler meets it a
+slot early, so a person's own analysis is not refused while the backlog
+drains. A failed run fails the
 profile for that revision; a re-price drafts a new revision and asks again.
 The whole chain needs what analysis needs, plus the agent's key.
 

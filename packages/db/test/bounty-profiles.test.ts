@@ -38,7 +38,12 @@ const request = {
 };
 
 test("a request checks the proposal is the owner's, then inserts once and reads the row back", async () => {
-  const fake = createSequencedFakeDb([[{ id: "bpr_1" }], [], [row()]]);
+  const fake = createSequencedFakeDb([
+    [{ id: "bpr_1" }],
+    [{ id: "rsn_1" }],
+    [],
+    [row()],
+  ]);
   const stored = await createBountyProfileStore(fake.db).request(
     "org_1",
     request,
@@ -46,8 +51,11 @@ test("a request checks the proposal is the owner's, then inserts once and reads 
   assert.equal(stored?.id, "bpf_1");
   assert.equal(stored?.status, "queued");
   assert.equal(stored?.createdAt, "2026-10-03T00:00:00.000Z");
-  const [owner, insert, read] = fake.calls;
+  const [owner, snapshot, insert, read] = fake.calls;
   assert.equal(owner?.filtered, true);
+  // The snapshot is the owner's too, and held until the insert commits.
+  assert.equal(snapshot?.filtered, true);
+  assert.equal(snapshot?.lock, "key share");
   assert.equal(insert?.kind, "insert");
   assert.equal(insert?.values?.["organizationId"], "org_1");
   assert.equal(insert?.values?.["snapshotId"], "rsn_1");
@@ -64,8 +72,23 @@ test("a request for another organization's proposal writes nothing", async () =>
     null,
   );
   assert.equal(fake.calls.length, 1);
+  // So is another organization's snapshot, or one pruned since.
+  const foreign = createSequencedFakeDb([[{ id: "bpr_1" }], []]);
+  assert.equal(
+    await createBountyProfileStore(foreign.db).request("org_1", request),
+    null,
+  );
+  assert.equal(
+    foreign.calls.some(({ kind }) => kind === "insert"),
+    false,
+  );
   // A row that vanished between the insert and the read is a miss too.
-  const racing = createSequencedFakeDb([[{ id: "bpr_1" }], [], []]);
+  const racing = createSequencedFakeDb([
+    [{ id: "bpr_1" }],
+    [{ id: "rsn_1" }],
+    [],
+    [],
+  ]);
   assert.equal(
     await createBountyProfileStore(racing.db).request("org_1", request),
     null,

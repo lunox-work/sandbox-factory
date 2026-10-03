@@ -13,7 +13,8 @@
  *
  * A step that meets the organization's analysis cap leaves the row where it
  * is for the next sweep, so a backlog of fifty tickets queues behind the cap
- * rather than failing. A run that fails is final for that spec revision: the
+ * rather than failing. It meets it a slot early, so a person's own analysis
+ * is not refused while a backlog's profiles fill the queue. A run that fails is final for that spec revision: the
  * profile fails with the run's code beside its own, and a re-price, which
  * drafts a new revision, asks again.
  */
@@ -30,14 +31,17 @@ import type {
 } from "@sandbox-factory/db";
 import {
   AGENT_DEADLINE_MINUTES,
+  GRAPH_DEADLINE_MINUTES,
   scopeProposalSchema,
   sliceBoundarySummarySchema,
+  type ScopeProposalDto,
 } from "@sandbox-factory/shared";
-import type { ScopeProposalDto } from "@sandbox-factory/shared";
-import { buildComplexityProfile, sliceRequestOf } from "sandbox-factory";
-import type { AnalysisErrorCode, ProfileErrorCode } from "sandbox-factory";
-
-import { GRAPH_DEADLINE_MINUTES } from "../analysis/routes.js";
+import {
+  buildComplexityProfile,
+  sliceRequestOf,
+  type AnalysisErrorCode,
+  type ProfileErrorCode,
+} from "sandbox-factory";
 
 /** How often in-flight profiles are looked at. */
 export const PROFILE_SWEEP_MS = 30_000;
@@ -54,6 +58,10 @@ export interface BountyProfilerOptions {
   readonly ensureWorker: () => Promise<void>;
   /** A re-queued run's previous log, to remove from the bucket. */
   readonly removeObject: (key: string) => Promise<void>;
+  /**
+   * The organization's analysis cap. The profiler leaves one of its slots
+   * for a person whenever the cap has more than one.
+   */
   readonly maxActive?: number;
   readonly intervalMs?: number;
   readonly onError?: (code: string, error?: unknown) => void;
@@ -75,6 +83,10 @@ export class BountyProfiler {
   #timer: ReturnType<typeof setInterval> | undefined;
   #pending: Promise<void> | undefined;
   #again = false;
+  /** A run this pass left queued, so a worker is wanted. */
+  #wanted = false;
+  /** Stopped: a request still in flight at shutdown starts no sweep. */
+  #stopped = false;
 
   constructor(options: BountyProfilerOptions) {
     this.#options = options;
@@ -99,6 +111,7 @@ export class BountyProfiler {
 
   start(): void {
     if (this.#timer !== undefined) return;
+    this.#stopped = false;
     this.kick();
     this.#timer = setInterval(
       () => this.kick(),
@@ -107,6 +120,7 @@ export class BountyProfiler {
   }
 
   async stop(): Promise<void> {
+    this.#stopped = true;
     clearInterval(this.#timer);
     this.#timer = undefined;
     await this.#pending?.catch(() => {});
@@ -114,6 +128,7 @@ export class BountyProfiler {
 
   /** A sweep now, or another straight after the one in progress. */
   kick(): void {
+    if (this.#stopped) return;
     void this.sweep().catch((error: unknown) =>
       this.#options.onError?.("bounty_profile_sweep_failed", error),
     );
@@ -132,10 +147,17 @@ export class BountyProfiler {
     const work = async () => {
       do {
         this.#again = false;
-        let enqueued = false;
-        for (const owner of await this.#options.profiles.organizationsWithPending())
-          enqueued = (await this.#sweepOrganization(owner)) || enqueued;
-        if (enqueued)
+        this.#wanted = false;
+        for (const owner of await this.#options.profiles.organizationsWithPending()) {
+          try {
+            await this.#sweepOrganization(owner);
+          } catch (error) {
+            // One organization's rows that could not be read wait for the
+            // next sweep; the other organizations' still move.
+            this.#options.onError?.("bounty_profile_sweep_failed", error);
+          }
+        }
+        if (this.#wanted)
           await this.#options
             .ensureWorker()
             .catch((error: unknown) =>
@@ -151,10 +173,8 @@ export class BountyProfiler {
     }
   }
 
-  /** True when a run was enqueued, so a worker is wanted. */
-  async #sweepOrganization(owner: string): Promise<boolean> {
+  async #sweepOrganization(owner: string): Promise<void> {
     let full = false;
-    let enqueued = false;
     for (const profile of await this.#options.profiles.pending(owner)) {
       let step: Step;
       try {
@@ -166,10 +186,7 @@ export class BountyProfiler {
         continue;
       }
       if (step.kind === "full") full = true;
-      if (step.kind === "moved" && profile.status !== "slicing")
-        enqueued = true;
     }
-    return enqueued;
   }
 
   #step(owner: string, profile: StoredBountyProfile, full: boolean) {
@@ -295,9 +312,12 @@ export class BountyProfiler {
     const result = await this.#options.runs.enqueue(owner, snapshotId, {
       ...input,
       requestedBy: null,
-      maxActive: this.#options.maxActive ?? 3,
+      maxActive: Math.max(1, (this.#options.maxActive ?? 3) - 1),
     });
     if (!result.ok) return result.reason === "run_limit" ? "full" : null;
+    // Wanted even when the next enqueue of the same step meets the cap: a
+    // graph queued for a scope that has to wait still needs running.
+    if (result.run.status === "queued") this.#wanted = true;
     if (result.obsoleteLogKey !== undefined)
       await this.#options.removeObject(result.obsoleteLogKey).catch(() => {});
     return result.run;

@@ -24,6 +24,7 @@ import * as githubSchema from "../src/schema/github.js";
 import * as jiraSchema from "../src/schema/jira.js";
 import * as organizationSchema from "../src/schema/organizations.js";
 import * as sandboxSchema from "../src/schema/sandbox.js";
+import * as ticketSchema from "../src/schema/ticket.js";
 
 /** The table name Postgres knows, which is what a foreign key resolves to. */
 function tableName(table: PgTable): string {
@@ -41,6 +42,7 @@ test("the barrel re-exports every table each module declares", () => {
     githubSchema,
     analysisSchema,
     sandboxSchema,
+    ticketSchema,
   ]) {
     for (const [name, value] of Object.entries(module)) {
       assert.equal(

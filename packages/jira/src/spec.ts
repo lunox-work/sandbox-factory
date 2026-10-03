@@ -2,15 +2,15 @@
  * Reading a ticket's spec, and fingerprinting what was read.
  *
  * Kept apart from `client.ts` because the description is the one thing this
- * package reads that the platform does not keep as it is: a run hashes it,
- * sizes from it and drafts a spec from it, and what is stored is the hash
- * and what was derived. `ISSUE_FIELDS` — what every list read asks for —
+ * package reads only by name: a run hashes it, sizes from it, drafts a spec
+ * from it and writes it onto the issue's ticket, the platform's own copy.
+ * `ISSUE_FIELDS` — what every list read asks for —
  * does not include `description`, so a board read cannot pull ticket text
  * even by accident; only `issueSpec` can, one ticket at a time, and the
  * caller has to ask for it by name.
  */
 
-import { ticketSpecHash } from "@sandbox-factory/shared";
+import { DEFAULT_ISSUE_TYPE, ticketSpecHash } from "@sandbox-factory/shared";
 
 import { adfToTextResult } from "./adf.js";
 
@@ -40,14 +40,17 @@ export interface JiraIssueSpec {
   /** True when ADF depth or length limits omitted any sizing input. */
   readonly inputTruncated: boolean;
   /**
-   * A fingerprint of `summary` + `descriptionText`.
-   *
-   * The platform stores this and not the text. On review, the live ticket is
-   * re-read and re-hashed: a difference means the spec changed after it was
-   * priced, and the proposal is stale.
+   * A fingerprint of `summary` + `descriptionText`, the first version of
+   * the spec hash. Nothing compares it now: proposals are priced against
+   * `pricingSpecHash`.
    */
   readonly specHash: string;
-  /** Version 1: normalized summary, description and issue type JSON tuple. */
+  /**
+   * Version 1 of the ticket's own hash (`ticketSpecHash`): the normalized
+   * summary, description and issue type as a JSON tuple. On review, the live
+   * ticket is re-read and re-hashed: a difference means the spec changed
+   * after it was priced, and the proposal is stale.
+   */
   readonly pricingSpecHash: string;
 }
 
@@ -97,13 +100,11 @@ export async function specHash(
  * priced from its stored text, and the two must agree byte for byte or a
  * fresh read would call every proposal stale.
  */
-export function pricingSpecHash(
+export const pricingSpecHash: (
   summary: string,
   descriptionText: string,
   issueType: string,
-): Promise<string> {
-  return ticketSpecHash(summary, descriptionText, issueType);
-}
+) => Promise<string> = ticketSpecHash;
 
 async function sha256(canonical: string): Promise<string> {
   const bytes = new TextEncoder().encode(canonical);
@@ -138,7 +139,9 @@ export async function toIssueSpec(
   const summary = typeof fields.summary === "string" ? fields.summary : "";
   const description = adfToTextResult(fields.description);
   const issueType =
-    typeof fields.issuetype?.name === "string" ? fields.issuetype.name : "Task";
+    typeof fields.issuetype?.name === "string"
+      ? fields.issuetype.name
+      : DEFAULT_ISSUE_TYPE;
   return {
     key,
     summary,

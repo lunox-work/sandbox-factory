@@ -253,8 +253,10 @@ function harness(options: {
   originPlanned?: StoredBountyRun["planned"];
   /** The board's pricing settings, as stored. */
   pricing?: unknown;
-  /** How many sub-tasks an `issue` run's ticket has when read again. */
+  /** How many sub-tasks a run's one ticket has when read again. */
   pickedSubtasks?: number;
+  /** Keeping Jira's text on the ticket fails with this. */
+  refreshError?: Error;
   /** The repository the board names, if any. */
   sourceRepoId?: string | null;
   /** The tickets the store holds, by id; a board's imports are added. */
@@ -417,6 +419,9 @@ function harness(options: {
       ticketId: string,
       content: TicketContent,
     ) => {
+      if (options.refreshError !== undefined) {
+        return Promise.reject(options.refreshError);
+      }
       refreshed.push({ ticketId, content });
       return Promise.resolve(true);
     },
@@ -1718,6 +1723,43 @@ test("Jira refusing a ticket's read stops the run; failing it fails the ticket",
     },
   ]);
   assert.equal(broken.finishes[0]?.status, "failed");
+});
+
+test("a ticket split into sub-tasks since it was imported sizes nothing", async () => {
+  const state = harness({
+    tickets: [ticket()],
+    runOverrides: ticketRun("tkt_1"),
+    pickedSubtasks: 2,
+  });
+  await state.executor.execute("org_1", "brn_1");
+  assert.deepEqual(state.finishes, [
+    { status: "failed", details: { fatalErrorCode: "issue_has_subtasks" } },
+  ]);
+  assert.equal(state.caller.calls.length, 0);
+  assert.equal(state.proposalInputs.length, 0);
+
+  // A sub-task read that fails is left to the text's own read.
+  const unread = harness({
+    tickets: [ticket()],
+    runOverrides: ticketRun("tkt_1"),
+    issueError: new JiraApiError(500, "down"),
+  });
+  await unread.executor.execute("org_1", "brn_1");
+  assert.equal(unread.finishes[0]?.status, "succeeded");
+});
+
+test("a copy of Jira's text that cannot be kept is not a Jira failure", async () => {
+  const errors: string[] = [];
+  const state = harness({
+    tickets: [ticket()],
+    runOverrides: ticketRun("tkt_1"),
+    refreshError: new Error("database down"),
+    onBackgroundError: (code) => void errors.push(code),
+  });
+  await state.executor.execute("org_1", "brn_1");
+  assert.equal(state.finishes[0]?.status, "succeeded");
+  assert.equal(state.proposalInputs.length, 1);
+  assert.deepEqual(errors, ["bounty_ticket_refresh_failed"]);
 });
 
 test("a ticket that is gone ends its run", async () => {

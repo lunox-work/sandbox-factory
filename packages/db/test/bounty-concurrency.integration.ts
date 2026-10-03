@@ -18,6 +18,7 @@ import {
   createBountySpecStore,
   createBountyWritebackStore,
   createConnection,
+  createTicketStore,
   type NewBountySpec,
 } from "../src/index.js";
 import { runMigrations } from "../src/migrate.js";
@@ -140,15 +141,20 @@ describe("bounty database concurrency", () => {
     `;
   }
 
-  function insertProposal(id: string, runId: string, issueId: string) {
-    return sql`
+  function insertProposal(
+    id: string,
+    runId: string,
+    issueId: string,
+    on: postgres.Sql | postgres.TransactionSql = sql,
+  ) {
+    return on`
       insert into bounty_proposal (
         id, organization_id, run_id, ticket_id, spec_hash, rate_card,
         model_complexity, model_confidence, model_rationale, actual_model,
         prompt_version, complexity, amount_minor, currency
       ) values (
         ${id}, 'org_bounty', ${runId}, ${issueId}, ${"a".repeat(64)},
-        ${sql.json(rateCard)}, 'M', 'high', 'A bounded medium change.',
+        ${on.json(rateCard)}, 'M', 'high', 'A bounded medium change.',
         'model-test', 'v1', 'M', 200, 'USD'
       )
     `;
@@ -565,6 +571,28 @@ describe("bounty database concurrency", () => {
         first?.categories.map(({ id }) => id),
         ["left-behind", "paper-cuts"],
       );
+
+      // Paged one at a time across rows made in one millisecond, none is
+      // skipped: a cursor holds milliseconds, and Postgres microseconds.
+      await sql`
+        update bounty_proposal
+        set created_at = timestamptz '2026-10-03 00:00:00.123Z'
+          + right(id, 1)::int * 100 * interval '1 microsecond'
+        where id like 'proposal_cat_%'
+      `;
+      const paged: string[] = [];
+      let cursor: { createdAt: string; id: string } | undefined;
+      for (;;) {
+        const [row] = await proposals.list("org_bounty", {
+          boardId: "board_categories",
+          limit: 1,
+          ...(cursor === undefined ? {} : { cursor }),
+        });
+        if (row === undefined) break;
+        paged.push(row.issueKey);
+        cursor = { createdAt: row.createdAt, id: row.id };
+      }
+      assert.deepEqual(paged, ["CAT-4", "CAT-3", "CAT-2", "CAT-1"]);
 
       // Another organization sees none of it.
       assert.deepEqual(
@@ -1080,6 +1108,127 @@ describe("bounty database concurrency", () => {
           )
         ).status,
         "changed",
+      );
+    } finally {
+      await connection.close();
+    }
+  });
+
+  test("a ticket page skips none made in the same millisecond as its last row", async () => {
+    // Postgres keeps microseconds, and a page's cursor milliseconds: three
+    // tickets inside one millisecond, read two to a page, all come back.
+    await sql`
+      insert into organization (id, name, slug)
+      values ('org_paging', 'Paging Org', 'paging-org')
+    `;
+    for (const [id, number, micros] of [
+      ["tkt_ms_a", 1, 100],
+      ["tkt_ms_b", 2, 400],
+      ["tkt_ms_c", 3, 700],
+    ] as const) {
+      // Computed in SQL: a timestamp sent as a parameter goes through a JS
+      // Date, which would cut it to the millisecond before it arrived.
+      await sql`
+        insert into ticket (id, organization_id, number, title, created_at)
+        values (
+          ${id}, 'org_paging', ${number}, ${id},
+          timestamptz '2026-10-03 00:00:00.123Z'
+            + ${micros}::int * interval '1 microsecond'
+        )
+      `;
+    }
+    const connection = createConnection({ url: scratchUrl() });
+    try {
+      const tickets = createTicketStore(connection.db);
+      const seen: string[] = [];
+      let cursor: { createdAt: string; id: string } | undefined;
+      for (;;) {
+        const page = await tickets.list("org_paging", {
+          limit: 2,
+          ...(cursor === undefined ? {} : { cursor }),
+        });
+        seen.push(...page.map(({ id }) => id));
+        const last = page.at(-1);
+        if (page.length < 2 || last === undefined) break;
+        cursor = { createdAt: last.createdAt, id: last.id };
+      }
+      assert.deepEqual(seen, ["tkt_ms_c", "tkt_ms_b", "tkt_ms_a"]);
+    } finally {
+      await connection.close();
+    }
+  });
+
+  test("a ticket delete waits for a proposal being written for it, and keeps both", async () => {
+    await importIssues([
+      ["issue_delete_race", "board_bounty", "1006", "DEMO-6"],
+    ]);
+    await insertRun("run_delete_race", "request-delete-race", "succeeded");
+    const connection = createConnection({ url: scratchUrl() });
+    try {
+      const tickets = createTicketStore(connection.db);
+      let removing: Promise<string> | undefined;
+      // The proposal's insert holds a key-share lock on the ticket until
+      // it commits; the delete is asked for while it is still open.
+      await sql.begin(async (tx) => {
+        await insertProposal(
+          "proposal_delete_race",
+          "run_delete_race",
+          "issue_delete_race",
+          tx,
+        );
+        removing = tickets.remove("org_bounty", "issue_delete_race");
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      });
+      assert.equal(await removing, "in-use");
+      const [kept] = await sql<{ proposals: number; tickets: number }[]>`
+        select
+          (select count(*)::int from bounty_proposal where id = 'proposal_delete_race') as proposals,
+          (select count(*)::int from ticket where id = 'issue_delete_race') as tickets
+      `;
+      assert.deepEqual(kept, { proposals: 1, tickets: 1 });
+
+      // A ticket nothing is built on goes.
+      await importIssues([
+        ["issue_delete_free", "board_bounty", "1007", "DEMO-7"],
+      ]);
+      assert.equal(
+        await tickets.remove("org_bounty", "issue_delete_free"),
+        "removed",
+      );
+      assert.equal(
+        await tickets.remove("org_bounty", "issue_delete_free"),
+        "not-found",
+      );
+    } finally {
+      await connection.close();
+    }
+  });
+
+  test("tickets written at once each take their own number", async () => {
+    await sql`
+      insert into organization (id, name, slug)
+      values ('org_numbers', 'Numbers Org', 'numbers-org')
+    `;
+    const connection = createConnection({ url: scratchUrl() });
+    try {
+      const tickets = createTicketStore(connection.db);
+      const created = await Promise.all(
+        Array.from({ length: 5 }, (_, index) =>
+          tickets.create("org_numbers", "user_bounty", {
+            title: `Ticket ${index}`,
+            description: "",
+            issueType: "Task",
+            priority: null,
+            labels: [],
+            repoId: null,
+          }),
+        ),
+      );
+      assert.deepEqual(
+        created
+          .map((result) => (result.ok ? result.ticket.number : 0))
+          .sort((a, b) => a - b),
+        [1, 2, 3, 4, 5],
       );
     } finally {
       await connection.close();

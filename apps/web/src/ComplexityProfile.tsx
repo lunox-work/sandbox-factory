@@ -4,8 +4,8 @@
  *
  * The profile is measured in the background after sizing (a scope agent,
  * then a slice, on the analysis worker), so the hook keeps reading while it
- * is in flight. A proposal that was never profiled shows nothing: its board
- * had no repository when it was sized.
+ * is in flight. A proposal that was never profiled shows nothing: neither
+ * its ticket nor its board named a repository when it was sized.
  */
 
 import type { BountyProfileDto } from "@sandbox-factory/shared";
@@ -13,6 +13,8 @@ import { proposalProfileResponseSchema } from "@sandbox-factory/shared";
 import { useEffect, useState } from "react";
 
 import { LoadingLine } from "@/components/Message";
+
+import { plural } from "./ProposalSpec";
 
 /** How often a profile still in flight is read again. */
 export const PROFILE_POLL_MS = 10_000;
@@ -30,8 +32,10 @@ export function useProposalProfile(
   /** The proposal's spec revision: a re-price that moves it reads again. */
   specRevision: number | null | undefined,
   /**
-   * Whether the spec was drafted beside a repository snapshot. Only such a
-   * proposal is ever profiled, so nothing is asked for one that was not.
+   * Whether the proposal has a spec. Only a spec is ever profiled, so
+   * nothing is asked for a proposal without one. Not whether the spec was
+   * drafted beside a snapshot: pruning the snapshot clears the proposal's
+   * link to it, while the profile it measured stays.
    */
   drafted: boolean,
 ): ProfileRead {
@@ -78,7 +82,7 @@ export function useProposalProfile(
 }
 
 const STAGE: Record<string, string> = {
-  queued: "Waiting for room in the organization's analysis queue.",
+  queued: "Waiting for room in the workspace's analysis queue.",
   scoping: "The scope agent is choosing the code this spec needs.",
   slicing: "Cutting the slice the scope agent chose.",
 };
@@ -90,10 +94,6 @@ const FAILURE: Record<string, string> = {
   slice_failed: "The slice the scope agent chose could not be cut.",
   output_invalid: "An analysis finished, but its result could not be read.",
 };
-
-function plural(count: number, noun: string): string {
-  return `${count.toLocaleString("en-US")} ${noun}${count === 1 ? "" : "s"}`;
-}
 
 function size(bytes: number): string {
   return bytes < 1024

@@ -18,13 +18,14 @@ import type {
   TicketDto,
   TicketSummaryDto,
 } from "@sandbox-factory/shared";
-import { TICKET_LIMITS } from "sandbox-factory";
+import { DEFAULT_ISSUE_TYPE, TICKET_LIMITS } from "sandbox-factory";
 import {
   ChevronRight,
   ExternalLink,
   Loader2,
   Pencil,
   Plus,
+  RefreshCw,
   Sparkles,
 } from "lucide-react";
 import {
@@ -48,7 +49,7 @@ import { cn } from "@/lib/utils";
 import { BoardBounties, money } from "./Bounties";
 import { JiraIcon } from "./ProviderIcon";
 import { TicketText } from "./TicketText";
-import { useGithubRepos } from "./useGithub";
+import { useGithubRepos, type GithubRepos } from "./useGithub";
 import { useTickets, type TicketDraft, type Tickets } from "./useTickets";
 
 type Tab = "tickets" | "proposals";
@@ -77,6 +78,8 @@ export function Tickets({
   role: string;
 }) {
   const tickets = useTickets(organizationId);
+  // Read once for every form and peek on the page.
+  const repos = useGithubRepos(organizationId);
   const [tab, setTab] = useState<Tab>(tabFromUrl);
   /*
     Which ticket's peek is open, or the form for a new one. `?ticket=` like
@@ -87,6 +90,14 @@ export function Tickets({
     new URLSearchParams(window.location.search).get("ticket"),
   );
   const [creating, setCreating] = useState(false);
+  /*
+    The ticket the open peek last read. It names the panel when the ticket
+    is not among the rows loaded, as for a link to an older one.
+  */
+  const [peeked, setPeeked] = useState<TicketDto | null>(null);
+  const shown =
+    (peeked?.id === openId ? peeked : undefined) ??
+    tickets.tickets.find(({ id }) => id === openId);
   /** Bumped to remount the proposal list on a proposal opened from here. */
   const [proposalsKey, setProposalsKey] = useState(0);
 
@@ -199,7 +210,7 @@ export function Tickets({
       >
         {creating && (
           <TicketForm
-            organizationId={organizationId}
+            repos={repos}
             submitLabel="Create ticket"
             onCancel={() => setCreating(false)}
             onSubmit={async (draft) => {
@@ -218,19 +229,18 @@ export function Tickets({
         onOpenChange={(next) => {
           if (!next) openTicket(null);
         }}
-        title={
-          tickets.tickets.find(({ id }) => id === openId)?.title ?? "Ticket"
-        }
-        description={tickets.tickets.find(({ id }) => id === openId)?.key}
+        title={shown?.title ?? "Ticket"}
+        description={shown?.key}
         data-testid="ticket-panel"
       >
         {openId !== null && (
           <TicketPeek
             key={openId}
-            organizationId={organizationId}
             ticketId={openId}
             tickets={tickets}
+            repos={repos}
             canManage={canManage(role)}
+            onLoaded={setPeeked}
             onOpenProposal={openProposal}
             onDeleted={() => openTicket(null)}
           />
@@ -350,6 +360,7 @@ function TicketRow({
   onOpenProposal: (proposalId: string) => void;
 }) {
   const propose = usePropose(tickets, ticket.id, onOpenProposal);
+  const { proposal } = ticket;
   return (
     <li className="flex flex-col">
       <div className="hover:bg-muted/50 flex items-center gap-3 px-3 py-2.5 transition-colors">
@@ -372,29 +383,25 @@ function TicketRow({
           </span>
         </button>
         <span className="flex shrink-0 items-center gap-2 sm:w-56">
-          {ticket.proposal !== null ? (
+          {proposal !== null ? (
             <button
               type="button"
               className="hover:bg-muted flex cursor-pointer items-center gap-2 rounded-md px-1 py-0.5"
-              onClick={() => onOpenProposal(ticket.proposal!.id)}
+              onClick={() => onOpenProposal(proposal.id)}
               aria-label={`Open the proposal for ${ticket.key}`}
             >
               <Badge
                 variant={
-                  ticket.proposal.status === "approved"
-                    ? "default"
-                    : "secondary"
+                  proposal.status === "approved" ? "default" : "secondary"
                 }
               >
-                {ticket.proposal.status === "approved"
-                  ? "Approved"
-                  : "Proposed"}
+                {proposal.status === "approved" ? "Approved" : "Proposed"}
               </Badge>
               <Badge variant="outline" className="font-mono">
-                {ticket.proposal.complexity}
+                {proposal.complexity}
               </Badge>
               <span className="text-sm tabular-nums">
-                {money(ticket.proposal.amountMinor, ticket.proposal.currency)}
+                {money(proposal.amountMinor, proposal.currency)}
               </span>
             </button>
           ) : canPropose ? (
@@ -458,74 +465,150 @@ function usePropose(
   return { pending, error, start };
 }
 
+/**
+ * What a save changes. Only the fields that differ are sent, so a field
+ * nobody touched is not judged again: a ticket gone from Jira can hold text
+ * longer than a ticket written here may. A ticket following its Jira issue
+ * sends its repository alone.
+ */
+function changesFrom(
+  ticket: TicketDto,
+  draft: TicketDraft,
+  textLocked: boolean,
+): Partial<TicketDraft> {
+  const change: Partial<TicketDraft> = {};
+  if (draft.repoId !== ticket.repoId) change.repoId = draft.repoId;
+  if (textLocked) return change;
+  if (draft.title !== ticket.title) change.title = draft.title;
+  if (draft.description !== ticket.description) {
+    change.description = draft.description;
+  }
+  if (draft.issueType !== ticket.issueType) change.issueType = draft.issueType;
+  if (draft.priority !== ticket.priority) change.priority = draft.priority;
+  if (draft.labels.join("\n") !== ticket.labels.join("\n")) {
+    change.labels = draft.labels;
+  }
+  return change;
+}
+
+/** Said when a save lost to someone else's, and the form now shows theirs. */
+const CHANGED_WHILE_EDITING =
+  "Someone changed this ticket while you were editing. It now shows their version; make your change again.";
+
 function TicketPeek({
-  organizationId,
   ticketId,
   tickets,
+  repos,
   canManage,
+  onLoaded,
   onOpenProposal,
   onDeleted,
 }: {
-  organizationId: string;
   ticketId: string;
   tickets: Tickets;
+  repos: GithubRepos;
   canManage: boolean;
+  onLoaded: (ticket: TicketDto) => void;
   onOpenProposal: (proposalId: string) => void;
   onDeleted: () => void;
 }) {
   const [ticket, setTicket] = useState<TicketDto | null>(null);
-  const [missing, setMissing] = useState(false);
+  /*
+    The read found nothing to show. `notFound` is a ticket that is gone;
+    anything else failed and is worth trying again, which `attempt` does.
+  */
+  const [failure, setFailure] = useState<{ notFound: boolean } | null>(null);
+  const [attempt, setAttempt] = useState(0);
   const [editing, setEditing] = useState(false);
-  const [deleteError, setDeleteError] = useState<string | null>(null);
-  const { repos } = useGithubRepos(organizationId);
+  /*
+    Why the form opened again holding the ticket as it is now. The form is
+    keyed by revision, so it is held here, where a remount cannot drop it.
+  */
+  const [notice, setNotice] = useState<string | null>(null);
   const propose = usePropose(tickets, ticketId, onOpenProposal);
   const { read } = tickets;
 
   useEffect(() => {
     let live = true;
-    void read(ticketId).then((found) => {
+    void read(ticketId).then((result) => {
       if (!live) return;
-      setTicket(found);
-      setMissing(found === null);
+      if (result.ok) {
+        setTicket(result.ticket);
+        setFailure(null);
+      } else {
+        setFailure({ notFound: result.notFound });
+      }
     });
     return () => {
       live = false;
     };
-  }, [read, ticketId]);
+  }, [read, ticketId, attempt]);
 
-  if (missing) {
+  useEffect(() => {
+    if (ticket !== null) onLoaded(ticket);
+  }, [ticket, onLoaded]);
+
+  if (failure?.notFound === true) {
     return (
       <p className="text-muted-foreground text-sm">
         This ticket no longer exists.
       </p>
     );
   }
-  if (ticket === null) return <LoadingLine>Loading the ticket…</LoadingLine>;
+  if (ticket === null) {
+    return failure === null ? (
+      <LoadingLine>Loading the ticket…</LoadingLine>
+    ) : (
+      <div className="flex flex-col items-start gap-3">
+        <ErrorBanner className="mt-0">Could not load the ticket.</ErrorBanner>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => {
+            setFailure(null);
+            setAttempt((count) => count + 1);
+          }}
+        >
+          <RefreshCw />
+          Try again
+        </Button>
+      </div>
+    );
+  }
 
   // A ticket following its Jira issue takes its text from Jira.
   const followsJira = ticket.jira !== null && ticket.jira.removedAt === null;
-  const repo = repos.find(({ id }) => id === ticket.repoId) ?? null;
+  const repo = repos.repos.find(({ id }) => id === ticket.repoId) ?? null;
+  const { proposal } = ticket;
 
   if (editing) {
     return (
       <TicketForm
-        organizationId={organizationId}
+        key={ticket.revision}
+        repos={repos}
         initial={ticket}
+        initialError={notice}
         textLocked={followsJira}
         submitLabel="Save"
         onCancel={() => setEditing(false)}
         onSubmit={async (draft) => {
-          const change: Partial<TicketDraft> = followsJira
-            ? { repoId: draft.repoId }
-            : draft;
+          const change = changesFrom(ticket, draft, followsJira);
+          if (Object.keys(change).length === 0) {
+            setEditing(false);
+            return null;
+          }
           const result = await tickets.update(
             ticket.id,
             ticket.revision,
             change,
           );
           if (!result.ok) {
-            if (result.ticket !== undefined) setTicket(result.ticket);
-            return result.error;
+            if (result.ticket === undefined) return result.error;
+            // The form remounts on the new revision, holding what is there.
+            setNotice(CHANGED_WHILE_EDITING);
+            setTicket(result.ticket);
+            return CHANGED_WHILE_EDITING;
           }
           setTicket(result.ticket);
           setEditing(false);
@@ -569,7 +652,10 @@ function TicketPeek({
             type="button"
             variant="outline"
             size="sm"
-            onClick={() => setEditing(true)}
+            onClick={() => {
+              setNotice(null);
+              setEditing(true);
+            }}
           >
             <Pencil />
             Edit
@@ -578,31 +664,27 @@ function TicketPeek({
       </div>
 
       <div className="flex flex-col gap-2 rounded-lg border p-4">
-        {ticket.proposal !== null ? (
+        {proposal !== null ? (
           <div className="flex flex-wrap items-center justify-between gap-3">
             <span className="flex items-center gap-2">
               <Badge
                 variant={
-                  ticket.proposal.status === "approved"
-                    ? "default"
-                    : "secondary"
+                  proposal.status === "approved" ? "default" : "secondary"
                 }
               >
-                {ticket.proposal.status === "approved"
-                  ? "Approved"
-                  : "Proposed"}
+                {proposal.status === "approved" ? "Approved" : "Proposed"}
               </Badge>
               <Badge variant="outline" className="font-mono">
-                {ticket.proposal.complexity}
+                {proposal.complexity}
               </Badge>
               <span className="text-lg font-semibold tabular-nums">
-                {money(ticket.proposal.amountMinor, ticket.proposal.currency)}
+                {money(proposal.amountMinor, proposal.currency)}
               </span>
             </span>
             <Button
               type="button"
               size="sm"
-              onClick={() => onOpenProposal(ticket.proposal!.id)}
+              onClick={() => onOpenProposal(proposal.id)}
             >
               Open proposal
             </Button>
@@ -642,12 +724,18 @@ function TicketPeek({
       <p className="text-sm">
         <span className="text-muted-foreground">Repository </span>
         <span className="font-medium">
+          {/*
+            A repository that is removed clears the ticket's link, so one
+            named but not listed is one the list has not shown yet.
+          */}
           {repo?.fullName ??
             (ticket.repoId === null
               ? ticket.jira === null
                 ? "None"
                 : "Its board's, if it has one"
-              : "A removed repository")}
+              : repos.loading
+                ? "…"
+                : "Unavailable")}
         </span>
       </p>
 
@@ -659,8 +747,8 @@ function TicketPeek({
         inputTruncated={ticket.inputTruncated}
       />
 
-      {canManage && ticket.proposal === null && (
-        <div className="flex flex-col items-start gap-1">
+      {canManage && proposal === null && (
+        <div className="flex flex-col items-start">
           <ConfirmDialog
             trigger={
               <button
@@ -671,22 +759,15 @@ function TicketPeek({
               </button>
             }
             title={`Delete ${ticket.key}?`}
-            description="The ticket is removed from this workspace. A ticket with a proposal or a sandbox cannot be deleted."
+            description="The ticket is removed from this workspace. A ticket with a proposal or a sandbox, or one being sized, cannot be deleted."
             confirmLabel="Delete ticket"
             onConfirm={async () => {
+              // A failure stays in the dialog, which says it.
               const failure = await tickets.remove(ticket.id);
-              if (failure !== null) {
-                setDeleteError(failure);
-                return failure;
-              }
+              if (failure !== null) return failure;
               onDeleted();
             }}
           />
-          {deleteError !== null && (
-            <p role="alert" className="text-destructive text-xs">
-              {deleteError}
-            </p>
-          )}
         </div>
       )}
     </div>
@@ -702,35 +783,50 @@ const fieldClass =
  * repository is offered.
  */
 function TicketForm({
-  organizationId,
+  repos,
   initial,
+  initialError = null,
   textLocked = false,
   submitLabel,
   onSubmit,
   onCancel,
 }: {
-  organizationId: string;
+  repos: GithubRepos;
   initial?: TicketDto;
+  /** What the form opens saying, as after a save that lost a race. */
+  initialError?: string | null;
   textLocked?: boolean;
   submitLabel: string;
   /** Resolves to null when saved, or to what to say. */
   onSubmit: (draft: TicketDraft) => Promise<string | null>;
   onCancel: () => void;
 }) {
-  const { repos } = useGithubRepos(organizationId);
   const [title, setTitle] = useState(initial?.title ?? "");
   const [description, setDescription] = useState(initial?.description ?? "");
-  const [issueType, setIssueType] = useState(initial?.issueType ?? "Task");
+  const [issueType, setIssueType] = useState(
+    initial?.issueType ?? DEFAULT_ISSUE_TYPE,
+  );
   const [priority, setPriority] = useState(initial?.priority ?? "");
   const [labels, setLabels] = useState((initial?.labels ?? []).join(", "));
   const [repoId, setRepoId] = useState(initial?.repoId ?? "");
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const choices: GithubRepoDto[] = repos.filter(
+  const [error, setError] = useState<string | null>(initialError);
+  const choices: GithubRepoDto[] = repos.repos.filter(
     (repo) =>
       (repo.role === "source" && repo.syncStatus !== "gone") ||
       repo.id === initial?.repoId,
   );
+  /*
+    A value the options do not hold — a Jira priority such as "Critical",
+    or a repository the list has not shown yet — is offered as itself.
+    Otherwise the select would show "None" while still sending the value.
+  */
+  const otherPriority =
+    priority !== "" && !(PRIORITIES as readonly string[]).includes(priority)
+      ? priority
+      : null;
+  const otherRepo =
+    repoId !== "" && !choices.some(({ id }) => id === repoId) ? repoId : null;
 
   return (
     <form
@@ -742,17 +838,37 @@ function TicketForm({
           setError("A ticket needs a title.");
           return;
         }
+        // Trimmed, and each kept once in the order first given, as stored.
+        const labelList = [
+          ...new Set(
+            labels
+              .split(",")
+              .map((label) => label.trim())
+              .filter((label) => label !== ""),
+          ),
+        ];
+        if (!textLocked && labelList.length > TICKET_LIMITS.labels) {
+          setError(`A ticket takes at most ${TICKET_LIMITS.labels} labels.`);
+          return;
+        }
+        if (
+          !textLocked &&
+          labelList.some((label) => label.length > TICKET_LIMITS.label)
+        ) {
+          setError(
+            `A label is at most ${TICKET_LIMITS.label} characters long.`,
+          );
+          return;
+        }
         setSaving(true);
         setError(null);
         void onSubmit({
           title: title.trim(),
           description,
-          issueType: issueType.trim() === "" ? "Task" : issueType.trim(),
+          issueType:
+            issueType.trim() === "" ? DEFAULT_ISSUE_TYPE : issueType.trim(),
           priority: priority === "" ? null : priority,
-          labels: labels
-            .split(",")
-            .map((label) => label.trim())
-            .filter((label) => label !== ""),
+          labels: labelList,
           repoId: repoId === "" ? null : repoId,
         }).then((failure) => {
           setSaving(false);
@@ -819,6 +935,9 @@ function TicketForm({
                     {value}
                   </option>
                 ))}
+                {otherPriority !== null && (
+                  <option value={otherPriority}>{otherPriority}</option>
+                )}
               </select>
             </>
           )}
@@ -856,6 +975,11 @@ function TicketForm({
                   {repo.fullName}
                 </option>
               ))}
+              {otherRepo !== null && (
+                <option value={otherRepo}>
+                  {repos.loading ? "…" : "Unavailable"}
+                </option>
+              )}
             </select>
           </>
         )}

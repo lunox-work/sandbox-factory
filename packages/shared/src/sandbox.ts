@@ -8,6 +8,7 @@
 import {
   ALIAS_KINDS,
   ALIAS_RULES_MAX,
+  APPROVED_TASK_SCHEMA_VERSION,
   DEPENDENCY_RESOLUTIONS,
   FIXTURE_LIMITS,
   PRICED_BOUNTY_COMPLEXITIES,
@@ -197,7 +198,7 @@ export const approvedTaskSnapshotSchema = z.discriminatedUnion(
   "schemaVersion",
   [
     approvedTaskSelectionSchema.extend({
-      schemaVersion: z.literal(2),
+      schemaVersion: z.literal(APPROVED_TASK_SCHEMA_VERSION),
       ticketIds: z.array(z.string()),
     }),
     approvedTaskSelectionSchema.extend({

@@ -1,12 +1,13 @@
 import { randomUUID } from "node:crypto";
 
-import type {
-  BountyProposalStore,
-  BountyWritebackStore,
-  JiraBoardStore,
-  JiraConnectionStore,
-  TicketStore,
-  StoredBountyWriteback,
+import {
+  followsJira,
+  type BountyProposalStore,
+  type BountyWritebackStore,
+  type JiraBoardStore,
+  type JiraConnectionStore,
+  type StoredBountyWriteback,
+  type TicketStore,
 } from "@sandbox-factory/db";
 import {
   adfToText,
@@ -252,13 +253,14 @@ export class BountyDelivery {
       operation.proposalId,
     );
     if (proposal === null) return { ok: false as const, code: "not_found" };
-    // Delivered to the ticket's Jira issue; a ticket with none has nowhere
-    // to be posted, and is never queued one.
+    // Delivered to the ticket's Jira issue while it follows one. A ticket
+    // with none is never queued one, and one whose issue has gone since has
+    // nowhere left to be posted.
     const ticket = await this.#options.tickets.get(
       organizationId,
       proposal.ticketId,
     );
-    const issue = ticket?.jira ?? null;
+    const issue = ticket !== null && followsJira(ticket) ? ticket.jira : null;
     if (issue === null) return { ok: false as const, code: "not_found" };
     const registered = await this.#options.boards.forRun(
       organizationId,
