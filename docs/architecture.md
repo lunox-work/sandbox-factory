@@ -22,7 +22,16 @@ apps/api, apps/worker    → github → shared
 | `packages/github` | `shared`         | `client`, any app           |
 | `apps/*`          | any package      | another app                 |
 
-Three of these are enforced or load-bearing:
+`npm run lint:deps` (dependency-cruiser, part of `npm run lint`) enforces this
+table plus two more rules: no unresolved imports and no runtime import cycles.
+The rules are in [`.dependency-cruiser.cjs`](../.dependency-cruiser.cjs); change
+its `packageDependencies` allowlist together with this table. Cycles that pass
+through a type-only import are allowed. The one accepted runtime cycle, between
+the auth and organization schema modules, is recorded in
+`.dependency-cruiser-known-violations.json`; do not add to that file to get a
+new cycle past CI.
+
+Three of these are load-bearing:
 
 - **`packages/core` has zero dependencies.** It is bundled into a browser, a
   Node server, and an extension host, and is the one publishable package.

@@ -6,6 +6,7 @@ protection on `main`.
 | Workflow              | Does                                                                    |
 | --------------------- | ----------------------------------------------------------------------- |
 | `ci.yml`              | Lint, format, build, test on Node 22 and 24; worker image smoke         |
+| `e2e.yml`             | Playwright browser smoke on Chromium — the `Browser smoke` check        |
 | `autofix.yml`         | Pushes `npm run format` fixes to same-repository PRs                    |
 | `codeql.yml`          | Security analysis — the `Analyze` check                                 |
 | `auto-merge.yml`      | Arms auto-merge on every PR                                             |
@@ -24,7 +25,8 @@ one active ruleset, no bypass actors, no force-push/deletion, linear history
 and squash-only PR merges. These contexts are required, from their expected
 GitHub Apps:
 
-- `Test (Node 22)`, `Test (Node 24)`, `Worker image smoke`, `Analyze`: GitHub Actions.
+- `Test (Node 22)`, `Test (Node 24)`, `Worker image smoke`,
+  `Browser smoke (Chromium)`, `Analyze`: GitHub Actions.
 - `CodeQL`: GitHub Advanced Security (the findings result, not just the scanner job).
 
 **A PR merges once CI passes.** No approving review is required, review
@@ -68,7 +70,10 @@ gateway incompatibilities such as optional AWS checksum trailer framing. Turbo
 passes the database URL and test S3 endpoint into the test tasks and their cache
 keys.
 
-- **Format is a separate gate from lint.** `npm run lint` is `tsc --noEmit`.
+- **Lint also checks import boundaries.** `npm run lint` runs each workspace's
+  `tsc --noEmit`, then `npm run lint:deps`
+  ([dependency rules](./architecture.md#dependency-direction)).
+- **Format is a separate gate from lint.**
   Unformatted Markdown fails CI as hard as unformatted TypeScript.
   [`autofix.yml`](../.github/workflows/autofix.yml) runs `npm run format` on
   each same-repository PR and pushes any diff as a `style:` commit, which

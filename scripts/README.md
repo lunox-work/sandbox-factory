@@ -1,11 +1,13 @@
 # scripts/
 
-| Script             | Does                                                               |
-| ------------------ | ------------------------------------------------------------------ |
-| `ship.sh`          | Verifies, opens a PR and returns to main; GitHub owns review/merge |
-| `rotate-token.sh`  | Rotates `AUTO_MERGE_TOKEN`, or the production app secrets          |
-| `build-info.mjs`   | Resolves build provenance — see [versioning.md][versioning]        |
-| `next-version.mjs` | Decides the release bump — see [ci.md][release]                    |
+| Script                   | Does                                                               |
+| ------------------------ | ------------------------------------------------------------------ |
+| `ship.sh`                | Verifies, opens a PR and returns to main; GitHub owns review/merge |
+| `rotate-token.sh`        | Rotates `AUTO_MERGE_TOKEN`, or the production app secrets          |
+| `graphify.sh`            | Builds and queries the local maintenance code graph                |
+| `install-agent-tools.sh` | Installs the pinned Archify skill and the Graphify graph           |
+| `build-info.mjs`         | Resolves build provenance — see [versioning.md][versioning]        |
+| `next-version.mjs`       | Decides the release bump — see [ci.md][release]                    |
 
 [versioning]: ../docs/versioning.md
 [release]: ../docs/ci.md#release-cdyml-the-release-job

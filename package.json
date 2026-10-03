@@ -26,15 +26,20 @@
   "scripts": {
     "build": "turbo run build",
     "test": "node --test scripts/test/*.test.cjs && turbo run test",
-    "lint": "turbo run lint",
+    "lint": "turbo run lint && npm run lint:deps",
+    "lint:deps": "depcruise apps/*/src packages/*/src --config .dependency-cruiser.cjs --ignore-known",
     "dev": "turbo run dev --filter=@sandbox-factory/api --filter=@sandbox-factory/web",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "verify": "npm run lint && npm run format:check && npm run build && npm test",
     "prepare": "husky",
+    "test:e2e": "turbo run build --filter=@sandbox-factory/api --filter=@sandbox-factory/web && playwright test",
     "worker:smoke": "docker build --target runtime -f apps/worker/Dockerfile -t sandbox-factory-worker:smoke . && docker run --rm --entrypoint node sandbox-factory-worker:smoke apps/worker/scripts/smoke.mjs"
   },
   "devDependencies": {
+    "@playwright/test": "1.63.0",
+    "@swc/core": "1.16.13",
+    "dependency-cruiser": "18.5.0",
     "husky": "^9.1.7",
     "prettier": "^3.9.9",
     "turbo": "^2.11.5",

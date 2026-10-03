@@ -37,6 +37,48 @@ cannot verify, preserving the service-free local verification path.
   `task.ts` and `origin.ts`; only `extension.ts` imports `vscode`. That entry point,
   `build.js` and type-only `host.js` are excluded from coverage.
 
+## Import boundaries
+
+`npm run lint:deps` runs dependency-cruiser over every `apps/*/src` and
+`packages/*/src`. It parses with SWC because dependency-cruiser does not
+support TypeScript 7; its "missing TypeScript transpiler" warning is expected.
+`scripts/dependency-resolver.cjs` only teaches it the `@/` alias and workspace
+entry points and does not affect builds. If `@swc/core` is missing the run
+cruises almost nothing, so keep it pinned in the root `devDependencies`.
+
+## Browser smoke tests
+
+`npm run test:e2e` builds the API and web app, then runs Playwright
+(`e2e/*.spec.mjs`, Chromium) against `e2e/server.mjs`: the built web bundle and
+the compiled production Hono routes with in-memory session and store doubles.
+It needs no Docker, database or credentials, and does not exercise Better Auth's
+OAuth flow, PostgreSQL or third-party integrations. Run
+`npx playwright install chromium` once. It is deliberately outside
+`npm run verify`; CI runs it in [`e2e.yml`](../.github/workflows/e2e.yml) as a
+required check.
+Extend the doubles in `e2e/server.mjs` when a new flow needs a store; never add
+a reset endpoint or auth bypass to the product for the suite.
+
+## Maintenance tools for agents
+
+Two optional agent skills live in `.agents/skills/`; `.claude/skills` is a
+symlink to it so Codex and Claude Code find the same ones. The tools themselves
+are not committed. Run `scripts/install-agent-tools.sh` once per clone to
+install both (or pass `archify` or `graphify`), and again after a pin changes.
+Their output is supplemental: reviewed rules and explanations stay in
+`AGENTS.md` and `docs/`.
+
+- **Graphify** (`scripts/graphify.sh`, skill `graphify`): a pinned, code-only
+  graph for finding definitions, callers and cross-workspace paths. The venv and
+  graph live in `~/.cache/sandbox-factory/graphify` (override with
+  `GRAPHIFY_CACHE`); needs Python 3.10+. It is unrelated to the worker's
+  Graphify adapter and its pin.
+- **Archify** (skill `archify`): on-demand architecture diagrams. The install
+  script unpacks `tt-a1i/archify` v3.0.1 at a pinned commit into the gitignored
+  `.agents/skills/archify`; needs Node 18+ and `curl`. Check it with `node .agents/skills/archify/bin/archify.mjs doctor`. Write
+  diagrams outside the checkout unless one is being committed on purpose. A
+  validated diagram is not evidence the system behaves that way.
+
 ## Build and development servers
 
 Make targets must work from a fresh clone: host targets use the `node_modules`

@@ -45,3 +45,9 @@ docker-compose.yml
 
 **/__pycache__
 **/*.pyc
+
+# Agent skills and browser tests are not part of any image.
+.agents
+e2e
+playwright-report
+test-results

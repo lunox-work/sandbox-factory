@@ -81,3 +81,10 @@ docs/plan/
 # Private, human-labelled sizing examples. Synthetic fixtures remain tracked.
 apps/api/eval/*.jsonl
 !apps/api/eval/*.synthetic.jsonl
+
+# Playwright output (`npm run test:e2e`)
+playwright-report/
+test-results/
+
+# Installed by scripts/install-agent-tools.sh at a pinned upstream release.
+.agents/skills/archify/
