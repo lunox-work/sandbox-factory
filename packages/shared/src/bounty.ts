@@ -122,6 +122,9 @@ export const bountyOutcomeStatusSchema = z.enum([
 export const bountyRunOutcomeSchema = z.object({
   externalIssueId: z.string().min(1),
   issueKey: z.string().min(1),
+  /** The ticket the outcome is about, once the run had one. */
+  ticketId: z.string().min(1).optional(),
+  /** On outcomes recorded before tickets existed: the Jira pointer. */
   jiraIssueId: z.string().min(1).optional(),
   proposalId: z.string().min(1).optional(),
   status: bountyOutcomeStatusSchema,
@@ -171,9 +174,12 @@ export const proposalCategoriesDtoSchema = z.object({
 });
 
 export const bountyRunPlannedIssueSchema = z.object({
+  /** Jira's issue id for a board's ticket; the ticket's id for one written here. */
   externalIssueId: z.string().min(1),
   issueKey: z.string().min(1),
   summary: z.string(),
+  /** The ticket, when it was known as the plan was written. */
+  ticketId: z.string().min(1).optional(),
   /** Absent on plans recorded before categories existed. */
   categories: z.array(bountyCategoryMatchSchema).optional(),
 });
@@ -181,7 +187,13 @@ export const bountyRunPlannedIssueSchema = z.object({
 export const bountyRunDtoSchema = z.object({
   id: z.string().min(1),
   organizationId: z.string().min(1),
-  boardId: z.string().min(1),
+  /**
+   * The Jira board the run read, or null for a run that started from a
+   * ticket with none: one written here, or one whose board has gone.
+   */
+  boardId: z.string().min(1).nullable(),
+  /** The one ticket a `ticket`, `reprice` or `respec` run is about. */
+  ticketId: z.string().min(1).nullable(),
   kind: bountyRunKindSchema,
   sourceProposalId: z.string().nullable(),
   sourceRevision: z.number().int().positive().nullable(),
@@ -268,8 +280,12 @@ export const bountyProposalDtoSchema = z.object({
   id: z.string().min(1),
   organizationId: z.string().min(1),
   runId: z.string().min(1),
-  jiraIssueId: z.string().min(1),
+  /** The ticket the proposal prices. */
+  ticketId: z.string().min(1),
+  /** The ticket's key: its Jira key while it has one, `T-<number>` otherwise. */
   issueKey: z.string().min(1),
+  /** The ticket's title as the platform holds it. */
+  title: z.string(),
   specHash: z.string().length(64),
   specHashVersion: z.number().int().positive(),
   rateCard: rateCardSnapshotSchema,
@@ -296,7 +312,7 @@ export const bountyProposalDtoSchema = z.object({
   specRevision: z.number().int().positive().nullable(),
   /**
    * The repository snapshot whose outline the spec was drafted beside, or
-   * null when the board named no repository, its repository had no snapshot
+   * null when the ticket had no repository, its repository had no snapshot
    * yet, or the snapshot has since been pruned.
    */
   repoSnapshotId: z.string().nullable().default(null),
@@ -347,12 +363,17 @@ export const proposalFreshnessDtoSchema = z.object({
   liveUrl: z.url().optional(),
 });
 
+/**
+ * What the ticket says now, for comparing with what was priced: read from
+ * Jira for a ticket that has an issue there, and the ticket as stored
+ * otherwise, which has no `url`.
+ */
 export const proposalLiveSpecSchema = z.object({
   summary: z.string(),
   descriptionText: z.string(),
   issueType: z.string(),
   key: z.string(),
-  url: z.url(),
+  url: z.url().nullable(),
   inputTruncated: z.boolean(),
 });
 

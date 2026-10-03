@@ -19,7 +19,7 @@ import { z } from "zod";
 import { entryPointSchema, sandboxFixtureSchema } from "./analysis.js";
 import { specDraftSchema } from "./spec.js";
 
-export const SANDBOX_JIRA_ISSUES_MAX = 20;
+export const SANDBOX_TICKETS_MAX = 20;
 export const ACCEPTANCE_TESTS_MAX = 50;
 export const ACCEPTANCE_TEST_CHARS_MAX = 64 * 1024;
 export const SANDBOX_TAGS_MAX = 10;
@@ -72,10 +72,8 @@ export const versionFixturesSchema = fixturesInputSchema.extend({
 
 export const createSandboxSchema = z.strictObject({
   sourceRepoId: z.string().min(1),
-  jiraIssueIds: z
-    .array(z.string().min(1))
-    .max(SANDBOX_JIRA_ISSUES_MAX)
-    .default([]),
+  /** The tickets the sandbox is cut for. */
+  ticketIds: z.array(z.string().min(1)).max(SANDBOX_TICKETS_MAX).default([]),
 });
 
 /** A draft version from a succeeded slice run on the sandbox's source. */
@@ -124,7 +122,7 @@ export const sandboxDtoSchema = z.strictObject({
   publicRepoId: z.string().nullable(),
   currentVersionId: z.string().nullable(),
   sourceRepoId: z.string(),
-  jiraIssueIds: z.array(z.string()),
+  ticketIds: z.array(z.string()),
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
 });
@@ -165,8 +163,7 @@ export const scopeRecordSchema = z.object({
   dependencies: z.array(resolvedDependencySchema),
   blockers: z.array(z.object({ code: z.string(), detail: z.string() })),
 });
-export const approvedTaskSnapshotSchema = z.object({
-  schemaVersion: z.literal(1),
+const approvedTaskSelectionSchema = z.object({
   title: z.string(),
   summary: z.string(),
   spec: z
@@ -190,8 +187,25 @@ export const approvedTaskSnapshotSchema = z.object({
     .nullable(),
   selectedBy: z.string(),
   selectedAt: z.string(),
-  jiraIssueIds: z.array(z.string()),
 });
+/**
+ * A version's frozen task. Version 2 names the sandbox's tickets; a version
+ * frozen before tickets names Jira issue pointers, and is read as it was
+ * written because its hash covers it.
+ */
+export const approvedTaskSnapshotSchema = z.discriminatedUnion(
+  "schemaVersion",
+  [
+    approvedTaskSelectionSchema.extend({
+      schemaVersion: z.literal(2),
+      ticketIds: z.array(z.string()),
+    }),
+    approvedTaskSelectionSchema.extend({
+      schemaVersion: z.literal(1),
+      jiraIssueIds: z.array(z.string()),
+    }),
+  ],
+);
 
 /** Private provenance, for owners and admins only. */
 export const sandboxVersionSourceDtoSchema = z.strictObject({

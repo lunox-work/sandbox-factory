@@ -1,4 +1,4 @@
-/** Commercial records produced from Jira issue pointers. */
+/** Commercial records: what tickets are priced at, and how they got there. */
 
 import { sql } from "drizzle-orm";
 import {
@@ -17,9 +17,14 @@ import {
 } from "drizzle-orm/pg-core";
 
 import type {
+  AnalysisErrorCode,
   BountyRunOutcome,
   BountyRunPlannedIssue,
   BountySelection,
+  ComplexityProfile,
+  ProfileErrorCode,
+  ProfileStatus,
+  ProfileTicket,
   RateCardSnapshot,
   PricedComplexity,
   RespecRequest,
@@ -27,10 +32,11 @@ import type {
   StepResult,
 } from "sandbox-factory";
 
-import { repoSnapshot } from "./analysis.js";
+import { analysisRun, repoSnapshot } from "./analysis.js";
 import { user } from "./auth.js";
-import { jiraBoard, jiraIssue } from "./jira.js";
+import { jiraBoard } from "./jira.js";
 import { organization } from "./organizations.js";
+import { ticket } from "./ticket.js";
 
 const ts = (name: string) => timestamp(name, { withTimezone: true });
 const safeMinor = (name: string) => bigint(name, { mode: "number" });
@@ -72,9 +78,21 @@ export const bountyRun = pgTable(
     organizationId: text("organization_id")
       .notNull()
       .references(() => organization.id, { onDelete: "cascade" }),
-    boardId: text("board_id")
-      .notNull()
-      .references(() => jiraBoard.id, { onDelete: "cascade" }),
+    /**
+     * The Jira board the run reads. Required for the two kinds that read
+     * one, `backlog` and `issue`; a run that starts from a ticket has its
+     * ticket's board when it has one, and none otherwise.
+     */
+    boardId: text("board_id").references(() => jiraBoard.id, {
+      onDelete: "cascade",
+    }),
+    /**
+     * The one ticket a `ticket`, `reprice` or `respec` run is about. Null
+     * for a board's runs, whose tickets are imported as they are reached.
+     */
+    ticketId: text("ticket_id").references(() => ticket.id, {
+      onDelete: "cascade",
+    }),
     startedBy: text("started_by").references(() => user.id, {
       onDelete: "set null",
     }),
@@ -126,7 +144,14 @@ export const bountyRun = pgTable(
       // a second live proposal for the same ticket. Nor is a spec change on
       // one proposal, which a backlog run never touches.
       .where(
-        sql`${table.status} in ('queued', 'running') and ${table.kind} not in ('issue', 'respec')`,
+        sql`${table.status} in ('queued', 'running') and ${table.kind} not in ('issue', 'respec', 'ticket')`,
+      ),
+    // One sizing of a ticket at a time: a second would only meet the first's
+    // proposal when it came to write, after paying for its model calls.
+    uniqueIndex("bounty_run_ticket_active_unique")
+      .on(table.ticketId)
+      .where(
+        sql`${table.status} in ('queued', 'running') and ${table.kind} = 'ticket'`,
       ),
     // One change in flight per proposal: a re-price and a spec change both
     // rewrite it, and the second would only find it changed when it came to
@@ -138,9 +163,17 @@ export const bountyRun = pgTable(
       ),
     index("bounty_run_organization_id_idx").on(table.organizationId),
     index("bounty_run_board_created_idx").on(table.boardId, table.createdAt),
+    index("bounty_run_ticket_id_idx").on(table.ticketId),
     check(
       "bounty_run_kind_check",
-      sql`${table.kind} in ('backlog', 'reprice', 'issue', 'respec')`,
+      sql`${table.kind} in ('backlog', 'reprice', 'issue', 'respec', 'ticket')`,
+    ),
+    check(
+      "bounty_run_scope_check",
+      // A board's runs read the board; a ticket's run names its ticket. A
+      // re-price or spec change names its proposal (below), and its ticket
+      // and board only as they were when it started.
+      sql`(${table.kind} not in ('backlog', 'issue') OR ${table.boardId} IS NOT NULL) AND (${table.kind} <> 'ticket' OR ${table.ticketId} IS NOT NULL)`,
     ),
     check(
       "bounty_run_status_check",
@@ -150,7 +183,7 @@ export const bountyRun = pgTable(
       "bounty_run_source_check",
       // A reprice run's source may be deleted later, and `ON DELETE SET NULL`
       // clears the pointer; requiring it here would make that delete fail.
-      sql`(${table.kind} in ('backlog', 'issue') AND ${table.sourceProposalId} IS NULL AND ${table.sourceRevision} IS NULL) OR (${table.kind} in ('reprice', 'respec') AND ${table.sourceRevision} > 0)`,
+      sql`(${table.kind} in ('backlog', 'issue', 'ticket') AND ${table.sourceProposalId} IS NULL AND ${table.sourceRevision} IS NULL) OR (${table.kind} in ('reprice', 'respec') AND ${table.sourceRevision} > 0)`,
     ),
     check(
       "bounty_run_respec_check",
@@ -169,9 +202,10 @@ export const bountyProposal = pgTable(
     runId: text("run_id")
       .notNull()
       .references(() => bountyRun.id, { onDelete: "cascade" }),
-    jiraIssueId: text("jira_issue_id")
+    /** The ticket this prices. One live proposal per ticket. */
+    ticketId: text("ticket_id")
       .notNull()
-      .references(() => jiraIssue.id, { onDelete: "cascade" }),
+      .references(() => ticket.id, { onDelete: "cascade" }),
     specHash: text("spec_hash").notNull(),
     specHashVersion: integer("spec_hash_version").notNull().default(1),
     rateCard: jsonb("rate_card").$type<RateCardSnapshot>().notNull(),
@@ -204,7 +238,7 @@ export const bountyProposal = pgTable(
     step: jsonb("step").$type<StepResult>(),
     stepVersion: text("step_version"),
     // The repository snapshot whose outline the spec was drafted beside.
-    // Null when the board named no repository or it had no snapshot yet;
+    // Null when the ticket had no repository or it had no snapshot yet;
     // a pruned snapshot clears it rather than taking the proposal with it.
     repoSnapshotId: text("repo_snapshot_id").references(() => repoSnapshot.id, {
       onDelete: "set null",
@@ -219,9 +253,10 @@ export const bountyProposal = pgTable(
   },
   (table) => [
     uniqueIndex("bounty_proposal_live_unique")
-      .on(table.jiraIssueId)
+      .on(table.ticketId)
       .where(sql`${table.status} in ('proposed', 'approved')`),
     index("bounty_proposal_organization_id_idx").on(table.organizationId),
+    index("bounty_proposal_ticket_id_idx").on(table.ticketId),
     index("bounty_proposal_run_id_idx").on(table.runId),
     // Pruning asks whether a snapshot is still referenced.
     index("bounty_proposal_repo_snapshot_id_idx").on(table.repoSnapshotId),
@@ -345,6 +380,74 @@ export const bountySpec = pgTable(
   ],
 );
 
+/**
+ * A proposal's complexity profile, one row per spec revision: the evidence
+ * its price will point back to, measured from the ticket's repository.
+ *
+ * A row is asked for when a ticket is sized beside a snapshot, and a sweep
+ * walks it through the scope agent and the slice the agent chose
+ * (`apps/api/src/bounty/profiler.ts`). The runs are named here so what a
+ * profile was measured from stays readable; a run or snapshot that is
+ * later pruned leaves its column null and the profile as it was.
+ */
+export const bountyProfile = pgTable(
+  "bounty_profile",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    proposalId: text("proposal_id")
+      .notNull()
+      .references(() => bountyProposal.id, { onDelete: "cascade" }),
+    specRevision: integer("spec_revision").notNull(),
+    // The spec revision's own hash, which the scope run is keyed on.
+    specHash: text("spec_hash").notNull(),
+    snapshotId: text("snapshot_id").references(() => repoSnapshot.id, {
+      onDelete: "set null",
+    }),
+    // What the ticket said about itself when it was sized; never re-read.
+    ticket: jsonb("ticket").$type<ProfileTicket>().notNull(),
+    status: text("status").$type<ProfileStatus>().notNull().default("queued"),
+    errorCode: text("error_code").$type<ProfileErrorCode>(),
+    runErrorCode: text("run_error_code").$type<AnalysisErrorCode>(),
+    scopeRunId: text("scope_run_id").references(() => analysisRun.id, {
+      onDelete: "set null",
+    }),
+    sliceRunId: text("slice_run_id").references(() => analysisRun.id, {
+      onDelete: "set null",
+    }),
+    profile: jsonb("profile").$type<ComplexityProfile>(),
+    createdAt: ts("created_at").notNull().defaultNow(),
+    updatedAt: ts("updated_at").notNull().defaultNow(),
+  },
+  (table) => [
+    unique("bounty_profile_proposal_revision_unique").on(
+      table.proposalId,
+      table.specRevision,
+    ),
+    index("bounty_profile_organization_id_idx").on(table.organizationId),
+    // The sweep's discovery: rows still in flight, oldest first.
+    index("bounty_profile_status_updated_at_idx").on(
+      table.status,
+      table.updatedAt,
+    ),
+    check(
+      "bounty_profile_status_check",
+      sql`${table.status} in ('queued', 'scoping', 'slicing', 'ready', 'failed')`,
+    ),
+    check(
+      "bounty_profile_ready_check",
+      sql`(${table.status} = 'ready') = (${table.profile} IS NOT NULL)`,
+    ),
+    check(
+      "bounty_profile_failed_check",
+      sql`(${table.status} = 'failed') = (${table.errorCode} IS NOT NULL)`,
+    ),
+    check("bounty_profile_revision_check", sql`${table.specRevision} > 0`),
+  ],
+);
+
 export interface BountyWritebackPayload {
   readonly complexity: PricedComplexity;
   readonly amountMinor: number;
@@ -413,3 +516,5 @@ export type BountySpecRow = typeof bountySpec.$inferSelect;
 export type NewBountySpecRow = typeof bountySpec.$inferInsert;
 export type BountyWritebackRow = typeof bountyWriteback.$inferSelect;
 export type NewBountyWritebackRow = typeof bountyWriteback.$inferInsert;
+export type BountyProfileRow = typeof bountyProfile.$inferSelect;
+export type NewBountyProfileRow = typeof bountyProfile.$inferInsert;

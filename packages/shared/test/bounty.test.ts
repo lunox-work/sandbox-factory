@@ -207,8 +207,9 @@ test("a proposal carries its step, null when there is none", () => {
     id: "bpr_1",
     organizationId: "org_1",
     runId: "brn_1",
-    jiraIssueId: "jis_1",
+    ticketId: "tkt_1",
     issueKey: "APP-1",
+    title: "Add a checkout form",
     specHash: "a".repeat(64),
     specHashVersion: 1,
     rateCard: {

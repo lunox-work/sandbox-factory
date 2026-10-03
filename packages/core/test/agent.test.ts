@@ -51,7 +51,7 @@ test("agent parameters name their tool, and a scope run is never a slice", () =>
 
 test("every tool has a version", () => {
   for (const tool of ANALYSIS_TOOLS) assert.match(toolVersionOf(tool), /@/);
-  assert.equal(toolVersionOf("scope"), "scope@1");
+  assert.equal(toolVersionOf("scope"), "scope@2");
   assert.equal(toolVersionOf("fixtures"), "fixtures@1");
 });
 

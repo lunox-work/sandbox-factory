@@ -12,6 +12,7 @@ import { Organizations } from "./Organizations";
 import { JiraBoard } from "./Jira";
 import { SideNav, type Screen } from "./SideNav";
 import { SignIn } from "./SignIn";
+import { Tickets } from "./Tickets";
 import {
   boardForPath,
   canonicalUrl,
@@ -167,7 +168,9 @@ function Signed({
               ? "New workspace"
               : screen === "org-jira-board"
                 ? (boardName ?? "Board")
-                : (organizations.active?.name ?? "Workspace");
+                : screen === "org-tickets"
+                  ? "Tickets"
+                  : (organizations.active?.name ?? "Workspace");
     document.title = `${page} · Lunox`;
   }, [boardName, organizations.active?.name, screen]);
 
@@ -342,6 +345,8 @@ function Signed({
           // passed because `select` has not re-rendered yet — see `navigate`.
           if (screen === "org-settings") {
             navigate("org-settings", organization.slug);
+          } else if (screen === "org-tickets") {
+            navigate("org-tickets", organization.slug);
           } else if (screen === "org-jira-board") {
             navigate(
               "org-settings",
@@ -448,6 +453,22 @@ function Signed({
               boardId={boardId}
               boardName={boardName}
               onBoardName={setBoardName}
+              role={organizations.active.role}
+            />
+          )
+        ) : screen === "org-tickets" ? (
+          organizations.active === null ? (
+            <NoOrganization
+              loading={organizations.loading}
+              notFound={organizations.notFound}
+              onOpenOrganizations={() => navigate("organizations")}
+            />
+          ) : (
+            <Tickets
+              // Keyed by the organization: another workspace's tickets are
+              // a different list, and the previous one must not linger.
+              key={organizations.active.id}
+              organizationId={organizations.active.id}
               role={organizations.active.role}
             />
           )

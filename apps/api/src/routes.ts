@@ -42,6 +42,7 @@ import {
   type GithubWebhookOptions,
 } from "./github/webhook.js";
 import { mountJiraRoutes, type JiraRouteOptions } from "./jira/routes.js";
+import { mountTicketRoutes } from "./tickets/routes.js";
 import {
   mountAnalysisRoutes,
   type AnalysisRouteOptions,
@@ -619,6 +620,9 @@ export function createApp({
     }
     if (bounty !== undefined) {
       mountBountyRoutes(app, bounty);
+      // The organization's own tickets, which need nothing but the
+      // database: written here, they are sized with no Jira at all.
+      mountTicketRoutes(app, bounty);
     }
     if (sandbox !== undefined) mountSandboxRoutes(app, sandbox);
     else

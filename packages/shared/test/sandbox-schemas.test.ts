@@ -142,7 +142,7 @@ test("a task descriptor accepts only the fixed commands", () => {
 test("private provenance, the approved task and replay answers keep their exact shapes", () => {
   const stamp = "2026-10-03T00:00:00.000Z";
   const approvedTask = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     title: "Fix it",
     summary: "Make it work.",
     spec: null,
@@ -157,14 +157,30 @@ test("private provenance, the approved task and replay answers keep their exact 
     },
     selectedBy: "user_1",
     selectedAt: stamp,
-    jiraIssueIds: ["jri_1"],
+    ticketIds: ["tkt_1"],
   };
   assert.equal(
     approvedTaskSnapshotSchema.safeParse(approvedTask).success,
     true,
   );
+  // A version frozen before tickets still reads, with its Jira pointers.
+  const { ticketIds: _ticketIds, ...selection } = approvedTask;
   assert.equal(
-    approvedTaskSnapshotSchema.safeParse({ ...approvedTask, schemaVersion: 2 })
+    approvedTaskSnapshotSchema.safeParse({
+      ...selection,
+      schemaVersion: 1,
+      jiraIssueIds: ["jri_1"],
+    }).success,
+    true,
+  );
+  // Each version has its own list, and no other.
+  assert.equal(
+    approvedTaskSnapshotSchema.safeParse({ ...approvedTask, schemaVersion: 1 })
+      .success,
+    false,
+  );
+  assert.equal(
+    approvedTaskSnapshotSchema.safeParse({ ...approvedTask, schemaVersion: 3 })
       .success,
     false,
   );

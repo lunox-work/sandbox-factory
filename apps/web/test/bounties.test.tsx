@@ -2178,7 +2178,7 @@ test("keyboard adjustments land on the grid whichever way an off-grid rate moves
   open-proposal read waits until the test lets it through. Two stored
   proposals: APP-1 at M, APP-2 at L.
 */
-function streamedBoard(sizedTitles: Record<number, string> = {}) {
+function streamedBoard(storedTitles: Record<number, string> = {}) {
   const encoder = new TextEncoder();
   const calls: string[] = [];
   let feed: ReadableStreamDefaultController<Uint8Array> | undefined;
@@ -2198,8 +2198,8 @@ function streamedBoard(sizedTitles: Record<number, string> = {}) {
     actualModel: "deepseek-v4-pro",
     status: "proposed",
     revision: 1,
-    // The title the run planned the ticket under, when it recorded one.
-    sizedTitle: sizedTitles[n] ?? null,
+    // The ticket's stored title; empty stands for one with nothing stored.
+    title: storedTitles[n] ?? "",
     ...overrides,
   });
   const fetchMock = vi.fn((input: string) => {
@@ -2303,11 +2303,11 @@ test("rows show what is stored at once and fill in title by title", async () => 
 
   // A row the stream ended without says what it is, not that it is loading.
   server.end();
-  expect(await within(list).findByText("Jira ticket")).toBeDefined();
+  expect(await within(list).findByText("Ticket")).toBeDefined();
   expect(within(list).queryAllByTestId("title-pending")).toHaveLength(0);
 });
 
-test("a row is titled at once from its sizing, and Jira's answer wins", async () => {
+test("a row is titled at once from its stored ticket, and Jira's answer wins", async () => {
   const server = streamedBoard({ 1: "Add login", 2: "Export to CSV" });
   vi.stubGlobal("fetch", server.fetchMock);
   renderStreamedBoard();
@@ -2328,7 +2328,7 @@ test("a row is titled at once from its sizing, and Jira's answer wins", async ()
   server.end();
   await waitFor(() => expect(server.titleReads()).toBe(1));
   expect(within(list).getByText("Export to CSV")).toBeDefined();
-  expect(within(list).queryByText("Jira ticket")).toBeNull();
+  expect(within(list).queryByText("Ticket")).toBeNull();
 });
 
 test("opening a proposal reads it alone, and approval waits for its check", async () => {
@@ -2348,7 +2348,7 @@ test("opening a proposal reads it alone, and approval waits for its check", asyn
   const panel = await screen.findByTestId("proposal-panel");
   // The row is there at once; whether the ticket changed is not claimed
   // until the proposal's own read says so, and approval waits for it.
-  expect(within(panel).getByText("Checking Jira…")).toBeDefined();
+  expect(within(panel).getByText("Checking the ticket…")).toBeDefined();
   const approve = within(panel).getByRole("button", {
     name: "Approve",
   }) as HTMLButtonElement;
@@ -2433,7 +2433,7 @@ function pagedBoard(
     actualModel: "deepseek-v4-pro",
     status: approved.has(n) ? "approved" : "proposed",
     revision: approved.has(n) ? 2 : 1,
-    sizedTitle: `Ticket ${n}`,
+    title: `Ticket ${n}`,
     categories: categoriesFor(n),
   });
   const fetchMock = vi.fn((input: string) => {
@@ -2597,7 +2597,7 @@ function specBoard() {
     status: "proposed",
     revision: 1,
     specRevision: n === 1 ? 3 : null,
-    sizedTitle: `Ticket ${n}`,
+    title: `Ticket ${n}`,
     categories: [],
   });
   const fetchMock = vi.fn((input: string) => {
@@ -2780,7 +2780,7 @@ function steppedBoard() {
       revision: 1,
       specRevision: 2,
       step,
-      sizedTitle: "Ticket 1",
+      title: "Ticket 1",
       categories: [],
     },
     bpr_2: {
@@ -2798,7 +2798,7 @@ function steppedBoard() {
       revision: 1,
       specRevision: null,
       step: null,
-      sizedTitle: "Ticket 2",
+      title: "Ticket 2",
       categories: [],
     },
   };

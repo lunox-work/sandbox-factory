@@ -75,17 +75,13 @@ describe("bounty database concurrency", () => {
       insert into jira_board (id, organization_id, connection_id, external_id, name, board_type)
       values ('board_bounty', 'org_bounty', 'conn_bounty', '42', 'Backlog', 'scrum')
     `;
-    await sql`
-      insert into jira_issue (
-        id, organization_id, board_id, external_id, key, status_category,
-        remote_created_at, remote_updated_at
-      ) values
-        ('issue_race', 'org_bounty', 'board_bounty', '1001', 'DEMO-1', 'new', now(), now()),
-        ('issue_rollback', 'org_bounty', 'board_bounty', '1002', 'DEMO-2', 'new', now(), now()),
-        ('issue_lease', 'org_bounty', 'board_bounty', '1003', 'DEMO-3', 'new', now(), now()),
-        ('issue_states', 'org_bounty', 'board_bounty', '1004', 'DEMO-4', 'new', now(), now()),
-        ('issue_repriced', 'org_bounty', 'board_bounty', '1005', 'DEMO-5', 'new', now(), now())
-    `;
+    await importIssues([
+      ["issue_race", "board_bounty", "1001", "DEMO-1"],
+      ["issue_rollback", "board_bounty", "1002", "DEMO-2"],
+      ["issue_lease", "board_bounty", "1003", "DEMO-3"],
+      ["issue_states", "board_bounty", "1004", "DEMO-4"],
+      ["issue_repriced", "board_bounty", "1005", "DEMO-5"],
+    ]);
   });
 
   after(async () => {
@@ -97,6 +93,39 @@ describe("bounty database concurrency", () => {
       await admin.end();
     }
   });
+
+  /**
+   * Jira issues as a run imports them: each pointer with its ticket. The
+   * ticket takes the pointer's id, so a test names one thing either way.
+   */
+  async function importIssues(
+    rows: readonly (readonly [
+      id: string,
+      boardId: string,
+      externalId: string,
+      key: string,
+    ])[],
+  ) {
+    for (const [id, boardId, externalId, key] of rows) {
+      await sql`
+        insert into ticket (id, organization_id, number, title, origin)
+        values (
+          ${id}, 'org_bounty',
+          (select coalesce(max(number), 0) + 1 from ticket where organization_id = 'org_bounty'),
+          ${key}, 'jira'
+        )
+      `;
+      await sql`
+        insert into jira_issue (
+          id, organization_id, board_id, external_id, key, ticket_id,
+          status_category, remote_created_at, remote_updated_at
+        ) values (
+          ${id}, 'org_bounty', ${boardId}, ${externalId}, ${key}, ${id},
+          'new', now(), now()
+        )
+      `;
+    }
+  }
 
   function insertRun(id: string, requestId: string, status: string) {
     return sql`
@@ -114,7 +143,7 @@ describe("bounty database concurrency", () => {
   function insertProposal(id: string, runId: string, issueId: string) {
     return sql`
       insert into bounty_proposal (
-        id, organization_id, run_id, jira_issue_id, spec_hash, rate_card,
+        id, organization_id, run_id, ticket_id, spec_hash, rate_card,
         model_complexity, model_confidence, model_rationale, actual_model,
         prompt_version, complexity, amount_minor, currency
       ) values (
@@ -275,7 +304,7 @@ describe("bounty database concurrency", () => {
 
       const created = await proposals.createForLease("org_bounty", "lease_1", {
         runId: "run_lease",
-        jiraIssueId: "issue_lease",
+        ticketId: "issue_lease",
         specHash: "c".repeat(64),
         specHashVersion: 1,
         rateCard,
@@ -425,16 +454,12 @@ describe("bounty database concurrency", () => {
       insert into jira_board (id, organization_id, connection_id, external_id, name, board_type)
       values ('board_categories', 'org_bounty', 'conn_bounty', '43', 'Categories', 'scrum')
     `;
-    await sql`
-      insert into jira_issue (
-        id, organization_id, board_id, external_id, key, status_category,
-        remote_created_at, remote_updated_at
-      ) values
-        ('issue_cat_1', 'org_bounty', 'board_categories', '3001', 'CAT-1', 'new', now(), now()),
-        ('issue_cat_2', 'org_bounty', 'board_categories', '3002', 'CAT-2', 'new', now(), now()),
-        ('issue_cat_3', 'org_bounty', 'board_categories', '3003', 'CAT-3', 'new', now(), now()),
-        ('issue_cat_4', 'org_bounty', 'board_categories', '3004', 'CAT-4', 'new', now(), now())
-    `;
+    await importIssues([
+      ["issue_cat_1", "board_categories", "3001", "CAT-1"],
+      ["issue_cat_2", "board_categories", "3002", "CAT-2"],
+      ["issue_cat_3", "board_categories", "3003", "CAT-3"],
+      ["issue_cat_4", "board_categories", "3004", "CAT-4"],
+    ]);
     const match = (id: string, label: string) => ({ id, label, reason: "r" });
     const leftBehind = match("left-behind", "Left behind");
     const paperCuts = match("paper-cuts", "Paper cuts");
@@ -491,7 +516,9 @@ describe("bounty database concurrency", () => {
       const proposals = createBountyProposalStore(connection.db);
 
       assert.deepEqual(
-        await proposals.categoryCounts("org_bounty", "board_categories"),
+        await proposals.categoryCounts("org_bounty", {
+          boardId: "board_categories",
+        }),
         {
           total: 4,
           uncategorized: 2,
@@ -501,7 +528,8 @@ describe("bounty database concurrency", () => {
 
       const keys = async (category?: string) =>
         (
-          await proposals.listForBoard("org_bounty", "board_categories", {
+          await proposals.list("org_bounty", {
+            boardId: "board_categories",
             ...(category === undefined ? {} : { category }),
           })
         )
@@ -518,7 +546,8 @@ describe("bounty database concurrency", () => {
       // two the count above calls uncategorized.
       assert.deepEqual(
         (
-          await proposals.listForBoard("org_bounty", "board_categories", {
+          await proposals.list("org_bounty", {
+            boardId: "board_categories",
             uncategorized: true,
           })
         )
@@ -528,11 +557,10 @@ describe("bounty database concurrency", () => {
       );
 
       // A filtered row still carries its own reasons.
-      const [first] = await proposals.listForBoard(
-        "org_bounty",
-        "board_categories",
-        { category: "left-behind" },
-      );
+      const [first] = await proposals.list("org_bounty", {
+        boardId: "board_categories",
+        category: "left-behind",
+      });
       assert.deepEqual(
         first?.categories.map(({ id }) => id),
         ["left-behind", "paper-cuts"],
@@ -540,7 +568,9 @@ describe("bounty database concurrency", () => {
 
       // Another organization sees none of it.
       assert.deepEqual(
-        await proposals.categoryCounts("org_other", "board_categories"),
+        await proposals.categoryCounts("org_other", {
+          boardId: "board_categories",
+        }),
         { total: 0, uncategorized: 0, counts: {} },
       );
     } finally {
@@ -556,14 +586,10 @@ describe("bounty database concurrency", () => {
       insert into jira_board (id, organization_id, connection_id, external_id, name, board_type)
       values ('board_spec', 'org_bounty', 'conn_bounty', '44', 'Specs', 'scrum')
     `;
-    await sql`
-      insert into jira_issue (
-        id, organization_id, board_id, external_id, key, status_category,
-        remote_created_at, remote_updated_at
-      ) values
-        ('issue_spec', 'org_bounty', 'board_spec', '4001', 'SPEC-1', 'new', now(), now()),
-        ('issue_spec_lost', 'org_bounty', 'board_spec', '4002', 'SPEC-2', 'new', now(), now())
-    `;
+    await importIssues([
+      ["issue_spec", "board_spec", "4001", "SPEC-1"],
+      ["issue_spec_lost", "board_spec", "4002", "SPEC-2"],
+    ]);
     const queueRun = (
       id: string,
       source: { proposalId: string; revision: number } | null,
@@ -604,9 +630,9 @@ describe("bounty database concurrency", () => {
       actualModel: "model-test",
       promptVersion: "draft-v1",
     });
-    const input = (runId: string, jiraIssueId: string) => ({
+    const input = (runId: string, ticketId: string) => ({
       runId,
-      jiraIssueId,
+      ticketId,
       specHash: "d".repeat(64),
       specHashVersion: 1,
       rateCard,
@@ -769,13 +795,7 @@ describe("bounty database concurrency", () => {
       insert into jira_board (id, organization_id, connection_id, external_id, name, board_type)
       values ('board_respec', 'org_bounty', 'conn_bounty', '45', 'Respec', 'scrum')
     `;
-    await sql`
-      insert into jira_issue (
-        id, organization_id, board_id, external_id, key, status_category,
-        remote_created_at, remote_updated_at
-      ) values
-        ('issue_respec', 'org_bounty', 'board_respec', '5001', 'RESPEC-1', 'new', now(), now())
-    `;
+    await importIssues([["issue_respec", "board_respec", "5001", "RESPEC-1"]]);
     const draft: SpecDraft = {
       feature: "CSV export",
       background: [],
@@ -862,7 +882,7 @@ describe("bounty database concurrency", () => {
       await runs.claim("org_bounty", "run_respec_sized", "lease_s", new Date());
       const sized = await proposals.createForLease("org_bounty", "lease_s", {
         runId: "run_respec_sized",
-        jiraIssueId: "issue_respec",
+        ticketId: "issue_respec",
         specHash: "e".repeat(64),
         specHashVersion: 1,
         rateCard,

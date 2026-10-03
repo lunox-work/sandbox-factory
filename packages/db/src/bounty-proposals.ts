@@ -8,6 +8,7 @@ import type {
   SizingConfidence,
   StepResult,
 } from "sandbox-factory";
+import { ticketKey } from "sandbox-factory";
 import { and, desc, eq, gt, inArray, lt, or, sql } from "drizzle-orm";
 
 import {
@@ -27,6 +28,7 @@ import {
   jiraConnection,
   jiraIssue,
   repoSnapshot,
+  ticket,
 } from "./schema.js";
 import type {
   BountyProposalRow,
@@ -36,7 +38,8 @@ import type {
 
 export interface CreateBountyProposalInput {
   readonly runId: string;
-  readonly jiraIssueId: string;
+  /** The ticket priced. One the run may write for: see `ticketForRun`. */
+  readonly ticketId: string;
   readonly specHash: string;
   readonly specHashVersion: number;
   readonly rateCard: RateCardSnapshot;
@@ -53,9 +56,9 @@ export interface CreateBountyProposalInput {
    */
   readonly step?: StepResult | null;
   /**
-   * The repository snapshot the spec was drafted beside, when the board
-   * named a repository that had one. Its organization is the board's,
-   * which the caller read it through.
+   * The repository snapshot the spec was drafted beside, when the ticket
+   * had a repository with one. Its organization is the ticket's, which the
+   * caller read it through.
    */
   readonly repoSnapshotId?: string | null;
 }
@@ -95,15 +98,10 @@ export type ProposalMutationResult =
       readonly current?: StoredBountyProposal;
     };
 
-/** A proposal as the board's list returns it. */
+/** A proposal as a list returns it. */
 export type ListedBountyProposal = StoredBountyProposal & {
-  /**
-   * The ticket's title as the run that sized it planned it, or null when
-   * that run recorded no plan for the ticket. Already stored with the run:
-   * the list shows it at once, and the live title replaces it if the two
-   * differ.
-   */
-  readonly sizedTitle: string | null;
+  /** The Jira board the ticket came through, or null for one written here. */
+  readonly boardId: string | null;
   /**
    * Why the run picked the ticket: the categories it fit and the reason for
    * each, from the same plan entry. Empty for a ticket someone picked by
@@ -133,10 +131,19 @@ export interface BountyProposalStore {
     organizationId: string,
     proposalId: string,
   ): Promise<StoredBountyProposal | null>;
-  listForBoard(
+  /**
+   * The organization's proposals, newest first, or one board's: those its
+   * runs made, which is every proposal of a ticket imported through it.
+   */
+  list(
     organizationId: string,
-    boardId: string,
     options?: {
+      boardId?: string;
+      /**
+       * Only proposals of tickets about this repository: one the ticket
+       * names, or, when it names none, its Jira board's.
+       */
+      repoId?: string;
       status?: "proposed" | "approved";
       cursor?: { readonly createdAt: string; readonly id: string };
       limit?: number;
@@ -147,8 +154,9 @@ export interface BountyProposalStore {
     },
   ): Promise<ListedBountyProposal[]>;
   /**
-   * How many of a board's proposals fall in each category, by category id,
-   * how many fall in none, and how many proposals the board has in all.
+   * How many proposals fall in each category, by category id, how many fall
+   * in none, and how many there are in all: the organization's, or one
+   * board's.
    *
    * Counted here rather than from a page of the list, because the list is
    * paged and a count of fifty rows says nothing about a board of three
@@ -156,13 +164,13 @@ export interface BountyProposalStore {
    * counts can sum to more than `total`.
    *
    * `uncategorized` is the proposals with no category recorded at all,
-   * which is what `listForBoard`'s `uncategorized` lists. A ticket whose
+   * which is what `list`'s `uncategorized` lists. A ticket whose
    * only category has since left the registry is not one of them: it still
    * has its reason, under an id nothing offers as a view.
    */
   categoryCounts(
     organizationId: string,
-    boardId: string,
+    options?: { boardId?: string },
   ): Promise<{
     readonly total: number;
     readonly uncategorized: number;
@@ -173,6 +181,11 @@ export interface BountyProposalStore {
     boardId: string,
     externalIds: readonly string[],
   ): Promise<Set<string>>;
+  /** The ticket's live proposal, proposed or approved, if it has one. */
+  liveForTicket(
+    organizationId: string,
+    ticketId: string,
+  ): Promise<string | null>;
   /** The same tickets, each with the id of its live proposal. */
   liveProposalIds(
     organizationId: string,
@@ -180,9 +193,9 @@ export interface BountyProposalStore {
     externalIds: readonly string[],
   ): Promise<Map<string, string>>;
   /**
-   * The Jira issue behind each of these proposals, for reading its live
-   * title. Only proposals of the owner whose issue is on this board are in
-   * the map; any other id is simply absent.
+   * The Jira issue behind each of these proposals' tickets, for reading its
+   * live title. Only proposals of the owner whose ticket came from this
+   * board are in the map; any other id is simply absent.
    */
   issuesForProposals(
     organizationId: string,
@@ -290,8 +303,11 @@ export interface StoredBountyProposal {
   readonly id: string;
   readonly organizationId: string;
   readonly runId: string;
-  readonly jiraIssueId: string;
+  readonly ticketId: string;
+  /** The ticket's key: its Jira key while it has one, `T-<number>` otherwise. */
   readonly issueKey: string;
+  /** The ticket's title as the platform holds it. */
+  readonly title: string;
   readonly specHash: string;
   readonly specHashVersion: number;
   readonly rateCard: RateCardSnapshot;
@@ -323,13 +339,45 @@ export interface StoredBountyProposal {
   readonly updatedAt: string;
 }
 
-function toDto(row: BountyProposalRow, issueKey: string): StoredBountyProposal {
+/** What a proposal shows of its ticket. */
+interface TicketName {
+  readonly issueKey: string;
+  readonly title: string;
+}
+
+/** The ticket's columns a proposal read joins for its name. */
+const nameColumns = {
+  ticketNumber: ticket.number,
+  ticketTitle: ticket.title,
+  jiraKey: jiraIssue.key,
+};
+
+/**
+ * What a plan entry calls the ticket: Jira's issue id for one imported from
+ * a board, the ticket's own id for one written here. A plan entry is matched
+ * to its proposal by this.
+ */
+const PLAN_KEY = sql`coalesce(${jiraIssue.externalId}, ${ticket.id})`;
+
+function nameOf(row: {
+  readonly ticketNumber: number;
+  readonly ticketTitle: string;
+  readonly jiraKey: string | null;
+}): TicketName {
+  return {
+    issueKey: ticketKey({ number: row.ticketNumber, jiraKey: row.jiraKey }),
+    title: row.ticketTitle,
+  };
+}
+
+function toDto(row: BountyProposalRow, name: TicketName): StoredBountyProposal {
   return {
     id: row.id,
     organizationId: row.organizationId,
     runId: row.runId,
-    jiraIssueId: row.jiraIssueId,
-    issueKey,
+    ticketId: row.ticketId,
+    issueKey: name.issueKey,
+    title: name.title,
     specHash: row.specHash,
     specHashVersion: row.specHashVersion,
     rateCard: {
@@ -367,18 +415,56 @@ async function first(
   db: Database,
   organizationId: string,
   proposalId: string,
-): Promise<{ row: BountyProposalRow; issueKey: string } | undefined> {
-  const rows = await db
-    .select({ row: bountyProposal, issueKey: jiraIssue.key })
+): Promise<{ row: BountyProposalRow; name: TicketName } | undefined> {
+  const rows = (await db
+    .select({ row: bountyProposal, ...nameColumns })
     .from(bountyProposal)
-    .innerJoin(jiraIssue, eq(bountyProposal.jiraIssueId, jiraIssue.id))
+    .innerJoin(ticket, eq(ticket.id, bountyProposal.ticketId))
+    .leftJoin(jiraIssue, eq(jiraIssue.ticketId, ticket.id))
     .where(
       and(
         eq(bountyProposal.organizationId, organizationId),
         eq(bountyProposal.id, proposalId),
       ),
-    );
-  return rows[0];
+    )) as ({ row: BountyProposalRow } & NameRow)[];
+  const found = rows[0];
+  return found === undefined
+    ? undefined
+    : { row: found.row, name: nameOf(found) };
+}
+
+interface NameRow {
+  readonly ticketNumber: number;
+  readonly ticketTitle: string;
+  readonly jiraKey: string | null;
+}
+
+/**
+ * The ticket's name, if a run may write a proposal for it: the
+ * organization's, and the run's own. A run that names its ticket writes
+ * for that one only; a board's run, for a ticket imported through that
+ * board.
+ */
+async function ticketForRun(
+  db: Database,
+  organizationId: string,
+  run: Pick<BountyRunRow, "ticketId" | "boardId">,
+  ticketId: string,
+): Promise<TicketName | null> {
+  const rows = (await db
+    .select({ ...nameColumns, boardId: jiraIssue.boardId })
+    .from(ticket)
+    .leftJoin(jiraIssue, eq(jiraIssue.ticketId, ticket.id))
+    .where(
+      and(eq(ticket.organizationId, organizationId), eq(ticket.id, ticketId)),
+    )) as (NameRow & { readonly boardId: string | null })[];
+  const found = rows[0];
+  if (found === undefined) return null;
+  const allowed =
+    run.ticketId !== null
+      ? run.ticketId === ticketId
+      : run.boardId !== null && found.boardId === run.boardId;
+  return allowed ? nameOf(found) : null;
 }
 
 async function mutationMiss(
@@ -393,7 +479,7 @@ async function mutationMiss(
     ok: false,
     reason:
       current.row.revision === expectedRevision ? "invalid-state" : "changed",
-    current: toDto(current.row, current.issueKey),
+    current: toDto(current.row, current.name),
   };
 }
 
@@ -407,7 +493,7 @@ function insertValues(
     specRevision,
     organizationId,
     runId: input.runId,
-    jiraIssueId: input.jiraIssueId,
+    ticketId: input.ticketId,
     specHash: input.specHash,
     specHashVersion: input.specHashVersion,
     rateCard: input.rateCard,
@@ -464,7 +550,7 @@ async function liveProposalIds(
       proposalId: bountyProposal.id,
     })
     .from(bountyProposal)
-    .innerJoin(jiraIssue, eq(bountyProposal.jiraIssueId, jiraIssue.id))
+    .innerJoin(jiraIssue, eq(jiraIssue.ticketId, bountyProposal.ticketId))
     .where(
       and(
         eq(bountyProposal.organizationId, organizationId),
@@ -486,25 +572,24 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
     async create(organizationId, input) {
       return db.transaction(async (transaction) => {
         const tx = transaction as unknown as Database;
-        const parents = await tx
-          .select({ runId: bountyRun.id, issueKey: jiraIssue.key })
+        const runs = (await tx
+          .select()
           .from(bountyRun)
-          .innerJoin(
-            jiraIssue,
-            and(
-              eq(jiraIssue.id, input.jiraIssueId),
-              eq(jiraIssue.organizationId, organizationId),
-              eq(jiraIssue.boardId, bountyRun.boardId),
-            ),
-          )
           .where(
             and(
               eq(bountyRun.organizationId, organizationId),
               eq(bountyRun.id, input.runId),
             ),
-          );
-        const parent = parents[0];
-        if (parent === undefined) return null;
+          )) as BountyRunRow[];
+        const run = runs[0];
+        if (run === undefined) return null;
+        const name = await ticketForRun(
+          tx,
+          organizationId,
+          run,
+          input.ticketId,
+        );
+        if (name === null) return null;
 
         const repoSnapshotId = await snapshotForWrite(
           tx,
@@ -516,7 +601,7 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
             .insert(bountyProposal)
             .values(insertValues(organizationId, { ...input, repoSnapshotId }))
             .returning()) as BountyProposalRow[];
-          return rows[0] === undefined ? null : toDto(rows[0], parent.issueKey);
+          return rows[0] === undefined ? null : toDto(rows[0], name);
         } catch (error) {
           // Another worker or process may have won the one-live-proposal race.
           if (isUniqueViolation(error)) return null;
@@ -553,18 +638,13 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
         const run = claimed[0];
         if (run === undefined) return { status: "lost-lease" } as const;
 
-        const ownedIssue = await tx
-          .select({ key: jiraIssue.key })
-          .from(jiraIssue)
-          .where(
-            and(
-              eq(jiraIssue.organizationId, organizationId),
-              eq(jiraIssue.id, input.jiraIssueId),
-              eq(jiraIssue.boardId, run.boardId),
-            ),
-          );
-        const issue = ownedIssue[0];
-        if (issue === undefined) return { status: "not-found" } as const;
+        const name = await ticketForRun(
+          tx,
+          organizationId,
+          run,
+          input.ticketId,
+        );
+        if (name === null) return { status: "not-found" } as const;
 
         const rows = (await tx
           .insert(bountyProposal)
@@ -591,32 +671,42 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
         }
         return {
           status: "created",
-          proposal: toDto(created, issue.key),
+          proposal: toDto(created, name),
         } as const;
       });
     },
 
     async get(organizationId, proposalId) {
       const found = await first(db, organizationId, proposalId);
-      return found === undefined ? null : toDto(found.row, found.issueKey);
+      return found === undefined ? null : toDto(found.row, found.name);
     },
 
-    async listForBoard(organizationId, boardId, options = {}) {
+    async list(organizationId, options = {}) {
       const limit = Math.min(Math.max(options.limit ?? 25, 1), 50);
-      const rows = await db
+      const rows = (await db
         .select({
           row: bountyProposal,
-          issueKey: jiraIssue.key,
+          ...nameColumns,
           externalId: jiraIssue.externalId,
+          issueBoardId: jiraIssue.boardId,
           planned: bountyRun.planned,
         })
         .from(bountyProposal)
         .innerJoin(bountyRun, eq(bountyProposal.runId, bountyRun.id))
-        .innerJoin(jiraIssue, eq(bountyProposal.jiraIssueId, jiraIssue.id))
+        .innerJoin(ticket, eq(ticket.id, bountyProposal.ticketId))
+        .leftJoin(jiraIssue, eq(jiraIssue.ticketId, ticket.id))
         .where(
           and(
             eq(bountyProposal.organizationId, organizationId),
-            eq(bountyRun.boardId, boardId),
+            options.boardId === undefined
+              ? undefined
+              : eq(bountyRun.boardId, options.boardId),
+            options.repoId === undefined
+              ? undefined
+              : sql`coalesce(
+                  ${ticket.repoId},
+                  (select ${jiraBoard.sourceRepoId} from ${jiraBoard} where ${jiraBoard.id} = ${jiraIssue.boardId})
+                ) = ${options.repoId}`,
             options.status === undefined
               ? undefined
               : eq(bountyProposal.status, options.status),
@@ -630,7 +720,7 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
               : sql`exists (
                   select 1
                   from jsonb_array_elements(${bountyRun.planned}) as planned_issue
-                  where planned_issue->>'externalIssueId' = ${jiraIssue.externalId}
+                  where planned_issue->>'externalIssueId' = ${PLAN_KEY}
                     and coalesce(planned_issue->'categories', '[]'::jsonb)
                       @> ${JSON.stringify([{ id: options.category }])}::jsonb
                 )`,
@@ -645,7 +735,7 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
               : sql`not exists (
                   select 1
                   from jsonb_array_elements(${bountyRun.planned}) as planned_issue
-                  where planned_issue->>'externalIssueId' = ${jiraIssue.externalId}
+                  where planned_issue->>'externalIssueId' = ${PLAN_KEY}
                     and jsonb_path_exists(
                       planned_issue,
                       '$.categories[*].id ? (@.type() == "string")'
@@ -669,21 +759,26 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
           ),
         )
         .orderBy(desc(bountyProposal.createdAt), desc(bountyProposal.id))
-        .limit(limit);
-      return rows.map(({ row, issueKey, externalId, planned }) => {
-        const entry = planned.find(
-          (issue) => issue.externalIssueId === externalId,
+        .limit(limit)) as ({
+        row: BountyProposalRow;
+        externalId: string | null;
+        issueBoardId: string | null;
+        planned: BountyRunRow["planned"];
+      } & NameRow)[];
+      return rows.map((found) => {
+        const key = found.externalId ?? found.row.ticketId;
+        const entry = found.planned.find(
+          (issue) => issue.externalIssueId === key,
         );
-        const summary = entry?.summary;
         return {
-          ...toDto(row, issueKey),
-          sizedTitle: summary === undefined || summary === "" ? null : summary,
+          ...toDto(found.row, nameOf(found)),
+          boardId: found.issueBoardId,
           categories: entry?.categories ?? [],
         };
       });
     },
 
-    async categoryCounts(organizationId, boardId) {
+    async categoryCounts(organizationId, options = {}) {
       // One row per proposal, carrying only that ticket's categories: the
       // plan entry is picked out in SQL, so a run's whole plan is not sent
       // once for every proposal it produced.
@@ -692,17 +787,20 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
           categories: sql<readonly { readonly id?: unknown }[] | null>`(
             select planned_issue->'categories'
             from jsonb_array_elements(${bountyRun.planned}) as planned_issue
-            where planned_issue->>'externalIssueId' = ${jiraIssue.externalId}
+            where planned_issue->>'externalIssueId' = ${PLAN_KEY}
             limit 1
           )`,
         })
         .from(bountyProposal)
         .innerJoin(bountyRun, eq(bountyProposal.runId, bountyRun.id))
-        .innerJoin(jiraIssue, eq(bountyProposal.jiraIssueId, jiraIssue.id))
+        .innerJoin(ticket, eq(ticket.id, bountyProposal.ticketId))
+        .leftJoin(jiraIssue, eq(jiraIssue.ticketId, ticket.id))
         .where(
           and(
             eq(bountyProposal.organizationId, organizationId),
-            eq(bountyRun.boardId, boardId),
+            options.boardId === undefined
+              ? undefined
+              : eq(bountyRun.boardId, options.boardId),
           ),
         );
 
@@ -734,6 +832,23 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
     liveProposalIds: (organizationId, boardId, externalIds) =>
       liveProposalIds(db, organizationId, boardId, externalIds),
 
+    async liveForTicket(organizationId, ticketId) {
+      const rows = await db
+        .select({ id: bountyProposal.id })
+        .from(bountyProposal)
+        .where(
+          and(
+            eq(bountyProposal.organizationId, organizationId),
+            eq(bountyProposal.ticketId, ticketId),
+            or(
+              eq(bountyProposal.status, "proposed"),
+              eq(bountyProposal.status, "approved"),
+            ),
+          ),
+        );
+      return rows[0]?.id ?? null;
+    },
+
     async issuesForProposals(organizationId, boardId, proposalIds) {
       if (proposalIds.length === 0) return new Map();
       const rows = await db
@@ -743,7 +858,7 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
           externalId: jiraIssue.externalId,
         })
         .from(bountyProposal)
-        .innerJoin(jiraIssue, eq(bountyProposal.jiraIssueId, jiraIssue.id))
+        .innerJoin(jiraIssue, eq(jiraIssue.ticketId, bountyProposal.ticketId))
         .where(
           and(
             eq(bountyProposal.organizationId, organizationId),
@@ -794,13 +909,13 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
           current.row.status === "approved" &&
           current.row.revision === expectedRevision + 1
         ) {
-          return { ok: true, proposal: toDto(current.row, current.issueKey) };
+          return { ok: true, proposal: toDto(current.row, current.name) };
         }
         return mutationMiss(db, organizationId, proposalId, expectedRevision);
       }
       const found = await first(db, organizationId, updated.id);
       if (found === undefined) return { ok: false, reason: "not-found" };
-      return { ok: true, proposal: toDto(found.row, found.issueKey) };
+      return { ok: true, proposal: toDto(found.row, found.name) };
     },
 
     async withdraw(organizationId, proposalId, expectedRevision) {
@@ -832,7 +947,7 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
       }
       const found = await first(db, organizationId, updated.id);
       if (found === undefined) return { ok: false, reason: "not-found" };
-      return { ok: true, proposal: toDto(found.row, found.issueKey) };
+      return { ok: true, proposal: toDto(found.row, found.name) };
     },
 
     async resize(
@@ -875,7 +990,7 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
       }
       const found = await first(db, organizationId, updated.id);
       if (found === undefined) return { ok: false, reason: "not-found" };
-      return { ok: true, proposal: toDto(found.row, found.issueKey) };
+      return { ok: true, proposal: toDto(found.row, found.name) };
     },
 
     async remove(organizationId, proposalId, expectedRevision) {
@@ -895,7 +1010,7 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
       if (rows[0] === undefined) {
         return mutationMiss(db, organizationId, proposalId, expectedRevision);
       }
-      return { ok: true, proposal: toDto(found.row, found.issueKey) };
+      return { ok: true, proposal: toDto(found.row, found.name) };
     },
 
     async repriceForLease(
@@ -944,7 +1059,7 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
             and(
               eq(bountyProposal.organizationId, organizationId),
               eq(bountyProposal.id, sourceProposalId),
-              eq(bountyProposal.jiraIssueId, input.jiraIssueId),
+              eq(bountyProposal.ticketId, input.ticketId),
               or(
                 eq(bountyProposal.status, "proposed"),
                 eq(bountyProposal.status, "approved"),
@@ -1065,20 +1180,22 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
           // Whether the site posts back is the connection's grant, read in
           // the same transaction as the re-price so a site disconnected
           // between the two cannot leave a follow-up nobody can deliver.
+          // The site is the ticket's: an approval comment went to its issue.
           const site = await tx
             .select({
               scopes: jiraConnection.scopes,
               resourceScopes: jiraConnection.resourceScopes,
             })
-            .from(jiraBoard)
+            .from(jiraIssue)
+            .innerJoin(jiraBoard, eq(jiraBoard.id, jiraIssue.boardId))
             .innerJoin(
               jiraConnection,
               eq(jiraConnection.id, jiraBoard.connectionId),
             )
             .where(
               and(
-                eq(jiraBoard.organizationId, organizationId),
-                eq(jiraBoard.id, run.boardId),
+                eq(jiraIssue.organizationId, organizationId),
+                eq(jiraIssue.ticketId, input.ticketId),
               ),
             );
           const granted =
@@ -1104,7 +1221,7 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
         }
         return {
           status: "repriced",
-          proposal: toDto(found.row, found.issueKey),
+          proposal: toDto(found.row, found.name),
           ...(writebackOperationId === undefined
             ? {}
             : { writebackOperationId }),
@@ -1210,7 +1327,7 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
           throw new Error("Respecced proposal vanished.");
         return {
           status: "respecced",
-          proposal: toDto(found.row, found.issueKey),
+          proposal: toDto(found.row, found.name),
           previousComplexity: source.complexity as BountyComplexity,
         } as const;
       });

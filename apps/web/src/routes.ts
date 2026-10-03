@@ -108,6 +108,18 @@ export function boardForPath(pathname: string): string | undefined {
     : undefined;
 }
 
+/** `/o/:slug/tickets`: the organization's tickets and proposals. */
+function isTicketsPath(pathname: string): boolean {
+  const parts = pathname.replace(/\/+$/, "").split("/");
+  return (
+    parts.length === 4 &&
+    parts[1] === "o" &&
+    parts[2] !== undefined &&
+    parts[2] !== "" &&
+    parts[3] === "tickets"
+  );
+}
+
 export function screenForPath(pathname: string): Screen {
   const path = pathname.replace(/\/+$/, "");
   if (path === ACCOUNT_PATH) return "account";
@@ -121,6 +133,7 @@ export function screenForPath(pathname: string): Screen {
     if (connectionForPath(pathname) !== undefined) {
       return "org-jira-board";
     }
+    if (isTicketsPath(pathname)) return "org-tickets";
     // `/o/:slug/jira` and `/o/:slug/jira/:site` included: both now live in
     // the Jira tab of settings, and `canonicalUrl` rewrites the address.
     return "org-settings";
@@ -149,6 +162,8 @@ export function pathForScreen(
         : connectionTab === undefined || connectionTab === "home"
           ? `/o/${slug}/settings`
           : `/o/${slug}/settings?connection=${connectionTab}`;
+    case "org-tickets":
+      return slug === undefined ? ORGANIZATIONS_PATH : `/o/${slug}/tickets`;
     case "org-jira-board":
       return slug === undefined ||
         connectionId === undefined ||

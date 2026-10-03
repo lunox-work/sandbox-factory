@@ -1,16 +1,20 @@
 import { randomUUID } from "node:crypto";
 
-import type {
-  BountyProposalStore,
-  BountyRunStore,
-  BountySpecStore,
-  BountyWritebackStore,
-  JiraBoardStore,
-  JiraConnectionStore,
-  JiraIssueStore,
-  RateCardStore,
-  StoredBountyRun,
-  StoredRateCard,
+import {
+  followsJira,
+  type BountyProfileStore,
+  type BountyProposalStore,
+  type BountyRunStore,
+  type BountySpecStore,
+  type BountyWritebackStore,
+  type JiraBoardStore,
+  type JiraConnectionStore,
+  type JiraIssueStore,
+  type RateCardStore,
+  type StoredBountyRun,
+  type StoredRateCard,
+  type StoredTicket,
+  type TicketStore,
 } from "@sandbox-factory/db";
 import { JiraApiError, JiraAuthError } from "@sandbox-factory/jira";
 import {
@@ -19,6 +23,8 @@ import {
   createRunSchema,
   putRateCardSchema,
   proposalMutationSchema,
+  proposalProfileResponseSchema,
+  proposeTicketSchema,
   repriceProposalSchema,
   resizeProposalSchema,
   respecProposalSchema,
@@ -60,6 +66,10 @@ export interface BountyRouteOptions {
   readonly proposals: BountyProposalStore;
   readonly specs: BountySpecStore;
   readonly issues: JiraIssueStore;
+  /** The organization's tickets, which every proposal prices. */
+  readonly tickets: TicketStore;
+  /** Complexity profiles; absent where no repository analysis is set up. */
+  readonly profiles?: Pick<BountyProfileStore, "latest">;
   readonly connections?: JiraConnectionStore;
   readonly writebacks?: BountyWritebackStore;
   readonly delivery?: BountyDelivery;
@@ -68,6 +78,11 @@ export interface BountyRouteOptions {
     organizationId: string,
   ) => Promise<string | undefined>;
   readonly executor?: BountyExecutor;
+  /**
+   * A Jira site's client. Absent where Jira is not configured: a board's
+   * runs then cannot start, and a ticket from Jira cannot be read, but a
+   * ticket written here is sized and reviewed all the same.
+   */
   readonly clientFor?: (
     organizationId: string,
     connectionId: string,
@@ -320,6 +335,145 @@ export async function startRun(
   }
   if (created.created) options.executor.start(organizationId, created.run.id);
   return { ok: true, run: created.run };
+}
+
+/** Why a ticket's sizing did not start. */
+export type StartTicketRunResult =
+  | { readonly ok: true; readonly run: StoredBountyRun }
+  | { readonly ok: false; readonly reason: "active"; readonly runId: string }
+  | {
+      readonly ok: false;
+      readonly reason: "live-proposal";
+      readonly proposalId: string;
+    }
+  | {
+      readonly ok: false;
+      readonly reason:
+        | "sizing-unavailable"
+        | "not-found"
+        | "reconnect"
+        | "rate-card-required"
+        | "request-conflict";
+    };
+
+/**
+ * Start sizing one of the organization's tickets: the run row, then the
+ * executor in the background, as a board's run starts.
+ *
+ * Needs a sizer and a rate card, and nothing from Jira unless the ticket
+ * still follows a Jira issue, whose text the run reads. A ticket with a
+ * live proposal gets that proposal back instead of a run. A ticket that
+ * came from a board is sized with that board's selection and pricing
+ * settings; any other with the defaults.
+ */
+export async function startTicketRun(
+  options: BountyRouteOptions,
+  input: {
+    readonly organizationId: string;
+    readonly ticketId: string;
+    readonly startedBy: string;
+    readonly requestId: string;
+  },
+): Promise<StartTicketRunResult> {
+  const { organizationId } = input;
+  if (
+    options.executor === undefined ||
+    options.requestedModel === undefined ||
+    options.promptVersion === undefined
+  ) {
+    return { ok: false, reason: "sizing-unavailable" };
+  }
+  const ticket = await options.tickets.get(organizationId, input.ticketId);
+  if (ticket === null) return { ok: false, reason: "not-found" };
+  const live = await options.proposals.liveForTicket(organizationId, ticket.id);
+  if (live !== null) {
+    return { ok: false, reason: "live-proposal", proposalId: live };
+  }
+  if (followsJira(ticket) && options.clientFor === undefined) {
+    return { ok: false, reason: "reconnect" };
+  }
+  const board = await boardOf(options, organizationId, ticket);
+  const card = await rateCardFor(options.rateCards, organizationId, input);
+  if (card === null) return { ok: false, reason: "rate-card-required" };
+
+  const created = await options.runs.create(organizationId, {
+    kind: "ticket",
+    boardId: board?.id ?? null,
+    ticketId: ticket.id,
+    planned: [
+      {
+        externalIssueId: ticket.jira?.externalId ?? ticket.id,
+        issueKey: ticket.key,
+        summary: ticket.title,
+        ticketId: ticket.id,
+        // Picked by a person, not by a category.
+        categories: [],
+      },
+    ],
+    startedBy: input.startedBy,
+    requestId: input.requestId,
+    selection: boardSelectionSchema.parse(board?.selection ?? {}),
+    rateCard: {
+      currency: card.currency,
+      xsMinor: card.xsMinor,
+      sMinor: card.sMinor,
+      mMinor: card.mMinor,
+      lMinor: card.lMinor,
+      xlMinor: card.xlMinor,
+      revision: card.revision,
+    },
+    requestedModel: options.requestedModel,
+    promptVersion: options.promptVersion,
+  });
+  if (!created.ok) {
+    return created.reason === "active"
+      ? { ok: false, reason: "active", runId: created.runId }
+      : {
+          ok: false,
+          reason:
+            created.reason === "request-conflict"
+              ? "request-conflict"
+              : "not-found",
+        };
+  }
+  if (created.created) options.executor.start(organizationId, created.run.id);
+  return { ok: true, run: created.run };
+}
+
+/** The board a ticket came through, while it is registered. */
+async function boardOf(
+  options: Pick<BountyRouteOptions, "boards">,
+  organizationId: string,
+  ticket: StoredTicket,
+) {
+  return ticket.jira === null
+    ? null
+    : options.boards.get(organizationId, ticket.jira.boardId);
+}
+
+/**
+ * The Jira site a ticket's approval is posted to: its issue's board and
+ * connection, while the issue is there. Null for a ticket written here, or
+ * one whose issue has gone, whose approval is recorded here only.
+ */
+async function siteOf(
+  options: BountyRouteOptions,
+  organizationId: string,
+  ticketId: string,
+) {
+  const ticket = await options.tickets.get(organizationId, ticketId);
+  if (ticket === null || ticket.jira === null || !followsJira(ticket)) {
+    return null;
+  }
+  const registered = await options.boards.forRun(
+    organizationId,
+    ticket.jira.boardId,
+  );
+  const connection =
+    registered === null || options.connections === undefined
+      ? null
+      : await options.connections.get(organizationId, registered.connectionId);
+  return registered === null ? null : { registered, connection };
 }
 
 export function mountBountyRoutes<Env extends BountyAppEnv>(
@@ -616,6 +770,82 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
     }
   });
 
+  /**
+   * Size one of the organization's tickets and propose a bounty for it, in
+   * the background: the same answer as adding a board's ticket. 202 with the
+   * run, which the page follows until the proposal lands; 200 with the
+   * proposal's id when the ticket already has a live one.
+   */
+  app.post("/api/v1/orgs/:orgId/tickets/:id/propose", async (c) => {
+    const { organizationId, role } = c.get("member");
+    if (!isAtLeastAdmin(role)) {
+      return c.json(
+        { error: "Only an owner or admin may propose a bounty." },
+        403,
+      );
+    }
+    const parsed = proposeTicketSchema.safeParse(
+      await c.req.json().catch(() => null),
+    );
+    if (!parsed.success) {
+      return c.json({ error: "Provide a valid requestId." }, 400);
+    }
+    const started = await startTicketRun(options, {
+      organizationId,
+      ticketId: c.req.param("id"),
+      startedBy: c.get("user").id,
+      requestId: parsed.data.requestId,
+    });
+    if (started.ok) return c.json({ run: started.run }, 202);
+    switch (started.reason) {
+      case "live-proposal":
+        return c.json({ proposalId: started.proposalId });
+      case "sizing-unavailable":
+        return c.json(
+          {
+            code: "sizing_unavailable",
+            error: "Sizing is not configured for this deployment.",
+          },
+          503,
+        );
+      case "reconnect":
+        return c.json(
+          {
+            code: "reconnect",
+            error: "This ticket's Jira connection needs reconnecting.",
+          },
+          409,
+        );
+      case "rate-card-required":
+        return c.json(
+          {
+            code: "rate_card_required",
+            error: "Set a rate card before proposing.",
+          },
+          409,
+        );
+      case "active":
+        return c.json(
+          {
+            code: "run_active",
+            error: "This ticket is already being sized.",
+            runId: started.runId,
+          },
+          409,
+        );
+      case "request-conflict":
+        return c.json(
+          {
+            code: "request_conflict",
+            error: "That requestId was already used for another run.",
+          },
+          409,
+        );
+      case "not-found":
+        return c.json({ error: "Not found" }, 404);
+    }
+  });
+
   app.get("/api/v1/orgs/:orgId/jira/boards/:id/runs", async (c) => {
     const { organizationId } = c.get("member");
     const boardId = c.req.param("id");
@@ -717,28 +947,32 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
       if ((await options.boards.get(organizationId, boardId)) === null) {
         return c.json({ error: "Not found" }, 404);
       }
-      const { total, uncategorized, counts } =
-        await options.proposals.categoryCounts(organizationId, boardId);
-      const body: ProposalCategoriesDto = {
-        total,
-        uncategorized,
-        categories: CATEGORIES.map(({ id, label, why }) => ({
-          id,
-          label,
-          why,
-          // `Object.hasOwn`: the ids are keys of stored JSON's making.
-          count: Object.hasOwn(counts, id) ? (counts[id] ?? 0) : 0,
-        })),
-      };
-      return c.json(body);
+      return c.json(
+        categoriesBody(
+          await options.proposals.categoryCounts(organizationId, { boardId }),
+        ),
+      );
     },
   );
 
+  /* The same, for every proposal the organization has, from any source. */
+  app.get("/api/v1/orgs/:orgId/proposal-categories", async (c) => {
+    const { organizationId } = c.get("member");
+    return c.json(
+      categoriesBody(await options.proposals.categoryCounts(organizationId)),
+    );
+  });
+
+  /*
+    The organization's proposals, newest first, from every source: a
+    board's, with `?boardId=`, or all of them, the tickets written here
+    among them.
+  */
   app.get("/api/v1/orgs/:orgId/proposals", async (c) => {
     const { organizationId } = c.get("member");
     const boardId = c.req.query("boardId");
     if (
-      boardId === undefined ||
+      boardId !== undefined &&
       (await options.boards.get(organizationId, boardId)) === null
     ) {
       return c.json({ error: "Not found" }, 404);
@@ -757,22 +991,19 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
       Checking every row against Jira here held the whole list back for
       the slowest ticket on the page.
     */
-    const proposals = await options.proposals.listForBoard(
-      organizationId,
-      boardId,
-      {
-        limit,
-        ...(status === undefined ? {} : { status }),
-        // The reserved id asks for the tickets in no category, which is a
-        // different question of the store than any category's.
-        ...(category === undefined
-          ? {}
-          : category === UNCATEGORIZED
-            ? { uncategorized: true }
-            : { category }),
-        ...(cursor === undefined ? {} : { cursor }),
-      },
-    );
+    const proposals = await options.proposals.list(organizationId, {
+      ...(boardId === undefined ? {} : { boardId }),
+      limit,
+      ...(status === undefined ? {} : { status }),
+      // The reserved id asks for the tickets in no category, which is a
+      // different question of the store than any category's.
+      ...(category === undefined
+        ? {}
+        : category === UNCATEGORIZED
+          ? { uncategorized: true }
+          : { category }),
+      ...(cursor === undefined ? {} : { cursor }),
+    });
     return c.json({
       proposals,
       nextCursor:
@@ -789,36 +1020,19 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
       c.req.param("id"),
     );
     if (proposal === null) return c.json({ error: "Not found" }, 404);
-    const pointer = await options.issues.get(
-      organizationId,
-      proposal.jiraIssueId,
-    );
+    // Asked for on a board's page: only a ticket that came through it.
     const expectedBoardId = c.req.query("boardId");
-    if (
-      pointer === null ||
-      (expectedBoardId !== undefined && pointer.boardId !== expectedBoardId)
-    ) {
-      return c.json({ error: "Not found" }, 404);
-    }
-    if (options.clientFor === undefined) {
-      return c.json({
-        proposal,
-        liveSpec: null,
-        freshness: {
-          freshness: "unknown",
-          checkedAt: new Date().toISOString(),
-          code: "reconnect",
-        },
-        writebackOperations: [],
-      });
+    if (expectedBoardId !== undefined) {
+      const ticket = await options.tickets.get(
+        organizationId,
+        proposal.ticketId,
+      );
+      if (ticket?.jira?.boardId !== expectedBoardId) {
+        return c.json({ error: "Not found" }, 404);
+      }
     }
     const live = await freshProposal(
-      {
-        proposals: options.proposals,
-        issues: options.issues,
-        boards: options.boards,
-        clientFor: options.clientFor,
-      },
+      reviewOptions(options),
       organizationId,
       proposal,
     );
@@ -867,6 +1081,46 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
       return c.json({ error: "Not found" }, 404);
     }
     return c.json({ spec });
+  });
+
+  /*
+    The complexity profile of the proposal's newest profiled spec revision,
+    with where it stands while its runs are in flight. Null when it was
+    never profiled: the board had no repository when it was sized, or this
+    deployment has no repository analysis.
+  */
+  app.get("/api/v1/orgs/:orgId/proposals/:id/profile", async (c) => {
+    const { organizationId } = c.get("member");
+    const proposal = await options.proposals.get(
+      organizationId,
+      c.req.param("id"),
+    );
+    if (proposal === null) return c.json({ error: "Not found" }, 404);
+    const stored =
+      options.profiles === undefined
+        ? null
+        : await options.profiles.latest(organizationId, proposal.id);
+    return c.json(
+      proposalProfileResponseSchema.parse({
+        profile:
+          stored === null
+            ? null
+            : {
+                id: stored.id,
+                proposalId: stored.proposalId,
+                specRevision: stored.specRevision,
+                status: stored.status,
+                errorCode: stored.errorCode,
+                runErrorCode: stored.runErrorCode,
+                snapshotId: stored.snapshotId,
+                scopeRunId: stored.scopeRunId,
+                sliceRunId: stored.sliceRunId,
+                profile: stored.profile,
+                createdAt: stored.createdAt,
+                updatedAt: stored.updatedAt,
+              },
+      }),
+    );
   });
 
   /* Every revision the spec has had, newest first, without the scenarios. */
@@ -996,21 +1250,8 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
         (operation) =>
           operation.kind === "approved" && operation.jiraCommentId !== null,
       );
-      const pointer = await options.issues.get(
-        organizationId,
-        proposal.jiraIssueId,
-      );
-      const registered =
-        pointer === null
-          ? null
-          : await options.boards.forRun(organizationId, pointer.boardId);
-      const site =
-        registered === null || options.connections === undefined
-          ? null
-          : await options.connections.get(
-              organizationId,
-              registered.connectionId,
-            );
+      const site = (await siteOf(options, organizationId, proposal.ticketId))
+        ?.connection;
       if (announced !== undefined && site?.writeGranted === true) {
         if (options.delivery === undefined)
           return c.json(
@@ -1148,13 +1389,9 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
         );
       }
     }
-    const pointer = await options.issues.get(
-      organizationId,
-      proposal.jiraIssueId,
-    );
-    if (pointer === null) return c.json({ error: "Not found" }, 404);
-    const board = await options.boards.get(organizationId, pointer.boardId);
-    if (board === null) return c.json({ error: "Not found" }, 404);
+    const ticket = await options.tickets.get(organizationId, proposal.ticketId);
+    if (ticket === null) return c.json({ error: "Not found" }, 404);
+    const board = await boardOf(options, organizationId, ticket);
     const card = await options.rateCards.get(organizationId);
     if (card === null)
       return c.json(
@@ -1165,7 +1402,8 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
         409,
       );
     const created = await options.runs.create(organizationId, {
-      boardId: board.id,
+      boardId: board?.id ?? null,
+      ticketId: ticket.id,
       startedBy: c.get("user").id,
       kind: "reprice",
       sourceProposalId: proposal.id,
@@ -1173,7 +1411,7 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
       requestId: parsed.data.requestId,
       // A re-price sizes the one ticket its proposal names; the selection
       // is snapshotted for `minSpecChars`, and nothing is selected with it.
-      selection: boardSelectionSchema.parse(board.selection),
+      selection: boardSelectionSchema.parse(board?.selection ?? {}),
       rateCard: {
         currency: card.currency,
         xsMinor: card.xsMinor,
@@ -1221,8 +1459,7 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
     if (denied !== null) return c.json(denied, 403);
     if (
       options.executor === undefined ||
-      options.requestedModel === undefined ||
-      options.clientFor === undefined
+      options.requestedModel === undefined
     ) {
       return c.json(
         {
@@ -1280,12 +1517,7 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
       return c.json({ code: refusal, error: RESPEC_REFUSALS[refusal] }, 409);
     }
     const fresh = await freshProposal(
-      {
-        proposals: options.proposals,
-        issues: options.issues,
-        boards: options.boards,
-        clientFor: options.clientFor,
-      },
+      reviewOptions(options),
       organizationId,
       proposal,
     );
@@ -1302,17 +1534,12 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
         409,
       );
     }
-    const pointer = await options.issues.get(
-      organizationId,
-      proposal.jiraIssueId,
-    );
-    const board =
-      pointer === null
-        ? null
-        : await options.boards.get(organizationId, pointer.boardId);
-    if (board === null) return c.json({ error: "Not found" }, 404);
+    const ticket = await options.tickets.get(organizationId, proposal.ticketId);
+    if (ticket === null) return c.json({ error: "Not found" }, 404);
+    const board = await boardOf(options, organizationId, ticket);
     const created = await options.runs.create(organizationId, {
-      boardId: board.id,
+      boardId: board?.id ?? null,
+      ticketId: ticket.id,
       startedBy: c.get("user").id,
       kind: "respec",
       sourceProposalId: proposal.id,
@@ -1320,7 +1547,7 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
       respec: request,
       requestId: parsed.data.requestId,
       // Nothing is selected; the column holds every run's snapshot.
-      selection: boardSelectionSchema.parse(board.selection),
+      selection: boardSelectionSchema.parse(board?.selection ?? {}),
       // The proposal's own card: a spec change moves the size, not the
       // rates, as a resize does.
       rateCard: proposal.rateCard,
@@ -1428,19 +1655,8 @@ async function approveWithFreshSpec(
       409,
     );
   }
-  if (options.clientFor === undefined) {
-    return c.json(
-      { code: "spec_unavailable", error: "The ticket could not be checked." },
-      503,
-    );
-  }
   const fresh = await freshProposal(
-    {
-      proposals: options.proposals,
-      issues: options.issues,
-      boards: options.boards,
-      clientFor: options.clientFor,
-    },
+    reviewOptions(options),
     organizationId,
     proposal,
   );
@@ -1452,7 +1668,7 @@ async function approveWithFreshSpec(
         code,
         error:
           code === "proposal_stale"
-            ? "The Jira sizing inputs changed. Re-price before continuing."
+            ? "The ticket changed since it was sized. Re-price before continuing."
             : "The ticket could not be checked.",
         freshness: fresh.freshness,
       },
@@ -1478,22 +1694,14 @@ async function approveWithFreshSpec(
       409,
     );
   }
-  const pointer = await options.issues.get(
-    organizationId,
-    proposal.jiraIssueId,
-  );
-  const registered =
-    pointer === null
-      ? null
-      : await options.boards.forRun(organizationId, pointer.boardId);
   // Whether the approval is posted to the ticket is the site's grant: every
   // consent asks for the write scope, so a site holds it unless the person
   // withheld it. No grant means the approval is recorded here and nowhere
-  // else, which is what a read-only site was connected for.
-  const connection =
-    registered === null || options.connections === undefined
-      ? null
-      : await options.connections.get(organizationId, registered.connectionId);
+  // else, which is what a read-only site was connected for, and what a
+  // ticket with no Jira issue always has.
+  const site = await siteOf(options, organizationId, proposal.ticketId);
+  const registered = site?.registered ?? null;
+  const connection = site?.connection ?? null;
   if (registered !== null && connection?.writeGranted === true) {
     if (!connection.healthy) {
       // Not approved without the post: the site was connected to receive
@@ -1562,6 +1770,42 @@ async function approveWithFreshSpec(
       "off",
     ),
   );
+}
+
+/** What a proposal's review reads the ticket through. */
+function reviewOptions(options: BountyRouteOptions) {
+  return {
+    proposals: options.proposals,
+    issues: options.issues,
+    tickets: options.tickets,
+    boards: options.boards,
+    ...(options.clientFor === undefined
+      ? {}
+      : { clientFor: options.clientFor }),
+  };
+}
+
+/**
+ * Proposals by category, for the view above a list. The categories, their
+ * order, labels and why-text come from the registry, so the page names
+ * none of them; the proposals in no category are counted beside them.
+ */
+function categoriesBody(counted: {
+  readonly total: number;
+  readonly uncategorized: number;
+  readonly counts: Readonly<Record<string, number>>;
+}): ProposalCategoriesDto {
+  return {
+    total: counted.total,
+    uncategorized: counted.uncategorized,
+    categories: CATEGORIES.map(({ id, label, why }) => ({
+      id,
+      label,
+      why,
+      // `Object.hasOwn`: the ids are keys of stored JSON's making.
+      count: Object.hasOwn(counted.counts, id) ? (counted.counts[id] ?? 0) : 0,
+    })),
+  };
 }
 
 /** What each refused spec change is told. */

@@ -4,6 +4,7 @@ import type {
   BountyRunDto,
   BountyWritebackDto,
   ProposalCategoriesDto,
+  ProposalLiveSpecDto,
   RateCardDto,
   StepResultDto,
 } from "@sandbox-factory/shared";
@@ -63,6 +64,10 @@ import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 import { CategoryIcon } from "./CategoryIcon";
+import {
+  ComplexityProfileBlock,
+  useProposalProfile,
+} from "./ComplexityProfile";
 import { IssueSpec, IssueSpecSkeleton } from "./IssueSpec";
 import {
   plural,
@@ -73,15 +78,11 @@ import {
 } from "./ProposalSpec";
 import { JiraIcon, ModelIcon } from "./ProviderIcon";
 import { useRespec } from "./SpecChanges";
+import { TicketText } from "./TicketText";
 import { useRepoSnapshot } from "./useGithub";
 import type { JiraIssueDetail } from "./useJira";
 
 type EnrichedProposal = BountyProposalDto & {
-  /**
-   * The ticket's title when it was sized, which the list carries: stored,
-   * so a row has something to call itself before Jira answers.
-   */
-  sizedTitle?: string | null;
   /**
    * Why the run picked the ticket: each category it fit, with the reason.
    * Stored with the run like the title. Empty for a ticket someone added by
@@ -123,6 +124,11 @@ interface ProposalDetail {
     checkedAt: string;
     code?: string;
   };
+  /**
+   * What the ticket says now: Jira's text for a ticket following an issue,
+   * and the ticket as stored otherwise. Null when it could not be read.
+   */
+  liveSpec?: ProposalLiveSpecDto | null;
   writebackOperations: BountyWritebackDto[];
 }
 
@@ -755,28 +761,45 @@ export function RateCardEditor({
   );
 }
 
+/**
+ * Proposals, and the peek a reviewer decides them in: one board's, or with
+ * no board the organization's, from every source — Jira's tickets and the
+ * ones written here alike.
+ *
+ * A board's list has the board's machinery around it: its sizing run as it
+ * streams, the search for one of its tickets to add, and each row's live
+ * title from Jira. The organization's list reads stored rows only, since a
+ * ticket's title is stored with it, and each proposal's freshness comes
+ * from its own read as on a board.
+ */
 export function BoardBounties({
   organizationId,
   boardId,
   role,
-  writeGranted,
+  writeGranted = true,
   readIssue,
+  emptyText,
 }: {
   organizationId: string;
-  boardId: string;
+  /** The board whose proposals these are; absent, the organization's. */
+  boardId?: string | undefined;
   role: string;
   /**
    * Whether this board's site holds the write grant. Shown, not switched:
    * the permission is asked for when a site is connected, and a site
    * without it is connected again from the Jira page to grant it.
    */
-  writeGranted: boolean;
+  writeGranted?: boolean | undefined;
   /**
    * Reads one ticket live from Jira, for the peek's Spec tab. Passed in
    * rather than fetched here because the board page owns the Jira read and
-   * the reconnect banner that answers its failures.
+   * the reconnect banner that answers its failures. Absent, the tab shows
+   * the ticket as the proposal's own read returned it.
    */
-  readIssue: (issueKey: string) => Promise<JiraIssueDetail | null>;
+  readIssue?:
+    ((issueKey: string) => Promise<JiraIssueDetail | null>) | undefined;
+  /** What an empty list says, in place of the board's wording. */
+  emptyText?: string | undefined;
 }) {
   const [runs, setRuns] = useState<BountyRunDto[]>([]);
   const [proposals, setProposals] = useState<EnrichedProposal[]>([]);
@@ -856,6 +879,10 @@ export function BoardBounties({
   const [detailVersion, setDetailVersion] = useState(0);
 
   const base = `/api/v1/orgs/${encodeURIComponent(organizationId)}`;
+  const boardPath =
+    boardId === undefined
+      ? null
+      : `${base}/jira/boards/${encodeURIComponent(boardId)}`;
   /*
     Runs and stored proposals: both local reads, so the list renders as soon
     as they land. Nothing here waits on Jira — titles stream in below, and
@@ -871,7 +898,11 @@ export function BoardBounties({
       let cursor: string | null = null;
       do {
         const response: Response = await fetch(
-          `${base}/proposals?boardId=${encodeURIComponent(boardId)}&limit=${PROPOSAL_PAGE}${
+          `${base}/proposals?${
+            boardId === undefined
+              ? ""
+              : `boardId=${encodeURIComponent(boardId)}&`
+          }limit=${PROPOSAL_PAGE}${
             category === null ? "" : `&category=${encodeURIComponent(category)}`
           }${cursor === null ? "" : `&cursor=${encodeURIComponent(cursor)}`}`,
           { credentials: "include" },
@@ -893,7 +924,7 @@ export function BoardBounties({
     const readCategories = async () => {
       try {
         const response = await fetch(
-          `${base}/jira/boards/${encodeURIComponent(boardId)}/proposal-categories`,
+          `${boardPath ?? base}/proposal-categories`,
           { credentials: "include" },
         );
         return response.ok ? categorySummary(await response.json()) : null;
@@ -901,19 +932,25 @@ export function BoardBounties({
         return null;
       }
     };
-    try {
-      const [runResponse, listed, summary] = await Promise.all([
-        fetch(`${base}/jira/boards/${encodeURIComponent(boardId)}/runs`, {
-          credentials: "include",
-        }),
-        readProposals(),
-        readCategories(),
-      ]);
-      if (!runResponse.ok) throw new Error();
-      const runBody = (await runResponse.json()) as {
+    // A board's runs, for its sizing stream and whether it can be sized.
+    // The organization's list has no board run to show.
+    const readRuns = async () => {
+      if (boardPath === null) return { runs: [], sizingAvailable: true };
+      const response = await fetch(`${boardPath}/runs`, {
+        credentials: "include",
+      });
+      if (!response.ok) throw new Error();
+      return (await response.json()) as {
         runs: BountyRunDto[];
         sizingAvailable: boolean;
       };
+    };
+    try {
+      const [runBody, listed, summary] = await Promise.all([
+        readRuns(),
+        readProposals(),
+        readCategories(),
+      ]);
       if (generation !== requestGeneration.current) return;
       setRuns(runBody.runs ?? []);
       setSizingAvailable(runBody.sizingAvailable);
@@ -930,7 +967,7 @@ export function BoardBounties({
         setSwitching(false);
       }
     }
-  }, [base, boardId, category]);
+  }, [base, boardId, boardPath, category]);
 
   /*
     What a mutation, a landed run result or a search re-reads: the list, and
@@ -998,7 +1035,9 @@ export function BoardBounties({
       setDetailFailure({ id: selectedId, notFound });
     };
     fetch(
-      `${base}/proposals/${encodeURIComponent(selectedId)}?boardId=${encodeURIComponent(boardId)}`,
+      `${base}/proposals/${encodeURIComponent(selectedId)}${
+        boardId === undefined ? "" : `?boardId=${encodeURIComponent(boardId)}`
+      }`,
       { credentials: "include" },
     )
       .then(async (response) => {
@@ -1024,6 +1063,8 @@ export function BoardBounties({
     a list holding more untitled rows than that opens a stream per batch.
   */
   useEffect(() => {
+    // Only a board's rows are read live: a ticket's stored title is its own.
+    if (boardPath === null) return;
     const untitled = proposals
       .map(({ id }) => id)
       .filter(
@@ -1037,7 +1078,7 @@ export function BoardBounties({
       const controller = new AbortController();
       titleStreams.current.add(controller);
       fetch(
-        `${base}/jira/boards/${encodeURIComponent(boardId)}/proposal-titles?ids=${wanted.map(encodeURIComponent).join(",")}`,
+        `${boardPath}/proposal-titles?ids=${wanted.map(encodeURIComponent).join(",")}`,
         { credentials: "include", signal: controller.signal },
       )
         .then((response) =>
@@ -1060,7 +1101,7 @@ export function BoardBounties({
           );
         });
     }
-  }, [base, boardId, proposals]);
+  }, [boardPath, proposals]);
 
   // Streams still reading when the list goes away are stopped, so Jira is
   // not asked about rows nobody will see.
@@ -1074,12 +1115,13 @@ export function BoardBounties({
     };
   }, []);
   // The board's own sizing run. A one-ticket run someone added is followed
-  // by the search that started it, and a change to one proposal's spec by
-  // the proposal's peek: neither is shown as the board's stream.
+  // by the search or the ticket that started it, and a change to one
+  // proposal's spec by the proposal's peek: none is the board's stream.
   const active = runs.find(
     (run) =>
       run.kind !== "issue" &&
       run.kind !== "respec" &&
+      run.kind !== "ticket" &&
       (run.status === "queued" || run.status === "running"),
   );
   /*
@@ -1210,8 +1252,8 @@ export function BoardBounties({
       : [detailProposal, ...proposals];
   /*
     A row's key and title: live once its line has arrived, and until then
-    the title the ticket was sized under, when the run recorded one. The
-    two are nearly always the same words, so most rows never change.
+    the title the platform holds for the ticket. The two are nearly always
+    the same words, so most rows never change.
   */
   const nameOf = (proposal: EnrichedProposal) => {
     const live = titles[proposal.id];
@@ -1223,8 +1265,7 @@ export function BoardBounties({
       title:
         (live !== undefined && "title" in live ? live.title : undefined) ??
         proposal.liveTitle ??
-        proposal.sizedTitle ??
-        undefined,
+        (proposal.title === "" ? undefined : proposal.title),
       pending: titlesPending.has(proposal.id),
     };
   };
@@ -1267,6 +1308,7 @@ export function BoardBounties({
 
   const loadTicket = useCallback(
     (issueKey: string) => {
+      if (readIssue === undefined) return;
       wantedKey.current = issueKey;
       setTicket(null);
       setTicketError(null);
@@ -1351,7 +1393,7 @@ export function BoardBounties({
     <div className="flex flex-col gap-4">
       {error !== null && <ErrorBanner className="mt-0">{error}</ErrorBanner>}
 
-      {canManage(role) && sizingAvailable && (
+      {canManage(role) && sizingAvailable && boardId !== undefined && (
         <TicketSearch base={base} boardId={boardId} onProposal={showProposal} />
       )}
 
@@ -1428,7 +1470,7 @@ export function BoardBounties({
             {category !== null
               ? "No proposals in this category."
               : active === undefined
-                ? "No proposals yet."
+                ? (emptyText ?? "No proposals yet.")
                 : "Proposals appear here as tickets are sized."}
           </p>
         ) : (
@@ -1481,7 +1523,7 @@ export function BoardBounties({
                                   className="skeleton inline-block h-3 w-40 max-w-full rounded align-middle"
                                 />
                               ) : (
-                                "Jira ticket"
+                                "Ticket"
                               ))}
                           </span>
                           <CategoryLine
@@ -1571,7 +1613,9 @@ export function BoardBounties({
           detailFailure !== null && detailFailure.id === selectedId ? (
             detailFailure.notFound ? (
               <p className="text-muted-foreground text-sm">
-                This proposal is not on this board.
+                {boardId === undefined
+                  ? "This proposal no longer exists."
+                  : "This proposal is not on this board."}
               </p>
             ) : (
               <div className="flex flex-col items-start gap-3">
@@ -1596,8 +1640,15 @@ export function BoardBounties({
           <ProposalPeek
             base={base}
             proposal={selected}
-            ticket={ticket}
-            ticketError={ticketError}
+            ticket={readIssue === undefined ? null : ticket}
+            liveSpec={
+              readIssue === undefined &&
+              detail !== null &&
+              detail.proposal.id === selected.id
+                ? (detail.liveSpec ?? null)
+                : undefined
+            }
+            ticketError={readIssue === undefined ? null : ticketError}
             onRetryTicket={() => {
               if (selectedKey !== null) loadTicket(selectedKey);
             }}
@@ -1624,10 +1675,10 @@ function freshnessLabel(freshness: EnrichedProposal["freshness"]): {
     case "stale":
       return { text: "Changed since sizing", tone: "warn" };
     case "missing":
-      return { text: "No longer in Jira", tone: "bad" };
+      return { text: "Ticket no longer exists", tone: "bad" };
     // Not known yet: the open proposal's own read is still out.
     case undefined:
-      return { text: "Checking Jira…", tone: "muted" };
+      return { text: "Checking the ticket…", tone: "muted" };
     default:
       return { text: "Not checked", tone: "muted" };
   }
@@ -2098,6 +2149,7 @@ function ProposalPeek({
   base,
   proposal,
   ticket,
+  liveSpec,
   ticketError,
   onRetryTicket,
   canDecide,
@@ -2110,6 +2162,12 @@ function ProposalPeek({
   base: string;
   proposal: EnrichedProposal;
   ticket: JiraIssueDetail | null;
+  /**
+   * The ticket as the proposal's own read returned it, for a list with no
+   * Jira read of its own: undefined until that read lands, and null when it
+   * found nothing to show.
+   */
+  liveSpec?: ProposalLiveSpecDto | null | undefined;
   ticketError: string | null;
   onRetryTicket: () => void;
   canDecide: boolean;
@@ -2134,6 +2192,13 @@ function ProposalPeek({
   const spec = useProposalSpec(base, proposal.id, proposal.specRevision);
   // The commit the spec's repository outline came from, when it had one.
   const outline = useRepoSnapshot(base, proposal.repoSnapshotId ?? null);
+  // What the size will point back to, measured from that repository.
+  const profile = useProposalProfile(
+    base,
+    proposal.id,
+    proposal.specRevision,
+    proposal.repoSnapshotId != null,
+  );
   const scenarios = scenarioTotal(spec.read);
   const step = proposal.step ?? null;
   // A reviewer's changes to the spec, and the run each one starts.
@@ -2404,6 +2469,11 @@ function ProposalPeek({
 
             {step !== null && <StepBlock step={step} />}
 
+            <ComplexityProfileBlock
+              read={profile}
+              specRevision={proposal.specRevision}
+            />
+
             {/* A rule before the decision: what follows is the act, not the record. */}
             <Separator />
 
@@ -2542,7 +2612,17 @@ function ProposalPeek({
         </TabsContent>
 
         <TabsContent value="spec" className="mt-2">
-          {ticketError !== null ? (
+          {liveSpec === null ? (
+            <p className="text-muted-foreground py-6 text-sm">
+              The ticket could not be read.
+            </p>
+          ) : liveSpec !== undefined ? (
+            <TicketText
+              issueType={liveSpec.issueType}
+              description={liveSpec.descriptionText}
+              inputTruncated={liveSpec.inputTruncated}
+            />
+          ) : ticketError !== null ? (
             <div className="flex min-h-48 flex-col items-start justify-center gap-3">
               <ErrorBanner className="mt-0">{ticketError}</ErrorBanner>
               <Button

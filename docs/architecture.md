@@ -294,6 +294,68 @@ transport, at which point `sendInvitationEmail` is one function and the in-app
 flow stays as the fallback; a crop tool, a sweeper for avatar objects orphaned
 by a failed delete, and more than one avatar size (see [Avatars](#avatars)).
 
+## Tickets
+
+**A ticket is the platform's own record of a piece of work**, and every
+proposal prices one (`bounty_proposal.ticket_id`). It is written here, or
+imported from Jira by a run, and either way it is one `ticket` row,
+proposed, reviewed and cut into a sandbox the same way. Jira, GitHub and
+any source added later enrich a ticket; none of them is required. A
+deployment with a model and no Jira or GitHub configured sizes the
+tickets written in it.
+
+**Jira enriches a ticket rather than owning it.** A `jira_issue` row is the
+pointer half of an imported ticket (`jira_issue.ticket_id`, one each): the
+first run that reads an issue creates the ticket, and every read after —
+a run, or opening one of its proposals — writes Jira's text back onto it
+(`refreshFromJira`, only when it differs, so the revision does not move
+for nothing). While the issue is there its text is Jira's to change, and
+the API refuses an edit to it (`jira_owned`); its repository is the
+platform's to set. When Jira stops returning the issue, the pointer is
+marked `removed_at` and the ticket keeps the text it last had: it is then
+sized, reviewed and edited as stored, like a ticket written here. Losing a
+board takes its pointers but not its tickets.
+
+**Freshness is the ticket's.** `ticketSpecHash` in `packages/core`
+fingerprints a ticket's title, description and type, and
+`packages/jira`'s `pricingSpecHash` is that function, not a copy, so a
+proposal priced from Jira's text and one priced from the stored copy
+compare. A proposal is current while its ticket still hashes to what it
+was priced from: read live from Jira while the ticket follows an issue,
+and as stored otherwise.
+
+**A ticket is named by its Jira key while it has one, and by its
+organization's own number otherwise** (`T-12`, `ticket.number`, unique per
+organization and taken as the next after the highest in the insert
+itself, retried in a savepoint on the rare collision).
+
+**Runs.** A `ticket` run sizes one ticket someone proposed
+(`POST .../tickets/:id/propose`); `reprice` and `respec` runs name their
+proposal's ticket too. Those three need a board only when the ticket came
+from one, whose selection and pricing settings they then use; otherwise
+the defaults. `backlog` and `issue` runs read a Jira board and import what
+they reach. A ticket following its issue cannot be read while its site
+needs reconnecting, and its run fails `reconnect` rather than sizing
+stale text. Approval posts back to Jira only for a ticket still following
+an issue on a site that holds the write grant.
+
+**Sandboxes link tickets** (`sandbox_ticket`), and a version's frozen task
+names them (`ApprovedTaskSnapshot.ticketIds`, schema version 2). A version
+frozen before tickets keeps its version 1 snapshot with `jiraIssueIds`:
+the snapshot is named by its hash, so it is read as written, never
+rewritten.
+
+**Migrations 0043 and 0044** made every existing `jira_issue` a ticket and
+moved what pointed at the issue to point at the ticket. Ticket text had
+lived only in Jira, so the backfill could copy only a title (the latest
+run's plan, else the key); the rest arrives on the next Jira read. Until
+then such a ticket shows no description, and one whose issue has gone
+reviews as stale, since the stored text is not what was priced.
+
+The web app's Tickets page (`/o/:slug/tickets`) lists the organization's
+tickets, writes and edits them, proposes them, and lists every proposal
+from any source in the same peek a board uses.
+
 ## GitHub
 
 One GitHub App, used two ways, and neither is the sign-in OAuth app, which
@@ -388,13 +450,15 @@ before rechecking references.
 Snapshots need object storage: without a bucket none are taken and the
 snapshot routes answer 503.
 
-**A board can name the repository its tickets are about**
-(`jira_board.source_repo_id`, same organization only, checked in the
-update's `WHERE`). Sizing then drafts each spec beside an outline of that
-repository's current snapshot — module names with file counts and file
-types, capped at 60 lines (`apps/api/src/sizing/outline.ts`) — and records
-the snapshot on the proposal (`bounty_proposal.repo_snapshot_id`). The size
-call is never shown it.
+**A ticket can name the repository it is about** (`ticket.repo_id`), and
+**a board can name one for its tickets** (`jira_board.source_repo_id`);
+both same organization only, checked in the write. A ticket's own wins,
+and a Jira ticket that names none takes its board's. Sizing then drafts
+each spec beside an outline of that repository's current snapshot —
+module names with file counts and file types, capped at 60 lines
+(`apps/api/src/sizing/outline.ts`) — and records the snapshot on the
+proposal (`bounty_proposal.repo_snapshot_id`). The size call is never
+shown it.
 
 **A delivery is applied before it is answered.** GitHub does not retry a
 failed delivery on its own and records any 2xx as delivered, so the
@@ -442,6 +506,25 @@ source is read only during a run: transcripts and tool results are never
 stored, only the structured answer, its token usage and fixed log lines.
 Agent runs need `ANTHROPIC_API_KEY` and `AGENT_MODEL` on the worker; without
 a key they fail `agent_unavailable` and nothing else changes.
+
+**A sized ticket is profiled from the code it touches.** When a spec is
+drafted beside its ticket's repository snapshot, the executor asks for that
+spec revision's complexity profile (`bounty_profile`, one row per revision).
+`apps/api/src/bounty/profiler.ts` sweeps the rows in flight every 30
+seconds, since the worker reports a finished run only to the database: it
+enqueues the snapshot's graph and a `scope` run for the spec (no person
+behind either, so `requested_by` is null), then slices exactly the request
+the scope recorded, then builds the profile with `buildComplexityProfile`
+(`packages/core/src/pricing/profile.ts`). The profile is evidence, not a
+price. It holds the slice's files, bytes and modules, the modules the
+scope's entry points touch, the services and environment the slice reaches,
+the spec's open questions and assumptions, the test files in the touched
+modules, migrations and CI, and an existing file the scope agent names as
+the pattern to follow, which the worker checks is a real file. A step that
+meets the organization's analysis cap waits for the next sweep, so a large
+backlog queues behind the cap rather than failing. A failed run fails the
+profile for that revision; a re-price drafts a new revision and asks again.
+The whole chain needs what analysis needs, plus the agent's key.
 
 **Sandbox versions pin their provenance.** A version is cut from a succeeded
 slice. Its private source row records the slice's manifest and contract

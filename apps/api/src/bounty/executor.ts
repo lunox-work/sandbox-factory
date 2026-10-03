@@ -1,15 +1,19 @@
 import { randomUUID } from "node:crypto";
 
-import type {
-  BountyProposalStore,
-  BountyRunStore,
-  BountySpecStore,
-  JiraBoardStore,
-  JiraIssueStore,
-  NewBountySpec,
-  StoredBountyProposal,
-  StoredBountyRun,
-  JiraIssuePointer,
+import {
+  followsJira,
+  type BountyProposalStore,
+  type BountyRunStore,
+  type BountySpecStore,
+  type JiraBoardStore,
+  type JiraBoardSummary,
+  type JiraIssueStore,
+  type NewBountyProfile,
+  type NewBountySpec,
+  type StoredBountyProposal,
+  type StoredBountyRun,
+  type StoredTicket,
+  type TicketStore,
 } from "@sandbox-factory/db";
 import {
   JiraApiError,
@@ -32,14 +36,18 @@ import {
   resolveStepSettings,
   sameSpec,
   stepUp,
+  TICKET_SPEC_HASH_VERSION,
+  ticketSpecHash,
   trimSpec,
   type BountyRunOutcome,
+  type BountyRunPlannedIssue,
   type BountySizingResult,
   type CategoryMatch,
   type RespecRequest,
   type SpecDraft,
   type StepResult,
   type StepSettings,
+  type TicketContent,
 } from "sandbox-factory";
 
 import {
@@ -61,12 +69,58 @@ const HEARTBEAT_MS = 15_000;
 const CONCURRENCY = 3;
 
 /**
- * A ticket a run is about to size. A backlog run knows why it picked each
- * one; a ticket a person picked, or one being re-priced, has no such reason.
+ * A ticket a board's run is about to size. A backlog run knows why it
+ * picked each one; a ticket a person picked has no such reason.
  */
 type RunCandidate = JiraIssueDto & {
   readonly categories?: readonly CategoryMatch[];
 };
+
+/**
+ * One ticket a run sizes: a board's issue, read from Jira and imported as a
+ * ticket when the run reaches it, or a ticket the platform already holds.
+ */
+type Candidate =
+  | { readonly source: "jira"; readonly issue: RunCandidate }
+  | {
+      readonly source: "ticket";
+      readonly ticket: StoredTicket;
+      readonly categories: readonly CategoryMatch[];
+    };
+
+/** The board a run reads through, as `JiraBoardStore.forRun` answers. */
+interface BoardRead {
+  readonly board: JiraBoardSummary;
+  readonly connectionId: string;
+}
+
+/**
+ * What a run reads its tickets through. A board's run has both; a ticket's
+ * run has its ticket's board when it came from one, and a client while its
+ * Jira issue is still there to read. A ticket written here has neither.
+ */
+interface RunScope {
+  readonly board: BoardRead | null;
+  readonly client: RunJiraClient | null;
+}
+
+/** What a run sized a ticket from, and what its outcome is named by. */
+interface ReadTicket {
+  readonly ticket: StoredTicket;
+  readonly content: TicketContent;
+  readonly specHash: string;
+  readonly base: OutcomeBase;
+}
+
+interface OutcomeBase {
+  readonly externalIssueId: string;
+  readonly issueKey: string;
+  readonly ticketId?: string;
+}
+
+type Step<T> =
+  | { readonly value: T; readonly fatalCode?: undefined }
+  | { readonly value?: undefined; readonly fatalCode: string };
 
 export interface RunJiraClient extends BacklogPageReader {
   /** A board's tickets, for finding one by id or by what a person typed. */
@@ -88,17 +142,24 @@ export interface BountyExecutorOptions {
   readonly runs: BountyRunStore;
   readonly proposals: BountyProposalStore;
   readonly issues: JiraIssueStore;
+  /** The tickets runs size, and import Jira's issues as. */
+  readonly tickets: TicketStore;
   /** The spec revisions a `respec` run changes. */
   readonly specs: BountySpecStore;
   /** The model behind every call a run makes: the spec draft and the size. */
   readonly caller: StructuredCaller;
+  /**
+   * A Jira site's client. Only a board's run and a ticket still following
+   * its Jira issue ask for one; a deployment without Jira answers
+   * `reconnect`, and sizes the tickets written here all the same.
+   */
   readonly clientFor: (
     organizationId: string,
     connectionId: string,
   ) => Promise<RunClientResult>;
   /**
-   * The outline of a board's source repository, from its current snapshot,
-   * or null when it has none yet. Absent, no draft is shown one.
+   * The outline of a repository, from its current snapshot, or null when
+   * it has none yet. Absent, no draft is shown one.
    */
   readonly outlineFor?: (
     organizationId: string,
@@ -111,6 +172,15 @@ export interface BountyExecutorOptions {
   readonly onWritebackCreated?: (
     organizationId: string,
     operationId: string,
+  ) => void;
+  /**
+   * Called for each proposal whose spec was drafted beside a repository
+   * snapshot, to measure its complexity profile from that snapshot's code.
+   * Must not throw: the proposal is already written.
+   */
+  readonly onProposalDrafted?: (
+    organizationId: string,
+    input: NewBountyProfile,
   ) => void;
   /**
    * Called when `execute` itself throws. `code` is fixed; `error` is the
@@ -140,7 +210,7 @@ export class BountyExecutor {
   }
 
   async execute(organizationId: string, runId: string): Promise<void> {
-    const { runs, boards, proposals } = this.#options;
+    const { runs } = this.#options;
     const now = this.#options.now ?? (() => new Date());
     const leaseToken = (this.#options.leaseToken ?? randomUUID)();
     const queued = await runs.get(organizationId, runId);
@@ -159,282 +229,491 @@ export class BountyExecutor {
     }, HEARTBEAT_MS);
 
     try {
-      const registered = await boards.forRun(organizationId, run.boardId);
-      if (registered === null) {
-        await runs.finish(organizationId, runId, leaseToken, "failed", {
-          fatalErrorCode: "board_unavailable",
-        });
-        return;
+      if (run.kind === "backlog" || run.kind === "issue") {
+        await this.#boardRun(organizationId, run, leaseToken, controller);
+      } else if (run.kind === "respec") {
+        await this.#respec(organizationId, run, leaseToken, controller.signal);
+      } else {
+        await this.#ticketRun(organizationId, run, leaseToken, controller);
       }
-      const clientResult = await this.#options.clientFor(
-        organizationId,
-        registered.connectionId,
-      );
-      if (!clientResult.ok) {
-        await runs.finish(organizationId, runId, leaseToken, "failed", {
-          fatalErrorCode: clientResult.reason,
-        });
-        return;
-      }
-
-      if (run.kind === "respec") {
-        await this.#respec(
-          organizationId,
-          run,
-          leaseToken,
-          clientResult.client,
-          controller.signal,
-        );
-        return;
-      }
-
-      let selected: {
-        issues: RunCandidate[];
-        candidatesScanned: number;
-        skippedLive: number;
-        scanLimitReached: boolean;
-      };
-      try {
-        if (run.kind === "reprice") {
-          const source =
-            run.sourceProposalId === null
-              ? null
-              : await proposals.get(organizationId, run.sourceProposalId);
-          const pointer =
-            source === null
-              ? null
-              : await this.#options.issues.get(
-                  organizationId,
-                  source.jiraIssueId,
-                );
-          if (
-            source === null ||
-            pointer === null ||
-            source.revision !== run.sourceRevision
-          ) {
-            await runs.finish(organizationId, runId, leaseToken, "failed", {
-              fatalErrorCode: "proposal_changed",
-            });
-            return;
-          }
-          /*
-            Why the ticket was picked, carried over from the plan its
-            proposal came from. A re-price moves the proposal onto this run,
-            and a proposal's reasons are read from its run's plan: without
-            this, asking the model to look again would quietly take the
-            ticket out of its category.
-          */
-          const origin = await runs.get(organizationId, source.runId);
-          const categories =
-            origin?.planned.find(
-              (planned) => planned.externalIssueId === pointer.externalId,
-            )?.categories ?? [];
-          selected = {
-            issues: [
-              {
-                categories,
-                id: pointer.externalId,
-                key: pointer.key,
-                summary: "",
-                status: "",
-                statusCategory: statusCategory(pointer.statusCategory),
-                assignee: null,
-                priority: null,
-                issueType: "",
-                labels: [],
-                projectKey: null,
-                parentKey: null,
-                created: pointer.remoteCreatedAt,
-                updated: pointer.remoteUpdatedAt,
-                dueDate: null,
-                url: null,
-              },
-            ],
-            candidatesScanned: 1,
-            skippedLive: 0,
-            scanLimitReached: false,
-          };
-        } else if (run.kind === "issue") {
-          /*
-            One ticket someone picked, named in the plan when the run was
-            created. Read again here rather than trusted from the plan: its
-            dates and status are what the pointer records, and the ticket
-            may have moved or gone since it was picked.
-          */
-          const target = run.planned[0];
-          if (target === undefined) {
-            await runs.finish(organizationId, runId, leaseToken, "failed", {
-              fatalErrorCode: "issue_unavailable",
-            });
-            return;
-          }
-          const picked = await clientResult.client.issue(
-            target.externalIssueId,
-          );
-          // Split into sub-tasks since it was picked: priced through them,
-          // as a backlog run would, never itself.
-          if ((picked.subtaskCount ?? 0) > 0) {
-            await runs.finish(organizationId, runId, leaseToken, "failed", {
-              fatalErrorCode: "issue_has_subtasks",
-            });
-            return;
-          }
-          selected = {
-            issues: [picked],
-            candidatesScanned: 1,
-            skippedLive: 0,
-            scanLimitReached: false,
-          };
-        } else {
-          selected = await selectBacklog({
-            organizationId,
-            board: registered.board,
-            client: clientResult.client,
-            proposals,
-            now: now(),
-          });
-        }
-      } catch (error) {
-        await runs.finish(organizationId, runId, leaseToken, "failed", {
-          fatalErrorCode: jiraCode(error),
-        });
-        return;
-      }
-
-      /*
-        What the run is about to size, before the first ticket is sent to
-        the model. A page opened mid-run lists it with each ticket's state,
-        so what is still to come shows as well as what is done. Each ticket
-        carries why it was picked, which is what a proposal later shows as
-        its reason.
-
-        Recording the plan also moves the deadline out by its size, so the
-        run continues as the row the store hands back: sizing against the
-        deadline it claimed with would cut a long run short.
-      */
-      const planned = await runs.recordPlan(
-        organizationId,
-        runId,
-        leaseToken,
-        selected.issues.map((issue) => ({
-          externalIssueId: issue.id,
-          issueKey: issue.key,
-          summary: issue.summary,
-          categories: [...(issue.categories ?? [])],
-        })),
-      );
-      if (planned === null) return;
-
-      /*
-        How the board counts scenario weight, read once for the run. Every
-        step this run writes is zero, since a fresh draft has added
-        nothing, but it is written with the settings that will count what
-        a reviewer adds to it.
-      */
-      const pricing = boardPricingSchema.safeParse(registered.board.pricing);
-      const stepSettings = resolveStepSettings(
-        pricing.success ? pricing.data.step : {},
-      );
-      /*
-        The repository the board's tickets are about, read once for the
-        run like the settings above: every ticket is drafted beside the
-        same snapshot. One that cannot be read leaves the drafts without
-        it rather than failing the run; the outline helps a weight, it is
-        not what a size stands on.
-      */
-      const outline = await this.#outline(
-        organizationId,
-        registered.board.sourceRepoId,
-      );
-
-      const outcomes: BountyRunOutcome[] = [];
-      let nextIndex = 0;
-      let fatalCode: string | undefined;
-
-      const worker = async () => {
-        while (
-          fatalCode === undefined &&
-          !controller.signal.aborted &&
-          nextIndex < selected.issues.length
-        ) {
-          const candidate = selected.issues[nextIndex];
-          nextIndex += 1;
-          if (candidate === undefined) return;
-          const outcome = await this.#processIssue(
-            organizationId,
-            planned,
-            leaseToken,
-            candidate,
-            clientResult.client,
-            controller.signal,
-            stepSettings,
-            outline,
-          );
-          if (outcome.fatalCode !== undefined) {
-            // The first fatal code is the cause. Aborting the controller
-            // cancels the other workers mid-request, and their resulting
-            // `worker_lost` must not overwrite it.
-            fatalCode ??= outcome.fatalCode;
-            controller.abort();
-          }
-          if (outcome.value !== undefined) {
-            outcomes.push(outcome.value);
-            const recorded = await runs.recordOutcome(
-              organizationId,
-              runId,
-              leaseToken,
-              outcome.value,
-            );
-            if (!recorded) {
-              fatalCode = "worker_lost";
-              controller.abort();
-            }
-          }
-        }
-      };
-
-      await Promise.all(
-        Array.from(
-          { length: Math.min(CONCURRENCY, selected.issues.length) },
-          () => worker(),
-        ),
-      );
-
-      const succeeded = outcomes.filter(
-        ({ status }) => status !== "failed",
-      ).length;
-      const failed = outcomes.filter(
-        ({ status }) => status === "failed",
-      ).length;
-      const status =
-        fatalCode !== undefined || (failed > 0 && succeeded === 0)
-          ? "failed"
-          : failed > 0
-            ? "partial"
-            : "succeeded";
-      await runs.finish(organizationId, runId, leaseToken, status, {
-        ...(fatalCode === undefined ? {} : { fatalErrorCode: fatalCode }),
-        candidatesScanned: selected.candidatesScanned,
-        skippedLive: selected.skippedLive,
-        scanLimitReached: selected.scanLimitReached,
-      });
     } finally {
       (this.#options.clearInterval ?? clearInterval)(heartbeat);
     }
   }
 
-  /** The board's repository outline, or null when there is none to read. */
+  /** A board's backlog, or one of its tickets a person picked (`issue`). */
+  async #boardRun(
+    organizationId: string,
+    run: StoredBountyRun,
+    leaseToken: string,
+    controller: AbortController,
+  ): Promise<void> {
+    const { runs, boards, proposals } = this.#options;
+    const fail = (fatalErrorCode: string) =>
+      runs.finish(organizationId, run.id, leaseToken, "failed", {
+        fatalErrorCode,
+      });
+    const registered =
+      run.boardId === null
+        ? null
+        : await boards.forRun(organizationId, run.boardId);
+    if (registered === null) {
+      await fail("board_unavailable");
+      return;
+    }
+    const clientResult = await this.#options.clientFor(
+      organizationId,
+      registered.connectionId,
+    );
+    if (!clientResult.ok) {
+      await fail(clientResult.reason);
+      return;
+    }
+
+    let selected: {
+      issues: RunCandidate[];
+      candidatesScanned: number;
+      skippedLive: number;
+      scanLimitReached: boolean;
+    };
+    try {
+      if (run.kind === "issue") {
+        /*
+          One ticket someone picked, named in the plan when the run was
+          created. Read again here rather than trusted from the plan: its
+          dates and status are what the pointer records, and the ticket
+          may have moved or gone since it was picked.
+        */
+        const target = run.planned[0];
+        if (target === undefined) {
+          await fail("issue_unavailable");
+          return;
+        }
+        const picked = await clientResult.client.issue(target.externalIssueId);
+        // Split into sub-tasks since it was picked: priced through them,
+        // as a backlog run would, never itself.
+        if ((picked.subtaskCount ?? 0) > 0) {
+          await fail("issue_has_subtasks");
+          return;
+        }
+        selected = {
+          issues: [picked],
+          candidatesScanned: 1,
+          skippedLive: 0,
+          scanLimitReached: false,
+        };
+      } else {
+        selected = await selectBacklog({
+          organizationId,
+          board: registered.board,
+          client: clientResult.client,
+          proposals,
+          now: (this.#options.now ?? (() => new Date()))(),
+        });
+      }
+    } catch (error) {
+      await fail(jiraCode(error));
+      return;
+    }
+
+    await this.#sizeAll(
+      organizationId,
+      run,
+      leaseToken,
+      controller,
+      selected.issues.map((issue) => ({ source: "jira", issue })),
+      { board: registered, client: clientResult.client },
+      selected,
+    );
+  }
+
+  /**
+   * One of the organization's tickets: sized for the first time (`ticket`),
+   * or again for the proposal it has (`reprice`). Read through its Jira
+   * issue while it follows one, and as the platform holds it otherwise.
+   */
+  async #ticketRun(
+    organizationId: string,
+    run: StoredBountyRun,
+    leaseToken: string,
+    controller: AbortController,
+  ): Promise<void> {
+    const { runs, proposals, tickets } = this.#options;
+    const fail = (fatalErrorCode: string) =>
+      runs.finish(organizationId, run.id, leaseToken, "failed", {
+        fatalErrorCode,
+      });
+
+    let ticket: StoredTicket | null;
+    let categories: readonly CategoryMatch[] = [];
+    if (run.kind === "reprice") {
+      const source =
+        run.sourceProposalId === null
+          ? null
+          : await proposals.get(organizationId, run.sourceProposalId);
+      ticket =
+        source === null
+          ? null
+          : await tickets.get(organizationId, source.ticketId);
+      if (
+        source === null ||
+        ticket === null ||
+        source.revision !== run.sourceRevision
+      ) {
+        await fail("proposal_changed");
+        return;
+      }
+      /*
+        Why the ticket was picked, carried over from the plan its
+        proposal came from. A re-price moves the proposal onto this run,
+        and a proposal's reasons are read from its run's plan: without
+        this, asking the model to look again would quietly take the
+        ticket out of its category.
+      */
+      const origin = await runs.get(organizationId, source.runId);
+      const key = planKey(ticket);
+      categories =
+        origin?.planned.find((planned) => planned.externalIssueId === key)
+          ?.categories ?? [];
+    } else {
+      ticket =
+        run.ticketId === null
+          ? null
+          : await tickets.get(organizationId, run.ticketId);
+      if (ticket === null) {
+        await fail("ticket_unavailable");
+        return;
+      }
+    }
+
+    const scope = await this.#scopeFor(organizationId, ticket);
+    if (scope.value === undefined) {
+      await fail(scope.fatalCode);
+      return;
+    }
+    await this.#sizeAll(
+      organizationId,
+      run,
+      leaseToken,
+      controller,
+      [{ source: "ticket", ticket, categories }],
+      scope.value,
+      { candidatesScanned: 1, skippedLive: 0, scanLimitReached: false },
+    );
+  }
+
+  /**
+   * The board a ticket came through and the client to read it with. A
+   * ticket whose issue has gone keeps its board's settings but is not read;
+   * one written here has neither.
+   */
+  async #scopeFor(
+    organizationId: string,
+    ticket: StoredTicket,
+  ): Promise<Step<RunScope>> {
+    if (ticket.jira === null) return { value: { board: null, client: null } };
+    const registered = await this.#options.boards.forRun(
+      organizationId,
+      ticket.jira.boardId,
+    );
+    if (registered === null || !followsJira(ticket)) {
+      return { value: { board: registered, client: null } };
+    }
+    const ready = await this.#options.clientFor(
+      organizationId,
+      registered.connectionId,
+    );
+    return ready.ok
+      ? { value: { board: registered, client: ready.client } }
+      : { fatalCode: ready.reason };
+  }
+
+  /**
+   * Sizes what a run selected: the plan first, then each ticket, three at a
+   * time, then the run's end.
+   */
+  async #sizeAll(
+    organizationId: string,
+    run: StoredBountyRun,
+    leaseToken: string,
+    controller: AbortController,
+    candidates: readonly Candidate[],
+    scope: RunScope,
+    stats: {
+      readonly candidatesScanned: number;
+      readonly skippedLive: number;
+      readonly scanLimitReached: boolean;
+    },
+  ): Promise<void> {
+    const { runs } = this.#options;
+    /*
+      What the run is about to size, before the first ticket is sent to
+      the model. A page opened mid-run lists it with each ticket's state,
+      so what is still to come shows as well as what is done. Each ticket
+      carries why it was picked, which is what a proposal later shows as
+      its reason.
+
+      Recording the plan also moves the deadline out by its size, so the
+      run continues as the row the store hands back: sizing against the
+      deadline it claimed with would cut a long run short.
+    */
+    const planned = await runs.recordPlan(
+      organizationId,
+      run.id,
+      leaseToken,
+      candidates.map(planEntry),
+    );
+    if (planned === null) return;
+
+    /*
+      How the board counts scenario weight, read once for the run. Every
+      step this run writes is zero, since a fresh draft has added
+      nothing, but it is written with the settings that will count what
+      a reviewer adds to it. A ticket with no board counts with the
+      defaults.
+    */
+    const pricing = boardPricingSchema.safeParse(scope.board?.board.pricing);
+    const stepSettings = resolveStepSettings(
+      pricing.success ? pricing.data.step : {},
+    );
+    /*
+      The repository each ticket is about: its own, or its board's. Read
+      once per repository for the run, like the settings above, so a
+      backlog's tickets are drafted beside the same snapshot.
+    */
+    const outlines = new Map<string, Promise<RepositoryOutlineRead | null>>();
+    const outline = (ticket: StoredTicket) => {
+      const repoId = ticket.repoId ?? scope.board?.board.sourceRepoId ?? null;
+      if (repoId === null) return Promise.resolve(null);
+      let read = outlines.get(repoId);
+      if (read === undefined) {
+        read = this.#outline(organizationId, repoId);
+        outlines.set(repoId, read);
+      }
+      return read;
+    };
+
+    const outcomes: BountyRunOutcome[] = [];
+    let nextIndex = 0;
+    let fatalCode: string | undefined;
+
+    const worker = async () => {
+      while (
+        fatalCode === undefined &&
+        !controller.signal.aborted &&
+        nextIndex < candidates.length
+      ) {
+        const candidate = candidates[nextIndex];
+        nextIndex += 1;
+        if (candidate === undefined) return;
+        const outcome = await this.#processCandidate(
+          organizationId,
+          planned,
+          leaseToken,
+          candidate,
+          scope,
+          controller.signal,
+          stepSettings,
+          outline,
+        );
+        if (outcome.fatalCode !== undefined) {
+          // The first fatal code is the cause. Aborting the controller
+          // cancels the other workers mid-request, and their resulting
+          // `worker_lost` must not overwrite it.
+          fatalCode ??= outcome.fatalCode;
+          controller.abort();
+        }
+        if (outcome.value !== undefined) {
+          outcomes.push(outcome.value);
+          const recorded = await runs.recordOutcome(
+            organizationId,
+            run.id,
+            leaseToken,
+            outcome.value,
+          );
+          if (!recorded) {
+            fatalCode = "worker_lost";
+            controller.abort();
+          }
+        }
+      }
+    };
+
+    await Promise.all(
+      Array.from({ length: Math.min(CONCURRENCY, candidates.length) }, () =>
+        worker(),
+      ),
+    );
+
+    const succeeded = outcomes.filter(
+      ({ status }) => status !== "failed",
+    ).length;
+    const failed = outcomes.filter(({ status }) => status === "failed").length;
+    const status =
+      fatalCode !== undefined || (failed > 0 && succeeded === 0)
+        ? "failed"
+        : failed > 0
+          ? "partial"
+          : "succeeded";
+    await runs.finish(organizationId, run.id, leaseToken, status, {
+      ...(fatalCode === undefined ? {} : { fatalErrorCode: fatalCode }),
+      candidatesScanned: stats.candidatesScanned,
+      skippedLive: stats.skippedLive,
+      scanLimitReached: stats.scanLimitReached,
+    });
+  }
+
+  /** A repository's outline, or null when there is none to read. */
   async #outline(
     organizationId: string,
-    repoId: string | null,
+    repoId: string,
   ): Promise<RepositoryOutlineRead | null> {
     const read = this.#options.outlineFor;
-    if (repoId === null || read === undefined) return null;
+    if (read === undefined) return null;
     try {
       return await read(organizationId, repoId);
     } catch (error) {
+      // The outline helps a weight; it is not what a size stands on, so a
+      // repository that cannot be read leaves the draft without it.
       this.#options.onBackgroundError?.("bounty_outline_unavailable", error);
       return null;
+    }
+  }
+
+  /**
+   * A ticket's text, as a run sizes it. A board's issue is read from Jira
+   * and imported, creating or refreshing its ticket. A ticket the platform
+   * holds is read through its Jira issue while it has one, and refreshed
+   * from it; one whose issue has gone, or that was written here, is sized
+   * from what is stored.
+   */
+  async #readCandidate(
+    organizationId: string,
+    candidate: Candidate,
+    scope: RunScope,
+  ): Promise<
+    Step<ReadTicket | { readonly failed: OutcomeBase & { code: string } }>
+  > {
+    if (candidate.source === "ticket") {
+      const { ticket } = candidate;
+      const base = baseOf(ticket);
+      const read = await this.#ticketContent(
+        organizationId,
+        ticket,
+        scope.client,
+      );
+      if (read.fatalCode !== undefined) return read;
+      if ("code" in read.value) {
+        return { value: { failed: { ...base, code: read.value.code } } };
+      }
+      return {
+        value: {
+          ticket,
+          content: read.value.content,
+          specHash: read.value.specHash,
+          base,
+        },
+      };
+    }
+
+    const { issue } = candidate;
+    const base = { externalIssueId: issue.id, issueKey: issue.key };
+    if (!validDate(issue.created) || !validDate(issue.updated)) {
+      return { value: { failed: { ...base, code: "invalid_issue_dates" } } };
+    }
+    const board = scope.board;
+    const client = scope.client;
+    if (board === null || client === null) {
+      return { value: { failed: { ...base, code: "issue_pointer" } } };
+    }
+    let spec: JiraIssueSpec;
+    try {
+      spec = await client.issueSpec(issue.id);
+    } catch (error) {
+      if (error instanceof JiraApiError && error.isNotFound) {
+        // A ticket imported before keeps its text; this one is not sized.
+        await this.#options.issues.markRemovedByExternal(
+          organizationId,
+          board.board.id,
+          issue.id,
+        );
+        return { value: { failed: { ...base, code: "issue_unavailable" } } };
+      }
+      const code = jiraCode(error);
+      return code === "reconnect" || code === "scope"
+        ? { fatalCode: code }
+        : { value: { failed: { ...base, code } } };
+    }
+    const content = jiraContent(spec);
+    const pointer = await this.#options.issues.upsert(
+      organizationId,
+      board.board.id,
+      {
+        externalId: issue.id,
+        key: issue.key,
+        statusCategory: issue.statusCategory,
+        remoteCreatedAt: issue.created,
+        remoteUpdatedAt: issue.updated,
+      },
+      content,
+    );
+    const ticket =
+      pointer === null
+        ? null
+        : await this.#options.tickets.get(organizationId, pointer.ticketId);
+    if (ticket === null) {
+      return { value: { failed: { ...base, code: "issue_pointer" } } };
+    }
+    return {
+      value: {
+        ticket,
+        content,
+        specHash: spec.pricingSpecHash,
+        base: { ...base, ticketId: ticket.id },
+      },
+    };
+  }
+
+  /**
+   * What a ticket says now, and its fingerprint: Jira's text while it
+   * follows an issue (written back to the ticket), and the stored text
+   * otherwise. An issue Jira no longer has is marked so, and the ticket is
+   * read as stored from then on.
+   */
+  async #ticketContent(
+    organizationId: string,
+    ticket: StoredTicket,
+    client: RunJiraClient | null,
+  ): Promise<
+    Step<
+      | { readonly content: TicketContent; readonly specHash: string }
+      | { readonly code: string }
+    >
+  > {
+    if (ticket.jira === null || client === null || !followsJira(ticket)) {
+      return { value: await stored(ticket) };
+    }
+    try {
+      const spec = await client.issueSpec(ticket.jira.externalId);
+      const content = jiraContent(spec);
+      await this.#options.tickets.refreshFromJira(
+        organizationId,
+        ticket.id,
+        content,
+      );
+      return { value: { content, specHash: spec.pricingSpecHash } };
+    } catch (error) {
+      if (error instanceof JiraApiError && error.isNotFound) {
+        await this.#options.issues.markRemoved(
+          organizationId,
+          ticket.jira.issueId,
+        );
+        return { value: await stored(ticket) };
+      }
+      const code = jiraCode(error);
+      return code === "reconnect" || code === "scope"
+        ? { fatalCode: code }
+        : { value: { code } };
     }
   }
 
@@ -453,21 +732,20 @@ export class BountyExecutor {
     organizationId: string,
     claimed: StoredBountyRun,
     leaseToken: string,
-    client: RunJiraClient,
     signal: AbortSignal,
   ): Promise<void> {
-    const { runs, proposals, issues } = this.#options;
+    const { runs, proposals, tickets } = this.#options;
     const source =
       claimed.sourceProposalId === null
         ? null
         : await proposals.get(organizationId, claimed.sourceProposalId);
-    const pointer =
+    const ticket =
       source === null
         ? null
-        : await issues.get(organizationId, source.jiraIssueId);
+        : await tickets.get(organizationId, source.ticketId);
     if (
       claimed.respec === null ||
-      pointer === null ||
+      ticket === null ||
       !respeccable(source, claimed)
     ) {
       await runs.finish(organizationId, claimed.id, leaseToken, "failed", {
@@ -476,11 +754,7 @@ export class BountyExecutor {
       return;
     }
     const run = await runs.recordPlan(organizationId, claimed.id, leaseToken, [
-      {
-        externalIssueId: pointer.externalId,
-        issueKey: pointer.key,
-        summary: "",
-      },
+      planEntry({ source: "ticket", ticket, categories: [] }),
     ]);
     if (run === null) return;
 
@@ -489,9 +763,8 @@ export class BountyExecutor {
       run,
       leaseToken,
       source,
-      pointer,
+      ticket,
       claimed.respec,
-      client,
       signal,
     );
     if (outcome.value === undefined) {
@@ -520,20 +793,11 @@ export class BountyExecutor {
     run: StoredBountyRun,
     leaseToken: string,
     source: Respeccable,
-    pointer: JiraIssuePointer,
+    ticket: StoredTicket,
     request: RespecRequest,
-    client: RunJiraClient,
     signal: AbortSignal,
-  ): Promise<
-    | { readonly value: BountyRunOutcome; readonly fatalCode?: undefined }
-    | { readonly value?: undefined; readonly fatalCode: string }
-  > {
-    const base = {
-      externalIssueId: pointer.externalId,
-      issueKey: pointer.key,
-      jiraIssueId: pointer.id,
-      proposalId: source.id,
-    };
+  ): Promise<Step<BountyRunOutcome>> {
+    const base = { ...baseOf(ticket), proposalId: source.id };
     const failed = (code: string) => ({
       value: { ...base, status: "failed" as const, code },
     });
@@ -561,22 +825,19 @@ export class BountyExecutor {
         said when the proposal was sized. A change made of a ticket that
         has moved on would grow a spec the next re-price throws away.
       */
-      let ticket: JiraIssueSpec;
-      try {
-        ticket = await client.issueSpec(pointer.externalId);
-      } catch (error) {
-        if (error instanceof JiraApiError && error.isNotFound) {
-          await this.#options.issues.markRemoved(organizationId, pointer.id);
-          return failed("issue_unavailable");
-        }
-        const code = jiraCode(error);
-        return code === "reconnect" || code === "scope"
-          ? { fatalCode: code }
-          : failed(code);
-      }
+      const scope = await this.#scopeFor(organizationId, ticket);
+      if (scope.value === undefined) return { fatalCode: scope.fatalCode };
+      const read = await this.#ticketContent(
+        organizationId,
+        ticket,
+        scope.value.client,
+      );
+      if (read.value === undefined) return { fatalCode: read.fatalCode };
+      if ("code" in read.value) return failed(read.value.code);
+      const { content } = read.value;
       if (
-        source.specHashVersion !== SPEC_HASH_VERSION ||
-        ticket.pricingSpecHash !== source.specHash
+        source.specHashVersion !== TICKET_SPEC_HASH_VERSION ||
+        read.value.specHash !== source.specHash
       ) {
         return failed("proposal_stale");
       }
@@ -588,11 +849,11 @@ export class BountyExecutor {
       };
       const input = {
         ticket: {
-          summary: ticket.summary,
-          descriptionText: ticket.descriptionText,
-          issueType: ticket.issueType,
-          components: ticket.components,
-          labels: ticket.labels,
+          summary: content.title,
+          descriptionText: content.description,
+          issueType: content.issueType,
+          components: content.components,
+          labels: content.labels,
         },
         spec: current.draft,
       };
@@ -699,68 +960,23 @@ export class BountyExecutor {
     };
   }
 
-  async #processIssue(
+  async #processCandidate(
     organizationId: string,
     run: StoredBountyRun,
     leaseToken: string,
-    candidate: RunCandidate,
-    client: RunJiraClient,
+    candidate: Candidate,
+    scope: RunScope,
     signal: AbortSignal,
     stepSettings: StepSettings,
-    outline: RepositoryOutlineRead | null,
+    outlineOf: (ticket: StoredTicket) => Promise<RepositoryOutlineRead | null>,
   ): Promise<{ value?: BountyRunOutcome; fatalCode?: string }> {
-    const base = {
-      externalIssueId: candidate.id,
-      issueKey: candidate.key,
-    };
-    if (!validDate(candidate.created) || !validDate(candidate.updated)) {
-      return {
-        value: { ...base, status: "failed", code: "invalid_issue_dates" },
-      };
+    const read = await this.#readCandidate(organizationId, candidate, scope);
+    if (read.value === undefined) return { fatalCode: read.fatalCode };
+    if ("failed" in read.value) {
+      return { value: { ...read.value.failed, status: "failed" } };
     }
-
-    const pointer = await this.#options.issues.upsert(
-      organizationId,
-      run.boardId,
-      {
-        externalId: candidate.id,
-        key: candidate.key,
-        statusCategory: candidate.statusCategory,
-        remoteCreatedAt: candidate.created,
-        remoteUpdatedAt: candidate.updated,
-      },
-    );
-    if (pointer === null) {
-      return { value: { ...base, status: "failed", code: "issue_pointer" } };
-    }
-
-    let spec: JiraIssueSpec;
-    try {
-      spec = await client.issueSpec(candidate.id);
-    } catch (error) {
-      if (error instanceof JiraApiError && error.isNotFound) {
-        await this.#options.issues.markRemoved(organizationId, pointer.id);
-        return {
-          value: {
-            ...base,
-            jiraIssueId: pointer.id,
-            status: "failed",
-            code: "issue_unavailable",
-          },
-        };
-      }
-      const code = jiraCode(error);
-      return code === "reconnect" || code === "scope"
-        ? { fatalCode: code }
-        : {
-            value: {
-              ...base,
-              jiraIssueId: pointer.id,
-              status: "failed",
-              code,
-            },
-          };
-    }
+    const { ticket, content, specHash, base } = read.value;
+    const outline = await outlineOf(ticket);
 
     let sizing: BountySizingResult;
     let actualModel = run.requestedModel;
@@ -769,13 +985,13 @@ export class BountyExecutor {
     const spent: SizingUsage[] = [];
     let technicalFailure = false;
     let draftFailure = false;
-    if (spec.inputTruncated) {
+    if (content.inputTruncated) {
       sizing = fixedUnsized(
         "spec_too_large",
         "The ticket is too large to size safely.",
       );
     } else if (
-      spec.summary.length + spec.descriptionText.length <
+      content.title.length + content.description.length <
       run.selection.minSpecChars
     ) {
       sizing = fixedUnsized(
@@ -801,19 +1017,19 @@ export class BountyExecutor {
         const draft = await this.#options.caller.call(
           draftSpecTool,
           {
-            summary: spec.summary,
-            descriptionText: spec.descriptionText,
-            issueType: spec.issueType,
-            components: spec.components,
-            labels: spec.labels,
+            summary: content.title,
+            descriptionText: content.description,
+            issueType: content.issueType,
+            components: content.components,
+            labels: content.labels,
             ...(outline === null ? {} : { repositoryOutline: outline.text }),
           },
           request,
         );
         spent.push(draft.usage);
         drafted = {
-          specHash: spec.pricingSpecHash,
-          specHashVersion: SPEC_HASH_VERSION,
+          specHash,
+          specHashVersion: TICKET_SPEC_HASH_VERSION,
           draft: draft.result,
           origin: "draft",
           actualModel: draft.actualModel,
@@ -829,9 +1045,9 @@ export class BountyExecutor {
         const sized = await this.#options.caller.call(
           sizeBountyTool,
           {
-            summary: spec.summary,
-            descriptionText: spec.descriptionText,
-            issueType: spec.issueType,
+            summary: content.title,
+            descriptionText: content.description,
+            issueType: content.issueType,
           },
           request,
         );
@@ -858,7 +1074,6 @@ export class BountyExecutor {
       return {
         value: {
           ...base,
-          jiraIssueId: pointer.id,
           status: "failed",
           code: technicalFailure ? "sizing_failed" : "spec_failed",
         },
@@ -881,12 +1096,12 @@ export class BountyExecutor {
     );
     const input = {
       runId: run.id,
-      jiraIssueId: pointer.id,
-      specHash: spec.pricingSpecHash,
-      specHashVersion: SPEC_HASH_VERSION,
+      ticketId: ticket.id,
+      specHash,
+      specHashVersion: TICKET_SPEC_HASH_VERSION,
       rateCard: run.rateCard,
       sizing,
-      inputTruncated: spec.inputTruncated,
+      inputTruncated: content.inputTruncated,
       actualModel,
       promptVersion: run.promptVersion,
       amountMinor,
@@ -918,7 +1133,6 @@ export class BountyExecutor {
       return {
         value: {
           ...base,
-          jiraIssueId: pointer.id,
           status: "skipped",
           code:
             created.status === "duplicate"
@@ -938,11 +1152,24 @@ export class BountyExecutor {
     if (typeof writebackOperationId === "string") {
       this.#options.onWritebackCreated?.(organizationId, writebackOperationId);
     }
+    // A spec drafted beside a snapshot is profiled against that snapshot.
+    if (
+      drafted !== undefined &&
+      outline !== null &&
+      created.proposal.specRevision !== null
+    ) {
+      this.#options.onProposalDrafted?.(organizationId, {
+        proposalId: created.proposal.id,
+        specRevision: created.proposal.specRevision,
+        specHash: drafted.specHash,
+        snapshotId: outline.snapshotId,
+        ticket: { issueType: content.issueType, priority: content.priority },
+      });
+    }
 
     return {
       value: {
         ...base,
-        jiraIssueId: pointer.id,
         proposalId: created.proposal.id,
         status: technicalFailure
           ? "failed"
@@ -966,6 +1193,81 @@ export class BountyExecutor {
       },
     };
   }
+}
+
+/**
+ * What a plan entry calls a ticket: Jira's issue id for one imported from
+ * a board, which is what a board's plan named it by before it was
+ * imported, and the ticket's own id for one written here.
+ */
+function planKey(ticket: StoredTicket): string {
+  return ticket.jira?.externalId ?? ticket.id;
+}
+
+function baseOf(ticket: StoredTicket): OutcomeBase {
+  return {
+    externalIssueId: planKey(ticket),
+    issueKey: ticket.key,
+    ticketId: ticket.id,
+  };
+}
+
+function planEntry(candidate: Candidate): BountyRunPlannedIssue {
+  if (candidate.source === "jira") {
+    const { issue } = candidate;
+    return {
+      externalIssueId: issue.id,
+      issueKey: issue.key,
+      summary: issue.summary,
+      categories: [...(issue.categories ?? [])],
+    };
+  }
+  const { ticket } = candidate;
+  return {
+    externalIssueId: planKey(ticket),
+    issueKey: ticket.key,
+    summary: ticket.title,
+    ticketId: ticket.id,
+    categories: [...candidate.categories],
+  };
+}
+
+/** Jira's text, as a ticket holds it. */
+function jiraContent(spec: JiraIssueSpec): TicketContent {
+  return {
+    title: spec.summary,
+    description: spec.descriptionText,
+    issueType: spec.issueType,
+    priority: spec.priority,
+    labels: spec.labels,
+    components: spec.components,
+    inputTruncated: spec.inputTruncated,
+  };
+}
+
+/**
+ * A ticket's text as stored, and the fingerprint a proposal of it is
+ * priced against: Jira's own hash is this one, so either reads the same.
+ */
+async function stored(
+  ticket: StoredTicket,
+): Promise<{ readonly content: TicketContent; readonly specHash: string }> {
+  return {
+    content: {
+      title: ticket.title,
+      description: ticket.description,
+      issueType: ticket.issueType,
+      priority: ticket.priority,
+      labels: ticket.labels,
+      components: ticket.components,
+      inputTruncated: ticket.inputTruncated,
+    },
+    specHash: await ticketSpecHash(
+      ticket.title,
+      ticket.description,
+      ticket.issueType,
+    ),
+  };
 }
 
 /**
@@ -995,9 +1297,6 @@ function sum(values: readonly number[]): number {
   return values.reduce((total, value) => total + value, 0);
 }
 
-/** The version of `pricingSpecHash`: summary, description and issue type. */
-const SPEC_HASH_VERSION = 1;
-
 /**
  * The code a run ends with when a model call's failure is not the ticket's:
  * a provider that refuses every call, or a run that was cancelled under it.
@@ -1020,14 +1319,6 @@ function fixedUnsized(reason: string, rationale: string): BountySizingResult {
 
 function validDate(value: string | null): value is string {
   return value !== null && Number.isFinite(Date.parse(value));
-}
-
-function statusCategory(
-  value: string,
-): "new" | "indeterminate" | "done" | "unknown" {
-  return value === "new" || value === "indeterminate" || value === "done"
-    ? value
-    : "unknown";
 }
 
 function jiraCode(error: unknown): string {

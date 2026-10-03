@@ -485,7 +485,7 @@ export function mountSandboxRoutes(
       pricing,
       selectedBy: c.get("user").id,
       selectedAt: now().toISOString(),
-      jiraIssueIds: sandbox.jiraIssueIds,
+      ticketIds: sandbox.ticketIds,
     };
     const scope = resolveScope({
       manifest: inputs.manifest,

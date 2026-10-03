@@ -10,6 +10,8 @@
  * caller has to ask for it by name.
  */
 
+import { ticketSpecHash } from "@sandbox-factory/shared";
+
 import { adfToTextResult } from "./adf.js";
 
 /** What a run reads before it prices a ticket. */
@@ -28,6 +30,11 @@ export interface JiraIssueSpec {
   readonly components: readonly string[];
   /** The ticket's labels. Like `components`, read but not hashed. */
   readonly labels: readonly string[];
+  /**
+   * Jira's priority name, or null when the site has priorities off. Read
+   * for the complexity profile; like `components`, not hashed.
+   */
+  readonly priority: string | null;
   /** Jira's own `updated`, for ordering and for staleness reporting. */
   readonly updated: string | null;
   /** True when ADF depth or length limits omitted any sizing input. */
@@ -54,6 +61,7 @@ export const SPEC_FIELDS: readonly string[] = [
   "issuetype",
   "components",
   "labels",
+  "priority",
   "updated",
 ];
 
@@ -82,19 +90,19 @@ export async function specHash(
   return sha256(canonical);
 }
 
-/** Fingerprints every input that affects pricing, encoded without ambiguity. */
+/**
+ * Fingerprints every input that affects pricing, encoded without ambiguity.
+ *
+ * The ticket's own hash, not a copy of it: a ticket imported from Jira is
+ * priced from its stored text, and the two must agree byte for byte or a
+ * fresh read would call every proposal stale.
+ */
 export function pricingSpecHash(
   summary: string,
   descriptionText: string,
   issueType: string,
 ): Promise<string> {
-  return sha256(
-    JSON.stringify([
-      normalize(summary),
-      normalize(descriptionText),
-      normalize(issueType),
-    ]),
-  );
+  return ticketSpecHash(summary, descriptionText, issueType);
 }
 
 async function sha256(canonical: string): Promise<string> {
@@ -123,6 +131,7 @@ export async function toIssueSpec(
     issuetype?: { name?: unknown } | null;
     components?: unknown;
     labels?: unknown;
+    priority?: { name?: unknown } | null;
     updated?: unknown;
   },
 ): Promise<JiraIssueSpec> {
@@ -137,6 +146,8 @@ export async function toIssueSpec(
     issueType,
     components: names(fields.components),
     labels: strings(fields.labels),
+    priority:
+      typeof fields.priority?.name === "string" ? fields.priority.name : null,
     updated: typeof fields.updated === "string" ? fields.updated : null,
     inputTruncated: description.truncated,
     specHash: await specHash(summary, description.text),

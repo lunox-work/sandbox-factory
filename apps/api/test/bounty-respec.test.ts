@@ -94,8 +94,9 @@ function proposal(
     id: "bpr_1",
     organizationId: "org_1",
     runId: "brn_sized",
-    jiraIssueId: "jri_1",
+    ticketId: "tkt_1",
     issueKey: "APP-1",
+    title: "Add CSV export",
     specHash: hash,
     specHashVersion: 1,
     rateCard,
@@ -157,6 +158,7 @@ function respecRun(
     id: "brn_respec",
     organizationId: "org_1",
     boardId: "jrb_1",
+    ticketId: "tkt_1",
     kind: "respec",
     sourceProposalId: "bpr_1",
     sourceRevision: 4,
@@ -199,6 +201,41 @@ const ticket = {
   specHash: hash,
   pricingSpecHash: hash,
 };
+
+/** The ticket the proposal prices, as the platform holds it. */
+const storedTicket = {
+  id: "tkt_1",
+  organizationId: "org_1",
+  number: 1,
+  key: "APP-1",
+  title: "Add CSV export",
+  description: "Export the filtered table.",
+  issueType: "Story",
+  priority: null,
+  labels: [],
+  components: ["Reports"],
+  inputTruncated: false,
+  origin: "jira",
+  repoId: null,
+  createdBy: null,
+  revision: 1,
+  jira: {
+    issueId: "jri_1",
+    boardId: "jrb_1",
+    connectionId: "jrc_1",
+    externalId: "100",
+    key: "APP-1",
+    siteUrl: "https://acme.atlassian.net",
+    removedAt: null,
+  },
+  createdAt: "2026-10-01T00:00:00.000Z",
+  updatedAt: "2026-10-01T00:00:00.000Z",
+};
+
+const tickets = {
+  get: () => Promise.resolve(storedTicket),
+  refreshFromJira: () => Promise.resolve(false),
+} as never;
 
 const usage = { inputTokens: 30, outputTokens: 70 };
 
@@ -328,6 +365,7 @@ function executorHarness(options: {
     runs,
     proposals,
     issues,
+    tickets,
     specs,
     caller,
     clientFor: () =>
@@ -369,7 +407,15 @@ test("a trim takes an added scenario out, asks no model, and the step comes back
   await state.run();
 
   assert.deepEqual(state.plans, [
-    [{ externalIssueId: "100", issueKey: "APP-1", summary: "" }],
+    [
+      {
+        externalIssueId: "100",
+        issueKey: "APP-1",
+        summary: "Add CSV export",
+        ticketId: "tkt_1",
+        categories: [],
+      },
+    ],
   ]);
   assert.equal(state.caller.calls.length, 0);
   assert.equal(state.ticketReads(), 0);
@@ -396,7 +442,7 @@ test("a trim takes an added scenario out, asks no model, and the step comes back
     {
       externalIssueId: "100",
       issueKey: "APP-1",
-      jiraIssueId: "jri_1",
+      ticketId: "tkt_1",
       proposalId: "bpr_1",
       status: "proposed",
       previousComplexity: "S+",
@@ -467,7 +513,7 @@ test("an expansion adds the model's new scenarios and the size climbs by the ste
   assert.deepEqual(state.outcomes[0], {
     externalIssueId: "100",
     issueKey: "APP-1",
-    jiraIssueId: "jri_1",
+    ticketId: "tkt_1",
     proposalId: "bpr_1",
     status: "proposed",
     previousComplexity: "S+",
@@ -649,14 +695,16 @@ test("a write that lost the race is skipped; one that lost the lease ends the ru
   ]);
 });
 
-test("a ticket Jira no longer has is marked removed; a lost grant ends the run", async () => {
+test("a ticket Jira no longer has keeps its text; a lost grant ends the run", async () => {
+  // Marked gone, and compared as stored: what the platform holds is not
+  // what this proposal was priced from, so the change is refused as stale.
   const removed = executorHarness({
     request: { mode: "expand", kinds: ["boundary"] },
     ticketError: new JiraApiError(404, "gone"),
   });
   await removed.run();
   assert.deepEqual(removed.removed, ["jri_1"]);
-  assert.equal(removed.outcomes[0]?.["code"], "issue_unavailable");
+  assert.equal(removed.outcomes[0]?.["code"], "proposal_stale");
 
   const throttled = executorHarness({
     request: { mode: "expand", kinds: ["boundary"] },
@@ -811,10 +859,9 @@ function routeHarness(
           ),
       } as never,
       issues: {
-        get: () =>
-          Promise.resolve({ id: "jri_1", boardId: "jrb_1", externalId: "100" }),
         markRemoved: () => Promise.resolve(true),
       } as never,
+      tickets,
       boards: {
         get: () => Promise.resolve(board),
         forRun: () =>
@@ -874,6 +921,7 @@ test("a spec change starts a respec run on the proposal's own card", async () =>
   assert.deepEqual(state.created, [
     {
       boardId: "jrb_1",
+      ticketId: "tkt_1",
       startedBy: "user_1",
       kind: "respec",
       sourceProposalId: "bpr_1",

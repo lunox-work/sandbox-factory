@@ -5,7 +5,7 @@
  * deleted. A version must not move with it, so the selected spec content,
  * the price at selection and the approval evidence are copied into one
  * private artifact and named by their hash (`approvedTaskSha256`). The live
- * rows are not its source of truth afterwards, and Jira's own
+ * rows are not its source of truth afterwards, and the ticket's own
  * pricing-freshness hash (`specHash`) is deliberately not reused: it hashes
  * a ticket, not the build inputs.
  *
@@ -16,12 +16,17 @@
 import type { SpecDraft } from "../pricing/spec.js";
 import type { BountyComplexity } from "../bounty.js";
 
-export const APPROVED_TASK_SCHEMA_VERSION = 1;
+/**
+ * Version 2 links the sandbox's tickets (`ticketIds`). Version 1 linked
+ * Jira issue pointers (`jiraIssueIds`) and is still read, never written: a
+ * stored snapshot is named by its hash, so it stays exactly as it was.
+ */
+export const APPROVED_TASK_SCHEMA_VERSION = 2;
 
 export interface ApprovedTaskSpec {
   readonly proposalId: string;
   readonly specRevision: number;
-  /** Jira's pricing-freshness hash, kept for the record only. */
+  /** The ticket's pricing-freshness hash, kept for the record only. */
   readonly specHash: string;
   readonly draft: SpecDraft;
 }
@@ -37,8 +42,7 @@ export interface ApprovedTaskPricing {
   readonly decidedAt: string | null;
 }
 
-export interface ApprovedTaskSnapshot {
-  readonly schemaVersion: typeof APPROVED_TASK_SCHEMA_VERSION;
+interface ApprovedTaskSelection {
   /** The private working title and summary at selection. */
   readonly title: string;
   readonly summary: string;
@@ -46,12 +50,28 @@ export interface ApprovedTaskSnapshot {
   readonly pricing: ApprovedTaskPricing | null;
   readonly selectedBy: string;
   readonly selectedAt: string;
-  /** Jira issue ids the sandbox is linked to; pointers, never contents. */
+}
+
+/** What a version is frozen with now. */
+export interface ApprovedTaskSnapshot extends ApprovedTaskSelection {
+  readonly schemaVersion: typeof APPROVED_TASK_SCHEMA_VERSION;
+  /** The tickets the sandbox is linked to, by id; never their text. */
+  readonly ticketIds: readonly string[];
+}
+
+/** What a version frozen before tickets holds. Read, never written. */
+export interface LegacyApprovedTaskSnapshot extends ApprovedTaskSelection {
+  readonly schemaVersion: 1;
+  /** Jira issue pointer ids the sandbox was linked to. */
   readonly jiraIssueIds: readonly string[];
 }
 
+/** Any snapshot a stored version can hold. */
+export type StoredApprovedTaskSnapshot =
+  ApprovedTaskSnapshot | LegacyApprovedTaskSnapshot;
+
 /** Which selections are complete enough to build for. */
-export function approvedTaskReadiness(snapshot: ApprovedTaskSnapshot): {
+export function approvedTaskReadiness(snapshot: StoredApprovedTaskSnapshot): {
   ready: boolean;
   reasons: string[];
 } {

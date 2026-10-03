@@ -191,6 +191,7 @@ const submission = {
   ],
   summary: "The developer changes how run labels a thing.",
   risks: ["The service is mocked."],
+  pattern: { path: "lib/helpers.ts", reason: "it labels things already" },
 };
 
 test("the scope agent checks candidates with the slice itself and records a verified proposal", async () => {
@@ -225,6 +226,12 @@ test("the scope agent checks candidates with the slice itself and records a veri
         entryPoints: [{ path: "x.ts", reason: "r" }],
       }),
     ]),
+    turn([
+      call("submit_scope", {
+        ...submission,
+        pattern: { path: "lib/nowhere.ts", reason: "imagined" },
+      }),
+    ]),
     turn([call("submit_scope", submission)]),
   ]);
   const { files, texts, lines } = await runTool(
@@ -255,6 +262,10 @@ test("the scope agent checks candidates with the slice itself and records a veri
     contentOf((model.results[3] ?? [])[0]).content,
     /includes nothing/,
   );
+  assert.match(
+    contentOf((model.results[4] ?? [])[0]).content,
+    /lib\/nowhere\.ts is not a file in the repository/,
+  );
   assert.equal(files.length, 1);
   assert.equal(files[0]?.kind, "scope_proposal");
   const proposal = JSON.parse(texts[0] ?? "{}") as ScopeProposal;
@@ -263,8 +274,9 @@ test("the scope agent checks candidates with the slice itself and records a veri
   assert.deepEqual(proposal.budget, { maxFiles: 5, maxDepth: 0 });
   assert.equal(proposal.check.includedFiles, 1);
   assert.ok(proposal.check.outboundModules >= 3);
-  assert.equal(proposal.usage.turns, 5);
-  assert.equal(proposal.usage.cacheReadTokens, 100);
+  assert.deepEqual(proposal.pattern, submission.pattern);
+  assert.equal(proposal.usage.turns, 6);
+  assert.equal(proposal.usage.cacheReadTokens, 120);
   assert.ok(lines.includes("Scope agent started."));
   assert.ok(
     lines.some((line) => /^Scope proposal recorded: 1 entry points/.test(line)),

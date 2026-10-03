@@ -510,7 +510,7 @@ test("freeze needs matching evidence for every gate, and replay never substitute
 
 test("an approved task snapshot is ready only with a usable spec and an approved price", () => {
   const snapshot: ApprovedTaskSnapshot = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     title: "Fix the thing",
     summary: "It is broken.",
     spec: {
@@ -544,12 +544,22 @@ test("an approved task snapshot is ready only with a usable spec and an approved
     },
     selectedBy: "user_1",
     selectedAt: "2026-10-02T00:00:00.000Z",
-    jiraIssueIds: ["jri_1"],
+    ticketIds: ["tkt_1"],
   };
   assert.deepEqual(approvedTaskReadiness(snapshot), {
     ready: true,
     reasons: [],
   });
+  // A version frozen before tickets is still read the same way.
+  const { ticketIds: _ticketIds, ...selection } = snapshot;
+  assert.deepEqual(
+    approvedTaskReadiness({
+      ...selection,
+      schemaVersion: 1,
+      jiraIssueIds: ["jri_1"],
+    }),
+    { ready: true, reasons: [] },
+  );
   const bad = approvedTaskReadiness({
     ...snapshot,
     title: " ",

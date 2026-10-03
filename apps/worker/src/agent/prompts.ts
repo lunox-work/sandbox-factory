@@ -24,7 +24,7 @@ A good slice holds the code the ticket changes and the logic that code depends o
 
 Use the repository tools to understand the code, and \`check_scope\` to see exactly what a request produces: the included files, the modules it cuts with the symbols used from each, the public surface, the services and environment variables it touches, and blockers such as unresolved imports, packages no package.json pins, or compile errors. Iterate until nothing blocks and every cut module is a seam you can defend. A depth of 0 with an explicit file list is often the clearest request once you know the files.
 
-Finish by calling \`submit_scope\` once. Give each entry point a reason in the ticket's terms; list every cut module you consider a seam with its kind and why mocking it is safe; summarise in two to four sentences what the developer will see and change; and list risks, such as logic you could not avoid cutting or behaviour that will only exist as a mock.`;
+Finish by calling \`submit_scope\` once. Give each entry point a reason in the ticket's terms; list every cut module you consider a seam with its kind and why mocking it is safe; summarise in two to four sentences what the developer will see and change; list risks, such as logic you could not avoid cutting or behaviour that will only exist as a mock; and name the pattern: the one existing file that already does what the ticket asks somewhere else (a retry, a validation, a similar endpoint) for the developer to follow, or null when the repository has none. Name a pattern only from code you have read.`;
 
 export const FIXTURES_SYSTEM_PROMPT = `${SANDBOX_CONTEXT}
 

@@ -377,4 +377,11 @@ test("a repository's proposals name their spec revision and board", () => {
     }).success,
     false,
   );
+  // A ticket written here reaches the repository without a board.
+  assert.equal(
+    repositoryProposalListSchema.safeParse({
+      proposals: [{ ...proposal, boardId: null, boardName: null }],
+    }).success,
+    true,
+  );
 });

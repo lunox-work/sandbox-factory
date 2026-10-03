@@ -25,6 +25,7 @@ import {
 
 import { githubRepo } from "./github.js";
 import { organization } from "./organizations.js";
+import { ticket } from "./ticket.js";
 
 export const jiraConnection = pgTable(
   "jira_connection",
@@ -201,22 +202,21 @@ export type JiraBoardRow = typeof jiraBoard.$inferSelect;
 export type NewJiraBoardRow = typeof jiraBoard.$inferInsert;
 
 /**
- * A ticket a run has looked at.
+ * A Jira issue a run has imported, and the ticket it is imported as.
  *
- * A pointer, not a copy: the summary, description and status live in Jira and
- * are read when they are needed. What is here is the minimum to answer
- * questions that would otherwise need the client — which tickets has a run
- * already considered, and when did Jira last say this one changed.
+ * The pointer half of a Jira ticket. The text lives on the `ticket` this row
+ * names, which is what proposals price; what is here is Jira's identity for
+ * it and the facts that answer Jira's own questions — which issues has a run
+ * already considered on this board, and when did Jira last say this one
+ * changed. A run refreshes both halves together, each time it reads the
+ * issue.
  *
- * Nothing writes a row yet. The backlog preview reads live from Jira and
- * stores nothing, deliberately: a preview that persisted rows would make
- * looking at a board indistinguishable from pricing it. The first writer is
- * the run in M5, which records a ticket as it prices it.
+ * Written only by a run that sizes the issue. The backlog preview reads live
+ * from Jira and stores nothing, deliberately: a preview that persisted rows
+ * would make looking at a board indistinguishable from pricing it.
  *
- * No `syncedAt`, no body columns, no full-board mirror. An earlier design
- * synced whole boards and the decision was reversed: a mirror of a client's
- * tickets is a liability to hold and a cache to invalidate, and every question
- * the product asks can be answered from a pointer plus a live read.
+ * Still no full-board mirror: an issue is imported when a run takes it, not
+ * because it is on a board.
  */
 export const jiraIssue = pgTable(
   "jira_issue",
@@ -238,6 +238,15 @@ export const jiraIssue = pgTable(
     externalId: text("external_id").notNull(),
     /** `ACME-123`. Display only, refreshed whenever the ticket is seen. */
     key: text("key").notNull(),
+    /**
+     * The ticket this issue is imported as, one each: made the first time a
+     * run reads the issue, and refreshed from it every time after. Deleting
+     * the ticket takes the pointer with it; losing the board does not take
+     * the ticket.
+     */
+    ticketId: text("ticket_id")
+      .notNull()
+      .references(() => ticket.id, { onDelete: "cascade" }),
     /** `new`, `indeterminate` or `done`, normalised by `toIssueDto`. */
     statusCategory: text("status_category").notNull(),
     /** Jira's own created time, which is what a ticket's age is counted from. */
@@ -254,8 +263,8 @@ export const jiraIssue = pgTable(
     /**
      * When Jira stopped returning the ticket: deleted, moved out of reach, or
      * no longer visible to this connection's grant. Set rather than deleting
-     * the row, because a proposal may reference it and a priced ticket that
-     * vanished is a thing the review page has to be able to explain.
+     * the row, so the ticket can say where it came from; from then on it
+     * keeps the text it last had and is reviewed against that.
      */
     removedAt: timestamp("removed_at", { withTimezone: true }),
   },
@@ -266,6 +275,7 @@ export const jiraIssue = pgTable(
       table.boardId,
       table.externalId,
     ),
+    unique("jira_issue_ticket_unique").on(table.ticketId),
     index("jira_issue_organization_id_idx").on(table.organizationId),
   ],
 );
