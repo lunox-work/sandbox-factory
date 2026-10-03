@@ -102,7 +102,13 @@ function resolveEntry(
     const file = fileOf(node);
     return file === null ? [] : [file];
   }
-  const path = entry.replace(/^\/+|\/+$/g, "");
+  // Scans rather than /^\/+|\/+$/, which backtracks quadratically on a long
+  // run of slashes that does not end the string.
+  let start = 0;
+  let end = entry.length;
+  while (start < end && entry[start] === "/") start += 1;
+  while (end > start && entry[end - 1] === "/") end -= 1;
+  const path = entry.slice(start, end);
   if (path === "") return [];
   if (files.has(path)) return [path];
   const prefix = `${path}/`;

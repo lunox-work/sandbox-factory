@@ -309,8 +309,13 @@ export function boundarySummary(
   };
 }
 
-const fence = (text: string, language: string) =>
-  `\`\`\`${language}\n${text.replace(/\n+$/, "")}\n\`\`\``;
+function fence(text: string, language: string) {
+  // A scan rather than /\n+$/, which backtracks quadratically on a long run
+  // of newlines that does not end the declaration.
+  let end = text.length;
+  while (end > 0 && text[end - 1] === "\n") end -= 1;
+  return `\`\`\`${language}\n${text.slice(0, end)}\n\`\`\``;
+}
 
 function renderModules(modules: readonly BoundaryModule[], empty: string) {
   if (modules.length === 0) return [empty];

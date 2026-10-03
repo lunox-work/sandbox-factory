@@ -10,7 +10,8 @@
  * a pure function of the graph, the source bytes and the parameters.
  */
 
-import { lstat, mkdir, readFile, writeFile } from "node:fs/promises";
+import { constants, type Stats } from "node:fs";
+import { mkdir, open, readFile, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import {
   BOUNDARY_CONTRACT_SCHEMA_VERSION,
@@ -124,12 +125,25 @@ async function readIncluded(
     const rel = relative(sourceDir, absolute);
     if (rel.startsWith("..") || isAbsolute(rel) || rel === "")
       throw new AnalysisError("tool_failed");
-    const stats = await lstat(absolute).catch(() => null);
-    if (stats === null || !stats.isFile())
-      throw new AnalysisError("tool_failed");
-    total += stats.size;
-    if (total > INCLUDED_BYTES_MAX) throw new AnalysisError("too_large");
-    const bytes = await readFile(absolute);
+    // One handle for the check and the read, so the file cannot be swapped
+    // between them; a symlink fails to open, and a FIFO opens without
+    // blocking and then fails the regular-file check.
+    const handle = await open(
+      absolute,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    ).catch(() => null);
+    if (handle === null) throw new AnalysisError("tool_failed");
+    let stats: Stats;
+    let bytes: Buffer;
+    try {
+      stats = await handle.stat();
+      if (!stats.isFile()) throw new AnalysisError("tool_failed");
+      total += stats.size;
+      if (total > INCLUDED_BYTES_MAX) throw new AnalysisError("too_large");
+      bytes = await handle.readFile();
+    } finally {
+      await handle.close();
+    }
     result.set(path, {
       bytes,
       file: {

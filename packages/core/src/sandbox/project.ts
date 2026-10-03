@@ -177,7 +177,7 @@ export function runtimeKindOf(
   return "unknown";
 }
 const IMPORT_LITERAL =
-  /((?:\bimport|\bexport)\s+(?:type\s+)?(?:[^'";]*?\s+from\s+)?|\brequire\(\s*|\bimport\(\s*)(['"])([^'"\n]+)\2/g;
+  /((?:\bimport|\bexport)\s+(?:type\s+)?(?:[^'";\s][^'";]*?\sfrom\s+)?|\brequire\(\s*|\bimport\(\s*)(['"])([^'"\n]+)\2/g;
 const NAMED_IMPORT =
   /\bimport\s+(type\s+)?(?:[\w$]+\s*,\s*)?\{([^}]*)\}\s*from\s*['"]([^'"\n]+)['"]/g;
 
@@ -263,14 +263,14 @@ function isScript(path: string): boolean {
 export function enumMembers(
   declaration: string,
 ): { name: string; value: string | number }[] | null {
-  const match = /enum\s+[\w$]+\s*\{([\s\S]*?)\}/.exec(declaration);
+  const match = /\benum\s+[\w$]+\s*\{([^}]*)\}/.exec(declaration);
   if (match === null) return null;
   const members: { name: string; value: string | number }[] = [];
   let next = 0;
   for (const raw of (match[1] ?? "").split(",")) {
     const entry = raw.trim();
     if (entry === "") continue;
-    const parts = /^([\w$]+|"[^"]*"|'[^']*')\s*(?:=\s*([\s\S]+))?$/.exec(entry);
+    const parts = /^([\w$]+|"[^"]*"|'[^']*')\s*(?:=([\s\S]+))?$/.exec(entry);
     if (parts === null) return null;
     const name = (parts[1] ?? "").replace(/^['"]|['"]$/g, "");
     const initializer = parts[2]?.trim();
@@ -559,7 +559,7 @@ function scanNamedImports(
       for (const part of (match[2] ?? "").split(",")) {
         const trimmed = part.trim();
         if (trimmed === "" || /^type\s/.test(trimmed)) continue;
-        const name = trimmed.split(/\s+as\s+/)[0]?.trim();
+        const name = /^\S+/.exec(trimmed)?.[0];
         if (name !== undefined && name !== "" && name !== "default")
           list.add(name);
       }

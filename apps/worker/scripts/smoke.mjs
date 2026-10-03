@@ -357,6 +357,7 @@ try {
       ["prepare", true],
       ["install", true],
       ["build", true],
+      ["dev", true],
       ["public-tests", true],
       ["private-test", true],
     ],

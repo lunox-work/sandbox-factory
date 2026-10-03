@@ -533,7 +533,7 @@ test("a build refuses stale parameters, missing versions, an unfinished slice, t
   await assert.rejects(
     createSandboxBuildAdapter({ provider: fake.provider }).run({
       sourceDir: fixture,
-      outDir: "/tmp/never",
+      outDir: await mkdtemp(join(tmpdir(), "build-out-")),
       params: { deadlineMinutes: 30 },
       run: { snapshotId: "rsn_1", commitSha: "a".repeat(40) },
       inputs: {
