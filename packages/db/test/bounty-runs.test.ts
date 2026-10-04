@@ -10,7 +10,7 @@ function row(overrides: Partial<BountyRunRow> = {}): BountyRunRow {
     id: "brn_1",
     organizationId: "org_1",
     boardId: "jrb_1",
-    ticketId: null,
+    bountyId: null,
     startedBy: "usr_1",
     kind: "backlog",
     sourceProposalId: null,
@@ -107,9 +107,9 @@ test("refuses a foreign board and reports an existing active run", async () => {
   );
 });
 
-test("a one-ticket run does not wait behind the board's active run", async () => {
+test("a one-bounty run does not wait behind the board's active run", async () => {
   // No activity read: the sequence has no row for it, so the insert is the
-  // third call. The ticket is stored as the plan from the start.
+  // third call. The bounty is stored as the plan from the start.
   const planned = [
     { externalIssueId: "10007", issueKey: "APP-7", summary: "Add login" },
   ];
@@ -128,55 +128,55 @@ test("a one-ticket run does not wait behind the board's active run", async () =>
   assert.equal(fake.calls[2]?.values?.["kind"], "issue");
 });
 
-test("a ticket's run needs no board, only the ticket, and waits for its own sizing", async () => {
+test("a bounty's run needs no board, only the bounty, and waits for its own sizing", async () => {
   const planned = [
     {
-      externalIssueId: "tkt_1",
-      issueKey: "T-1",
+      externalIssueId: "bty_1",
+      issueKey: "B-1",
       summary: "Add login",
-      ticketId: "tkt_1",
+      bountyId: "bty_1",
     },
   ];
-  const ticketInput = {
+  const bountyInput = {
     ...input,
     boardId: null,
-    ticketId: "tkt_1",
-    kind: "ticket",
+    bountyId: "bty_1",
+    kind: "bounty",
     planned,
   } as const;
-  // Request lookup, the ticket's ownership, nothing in flight, the insert.
+  // Request lookup, the bounty's ownership, nothing in flight, the insert.
   const fake = createSequencedFakeDb([
     [],
-    [{ id: "tkt_1" }],
+    [{ id: "bty_1" }],
     [],
-    [row({ kind: "ticket", boardId: null, ticketId: "tkt_1", planned })],
+    [row({ kind: "bounty", boardId: null, bountyId: "bty_1", planned })],
   ]);
   const result = await createBountyRunStore(fake.db).create(
     "org_1",
-    ticketInput,
+    bountyInput,
   );
   assert.equal(result.ok, true);
   if (result.ok) {
     assert.equal(result.run.boardId, null);
-    assert.equal(result.run.ticketId, "tkt_1");
+    assert.equal(result.run.bountyId, "bty_1");
   }
   assert.equal(fake.calls[3]?.values?.["boardId"], null);
-  assert.equal(fake.calls[3]?.values?.["ticketId"], "tkt_1");
-  assert.equal(fake.calls[3]?.values?.["kind"], "ticket");
+  assert.equal(fake.calls[3]?.values?.["bountyId"], "bty_1");
+  assert.equal(fake.calls[3]?.values?.["kind"], "bounty");
 
   const active = createSequencedFakeDb([
     [],
-    [{ id: "tkt_1" }],
-    [row({ id: "brn_9", kind: "ticket", ticketId: "tkt_1" })],
+    [{ id: "bty_1" }],
+    [row({ id: "brn_9", kind: "bounty", bountyId: "bty_1" })],
   ]);
   assert.deepEqual(
-    await createBountyRunStore(active.db).create("org_1", ticketInput),
+    await createBountyRunStore(active.db).create("org_1", bountyInput),
     { ok: false, reason: "active", runId: "brn_9" },
   );
 
   const foreign = createSequencedFakeDb([[], []]);
   assert.deepEqual(
-    await createBountyRunStore(foreign.db).create("org_2", ticketInput),
+    await createBountyRunStore(foreign.db).create("org_2", bountyInput),
     { ok: false, reason: "not-found" },
   );
 });
@@ -185,7 +185,7 @@ test("a run is refused without what its kind reads", async () => {
   for (const missing of [
     { ...input, boardId: null },
     { ...input, kind: "issue", boardId: undefined },
-    { ...input, kind: "ticket", ticketId: null },
+    { ...input, kind: "bounty", bountyId: null },
   ] as const) {
     const fake = createSequencedFakeDb([[]]);
     assert.deepEqual(
@@ -197,17 +197,17 @@ test("a run is refused without what its kind reads", async () => {
   }
 });
 
-test("a re-price of a ticket with no board waits only for its proposal", async () => {
+test("a re-price of a bounty with no board waits only for its proposal", async () => {
   const fake = createSequencedFakeDb([
     [],
-    [{ id: "tkt_1" }],
+    [{ id: "bty_1" }],
     [],
-    [row({ kind: "reprice", boardId: null, ticketId: "tkt_1" })],
+    [row({ kind: "reprice", boardId: null, bountyId: "bty_1" })],
   ]);
   const result = await createBountyRunStore(fake.db).create("org_1", {
     ...input,
     boardId: null,
-    ticketId: "tkt_1",
+    bountyId: "bty_1",
     kind: "reprice",
     sourceProposalId: "bpr_1",
     sourceRevision: 1,
@@ -217,7 +217,7 @@ test("a re-price of a ticket with no board waits only for its proposal", async (
   assert.equal(fake.calls.length, 4);
 });
 
-test("a replayed one-ticket request must name the same ticket", async () => {
+test("a replayed one-bounty request must name the same bounty", async () => {
   const planned = [
     { externalIssueId: "10007", issueKey: "APP-7", summary: "Add login" },
   ];
@@ -434,7 +434,7 @@ test("claims, heartbeats, records and finishes only under the lease", async () =
     "brn_1",
   );
   // The plan is written with its reasons, and the deadline moves with its
-  // size: ten minutes, plus twenty seconds a ticket.
+  // size: ten minutes, plus twenty seconds a bounty.
   const planWrite = fake.calls.find(
     ({ values }) => values?.["planned"] !== undefined,
   );
@@ -463,9 +463,9 @@ test("claims, heartbeats, records and finishes only under the lease", async () =
   assert.ok(fake.calls.slice(0, 5).every(({ filtered }) => filtered));
 });
 
-test("a run's deadline grows with the number of tickets it planned", () => {
+test("a run's deadline grows with the number of bounties it planned", () => {
   const now = new Date("2026-09-30T00:00:00Z");
-  // Nothing planned yet: the time a run has to choose its tickets.
+  // Nothing planned yet: the time a run has to choose its bounties.
   assert.equal(runDeadline(now, 0).toISOString(), "2026-09-30T00:10:00.000Z");
   assert.equal(runDeadline(now, 3).toISOString(), "2026-09-30T00:11:00.000Z");
   // A board's worth of matches is hours, not a failure at ten minutes.

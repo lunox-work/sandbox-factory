@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "./render";
 import { afterEach, expect, test, vi } from "vitest";
 import type {
   AnalysisRunDto,
@@ -319,7 +319,7 @@ test("an owner asks the agent for a scope, reviews it, and slices exactly that r
   });
 });
 
-test("a succeeded slice gets fake data written for a ticket, shown for review", async () => {
+test("a succeeded slice gets fake data written for a bounty, shown for review", async () => {
   let runs: AnalysisRunDto[] = [sliceRun, graphRun];
   const requests: { url: string; body: unknown }[] = [];
   vi.stubGlobal(
@@ -342,8 +342,8 @@ test("a succeeded slice gets fake data written for a ticket, shown for review", 
   );
   await screen.findByText(/Slice \(1 entry point\)/);
   fireEvent.click(screen.getByRole("button", { name: "Write fake data" }));
-  const ticket = (await screen.findByLabelText("Ticket")) as HTMLSelectElement;
-  fireEvent.change(ticket, { target: { value: "bpr_2" } });
+  const bounty = (await screen.findByLabelText("Bounty")) as HTMLSelectElement;
+  fireEvent.change(bounty, { target: { value: "bpr_2" } });
   fireEvent.click(screen.getByRole("button", { name: "Write fake data" }));
   await waitFor(() => expect(requests).toHaveLength(1));
   expect(requests[0]?.url).toMatch(/\/runs\/arn_slice\/fixtures$/);
@@ -356,7 +356,7 @@ test("a succeeded slice gets fake data written for a ticket, shown for review", 
   expect(screen.getByText(/Fixtures \(2\)/)).toBeTruthy();
 });
 
-test("the ticket picker explains an empty list and reports a failed one; members only read", async () => {
+test("the bounty picker explains an empty list and reports a failed one; members only read", async () => {
   vi.stubGlobal("fetch", server({ runs: () => [graphRun], proposals: [] }));
   const { unmount } = render(
     <RepositoryAnalysis

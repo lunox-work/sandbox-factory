@@ -319,15 +319,15 @@ export const draftSpecTool: StructuredCall<DraftInput, SpecDraft> = {
 };
 
 /**
- * The ticket as JSON, as before outlines, and the outline after it under
- * its own heading, so the ticket's fields read the same with or without
- * one.
+ * The bounty as JSON, under the heading the model has always seen, and
+ * the outline after it under its own, so the bounty's fields read the
+ * same with or without one.
  */
 export function renderDraftInput({
   repositoryOutline,
-  ...ticket
+  ...bounty
 }: DraftInput): string {
-  const data = `Ticket data:\n${JSON.stringify(ticket)}`;
+  const data = `Ticket data:\n${JSON.stringify(bounty)}`;
   return repositoryOutline === undefined || repositoryOutline.trim() === ""
     ? data
     : `${data}\n\nRepository outline:\n${repositoryOutline}`;

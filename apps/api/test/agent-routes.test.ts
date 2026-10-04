@@ -365,7 +365,7 @@ test("a fixtures run is written for a succeeded slice, on its snapshot", async (
   }
 });
 
-test("a repository's proposals are the specced ones whose tickets are about it, newest first", async () => {
+test("a repository's proposals are the specced ones whose bounties are about it, newest first", async () => {
   const f = fixture("member");
   const response = await f.request("repositories/ghr_1/proposals");
   assert.equal(response.status, 200);
@@ -376,7 +376,7 @@ test("a repository's proposals are the specced ones whose tickets are about it, 
       title: string | null;
     }[];
   };
-  // A ticket written here has no board; one from Jira names its own.
+  // A bounty written here has no board; one from Jira names its own.
   assert.deepEqual(
     body.proposals.map((proposal) => [proposal.id, proposal.boardName]),
     [

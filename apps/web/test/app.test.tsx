@@ -9,7 +9,7 @@
  * `account.test.tsx`.
  */
 
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "./render";
 import { beforeEach, expect, test, vi } from "vitest";
 
 const useSession = vi.fn();

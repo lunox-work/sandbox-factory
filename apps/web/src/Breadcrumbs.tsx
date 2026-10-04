@@ -118,9 +118,9 @@ export function trailFor(
       return organization === undefined
         ? []
         : [HOME, ORGANIZATIONS, { label: organization.name }];
-    case "org-tickets":
+    case "org-bounties":
       return organization === undefined
-        ? [HOME, ORGANIZATIONS, { label: "Tickets" }]
+        ? [HOME, ORGANIZATIONS, { label: "Bounties" }]
         : [
             HOME,
             ORGANIZATIONS,
@@ -129,7 +129,7 @@ export function trailFor(
               screen: "org-settings",
               slug: organization.slug,
             },
-            { label: "Tickets" },
+            { label: "Bounties" },
           ];
     case "org-jira-board": {
       /*
@@ -219,7 +219,7 @@ export function Breadcrumbs({
         // right of the content. Read from the screen rather than taken as a
         // prop: which pages are wide is the trail's own business, and the
         // shell already tells it where it is.
-        screen === "org-jira-board" || screen === "org-tickets"
+        screen === "org-jira-board" || screen === "org-bounties"
           ? "max-w-5xl"
           : "max-w-2xl",
       )}

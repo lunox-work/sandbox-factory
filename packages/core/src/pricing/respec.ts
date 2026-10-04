@@ -41,7 +41,7 @@ export const RESPEC_LIMITS = {
 
 export interface ExpandRequest {
   readonly mode: "expand";
-  /** The kinds to write more of. Absent or empty: any kind the ticket needs. */
+  /** The kinds to write more of. Absent or empty: any kind the bounty needs. */
   readonly kinds?: readonly ScenarioKind[] | undefined;
   /** What the reviewer wants covered, in their words. */
   readonly instruction?: string | undefined;

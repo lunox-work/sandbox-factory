@@ -15,13 +15,7 @@
  * `nav.test.tsx`.
  */
 
-import {
-  render,
-  screen,
-  fireEvent,
-  waitFor,
-  within,
-} from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "./render";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import { trailFor } from "../src/Breadcrumbs";

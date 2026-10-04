@@ -9,13 +9,7 @@
  * what a person sees given a server response.
  */
 
-import {
-  act,
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-} from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "./render";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
 const listAccounts = vi.fn();
@@ -589,7 +583,7 @@ test("the page links to the organizations you belong to", async () => {
 
   expect(onOpenOrganizations).toHaveBeenCalledTimes(1);
 
-  // The same mark the avatar menu's "Organizations" item carries, so the two
+  // The same mark the rail's Workspaces row carries, so the two
   // ways to this page read as one destination. Decorative — the button's own
   // text is its name, which is why the query above still finds it.
   expect(link.querySelector("svg.lucide-building-2")).not.toBeNull();

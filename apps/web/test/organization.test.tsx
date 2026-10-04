@@ -12,14 +12,7 @@
  * would refuse is not offered.
  */
 
-import {
-  act,
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-  within,
-} from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "./render";
 import type { MembershipDto } from "@sandbox-factory/shared";
 import { beforeEach, expect, test, vi } from "vitest";
 
@@ -1120,6 +1113,49 @@ test("the GitHub tab is live, and an owner can connect from it", async () => {
   ).toBeDefined();
   expect(within(panel).queryByText("Coming soon")).toBeNull();
   expect(window.location.search).toBe("?connection=github");
+});
+
+test("a tab opened before opens on what it showed, without reading it again", async () => {
+  // Read afresh on every switch, the card fell to a loading line and grew
+  // back each time, and took the page's scrollbar with it.
+  showConnections([{ healthy: true }]);
+  const syncs = () =>
+    vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith("/sync"))
+      .length;
+
+  await openConnection("Jira");
+  expect(await screen.findByText("Site 1")).toBeDefined();
+  await waitFor(() => expect(syncs()).toBe(1));
+  await openConnection("GitHub");
+  // The one left is hidden, not shown under the one chosen.
+  expect(screen.queryByRole("tabpanel", { name: "Jira" })).toBeNull();
+  expect(screen.getByRole("tabpanel", { name: "GitHub" })).toBeDefined();
+
+  await openConnection("Jira");
+  const panel = screen.getByRole("tabpanel", { name: "Jira" });
+  // There at once, rather than after a loading line.
+  expect(within(panel).getByText("Site 1")).toBeDefined();
+  expect(within(panel).queryByText("Loading…")).toBeNull();
+  // Nor synced with Atlassian again for being looked at twice.
+  expect(syncs()).toBe(1);
+});
+
+test("Home counts again when it is come back to", async () => {
+  // The Jira tab stays mounted, so a site disconnected there would otherwise
+  // leave Home's count as it was before.
+  const connections = [{ healthy: true }, { healthy: true }];
+  showConnections(connections);
+  await screen.findByText("2 active connections across 3 tools.");
+
+  await openConnection("Jira");
+  await screen.findByText("Site 2");
+  // As the server answers once a site has been disconnected.
+  connections.pop();
+  await openConnection("Home");
+
+  expect(
+    await screen.findByText("1 active connection across 3 tools."),
+  ).toBeDefined();
 });
 
 test("the return from GitHub opens on the GitHub tab and reports it", async () => {

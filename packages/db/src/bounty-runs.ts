@@ -20,21 +20,21 @@ import {
 
 import { isUniqueViolation, type Database } from "./errors.js";
 import { generateId } from "./mapping.js";
-import { bountyRun, jiraBoard, ticket } from "./schema.js";
+import { bountyRun, jiraBoard, bounty } from "./schema.js";
 import type { BountyRunRow } from "./schema.js";
 
 export interface CreateBountyRunInput {
   /**
    * The Jira board the run reads: required for a `backlog` or `issue` run,
-   * and the ticket's board, when it has one, for a run about one ticket.
+   * and the bounty's board, when it has one, for a run about one bounty.
    */
   readonly boardId?: string | null;
-  /** The one ticket a `ticket`, `reprice` or `respec` run is about. */
-  readonly ticketId?: string | null;
+  /** The one bounty a `bounty`, `reprice` or `respec` run is about. */
+  readonly bountyId?: string | null;
   readonly startedBy: string;
   readonly kind?: BountyRunKind;
   /**
-   * The ticket an `issue` or `ticket` run sizes, stored as its plan from
+   * The bounty an `issue` or `bounty` run sizes, stored as its plan from
    * the start.
    */
   readonly planned?: readonly BountyRunPlannedIssue[];
@@ -83,7 +83,7 @@ export interface BountyRunStore {
     now: Date,
   ): Promise<boolean>;
   /**
-   * The tickets a claimed run is about to size, written once before the
+   * The bounties a claimed run is about to size, written once before the
    * first. Guarded by the lease like an outcome, so a run that lost its lease
    * cannot overwrite the plan of the worker that took it over.
    *
@@ -121,38 +121,38 @@ export interface BountyRunStore {
   organizationsWithExpiredRuns(now: Date): Promise<string[]>;
 }
 
-/** How long a run has to choose its tickets, before any is sized. */
+/** How long a run has to choose its bounties, before any is sized. */
 const RUN_BASE_MS = 10 * 60_000;
 /**
- * The allowance each planned ticket adds. A ticket costs one Jira read and
+ * The allowance each planned bounty adds. A bounty costs one Jira read and
  * two model calls, the spec draft and the size, which together took 18 to
- * 29 seconds on the dev board. Three tickets are sized at a time, so this
+ * 29 seconds on the dev board. Three bounties are sized at a time, so this
  * is about twice what one needs. It is a bound on a stuck run, not a
  * target.
  */
-const RUN_PER_TICKET_MS = 20_000;
+const RUN_PER_BOUNTY_MS = 20_000;
 
 /**
- * When a run with this many planned tickets must be finished.
+ * When a run with this many planned bounties must be finished.
  *
- * A run takes every ticket that matches a category, so its length is the
+ * A run takes every bounty that matches a category, so its length is the
  * board's to decide, not a constant. A fixed deadline would fail a large
  * run partway as `worker_lost`; one that grows with the plan still ends a
  * run that has stopped making progress.
  */
-export function runDeadline(now: Date, plannedTickets: number): Date {
+export function runDeadline(now: Date, plannedBounties: number): Date {
   return new Date(
-    now.getTime() + RUN_BASE_MS + RUN_PER_TICKET_MS * plannedTickets,
+    now.getTime() + RUN_BASE_MS + RUN_PER_BOUNTY_MS * plannedBounties,
   );
 }
 
 export interface StoredBountyRun {
   readonly id: string;
   readonly organizationId: string;
-  /** The Jira board read, or null for a run about a ticket with none. */
+  /** The Jira board read, or null for a run about a bounty with none. */
   readonly boardId: string | null;
-  /** The one ticket a `ticket`, `reprice` or `respec` run is about. */
-  readonly ticketId: string | null;
+  /** The one bounty a `bounty`, `reprice` or `respec` run is about. */
+  readonly bountyId: string | null;
   readonly kind: BountyRunKind;
   readonly sourceProposalId: string | null;
   readonly sourceRevision: number | null;
@@ -181,7 +181,7 @@ function toDto(row: BountyRunRow): StoredBountyRun {
     id: row.id,
     organizationId: row.organizationId,
     boardId: row.boardId,
-    ticketId: row.ticketId,
+    bountyId: row.bountyId,
     kind: row.kind as StoredBountyRun["kind"],
     sourceProposalId: row.sourceProposalId,
     sourceRevision: row.sourceRevision,
@@ -229,12 +229,12 @@ async function firstByRequest(
  * The run in flight that a new one would have to wait for, as the three
  * partial unique indexes on `bounty_run` decide it: a board's own run (a
  * backlog or a re-price), for a run that changes one proposal the re-price
- * or spec change already changing it, and for a ticket's sizing the one
+ * or spec change already changing it, and for a bounty's sizing the one
  * already sizing it.
  *
  * An `issue` run waits for none. A spec change does not wait for the
  * board, since a backlog run never touches a proposal that exists, and a
- * re-price of a ticket with no board has no board to wait for.
+ * re-price of a bounty with no board has no board to wait for.
  */
 async function activeFor(
   db: Database,
@@ -255,21 +255,21 @@ async function activeFor(
           eq(bountyRun.organizationId, organizationId),
           eq(bountyRun.boardId, input.boardId),
           inFlight,
-          notInArray(bountyRun.kind, ["issue", "respec", "ticket"]),
+          notInArray(bountyRun.kind, ["issue", "respec", "bounty"]),
         ),
       )) as BountyRunRow[];
     if (rows[0] !== undefined) return rows[0];
   }
-  if (kind === "ticket" && input.ticketId != null) {
+  if (kind === "bounty" && input.bountyId != null) {
     const rows = (await db
       .select()
       .from(bountyRun)
       .where(
         and(
           eq(bountyRun.organizationId, organizationId),
-          eq(bountyRun.ticketId, input.ticketId),
+          eq(bountyRun.bountyId, input.bountyId),
           inFlight,
-          eq(bountyRun.kind, "ticket"),
+          eq(bountyRun.kind, "bounty"),
         ),
       )) as BountyRunRow[];
     if (rows[0] !== undefined) return rows[0];
@@ -297,7 +297,7 @@ async function activeFor(
 function sameRequest(row: BountyRunRow, input: CreateBountyRunInput): boolean {
   return (
     row.boardId === (input.boardId ?? null) &&
-    row.ticketId === (input.ticketId ?? null) &&
+    row.bountyId === (input.bountyId ?? null) &&
     row.kind === (input.kind ?? "backlog") &&
     row.sourceProposalId === (input.sourceProposalId ?? null) &&
     row.sourceRevision === (input.sourceRevision ?? null) &&
@@ -323,11 +323,11 @@ export function createBountyRunStore(db: Database): BountyRunStore {
 
       const kind = input.kind ?? "backlog";
       const boardId = input.boardId ?? null;
-      const ticketId = input.ticketId ?? null;
+      const bountyId = input.bountyId ?? null;
       // What the scope check in SQL would refuse, refused as a miss.
       if (
         ((kind === "backlog" || kind === "issue") && boardId === null) ||
-        (kind === "ticket" && ticketId === null)
+        (kind === "bounty" && bountyId === null)
       ) {
         return { ok: false, reason: "not-found" };
       }
@@ -344,17 +344,17 @@ export function createBountyRunStore(db: Database): BountyRunStore {
         if (ownedBoard[0] === undefined)
           return { ok: false, reason: "not-found" };
       }
-      if (ticketId !== null) {
-        const ownedTicket = await db
-          .select({ id: ticket.id })
-          .from(ticket)
+      if (bountyId !== null) {
+        const ownedBounty = await db
+          .select({ id: bounty.id })
+          .from(bounty)
           .where(
             and(
-              eq(ticket.organizationId, organizationId),
-              eq(ticket.id, ticketId),
+              eq(bounty.organizationId, organizationId),
+              eq(bounty.id, bountyId),
             ),
           );
-        if (ownedTicket[0] === undefined)
+        if (ownedBounty[0] === undefined)
           return { ok: false, reason: "not-found" };
       }
 
@@ -370,7 +370,7 @@ export function createBountyRunStore(db: Database): BountyRunStore {
             id: generateId("brn"),
             organizationId,
             boardId,
-            ticketId,
+            bountyId,
             startedBy: input.startedBy,
             kind,
             sourceProposalId: input.sourceProposalId ?? null,
@@ -442,7 +442,7 @@ export function createBountyRunStore(db: Database): BountyRunStore {
 
     async claim(organizationId, runId, leaseToken, now) {
       const leaseExpiresAt = new Date(now.getTime() + 60_000);
-      // Before the plan exists, so with no tickets to allow for. `recordPlan`
+      // Before the plan exists, so with no bounties to allow for. `recordPlan`
       // moves it once the run knows how many it will size.
       const deadlineAt = runDeadline(now, 0);
       const rows = (await db
@@ -529,8 +529,8 @@ export function createBountyRunStore(db: Database): BountyRunStore {
             eq(bountyRun.leaseToken, leaseToken),
             gt(bountyRun.leaseExpiresAt, now),
             gt(bountyRun.deadlineAt, now),
-            // One outcome per planned ticket, and no more. The plan is the
-            // bound now that a run has no fixed number of tickets.
+            // One outcome per planned bounty, and no more. The plan is the
+            // bound now that a run has no fixed number of bounties.
             sql`jsonb_array_length(${bountyRun.outcomes}) < jsonb_array_length(${bountyRun.planned})`,
           ),
         )

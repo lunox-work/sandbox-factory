@@ -1,3 +1,5 @@
+import { useQueries, useQueryClient } from "@tanstack/react-query";
+import { clients, queryKeys, useUserId } from "./data/query";
 /**
  * Every Jira connection the signed-in person can see, grouped by who owns it.
  *
@@ -13,7 +15,7 @@
  */
 
 import type { MembershipDto } from "@sandbox-factory/shared";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback } from "react";
 
 import type { JiraConnection } from "./useJira";
 
@@ -40,82 +42,47 @@ export interface Connections {
   refresh: () => Promise<void>;
 }
 
-async function loadOne(organization: MembershipDto): Promise<ConnectionGroup> {
-  try {
-    const res = await fetch(
-      `/api/v1/orgs/${encodeURIComponent(organization.id)}/jira/connections`,
-      { credentials: "include" },
-    );
-    if (!res.ok) {
-      return { organization, connections: [], failed: true };
-    }
-    const body = (await res.json()) as {
-      connections?: JiraConnection[];
-    } | null;
-    // Defaulted rather than trusted, as elsewhere: a 200 of the wrong shape
-    // renders an empty group instead of throwing through the page.
-    return {
-      organization,
-      connections: body?.connections ?? [],
-      failed: false,
-    };
-  } catch {
-    return { organization, connections: [], failed: true };
-  }
-}
-
 export function useConnections(
   organizations: MembershipDto[],
-  /** True while the memberships themselves are still loading. */
   organizationsLoading: boolean,
 ): Connections {
-  const [groups, setGroups] = useState<ConnectionGroup[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  /**
-   * Depends on the ids, not the array: `useOrganizations` builds a new array
-   * on every refresh, so depending on the array itself would refetch forever.
-   */
-  const key = organizations.map((entry) => entry.id).join(",");
-
+  const userId = useUserId();
+  const client = useQueryClient();
+  const queries = useQueries({
+    queries: organizations.map((organization) => ({
+      queryKey: queryKeys.resource(userId, organization.id, "jira-connections"),
+      enabled: !organizationsLoading,
+      queryFn: ({ signal }: { signal: AbortSignal }) =>
+        clients.jira.connections(organization.id, signal),
+    })),
+  });
+  const groups = organizations.map((organization, index) => ({
+    organization,
+    connections: queries[index]?.data ?? [],
+    failed: queries[index]?.isError ?? false,
+  }));
+  const ids = organizations.map((o) => o.id).join(",");
   const refresh = useCallback(async () => {
-    if (organizationsLoading) {
-      return;
-    }
-    if (organizations.length === 0) {
-      setGroups([]);
-      setLoading(false);
-      setError(null);
-      return;
-    }
-    setLoading(true);
-    // Concurrent, not sequential: these are independent reads and the slowest
-    // one should set the pace, not the sum.
-    const loaded = await Promise.all(organizations.map(loadOne));
-    setGroups(loaded);
-    setLoading(false);
-    // Only a total failure is an error. One organization failing shows as a
-    // message on its own group, so the rest stay usable.
-    setError(
-      loaded.every((group) => group.failed)
-        ? "Could not load your connections."
-        : null,
+    await Promise.all(
+      ids
+        .split(",")
+        .filter(Boolean)
+        .map((owner) =>
+          client.invalidateQueries({
+            queryKey: queryKeys.resource(userId, owner, "jira-connections"),
+          }),
+        ),
     );
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed by ids; see above.
-  }, [key, organizationsLoading]);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
-
+  }, [client, userId, ids]);
   return {
     groups,
-    loading: loading || organizationsLoading,
-    error,
+    loading: organizationsLoading || queries.some((query) => query.isPending),
+    error:
+      groups.length > 0 && groups.every((g) => g.failed)
+        ? "Could not load your connections."
+        : null,
     total: groups.reduce(
-      (sum, group) =>
-        sum + group.connections.filter((entry) => entry.healthy).length,
+      (sum, g) => sum + g.connections.filter((c) => c.healthy).length,
       0,
     ),
     refresh,

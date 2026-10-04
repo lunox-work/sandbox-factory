@@ -31,11 +31,11 @@ import { describeProblem } from "./parse.js";
 
 /**
  * What a revision is made from: the ticket, the spec as it stands, and
- * what the reviewer asked of it. The ticket comes along so the model knows
+ * what the reviewer asked of it. The bounty comes along so the model knows
  * what the scenarios are about; the spec so it does not repeat them.
  */
 export interface ReviseInput<R extends ExpandRequest | AnswerRequest> {
-  readonly ticket: DraftInput;
+  readonly bounty: DraftInput;
   readonly spec: SpecDraft;
   readonly request: R;
 }
@@ -76,7 +76,7 @@ function specForModel(spec: SpecDraft) {
 
 function render(input: ReviseInput<ExpandRequest | AnswerRequest>): string {
   return [
-    `Ticket data:\n${JSON.stringify(input.ticket)}`,
+    `Ticket data:\n${JSON.stringify(input.bounty)}`,
     `Current spec:\n${JSON.stringify(specForModel(input.spec))}`,
     `Reviewer request:\n${JSON.stringify(input.request)}`,
   ].join("\n\n");

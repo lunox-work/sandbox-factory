@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { ticketSpecHash } from "@sandbox-factory/shared";
+import { bountySpecHash } from "@sandbox-factory/shared";
 
 import {
   pricingSpecHash,
@@ -57,7 +57,7 @@ test("an empty spec still hashes", async () => {
 });
 
 test("the pricing fingerprint is the ticket's own hash, not a copy", () => {
-  assert.equal(pricingSpecHash, ticketSpecHash);
+  assert.equal(pricingSpecHash, bountySpecHash);
 });
 
 test("an issue with no type is read as the default type", async () => {

@@ -120,6 +120,10 @@ export async function runAgent(input: {
   let stopped: AgentStop | null = null;
   while (stopped === null) {
     signal.throwIfAborted();
+    if (spent() >= limits.maxTokens) {
+      stopped = "budget";
+      break;
+    }
     if (usage.turns >= limits.maxTurns) {
       stopped = "turns";
       break;
@@ -202,10 +206,6 @@ export async function runAgent(input: {
     );
     if (accepted) {
       stopped = "accepted";
-      break;
-    }
-    if (spent() >= limits.maxTokens) {
-      stopped = "budget";
       break;
     }
     const content: (ToolResultBlock | TextBlock)[] = [...results];

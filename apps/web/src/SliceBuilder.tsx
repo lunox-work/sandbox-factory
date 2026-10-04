@@ -1,3 +1,5 @@
+import { useInfiniteQuery } from "@tanstack/react-query";
+import { queryKeys, useUserId } from "./data/query";
 /**
  * Choosing a slice and reading its boundary.
  *
@@ -9,19 +11,18 @@
  * documents open through signed URLs like every other artifact.
  */
 
+import { ErrorBanner, LoadingLine } from "@/components/Message";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import type { GithubAnalysisClient } from "@sandbox-factory/client";
 import { ApiError } from "@sandbox-factory/client";
 import type {
   ArtifactDto,
   SliceBoundarySummaryDto,
-  StoredTreeEntry,
 } from "@sandbox-factory/shared";
 import { SLICE_ENTRY_POINTS_MAX } from "@sandbox-factory/shared";
-import { useEffect, useRef, useState } from "react";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { ErrorBanner, LoadingLine } from "@/components/Message";
+import { useEffect, useState } from "react";
 
 const PAGE = 200;
 /** Typing settles for this long before the file list is asked again. */
@@ -43,74 +44,48 @@ export function SliceEntryPicker({
   // What the person typed, and the trimmed directory it settles into.
   const [filter, setFilter] = useState("");
   const [prefix, setPrefix] = useState("");
-  const [entries, setEntries] = useState<StoredTreeEntry[]>([]);
-  const [cursor, setCursor] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [version, setVersion] = useState(0);
-  // Each listing bumps this; a page that answers a superseded listing (an
-  // older prefix, snapshot or reload) is dropped instead of appended.
-  const listing = useRef(0);
+  const userId = useUserId();
   useEffect(() => {
     const timer = setTimeout(() => setPrefix(filter.trim()), FILTER_DELAY_MS);
     return () => clearTimeout(timer);
   }, [filter]);
-  useEffect(() => {
-    const id = ++listing.current;
-    const active = () => listing.current === id;
-    setLoading(true);
-    setEntries([]);
-    setCursor(null);
-    void client
-      .tree(organizationId, snapshotId, { prefix, limit: PAGE })
-      .then((page) => {
-        if (!active()) return;
-        setEntries(page.entries.filter((entry) => entry.type === "blob"));
-        setCursor(page.nextCursor);
-        setError(null);
-      })
-      .catch((caught: unknown) => {
-        if (active())
-          setError(
-            caught instanceof ApiError
-              ? caught.message
-              : "The file list could not be loaded.",
-          );
-      })
-      .finally(() => {
-        if (active()) setLoading(false);
-      });
-    return () => {
-      listing.current += 1;
-    };
-  }, [client, organizationId, snapshotId, prefix, version]);
-  async function more() {
-    if (cursor === null) return;
-    const id = listing.current;
-    setLoading(true);
-    try {
-      const page = await client.tree(organizationId, snapshotId, {
-        prefix,
-        cursor,
-        limit: PAGE,
-      });
-      if (listing.current !== id) return;
-      setEntries((current) => [
-        ...current,
-        ...page.entries.filter((entry) => entry.type === "blob"),
-      ]);
-      setCursor(page.nextCursor);
-    } catch (caught) {
-      if (listing.current !== id) return;
-      setError(
-        caught instanceof ApiError
-          ? caught.message
-          : "The file list could not be loaded.",
-      );
-    } finally {
-      if (listing.current === id) setLoading(false);
-    }
-  }
+  const query = useInfiniteQuery({
+    queryKey: queryKeys.resource(
+      userId,
+      organizationId,
+      "tree",
+      snapshotId,
+      prefix,
+    ),
+    initialPageParam: undefined as string | undefined,
+    queryFn: ({ signal, pageParam }) =>
+      client.tree(
+        organizationId,
+        snapshotId,
+        {
+          prefix,
+          limit: PAGE,
+          ...(pageParam === undefined ? {} : { cursor: pageParam }),
+        },
+        signal,
+      ),
+    getNextPageParam: (page) => page.nextCursor ?? undefined,
+  });
+  const entries =
+    query.data?.pages.flatMap((page) =>
+      page.entries.filter((entry) => entry.type === "blob"),
+    ) ?? [];
+  const loading = query.isFetching;
+  const cursor = query.hasNextPage ? "more" : null;
+  const error =
+    query.error === null
+      ? null
+      : query.error instanceof ApiError
+        ? query.error.message
+        : "The file list could not be loaded.";
+  const more = async () => {
+    await query.fetchNextPage();
+  };
   const toggle = (path: string) =>
     onChange(
       selected.includes(path)
@@ -130,7 +105,9 @@ export function SliceEntryPicker({
         <Button
           variant="outline"
           size="sm"
-          onClick={() => setVersion((v) => v + 1)}
+          onClick={() => {
+            void query.refetch();
+          }}
         >
           Reload
         </Button>

@@ -1,5 +1,5 @@
 import type { BountySpecDto } from "@sandbox-factory/shared";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "./render";
 import { userEvent } from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
 
@@ -139,7 +139,7 @@ test("scenarios are grouped by kind, in the kinds' order", async () => {
 
   expect(calls).toEqual([`${BASE}/proposals/bpr_1/spec`]);
   // Happy before boundary before unhappy, whatever order they were drafted
-  // in, then what the ticket left open and what the draft assumed. A kind
+  // in, then what the bounty left open and what the draft assumed. A kind
   // is not counted: unweighed, it has no points to show either.
   expect(headings(panel)).toEqual([
     "Background",
@@ -266,7 +266,7 @@ test("a spec with one scenario and nothing else shows only that", async () => {
   expect(within(panel).getByText("1 scenario · revision 1")).toBeDefined();
 });
 
-test("a spec of open questions alone says the ticket described no behaviour", async () => {
+test("a spec of open questions alone says the bounty described no behaviour", async () => {
   server(() =>
     Response.json({
       spec: spec({
@@ -282,7 +282,7 @@ test("a spec of open questions alone says the ticket described no behaviour", as
 
   expect(
     await within(panel).findByText(
-      "The ticket did not describe behaviour to write a scenario for.",
+      "The bounty did not describe behaviour to write a scenario for.",
     ),
   ).toBeDefined();
   expect(headings(panel)).toEqual(["Open questions1"]);
@@ -309,7 +309,7 @@ test("someone who can re-analyze is told that it drafts the scenarios", () => {
   server(() => Response.json({ spec: null }));
   block({ specRevision: null, canAnalyze: true });
   expect(screen.getByTestId("spec-empty").textContent).toBe(
-    "No scenarios were drafted for this proposal. Re-analyze, on the Bounty tab, drafts them from the ticket as it is now.",
+    "No scenarios were drafted for this proposal. Re-analyze, on the Price tab, drafts them from the bounty as it is now.",
   );
 });
 
@@ -319,7 +319,7 @@ test("a pointer the server has no spec for reads as none", async () => {
   expect(await screen.findByTestId("spec-empty")).toBeDefined();
 });
 
-test("a response that is not a spec is no spec, not a crash", async () => {
+test("a malformed spec response shows a retryable failure", async () => {
   for (const body of [
     null,
     "spec",
@@ -332,13 +332,15 @@ test("a response that is not a spec is no spec, not a crash", async () => {
   ]) {
     server(() => Response.json(body));
     const view = block();
-    expect(await screen.findByTestId("spec-empty")).toBeDefined();
+    expect(
+      await screen.findByRole("button", { name: /try again/i }),
+    ).toBeDefined();
     view.unmount();
   }
 });
 
 test("the block says it is loading until the spec lands", async () => {
-  let release = (_response: Response) => {};
+  let release: ((response: Response) => void) | undefined;
   server(
     () =>
       new Promise<Response>((resolve) => {
@@ -353,7 +355,8 @@ test("the block says it is loading until the spec lands", async () => {
   );
   expect(within(panel).queryByTestId("spec-empty")).toBeNull();
 
-  release(Response.json({ spec: spec() }));
+  await waitFor(() => expect(release).not.toBeUndefined());
+  release?.(Response.json({ spec: spec() }));
   expect(
     await within(panel).findByText("Interview invitation delivery"),
   ).toBeDefined();
@@ -556,7 +559,7 @@ test("a spec drafted before weights says so, and how to weigh it", async () => {
 
   expect(within(panel).getByText("5 scenarios · revision 1")).toBeDefined();
   expect(within(panel).getByTestId("spec-unweighed").textContent).toMatch(
-    /Re-analyze, on the Bounty tab, drafts it again with weights\./,
+    /Re-analyze, on the Price tab, drafts it again with weights\./,
   );
   expect(panel.querySelector("[data-weight]")).toBeNull();
   expect(headings(panel)).toContain("Happy path");
@@ -569,7 +572,7 @@ test("a spec drafted before weights says so, and how to weigh it", async () => {
   expect(read.textContent).not.toMatch(/Re-analyze/);
 });
 
-test("the tab opens on why the model sized the ticket as it did", async () => {
+test("the tab opens on why the model sized the bounty as it did", async () => {
   server(() => Response.json({ spec: weighedSpec() }));
   block({
     sizeReason: {
@@ -613,7 +616,7 @@ test("an overridden size says so, and keeps the model's own size and reasoning",
   expect(await within(panel).findByTestId("spec-empty")).toBeDefined();
 });
 
-test("a ticket the model left unsized says that instead of a size", async () => {
+test("a bounty the model left unsized says that instead of a size", async () => {
   server(() => Response.json({ spec: null }));
   const view = block({
     sizeReason: {

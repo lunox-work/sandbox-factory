@@ -1,3 +1,4 @@
+import { rankAtLeast } from "sandbox-factory";
 /**
  * Connected Jira sites, for one organization.
  *
@@ -53,7 +54,7 @@ import { cn } from "@/lib/utils";
 import { JiraIcon } from "./ProviderIcon";
 import { isPlainLeftClick, pathForScreen } from "./routes";
 import { BoardRepository } from "./BoardRepository";
-import { BoardBounties } from "./Bounties";
+import { ProposalList } from "./Proposals";
 
 import {
   useJira,
@@ -67,10 +68,7 @@ import {
 
 /** Roles that may connect or disconnect, matching the API's own floor. */
 function canManage(role: string): boolean {
-  return role
-    .split(",")
-    .map((entry) => entry.trim())
-    .some((entry) => entry === "owner" || entry === "admin");
+  return rankAtLeast(role, "admin");
 }
 
 /**
@@ -377,21 +375,6 @@ function BoardRow({
         </span>
         <span className="min-w-0 flex-1 truncate text-sm font-medium">
           {board.name}
-        </span>
-        {/*
-          Pills at the end of the row rather than a second line under the
-          name: they are labels to scan down, and a line of their own made
-          every row twice as tall as the name needed.
-        */}
-        <span className="flex shrink-0 items-center gap-1.5">
-          {board.projectKey !== null && (
-            <Badge variant="secondary" className="font-mono">
-              {board.projectKey}
-            </Badge>
-          )}
-          <Badge variant="outline" className="text-muted-foreground capitalize">
-            {board.boardType}
-          </Badge>
         </span>
         <ChevronRight className="text-muted-foreground size-4 shrink-0" />
       </a>
@@ -766,7 +749,7 @@ export function JiraBoard({
         />
       )}
 
-      <BoardBounties
+      <ProposalList
         organizationId={organizationId}
         boardId={boardId}
         role={role ?? "member"}

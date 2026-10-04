@@ -32,6 +32,12 @@ export class RepositoryInUseError extends Error {
 }
 
 export type Database = PostgresJsDatabase<Record<string, never>>;
+export type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
+/** The shared query surface; transaction-only helpers take Transaction explicitly. */
+export type QueryExecutor = Pick<
+  Database,
+  "select" | "insert" | "update" | "delete" | "execute"
+>;
 
 /**
  * Whether a write was refused by a unique constraint — Postgres' `23505`.

@@ -1,0 +1,8 @@
+# Maintenance graph scope (scripts/graphify.sh). .gitignore already applies.
+.agents/
+.github/
+e2e/
+package-lock.json
+**/CHANGELOG.md
+packages/db/drizzle/
+**/fixtures/

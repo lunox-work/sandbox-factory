@@ -28,7 +28,7 @@ import { z } from "zod";
 import { AnalysisError } from "../errors.js";
 import type { AgentSettings, AgentTool } from "../agent/loop.js";
 import { runAgent } from "../agent/loop.js";
-import { FIXTURES_SYSTEM_PROMPT, ticketSection } from "../agent/prompts.js";
+import { FIXTURES_SYSTEM_PROMPT, bountySection } from "../agent/prompts.js";
 import {
   indexRepository,
   invalidInput,
@@ -37,7 +37,7 @@ import {
 } from "../agent/repo-tools.js";
 import type { ArtifactFile, ToolAdapter, ToolRunInput } from "./adapter.js";
 import { checkFixtures } from "./fixtures-check.js";
-import { nearestCompilerOptions } from "./sandbox-build.js";
+import { nearestCompilerOptions } from "./compiler-config.js";
 import { loadSliceRun, readIncludedSource } from "./slice-run.js";
 
 /** Candidate sets one run may check before it must submit. */
@@ -202,7 +202,7 @@ export function createFixturesAdapter(settings: AgentSettings): ToolAdapter {
         model: settings.model,
         system: FIXTURES_SYSTEM_PROMPT,
         prompt: [
-          ticketSection(task.issueKey, task.draft),
+          bountySection(task.issueKey, task.draft),
           `The slice, at commit ${input.run.commitSha}. Entry points: ${slice.manifest.entryPoints.join(", ")}. Included files:\n${slice.manifest.included.map((file) => file.path).join("\n")}`,
           `Cut modules and their declaration stubs:\n\n${stubSections.join("\n\n") || "(none)"}${
             unquoted.length === 0

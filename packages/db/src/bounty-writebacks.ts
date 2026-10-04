@@ -136,7 +136,7 @@ export function createBountyWritebackStore(db: Database): BountyWritebackStore {
       payload,
     ) {
       return db.transaction(async (transaction) => {
-        const tx = transaction as unknown as Database;
+        const tx = transaction;
         const now = new Date();
         const approved = (await tx
           .update(bountyProposal)
@@ -205,7 +205,7 @@ export function createBountyWritebackStore(db: Database): BountyWritebackStore {
       payload,
     ) {
       return db.transaction(async (transaction) => {
-        const tx = transaction as unknown as Database;
+        const tx = transaction;
         const now = new Date();
         const withdrawn = (await tx
           .update(bountyProposal)

@@ -1,3 +1,7 @@
+import { ApiError } from "@sandbox-factory/client";
+import { useQueryClient } from "@tanstack/react-query";
+import { clients, queryKeys, useOwnerQuery, useUserId } from "./data/query";
+import { replaceLocation } from "./navigation/location";
 /**
  * The Jira sites an organization has connected.
  *
@@ -63,53 +67,25 @@ export interface Jira extends JiraState {
 }
 
 export function useJira(organizationId: string | undefined): Jira {
-  const [state, setState] = useState<JiraState>({
-    connections: [],
-    loading: true,
-    error: null,
-  });
-
+  const cache = useQueryClient();
+  const userId = useUserId();
+  const query = useOwnerQuery(
+    organizationId,
+    "jira-connections",
+    (owner, signal) => clients.jira.connections(owner, signal),
+  );
+  const [writeError, setWriteError] = useState<string | null>(null);
   const refresh = useCallback(async () => {
-    if (organizationId === undefined) {
-      setState({ connections: [], loading: false, error: null });
-      return;
-    }
-    setState((current) => ({ ...current, loading: true }));
-    try {
-      const res = await fetch(
-        `/api/v1/orgs/${encodeURIComponent(organizationId)}/jira/connections`,
-        { credentials: "include" },
-      );
-      if (!res.ok) {
-        setState({
-          connections: [],
-          loading: false,
-          error: "Could not load your Jira connections.",
-        });
-        return;
-      }
-      const body = (await res.json()) as {
-        connections?: JiraConnection[];
-      } | null;
-      // Defaulted rather than trusted: a response of the wrong shape should
-      // render an empty list, not throw inside a component.
-      setState({
-        connections: body?.connections ?? [],
-        loading: false,
-        error: null,
-      });
-    } catch {
-      setState({
-        connections: [],
-        loading: false,
-        error: "Could not reach the server.",
-      });
-    }
-  }, [organizationId]);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+    await query.refresh();
+    setWriteError(null);
+  }, [query.refresh]);
+  const state: JiraState = {
+    connections: query.data ?? [],
+    loading: organizationId !== undefined && query.isPending,
+    error:
+      writeError ??
+      (query.isError ? "Could not load your Jira connections." : null),
+  };
 
   /**
    * Connect a site, or connect one again.
@@ -137,30 +113,22 @@ export function useJira(organizationId: string | undefined): Jira {
         return { ok: false as const, error: "Could not disconnect that site." };
       }
       try {
-        const res = await fetch(
-          `/api/v1/orgs/${encodeURIComponent(
-            organizationId,
-          )}/jira/connections/${encodeURIComponent(connectionId)}`,
-          { method: "DELETE", credentials: "include" },
-        );
-        if (!res.ok) {
-          const error = "Could not disconnect that site.";
-          setState((current) => ({ ...current, error }));
-          return { ok: false as const, error };
-        }
+        await clients.jira.disconnect(organizationId, connectionId);
+        await cache.invalidateQueries({
+          queryKey: queryKeys.resource(userId, organizationId, "jira-boards"),
+        });
         await refresh();
         return { ok: true as const };
-      } catch {
+      } catch (caught) {
         const error =
-          "Could not reach the server. The site is still connected.";
-        setState((current) => ({
-          ...current,
-          error,
-        }));
+          caught instanceof ApiError
+            ? "Could not disconnect that site."
+            : "Could not reach the server. The site is still connected.";
+        setWriteError(error);
         return { ok: false as const, error };
       }
     },
-    [organizationId, refresh],
+    [organizationId, refresh, cache, userId],
   );
 
   return { ...state, connect, disconnect, refresh };
@@ -196,10 +164,10 @@ export function useJiraOutcome(): {
     params.delete("jira");
     params.delete("missing");
     const query = params.toString();
-    window.history.replaceState(
-      null,
-      "",
-      window.location.pathname + (query === "" ? "" : `?${query}`),
+    replaceLocation(
+      window.location.pathname +
+        (query === "" ? "" : `?${query}`) +
+        (window.location.hash ?? ""),
     );
   }, []);
 
@@ -224,19 +192,7 @@ export interface JiraBoard {
   name: string;
   boardType: string;
   projectKey: string | null;
-  selection: {
-    /** A ceiling on tickets per run. Absent means every ticket that fits. */
-    ticketCap?: number;
-    unassignedOnly?: boolean;
-    minAgeDays?: number;
-    maxAgeDays?: number | null;
-    minSpecChars?: number;
-    /** Per-category overrides, by category id. */
-    categories?: Record<
-      string,
-      { enabled?: boolean; thresholds?: Record<string, number> }
-    >;
-  };
+  selection: Partial<import("@sandbox-factory/shared").BoardSelection>;
   /**
    * The registered GitHub repository the board's tickets are about. Absent
    * from a server older than repository links, which reads as unlinked.
@@ -346,11 +302,12 @@ export type JiraFetchError =
   | { kind: "other"; message: string };
 
 /** Turns a failed response into the error the page renders. */
-async function toFetchError(res: Response): Promise<JiraFetchError> {
-  const body = (await res.json().catch(() => null)) as {
-    code?: string;
-    error?: string;
-  } | null;
+function toFetchError(error: unknown): JiraFetchError {
+  const body =
+    error instanceof ApiError
+      ? { code: error.code, error: error.message }
+      : null;
+
   if (body?.code === "reconnect") {
     return { kind: "reconnect" };
   }
@@ -365,7 +322,10 @@ async function toFetchError(res: Response): Promise<JiraFetchError> {
   if (body?.code === "jira") {
     return { kind: "jira" };
   }
-  return { kind: "other", message: body?.error ?? "Something went wrong." };
+  return {
+    kind: "other",
+    message: body?.error ?? "Could not reach the server.",
+  };
 }
 
 export interface JiraBoards {
@@ -409,159 +369,114 @@ export interface JiraBoards {
  * re-render on a read the user is no longer waiting for.
  */
 export function useJiraBoards(organizationId: string | undefined): JiraBoards {
-  const [boards, setBoards] = useState<JiraBoard[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<JiraFetchError | null>(null);
-
-  const base =
-    organizationId === undefined
-      ? undefined
-      : `/api/v1/orgs/${encodeURIComponent(organizationId)}/jira`;
-
+  const cache = useQueryClient();
+  const userId = useUserId();
+  const query = useOwnerQuery<JiraBoard[]>(
+    organizationId,
+    "jira-boards",
+    (owner, signal) => clients.jira.boards(owner, signal),
+  );
+  const boards = query.data ?? [];
+  const loading = organizationId !== undefined && query.isPending;
+  const [actionError, setError] = useState<JiraFetchError | null>(null);
+  const error =
+    actionError ??
+    (query.isError
+      ? { kind: "other" as const, message: "Could not reach the server." }
+      : null);
   const refresh = useCallback(async () => {
-    if (base === undefined) {
-      setBoards([]);
-      setLoading(false);
-      return;
-    }
-    setLoading(true);
-    try {
-      const res = await fetch(`${base}/boards`, { credentials: "include" });
-      if (!res.ok) {
-        setError(await toFetchError(res));
-        setBoards([]);
-        setLoading(false);
-        return;
-      }
-      const body = (await res.json()) as { boards?: JiraBoard[] } | null;
-      setBoards(body?.boards ?? []);
-      setError(null);
-    } catch {
-      setError({ kind: "other", message: "Could not reach the server." });
-      setBoards([]);
-    }
-    setLoading(false);
-  }, [base]);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+    await query.refresh();
+  }, [query.refresh]);
 
   const sync = useCallback(
     async (connectionId: string) => {
-      if (base === undefined) {
-        return null;
-      }
-      // A POST because it writes rows, though the page means it as a read.
+      if (organizationId === undefined) return null;
       try {
-        const res = await fetch(
-          `${base}/connections/${encodeURIComponent(connectionId)}/sync`,
-          { method: "POST", credentials: "include" },
-        );
-        if (!res.ok) {
-          setError(await toFetchError(res));
-          return null;
-        }
-        const body = (await res.json().catch(() => null)) as {
-          added?: string[];
-        } | null;
+        const added = await clients.jira.sync(organizationId, connectionId);
         setError(null);
         await refresh();
-        return body?.added ?? [];
-      } catch {
-        setError({ kind: "other", message: "Could not reach the server." });
+        return added;
+      } catch (error) {
+        setError(toFetchError(error));
         return null;
       }
     },
-    [base, refresh],
+    [organizationId, refresh],
   );
-
   const preview = useCallback(
     async (boardId: string) => {
-      if (base === undefined) {
-        return null;
-      }
+      if (organizationId === undefined) return null;
       try {
-        const res = await fetch(
-          `${base}/boards/${encodeURIComponent(boardId)}/backlog-preview`,
-          { credentials: "include" },
-        );
-        if (!res.ok) {
-          setError(await toFetchError(res));
-          return null;
-        }
+        const result = await cache.fetchQuery({
+          queryKey: queryKeys.resource(
+            userId,
+            organizationId,
+            "jira-preview",
+            boardId,
+          ),
+          queryFn: ({ signal }) =>
+            clients.jira.preview(organizationId, boardId, signal),
+          staleTime: 0,
+        });
         setError(null);
-        return (await res.json()) as BacklogPreview;
-      } catch {
-        setError({ kind: "other", message: "Could not reach the server." });
+        return result;
+      } catch (error) {
+        setError(toFetchError(error));
         return null;
       }
     },
-    [base],
+    [organizationId, cache, userId],
   );
-
   const issue = useCallback(
     async (boardId: string, issueKey: string) => {
-      if (base === undefined) {
-        return null;
-      }
+      if (organizationId === undefined) return null;
       try {
-        const res = await fetch(
-          `${base}/boards/${encodeURIComponent(boardId)}/issues/${encodeURIComponent(issueKey)}`,
-          { credentials: "include" },
-        );
-        if (!res.ok) {
-          setError(await toFetchError(res));
-          return null;
-        }
+        const result = await cache.fetchQuery({
+          queryKey: queryKeys.resource(
+            userId,
+            organizationId,
+            "jira-issue",
+            boardId,
+            issueKey,
+          ),
+          queryFn: ({ signal }) =>
+            clients.jira.issue(organizationId, boardId, issueKey, signal),
+          staleTime: 0,
+        });
         setError(null);
-        const body = (await res.json()) as { issue?: JiraIssueDetail } | null;
-        return body?.issue ?? null;
-      } catch {
-        setError({ kind: "other", message: "Could not reach the server." });
+        return result;
+      } catch (error) {
+        setError(toFetchError(error));
         return null;
       }
     },
-    [base],
+    [organizationId, cache, userId],
   );
-
   const linkRepository = useCallback(
     async (boardId: string, repoId: string | null) => {
-      if (base === undefined) return "Could not link that repository.";
+      if (organizationId === undefined)
+        return "Could not link that repository.";
       try {
-        const res = await fetch(
-          `${base}/boards/${encodeURIComponent(boardId)}`,
-          {
-            method: "PATCH",
-            credentials: "include",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ sourceRepoId: repoId }),
-          },
+        const saved = await clients.jira.updateBoard(organizationId, boardId, {
+          sourceRepoId: repoId,
+        });
+        query.setData((current) =>
+          (current ?? []).map((board) =>
+            board.id === saved.id ? saved : board,
+          ),
         );
-        if (!res.ok) {
-          return res.status === 404
-            ? "That repository is no longer registered here."
-            : res.status === 403
-              ? "Only an owner or admin may change the repository."
-              : "Could not link that repository.";
-        }
-        const body = (await res.json().catch(() => null)) as {
-          board?: JiraBoard;
-        } | null;
-        const saved = body?.board;
-        if (saved !== undefined) {
-          setBoards((current) =>
-            current.map((board) => (board.id === saved.id ? saved : board)),
-          );
-        } else {
-          await refresh();
-        }
         return null;
-      } catch {
-        return "Could not reach the server.";
+      } catch (error) {
+        return error instanceof ApiError
+          ? error.status === 404
+            ? "That repository is no longer registered here."
+            : error.status === 403
+              ? "Only an owner or admin may change the repository."
+              : "Could not link that repository."
+          : "Could not reach the server.";
       }
     },
-    [base, refresh],
+    [organizationId, query.setData],
   );
 
   return {

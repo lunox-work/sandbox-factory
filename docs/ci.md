@@ -6,6 +6,7 @@ protection on `main`.
 | Workflow              | Does                                                                    |
 | --------------------- | ----------------------------------------------------------------------- |
 | `ci.yml`              | Lint, format, build, test on Node 22 and 24; worker image smoke         |
+| `e2e.yml`             | Playwright browser smoke on Chromium — the `Browser smoke` check        |
 | `autofix.yml`         | Pushes `npm run format` fixes to same-repository PRs                    |
 | `codeql.yml`          | Security analysis — the `Analyze` check                                 |
 | `auto-merge.yml`      | Arms auto-merge on every PR                                             |
@@ -24,7 +25,8 @@ one active ruleset, no bypass actors, no force-push/deletion, linear history
 and squash-only PR merges. These contexts are required, from their expected
 GitHub Apps:
 
-- `Test (Node 22)`, `Test (Node 24)`, `Worker image smoke`, `Analyze`: GitHub Actions.
+- `Test (Node 22)`, `Test (Node 24)`, `Worker image smoke`,
+  `Browser smoke (Chromium)`, `Analyze`: GitHub Actions.
 - `CodeQL`: GitHub Advanced Security (the findings result, not just the scanner job).
 
 **A PR merges once CI passes.** No approving review is required, review
@@ -56,6 +58,10 @@ Each job runs `npm ci --ignore-scripts` → `npm run lint` → `npm run format:c
 → `npm run build` → `npm test` — the same sequence as `npm run verify`, which
 the pre-push hook runs. Keep them identical.
 
+CI also runs `npm run test:bounty-concurrency --workspace @sandbox-factory/db`
+sequentially after ordinary tests, against its disposable Postgres service.
+This scratch-database suite fails when Postgres is unavailable.
+
 CI then does three things `verify` does not: it runs against a **Postgres
 service container and a SeaweedFS fixture**, asserts the database-backed tests actually ran rather than
 skipping, and asserts the build recorded its commit. The S3 regression uploads
@@ -64,7 +70,10 @@ gateway incompatibilities such as optional AWS checksum trailer framing. Turbo
 passes the database URL and test S3 endpoint into the test tasks and their cache
 keys.
 
-- **Format is a separate gate from lint.** `npm run lint` is `tsc --noEmit`.
+- **Lint also checks import boundaries.** `npm run lint` runs each workspace's
+  `tsc --noEmit`, then `npm run lint:deps`
+  ([dependency rules](./architecture.md#dependency-direction)).
+- **Format is a separate gate from lint.**
   Unformatted Markdown fails CI as hard as unformatted TypeScript.
   [`autofix.yml`](../.github/workflows/autofix.yml) runs `npm run format` on
   each same-repository PR and pushes any diff as a `style:` commit, which

@@ -6,7 +6,7 @@ Slice reads a graphify run's graph and the same source to describe
 the files one task needs and their boundary. Sandbox build
 turns a slice and a version's private transform into a runnable project and
 checks its baseline in an evaluation job. Scope and fixtures are agent runs:
-a model reads the source to propose a slice for a ticket, and to write
+a model reads the source to propose a slice for a bounty, and to write
 behaviour for a succeeded slice's mocked calls. Graphify, slice and the
 agents never execute repository code or install its dependencies; the build
 executes the generated project only inside the evaluation provider's job.

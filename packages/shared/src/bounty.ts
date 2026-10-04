@@ -1,422 +1,168 @@
+/**
+ * Bounties on the wire: the organization's own record of a piece of work,
+ * written here or imported from Jira. A bounty is two things at least, its
+ * proposal and its sandbox, and each answer carries both in brief.
+ * `/api/v1/orgs/:orgId/bounties`.
+ */
+
 import {
-  BOUNTY_COMPLEXITIES,
-  BOUNTY_RUN_KINDS,
-  maximumRateCardMinor,
-  MODEL_BOUNTY_COMPLEXITIES,
-  PRICED_BOUNTY_COMPLEXITIES,
-  SCENARIO_WEIGHTS,
-  STEP_SETTING_LIMITS,
-  WHOLE_BOUNTY_COMPLEXITIES,
+  DEFAULT_ISSUE_TYPE,
+  BOUNTY_LIMITS,
+  BOUNTY_ORIGINS,
+  bountySpecHash,
+  SANDBOX_STATUSES,
 } from "sandbox-factory";
 import { z } from "zod";
 
 import {
-  respecRequestSchema,
-  scenarioKindSchema,
-  scenarioWeightSchema,
-} from "./spec.js";
-
-/** Any size a proposal can hold, half sizes included, or `unsized`. */
-export const bountyComplexitySchema = z.enum(BOUNTY_COMPLEXITIES);
-/** Any size a proposal can be priced at, half sizes included. */
-export const pricedComplexitySchema = z.enum(PRICED_BOUNTY_COMPLEXITIES);
-/**
- * The five sizes a person or the model judges in. The model never answers
- * a half size and a resize never sets one: a half size is only ever where
- * the scenario step lands.
- */
-export const wholeComplexitySchema = z.enum(WHOLE_BOUNTY_COMPLEXITIES);
-/** What the sizing model may answer: a whole size, or `unsized`. */
-export const modelComplexitySchema = z.enum(MODEL_BOUNTY_COMPLEXITIES);
-export const sizingConfidenceSchema = z.enum(["low", "medium", "high"]);
-
-const minorAmountSchema = z
-  .number()
-  .int()
-  .positive()
-  .max(Number.MAX_SAFE_INTEGER);
-
-export const rateCardValuesSchema = z
-  .object({
-    currency: z
-      .string()
-      .trim()
-      .length(3)
-      .transform((value) => value.toUpperCase()),
-    xsMinor: minorAmountSchema,
-    sMinor: minorAmountSchema,
-    mMinor: minorAmountSchema,
-    lMinor: minorAmountSchema,
-    xlMinor: minorAmountSchema,
-  })
-  .refine(
-    ({ xsMinor, sMinor, mMinor, lMinor, xlMinor }) =>
-      xsMinor <= sMinor &&
-      sMinor <= mMinor &&
-      mMinor <= lMinor &&
-      lMinor <= xlMinor,
-    { message: "Rates must increase from XS through XL." },
-  );
-
-export const rateCardSnapshotSchema = rateCardValuesSchema.extend({
-  revision: z.number().int().positive(),
-});
-
-export const rateCardDtoSchema = rateCardSnapshotSchema.extend({
-  organizationId: z.string().min(1),
-  updatedAt: z.iso.datetime(),
-});
-
-export const putRateCardSchema = rateCardValuesSchema
-  .extend({
-    expectedRevision: z.number().int().nonnegative(),
-  })
-  .refine(
-    ({ currency, xlMinor }) => xlMinor <= maximumRateCardMinor(currency),
-    {
-      path: ["xlMinor"],
-      message: "XL cannot exceed USD 1,000.",
-    },
-  );
-
-export const sizingResultSchema = z
-  .object({
-    complexity: modelComplexitySchema,
-    confidence: sizingConfidenceSchema,
-    rationale: z.string().trim().min(1).max(500),
-    unsizedReason: z.string().trim().min(1).max(120).optional(),
-  })
-  .superRefine((value, ctx) => {
-    if (value.complexity === "unsized" && value.unsizedReason === undefined) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["unsizedReason"],
-        message: "An unsized result requires a reason.",
-      });
-    }
-    if (value.complexity !== "unsized" && value.unsizedReason !== undefined) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["unsizedReason"],
-        message: "A sized result cannot include an unsized reason.",
-      });
-    }
-  });
-
-/** What a run does: core's `BOUNTY_RUN_KINDS`. */
-export const bountyRunKindSchema = z.enum(BOUNTY_RUN_KINDS);
-export const bountyRunStatusSchema = z.enum([
-  "queued",
-  "running",
-  "succeeded",
-  "partial",
-  "failed",
-]);
-export const bountyOutcomeStatusSchema = z.enum([
-  "proposed",
-  "unsized",
-  "failed",
-  "skipped",
-]);
-
-export const bountyRunOutcomeSchema = z.object({
-  externalIssueId: z.string().min(1),
-  issueKey: z.string().min(1),
-  /** The ticket the outcome is about, once the run had one. */
-  ticketId: z.string().min(1).optional(),
-  /** On outcomes recorded before tickets existed: the Jira pointer. */
-  jiraIssueId: z.string().min(1).optional(),
-  proposalId: z.string().min(1).optional(),
-  status: bountyOutcomeStatusSchema,
-  code: z.string().min(1).max(80).optional(),
-  actualModel: z.string().min(1).max(200).optional(),
-  inputTokens: z.number().int().nonnegative().optional(),
-  outputTokens: z.number().int().nonnegative().optional(),
-  /**
-   * A respec's only: the size before the change, and the points the change
-   * moved the spec by, negative for a trim. The size after is the
-   * proposal's.
-   */
-  previousComplexity: bountyComplexitySchema.optional(),
-  pointsDelta: z.number().int().optional(),
-});
-
-/** Why a backlog run picked a ticket: one category it fits, and the case. */
-export const bountyCategoryMatchSchema = z.object({
-  id: z.string().min(1),
-  label: z.string().min(1),
-  reason: z.string().min(1),
-});
+  bountyComplexitySchema,
+  bountyProposalStatusSchema,
+} from "./pricing.js";
 
 /**
- * A board's proposals by category: what the category view above the list
- * is drawn from. Every category in the registry is present, in registry
- * order, with a zero when nothing on the board fits it. A ticket picked for
- * two categories counts in both, so the counts can sum past `total`.
+ * The fingerprint a proposal is priced against, and the bounds and default
+ * a bounty's text is held to, re-exported so `packages/jira` reads Jira's
+ * text with the one definition of each.
  */
-export const proposalCategoriesDtoSchema = z.object({
-  /** Every proposal on the board, categorised or not. */
-  total: z.number().int().nonnegative(),
-  /**
-   * The proposals in no category at all: a ticket somebody picked by hand,
-   * or one sized before there were categories.
-   */
-  uncategorized: z.number().int().nonnegative(),
-  categories: z.array(
-    z.object({
-      id: z.string().min(1),
-      label: z.string().min(1),
-      /** Why a ticket like this is worth outsourcing. */
-      why: z.string(),
-      count: z.number().int().nonnegative(),
-    }),
-  ),
-});
+export { DEFAULT_ISSUE_TYPE, BOUNTY_LIMITS, bountySpecHash };
 
-export const bountyRunPlannedIssueSchema = z.object({
-  /** Jira's issue id for a board's ticket; the ticket's id for one written here. */
-  externalIssueId: z.string().min(1),
-  issueKey: z.string().min(1),
-  summary: z.string(),
-  /** The ticket, when it was known as the plan was written. */
-  ticketId: z.string().min(1).optional(),
-  /** Absent on plans recorded before categories existed. */
-  categories: z.array(bountyCategoryMatchSchema).optional(),
-});
-
-export const bountyRunDtoSchema = z.object({
-  id: z.string().min(1),
-  organizationId: z.string().min(1),
-  /**
-   * The Jira board the run read, or null for a run that started from a
-   * ticket with none: one written here, or one whose board has gone.
-   */
-  boardId: z.string().min(1).nullable(),
-  /** The one ticket a `ticket`, `reprice` or `respec` run is about. */
-  ticketId: z.string().min(1).nullable(),
-  kind: bountyRunKindSchema,
-  sourceProposalId: z.string().nullable(),
-  sourceRevision: z.number().int().positive().nullable(),
-  /** What a `respec` run was asked to do; null for every other kind. */
-  respec: respecRequestSchema.nullable(),
-  requestId: z.uuid(),
-  status: bountyRunStatusSchema,
-  selection: z.record(z.string(), z.unknown()),
-  rateCard: rateCardSnapshotSchema,
-  requestedModel: z.string().min(1),
-  promptVersion: z.string().min(1),
-  planned: z.array(bountyRunPlannedIssueSchema),
-  outcomes: z.array(bountyRunOutcomeSchema),
-  candidatesScanned: z.number().int().nonnegative(),
-  skippedLive: z.number().int().nonnegative(),
-  scanLimitReached: z.boolean(),
-  fatalErrorCode: z.string().nullable(),
-  startedAt: z.iso.datetime().nullable(),
-  deadlineAt: z.iso.datetime().nullable(),
-  finishedAt: z.iso.datetime().nullable(),
-  createdAt: z.iso.datetime(),
-});
-
-export const createRunSchema = z.object({ requestId: z.uuid() });
-
-/** Size one ticket someone picked, by Jira's numeric issue id. */
-export const addIssueSchema = z.object({
-  requestId: z.uuid(),
-  issueId: z.string().regex(/^\d{1,18}$/),
-});
-
-const stepPointsSchema = z
-  .number()
-  .int()
-  .min(STEP_SETTING_LIMITS.minWeightPoints)
-  .max(STEP_SETTING_LIMITS.maxPoints);
-
-/** The settings a step was computed with: `pricing/step` in core. */
-export const stepSettingsSchema = z.object({
-  pointsPerStep: z
-    .number()
-    .int()
-    .min(STEP_SETTING_LIMITS.minPointsPerStep)
-    .max(STEP_SETTING_LIMITS.maxPoints),
-  weightPoints: z.object(
-    Object.fromEntries(
-      SCENARIO_WEIGHTS.map((weight) => [weight, stepPointsSchema]),
-    ) as Record<(typeof SCENARIO_WEIGHTS)[number], typeof stepPointsSchema>,
-  ),
-});
+export const bountyOriginSchema = z.enum(BOUNTY_ORIGINS);
 
 /**
- * How the weight a reviewer added to the spec moved the size: the base,
- * the half steps it climbed and the scenarios behind them. Stored on the
- * proposal as computed, so it reads the same after the settings change.
+ * A bounty's Jira issue, while it has one. The bounty's text follows the
+ * issue each time a run reads it; `removedAt` says Jira stopped returning
+ * it, and from then on the bounty keeps the text it last had.
  */
-export const stepResultSchema = z.object({
-  base: wholeComplexitySchema,
-  complexity: pricedComplexitySchema,
-  steps: z.number().int().nonnegative(),
-  addedPoints: z.number().int().nonnegative(),
-  added: z.array(
-    z.object({
-      id: z.string().min(1),
-      kind: scenarioKindSchema,
-      title: z.string().min(1),
-      weight: scenarioWeightSchema,
-    }),
-  ),
-  nextStepIn: z.number().int().positive().nullable(),
-  settings: stepSettingsSchema,
-  stepVersion: z.string().min(1),
-});
-
-export const bountyProposalStatusSchema = z.enum(["proposed", "approved"]);
-export const proposalFreshnessSchema = z.enum([
-  "current",
-  "stale",
-  "missing",
-  "unknown",
-]);
-
-export const bountyProposalDtoSchema = z.object({
-  id: z.string().min(1),
-  organizationId: z.string().min(1),
-  runId: z.string().min(1),
-  /** The ticket the proposal prices. */
-  ticketId: z.string().min(1),
-  /** The ticket's key: its Jira key while it has one, `T-<number>` otherwise. */
-  issueKey: z.string().min(1),
-  /** The ticket's title as the platform holds it. */
-  title: z.string(),
-  specHash: z.string().length(64),
-  specHashVersion: z.number().int().positive(),
-  rateCard: rateCardSnapshotSchema,
-  modelComplexity: modelComplexitySchema,
-  modelConfidence: sizingConfidenceSchema,
-  modelRationale: z.string().max(500),
-  unsizedReason: z.string().nullable(),
-  inputTruncated: z.boolean(),
-  actualModel: z.string().min(1),
-  promptVersion: z.string().min(1),
-  complexity: bountyComplexitySchema,
-  sizedBy: z.enum(["model", "reviewer"]),
-  resizedBy: z.string().nullable(),
-  resizedAt: z.iso.datetime().nullable(),
-  amountMinor: minorAmountSchema.nullable(),
-  currency: z.string().length(3).nullable(),
-  status: bountyProposalStatusSchema,
-  revision: z.number().int().positive(),
-  /**
-   * The spec revision this size goes with. Null when the proposal has no
-   * spec: one sized before specs existed, or one whose ticket could not be
-   * drafted from.
-   */
-  specRevision: z.number().int().positive().nullable(),
-  /**
-   * The repository snapshot whose outline the spec was drafted beside, or
-   * null when the ticket had no repository, its repository had no snapshot
-   * yet, or the snapshot has since been pruned.
-   */
-  repoSnapshotId: z.string().nullable().default(null),
-  /**
-   * The scenario step `complexity` came from. Null when there is none to
-   * take: an unsized ticket, a proposal with no spec, or one whose spec was
-   * drafted before weights. Then `complexity` is the base itself.
-   */
-  step: stepResultSchema.nullable(),
-  decidedAt: z.iso.datetime().nullable(),
-  decidedBy: z.string().nullable(),
-  decisionDeliveryPolicy: z.enum(["off", "requested"]).nullable(),
-  freshness: proposalFreshnessSchema.optional(),
-  liveTitle: z.string().optional(),
-  createdAt: z.iso.datetime(),
-  updatedAt: z.iso.datetime(),
-});
-
-export const proposalMutationSchema = z.object({
-  expectedRevision: z.number().int().positive(),
-});
-/**
- * A reviewer's size. Whole sizes only: it sets the base, and the step
- * still applies on top, so a reviewer who says M on a spec that grew a
- * heavy scenario gets M+.
- */
-export const resizeProposalSchema = proposalMutationSchema.extend({
-  complexity: wholeComplexitySchema,
-});
-export const repriceProposalSchema = proposalMutationSchema.extend({
-  requestId: z.uuid(),
-});
-/**
- * A change to a proposal's spec: grow it, answer its questions or trim
- * it. Like a re-price it starts a run, named by `requestId`, against the
- * proposal revision the reviewer saw.
- */
-export const respecProposalSchema = repriceProposalSchema.extend({
-  request: respecRequestSchema,
-});
-
-export const proposalFreshnessDtoSchema = z.object({
-  freshness: proposalFreshnessSchema,
-  checkedAt: z.iso.datetime(),
-  code: z.string().optional(),
-  liveTitle: z.string().optional(),
-  liveKey: z.string().optional(),
-  liveUrl: z.url().optional(),
-});
-
-/**
- * What the ticket says now, for comparing with what was priced: read from
- * Jira for a ticket that has an issue there, and the ticket as stored
- * otherwise, which has no `url`.
- */
-export const proposalLiveSpecSchema = z.object({
-  summary: z.string(),
-  descriptionText: z.string(),
-  issueType: z.string(),
-  key: z.string(),
+export const bountyJiraLinkSchema = z.object({
+  /** The platform's pointer to the issue. */
+  issueId: z.string().min(1),
+  boardId: z.string().min(1),
+  connectionId: z.string().min(1),
+  key: z.string().min(1),
+  /** The issue in Jira, or null when the site is not known. */
   url: z.url().nullable(),
-  inputTruncated: z.boolean(),
+  removedAt: z.iso.datetime().nullable(),
 });
 
-export const bountyWritebackDtoSchema = z.object({
+/** The bounty's live proposal, in brief: enough for a list to show. */
+export const bountyProposalSummarySchema = z.object({
+  id: z.string().min(1),
+  status: bountyProposalStatusSchema,
+  complexity: bountyComplexitySchema,
+  amountMinor: z.number().int().positive().nullable(),
+  currency: z.string().length(3).nullable(),
+});
+
+/** The bounty's sandbox, in brief: absent until one is made for it. */
+export const bountySandboxSummarySchema = z.object({
+  id: z.string().min(1),
+  status: z.enum(SANDBOX_STATUSES),
+  currentVersionId: z.string().nullable(),
+  /** Null until a repository is linked; no version is cut before. */
+  sourceRepoId: z.string().nullable(),
+});
+
+/** A bounty as a list shows it: everything but its longer text. */
+export const bountySummaryDtoSchema = z.object({
   id: z.string().min(1),
   organizationId: z.string().min(1),
-  proposalId: z.string().min(1),
-  proposalRevision: z.number().int().positive(),
-  kind: z.enum(["approved", "withdrawn"]),
-  status: z.enum([
-    "pending",
-    "running",
-    "done",
-    "failed",
-    "uncertain",
-    "cancelled",
-  ]),
-  step: z.enum(["comment", "label"]),
-  payload: z.object({
-    complexity: pricedComplexitySchema,
-    amountMinor: minorAmountSchema,
-    currency: z.string().length(3),
-    proposalUrl: z.url(),
-  }),
-  jiraCommentId: z.string().nullable(),
-  errorCode: z.string().nullable(),
-  commentAttemptedAt: z.iso.datetime().nullable(),
+  /** The organization's own count, which `key` falls back to. */
+  number: z.number().int().positive(),
+  /** Its Jira key while it has one, `B-<number>` otherwise. */
+  key: z.string().min(1),
+  title: z.string().min(1),
+  issueType: z.string().min(1),
+  priority: z.string().nullable(),
+  labels: z.array(z.string()),
+  origin: bountyOriginSchema,
+  /**
+   * The repository the bounty is about, when one was named for it. A Jira
+   * bounty with none is drafted beside its board's repository instead.
+   */
+  repoId: z.string().nullable(),
+  revision: z.number().int().positive(),
+  jira: bountyJiraLinkSchema.nullable(),
+  proposal: bountyProposalSummarySchema.nullable(),
+  sandbox: bountySandboxSummarySchema.nullable(),
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
 });
 
-export type RateCardValuesDto = z.infer<typeof rateCardValuesSchema>;
-export type RateCardSnapshotDto = z.infer<typeof rateCardSnapshotSchema>;
-export type RateCardDto = z.infer<typeof rateCardDtoSchema>;
-export type SizingResult = z.infer<typeof sizingResultSchema>;
-export type StepSettingsDto = z.infer<typeof stepSettingsSchema>;
-export type StepResultDto = z.infer<typeof stepResultSchema>;
-export type BountyRunOutcome = z.infer<typeof bountyRunOutcomeSchema>;
-export type BountyCategoryMatch = z.infer<typeof bountyCategoryMatchSchema>;
-export type ProposalCategoriesDto = z.infer<typeof proposalCategoriesDtoSchema>;
-export type BountyRunPlannedIssue = z.infer<typeof bountyRunPlannedIssueSchema>;
-export type BountyRunDto = z.infer<typeof bountyRunDtoSchema>;
-export type BountyProposalDto = z.infer<typeof bountyProposalDtoSchema>;
-export type ProposalFreshnessDto = z.infer<typeof proposalFreshnessDtoSchema>;
-export type ProposalLiveSpecDto = z.infer<typeof proposalLiveSpecSchema>;
-export type BountyWritebackDto = z.infer<typeof bountyWritebackDtoSchema>;
+export const bountyDtoSchema = bountySummaryDtoSchema.extend({
+  description: z.string(),
+  components: z.array(z.string()),
+  /** True when Jira's description was longer than a bounty keeps. */
+  inputTruncated: z.boolean(),
+  createdBy: z.string().nullable(),
+});
+
+export const bountyListResponseSchema = z.object({
+  bounties: z.array(bountySummaryDtoSchema),
+  nextCursor: z.string().nullable(),
+});
+
+export const bountyResponseSchema = z.object({ bounty: bountyDtoSchema });
+
+const titleSchema = z.string().trim().min(1).max(BOUNTY_LIMITS.title);
+const descriptionSchema = z.string().max(BOUNTY_LIMITS.description);
+const issueTypeSchema = z.string().trim().min(1).max(BOUNTY_LIMITS.issueType);
+const prioritySchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(BOUNTY_LIMITS.priority)
+  .nullable();
+/** Trimmed, and each kept once in the order first given. */
+const labelsSchema = z
+  .array(z.string().trim().min(1).max(BOUNTY_LIMITS.label))
+  .max(BOUNTY_LIMITS.labels)
+  .transform((labels) => [...new Set(labels)]);
+const repoIdSchema = z.string().min(1).nullable();
+
+/** A bounty written here. Only the title is required. */
+export const createBountySchema = z.strictObject({
+  title: titleSchema,
+  description: descriptionSchema.default(""),
+  issueType: issueTypeSchema.default(DEFAULT_ISSUE_TYPE),
+  priority: prioritySchema.default(null),
+  labels: labelsSchema.default([]),
+  repoId: repoIdSchema.default(null),
+});
+
+/**
+ * A change to a bounty, against the revision the editor saw. A Jira
+ * bounty's text is Jira's to change, so only its repository may be set
+ * here; the route refuses the rest.
+ */
+export const updateBountySchema = z
+  .strictObject({
+    expectedRevision: z.number().int().positive(),
+    title: titleSchema.optional(),
+    description: descriptionSchema.optional(),
+    issueType: issueTypeSchema.optional(),
+    priority: prioritySchema.optional(),
+    labels: labelsSchema.optional(),
+    repoId: repoIdSchema.optional(),
+  })
+  .refine(
+    ({ expectedRevision: _revision, ...change }) =>
+      Object.values(change).some((value) => value !== undefined),
+    "Nothing to change.",
+  );
+
+/** Size one bounty and make its proposal, named by `requestId`. */
+export const proposeBountySchema = z.object({ requestId: z.uuid() });
+
+export type BountyOriginDto = z.infer<typeof bountyOriginSchema>;
+export type BountyJiraLinkDto = z.infer<typeof bountyJiraLinkSchema>;
+export type BountyProposalSummaryDto = z.infer<
+  typeof bountyProposalSummarySchema
+>;
+export type BountySandboxSummaryDto = z.infer<
+  typeof bountySandboxSummarySchema
+>;
+export type BountySummaryDto = z.infer<typeof bountySummaryDtoSchema>;
+export type BountyDto = z.infer<typeof bountyDtoSchema>;
+export type BountyListResponse = z.infer<typeof bountyListResponseSchema>;
+export type CreateBountyInput = z.infer<typeof createBountySchema>;
+export type UpdateBountyInput = z.infer<typeof updateBountySchema>;

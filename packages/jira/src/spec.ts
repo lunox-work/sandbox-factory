@@ -1,3 +1,4 @@
+import { normalizeSpecText } from "@sandbox-factory/shared";
 /**
  * Reading a ticket's spec, and fingerprinting what was read.
  *
@@ -10,7 +11,7 @@
  * caller has to ask for it by name.
  */
 
-import { DEFAULT_ISSUE_TYPE, ticketSpecHash } from "@sandbox-factory/shared";
+import { DEFAULT_ISSUE_TYPE, bountySpecHash } from "@sandbox-factory/shared";
 
 import { adfToTextResult } from "./adf.js";
 
@@ -46,7 +47,7 @@ export interface JiraIssueSpec {
    */
   readonly specHash: string;
   /**
-   * Version 1 of the ticket's own hash (`ticketSpecHash`): the normalized
+   * Version 1 of the ticket's own hash (`bountySpecHash`): the normalized
    * summary, description and issue type as a JSON tuple. On review, the live
    * ticket is re-read and re-hashed: a difference means the spec changed
    * after it was priced, and the proposal is stale.
@@ -89,7 +90,7 @@ export async function specHash(
 ): Promise<string> {
   // `\u0000` separates the fields: it cannot occur in text Jira renders, so
   // no summary can be crafted to collide with a summary+description pair.
-  const canonical = `${normalize(summary)}\u0000${normalize(descriptionText)}`;
+  const canonical = `${normalizeSpecText(summary)}\u0000${normalizeSpecText(descriptionText)}`;
   return sha256(canonical);
 }
 
@@ -104,7 +105,7 @@ export const pricingSpecHash: (
   summary: string,
   descriptionText: string,
   issueType: string,
-) => Promise<string> = ticketSpecHash;
+) => Promise<string> = bountySpecHash;
 
 async function sha256(canonical: string): Promise<string> {
   const bytes = new TextEncoder().encode(canonical);
@@ -112,15 +113,6 @@ async function sha256(canonical: string): Promise<string> {
   return [...new Uint8Array(digest)]
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("");
-}
-
-/** Line endings and trailing space removed; the words themselves untouched. */
-function normalize(value: string): string {
-  return value
-    .split(/\r\n|\r|\n/)
-    .map((line) => line.trimEnd())
-    .join("\n")
-    .trim();
 }
 
 /** Builds the spec from a raw issue payload. Exported for the client. */

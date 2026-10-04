@@ -36,6 +36,6 @@ The walkthrough is TypeScript for \`sandbox/run.ts\`. Import the task's code wit
 
 Use \`check_fixtures\` to type-check fixtures against the stubs and the walkthrough against the slice, and fix what it reports. Finish by calling \`submit_fixtures\` once, with a reason for each fixture and a short summary of what the walkthrough shows.`;
 
-export function ticketSection(issueKey: string, draft: SpecDraft): string {
+export function bountySection(issueKey: string, draft: SpecDraft): string {
   return `Ticket ${issueKey}, as its approved Gherkin spec:\n\n${renderGherkin(draft)}`;
 }

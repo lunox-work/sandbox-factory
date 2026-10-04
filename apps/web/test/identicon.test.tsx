@@ -9,7 +9,7 @@
  * identicon while a missing or broken one does not.
  */
 
-import { render, waitFor } from "@testing-library/react";
+import { render, waitFor } from "./render";
 import { expect, test, vi } from "vitest";
 
 import { EntityAvatar } from "../src/components/Avatar";

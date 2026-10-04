@@ -20,7 +20,6 @@ import { z } from "zod";
 import { entryPointSchema, sandboxFixtureSchema } from "./analysis.js";
 import { specDraftSchema } from "./spec.js";
 
-export const SANDBOX_TICKETS_MAX = 20;
 export const ACCEPTANCE_TESTS_MAX = 50;
 export const ACCEPTANCE_TEST_CHARS_MAX = 64 * 1024;
 export const SANDBOX_TAGS_MAX = 10;
@@ -71,10 +70,22 @@ export const versionFixturesSchema = fixturesInputSchema.extend({
   fixtureRunId: z.string().nullable(),
 });
 
+/**
+ * A bounty's sandbox. One per bounty. The repository it is cut from is
+ * optional: a sandbox without one exists, but no version can be sliced for
+ * it until one is linked.
+ */
 export const createSandboxSchema = z.strictObject({
+  bountyId: z.string().min(1),
+  sourceRepoId: z.string().min(1).nullable().default(null),
+});
+
+/**
+ * The repository a sandbox made without one is cut from. Linked once: the
+ * versions sliced from it are bound to it.
+ */
+export const linkSandboxSourceSchema = z.strictObject({
   sourceRepoId: z.string().min(1),
-  /** The tickets the sandbox is cut for. */
-  ticketIds: z.array(z.string().min(1)).max(SANDBOX_TICKETS_MAX).default([]),
 });
 
 /** A draft version from a succeeded slice run on the sandbox's source. */
@@ -122,8 +133,9 @@ export const sandboxDtoSchema = z.strictObject({
   status: z.enum(SANDBOX_STATUSES),
   publicRepoId: z.string().nullable(),
   currentVersionId: z.string().nullable(),
-  sourceRepoId: z.string(),
-  ticketIds: z.array(z.string()),
+  bountyId: z.string(),
+  /** Null for a sandbox with no repository to slice from. */
+  sourceRepoId: z.string().nullable(),
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
 });
@@ -190,15 +202,20 @@ const approvedTaskSelectionSchema = z.object({
   selectedAt: z.string(),
 });
 /**
- * A version's frozen task. Version 2 names the sandbox's tickets; a version
- * frozen before tickets names Jira issue pointers, and is read as it was
- * written because its hash covers it.
+ * A version's frozen task. Version 3 names the bounty the sandbox belongs
+ * to. Older versions are read as they were written, because their hash
+ * covers them: version 2 names the tickets, as bounties were then called,
+ * and version 1 names Jira issue pointers.
  */
 export const approvedTaskSnapshotSchema = z.discriminatedUnion(
   "schemaVersion",
   [
     approvedTaskSelectionSchema.extend({
       schemaVersion: z.literal(APPROVED_TASK_SCHEMA_VERSION),
+      bountyId: z.string(),
+    }),
+    approvedTaskSelectionSchema.extend({
+      schemaVersion: z.literal(2),
       ticketIds: z.array(z.string()),
     }),
     approvedTaskSelectionSchema.extend({
@@ -262,6 +279,7 @@ export const replayResponseSchema = z.discriminatedUnion("ok", [
 
 export type AliasRuleInput = z.input<typeof aliasRuleSchema>;
 export type CreateSandboxInput = z.input<typeof createSandboxSchema>;
+export type LinkSandboxSourceInput = z.input<typeof linkSandboxSourceSchema>;
 export type CreateSandboxVersionInput = z.input<
   typeof createSandboxVersionSchema
 >;

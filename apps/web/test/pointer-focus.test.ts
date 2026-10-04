@@ -6,7 +6,7 @@
  * whether a real browser draws the ring, and that is the whole of the fix.
  */
 
-import { fireEvent } from "@testing-library/react";
+import { fireEvent } from "./render";
 import { afterEach, beforeEach, expect, test, vi, type Mock } from "vitest";
 
 import { installPointerFocus } from "../src/lib/pointer-focus";

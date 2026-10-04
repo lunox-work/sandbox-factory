@@ -1,3 +1,4 @@
+import { isAtLeastAdmin } from "../access.js";
 /**
  * Connecting a client's Jira site: the OAuth 2.0 (3LO) round trip, and the
  * connections it produces.
@@ -48,9 +49,8 @@ import {
   type JiraClientFailure,
   type JiraFailureTarget,
 } from "./credential.js";
-import { InvalidBoardIdError, selectBacklog } from "../bounty/selection.js";
+import { InvalidBoardIdError, selectBacklog } from "../pricing/selection.js";
 import {
-  isAtLeastAdmin,
   redirectTarget,
   safePath,
   signState,

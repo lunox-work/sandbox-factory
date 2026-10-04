@@ -1,3 +1,8 @@
+import { ApiError } from "@sandbox-factory/client";
+import { activeRunConflictSchema } from "@sandbox-factory/shared";
+import { useQuery } from "@tanstack/react-query";
+import { terminalRun, useObservation } from "./data/observe";
+import { clients, queryKeys, useUserId } from "./data/query";
 /**
  * Changing a proposal's spec from its Scenarios tab: more scenarios of a
  * kind, scenarios for an instruction, answers to the open questions, or a
@@ -14,13 +19,13 @@ import type {
   BountySpecRevisionDto,
   RespecRequestDto,
 } from "@sandbox-factory/shared";
+import { ChevronDown, Loader2, Plus } from "lucide-react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import {
   RESPEC_LIMITS,
   SCENARIO_KIND_DEFINITIONS,
   type ScenarioKind,
 } from "sandbox-factory";
-import { ChevronDown, Loader2, Plus } from "lucide-react";
-import { useCallback, useEffect, useId, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -69,11 +74,11 @@ const RUN_FAILURES: Readonly<Record<string, string>> = {
 const OUTCOME_LINES: Readonly<Record<string, string>> = {
   nothing_added: "Nothing new to add: the spec already covers that.",
   proposal_stale:
-    "The ticket changed since it was sized. Re-analyze it before changing its scenarios.",
+    "The bounty changed since it was sized. Re-analyze it before changing its scenarios.",
   proposal_changed:
     "The proposal changed while this ran, so nothing was saved. Try again.",
   spec_failed: "The model's answer could not be used. Try again.",
-  issue_unavailable: "Jira no longer has this ticket.",
+  issue_unavailable: "Jira no longer has this bounty.",
   jira_rate_limited: "Jira is busy. Try again in a minute.",
 };
 
@@ -134,88 +139,102 @@ export function useRespec(
   useEffect(() => {
     setState({ phase: "idle" });
     setFollowing(null);
-  }, [proposalId]);
+  }, [base, proposalId, revision]);
 
+  const selection = `${base}:${proposalId}:${revision}`;
+  const selectionRef = useRef(selection);
+  selectionRef.current = selection;
+  const observed = useObservation({
+    owner: decodeURIComponent(base.split("/").at(-1) ?? ""),
+    resource: "bounty-run",
+    id: following,
+    interval: 1_000,
+    startDelay: 1_000,
+    terminal: terminalRun,
+    read: (id, signal) =>
+      clients.runs.run(
+        decodeURIComponent(base.split("/").at(-1) ?? ""),
+        id,
+        signal,
+      ),
+  });
+  const completed = useRef<string | null>(null);
   useEffect(() => {
-    if (following === null) return;
-    let live = true;
-    const timer = window.setInterval(() => {
-      void fetch(`${base}/runs/${encodeURIComponent(following)}`, {
-        credentials: "include",
-      })
-        .then((response) =>
-          response.ok
-            ? (response.json() as Promise<{ run: BountyRunDto }>)
-            : null,
-        )
-        .then(async (body) => {
-          if (!live || body === null) return;
-          const { run } = body;
-          if (run.status === "queued" || run.status === "running") return;
-          live = false;
-          setFollowing(null);
-          await landed.current();
-          setState(respecResult(run));
-        })
-        .catch(() => {});
-    }, 1_000);
-    return () => {
-      live = false;
-      window.clearInterval(timer);
-    };
-  }, [base, following]);
+    const run = observed.data;
+    if (
+      following === null ||
+      run === undefined ||
+      !terminalRun(run) ||
+      completed.current === run.id
+    )
+      return;
+    completed.current = run.id;
+    const selected = selection;
+    setFollowing(null);
+    void Promise.resolve(landed.current()).then(() => {
+      if (selectionRef.current === selected) setState(respecResult(run));
+    });
+  }, [following, observed.data, selection]);
+  useEffect(() => {
+    if (observed.isError)
+      setState({
+        phase: "ended",
+        tone: "error",
+        line: "Lost track of the spec change. Try again.",
+      });
+  }, [observed.isError]);
 
   const request = useCallback(
     (change: RespecRequestDto, label: string) => {
       setState({ phase: "working", label });
+      const selected = selection;
       void (async () => {
         try {
-          const response = await fetch(
-            `${base}/proposals/${encodeURIComponent(proposalId)}/respec`,
+          const body = await clients.pricing.action(
+            decodeURIComponent(base.split("/").at(-1) ?? ""),
+            `/proposals/${encodeURIComponent(proposalId)}/respec`,
             {
-              method: "POST",
-              credentials: "include",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({
-                expectedRevision: revision,
-                requestId: crypto.randomUUID(),
-                request: change,
-              }),
+              expectedRevision: revision,
+              requestId: crypto.randomUUID(),
+              request: change,
             },
           );
-          const body = (await response.json().catch(() => ({}))) as {
-            run?: BountyRunDto;
-            code?: string;
-            runId?: string;
-            error?: string;
-          };
-          if (response.ok && body.run !== undefined) {
+          if (selectionRef.current !== selected) return;
+          if (body.run !== undefined) {
             setFollowing(body.run.id);
             return;
           }
-          if (body.code === "run_active" && body.runId !== undefined) {
+          setState({
+            phase: "ended",
+            tone: "error",
+            line: "The scenarios could not be changed.",
+          });
+        } catch (error) {
+          if (selectionRef.current !== selected) return;
+          const conflict =
+            error instanceof ApiError
+              ? activeRunConflictSchema.safeParse(error.details)
+              : null;
+          if (conflict?.success) {
             setState({
               phase: "working",
               label: "Waiting for the change already under way…",
             });
-            setFollowing(body.runId);
+            setFollowing(conflict.data.runId);
             return;
           }
           setState({
             phase: "ended",
             tone: "error",
-            line: body.error ?? "The scenarios could not be changed.",
-          });
-        } catch {
-          setState({
-            phase: "ended",
-            tone: "error",
-            line: "Could not reach the server.",
+            line:
+              error instanceof ApiError
+                ? error.message
+                : "Could not reach the server.",
           });
         }
       })();
     },
-    [base, proposalId, revision],
+    [base, proposalId, revision, selection],
   );
 
   return { state, request };
@@ -341,7 +360,7 @@ const textareaClass =
 
 /**
  * The spec's open questions, each with a field for its answer. Any number
- * may be answered at once, since a ticket's questions usually come as a
+ * may be answered at once, since a bounty's questions usually come as a
  * handful; the blank ones are left open.
  */
 export function AnswerForm({
@@ -466,36 +485,21 @@ export function useSpecRevisions(
   proposalId: string,
   specRevision: number | null,
 ): readonly BountySpecRevisionDto[] {
-  const key = `${proposalId}:${specRevision ?? ""}`;
-  const [read, setRead] = useState<{
-    key: string;
-    revisions: readonly BountySpecRevisionDto[];
-  }>({ key, revisions: [] });
-  useEffect(() => {
-    if (specRevision === null || specRevision < 2) return;
-    let live = true;
-    fetch(
-      `${base}/proposals/${encodeURIComponent(proposalId)}/spec/revisions`,
-      { credentials: "include" },
-    )
-      .then((response) =>
-        response.ok
-          ? (response.json() as Promise<{
-              revisions?: BountySpecRevisionDto[];
-            }>)
-          : null,
-      )
-      .then((body) => {
-        if (live && Array.isArray(body?.revisions)) {
-          setRead({ key, revisions: body.revisions });
-        }
-      })
-      .catch(() => {});
-    return () => {
-      live = false;
-    };
-  }, [base, proposalId, specRevision, key]);
-  return read.key === key ? read.revisions : [];
+  const owner = decodeURIComponent(base.split("/").at(-1) ?? "");
+  const userId = useUserId();
+  const query = useQuery({
+    queryKey: queryKeys.resource(
+      userId,
+      owner,
+      "proposal-spec-revisions",
+      proposalId,
+      specRevision,
+    ),
+    enabled: specRevision !== null && specRevision > 1,
+    queryFn: ({ signal }) =>
+      clients.pricing.revisions(owner, proposalId, signal),
+  });
+  return query.data ?? [];
 }
 
 /** How a revision came to be, as the picker names it. */

@@ -19,12 +19,19 @@ in CI's order. Never bypass a failing pre-push hook with `--no-verify`.
 During iteration, use `npx turbo run lint test --filter=<workspace-name>`.
 Workspace names and entry points are in the [index](./docs/README.md#workspaces).
 
+Run `npm run test:e2e` after changing sign-in gating, workspace switching or
+bounty creation in `apps/web` or their API routes; CI requires it. The
+`graphify` and `archify` skills are optional navigation and diagram aids,
+installed per clone with `scripts/install-agent-tools.sh`; see
+[development.md](./docs/development.md#maintenance-tools-for-agents).
+
 Read [development.md](./docs/development.md) before changing tests, Makefile,
 Docker or dev scripts. It preserves the setup and testing constraints.
 
 ## Architecture and access
 
 - Apps never import each other; shared logic belongs in packages.
+  `npm run lint:deps` enforces the import rules in this section.
 - `packages/core` owns domain rules and has zero dependencies.
 - `packages/client` uses `fetch` only: no `node:*`, `vscode` or `@types/node`.
   Keep its `types: []`. Only `apps/extension` may import `vscode`.
@@ -44,7 +51,7 @@ Docker or dev scripts. It preserves the setup and testing constraints.
   `/api/*`; `/api/v1` is session-guarded. Routes outside it need deliberate access
   rules. The API requires `DATABASE_URL`; in-memory stores are test doubles.
 - Read the relevant [architecture](./docs/architecture.md) section before
-  changing ownership, auth, tickets, integration credentials or sandbox flows.
+  changing ownership, auth, bounties, integration credentials or sandbox flows.
 
 ## Implementation
 

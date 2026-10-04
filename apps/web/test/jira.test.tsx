@@ -1,3 +1,4 @@
+import { completeBountyFixture } from "./api-fixtures";
 /**
  * The Jira connections list, which is the Jira tab of an organization's
  * settings, and the board page under it. A site has no page of its own.
@@ -11,16 +12,9 @@
  * The server is faked at the `fetch` boundary, as elsewhere in this suite.
  */
 
-import {
-  act,
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-  within,
-} from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { act, fireEvent, render, screen, waitFor, within } from "./render";
 
 import { fromToday } from "../src/IssueSpec";
 import { JiraBoard, JiraConnections } from "../src/Jira";
@@ -381,7 +375,7 @@ test("a failed load says so rather than rendering an empty list", async () => {
   expect(await screen.findByText(/could not load/i)).toBeDefined();
 });
 
-test("a response of the wrong shape renders empty rather than throwing", async () => {
+test("a response of the wrong shape reports a controlled load error", async () => {
   // The existing suite stubs `fetch` loosely, and trusting a response shape
   // has crashed these tests before.
   vi.stubGlobal(
@@ -398,7 +392,9 @@ test("a response of the wrong shape renders empty rather than throwing", async (
 
   renderPage();
 
-  expect(await screen.findByText(/no sites connected/i)).toBeDefined();
+  expect(
+    await screen.findByText(/could not load your Jira connections/i),
+  ).toBeDefined();
 });
 
 /* The outcome banner: what the callback reports back. */
@@ -562,10 +558,13 @@ function routedFetch(
     const url = String(input);
     const json = (body: unknown, status = 200) =>
       Promise.resolve(
-        new Response(status === 204 ? null : JSON.stringify(body), {
-          status,
-          headers: { "content-type": "application/json" },
-        }),
+        new Response(
+          status === 204 ? null : JSON.stringify(completeBountyFixture(body)),
+          {
+            status,
+            headers: { "content-type": "application/json" },
+          },
+        ),
       );
 
     if (url.includes("/proposal-titles?")) {
@@ -699,16 +698,15 @@ function renderList(role = "owner") {
   );
 }
 
-test("a registered board is listed with its type and project", async () => {
+test("a registered board is listed without type or project pills", async () => {
   vi.stubGlobal("fetch", routedFetch());
 
   renderList();
 
   expect(await screen.findByText("Acme Board")).toBeDefined();
-  // As pills at the end of the row, not a second line under the name.
   const row = screen.getByRole("link", { name: /acme board/i });
-  expect(within(row).getByText("scrum").dataset.slot).toBe("badge");
-  expect(within(row).getByText("ACME").dataset.slot).toBe("badge");
+  expect(within(row).queryByText("scrum")).toBeNull();
+  expect(within(row).queryByText("ACME")).toBeNull();
 });
 
 test("Re-sync re-reads the site and says what it found", async () => {
@@ -826,7 +824,7 @@ test("a proposal opens over the list, which keeps its place", async () => {
   await userEvent.click(await screen.findByText("Ticket 1"));
 
   const panel = await screen.findByTestId("proposal-panel");
-  expect(within(panel).getByRole("tab", { name: /bounty/i })).toBeDefined();
+  expect(within(panel).getByRole("tab", { name: "Price" })).toBeDefined();
   expect(within(panel).getByRole("tab", { name: /spec/i })).toBeDefined();
   expect(within(panel).getByText("A few files.")).toBeDefined();
 
@@ -1094,8 +1092,8 @@ test("a failed ticket read stays in the Spec tab with a retry", async () => {
   expect(
     within(panel).getByRole("button", { name: /try again/i }),
   ).toBeDefined();
-  // The Bounty tab is unaffected: the proposal itself loaded.
-  await userEvent.click(within(panel).getByRole("tab", { name: /bounty/i }));
+  // The Price tab is unaffected: the proposal itself loaded.
+  await userEvent.click(within(panel).getByRole("tab", { name: "Price" }));
   expect(within(panel).getByText("A few files.")).toBeDefined();
 });
 
@@ -1610,7 +1608,7 @@ test("the ticket is read when the peek opens, so the Spec tab is instant once it
 
   await userEvent.click(await screen.findByText("Ticket 1"));
 
-  // Open at once, on the Bounty tab, with the proposal already there.
+  // Open at once, on the Price tab, with the proposal already there.
   const panel = await screen.findByTestId("proposal-panel");
   expect(within(panel).getByText("A few files.")).toBeDefined();
   // The read started with the click, not with the tab.
@@ -1746,7 +1744,7 @@ function withRepositories(
     const url = String(input);
     const json = (body: unknown, status = 200) =>
       Promise.resolve(
-        new Response(JSON.stringify(body), {
+        new Response(JSON.stringify(completeBountyFixture(body)), {
           status,
           headers: { "content-type": "application/json" },
         }),
@@ -1895,7 +1893,18 @@ test("a spec drafted beside an outline names the commit it came from", async () 
         languages: {},
         createdAt: "2026-10-01T00:00:00.000Z",
         repoFullName: "acme/widgets",
-        facts: {},
+        facts: {
+          version: 1,
+          fileCount: 3,
+          totalBytes: 30,
+          truncated: false,
+          testFiles: 0,
+          modules: [],
+          extensions: {},
+          lockfiles: [],
+          migrationDirectories: [],
+          infraDirectories: [],
+        },
       },
     }),
   );

@@ -7,7 +7,7 @@
  * typed confirmation that does not match.
  */
 
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "./render";
 import { userEvent } from "@testing-library/user-event";
 import { expect, test, vi } from "vitest";
 

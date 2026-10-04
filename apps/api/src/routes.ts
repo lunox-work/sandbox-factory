@@ -1,3 +1,7 @@
+import { sizeIfNeverSized } from "./pricing/start-run.js";
+import type { AuthVariables } from "./http-context.js";
+export type { AuthVariables } from "./http-context.js";
+export { rankAtLeast } from "./access.js";
 /**
  * HTTP routes, built by a factory that takes its dependencies so tests run
  * against fakes without binding a port or a database.
@@ -11,7 +15,6 @@ import {
   inviteMemberSchema,
   unknownBuildInfo,
   type BuildInfoDto,
-  type OrganizationRole,
 } from "@sandbox-factory/shared";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
@@ -32,17 +35,16 @@ import {
 } from "./avatars/routes.js";
 import type { AvatarService } from "./avatars/service.js";
 import {
-  mountBountyRoutes,
-  sizeIfNeverSized,
-  type BountyRouteOptions,
-} from "./bounty/routes.js";
+  mountPricingRoutes,
+  type PricingRouteOptions,
+} from "./pricing/routes.js";
 import { mountGithubRoutes, type GithubRouteOptions } from "./github/routes.js";
 import {
   mountGithubWebhook,
   type GithubWebhookOptions,
 } from "./github/webhook.js";
 import { mountJiraRoutes, type JiraRouteOptions } from "./jira/routes.js";
-import { mountTicketRoutes } from "./tickets/routes.js";
+import { mountBountyRoutes } from "./bounties/routes.js";
 import {
   mountAnalysisRoutes,
   type AnalysisRouteOptions,
@@ -90,7 +92,7 @@ export interface AppOptions {
         >)
     | undefined;
   /** Commercial routes. Rate-card reads remain mounted without model config. */
-  bounty?: BountyRouteOptions | undefined;
+  pricing?: PricingRouteOptions | undefined;
   analysis?: AnalysisRouteOptions | undefined;
   /**
    * Sandbox versions: private provenance cut from slice runs. Needs the
@@ -118,47 +120,6 @@ export interface AppOptions {
   buildInfo?: BuildInfoDto | undefined;
 }
 
-/** What the session middleware puts on the context for the routes behind it. */
-export interface AuthVariables {
-  user: { id: string; email: string; name: string };
-  sessionId: string;
-  /**
-   * The caller's standing in the organization named by the path, set by
-   * `requireMembership` on `/api/v1/orgs/:orgId/*`. Absent elsewhere.
-   */
-  member: { organizationId: string; role: string };
-}
-
-/**
- * Roles from least to most powerful, as the plugin defines them. Used only to
- * compare two roles; the plugin itself decides what each may do.
- */
-const ROLE_RANK: Record<string, number> = {
-  member: 0,
-  admin: 1,
-  owner: 2,
-};
-
-/**
- * Whether `held` is at least `required`.
- *
- * A member may hold several comma-separated roles — the plugin splits on `,`
- * when it checks permissions — so the strongest one counts. An unknown role
- * ranks lowest rather than throwing: a role added to the plugin's config but
- * not here must not silently pass a check.
- *
- * The floor for the writes this API makes itself rather than through the
- * plugin — a team's picture needs `admin`. The plugin checks roles on its own
- * endpoints.
- */
-export function rankAtLeast(held: string, required: OrganizationRole): boolean {
-  const strongest = held
-    .split(",")
-    .map((entry) => ROLE_RANK[entry.trim()] ?? -1)
-    .reduce((best, rank) => Math.max(best, rank), -1);
-  return strongest >= (ROLE_RANK[required] ?? 0);
-}
-
 /** Shared by the app, the error handler and the factory's return type. */
 type AppEnv = { Variables: AuthVariables };
 
@@ -170,7 +131,7 @@ export function createApp({
   organizations,
   jira,
   github,
-  bounty,
+  pricing,
   analysis,
   sandbox,
   avatars,
@@ -570,14 +531,14 @@ export function createApp({
           organizations.roleOf(userId, organizationId),
         // Every board a sync sees is sized once, through the same checks
         // the board's own run endpoint applies.
-        ...(bounty === undefined || jira.startSizing !== undefined
+        ...(pricing === undefined || jira.startSizing !== undefined
           ? {}
           : {
               startSizing: (input: {
                 organizationId: string;
                 boardId: string;
                 startedBy: string;
-              }) => sizeIfNeverSized(bounty, input),
+              }) => sizeIfNeverSized(pricing, input),
             }),
       });
     }
@@ -618,11 +579,11 @@ export function createApp({
         ),
       );
     }
-    if (bounty !== undefined) {
-      mountBountyRoutes(app, bounty);
-      // The organization's own tickets, which need nothing but the
+    if (pricing !== undefined) {
+      mountPricingRoutes(app, pricing);
+      // The organization's own bounties, which need nothing but the
       // database: written here, they are sized with no Jira at all.
-      mountTicketRoutes(app, bounty);
+      mountBountyRoutes(app, pricing);
     }
     if (sandbox !== undefined) mountSandboxRoutes(app, sandbox);
     else

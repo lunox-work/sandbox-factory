@@ -20,6 +20,7 @@ import {
   relativeSpecifier,
   replayOf,
   resolveScope,
+  submissionVerdict,
   unknownDependencyChoices,
   runtimeKindOf,
   runtimePath,
@@ -510,7 +511,7 @@ test("freeze needs matching evidence for every gate, and replay never substitute
 
 test("an approved task snapshot is ready only with a usable spec and an approved price", () => {
   const snapshot: ApprovedTaskSnapshot = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     title: "Fix the thing",
     summary: "It is broken.",
     spec: {
@@ -544,14 +545,22 @@ test("an approved task snapshot is ready only with a usable spec and an approved
     },
     selectedBy: "user_1",
     selectedAt: "2026-10-02T00:00:00.000Z",
-    ticketIds: ["tkt_1"],
+    bountyId: "bty_1",
   };
   assert.deepEqual(approvedTaskReadiness(snapshot), {
     ready: true,
     reasons: [],
   });
-  // A version frozen before tickets is still read the same way.
-  const { ticketIds: _ticketIds, ...selection } = snapshot;
+  // Versions frozen under the older links are still read the same way.
+  const { bountyId: _bountyId, ...selection } = snapshot;
+  assert.deepEqual(
+    approvedTaskReadiness({
+      ...selection,
+      schemaVersion: 2,
+      ticketIds: ["tkt_1", "tkt_2"],
+    }),
+    { ready: true, reasons: [] },
+  );
   assert.deepEqual(
     approvedTaskReadiness({
       ...selection,
@@ -1335,5 +1344,28 @@ test("fixtures give mocked calls default behaviour, and a walkthrough replaces t
       "import_unrewritable sandbox/run.ts: ../src/missing.js does not resolve to a file in the project.",
       "import_unrewritable sandbox/run.ts: ../../outside.js does not resolve to a file in the project.",
     ],
+  );
+});
+
+test("a submission passes only when every public and hidden test passed", () => {
+  const all = { passed: 4, total: 4 };
+  assert.equal(submissionVerdict({ public: all, hidden: all }), "passed");
+  // A public suite with nothing in it does not hold a submission back.
+  assert.equal(
+    submissionVerdict({ public: { passed: 0, total: 0 }, hidden: all }),
+    "passed",
+  );
+  assert.equal(
+    submissionVerdict({ public: all, hidden: { passed: 3, total: 4 } }),
+    "failed",
+  );
+  assert.equal(
+    submissionVerdict({ public: { passed: 1, total: 2 }, hidden: all }),
+    "failed",
+  );
+  // A hidden suite that ran nothing proves nothing.
+  assert.equal(
+    submissionVerdict({ public: all, hidden: { passed: 0, total: 0 } }),
+    "failed",
   );
 });

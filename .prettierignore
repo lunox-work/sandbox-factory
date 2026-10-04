@@ -8,3 +8,10 @@ node_modules
 # drizzle-kit output. Reformatting it creates a diff the next
 # `npm run db:generate` reverts.
 packages/db/drizzle
+
+# Playwright output
+playwright-report
+test-results
+
+# Installed at a pinned upstream release (gitignored); never reformat it.
+.agents/skills/archify

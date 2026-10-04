@@ -11,7 +11,7 @@
  * as in the other web suites.
  */
 
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "./render";
 import { beforeEach, expect, test, vi } from "vitest";
 
 const setActive = vi.fn();

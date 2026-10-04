@@ -4,7 +4,9 @@
  * Modelled on a prior internal platform's rail: 56px wide, a small logo at
  * the top, the destination buttons below it, and the account avatar at the
  * foot with its menu opening to the right. The current destination is marked
- * by a border down its leading edge, over a filled row.
+ * by a border down its leading edge, over a filled row. Workspaces sits at the
+ * foot too, directly above the avatar: like the account, it is about who you
+ * are rather than the work in front of you.
  *
  * Two departures from that reference, both deliberate. The rail is a flex item
  * in the shell rather than `position: fixed`, which is what lets the page
@@ -34,7 +36,7 @@
  * toggling only moves the edge: nothing the eye was tracking jumps.
  */
 
-import { House, Ticket } from "lucide-react";
+import { Building2, House, Target } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import type { MembershipDto } from "@sandbox-factory/shared";
@@ -44,7 +46,7 @@ import { cn } from "@/lib/utils";
 import { OrganizationSwitcher } from "./OrganizationSwitcher";
 import { UserMenu } from "./UserMenu";
 import type { Organizations } from "./useOrganizations";
-import { isPlainLeftClick } from "./routes";
+import { isPlainLeftClick, pathForScreen } from "./routes";
 
 export type Screen =
   | "home"
@@ -53,8 +55,8 @@ export type Screen =
   | "org-settings"
   /** One board, on a connected site. Carries a connection id and a board id. */
   | "org-jira-board"
-  /** The organization's tickets, and the proposals made from them. */
-  | "org-tickets"
+  /** The organization's bounties, and the proposals made from them. */
+  | "org-bounties"
   | "create-org";
 
 export function SideNav({
@@ -182,27 +184,21 @@ export function SideNav({
         </RailButton>
 
         {/*
-          The active workspace's tickets: what a proposal is made from,
-          whichever tool the ticket came from. Only once there is a
+          The active workspace's bounties: what a proposal is made from,
+          whichever tool the bounty came from. Only once there is a
           workspace to have them.
         */}
         {organizations.active !== null && (
           <RailButton
-            label="Tickets"
-            href={`/o/${organizations.active.slug}/tickets`}
+            label="Bounties"
+            href={`/o/${organizations.active.slug}/bounties`}
             expanded={expanded}
-            current={screen === "org-tickets"}
-            onClick={() => onNavigate("org-tickets")}
+            current={screen === "org-bounties"}
+            onClick={() => onNavigate("org-bounties")}
           >
-            <Ticket strokeWidth={1.6} />
+            <Target strokeWidth={1.6} />
           </RailButton>
         )}
-
-        {/*
-          No Organizations destination: the switcher at the head of the rail
-          is where organizations are chosen, and its menu and the avatar menu
-          both link to the full list.
-        */}
 
         {children !== undefined && (
           <div className="hidden sm:mt-2 sm:flex sm:w-full sm:flex-col sm:border-t sm:pt-2">
@@ -215,26 +211,42 @@ export function SideNav({
           opposite the switcher however tall it is. In the phone bar the margin is
           dropped, or it would push the avatar to the far right and split it
           from the destinations. */}
-      <div className="sm:mt-auto sm:w-full sm:px-2">
-        <UserMenu
+      <div className="flex sm:mt-auto sm:w-full sm:flex-col">
+        {/*
+          The full list of workspaces, with the create form beneath it. A row
+          of its own above the avatar rather than an item in its menu, so it is
+          one click from every screen — the switcher's own menu also links
+          here, but that is hidden in the phone bar and while collapsed.
+
+          A rail row rather than inside the avatar's inset wrapper, so its icon
+          lines up with the destinations above it.
+        */}
+        <RailButton
+          label="Workspaces"
+          href={pathForScreen("organizations")}
           expanded={expanded}
-          // The screens its menu opens: the account page, and the
-          // organizations list with the create form beneath it. Not one
-          // organization's own pages, which the switcher above stands for.
-          current={
-            screen === "account" ||
-            screen === "organizations" ||
-            screen === "create-org"
-          }
-          userId={userId}
-          name={name}
-          email={email}
-          image={image}
-          invitationCount={invitationCount}
-          onNavigate={onNavigate}
-          onAccount={() => onNavigate("account")}
-          onSignOut={onSignOut}
-        />
+          current={screen === "organizations" || screen === "create-org"}
+          onClick={() => onNavigate("organizations")}
+        >
+          <Building2 strokeWidth={1.6} />
+        </RailButton>
+
+        <div className="sm:mt-1 sm:w-full sm:px-2">
+          <UserMenu
+            expanded={expanded}
+            // The one screen its menu opens. Not one organization's own pages,
+            // which the switcher above stands for, nor the workspaces list,
+            // which has its own row.
+            current={screen === "account"}
+            userId={userId}
+            name={name}
+            email={email}
+            image={image}
+            invitationCount={invitationCount}
+            onAccount={() => onNavigate("account")}
+            onSignOut={onSignOut}
+          />
+        </div>
       </div>
     </nav>
   );

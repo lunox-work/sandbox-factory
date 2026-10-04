@@ -51,6 +51,7 @@ export const DESCRIPTOR_FORBIDDEN_KEYS: readonly string[] = [
   "amountMinor",
   "jiraIssueIds",
   "ticketIds",
+  "bountyId",
   "repoFullName",
 ];
 

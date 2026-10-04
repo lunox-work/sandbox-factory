@@ -22,8 +22,8 @@ import type { Context, Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 
 import type { Auth } from "../auth.js";
-import type { AuthVariables } from "../routes.js";
-import { rankAtLeast } from "../routes.js";
+import type { AuthVariables } from "../http-context.js";
+import { rankAtLeast } from "../access.js";
 import { MAX_UPLOAD_BYTES, UnsupportedImageError } from "./image.js";
 import { isAvatarRef, type AvatarKind } from "./keys.js";
 import { AVATAR_CONTENT_TYPE, type AvatarService } from "./service.js";

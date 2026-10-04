@@ -74,7 +74,32 @@ export function canonicalUrl(
     params.set("connection", "jira");
     return `/o/${slug}/settings?${params.toString()}`;
   }
+  const bountiesSlug = legacyBountiesSlug(path);
+  if (bountiesSlug !== undefined) {
+    // The open bounty rode on `?ticket=`; it opens under its new name.
+    const params = new URLSearchParams(search);
+    const open = params.get("ticket");
+    params.delete("ticket");
+    if (open !== null) params.set("bounty", open);
+    const query = params.toString();
+    return `/o/${bountiesSlug}/bounties${query === "" ? "" : `?${query}`}`;
+  }
   return undefined;
+}
+
+/**
+ * `/o/:slug/tickets`, where bounties lived while they were called tickets.
+ * Still read, so an old link lands on the same page; never written.
+ */
+function legacyBountiesSlug(path: string): string | undefined {
+  const parts = path.split("/");
+  return parts.length === 4 &&
+    parts[1] === "o" &&
+    parts[2] !== undefined &&
+    parts[2] !== "" &&
+    parts[3] === "tickets"
+    ? parts[2]
+    : undefined;
 }
 
 export function slugForPath(pathname: string): string | undefined {
@@ -108,15 +133,15 @@ export function boardForPath(pathname: string): string | undefined {
     : undefined;
 }
 
-/** `/o/:slug/tickets`: the organization's tickets and proposals. */
-function isTicketsPath(pathname: string): boolean {
+/** `/o/:slug/bounties`: the organization's bounties and proposals. */
+function isBountiesPath(pathname: string): boolean {
   const parts = pathname.replace(/\/+$/, "").split("/");
   return (
     parts.length === 4 &&
     parts[1] === "o" &&
     parts[2] !== undefined &&
     parts[2] !== "" &&
-    parts[3] === "tickets"
+    parts[3] === "bounties"
   );
 }
 
@@ -133,7 +158,8 @@ export function screenForPath(pathname: string): Screen {
     if (connectionForPath(pathname) !== undefined) {
       return "org-jira-board";
     }
-    if (isTicketsPath(pathname)) return "org-tickets";
+    if (isBountiesPath(pathname) || legacyBountiesSlug(path) !== undefined)
+      return "org-bounties";
     // `/o/:slug/jira` and `/o/:slug/jira/:site` included: both now live in
     // the Jira tab of settings, and `canonicalUrl` rewrites the address.
     return "org-settings";
@@ -162,8 +188,8 @@ export function pathForScreen(
         : connectionTab === undefined || connectionTab === "home"
           ? `/o/${slug}/settings`
           : `/o/${slug}/settings?connection=${connectionTab}`;
-    case "org-tickets":
-      return slug === undefined ? ORGANIZATIONS_PATH : `/o/${slug}/tickets`;
+    case "org-bounties":
+      return slug === undefined ? ORGANIZATIONS_PATH : `/o/${slug}/bounties`;
     case "org-jira-board":
       return slug === undefined ||
         connectionId === undefined ||

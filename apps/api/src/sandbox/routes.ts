@@ -1,3 +1,7 @@
+import type { SandboxRouteOptions } from "./options.js";
+import { transformConfigHash, versionService } from "./version-service.js";
+export type { SandboxRouteOptions } from "./options.js";
+export { approvedTaskHash, transformConfigHash } from "./version-service.js";
 /**
  * Sandboxes and their versions, for the owning organization.
  *
@@ -10,15 +14,7 @@
  * public; publication is phase 5D.
  */
 
-import { createHash } from "node:crypto";
 import type {
-  AnalysisRunStore,
-  ArtifactStore,
-  BountyProposalStore,
-  BountySpecStore,
-  ObjectStore,
-  SandboxStore,
-  StoredArtifact,
   StoredSandbox,
   StoredVersionSource,
   StoredVersionWithSource,
@@ -26,8 +22,8 @@ import type {
 import {
   analysisRunResponseSchema,
   createSandboxSchema,
-  fixtureSetSchema,
   createSandboxVersionSchema,
+  linkSandboxSourceSchema,
   replayResponseSchema,
   sandboxListSchema,
   sandboxResponseSchema,
@@ -35,70 +31,24 @@ import {
   sandboxVersionResponseSchema,
   updateSandboxVersionSchema,
 } from "@sandbox-factory/shared";
+import type { Context, Hono } from "hono";
+import type {
+  BoundaryContract,
+  DependencyChoice,
+  SandboxFixture,
+  SliceManifest,
+} from "sandbox-factory";
 import {
-  APPROVED_TASK_SCHEMA_VERSION,
   approvedTaskReadiness,
-  canonicalJson,
   fixtureProblems,
-  isFixturesParams,
   replayOf,
   resolveScope,
   unknownDependencyChoices,
   validateAliasRules,
 } from "sandbox-factory";
-import type {
-  AcceptanceTest,
-  AliasRule,
-  ApprovedTaskSnapshot,
-  BoundaryContract,
-  DependencyChoice,
-  SandboxFixture,
-  SliceManifest,
-  VersionFixtures,
-} from "sandbox-factory";
-import type { Context, Hono } from "hono";
-import { rankAtLeast } from "../routes.js";
-import type { AuthVariables } from "../routes.js";
+import { rankAtLeast } from "../access.js";
+import type { AuthVariables } from "../http-context.js";
 
-export interface SandboxRouteOptions {
-  readonly sandboxes: SandboxStore;
-  readonly runs: Pick<AnalysisRunStore, "get" | "enqueue">;
-  readonly artifacts: Pick<ArtifactStore, "list">;
-  readonly objects: Pick<ObjectStore, "get" | "remove">;
-  readonly proposals: Pick<BountyProposalStore, "get">;
-  readonly specs: Pick<BountySpecStore, "get">;
-  readonly ensureWorker: () => Promise<void>;
-  readonly maxActive?: number;
-  readonly onLaunchError?: () => void;
-  readonly now?: () => Date;
-}
-
-const sha256 = (text: string | Uint8Array) =>
-  createHash("sha256").update(text).digest("hex");
-
-/** The canonical transform, hashed into `transformConfigSha256`. */
-export function transformConfigHash(input: {
-  readonly aliasRules: readonly AliasRule[];
-  readonly dependencyChoices: Readonly<Record<string, DependencyChoice>>;
-  readonly acceptanceTests: readonly AcceptanceTest[];
-  readonly fixtures?: VersionFixtures | null;
-}): string {
-  return sha256(
-    canonicalJson({
-      schemaVersion: 2,
-      aliasRules: input.aliasRules,
-      dependencyChoices: input.dependencyChoices,
-      acceptanceTests: input.acceptanceTests,
-      fixtures: input.fixtures ?? null,
-    }),
-  );
-}
-
-export function approvedTaskHash(snapshot: ApprovedTaskSnapshot): string {
-  return sha256(canonicalJson(snapshot));
-}
-
-/** The owner is the path's; it is not repeated in the body. */
 const sandboxDto = ({ organizationId: _owner, ...dto }: StoredSandbox) => dto;
 const sourceDto = (source: StoredVersionSource) => ({
   sandboxVersionId: source.sandboxVersionId,
@@ -205,6 +155,53 @@ function invalidFixtures(
       );
 }
 
+/** A store refusal to make a sandbox or link its repository. */
+function sandboxRefused(
+  c: Context,
+  reason:
+    | "not-found"
+    | "bounty_not_found"
+    | "bounty_has_sandbox"
+    | "source_linked"
+    | "repo_not_found"
+    | "repo_role",
+): Response {
+  if (reason === "repo_role")
+    return c.json(
+      {
+        error: "Only a source repository can back a sandbox.",
+        code: "repo_role",
+      },
+      409,
+    );
+  if (reason === "bounty_has_sandbox")
+    return c.json(
+      { error: "This bounty already has a sandbox.", code: reason },
+      409,
+    );
+  if (reason === "source_linked")
+    return c.json(
+      {
+        error: "This sandbox is already cut from another repository.",
+        code: reason,
+      },
+      409,
+    );
+  // Told apart from a missing bounty: a bounty can name a repository that
+  // has since been disconnected, and is otherwise refused with no hint.
+  if (reason === "repo_not_found")
+    return c.json(
+      {
+        error: "The repository is not connected to this workspace any more.",
+        code: reason,
+      },
+      404,
+    );
+  return reason === "bounty_not_found"
+    ? c.json({ error: "Not found.", code: reason }, 404)
+    : c.json({ error: "Not found." }, 404);
+}
+
 /** A store refusal of a draft change, as the API reports it. */
 function refused(
   c: Context,
@@ -237,74 +234,8 @@ export function mountSandboxRoutes(
   const now = options.now ?? (() => new Date());
   const admin = (role: string) => rankAtLeast(role, "admin");
 
-  /** The slice run's manifest and contract, verified against their recorded hashes. */
-  async function sliceInputs(owner: string, sliceRunId: string) {
-    const run = await options.runs.get(owner, sliceRunId);
-    if (run === null || run.tool !== "slice")
-      return { error: "not_found" } as const;
-    if (run.status !== "succeeded")
-      return { error: "slice_not_ready" } as const;
-    const artifacts = await options.artifacts.list(owner, run.id);
-    const read = async (kind: StoredArtifact["kind"]) => {
-      const artifact = artifacts.find((item) => item.kind === kind);
-      if (artifact === undefined) return null;
-      const bytes = await options.objects.get(artifact.objectKey);
-      if (bytes === undefined || sha256(bytes) !== artifact.sha256) return null;
-      return { artifact, text: Buffer.from(bytes).toString("utf8") };
-    };
-    const manifest = await read("slice_manifest");
-    const contract = await read("boundary_contract");
-    if (manifest === null || contract === null)
-      return { error: "artifacts_unavailable" } as const;
-    try {
-      return {
-        run,
-        manifest: JSON.parse(manifest.text) as SliceManifest,
-        manifestSha256: manifest.artifact.sha256,
-        contract: JSON.parse(contract.text) as BoundaryContract,
-        contractSha256: contract.artifact.sha256,
-      } as const;
-    } catch {
-      return { error: "artifacts_unavailable" } as const;
-    }
-  }
-
-  /** A succeeded fixtures run's set, written for the given slice run. */
-  async function fixturesFromRun(
-    owner: string,
-    fixtureRunId: string,
-    sliceRunId: string,
-  ): Promise<{ fixtures: VersionFixtures } | { error: FixturesFailure }> {
-    const run = await options.runs.get(owner, fixtureRunId);
-    if (run === null || !isFixturesParams(run.params))
-      return { error: "not_found" };
-    if (run.status !== "succeeded") return { error: "fixtures_not_ready" };
-    if (run.params.sliceRunId !== sliceRunId)
-      return { error: "fixtures_mismatch" };
-    const artifact = (await options.artifacts.list(owner, run.id)).find(
-      (item) => item.kind === "fixture_set",
-    );
-    if (artifact === undefined) return { error: "artifacts_unavailable" };
-    const bytes = await options.objects.get(artifact.objectKey);
-    if (bytes === undefined || sha256(bytes) !== artifact.sha256)
-      return { error: "artifacts_unavailable" };
-    let parsed;
-    try {
-      parsed = fixtureSetSchema.safeParse(
-        JSON.parse(Buffer.from(bytes).toString("utf8")),
-      );
-    } catch {
-      return { error: "artifacts_unavailable" };
-    }
-    if (!parsed.success) return { error: "artifacts_unavailable" };
-    return {
-      fixtures: {
-        fixtureRunId: run.id,
-        fixtures: parsed.data.fixtures,
-        scenario: parsed.data.scenario,
-      },
-    };
-  }
+  const service = versionService(options);
+  const { sliceInputs, fixturesFromRun } = service;
 
   app.post(base, async (c) => {
     if (!admin(c.get("member").role))
@@ -321,19 +252,32 @@ export function mountSandboxRoutes(
       c.req.param("orgId"),
       body.data,
     );
-    if (!result.ok)
-      return result.reason === "repo_role"
-        ? c.json(
-            {
-              error: "Only a source repository can back a sandbox.",
-              code: "repo_role",
-            },
-            409,
-          )
-        : c.json({ error: "Not found." }, 404);
+    if (!result.ok) return sandboxRefused(c, result.reason);
     return c.json(
       sandboxResponseSchema.parse({ sandbox: sandboxDto(result.sandbox) }),
       201,
+    );
+  });
+  // A sandbox made without a repository gets one here, once.
+  app.put(`${base}/:id/source`, async (c) => {
+    if (!admin(c.get("member").role))
+      return c.json(
+        { error: "Only owners and admins can link a sandbox's repository." },
+        403,
+      );
+    const body = linkSandboxSourceSchema.safeParse(
+      await c.req.json().catch(() => null),
+    );
+    if (!body.success)
+      return c.json({ error: "Invalid sandbox request." }, 400);
+    const result = await options.sandboxes.linkSource(
+      c.req.param("orgId"),
+      c.req.param("id"),
+      body.data.sourceRepoId,
+    );
+    if (!result.ok) return sandboxRefused(c, result.reason);
+    return c.json(
+      sandboxResponseSchema.parse({ sandbox: sandboxDto(result.sandbox) }),
     );
   });
   app.get(base, async (c) =>
@@ -393,136 +337,23 @@ export function mountSandboxRoutes(
     );
     if (!body.success)
       return c.json({ error: "Invalid version request." }, 400);
-    const aliases = validateAliasRules(body.data.aliasRules);
-    if (!aliases.ok)
-      return c.json(
-        {
-          error: "Alias rules are invalid.",
-          code: "alias_rules_invalid",
-          problems: aliases.problems,
-        },
-        400,
-      );
-    const inputs = await sliceInputs(owner, body.data.sliceRunId);
-    if ("error" in inputs)
-      return inputs.error === "not_found"
-        ? c.json({ error: "Not found." }, 404)
-        : inputs.error === "slice_not_ready"
-          ? c.json(
-              {
-                error: "The slice run has not succeeded.",
-                code: "slice_not_ready",
-              },
-              409,
-            )
-          : c.json(
-              {
-                error: "The slice artifacts could not be read.",
-                code: "artifacts_unavailable",
-              },
-              502,
-            );
-    const unknown = unknownChoices(
-      c,
-      inputs.manifest,
-      body.data.dependencyChoices,
+    const created = await service.create(
+      owner,
+      c.get("user").id,
+      sandbox,
+      body.data,
+      now(),
     );
-    if (unknown !== null) return unknown;
-    let fixtures: VersionFixtures | null = null;
-    if (body.data.fixtureRunId !== undefined) {
-      const copied = await fixturesFromRun(
-        owner,
-        body.data.fixtureRunId,
-        inputs.run.id,
-      );
-      if ("error" in copied) return fixturesRefused(c, copied.error);
-      const invalid = invalidFixtures(
-        c,
-        copied.fixtures.fixtures,
-        inputs.contract,
-      );
-      if (invalid !== null) return invalid;
-      fixtures = copied.fixtures;
+    if (!created.ok) {
+      const status = {
+        invalid: 400,
+        "not-found": 404,
+        conflict: 409,
+        unavailable: 502,
+      } as const;
+      return c.json(created.body, status[created.reason]);
     }
-    let spec: ApprovedTaskSnapshot["spec"] = null;
-    let pricing: ApprovedTaskSnapshot["pricing"] = null;
-    if (body.data.proposalId !== undefined) {
-      const proposal = await options.proposals.get(owner, body.data.proposalId);
-      if (proposal === null) return c.json({ error: "Not found." }, 404);
-      const revision = body.data.specRevision ?? proposal.specRevision;
-      if (revision !== null) {
-        const stored = await options.specs.get(owner, proposal.id, revision);
-        if (stored === null)
-          return c.json(
-            {
-              error: "The spec revision does not exist.",
-              code: "spec_not_found",
-            },
-            404,
-          );
-        spec = {
-          proposalId: proposal.id,
-          specRevision: stored.revision,
-          specHash: stored.specHash,
-          draft: stored.draft,
-        };
-      }
-      pricing = {
-        proposalId: proposal.id,
-        proposalRevision: proposal.revision,
-        complexity: proposal.complexity,
-        amountMinor: proposal.amountMinor,
-        currency: proposal.currency,
-        status: proposal.status,
-        decidedAt: proposal.decidedAt,
-      };
-    }
-    const approvedTask: ApprovedTaskSnapshot = {
-      schemaVersion: APPROVED_TASK_SCHEMA_VERSION,
-      title: body.data.title,
-      summary: body.data.specSummary,
-      spec,
-      pricing,
-      selectedBy: c.get("user").id,
-      selectedAt: now().toISOString(),
-      ticketIds: sandbox.ticketIds,
-    };
-    const scope = resolveScope({
-      manifest: inputs.manifest,
-      contract: inputs.contract,
-      choices: body.data.dependencyChoices,
-    });
-    const result = await options.sandboxes.createVersion(owner, sandbox.id, {
-      title: body.data.title,
-      specSummary: body.data.specSummary,
-      complexity: body.data.complexity,
-      tags: body.data.tags,
-      source: {
-        sourceSnapshotId: inputs.run.snapshotId,
-        sliceRunId: inputs.run.id,
-        manifestSha256: inputs.manifestSha256,
-        contractSha256: inputs.contractSha256,
-        transformConfigSha256: transformConfigHash({ ...body.data, fixtures }),
-        approvedTaskSha256: approvedTaskHash(approvedTask),
-        approvedTask,
-        aliasRules: body.data.aliasRules,
-        dependencyChoices: body.data.dependencyChoices,
-        acceptanceTests: body.data.acceptanceTests,
-        fixtures,
-        scope,
-      },
-    });
-    if (!result.ok)
-      return result.reason === "slice_mismatch"
-        ? c.json(
-            {
-              error: "The slice run does not describe this sandbox's source.",
-              code: "slice_mismatch",
-            },
-            409,
-          )
-        : c.json({ error: "Not found." }, 404);
-    return c.json(versionResponse(result, true), 201);
+    return c.json(versionResponse(created.result, true), 201);
   });
 
   /**

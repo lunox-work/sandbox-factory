@@ -268,7 +268,7 @@ test("agent runs name a proposal's spec revision and discriminate by tool", () =
 });
 
 const submission = {
-  entryPoints: [{ path: "src/a.ts", reason: "the rule the ticket changes" }],
+  entryPoints: [{ path: "src/a.ts", reason: "the rule the bounty changes" }],
   budget: { maxFiles: 20, maxDepth: 1 },
   includeInferred: false,
   seams: [{ module: "src/db.ts", kind: "database", reason: "queries" }],
@@ -377,7 +377,7 @@ test("a repository's proposals name their spec revision and board", () => {
     }).success,
     false,
   );
-  // A ticket written here reaches the repository without a board.
+  // A bounty written here reaches the repository without a board.
   assert.equal(
     repositoryProposalListSchema.safeParse({
       proposals: [{ ...proposal, boardId: null, boardName: null }],

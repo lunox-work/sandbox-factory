@@ -1,0 +1,23 @@
+[
+  {
+    "type": "cycle",
+    "from": "packages/db/src/schema/auth.ts",
+    "to": "packages/db/src/schema/organizations.ts",
+    "unresolvedTo": "./organizations.js",
+    "dependencyTypes": ["local", "import"],
+    "rule": {
+      "severity": "error",
+      "name": "no-circular-imports"
+    },
+    "cycle": [
+      {
+        "name": "packages/db/src/schema/organizations.ts",
+        "dependencyTypes": ["local", "import"]
+      },
+      {
+        "name": "packages/db/src/schema/auth.ts",
+        "dependencyTypes": ["local", "import"]
+      }
+    ]
+  }
+]

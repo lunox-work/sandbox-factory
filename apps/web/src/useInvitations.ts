@@ -11,43 +11,22 @@
  * twice would be two requests to render one badge.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { queryKeys, useUserId, useInvitationsQuery } from "./data/query";
 
 export interface Invitations {
-  /** Pending invitations, or 0 while the request is in flight. */
   count: number;
-  /** Re-reads, after one has been accepted or declined. */
   refresh: () => Promise<void>;
 }
-
 export function useInvitations(): Invitations {
-  const [count, setCount] = useState(0);
-
+  const userId = useUserId();
+  const client = useQueryClient();
+  const query = useInvitationsQuery();
   const refresh = useCallback(async () => {
-    try {
-      const res = await fetch("/api/v1/me/invitations", {
-        credentials: "include",
-      });
-      if (!res.ok) {
-        // Silent: this decorates the rail. A failure here should not put an
-        // error on a page that is about something else, and the account page
-        // reports its own.
-        setCount(0);
-        return;
-      }
-      const body = (await res.json()) as { invitations?: unknown[] } | null;
-      // Defaulted, not trusted — as `useOrganizations` and `Account` both do:
-      // a 200 carrying the wrong shape should show no badge rather than throw
-      // through the whole app shell.
-      setCount(body?.invitations?.length ?? 0);
-    } catch {
-      setCount(0);
-    }
-  }, []);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
-
-  return { count, refresh };
+    await client.invalidateQueries({
+      queryKey: queryKeys.me(userId, "invitations"),
+    });
+  }, [client, userId]);
+  return { count: query.data?.length ?? 0, refresh };
 }

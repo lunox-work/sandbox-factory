@@ -1,10 +1,10 @@
-import { GithubAnalysisClient, ApiError } from "@sandbox-factory/client";
-import type {
-  AnalysisRunDto,
-  ArtifactDto,
-  GithubRepoDto,
-  RepoSnapshotDto,
-} from "@sandbox-factory/shared";
+import { ErrorBanner, LoadingLine } from "@/components/Message";
+import { PeekPanel } from "@/components/PeekPanel";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { ApiError } from "@sandbox-factory/client";
+import type { AnalysisRunDto, GithubRepoDto } from "@sandbox-factory/shared";
 import {
   SLICE_BUDGET_LIMITS,
   fixtureSetSchema,
@@ -12,11 +12,8 @@ import {
   sliceBoundarySummarySchema,
 } from "@sandbox-factory/shared";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { PeekPanel } from "@/components/PeekPanel";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { Input } from "@/components/ui/input";
-import { ErrorBanner, LoadingLine } from "@/components/Message";
+import { clients } from "./data/query";
+import { useAnalysisResources } from "./features/analysis/queries";
 import {
   AgentProposalPicker,
   FixtureSetView,
@@ -81,130 +78,42 @@ export function RepositoryAnalysis({
   manageable: boolean;
   onClose: () => void;
 }) {
-  const client = useMemo(() => new GithubAnalysisClient({ baseUrl: "" }), []);
-  const [snapshots, setSnapshots] = useState<RepoSnapshotDto[]>([]);
-  const [runs, setRuns] = useState<AnalysisRunDto[]>([]);
+  const client = clients.analysis;
   const [snapshotId, setSnapshotId] = useState("");
   const [selected, setSelected] = useState<string | null>(null);
-  const [artifacts, setArtifacts] = useState<ArtifactDto[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [artifactLoading, setArtifactLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
-  const [refresh, setRefresh] = useState(0);
   const [slicing, setSlicing] = useState(false);
   const [entryPoints, setEntryPoints] = useState<string[]>([]);
   const [budget, setBudget] = useState({ maxFiles: 40, maxDepth: 3 });
   const [includeInferred, setIncludeInferred] = useState(false);
-  // Which agent's ticket picker is open, if any.
+  // Which agent's bounty picker is open, if any.
   const [agent, setAgent] = useState<"scope" | "fixtures" | null>(null);
   const selectedRef = useRef(selected);
   useEffect(() => {
     selectedRef.current = selected;
   }, [selected]);
-  useEffect(() => {
-    let active = true;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const load = async () => {
-      try {
-        const [snapshotResult, runResult] = await Promise.all([
-          client.snapshots(organizationId, repo.id),
-          client.runs(organizationId, repo.id),
-        ]);
-        if (!active) return;
-        setSnapshots(snapshotResult);
-        setRuns((current) => [
-          ...runResult,
-          ...current.filter(
-            (run) =>
-              run.id === selectedRef.current &&
-              !runResult.some((item) => item.id === run.id),
-          ),
-        ]);
-        setError(null);
-        setSnapshotId(
-          (current) =>
-            current ||
-            snapshotResult.find((s) => s.commitSha === repo.headSha)?.id ||
-            snapshotResult[0]?.id ||
-            "",
-        );
-        setSelected((current) => current ?? runResult[0]?.id ?? null);
-        if (
-          runResult.some((r) => r.status === "queued" || r.status === "running")
-        )
-          timer = setTimeout(() => {
-            void load();
-          }, 2000);
-      } catch (error) {
-        if (active) setError(errorMessage(error));
-      } finally {
-        if (active) setLoading(false);
-      }
-    };
-    void load();
-    return () => {
-      active = false;
-      clearTimeout(timer);
-    };
-  }, [client, organizationId, repo.id, repo.headSha, refresh]);
+  const resources = useAnalysisResources(organizationId, repo.id, selected);
+  const snapshots = resources.snapshots.data ?? [];
+  const runs = resources.runs;
+  const artifacts = resources.artifacts.data ?? [];
+  const loading = resources.loading;
+  const artifactLoading = selected !== null && resources.artifacts.isPending;
   const selectedRun = runs.find((r) => r.id === selected);
-  // An idempotent enqueue can return an active run older than the history page.
   useEffect(() => {
-    if (
-      selected === null ||
-      (selectedRun !== undefined &&
-        selectedRun.status !== "queued" &&
-        selectedRun.status !== "running")
-    )
-      return;
-    let active = true;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const load = async () => {
-      try {
-        const run = await client.run(organizationId, selected);
-        if (!active) return;
-        setRuns((current) =>
-          [run, ...current.filter((item) => item.id !== run.id)].sort(
-            (a, b) =>
-              Date.parse(b.createdAt) - Date.parse(a.createdAt) ||
-              b.id.localeCompare(a.id),
-          ),
-        );
-        if (run.status === "queued" || run.status === "running")
-          timer = setTimeout(() => {
-            void load();
-          }, 2000);
-      } catch (error) {
-        if (active) setError(errorMessage(error));
-      }
-    };
-    void load();
-    return () => {
-      active = false;
-      clearTimeout(timer);
-    };
-  }, [client, organizationId, selected, selectedRun?.status]);
-  useEffect(() => {
-    let active = true;
-    setArtifacts([]);
-    if (selected === null) return;
-    setArtifactLoading(true);
-    void client
-      .artifacts(organizationId, selected)
-      .then((result) => {
-        if (active) setArtifacts(result);
-      })
-      .catch((error) => {
-        if (active) setError(errorMessage(error));
-      })
-      .finally(() => {
-        if (active) setArtifactLoading(false);
-      });
-    return () => {
-      active = false;
-    };
-  }, [client, organizationId, selected, selectedRun?.status]);
+    if (snapshots.length > 0)
+      setSnapshotId(
+        (current) =>
+          current ||
+          snapshots.find((s) => s.commitSha === repo.headSha)?.id ||
+          snapshots[0]?.id ||
+          "",
+      );
+    if (runs.length > 0)
+      setSelected((current) => current ?? runs[0]?.id ?? null);
+  }, [resources.snapshots.data, resources.runs, repo.headSha]);
+  const trackingError =
+    resources.error === null ? null : errorMessage(resources.error);
   const current = snapshots.find((s) => s.id === snapshotId);
   const existing = runs.find(
     (r) => r.snapshotId === snapshotId && r.tool === "graphify",
@@ -221,7 +130,7 @@ export function RepositoryAnalysis({
         snapshotId,
       });
       setSelected(result.id);
-      setRefresh((r) => r + 1);
+      resources.refresh();
     } catch (error) {
       setError(errorMessage(error));
     } finally {
@@ -240,7 +149,7 @@ export function RepositoryAnalysis({
       });
       setSelected(result.run.id);
       setSlicing(false);
-      setRefresh((r) => r + 1);
+      resources.refresh();
     } catch (error) {
       setError(errorMessage(error));
     } finally {
@@ -257,7 +166,7 @@ export function RepositoryAnalysis({
       });
       setSelected(result.run.id);
       setAgent(null);
-      setRefresh((r) => r + 1);
+      resources.refresh();
     } catch (error) {
       setError(errorMessage(error));
     } finally {
@@ -273,7 +182,7 @@ export function RepositoryAnalysis({
       });
       setSelected(run.id);
       setAgent(null);
-      setRefresh((r) => r + 1);
+      resources.refresh();
     } catch (error) {
       setError(errorMessage(error));
     } finally {
@@ -338,7 +247,12 @@ export function RepositoryAnalysis({
       description="Repository snapshots and Graphify analysis"
     >
       <div className="space-y-6">
-        {error !== null && <ErrorBanner>{error}</ErrorBanner>}
+        {(error ?? trackingError) !== null && (
+          <ErrorBanner>
+            {error ?? trackingError}
+            <button onClick={resources.retry}>Try again</button>
+          </ErrorBanner>
+        )}
         {loading ? (
           <LoadingLine />
         ) : error !== null && snapshots.length === 0 ? null : (
@@ -520,7 +434,7 @@ export function RepositoryAnalysis({
             {!slicing && agent === "scope" && (
               <p className="text-muted-foreground text-xs">
                 An agent reads this commit&rsquo;s source with the
-                ticket&rsquo;s spec and proposes entry points that cut at the
+                bounty&rsquo;s spec and proposes entry points that cut at the
                 code&rsquo;s seams. Nothing is sliced until you review the
                 proposal and slice it.
               </p>
@@ -529,11 +443,14 @@ export function RepositoryAnalysis({
         )}
         <section className="space-y-3">
           <h2 className="text-sm font-semibold">Run history</h2>
-          {!loading && error === null && runs.length === 0 && (
-            <p className="text-muted-foreground text-sm">
-              No analysis runs yet.
-            </p>
-          )}
+          {!loading &&
+            error === null &&
+            trackingError === null &&
+            runs.length === 0 && (
+              <p className="text-muted-foreground text-sm">
+                No analysis runs yet.
+              </p>
+            )}
           <ul className="space-y-2">
             {runs.map((run) => (
               <li key={run.id}>

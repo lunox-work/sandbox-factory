@@ -3,11 +3,11 @@ import type {
   ComplexityProfile,
   ProfileErrorCode,
   ProfileStatus,
-  ProfileTicket,
+  ProfileBounty,
 } from "sandbox-factory";
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
 
-import { snapshotForWrite } from "./bounty-proposals.js";
+import { snapshotForWrite } from "./snapshot-write.js";
 import type { Database } from "./errors.js";
 import { generateId } from "./mapping.js";
 import { bountyProfile, bountyProposal } from "./schema.js";
@@ -27,7 +27,7 @@ export interface StoredBountyProfile {
   readonly specRevision: number;
   readonly specHash: string;
   readonly snapshotId: string | null;
-  readonly ticket: ProfileTicket;
+  readonly bounty: ProfileBounty;
   readonly status: ProfileStatus;
   readonly errorCode: ProfileErrorCode | null;
   readonly runErrorCode: AnalysisErrorCode | null;
@@ -44,7 +44,7 @@ export interface NewBountyProfile {
   readonly specRevision: number;
   readonly specHash: string;
   readonly snapshotId: string;
-  readonly ticket: ProfileTicket;
+  readonly bounty: ProfileBounty;
 }
 
 /** The one step a sweep takes a row: each status says what it carries. */
@@ -100,7 +100,7 @@ function toStored(row: BountyProfileRow): StoredBountyProfile {
     specRevision: row.specRevision,
     specHash: row.specHash,
     snapshotId: row.snapshotId,
-    ticket: row.ticket,
+    bounty: row.bounty,
     status: row.status,
     errorCode: row.errorCode,
     runErrorCode: row.runErrorCode,
@@ -122,7 +122,7 @@ export function createBountyProfileStore(db: Database): BountyProfileStore {
   return {
     async request(owner, input) {
       return db.transaction(async (transaction) => {
-        const tx = transaction as unknown as Database;
+        const tx = transaction;
         // The proposal id comes from a run, but the owner boundary is still
         // checked here rather than trusted: another organization's proposal
         // is not profiled.
@@ -149,7 +149,7 @@ export function createBountyProfileStore(db: Database): BountyProfileStore {
             specRevision: input.specRevision,
             specHash: input.specHash,
             snapshotId,
-            ticket: input.ticket,
+            bounty: input.bounty,
           })
           .onConflictDoNothing();
         const rows = (await tx

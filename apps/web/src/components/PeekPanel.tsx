@@ -9,18 +9,18 @@
  * The split gave each side half the width, so a spec with a table in it had
  * about 400px to render in while the list beside it showed thirty rows of
  * truncated summaries — both cramped, to show two things at once that are not
- * read at once. A peek gives the ticket real width and leaves the list
+ * read at once. A peek gives the bounty real width and leaves the list
  * legible behind it.
  *
  * It also settles which region the wheel belongs to. The split had the panel
  * pinned inside the page's own scroller, so a panel with its own overflow
  * captured the wheel when the cursor was inside it; without one, a long
- * ticket stretched the page. A peek is its own scrolling region with the page
+ * bounty stretched the page. A peek is its own scrolling region with the page
  * behind it locked, which is unambiguous in a way neither arrangement was.
  *
  * And it is the same shape on a phone, where the split had to collapse into
  * one column and hide the list — a second layout to reason about, with a
- * bespoke "All tickets" control to undo it.
+ * bespoke "All bounties" control to undo it.
  *
  * Built on Radix's Dialog rather than hand-rolled, which is what brings the
  * focus trap, the return of focus to the row on close, Escape, the click
@@ -64,7 +64,7 @@ export function PeekPanel({
     Radix returns focus to its own `Trigger`, and there is none here: the peek
     is opened by a row in a list somewhere else in the tree, not by a button
     wrapping it. Left alone, closing drops focus on `<body>`, and a keyboard
-    reader who peeks one ticket loses their place in the backlog entirely.
+    reader who peeks one bounty loses their place in the backlog entirely.
 
     So the element that had focus when the peek opened is remembered and
     restored on close — which is the row that opened it, and where the reader

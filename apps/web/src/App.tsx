@@ -1,3 +1,9 @@
+import { ServerDataProvider } from "./data/query";
+import {
+  useLocation,
+  pushLocation,
+  replaceLocation,
+} from "./navigation/location";
 import { useEffect, useRef, useState } from "react";
 
 import { LoadingLine } from "@/components/Message";
@@ -12,7 +18,7 @@ import { Organizations } from "./Organizations";
 import { JiraBoard } from "./Jira";
 import { SideNav, type Screen } from "./SideNav";
 import { SignIn } from "./SignIn";
-import { Tickets } from "./Tickets";
+import { Bounties } from "./Bounties";
 import {
   boardForPath,
   canonicalUrl,
@@ -51,13 +57,15 @@ export function App() {
    * another's data.
    */
   return (
-    <Signed
-      key={session.user.id}
-      userId={session.user.id}
-      name={session.user.name}
-      email={session.user.email}
-      image={session.user.image}
-    />
+    <ServerDataProvider key={session.user.id} userId={session.user.id}>
+      <Signed
+        key={session.user.id}
+        userId={session.user.id}
+        name={session.user.name}
+        email={session.user.email}
+        image={session.user.image}
+      />
+    </ServerDataProvider>
   );
 }
 
@@ -77,12 +85,10 @@ function Signed({
   const shouldFocusPage = useRef(false);
   const restorePageScroll = useRef(false);
   const scrollPositions = useRef(new Map<string, number>());
-  // A value rather than a router: a handful of screens, each with a path.
-  // Read from the path so a reload, a bookmark, or the return from a provider
-  // link all land on the screen the URL names.
-  const [screen, setScreen] = useState<Screen>(() =>
-    screenForPath(window.location.pathname),
-  );
+  const location = useLocation();
+  const screen = screenForPath(location.pathname);
+  const connectionId = connectionForPath(location.pathname);
+  const boardId = boardForPath(location.pathname);
 
   // An old `/organizations` or `/o/acme/jira` link opens the page, then the
   // address bar is brought up to date. Replaced rather than pushed: it is the
@@ -93,37 +99,16 @@ function Signed({
       window.location.search,
     );
     if (current !== undefined) {
-      window.history.replaceState(
-        window.history.state,
-        "",
-        current + window.location.hash,
-      );
+      replaceLocation(current + location.hash);
     }
-  }, []);
+  }, [location]);
 
   /**
    * The organization the app is showing. The handle in the URL wins over the
    * remembered choice, so `/o/acme/settings` opens Acme even when another was
    * active last.
    */
-  const organizations = useOrganizations(slugForPath(window.location.pathname));
-
-  /**
-   * The connected site the board on screen is on, from the URL.
-   *
-   * Held in state beside the screen rather than read from `window.location`
-   * at render time, for the same reason the screen is: a `popstate` has to
-   * change both together, and a value read during render would not re-render
-   * when the URL changed under it.
-   */
-  const [connectionId, setConnectionId] = useState<string | undefined>(() =>
-    connectionForPath(window.location.pathname),
-  );
-
-  /** The board `org-jira-board` is showing, from the URL's last segment. */
-  const [boardId, setBoardId] = useState<string | undefined>(() =>
-    boardForPath(window.location.pathname),
-  );
+  const organizations = useOrganizations(slugForPath(location.pathname));
 
   /**
    * The name of the board on screen, reported up by `JiraBoard` so the trail
@@ -148,9 +133,6 @@ function Signed({
     function onPopState() {
       shouldFocusPage.current = true;
       restorePageScroll.current = true;
-      setScreen(screenForPath(window.location.pathname));
-      setConnectionId(connectionForPath(window.location.pathname));
-      setBoardId(boardForPath(window.location.pathname));
     }
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
@@ -168,8 +150,8 @@ function Signed({
               ? "New workspace"
               : screen === "org-jira-board"
                 ? (boardName ?? "Board")
-                : screen === "org-tickets"
-                  ? "Tickets"
+                : screen === "org-bounties"
+                  ? "Bounties"
                   : (organizations.active?.name ?? "Workspace");
     document.title = `${page} · Lunox`;
   }, [boardName, organizations.active?.name, screen]);
@@ -231,7 +213,7 @@ function Signed({
     } else {
       window.scrollTo({ top });
     }
-  }, [boardId, connectionId, screen]);
+  }, [location.pathname, location.search]);
 
   /**
    * `slug` names the organization a path should carry, for the rows on the
@@ -273,15 +255,10 @@ function Signed({
         contentScrolls ? contentRef.current.scrollTop : window.scrollY,
       );
     }
-    window.history.pushState(
-      null,
-      "",
+    shouldFocusPage.current = true;
+    pushLocation(
       pathForScreen(next, slug ?? organizations.active?.slug, id, board, tab),
     );
-    shouldFocusPage.current = true;
-    setScreen(next);
-    setConnectionId(id);
-    setBoardId(board);
   }
 
   /*
@@ -321,6 +298,13 @@ function Signed({
       From `sm` up the row is painted the rail's colour and the content sits
       in it as an inset rounded panel, a thin margin on every side but the
       rail's, so the rail and the frame around the panel are one surface.
+
+      The panel scrolls without drawing a scrollbar. One came and went as a
+      page grew past the panel's height or fell back under it (a settings
+      tab opened, a list arriving), and where scrollbars take up width it
+      nudged the centred column sideways each time. The wheel, trackpad and
+      keyboard still scroll it. Both rules, because Safari before 18.2
+      ignores `scrollbar-width`.
     */
     <div className="flex min-h-dvh flex-col sm:bg-sidebar sm:h-dvh sm:flex-row sm:overflow-hidden">
       <SideNav
@@ -345,8 +329,8 @@ function Signed({
           // passed because `select` has not re-rendered yet — see `navigate`.
           if (screen === "org-settings") {
             navigate("org-settings", organization.slug);
-          } else if (screen === "org-tickets") {
-            navigate("org-tickets", organization.slug);
+          } else if (screen === "org-bounties") {
+            navigate("org-bounties", organization.slug);
           } else if (screen === "org-jira-board") {
             navigate(
               "org-settings",
@@ -362,7 +346,7 @@ function Signed({
       />
       <div
         ref={contentRef}
-        className={`min-w-0 flex-1 pb-[calc(4rem+env(safe-area-inset-bottom))] sm:bg-background sm:my-2 sm:mr-2 sm:overflow-y-auto sm:rounded-[6px] sm:border sm:pb-0 ${
+        className={`min-w-0 flex-1 pb-[calc(4rem+env(safe-area-inset-bottom))] sm:bg-background sm:my-2 sm:mr-2 sm:overflow-y-auto sm:scrollbar-none sm:[&::-webkit-scrollbar]:hidden sm:rounded-[6px] sm:border sm:pb-0 ${
           screen === "home" ? "" : "[&>main]:!pt-4 sm:[&>main]:!pt-6"
         }`}
       >
@@ -456,7 +440,7 @@ function Signed({
               role={organizations.active.role}
             />
           )
-        ) : screen === "org-tickets" ? (
+        ) : screen === "org-bounties" ? (
           organizations.active === null ? (
             <NoOrganization
               loading={organizations.loading}
@@ -464,8 +448,8 @@ function Signed({
               onOpenOrganizations={() => navigate("organizations")}
             />
           ) : (
-            <Tickets
-              // Keyed by the organization: another workspace's tickets are
+            <Bounties
+              // Keyed by the organization: another workspace's bounties are
               // a different list, and the previous one must not linger.
               key={organizations.active.id}
               organizationId={organizations.active.id}

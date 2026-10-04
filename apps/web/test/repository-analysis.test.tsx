@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "./render";
 import { afterEach, expect, test, vi } from "vitest";
 import { RepositoryAnalysis } from "../src/RepositoryAnalysis";
 import type { GithubRepoDto, AnalysisRunDto } from "@sandbox-factory/shared";

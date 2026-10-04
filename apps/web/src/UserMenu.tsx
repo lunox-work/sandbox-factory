@@ -11,7 +11,7 @@
  * are the facts a bug report needs. See `BuildDetails`.
  */
 
-import { Building2, ChevronsUpDown, LogOut, Settings } from "lucide-react";
+import { ChevronsUpDown, LogOut, Settings } from "lucide-react";
 import { useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -26,7 +26,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import type { Screen } from "./SideNav";
 
 import { BuildReadout, type LinkWrapper } from "./BuildReadout";
 import { isPlainLeftClick, pathForScreen } from "./routes";
@@ -39,7 +38,6 @@ export function UserMenu({
   email,
   image,
   invitationCount = 0,
-  onNavigate,
   onAccount,
   onSignOut,
 }: {
@@ -49,9 +47,9 @@ export function UserMenu({
    */
   expanded?: boolean | undefined;
   /**
-   * A screen this menu leads to is showing — the account page or the
-   * organizations list — so the trigger is filled like the rail's current
-   * destination. Otherwise nothing in the rail says where you are.
+   * The screen this menu leads to is showing — the account page — so the
+   * trigger is filled like the rail's current destination. Otherwise nothing
+   * in the rail says where you are.
    */
   current?: boolean | undefined;
   /** Seeds the generated avatar when there is no picture. */
@@ -61,7 +59,6 @@ export function UserMenu({
   image?: string | null;
   /** Organizations waiting for an answer; see `SideNav`. */
   invitationCount?: number | undefined;
-  onNavigate?: ((screen: Screen) => void) | undefined;
   onAccount: () => void;
   onSignOut: () => void;
 }) {
@@ -184,8 +181,8 @@ export function UserMenu({
 
         <DropdownMenuSeparator />
 
-        {/* No "Home" item: the rail is that destination, and two affordances
-            for one screen invite the wrong one. */}
+        {/* No "Home" or "Workspaces" item: the rail has a row for each, and
+            two affordances for one screen invite the wrong one. */}
         {/* The count travels with the item that leads to them, so the dot on
             the avatar resolves into something specific once the menu opens. */}
         <DropdownMenuItem asChild>
@@ -206,31 +203,6 @@ export function UserMenu({
                 {invitationCount}
               </Badge>
             )}
-          </a>
-        </DropdownMenuItem>
-
-        {/*
-          One item, not a switcher. Which organizations you are in is a list
-          worth a page — it carries names, roles and the actions on each — and
-          a menu that tried to hold all that competed with the account items
-          around it. See `Organizations.tsx`.
-
-          The switcher at the head of the rail links to the same list; this
-          menu is where somebody looks for what belongs to their account.
-        */}
-        <DropdownMenuItem asChild>
-          <a
-            href={pathForScreen("organizations")}
-            onClick={(event) => {
-              if (isPlainLeftClick(event)) {
-                event.preventDefault();
-                setOpen(false);
-                onNavigate?.("organizations");
-              }
-            }}
-          >
-            <Building2 />
-            Workspaces
           </a>
         </DropdownMenuItem>
 

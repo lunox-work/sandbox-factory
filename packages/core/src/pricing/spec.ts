@@ -1,8 +1,8 @@
 /**
- * A ticket's behaviour, written down as scenarios.
+ * A bounty's behaviour, written down as scenarios.
  *
- * A spec is the first link of the pricing chain: what the ticket asks for,
- * as Given/When/Then scenarios a reviewer can read, plus what the ticket
+ * A spec is the first link of the pricing chain: what the bounty asks for,
+ * as Given/When/Then scenarios a reviewer can read, plus what the bounty
  * left unsaid (open questions) and what the draft decided in that silence
  * (assumptions). Later links count it; nothing here prices anything.
  *
@@ -105,14 +105,14 @@ export interface Scenario {
 }
 
 export interface SpecDraft {
-  /** What the ticket is about, as a Gherkin feature name. */
+  /** What the bounty is about, as a Gherkin feature name. */
   readonly feature: string;
   /** Given-steps shared by every scenario, without the keyword. May be empty. */
   readonly background: readonly string[];
   readonly scenarios: readonly Scenario[];
-  /** What the ticket does not say and the draft needed. */
+  /** What the bounty does not say and the draft needed. */
   readonly openQuestions: readonly string[];
-  /** What the draft decided in the ticket's silence. */
+  /** What the draft decided in the bounty's silence. */
   readonly assumptions: readonly string[];
 }
 

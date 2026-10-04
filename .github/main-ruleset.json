@@ -50,6 +50,10 @@
             "integration_id": 15368
           },
           {
+            "context": "Browser smoke (Chromium)",
+            "integration_id": 15368
+          },
+          {
             "context": "Analyze",
             "integration_id": 15368
           },

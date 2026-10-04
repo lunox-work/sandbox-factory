@@ -14,15 +14,17 @@
  * - `schema/auth.ts` — Better Auth's four tables, plus `user_email`.
  * - `schema/organizations.ts` — the second principal, its membership, and the
  *   handle namespace both principals share.
- * - `schema/ticket.ts` — the organization's own tickets, which proposals
- *   price whether they were written here or imported.
+ * - `schema/bounty.ts` — the organization's own bounties: the record a
+ *   proposal and a sandbox hang from, whether written here or imported.
+ * - `schema/pricing.ts` — what bounties are priced at, and how they got
+ *   there: rate cards, sizing runs, proposals and their specs.
  * - `schema/jira.ts` — connections to a client's Atlassian site, and the
- *   issues imported from it as tickets.
+ *   issues imported from it as bounties.
  * - `schema/github.ts` — installations of the GitHub App, the grants that
  *   linked them, and the repositories registered from them.
  * - `schema/analysis.ts` — what is known about a repository at one commit.
- * - `schema/sandbox.ts` — tasks cut from a repository, their versions and
- *   the private provenance behind each.
+ * - `schema/sandbox.ts` — a bounty's sandbox: its versions, the private
+ *   provenance behind each, and the submissions judged by them.
  *
  * `auth.ts` and `organizations.ts` import each other; see the note in
  * `organizations.ts` for why the foreign-key thunks make that safe.
@@ -61,8 +63,8 @@ export type {
   OrganizationRow,
 } from "./schema/organizations.js";
 
-export { ticket } from "./schema/ticket.js";
-export type { NewTicketRow, TicketRow } from "./schema/ticket.js";
+export { bounty } from "./schema/bounty.js";
+export type { NewBountyRow, BountyRow } from "./schema/bounty.js";
 
 export { jiraBoard, jiraConnection, jiraIssue } from "./schema/jira.js";
 export type {
@@ -100,7 +102,7 @@ export {
   bountySpec,
   bountyWriteback,
   rateCard,
-} from "./schema/bounty.js";
+} from "./schema/pricing.js";
 export type {
   BountyProfileRow,
   BountyProposalRow,
@@ -116,19 +118,20 @@ export type {
   NewBountyWritebackRow,
   NewRateCardRow,
   RateCardRow,
-} from "./schema/bounty.js";
+} from "./schema/pricing.js";
 
 export {
   sandbox,
   sandboxSource,
-  sandboxTicket,
   sandboxVersion,
   sandboxVersionSource,
+  submission,
 } from "./schema/sandbox.js";
 export type {
-  SandboxTicketRow,
+  NewSubmissionRow,
   SandboxRow,
   SandboxSourceRow,
   SandboxVersionRow,
   SandboxVersionSourceRow,
+  SubmissionRow,
 } from "./schema/sandbox.js";

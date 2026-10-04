@@ -1,3 +1,7 @@
+import { ApiError } from "@sandbox-factory/client";
+import { rankAtLeast } from "sandbox-factory";
+import { clients, useOwnerQuery } from "./data/query";
+import { pushLocation, subscribeLocation } from "./navigation/location";
 /**
  * Organization settings: the handle, who is in it, and who has been invited.
  *
@@ -12,17 +16,8 @@
  * courtesy, not security.
  */
 
-import type {
-  MembershipDto,
-  OrganizationMemberDto,
-} from "@sandbox-factory/shared";
+import type { MembershipDto } from "@sandbox-factory/shared";
 import { LogOut, Trash2, UserPlus, Users } from "lucide-react";
-import {
-  HANDLE_MAX_LENGTH,
-  isValidHandle,
-  normalizeHandle,
-  toHandleStem,
-} from "sandbox-factory";
 import {
   useCallback,
   useEffect,
@@ -30,11 +25,17 @@ import {
   type FormEvent,
   type ReactNode,
 } from "react";
+import {
+  HANDLE_MAX_LENGTH,
+  isValidHandle,
+  normalizeHandle,
+  toHandleStem,
+} from "sandbox-factory";
 
+import { EntityAvatar } from "@/components/Avatar";
 import { AvatarField } from "@/components/AvatarField";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { EditableField } from "@/components/EditableField";
-import { EntityAvatar } from "@/components/Avatar";
 import { ErrorBanner, LoadingLine } from "@/components/Message";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -50,9 +51,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 import { authClient } from "./auth";
 import { removeAvatar, uploadAvatar, type AvatarResult } from "./avatars";
+import { RateCardEditor } from "./Proposals";
 import { Connections } from "./Connections";
 import type { JiraBoard } from "./useJira";
-import { RateCardEditor } from "./Bounties";
 
 /**
  * The three groups the settings page is split into, in tab order.
@@ -87,7 +88,7 @@ function tabFromUrl(personal: boolean): OrganizationTab {
 
 /** Roles that may manage members and invitations. */
 function canManage(role: string): boolean {
-  return role === "owner" || role === "admin";
+  return rankAtLeast(role, "admin");
 }
 
 export function Organization({
@@ -123,10 +124,16 @@ export function Organization({
    */
   viewer?: { id: string; image?: string | null } | undefined;
 }) {
-  const [members, setMembers] = useState<OrganizationMemberDto[]>([]);
-  /** False until the members request has answered once; see `memberCount`. */
-  const [loaded, setLoaded] = useState(false);
-  const [memberError, setMemberError] = useState<string | null>(null);
+  const memberQuery = useOwnerQuery(
+    organization.id,
+    "members",
+    (owner, signal) => clients.memberships.members(owner, signal),
+  );
+  const members = memberQuery.data ?? [];
+  const loaded = !memberQuery.isPending;
+  const memberError = memberQuery.isError
+    ? "Could not load this workspace’s members."
+    : null;
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   /*
@@ -150,47 +157,21 @@ export function Organization({
       params.set("tab", selected);
     }
     const query = params.toString();
-    window.history.pushState(
-      null,
-      "",
-      window.location.pathname + (query === "" ? "" : `?${query}`),
+    pushLocation(
+      window.location.pathname +
+        (query === "" ? "" : `?${query}`) +
+        (window.location.hash ?? ""),
     );
   }, []);
 
   useEffect(() => {
     const syncTab = () => setTab(tabFromUrl(organization.kind === "personal"));
-    window.addEventListener("popstate", syncTab);
-    return () => window.removeEventListener("popstate", syncTab);
+    return subscribeLocation(syncTab);
   }, [organization.kind]);
 
   const refresh = useCallback(async () => {
-    setLoaded(false);
-    try {
-      const res = await fetch(`/api/v1/orgs/${organization.id}/members`, {
-        credentials: "include",
-      });
-      if (!res.ok) {
-        // It used to ignore this entirely, so a 500 left an empty member list
-        // and no reason for it — an organization that looked as though it had
-        // lost everybody.
-        setMemberError("Could not load this workspace.");
-        return;
-      }
-      setMembers(
-        ((await res.json()) as { members: OrganizationMemberDto[] }).members,
-      );
-      setLoaded(true);
-      setMemberError(null);
-    } catch {
-      setMemberError("Could not load this workspace.");
-    } finally {
-      setLoaded(true);
-    }
-  }, [organization.id]);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+    await memberQuery.refresh();
+  }, [memberQuery.refresh]);
 
   const manage = canManage(organization.role);
   /**
@@ -797,23 +778,15 @@ function InviteForm({
       ? { email: value }
       : { handle: checked.status === "ok" ? checked.handle : rawHandle };
     try {
-      const res = await fetch(`/api/v1/orgs/${organizationId}/invitations`, {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) {
-        const payload = (await res.json().catch(() => null)) as {
-          error?: string;
-        } | null;
-        onError(payload?.error ?? "Could not send that invitation.");
-        return;
-      }
+      await clients.memberships.invite(organizationId, body);
       setDraft("");
       setMessage(`Invited ${value}. They will see it on their account page.`);
-    } catch {
-      onError("Could not send that invitation.");
+    } catch (error) {
+      onError(
+        error instanceof ApiError
+          ? error.message
+          : "Could not send that invitation.",
+      );
     } finally {
       onBusy(false);
     }

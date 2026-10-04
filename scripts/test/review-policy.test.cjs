@@ -21,6 +21,7 @@ test("required checks are the CI contexts, without bypass actors", () => {
       "Test (Node 22)",
       "Test (Node 24)",
       "Worker image smoke",
+      "Browser smoke (Chromium)",
       "Analyze",
       "CodeQL",
     ],

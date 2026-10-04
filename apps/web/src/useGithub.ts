@@ -1,3 +1,7 @@
+import { ApiError } from "@sandbox-factory/client";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { clients, queryKeys, useOwnerQuery, useUserId } from "./data/query";
+import { replaceLocation } from "./navigation/location";
 /**
  * An organization's GitHub: the installations it has linked, and the
  * repositories registered from them.
@@ -11,11 +15,8 @@
  */
 
 import type {
-  GithubAvailableInstallationDto,
   GithubConnectionDto,
   GithubConnectOutcome,
-  GithubGrantDto,
-  GithubInstallationRepositoryDto,
   GithubRepoDto,
   RepoSnapshotDetailDto,
 } from "@sandbox-factory/shared";
@@ -26,34 +27,20 @@ const base = (organizationId: string) =>
   `/api/v1/orgs/${encodeURIComponent(organizationId)}/github`;
 
 /** The API's error body, read defensively. */
-async function failureOf(
-  res: Response,
+function failureOf(
+  error: unknown,
   fallback: string,
-): Promise<{ ok: false; error: string; code?: string }> {
-  const body = (await res.json().catch(() => null)) as {
-    error?: unknown;
-    code?: unknown;
-  } | null;
+): { ok: false; error: string; code?: string } {
   return {
     ok: false,
-    // A 404's own words are "Not found", which tells a person nothing about
-    // what they pressed; ours say what could not be done.
     error:
-      res.status !== 404 && typeof body?.error === "string"
-        ? body.error
+      error instanceof ApiError && error.status !== 404
+        ? error.message
         : fallback,
-    ...(typeof body?.code === "string" ? { code: body.code } : {}),
+    ...(error instanceof ApiError && error.code !== null
+      ? { code: error.code }
+      : {}),
   };
-}
-
-/** Whether a response is the API saying GitHub is not set up on it. */
-async function isUnconfigured(res: Response): Promise<boolean> {
-  if (res.status !== 503) return false;
-  const body = (await res
-    .clone()
-    .json()
-    .catch(() => null)) as { code?: unknown } | null;
-  return body?.code === "unconfigured";
 }
 
 /**
@@ -82,70 +69,27 @@ export interface GithubConnections {
 export function useGithub(
   organizationId: string | undefined,
 ): GithubConnections {
-  const [state, setState] = useState<{
-    connections: GithubConnectionDto[];
-    loading: boolean;
-    error: string | null;
-    unconfigured: boolean;
-  }>({ connections: [], loading: true, error: null, unconfigured: false });
-
+  const cache = useQueryClient();
+  const userId = useUserId();
+  const query = useOwnerQuery(
+    organizationId,
+    "github-connections",
+    (owner, signal) => clients.github.connections(owner, signal),
+  );
+  const unconfigured =
+    query.error instanceof ApiError && query.error.code === "unconfigured";
+  const state = {
+    connections: query.data ?? [],
+    loading: organizationId !== undefined && query.isPending,
+    error:
+      query.isError && !unconfigured
+        ? "Could not load your GitHub connections."
+        : null,
+    unconfigured,
+  };
   const refresh = useCallback(async () => {
-    if (organizationId === undefined) {
-      setState({
-        connections: [],
-        loading: false,
-        error: null,
-        unconfigured: false,
-      });
-      return;
-    }
-    setState((current) => ({ ...current, loading: true }));
-    try {
-      const res = await fetch(`${base(organizationId)}/connections`, {
-        credentials: "include",
-      });
-      if (await isUnconfigured(res)) {
-        setState({
-          connections: [],
-          loading: false,
-          error: null,
-          unconfigured: true,
-        });
-        return;
-      }
-      if (!res.ok) {
-        setState({
-          connections: [],
-          loading: false,
-          error: "Could not load your GitHub connections.",
-          unconfigured: false,
-        });
-        return;
-      }
-      const body = (await res.json()) as {
-        connections?: GithubConnectionDto[];
-      } | null;
-      // Defaulted rather than trusted, as with Jira: a response of the wrong
-      // shape renders an empty list rather than throwing in a component.
-      setState({
-        connections: body?.connections ?? [],
-        loading: false,
-        error: null,
-        unconfigured: false,
-      });
-    } catch {
-      setState({
-        connections: [],
-        loading: false,
-        error: "Could not reach the server.",
-        unconfigured: false,
-      });
-    }
-  }, [organizationId]);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+    await query.refresh();
+  }, [query.refresh]);
 
   const connect = useCallback(() => {
     if (organizationId === undefined) return;
@@ -163,23 +107,26 @@ export function useGithub(
         return { ok: false, error: "Could not disconnect that account." };
       }
       try {
-        const res = await fetch(
-          `${base(organizationId)}/connections/${encodeURIComponent(connectionId)}`,
-          { method: "DELETE", credentials: "include" },
-        );
-        if (!res.ok) {
-          return failureOf(res, "Could not disconnect that account.");
-        }
+        await clients.github.disconnect(organizationId, connectionId);
+        await cache.invalidateQueries({
+          queryKey: queryKeys.resource(
+            userId,
+            organizationId,
+            "github-repositories",
+          ),
+        });
         await refresh();
         return { ok: true, value: undefined };
-      } catch {
-        return {
-          ok: false,
-          error: "Could not reach the server. The account is still connected.",
-        };
+      } catch (error) {
+        return failureOf(
+          error,
+          error instanceof ApiError
+            ? "Could not disconnect that account."
+            : "Could not reach the server. The account is still connected.",
+        );
       }
     },
-    [organizationId, refresh],
+    [organizationId, refresh, cache, userId],
   );
 
   return { ...state, connect, disconnect, refresh };
@@ -206,10 +153,10 @@ export function useGithubOutcome(): {
     );
     params.delete("github");
     const query = params.toString();
-    window.history.replaceState(
-      null,
-      "",
-      window.location.pathname + (query === "" ? "" : `?${query}`),
+    replaceLocation(
+      window.location.pathname +
+        (query === "" ? "" : `?${query}`) +
+        (window.location.hash ?? ""),
     );
   }, []);
 
@@ -222,75 +169,44 @@ export function useGithubOutcome(): {
 /** The installations the signed-in person can see, for the picker. */
 export async function fetchAvailableInstallations(
   organizationId: string,
-): Promise<
-  Result<{
-    grant: GithubGrantDto;
-    installations: GithubAvailableInstallationDto[];
-  }>
-> {
+  signal?: AbortSignal,
+) {
   try {
-    const res = await fetch(`${base(organizationId)}/connections/available`, {
-      credentials: "include",
-    });
-    if (!res.ok) {
-      return failureOf(res, "Could not list your GitHub installations.");
-    }
-    const body = (await res.json()) as {
-      grant?: GithubGrantDto;
-      installations?: GithubAvailableInstallationDto[];
-    } | null;
     return {
-      ok: true,
-      value: {
-        grant: body?.grant ?? { githubLogin: "", healthy: true },
-        installations: body?.installations ?? [],
-      },
+      ok: true as const,
+      value: await clients.github.available(organizationId, signal),
     };
-  } catch {
-    return { ok: false, error: "Could not reach the server." };
+  } catch (error) {
+    return failureOf(error, "Could not list your GitHub installations.");
   }
 }
-
-/** Links an installation from the picker. */
 export async function linkInstallation(
   organizationId: string,
   installationId: string,
 ): Promise<Result> {
   try {
-    const res = await fetch(`${base(organizationId)}/connections`, {
-      method: "POST",
-      credentials: "include",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ installationId }),
-    });
-    if (!res.ok) {
-      return failureOf(res, "Could not connect that installation.");
-    }
+    await clients.github.link(organizationId, installationId);
     return { ok: true, value: undefined };
-  } catch {
-    return { ok: false, error: "Could not reach the server." };
+  } catch (error) {
+    return failureOf(error, "Could not connect that installation.");
   }
 }
-
-/** What one installation can see, live from GitHub. */
 export async function fetchInstallationRepositories(
   organizationId: string,
   connectionId: string,
-): Promise<Result<GithubInstallationRepositoryDto[]>> {
+  signal?: AbortSignal,
+) {
   try {
-    const res = await fetch(
-      `${base(organizationId)}/connections/${encodeURIComponent(connectionId)}/repositories`,
-      { credentials: "include" },
-    );
-    if (!res.ok) {
-      return failureOf(res, "Could not list that account's repositories.");
-    }
-    const body = (await res.json()) as {
-      repositories?: GithubInstallationRepositoryDto[];
-    } | null;
-    return { ok: true, value: body?.repositories ?? [] };
-  } catch {
-    return { ok: false, error: "Could not reach the server." };
+    return {
+      ok: true as const,
+      value: await clients.github.installationRepositories(
+        organizationId,
+        connectionId,
+        signal,
+      ),
+    };
+  } catch (error) {
+    return failureOf(error, "Could not list that account's repositories.");
   }
 }
 
@@ -307,54 +223,19 @@ export interface GithubRepos {
 export function useGithubRepos(
   organizationId: string | undefined,
 ): GithubRepos {
-  const [state, setState] = useState<{
-    repos: GithubRepoDto[];
-    loading: boolean;
-    error: string | null;
-  }>({ repos: [], loading: true, error: null });
-
+  const query = useOwnerQuery(
+    organizationId,
+    "github-repositories",
+    (owner, signal) => clients.github.repositories(owner, signal),
+  );
+  const state = {
+    repos: query.data ?? [],
+    loading: organizationId !== undefined && query.isPending,
+    error: query.isError ? "Could not load the registered repositories." : null,
+  };
   const refresh = useCallback(async () => {
-    if (organizationId === undefined) {
-      setState({ repos: [], loading: false, error: null });
-      return;
-    }
-    try {
-      const res = await fetch(`${base(organizationId)}/repositories`, {
-        credentials: "include",
-      });
-      if (await isUnconfigured(res)) {
-        // Said once, by the connections read; not a second error here.
-        setState({ repos: [], loading: false, error: null });
-        return;
-      }
-      if (!res.ok) {
-        setState({
-          repos: [],
-          loading: false,
-          error: "Could not load the registered repositories.",
-        });
-        return;
-      }
-      const body = (await res.json()) as {
-        repositories?: GithubRepoDto[];
-      } | null;
-      setState({
-        repos: body?.repositories ?? [],
-        loading: false,
-        error: null,
-      });
-    } catch {
-      setState({
-        repos: [],
-        loading: false,
-        error: "Could not reach the server.",
-      });
-    }
-  }, [organizationId]);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+    await query.refresh();
+  }, [query.refresh]);
 
   const register = useCallback(
     async (connectionId: string, externalId: string): Promise<Result> => {
@@ -362,22 +243,11 @@ export function useGithubRepos(
         return { ok: false, error: "Could not register that repository." };
       }
       try {
-        const res = await fetch(
-          `${base(organizationId)}/connections/${encodeURIComponent(connectionId)}/repositories`,
-          {
-            method: "POST",
-            credentials: "include",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ externalId, role: "source" }),
-          },
-        );
-        if (!res.ok) {
-          return failureOf(res, "Could not register that repository.");
-        }
+        await clients.github.register(organizationId, connectionId, externalId);
         await refresh();
         return { ok: true, value: undefined };
-      } catch {
-        return { ok: false, error: "Could not reach the server." };
+      } catch (error) {
+        return failureOf(error, "Could not reach the server.");
       }
     },
     [organizationId, refresh],
@@ -389,17 +259,11 @@ export function useGithubRepos(
         return { ok: false, error: "Could not remove that repository." };
       }
       try {
-        const res = await fetch(
-          `${base(organizationId)}/repositories/${encodeURIComponent(repoId)}`,
-          { method: "DELETE", credentials: "include" },
-        );
-        if (!res.ok) {
-          return failureOf(res, "Could not remove that repository.");
-        }
+        await clients.github.remove(organizationId, repoId);
         await refresh();
         return { ok: true, value: undefined };
-      } catch {
-        return { ok: false, error: "Could not reach the server." };
+      } catch (error) {
+        return failureOf(error, "Could not reach the server.");
       }
     },
     [organizationId, refresh],
@@ -419,32 +283,13 @@ export function useRepoSnapshot(
   organizationBase: string,
   snapshotId: string | null,
 ): RepoSnapshotDetailDto | null {
-  const [snapshot, setSnapshot] = useState<RepoSnapshotDetailDto | null>(null);
-
-  useEffect(() => {
-    setSnapshot(null);
-    if (snapshotId === null) return;
-    let live = true;
-    void (async () => {
-      try {
-        const res = await fetch(
-          `${organizationBase}/github/snapshots/${encodeURIComponent(snapshotId)}`,
-          { credentials: "include" },
-        );
-        if (!res.ok) return;
-        const body = (await res.json()) as {
-          snapshot?: RepoSnapshotDetailDto;
-        } | null;
-        if (live && body?.snapshot !== undefined) setSnapshot(body.snapshot);
-      } catch {
-        // A courtesy line: without it the page says nothing about the
-        // repository, which is true of every proposal drafted before one.
-      }
-    })();
-    return () => {
-      live = false;
-    };
-  }, [organizationBase, snapshotId]);
-
-  return snapshot;
+  const owner = decodeURIComponent(organizationBase.split("/").at(-1) ?? "");
+  const userId = useUserId();
+  const query = useQuery({
+    queryKey: queryKeys.resource(userId, owner, "snapshot", snapshotId),
+    enabled: snapshotId !== null,
+    queryFn: ({ signal }) =>
+      clients.analysis.snapshot(owner, snapshotId ?? "", signal),
+  });
+  return query.data ?? null;
 }

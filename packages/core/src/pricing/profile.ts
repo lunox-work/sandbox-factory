@@ -1,17 +1,17 @@
 /**
- * A ticket's complexity profile: the measurable features a price will point
+ * A bounty's complexity profile: the measurable features a price will point
  * back to.
  *
  * Nothing here is a price, a size or a multiplier. It is the evidence those
  * are later drawn from, and each feature is taken from the source least easy
  * to push around: the code graph (the scope agent's entry points and the
- * slice cut from them) and the repository's file list before the ticket's
+ * slice cut from them) and the repository's file list before the bounty's
  * prose. A poster can rewrite a description; they cannot rewrite which
  * modules the change lands in.
  *
  * | Feature           | Source                                           |
  * | ----------------- | ------------------------------------------------ |
- * | Ticket type       | The ticket, as written here or in Jira           |
+ * | Bounty type       | The bounty, as written here or in Jira           |
  * | Slice size        | The slice: included files, bytes, their modules  |
  * | Touched modules   | The scope agent's entry points, by `modulesFor`  |
  * | Externals         | The slice's services and environment; its seams  |
@@ -68,16 +68,16 @@ const isCiDirectory = (directory: string) =>
   directory === ".circleci" ||
   directory.endsWith("/.circleci");
 
-/** What the ticket says about itself, whether written here or in Jira. */
-export interface ProfileTicket {
+/** What the bounty says about itself, whether written here or in Jira. */
+export interface ProfileBounty {
   readonly issueType: string;
-  /** The ticket's priority name, or null when it has none. */
+  /** The bounty's priority name, or null when it has none. */
   readonly priority: string | null;
 }
 
 export interface ComplexityProfile {
   readonly version: typeof COMPLEXITY_PROFILE_VERSION;
-  readonly ticket: ProfileTicket;
+  readonly bounty: ProfileBounty;
   /** The measured slice: the context an agent has to read. */
   readonly slice: {
     readonly files: number;
@@ -145,7 +145,7 @@ export interface ProfileSlice {
 }
 
 export interface ProfileInput {
-  readonly ticket: ProfileTicket;
+  readonly bounty: ProfileBounty;
   readonly spec: Pick<SpecDraft, "scenarios" | "openQuestions" | "assumptions">;
   readonly facts: Pick<
     TreeFacts,
@@ -177,7 +177,7 @@ export function buildComplexityProfile(input: ProfileInput): ComplexityProfile {
 
   return {
     version: COMPLEXITY_PROFILE_VERSION,
-    ticket: input.ticket,
+    bounty: input.bounty,
     slice: {
       files: slice.counts.includedFiles,
       bytes: slice.counts.includedBytes,

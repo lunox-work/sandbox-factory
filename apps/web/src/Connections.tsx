@@ -1,3 +1,4 @@
+import { pushLocation, subscribeLocation } from "./navigation/location";
 /**
  * An organization's connections: the tools it reads work from, managed in
  * place on its settings page.
@@ -17,7 +18,13 @@
  */
 
 import { ChevronRight, TriangleAlert } from "lucide-react";
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
@@ -70,8 +77,7 @@ function useConnectionTab(): [ConnectionTab, (next: string) => void] {
 
   useEffect(() => {
     const sync = () => setTab(connectionTabForSearch(window.location.search));
-    window.addEventListener("popstate", sync);
-    return () => window.removeEventListener("popstate", sync);
+    return subscribeLocation(sync);
   }, []);
 
   const select = useCallback((next: string) => {
@@ -87,14 +93,68 @@ function useConnectionTab(): [ConnectionTab, (next: string) => void] {
       params.set("connection", chosen);
     }
     const query = params.toString();
-    window.history.pushState(
-      null,
-      "",
-      window.location.pathname + (query === "" ? "" : `?${query}`),
+    pushLocation(
+      window.location.pathname +
+        (query === "" ? "" : `?${query}`) +
+        (window.location.hash ?? ""),
     );
   }, []);
 
   return [tab, select];
+}
+
+/**
+ * Every tab opened so far, the chosen one included.
+ *
+ * Added to while rendering rather than in an effect, so a newly chosen
+ * tab's panel is in the same paint as the indicator setting off for it.
+ */
+function useVisited(tab: ConnectionTab): ReadonlySet<ConnectionTab> {
+  const [visited, setVisited] = useState<ReadonlySet<ConnectionTab>>(
+    () => new Set([tab]),
+  );
+  if (visited.has(tab)) {
+    return visited;
+  }
+  const next = new Set(visited).add(tab);
+  setVisited(next);
+  return next;
+}
+
+/**
+ * A tab's panel: mounted the first time its tab is opened, then kept, and
+ * hidden while another is chosen.
+ *
+ * Radix unmounts a panel when its tab is left, so every switch read the
+ * panel's lists again from nothing. The card dropped to a loading line and
+ * grew back as each read arrived, and with it the page's scrollbar went and
+ * came back, all while the indicator was still gliding. Kept, a panel opens
+ * on what it last showed.
+ *
+ * Not mounted before it is opened: the Jira panel re-syncs each site's boards
+ * with Atlassian as it mounts (see `SiteBoardsCard` in Jira.tsx), which is
+ * for somebody looking at them, not for everyone who opens settings.
+ */
+function Panel({
+  value,
+  tab,
+  visited,
+  children,
+}: {
+  value: ConnectionTab;
+  tab: ConnectionTab;
+  visited: ReadonlySet<ConnectionTab>;
+  children: ReactNode;
+}) {
+  if (!visited.has(value)) {
+    return null;
+  }
+  // `forceMount` keeps Radix from unmounting it, and leaves hiding it to us.
+  return (
+    <TabsContent value={value} forceMount hidden={value !== tab}>
+      {children}
+    </TabsContent>
+  );
 }
 
 export function Connections({
@@ -109,6 +169,7 @@ export function Connections({
   onOpenBoard: (board: JiraBoard) => void;
 }) {
   const [tab, select] = useConnectionTab();
+  const visited = useVisited(tab);
   const indicatorIndex = Math.max(
     0,
     ["home", ...TOOLS.map((tool) => tool.value)].indexOf(tab),
@@ -188,24 +249,33 @@ export function Connections({
         */}
         <Card className="-ml-px min-w-0 flex-1 border-(--connection-edge) shadow-none">
           <CardContent>
-            <TabsContent value="home">
-              <Overview organizationId={organizationId} onSelect={select} />
-            </TabsContent>
-            <TabsContent value="jira">
+            <Panel value="home" tab={tab} visited={visited}>
+              <Overview
+                organizationId={organizationId}
+                shown={tab === "home"}
+                onSelect={select}
+              />
+            </Panel>
+            <Panel value="jira" tab={tab} visited={visited}>
               <JiraConnections
                 organizationId={organizationId}
                 organizationSlug={organizationSlug}
                 role={role}
                 onOpenBoard={onOpenBoard}
               />
-            </TabsContent>
-            <TabsContent value="github">
+            </Panel>
+            <Panel value="github" tab={tab} visited={visited}>
               <GithubConnections organizationId={organizationId} role={role} />
-            </TabsContent>
+            </Panel>
             {TOOLS.filter((tool) => !tool.ready).map((tool) => (
-              <TabsContent key={tool.value} value={tool.value}>
+              <Panel
+                key={tool.value}
+                value={tool.value}
+                tab={tab}
+                visited={visited}
+              >
                 <ComingSoon tool={tool} />
-              </TabsContent>
+              </Panel>
             ))}
           </CardContent>
         </Card>
@@ -303,20 +373,44 @@ function SquareTab({
 /**
  * The overview: how much each tool has connected, and the way into it.
  *
- * Reads each tool's connections itself rather than sharing the tab's read.
- * Only one tab is mounted at a time, so opening this after disconnecting a
- * site on the Jira tab reads the list again rather than showing a count from
- * before the change.
+ * Reads each tool's connections itself rather than sharing the tab's read,
+ * and reads them again each time it is shown after another tab. The panels
+ * stay mounted (see `Panel`), so coming back after disconnecting a site on
+ * the Jira tab would otherwise show the count from before the change.
  */
 function Overview({
   organizationId,
+  shown,
   onSelect,
 }: {
   organizationId: string;
+  /** Whether its tab is the chosen one. */
+  shown: boolean;
   onSelect: (tab: ConnectionTab) => void;
 }) {
   const jira = useJira(organizationId);
   const github = useGithub(organizationId);
+  const { refresh: refreshJira } = jira;
+  const { refresh: refreshGithub } = github;
+  /*
+    Only on coming back: the first showing is the mount, which has just read
+    both.
+  */
+  const wasShown = useRef(shown);
+  useEffect(() => {
+    if (shown && !wasShown.current) {
+      void refreshJira();
+      void refreshGithub();
+    }
+    wasShown.current = shown;
+  }, [shown, refreshJira, refreshGithub]);
+  /*
+    Blank until each has answered once, and not again: a re-read keeps the
+    last answer on screen, so coming back does not blank the counts and
+    fill them in again.
+  */
+  const jiraAnswered = useAnswered(jira.loading);
+  const githubAnswered = useAnswered(github.loading);
   /*
     Healthy ones only, matching what the home screen counts: a connection
     that cannot be read is not one the organization can use. Each tool's
@@ -325,14 +419,14 @@ function Overview({
   const tally = (
     read: {
       connections: { healthy: boolean }[];
-      loading: boolean;
       error: string | null;
     },
+    answered: boolean,
     noun: string,
   ) => {
     const active = read.connections.filter((entry) => entry.healthy).length;
     return {
-      loading: read.loading,
+      loading: !answered,
       error: read.error,
       active,
       broken: read.connections.length - active,
@@ -345,8 +439,10 @@ function Overview({
     out, so Jira's count is not reported as a failed load.
   */
   const counts: Partial<Record<Tool["value"], ReturnType<typeof tally>>> = {
-    jira: tally(jira, "site"),
-    ...(github.unconfigured ? {} : { github: tally(github, "account") }),
+    jira: tally(jira, jiraAnswered, "site"),
+    ...(github.unconfigured
+      ? {}
+      : { github: tally(github, githubAnswered, "account") }),
   };
   const read = Object.values(counts);
   const loading = read.some((entry) => entry.loading);
@@ -404,6 +500,15 @@ function Overview({
       </ul>
     </div>
   );
+}
+
+/** Whether a read has answered at least once; later re-reads do not undo it. */
+function useAnswered(loading: boolean): boolean {
+  const [answered, setAnswered] = useState(!loading);
+  if (!loading && !answered) {
+    setAnswered(true);
+  }
+  return answered || !loading;
 }
 
 /**

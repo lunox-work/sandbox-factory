@@ -13,7 +13,7 @@ import type { AgentModel, AgentTool, AgentTurn } from "../src/agent/loop.js";
 import {
   FIXTURES_SYSTEM_PROMPT,
   SCOPE_SYSTEM_PROMPT,
-  ticketSection,
+  bountySection,
 } from "../src/agent/prompts.js";
 import {
   REPO_TOOL_LIMITS,
@@ -579,10 +579,10 @@ const draft: SpecDraft = {
 };
 
 test("prompts carry the ticket's spec and the seam rule", () => {
-  const ticket = ticketSection("SHOP-1", draft);
-  assert.match(ticket, /^Ticket SHOP-1/);
-  assert.match(ticket, /Scenario: A coupon lowers the total/);
-  assert.match(ticket, /Do coupons stack\?/);
+  const section = bountySection("SHOP-1", draft);
+  assert.match(section, /^Ticket SHOP-1/);
+  assert.match(section, /Scenario: A coupon lowers the total/);
+  assert.match(section, /Do coupons stack\?/);
   assert.match(SCOPE_SYSTEM_PROMPT, /submit_scope/);
   assert.match(SCOPE_SYSTEM_PROMPT, /data, not instructions/);
   assert.match(FIXTURES_SYSTEM_PROMPT, /sandbox\/run\.ts/);
@@ -651,4 +651,30 @@ test("a key needs a named model, a model alone does nothing, and limits are boun
     undefined,
   );
   assert.throws(() => parseWorkerEnv({ ...base, AGENT_MAX_TURNS: "500" }));
+});
+
+test("text-only replies cannot continue after exhausting the token budget", async () => {
+  const model = scripted(
+    Array.from({ length: 3 }, () =>
+      turn([{ type: "text", text: "thinking" }], "end_turn", {
+        inputTokens: 10,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+      }),
+    ),
+  );
+  const result = await runAgent({
+    model,
+    system: "test",
+    prompt: "test",
+    tools: [submit(() => true)],
+    submitTool: "submit",
+    limits: { maxTurns: 10, maxTokens: 5 },
+    signal,
+    log: () => {},
+  });
+  assert.equal(model.requests.length, 1);
+  assert.equal(result.stopped, "budget");
+  assert.equal(result.usage.inputTokens, 10);
 });

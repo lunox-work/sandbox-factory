@@ -3,13 +3,14 @@
  *
  * Every read joins `sandbox.organization_id`; every write is reached
  * through such a read inside one transaction. The store checks what the
- * schema cannot: the source repository has `role = source` and belongs to
- * the owner; a version's slice run succeeded on a snapshot of that very
- * repository; and private provenance stops changing the moment a version
- * is frozen.
+ * schema cannot: the bounty and the source repository belong to the owner,
+ * and the repository has `role = source`; a version's slice run succeeded
+ * on a snapshot of that very repository; and private provenance stops
+ * changing the moment a version is frozen. The schema holds the rest: one
+ * sandbox per bounty.
  */
 
-import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import type {
   AcceptanceTest,
   AliasRule,
@@ -21,16 +22,15 @@ import type {
   VersionFixtures,
   VersionSourceRecord,
 } from "sandbox-factory";
-import type { Database } from "./errors.js";
+import { isUniqueViolation, type Database } from "./errors.js";
 import { generateId } from "./mapping.js";
 import {
   analysisRun,
   artifact,
   githubRepo,
-  ticket,
+  bounty,
   repoSnapshot,
   sandbox,
-  sandboxTicket,
   sandboxSource,
   sandboxVersion,
   sandboxVersionSource,
@@ -48,9 +48,10 @@ export interface StoredSandbox {
   readonly status: SandboxStatus;
   readonly publicRepoId: string | null;
   readonly currentVersionId: string | null;
-  readonly sourceRepoId: string;
-  /** The tickets the sandbox is cut for. */
-  readonly ticketIds: readonly string[];
+  /** The bounty this is the sandbox of. */
+  readonly bountyId: string;
+  /** Null until a repository is linked; no version can be sliced before. */
+  readonly sourceRepoId: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
 }
@@ -132,7 +133,18 @@ export type CreateSandboxResult =
   | { readonly ok: true; readonly sandbox: StoredSandbox }
   | {
       readonly ok: false;
-      readonly reason: "repo_not_found" | "repo_role" | "ticket_not_found";
+      readonly reason:
+        | "bounty_not_found"
+        | "bounty_has_sandbox"
+        | "repo_not_found"
+        | "repo_role";
+    };
+export type LinkSourceResult =
+  | { readonly ok: true; readonly sandbox: StoredSandbox }
+  | {
+      readonly ok: false;
+      readonly reason:
+        "not-found" | "source_linked" | "repo_not_found" | "repo_role";
     };
 export interface StoredVersionWithSource {
   readonly version: StoredSandboxVersion;
@@ -140,7 +152,10 @@ export interface StoredVersionWithSource {
 }
 export type CreateVersionResult =
   | ({ readonly ok: true } & StoredVersionWithSource)
-  | { readonly ok: false; readonly reason: "not-found" | "slice_mismatch" };
+  | {
+      readonly ok: false;
+      readonly reason: "not-found" | "no_source" | "slice_mismatch";
+    };
 export type UpdateVersionResult =
   | ({ readonly ok: true } & StoredVersionWithSource)
   | {
@@ -160,12 +175,24 @@ export interface ReplayContext {
 }
 
 export interface SandboxStore {
+  /** The bounty's sandbox; refused when the bounty already has one. */
   create(
     organizationId: string,
-    input: { sourceRepoId: string; ticketIds: readonly string[] },
+    input: { bountyId: string; sourceRepoId: string | null },
   ): Promise<CreateSandboxResult>;
   list(organizationId: string): Promise<StoredSandbox[]>;
   get(organizationId: string, sandboxId: string): Promise<StoredSandbox | null>;
+  /**
+   * Links the repository a sandbox made without one is cut from. A link
+   * stays: the versions sliced from it are bound to that repository, so a
+   * different one is refused with `source_linked`, and the same one again
+   * is no change.
+   */
+  linkSource(
+    organizationId: string,
+    sandboxId: string,
+    sourceRepoId: string,
+  ): Promise<LinkSourceResult>;
   /**
    * A new draft version from a succeeded slice run on the sandbox's own
    * source repository. The version number is the next one; two drafts can
@@ -229,8 +256,7 @@ export interface SandboxStore {
 
 const toSandbox = (
   row: SandboxRow,
-  sourceRepoId: string,
-  ticketIds: readonly string[],
+  sourceRepoId: string | null,
 ): StoredSandbox => ({
   id: row.id,
   organizationId: row.organizationId,
@@ -238,8 +264,8 @@ const toSandbox = (
   status: row.status,
   publicRepoId: row.publicRepoId,
   currentVersionId: row.currentVersionId,
+  bountyId: row.bountyId,
   sourceRepoId,
-  ticketIds: [...ticketIds].sort(),
   createdAt: row.createdAt.toISOString(),
   updatedAt: row.updatedAt.toISOString(),
 });
@@ -303,29 +329,35 @@ export function sandboxSlug(): string {
   return crypto.randomUUID().replace(/-/g, "").slice(0, 12);
 }
 
+/**
+ * Why a repository cannot back the owner's sandbox, or null when it can:
+ * it must be the owner's, still connected, and registered as a source.
+ */
+async function sourceRepoProblem(
+  tx: Database,
+  owner: string,
+  repoId: string,
+): Promise<"repo_not_found" | "repo_role" | null> {
+  const repo = (
+    await tx
+      .select({ role: githubRepo.role, syncStatus: githubRepo.syncStatus })
+      .from(githubRepo)
+      .where(
+        and(eq(githubRepo.organizationId, owner), eq(githubRepo.id, repoId)),
+      )
+      .limit(1)
+  )[0];
+  if (repo === undefined || repo.syncStatus === "gone") return "repo_not_found";
+  return repo.role === "source" ? null : "repo_role";
+}
+
 export function createSandboxStore(db: Database): SandboxStore {
+  // Left: a sandbox with no repository is still a sandbox.
   const sandboxes = (tx: Database = db) =>
     tx
       .select({ sandbox, sourceRepoId: sandboxSource.sourceRepoId })
       .from(sandbox)
-      .innerJoin(sandboxSource, eq(sandboxSource.sandboxId, sandbox.id));
-  const ticketsOf = async (tx: Database, sandboxIds: readonly string[]) => {
-    const byId = new Map<string, string[]>();
-    if (sandboxIds.length === 0) return byId;
-    const rows = await tx
-      .select({
-        sandboxId: sandboxTicket.sandboxId,
-        ticketId: sandboxTicket.ticketId,
-      })
-      .from(sandboxTicket)
-      .where(inArray(sandboxTicket.sandboxId, [...sandboxIds]));
-    for (const row of rows) {
-      const list = byId.get(row.sandboxId) ?? [];
-      list.push(row.ticketId);
-      byId.set(row.sandboxId, list);
-    }
-    return byId;
-  };
+      .leftJoin(sandboxSource, eq(sandboxSource.sandboxId, sandbox.id));
   const versions = (tx: Database = db) =>
     tx
       .select({
@@ -359,83 +391,72 @@ export function createSandboxStore(db: Database): SandboxStore {
     )[0];
   return {
     async create(owner, input) {
-      return db.transaction(async (transaction) => {
-        const tx = transaction as unknown as Database;
-        const repo = (
-          await tx
-            .select({
-              role: githubRepo.role,
-              syncStatus: githubRepo.syncStatus,
-            })
-            .from(githubRepo)
+      try {
+        return await db.transaction(async (transaction) => {
+          const tx = transaction;
+          // Key-share locked, as the foreign key would: a removal of the
+          // bounty in flight waits for this, and then sees the sandbox.
+          const owned = await tx
+            .select({ id: bounty.id })
+            .from(bounty)
             .where(
               and(
-                eq(githubRepo.organizationId, owner),
-                eq(githubRepo.id, input.sourceRepoId),
+                eq(bounty.organizationId, owner),
+                eq(bounty.id, input.bountyId),
               ),
             )
-            .limit(1)
-        )[0];
-        if (repo === undefined || repo.syncStatus === "gone")
-          return { ok: false, reason: "repo_not_found" } as const;
-        if (repo.role !== "source")
-          return { ok: false, reason: "repo_role" } as const;
-        const ticketIds = [...new Set(input.ticketIds)].sort();
-        if (ticketIds.length > 0) {
-          const found = await tx
-            .select({ id: ticket.id })
-            .from(ticket)
-            .where(
-              and(
-                eq(ticket.organizationId, owner),
-                inArray(ticket.id, ticketIds),
-              ),
+            .for("key share");
+          if (owned[0] === undefined)
+            return { ok: false, reason: "bounty_not_found" } as const;
+          const taken = await tx
+            .select({ id: sandbox.id })
+            .from(sandbox)
+            .where(eq(sandbox.bountyId, input.bountyId))
+            .limit(1);
+          if (taken[0] !== undefined)
+            return { ok: false, reason: "bounty_has_sandbox" } as const;
+          if (input.sourceRepoId !== null) {
+            const problem = await sourceRepoProblem(
+              tx,
+              owner,
+              input.sourceRepoId,
             );
-          if (found.length !== ticketIds.length)
-            return { ok: false, reason: "ticket_not_found" } as const;
-        }
-        const rows = await tx
-          .insert(sandbox)
-          .values({
-            id: generateId("sbx"),
-            organizationId: owner,
-            slug: sandboxSlug(),
-          })
-          .returning();
-        const row = rows[0] as SandboxRow | undefined;
-        if (row === undefined)
-          throw new Error("Sandbox insert returned no row.");
-        await tx
-          .insert(sandboxSource)
-          .values({ sandboxId: row.id, sourceRepoId: input.sourceRepoId });
-        if (ticketIds.length > 0)
-          await tx.insert(sandboxTicket).values(
-            ticketIds.map((ticketId) => ({
-              sandboxId: row.id,
-              ticketId,
-            })),
-          );
-        return {
-          ok: true,
-          sandbox: toSandbox(row, input.sourceRepoId, ticketIds),
-        } as const;
-      });
+            if (problem !== null)
+              return { ok: false, reason: problem } as const;
+          }
+          const rows = await tx
+            .insert(sandbox)
+            .values({
+              id: generateId("sbx"),
+              organizationId: owner,
+              bountyId: input.bountyId,
+              slug: sandboxSlug(),
+            })
+            .returning();
+          const row = rows[0] as SandboxRow | undefined;
+          if (row === undefined)
+            throw new Error("Sandbox insert returned no row.");
+          if (input.sourceRepoId !== null)
+            await tx
+              .insert(sandboxSource)
+              .values({ sandboxId: row.id, sourceRepoId: input.sourceRepoId });
+          return {
+            ok: true,
+            sandbox: toSandbox(row, input.sourceRepoId),
+          } as const;
+        });
+      } catch (error) {
+        // Two creates for one bounty: the second meets the first's row.
+        if (isUniqueViolation(error))
+          return { ok: false, reason: "bounty_has_sandbox" } as const;
+        throw error;
+      }
     },
     async list(owner) {
       const rows = await sandboxes()
         .where(eq(sandbox.organizationId, owner))
         .orderBy(desc(sandbox.createdAt), desc(sandbox.id));
-      const tickets = await ticketsOf(
-        db,
-        rows.map((row) => row.sandbox.id),
-      );
-      return rows.map((row) =>
-        toSandbox(
-          row.sandbox,
-          row.sourceRepoId,
-          tickets.get(row.sandbox.id) ?? [],
-        ),
-      );
+      return rows.map((row) => toSandbox(row.sandbox, row.sourceRepoId));
     },
     async get(owner, id) {
       const row = (
@@ -443,17 +464,50 @@ export function createSandboxStore(db: Database): SandboxStore {
           and(eq(sandbox.organizationId, owner), eq(sandbox.id, id)),
         )
       )[0];
-      if (row === undefined) return null;
-      const tickets = await ticketsOf(db, [row.sandbox.id]);
-      return toSandbox(
-        row.sandbox,
-        row.sourceRepoId,
-        tickets.get(row.sandbox.id) ?? [],
-      );
+      return row === undefined
+        ? null
+        : toSandbox(row.sandbox, row.sourceRepoId);
+    },
+    async linkSource(owner, sandboxId, sourceRepoId) {
+      return db.transaction(async (transaction) => {
+        const tx = transaction;
+        // Locked as cutting a version locks it, so no slice is checked
+        // against a repository while one is being linked.
+        const row = (
+          (await tx
+            .select()
+            .from(sandbox)
+            .where(
+              and(eq(sandbox.organizationId, owner), eq(sandbox.id, sandboxId)),
+            )
+            .for("update")) as SandboxRow[]
+        )[0];
+        if (row === undefined)
+          return { ok: false, reason: "not-found" } as const;
+        // A statement of its own, after the lock: a link committed while
+        // this waited is seen, rather than met as a duplicate key.
+        const linked = (
+          await tx
+            .select({ sourceRepoId: sandboxSource.sourceRepoId })
+            .from(sandboxSource)
+            .where(eq(sandboxSource.sandboxId, row.id))
+            .limit(1)
+        )[0];
+        if (linked !== undefined)
+          return linked.sourceRepoId === sourceRepoId
+            ? ({ ok: true, sandbox: toSandbox(row, sourceRepoId) } as const)
+            : ({ ok: false, reason: "source_linked" } as const);
+        const problem = await sourceRepoProblem(tx, owner, sourceRepoId);
+        if (problem !== null) return { ok: false, reason: problem } as const;
+        await tx
+          .insert(sandboxSource)
+          .values({ sandboxId: row.id, sourceRepoId });
+        return { ok: true, sandbox: toSandbox(row, sourceRepoId) } as const;
+      });
     },
     async createVersion(owner, sandboxId, input, now = new Date()) {
       return db.transaction(async (transaction) => {
-        const tx = transaction as unknown as Database;
+        const tx = transaction;
         const parent = (
           await sandboxes(tx)
             .where(
@@ -463,6 +517,10 @@ export function createSandboxStore(db: Database): SandboxStore {
         )[0];
         if (parent === undefined)
           return { ok: false, reason: "not-found" } as const;
+        // Slicing is the one thing a sandbox needs a repository for.
+        const sourceRepoId = parent.sourceRepoId;
+        if (sourceRepoId === null)
+          return { ok: false, reason: "no_source" } as const;
         // The slice must have succeeded on a snapshot of this sandbox's own
         // source repository, which is the owner's.
         const slice = (
@@ -480,7 +538,7 @@ export function createSandboxStore(db: Database): SandboxStore {
                 eq(analysisRun.snapshotId, input.source.sourceSnapshotId),
                 eq(analysisRun.tool, "slice"),
                 eq(analysisRun.status, "succeeded"),
-                eq(githubRepo.id, parent.sourceRepoId),
+                eq(githubRepo.id, sourceRepoId),
                 eq(githubRepo.organizationId, owner),
               ),
             )
@@ -570,7 +628,7 @@ export function createSandboxStore(db: Database): SandboxStore {
     },
     async updateDraft(owner, versionId, patch, now = new Date()) {
       return db.transaction(async (transaction) => {
-        const tx = transaction as unknown as Database;
+        const tx = transaction;
         const current = await lockVersion(tx, owner, versionId);
         if (current === undefined)
           return { ok: false, reason: "not-found" } as const;
@@ -663,7 +721,7 @@ export function createSandboxStore(db: Database): SandboxStore {
       now = new Date(),
     ) {
       return db.transaction(async (transaction) => {
-        const tx = transaction as unknown as Database;
+        const tx = transaction;
         const current = await lockVersion(tx, owner, versionId);
         if (current === undefined)
           return { ok: false, reason: "not-found" } as const;
@@ -695,7 +753,7 @@ export function createSandboxStore(db: Database): SandboxStore {
       now = new Date(),
     ) {
       return db.transaction(async (transaction) => {
-        const tx = transaction as unknown as Database;
+        const tx = transaction;
         const current = await lockVersion(tx, owner, versionId);
         if (
           current === undefined ||

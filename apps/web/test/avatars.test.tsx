@@ -3,7 +3,7 @@
  * before anything is sent, and how each kind of server answer reads.
  */
 
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "./render";
 import { afterEach, expect, test, vi } from "vitest";
 
 import {

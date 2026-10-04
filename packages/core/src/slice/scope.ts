@@ -1,5 +1,5 @@
 /**
- * What the scope agent proposes for a ticket.
+ * What the scope agent proposes for a bounty.
  *
  * A proposal is the slice request a person reviews in the picker (entry
  * points, budget, inferred edges), why each entry point is there, which of
@@ -39,7 +39,7 @@ export interface ScopeEntryPoint {
   readonly reason: string;
 }
 /**
- * Code already in the repository that does what the ticket asks somewhere
+ * Code already in the repository that does what the bounty asks somewhere
  * else, so the change can follow it rather than invent one.
  */
 export interface ScopePattern {

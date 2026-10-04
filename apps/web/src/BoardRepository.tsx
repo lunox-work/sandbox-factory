@@ -122,7 +122,7 @@ export function BoardRepository({
       </div>
       <p className="text-muted-foreground text-xs">
         {sourceRepoId === null
-          ? "Link the repository these tickets are about, and specs are drafted with an outline of its modules."
+          ? "Link the repository these bounties are about, and specs are drafted with an outline of its modules."
           : "Specs are drafted with an outline of this repository's modules, from its newest snapshot."}
       </p>
       {(error ?? loadError) !== null && (

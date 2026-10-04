@@ -1,16 +1,16 @@
+import { useObservation } from "./data/observe";
+import { clients } from "./data/query";
 /**
- * A proposal's complexity profile, in the Bounty tab under the size: the
+ * A proposal's complexity profile, in the Price tab under the size: the
  * measured evidence its price will point back to, one row per feature.
  *
  * The profile is measured in the background after sizing (a scope agent,
  * then a slice, on the analysis worker), so the hook keeps reading while it
  * is in flight. A proposal that was never profiled shows nothing: neither
- * its ticket nor its board named a repository when it was sized.
+ * its bounty nor its board named a repository when it was sized.
  */
 
 import type { BountyProfileDto } from "@sandbox-factory/shared";
-import { proposalProfileResponseSchema } from "@sandbox-factory/shared";
-import { useEffect, useState } from "react";
 
 import { LoadingLine } from "@/components/Message";
 
@@ -23,7 +23,7 @@ const IN_FLIGHT = new Set(["queued", "scoping", "slicing"]);
 
 export type ProfileRead =
   | { readonly state: "loading" }
-  | { readonly state: "failed" }
+  | { readonly state: "failed"; readonly retry?: () => void }
   | { readonly state: "ready"; readonly profile: BountyProfileDto | null };
 
 export function useProposalProfile(
@@ -39,46 +39,25 @@ export function useProposalProfile(
    */
   drafted: boolean,
 ): ProfileRead {
-  const key = `${proposalId}:${specRevision ?? ""}:${drafted}`;
-  const [read, setRead] = useState<{ key: string } & ProfileRead>({
-    key,
-    state: "loading",
+  const owner = decodeURIComponent(base.split("/").at(-1) ?? "");
+  const query = useObservation({
+    owner,
+    resource: "profile",
+    id: drafted ? `${proposalId}:${specRevision ?? ""}` : null,
+    read: (_id, signal) => clients.pricing.profile(owner, proposalId, signal),
+    terminal: (profile) => profile === null || !IN_FLIGHT.has(profile.status),
+    interval: PROFILE_POLL_MS,
   });
-
-  useEffect(() => {
-    if (!drafted) return;
-    let live = true;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const load = async () => {
-      try {
-        const response = await fetch(
-          `${base}/proposals/${encodeURIComponent(proposalId)}/profile`,
-          { credentials: "include" },
-        );
-        if (!response.ok) throw new Error();
-        const parsed = proposalProfileResponseSchema.safeParse(
-          await response.json(),
-        );
-        if (!parsed.success) throw new Error();
-        if (!live) return;
-        const profile = parsed.data.profile;
-        setRead({ key, state: "ready", profile });
-        if (profile !== null && IN_FLIGHT.has(profile.status))
-          timer = setTimeout(() => void load(), PROFILE_POLL_MS);
-      } catch {
-        if (live) setRead({ key, state: "failed" });
-      }
-    };
-    setRead({ key, state: "loading" });
-    void load();
-    return () => {
-      live = false;
-      clearTimeout(timer);
-    };
-  }, [base, proposalId, drafted, key]);
-
   if (!drafted) return { state: "ready", profile: null };
-  return read.key === key ? read : { state: "loading" };
+  if (query.isError)
+    return {
+      state: "failed",
+      retry: () => {
+        void query.refetch();
+      },
+    };
+  if (query.data === undefined) return { state: "loading" };
+  return { state: "ready", profile: query.data };
 }
 
 const STAGE: Record<string, string> = {
@@ -120,6 +99,9 @@ export function ComplexityProfileBlock({
       <Section>
         <p className="text-muted-foreground text-sm">
           The complexity profile could not be loaded.
+          {read.retry !== undefined && (
+            <button onClick={read.retry}>Try again</button>
+          )}
         </p>
       </Section>
     );
@@ -156,11 +138,11 @@ export function ComplexityProfileBlock({
   ].filter((demand): demand is string => typeof demand === "string");
   const rows: [string, React.ReactNode][] = [
     [
-      "Ticket",
-      `${profile.ticket.issueType}${
-        profile.ticket.priority === null
+      "Bounty",
+      `${profile.bounty.issueType}${
+        profile.bounty.priority === null
           ? ""
-          : `, priority ${profile.ticket.priority}`
+          : `, priority ${profile.bounty.priority}`
       }`,
     ],
     [

@@ -1,14 +1,16 @@
 # sandbox-factory
 
-> Write tickets or import them from Jira, price the work, and build task sandboxes.
+> Write bounties or import them from Jira, price the work, and build task sandboxes.
 
 [![CI](https://github.com/lunox-work/sandbox-factory/actions/workflows/ci.yml/badge.svg)](https://github.com/lunox-work/sandbox-factory/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 
 A monorepo holding the API, web app, analysis worker, VS Code extension, and
-shared packages. Tickets work on their own; Jira and GitHub connections add
-issue tracking and repository context. Shared domain rules cover handles,
-selection, pricing, analysis, and sandbox contracts.
+shared packages. A bounty is a proposal, which specifies and prices the work,
+and a sandbox, which contributors do it in; both work on their own. Jira and
+GitHub connections enrich them with issue tracking and repository context.
+Shared domain rules cover handles, selection, pricing, analysis, and sandbox
+contracts.
 
 | Workspace                                | What it is                                        |
 | ---------------------------------------- | ------------------------------------------------- |
@@ -176,7 +178,7 @@ relevant reading set for your task.
 | ------------------------------------------------ | --------------------------------------------------- |
 | [CONTRIBUTING.md](./CONTRIBUTING.md)             | Dev setup and pull request process                  |
 | [AGENTS.md](./AGENTS.md)                         | Rules for coding agents                             |
-| [docs/architecture.md](./docs/architecture.md)   | Dependencies, auth, tickets, pricing, analysis      |
+| [docs/architecture.md](./docs/architecture.md)   | Dependencies, auth, bounties, pricing, analysis     |
 | [docs/ci.md](./docs/ci.md)                       | Workflows, branch protection, releases              |
 | [docs/versioning.md](./docs/versioning.md)       | Build provenance, and verifying a release           |
 | [docs/github-apps.md](./docs/github-apps.md)     | Installed apps and settings that live outside files |
