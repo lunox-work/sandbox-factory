@@ -8,8 +8,8 @@ const sandbox = {
   status: "draft",
   publicRepoId: null,
   currentVersionId: null,
+  bountyId: "bty_1",
   sourceRepoId: "ghr_1",
-  ticketIds: ["tkt_1"],
   createdAt: stamp,
   updatedAt: stamp,
 };
@@ -43,7 +43,7 @@ const source = {
   dependencyChoices: {},
   acceptanceTests: [],
   fixtures: null,
-  // A version frozen before tickets, read as it was written.
+  // A version frozen before bounties, read as it was written.
   approvedTask: {
     schemaVersion: 1,
     title: "Fix it",
@@ -104,7 +104,10 @@ test("the sandbox client parses every response and scopes every path to the owne
     let body: unknown;
     if (url.endsWith("/sandboxes") && init?.method !== "POST")
       body = { sandboxes: [sandbox] };
-    else if (url.endsWith("/sandboxes")) body = { sandbox };
+    // Made without a repository, which it links after.
+    else if (url.endsWith("/sandboxes"))
+      body = { sandbox: { ...sandbox, sourceRepoId: null } };
+    else if (url.endsWith("/source")) body = { sandbox };
     else if (url.endsWith("/sandboxes/sbx%201")) body = { sandbox };
     else if (url.endsWith("/versions") && init?.method !== "POST")
       body = { versions: [version] };
@@ -126,9 +129,15 @@ test("the sandbox client parses every response and scopes every path to the owne
   });
   assert.deepEqual(await client.sandboxes("org 1"), [sandbox]);
   assert.equal((await client.sandbox("org 1", "sbx 1")).id, "sbx_1");
+  const bare = await client.createSandbox("org 1", { bountyId: "bty_1" });
+  assert.deepEqual([bare.id, bare.sourceRepoId], ["sbx_1", null]);
   assert.equal(
-    (await client.createSandbox("org 1", { sourceRepoId: "ghr_1" })).id,
-    "sbx_1",
+    (
+      await client.linkSandboxSource("org 1", "sbx 1", {
+        sourceRepoId: "ghr_1",
+      })
+    ).sourceRepoId,
+    "ghr_1",
   );
   assert.deepEqual(await client.sandboxVersions("org 1", "sbx_1"), [version]);
   const created = await client.createSandboxVersion("org 1", "sbx_1", {
@@ -156,6 +165,7 @@ test("the sandbox client parses every response and scopes every path to the owne
       ["GET", "https://api.test/api/v1/orgs/org%201/sandboxes"],
       ["GET", "https://api.test/api/v1/orgs/org%201/sandboxes/sbx%201"],
       ["POST", "https://api.test/api/v1/orgs/org%201/sandboxes"],
+      ["PUT", "https://api.test/api/v1/orgs/org%201/sandboxes/sbx%201/source"],
       ["GET", "https://api.test/api/v1/orgs/org%201/sandboxes/sbx_1/versions"],
       ["POST", "https://api.test/api/v1/orgs/org%201/sandboxes/sbx_1/versions"],
       ["GET", "https://api.test/api/v1/orgs/org%201/sandboxes/versions/sbv_1"],
@@ -177,5 +187,6 @@ test("the sandbox client parses every response and scopes every path to the owne
     new Headers(calls[2]?.init?.headers).get("Authorization"),
     "Bearer token",
   );
-  assert.equal(calls[2]?.init?.body, JSON.stringify({ sourceRepoId: "ghr_1" }));
+  assert.equal(calls[2]?.init?.body, JSON.stringify({ bountyId: "bty_1" }));
+  assert.equal(calls[3]?.init?.body, JSON.stringify({ sourceRepoId: "ghr_1" }));
 });

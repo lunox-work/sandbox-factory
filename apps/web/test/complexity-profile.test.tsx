@@ -29,7 +29,7 @@ function Wired({
 
 const profile = {
   version: "profile-v1",
-  ticket: { issueType: "Bug", priority: "High" },
+  bounty: { issueType: "Bug", priority: "High" },
   slice: {
     files: 9,
     bytes: 42 * 1024,
@@ -104,7 +104,7 @@ test("a ready profile lists the evidence, one row per feature", async () => {
   );
   const text = (label: string) =>
     within(rows).getByText(label).nextElementSibling?.textContent;
-  expect(text("Ticket")).toBe("Bug, priority High");
+  expect(text("Bounty")).toBe("Bug, priority High");
   expect(text("Slice")).toBe("9 files in 3 modules, 42 KB");
   expect(text("Modules touched")).toBe("2: src/mailer, src/scheduler");
   expect(text("External services")).toBe(
@@ -128,7 +128,7 @@ test("a sparse profile says so plainly, and names an older spec revision", async
       specRevision: 1,
       profile: {
         ...profile,
-        ticket: { issueType: "Task", priority: null },
+        bounty: { issueType: "Task", priority: null },
         slice: { ...profile.slice, bytes: 900, blockers: 2 },
         externals: { services: [], environment: 0, seams: 0 },
         tests: { files: 0, untestedModules: ["src/mailer"] },
@@ -143,7 +143,7 @@ test("a sparse profile says so plainly, and names an older spec revision", async
   const rows = await screen.findByTestId("profile-rows");
   const text = (label: string) =>
     within(rows).getByText(label).nextElementSibling?.textContent;
-  expect(text("Ticket")).toBe("Task");
+  expect(text("Bounty")).toBe("Task");
   expect(text("Slice")).toBe("9 files in 3 modules, 900 B, 2 blockers");
   expect(text("External services")).toBe("0");
   expect(text("Tests on the path")).toBe("None in the touched modules");

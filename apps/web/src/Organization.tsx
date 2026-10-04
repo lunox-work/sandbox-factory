@@ -51,7 +51,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 import { authClient } from "./auth";
 import { removeAvatar, uploadAvatar, type AvatarResult } from "./avatars";
-import { RateCardEditor } from "./Bounties";
+import { RateCardEditor } from "./Proposals";
 import { Connections } from "./Connections";
 import type { JiraBoard } from "./useJira";
 

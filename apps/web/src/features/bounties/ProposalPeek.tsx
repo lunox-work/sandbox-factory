@@ -45,7 +45,7 @@ import {
 } from "../../ProposalSpec";
 import { JiraIcon, ModelIcon } from "../../ProviderIcon";
 import { useRespec } from "../../SpecChanges";
-import { TicketText } from "../../TicketText";
+import { BountyText } from "../../BountyText";
 import { useRepoSnapshot } from "../../useGithub";
 import type { JiraIssueDetail } from "../../useJira";
 
@@ -59,10 +59,10 @@ function freshnessLabel(freshness: EnrichedProposal["freshness"]): {
     case "stale":
       return { text: "Changed since sizing", tone: "warn" };
     case "missing":
-      return { text: "Ticket no longer exists", tone: "bad" };
+      return { text: "Bounty no longer exists", tone: "bad" };
     // Not known yet: the open proposal's own read is still out.
     case undefined:
-      return { text: "Checking the ticket…", tone: "muted" };
+      return { text: "Checking the bounty…", tone: "muted" };
     default:
       return { text: "Not checked", tone: "muted" };
   }
@@ -80,10 +80,10 @@ const CONFIDENCE_MARK: Record<
 export function ProposalPeek({
   base,
   proposal,
-  ticket,
+  bounty,
   liveSpec,
-  ticketError,
-  onRetryTicket,
+  bountyError,
+  onRetryBounty,
   canDecide,
   busy,
   mutate,
@@ -93,15 +93,15 @@ export function ProposalPeek({
   /** The organization's API root, for the reads the peek makes itself. */
   base: string;
   proposal: EnrichedProposal;
-  ticket: JiraIssueDetail | null;
+  bounty: JiraIssueDetail | null;
   /**
-   * The ticket as the proposal's own read returned it, for a list with no
+   * The bounty as the proposal's own read returned it, for a list with no
    * Jira read of its own: undefined until that read lands, and null when it
    * found nothing to show.
    */
   liveSpec?: ProposalLiveSpecDto | null | undefined;
-  ticketError: string | null;
-  onRetryTicket: () => void;
+  bountyError: string | null;
+  onRetryBounty: () => void;
   canDecide: boolean;
   busy: boolean;
   mutate: (
@@ -113,14 +113,14 @@ export function ProposalPeek({
   onChanged: () => Promise<void>;
   onRemoved: () => void;
 }) {
-  const url = ticket?.url ?? proposal.liveUrl ?? null;
+  const url = bounty?.url ?? proposal.liveUrl ?? null;
   const label = modelLabel(proposal.actualModel);
   const delivery = proposal.writebackOperations?.at(-1);
   const freshness = freshnessLabel(proposal.freshness);
   const priced = proposal.amountMinor !== null;
   const open = proposal.status === "proposed";
   const key = proposal.liveKey ?? proposal.issueKey;
-  // Read when the peek opens, like the ticket, so the tab opens on it.
+  // Read when the peek opens, like the bounty, so the tab opens on it.
   const spec = useProposalSpec(base, proposal.id, proposal.specRevision);
   // The commit the spec's repository outline came from, when it had one.
   const outline = useRepoSnapshot(base, proposal.repoSnapshotId ?? null);
@@ -155,10 +155,10 @@ export function ProposalPeek({
         on this proposal, and the right edge is where this app puts the
         action a surface offers.
       */}
-      <Tabs defaultValue="bounty">
+      <Tabs defaultValue="price">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <TabsList>
-            <TabsTrigger value="bounty">Bounty</TabsTrigger>
+            <TabsTrigger value="price">Price</TabsTrigger>
             <TabsTrigger value="scenarios">
               Scenarios
               {scenarios !== null && (
@@ -187,7 +187,7 @@ export function ProposalPeek({
           )}
         </div>
 
-        <TabsContent value="bounty" className="mt-2">
+        <TabsContent value="price" className="mt-2">
           <div className="flex flex-col gap-6" data-testid="proposal-bounty">
             {/*
               The proposal as one card: the status with the way to have
@@ -333,7 +333,7 @@ export function ProposalPeek({
                 {/*
                   The one warning a size can carry, level with the model
                   and under the size it is about: an XL is a hint that
-                  the ticket is two.
+                  the bounty is two.
                 */}
                 {proposal.complexity === "XL" && (
                   <span
@@ -347,16 +347,16 @@ export function ProposalPeek({
             </div>
 
             {/*
-              Why the run offered this ticket at all, before why it is the
+              Why the run offered this bounty at all, before why it is the
               size it is: the first is the case for outsourcing it, the
-              second for the price. Absent for a ticket someone added by
+              second for the price. Absent for a bounty someone added by
               hand, which needs no case made.
             */}
             {proposal.categories !== undefined &&
               proposal.categories.length > 0 && (
                 <div data-testid="proposal-categories">
                   <p className="text-muted-foreground mb-1.5 text-xs font-medium">
-                    Why this ticket
+                    Why this bounty
                   </p>
                   <ul className="flex flex-col gap-1.5">
                     {proposal.categories.map((category) => (
@@ -379,7 +379,7 @@ export function ProposalPeek({
 
             {/*
               Why this size, in two parts: what the model made of the
-              ticket, and then what the spec's added weight made of that.
+              bounty, and then what the spec's added weight made of that.
             */}
             <div>
               <p className="text-muted-foreground mb-1.5 text-xs font-medium">
@@ -412,7 +412,7 @@ export function ProposalPeek({
             {/*
               The decision row, after the reasoning it is made on. On the
               left, what the decision is checked against: which revision
-              this is, and under it whether the ticket still says what it
+              this is, and under it whether the bounty still says what it
               said when sized. On the right, the decision itself — Approve for a
               proposed bounty, the way back for an approved one — where
               this app puts the action a surface offers, and centred under
@@ -463,7 +463,7 @@ export function ProposalPeek({
                           </button>
                         }
                         title={`Remove the proposal for ${key}?`}
-                        description="The ticket will have no proposal, and the next sizing run may propose it again. Nothing is posted to Jira."
+                        description="The bounty will have no proposal, and the next sizing run may propose it again. Nothing is posted to Jira."
                         confirmLabel="Remove"
                         tone="destructive"
                         busy={busy}
@@ -508,8 +508,8 @@ export function ProposalPeek({
         </TabsContent>
 
         {/*
-          What the ticket was taken to ask for when it was sized: after the
-          decision, which it supports, and before the ticket it was drafted
+          What the bounty was taken to ask for when it was sized: after the
+          decision, which it supports, and before the bounty it was drafted
           from.
         */}
         <TabsContent value="scenarios" className="mt-2">
@@ -546,31 +546,31 @@ export function ProposalPeek({
         <TabsContent value="spec" className="mt-2">
           {liveSpec === null ? (
             <p className="text-muted-foreground py-6 text-sm">
-              The ticket could not be read.
+              The bounty could not be read.
             </p>
           ) : liveSpec !== undefined ? (
-            <TicketText
+            <BountyText
               issueType={liveSpec.issueType}
               description={liveSpec.descriptionText}
               inputTruncated={liveSpec.inputTruncated}
             />
-          ) : ticketError !== null ? (
+          ) : bountyError !== null ? (
             <div className="flex min-h-48 flex-col items-start justify-center gap-3">
-              <ErrorBanner className="mt-0">{ticketError}</ErrorBanner>
+              <ErrorBanner className="mt-0">{bountyError}</ErrorBanner>
               <Button
                 type="button"
                 variant="outline"
                 size="sm"
-                onClick={onRetryTicket}
+                onClick={onRetryBounty}
               >
                 <RefreshCw />
                 Try again
               </Button>
             </div>
-          ) : ticket === null ? (
+          ) : bounty === null ? (
             <IssueSpecSkeleton />
           ) : (
-            <IssueSpec issue={ticket} />
+            <IssueSpec issue={bounty} />
           )}
         </TabsContent>
       </Tabs>

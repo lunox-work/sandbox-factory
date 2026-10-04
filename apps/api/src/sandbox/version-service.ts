@@ -219,6 +219,16 @@ export function versionService(options: SandboxRouteOptions) {
     input: z.infer<typeof createSandboxVersionSchema>,
     now: Date,
   ) {
+    // A version is a slice, and a slice needs a repository; the sandbox
+    // itself does not, so this is where its absence is refused.
+    if (sandbox.sourceRepoId === null)
+      return failure(
+        {
+          error: "The sandbox has no repository to slice from.",
+          code: "no_source",
+        },
+        "conflict",
+      );
     const aliases = validateAliasRules(input.aliasRules);
     if (!aliases.ok)
       return failure(
@@ -271,6 +281,17 @@ export function versionService(options: SandboxRouteOptions) {
       const proposal = await options.proposals.get(owner, input.proposalId);
       if (proposal === null)
         return failure({ error: "Not found." }, "not-found");
+      // The frozen task names this sandbox's bounty, so its spec and price
+      // must be that bounty's; a hash would otherwise bind one bounty's
+      // name to another's terms.
+      if (proposal.bountyId !== sandbox.bountyId)
+        return failure(
+          {
+            error: "The proposal is for a different bounty.",
+            code: "proposal_mismatch",
+          },
+          "conflict",
+        );
       const revision = input.specRevision ?? proposal.specRevision;
       if (revision !== null) {
         const stored = await options.specs.get(owner, proposal.id, revision);
@@ -307,7 +328,7 @@ export function versionService(options: SandboxRouteOptions) {
       pricing,
       selectedBy: actor,
       selectedAt: now.toISOString(),
-      ticketIds: sandbox.ticketIds,
+      bountyId: sandbox.bountyId,
     };
     const scope = resolveScope({
       manifest: inputs.manifest,
@@ -343,7 +364,15 @@ export function versionService(options: SandboxRouteOptions) {
             },
             "conflict",
           )
-        : failure({ error: "Not found." }, "not-found");
+        : result.reason === "no_source"
+          ? failure(
+              {
+                error: "The sandbox has no repository to slice from.",
+                code: "no_source",
+              },
+              "conflict",
+            )
+          : failure({ error: "Not found." }, "not-found");
     return { ok: true as const, result };
   }
   return { sliceInputs, fixturesFromRun, create };

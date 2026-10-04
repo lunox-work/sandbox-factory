@@ -5,28 +5,30 @@
  * deleted. A version must not move with it, so the selected spec content,
  * the price at selection and the approval evidence are copied into one
  * private artifact and named by their hash (`approvedTaskSha256`). The live
- * rows are not its source of truth afterwards, and the ticket's own
+ * rows are not its source of truth afterwards, and the bounty's own
  * pricing-freshness hash (`specHash`) is deliberately not reused: it hashes
- * a ticket, not the build inputs.
+ * a bounty, not the build inputs.
  *
  * Nothing here is public. The listing's title and summary are separately
  * reviewed derivatives written after aliasing.
  */
 
 import type { SpecDraft } from "../pricing/spec.js";
-import type { BountyComplexity } from "../bounty.js";
+import type { BountyComplexity } from "../sizing.js";
 
 /**
- * Version 2 links the sandbox's tickets (`ticketIds`). Version 1 linked
- * Jira issue pointers (`jiraIssueIds`) and is still read, never written: a
- * stored snapshot is named by its hash, so it stays exactly as it was.
+ * Version 3 names the one bounty the sandbox belongs to (`bountyId`).
+ * Earlier versions are still read, never written: a stored snapshot is
+ * named by its hash, so it stays exactly as it was. Version 2 linked any
+ * number of tickets, as bounties were called then (`ticketIds`); version 1
+ * linked Jira issue pointers (`jiraIssueIds`).
  */
-export const APPROVED_TASK_SCHEMA_VERSION = 2;
+export const APPROVED_TASK_SCHEMA_VERSION = 3;
 
 export interface ApprovedTaskSpec {
   readonly proposalId: string;
   readonly specRevision: number;
-  /** The ticket's pricing-freshness hash, kept for the record only. */
+  /** The bounty's pricing-freshness hash, kept for the record only. */
   readonly specHash: string;
   readonly draft: SpecDraft;
 }
@@ -55,7 +57,17 @@ interface ApprovedTaskSelection {
 /** What a version is frozen with now. */
 export interface ApprovedTaskSnapshot extends ApprovedTaskSelection {
   readonly schemaVersion: typeof APPROVED_TASK_SCHEMA_VERSION;
-  /** The tickets the sandbox is linked to, by id; never their text. */
+  /** The bounty the sandbox belongs to, by id; never its text. */
+  readonly bountyId: string;
+}
+
+/**
+ * What a version frozen while a sandbox could be cut for several tickets
+ * holds. Read, never written; the key keeps the old name its hash covers.
+ */
+export interface LegacyTicketApprovedTaskSnapshot extends ApprovedTaskSelection {
+  readonly schemaVersion: 2;
+  /** The tickets, now bounties, the sandbox was linked to. */
   readonly ticketIds: readonly string[];
 }
 
@@ -68,7 +80,9 @@ export interface LegacyApprovedTaskSnapshot extends ApprovedTaskSelection {
 
 /** Any snapshot a stored version can hold. */
 export type StoredApprovedTaskSnapshot =
-  ApprovedTaskSnapshot | LegacyApprovedTaskSnapshot;
+  | ApprovedTaskSnapshot
+  | LegacyTicketApprovedTaskSnapshot
+  | LegacyApprovedTaskSnapshot;
 
 /** Which selections are complete enough to build for. */
 export function approvedTaskReadiness(snapshot: StoredApprovedTaskSnapshot): {

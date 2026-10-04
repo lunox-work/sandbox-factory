@@ -25,7 +25,7 @@ import {
 
 import { githubRepo } from "./github.js";
 import { organization } from "./organizations.js";
-import { ticket } from "./ticket.js";
+import { bounty } from "./bounty.js";
 
 export const jiraConnection = pgTable(
   "jira_connection",
@@ -202,15 +202,16 @@ export type JiraBoardRow = typeof jiraBoard.$inferSelect;
 export type NewJiraBoardRow = typeof jiraBoard.$inferInsert;
 
 /**
- * A Jira issue a run has imported, and the ticket it is imported as.
+ * A Jira issue a run has imported, and the bounty it enriches.
  *
- * The pointer half of a Jira ticket. The text lives on the `ticket` this row
- * names, which is what proposals price; what is here is Jira's identity for
- * it and the facts that answer Jira's own questions — which issues has a run
- * already considered on this board, and when did Jira last say this one
- * changed. A backlog or issue run refreshes both halves together, each time
- * it reads the issue; a run or a review that reads one ticket by its
- * pointer refreshes the ticket's text only.
+ * The pointer half of a bounty imported from Jira. The text lives on the
+ * `bounty` this row names, which is what proposals price; what is here is
+ * Jira's identity for it and the facts that answer Jira's own questions —
+ * which issues has a run already considered on this board, and when did
+ * Jira last say this one changed. A backlog or issue run refreshes both
+ * halves together, each time it reads the issue; a run or a review that
+ * reads one bounty by its
+ * pointer refreshes the bounty's text only.
  *
  * Written by a run that sizes the issue, and marked removed by a run or a
  * review that finds Jira no longer returns it. The backlog preview reads live
@@ -244,14 +245,14 @@ export const jiraIssue = pgTable(
      */
     key: text("key").notNull(),
     /**
-     * The ticket this issue is imported as, one each: made the first time a
+     * The bounty this issue is imported as, one each: made the first time a
      * run reads the issue, and refreshed from it every time after. Deleting
-     * the ticket takes the pointer with it; losing the board does not take
-     * the ticket.
+     * the bounty takes the pointer with it; losing the board does not take
+     * the bounty.
      */
-    ticketId: text("ticket_id")
+    bountyId: text("bounty_id")
       .notNull()
-      .references(() => ticket.id, { onDelete: "cascade" }),
+      .references(() => bounty.id, { onDelete: "cascade" }),
     /** `new`, `indeterminate` or `done`, normalised by `toIssueDto`. */
     statusCategory: text("status_category").notNull(),
     /** Jira's own created time, which is what a ticket's age is counted from. */
@@ -280,7 +281,7 @@ export const jiraIssue = pgTable(
       table.boardId,
       table.externalId,
     ),
-    unique("jira_issue_ticket_unique").on(table.ticketId),
+    unique("jira_issue_bounty_unique").on(table.bountyId),
     index("jira_issue_organization_id_idx").on(table.organizationId),
   ],
 );

@@ -85,7 +85,7 @@ export const enqueueSliceSchema = z.strictObject({
   deadlineMinutes: z.number().int().min(1).max(120).default(30),
 });
 
-/** The ticket an agent run works for; stored, so the cache key names the spec revision. */
+/** The bounty an agent run works for; stored, so the cache key names the spec revision. */
 const agentTaskFields = {
   deadlineMinutes: z.number().int().min(1).max(120).default(30),
   proposalId: z.string().min(1),
@@ -256,7 +256,7 @@ export const sliceBoundarySummarySchema = z.object({
   truncated: z.boolean(),
 });
 /**
- * A proposal an agent run can work for: one with a spec, whose ticket is
+ * A proposal an agent run can work for: one with a spec, whose bounty is
  * about the repository, by naming it or through its Jira board.
  * `GET .../repositories/:id/proposals`.
  */
@@ -266,7 +266,7 @@ export const repositoryProposalSchema = z.object({
   title: z.string().nullable(),
   status: z.string(),
   specRevision: z.number().int().positive(),
-  /** The Jira board it came through, or null for a ticket written here. */
+  /** The Jira board it came through, or null for a bounty written here. */
   boardId: z.string().nullable(),
   boardName: z.string().nullable(),
   createdAt: z.string(),

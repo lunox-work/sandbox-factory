@@ -152,7 +152,7 @@ for (const example of examples) {
 
   if (example.scenarios === undefined) continue;
   labelledWeights += example.scenarios.length;
-  const ticket = {
+  const bounty = {
     summary: example.summary,
     descriptionText: example.descriptionText,
     issueType: example.issueType,
@@ -189,7 +189,7 @@ for (const example of examples) {
   };
   let baselineScenarios;
   try {
-    const drafted = await caller.call(draftSpecTool, ticket);
+    const drafted = await caller.call(draftSpecTool, bounty);
     baselineScenarios = drafted.result.scenarios;
     inputTokens += drafted.usage?.inputTokens ?? 0;
     outputTokens += drafted.usage?.outputTokens ?? 0;
@@ -206,7 +206,7 @@ for (const example of examples) {
   outlineDrafts += 1;
   try {
     const drafted = await caller.call(draftSpecTool, {
-      ...ticket,
+      ...bounty,
       repositoryOutline: outline,
     });
     inputTokens += drafted.usage?.inputTokens ?? 0;

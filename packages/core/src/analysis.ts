@@ -49,7 +49,7 @@ export type ArtifactKind = (typeof ARTIFACT_KINDS)[number];
  * `slice` reads that map and the source to describe one task's boundary;
  * `sandbox_build` turns a slice and a version's private transform into a
  * runnable project and checks its baseline. `scope` and `fixtures` are
- * agent runs: a model reads the source to propose a slice for a ticket, and
+ * agent runs: a model reads the source to propose a slice for a bounty, and
  * to write believable behaviour for a succeeded slice's mocked seams.
  */
 export const ANALYSIS_TOOLS = [
@@ -117,7 +117,7 @@ export interface SandboxBuildParams extends GraphifyParams {
   readonly approvedTaskSha256: string;
 }
 /**
- * The ticket an agent run works for: a proposal and one immutable revision
+ * The bounty an agent run works for: a proposal and one immutable revision
  * of its spec. The spec hash is in the cache key, so a revised spec is a
  * different run.
  */

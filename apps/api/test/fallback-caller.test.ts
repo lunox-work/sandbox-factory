@@ -53,7 +53,7 @@ test("the primary answers alone while it succeeds", async () => {
   assert.equal(caller.model, "anthropic");
 });
 
-test("a provider failure hands the same ticket to the fallback", async () => {
+test("a provider failure hands the same bounty to the fallback", async () => {
   const handovers: string[] = [];
   const fallback = provider("deepseek", [sized("deepseek")]);
   const caller = new FallbackCaller({

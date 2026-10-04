@@ -16,7 +16,7 @@ function row(overrides: Partial<BountyProposalRow> = {}): BountyProposalRow {
     id: "bpr_1",
     organizationId: "org_1",
     runId: "brn_1",
-    ticketId: "tkt_1",
+    bountyId: "bty_1",
     specHash: "a".repeat(64),
     specHashVersion: 1,
     rateCard: {
@@ -56,18 +56,18 @@ function row(overrides: Partial<BountyProposalRow> = {}): BountyProposalRow {
   };
 }
 
-/** The ticket's name as a proposal read joins it. */
+/** The bounty's name as a proposal read joins it. */
 const NAME = {
-  ticketNumber: 1,
-  ticketTitle: "Add login",
+  bountyNumber: 1,
+  bountyTitle: "Add login",
   jiraKey: "APP-1",
 } as const;
-/** The ticket a run writes for, with the board it was imported through. */
-const TICKET = { ...NAME, boardId: "jrb_1" } as const;
+/** The bounty a run writes for, with the board it was imported through. */
+const BOUNTY = { ...NAME, boardId: "jrb_1" } as const;
 
 const input = {
   runId: "brn_1",
-  ticketId: "tkt_1",
+  bountyId: "bty_1",
   specHash: "a".repeat(64),
   specHashVersion: 1,
   rateCard: row().rateCard,
@@ -108,78 +108,78 @@ const spec = {
 } as const;
 
 test("creates only after both owner-scoped parents are found", async () => {
-  const boardRun = { id: "brn_1", boardId: "jrb_1", ticketId: null };
-  const fake = createSequencedFakeDb([[boardRun], [TICKET], [row()]]);
+  const boardRun = { id: "brn_1", boardId: "jrb_1", bountyId: null };
+  const fake = createSequencedFakeDb([[boardRun], [BOUNTY], [row()]]);
   const proposal = await createBountyProposalStore(fake.db).create(
     "org_1",
     input,
   );
   assert.equal(proposal?.issueKey, "APP-1");
   assert.equal(proposal?.title, "Add login");
-  assert.equal(proposal?.ticketId, "tkt_1");
+  assert.equal(proposal?.bountyId, "bty_1");
   assert.match(String(fake.calls[2]?.values?.["id"]), /^bpr_/);
-  assert.equal(fake.calls[2]?.values?.["ticketId"], "tkt_1");
+  assert.equal(fake.calls[2]?.values?.["bountyId"], "bty_1");
 
   const missing = createFakeDb([]);
   assert.equal(
     await createBountyProposalStore(missing.db).create("org_2", input),
     null,
   );
-  // A run with no such ticket of the organization's writes nothing.
-  const noTicket = createSequencedFakeDb([[boardRun], []]);
+  // A run with no such bounty of the organization's writes nothing.
+  const noBounty = createSequencedFakeDb([[boardRun], []]);
   assert.equal(
-    await createBountyProposalStore(noTicket.db).create("org_1", input),
+    await createBountyProposalStore(noBounty.db).create("org_1", input),
     null,
   );
   assert.equal(
-    noTicket.calls.filter(({ kind }) => kind === "insert").length,
+    noBounty.calls.filter(({ kind }) => kind === "insert").length,
     0,
   );
 });
 
-test("a run writes only for its own ticket", async () => {
+test("a run writes only for its own bounty", async () => {
   const store = (responses: unknown[][]) =>
     createBountyProposalStore(createSequencedFakeDb(responses).db);
-  // A board's run: only a ticket imported through that board.
-  const otherBoard = { ...TICKET, boardId: "jrb_2" };
+  // A board's run: only a bounty imported through that board.
+  const otherBoard = { ...BOUNTY, boardId: "jrb_2" };
   assert.equal(
     await store([
-      [{ id: "brn_1", boardId: "jrb_1", ticketId: null }],
+      [{ id: "brn_1", boardId: "jrb_1", bountyId: null }],
       [otherBoard],
     ]).create("org_1", input),
     null,
   );
-  // A ticket written here has no board, so no board's run writes for it.
-  const handWritten = { ...TICKET, jiraKey: null, boardId: null };
+  // A bounty written here has no board, so no board's run writes for it.
+  const handWritten = { ...BOUNTY, jiraKey: null, boardId: null };
   assert.equal(
     await store([
-      [{ id: "brn_1", boardId: "jrb_1", ticketId: null }],
+      [{ id: "brn_1", boardId: "jrb_1", bountyId: null }],
       [handWritten],
     ]).create("org_1", input),
     null,
   );
-  // A ticket's run: that ticket, and no other.
-  const ticketRun = { id: "brn_1", boardId: null, ticketId: "tkt_2" };
+  // A bounty's run: that bounty, and no other.
+  const oneBountyRun = { id: "brn_1", boardId: null, bountyId: "bty_2" };
   assert.equal(
-    await store([[ticketRun], [handWritten]]).create("org_1", input),
+    await store([[oneBountyRun], [handWritten]]).create("org_1", input),
     null,
   );
   const own = await store([
-    [{ ...ticketRun, ticketId: "tkt_1" }],
+    [{ ...oneBountyRun, bountyId: "bty_1" }],
     [handWritten],
     [row()],
   ]).create("org_1", input);
   // Named by its own number while it has no Jira key.
-  assert.equal(own?.issueKey, "T-1");
+  assert.equal(own?.issueKey, "B-1");
 });
 
 test("creates under a live lease and classifies fencing outcomes", async () => {
   const running = {
     id: "brn_1",
     boardId: "jrb_1",
-    ticketId: null,
+    bountyId: null,
   } as BountyRunRow;
-  const created = createSequencedFakeDb([[running], [TICKET], [row()]]);
+  const created = createSequencedFakeDb([[running], [BOUNTY], [row()]]);
   const result = await createBountyProposalStore(created.db).createForLease(
     "org_1",
     "lease",
@@ -198,7 +198,7 @@ test("creates under a live lease and classifies fencing outcomes", async () => {
     { status: "lost-lease" },
   );
 
-  const duplicate = createSequencedFakeDb([[running], [TICKET], []]);
+  const duplicate = createSequencedFakeDb([[running], [BOUNTY], []]);
   assert.deepEqual(
     await createBountyProposalStore(duplicate.db).createForLease(
       "org_1",
@@ -215,8 +215,8 @@ test("proposal writes keep only surviving owner-scoped snapshots", async () => {
     const snapshotId = available ? "rsn_1" : null;
     const created = createSequencedFakeDb([
       snapshot,
-      [{ id: "brn_1", boardId: "jrb_1", ticketId: null } as BountyRunRow],
-      [TICKET],
+      [{ id: "brn_1", boardId: "jrb_1", bountyId: null } as BountyRunRow],
+      [BOUNTY],
       [row({ repoSnapshotId: snapshotId })],
     ]);
     const result = await createBountyProposalStore(created.db).createForLease(
@@ -230,8 +230,8 @@ test("proposal writes keep only surviving owner-scoped snapshots", async () => {
     assert.equal(created.calls[3]?.values?.["repoSnapshotId"], snapshotId);
 
     const direct = createSequencedFakeDb([
-      [{ id: "brn_1", boardId: "jrb_1", ticketId: null }],
-      [TICKET],
+      [{ id: "brn_1", boardId: "jrb_1", bountyId: null }],
+      [BOUNTY],
       snapshot,
       [row({ repoSnapshotId: snapshotId })],
     ]);
@@ -249,7 +249,7 @@ test("proposal writes keep only surviving owner-scoped snapshots", async () => {
     });
     const reprice = createSequencedFakeDb([
       snapshot,
-      [{ id: "brn_2", boardId: "jrb_1", ticketId: null } as BountyRunRow],
+      [{ id: "brn_2", boardId: "jrb_1", bountyId: null } as BountyRunRow],
       [row()],
       [repriced],
       [{ row: repriced, ...NAME }],
@@ -271,11 +271,11 @@ test("a proposal created with a spec stores it as revision 1 in the same transac
   const running = {
     id: "brn_1",
     boardId: "jrb_1",
-    ticketId: null,
+    bountyId: null,
   } as BountyRunRow;
   const fake = createSequencedFakeDb([
     [running],
-    [TICKET],
+    [BOUNTY],
     [row({ specRevision: 1 })],
     [],
   ]);
@@ -331,7 +331,7 @@ test("a proposal created with a step is priced at the step's size and keeps it",
   const running = {
     id: "brn_1",
     boardId: "jrb_1",
-    ticketId: null,
+    bountyId: null,
   } as BountyRunRow;
   const stored = row({
     complexity: "M+",
@@ -339,7 +339,7 @@ test("a proposal created with a step is priced at the step's size and keeps it",
     step,
     stepVersion: step.stepVersion,
   });
-  const fake = createSequencedFakeDb([[running], [TICKET], [stored]]);
+  const fake = createSequencedFakeDb([[running], [BOUNTY], [stored]]);
   const result = await createBountyProposalStore(fake.db).createForLease(
     "org_1",
     "lease",
@@ -363,9 +363,9 @@ test("a proposal created without a spec points at none", async () => {
   const running = {
     id: "brn_1",
     boardId: "jrb_1",
-    ticketId: null,
+    bountyId: null,
   } as BountyRunRow;
-  const fake = createSequencedFakeDb([[running], [TICKET], [row()]]);
+  const fake = createSequencedFakeDb([[running], [BOUNTY], [row()]]);
   const result = await createBountyProposalStore(fake.db).createForLease(
     "org_1",
     "lease",
@@ -382,15 +382,15 @@ test("a proposal created without a spec points at none", async () => {
   if (result.status === "created") assert.equal(result.proposal.step, null);
 });
 
-test("a ticket that already has a live proposal gets no spec", async () => {
+test("a bounty that already has a live proposal gets no spec", async () => {
   // The proposal insert lost to the live one, so there is nothing for a
   // spec to belong to.
   const running = {
     id: "brn_1",
     boardId: "jrb_1",
-    ticketId: null,
+    bountyId: null,
   } as BountyRunRow;
-  const fake = createSequencedFakeDb([[running], [TICKET], []]);
+  const fake = createSequencedFakeDb([[running], [BOUNTY], []]);
   assert.deepEqual(
     await createBountyProposalStore(fake.db).createForLease("org_1", "lease", {
       ...input,
@@ -401,7 +401,7 @@ test("a ticket that already has a live proposal gets no spec", async () => {
   assert.equal(fake.calls.filter(({ kind }) => kind === "insert").length, 1);
 });
 
-test("gets and lists proposals with ticket display keys", async () => {
+test("gets and lists proposals with bounty display keys", async () => {
   const joined = {
     row: row(),
     ...NAME,
@@ -435,7 +435,7 @@ test("gets and lists proposals with ticket display keys", async () => {
     limit: 500,
   });
   assert.equal(listed[0]?.id, "bpr_1");
-  // The ticket's own title, as the platform holds it.
+  // The bounty's own title, as the platform holds it.
   assert.equal(listed[0]?.title, "Add login");
   // And why its own run picked it, from its own plan entry.
   assert.deepEqual(listed[0]?.categories, [
@@ -458,14 +458,14 @@ test("a listed proposal has no reasons when its run planned none for it", async 
       { row: row(), ...NAME, externalId: "10001", planned },
     ]);
     const listed = await createBountyProposalStore(fake.db).list("org_1");
-    // The title is the ticket's, whatever the plan said.
+    // The title is the bounty's, whatever the plan said.
     assert.equal(listed[0]?.title, "Add login");
-    // A plan from before categories, or a ticket picked by hand: none.
+    // A plan from before categories, or a bounty picked by hand: none.
     assert.deepEqual(listed[0]?.categories, []);
   }
 });
 
-test("a repository's proposals are those its tickets are about", async () => {
+test("a repository's proposals are those its bounties are about", async () => {
   const fake = createFakeDb([
     {
       row: row(),
@@ -482,7 +482,7 @@ test("a repository's proposals are those its tickets are about", async () => {
   assert.equal(fake.calls[0]?.filtered, true);
 });
 
-test("a ticket written here is matched to its plan entry by its own id", async () => {
+test("a bounty written here is matched to its plan entry by its own id", async () => {
   const fake = createFakeDb([
     {
       row: row(),
@@ -491,17 +491,17 @@ test("a ticket written here is matched to its plan entry by its own id", async (
       externalId: null,
       planned: [
         {
-          externalIssueId: "tkt_1",
-          issueKey: "T-1",
+          externalIssueId: "bty_1",
+          issueKey: "B-1",
           summary: "Add login",
-          ticketId: "tkt_1",
+          bountyId: "bty_1",
           categories: [{ id: "paper-cuts", label: "Paper cuts", reason: "r" }],
         },
       ],
     },
   ]);
   const listed = await createBountyProposalStore(fake.db).list("org_1");
-  assert.equal(listed[0]?.issueKey, "T-1");
+  assert.equal(listed[0]?.issueKey, "B-1");
   assert.deepEqual(
     listed[0]?.categories.map(({ id }) => id),
     ["paper-cuts"],
@@ -514,7 +514,7 @@ test("category counts are per category and per proposal", async () => {
   const fake = createFakeDb([
     { categories: [leftBehind, paperCuts] },
     { categories: [leftBehind] },
-    // A ticket someone picked by hand, and a plan from before categories.
+    // A bounty someone picked by hand, and a plan from before categories.
     { categories: [] },
     { categories: null },
     // Stored JSON is not trusted to be well formed: a repeat counts once,
@@ -613,17 +613,17 @@ test("proposal reads can miss and list with defaults", async () => {
   assert.deepEqual(await store.list("org_1"), []);
 });
 
-test("finds a ticket's live proposal, or none", async () => {
+test("finds a bounty's live proposal, or none", async () => {
   const live = createFakeDb([{ id: "bpr_1" }]);
   assert.equal(
-    await createBountyProposalStore(live.db).liveForTicket("org_1", "tkt_1"),
+    await createBountyProposalStore(live.db).liveForBounty("org_1", "bty_1"),
     "bpr_1",
   );
   assert.equal(live.calls[0]?.filtered, true);
   assert.equal(
-    await createBountyProposalStore(createFakeDb([]).db).liveForTicket(
+    await createBountyProposalStore(createFakeDb([]).db).liveForBounty(
       "org_1",
-      "tkt_2",
+      "bty_2",
     ),
     null,
   );
@@ -649,7 +649,7 @@ test("finds live proposal issue ids for selection", async () => {
   );
 });
 
-test("finds each live ticket's proposal id, for search results", async () => {
+test("finds each live bounty's proposal id, for search results", async () => {
   const fake = createFakeDb([{ externalId: "10001", proposalId: "bpr_1" }]);
   const ids = await createBountyProposalStore(fake.db).liveProposalIds(
     "org_1",
@@ -851,7 +851,7 @@ test("remove deletes a proposed proposal by expected revision", async () => {
 test("re-price updates the source in place, fenced by its run lease and source revision", async () => {
   const repriced = row({ revision: 2, runId: "brn_2" });
   const fake = createSequencedFakeDb([
-    [{ id: "brn_2", boardId: "jrb_1", ticketId: null } as BountyRunRow],
+    [{ id: "brn_2", boardId: "jrb_1", bountyId: null } as BountyRunRow],
     [row()],
     [repriced],
     [{ row: repriced, ...NAME }],
@@ -901,7 +901,7 @@ test("re-price updates the source in place, fenced by its run lease and source r
 test("re-price with a spec writes the next revision and points the proposal at it", async () => {
   const repriced = row({ revision: 2, runId: "brn_2", specRevision: 3 });
   const fake = createSequencedFakeDb([
-    [{ id: "brn_2", boardId: "jrb_1", ticketId: null } as BountyRunRow],
+    [{ id: "brn_2", boardId: "jrb_1", bountyId: null } as BountyRunRow],
     [row({ specRevision: 2 })],
     // The proposal's latest spec revision, read while its row is locked.
     [{ revision: 2 }],
@@ -942,7 +942,7 @@ test("re-price writes the fresh step with the fresh size", async () => {
     stepVersion: "step-v1",
   });
   const fake = createSequencedFakeDb([
-    [{ id: "brn_2", boardId: "jrb_1", ticketId: null } as BountyRunRow],
+    [{ id: "brn_2", boardId: "jrb_1", bountyId: null } as BountyRunRow],
     [row()],
     [repriced],
     [{ row: repriced, ...NAME }],
@@ -969,7 +969,7 @@ test("re-price writes the fresh step with the fresh size", async () => {
 test("re-price starts a spec at revision 1 for a proposal that had none", async () => {
   const repriced = row({ revision: 2, runId: "brn_2", specRevision: 1 });
   const fake = createSequencedFakeDb([
-    [{ id: "brn_2", boardId: "jrb_1", ticketId: null } as BountyRunRow],
+    [{ id: "brn_2", boardId: "jrb_1", bountyId: null } as BountyRunRow],
     [row()],
     [],
     [repriced],
@@ -989,11 +989,11 @@ test("re-price starts a spec at revision 1 for a proposal that had none", async 
 });
 
 test("re-price without a spec clears the pointer and writes no revision", async () => {
-  // The earlier revisions were drafted from a ticket this size no longer
+  // The earlier revisions were drafted from a bounty this size no longer
   // goes with, so the proposal stops pointing at any of them.
   const repriced = row({ revision: 2, runId: "brn_2" });
   const fake = createSequencedFakeDb([
-    [{ id: "brn_2", boardId: "jrb_1", ticketId: null } as BountyRunRow],
+    [{ id: "brn_2", boardId: "jrb_1", bountyId: null } as BountyRunRow],
     [row({ specRevision: 2 })],
     [repriced],
     [{ row: repriced, ...NAME }],
@@ -1078,7 +1078,7 @@ test("re-price queues a withdrawal for a posted approval in the same transaction
 
 test("re-price completion refuses unresolved approval delivery", async () => {
   const fake = createSequencedFakeDb([
-    [{ id: "brn_2", boardId: "jrb_1", ticketId: null } as BountyRunRow],
+    [{ id: "brn_2", boardId: "jrb_1", bountyId: null } as BountyRunRow],
     [row({ status: "approved", decisionDeliveryPolicy: "requested" })],
     [{ status: "uncertain" } as BountyWritebackRow],
   ]);
@@ -1110,7 +1110,7 @@ test("re-price does not queue a withdrawal when the site holds no write grant", 
     },
   } as BountyWritebackRow;
   const fake = createSequencedFakeDb([
-    [{ id: "brn_2", boardId: "jrb_1", ticketId: null } as BountyRunRow],
+    [{ id: "brn_2", boardId: "jrb_1", bountyId: null } as BountyRunRow],
     [source],
     [approval],
     [repriced],
@@ -1139,7 +1139,7 @@ test("re-price does not queue a withdrawal when the site holds no write grant", 
 
 test("re-price completion distinguishes a vanished source from a changed one", async () => {
   const missing = createSequencedFakeDb([
-    [{ id: "brn_2", boardId: "jrb_1", ticketId: null } as BountyRunRow],
+    [{ id: "brn_2", boardId: "jrb_1", bountyId: null } as BountyRunRow],
     [],
     [],
   ]);
@@ -1157,7 +1157,7 @@ test("re-price completion distinguishes a vanished source from a changed one", a
   );
 
   const changed = createSequencedFakeDb([
-    [{ id: "brn_2", boardId: "jrb_1", ticketId: null } as BountyRunRow],
+    [{ id: "brn_2", boardId: "jrb_1", bountyId: null } as BountyRunRow],
     [],
     [{ row: row({ revision: 2 }), ...NAME }],
   ]);
@@ -1278,7 +1278,7 @@ test("a spec change is fenced by its lease and refused once the proposal moved",
   const running = {
     id: "brn_3",
     boardId: "jrb_1",
-    ticketId: null,
+    bountyId: null,
   } as BountyRunRow;
   const missing = createSequencedFakeDb([[running], [], []]);
   assert.equal((await store(missing)).status, "not-found");
@@ -1303,17 +1303,17 @@ test("legacy snapshot reads add XS without changing historical rates", async () 
   assert.equal(record?.rateCard.revision, 1);
 });
 
-test("profile intent uses the surviving locked snapshot and frozen ticket metadata", async () => {
+test("profile intent uses the surviving locked snapshot and frozen bounty metadata", async () => {
   const running = {
     id: "brn_1",
     boardId: "jrb_1",
-    ticketId: null,
+    bountyId: null,
   } as BountyRunRow;
   for (const snapshot of [[], [{ id: "rsn_1" }]]) {
     const fake = createSequencedFakeDb([
       snapshot,
       [running],
-      [TICKET],
+      [BOUNTY],
       [
         row({
           specRevision: 1,
@@ -1344,7 +1344,7 @@ test("profile intent uses the surviving locked snapshot and frozen ticket metada
       assert.equal(intents[0]?.values?.["specRevision"], 1);
       assert.equal(intents[0]?.values?.["specHash"], spec.specHash);
       assert.equal(intents[0]?.values?.["snapshotId"], "rsn_1");
-      assert.deepEqual(intents[0]?.values?.["ticket"], {
+      assert.deepEqual(intents[0]?.values?.["bounty"], {
         issueType: "Bug",
         priority: "High",
       });
@@ -1354,7 +1354,7 @@ test("profile intent uses the surviving locked snapshot and frozen ticket metada
   const disabled = createSequencedFakeDb([
     [{ id: "rsn_1" }],
     [running],
-    [TICKET],
+    [BOUNTY],
     [row({ specRevision: 1 })],
     [],
   ]);

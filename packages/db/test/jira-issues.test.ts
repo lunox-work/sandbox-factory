@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import type { TicketContent } from "sandbox-factory";
+import type { BountyContent } from "sandbox-factory";
 
 import { createJiraIssueStore } from "../src/jira-issues.js";
-import type { JiraIssueRow, TicketRow } from "../src/schema.js";
+import type { JiraIssueRow, BountyRow } from "../src/schema.js";
 import { createFakeDb, createSequencedFakeDb } from "./fake-db.js";
 
 function row(overrides: Partial<JiraIssueRow> = {}): JiraIssueRow {
@@ -14,7 +14,7 @@ function row(overrides: Partial<JiraIssueRow> = {}): JiraIssueRow {
     boardId: "jrb_1",
     externalId: "10001",
     key: "APP-1",
-    ticketId: "tkt_1",
+    bountyId: "bty_1",
     statusCategory: "new",
     remoteCreatedAt: new Date("2026-01-01T00:00:00Z"),
     remoteUpdatedAt: new Date("2026-09-22T00:00:00Z"),
@@ -24,9 +24,9 @@ function row(overrides: Partial<JiraIssueRow> = {}): JiraIssueRow {
   };
 }
 
-function ticketRow(overrides: Partial<TicketRow> = {}): TicketRow {
+function bountyRow(overrides: Partial<BountyRow> = {}): BountyRow {
   return {
-    id: "tkt_1",
+    id: "bty_1",
     organizationId: "org_1",
     number: 4,
     title: "Invitations are not sent",
@@ -54,7 +54,7 @@ const facts = {
   remoteUpdatedAt: "2026-09-22T00:00:00Z",
 };
 
-const content: TicketContent = {
+const content: BountyContent = {
   title: "Invitations are not sent",
   description: "Steps",
   issueType: "Bug",
@@ -68,7 +68,7 @@ test("gets an issue pointer through an owner filter", async () => {
   const fake = createFakeDb([row()]);
   const issue = await createJiraIssueStore(fake.db).get("org_1", "jri_1");
   assert.equal(issue?.key, "APP-1");
-  assert.equal(issue?.ticketId, "tkt_1");
+  assert.equal(issue?.bountyId, "bty_1");
   assert.equal(fake.calls[0]?.filtered, true);
 });
 
@@ -89,8 +89,8 @@ test("a first read imports the issue as a new ticket", async () => {
     [{ id: "jrb_1" }],
     // Not seen before.
     [],
-    [ticketRow({ id: "tkt_new" })],
-    [row({ ticketId: "tkt_new" })],
+    [bountyRow({ id: "bty_new" })],
+    [row({ bountyId: "bty_new" })],
   ]);
   const issue = await createJiraIssueStore(fake.db).upsert(
     "org_1",
@@ -98,16 +98,16 @@ test("a first read imports the issue as a new ticket", async () => {
     facts,
     { ...content, labels: ["email"], components: ["Mailer"] },
   );
-  assert.equal(issue?.ticketId, "tkt_new");
+  assert.equal(issue?.bountyId, "bty_new");
   const created = fake.calls[2];
   assert.equal(created?.kind, "insert");
-  assert.match(String(created?.values?.["id"]), /^tkt_/);
+  assert.match(String(created?.values?.["id"]), /^bty_/);
   assert.equal(created?.values?.["origin"], "jira");
   assert.equal(created?.values?.["title"], "Invitations are not sent");
   assert.deepEqual(created?.values?.["components"], ["Mailer"]);
   // The pointer names the ticket as it was stored.
   const pointer = fake.calls[3];
-  assert.equal(pointer?.values?.["ticketId"], "tkt_new");
+  assert.equal(pointer?.values?.["bountyId"], "bty_new");
   assert.equal(pointer?.values?.["removedAt"], null);
   assert.equal(pointer?.ignoredConflict, true);
 });
@@ -116,7 +116,7 @@ test("an issue with no summary is imported under its key", async () => {
   const fake = createSequencedFakeDb([
     [{ id: "jrb_1" }],
     [],
-    [ticketRow()],
+    [bountyRow()],
     [row()],
   ]);
   await createJiraIssueStore(fake.db).upsert("org_1", "jrb_1", facts, {
@@ -130,8 +130,8 @@ test("a later read refreshes the pointer and the ticket's text", async () => {
   const fake = createSequencedFakeDb([
     [{ id: "jrb_1" }],
     [row({ key: "APP-2" })],
-    [ticketRow({ description: "Old steps", revision: 3 })],
-    [{ id: "tkt_1" }],
+    [bountyRow({ description: "Old steps", revision: 3 })],
+    [{ id: "bty_1" }],
   ]);
   const issue = await createJiraIssueStore(fake.db).upsert(
     "org_1",
@@ -154,7 +154,7 @@ test("a later read that finds nothing new writes no ticket", async () => {
   const fake = createSequencedFakeDb([
     [{ id: "jrb_1" }],
     [row()],
-    [ticketRow()],
+    [bountyRow()],
   ]);
   await createJiraIssueStore(fake.db).upsert("org_1", "jrb_1", facts, content);
   assert.equal(fake.calls.length, 3);
@@ -164,13 +164,13 @@ test("an import that loses a race keeps the winner's ticket", async () => {
   const fake = createSequencedFakeDb([
     [{ id: "jrb_1" }],
     [],
-    [ticketRow({ id: "tkt_lost" })],
+    [bountyRow({ id: "bty_lost" })],
     // The pointer insert met the other run's row.
     [],
     // So the ticket just made is deleted, and the winner's refreshed.
     [],
-    [row({ ticketId: "tkt_won" })],
-    [ticketRow({ id: "tkt_won" })],
+    [row({ bountyId: "bty_won" })],
+    [bountyRow({ id: "bty_won" })],
   ]);
   const issue = await createJiraIssueStore(fake.db).upsert(
     "org_1",
@@ -178,7 +178,7 @@ test("an import that loses a race keeps the winner's ticket", async () => {
     facts,
     content,
   );
-  assert.equal(issue?.ticketId, "tkt_won");
+  assert.equal(issue?.bountyId, "bty_won");
   assert.equal(fake.calls[4]?.kind, "delete");
   assert.equal(fake.calls[4]?.filtered, true);
 });
@@ -187,7 +187,7 @@ test("an import whose race leaves no pointer imports nothing", async () => {
   const fake = createSequencedFakeDb([
     [{ id: "jrb_1" }],
     [],
-    [ticketRow({ id: "tkt_lost" })],
+    [bountyRow({ id: "bty_lost" })],
     [],
     [],
     [],

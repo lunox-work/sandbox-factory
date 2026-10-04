@@ -8,7 +8,7 @@ import {
   bountyWritebackDtoSchema,
   proposalLiveSpecSchema,
   proposalFreshnessDtoSchema,
-} from "./bounty.js";
+} from "./pricing.js";
 import {
   githubConnectionDtoSchema,
   githubRepoDtoSchema,
@@ -91,7 +91,7 @@ export const proposalActionResponseSchema = z.object({
   run: bountyRunDtoSchema.optional(),
   proposalId: z.string().optional(),
 });
-export const jiraTicketSearchSchema = z.object({
+export const jiraIssueSearchSchema = z.object({
   issues: z.array(
     z.object({
       id: z.string(),

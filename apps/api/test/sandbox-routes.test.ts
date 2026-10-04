@@ -220,8 +220,8 @@ const sandbox: StoredSandbox = {
   status: "draft",
   publicRepoId: null,
   currentVersionId: null,
+  bountyId: "bty_1",
   sourceRepoId: "ghr_1",
-  ticketIds: ["tkt_1"],
   createdAt: stamp,
   updatedAt: stamp,
 };
@@ -250,7 +250,7 @@ const source: StoredVersionSource = {
   transformConfigSha256: "1".repeat(64),
   approvedTaskSha256: "2".repeat(64),
   approvedTask: {
-    schemaVersion: 2,
+    schemaVersion: 3,
     title: "Fix it",
     summary: "Summary",
     spec: {
@@ -284,7 +284,7 @@ const source: StoredVersionSource = {
     },
     selectedBy: "user_1",
     selectedAt: stamp,
-    ticketIds: ["tkt_1"],
+    bountyId: "bty_1",
   },
   aliasRules: [],
   dependencyChoices: {},
@@ -386,15 +386,48 @@ function fixture(
     );
   const options = {
     sandboxes: {
-      create: async (owner: string, input: { sourceRepoId: string }) =>
-        input.sourceRepoId === "ghr_pub"
-          ? { ok: false, reason: "repo_role" }
-          : input.sourceRepoId === "ghr_x"
-            ? { ok: false, reason: "repo_not_found" }
-            : { ok: true, sandbox: { ...sandbox, organizationId: owner } },
+      create: async (
+        owner: string,
+        input: { bountyId: string; sourceRepoId: string | null },
+      ) =>
+        input.bountyId === "bty_x"
+          ? { ok: false, reason: "bounty_not_found" }
+          : input.bountyId === "bty_taken"
+            ? { ok: false, reason: "bounty_has_sandbox" }
+            : input.sourceRepoId === "ghr_pub"
+              ? { ok: false, reason: "repo_role" }
+              : input.sourceRepoId === "ghr_x"
+                ? { ok: false, reason: "repo_not_found" }
+                : {
+                    ok: true,
+                    sandbox: {
+                      ...sandbox,
+                      organizationId: owner,
+                      bountyId: input.bountyId,
+                      sourceRepoId: input.sourceRepoId,
+                    },
+                  },
       list: async () => [sandbox],
+      linkSource: async (owner: string, id: string, sourceRepoId: string) =>
+        owner !== "org_1" || id === "sbx_9"
+          ? { ok: false, reason: "not-found" }
+          : id === "sbx_1" && sourceRepoId !== sandbox.sourceRepoId
+            ? { ok: false, reason: "source_linked" }
+            : sourceRepoId === "ghr_pub"
+              ? { ok: false, reason: "repo_role" }
+              : sourceRepoId === "ghr_x"
+                ? { ok: false, reason: "repo_not_found" }
+                : { ok: true, sandbox: { ...sandbox, id, sourceRepoId } },
       get: async (owner: string, id: string) =>
-        owner === "org_1" && id === "sbx_1" ? sandbox : null,
+        owner !== "org_1"
+          ? null
+          : id === "sbx_1"
+            ? sandbox
+            : id === "sbx_bare"
+              ? { ...sandbox, id: "sbx_bare", sourceRepoId: null }
+              : id === "sbx_unlinked"
+                ? { ...sandbox, id: "sbx_unlinked" }
+                : null,
       createVersion: async (
         _owner: string,
         sandboxId: string,
@@ -406,7 +439,9 @@ function fixture(
           ? { ok: false, reason: "slice_mismatch" }
           : sandboxId === "sbx_1"
             ? { ok: true, ...stored }
-            : { ok: false, reason: "not-found" };
+            : sandboxId === "sbx_unlinked"
+              ? { ok: false, reason: "no_source" }
+              : { ok: false, reason: "not-found" };
       },
       listVersions: async () => [version],
       getVersion: async (owner: string, id: string) =>
@@ -494,9 +529,10 @@ function fixture(
     },
     proposals: {
       get: async (owner: string, id: string) =>
-        owner === "org_1" && id === "bpr_1"
+        owner === "org_1" && (id === "bpr_1" || id === "bpr_other")
           ? {
               id,
+              bountyId: id === "bpr_1" ? "bty_1" : "bty_2",
               revision: 3,
               complexity: "M",
               amountMinor: 10500,
@@ -508,6 +544,7 @@ function fixture(
           : owner === "org_1" && id === "bpr_nospec"
             ? {
                 id,
+                bountyId: "bty_1",
                 revision: 1,
                 complexity: "S",
                 amountMinor: 5800,
@@ -570,29 +607,65 @@ function fixture(
   };
 }
 
-test("sandboxes are created from owned source repositories by admins and listed for members", async () => {
+test("a bounty's sandbox is created by admins, with or without a repository, and listed for members", async () => {
   const f = fixture();
   const created = await f.request("POST", "", {
+    bountyId: "bty_1",
     sourceRepoId: "ghr_1",
-    ticketIds: ["tkt_1"],
   });
   assert.equal(created.status, 201);
+  const made = ((await created.json()) as { sandbox: StoredSandbox }).sandbox;
+  assert.deepEqual(
+    [made.id, made.bountyId, made.sourceRepoId],
+    ["sbx_1", "bty_1", "ghr_1"],
+  );
+  // A repository is enrichment: a sandbox is made without one.
+  const bare = await f.request("POST", "", { bountyId: "bty_2" });
+  assert.equal(bare.status, 201);
   assert.equal(
-    ((await created.json()) as { sandbox: StoredSandbox }).sandbox.id,
-    "sbx_1",
+    ((await bare.json()) as { sandbox: StoredSandbox }).sandbox.sourceRepoId,
+    null,
+  );
+  const taken = await f.request("POST", "", { bountyId: "bty_taken" });
+  assert.equal(taken.status, 409);
+  assert.equal(
+    ((await taken.json()) as { code: string }).code,
+    "bounty_has_sandbox",
+  );
+  const noBounty = await f.request("POST", "", { bountyId: "bty_x" });
+  assert.equal(noBounty.status, 404);
+  assert.equal(
+    ((await noBounty.json()) as { code: string }).code,
+    "bounty_not_found",
   );
   assert.equal(
-    (await f.request("POST", "", { sourceRepoId: "ghr_pub" })).status,
+    (
+      await f.request("POST", "", {
+        bountyId: "bty_1",
+        sourceRepoId: "ghr_pub",
+      })
+    ).status,
     409,
   );
+  // A repository disconnected since the bounty named it is told apart from
+  // a missing bounty, so the person asking can see what to change.
+  const noRepo = await f.request("POST", "", {
+    bountyId: "bty_1",
+    sourceRepoId: "ghr_x",
+  });
+  assert.equal(noRepo.status, 404);
+  assert.deepEqual(await noRepo.json(), {
+    error: "The repository is not connected to this workspace any more.",
+    code: "repo_not_found",
+  });
+  // No sandbox without its bounty.
   assert.equal(
-    (await f.request("POST", "", { sourceRepoId: "ghr_x" })).status,
-    404,
+    (await f.request("POST", "", { sourceRepoId: "ghr_1" })).status,
+    400,
   );
   assert.equal((await f.request("POST", "", { nope: true })).status, 400);
   assert.equal(
-    (await fixture("member").request("POST", "", { sourceRepoId: "ghr_1" }))
-      .status,
+    (await fixture("member").request("POST", "", { bountyId: "bty_1" })).status,
     403,
   );
   const list = await fixture("member").request("GET", "");
@@ -610,6 +683,73 @@ test("sandboxes are created from owned source repositories by admins and listed 
   );
   assert.equal((await f.request("GET", "/sbx_1/versions")).status, 200);
   assert.equal((await f.request("GET", "/sbx_9/versions")).status, 404);
+});
+
+test("a sandbox made without a repository has one linked once, by an admin", async () => {
+  const f = fixture();
+  const linked = await f.request("PUT", "/sbx_bare/source", {
+    sourceRepoId: "ghr_1",
+  });
+  assert.equal(linked.status, 200);
+  const made = ((await linked.json()) as { sandbox: StoredSandbox }).sandbox;
+  assert.deepEqual([made.id, made.sourceRepoId], ["sbx_bare", "ghr_1"]);
+  const code = async (response: Response) => [
+    response.status,
+    ((await response.json()) as { code?: string }).code,
+  ];
+  // Its versions are bound to the repository it has.
+  assert.deepEqual(
+    await code(
+      await f.request("PUT", "/sbx_1/source", { sourceRepoId: "ghr_2" }),
+    ),
+    [409, "source_linked"],
+  );
+  assert.deepEqual(
+    await code(
+      await f.request("PUT", "/sbx_bare/source", { sourceRepoId: "ghr_pub" }),
+    ),
+    [409, "repo_role"],
+  );
+  assert.deepEqual(
+    await code(
+      await f.request("PUT", "/sbx_bare/source", { sourceRepoId: "ghr_x" }),
+    ),
+    [404, "repo_not_found"],
+  );
+  assert.deepEqual(
+    await code(
+      await f.request("PUT", "/sbx_9/source", { sourceRepoId: "ghr_1" }),
+    ),
+    [404, undefined],
+  );
+  assert.equal(
+    (
+      await f.request(
+        "PUT",
+        "/sbx_bare/source",
+        { sourceRepoId: "ghr_1" },
+        "org_2",
+      )
+    ).status,
+    404,
+  );
+  for (const body of [
+    {},
+    { sourceRepoId: "" },
+    { sourceRepoId: "ghr_1", x: 1 },
+  ])
+    assert.equal(
+      (await f.request("PUT", "/sbx_bare/source", body)).status,
+      400,
+    );
+  assert.equal(
+    (
+      await fixture("member").request("PUT", "/sbx_bare/source", {
+        sourceRepoId: "ghr_1",
+      })
+    ).status,
+    403,
+  );
 });
 
 test("a version pins the slice artifacts by hash, snapshots the approved task and writes the scope", async () => {
@@ -669,9 +809,10 @@ test("a version pins the slice artifacts by hash, snapshots the approved task an
   );
   assert.equal(input.source.approvedTask.spec?.specRevision, 2);
   assert.equal(input.source.approvedTask.pricing?.amountMinor, 10500);
-  // A new version names the sandbox's tickets, at the current schema.
-  assert.deepEqual(input.source.approvedTask.ticketIds, ["tkt_1"]);
-  assert.equal(input.source.approvedTask.schemaVersion, 2);
+  // A new version names the sandbox's bounty, at the current schema.
+  assert.equal(input.source.approvedTask.schemaVersion, 3);
+  if (input.source.approvedTask.schemaVersion === 3)
+    assert.equal(input.source.approvedTask.bountyId, "bty_1");
   assert.equal(input.source.approvedTask.selectedBy, "user_1");
   assert.deepEqual(input.source.scope.editablePaths, ["src/app.ts"]);
   assert.deepEqual(
@@ -698,6 +839,29 @@ test("a version pins the slice artifacts by hash, snapshots the approved task an
   const priced = f.created[2] as { source: StoredVersionSource };
   assert.equal(priced.source.approvedTask.spec, null);
   assert.equal(priced.source.approvedTask.pricing?.complexity, "S");
+});
+
+test("a sandbox with no repository has no version to cut", async () => {
+  const f = fixture();
+  const response = await f.request("POST", "/sbx_bare/versions", {
+    sliceRunId: "arn_slice",
+    title: "Fix it",
+    specSummary: "Summary",
+    complexity: "M",
+  });
+  assert.equal(response.status, 409);
+  assert.equal(((await response.json()) as { code: string }).code, "no_source");
+  assert.equal(f.created.length, 0);
+  // Its repository unlinked between the read and the write: the same answer.
+  const raced = await f.request("POST", "/sbx_unlinked/versions", {
+    sliceRunId: "arn_slice",
+    title: "Fix it",
+    specSummary: "Summary",
+    complexity: "M",
+    dependencyChoices: { pg: "approved-package" },
+  });
+  assert.equal(raced.status, 409);
+  assert.equal(((await raced.json()) as { code: string }).code, "no_source");
 });
 
 test("version creation refuses what it cannot pin", async () => {
@@ -804,6 +968,18 @@ test("version creation refuses what it cannot pin", async () => {
     ).status,
     404,
   );
+  // Another bounty's proposal: its spec and price are not this bounty's.
+  const elsewhere = await f.request("POST", "/sbx_1/versions", {
+    ...base,
+    sliceRunId: "arn_slice",
+    proposalId: "bpr_other",
+  });
+  assert.equal(elsewhere.status, 409);
+  assert.equal(
+    ((await elsewhere.json()) as { code: string }).code,
+    "proposal_mismatch",
+  );
+  assert.equal(f.created.length, 0);
   const spec = await f.request("POST", "/sbx_1/versions", {
     ...base,
     sliceRunId: "arn_slice",

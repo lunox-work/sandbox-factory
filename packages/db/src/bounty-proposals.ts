@@ -11,7 +11,7 @@ import type {
   SizingConfidence,
   StepResult,
 } from "sandbox-factory";
-import { ticketKey } from "sandbox-factory";
+import { bountyKey } from "sandbox-factory";
 import { and, desc, eq, gt, inArray, or, sql } from "drizzle-orm";
 
 import {
@@ -33,7 +33,7 @@ import {
   jiraBoard,
   jiraConnection,
   jiraIssue,
-  ticket,
+  bounty,
 } from "./schema.js";
 import type {
   BountyProposalRow,
@@ -43,8 +43,8 @@ import type {
 
 export interface CreateBountyProposalInput {
   readonly runId: string;
-  /** The ticket priced. One the run may write for: see `ticketForRun`. */
-  readonly ticketId: string;
+  /** The bounty priced. One the run may write for: see `bountyForRun`. */
+  readonly bountyId: string;
   readonly specHash: string;
   readonly specHashVersion: number;
   readonly rateCard: RateCardSnapshot;
@@ -61,8 +61,8 @@ export interface CreateBountyProposalInput {
    */
   readonly step?: StepResult | null;
   /**
-   * The repository snapshot the spec was drafted beside, when the ticket
-   * had a repository with one. Its organization is the ticket's, which the
+   * The repository snapshot the spec was drafted beside, when the bounty
+   * had a repository with one. Its organization is the bounty's, which the
    * caller read it through.
    */
   readonly repoSnapshotId?: string | null;
@@ -76,7 +76,7 @@ export interface CreateBountyProposalInput {
 export interface LeasedBountyProposalInput extends CreateBountyProposalInput {
   readonly spec?: NewBountySpec;
   /** Frozen sizing content, supplied only when profiling is configured. */
-  readonly profileIntent?: import("sandbox-factory").ProfileTicket;
+  readonly profileIntent?: import("sandbox-factory").ProfileBounty;
 }
 
 /**
@@ -107,11 +107,11 @@ export type ProposalMutationResult =
 
 /** A proposal as a list returns it. */
 export type ListedBountyProposal = StoredBountyProposal & {
-  /** The Jira board the ticket came through, or null for one written here. */
+  /** The Jira board the bounty came through, or null for one written here. */
   readonly boardId: string | null;
   /**
-   * Why the run picked the ticket: the categories it fit and the reason for
-   * each, from the same plan entry. Empty for a ticket someone picked by
+   * Why the run picked the bounty: the categories it fit and the reason for
+   * each, from the same plan entry. Empty for a bounty someone picked by
    * hand, and for a run from before categories existed.
    */
   readonly categories: readonly CategoryMatch[];
@@ -140,23 +140,23 @@ export interface BountyProposalStore {
   ): Promise<StoredBountyProposal | null>;
   /**
    * The organization's proposals, newest first, or one board's: those its
-   * runs made, which is every proposal of a ticket imported through it.
+   * runs made, which is every proposal of a bounty imported through it.
    */
   list(
     organizationId: string,
     options?: {
       boardId?: string;
       /**
-       * Only proposals of tickets about this repository: one the ticket
+       * Only proposals of bounties about this repository: one the bounty
        * names, or, when it names none, its Jira board's.
        */
       repoId?: string;
       status?: "proposed" | "approved";
       cursor?: { readonly createdAt: string; readonly id: string };
       limit?: number;
-      /** Only proposals whose ticket was picked for this category. */
+      /** Only proposals whose bounty was picked for this category. */
       category?: string;
-      /** Only proposals whose ticket was picked for no category at all. */
+      /** Only proposals whose bounty was picked for no category at all. */
       uncategorized?: boolean;
     },
   ): Promise<ListedBountyProposal[]>;
@@ -167,11 +167,11 @@ export interface BountyProposalStore {
    *
    * Counted here rather than from a page of the list, because the list is
    * paged and a count of fifty rows says nothing about a board of three
-   * hundred. A ticket picked for two categories counts in both, so the
+   * hundred. A bounty picked for two categories counts in both, so the
    * counts can sum to more than `total`.
    *
    * `uncategorized` is the proposals with no category recorded at all,
-   * which is what `list`'s `uncategorized` lists. A ticket whose
+   * which is what `list`'s `uncategorized` lists. A bounty whose
    * only category has since left the registry is not one of them: it still
    * has its reason, under an id nothing offers as a view.
    */
@@ -188,20 +188,20 @@ export interface BountyProposalStore {
     boardId: string,
     externalIds: readonly string[],
   ): Promise<Set<string>>;
-  /** The same tickets, each with the id of its live proposal. */
+  /** The same bounties, each with the id of its live proposal. */
   liveProposalIds(
     organizationId: string,
     boardId: string,
     externalIds: readonly string[],
   ): Promise<Map<string, string>>;
-  /** The ticket's live proposal, proposed or approved, if it has one. */
-  liveForTicket(
+  /** The bounty's live proposal, proposed or approved, if it has one. */
+  liveForBounty(
     organizationId: string,
-    ticketId: string,
+    bountyId: string,
   ): Promise<string | null>;
   /**
-   * The Jira issue behind each of these proposals' tickets, for reading its
-   * live title. Only proposals of the owner whose ticket came from this
+   * The Jira issue behind each of these proposals' bounties, for reading its
+   * live title. Only proposals of the owner whose bounty came from this
    * board are in the map; any other id is simply absent.
    */
   issuesForProposals(
@@ -241,7 +241,7 @@ export interface BountyProposalStore {
     step?: StepResult | null,
   ): Promise<ProposalMutationResult>;
   /**
-   * Deletes a proposed proposal, so the ticket has none and a later run may
+   * Deletes a proposed proposal, so the bounty has none and a later run may
    * propose it again. The returned proposal is the row as it was.
    */
   remove(
@@ -253,7 +253,7 @@ export interface BountyProposalStore {
    * A re-price run's result: the same proposal, sized again and back to
    * proposed. Fenced by the run's lease and the source revision, like
    * `createForLease`. When the source was approved and its approval comment
-   * is on the ticket, a `withdrawn` write-back is queued in the same
+   * is on the bounty, a `withdrawn` write-back is queued in the same
    * transaction and its id returned.
    *
    * A spec on the input becomes the proposal's next spec revision, and the
@@ -310,10 +310,10 @@ export interface StoredBountyProposal {
   readonly id: string;
   readonly organizationId: string;
   readonly runId: string;
-  readonly ticketId: string;
-  /** The ticket's key: its Jira key while it has one, `T-<number>` otherwise. */
+  readonly bountyId: string;
+  /** The bounty's key: its Jira key while it has one, `B-<number>` otherwise. */
   readonly issueKey: string;
-  /** The ticket's title as the platform holds it. */
+  /** The bounty's title as the platform holds it. */
   readonly title: string;
   readonly specHash: string;
   readonly specHashVersion: number;
@@ -346,43 +346,43 @@ export interface StoredBountyProposal {
   readonly updatedAt: string;
 }
 
-/** What a proposal shows of its ticket. */
-interface TicketName {
+/** What a proposal shows of its bounty. */
+interface BountyName {
   readonly issueKey: string;
   readonly title: string;
 }
 
-/** The ticket's columns a proposal read joins for its name. */
+/** The bounty's columns a proposal read joins for its name. */
 const nameColumns = {
-  ticketNumber: ticket.number,
-  ticketTitle: ticket.title,
+  bountyNumber: bounty.number,
+  bountyTitle: bounty.title,
   jiraKey: jiraIssue.key,
 };
 
 /**
- * What a plan entry calls the ticket: Jira's issue id for one imported from
- * a board, the ticket's own id for one written here. A plan entry is matched
+ * What a plan entry calls the bounty: Jira's issue id for one imported from
+ * a board, the bounty's own id for one written here. A plan entry is matched
  * to its proposal by this.
  */
-const PLAN_KEY = sql`coalesce(${jiraIssue.externalId}, ${ticket.id})`;
+const PLAN_KEY = sql`coalesce(${jiraIssue.externalId}, ${bounty.id})`;
 
 function nameOf(row: {
-  readonly ticketNumber: number;
-  readonly ticketTitle: string;
+  readonly bountyNumber: number;
+  readonly bountyTitle: string;
   readonly jiraKey: string | null;
-}): TicketName {
+}): BountyName {
   return {
-    issueKey: ticketKey({ number: row.ticketNumber, jiraKey: row.jiraKey }),
-    title: row.ticketTitle,
+    issueKey: bountyKey({ number: row.bountyNumber, jiraKey: row.jiraKey }),
+    title: row.bountyTitle,
   };
 }
 
-function toDto(row: BountyProposalRow, name: TicketName): StoredBountyProposal {
+function toDto(row: BountyProposalRow, name: BountyName): StoredBountyProposal {
   return {
     id: row.id,
     organizationId: row.organizationId,
     runId: row.runId,
-    ticketId: row.ticketId,
+    bountyId: row.bountyId,
     issueKey: name.issueKey,
     title: name.title,
     specHash: row.specHash,
@@ -422,12 +422,12 @@ async function first(
   db: QueryExecutor,
   organizationId: string,
   proposalId: string,
-): Promise<{ row: BountyProposalRow; name: TicketName } | undefined> {
+): Promise<{ row: BountyProposalRow; name: BountyName } | undefined> {
   const rows = (await db
     .select({ row: bountyProposal, ...nameColumns })
     .from(bountyProposal)
-    .innerJoin(ticket, eq(ticket.id, bountyProposal.ticketId))
-    .leftJoin(jiraIssue, eq(jiraIssue.ticketId, ticket.id))
+    .innerJoin(bounty, eq(bounty.id, bountyProposal.bountyId))
+    .leftJoin(jiraIssue, eq(jiraIssue.bountyId, bounty.id))
     .where(
       and(
         eq(bountyProposal.organizationId, organizationId),
@@ -441,35 +441,35 @@ async function first(
 }
 
 interface NameRow {
-  readonly ticketNumber: number;
-  readonly ticketTitle: string;
+  readonly bountyNumber: number;
+  readonly bountyTitle: string;
   readonly jiraKey: string | null;
 }
 
 /**
- * The ticket's name, if a run may write a proposal for it: the
- * organization's, and the run's own. A run that names its ticket writes
- * for that one only; a board's run, for a ticket imported through that
+ * The bounty's name, if a run may write a proposal for it: the
+ * organization's, and the run's own. A run that names its bounty writes
+ * for that one only; a board's run, for a bounty imported through that
  * board.
  */
-async function ticketForRun(
+async function bountyForRun(
   db: QueryExecutor,
   organizationId: string,
-  run: Pick<BountyRunRow, "ticketId" | "boardId">,
-  ticketId: string,
-): Promise<TicketName | null> {
+  run: Pick<BountyRunRow, "bountyId" | "boardId">,
+  bountyId: string,
+): Promise<BountyName | null> {
   const rows = (await db
     .select({ ...nameColumns, boardId: jiraIssue.boardId })
-    .from(ticket)
-    .leftJoin(jiraIssue, eq(jiraIssue.ticketId, ticket.id))
+    .from(bounty)
+    .leftJoin(jiraIssue, eq(jiraIssue.bountyId, bounty.id))
     .where(
-      and(eq(ticket.organizationId, organizationId), eq(ticket.id, ticketId)),
+      and(eq(bounty.organizationId, organizationId), eq(bounty.id, bountyId)),
     )) as (NameRow & { readonly boardId: string | null })[];
   const found = rows[0];
   if (found === undefined) return null;
   const allowed =
-    run.ticketId !== null
-      ? run.ticketId === ticketId
+    run.bountyId !== null
+      ? run.bountyId === bountyId
       : run.boardId !== null && found.boardId === run.boardId;
   return allowed ? nameOf(found) : null;
 }
@@ -500,7 +500,7 @@ function insertValues(
     specRevision,
     organizationId,
     runId: input.runId,
-    ticketId: input.ticketId,
+    bountyId: input.bountyId,
     specHash: input.specHash,
     specHashVersion: input.specHashVersion,
     rateCard: input.rateCard,
@@ -528,7 +528,7 @@ function insertValues(
  */
 const proposalCreatedMs = sql`date_trunc('milliseconds', ${bountyProposal.createdAt})`;
 
-/** Each ticket's live proposal, for the tickets that have one. */
+/** Each bounty's live proposal, for the bounties that have one. */
 async function liveProposalIds(
   db: QueryExecutor,
   organizationId: string,
@@ -542,7 +542,7 @@ async function liveProposalIds(
       proposalId: bountyProposal.id,
     })
     .from(bountyProposal)
-    .innerJoin(jiraIssue, eq(jiraIssue.ticketId, bountyProposal.ticketId))
+    .innerJoin(jiraIssue, eq(jiraIssue.bountyId, bountyProposal.bountyId))
     .where(
       and(
         eq(bountyProposal.organizationId, organizationId),
@@ -575,11 +575,11 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
           )) as BountyRunRow[];
         const run = runs[0];
         if (run === undefined) return null;
-        const name = await ticketForRun(
+        const name = await bountyForRun(
           tx,
           organizationId,
           run,
-          input.ticketId,
+          input.bountyId,
         );
         if (name === null) return null;
 
@@ -630,11 +630,11 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
         const run = claimed[0];
         if (run === undefined) return { status: "lost-lease" } as const;
 
-        const name = await ticketForRun(
+        const name = await bountyForRun(
           tx,
           organizationId,
           run,
-          input.ticketId,
+          input.bountyId,
         );
         if (name === null) return { status: "not-found" } as const;
 
@@ -652,7 +652,7 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
         const created = rows[0];
         if (created === undefined) return { status: "duplicate" } as const;
         // After the proposal, which it references, and only when there is
-        // one: a ticket that already has a live proposal gets no spec.
+        // one: a bounty that already has a live proposal gets no spec.
         if (input.spec !== undefined) {
           await insertSpecRevision(
             tx,
@@ -666,7 +666,7 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
               specRevision: 1,
               specHash: input.spec.specHash,
               snapshotId: repoSnapshotId,
-              ticket: input.profileIntent,
+              bounty: input.profileIntent,
             });
           }
         }
@@ -694,8 +694,8 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
         })
         .from(bountyProposal)
         .innerJoin(bountyRun, eq(bountyProposal.runId, bountyRun.id))
-        .innerJoin(ticket, eq(ticket.id, bountyProposal.ticketId))
-        .leftJoin(jiraIssue, eq(jiraIssue.ticketId, ticket.id))
+        .innerJoin(bounty, eq(bounty.id, bountyProposal.bountyId))
+        .leftJoin(jiraIssue, eq(jiraIssue.bountyId, bounty.id))
         .where(
           and(
             eq(bountyProposal.organizationId, organizationId),
@@ -705,14 +705,14 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
             options.repoId === undefined
               ? undefined
               : sql`coalesce(
-                  ${ticket.repoId},
+                  ${bounty.repoId},
                   (select ${jiraBoard.sourceRepoId} from ${jiraBoard} where ${jiraBoard.id} = ${jiraIssue.boardId})
                 ) = ${options.repoId}`,
             options.status === undefined
               ? undefined
               : eq(bountyProposal.status, options.status),
-            // Why a ticket was picked lives on its run's plan, so the filter
-            // looks there: the plan entry for this ticket, holding a
+            // Why a bounty was picked lives on its run's plan, so the filter
+            // looks there: the plan entry for this bounty, holding a
             // category with this id. `@>` is jsonb containment, and the id
             // travels as a bound parameter inside the JSON it is matched
             // against, never as SQL.
@@ -726,7 +726,7 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
                       @> ${JSON.stringify([{ id: options.category }])}::jsonb
                 )`,
             // The other side of the same question: no plan entry for this
-            // ticket holding any category. "Holding one" is an entry of
+            // bounty holding any category. "Holding one" is an entry of
             // `categories` with a string id, the same test `categoryCounts`
             // applies, so the tile's number and its list agree. The path is
             // lax, so a plan with no `categories`, or one that is not a
@@ -755,7 +755,7 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
         planned: BountyRunRow["planned"];
       } & NameRow)[];
       return rows.map((found) => {
-        const key = found.externalId ?? found.row.ticketId;
+        const key = found.externalId ?? found.row.bountyId;
         const entry = found.planned.find(
           (issue) => issue.externalIssueId === key,
         );
@@ -768,7 +768,7 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
     },
 
     async categoryCounts(organizationId, options = {}) {
-      // One row per proposal, carrying only that ticket's categories: the
+      // One row per proposal, carrying only that bounty's categories: the
       // plan entry is picked out in SQL, so a run's whole plan is not sent
       // once for every proposal it produced.
       const rows = await db
@@ -782,8 +782,8 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
         })
         .from(bountyProposal)
         .innerJoin(bountyRun, eq(bountyProposal.runId, bountyRun.id))
-        .innerJoin(ticket, eq(ticket.id, bountyProposal.ticketId))
-        .leftJoin(jiraIssue, eq(jiraIssue.ticketId, ticket.id))
+        .innerJoin(bounty, eq(bounty.id, bountyProposal.bountyId))
+        .leftJoin(jiraIssue, eq(jiraIssue.bountyId, bounty.id))
         .where(
           and(
             eq(bountyProposal.organizationId, organizationId),
@@ -797,7 +797,7 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
       let uncategorized = 0;
       for (const { categories } of rows) {
         // Once per proposal, even if a plan somehow named a category twice.
-        // A plan from before categories has no list, and a ticket someone
+        // A plan from before categories has no list, and a bounty someone
         // picked by hand has an empty one: both are in no category.
         const ids = new Set(
           (Array.isArray(categories) ? categories : [])
@@ -821,14 +821,14 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
     liveProposalIds: (organizationId, boardId, externalIds) =>
       liveProposalIds(db, organizationId, boardId, externalIds),
 
-    async liveForTicket(organizationId, ticketId) {
+    async liveForBounty(organizationId, bountyId) {
       const rows = await db
         .select({ id: bountyProposal.id })
         .from(bountyProposal)
         .where(
           and(
             eq(bountyProposal.organizationId, organizationId),
-            eq(bountyProposal.ticketId, ticketId),
+            eq(bountyProposal.bountyId, bountyId),
             or(
               eq(bountyProposal.status, "proposed"),
               eq(bountyProposal.status, "approved"),
@@ -847,7 +847,7 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
           externalId: jiraIssue.externalId,
         })
         .from(bountyProposal)
-        .innerJoin(jiraIssue, eq(jiraIssue.ticketId, bountyProposal.ticketId))
+        .innerJoin(jiraIssue, eq(jiraIssue.bountyId, bountyProposal.bountyId))
         .where(
           and(
             eq(bountyProposal.organizationId, organizationId),
@@ -1048,7 +1048,7 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
             and(
               eq(bountyProposal.organizationId, organizationId),
               eq(bountyProposal.id, sourceProposalId),
-              eq(bountyProposal.ticketId, input.ticketId),
+              eq(bountyProposal.bountyId, input.bountyId),
               or(
                 eq(bountyProposal.status, "proposed"),
                 eq(bountyProposal.status, "approved"),
@@ -1166,7 +1166,7 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
               specRevision,
               specHash: input.spec.specHash,
               snapshotId: repoSnapshotId,
-              ticket: input.profileIntent,
+              bounty: input.profileIntent,
             });
           }
         }
@@ -1178,7 +1178,7 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
           // Whether the site posts back is the connection's grant, read in
           // the same transaction as the re-price so a site disconnected
           // between the two cannot leave a follow-up nobody can deliver.
-          // The site is the ticket's: an approval comment went to its issue.
+          // The site is the bounty's: an approval comment went to its issue.
           const site = await tx
             .select({
               scopes: jiraConnection.scopes,
@@ -1193,7 +1193,7 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
             .where(
               and(
                 eq(jiraIssue.organizationId, organizationId),
-                eq(jiraIssue.ticketId, input.ticketId),
+                eq(jiraIssue.bountyId, input.bountyId),
               ),
             );
           const granted =

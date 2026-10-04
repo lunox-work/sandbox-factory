@@ -54,7 +54,7 @@ import { cn } from "@/lib/utils";
 import { JiraIcon } from "./ProviderIcon";
 import { isPlainLeftClick, pathForScreen } from "./routes";
 import { BoardRepository } from "./BoardRepository";
-import { BoardBounties } from "./Bounties";
+import { ProposalList } from "./Proposals";
 
 import {
   useJira,
@@ -749,7 +749,7 @@ export function JiraBoard({
         />
       )}
 
-      <BoardBounties
+      <ProposalList
         organizationId={organizationId}
         boardId={boardId}
         role={role ?? "member"}

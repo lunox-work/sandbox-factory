@@ -12,7 +12,7 @@ const rates = {
 const proposalDefaults = {
   organizationId: "org_1",
   runId: "brn_1",
-  ticketId: "tkt_1",
+  bountyId: "bty_1",
   title: "",
   specHash: "a".repeat(64),
   specHashVersion: 1,
@@ -45,7 +45,7 @@ const runDefaults = {
   status: "queued",
   organizationId: "org_1",
   boardId: "jrb_1",
-  ticketId: null,
+  bountyId: null,
   kind: "backlog",
   sourceProposalId: null,
   sourceRevision: null,

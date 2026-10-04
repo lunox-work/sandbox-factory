@@ -18,7 +18,7 @@ import { Organizations } from "./Organizations";
 import { JiraBoard } from "./Jira";
 import { SideNav, type Screen } from "./SideNav";
 import { SignIn } from "./SignIn";
-import { Tickets } from "./Tickets";
+import { Bounties } from "./Bounties";
 import {
   boardForPath,
   canonicalUrl,
@@ -150,8 +150,8 @@ function Signed({
               ? "New workspace"
               : screen === "org-jira-board"
                 ? (boardName ?? "Board")
-                : screen === "org-tickets"
-                  ? "Tickets"
+                : screen === "org-bounties"
+                  ? "Bounties"
                   : (organizations.active?.name ?? "Workspace");
     document.title = `${page} · Lunox`;
   }, [boardName, organizations.active?.name, screen]);
@@ -329,8 +329,8 @@ function Signed({
           // passed because `select` has not re-rendered yet — see `navigate`.
           if (screen === "org-settings") {
             navigate("org-settings", organization.slug);
-          } else if (screen === "org-tickets") {
-            navigate("org-tickets", organization.slug);
+          } else if (screen === "org-bounties") {
+            navigate("org-bounties", organization.slug);
           } else if (screen === "org-jira-board") {
             navigate(
               "org-settings",
@@ -440,7 +440,7 @@ function Signed({
               role={organizations.active.role}
             />
           )
-        ) : screen === "org-tickets" ? (
+        ) : screen === "org-bounties" ? (
           organizations.active === null ? (
             <NoOrganization
               loading={organizations.loading}
@@ -448,8 +448,8 @@ function Signed({
               onOpenOrganizations={() => navigate("organizations")}
             />
           ) : (
-            <Tickets
-              // Keyed by the organization: another workspace's tickets are
+            <Bounties
+              // Keyed by the organization: another workspace's bounties are
               // a different list, and the previous one must not linger.
               key={organizations.active.id}
               organizationId={organizations.active.id}

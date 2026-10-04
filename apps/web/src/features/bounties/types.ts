@@ -6,8 +6,8 @@ import type {
 } from "@sandbox-factory/shared";
 export type EnrichedProposal = BountyProposalDto & {
   /**
-   * Why the run picked the ticket: each category it fit, with the reason.
-   * Stored with the run like the title. Empty for a ticket someone added by
+   * Why the run picked the bounty: each category it fit, with the reason.
+   * Stored with the run like the title. Empty for a bounty someone added by
    * hand, and absent on a row read by id rather than from the list.
    */
   categories?: BountyCategoryMatch[];
@@ -47,8 +47,8 @@ export interface ProposalDetail {
     code?: string;
   };
   /**
-   * What the ticket says now: Jira's text for a ticket following an issue,
-   * and the ticket as stored otherwise. Null when it could not be read.
+   * What the bounty says now: Jira's text for a bounty following an issue,
+   * and the bounty as stored otherwise. Null when it could not be read.
    */
   liveSpec?: ProposalLiveSpecDto | null;
   writebackOperations: BountyWritebackDto[];

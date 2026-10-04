@@ -1,9 +1,9 @@
 /**
- * The icon for each category a run picks tickets by.
+ * The icon for each category a run picks bounties by.
  *
  * Drawn here rather than picked from Lucide: a stock icon gives "an
  * hourglass" or "a pair of scissors", where these say the category — the
- * ticket fading at one corner, the card carrying a blocker mark. They are
+ * bounty fading at one corner, the card carrying a blocker mark. They are
  * on Lucide's grid all the same (24×24, a 2px stroke, round caps and
  * joins, `currentColor`), so they sit beside the Lucide icons the page
  * already uses and follow the text colour into dark mode.
@@ -23,7 +23,7 @@ import type { ReactElement } from "react";
 
 /** Keyed by category id. What is here is the inside of the `<svg>`. */
 const DRAWINGS: Record<string, ReactElement> = {
-  // A ticket fading away from its top right corner: the outline breaks
+  // A bounty fading away from its top right corner: the outline breaks
   // into a dash and then a dot on each side of the corner, which is gone.
   "left-behind": (
     <>
@@ -58,7 +58,7 @@ const DRAWINGS: Record<string, ReactElement> = {
       <path d="M9 11.5l3-3 3 3" />
     </>
   ),
-  // A ticket card carrying the blocker mark, a circle with a dash in it.
+  // A bounty card carrying the blocker mark, a circle with a dash in it.
   "holding-others-up": (
     <>
       <rect x="3" y="3" width="18" height="18" rx="2" />

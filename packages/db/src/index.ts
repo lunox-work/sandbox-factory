@@ -37,17 +37,18 @@ export type {
   SyncBoardInput,
   UpdateBoardInput,
 } from "./jira-boards.js";
-export { createTicketStore, followsJira } from "./tickets.js";
+export { createBountyStore, followsJira } from "./bounties.js";
 export type {
-  ListedTicket,
-  NewTicket,
-  StoredTicket,
-  TicketChange,
-  TicketJiraLink,
-  TicketMutationResult,
-  TicketProposalSummary,
-  TicketStore,
-} from "./tickets.js";
+  ListedBounty,
+  NewBounty,
+  StoredBounty,
+  BountyChange,
+  BountyJiraLink,
+  BountyMutationResult,
+  BountyProposalSummary,
+  BountySandboxSummary,
+  BountyStore,
+} from "./bounties.js";
 export { createJiraIssueStore } from "./jira-issues.js";
 export type {
   JiraIssueInput,
@@ -195,6 +196,7 @@ export type {
   BuildOutput,
   CreateSandboxResult,
   CreateVersionResult,
+  LinkSourceResult,
   NewSandboxVersion,
   ReplayContext,
   SandboxStore,
@@ -205,3 +207,11 @@ export type {
   StoredVersionWithSource,
   UpdateVersionResult,
 } from "./sandboxes.js";
+export { createSubmissionStore } from "./submissions.js";
+export type {
+  CreateSubmissionResult,
+  NewSubmission,
+  StoredSubmission,
+  SubmissionOutcome,
+  SubmissionStore,
+} from "./submissions.js";

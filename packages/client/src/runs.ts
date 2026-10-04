@@ -3,7 +3,7 @@ import {
   bountyRunListResponseSchema,
 } from "@sandbox-factory/shared";
 import { ApiClient } from "./transport.js";
-import { ownerPath } from "./tickets.js";
+import { ownerPath } from "./bounties.js";
 export class BountyRunClient extends ApiClient {
   async run(owner: string, id: string, signal?: AbortSignal) {
     return bountyRunResponseSchema.parse(

@@ -107,8 +107,8 @@ vi.stubGlobal(
     if (url.includes("/members")) {
       return Promise.resolve(Response.json({ members: [] }));
     }
-    if (url.includes("/tickets?")) {
-      return Promise.resolve(Response.json({ tickets: [], nextCursor: null }));
+    if (url.includes("/bounties?")) {
+      return Promise.resolve(Response.json({ bounties: [], nextCursor: null }));
     }
     if (url.includes("/api/v1/me")) {
       return Promise.resolve(
@@ -503,29 +503,29 @@ test("/o/:slug/settings opens that organization directly", async () => {
   });
 });
 
-test("the rail leads to the workspace's tickets, and marks them current", async () => {
+test("the rail leads to the workspace's bounties, and marks them current", async () => {
   render(<App />);
   const rail = screen.getByRole("navigation", { name: "Main" });
-  const tickets = await within(rail).findByRole("link", { name: "Tickets" });
-  expect(tickets.getAttribute("href")).toBe("/o/acme/tickets");
+  const bounties = await within(rail).findByRole("link", { name: "Bounties" });
+  expect(bounties.getAttribute("href")).toBe("/o/acme/bounties");
 
-  fireEvent.click(tickets);
+  fireEvent.click(bounties);
   expect(
-    await screen.findByRole("heading", { name: "Tickets", level: 1 }),
+    await screen.findByRole("heading", { name: "Bounties", level: 1 }),
   ).toBeTruthy();
-  expect(window.location.pathname).toBe("/o/acme/tickets");
-  expect(tickets.ariaCurrent).toBe("page");
+  expect(window.location.pathname).toBe("/o/acme/bounties");
+  expect(bounties.ariaCurrent).toBe("page");
   expect(railHome().ariaCurrent).toBeNull();
-  await waitFor(() => expect(document.title).toBe("Tickets · Lunox"));
+  await waitFor(() => expect(document.title).toBe("Bounties · Lunox"));
 });
 
-test("/o/:slug/tickets opens that workspace's tickets directly", async () => {
-  window.history.replaceState(null, "", "/o/acme/tickets");
+test("/o/:slug/bounties opens that workspace's bounties directly", async () => {
+  window.history.replaceState(null, "", "/o/acme/bounties");
   render(<App />);
   expect(
-    await screen.findByRole("heading", { name: "Tickets", level: 1 }),
+    await screen.findByRole("heading", { name: "Bounties", level: 1 }),
   ).toBeTruthy();
-  expect(await screen.findByText(/No tickets yet/)).toBeTruthy();
+  expect(await screen.findByText(/No bounties yet/)).toBeTruthy();
 });
 
 test("a trailing slash names the same organization screen", async () => {
@@ -1263,7 +1263,7 @@ test("no mark when nothing is waiting", async () => {
   expect(screen.queryByRole("button", { name: /invitation/ })).toBeNull();
 });
 
-for (const destination of ["settings", "tickets"]) {
+for (const destination of ["settings", "bounties"]) {
   test(`history changes workspace on the same ${destination} screen`, async () => {
     window.history.replaceState(null, "", `/o/acme/${destination}`);
     render(<App />);

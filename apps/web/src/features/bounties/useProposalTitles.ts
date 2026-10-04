@@ -16,7 +16,7 @@ export function useProposalTitles(
   /** Bumped by `refresh`, so the open proposal is read again with the list. */
 
   useEffect(() => {
-    // Only a board's rows are read live: a ticket's stored title is its own.
+    // Only a board's rows are read live: a bounty's stored title is its own.
     if (boardPath === null) return;
     const untitled = proposals
       .map(({ id }) => id)

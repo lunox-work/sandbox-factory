@@ -10,15 +10,15 @@ import { Badge } from "@/components/ui/badge";
 const SIZING_CONCURRENCY = 3;
 
 /**
- * A run in flight, ticket by ticket.
+ * A run in flight, bounty by bounty.
  *
  * Connecting a site sizes its boards in the background, so a board is often
- * opened mid-run. This is what the run is doing: the tickets it picked, the
+ * opened mid-run. This is what the run is doing: the bounties it picked, the
  * ones it has finished — with the size and amount as they land — the ones
  * being sized now, and the ones still waiting. The page polls every second
  * while a run is active, so rows turn over as the model answers.
  *
- * Which tickets are "sizing now" is inferred, not reported: the executor
+ * Which bounties are "sizing now" is inferred, not reported: the executor
  * takes the plan in order, a few at a time, so the first few without a
  * result are the ones in the model's hands.
  */
@@ -48,7 +48,7 @@ export function SizingStream({
           <span>Picking tickets from the board…</span>
         ) : (
           <span>
-            Sizing {total} ticket{total === 1 ? "" : "s"}
+            Sizing {total} {total === 1 ? "bounty" : "bounties"}
             <span className="text-muted-foreground"> · {done.size} done</span>
           </span>
         )}
@@ -68,13 +68,13 @@ export function SizingStream({
             />
           </div>
           {/*
-            Scrolls within itself: a run sizes every ticket that fits a
+            Scrolls within itself: a run sizes every bounty that fits a
             category, and a plan of hundreds must not push the proposals
             it is producing off the page.
           */}
           <ul className="max-h-96 divide-y overflow-y-auto text-sm">
-            {run.planned.map((ticket) => {
-              const outcome = done.get(ticket.externalIssueId);
+            {run.planned.map((bounty) => {
+              const outcome = done.get(bounty.externalIssueId);
               const proposal =
                 outcome?.proposalId === undefined
                   ? undefined
@@ -83,7 +83,7 @@ export function SizingStream({
                 outcome === undefined && inFlight++ < SIZING_CONCURRENCY;
               return (
                 <li
-                  key={ticket.externalIssueId}
+                  key={bounty.externalIssueId}
                   className="flex items-center gap-3 px-3 py-2"
                   data-state={
                     outcome !== undefined
@@ -107,15 +107,15 @@ export function SizingStream({
                     )}
                   </span>
                   <span className="w-20 shrink-0 font-mono text-xs">
-                    {ticket.issueKey}
+                    {bounty.issueKey}
                   </span>
                   <span className="flex min-w-0 flex-1 flex-col">
                     <span
                       className={`truncate ${outcome === undefined && !sizing ? "text-muted-foreground" : ""}`}
                     >
-                      {ticket.summary}
+                      {bounty.summary}
                     </span>
-                    <CategoryLine categories={ticket.categories} />
+                    <CategoryLine categories={bounty.categories} />
                   </span>
                   {proposal !== undefined ? (
                     <button

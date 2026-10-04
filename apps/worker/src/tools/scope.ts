@@ -38,7 +38,7 @@ import { z } from "zod";
 import { AnalysisError } from "../errors.js";
 import type { AgentSettings, AgentTool } from "../agent/loop.js";
 import { runAgent } from "../agent/loop.js";
-import { SCOPE_SYSTEM_PROMPT, ticketSection } from "../agent/prompts.js";
+import { SCOPE_SYSTEM_PROMPT, bountySection } from "../agent/prompts.js";
 import {
   graphNeighboursTool,
   indexRepository,
@@ -334,7 +334,7 @@ export function createScopeAdapter(settings: AgentSettings): ToolAdapter {
         model: settings.model,
         system: SCOPE_SYSTEM_PROMPT,
         prompt: [
-          ticketSection(task.issueKey, task.draft),
+          bountySection(task.issueKey, task.draft),
           `The repository, at commit ${input.run.commitSha}:\n${repositoryOverview(index)}`,
           `The structure analysis has ${graph.graph.nodes.length} nodes and ${graph.graph.links.length} relations.`,
         ].join("\n\n"),

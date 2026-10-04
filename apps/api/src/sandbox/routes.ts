@@ -23,6 +23,7 @@ import {
   analysisRunResponseSchema,
   createSandboxSchema,
   createSandboxVersionSchema,
+  linkSandboxSourceSchema,
   replayResponseSchema,
   sandboxListSchema,
   sandboxResponseSchema,
@@ -154,6 +155,53 @@ function invalidFixtures(
       );
 }
 
+/** A store refusal to make a sandbox or link its repository. */
+function sandboxRefused(
+  c: Context,
+  reason:
+    | "not-found"
+    | "bounty_not_found"
+    | "bounty_has_sandbox"
+    | "source_linked"
+    | "repo_not_found"
+    | "repo_role",
+): Response {
+  if (reason === "repo_role")
+    return c.json(
+      {
+        error: "Only a source repository can back a sandbox.",
+        code: "repo_role",
+      },
+      409,
+    );
+  if (reason === "bounty_has_sandbox")
+    return c.json(
+      { error: "This bounty already has a sandbox.", code: reason },
+      409,
+    );
+  if (reason === "source_linked")
+    return c.json(
+      {
+        error: "This sandbox is already cut from another repository.",
+        code: reason,
+      },
+      409,
+    );
+  // Told apart from a missing bounty: a bounty can name a repository that
+  // has since been disconnected, and is otherwise refused with no hint.
+  if (reason === "repo_not_found")
+    return c.json(
+      {
+        error: "The repository is not connected to this workspace any more.",
+        code: reason,
+      },
+      404,
+    );
+  return reason === "bounty_not_found"
+    ? c.json({ error: "Not found.", code: reason }, 404)
+    : c.json({ error: "Not found." }, 404);
+}
+
 /** A store refusal of a draft change, as the API reports it. */
 function refused(
   c: Context,
@@ -204,19 +252,32 @@ export function mountSandboxRoutes(
       c.req.param("orgId"),
       body.data,
     );
-    if (!result.ok)
-      return result.reason === "repo_role"
-        ? c.json(
-            {
-              error: "Only a source repository can back a sandbox.",
-              code: "repo_role",
-            },
-            409,
-          )
-        : c.json({ error: "Not found." }, 404);
+    if (!result.ok) return sandboxRefused(c, result.reason);
     return c.json(
       sandboxResponseSchema.parse({ sandbox: sandboxDto(result.sandbox) }),
       201,
+    );
+  });
+  // A sandbox made without a repository gets one here, once.
+  app.put(`${base}/:id/source`, async (c) => {
+    if (!admin(c.get("member").role))
+      return c.json(
+        { error: "Only owners and admins can link a sandbox's repository." },
+        403,
+      );
+    const body = linkSandboxSourceSchema.safeParse(
+      await c.req.json().catch(() => null),
+    );
+    if (!body.success)
+      return c.json({ error: "Invalid sandbox request." }, 400);
+    const result = await options.sandboxes.linkSource(
+      c.req.param("orgId"),
+      c.req.param("id"),
+      body.data.sourceRepoId,
+    );
+    if (!result.ok) return sandboxRefused(c, result.reason);
+    return c.json(
+      sandboxResponseSchema.parse({ sandbox: sandboxDto(result.sandbox) }),
     );
   });
   app.get(base, async (c) =>

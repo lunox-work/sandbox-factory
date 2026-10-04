@@ -1,13 +1,18 @@
 /**
- * Sandboxes: a task cut from a source repository, its immutable versions,
- * and the private provenance behind each version.
+ * Sandboxes: a bounty's task, its immutable versions, the private
+ * provenance behind each version, and the submissions judged by them.
  *
- * `sandbox` and `sandbox_version` hold public-safe columns only, so a
- * publication receipt can expose them without a filter. `sandbox_source`,
- * `sandbox_ticket` and `sandbox_version_source` are private and are
- * never joined by a public store: the source repository, the alias table,
- * the approved task with its spec and price, hidden tests and every hash
- * that locates private evidence live there.
+ * A bounty has one sandbox, and the sandbox three faces. The private one is
+ * `sandbox_source` and `sandbox_version_source`: the source repository, the
+ * alias table, the approved task with its spec and price, hidden tests and
+ * every hash that locates private evidence. The public one is `sandbox` and
+ * `sandbox_version`, which hold public-safe columns only, so a publication
+ * receipt can expose them without a filter. The protected one is
+ * `submission`: a contributor's patch, run against the version it was made
+ * for. No public store joins a private table.
+ *
+ * The repository is enrichment, not a requirement: a sandbox exists without
+ * `sandbox_source`, and only slicing a version needs one.
  *
  * Owner scoping: `sandbox.organization_id` is the owner, and the version
  * tables reach it through `sandbox`. A version's snapshot and slice run
@@ -16,12 +21,13 @@
  * change once a version is frozen.
  */
 
+import { sql } from "drizzle-orm";
 import {
+  check,
   index,
   integer,
   jsonb,
   pgTable,
-  primaryKey,
   text,
   timestamp,
   unique,
@@ -34,14 +40,16 @@ import type {
   DependencyChoice,
   SandboxStatus,
   ScopeRecord,
+  SubmissionResult,
+  SubmissionStatus,
   VersionFixtures,
 } from "sandbox-factory";
 
 import { analysisRun, repoSnapshot } from "./analysis.js";
 import { user } from "./auth.js";
+import { bounty } from "./bounty.js";
 import { githubRepo } from "./github.js";
 import { organization } from "./organizations.js";
-import { ticket } from "./ticket.js";
 
 const ts = (name: string) => timestamp(name, { withTimezone: true });
 const owner = () =>
@@ -54,6 +62,15 @@ export const sandbox = pgTable(
   {
     id: text("id").primaryKey(),
     organizationId: owner(),
+    /**
+     * The bounty this is the sandbox of, one each. Private, like the rest
+     * of the bounty: never in a public listing. Removing a bounty that has
+     * a sandbox is refused, so a published task keeps its provenance.
+     */
+    bountyId: text("bounty_id")
+      .notNull()
+      .unique()
+      .references(() => bounty.id),
     /** Opaque, so the source module cannot be inferred from the listing. */
     slug: text("slug").notNull().unique(),
     status: text("status").$type<SandboxStatus>().notNull().default("draft"),
@@ -67,6 +84,7 @@ export const sandbox = pgTable(
   (t) => [index("sandbox_organization_id_idx").on(t.organizationId)],
 );
 
+/** The repository a sandbox is cut from, when it has one. */
 export const sandboxSource = pgTable("sandbox_source", {
   sandboxId: text("sandbox_id")
     .primaryKey()
@@ -77,24 +95,6 @@ export const sandboxSource = pgTable("sandbox_source", {
     .references(() => githubRepo.id),
   updatedAt: ts("updated_at").notNull().defaultNow(),
 });
-
-/** The tickets a sandbox is cut for. Private, like its source. */
-export const sandboxTicket = pgTable(
-  "sandbox_ticket",
-  {
-    sandboxId: text("sandbox_id")
-      .notNull()
-      .references(() => sandbox.id, { onDelete: "cascade" }),
-    ticketId: text("ticket_id")
-      .notNull()
-      .references(() => ticket.id, { onDelete: "cascade" }),
-  },
-  (t) => [
-    primaryKey({ columns: [t.sandboxId, t.ticketId] }),
-    // Deleting a ticket takes its links; without it that is a scan.
-    index("sandbox_ticket_ticket_id_idx").on(t.ticketId),
-  ],
-);
 
 export const sandboxVersion = pgTable(
   "sandbox_version",
@@ -173,8 +173,66 @@ export const sandboxVersionSource = pgTable("sandbox_version_source", {
   updatedAt: ts("updated_at").notNull().defaultNow(),
 });
 
+/**
+ * One contributor's attempt at a sandbox version: the protected sandbox,
+ * where their patch is applied to the version it was made against and run
+ * with the hidden tests. See `sandbox/submission.ts` in core.
+ *
+ * Pinned to its version, not the sandbox's current one, so a later version
+ * never changes what an earlier verdict was measured against. The patch
+ * itself is in the private bucket; this row names it by hash. A result is
+ * counts only, never the names of hidden tests.
+ */
+export const submission = pgTable(
+  "submission",
+  {
+    id: text("id").primaryKey(),
+    organizationId: owner(),
+    sandboxVersionId: text("sandbox_version_id")
+      .notNull()
+      .references(() => sandboxVersion.id, { onDelete: "cascade" }),
+    /** The contributor. Kept as null when their account goes. */
+    submittedBy: text("submitted_by").references(() => user.id, {
+      onDelete: "set null",
+    }),
+    /** `patches/<sandboxVersionId>/<patchSha256>.diff` in the private bucket. */
+    patchKey: text("patch_key").notNull(),
+    patchSha256: text("patch_sha256").notNull(),
+    status: text("status")
+      .$type<SubmissionStatus>()
+      .notNull()
+      .default("queued"),
+    /** Present once the run passed or failed, and only then. */
+    result: jsonb("result").$type<SubmissionResult>(),
+    /** The run that applied and tested the patch, while it is kept. */
+    runId: text("run_id").references(() => analysisRun.id, {
+      onDelete: "set null",
+    }),
+    createdAt: ts("created_at").notNull().defaultNow(),
+    updatedAt: ts("updated_at").notNull().defaultNow(),
+  },
+  (t) => [
+    // The same patch against the same version is the same submission.
+    unique("submission_version_patch_unique").on(
+      t.sandboxVersionId,
+      t.patchSha256,
+    ),
+    index("submission_organization_id_idx").on(t.organizationId),
+    check(
+      "submission_status_check",
+      sql`${t.status} in ('queued', 'running', 'passed', 'failed', 'errored')`,
+    ),
+    check(
+      "submission_result_check",
+      sql`(${t.status} in ('passed', 'failed')) = (${t.result} IS NOT NULL)`,
+    ),
+    check("submission_patch_hash_check", sql`length(${t.patchSha256}) = 64`),
+  ],
+);
+
 export type SandboxRow = typeof sandbox.$inferSelect;
 export type SandboxSourceRow = typeof sandboxSource.$inferSelect;
-export type SandboxTicketRow = typeof sandboxTicket.$inferSelect;
 export type SandboxVersionRow = typeof sandboxVersion.$inferSelect;
 export type SandboxVersionSourceRow = typeof sandboxVersionSource.$inferSelect;
+export type SubmissionRow = typeof submission.$inferSelect;
+export type NewSubmissionRow = typeof submission.$inferInsert;

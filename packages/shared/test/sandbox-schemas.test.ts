@@ -142,7 +142,7 @@ test("a task descriptor accepts only the fixed commands", () => {
 test("private provenance, the approved task and replay answers keep their exact shapes", () => {
   const stamp = "2026-10-03T00:00:00.000Z";
   const approvedTask = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     title: "Fix it",
     summary: "Make it work.",
     spec: null,
@@ -157,14 +157,22 @@ test("private provenance, the approved task and replay answers keep their exact 
     },
     selectedBy: "user_1",
     selectedAt: stamp,
-    ticketIds: ["tkt_1"],
+    bountyId: "bty_1",
   };
   assert.equal(
     approvedTaskSnapshotSchema.safeParse(approvedTask).success,
     true,
   );
-  // A version frozen before tickets still reads, with its Jira pointers.
-  const { ticketIds: _ticketIds, ...selection } = approvedTask;
+  // Versions frozen under the older links still read, as they were stored.
+  const { bountyId: _bountyId, ...selection } = approvedTask;
+  assert.equal(
+    approvedTaskSnapshotSchema.safeParse({
+      ...selection,
+      schemaVersion: 2,
+      ticketIds: ["tkt_1", "tkt_2"],
+    }).success,
+    true,
+  );
   assert.equal(
     approvedTaskSnapshotSchema.safeParse({
       ...selection,
@@ -173,17 +181,13 @@ test("private provenance, the approved task and replay answers keep their exact 
     }).success,
     true,
   );
-  // Each version has its own list, and no other.
-  assert.equal(
-    approvedTaskSnapshotSchema.safeParse({ ...approvedTask, schemaVersion: 1 })
-      .success,
-    false,
-  );
-  assert.equal(
-    approvedTaskSnapshotSchema.safeParse({ ...approvedTask, schemaVersion: 3 })
-      .success,
-    false,
-  );
+  // Each version has its own link, and no other.
+  for (const schemaVersion of [1, 2, 4])
+    assert.equal(
+      approvedTaskSnapshotSchema.safeParse({ ...approvedTask, schemaVersion })
+        .success,
+      false,
+    );
   const source = {
     sandboxVersionId: "sbv_1",
     sourceSnapshotId: "rsn_1",

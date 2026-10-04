@@ -88,7 +88,7 @@ export function AgentProposalPicker({
       <div className="space-y-2">
         <p className="text-muted-foreground text-sm">
           No proposal with a spec is on a board linked to this repository. Link
-          a board to it and size a ticket first.
+          a board to it and size a bounty first.
         </p>
         <Button variant="ghost" size="sm" onClick={onCancel}>
           Cancel
@@ -98,9 +98,9 @@ export function AgentProposalPicker({
   return (
     <div className="flex flex-wrap items-end gap-3">
       <label className="text-xs">
-        Ticket
+        Bounty
         <select
-          aria-label="Ticket"
+          aria-label="Bounty"
           className="bg-background mt-1 block max-w-full rounded border p-2 text-sm"
           value={chosen}
           onChange={(event) => setChosen(event.target.value)}

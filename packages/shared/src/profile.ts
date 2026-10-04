@@ -1,6 +1,6 @@
 /**
  * A proposal's complexity profile on the wire: the evidence its price will
- * point back to, measured from the code graph of the ticket's repository.
+ * point back to, measured from the code graph of the bounty's repository.
  * `GET /api/v1/orgs/:orgId/proposals/:id/profile`.
  */
 
@@ -17,7 +17,7 @@ const count = z.number().int().nonnegative();
 
 export const complexityProfileSchema = z.object({
   version: z.literal(COMPLEXITY_PROFILE_VERSION),
-  ticket: z.object({
+  bounty: z.object({
     issueType: z.string(),
     priority: z.string().nullable(),
   }),

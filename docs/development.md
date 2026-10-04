@@ -122,6 +122,8 @@ suite fails when Postgres is unavailable; CI runs it sequentially after `npm tes
 
 The concurrency suite also verifies atomic proposal/spec/profile-intent commit,
 rollback on an intent insertion failure, idempotency and discovery by a later
-sweep. The regular DB tests retain service-free fakes. For local S3 verification,
+sweep. The same command runs `bounty-migration.integration.ts`, which migrates
+a scratch database to just before migration 0045, seeds it, and checks the
+hand-written backfill against what 0045 leaves. The regular DB tests retain service-free fakes. For local S3 verification,
 use the CI SeaweedFS fixture and set `TEST_S3_ENDPOINT` to its disposable localhost
 port; never derive integration configuration from production environment files.

@@ -7,7 +7,7 @@ import {
   githubRepoListSchema,
 } from "@sandbox-factory/shared";
 import { ApiClient } from "./transport.js";
-import { ownerPath } from "./tickets.js";
+import { ownerPath } from "./bounties.js";
 export class GithubManagementClient extends ApiClient {
   async available(owner: string, signal?: AbortSignal) {
     return githubAvailableInstallationsSchema.parse(

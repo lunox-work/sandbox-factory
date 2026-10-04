@@ -9,7 +9,7 @@ import {
   proposalSpecRevisionsResponseSchema,
   rateCardResponseSchema,
 } from "@sandbox-factory/shared";
-import { ownerPath } from "./tickets.js";
+import { ownerPath } from "./bounties.js";
 import { ApiClient } from "./transport.js";
 export class PricingClient extends ApiClient {
   async titles(

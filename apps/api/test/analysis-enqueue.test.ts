@@ -55,5 +55,5 @@ test("queue coordination cleans obsolete logs and records a prerequisite wake-up
 // Type-only boundaries also emit modules; load them so the coverage inventory
 // checks the whole API source tree without excluding newly extracted seams.
 import "../src/http-context.js";
-import "../src/bounty/options.js";
+import "../src/pricing/options.js";
 import "../src/sandbox/options.js";

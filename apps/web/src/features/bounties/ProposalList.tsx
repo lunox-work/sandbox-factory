@@ -13,7 +13,7 @@ import { capitalize, unweighed } from "./presentation";
 import { ProposalPeek } from "./ProposalPeek";
 import { useProposalResources } from "./queries";
 import { SizingStream } from "./SizingProgress";
-import { TicketSearch } from "./TicketSearch";
+import { IssueSearch } from "./IssueSearch";
 import { type EnrichedProposal } from "./types";
 import { useProposalTitles } from "./useProposalTitles";
 export { RateCardEditor } from "../../features/pricing/RateCardEditor";
@@ -32,16 +32,16 @@ function canManage(role: string): boolean {
 
 /**
  * Proposals, and the peek a reviewer decides them in: one board's, or with
- * no board the organization's, from every source — Jira's tickets and the
- * ones written here alike.
+ * no board the organization's, from every source — imported from Jira and
+ * written here alike.
  *
  * A board's list has the board's machinery around it: its sizing run as it
- * streams, the search for one of its tickets to add, and each row's live
+ * streams, the search for one of its issues to add, and each row's live
  * title from Jira. The organization's list reads stored rows only, since a
- * ticket's title is stored with it, and each proposal's freshness comes
+ * bounty's title is stored with it, and each proposal's freshness comes
  * from its own read as on a board.
  */
-export function BoardBounties({
+export function ProposalList({
   organizationId,
   boardId,
   role,
@@ -60,10 +60,10 @@ export function BoardBounties({
    */
   writeGranted?: boolean | undefined;
   /**
-   * Reads one ticket live from Jira, for the peek's Spec tab. Passed in
+   * Reads one bounty live from Jira, for the peek's Spec tab. Passed in
    * rather than fetched here because the board page owns the Jira read and
    * the reconnect banner that answers its failures. Absent, the tab shows
-   * the ticket as the proposal's own read returned it.
+   * the bounty as the proposal's own read returned it.
    */
   readIssue?:
     ((issueKey: string) => Promise<JiraIssueDetail | null>) | undefined;
@@ -75,16 +75,16 @@ export function BoardBounties({
     new URLSearchParams(window.location.search).get("proposal"),
   );
   /*
-    The ticket behind the open proposal, read live for the Spec tab.
+    The bounty behind the open proposal, read live for the Spec tab.
 
     Read when the peek opens rather than when the tab is pressed, so the
     switch to Spec is instant. `wantedKey` is what stops a slow read for one
-    ticket landing in a peek that has since moved to another — or closed:
-    neither `ticket` nor the selection can be read inside the resolve, both
+    bounty landing in a peek that has since moved to another — or closed:
+    neither `bounty` nor the selection can be read inside the resolve, both
     are stale by then, so the check is against what was last asked for.
   */
-  const [ticket, setTicket] = useState<JiraIssueDetail | null>(null);
-  const [ticketError, setTicketError] = useState<string | null>(null);
+  const [bounty, setBounty] = useState<JiraIssueDetail | null>(null);
+  const [bountyError, setBountyError] = useState<string | null>(null);
   const wantedKey = useRef<string | null>(null);
 
   /*
@@ -158,21 +158,21 @@ export function BoardBounties({
 
   /*
     Titles for the rows that have none yet. Each row fills in as its line
-    arrives rather than when the slowest ticket answers. A row the stream
+    arrives rather than when the slowest bounty answers. A row the stream
     ended without is left untitled and unrecorded, so the next refresh asks
     for it again.
 
     One stream for all of them, up to what the route accepts in one request;
     a list holding more untitled rows than that opens a stream per batch.
   */
-  // The board's own sizing run. A one-ticket run someone added is followed
-  // by the search or the ticket that started it, and a change to one
+  // The board's own sizing run. A one-bounty run someone added is followed
+  // by the search or the bounty that started it, and a change to one
   // proposal's spec by the proposal's peek: none is the board's stream.
   const active = runs.find(
     (run) =>
       run.kind !== "issue" &&
       run.kind !== "respec" &&
-      run.kind !== "ticket" &&
+      run.kind !== "bounty" &&
       (run.status === "queued" || run.status === "running"),
   );
   /*
@@ -229,7 +229,7 @@ export function BoardBounties({
     setSelectedId(proposalId);
   }, []);
 
-  // A proposal the ticket search produced: the list re-read so it has the
+  // A proposal the bounty search produced: the list re-read so it has the
   // row, then opened. Stable, because the search follows a run with it.
   const showProposal = useCallback(
     async (proposalId: string) => {
@@ -296,7 +296,7 @@ export function BoardBounties({
       : [detailProposal, ...proposals];
   /*
     A row's key and title: live once its line has arrived, and until then
-    the title the platform holds for the ticket. The two are nearly always
+    the title the platform holds for the bounty. The two are nearly always
     the same words, so most rows never change.
   */
   const nameOf = (proposal: EnrichedProposal) => {
@@ -350,16 +350,16 @@ export function BoardBounties({
         };
   const selectedKey = selectedName === null ? null : selectedName.key;
 
-  const loadTicket = useCallback(
+  const loadBounty = useCallback(
     (issueKey: string) => {
       if (readIssue === undefined) return;
       wantedKey.current = issueKey;
-      setTicket(null);
-      setTicketError(null);
+      setBounty(null);
+      setBountyError(null);
       void readIssue(issueKey).then((result) => {
         if (wantedKey.current !== issueKey) return;
-        if (result !== null) setTicket(result);
-        else setTicketError("Could not load this ticket from Jira.");
+        if (result !== null) setBounty(result);
+        else setBountyError("Could not load this ticket from Jira.");
       });
     },
     [readIssue],
@@ -367,19 +367,19 @@ export function BoardBounties({
   useEffect(() => {
     if (selectedKey === null) {
       wantedKey.current = null;
-      setTicket(null);
-      setTicketError(null);
+      setBounty(null);
+      setBountyError(null);
       return;
     }
-    loadTicket(selectedKey);
-  }, [selectedKey, loadTicket]);
+    loadBounty(selectedKey);
+  }, [selectedKey, loadBounty]);
 
   /**
    * One POST, then the page catches up.
    *
    * By default that is a full re-read — runs, list and detail — because an
    * approval or a re-price changes more than the row: the run list, the
-   * Jira delivery, the ticket's freshness. A mutation that returns the
+   * Jira delivery, the bounty's freshness. A mutation that returns the
    * proposal it changed and touches nothing else can `apply` it instead:
    * the row and the open detail take the proposal from the response, and
    * no request follows. That is what keeps a resize instant, where the
@@ -406,7 +406,7 @@ export function BoardBounties({
       )}
 
       {canManage(role) && sizingAvailable && boardId !== undefined && (
-        <TicketSearch base={base} boardId={boardId} onProposal={showProposal} />
+        <IssueSearch base={base} boardId={boardId} onProposal={showProposal} />
       )}
 
       {/*
@@ -470,7 +470,7 @@ export function BoardBounties({
       {/*
         The list at full width, with the proposal opening over it rather than
         beside it or inside it. See `PeekPanel` for why. A row carries only
-        what a scan needs — which ticket, at what size, for how much — and
+        what a scan needs — which bounty, at what size, for how much — and
         everything a decision needs is in the peek.
       */}
       <div
@@ -483,7 +483,7 @@ export function BoardBounties({
               ? "No proposals in this category."
               : active === undefined
                 ? (emptyText ?? "No proposals yet.")
-                : "Proposals appear here as tickets are sized."}
+                : "Proposals appear here as bounties are sized."}
           </p>
         ) : (
           <>
@@ -491,7 +491,7 @@ export function BoardBounties({
               aria-hidden="true"
               className="text-muted-foreground bg-muted/40 hidden items-center gap-3 border-b px-3 py-2 text-xs font-medium sm:flex"
             >
-              <span className="w-20 shrink-0">Ticket</span>
+              <span className="w-20 shrink-0">Bounty</span>
               <span className="flex-1" />
               <span className="w-24 shrink-0">Status</span>
               <span className="w-12 shrink-0">Size</span>
@@ -519,8 +519,8 @@ export function BoardBounties({
                         </span>
                         {/*
                           The title, and under it why the run picked the
-                          ticket: that is what makes a row more than an old
-                          ticket with a price, so it is on the row rather
+                          bounty: that is what makes a row more than an old
+                          bounty with a price, so it is on the row rather
                           than only in the peek.
                         */}
                         <span className="flex min-w-0 flex-col sm:flex-1">
@@ -535,7 +535,7 @@ export function BoardBounties({
                                   className="skeleton inline-block h-3 w-40 max-w-full rounded align-middle"
                                 />
                               ) : (
-                                "Ticket"
+                                "Bounty"
                               ))}
                           </span>
                           <CategoryLine
@@ -609,7 +609,7 @@ export function BoardBounties({
 
       {/*
         Mounted whether or not a proposal is open, so Radix can animate it
-        out on close. The actions live in the Bounty card, each beside the
+        out on close. The actions live in the Price tab, each beside the
         fact it changes; the card is short, so nothing pushes them off.
       */}
       <PeekPanel
@@ -652,22 +652,22 @@ export function BoardBounties({
           <ProposalPeek
             base={base}
             proposal={selected}
-            ticket={readIssue === undefined ? null : ticket}
+            bounty={readIssue === undefined ? null : bounty}
             liveSpec={
               /*
                 On a board, the proposal's own read stands in when Jira's
-                fails: a ticket gone from Jira is reviewed as stored.
+                fails: a bounty gone from Jira is reviewed as stored.
               */
               detail !== null &&
               detail.proposal.id === selected.id &&
               (readIssue === undefined ||
-                (ticketError !== null && detail.liveSpec != null))
+                (bountyError !== null && detail.liveSpec != null))
                 ? (detail.liveSpec ?? null)
                 : undefined
             }
-            ticketError={readIssue === undefined ? null : ticketError}
-            onRetryTicket={() => {
-              if (selectedKey !== null) loadTicket(selectedKey);
+            bountyError={readIssue === undefined ? null : bountyError}
+            onRetryBounty={() => {
+              if (selectedKey !== null) loadBounty(selectedKey);
             }}
             canDecide={canManage(role)}
             busy={busy}

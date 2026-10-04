@@ -38,6 +38,7 @@ import type {
   EnqueueFixturesInput,
   EnqueueScopeInput,
   EnqueueSliceInput,
+  LinkSandboxSourceInput,
   UpdateSandboxVersionInput,
 } from "@sandbox-factory/shared";
 
@@ -206,6 +207,19 @@ export class SandboxClient extends GithubAnalysisClient {
       }),
     ).sandbox;
   }
+  /** Links the repository a sandbox made without one is cut from. */
+  async linkSandboxSource(
+    owner: string,
+    sandboxId: string,
+    input: LinkSandboxSourceInput,
+  ) {
+    return sandboxResponseSchema.parse(
+      await this.request(
+        `${this.#sandboxes(owner)}/${encodeURIComponent(sandboxId)}/source`,
+        { method: "PUT", body: JSON.stringify(input) },
+      ),
+    ).sandbox;
+  }
   async sandboxVersions(
     owner: string,
     sandboxId: string,
@@ -272,7 +286,7 @@ export class SandboxClient extends GithubAnalysisClient {
 }
 
 export * from "./memberships.js";
-export * from "./tickets.js";
+export * from "./bounties.js";
 export * from "./jira.js";
 export * from "./github.js";
 export * from "./pricing.js";

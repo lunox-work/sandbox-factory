@@ -53,8 +53,8 @@ repo. Both `apps/api` and `apps/worker` import it.
 
 | Area                                              | Source under `packages/core/src/`     |
 | ------------------------------------------------- | ------------------------------------- |
-| Public handles and ticket text                    | `handle.ts`, `ticket.ts`              |
-| Ticket selection and pricing                      | `selection/`, `pricing/`, `bounty.ts` |
+| Public handles and bounty text                    | `handle.ts`, `bounty.ts`              |
+| Bounty selection and pricing                      | `selection/`, `pricing/`, `bounty.ts` |
 | Repository facts and slices                       | `repo/`, `analysis.ts`, `slice/`      |
 | Sandbox provenance, generation, and task contract | `sandbox/`                            |
 
@@ -74,7 +74,7 @@ them, so a change to the rules cannot leave the two disagreeing.
 Better Auth owns the session and its organization writes. Authenticated web
 content gets a user-scoped `ServerDataProvider` in `apps/web/src/data/query.tsx`.
 TanStack Query owns memberships, invitations, integration lists, repositories,
-members, account resources, tickets, pricing, proposal details/specs and analysis
+members, account resources, bounties, pricing, proposal details/specs and analysis
 resources. Keys include user and owner before resource identifiers, filters and
 pages. Account changes recreate the cache; obsolete reads receive cancellation.
 Queries do not retry automatically, refetch on focus or reconnect. Stored reads
@@ -352,80 +352,122 @@ transport, at which point `sendInvitationEmail` is one function and the in-app
 flow stays as the fallback; a crop tool, a sweeper for avatar objects orphaned
 by a failed delete, and more than one avatar size (see [Avatars](#avatars)).
 
-## Tickets
+## Bounties
 
-**A ticket is the platform's own record of a piece of work**, and every
-proposal prices one (`bounty_proposal.ticket_id`). It is written here, or
-imported from Jira by a run, and either way it is one `ticket` row,
-proposed, reviewed and cut into a sandbox the same way. Jira, GitHub and
-any source added later enrich a ticket; none of them is required. A
-deployment with a model and no Jira or GitHub configured sizes the
-tickets written in it.
+**A bounty is the platform's own record of a piece of work, and it is two
+parts at least: its proposal and its sandbox.** The proposal specifies and
+prices it (`bounty_proposal.bounty_id`, one live at a time); the sandbox is
+where contributors do it (`sandbox.bounty_id`, exactly one). A bounty is
+written here, or imported from Jira by a run, and either way it is one
+`bounty` row, proposed, reviewed and cut into a sandbox the same way. Jira,
+a GitHub repository and any source added later enrich a bounty with
+context; none of them is required. A deployment with a model and no Jira
+or GitHub configured sizes the bounties written in it, and makes their
+sandboxes.
 
-**Jira enriches a ticket rather than owning it.** A `jira_issue` row is the
-pointer half of an imported ticket (`jira_issue.ticket_id`, one each): the
-first run that reads an issue creates the ticket, and every read after —
+**Jira enriches a bounty rather than owning it.** A `jira_issue` row is the
+pointer half of an imported bounty (`jira_issue.bounty_id`, one each): the
+first run that reads an issue creates the bounty, and every read after —
 a run, or opening one of its proposals — writes Jira's text back onto it
 (`refreshFromJira`, only when it differs, so the revision does not move
 for nothing). While the issue is there its text is Jira's to change, and
 the API refuses an edit to it (`jira_owned`); its repository is the
 platform's to set. When Jira stops returning the issue, the pointer is
-marked `removed_at` and the ticket keeps the text it last had: it is then
-sized, reviewed and edited as stored, like a ticket written here. If a
+marked `removed_at` and the bounty keeps the text it last had: it is then
+sized, reviewed and edited as stored, like a bounty written here. If a
 board's run finds the issue again, the pointer is restored and Jira's text
-replaces the ticket's once more. Losing a board takes its pointers but not its
-tickets; it does take the runs that read through it, and with them the
+replaces the bounty's once more. Losing a board takes its pointers but not its
+bounties; it does take the runs that read through it, and with them the
 proposals those runs made (`bounty_run.board_id` and
 `bounty_proposal.run_id` cascade).
 
-**Freshness is the ticket's.** `ticketSpecHash` in `packages/core`
-fingerprints a ticket's title, description and type, and
+**Freshness is the bounty's.** `bountySpecHash` in `packages/core`
+fingerprints a bounty's title, description and type, and
 `packages/jira`'s `pricingSpecHash` is that function, not a copy, so a
 proposal priced from Jira's text and one priced from the stored copy
-compare. A proposal is current while its ticket still hashes to what it
-was priced from: read live from Jira while the ticket follows an issue,
+compare. A proposal is current while its bounty still hashes to what it
+was priced from: read live from Jira while the bounty follows an issue,
 and as stored otherwise.
 
-**A ticket is named by its Jira key while it has one, and by its
-organization's own number otherwise** (`T-12`, `ticket.number`, unique per
+**A bounty is named by its Jira key while it has one, and by its
+organization's own number otherwise** (`B-12`, `bounty.number`, unique per
 organization and taken as the next after the highest in the insert
 itself, retried in a savepoint on the rare collision).
 
-**Runs.** A `ticket` run sizes one ticket someone proposed
-(`POST .../tickets/:id/propose`); `reprice` and `respec` runs name their
-proposal's ticket too. Those three need a board only when the ticket came
+**Runs.** A `bounty` run sizes one bounty someone proposed
+(`POST .../bounties/:id/propose`); `reprice` and `respec` runs name their
+proposal's bounty too. Those three need a board only when the bounty came
 from one, whose selection and pricing settings they then use; otherwise
 the defaults. `backlog` and `issue` runs read a Jira board and import what
-they reach. A ticket following its issue cannot be read while its site
+they reach. A bounty following its issue cannot be read while its site
 needs reconnecting, and its run fails `reconnect` rather than sizing
-stale text. Approval posts back to Jira only for a ticket still following
+stale text. Approval posts back to Jira only for a bounty still following
 an issue on a site that holds the write grant.
 
-**Sandboxes link tickets** (`sandbox_ticket`), and a version's frozen task
-names them (`ApprovedTaskSnapshot.ticketIds`, schema version 2). A version
-frozen before tickets keeps its version 1 snapshot with `jiraIssueIds`:
-the snapshot is named by its hash, so it is read as written, never
-rewritten.
+**A bounty has one sandbox, and the sandbox three faces.** `sandbox.bounty_id`
+is unique and required, and a bounty with a sandbox cannot be removed. The
+private face is `sandbox_source` and `sandbox_version_source`: the source
+repository, alias table, approved task and hidden tests. The public face is
+`sandbox` and `sandbox_version`, the aliased copy contributors work in. The
+protected face is `submission`: one contributor's patch, pinned to the
+version it was made against and run with the public and hidden tests
+together. A submission's verdict is `submissionVerdict` in
+`packages/core/src/sandbox/submission.ts`: every test in both suites, and
+at least one hidden test, must pass. Only counts are kept, never hidden test
+names, and only a frozen version takes a submission. No route takes a
+submission yet; the table and its store (`packages/db/src/submissions.ts`)
+are the shape the contributor flow will write.
 
-**Migrations 0043 and 0044** made every existing `jira_issue` a ticket and
-moved what pointed at the issue to point at the ticket. Ticket text had
+**The repository is enrichment for a sandbox too.** A sandbox is made with
+or without one (`POST .../sandboxes` with `bountyId` and an optional
+`sourceRepoId`); `sandbox_source` exists only when it has one. Cutting a
+version is a slice, so that alone needs it, and is refused `no_source`
+without. One made without a repository has it linked later, once
+(`PUT .../sandboxes/:id/source`): its versions are bound to the repository
+they were sliced from, so a different one is refused `source_linked`. The
+bounty's panel offers to link the bounty's own repository. A version's
+frozen task names the bounty (`ApprovedTaskSnapshot.bountyId`, schema
+version 3), and its spec and price must be that bounty's proposal's
+(`proposal_mismatch` otherwise). Versions frozen earlier
+keep what they were frozen with, because the snapshot is named by its hash:
+version 2 lists `ticketIds`, from when a sandbox linked any number of
+tickets, and version 1 lists `jiraIssueIds`.
+
+**Migration 0045** renamed tickets to bounties: the `ticket` table, every
+`ticket_id` column, the `ticket` run kind and the `ticketId` keys inside a
+run's plan and outcomes and a profile's JSON. It replaced `sandbox_ticket`
+with `sandbox.bounty_id`. Each old link goes to the oldest sandbox that held
+it, and each sandbox takes its lowest-numbered one. A sandbox left with none
+is given a bounty of its own, titled after its newest version, so no
+sandbox is lost. Old bounty ids keep their `tkt_` prefix; new ones are
+`bty_`.
+
+**Migrations 0043 and 0044** made every existing `jira_issue` a bounty and
+moved what pointed at the issue to point at the bounty. Bounty text had
 lived only in Jira, so the backfill could copy only a title (the latest
 run's plan, else the key); the rest arrives on the next Jira read. Until
-then such a ticket shows no description, and one whose issue has gone
+then such a bounty shows no description, and one whose issue has gone
 reviews as stale, since the stored text is not what was priced.
 
-The web app's Tickets page (`/o/:slug/tickets`) lists the organization's
-tickets, writes and edits them, proposes them, and lists every proposal
-from any source in the same peek a board uses.
+The web app's Bounties page (`/o/:slug/bounties`) lists the organization's
+bounties, and writes and edits them. It has no list of proposals: a proposal
+is made from a bounty and opens inside it. A bounty's panel has two tabs.
+**Bounty** shows its two parts, Proposal and Sandbox, each with its state and
+the action that makes it, and under them Context: its Jira issue and
+repository, each optional. **Proposal** is the bounty's proposal in the same
+peek a board uses (`?bounty=…&proposal=…`), where it is reviewed and
+decided. The old `/o/:slug/tickets?ticket=…` address and the old
+`?tab=proposals&proposal=…` both still land on the right bounty. A Jira
+board's page keeps its own list of the proposals its runs made.
 
 ## Pricing
 
-[`apps/api/src/bounty/executor.ts`](../apps/api/src/bounty/executor.ts)
-coordinates drafting and sizing. The sizing model sees the ticket text and
+[`apps/api/src/pricing/executor.ts`](../apps/api/src/pricing/executor.ts)
+coordinates drafting and sizing. The sizing model sees the bounty text and
 returns a whole size (`XS` through `XL`, or `unsized`), never a price.
-`priceFor` in `packages/core/src/bounty.ts` applies the organization's saved
+`priceFor` in `packages/core/src/sizing.ts` applies the organization's saved
 rate-card snapshot; a `+` size uses the rounded midpoint between adjacent
-prices, in minor currency units. Unsized tickets have no price.
+prices, in minor currency units. Unsized bounties have no price.
 
 Spec revisions add half steps for net scenario weight gained since the sized
 draft (`packages/core/src/pricing/step.ts`). Light, moderate, and heavy scenarios
@@ -534,10 +576,10 @@ before rechecking references.
 Snapshots need object storage: without a bucket none are taken and the
 snapshot routes answer 503.
 
-**A ticket can name the repository it is about** (`ticket.repo_id`), and
-**a board can name one for its tickets** (`jira_board.source_repo_id`);
-both same organization only, checked in the write. A ticket's own wins,
-and a Jira ticket that names none takes its board's. Sizing then drafts
+**A bounty can name the repository it is about** (`bounty.repo_id`), and
+**a board can name one for its bounties** (`jira_board.source_repo_id`);
+both same organization only, checked in the write. A bounty's own wins,
+and a Jira bounty that names none takes its board's. Sizing then drafts
 each spec beside an outline of that repository's current snapshot —
 module names with file counts and file types, capped at 60 lines
 (`apps/api/src/sizing/outline.ts`) — and records the snapshot on the
@@ -578,7 +620,7 @@ to the provenance checks in
 Anything less remains diagnostic output and cannot produce a ready sandbox.
 
 **Agents propose; deterministic code decides.** A `scope` run gives a model
-read-only tools over the extracted source and the ticket's approved spec,
+read-only tools over the extracted source and the bounty's approved spec,
 and it proposes a slice request: entry points and a budget chosen so the
 cuts fall on input/output seams. Its `check_scope` tool runs the very slice
 computation the `slice` tool runs, and an answer is recorded only when that
@@ -592,17 +634,17 @@ stored, only the structured answer, its token usage and fixed log lines.
 Agent runs need `ANTHROPIC_API_KEY` and `AGENT_MODEL` on the worker; without
 a key they fail `agent_unavailable` and nothing else changes.
 
-**A sized ticket is profiled from the code it touches.** When a spec is
-drafted beside its ticket's surviving repository snapshot and profiling is
+**A sized bounty is profiled from the code it touches.** When a spec is
+drafted beside its bounty's surviving repository snapshot and profiling is
 configured, the proposal/spec transaction inserts the pending profile intent
 (`bounty_profile`, one row per revision). It freezes issue type and priority
-from the sized ticket, with the owner, spec hash and locked snapshot. An intent
+from the sized bounty, with the owner, spec hash and locked snapshot. An intent
 insert failure rolls back the proposal and spec. The post-commit callback only
 wakes the profiler: a later sweep discovers committed intent without it. The
 unique proposal/revision constraint makes requests idempotent. Snapshot-less
 or disabled profiling retains the existing behavior; respec does not implicitly
 request profiles, and historical rows are not backfilled.
-`apps/api/src/bounty/profiler.ts` sweeps the rows in flight every 30
+`apps/api/src/pricing/profiler.ts` sweeps the rows in flight every 30
 seconds, since the worker reports a finished run only to the database: it
 enqueues the snapshot's graph and a `scope` run for the spec (no person
 behind either, so `requested_by` is null), then slices exactly the request

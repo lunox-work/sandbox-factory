@@ -1,311 +1,133 @@
-/** Pure commercial rules. This module stays dependency-free. */
-
-import type { CategoryConfig, CategoryMatch } from "./selection/categories.js";
-
 /**
- * The five sizes a ticket is judged in: the model's answer, and a
- * reviewer's resize. The rate card has a row for each.
- */
-export const WHOLE_BOUNTY_COMPLEXITIES = ["XS", "S", "M", "L", "XL"] as const;
-export type WholeComplexity = (typeof WHOLE_BOUNTY_COMPLEXITIES)[number];
-
-/** What the sizing model may answer: a whole size, or none. */
-export const MODEL_BOUNTY_COMPLEXITIES = [
-  ...WHOLE_BOUNTY_COMPLEXITIES,
-  "unsized",
-] as const;
-export type ModelComplexity = (typeof MODEL_BOUNTY_COMPLEXITIES)[number];
-
-/**
- * Every size a proposal can be priced at, in order: the whole sizes with a
- * half step between each pair. A "+" size is never anyone's answer; it is
- * where a whole size lands when a reviewer has added weight to the spec
- * (`pricing/step`), and it prices between its neighbours. There is no
- * `XL+`: XL already means "consider splitting".
- */
-export const PRICED_BOUNTY_COMPLEXITIES = [
-  "XS",
-  "XS+",
-  "S",
-  "S+",
-  "M",
-  "M+",
-  "L",
-  "L+",
-  "XL",
-] as const;
-export const BOUNTY_COMPLEXITIES = [
-  ...PRICED_BOUNTY_COMPLEXITIES,
-  "unsized",
-] as const;
-export type BountyComplexity = (typeof BOUNTY_COMPLEXITIES)[number];
-export type PricedComplexity = Exclude<BountyComplexity, "unsized">;
-
-export interface RateCardValues {
-  readonly currency: string;
-  readonly xsMinor: number;
-  readonly sMinor: number;
-  readonly mMinor: number;
-  readonly lMinor: number;
-  readonly xlMinor: number;
-}
-
-export interface RateCardSnapshot extends RateCardValues {
-  readonly revision: number;
-}
-
-/**
- * The card an organization prices with until someone edits it: USD, evenly
- * spaced from 10 to 200 in whole dollars. The rate card editor shows it as
- * the starting values, and the first run on an organization with no card
- * saves it, so a new Jira site is sized without a stop at settings first.
- */
-export const DEFAULT_RATE_CARD: RateCardValues = {
-  currency: "USD",
-  xsMinor: 1_000,
-  sMinor: 5_800,
-  mMinor: 10_500,
-  lMinor: 15_300,
-  xlMinor: 20_000,
-};
-
-/**
- * The selection settings a run was started with, as snapshotted on the run.
+ * A bounty: the platform's own record of a piece of work, which a proposal
+ * prices and a sandbox is cut for.
  *
- * Runs from before categories existed hold the older shape (`maxTickets`,
- * `excludeAssigned`); those keys are simply absent from this type and are
- * never read.
- */
-export interface BountySelection {
-  /** A ceiling on tickets per run. Absent means every matching ticket. */
-  readonly ticketCap?: number | undefined;
-  readonly unassignedOnly: boolean;
-  readonly issueTypes: readonly string[];
-  readonly minAgeDays: number;
-  readonly maxAgeDays?: number | undefined;
-  readonly minSpecChars: number;
-  /**
-   * How many of the oldest open tickets a run sizes when nothing fits a
-   * category; 0 turns that off. Absent on runs from before the fallback.
-   */
-  readonly fallbackOldest?: number | undefined;
-  /** Per-category overrides, by category id. See `selection/categories`. */
-  readonly categories: CategoryConfig;
-}
-
-export type SizingConfidence = "low" | "medium" | "high";
-
-export interface BountySizingResult {
-  readonly complexity: ModelComplexity;
-  readonly confidence: SizingConfidence;
-  readonly rationale: string;
-  readonly unsizedReason?: string;
-}
-
-export type BountyOutcomeStatus = "proposed" | "unsized" | "failed" | "skipped";
-
-/**
- * What a run does: size a board's backlog, re-price one proposal, size one
- * Jira ticket someone picked from a board (`issue`), size one of the
- * organization's own tickets (`ticket`), or change one proposal's spec and
- * move its size by the scenario step (`respec`).
+ * The platform holds it, not a tracker. A bounty is written here by a
+ * person, or imported from Jira, and whichever it was it is the same row,
+ * proposed the same way. A source such as Jira enriches a bounty rather than
+ * owning it: an imported bounty's text follows its Jira issue each time a
+ * run reads it, and a bounty whose issue has gone keeps the text it last
+ * had.
  *
- * `backlog` and `issue` read a Jira board, and are the only kinds that need
- * one. The others start from a ticket, which may have come from Jira or
- * been written here.
+ * What is decided here, once, is what a bounty's sizing input is and how it
+ * is fingerprinted, so a proposal goes stale the same way whether its
+ * bounty's text came from Jira or from the form.
  */
-export const BOUNTY_RUN_KINDS = [
-  "backlog",
-  "reprice",
-  "issue",
-  "respec",
-  "ticket",
-] as const;
-export type BountyRunKind = (typeof BOUNTY_RUN_KINDS)[number];
+
+/** Where a bounty's text came from when it was made. Never changes. */
+export const BOUNTY_ORIGINS = ["manual", "jira"] as const;
+export type BountyOrigin = (typeof BOUNTY_ORIGINS)[number];
 
 /**
- * A ticket a run chose to size, recorded before sizing starts, so a page
- * opened mid-run can show what is still to come as well as what is done.
+ * The bounds of a bounty's text, for one written or edited here. The
+ * description's is also where a Jira description is cut when it is
+ * flattened, so a bounty asks a model for about as much whichever way it
+ * was written. Jira's text is stored as read, and can run past these: a cut
+ * description carries its truncation marker, and Jira bounds no labels.
  */
-export interface BountyRunPlannedIssue {
-  /**
-   * The ticket's id in its source: Jira's issue id for a ticket a board
-   * offered, and the ticket's own id for one written here. A plan entry is
-   * matched to its proposal through this.
-   */
-  readonly externalIssueId: string;
-  readonly issueKey: string;
-  readonly summary: string;
-  /**
-   * The ticket, when it was known as the plan was written. Absent for a
-   * board's tickets, which a run imports only once it reaches them.
-   */
-  readonly ticketId?: string | undefined;
-  /**
-   * Why a backlog run picked it. Absent on plans recorded before categories
-   * existed, and empty for a ticket a person picked by hand.
-   */
-  readonly categories?: readonly CategoryMatch[] | undefined;
+export const BOUNTY_LIMITS = {
+  title: 255,
+  description: 20_000,
+  issueType: 64,
+  priority: 64,
+  labels: 20,
+  label: 64,
+} as const;
+
+/** The issue type a bounty has when nobody named one, as Jira's default. */
+export const DEFAULT_ISSUE_TYPE = "Task";
+
+/**
+ * A title from a source the limit does not bound, cut to fit it. Never in
+ * the middle of a surrogate pair: half a character is stored as a
+ * replacement character, which the source's title never matches again, so
+ * every later read would see a change and move the revision.
+ */
+export function clampBountyTitle(title: string): string {
+  const cut = title.slice(0, BOUNTY_LIMITS.title);
+  return /[\uD800-\uDBFF]$/.test(cut) ? cut.slice(0, -1) : cut;
 }
 
-export interface BountyRunOutcome {
-  readonly externalIssueId: string;
-  readonly issueKey: string;
-  /** The ticket the outcome is about, once the run had one. */
-  readonly ticketId?: string;
+/** What a bounty says: everything a run sizes it from. */
+export interface BountyContent {
+  readonly title: string;
+  readonly description: string;
+  readonly issueType: string;
+  /** The priority's name, or null when the bounty has none. */
+  readonly priority: string | null;
+  readonly labels: readonly string[];
+  /** Jira's components, by name. Empty for a bounty written here. */
+  readonly components: readonly string[];
   /**
-   * The Jira pointer, on outcomes recorded before tickets existed. Read
-   * from stored runs only; nothing writes it now.
+   * True when the source held more than the description keeps: a Jira
+   * description past the flattening limit. A bounty written here is
+   * refused at the limit instead, so it is never truncated.
    */
-  readonly jiraIssueId?: string;
-  readonly proposalId?: string;
-  readonly status: BountyOutcomeStatus;
-  readonly code?: string;
-  readonly actualModel?: string;
-  readonly inputTokens?: number;
-  readonly outputTokens?: number;
-  /**
-   * A respec's outcome only: the size before the change, and how many
-   * points the change moved the spec by (negative for a trim). The size
-   * after it is the proposal's.
-   */
-  readonly previousComplexity?: BountyComplexity;
-  readonly pointsDelta?: number;
-}
-
-export type RateCardValidation =
-  | { readonly ok: true; readonly rateCard: RateCardValues }
-  | { readonly ok: false; readonly reason: string };
-
-const MAX_MINOR = Number.MAX_SAFE_INTEGER;
-
-/** Maximum for new rate-card writes; historical snapshots remain readable. */
-export function maximumRateCardMinor(currency: string): number {
-  return currency.trim().toUpperCase() === "USD" ? 100_000 : MAX_MINOR;
-}
-
-export function validateRateCard(
-  input: RateCardValues,
-  supportedCurrencies: ReadonlySet<string>,
-): RateCardValidation {
-  const currency = input.currency.trim().toUpperCase();
-  if (!supportedCurrencies.has(currency)) {
-    return { ok: false, reason: "Choose a supported ISO currency." };
-  }
-
-  const amounts = [
-    input.xsMinor,
-    input.sMinor,
-    input.mMinor,
-    input.lMinor,
-    input.xlMinor,
-  ];
-  if (
-    amounts.some(
-      (amount) =>
-        !Number.isSafeInteger(amount) || amount <= 0 || amount > MAX_MINOR,
-    )
-  ) {
-    return {
-      ok: false,
-      reason: "Every rate must be a positive whole number of minor units.",
-    };
-  }
-  if (
-    input.xsMinor > input.sMinor ||
-    input.sMinor > input.mMinor ||
-    input.mMinor > input.lMinor ||
-    input.lMinor > input.xlMinor
-  ) {
-    return { ok: false, reason: "Rates must increase from XS through XL." };
-  }
-
-  if (input.xlMinor > maximumRateCardMinor(currency)) {
-    return { ok: false, reason: "XL cannot exceed USD 1,000." };
-  }
-  return { ok: true, rateCard: { ...input, currency } };
+  readonly inputTruncated: boolean;
 }
 
 /**
- * What a size costs on a card. A "+" size is the midpoint of its two
- * neighbours, rounded to a whole minor unit: derived from the card rather
- * than stored on it, so the card keeps its five rows, and a snapshot taken
- * before half sizes existed prices them too.
+ * The version of `bountySpecHash`: the normalized title, description and
+ * issue type as a JSON tuple. Version 1 is the hash proposals stored when
+ * bounties were read from Jira, so the proposals made then still compare.
  */
-export function priceFor(
-  complexity: BountyComplexity,
-  rateCard: RateCardValues,
-): number | null {
-  const midpoint = (lower: number, upper: number) =>
-    Math.round((lower + upper) / 2);
-  switch (complexity) {
-    case "XS":
-      return rateCard.xsMinor;
-    case "XS+":
-      return midpoint(rateCard.xsMinor, rateCard.sMinor);
-    case "S":
-      return rateCard.sMinor;
-    case "S+":
-      return midpoint(rateCard.sMinor, rateCard.mMinor);
-    case "M":
-      return rateCard.mMinor;
-    case "M+":
-      return midpoint(rateCard.mMinor, rateCard.lMinor);
-    case "L":
-      return rateCard.lMinor;
-    case "L+":
-      return midpoint(rateCard.lMinor, rateCard.xlMinor);
-    case "XL":
-      return rateCard.xlMinor;
-    case "unsized":
-      return null;
-  }
+export const BOUNTY_SPEC_HASH_VERSION = 1;
+
+/**
+ * A stable fingerprint of what a bounty was priced from.
+ *
+ * Three properties matter, in this order:
+ *
+ * - **Stable.** The same text must hash the same on every machine and every
+ *   run, or proposals would go stale at random. Hence a fixed field order,
+ *   encoded as JSON so no field can run into the next.
+ * - **Sensitive to meaning.** An edit to the words changes the hash.
+ * - **Insensitive to noise.** Trailing whitespace and CRLF do not, because
+ *   opening a bounty in a different editor should not invalidate a bounty.
+ *
+ * Labels, components and priority are read for the draft and the profile,
+ * and are deliberately not hashed: retagging a bounty does not make its
+ * price stale.
+ *
+ * SHA-256 via `crypto.subtle`, which exists in Node, browsers and workers
+ * alike, so this stays dependency-free.
+ */
+export async function bountySpecHash(
+  title: string,
+  description: string,
+  issueType: string,
+): Promise<string> {
+  const canonical = JSON.stringify([
+    normalizeSpecText(title),
+    normalizeSpecText(description),
+    normalizeSpecText(issueType),
+  ]);
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(canonical),
+  );
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+/** Line endings and trailing space removed; the words themselves untouched. */
+export function normalizeSpecText(value: string): string {
+  return value
+    .split(/\r\n|\r|\n/)
+    .map((line) => line.trimEnd())
+    .join("\n")
+    .trim();
 }
 
 /**
- * Parses a decimal entered by a person without passing through binary floats.
+ * How a bounty is named to a person: its Jira key while it has one, and its
+ * number here otherwise. The number is the organization's own count, so
+ * `B-12` is the twelfth bounty the organization has, whatever its source.
  */
-export function parseMinorUnits(
-  value: string,
-  fractionDigits: number,
-): number | null {
-  if (
-    !Number.isInteger(fractionDigits) ||
-    fractionDigits < 0 ||
-    fractionDigits > 3
-  ) {
-    return null;
-  }
-  const match = /^(?:0|[1-9]\d*)(?:\.(\d+))?$/.exec(value.trim());
-  if (match === null) return null;
-  const fraction = match[1] ?? "";
-  if (fraction.length > fractionDigits) return null;
-
-  const scale = 10n ** BigInt(fractionDigits);
-  const whole = BigInt(value.trim().split(".")[0] ?? "0");
-  const padded = fraction.padEnd(fractionDigits, "0");
-  const minor = whole * scale + BigInt(padded === "" ? "0" : padded);
-  return minor > BigInt(MAX_MINOR) ? null : Number(minor);
-}
-
-/** Formats safe minor units as an exact decimal string for editable inputs. */
-export function formatMinorUnits(
-  value: number,
-  fractionDigits: number,
-): string | null {
-  if (
-    !Number.isSafeInteger(value) ||
-    value < 0 ||
-    !Number.isInteger(fractionDigits) ||
-    fractionDigits < 0 ||
-    fractionDigits > 3
-  ) {
-    return null;
-  }
-  if (fractionDigits === 0) return String(value);
-
-  const scale = 10 ** fractionDigits;
-  const whole = Math.floor(value / scale);
-  const fraction = String(value % scale).padStart(fractionDigits, "0");
-  return `${whole}.${fraction}`;
+export function bountyKey(bounty: {
+  readonly number: number;
+  readonly jiraKey?: string | null | undefined;
+}): string {
+  return bounty.jiraKey ?? `B-${bounty.number}`;
 }

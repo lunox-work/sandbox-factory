@@ -3,15 +3,15 @@ import { clients, queryKeys, useUserId } from "./data/query";
 import { plural } from "./lib/format";
 export { plural } from "./lib/format";
 /**
- * A proposal's drafted spec, read-only: what the ticket asks for as
- * scenarios, grouped by kind, with the questions the ticket left open and
+ * A proposal's drafted spec, read-only: what the bounty asks for as
+ * scenarios, grouped by kind, with the questions the bounty left open and
  * the assumptions the draft made. The peek's Scenarios tab.
  *
  * Called Scenarios rather than Spec because the peek already has a Spec
- * tab, which is the Jira ticket read live. This is the other side of it:
- * what was made of the ticket when it was sized.
+ * tab, which is the Jira issue read live. This is the other side of it:
+ * what was made of the bounty when it was sized.
  *
- * The tab opens on why the ticket is the size it is: the sizing model's
+ * The tab opens on why the bounty is the size it is: the sizing model's
  * size and reasoning, or, when a reviewer overrode it, the reviewer's size
  * with the model's original size and reasoning under it. That reasoning is
  * the proposal's, not the spec's, so it shows whatever state the spec is in.
@@ -28,9 +28,9 @@ export { plural } from "./lib/format";
  * revisions before it stay readable, read-only, from the picker.
  *
  * The read is split from the view so the peek can start it when it opens,
- * as it does the ticket's, and a switch to the tab is instant. It is a
+ * as it does the bounty's, and a switch to the tab is instant. It is a
  * stored read and answers without Jira, which is why it does not ride on
- * the proposal's own read, which waits for Jira to say whether the ticket
+ * the proposal's own read, which waits for Jira to say whether the bounty
  * changed.
  */
 
@@ -301,7 +301,7 @@ export function ProposalSpec({
 }: {
   read: SpecRead;
   onRetry: () => void;
-  /** Whether the reader can have the ticket analyzed again. */
+  /** Whether the reader can have the bounty analyzed again. */
   canAnalyze: boolean;
   /**
    * What each weight counts for: the settings the proposal's step was
@@ -359,7 +359,7 @@ export function ProposalSpec({
         <p className="text-muted-foreground text-sm" data-testid="spec-empty">
           No scenarios were drafted for this proposal.
           {canAnalyze &&
-            " Re-analyze, on the Bounty tab, drafts them from the ticket as it is now."}
+            " Re-analyze, on the Price tab, drafts them from the bounty as it is now."}
         </p>
       ) : (
         <SpecBody
@@ -416,7 +416,7 @@ function SpecBody({
   };
   return (
     <div className="flex flex-col gap-4">
-      {/* What the ticket is about, and which revision of the spec this is. */}
+      {/* What the bounty is about, and which revision of the spec this is. */}
       <div className="flex flex-col gap-1">
         <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
           <p className="text-sm leading-relaxed font-medium">{draft.feature}</p>
@@ -521,7 +521,7 @@ function SpecBody({
           Drafted before scenarios carried weights, so a scenario added to this
           spec cannot move the size.
           {canAnalyze &&
-            " Re-analyze, on the Bounty tab, drafts it again with weights."}
+            " Re-analyze, on the Price tab, drafts it again with weights."}
         </p>
       )}
 
@@ -578,7 +578,7 @@ function SpecBody({
 
       {draft.scenarios.length === 0 && (
         <p className="text-muted-foreground text-sm">
-          The ticket did not describe behaviour to write a scenario for.
+          The bounty did not describe behaviour to write a scenario for.
         </p>
       )}
 

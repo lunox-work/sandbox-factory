@@ -3,7 +3,7 @@ import { test } from "node:test";
 import {
   ApiError,
   MembershipClient,
-  TicketClient,
+  BountyClient,
   JiraManagementClient,
   GithubManagementClient,
   PricingClient,
@@ -62,37 +62,37 @@ test("feature reads validate their success envelopes", async () => {
   assert.deepEqual(await pricing.spec("owner", "1"), { spec: null });
 });
 
-test("ticket transport retains conflicts and cancels without dispatch", async () => {
+test("bounty transport retains conflicts and cancels without dispatch", async () => {
   const paths: string[] = [];
-  const client = new TicketClient({
+  const client = new BountyClient({
     baseUrl: "",
     fetch: (async (input) => {
       paths.push(String(input));
-      return Response.json({ tickets: [], nextCursor: null });
+      return Response.json({ bounties: [], nextCursor: null });
     }) as typeof fetch,
   });
   assert.deepEqual(
-    await client.tickets("owner /", { limit: 50, cursor: "page /" }),
-    { tickets: [], nextCursor: null },
+    await client.bounties("owner /", { limit: 50, cursor: "page /" }),
+    { bounties: [], nextCursor: null },
   );
   assert.match(paths[0] ?? "", /owner%20%2F.*limit=50.*cursor=page/);
-  await client.tickets("owner");
-  await assert.rejects(client.ticket("owner", "1"));
-  await client.deleteTicket("owner", "1");
+  await client.bounties("owner");
+  await assert.rejects(client.bounty("owner", "1"));
+  await client.deleteBounty("owner", "1");
   const malformed = new BountyRunClient(options);
   await assert.rejects(malformed.run("owner", "1"));
   await assert.rejects(malformed.runs("owner", "1"));
-  const conflicts = new TicketClient({
+  const conflicts = new BountyClient({
     baseUrl: "",
     fetch: (async () =>
       Response.json(
-        { error: "changed", code: "ticket_changed", ticket: { revision: 3 } },
+        { error: "changed", code: "bounty_changed", bounty: { revision: 3 } },
         { status: 409 },
       )) as typeof fetch,
   });
   for (const action of [
     () =>
-      conflicts.createTicket("owner", {
+      conflicts.createBounty("owner", {
         title: "Task",
         description: "",
         issueType: "Task",
@@ -101,7 +101,7 @@ test("ticket transport retains conflicts and cancels without dispatch", async ()
         repoId: null,
       }),
     () =>
-      conflicts.updateTicket("owner", "1", {
+      conflicts.updateBounty("owner", "1", {
         expectedRevision: 1,
         title: "Task",
       }),
@@ -111,12 +111,12 @@ test("ticket transport retains conflicts and cancels without dispatch", async ()
       (error: unknown) =>
         error instanceof ApiError &&
         error.status === 409 &&
-        error.code === "ticket_changed" &&
+        error.code === "bounty_changed" &&
         JSON.stringify(error.details).includes('"revision":3'),
     );
   }
   await assert.rejects(
-    client.tickets("owner", {}, AbortSignal.abort(new Error("stopped"))),
+    client.bounties("owner", {}, AbortSignal.abort(new Error("stopped"))),
     /stopped/,
   );
   assert.equal(paths.length, 4);
@@ -267,7 +267,7 @@ test("Jira writes and detail reads validate their envelopes", async () => {
     client.updateBoard("o", "board", { selection: { unassignedOnly: false } }),
   );
   assert.deepEqual(
-    await new TicketClient(options).proposeTicket("o", "id", "request"),
+    await new BountyClient(options).proposeBounty("o", "id", "request"),
     {},
   );
 });

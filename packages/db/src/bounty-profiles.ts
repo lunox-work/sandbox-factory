@@ -3,7 +3,7 @@ import type {
   ComplexityProfile,
   ProfileErrorCode,
   ProfileStatus,
-  ProfileTicket,
+  ProfileBounty,
 } from "sandbox-factory";
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
 
@@ -27,7 +27,7 @@ export interface StoredBountyProfile {
   readonly specRevision: number;
   readonly specHash: string;
   readonly snapshotId: string | null;
-  readonly ticket: ProfileTicket;
+  readonly bounty: ProfileBounty;
   readonly status: ProfileStatus;
   readonly errorCode: ProfileErrorCode | null;
   readonly runErrorCode: AnalysisErrorCode | null;
@@ -44,7 +44,7 @@ export interface NewBountyProfile {
   readonly specRevision: number;
   readonly specHash: string;
   readonly snapshotId: string;
-  readonly ticket: ProfileTicket;
+  readonly bounty: ProfileBounty;
 }
 
 /** The one step a sweep takes a row: each status says what it carries. */
@@ -100,7 +100,7 @@ function toStored(row: BountyProfileRow): StoredBountyProfile {
     specRevision: row.specRevision,
     specHash: row.specHash,
     snapshotId: row.snapshotId,
-    ticket: row.ticket,
+    bounty: row.bounty,
     status: row.status,
     errorCode: row.errorCode,
     runErrorCode: row.runErrorCode,
@@ -149,7 +149,7 @@ export function createBountyProfileStore(db: Database): BountyProfileStore {
             specRevision: input.specRevision,
             specHash: input.specHash,
             snapshotId,
-            ticket: input.ticket,
+            bounty: input.bounty,
           })
           .onConflictDoNothing();
         const rows = (await tx

@@ -11,7 +11,7 @@ import { normalizeSpecText } from "@sandbox-factory/shared";
  * caller has to ask for it by name.
  */
 
-import { DEFAULT_ISSUE_TYPE, ticketSpecHash } from "@sandbox-factory/shared";
+import { DEFAULT_ISSUE_TYPE, bountySpecHash } from "@sandbox-factory/shared";
 
 import { adfToTextResult } from "./adf.js";
 
@@ -47,7 +47,7 @@ export interface JiraIssueSpec {
    */
   readonly specHash: string;
   /**
-   * Version 1 of the ticket's own hash (`ticketSpecHash`): the normalized
+   * Version 1 of the ticket's own hash (`bountySpecHash`): the normalized
    * summary, description and issue type as a JSON tuple. On review, the live
    * ticket is re-read and re-hashed: a difference means the spec changed
    * after it was priced, and the proposal is stale.
@@ -105,7 +105,7 @@ export const pricingSpecHash: (
   summary: string,
   descriptionText: string,
   issueType: string,
-) => Promise<string> = ticketSpecHash;
+) => Promise<string> = bountySpecHash;
 
 async function sha256(canonical: string): Promise<string> {
   const bytes = new TextEncoder().encode(canonical);

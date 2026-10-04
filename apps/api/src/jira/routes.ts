@@ -49,7 +49,7 @@ import {
   type JiraClientFailure,
   type JiraFailureTarget,
 } from "./credential.js";
-import { InvalidBoardIdError, selectBacklog } from "../bounty/selection.js";
+import { InvalidBoardIdError, selectBacklog } from "../pricing/selection.js";
 import {
   redirectTarget,
   safePath,

@@ -5,12 +5,12 @@ import {
   jiraSyncResponseSchema,
   jiraIssueDetailResponseSchema,
   jiraBacklogPreviewSchema,
-  jiraTicketSearchSchema,
+  jiraIssueSearchSchema,
   proposalActionResponseSchema,
   jiraBoardListSchema,
 } from "@sandbox-factory/shared";
 import { ApiClient } from "./transport.js";
-import { ownerPath } from "./tickets.js";
+import { ownerPath } from "./bounties.js";
 export class JiraManagementClient extends ApiClient {
   async sync(owner: string, id: string) {
     return jiraSyncResponseSchema.parse(
@@ -55,7 +55,7 @@ export class JiraManagementClient extends ApiClient {
     query: string,
     signal?: AbortSignal,
   ) {
-    return jiraTicketSearchSchema.parse(
+    return jiraIssueSearchSchema.parse(
       await this.request(
         `${ownerPath(owner)}/jira/boards/${encodeURIComponent(boardId)}/search?q=${encodeURIComponent(query)}`,
         { signal },

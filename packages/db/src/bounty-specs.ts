@@ -15,7 +15,7 @@ import type { BountySpecOrigin, BountySpecRow } from "./schema.js";
  * stored for a proposal that was not.
  */
 export interface NewBountySpec {
-  /** The ticket it was drafted from, hashed as the proposal hashes it. */
+  /** The bounty it was drafted from, hashed as the proposal hashes it. */
   readonly specHash: string;
   readonly specHashVersion: number;
   readonly draft: SpecDraft;

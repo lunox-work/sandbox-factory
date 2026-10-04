@@ -1,5 +1,5 @@
 /**
- * How much work a scenario adds to its ticket.
+ * How much work a scenario adds to its bounty.
  *
  * Every scenario carries a weight, the drafting model's judgement made in
  * the same call that wrote the scenario. A judgement, not a fact: it is

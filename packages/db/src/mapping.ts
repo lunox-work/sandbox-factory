@@ -22,8 +22,8 @@ export const ID_PREFIXES = [
   /** The personal organization minted at signup, and its sole membership. */
   "org",
   "mbr",
-  /** A ticket: the organization's own record of a piece of work. */
-  "tkt",
+  /** A bounty: the organization's own record of a piece of work. */
+  "bty",
   /** Jira: connection, board, issue. */
   "jrc",
   "jrb",
@@ -46,9 +46,13 @@ export const ID_PREFIXES = [
   "rsn",
   "arn",
   "art",
-  /** Sandboxes: a task cut from a repository, and one immutable version of it. */
+  /**
+   * Sandboxes: a bounty's task, one immutable version of it, and one
+   * contributor's submission against a version.
+   */
   "sbx",
   "sbv",
+  "sbm",
 ] as const;
 
 export type IdPrefix = (typeof ID_PREFIXES)[number];

@@ -36,7 +36,7 @@
  * toggling only moves the edge: nothing the eye was tracking jumps.
  */
 
-import { Building2, House, Ticket } from "lucide-react";
+import { Building2, House, Target } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import type { MembershipDto } from "@sandbox-factory/shared";
@@ -55,8 +55,8 @@ export type Screen =
   | "org-settings"
   /** One board, on a connected site. Carries a connection id and a board id. */
   | "org-jira-board"
-  /** The organization's tickets, and the proposals made from them. */
-  | "org-tickets"
+  /** The organization's bounties, and the proposals made from them. */
+  | "org-bounties"
   | "create-org";
 
 export function SideNav({
@@ -184,19 +184,19 @@ export function SideNav({
         </RailButton>
 
         {/*
-          The active workspace's tickets: what a proposal is made from,
-          whichever tool the ticket came from. Only once there is a
+          The active workspace's bounties: what a proposal is made from,
+          whichever tool the bounty came from. Only once there is a
           workspace to have them.
         */}
         {organizations.active !== null && (
           <RailButton
-            label="Tickets"
-            href={`/o/${organizations.active.slug}/tickets`}
+            label="Bounties"
+            href={`/o/${organizations.active.slug}/bounties`}
             expanded={expanded}
-            current={screen === "org-tickets"}
-            onClick={() => onNavigate("org-tickets")}
+            current={screen === "org-bounties"}
+            onClick={() => onNavigate("org-bounties")}
           >
-            <Ticket strokeWidth={1.6} />
+            <Target strokeWidth={1.6} />
           </RailButton>
         )}
 

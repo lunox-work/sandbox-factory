@@ -49,13 +49,13 @@ function fixtureApp(token) {
   const signedIn = () => (token === "" ? null : { user, session });
   const rows = new Map();
   let sequence = 0;
-  function addTicket(organizationId, createdBy, input) {
+  function addBounty(organizationId, createdBy, input) {
     const number = ++sequence;
-    const ticket = {
-      id: `tkt_${number}`,
+    const bounty = {
+      id: `bty_${number}`,
       organizationId,
       number,
-      key: `T-${number}`,
+      key: `B-${number}`,
       title: input.title,
       description: input.description,
       issueType: input.issueType,
@@ -68,15 +68,16 @@ function fixtureApp(token) {
       createdBy,
       revision: 1,
       jira: null,
+      sandbox: null,
       createdAt: stamp,
       updatedAt: stamp,
     };
-    rows.set(ticket.id, ticket);
-    return ticket;
+    rows.set(bounty.id, bounty);
+    return bounty;
   }
   for (const organization of memberships) {
-    addTicket(organization.id, user.id, {
-      title: `${organization.name} private ticket`,
+    addBounty(organization.id, user.id, {
+      title: `${organization.name} private bounty`,
       description: `Work owned by ${organization.name}.`,
       issueType: "Task",
       priority: null,
@@ -114,23 +115,23 @@ function fixtureApp(token) {
       get: async (organizationId) =>
         memberships.find(({ id }) => id === organizationId),
     },
-    bounty: {
-      tickets: {
+    pricing: {
+      bounties: {
         create: async (organizationId, createdBy, input) => ({
           ok: true,
-          ticket: addTicket(organizationId, createdBy, input),
+          bounty: addBounty(organizationId, createdBy, input),
         }),
         list: async (organizationId) =>
           [...rows.values()]
-            .filter((ticket) => ticket.organizationId === organizationId)
+            .filter((bounty) => bounty.organizationId === organizationId)
             .reverse()
-            .map((ticket) => ({ ...ticket, proposal: null })),
-        get: async (organizationId, ticketId) => {
-          const ticket = rows.get(ticketId);
-          return ticket?.organizationId === organizationId ? ticket : null;
+            .map((bounty) => ({ ...bounty, proposal: null })),
+        get: async (organizationId, bountyId) => {
+          const bounty = rows.get(bountyId);
+          return bounty?.organizationId === organizationId ? bounty : null;
         },
       },
-      proposals: { liveForTicket: async () => null },
+      proposals: { liveForBounty: async () => null },
     },
   });
 }

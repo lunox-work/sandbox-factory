@@ -1,18 +1,18 @@
-import type { TicketContent } from "sandbox-factory";
-import { clampTicketTitle } from "sandbox-factory";
+import type { BountyContent } from "sandbox-factory";
+import { clampBountyTitle } from "sandbox-factory";
 import { and, eq } from "drizzle-orm";
 
 import type { Database } from "./errors.js";
 import { generateId } from "./mapping.js";
-import { jiraBoard, jiraIssue, ticket } from "./schema.js";
-import type { JiraIssueRow, TicketRow } from "./schema.js";
-import { insertTicket, refreshTicket } from "./tickets.js";
+import { bounty, jiraBoard, jiraIssue } from "./schema.js";
+import type { JiraIssueRow, BountyRow } from "./schema.js";
+import { insertBounty, refreshBounty } from "./bounties.js";
 
 export interface JiraIssuePointer {
   readonly id: string;
   readonly boardId: string;
-  /** The ticket the issue is imported as. */
-  readonly ticketId: string;
+  /** The bounty the issue is imported as. */
+  readonly bountyId: string;
   readonly externalId: string;
   readonly key: string;
   readonly statusCategory: string;
@@ -35,15 +35,15 @@ export interface JiraIssueStore {
     issueId: string,
   ): Promise<JiraIssuePointer | null>;
   /**
-   * Imports an issue a run has read: its pointer, and the ticket it stands
-   * for with the text Jira gave. The first read makes the ticket; every one
+   * Imports an issue a run has read: its pointer, and the bounty it stands
+   * for with the text Jira gave. The first read makes the bounty; every one
    * after refreshes both. Null when the board is not the organization's.
    */
   upsert(
     organizationId: string,
     boardId: string,
     input: JiraIssueInput,
-    content: TicketContent,
+    content: BountyContent,
   ): Promise<JiraIssuePointer | null>;
   markRemoved(
     organizationId: string,
@@ -66,7 +66,7 @@ function toPointer(row: JiraIssueRow): JiraIssuePointer {
   return {
     id: row.id,
     boardId: row.boardId,
-    ticketId: row.ticketId,
+    bountyId: row.bountyId,
     externalId: row.externalId,
     key: row.key,
     statusCategory: row.statusCategory,
@@ -119,7 +119,7 @@ export function createJiraIssueStore(db: Database): JiraIssueStore {
           eq(jiraIssue.externalId, input.externalId),
         );
 
-        // Seen before: the pointer's facts and the ticket's text, together,
+        // Seen before: the pointer's facts and the bounty's text, together,
         // with the pointer locked so two runs refresh one at a time.
         const known = (await tx
           .update(jiraIssue)
@@ -127,12 +127,12 @@ export function createJiraIssueStore(db: Database): JiraIssueStore {
           .where(where)
           .returning()) as JiraIssueRow[];
         if (known[0] !== undefined) {
-          await refreshImported(tx, organizationId, known[0].ticketId, content);
+          await refreshImported(tx, organizationId, known[0].bountyId, content);
           return toPointer(known[0]);
         }
 
-        // New: the ticket first, which the pointer names.
-        const created = await insertTicket(tx, organizationId, {
+        // New: the bounty first, which the pointer names.
+        const created = await insertBounty(tx, organizationId, {
           ...importedText(content, input.key),
           origin: "jira",
         });
@@ -143,21 +143,21 @@ export function createJiraIssueStore(db: Database): JiraIssueStore {
             organizationId,
             boardId,
             externalId: input.externalId,
-            ticketId: created.id,
+            bountyId: created.id,
             ...facts,
           })
           .onConflictDoNothing()
           .returning()) as JiraIssueRow[];
         if (inserted[0] !== undefined) return toPointer(inserted[0]);
 
-        // Another run imported it in between: its ticket stands, and this
+        // Another run imported it in between: its bounty stands, and this
         // one goes. The text is refreshed onto the one that stands.
         await tx
-          .delete(ticket)
+          .delete(bounty)
           .where(
             and(
-              eq(ticket.organizationId, organizationId),
-              eq(ticket.id, created.id),
+              eq(bounty.organizationId, organizationId),
+              eq(bounty.id, created.id),
             ),
           );
         const raced = (await tx
@@ -166,7 +166,7 @@ export function createJiraIssueStore(db: Database): JiraIssueStore {
           .where(where)
           .returning()) as JiraIssueRow[];
         if (raced[0] === undefined) return null;
-        await refreshImported(tx, organizationId, raced[0].ticketId, content);
+        await refreshImported(tx, organizationId, raced[0].bountyId, content);
         return toPointer(raced[0]);
       });
     },
@@ -207,10 +207,10 @@ export function createJiraIssueStore(db: Database): JiraIssueStore {
   };
 }
 
-/** What an imported ticket is made with: Jira's text, its key for a title. */
-function importedText(content: TicketContent, key: string) {
+/** What an imported bounty is made with: Jira's text, its key for a title. */
+function importedText(content: BountyContent, key: string) {
   return {
-    title: clampTicketTitle(content.title.trim() === "" ? key : content.title),
+    title: clampBountyTitle(content.title.trim() === "" ? key : content.title),
     description: content.description,
     issueType: content.issueType,
     priority: content.priority,
@@ -223,17 +223,17 @@ function importedText(content: TicketContent, key: string) {
 async function refreshImported(
   tx: Database,
   organizationId: string,
-  ticketId: string,
-  content: TicketContent,
+  bountyId: string,
+  content: BountyContent,
 ): Promise<void> {
   const rows = (await tx
     .select()
-    .from(ticket)
+    .from(bounty)
     .where(
-      and(eq(ticket.organizationId, organizationId), eq(ticket.id, ticketId)),
+      and(eq(bounty.organizationId, organizationId), eq(bounty.id, bountyId)),
     )
-    .for("update")) as TicketRow[];
+    .for("update")) as BountyRow[];
   if (rows[0] !== undefined) {
-    await refreshTicket(tx, organizationId, rows[0], content);
+    await refreshBounty(tx, organizationId, rows[0], content);
   }
 }

@@ -6,7 +6,7 @@ product proposals and historical explainers are optional design context.
 
 ## Current capabilities
 
-- Native tickets and optional Jira imports share proposals, spec review and pricing.
+- Native bounties and optional Jira imports share proposals, spec review and pricing.
 - GitHub supplies private repository snapshots. Graphify, scope, slice and fixture
   tools prepare the source for versioned private sandbox builds.
 - Builds generate a runnable project and check its baseline. The available
@@ -23,8 +23,8 @@ product proposals and historical explainers are optional design context.
 | ----------------------------- | --------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
 | Setup and daily development   | [Run it](../README.md#run-it), [development](./development.md)                                                        | `Makefile`, `docker-compose.yml`, `package.json`                                                                     |
 | Auth and ownership            | [Auth](./architecture.md#auth), [organizations](./architecture.md#organizations)                                      | `apps/api/src/auth.ts`, `apps/api/src/routes.ts`, `packages/db/src/schema.ts`                                        |
-| Tickets and Jira              | [Tickets](./architecture.md#tickets)                                                                                  | `apps/api/src/tickets/routes.ts`, `apps/api/src/jira/`, `packages/core/src/ticket.ts`                                |
-| Pricing and specs             | [Pricing](./architecture.md#pricing)                                                                                  | `packages/core/src/bounty.ts`, `packages/core/src/pricing/`, `apps/api/src/sizing/`, `apps/api/src/bounty/`          |
+| Bounties and Jira             | [Bounties](./architecture.md#bounties)                                                                                | `apps/api/src/bounties/routes.ts`, `apps/api/src/jira/`, `packages/core/src/bounty.ts`                               |
+| Pricing and specs             | [Pricing](./architecture.md#pricing)                                                                                  | `packages/core/src/sizing.ts`, `packages/core/src/pricing/`, `apps/api/src/sizing/`, `apps/api/src/pricing/`         |
 | GitHub snapshots              | [GitHub](./architecture.md#github), [App setup](./github-apps.md)                                                     | `apps/api/src/github/`, `packages/github/`                                                                           |
 | Analysis and sandboxes        | [Worker contract](../apps/worker/README.md)                                                                           | `apps/worker/src/tools/`, `apps/api/src/sandbox/routes.ts`, `packages/core/src/slice/`, `packages/core/src/sandbox/` |
 | Web and extension             | [Dependency direction](./architecture.md#dependency-direction), [extension setup](../README.md#the-vs-code-extension) | `apps/web/src/App.tsx`, `apps/web/src/routes.ts`, `apps/extension/src/commands.ts`, `packages/client/`               |
@@ -37,20 +37,20 @@ product proposals and historical explainers are optional design context.
 Apps use packages; apps never import each other. Core has no dependencies.
 The full import rules are in [architecture](./architecture.md#dependency-direction).
 
-| Directory                | Workspace name              | Responsibility                                                                     |
-| ------------------------ | --------------------------- | ---------------------------------------------------------------------------------- |
-| `packages/core`          | `sandbox-factory`           | Domain rules: handles, tickets, pricing, selection, analysis, slices and sandboxes |
-| `packages/shared`        | `@sandbox-factory/shared`   | Wire schemas and shared DTOs                                                       |
-| `packages/db`            | `@sandbox-factory/db`       | Drizzle schema, migrations, Postgres and object storage                            |
-| `packages/jira`          | `@sandbox-factory/jira`     | Atlassian OAuth and Jira client                                                    |
-| `packages/github`        | `@sandbox-factory/github`   | GitHub App credentials, API and webhooks                                           |
-| `packages/client`        | `@sandbox-factory/client`   | Platform-neutral typed API client                                                  |
-| `apps/api`               | `@sandbox-factory/api`      | Hono API and background orchestration                                              |
-| `apps/web`               | `@sandbox-factory/web`      | React dashboard                                                                    |
-| `apps/worker`            | `@sandbox-factory/worker`   | Private analysis, scope/fixture agents and sandbox builds                          |
-| `apps/extension`         | `sandbox-factory-vscode`    | VS Code task commands                                                              |
-| `tooling/tsconfig`       | `@sandbox-factory/tsconfig` | Shared compiler settings                                                           |
-| `tooling/coverage-guard` | `@sandbox-factory/coverage` | Detect source files omitted from coverage                                          |
+| Directory                | Workspace name              | Responsibility                                                                      |
+| ------------------------ | --------------------------- | ----------------------------------------------------------------------------------- |
+| `packages/core`          | `sandbox-factory`           | Domain rules: handles, bounties, pricing, selection, analysis, slices and sandboxes |
+| `packages/shared`        | `@sandbox-factory/shared`   | Wire schemas and shared DTOs                                                        |
+| `packages/db`            | `@sandbox-factory/db`       | Drizzle schema, migrations, Postgres and object storage                             |
+| `packages/jira`          | `@sandbox-factory/jira`     | Atlassian OAuth and Jira client                                                     |
+| `packages/github`        | `@sandbox-factory/github`   | GitHub App credentials, API and webhooks                                            |
+| `packages/client`        | `@sandbox-factory/client`   | Platform-neutral typed API client                                                   |
+| `apps/api`               | `@sandbox-factory/api`      | Hono API and background orchestration                                               |
+| `apps/web`               | `@sandbox-factory/web`      | React dashboard                                                                     |
+| `apps/worker`            | `@sandbox-factory/worker`   | Private analysis, scope/fixture agents and sandbox builds                           |
+| `apps/extension`         | `sandbox-factory-vscode`    | VS Code task commands                                                               |
+| `tooling/tsconfig`       | `@sandbox-factory/tsconfig` | Shared compiler settings                                                            |
+| `tooling/coverage-guard` | `@sandbox-factory/coverage` | Detect source files omitted from coverage                                           |
 
 ## Keeping context small
 

@@ -29,7 +29,7 @@ import {
 } from "../src/sizing/tools/revise-spec.js";
 import { sizeBountyTool } from "../src/sizing/tools/size-bounty.js";
 
-const ticket = {
+const bounty = {
   summary: "Add CSV export",
   descriptionText: "Export the filtered table.",
   issueType: "Story",
@@ -250,20 +250,20 @@ test("the draft tool's prompt names every kind and its own limits", () => {
 
 test("the draft is asked for with the ticket's components and labels", () => {
   assert.equal(
-    draftSpecTool.render(ticket),
-    `Ticket data:\n${JSON.stringify(ticket)}`,
+    draftSpecTool.render(bounty),
+    `Ticket data:\n${JSON.stringify(bounty)}`,
   );
   // A blank outline is no outline.
   assert.equal(
-    draftSpecTool.render({ ...ticket, repositoryOutline: "  " }),
-    `Ticket data:\n${JSON.stringify(ticket)}`,
+    draftSpecTool.render({ ...bounty, repositoryOutline: "  " }),
+    `Ticket data:\n${JSON.stringify(bounty)}`,
   );
 });
 
 test("an outline follows the ticket under its own heading, outside its JSON", () => {
   assert.equal(
-    draftSpecTool.render({ ...ticket, repositoryOutline: "- src: 3 files" }),
-    `Ticket data:\n${JSON.stringify(ticket)}\n\nRepository outline:\n- src: 3 files`,
+    draftSpecTool.render({ ...bounty, repositoryOutline: "- src: 3 files" }),
+    `Ticket data:\n${JSON.stringify(bounty)}\n\nRepository outline:\n- src: 3 files`,
   );
 });
 
@@ -522,12 +522,12 @@ const currentSpec = specDraftSchema.parse({
 
 test("a revision is asked for with the ticket, the spec without our ids, and the request", () => {
   const rendered = expandSpecTool.render({
-    ticket,
+    bounty,
     spec: currentSpec,
     request: { mode: "expand", kinds: ["boundary"] },
   });
-  const [ticketPart, specPart, requestPart] = rendered.split("\n\n");
-  assert.equal(ticketPart, `Ticket data:\n${JSON.stringify(ticket)}`);
+  const [bountyPart, specPart, requestPart] = rendered.split("\n\n");
+  assert.equal(bountyPart, `Ticket data:\n${JSON.stringify(bounty)}`);
   assert.match(specPart ?? "", /^Current spec:\n/);
   // Ids and origins are the store's, not the model's to keep or change.
   assert.doesNotMatch(specPart ?? "", /"id":|"origin":/);

@@ -19,12 +19,12 @@ import type { PgTable } from "drizzle-orm/pg-core";
 import * as schema from "../src/schema.js";
 import * as analysisSchema from "../src/schema/analysis.js";
 import * as authSchema from "../src/schema/auth.js";
-import * as bountySchema from "../src/schema/bounty.js";
+import * as pricingSchema from "../src/schema/pricing.js";
 import * as githubSchema from "../src/schema/github.js";
 import * as jiraSchema from "../src/schema/jira.js";
 import * as organizationSchema from "../src/schema/organizations.js";
 import * as sandboxSchema from "../src/schema/sandbox.js";
-import * as ticketSchema from "../src/schema/ticket.js";
+import * as bountySchema from "../src/schema/bounty.js";
 
 /** The table name Postgres knows, which is what a foreign key resolves to. */
 function tableName(table: PgTable): string {
@@ -38,11 +38,11 @@ test("the barrel re-exports every table each module declares", () => {
     authSchema,
     organizationSchema,
     jiraSchema,
-    bountySchema,
+    pricingSchema,
     githubSchema,
     analysisSchema,
     sandboxSchema,
-    ticketSchema,
+    bountySchema,
   ]) {
     for (const [name, value] of Object.entries(module)) {
       assert.equal(

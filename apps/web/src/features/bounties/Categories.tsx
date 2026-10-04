@@ -119,22 +119,22 @@ function CategoryTile({
 }
 
 /**
- * The board's proposals by the reason each ticket was picked, above the
+ * The board's proposals by the reason each bounty was picked, above the
  * list they narrow.
  *
- * A run takes a ticket because it fits a category, so the categories are
+ * A run takes a bounty because it fits a category, so the categories are
  * the natural way to walk what a run produced: all the blockers, then all
  * the paper cuts. Each tile says how many the board has and, pressed, makes
  * the list below show those. The six are always the same six in the same
  * order, a category with nothing in it shown but not pressable, so a tile
  * does not move when a count reaches zero.
  *
- * After them, the tickets no run picked for a reason, which would
+ * After them, the bounties no run picked for a reason, which would
  * otherwise be reachable only by reading the whole list for the rows with
  * nothing under their title. It is the one tile the page names itself: it
  * is not in the registry the other six come from.
  *
- * A ticket picked for two categories is counted in both, which is why the
+ * A bounty picked for two categories is counted in both, which is why the
  * tiles can sum past "All".
  */
 export function CategoryNav({

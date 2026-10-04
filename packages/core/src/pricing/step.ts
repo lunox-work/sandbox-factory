@@ -1,7 +1,7 @@
 /**
  * The scenario step: what a reviewer's additions to a spec do to its size.
  *
- * A ticket's base size is the model's, from the ticket alone, or a
+ * A bounty's base size is the model's, from the bounty alone, or a
  * reviewer's resize. The step moves it up by half sizes (S → S+ → M) as
  * the spec gains weight after the base was set, and back down as that
  * weight is trimmed. A fresh draft has added nothing, so a fresh sizing is
@@ -25,7 +25,7 @@ import {
   PRICED_BOUNTY_COMPLEXITIES,
   type PricedComplexity,
   type WholeComplexity,
-} from "../bounty.js";
+} from "../sizing.js";
 import { scenarioKey, type ScenarioKind, type SpecDraft } from "./spec.js";
 import {
   pointsOf,
@@ -201,7 +201,7 @@ function stepFrom(
  * counted.
  *
  * `sized` is the revision the base was set against: the draft of the run
- * that sized the ticket. `current` is the revision the proposal points at
+ * that sized the bounty. `current` is the revision the proposal points at
  * now. Null when either has a scenario without a weight: a spec drafted
  * before weights has no step until the proposal is re-priced.
  */

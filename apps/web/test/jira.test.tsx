@@ -824,7 +824,7 @@ test("a proposal opens over the list, which keeps its place", async () => {
   await userEvent.click(await screen.findByText("Ticket 1"));
 
   const panel = await screen.findByTestId("proposal-panel");
-  expect(within(panel).getByRole("tab", { name: /bounty/i })).toBeDefined();
+  expect(within(panel).getByRole("tab", { name: "Price" })).toBeDefined();
   expect(within(panel).getByRole("tab", { name: /spec/i })).toBeDefined();
   expect(within(panel).getByText("A few files.")).toBeDefined();
 
@@ -1092,8 +1092,8 @@ test("a failed ticket read stays in the Spec tab with a retry", async () => {
   expect(
     within(panel).getByRole("button", { name: /try again/i }),
   ).toBeDefined();
-  // The Bounty tab is unaffected: the proposal itself loaded.
-  await userEvent.click(within(panel).getByRole("tab", { name: /bounty/i }));
+  // The Price tab is unaffected: the proposal itself loaded.
+  await userEvent.click(within(panel).getByRole("tab", { name: "Price" }));
   expect(within(panel).getByText("A few files.")).toBeDefined();
 });
 
@@ -1608,7 +1608,7 @@ test("the ticket is read when the peek opens, so the Spec tab is instant once it
 
   await userEvent.click(await screen.findByText("Ticket 1"));
 
-  // Open at once, on the Bounty tab, with the proposal already there.
+  // Open at once, on the Price tab, with the proposal already there.
   const panel = await screen.findByTestId("proposal-panel");
   expect(within(panel).getByText("A few files.")).toBeDefined();
   // The read started with the click, not with the tab.

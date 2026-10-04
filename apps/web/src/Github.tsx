@@ -95,7 +95,7 @@ export function describeGithubOutcome(
         tone: "ok",
         title: "GitHub connected",
         detail:
-          "Register the repositories this workspace's tickets are about. We track where each default branch points, never what is in it.",
+          "Register the repositories this workspace's bounties are about. We track where each default branch points, never what is in it.",
       };
     case "pick":
       return {

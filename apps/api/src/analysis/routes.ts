@@ -45,7 +45,7 @@ export interface AnalysisRouteOptions {
   /** The proposals agent runs work for, and the repository each is about. */
   readonly proposals: Pick<BountyProposalStore, "get" | "list">;
   readonly specs: Pick<BountySpecStore, "get">;
-  /** For naming the board a proposal's ticket came through. */
+  /** For naming the board a proposal's bounty came through. */
   readonly boards: Pick<JiraBoardStore, "list">;
 }
 /** Proposals one repository's picker lists, newest first. */
@@ -297,7 +297,7 @@ export function mountAnalysisRoutes(
     );
   });
   /**
-   * The scope agent proposes a slice for one ticket. Like a slice, it reads
+   * The scope agent proposes a slice for one bounty. Like a slice, it reads
    * the snapshot's graph, so the graphify run goes first and the scope run
    * waits for it.
    */
@@ -441,7 +441,7 @@ export function mountAnalysisRoutes(
     return c.json(analysisRunResponseSchema.parse({ run: result.run }), 202);
   });
   /**
-   * Proposals with a spec whose ticket is about this repository: one that
+   * Proposals with a spec whose bounty is about this repository: one that
    * names it, or one from a board linked to it. Written here or imported,
    * the same list.
    */

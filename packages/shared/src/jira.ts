@@ -334,9 +334,9 @@ export const jiraIssueDtoSchema = z.object({
  * `jiraIssueDtoSchema` above still has no description, so a board or
  * backlog read cannot pull a client's ticket contents into a list, a log or
  * a cache. The guarantee is about lists; a ticket's text is stored on the
- * ticket (`ticketDtoSchema`), which a run writes from its own read of the
- * issue, and showing someone the ticket they clicked on is the point of the
- * integration.
+ * bounty it is imported as (`bountyDtoSchema`), which a run writes from its
+ * own read of the issue, and showing someone the ticket they clicked on is
+ * the point of the integration.
  *
  * Nothing here is persisted. The detail route reads Jira live and returns it.
  *

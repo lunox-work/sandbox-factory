@@ -1,302 +1,252 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { stepUp, type SpecDraft } from "sandbox-factory";
+import * as core from "sandbox-factory";
 
 import {
-  bountyComplexitySchema,
-  bountyProposalDtoSchema,
-  bountyRunKindSchema,
-  bountyRunOutcomeSchema,
-  createRunSchema,
-  pricedComplexitySchema,
-  resizeProposalSchema,
-  putRateCardSchema,
-  rateCardSnapshotSchema,
-  respecProposalSchema,
-  sizingResultSchema,
-  stepResultSchema,
-} from "../src/bounty.js";
+  createSandboxSchema,
+  createBountySchema,
+  proposeBountySchema,
+  bountyDtoSchema,
+  bountyListResponseSchema,
+  DEFAULT_ISSUE_TYPE,
+  BOUNTY_LIMITS,
+  bountySpecHash,
+  linkSandboxSourceSchema,
+  sandboxDtoSchema,
+  updateBountySchema,
+} from "../src/index.js";
 
-test("rate cards normalize currency and require monotonic safe amounts", () => {
-  const parsed = putRateCardSchema.parse({
-    expectedRevision: 0,
-    currency: "usd",
-    xsMinor: 100,
-    sMinor: 100,
-    mMinor: 200,
-    lMinor: 300,
-    xlMinor: 400,
-  });
-  assert.equal(parsed.currency, "USD");
-  assert.equal(
-    putRateCardSchema.safeParse({ ...parsed, sMinor: 500 }).success,
-    false,
-  );
-  assert.equal(
-    putRateCardSchema.safeParse({ ...parsed, sMinor: Number.MAX_VALUE })
-      .success,
-    false,
-  );
-});
+const stamp = "2026-10-03T00:00:00.000Z";
 
-test("unsized sizing results require a reason and sized results reject one", () => {
-  assert.equal(
-    sizingResultSchema.safeParse({
-      complexity: "unsized",
-      confidence: "low",
-      rationale: "The requirements are incomplete.",
-    }).success,
-    false,
-  );
-  assert.equal(
-    sizingResultSchema.safeParse({
-      complexity: "S",
-      confidence: "high",
-      rationale: "A localized change.",
-      unsizedReason: "missing requirements",
-    }).success,
-    false,
-  );
-});
-
-test("run request ids are UUIDs", () => {
-  assert.equal(
-    createRunSchema.safeParse({
-      requestId: "28bb313f-252a-4a1d-b656-558a215b604b",
-    }).success,
-    true,
-  );
-  assert.equal(
-    createRunSchema.safeParse({ requestId: "retry-me" }).success,
-    false,
-  );
-});
-
-test("XS is required on rate writes and accepted in sizing and review", () => {
-  const card = {
-    currency: "USD",
-    xsMinor: 50,
-    sMinor: 100,
-    mMinor: 200,
-    lMinor: 300,
-    xlMinor: 400,
-    expectedRevision: 0,
-  };
-  for (const xsMinor of [undefined, 0, 101]) {
-    assert.equal(
-      putRateCardSchema.safeParse({ ...card, xsMinor }).success,
-      false,
-    );
-  }
-  assert.equal(putRateCardSchema.parse(card).xsMinor, 50);
-  assert.equal(
-    sizingResultSchema.parse({
-      complexity: "XS",
-      confidence: "high",
-      rationale: "One label correction.",
-    }).complexity,
-    "XS",
-  );
-  assert.equal(
-    resizeProposalSchema.parse({ complexity: "XS", expectedRevision: 1 })
-      .complexity,
-    "XS",
-  );
-});
-
-test("USD write limits preserve historical rate-card snapshots", () => {
-  const card = {
-    currency: "usd",
-    xsMinor: 1000,
-    sMinor: 5800,
-    mMinor: 10500,
-    lMinor: 15300,
-    xlMinor: 100000,
-    expectedRevision: 0,
-  };
-  assert.equal(putRateCardSchema.safeParse(card).success, true);
-  assert.equal(
-    putRateCardSchema.safeParse({ ...card, xlMinor: 100001 }).success,
-    false,
-  );
-  assert.equal(
-    putRateCardSchema.safeParse({ ...card, currency: "JPY", xlMinor: 200000 })
-      .success,
-    true,
-  );
-  assert.equal(
-    rateCardSnapshotSchema.safeParse({ ...card, xlMinor: 200000, revision: 1 })
-      .success,
-    true,
-  );
-});
-
-test("half sizes are prices, never the model's answer or a resize", () => {
-  for (const size of ["XS+", "S+", "M+", "L+"]) {
-    assert.equal(pricedComplexitySchema.safeParse(size).success, true);
-    assert.equal(bountyComplexitySchema.safeParse(size).success, true);
-    assert.equal(
-      sizingResultSchema.safeParse({
-        complexity: size,
-        confidence: "high",
-        rationale: "Between two sizes.",
-      }).success,
-      false,
-    );
-    assert.equal(
-      resizeProposalSchema.safeParse({ complexity: size, expectedRevision: 1 })
-        .success,
-      false,
-    );
-  }
-  // There is no size past XL to step into.
-  assert.equal(pricedComplexitySchema.safeParse("XL+").success, false);
-});
-
-const sized: SpecDraft = {
-  feature: "Invitations",
-  background: [],
-  scenarios: [
-    {
-      id: "s1",
-      kind: "happy",
-      title: "Sent",
-      steps: [{ keyword: "Then", text: "it is sent" }],
-      origin: "draft",
-      weight: "light",
-    },
-  ],
-  openQuestions: [],
-  assumptions: [],
+const summary = {
+  id: "bty_1",
+  organizationId: "org_1",
+  number: 7,
+  key: "B-7",
+  title: "Invitations are not sent",
+  issueType: "Bug",
+  priority: null,
+  labels: ["email"],
+  origin: "manual",
+  repoId: null,
+  revision: 1,
+  jira: null,
+  proposal: null,
+  sandbox: null,
+  createdAt: stamp,
+  updatedAt: stamp,
 };
 
-test("a step as core computes it is a step the wire carries", () => {
-  const grown: SpecDraft = {
-    ...sized,
-    scenarios: [
-      ...sized.scenarios,
-      {
-        id: "s2",
-        kind: "recovery",
-        title: "Retried",
-        steps: [{ keyword: "Then", text: "it is sent again" }],
-        origin: "expansion",
-        weight: "heavy",
-      },
-    ],
-  };
-  const step = stepUp("S", sized, grown);
-  assert.deepEqual(stepResultSchema.parse(step), step);
-  // A base is a whole size: a half size is only ever where a step lands.
+test("a bounty written here needs only a title", () => {
+  assert.deepEqual(createBountySchema.parse({ title: "  Fix login  " }), {
+    title: "Fix login",
+    description: "",
+    issueType: "Task",
+    priority: null,
+    labels: [],
+    repoId: null,
+  });
+  assert.equal(createBountySchema.safeParse({ title: " " }).success, false);
+  assert.equal(createBountySchema.safeParse({}).success, false);
+});
+
+test("a bounty written here is bounded at the description limit", () => {
   assert.equal(
-    stepResultSchema.safeParse({ ...step, base: "S+" }).success,
+    createBountySchema.safeParse({
+      title: "t",
+      description: "x".repeat(20_000),
+    }).success,
+    true,
+  );
+  assert.equal(
+    createBountySchema.safeParse({
+      title: "t",
+      description: "x".repeat(20_001),
+    }).success,
     false,
   );
   assert.equal(
-    stepResultSchema.safeParse({
-      ...step,
-      settings: { ...step?.settings, pointsPerStep: 0 },
+    createBountySchema.safeParse({ title: "x".repeat(256) }).success,
+    false,
+  );
+});
+
+test("labels are trimmed and kept once each", () => {
+  assert.deepEqual(
+    createBountySchema.parse({ title: "t", labels: [" ui ", "ui", "email"] })
+      .labels,
+    ["ui", "email"],
+  );
+  assert.equal(
+    createBountySchema.safeParse({
+      title: "t",
+      labels: Array.from({ length: 21 }, (_, i) => `l${i}`),
     }).success,
     false,
   );
 });
 
-test("a proposal carries its step, null when there is none", () => {
-  const proposal = {
-    id: "bpr_1",
-    organizationId: "org_1",
-    runId: "brn_1",
-    ticketId: "tkt_1",
-    issueKey: "APP-1",
-    title: "Add a checkout form",
-    specHash: "a".repeat(64),
-    specHashVersion: 1,
-    rateCard: {
-      currency: "USD",
-      xsMinor: 1,
-      sMinor: 2,
-      mMinor: 3,
-      lMinor: 4,
-      xlMinor: 5,
-      revision: 1,
-    },
-    modelComplexity: "S",
-    modelConfidence: "high",
-    modelRationale: "One form.",
-    unsizedReason: null,
-    inputTruncated: false,
-    actualModel: "model",
-    promptVersion: "jira-size-v2",
-    complexity: "S+",
-    sizedBy: "model",
-    resizedBy: null,
-    resizedAt: null,
-    amountMinor: 3,
-    currency: "USD",
-    status: "proposed",
-    revision: 1,
-    specRevision: 2,
-    step: stepUp("S", sized, sized),
-    decidedAt: null,
-    decidedBy: null,
-    decisionDeliveryPolicy: null,
-    createdAt: "2026-10-01T00:00:00.000Z",
-    updatedAt: "2026-10-01T00:00:00.000Z",
-  };
-  assert.equal(bountyProposalDtoSchema.safeParse(proposal).success, true);
+test("unknown fields are refused rather than dropped", () => {
   assert.equal(
-    bountyProposalDtoSchema.safeParse({ ...proposal, step: null }).success,
+    createBountySchema.safeParse({ title: "t", origin: "jira" }).success,
+    false,
+  );
+});
+
+test("a change names its revision and at least one field", () => {
+  assert.equal(
+    updateBountySchema.safeParse({ expectedRevision: 1 }).success,
+    false,
+  );
+  assert.deepEqual(
+    updateBountySchema.parse({ expectedRevision: 2, repoId: null }),
+    { expectedRevision: 2, repoId: null },
+  );
+  assert.equal(updateBountySchema.safeParse({ title: "t" }).success, false);
+});
+
+test("a proposal for a bounty is named by its request id", () => {
+  assert.equal(
+    proposeBountySchema.safeParse({
+      requestId: "8f0b4a1e-9a77-4c35-9a52-3f0f5b2d3c11",
+    }).success,
     true,
   );
-  // The model's own size stays whole whatever the step made of it.
   assert.equal(
-    bountyProposalDtoSchema.safeParse({ ...proposal, modelComplexity: "S+" })
+    proposeBountySchema.safeParse({ requestId: "x" }).success,
+    false,
+  );
+});
+
+test("a bounty reads with or without a Jira issue, a proposal and a sandbox", () => {
+  const detail = {
+    ...summary,
+    description: "Steps",
+    components: [],
+    inputTruncated: false,
+    createdBy: "user_1",
+  };
+  assert.equal(bountyDtoSchema.safeParse(detail).success, true);
+  assert.equal(
+    bountyDtoSchema.safeParse({
+      ...detail,
+      origin: "jira",
+      key: "APP-3",
+      jira: {
+        issueId: "jri_1",
+        boardId: "jrb_1",
+        connectionId: "jrc_1",
+        key: "APP-3",
+        url: "https://acme.atlassian.net/browse/APP-3",
+        removedAt: null,
+      },
+      proposal: {
+        id: "bpr_1",
+        status: "proposed",
+        complexity: "M",
+        amountMinor: 10_500,
+        currency: "USD",
+      },
+    }).success,
+    true,
+  );
+  assert.equal(
+    bountyDtoSchema.safeParse({
+      ...detail,
+      sandbox: {
+        id: "sbx_1",
+        status: "published",
+        currentVersionId: "sbv_1",
+        sourceRepoId: "ghr_1",
+      },
+    }).success,
+    true,
+  );
+  // A sandbox made without a repository says so, rather than leaving it out.
+  const bare = {
+    id: "sbx_1",
+    status: "draft",
+    currentVersionId: null,
+    sourceRepoId: null,
+  };
+  assert.equal(
+    bountyDtoSchema.safeParse({ ...detail, sandbox: bare }).success,
+    true,
+  );
+  const { sourceRepoId: _unsaid, ...silent } = bare;
+  assert.equal(
+    bountyDtoSchema.safeParse({ ...detail, sandbox: silent }).success,
+    false,
+  );
+  // The sandbox is said either way: absent is null, never left out.
+  const { sandbox: _sandbox, ...unsaid } = detail;
+  assert.equal(bountyDtoSchema.safeParse(unsaid).success, false);
+  assert.equal(
+    bountyDtoSchema.safeParse({
+      ...detail,
+      sandbox: {
+        id: "sbx_1",
+        status: "building",
+        currentVersionId: null,
+        sourceRepoId: null,
+      },
+    }).success,
+    false,
+  );
+  assert.equal(
+    bountyListResponseSchema.safeParse({
+      bounties: [summary],
+      nextCursor: null,
+    }).success,
+    true,
+  );
+});
+
+test("a sandbox belongs to one bounty, with or without a repository", () => {
+  assert.deepEqual(createSandboxSchema.parse({ bountyId: "bty_1" }), {
+    bountyId: "bty_1",
+    sourceRepoId: null,
+  });
+  assert.deepEqual(
+    createSandboxSchema.parse({ bountyId: "bty_1", sourceRepoId: "ghr_1" }),
+    { bountyId: "bty_1", sourceRepoId: "ghr_1" },
+  );
+  // No sandbox without its bounty, and no list of them.
+  assert.equal(
+    createSandboxSchema.safeParse({ sourceRepoId: "ghr_1" }).success,
+    false,
+  );
+  assert.equal(
+    createSandboxSchema.safeParse({ bountyId: "bty_1", bountyIds: ["bty_1"] })
       .success,
     false,
   );
+  // One made without a repository reads back as one, and links one later.
+  assert.equal(
+    sandboxDtoSchema.parse({
+      id: "sbx_1",
+      slug: "abc123def456",
+      status: "draft",
+      publicRepoId: null,
+      currentVersionId: null,
+      bountyId: "bty_1",
+      sourceRepoId: null,
+      createdAt: "2026-10-04T00:00:00.000Z",
+      updatedAt: "2026-10-04T00:00:00.000Z",
+    }).sourceRepoId,
+    null,
+  );
+  assert.deepEqual(linkSandboxSourceSchema.parse({ sourceRepoId: "ghr_1" }), {
+    sourceRepoId: "ghr_1",
+  });
+  for (const body of [{}, { sourceRepoId: "" }, { sourceRepoId: null }])
+    assert.equal(linkSandboxSourceSchema.safeParse(body).success, false);
 });
 
-test("a respec names the proposal revision, its request and what it asks", () => {
-  const body = {
-    expectedRevision: 3,
-    requestId: "28bb313f-252a-4a1d-b656-558a215b604b",
-    request: { mode: "trim", removeScenarioIds: ["s2"] },
-  };
-  assert.deepEqual(respecProposalSchema.parse(body), body);
-  assert.equal(
-    respecProposalSchema.safeParse({ ...body, request: undefined }).success,
-    false,
-  );
-  assert.equal(
-    respecProposalSchema.safeParse({ ...body, requestId: "again" }).success,
-    false,
-  );
-  // A respec run, and what its outcome says the change did.
-  assert.equal(bountyRunKindSchema.parse("respec"), "respec");
-  assert.deepEqual(
-    bountyRunOutcomeSchema.parse({
-      externalIssueId: "10001",
-      issueKey: "NOX-1",
-      status: "proposed",
-      previousComplexity: "S",
-      pointsDelta: -4,
-    }),
-    {
-      externalIssueId: "10001",
-      issueKey: "NOX-1",
-      status: "proposed",
-      previousComplexity: "S",
-      pointsDelta: -4,
-    },
-  );
-  assert.equal(
-    bountyRunOutcomeSchema.safeParse({
-      externalIssueId: "10001",
-      issueKey: "NOX-1",
-      status: "proposed",
-      pointsDelta: 1.5,
-    }).success,
-    false,
-  );
+test("re-exports the one bounty hash, bounds and default, not copies", async () => {
+  assert.equal(bountySpecHash, core.bountySpecHash);
+  assert.equal(BOUNTY_LIMITS, core.BOUNTY_LIMITS);
+  assert.equal(DEFAULT_ISSUE_TYPE, core.DEFAULT_ISSUE_TYPE);
+  assert.equal((await bountySpecHash("a", "b", "Task")).length, 64);
 });

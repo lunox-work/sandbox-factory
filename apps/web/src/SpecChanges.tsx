@@ -74,11 +74,11 @@ const RUN_FAILURES: Readonly<Record<string, string>> = {
 const OUTCOME_LINES: Readonly<Record<string, string>> = {
   nothing_added: "Nothing new to add: the spec already covers that.",
   proposal_stale:
-    "The ticket changed since it was sized. Re-analyze it before changing its scenarios.",
+    "The bounty changed since it was sized. Re-analyze it before changing its scenarios.",
   proposal_changed:
     "The proposal changed while this ran, so nothing was saved. Try again.",
   spec_failed: "The model's answer could not be used. Try again.",
-  issue_unavailable: "Jira no longer has this ticket.",
+  issue_unavailable: "Jira no longer has this bounty.",
   jira_rate_limited: "Jira is busy. Try again in a minute.",
 };
 
@@ -360,7 +360,7 @@ const textareaClass =
 
 /**
  * The spec's open questions, each with a field for its answer. Any number
- * may be answered at once, since a ticket's questions usually come as a
+ * may be answered at once, since a bounty's questions usually come as a
  * handful; the blank ones are left open.
  */
 export function AnswerForm({

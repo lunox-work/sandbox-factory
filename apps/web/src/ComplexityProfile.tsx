@@ -1,13 +1,13 @@
 import { useObservation } from "./data/observe";
 import { clients } from "./data/query";
 /**
- * A proposal's complexity profile, in the Bounty tab under the size: the
+ * A proposal's complexity profile, in the Price tab under the size: the
  * measured evidence its price will point back to, one row per feature.
  *
  * The profile is measured in the background after sizing (a scope agent,
  * then a slice, on the analysis worker), so the hook keeps reading while it
  * is in flight. A proposal that was never profiled shows nothing: neither
- * its ticket nor its board named a repository when it was sized.
+ * its bounty nor its board named a repository when it was sized.
  */
 
 import type { BountyProfileDto } from "@sandbox-factory/shared";
@@ -138,11 +138,11 @@ export function ComplexityProfileBlock({
   ].filter((demand): demand is string => typeof demand === "string");
   const rows: [string, React.ReactNode][] = [
     [
-      "Ticket",
-      `${profile.ticket.issueType}${
-        profile.ticket.priority === null
+      "Bounty",
+      `${profile.bounty.issueType}${
+        profile.bounty.priority === null
           ? ""
-          : `, priority ${profile.ticket.priority}`
+          : `, priority ${profile.bounty.priority}`
       }`,
     ],
     [

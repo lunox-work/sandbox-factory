@@ -69,7 +69,7 @@ export const specDraftSchema = z
       .max(SPEC_LIMITS.assumptions),
   })
   .superRefine((draft, ctx) => {
-    // A ticket too thin for a single scenario is a real answer, as long as
+    // A bounty too thin for a single scenario is a real answer, as long as
     // the draft says what it was missing.
     if (draft.scenarios.length === 0 && draft.openQuestions.length === 0) {
       ctx.addIssue({
@@ -105,7 +105,7 @@ export const bountySpecDtoSchema = z.object({
   organizationId: z.string().min(1),
   proposalId: z.string().min(1),
   revision: z.number().int().positive(),
-  /** The ticket this revision was drafted from, as the proposal hashes it. */
+  /** The bounty this revision was drafted from, as the proposal hashes it. */
   specHash: z.string().length(64),
   specHashVersion: z.number().int().positive(),
   draft: specDraftSchema,
@@ -136,7 +136,7 @@ export const bountySpecRevisionDtoSchema = z.object({
 
 /**
  * `GET /proposals/:id/spec`. `spec` is null for a proposal with none: one
- * sized before specs existed, or one whose ticket was too large or too thin
+ * sized before specs existed, or one whose bounty was too large or too thin
  * to draft from.
  */
 export const proposalSpecResponseSchema = z.object({

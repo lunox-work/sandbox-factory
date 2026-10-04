@@ -282,7 +282,7 @@ export function treeFacts(
  * each module inside a path that names a directory (`packages` touches every
  * `packages/*`). Paths matching no module are ignored. Sorted, no repeats.
  *
- * What turns the files or directories a ticket names into the modules the
+ * What turns the files or directories a bounty names into the modules the
  * pricing ladder counts as touched.
  */
 export function modulesFor(

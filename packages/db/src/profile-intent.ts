@@ -1,4 +1,4 @@
-import type { ProfileTicket } from "sandbox-factory";
+import type { ProfileBounty } from "sandbox-factory";
 import type { Transaction } from "./errors.js";
 import { bountyProfile } from "./schema.js";
 import { generateId } from "./mapping.js";
@@ -12,7 +12,7 @@ export async function insertProfileIntent(
     specRevision: number;
     specHash: string;
     snapshotId: string;
-    ticket: ProfileTicket;
+    bounty: ProfileBounty;
   },
 ): Promise<void> {
   await tx

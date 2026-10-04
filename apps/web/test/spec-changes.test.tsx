@@ -62,7 +62,7 @@ function finished(outcome: object | null, overrides: object = {}) {
       id: "brn_respec",
       organizationId: "org_1",
       boardId: null,
-      ticketId: null,
+      bountyId: null,
       sourceProposalId: "bpr_1",
       sourceRevision: 4,
       respec: null,
@@ -373,7 +373,7 @@ test("a refused change says why, and one already running is followed instead", a
         {
           code: "proposal_stale",
           error:
-            "The ticket changed since it was sized. Re-analyze it before changing its scenarios.",
+            "The bounty changed since it was sized. Re-analyze it before changing its scenarios.",
         },
         { status: 409 },
       ),
@@ -384,7 +384,7 @@ test("a refused change says why, and one already running is followed instead", a
     within(await openMenu(user)).getByRole("menuitem", { name: "Recovery" }),
   );
   expect((await screen.findByRole("alert")).textContent).toBe(
-    "The ticket changed since it was sized. Re-analyze it before changing its scenarios.",
+    "The bounty changed since it was sized. Re-analyze it before changing its scenarios.",
   );
   unmount();
 
@@ -424,7 +424,7 @@ test("a run that ends without a change says why", () => {
     ),
   ).toMatchObject({
     tone: "error",
-    line: expect.stringMatching(/^The ticket changed/),
+    line: expect.stringMatching(/^The bounty changed/),
   });
   expect(
     respecResult(

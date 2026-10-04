@@ -87,7 +87,7 @@ export function RepositoryAnalysis({
   const [entryPoints, setEntryPoints] = useState<string[]>([]);
   const [budget, setBudget] = useState({ maxFiles: 40, maxDepth: 3 });
   const [includeInferred, setIncludeInferred] = useState(false);
-  // Which agent's ticket picker is open, if any.
+  // Which agent's bounty picker is open, if any.
   const [agent, setAgent] = useState<"scope" | "fixtures" | null>(null);
   const selectedRef = useRef(selected);
   useEffect(() => {
@@ -434,7 +434,7 @@ export function RepositoryAnalysis({
             {!slicing && agent === "scope" && (
               <p className="text-muted-foreground text-xs">
                 An agent reads this commit&rsquo;s source with the
-                ticket&rsquo;s spec and proposes entry points that cut at the
+                bounty&rsquo;s spec and proposes entry points that cut at the
                 code&rsquo;s seams. Nothing is sliced until you review the
                 proposal and slice it.
               </p>

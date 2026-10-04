@@ -9,7 +9,7 @@ import {
 
 const profile = {
   version: "profile-v1",
-  ticket: { issueType: "Bug", priority: null },
+  bounty: { issueType: "Bug", priority: null },
   slice: {
     files: 9,
     bytes: 42_000,

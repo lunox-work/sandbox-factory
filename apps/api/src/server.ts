@@ -21,7 +21,7 @@ import {
   createJiraBoardStore,
   createJiraConnectionStore,
   createJiraIssueStore,
-  createTicketStore,
+  createBountyStore,
   createObjectStore,
   createOrganizationStore,
   createProfileStore,
@@ -35,10 +35,10 @@ import { buildBanner } from "@sandbox-factory/shared";
 
 import { createAuth } from "./auth.js";
 import { createAvatarService } from "./avatars/service.js";
-import { BountyExecutor } from "./bounty/executor.js";
-import { BountyProfiler } from "./bounty/profiler.js";
-import { BountyDelivery } from "./bounty/delivery.js";
-import { BountyWatchdog } from "./bounty/watchdog.js";
+import { BountyExecutor } from "./pricing/executor.js";
+import { BountyProfiler } from "./pricing/profiler.js";
+import { BountyDelivery } from "./pricing/delivery.js";
+import { BountyWatchdog } from "./pricing/watchdog.js";
 import {
   appUrl,
   buildInfo,
@@ -89,8 +89,8 @@ const bountyProposals = createBountyProposalStore(connection.db);
 const bountySpecs = createBountySpecStore(connection.db);
 const bountyProfiles = createBountyProfileStore(connection.db);
 const jiraIssues = createJiraIssueStore(connection.db);
-/** The organization's tickets: what every proposal prices, from any source. */
-const tickets = createTicketStore(connection.db);
+/** The organization's bounties: what every proposal prices, from any source. */
+const bounties = createBountyStore(connection.db);
 const rateCards = createRateCardStore(connection.db);
 const bountyWritebacks = createBountyWritebackStore(connection.db);
 
@@ -140,7 +140,7 @@ const deepseekSizing = deepseekSizingConfig(env);
 /**
  * The model a run calls, or undefined when neither provider is configured.
  * With both, the DeepSeek adapter answers whenever an Anthropic call fails;
- * with one, that one serves alone. Every spec and every sized ticket records
+ * with one, that one serves alone. Every spec and every sized bounty records
  * the model that actually answered, so a handover stays visible after the
  * fact.
  */
@@ -196,7 +196,7 @@ const bountyDelivery =
     : new BountyDelivery({
         writebacks: bountyWritebacks,
         proposals: bountyProposals,
-        tickets,
+        bounties,
         boards: jiraBoards,
         connections: jiraConnections,
         clientsFor: async (organizationId, connectionId) => {
@@ -216,8 +216,8 @@ const bountyDelivery =
         onBackgroundError: (code) => console.error(code),
       });
 /*
-  Sizing needs a model and nothing else: a ticket written here is sized with
-  no Jira configured at all. Only a board's runs, and a ticket still
+  Sizing needs a model and nothing else: a bounty written here is sized with
+  no Jira configured at all. Only a board's runs, and a bounty still
   following its Jira issue, need Jira; without it they fail `reconnect`.
 */
 const bountyExecutor =
@@ -228,7 +228,7 @@ const bountyExecutor =
         runs: bountyRuns,
         proposals: bountyProposals,
         issues: jiraIssues,
-        tickets,
+        bounties,
         specs: bountySpecs,
         caller,
         clientFor: runClientFor,
@@ -435,14 +435,14 @@ const app = createApp({
   github,
   analysis,
   sandbox,
-  bounty: {
+  pricing: {
     rateCards,
     runs: bountyRuns,
     boards: jiraBoards,
     proposals: bountyProposals,
     specs: bountySpecs,
     issues: jiraIssues,
-    tickets,
+    bounties,
     profiles: bountyProfiles,
     connections: jiraConnections,
     writebacks: bountyWritebacks,

@@ -13,6 +13,7 @@ const now = new Date("2026-10-02T00:00:00Z");
 const sandboxRow = (overrides: Partial<SandboxRow> = {}): SandboxRow => ({
   id: "sbx_1",
   organizationId: "owner",
+  bountyId: "bty_1",
   slug: "abc123def456",
   status: "draft",
   publicRepoId: null,
@@ -40,14 +41,14 @@ const versionRow = (
   ...overrides,
 });
 const approvedTask: ApprovedTaskSnapshot = {
-  schemaVersion: 2,
+  schemaVersion: 3,
   title: "Fix it",
   summary: "Summary",
   spec: null,
   pricing: null,
   selectedBy: "user",
   selectedAt: now.toISOString(),
-  ticketIds: [],
+  bountyId: "bty_1",
 };
 const scope: ScopeRecord = {
   editablePaths: ["src/app.ts"],
@@ -110,98 +111,183 @@ const newVersion = {
   },
 };
 
-test("create needs an owned source repository and owned tickets, then writes three tables", async () => {
+test("a sandbox is made for an owned bounty, with its repository when one is named", async () => {
   const fake = createSequencedFakeDb([
-    [{ role: "source", syncStatus: "ok" }],
-    [{ id: "tkt_1" }, { id: "tkt_2" }],
-    [sandboxRow()],
+    [{ id: "bty_1" }],
     [],
+    [{ role: "source", syncStatus: "ok" }],
+    [sandboxRow()],
     [],
   ]);
   const result = await createSandboxStore(fake.db).create("owner", {
+    bountyId: "bty_1",
     sourceRepoId: "ghr_1",
-    ticketIds: ["tkt_2", "tkt_1", "tkt_2"],
   });
   assert.equal(result.ok, true);
   if (!result.ok) return;
+  assert.equal(result.sandbox.bountyId, "bty_1");
   assert.equal(result.sandbox.sourceRepoId, "ghr_1");
-  assert.deepEqual(result.sandbox.ticketIds, ["tkt_1", "tkt_2"]);
+  // The bounty is held against a removal for as long as this runs.
+  assert.equal(fake.calls[0]?.lock, "key share");
   assert.equal(fake.calls[0]?.filtered, true);
-  assert.equal(fake.calls[2]?.kind, "insert");
-  assert.match(String(fake.calls[2]?.values?.["slug"]), /^[a-f0-9]{12}$/);
-  assert.equal(fake.calls[3]?.values?.["sourceRepoId"], "ghr_1");
+  assert.equal(fake.calls[2]?.filtered, true);
+  assert.equal(fake.calls[3]?.kind, "insert");
+  assert.equal(fake.calls[3]?.values?.["bountyId"], "bty_1");
+  assert.match(String(fake.calls[3]?.values?.["slug"]), /^[a-f0-9]{12}$/);
+  assert.equal(fake.calls[4]?.values?.["sourceRepoId"], "ghr_1");
   assert.equal(fake.calls.length, 5);
-  assert.deepEqual(
-    await createSandboxStore(createSequencedFakeDb([[]]).db).create("owner", {
-      sourceRepoId: "ghr_x",
-      ticketIds: [],
-    }),
-    { ok: false, reason: "repo_not_found" },
-  );
-  assert.deepEqual(
-    await createSandboxStore(
-      createSequencedFakeDb([[{ role: "source", syncStatus: "gone" }]]).db,
-    ).create("owner", { sourceRepoId: "ghr_x", ticketIds: [] }),
-    { ok: false, reason: "repo_not_found" },
-  );
-  assert.deepEqual(
-    await createSandboxStore(
-      createSequencedFakeDb([[{ role: "sandbox", syncStatus: "ok" }]]).db,
-    ).create("owner", { sourceRepoId: "ghr_pub", ticketIds: [] }),
-    { ok: false, reason: "repo_role" },
-  );
-  assert.deepEqual(
-    await createSandboxStore(
-      createSequencedFakeDb([
-        [{ role: "source", syncStatus: "ok" }],
-        [{ id: "tkt_1" }],
-      ]).db,
-    ).create("owner", {
-      sourceRepoId: "ghr_1",
-      ticketIds: ["tkt_1", "tkt_9"],
-    }),
-    { ok: false, reason: "ticket_not_found" },
-  );
-  // No issues: the issue lookup and insert are skipped.
-  const bare = createSequencedFakeDb([
-    [{ role: "source", syncStatus: "ok" }],
-    [sandboxRow()],
-    [],
-  ]);
-  const created = await createSandboxStore(bare.db).create("owner", {
-    sourceRepoId: "ghr_1",
-    ticketIds: [],
-  });
-  assert.equal(created.ok, true);
-  assert.equal(bare.calls.length, 3);
-  await assert.rejects(
-    createSandboxStore(
-      createSequencedFakeDb([[{ role: "source", syncStatus: "ok" }], []]).db,
-    ).create("owner", { sourceRepoId: "ghr_1", ticketIds: [] }),
-    /returned no row/,
-  );
   assert.match(sandboxSlug(), /^[a-f0-9]{12}$/);
 });
 
-test("list and get join the source and the tickets under the owner", async () => {
+test("a sandbox needs no repository: none is looked up and none is linked", async () => {
+  const bare = createSequencedFakeDb([[{ id: "bty_1" }], [], [sandboxRow()]]);
+  const created = await createSandboxStore(bare.db).create("owner", {
+    bountyId: "bty_1",
+    sourceRepoId: null,
+  });
+  assert.equal(created.ok, true);
+  if (created.ok) assert.equal(created.sandbox.sourceRepoId, null);
+  assert.equal(bare.calls.length, 3);
+  await assert.rejects(
+    createSandboxStore(
+      createSequencedFakeDb([[{ id: "bty_1" }], [], []]).db,
+    ).create("owner", { bountyId: "bty_1", sourceRepoId: null }),
+    /returned no row/,
+  );
+});
+
+test("a sandbox is refused for another owner's bounty, a second one, or an unusable repository", async () => {
+  const refused = async (
+    responses: readonly (readonly unknown[] | Error)[],
+    sourceRepoId: string | null = "ghr_1",
+  ) =>
+    createSandboxStore(createSequencedFakeDb(responses).db).create("owner", {
+      bountyId: "bty_1",
+      sourceRepoId,
+    });
+  assert.deepEqual(await refused([[]]), {
+    ok: false,
+    reason: "bounty_not_found",
+  });
+  assert.deepEqual(await refused([[{ id: "bty_1" }], [{ id: "sbx_0" }]]), {
+    ok: false,
+    reason: "bounty_has_sandbox",
+  });
+  assert.deepEqual(await refused([[{ id: "bty_1" }], [], []]), {
+    ok: false,
+    reason: "repo_not_found",
+  });
+  assert.deepEqual(
+    await refused([
+      [{ id: "bty_1" }],
+      [],
+      [{ role: "source", syncStatus: "gone" }],
+    ]),
+    { ok: false, reason: "repo_not_found" },
+  );
+  assert.deepEqual(
+    await refused([
+      [{ id: "bty_1" }],
+      [],
+      [{ role: "sandbox", syncStatus: "ok" }],
+    ]),
+    { ok: false, reason: "repo_role" },
+  );
+  // Two creates at once: the loser meets the winner's unique row.
+  const taken = Object.assign(new Error("duplicate"), { code: "23505" });
+  assert.deepEqual(await refused([[{ id: "bty_1" }], [], taken], null), {
+    ok: false,
+    reason: "bounty_has_sandbox",
+  });
+  const down = new Error("database down");
+  await assert.rejects(refused([[{ id: "bty_1" }], [], down], null), /down/);
+});
+
+test("a sandbox made without a repository has one linked once", async () => {
+  const fake = createSequencedFakeDb([
+    [sandboxRow()],
+    [],
+    [{ role: "source", syncStatus: "ok" }],
+    [],
+  ]);
+  const linked = await createSandboxStore(fake.db).linkSource(
+    "owner",
+    "sbx_1",
+    "ghr_1",
+  );
+  assert.deepEqual(
+    linked.ok ? [linked.sandbox.id, linked.sandbox.sourceRepoId] : linked,
+    ["sbx_1", "ghr_1"],
+  );
+  // Locked as cutting a version locks it, and its link read after the lock,
+  // so one linked meanwhile is seen rather than met as a duplicate key.
+  assert.equal(fake.calls[0]?.lock, "update");
+  assert.equal(fake.calls[0]?.filtered, true);
+  assert.equal(fake.calls[1]?.lock, undefined);
+  assert.equal(fake.calls[2]?.filtered, true);
+  assert.equal(fake.calls[3]?.kind, "insert");
+  assert.deepEqual(fake.calls[3]?.values, {
+    sandboxId: "sbx_1",
+    sourceRepoId: "ghr_1",
+  });
+
+  // The repository it already has is no change, and writes nothing.
+  const again = createSequencedFakeDb([
+    [sandboxRow()],
+    [{ sourceRepoId: "ghr_1" }],
+  ]);
+  assert.equal(
+    (await createSandboxStore(again.db).linkSource("owner", "sbx_1", "ghr_1"))
+      .ok,
+    true,
+  );
+  assert.equal(again.calls.length, 2);
+
+  const link = (responses: readonly (readonly unknown[])[]) =>
+    createSandboxStore(createSequencedFakeDb(responses).db).linkSource(
+      "owner",
+      "sbx_1",
+      "ghr_1",
+    );
+  // Its versions are bound to the repository it has.
+  assert.deepEqual(await link([[sandboxRow()], [{ sourceRepoId: "ghr_2" }]]), {
+    ok: false,
+    reason: "source_linked",
+  });
+  assert.deepEqual(await link([[]]), { ok: false, reason: "not-found" });
+  assert.deepEqual(await link([[sandboxRow()], [], []]), {
+    ok: false,
+    reason: "repo_not_found",
+  });
+  assert.deepEqual(
+    await link([[sandboxRow()], [], [{ role: "source", syncStatus: "gone" }]]),
+    { ok: false, reason: "repo_not_found" },
+  );
+  assert.deepEqual(
+    await link([[sandboxRow()], [], [{ role: "sandbox", syncStatus: "ok" }]]),
+    { ok: false, reason: "repo_role" },
+  );
+});
+
+test("list and get read each sandbox with its bounty and its repository, if any", async () => {
   const fake = createSequencedFakeDb([
     [
       { sandbox: sandboxRow(), sourceRepoId: "ghr_1" },
-      { sandbox: sandboxRow({ id: "sbx_2" }), sourceRepoId: "ghr_2" },
-    ],
-    [
-      { sandboxId: "sbx_1", ticketId: "tkt_b" },
-      { sandboxId: "sbx_1", ticketId: "tkt_a" },
+      {
+        sandbox: sandboxRow({ id: "sbx_2", bountyId: "bty_2" }),
+        sourceRepoId: null,
+      },
     ],
   ]);
   const list = await createSandboxStore(fake.db).list("owner");
   assert.deepEqual(
-    list.map((item) => [item.id, item.sourceRepoId, item.ticketIds]),
+    list.map((item) => [item.id, item.bountyId, item.sourceRepoId]),
     [
-      ["sbx_1", "ghr_1", ["tkt_a", "tkt_b"]],
-      ["sbx_2", "ghr_2", []],
+      ["sbx_1", "bty_1", "ghr_1"],
+      ["sbx_2", "bty_2", null],
     ],
   );
+  assert.equal(fake.calls.length, 1);
   assert.equal(fake.calls[0]?.filtered, true);
   assert.equal(fake.calls[0]?.ordered, true);
   assert.deepEqual(
@@ -210,10 +296,10 @@ test("list and get join the source and the tickets under the owner", async () =>
   );
   const one = createSequencedFakeDb([
     [{ sandbox: sandboxRow(), sourceRepoId: "ghr_1" }],
-    [],
   ]);
   const got = await createSandboxStore(one.db).get("owner", "sbx_1");
   assert.equal(got?.slug, "abc123def456");
+  assert.equal(got?.bountyId, "bty_1");
   assert.equal(got?.createdAt, now.toISOString());
   assert.equal(
     await createSandboxStore(createFakeDb([]).db).get("owner", "sbx_x"),
@@ -265,6 +351,14 @@ test("a version is cut only from a succeeded slice of the sandbox's own source, 
       ]).db,
     ).createVersion("owner", "sbx_1", newVersion),
     { ok: false, reason: "slice_mismatch" },
+  );
+  // Without a repository there is nothing to have sliced.
+  assert.deepEqual(
+    await createSandboxStore(
+      createSequencedFakeDb([[{ sandbox: sandboxRow(), sourceRepoId: null }]])
+        .db,
+    ).createVersion("owner", "sbx_1", newVersion),
+    { ok: false, reason: "no_source" },
   );
   // A first version starts at 1 even when the max query returns nothing.
   const first = createSequencedFakeDb([

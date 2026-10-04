@@ -21,8 +21,8 @@ export function unweighed(
  * Bounty is the decision — one card of what the proposal is, with each
  * action beside the fact it changes (for those who may act), the model's
  * reasoning as prose, and where delivery to Jira stands. Scenarios is what
- * the ticket was taken to ask for when it was sized, with the count in the
- * tab once it is known. Spec is the ticket itself, read live, so the
+ * the bounty was taken to ask for when it was sized, with the count in the
+ * tab once it is known. Spec is the bounty itself, read live, so the
  * decision is made against what Jira says now rather than what was stored
  * at sizing time.
  *
@@ -31,6 +31,6 @@ export function unweighed(
  * reasoning with Remove under it. Approved: Re-analyze beside the status
  * and Unapprove after the reasoning —
  * removal comes after unapproving, because that is what owes Jira the
- * withdrawal. Approve needs a current ticket; a resize, a re-price and an
+ * withdrawal. Approve needs a current bounty; a resize, a re-price and an
  * unapprove do not.
  */
