@@ -11,7 +11,6 @@ import type {
   SizingConfidence,
   StepResult,
 } from "sandbox-factory";
-import { bountyKey } from "sandbox-factory";
 import { and, desc, eq, gt, inArray, or, sql } from "drizzle-orm";
 
 import {
@@ -26,6 +25,7 @@ import {
 } from "./errors.js";
 import { jiraWriteGranted, splitScopes } from "./jira-connections.js";
 import { generateId } from "./mapping.js";
+import { approvalVersion, withdrawalVersion } from "./proposal-version.js";
 import {
   bountyProposal,
   bountyRun,
@@ -75,8 +75,11 @@ export interface CreateBountyProposalInput {
  */
 export interface LeasedBountyProposalInput extends CreateBountyProposalInput {
   readonly spec?: NewBountySpec;
-  /** Frozen sizing content, supplied only when profiling is configured. */
-  readonly profileIntent?: import("sandbox-factory").ProfileBounty;
+  /**
+   * Queue a complexity profile of the spec beside its snapshot. Set only
+   * when profiling is configured.
+   */
+  readonly profileIntent?: boolean;
 }
 
 /**
@@ -311,8 +314,8 @@ export interface StoredBountyProposal {
   readonly organizationId: string;
   readonly runId: string;
   readonly bountyId: string;
-  /** The bounty's key: its Jira key while it has one, `B-<number>` otherwise. */
-  readonly issueKey: string;
+  /** The bounty's Jira issue key while it has one; null for one written here. */
+  readonly issueKey: string | null;
   /** The bounty's title as the platform holds it. */
   readonly title: string;
   readonly specHash: string;
@@ -333,6 +336,13 @@ export interface StoredBountyProposal {
   readonly currency: string | null;
   readonly status: "proposed" | "approved" | "rejected" | "superseded";
   readonly revision: number;
+  /**
+   * How many times what it says has been approved: moved by an approval of
+   * something changed since the last, not by every write. 0 until the first.
+   */
+  readonly version: number;
+  /** When the current version was approved; null before the first. */
+  readonly versionedAt: string | null;
   /** The spec revision this size goes with, or null when there is none. */
   readonly specRevision: number | null;
   /** How the spec's added weight moved the size, or null when nothing could. */
@@ -348,13 +358,12 @@ export interface StoredBountyProposal {
 
 /** What a proposal shows of its bounty. */
 interface BountyName {
-  readonly issueKey: string;
+  readonly issueKey: string | null;
   readonly title: string;
 }
 
 /** The bounty's columns a proposal read joins for its name. */
 const nameColumns = {
-  bountyNumber: bounty.number,
   bountyTitle: bounty.title,
   jiraKey: jiraIssue.key,
 };
@@ -366,15 +375,8 @@ const nameColumns = {
  */
 const PLAN_KEY = sql`coalesce(${jiraIssue.externalId}, ${bounty.id})`;
 
-function nameOf(row: {
-  readonly bountyNumber: number;
-  readonly bountyTitle: string;
-  readonly jiraKey: string | null;
-}): BountyName {
-  return {
-    issueKey: bountyKey({ number: row.bountyNumber, jiraKey: row.jiraKey }),
-    title: row.bountyTitle,
-  };
+function nameOf(row: NameRow): BountyName {
+  return { issueKey: row.jiraKey, title: row.bountyTitle };
 }
 
 function toDto(row: BountyProposalRow, name: BountyName): StoredBountyProposal {
@@ -406,6 +408,8 @@ function toDto(row: BountyProposalRow, name: BountyName): StoredBountyProposal {
     currency: row.currency,
     status: row.status as StoredBountyProposal["status"],
     revision: row.revision,
+    version: row.version,
+    versionedAt: row.versionedAt?.toISOString() ?? null,
     specRevision: row.specRevision,
     step: row.step ?? null,
     repoSnapshotId: row.repoSnapshotId ?? null,
@@ -441,7 +445,6 @@ async function first(
 }
 
 interface NameRow {
-  readonly bountyNumber: number;
   readonly bountyTitle: string;
   readonly jiraKey: string | null;
 }
@@ -660,13 +663,12 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
             { proposalId: created.id, runId: input.runId, revision: 1 },
             input.spec,
           );
-          if (input.profileIntent !== undefined && repoSnapshotId !== null) {
+          if (input.profileIntent === true && repoSnapshotId !== null) {
             await insertProfileIntent(tx, organizationId, {
               proposalId: created.id,
               specRevision: 1,
               specHash: input.spec.specHash,
               snapshotId: repoSnapshotId,
-              bounty: input.profileIntent,
             });
           }
         }
@@ -879,6 +881,7 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
           decidedBy,
           decidedAt: now,
           decisionDeliveryPolicy: deliveryPolicy,
+          ...approvalVersion(expectedRevision, now),
           updatedAt: now,
         })
         .where(
@@ -920,6 +923,7 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
           decidedAt: null,
           decisionDeliveryPolicy: null,
           updatedAt: now,
+          ...withdrawalVersion(expectedRevision),
         })
         .where(
           and(
@@ -1160,13 +1164,12 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
             },
             input.spec,
           );
-          if (input.profileIntent !== undefined && repoSnapshotId !== null) {
+          if (input.profileIntent === true && repoSnapshotId !== null) {
             await insertProfileIntent(tx, organizationId, {
               proposalId: sourceProposalId,
               specRevision,
               specHash: input.spec.specHash,
               snapshotId: repoSnapshotId,
-              bounty: input.profileIntent,
             });
           }
         }

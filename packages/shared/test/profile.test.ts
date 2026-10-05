@@ -9,7 +9,6 @@ import {
 
 const profile = {
   version: "profile-v1",
-  bounty: { issueType: "Bug", priority: null },
   slice: {
     files: 9,
     bytes: 42_000,
@@ -68,6 +67,17 @@ test("a profile parses whole, and a version or count it does not know is refused
       slice: { ...profile.slice, files: -1 },
     }).success,
     false,
+  );
+});
+
+test("a profile stored with its bounty's type and priority reads without them", () => {
+  // Profiles measured before bounties dropped them still hold the pair.
+  assert.deepEqual(
+    complexityProfileSchema.parse({
+      ...profile,
+      bounty: { issueType: "Bug", priority: null },
+    }),
+    profile,
   );
 });
 

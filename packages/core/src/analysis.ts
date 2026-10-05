@@ -40,6 +40,8 @@ export const ARTIFACT_KINDS = [
   "baseline_report",
   "scope_proposal",
   "fixture_set",
+  "starter_set",
+  "pseudonyms",
   "other",
 ] as const;
 export type ArtifactKind = (typeof ARTIFACT_KINDS)[number];
@@ -51,6 +53,9 @@ export type ArtifactKind = (typeof ARTIFACT_KINDS)[number];
  * runnable project and checks its baseline. `scope` and `fixtures` are
  * agent runs: a model reads the source to propose a slice for a bounty, and
  * to write believable behaviour for a succeeded slice's mocked seams.
+ * `sandbox_starter` is the one run with no repository: a model writes a
+ * starter project from the bounty's own text, which is then built and
+ * checked like a slice's.
  */
 export const ANALYSIS_TOOLS = [
   "graphify",
@@ -58,6 +63,7 @@ export const ANALYSIS_TOOLS = [
   "sandbox_build",
   "scope",
   "fixtures",
+  "sandbox_starter",
 ] as const;
 export type AnalysisTool = (typeof ANALYSIS_TOOLS)[number];
 export const GRAPHIFY_TOOL_VERSION = "graphifyy@0.4.18+driver-1";
@@ -69,8 +75,16 @@ export const SANDBOX_BUILD_RUN_VERSION = "sandbox_build@1";
 export const SCOPE_TOOL_VERSION = "scope@2";
 /** Bumped when the fixtures agent's tools, prompt or set shape change meaning. */
 export const FIXTURES_TOOL_VERSION = "fixtures@1";
+/** Bumped when the starter agent's tools, prompt, set or project change meaning. */
+export const STARTER_TOOL_VERSION = "sandbox_starter@2";
+/** Tools that read a repository snapshot; every other one runs without source. */
+export function readsSource(tool: AnalysisTool): boolean {
+  return tool !== "sandbox_starter";
+}
 export function toolVersionOf(tool: AnalysisTool): string {
   switch (tool) {
+    case "sandbox_starter":
+      return STARTER_TOOL_VERSION;
     case "slice":
       return SLICE_TOOL_VERSION;
     case "sandbox_build":
@@ -136,12 +150,24 @@ export interface FixturesParams extends AgentTaskParams {
   readonly agent: "fixtures";
   readonly sliceRunId: string;
 }
+/**
+ * The starter agent writes the draft version it names, for the bounty the
+ * version's approved task snapshots. The task's hash is in the cache key,
+ * and the stack the agent follows is fixed when the run is queued.
+ */
+export interface StarterParams extends GraphifyParams {
+  readonly agent: "starter";
+  readonly sandboxVersionId: string;
+  readonly approvedTaskSha256: string;
+  readonly stack: readonly string[];
+}
 export type AnalysisParams =
   | GraphifyParams
   | SliceParams
   | SandboxBuildParams
   | ScopeParams
-  | FixturesParams;
+  | FixturesParams
+  | StarterParams;
 export function isScopeParams(params: AnalysisParams): params is ScopeParams {
   return "agent" in params && params.agent === "scope";
 }
@@ -150,18 +176,25 @@ export function isFixturesParams(
 ): params is FixturesParams {
   return "agent" in params && params.agent === "fixtures";
 }
+export function isStarterParams(
+  params: AnalysisParams,
+): params is StarterParams {
+  return "agent" in params && params.agent === "starter";
+}
 /** A scope run names a graph run too; only a run with no agent is a slice. */
 export function isSliceParams(params: AnalysisParams): params is SliceParams {
   return "graphRunId" in params && !("agent" in params);
 }
+/** A starter names a version too; only a run with no agent is a build. */
 export function isSandboxBuildParams(
   params: AnalysisParams,
 ): params is SandboxBuildParams {
-  return "sandboxVersionId" in params;
+  return "sandboxVersionId" in params && !("agent" in params);
 }
 export function toolOfParams(params: AnalysisParams): AnalysisTool {
   if (isScopeParams(params)) return "scope";
   if (isFixturesParams(params)) return "fixtures";
+  if (isStarterParams(params)) return "sandbox_starter";
   return isSliceParams(params)
     ? "slice"
     : isSandboxBuildParams(params)

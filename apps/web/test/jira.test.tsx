@@ -1,4 +1,5 @@
 import { completeBountyFixture } from "./api-fixtures";
+import { chooseOption } from "./combobox";
 /**
  * The Jira connections list, which is the Jira tab of an organization's
  * settings, and the board page under it. A site has no page of its own.
@@ -965,7 +966,8 @@ test("a resize takes the row from the response and reads nothing else", async ()
   // The list row moved with it.
   const list = screen.getByTestId("proposal-list");
   expect(within(list).getAllByText("L").length).toBeGreaterThan(0);
-  expect(within(card).getByText("Revision 2")).toBeDefined();
+  // A resize is a write, not an approval: no version yet.
+  expect(within(card).getByText("Not approved yet")).toBeDefined();
 });
 
 test("folded fields fall back from due date to priority to created", async () => {
@@ -1195,7 +1197,7 @@ test("the actions sit in the bounty card, beside what they change, for those who
     0;
   expect(follows(within(card).getByText("A few files."), approve)).toBe(true);
   expect(
-    within(card).getByText("Revision 1").parentElement?.parentElement,
+    within(card).getByText("Not approved yet").parentElement?.parentElement,
   ).toBe(approve.parentElement?.parentElement);
   // Remove hangs under Approve.
   expect(
@@ -1714,6 +1716,7 @@ const widgets = {
   lastSyncedAt: null,
   syncStatus: "ok",
   syncError: null,
+  stack: null,
   createdAt: "2026-10-01T00:00:00.000Z",
 };
 
@@ -1778,19 +1781,16 @@ test("an owner links the repository a board's tickets are about", async () => {
   renderBoard("jrb_1", "owner");
 
   const section = await screen.findByTestId("board-repository");
-  await userEvent.click(
-    within(section).getByRole("button", { name: /no repository/i }),
-  );
-  await userEvent.click(
-    await screen.findByRole("menuitem", { name: /acme\/widgets/ }),
-  );
+  const picker = within(section).getByRole("combobox", { name: "Repository" });
+  expect(picker.textContent).toBe("No repository");
+  await chooseOption(picker, "acme/widgets");
 
   await waitFor(() =>
     expect(
-      within(screen.getByTestId("board-repository")).getByRole("button", {
-        name: /acme\/widgets/,
-      }),
-    ).toBeDefined(),
+      within(screen.getByTestId("board-repository")).getByRole("combobox", {
+        name: "Repository",
+      }).textContent,
+    ).toBe("acme/widgets"),
   );
   const patch = fetchMock.mock.calls.find(
     ([, init]) => (init as RequestInit | undefined)?.method === "PATCH",
@@ -1811,11 +1811,9 @@ test("an owner can unlink, and a refused link is said", async () => {
   renderBoard("jrb_1", "owner");
 
   const section = await screen.findByTestId("board-repository");
-  await userEvent.click(
-    within(section).getByRole("button", { name: /acme\/widgets/ }),
-  );
-  await userEvent.click(
-    await screen.findByRole("menuitem", { name: /no repository/i }),
+  await chooseOption(
+    within(section).getByRole("combobox", { name: "Repository" }),
+    "No repository",
   );
 
   expect((await screen.findByRole("alert")).textContent).toMatch(

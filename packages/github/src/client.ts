@@ -7,7 +7,7 @@
  * takes a `TokenProvider` and never learns which it holds:
  *
  *   installation   `tokens.provider(installationId, narrowing)` — the
- *                  repository calls, `tree` and `languages`
+ *                  repository calls, `tree`, `languages` and `blobText`
  *   user           `credential.token` — `user`, `userInstallations`,
  *                  `userInstallationRepositoryCount`
  *
@@ -16,6 +16,7 @@
  */
 
 import {
+  githubBlobResponseSchema,
   type GithubInstallationResponse,
   githubInstallationPageResponseSchema,
   type GithubLanguagesResponse,
@@ -251,6 +252,23 @@ export class GithubClient {
       "languages",
     );
     return this.#parse(response, githubLanguagesResponseSchema, "languages");
+  }
+
+  /**
+   * One file's text, by Git's object id, decoded as UTF-8. Needs
+   * `contents: read`. Read only for the dependency manifests a stack is
+   * detected from (`apps/api/src/github/stack.ts`), whose names are kept
+   * and whose text is not.
+   */
+  async blobText(fullName: string, sha: string): Promise<string> {
+    const response = await this.#get(
+      `/repos/${segments(fullName)}/git/blobs/${encodeURIComponent(sha)}`,
+      "blob",
+    );
+    const blob = await this.#parse(response, githubBlobResponseSchema, "blob");
+    return blob.encoding === "base64"
+      ? Buffer.from(blob.content, "base64").toString("utf8")
+      : blob.content;
   }
 
   async #get(

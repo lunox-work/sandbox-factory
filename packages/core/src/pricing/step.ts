@@ -112,8 +112,8 @@ export function resolveStepSettings(config: StepConfig = {}): StepSettings {
   };
 }
 
-/** A scenario the current revision has and the sized one did not. */
-export interface AddedScenario {
+/** A scenario one revision has and the other did not. */
+export interface StepScenario {
   readonly id: string;
   readonly kind: ScenarioKind;
   readonly title: string;
@@ -135,7 +135,13 @@ export interface StepResult {
    * A scenario rewritten to a heavier weight under the same title is
    * counted in `addedPoints` without being listed here.
    */
-  readonly added: readonly AddedScenario[];
+  readonly added: readonly StepScenario[];
+  /**
+   * The scenarios of the sized revision with no scenario of the same kind
+   * and title in the current one: what was trimmed, for a reader. Absent on
+   * a step stored before removals were listed.
+   */
+  readonly removed?: readonly StepScenario[];
   /** Points still to add for the next half step; null at XL. */
   readonly nextStepIn: number | null;
   /** The settings it was computed with, so it can be read, and rebased, later. */
@@ -161,9 +167,10 @@ export function nextHalfStep(size: PricedComplexity): PricedComplexity | null {
   return size === "XL" ? null : halfStepsUp(size, 1);
 }
 
-function addedScenarios(sized: SpecDraft, current: SpecDraft): AddedScenario[] {
-  const before = new Set(sized.scenarios.map(scenarioKey));
-  return current.scenarios.flatMap((scenario) => {
+/** The weighed scenarios of `to` with no scenario of the same key in `from`. */
+function scenariosOnlyIn(to: SpecDraft, from: SpecDraft): StepScenario[] {
+  const before = new Set(from.scenarios.map(scenarioKey));
+  return to.scenarios.flatMap((scenario) => {
     const { id, kind, title, weight } = scenario;
     return weight === undefined || before.has(scenarioKey(scenario))
       ? []
@@ -174,7 +181,8 @@ function addedScenarios(sized: SpecDraft, current: SpecDraft): AddedScenario[] {
 function stepFrom(
   base: WholeComplexity,
   addedPoints: number,
-  added: readonly AddedScenario[],
+  added: readonly StepScenario[],
+  removed: readonly StepScenario[],
   settings: StepSettings,
 ): StepResult {
   const start = PRICED_BOUNTY_COMPLEXITIES.indexOf(base);
@@ -187,6 +195,7 @@ function stepFrom(
     steps,
     addedPoints,
     added,
+    removed,
     nextStepIn:
       wanted >= room
         ? null
@@ -217,7 +226,8 @@ export function stepUp(
   return stepFrom(
     base,
     Math.max(0, after - before),
-    addedScenarios(sized, current),
+    scenariosOnlyIn(current, sized),
+    scenariosOnlyIn(sized, current),
     settings,
   );
 }
@@ -231,5 +241,11 @@ export function rebaseStep(
   step: StepResult,
   base: WholeComplexity,
 ): StepResult {
-  return stepFrom(base, step.addedPoints, step.added, step.settings);
+  return stepFrom(
+    base,
+    step.addedPoints,
+    step.added,
+    step.removed ?? [],
+    step.settings,
+  );
 }

@@ -305,7 +305,7 @@ export async function startBountyRun(
     planned: [
       {
         externalIssueId: bounty.jira?.externalId ?? bounty.id,
-        issueKey: bounty.key,
+        issueKey: bounty.jira?.key ?? null,
         summary: bounty.title,
         bountyId: bounty.id,
         // Picked by a person, not by a category.

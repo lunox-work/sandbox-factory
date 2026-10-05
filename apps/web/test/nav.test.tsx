@@ -46,6 +46,26 @@ vi.mock("../src/auth", () => ({
   signInWith: vi.fn(),
 }));
 
+/** The one bounty a page of its own is opened on, in Acme. */
+const BOUNTY = {
+  id: "bty_1",
+  organizationId: "org_1",
+  title: "Export to CSV",
+  origin: "manual",
+  repoId: null,
+  stack: [],
+  revision: 1,
+  jira: null,
+  proposal: null,
+  sandbox: null,
+  createdAt: "2026-10-03T00:00:00.000Z",
+  updatedAt: "2026-10-03T00:00:00.000Z",
+  description: "Export the filtered table.",
+  components: [],
+  inputTruncated: false,
+  createdBy: "user_1",
+};
+
 vi.stubGlobal(
   "fetch",
   vi.fn((input: RequestInfo | URL) => {
@@ -106,6 +126,9 @@ vi.stubGlobal(
     }
     if (url.includes("/members")) {
       return Promise.resolve(Response.json({ members: [] }));
+    }
+    if (url.endsWith("/orgs/org_1/bounties/bty_1")) {
+      return Promise.resolve(Response.json({ bounty: BOUNTY }));
     }
     if (url.includes("/bounties?")) {
       return Promise.resolve(Response.json({ bounties: [], nextCursor: null }));
@@ -240,12 +263,11 @@ async function openSwitcher() {
   const trigger = await screen.findByRole("button", {
     name: /^Switch workspace — /,
   });
-  trigger.focus();
-  // See `openMenu`: Radix focuses the menu in an effect after the open.
+  // Inside `act`: Radix focuses the search field in an effect after the open.
   await act(async () => {
-    fireEvent.keyDown(trigger, { key: "Enter" });
+    fireEvent.click(trigger);
   });
-  return await screen.findByRole("menu");
+  return await screen.findByRole("dialog", { name: "Workspaces" });
 }
 
 async function openMenu() {
@@ -503,29 +525,95 @@ test("/o/:slug/settings opens that organization directly", async () => {
   });
 });
 
-test("the rail leads to the workspace's bounties, and marks them current", async () => {
+test("the rail leads to every workspace's bounties, and marks them current", async () => {
   render(<App />);
   const rail = screen.getByRole("navigation", { name: "Main" });
   const bounties = await within(rail).findByRole("link", { name: "Bounties" });
-  expect(bounties.getAttribute("href")).toBe("/o/acme/bounties");
+  expect(bounties.getAttribute("href")).toBe("/bounties");
 
   fireEvent.click(bounties);
   expect(
     await screen.findByRole("heading", { name: "Bounties", level: 1 }),
   ).toBeTruthy();
-  expect(window.location.pathname).toBe("/o/acme/bounties");
+  expect(window.location.pathname).toBe("/bounties");
   expect(bounties.ariaCurrent).toBe("page");
   expect(railHome().ariaCurrent).toBeNull();
   await waitFor(() => expect(document.title).toBe("Bounties · Lunox"));
 });
 
-test("/o/:slug/bounties opens that workspace's bounties directly", async () => {
-  window.history.replaceState(null, "", "/o/acme/bounties");
+test("a new bounty opens on a page of its own, still under the bounties", async () => {
+  window.history.replaceState(null, "", "/bounties");
   render(<App />);
+  const link = (await screen.findAllByRole("link", { name: "New bounty" }))[0]!;
+  expect(link.getAttribute("href")).toBe("/bounties/new");
+
+  fireEvent.click(link);
+  expect(
+    await screen.findByRole("heading", { name: "New bounty", level: 1 }),
+  ).toBeTruthy();
+  expect(window.location.pathname).toBe("/bounties/new");
+  expect(screen.queryByRole("dialog")).toBeNull();
+  const rail = screen.getByRole("navigation", { name: "Main" });
+  expect(within(rail).getByRole("link", { name: "Bounties" }).ariaCurrent).toBe(
+    "page",
+  );
+  const trail = screen.getByRole("navigation", { name: "Breadcrumb" });
+  expect(within(trail).getByRole("link", { name: "Bounties" })).toBeTruthy();
+  await waitFor(() => expect(document.title).toBe("New bounty · Lunox"));
+});
+
+test("an old /o/:slug/bounties link opens the bounties, under the new path", async () => {
+  window.history.replaceState(null, "", "/o/acme/bounties?bounty=bty_1");
+  render(<App />);
+  // The bounty it named opens over the page.
+  expect(await screen.findByTestId("bounty-panel")).toBeTruthy();
+  // The workspace the path named is the one the open bounty is read from.
+  await waitFor(() =>
+    expect(window.location.pathname + window.location.search).toBe(
+      "/bounties?peek=acme/bty_1",
+    ),
+  );
+});
+
+test("a bounty's own page sits under the bounties, and its trail leads back", async () => {
+  window.history.replaceState(null, "", "/bounties/acme/bty_1");
+  render(<App />);
+  expect(
+    await screen.findByRole("heading", { name: "Export to CSV", level: 1 }),
+  ).toBeTruthy();
+  expect(screen.queryByRole("dialog")).toBeNull();
+  const rail = screen.getByRole("navigation", { name: "Main" });
+  expect(within(rail).getByRole("link", { name: "Bounties" }).ariaCurrent).toBe(
+    "page",
+  );
+  // Named by the bounty once it is read, in the trail and the tab.
+  const trail = screen.getByRole("navigation", { name: "Breadcrumb" });
+  await waitFor(() =>
+    expect(
+      within(trail).getByText("Export to CSV").getAttribute("aria-current"),
+    ).toBe("page"),
+  );
+  await waitFor(() => expect(document.title).toBe("Export to CSV · Lunox"));
+
+  fireEvent.click(within(trail).getByRole("link", { name: "Bounties" }));
   expect(
     await screen.findByRole("heading", { name: "Bounties", level: 1 }),
   ).toBeTruthy();
+  expect(window.location.pathname + window.location.search).toBe("/bounties");
+});
+
+test("switching workspace leaves the bounties where they are", async () => {
+  window.history.replaceState(null, "", "/bounties");
+  render(<App />);
   expect(await screen.findByText(/No bounties yet/)).toBeTruthy();
+  const menu = await openSwitcher();
+  fireEvent.click(within(menu).getByRole("option", { name: /Globex/ }));
+  await screen.findByRole("button", { name: "Switch workspace — Globex" });
+  // Every workspace's already, so there is no other to move to.
+  expect(window.location.pathname).toBe("/bounties");
+  expect(
+    screen.getByRole("heading", { name: "Bounties", level: 1 }),
+  ).toBeTruthy();
 });
 
 test("a trailing slash names the same organization screen", async () => {
@@ -782,10 +870,10 @@ test("the picker switches home's board and remembers it", async () => {
 
   const trigger = await homeBoard("Delivery");
   await act(async () => {
-    fireEvent.keyDown(trigger, { key: "Enter" });
+    fireEvent.click(trigger);
   });
-  const menu = await screen.findByRole("menu");
-  fireEvent.click(within(menu).getByRole("menuitem", { name: /Platform/ }));
+  const menu = await screen.findByRole("listbox", { name: "Boards" });
+  fireEvent.click(within(menu).getByRole("option", { name: /Platform/ }));
 
   expect(await homeBoard("Platform")).toBeTruthy();
   expect(window.location.pathname).toBe("/");
@@ -804,11 +892,11 @@ test("the picker leads out to the board's own page", async () => {
 
   const trigger = await homeBoard("Delivery");
   await act(async () => {
-    fireEvent.keyDown(trigger, { key: "Enter" });
+    fireEvent.click(trigger);
   });
-  const menu = await screen.findByRole("menu");
+  const menu = await screen.findByRole("listbox", { name: "Boards" });
   fireEvent.click(
-    within(menu).getByRole("menuitem", { name: /Open board page/ }),
+    within(menu).getByRole("option", { name: /Open board page/ }),
   );
 
   await waitFor(() => {
@@ -839,7 +927,7 @@ test("switching organization moves home to that organization's board", async () 
   expect(await homeBoard("Delivery")).toBeTruthy();
 
   const menu = await openSwitcher();
-  fireEvent.click(within(menu).getByRole("menuitem", { name: /Globex/ }));
+  fireEvent.click(within(menu).getByRole("option", { name: /Globex/ }));
 
   expect(await homeBoard("Globex board")).toBeTruthy();
   expect(window.location.pathname).toBe("/");
@@ -858,7 +946,7 @@ test("Back onto another workspace's board does not file it under this one", asyn
   expect(await screen.findByRole("heading", { name: "Platform" })).toBeTruthy();
 
   const menu = await openSwitcher();
-  fireEvent.click(within(menu).getByRole("menuitem", { name: /Globex/ }));
+  fireEvent.click(within(menu).getByRole("option", { name: /Globex/ }));
   await screen.findByRole("button", { name: "Switch workspace — Globex" });
   await waitFor(() =>
     expect(window.location.pathname).not.toBe("/o/acme/jira/jrc_1/jrb_2"),
@@ -967,14 +1055,14 @@ test("the switcher names the active organization and lists the rest", async () =
   ).toBeTruthy();
 
   const menu = await openSwitcher();
-  const acme = within(menu).getByRole("menuitem", { name: /Acme/ });
+  const acme = within(menu).getByRole("option", { name: /Acme/ });
   // The one being shown is marked, and only that one.
-  expect(acme.getAttribute("aria-current")).toBe("true");
+  expect(acme.getAttribute("aria-selected")).toBe("true");
   expect(
     within(menu)
-      .getByRole("menuitem", { name: /Globex/ })
-      .getAttribute("aria-current"),
-  ).toBeNull();
+      .getByRole("option", { name: /Globex/ })
+      .getAttribute("aria-selected"),
+  ).toBe("false");
 });
 
 test("a personal organization is called Personal, not by its name", async () => {
@@ -997,7 +1085,7 @@ test("a personal organization is called Personal, not by its name", async () => 
     }),
   ).toBeTruthy();
   const menu = await openSwitcher();
-  expect(within(menu).getByRole("menuitem", { name: "Personal" })).toBeTruthy();
+  expect(within(menu).getByRole("option", { name: "Personal" })).toBeTruthy();
   expect(within(menu).queryByText("Alice Example")).toBeNull();
 });
 
@@ -1047,7 +1135,7 @@ test("every organization in the switcher's menu carries its face", async () => {
     ["Acme", "org_1"],
     ["Globex", "org_2"],
   ] as const) {
-    const item = within(menu).getByRole("menuitem", {
+    const item = within(menu).getByRole("option", {
       name: new RegExp(name),
     });
     expect(item.querySelector("path")?.getAttribute("d")).toBe(
@@ -1063,7 +1151,7 @@ test("choosing another organization keeps you on the same screen in it", async (
   render(<App />);
 
   const menu = await openSwitcher();
-  fireEvent.click(within(menu).getByRole("menuitem", { name: /Globex/ }));
+  fireEvent.click(within(menu).getByRole("option", { name: /Globex/ }));
 
   await waitFor(() => {
     expect(window.location.pathname).toBe("/o/globex/settings");
@@ -1080,7 +1168,7 @@ test("switching away from a board lands on the new organization's Jira tab", asy
   render(<App />);
 
   const menu = await openSwitcher();
-  fireEvent.click(within(menu).getByRole("menuitem", { name: /Globex/ }));
+  fireEvent.click(within(menu).getByRole("option", { name: /Globex/ }));
 
   await waitFor(() => {
     expect(window.location.pathname).toBe("/o/globex/settings");
@@ -1093,7 +1181,7 @@ test("a switch outside any organization stays on that screen", async () => {
   render(<App />);
 
   const menu = await openSwitcher();
-  fireEvent.click(within(menu).getByRole("menuitem", { name: /Globex/ }));
+  fireEvent.click(within(menu).getByRole("option", { name: /Globex/ }));
 
   expect(
     await screen.findByRole("button", { name: "Switch workspace — Globex" }),
@@ -1101,29 +1189,33 @@ test("a switch outside any organization stays on that screen", async () => {
   expect(window.location.pathname).toBe("/account");
 });
 
-test("the switcher's search narrows the list and keeps its keystrokes", async () => {
+test("the switcher's search narrows the list, and Enter takes the match", async () => {
   render(<App />);
 
   const menu = await openSwitcher();
-  const search = within(menu).getByRole("textbox", {
+  const search = within(menu).getByRole("combobox", {
     name: "Search workspaces",
   });
-  // Radix's typeahead would take a "g" and move focus to the item starting
-  // with it; the field has to keep it.
+  // Focused on open, so typing goes straight into it.
   await waitFor(() => expect(document.activeElement).toBe(search));
-  fireEvent.keyDown(search, { key: "g" });
-  // Radix moves typeahead focus on a timer, so give it one to act on.
-  await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  });
-  expect(document.activeElement).toBe(search);
-  fireEvent.change(search, { target: { value: "glo" } });
-
-  expect(within(menu).queryByRole("menuitem", { name: /Acme/ })).toBeNull();
-  expect(within(menu).getByRole("menuitem", { name: /Globex/ })).toBeTruthy();
 
   fireEvent.change(search, { target: { value: "nothing like it" } });
   expect(within(menu).getByText("No workspaces match.")).toBeTruthy();
+  // The way to the full list stays, whatever the search.
+  expect(
+    within(menu).getByRole("option", { name: "View all workspaces" }),
+  ).toBeTruthy();
+
+  fireEvent.change(search, { target: { value: "glo" } });
+  expect(within(menu).queryByRole("option", { name: /Acme/ })).toBeNull();
+  expect(within(menu).getByRole("option", { name: /Globex/ })).toBeTruthy();
+  await act(async () => {
+    fireEvent.keyDown(search, { key: "Enter" });
+  });
+
+  expect(
+    await screen.findByRole("button", { name: "Switch workspace — Globex" }),
+  ).toBeTruthy();
 });
 
 test("the switcher reaches the full list", async () => {
@@ -1131,7 +1223,7 @@ test("the switcher reaches the full list", async () => {
 
   const menu = await openSwitcher();
   fireEvent.click(
-    within(menu).getByRole("menuitem", { name: "View all workspaces" }),
+    within(menu).getByRole("option", { name: "View all workspaces" }),
   );
   await waitFor(() => {
     expect(window.location.pathname).toBe("/workspaces");
@@ -1263,12 +1355,12 @@ test("no mark when nothing is waiting", async () => {
   expect(screen.queryByRole("button", { name: /invitation/ })).toBeNull();
 });
 
-for (const destination of ["settings", "bounties"]) {
+for (const destination of ["settings"]) {
   test(`history changes workspace on the same ${destination} screen`, async () => {
     window.history.replaceState(null, "", `/o/acme/${destination}`);
     render(<App />);
     const menu = await openSwitcher();
-    fireEvent.click(within(menu).getByRole("menuitem", { name: /Globex/ }));
+    fireEvent.click(within(menu).getByRole("option", { name: /Globex/ }));
     await screen.findByRole("button", { name: "Switch workspace — Globex" });
     for (const slug of ["acme", "globex", "acme"]) {
       act(() => {

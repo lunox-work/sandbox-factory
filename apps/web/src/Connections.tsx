@@ -215,6 +215,7 @@ export function Connections({
         className="connection-tabs flex-row items-stretch gap-0"
       >
         <TabsList
+          variant="plain"
           aria-label="Connections"
           className="relative z-10 h-auto w-[calc(2.75rem+13px)] flex-none flex-col items-start justify-start gap-2 self-start rounded-none bg-transparent p-0 py-8"
         >
@@ -299,6 +300,11 @@ export function Connections({
  * four.
  *
  * Decorative: the square's label already says "Home".
+ *
+ * Not draggable. The tools' marks are inline SVG, which the tab primitive
+ * takes out of hit-testing; an `<img>` is not, and a click that moved a pixel
+ * before release picked it up as a native image drag, trailing a ghost of the
+ * mark under the cursor.
  */
 function LunoxMark() {
   return (
@@ -308,6 +314,7 @@ function LunoxMark() {
         alt=""
         width={24}
         height={24}
+        draggable={false}
         className="size-6 dark:hidden"
       />
       <img
@@ -315,6 +322,7 @@ function LunoxMark() {
         alt=""
         width={24}
         height={24}
+        draggable={false}
         className="hidden size-6 dark:block"
       />
     </>

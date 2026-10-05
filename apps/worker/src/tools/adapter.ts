@@ -6,14 +6,17 @@ import type {
 } from "sandbox-factory";
 import type {
   BuildOutput,
+  StarterOutput,
   StoredAnalysisRun,
   StoredArtifact,
   StoredVersionWithSource,
 } from "@sandbox-factory/db";
+import { AnalysisError } from "../errors.js";
 
 /** The ticket an agent run works for: one revision of a proposal's spec. */
 export interface AgentTask {
-  readonly issueKey: string;
+  /** Its bounty's Jira key; null for a bounty written here. */
+  readonly issueKey: string | null;
   readonly specRevision: number;
   readonly specHash: string;
   readonly draft: SpecDraft;
@@ -43,13 +46,28 @@ export interface ToolInputs {
     buildRunId: string,
     output: BuildOutput,
   ): Promise<boolean>;
+  /** What a committed starter run wrote, kept only while the draft still points at it. */
+  recordStarterOutput(
+    versionId: string,
+    starterRunId: string,
+    output: StarterOutput,
+  ): Promise<boolean>;
+}
+/** The snapshot and commit a source-reading run is on. */
+export interface RunSnapshot {
+  readonly snapshotId: string;
+  readonly commitSha: string;
 }
 export interface ToolRunInput {
+  /** The extracted source; an empty directory for a tool that reads none. */
   readonly sourceDir: string;
   readonly outDir: string;
   readonly params: AnalysisParams;
-  /** The run being executed: which snapshot and commit the source is. */
-  readonly run: { readonly snapshotId: string; readonly commitSha: string };
+  /**
+   * The run being executed: which snapshot and commit the source is. Null
+   * for a tool that reads no source (`readsSource` in core).
+   */
+  readonly run: RunSnapshot | null;
   readonly inputs: ToolInputs;
   readonly signal: AbortSignal;
   readonly log: (line: string) => void;
@@ -59,6 +77,11 @@ export interface ToolCommittedInput {
   /** The files `run` returned; still on disk until the run is cleaned up. */
   readonly files: readonly ArtifactFile[];
   readonly inputs: ToolInputs;
+}
+/** The snapshot a source-reading tool runs on; a run with none is not one of its. */
+export function snapshotOf(input: Pick<ToolRunInput, "run">): RunSnapshot {
+  if (input.run === null) throw new AnalysisError("source_unavailable");
+  return input.run;
 }
 export interface ToolAdapter {
   readonly name: AnalysisTool;

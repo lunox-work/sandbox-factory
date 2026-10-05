@@ -30,11 +30,14 @@ const version = {
 };
 const source = {
   sandboxVersionId: "sbv_1",
+  origin: "slice",
   sourceSnapshotId: "rsn_1",
   sourceCommitSha: "a".repeat(40),
   sliceRunId: "arn_slice",
   manifestSha256: "1".repeat(64),
   contractSha256: "c".repeat(64),
+  starterRunId: null,
+  starterSha256: null,
   transformConfigSha256: "2".repeat(64),
   approvedTaskSha256: "a".repeat(64),
   aliasRules: [
@@ -113,6 +116,49 @@ test("the sandbox client parses every response and scopes every path to the owne
       body = { versions: [version] };
     else if (url.endsWith("/versions")) body = { version, source };
     else if (url.endsWith("/build")) body = { run };
+    else if (url.endsWith("/starter"))
+      body = {
+        version,
+        source: {
+          ...source,
+          origin: "starter",
+          sourceSnapshotId: null,
+          sourceCommitSha: null,
+          sliceRunId: null,
+          manifestSha256: null,
+          contractSha256: null,
+          starterRunId: "arn_starter",
+        },
+        run: {
+          ...run,
+          id: "arn_starter",
+          snapshotId: null,
+          repoId: null,
+          tool: "sandbox_starter",
+          toolVersion: "sandbox_starter@1",
+          params: {
+            deadlineMinutes: 60,
+            agent: "starter",
+            sandboxVersionId: "sbv_1",
+            approvedTaskSha256: "a".repeat(64),
+            stack: [],
+          },
+        },
+      };
+    else if (url.endsWith("/files"))
+      body = {
+        run: { id: "arn_build", status: "succeeded" },
+        files: [
+          { path: "project/a b.ts", sizeBytes: 3, sha256: "e".repeat(64) },
+        ],
+      };
+    else if (url.includes("/files/content?"))
+      body = {
+        path: "project/a b.ts",
+        sizeBytes: 3,
+        text: "a;\n",
+        omitted: null,
+      };
     else if (url.endsWith("/replay"))
       body = { ok: false, reason: "source_unavailable", detail: "gone" };
     else if (init?.method === "PATCH") body = { version };
@@ -140,6 +186,9 @@ test("the sandbox client parses every response and scopes every path to the owne
     "ghr_1",
   );
   assert.deepEqual(await client.sandboxVersions("org 1", "sbx_1"), [version]);
+  const generated = await client.generateSandboxVersion("org 1", "sbx 1");
+  assert.equal(generated.source.origin, "starter");
+  assert.equal(generated.run.tool, "sandbox_starter");
   const created = await client.createSandboxVersion("org 1", "sbx_1", {
     sliceRunId: "arn_slice",
     title: "Fix it",
@@ -159,6 +208,13 @@ test("the sandbox client parses every response and scopes every path to the owne
   );
   const replay = await client.sandboxReplay("org 1", "sbv_1");
   assert.equal(replay.ok, false);
+  const files = await client.sandboxFiles("org 1", "sbv 1");
+  assert.deepEqual(
+    files.files.map(({ path }) => path),
+    ["project/a b.ts"],
+  );
+  const file = await client.sandboxFile("org 1", "sbv 1", "project/a b.ts");
+  assert.equal(file.text, "a;\n");
   assert.deepEqual(
     calls.map((call) => [call.init?.method ?? "GET", call.url]),
     [
@@ -167,6 +223,10 @@ test("the sandbox client parses every response and scopes every path to the owne
       ["POST", "https://api.test/api/v1/orgs/org%201/sandboxes"],
       ["PUT", "https://api.test/api/v1/orgs/org%201/sandboxes/sbx%201/source"],
       ["GET", "https://api.test/api/v1/orgs/org%201/sandboxes/sbx_1/versions"],
+      [
+        "POST",
+        "https://api.test/api/v1/orgs/org%201/sandboxes/sbx%201/starter",
+      ],
       ["POST", "https://api.test/api/v1/orgs/org%201/sandboxes/sbx_1/versions"],
       ["GET", "https://api.test/api/v1/orgs/org%201/sandboxes/versions/sbv_1"],
       [
@@ -180,6 +240,14 @@ test("the sandbox client parses every response and scopes every path to the owne
       [
         "GET",
         "https://api.test/api/v1/orgs/org%201/sandboxes/versions/sbv_1/replay",
+      ],
+      [
+        "GET",
+        "https://api.test/api/v1/orgs/org%201/sandboxes/versions/sbv%201/files",
+      ],
+      [
+        "GET",
+        "https://api.test/api/v1/orgs/org%201/sandboxes/versions/sbv%201/files/content?path=project%2Fa+b.ts",
       ],
     ],
   );

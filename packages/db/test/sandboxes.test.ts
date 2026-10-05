@@ -65,6 +65,8 @@ const sourceRow = (
   sliceRunId: "arn_slice",
   manifestSha256: "m".repeat(64),
   contractSha256: "c".repeat(64),
+  starterRunId: null,
+  starterSha256: null,
   transformConfigSha256: "t".repeat(64),
   approvedTaskSha256: "a".repeat(64),
   approvedTask,
@@ -399,6 +401,157 @@ test("a version is cut only from a succeeded slice of the sandbox's own source, 
   );
 });
 
+/** A generated version's source: a starter run where the slice was. */
+const generatedRow = (overrides: Partial<SandboxVersionSourceRow> = {}) =>
+  sourceRow({
+    sourceSnapshotId: null,
+    sliceRunId: null,
+    manifestSha256: null,
+    contractSha256: null,
+    starterRunId: "arn_starter",
+    buildRunId: "arn_starter",
+    ...overrides,
+  });
+const starterVersion = {
+  ...newVersion,
+  id: "sbv_new",
+  source: {
+    origin: "starter" as const,
+    starterRunId: "arn_starter",
+    transformConfigSha256: "t".repeat(64),
+    approvedTaskSha256: "a".repeat(64),
+    approvedTask,
+    aliasRules: [],
+    dependencyChoices: {},
+    acceptanceTests: [],
+    scope,
+  },
+};
+
+test("a version is generated only without a repository, from the owner's run queued for it", async () => {
+  const fake = createSequencedFakeDb([
+    [{ sandbox: sandboxRow(), sourceRepoId: null }],
+    [{ id: "arn_starter" }],
+    [{ version: 1 }],
+    [versionRow({ id: "sbv_new", version: 2 })],
+    [generatedRow({ sandboxVersionId: "sbv_new" })],
+  ]);
+  const result = await createSandboxStore(fake.db).createVersion(
+    "owner",
+    "sbx_1",
+    starterVersion,
+  );
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.source.origin, "starter");
+  assert.equal(result.source.sourceCommitSha, null);
+  assert.equal(result.source.starterRunId, "arn_starter");
+  // The run was looked up under the owner, and is the version's build too.
+  assert.equal(fake.calls[1]?.filtered, true);
+  assert.equal(fake.calls[3]?.values?.["id"], "sbv_new");
+  assert.equal(fake.calls[4]?.values?.["starterRunId"], "arn_starter");
+  assert.equal(fake.calls[4]?.values?.["buildRunId"], "arn_starter");
+  assert.equal(fake.calls[4]?.values?.["sliceRunId"], undefined);
+  // A sandbox with a repository slices its versions instead.
+  assert.deepEqual(
+    await createSandboxStore(
+      createSequencedFakeDb([
+        [{ sandbox: sandboxRow(), sourceRepoId: "ghr_1" }],
+      ]).db,
+    ).createVersion("owner", "sbx_1", starterVersion),
+    { ok: false, reason: "source_linked" },
+  );
+  // A run that is not the owner's, or was queued for another version.
+  assert.deepEqual(
+    await createSandboxStore(
+      createSequencedFakeDb([
+        [{ sandbox: sandboxRow(), sourceRepoId: null }],
+        [],
+      ]).db,
+    ).createVersion("owner", "sbx_1", starterVersion),
+    { ok: false, reason: "starter_mismatch" },
+  );
+});
+
+test("a starter run's output settles on its draft only while the draft still points at it", async () => {
+  const current = {
+    version: versionRow(),
+    source: generatedRow(),
+    commitSha: null,
+  };
+  const output = {
+    starterSha256: "s".repeat(64),
+    aliasRules: [
+      {
+        before: "AcmeCart",
+        after: "Cart",
+        kind: "identifier" as const,
+        paths: [],
+      },
+    ],
+    acceptanceTests: [
+      {
+        path: "tests/private/a.test.ts",
+        text: "",
+        expectedBaseline: "fail" as const,
+      },
+    ],
+    scope,
+    transformConfigSha256: "n".repeat(64),
+    build: { harnessSha256: "h".repeat(64), toolchainDigest: "d".repeat(64) },
+  };
+  const fake = createSequencedFakeDb([[current], [], []]);
+  assert.equal(
+    await createSandboxStore(fake.db).recordStarterOutput(
+      "owner",
+      "sbv_1",
+      "arn_starter",
+      output,
+      now,
+    ),
+    true,
+  );
+  assert.equal(fake.calls[0]?.lock, "update");
+  assert.deepEqual(fake.calls[1]?.values, {
+    starterSha256: output.starterSha256,
+    aliasRules: output.aliasRules,
+    acceptanceTests: output.acceptanceTests,
+    scope,
+    transformConfigSha256: output.transformConfigSha256,
+    harnessSha256: "h".repeat(64),
+    toolchainDigest: "d".repeat(64),
+    updatedAt: now,
+  });
+  // A build that was not ready proves nothing.
+  const unready = createSequencedFakeDb([[current], [], []]);
+  await createSandboxStore(unready.db).recordStarterOutput(
+    "owner",
+    "sbv_1",
+    "arn_starter",
+    { ...output, build: null },
+  );
+  assert.equal(unready.calls[1]?.values?.["harnessSha256"], null);
+  assert.equal(unready.calls[1]?.values?.["toolchainDigest"], null);
+  for (const rows of [
+    [],
+    [{ ...current, source: generatedRow({ starterRunId: "arn_other" }) }],
+    [{ ...current, source: generatedRow({ buildRunId: "arn_rebuilt" }) }],
+    [{ ...current, version: versionRow({ frozenAt: now }) }],
+  ]) {
+    const refused = createSequencedFakeDb([rows]);
+    assert.equal(
+      await createSandboxStore(refused.db).recordStarterOutput(
+        "owner",
+        "sbv_1",
+        "arn_starter",
+        output,
+      ),
+      false,
+    );
+    assert.equal(refused.calls.length, 1);
+  }
+});
+
 test("versions list newest first and read with their private source", async () => {
   const fake = createFakeDb([
     { version: versionRow({ version: 2, id: "sbv_2" }) },
@@ -700,11 +853,126 @@ test("replay context says whether the original source and slice are still there"
   ).replayContext("owner", "sbv_1");
   assert.equal(missing?.snapshot, null);
   assert.equal(missing?.sliceRun, null);
-  assert.equal(missing?.source.sourceCommitSha, "");
+  assert.equal(missing?.source.sourceCommitSha, null);
+  // A generated version reads nothing more: it has no snapshot or slice.
+  const generated = createSequencedFakeDb([[{ source: generatedRow() }]]);
+  const unsliced = await createSandboxStore(generated.db).replayContext(
+    "owner",
+    "sbv_1",
+  );
+  assert.equal(generated.calls.length, 1);
+  assert.equal(unsliced?.snapshot, null);
+  assert.equal(unsliced?.sliceRun, null);
+  assert.equal(unsliced?.source.origin, "starter");
   assert.equal(
     await createSandboxStore(createFakeDb([]).db).replayContext(
       "owner",
       "sbv_x",
+    ),
+    null,
+  );
+});
+
+test("publishing freezes and approves a version with a passing build, and points its sandbox at it", async () => {
+  const ready = generatedRow({
+    harnessSha256: "h".repeat(64),
+    toolchainDigest: "d".repeat(64),
+  });
+  const current = { version: versionRow(), source: ready, commitSha: null };
+  const fake = createSequencedFakeDb([
+    [current],
+    [versionRow({ frozenAt: now })],
+    [{ ...ready, approvedBy: "user_1", approvedAt: now }],
+    [sandboxRow({ status: "published", currentVersionId: "sbv_1" })],
+    [{ sourceRepoId: null }],
+  ]);
+  const result = await createSandboxStore(fake.db).publishVersion(
+    "owner",
+    "sbv_1",
+    "user_1",
+    now,
+  );
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(fake.calls[0]?.lock, "update");
+  assert.deepEqual(fake.calls[1]?.values, { frozenAt: now });
+  assert.deepEqual(fake.calls[2]?.values, {
+    approvedBy: "user_1",
+    approvedAt: now,
+    updatedAt: now,
+  });
+  assert.deepEqual(fake.calls[3]?.values, {
+    status: "published",
+    currentVersionId: "sbv_1",
+    updatedAt: now,
+  });
+  assert.equal(result.sandbox.status, "published");
+  assert.equal(result.version.version.frozenAt, now.toISOString());
+  assert.equal(result.version.source.approvedBy, "user_1");
+
+  // Published before: kept frozen with its first approval, only pointed at.
+  const again = createSequencedFakeDb([
+    [
+      {
+        version: versionRow({ frozenAt: now }),
+        source: { ...ready, approvedBy: "user_0", approvedAt: now },
+        commitSha: null,
+      },
+    ],
+    [sandboxRow({ status: "published", currentVersionId: "sbv_1" })],
+    [{ sourceRepoId: null }],
+  ]);
+  const republished = await createSandboxStore(again.db).publishVersion(
+    "owner",
+    "sbv_1",
+    "user_1",
+    now,
+  );
+  assert.equal(
+    republished.ok && republished.version.source.approvedBy,
+    "user_0",
+  );
+  assert.equal(again.calls.length, 3);
+
+  // No passing build, or not the organization's: refused, nothing written.
+  for (const [rows, reason] of [
+    [[{ ...current, source: generatedRow() }], "not_ready"],
+    [[], "not-found"],
+  ] as const) {
+    const refused = createSequencedFakeDb([rows]);
+    assert.deepEqual(
+      await createSandboxStore(refused.db).publishVersion(
+        "owner",
+        "sbv_1",
+        "user_1",
+      ),
+      { ok: false, reason },
+    );
+    assert.equal(refused.calls.length, 1);
+  }
+});
+
+test("unpublishing takes a sandbox back to a draft with no published version", async () => {
+  const fake = createSequencedFakeDb([
+    [sandboxRow({ status: "draft" })],
+    [{ sourceRepoId: "ghr_1" }],
+  ]);
+  const sandbox = await createSandboxStore(fake.db).unpublish(
+    "owner",
+    "sbx_1",
+    now,
+  );
+  assert.deepEqual(fake.calls[0]?.values, {
+    status: "draft",
+    currentVersionId: null,
+    updatedAt: now,
+  });
+  assert.equal(sandbox?.status, "draft");
+  assert.equal(sandbox?.sourceRepoId, "ghr_1");
+  assert.equal(
+    await createSandboxStore(createSequencedFakeDb([[]]).db).unpublish(
+      "owner",
+      "sbx_9",
     ),
     null,
   );

@@ -121,7 +121,8 @@ export const bountyOutcomeStatusSchema = z.enum([
 
 export const bountyRunOutcomeSchema = z.object({
   externalIssueId: z.string().min(1),
-  issueKey: z.string().min(1),
+  /** Jira's key for a board's ticket; null for a bounty written here. */
+  issueKey: z.string().min(1).nullable(),
   /** The bounty the outcome is about, once the run had one. */
   bountyId: z.string().min(1).optional(),
   /** On outcomes recorded before bounties existed: the Jira pointer. */
@@ -176,7 +177,8 @@ export const proposalCategoriesDtoSchema = z.object({
 export const bountyRunPlannedIssueSchema = z.object({
   /** Jira's issue id for a board's ticket; the bounty's id for one written here. */
   externalIssueId: z.string().min(1),
-  issueKey: z.string().min(1),
+  /** Jira's key for a board's ticket; null for a bounty written here. */
+  issueKey: z.string().min(1).nullable(),
   summary: z.string(),
   /** The bounty, when it was known as the plan was written. */
   bountyId: z.string().min(1).optional(),
@@ -245,6 +247,14 @@ export const stepSettingsSchema = z.object({
   ),
 });
 
+/** A scenario one revision of the spec has and the other did not. */
+const stepScenarioSchema = z.object({
+  id: z.string().min(1),
+  kind: scenarioKindSchema,
+  title: z.string().min(1),
+  weight: scenarioWeightSchema,
+});
+
 /**
  * How the weight a reviewer added to the spec moved the size: the base,
  * the half steps it climbed and the scenarios behind them. Stored on the
@@ -255,14 +265,9 @@ export const stepResultSchema = z.object({
   complexity: pricedComplexitySchema,
   steps: z.number().int().nonnegative(),
   addedPoints: z.number().int().nonnegative(),
-  added: z.array(
-    z.object({
-      id: z.string().min(1),
-      kind: scenarioKindSchema,
-      title: z.string().min(1),
-      weight: scenarioWeightSchema,
-    }),
-  ),
+  added: z.array(stepScenarioSchema),
+  /** Absent on a step stored before removals were listed. */
+  removed: z.array(stepScenarioSchema).optional(),
   nextStepIn: z.number().int().positive().nullable(),
   settings: stepSettingsSchema,
   stepVersion: z.string().min(1),
@@ -282,8 +287,8 @@ export const bountyProposalDtoSchema = z.object({
   runId: z.string().min(1),
   /** The bounty the proposal prices. */
   bountyId: z.string().min(1),
-  /** The bounty's key: its Jira key while it has one, `B-<number>` otherwise. */
-  issueKey: z.string().min(1),
+  /** The bounty's Jira issue key while it has one; null for one written here. */
+  issueKey: z.string().min(1).nullable(),
   /** The bounty's title as the platform holds it. */
   title: z.string(),
   specHash: z.string().length(64),
@@ -303,7 +308,16 @@ export const bountyProposalDtoSchema = z.object({
   amountMinor: minorAmountSchema.nullable(),
   currency: z.string().length(3).nullable(),
   status: bountyProposalStatusSchema,
+  /** Moved by every write, and what a change is checked against. */
   revision: z.number().int().positive(),
+  /**
+   * The version people see: how many times what it says has been
+   * approved, moved only by an approval of something changed since the
+   * last. 0 until it is first approved.
+   */
+  version: z.number().int().nonnegative().default(0),
+  /** When the current version was approved; null before the first. */
+  versionedAt: z.iso.datetime().nullable().default(null),
   /**
    * The spec revision this size goes with. Null when the proposal has no
    * spec: one sized before specs existed, or one whose bounty could not be
@@ -371,8 +385,8 @@ export const proposalFreshnessDtoSchema = z.object({
 export const proposalLiveSpecSchema = z.object({
   summary: z.string(),
   descriptionText: z.string(),
-  issueType: z.string(),
-  key: z.string(),
+  /** The Jira issue's key; null for a bounty written here. */
+  key: z.string().nullable(),
   url: z.url().nullable(),
   inputTruncated: z.boolean(),
 });

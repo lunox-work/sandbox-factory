@@ -11,7 +11,6 @@
  *
  * | Feature           | Source                                           |
  * | ----------------- | ------------------------------------------------ |
- * | Bounty type       | The bounty, as written here or in Jira           |
  * | Slice size        | The slice: included files, bytes, their modules  |
  * | Touched modules   | The scope agent's entry points, by `modulesFor`  |
  * | Externals         | The slice's services and environment; its seams  |
@@ -68,16 +67,8 @@ const isCiDirectory = (directory: string) =>
   directory === ".circleci" ||
   directory.endsWith("/.circleci");
 
-/** What the bounty says about itself, whether written here or in Jira. */
-export interface ProfileBounty {
-  readonly issueType: string;
-  /** The bounty's priority name, or null when it has none. */
-  readonly priority: string | null;
-}
-
 export interface ComplexityProfile {
   readonly version: typeof COMPLEXITY_PROFILE_VERSION;
-  readonly bounty: ProfileBounty;
   /** The measured slice: the context an agent has to read. */
   readonly slice: {
     readonly files: number;
@@ -145,7 +136,6 @@ export interface ProfileSlice {
 }
 
 export interface ProfileInput {
-  readonly bounty: ProfileBounty;
   readonly spec: Pick<SpecDraft, "scenarios" | "openQuestions" | "assumptions">;
   readonly facts: Pick<
     TreeFacts,
@@ -177,7 +167,6 @@ export function buildComplexityProfile(input: ProfileInput): ComplexityProfile {
 
   return {
     version: COMPLEXITY_PROFILE_VERSION,
-    bounty: input.bounty,
     slice: {
       files: slice.counts.includedFiles,
       bytes: slice.counts.includedBytes,

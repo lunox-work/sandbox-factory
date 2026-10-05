@@ -17,10 +17,6 @@ const count = z.number().int().nonnegative();
 
 export const complexityProfileSchema = z.object({
   version: z.literal(COMPLEXITY_PROFILE_VERSION),
-  bounty: z.object({
-    issueType: z.string(),
-    priority: z.string().nullable(),
-  }),
   slice: z.object({
     files: count,
     bytes: count,

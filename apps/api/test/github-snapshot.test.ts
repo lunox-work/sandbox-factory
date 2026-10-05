@@ -829,3 +829,121 @@ test("tree keys distinguish snapshot attempts at the same commit", () => {
     "trees/repo/sha/attempt.json.gz",
   );
 });
+
+/** A head whose tree holds manifests, with their text to read. */
+function stackedWorld(sha: string) {
+  const blob = (path: string, id: string, size = 50) => ({
+    path,
+    mode: "100644",
+    type: "blob",
+    sha: id,
+    size,
+  });
+  return {
+    trees: {
+      [`acme/widgets@${sha}`]: {
+        sha: `tree-${sha.slice(0, 7)}`,
+        tree: [
+          blob("package.json", "m1"),
+          blob("docker-compose.yml", "m2"),
+          blob("infra/auth.tf", "m3"),
+          blob("src/index.ts", "s1", 400),
+          // Vendored: neither read nor counted.
+          blob("node_modules/mysql/package.json", "m4"),
+        ],
+      },
+    },
+    blobs: {
+      m1: JSON.stringify({ dependencies: { react: "19", pg: "8" } }),
+      m2: "services:\n  cache:\n    image: redis:7\n",
+      m3: 'resource "aws_cognito_user_pool" "users" {}\n',
+      m4: JSON.stringify({ dependencies: { mysql2: "3" } }),
+    },
+    languages: { "acme/widgets": { TypeScript: 400 } },
+  };
+}
+
+test("a snapshot detects the repository's stack, keeping only names", async () => {
+  const { snapshotter, stores, fetch, target, repoId, errors } = await setup(
+    stackedWorld(SHA_A),
+  );
+
+  assert.equal(await snapshotter.snapshot(target), "created");
+
+  const repo = stores.repos.rows.get(repoId);
+  assert.deepEqual(repo?.stack, [
+    "TypeScript",
+    "React",
+    "PostgreSQL",
+    "Redis",
+    "AWS",
+    "Amazon Cognito",
+    "Docker",
+    "Terraform",
+  ]);
+  assert.equal(repo?.stackCommitSha, SHA_A);
+  assert.equal(repo?.stackVersion, 1);
+  // The manifests, by object id, with the one narrowed token; nothing else.
+  assert.deepEqual(
+    fetch.urls.filter((url) => url.includes("/git/blobs/")).sort(),
+    ["m1", "m2", "m3"].map(
+      (id) => `GET https://api.github.com/repos/acme/widgets/git/blobs/${id}`,
+    ),
+  );
+  assert.equal(fetch.mints.length, 1);
+  assert.deepEqual(errors, []);
+});
+
+test("a repository read before stacks were detected has its stack read on the next sweep", async () => {
+  const { snapshotter, stores, fetch, target, repoId } = await setup(
+    stackedWorld(SHA_A),
+  );
+  assert.equal(await snapshotter.snapshot(target), "created");
+  const row = stores.repos.rows.get(repoId);
+  assert.ok(row !== undefined);
+  stores.repos.rows.set(repoId, {
+    ...row,
+    stack: null,
+    stackCommitSha: null,
+    stackVersion: null,
+  });
+  const reads = fetch.urls.length;
+
+  // The snapshot exists; its tree is read back from the bucket, not GitHub.
+  assert.equal(await snapshotter.snapshot(target), "exists");
+  assert.equal(stores.repos.rows.get(repoId)?.stackCommitSha, SHA_A);
+  assert.ok(stores.repos.rows.get(repoId)?.stack?.includes("Amazon Cognito"));
+  const later = fetch.urls.slice(reads);
+  assert.ok(!later.some((url) => url.includes("/git/trees/")));
+  assert.equal(later.filter((url) => url.includes("/git/blobs/")).length, 3);
+
+  // Current now: asking again reads nothing.
+  const settled = fetch.urls.length;
+  assert.equal(await snapshotter.snapshot(target), "exists");
+  assert.equal(fetch.urls.length, settled);
+});
+
+test("a stack that cannot be read is reported, and the snapshot stands", async () => {
+  const { snapshotter, stores, objects, state, target, repoId, errors } =
+    await setup({ ...stackedWorld(SHA_A), blobStatus: 500 });
+
+  assert.equal(await snapshotter.snapshot(target), "created");
+  assert.equal(stores.repos.rows.get(repoId)?.stack, null);
+  assert.deepEqual(
+    errors.map(({ code }) => code),
+    ["github_stack_failed"],
+  );
+
+  // The next sweep tries again, and succeeds once GitHub does.
+  delete state.blobStatus;
+  assert.equal(await snapshotter.snapshot(target), "exists");
+  assert.equal(stores.repos.rows.get(repoId)?.stackCommitSha, SHA_A);
+
+  // A snapshot whose tree has gone from the bucket is reported, not thrown.
+  const row = stores.repos.rows.get(repoId);
+  assert.ok(row !== undefined);
+  stores.repos.rows.set(repoId, { ...row, stackVersion: 0 });
+  objects.objects.clear();
+  assert.equal(await snapshotter.snapshot(target), "exists");
+  assert.equal(errors.at(-1)?.code, "github_stack_failed");
+});

@@ -12,13 +12,16 @@
  * for. No public store joins a private table.
  *
  * The repository is enrichment, not a requirement: a sandbox exists without
- * `sandbox_source`, and only slicing a version needs one.
+ * `sandbox_source`, and only slicing a version needs one. Without one, a
+ * version is generated: an agent writes a starter from the bounty's text,
+ * and the version names that run (`starter_run_id`) where a sliced one
+ * names its snapshot, slice run, manifest and contract.
  *
  * Owner scoping: `sandbox.organization_id` is the owner, and the version
  * tables reach it through `sandbox`. A version's snapshot and slice run
- * must belong to the sandbox's own source repository, which the store
- * checks when it creates the version; the source association cannot
- * change once a version is frozen.
+ * must belong to the sandbox's own source repository, and a starter run to
+ * its owner, which the store checks when it creates the version; the
+ * source association cannot change once a version is frozen.
  */
 
 import { sql } from "drizzle-orm";
@@ -127,51 +130,64 @@ export const sandboxVersion = pgTable(
   ],
 );
 
-export const sandboxVersionSource = pgTable("sandbox_version_source", {
-  sandboxVersionId: text("sandbox_version_id")
-    .primaryKey()
-    .references(() => sandboxVersion.id, { onDelete: "cascade" }),
-  sourceSnapshotId: text("source_snapshot_id")
-    .notNull()
-    .references(() => repoSnapshot.id),
-  sliceRunId: text("slice_run_id")
-    .notNull()
-    .references(() => analysisRun.id),
-  /** Hashes locate immutable private artifacts through the run manifests. */
-  manifestSha256: text("manifest_sha256").notNull(),
-  contractSha256: text("contract_sha256").notNull(),
-  transformConfigSha256: text("transform_config_sha256").notNull(),
-  approvedTaskSha256: text("approved_task_sha256").notNull(),
-  /** The approved task copied at selection; survives the live proposal. */
-  approvedTask: jsonb("approved_task")
-    .$type<StoredApprovedTaskSnapshot>()
-    .notNull(),
-  /** Ordered, scoped rules; never returned publicly. */
-  aliasRules: jsonb("alias_rules").$type<AliasRule[]>().notNull(),
-  dependencyChoices: jsonb("dependency_choices")
-    .$type<Record<string, DependencyChoice>>()
-    .notNull()
-    .default({}),
-  /** Hidden tests and their expected baseline outcomes. */
-  acceptanceTests: jsonb("acceptance_tests")
-    .$type<AcceptanceTest[]>()
-    .notNull()
-    .default([]),
-  /** Behaviour for the mocked seams and the dev walkthrough; null when none. */
-  fixtures: jsonb("fixtures").$type<VersionFixtures>(),
-  /** Editable paths, generated paths and resolved dependencies. */
-  scope: jsonb("scope").$type<ScopeRecord>().notNull(),
-  /** Required at freeze; assembled by the build (5B). */
-  harnessSha256: text("harness_sha256"),
-  toolchainDigest: text("toolchain_digest"),
-  buildRunId: text("build_run_id").references(() => analysisRun.id),
-  roundTripRunId: text("round_trip_run_id").references(() => analysisRun.id),
-  disclosureRunId: text("disclosure_run_id").references(() => analysisRun.id),
-  approvedBy: text("approved_by").references(() => user.id),
-  approvedAt: ts("approved_at"),
-  createdAt: ts("created_at").notNull().defaultNow(),
-  updatedAt: ts("updated_at").notNull().defaultNow(),
-});
+export const sandboxVersionSource = pgTable(
+  "sandbox_version_source",
+  {
+    sandboxVersionId: text("sandbox_version_id")
+      .primaryKey()
+      .references(() => sandboxVersion.id, { onDelete: "cascade" }),
+    /** A sliced version's inputs; all null for a generated one. */
+    sourceSnapshotId: text("source_snapshot_id").references(
+      () => repoSnapshot.id,
+    ),
+    sliceRunId: text("slice_run_id").references(() => analysisRun.id),
+    /** Hashes locate immutable private artifacts through the run manifests. */
+    manifestSha256: text("manifest_sha256"),
+    contractSha256: text("contract_sha256"),
+    /** The run that writes a generated version's starter; null for a sliced one. */
+    starterRunId: text("starter_run_id").references(() => analysisRun.id),
+    /** The `starter_set` artifact's hash, once that run has committed. */
+    starterSha256: text("starter_sha256"),
+    transformConfigSha256: text("transform_config_sha256").notNull(),
+    approvedTaskSha256: text("approved_task_sha256").notNull(),
+    /** The approved task copied at selection; survives the live proposal. */
+    approvedTask: jsonb("approved_task")
+      .$type<StoredApprovedTaskSnapshot>()
+      .notNull(),
+    /** Ordered, scoped rules; never returned publicly. */
+    aliasRules: jsonb("alias_rules").$type<AliasRule[]>().notNull(),
+    dependencyChoices: jsonb("dependency_choices")
+      .$type<Record<string, DependencyChoice>>()
+      .notNull()
+      .default({}),
+    /** Hidden tests and their expected baseline outcomes. */
+    acceptanceTests: jsonb("acceptance_tests")
+      .$type<AcceptanceTest[]>()
+      .notNull()
+      .default([]),
+    /** Behaviour for the mocked seams and the dev walkthrough; null when none. */
+    fixtures: jsonb("fixtures").$type<VersionFixtures>(),
+    /** Editable paths, generated paths and resolved dependencies. */
+    scope: jsonb("scope").$type<ScopeRecord>().notNull(),
+    /** Required at freeze; assembled by the build (5B). */
+    harnessSha256: text("harness_sha256"),
+    toolchainDigest: text("toolchain_digest"),
+    buildRunId: text("build_run_id").references(() => analysisRun.id),
+    roundTripRunId: text("round_trip_run_id").references(() => analysisRun.id),
+    disclosureRunId: text("disclosure_run_id").references(() => analysisRun.id),
+    approvedBy: text("approved_by").references(() => user.id),
+    approvedAt: ts("approved_at"),
+    createdAt: ts("created_at").notNull().defaultNow(),
+    updatedAt: ts("updated_at").notNull().defaultNow(),
+  },
+  (t) => [
+    // Sliced or generated, never both and never neither.
+    check(
+      "sandbox_version_source_origin_check",
+      sql`(${t.sliceRunId} is not null and ${t.sourceSnapshotId} is not null and ${t.manifestSha256} is not null and ${t.contractSha256} is not null and ${t.starterRunId} is null) or (${t.sliceRunId} is null and ${t.sourceSnapshotId} is null and ${t.manifestSha256} is null and ${t.contractSha256} is null and ${t.starterRunId} is not null)`,
+    ),
+  ],
+);
 
 /**
  * One contributor's attempt at a sandbox version: the protected sandbox,

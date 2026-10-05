@@ -24,7 +24,6 @@ import type {
   ComplexityProfile,
   ProfileErrorCode,
   ProfileStatus,
-  ProfileBounty,
   RateCardSnapshot,
   PricedComplexity,
   RespecRequest,
@@ -226,6 +225,18 @@ export const bountyProposal = pgTable(
     currency: text("currency"),
     status: text("status").notNull().default("proposed"),
     revision: integer("revision").notNull().default(1),
+    // The version people see: how many times what it says has been
+    // approved. Unlike `revision`, which every write moves and every
+    // write is checked against, it moves only on an approval of something
+    // changed since the last one, so an approval withdrawn and given again
+    // is the same version. 0 until it is first approved.
+    version: integer("version").notNull().default(0),
+    // When the current version was approved.
+    versionedAt: ts("versioned_at"),
+    // The `revision` with nothing changed since the current version: the
+    // approval's own, moved on by a withdrawal and by nothing else. An
+    // approval from any other revision is of something new.
+    versionRevision: integer("version_revision"),
     // The `bounty_spec` revision this size goes with. Null for a proposal
     // with no spec: one from before specs, or a bounty nothing was drafted
     // from. A re-price moves it, or clears it when it drafts nothing.
@@ -291,6 +302,15 @@ export const bountyProposal = pgTable(
       sql`${table.decisionDeliveryPolicy} IS NULL OR ${table.decisionDeliveryPolicy} in ('off', 'requested')`,
     ),
     check("bounty_proposal_revision_check", sql`${table.revision} > 0`),
+    check(
+      "bounty_proposal_version_check",
+      sql`(${table.version} = 0 AND ${table.versionedAt} IS NULL AND ${table.versionRevision} IS NULL) OR (${table.version} > 0 AND ${table.versionedAt} IS NOT NULL AND ${table.versionRevision} > 0)`,
+    ),
+    // An approved proposal is a version.
+    check(
+      "bounty_proposal_approved_version_check",
+      sql`${table.status} <> 'approved' OR ${table.version} > 0`,
+    ),
     check(
       "bounty_proposal_spec_revision_check",
       sql`${table.specRevision} IS NULL OR ${table.specRevision} > 0`,
@@ -406,8 +426,6 @@ export const bountyProfile = pgTable(
     snapshotId: text("snapshot_id").references(() => repoSnapshot.id, {
       onDelete: "set null",
     }),
-    // What the bounty said about itself when it was sized; never re-read.
-    bounty: jsonb("bounty").$type<ProfileBounty>().notNull(),
     status: text("status").$type<ProfileStatus>().notNull().default("queued"),
     errorCode: text("error_code").$type<ProfileErrorCode>(),
     runErrorCode: text("run_error_code").$type<AnalysisErrorCode>(),

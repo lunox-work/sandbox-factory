@@ -23,7 +23,6 @@ import {
   pgTable,
   text,
   timestamp,
-  unique,
 } from "drizzle-orm/pg-core";
 import type { BountyOrigin } from "sandbox-factory";
 
@@ -40,17 +39,8 @@ export const bounty = pgTable(
     organizationId: text("organization_id")
       .notNull()
       .references(() => organization.id, { onDelete: "cascade" }),
-    /**
-     * The organization's own count, from 1: what `B-12` names. Taken as
-     * the next after the organization's highest, so it is never reused
-     * while that bounty stands; the unique constraint settles a race.
-     */
-    number: integer("number").notNull(),
     title: text("title").notNull(),
     description: text("description").notNull().default(""),
-    issueType: text("issue_type").notNull().default("Task"),
-    priority: text("priority"),
-    labels: jsonb("labels").$type<string[]>().notNull().default([]),
     /** Jira's components, by name. Empty for a bounty written here. */
     components: jsonb("components").$type<string[]>().notNull().default([]),
     /** Jira's description was longer than a bounty keeps. */
@@ -65,6 +55,11 @@ export const bounty = pgTable(
     repoId: text("repo_id").references(() => githubRepo.id, {
       onDelete: "set null",
     }),
+    /**
+     * Technologies the bounty adds to its repository's detected stack, by
+     * name. The repository's own are not copied here: they follow it.
+     */
+    stack: jsonb("stack").$type<string[]>().notNull().default([]),
     createdBy: text("created_by").references(() => user.id, {
       onDelete: "set null",
     }),
@@ -74,17 +69,12 @@ export const bounty = pgTable(
     updatedAt: ts("updated_at").notNull().defaultNow(),
   },
   (table) => [
-    unique("bounty_organization_number_unique").on(
-      table.organizationId,
-      table.number,
-    ),
     index("bounty_organization_created_idx").on(
       table.organizationId,
       table.createdAt,
     ),
     // Removing a repository clears this column; without it that is a scan.
     index("bounty_repo_id_idx").on(table.repoId),
-    check("bounty_number_check", sql`${table.number} > 0`),
     check(
       "bounty_title_check",
       sql`char_length(${table.title}) between 1 and 255`,

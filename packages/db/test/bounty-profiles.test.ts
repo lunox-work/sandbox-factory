@@ -16,7 +16,6 @@ function row(overrides: Partial<BountyProfileRow> = {}): BountyProfileRow {
     specRevision: 1,
     specHash: "a".repeat(64),
     snapshotId: "rsn_1",
-    bounty: { issueType: "Bug", priority: "High" },
     status: "queued",
     errorCode: null,
     runErrorCode: null,
@@ -34,7 +33,6 @@ const request = {
   specRevision: 1,
   specHash: "a".repeat(64),
   snapshotId: "rsn_1",
-  bounty: { issueType: "Bug", priority: "High" },
 };
 
 test("a request checks the proposal is the owner's, then inserts once and reads the row back", async () => {

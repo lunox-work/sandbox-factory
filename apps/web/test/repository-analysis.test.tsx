@@ -17,6 +17,7 @@ const repo: GithubRepoDto = {
   lastSyncedAt: stamp,
   syncStatus: "ok",
   syncError: null,
+  stack: null,
   createdAt: stamp,
 };
 const snapshot = {

@@ -243,7 +243,9 @@ export class BountyProfiler {
     full: boolean,
   ): Promise<Step> {
     const run = await this.#run(owner, profile.scopeRunId);
-    if (run === null) return this.#fail(owner, profile, "source_unavailable");
+    // A scope run always reads a snapshot; one without is not a scope run.
+    if (run === null || run.snapshotId === null)
+      return this.#fail(owner, profile, "source_unavailable");
     if (run.status === "failed")
       return this.#fail(owner, profile, "scope_failed", run.errorCode);
     if (run.status !== "succeeded") return WAIT;
@@ -292,7 +294,6 @@ export class BountyProfiler {
     return this.#advance(owner, profile, {
       status: "ready",
       profile: buildComplexityProfile({
-        bounty: profile.bounty,
         spec: spec.draft,
         facts: snapshot.facts,
         scope,

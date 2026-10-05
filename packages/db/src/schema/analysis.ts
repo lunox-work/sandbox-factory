@@ -34,6 +34,7 @@ import type {
 
 import { githubRepo } from "./github.js";
 import { user } from "./auth.js";
+import { organization } from "./organizations.js";
 
 const ts = (name: string) => timestamp(name, { withTimezone: true });
 
@@ -84,13 +85,22 @@ export const repoSnapshot = pgTable(
 export type RepoSnapshotRow = typeof repoSnapshot.$inferSelect;
 export type NewRepoSnapshotRow = typeof repoSnapshot.$inferInsert;
 
+/**
+ * One run of an analysis tool. Owned by `organization_id`, which every
+ * store puts in its `WHERE`. Most runs read a repository snapshot, which
+ * belongs to the same organization; a starter reads none, so its
+ * `snapshot_id` is null.
+ */
 export const analysisRun = pgTable(
   "analysis_run",
   {
     id: text("id").primaryKey(),
-    snapshotId: text("snapshot_id")
+    organizationId: text("organization_id")
       .notNull()
-      .references(() => repoSnapshot.id, { onDelete: "cascade" }),
+      .references(() => organization.id, { onDelete: "cascade" }),
+    snapshotId: text("snapshot_id").references(() => repoSnapshot.id, {
+      onDelete: "cascade",
+    }),
     tool: text("tool").notNull(),
     toolVersion: text("tool_version").notNull(),
     params: jsonb("params").$type<AnalysisParams>().notNull(),
@@ -120,6 +130,7 @@ export const analysisRun = pgTable(
       t.paramsHash,
     ),
     index("analysis_run_status_created_at_idx").on(t.status, t.createdAt),
+    index("analysis_run_organization_id_idx").on(t.organizationId),
   ],
 );
 

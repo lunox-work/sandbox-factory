@@ -25,6 +25,8 @@ export async function fetchSource(
   if ((run.sizeKb ?? 0) * 1024 > options.maxBytes)
     throw new AnalysisError("too_large");
   if (
+    run.commitSha === null ||
+    run.repoFullName === null ||
     !/^[a-f0-9]{40}$/i.test(run.commitSha) ||
     !/^[\w.-]+\/[\w.-]+$/.test(run.repoFullName)
   )

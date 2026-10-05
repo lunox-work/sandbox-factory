@@ -17,16 +17,13 @@ function bountyRow(overrides: Partial<BountyRow> = {}): BountyRow {
   return {
     id: "bty_1",
     organizationId: "org_1",
-    number: 7,
     title: "Invitations are not sent",
     description: "Steps",
-    issueType: "Bug",
-    priority: "High",
-    labels: ["email"],
     components: [],
     inputTruncated: false,
     origin: "manual",
     repoId: null,
+    stack: [],
     createdBy: "user_1",
     revision: 1,
     createdAt: new Date("2026-10-01T00:00:00Z"),
@@ -59,13 +56,11 @@ const linked = {
 const newBounty = {
   title: "Invitations are not sent",
   description: "Steps",
-  issueType: "Bug",
-  priority: "High",
-  labels: ["email"],
   repoId: null,
+  stack: ["PostgreSQL"],
 };
 
-test("creates a bounty written here as the organization's next number", async () => {
+test("creates a bounty written here, with no Jira issue", async () => {
   const fake = createFakeDb([bountyRow()]);
   const result = await createBountyStore(fake.db).create(
     "org_1",
@@ -73,15 +68,17 @@ test("creates a bounty written here as the organization's next number", async ()
     newBounty,
   );
   assert.ok(result.ok);
-  assert.equal(result.bounty.key, "B-7");
   assert.equal(result.bounty.jira, null);
+  // Named by nothing but its id: no count of the organization's bounties.
+  assert.equal("key" in result.bounty, false);
+  assert.equal("number" in result.bounty, false);
   const values = fake.calls[0]?.values;
   assert.match(String(values?.["id"]), /^bty_/);
   assert.equal(values?.["organizationId"], "org_1");
   assert.equal(values?.["origin"], "manual");
   assert.equal(values?.["createdBy"], "user_1");
-  // Read in the insert itself, so the count is never read and then raced.
-  assert.equal(typeof values?.["number"], "object");
+  assert.deepEqual(values?.["stack"], ["PostgreSQL"]);
+  assert.equal("number" in (values ?? {}), false);
 });
 
 test("refuses a repository the organization does not have", async () => {
@@ -110,41 +107,32 @@ test("names a repository the organization has", async () => {
   assert.equal(fake.calls[0]?.filtered, true);
 });
 
-test("a number taken by a concurrent bounty is retried", async () => {
-  const taken = Object.assign(new Error("duplicate"), { code: "23505" });
-  const fake = createSequencedFakeDb([taken, taken, [bountyRow()]]);
+test("inserts a bounty once, and passes a failure on", async () => {
+  const fake = createFakeDb([bountyRow()]);
   const created = await insertBounty(fake.db, "org_1", {
     title: "t",
     origin: "manual",
   });
   assert.equal(created.id, "bty_1");
-  assert.equal(fake.calls.length, 3);
-});
-
-test("gives up on the number after a bound, and passes other errors on", async () => {
-  const taken = Object.assign(new Error("duplicate"), { code: "23505" });
+  assert.equal(fake.calls.length, 1);
   await assert.rejects(
     insertBounty(createFakeDb([]).db, "org_1", { title: "t" }),
     /no row/,
   );
-  await assert.rejects(
-    insertBounty(createSequencedFakeDb(Array(8).fill(taken)).db, "org_1", {
-      title: "t",
-    }),
-    /duplicate/,
-  );
   const broken = new Error("connection lost");
-  const fake = createSequencedFakeDb([broken]);
-  await assert.rejects(insertBounty(fake.db, "org_1", { title: "t" }), broken);
-  assert.equal(fake.calls.length, 1);
+  const failing = createSequencedFakeDb([broken]);
+  await assert.rejects(
+    insertBounty(failing.db, "org_1", { title: "t" }),
+    broken,
+  );
+  assert.equal(failing.calls.length, 1);
 });
 
-test("reads a bounty with its Jira issue, named by the issue's key", async () => {
+test("reads a bounty with its Jira issue, and the issue's key", async () => {
   const fake = createFakeDb([
     { row: bountyRow({ origin: "jira" }), ...linked },
   ]);
   const bounty = await createBountyStore(fake.db).get("org_1", "bty_1");
-  assert.equal(bounty?.key, "APP-3");
   assert.deepEqual(bounty?.jira, {
     issueId: "jri_1",
     boardId: "jrb_1",
@@ -243,11 +231,7 @@ test("lists bounties newest first, a page at a time, with their live proposal", 
   const base = {
     id: "bty_1",
     organizationId: "org_1",
-    number: 7,
     title: "Invitations are not sent",
-    issueType: "Bug",
-    priority: null,
-    labels: [],
     origin: "manual",
     repoId: null,
     revision: 1,
@@ -267,7 +251,6 @@ test("lists bounties newest first, a page at a time, with their live proposal", 
     {
       ...base,
       id: "bty_2",
-      number: 8,
       ...linked,
       proposalId: null,
       proposalStatus: null,
@@ -287,9 +270,9 @@ test("lists bounties newest first, a page at a time, with their live proposal", 
     amountMinor: 10_500,
     currency: "USD",
   });
-  assert.equal(listed[0]?.key, "B-7");
+  assert.equal(listed[0]?.jira, null);
   assert.equal(listed[1]?.proposal, null);
-  assert.equal(listed[1]?.key, "APP-3");
+  assert.equal(listed[1]?.jira?.key, "APP-3");
   assert.equal(fake.calls[0]?.ordered, true);
   assert.equal(fake.calls[0]?.limited, 50);
   assert.equal(fake.calls[0]?.filtered, true);
@@ -299,6 +282,41 @@ test("lists bounties newest first, a page at a time, with their live proposal", 
   );
 });
 
+test("lists across the organizations it is given, and asks nothing of none", async () => {
+  const fake = createFakeDb([
+    {
+      id: "bty_2",
+      organizationId: "org_2",
+      title: "Export the ledger",
+      origin: "manual",
+      repoId: null,
+      revision: 1,
+      createdAt: new Date("2026-10-02T00:00:00Z"),
+      updatedAt: new Date("2026-10-02T00:00:00Z"),
+      ...unlinked,
+      proposalId: null,
+      proposalStatus: null,
+      proposalComplexity: null,
+      proposalAmountMinor: null,
+      proposalCurrency: null,
+    },
+  ]);
+  const listed = await createBountyStore(fake.db).listAcross(
+    ["org_1", "org_2"],
+    { limit: 10 },
+  );
+  assert.deepEqual(
+    listed.map(({ organizationId, title }) => [organizationId, title]),
+    [["org_2", "Export the ledger"]],
+  );
+  assert.equal(fake.calls[0]?.filtered, true);
+  assert.equal(fake.calls[0]?.limited, 10);
+
+  const none = createFakeDb([]);
+  assert.deepEqual(await createBountyStore(none.db).listAcross([]), []);
+  assert.equal(none.calls.length, 0);
+});
+
 test("a change is made against the revision the editor saw", async () => {
   const fake = createSequencedFakeDb([
     [{ row: bountyRow({ revision: 2 }), ...unlinked }],
@@ -306,16 +324,12 @@ test("a change is made against the revision the editor saw", async () => {
   ]);
   const result = await createBountyStore(fake.db).update("org_1", "bty_1", 2, {
     title: "Fixed title",
-    priority: null,
-    labels: [],
     description: "More",
-    issueType: "Task",
   });
   assert.ok(result.ok);
   assert.equal(result.bounty.title, "Fixed title");
   const values = fake.calls[1]?.values;
   assert.equal(values?.["revision"], 3);
-  assert.equal(values?.["priority"], null);
   assert.equal(values?.["description"], "More");
   assert.equal("repoId" in (values ?? {}), false);
 });
@@ -369,8 +383,8 @@ test("a Jira bounty's text is Jira's; its repository is the platform's", async (
     repoId: "ghr_1",
   });
   assert.ok(result.ok);
-  // Still named and linked as it was read.
-  assert.equal(result.bounty.key, "APP-3");
+  // Still linked as it was read.
+  assert.equal(result.bounty.jira?.key, "APP-3");
   assert.equal(result.bounty.jira?.issueId, "jri_1");
 
   const unknownRepo = await createBountyStore(
@@ -390,6 +404,28 @@ test("a Jira bounty's text is Jira's; its repository is the platform's", async (
   );
   assert.ok(unset.ok);
   assert.equal(cleared.calls[1]?.values?.["repoId"], null);
+
+  // Its stack is the workspace's too, and an unchanged one writes nothing.
+  const stacked = createSequencedFakeDb([
+    [jiraRow],
+    [bountyRow({ origin: "jira", stack: ["Redis"], revision: 2 })],
+  ]);
+  const added = await createBountyStore(stacked.db).update(
+    "org_1",
+    "bty_1",
+    1,
+    { stack: ["Redis"] },
+  );
+  assert.ok(added.ok);
+  assert.deepEqual(stacked.calls[1]?.values?.["stack"], ["Redis"]);
+  const same = createSequencedFakeDb([
+    [{ ...jiraRow, row: bountyRow({ origin: "jira", stack: ["Redis"] }) }],
+  ]);
+  const kept = await createBountyStore(same.db).update("org_1", "bty_1", 1, {
+    stack: ["Redis"],
+  });
+  assert.ok(kept.ok);
+  assert.equal(same.calls.length, 1);
 });
 
 test("a bounty is removed only while nothing is built on it", async () => {
@@ -427,8 +463,6 @@ test("a change to what the bounty already says writes nothing", async () => {
   ]);
   const result = await createBountyStore(fake.db).update("org_1", "bty_1", 1, {
     title: "Invitations are not sent",
-    labels: ["email"],
-    priority: "High",
     repoId: "ghr_1",
   });
   assert.ok(result.ok);
@@ -473,9 +507,6 @@ test("a repository removed between the check and the write is not found", async 
 const jiraText: BountyContent = {
   title: "Invitations are not sent",
   description: "Steps",
-  issueType: "Bug",
-  priority: "High",
-  labels: ["email"],
   components: [],
   inputTruncated: false,
 };
@@ -484,12 +515,15 @@ test("a refresh writes Jira's text only when it differs", async () => {
   assert.equal(jiraContentChange(bountyRow(), jiraText), null);
   assert.deepEqual(
     jiraContentChange(bountyRow(), { ...jiraText, components: ["Mailer"] }),
-    { ...jiraText, labels: ["email"], components: ["Mailer"] },
+    { ...jiraText, components: ["Mailer"] },
   );
   // An issue with no summary keeps the title the bounty has.
   assert.equal(
-    jiraContentChange(bountyRow(), { ...jiraText, title: " ", labels: [] })
-      ?.title,
+    jiraContentChange(bountyRow(), {
+      ...jiraText,
+      title: " ",
+      description: "New steps",
+    })?.title,
     "Invitations are not sent",
   );
   assert.equal(
@@ -533,16 +567,15 @@ test("a refresh writes Jira's text only when it differs", async () => {
   );
 });
 
-test("a bounty's number is its organization's, and its columns are checked", () => {
+test("a bounty is named by its id alone, and its columns are checked", () => {
   const config = getTableConfig(bounty);
-  assert.deepEqual(
-    config.uniqueConstraints
-      .find(({ name }) => name === "bounty_organization_number_unique")
-      ?.columns.map(({ name }) => name),
-    ["organization_id", "number"],
+  // No per-organization count: nothing a person reads as `B-12`.
+  assert.equal(
+    config.columns.some(({ name }) => name === "number"),
+    false,
   );
+  assert.deepEqual(config.uniqueConstraints, []);
   assert.deepEqual(config.checks.map(({ name }) => name).sort(), [
-    "bounty_number_check",
     "bounty_origin_check",
     "bounty_revision_check",
     "bounty_title_check",

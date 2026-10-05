@@ -8,6 +8,9 @@ import {
   SEAM_KINDS,
   SLICE_BLOCKER_CODES,
   SLICE_BUDGET_DEFAULTS,
+  STARTER_ALIAS_KINDS,
+  STARTER_LIMITS,
+  STARTER_SET_SCHEMA_VERSION,
 } from "sandbox-factory";
 import { z } from "zod";
 
@@ -139,8 +142,9 @@ export const enqueueFixturesSchema = z.strictObject({
 
 const runCommon = {
   id: z.string(),
-  snapshotId: z.string(),
-  repoId: z.string(),
+  /** Null for a run with no repository: a starter's. */
+  snapshotId: z.string().nullable(),
+  repoId: z.string().nullable(),
   toolVersion: z.string(),
   status: z.enum(ANALYSIS_STATUSES),
   attempt: z.number().int().nonnegative(),
@@ -162,6 +166,14 @@ export const sandboxBuildParamsSchema = z.strictObject({
   contractSha256: sha256Schema,
   transformConfigSha256: sha256Schema,
   approvedTaskSha256: sha256Schema,
+});
+/** Stored starter parameters: the version it writes, and the stack it follows. */
+export const starterParamsSchema = z.strictObject({
+  deadlineMinutes: z.number().int().min(1).max(120).default(60),
+  agent: z.literal("starter"),
+  sandboxVersionId: z.string().min(1),
+  approvedTaskSha256: sha256Schema,
+  stack: z.array(z.string().min(1)),
 });
 export const analysisRunDtoSchema = z.discriminatedUnion("tool", [
   z.strictObject({
@@ -188,6 +200,11 @@ export const analysisRunDtoSchema = z.discriminatedUnion("tool", [
     ...runCommon,
     tool: z.literal("fixtures"),
     params: fixturesParamsSchema,
+  }),
+  z.strictObject({
+    ...runCommon,
+    tool: z.literal("sandbox_starter"),
+    params: starterParamsSchema,
   }),
 ]);
 export const analysisRunListSchema = z.object({
@@ -262,7 +279,8 @@ export const sliceBoundarySummarySchema = z.object({
  */
 export const repositoryProposalSchema = z.object({
   id: z.string(),
-  issueKey: z.string(),
+  /** Its bounty's Jira key; null for a bounty written here. */
+  issueKey: z.string().nullable(),
   title: z.string().nullable(),
   status: z.string(),
   specRevision: z.number().int().positive(),
@@ -354,7 +372,77 @@ export const fixtureSetSchema = fixtureSubmissionSchema.extend({
   specRevision: z.number().int().positive(),
   usage: agentUsageSchema,
 });
+const starterFileSchema = (refine: (path: string) => boolean, rule: string) =>
+  z.strictObject({
+    path: entryPointSchema.refine(refine, rule),
+    text: z.string().max(STARTER_LIMITS.fileChars),
+  });
+/**
+ * What the starter agent submits. The schema holds each part's shape; the
+ * worker's checks (`starterProblems` in core, then a type check and the
+ * baseline) hold the rest.
+ */
+export const starterSubmissionSchema = z.strictObject({
+  files: z
+    .array(
+      starterFileSchema(
+        (path) => path.startsWith("src/"),
+        "Source files live under src/.",
+      ),
+    )
+    .min(1)
+    .max(STARTER_LIMITS.files),
+  publicTests: z
+    .array(
+      starterFileSchema(
+        (path) => path.startsWith("tests/public/"),
+        "Public tests live under tests/public/.",
+      ),
+    )
+    .max(STARTER_LIMITS.publicTests),
+  hiddenTests: z
+    .array(
+      starterFileSchema(
+        (path) => path.startsWith("tests/private/"),
+        "Hidden tests live under tests/private/.",
+      ).extend({ expectedBaseline: z.enum(["pass", "fail"]) }),
+    )
+    .min(1)
+    .max(STARTER_LIMITS.hiddenTests),
+  packages: z
+    .array(
+      z.strictObject({
+        name: z.string().min(1).max(214),
+        version: z.string().min(1).max(64),
+      }),
+    )
+    .max(STARTER_LIMITS.packages),
+  scenario: z.string().min(1).max(STARTER_LIMITS.scenarioChars),
+  summary: z.string().min(1).max(STARTER_LIMITS.summaryChars),
+  /** The name table; each rule a name the starter uses and its public one. */
+  aliases: z
+    .array(
+      z.strictObject({
+        before: z.string().min(1).max(200),
+        after: z.string().min(1).max(200),
+        kind: z.enum(STARTER_ALIAS_KINDS),
+        paths: z.array(entryPointSchema).max(50).default([]),
+      }),
+    )
+    .min(1)
+    .max(STARTER_LIMITS.aliases),
+});
+/** `starter-set.json`, the accepted answer and what it was written for. */
+export const starterSetSchema = starterSubmissionSchema.extend({
+  schemaVersion: z.literal(STARTER_SET_SCHEMA_VERSION),
+  toolVersion: z.string(),
+  sandboxVersionId: z.string(),
+  approvedTaskSha256: z.string(),
+  stack: z.array(z.string()),
+  usage: agentUsageSchema,
+});
 export type AnalysisRunDto = z.infer<typeof analysisRunDtoSchema>;
+export type StarterSetDto = z.infer<typeof starterSetSchema>;
 export type ArtifactDto = z.infer<typeof artifactDtoSchema>;
 export type EnqueueAnalysisInput = z.input<typeof enqueueAnalysisSchema>;
 export type EnqueueSliceInput = z.input<typeof enqueueSliceSchema>;

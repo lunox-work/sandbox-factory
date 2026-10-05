@@ -21,6 +21,8 @@ export { nearestCompilerOptions } from "./compiler-config.js";
 import {
   EVALUATION_LIMITS,
   PRIVATE_TESTS_DIR,
+  PSEUDONYMS_FILE,
+  PSEUDONYMS_SCHEMA_VERSION,
   RUN_PATH,
   SANDBOX_BUILD_RUN_VERSION,
   SANDBOX_BUILD_SCHEMA_VERSION,
@@ -35,6 +37,7 @@ import {
 } from "sandbox-factory";
 import type {
   AcceptanceTest,
+  AliasRule,
   BaselineReport,
   BaselineStep,
   BoundaryContract,
@@ -52,6 +55,7 @@ import type {
   StageExecution,
 } from "sandbox-factory";
 import { AnalysisError } from "../errors.js";
+import { snapshotOf } from "./adapter.js";
 import type { ArtifactFile, ToolAdapter, ToolRunInput } from "./adapter.js";
 import { loadSliceRun, readIncludedSource } from "./slice-run.js";
 import { sha256 } from "./slice/hash.js";
@@ -108,13 +112,23 @@ function withSymbols(
 }
 const compare = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 
+/** Where a build writes the table its public files were renamed by. */
+export const PSEUDONYMS_PATH = `private/${PSEUDONYMS_FILE}`;
+
 export function buildArtifactKind(path: string): ArtifactFile["kind"] {
   if (path === "build-manifest.json") return "build_manifest";
   if (path === "baseline.json") return "baseline_report";
+  if (path === PSEUDONYMS_PATH) return "pseudonyms";
   if (path.startsWith("project/")) return "project_file";
   if (path.startsWith("private/")) return "private_test";
   return "other";
 }
+
+/** What one baseline step printed, for a caller that shows it to an agent. */
+export type StepObserver = (
+  step: BaselineStep,
+  output: { readonly stdout: string; readonly stderr: string },
+) => void;
 
 async function runBaseline(
   provider: EvaluationProvider,
@@ -125,6 +139,7 @@ async function runBaseline(
     readonly signal: AbortSignal;
     readonly log: (line: string) => void;
     readonly now: () => Date;
+    readonly onStep?: StepObserver;
   },
 ): Promise<{
   baseline: BaselineReport;
@@ -181,6 +196,7 @@ async function runBaseline(
         path,
       };
       steps.push(step);
+      input.onStep?.(step, { stdout: result.stdout, stderr: result.stderr });
       return step;
     };
     // Trusted preparation pins the dependency tree; the clean install,
@@ -270,6 +286,172 @@ async function runBaseline(
   };
 }
 
+/**
+ * What a build manifest binds its files to: the slice, or a generated
+ * version's starter, and the transform and task they were built for.
+ */
+export type BuildBindings = Pick<
+  SandboxBuildManifest,
+  | "sourceSnapshotId"
+  | "sourceCommitSha"
+  | "sliceRunId"
+  | "manifestSha256"
+  | "contractSha256"
+  | "starterSha256"
+  | "transformConfigSha256"
+  | "approvedTaskSha256"
+>;
+
+/**
+ * Writes a build's outputs: `build-manifest.json` hashing and classifying
+ * every generated file, `baseline.json` when the baseline ran, each file
+ * under `project/` or, for a hidden test, `private/`, and the alias table
+ * as `private/pseudonym.lunox`. The public sandbox is `project/`; the
+ * private one is the same files read back through that table, so a build
+ * makes both.
+ */
+export async function writeBuildOutputs(input: {
+  readonly outDir: string;
+  readonly toolVersion: string;
+  readonly sandboxVersionId: string;
+  readonly bindings: BuildBindings;
+  /** The table the files were renamed by, written as `pseudonym.lunox`. */
+  readonly aliasRules: readonly AliasRule[];
+  readonly files: readonly GeneratedFile[];
+  readonly importRewrites: SandboxBuildManifest["importRewrites"];
+  readonly renames: SandboxBuildManifest["renames"];
+  readonly dependencies: SandboxBuildManifest["dependencies"];
+  readonly baseline: BaselineReport | null;
+  readonly evaluator: EvaluationEnvironment | null;
+  readonly blockers: readonly ProjectBlocker[];
+}): Promise<{ manifest: SandboxBuildManifest; written: ArtifactFile[] }> {
+  const { baseline, blockers } = input;
+  const files = [...input.files].sort((a, b) => compare(a.path, b.path));
+  const records: BuildFileRecord[] = files.map((file) => ({
+    path: file.path,
+    sha256: sha256(file.text),
+    sizeBytes: Buffer.byteLength(file.text),
+    class: file.class,
+    public: file.public,
+  }));
+  const hashOf = (subset: readonly BuildFileRecord[]) =>
+    sha256(canonicalJson(subset.map((record) => [record.path, record.sha256])));
+  const manifest: SandboxBuildManifest = {
+    schemaVersion: SANDBOX_BUILD_SCHEMA_VERSION,
+    toolVersion: input.toolVersion,
+    sandboxVersionId: input.sandboxVersionId,
+    ...input.bindings,
+    toolchain: SANDBOX_TOOLCHAIN,
+    toolchainDigest: sha256(canonicalJson(SANDBOX_TOOLCHAIN)),
+    evaluator: input.evaluator,
+    files: records,
+    importRewrites: input.importRewrites,
+    renames: input.renames,
+    dependencies: input.dependencies,
+    harnessSha256: hashOf(
+      records.filter((record) => record.class !== "source"),
+    ),
+    publicTestsSha256: hashOf(
+      records.filter((record) => record.class === "test-public"),
+    ),
+    privateTestsSha256: hashOf(
+      records.filter((record) => record.class === "test-private"),
+    ),
+    publicProjectSha256: hashOf(records.filter((record) => record.public)),
+    baseline,
+    blockers,
+    ready: blockers.length === 0 && baseline?.ok === true,
+  };
+  await mkdir(input.outDir, { recursive: true });
+  const outputs: {
+    path: string;
+    text: string;
+    meta: Record<string, unknown> | null;
+  }[] = [
+    {
+      path: "build-manifest.json",
+      text: canonicalJson(manifest),
+      meta: buildSummary(manifest) as unknown as Record<string, unknown>,
+    },
+    ...(baseline === null
+      ? []
+      : [{ path: "baseline.json", text: canonicalJson(baseline), meta: null }]),
+    {
+      path: PSEUDONYMS_PATH,
+      text: canonicalJson({
+        schemaVersion: PSEUDONYMS_SCHEMA_VERSION,
+        rules: input.aliasRules,
+      }),
+      meta: { rules: input.aliasRules.length },
+    },
+    ...files.map((file) => ({
+      path: file.public
+        ? `project/${file.path}`
+        : `private/${file.path.replace(`${PRIVATE_TESTS_DIR}/`, "")}`,
+      text: file.text,
+      meta: null,
+    })),
+  ];
+  const written: ArtifactFile[] = [];
+  for (const output of outputs) {
+    const absolutePath = join(input.outDir, output.path);
+    await mkdir(dirname(absolutePath), { recursive: true });
+    await writeFile(absolutePath, output.text, "utf8");
+    written.push({
+      path: output.path,
+      absolutePath,
+      kind: buildArtifactKind(output.path),
+      contentType:
+        output.path.endsWith(".json") || output.path === PSEUDONYMS_PATH
+          ? "application/json"
+          : "text/plain; charset=utf-8",
+      meta: output.meta,
+    });
+  }
+  return { manifest, written: written.sort((a, b) => compare(a.path, b.path)) };
+}
+
+/**
+ * Runs the baseline for generated files and folds its result in: the
+ * lockfile it resolved joins the files, and a failed baseline is a
+ * blocker. What a build and a starter both do once their files exist.
+ */
+export async function baselineOf(
+  provider: EvaluationProvider,
+  input: {
+    readonly label: string;
+    readonly files: GeneratedFile[];
+    readonly acceptanceTests: readonly AcceptanceTest[];
+    readonly blockers: ProjectBlocker[];
+    readonly signal: AbortSignal;
+    readonly log: (line: string) => void;
+    readonly now: () => Date;
+    /** Each step's output, for an agent fixing its own project; never logged. */
+    readonly onStep?: StepObserver;
+  },
+): Promise<{ baseline: BaselineReport; evaluator: EvaluationEnvironment }> {
+  const result = await runBaseline(provider, input);
+  if (result.lockfile !== null)
+    input.files.push({
+      path: "package-lock.json",
+      text: result.lockfile,
+      class: "config",
+      public: true,
+    });
+  if (!result.baseline.ok)
+    input.blockers.push({
+      code: "baseline_failed",
+      file: null,
+      detail: result.baseline.reasons.join(" "),
+    });
+  input.log(
+    result.baseline.ok
+      ? "Baseline check passed."
+      : `Baseline check failed: ${result.baseline.reasons.length} reason(s).`,
+  );
+  return { baseline: result.baseline, evaluator: result.evaluator };
+}
+
 export function createSandboxBuildAdapter(
   options: SandboxBuildOptions,
 ): ToolAdapter {
@@ -280,6 +462,7 @@ export function createSandboxBuildAdapter(
     async run(input: ToolRunInput): Promise<ArtifactFile[]> {
       const params = input.params;
       if (!isSandboxBuildParams(params)) throw new AnalysisError("tool_failed");
+      const snapshot = snapshotOf(input);
       const provider = options.provider;
       if (provider === null) {
         input.log("No evaluation provider is configured on this worker.");
@@ -292,7 +475,7 @@ export function createSandboxBuildAdapter(
       // A draft that changed after this run was queued is a different build.
       if (
         source.sliceRunId !== params.sliceRunId ||
-        source.sourceSnapshotId !== input.run.snapshotId ||
+        source.sourceSnapshotId !== snapshot.snapshotId ||
         source.manifestSha256 !== params.manifestSha256 ||
         source.contractSha256 !== params.contractSha256 ||
         source.transformConfigSha256 !== params.transformConfigSha256 ||
@@ -302,7 +485,7 @@ export function createSandboxBuildAdapter(
       const slice = await loadSliceRun(
         input.inputs,
         params.sliceRunId,
-        input.run.snapshotId,
+        snapshot.snapshotId,
       );
       if (
         slice.manifestSha256 !== params.manifestSha256 ||
@@ -435,131 +618,46 @@ export function createSandboxBuildAdapter(
       let baseline: BaselineReport | null = null;
       let evaluator: EvaluationEnvironment | null = null;
       if (blockers.length === 0) {
-        const result = await runBaseline(provider, {
+        const result = await baselineOf(provider, {
           label: version.id,
           files,
           acceptanceTests: source.acceptanceTests,
+          blockers,
           signal: input.signal,
           log: input.log,
           now,
         });
         baseline = result.baseline;
         evaluator = result.evaluator;
-        if (result.lockfile !== null)
-          files.push({
-            path: "package-lock.json",
-            text: result.lockfile,
-            class: "config",
-            public: true,
-          });
-        if (!baseline.ok)
-          blockers.push({
-            code: "baseline_failed",
-            file: null,
-            detail: baseline.reasons.join(" "),
-          });
-        input.log(
-          baseline.ok
-            ? "Baseline check passed."
-            : `Baseline check failed: ${baseline.reasons.length} reason(s).`,
-        );
       }
-      files.sort((a, b) => compare(a.path, b.path));
-      const records: BuildFileRecord[] = files.map((file) => ({
-        path: file.path,
-        sha256: sha256(file.text),
-        sizeBytes: Buffer.byteLength(file.text),
-        class: file.class,
-        public: file.public,
-      }));
-      const hashOf = (subset: readonly BuildFileRecord[]) =>
-        sha256(
-          canonicalJson(subset.map((record) => [record.path, record.sha256])),
-        );
-      const buildManifest: SandboxBuildManifest = {
-        schemaVersion: SANDBOX_BUILD_SCHEMA_VERSION,
+      const { manifest: buildManifest, written } = await writeBuildOutputs({
+        outDir: input.outDir,
         toolVersion: SANDBOX_BUILD_RUN_VERSION,
         sandboxVersionId: version.id,
-        sourceSnapshotId: source.sourceSnapshotId,
-        sourceCommitSha: input.run.commitSha,
-        sliceRunId: source.sliceRunId,
-        manifestSha256: source.manifestSha256,
-        contractSha256: source.contractSha256,
-        transformConfigSha256: source.transformConfigSha256,
-        approvedTaskSha256: source.approvedTaskSha256,
-        toolchain: SANDBOX_TOOLCHAIN,
-        toolchainDigest: sha256(canonicalJson(SANDBOX_TOOLCHAIN)),
-        evaluator,
-        files: records,
+        aliasRules: source.aliasRules,
+        bindings: {
+          sourceSnapshotId: source.sourceSnapshotId,
+          sourceCommitSha: snapshot.commitSha,
+          sliceRunId: source.sliceRunId,
+          manifestSha256: source.manifestSha256,
+          contractSha256: source.contractSha256,
+          transformConfigSha256: source.transformConfigSha256,
+          approvedTaskSha256: source.approvedTaskSha256,
+        },
+        files,
         importRewrites,
         renames,
         dependencies: source.scope.dependencies,
-        harnessSha256: hashOf(
-          records.filter((record) => record.class !== "source"),
-        ),
-        publicTestsSha256: hashOf(
-          records.filter((record) => record.class === "test-public"),
-        ),
-        privateTestsSha256: hashOf(
-          records.filter((record) => record.class === "test-private"),
-        ),
-        publicProjectSha256: hashOf(records.filter((record) => record.public)),
         baseline,
+        evaluator,
         blockers,
-        ready: blockers.length === 0 && baseline?.ok === true,
-      };
-      await mkdir(input.outDir, { recursive: true });
-      const outputs: {
-        path: string;
-        text: string;
-        meta: Record<string, unknown> | null;
-      }[] = [
-        {
-          path: "build-manifest.json",
-          text: canonicalJson(buildManifest),
-          meta: buildSummary(buildManifest) as unknown as Record<
-            string,
-            unknown
-          >,
-        },
-        ...(baseline === null
-          ? []
-          : [
-              {
-                path: "baseline.json",
-                text: canonicalJson(baseline),
-                meta: null,
-              },
-            ]),
-        ...files.map((file) => ({
-          path: file.public
-            ? `project/${file.path}`
-            : `private/${file.path.replace(`${PRIVATE_TESTS_DIR}/`, "")}`,
-          text: file.text,
-          meta: null,
-        })),
-      ];
-      const written: ArtifactFile[] = [];
-      for (const output of outputs) {
-        const absolutePath = join(input.outDir, output.path);
-        await mkdir(dirname(absolutePath), { recursive: true });
-        await writeFile(absolutePath, output.text, "utf8");
-        written.push({
-          path: output.path,
-          absolutePath,
-          kind: buildArtifactKind(output.path),
-          contentType: output.path.endsWith(".json")
-            ? "application/json"
-            : "text/plain; charset=utf-8",
-          meta: output.meta,
-        });
-      }
+      });
       input.log(
         buildManifest.ready
           ? "Sandbox build ready for the publication gates."
           : `Sandbox build completed as diagnostic output (${blockers.length} blocker(s)).`,
       );
-      return written.sort((a, b) => compare(a.path, b.path));
+      return written;
     },
     /** A ready build's harness and toolchain become the draft's freeze evidence. */
     async committed({ runId, files, inputs }) {

@@ -30,7 +30,7 @@ export const run: ClaimedAnalysisRun = {
 /** The run context and empty inputs a tool test does not care about. */
 export function toolContext() {
   return {
-    run: { snapshotId: run.snapshotId, commitSha: run.commitSha },
+    run: { snapshotId: "rsn_1", commitSha: "a".repeat(40) },
     inputs: {
       getRun: async () => null,
       listArtifacts: async () => [],
@@ -38,6 +38,7 @@ export function toolContext() {
       getVersion: async () => null,
       getTask: async () => null,
       recordBuildOutput: async () => false,
+      recordStarterOutput: async () => false,
     },
   };
 }

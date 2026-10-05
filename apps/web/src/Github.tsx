@@ -44,6 +44,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { ErrorBanner, LoadingLine } from "@/components/Message";
 import { OutcomeNotice, type OutcomeTone } from "@/components/OutcomeNotice";
+import { StackChips } from "@/components/StackPicker";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -816,6 +817,34 @@ function RepositoryPage({
       {repo.syncError !== null && (
         <ErrorBanner className="mt-0">{repo.syncError}</ErrorBanner>
       )}
+      <section
+        aria-label="Tech stack"
+        className="flex flex-col gap-2"
+        data-testid="repository-stack"
+      >
+        <h4 className="text-muted-foreground text-xs font-medium tracking-wide uppercase">
+          Tech stack
+        </h4>
+        {repo.stack === null ? (
+          <p className="text-muted-foreground text-sm">
+            Reading the repository&rsquo;s stack&hellip;
+          </p>
+        ) : repo.stack.length === 0 ? (
+          <p className="text-muted-foreground text-sm">
+            Nothing detected at the latest commit.
+          </p>
+        ) : (
+          <StackChips
+            inherited={[]}
+            inheritedFrom={repo.fullName}
+            own={repo.stack}
+          />
+        )}
+        <p className="text-muted-foreground text-xs">
+          Detected from its languages, files and dependency manifests at the
+          latest commit. A bounty about this repository starts with it.
+        </p>
+      </section>
       <div className="flex flex-wrap items-center gap-2">
         <Button
           variant="outline"

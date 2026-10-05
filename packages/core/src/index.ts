@@ -15,6 +15,7 @@
 export * from "./handle.js";
 export * from "./sizing.js";
 export * from "./bounty.js";
+export * from "./stack.js";
 export * from "./selection/index.js";
 export * from "./pricing/index.js";
 export * from "./repo/index.js";

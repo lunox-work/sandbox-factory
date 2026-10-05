@@ -9,10 +9,11 @@ import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 import { observeUntil, terminalRun } from "./data/observe";
 import { clients, queryKeys, useUserId } from "./data/query";
 /**
- * The organization's bounties: read a page at a time, written, changed,
- * deleted and proposed through the feature client; every read and write
- * is scoped by the organization in
- * the path, and the server decides what the caller may do.
+ * Bounties: the caller's, read a page at a time across every workspace they
+ * belong to (`useAllBounties`), and one workspace's, read, written, changed,
+ * deleted and proposed through the feature client (`useBounties`). Every
+ * write is scoped by the organization in the path, and the server decides
+ * what the caller may do.
  */
 
 import type {
@@ -32,10 +33,9 @@ export const PROPOSE_POLL_MS = 1_000;
 export interface BountyDraft {
   title: string;
   description: string;
-  issueType: string;
-  priority: string | null;
-  labels: string[];
   repoId: string | null;
+  /** What the bounty adds to its repository's detected stack. */
+  stack: string[];
 }
 
 export type BountyWrite =
@@ -52,14 +52,22 @@ export type BountyRead =
 export type ProposeResult =
   { ok: true; proposalId: string } | { ok: false; error: string };
 
-export interface Bounties {
+/** The caller's bounties, newest first, from every workspace. */
+export interface AllBounties {
   bounties: BountySummaryDto[];
   loading: boolean;
   error: string | null;
   more: boolean;
   loadMore: () => Promise<void>;
+}
+
+/** What can be done with one workspace's bounties. */
+export interface Bounties {
+  /** Reads again what a change to the workspace's bounties may have moved. */
   refresh: () => Promise<void>;
   read: (bountyId: string) => Promise<BountyRead>;
+  /** The bounty as last read, if it has been: shown while it is read again. */
+  cached: (bountyId: string) => BountyDto | undefined;
   create: (draft: BountyDraft) => Promise<BountyWrite>;
   update: (
     bountyId: string,
@@ -110,16 +118,17 @@ function runFailure(run: BountyRunDto): string {
   }
 }
 
-export function useBounties(organizationId: string): Bounties {
+/**
+ * The caller's bounties across every workspace they belong to, newest first.
+ * Each carries its workspace's id, which is where anything done to it goes.
+ */
+export function useAllBounties(): AllBounties {
   const userId = useUserId();
-  const queryClient = useQueryClient();
-  const key = queryKeys.resource(userId, organizationId, "bounties");
   const query = useInfiniteQuery({
-    queryKey: key,
+    queryKey: queryKeys.me(userId, "bounties"),
     initialPageParam: undefined as string | undefined,
     queryFn: ({ pageParam, signal }) =>
-      clients.bounties.bounties(
-        organizationId,
+      clients.bounties.myBounties(
         {
           limit: PAGE,
           ...(pageParam === undefined ? {} : { cursor: pageParam }),
@@ -128,12 +137,28 @@ export function useBounties(organizationId: string): Bounties {
       ),
     getNextPageParam: (page) => page.nextCursor ?? undefined,
   });
-  const bounties = query.data?.pages.flatMap((page) => page.bounties) ?? [];
-  const loading = query.isPending;
-  const error = query.isError ? "Could not load the bounties." : null;
+  const loadMore = useCallback(async () => {
+    await query.fetchNextPage();
+  }, [query.fetchNextPage]);
+  return {
+    bounties: query.data?.pages.flatMap((page) => page.bounties) ?? [],
+    loading: query.isPending,
+    error: query.isError ? "Could not load the bounties." : null,
+    more: query.hasNextPage,
+    loadMore,
+  };
+}
+
+export function useBounties(organizationId: string): Bounties {
+  const userId = useUserId();
+  const queryClient = useQueryClient();
   const load = useCallback(async () => {
-    await Promise.all(
-      [
+    await Promise.all([
+      // The list across workspaces holds this one's bounties too.
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.me(userId, "bounties"),
+      }),
+      ...[
         "bounties",
         "bounty-detail",
         "proposals",
@@ -148,11 +173,8 @@ export function useBounties(organizationId: string): Bounties {
           queryKey: queryKeys.resource(userId, organizationId, resource),
         }),
       ),
-    );
+    ]);
   }, [queryClient, userId, organizationId]);
-  const loadMore = useCallback(async () => {
-    await query.fetchNextPage();
-  }, [query.fetchNextPage]);
   const read = useCallback(
     async (id: string): Promise<BountyRead> => {
       try {
@@ -177,6 +199,13 @@ export function useBounties(organizationId: string): Bounties {
         };
       }
     },
+    [organizationId, queryClient, userId],
+  );
+  const cached = useCallback(
+    (id: string) =>
+      queryClient.getQueryData<BountyDto>(
+        queryKeys.resource(userId, organizationId, "bounty-detail", id),
+      ),
     [organizationId, queryClient, userId],
   );
   const write = useCallback(
@@ -359,13 +388,9 @@ export function useBounties(organizationId: string): Bounties {
   );
 
   return {
-    bounties,
-    loading,
-    error,
-    more: query.hasNextPage,
-    loadMore,
     refresh: load,
     read,
+    cached,
     create,
     update,
     remove,

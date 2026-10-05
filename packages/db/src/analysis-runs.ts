@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
-import { and, desc, eq, gt, lte, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, isNull, lte, ne, or, sql } from "drizzle-orm";
 import {
   ANALYSIS_TOOLS,
   canonicalJson,
   isFixturesParams,
   isScopeParams,
   isSliceParams,
+  readsSource,
   toolOfParams,
   toolVersionOf,
 } from "sandbox-factory";
@@ -30,8 +31,9 @@ import type { AnalysisRunRow } from "./schema.js";
 
 export interface StoredAnalysisRun {
   readonly id: string;
-  readonly snapshotId: string;
-  readonly repoId: string;
+  /** Null for a run that reads no repository: a starter's. */
+  readonly snapshotId: string | null;
+  readonly repoId: string | null;
   readonly tool: AnalysisTool;
   readonly toolVersion: string;
   readonly params: AnalysisParams;
@@ -48,10 +50,11 @@ export interface StoredAnalysisRun {
 export interface ClaimedAnalysisRun extends StoredAnalysisRun {
   readonly organizationId: string;
   readonly leaseToken: string;
-  readonly commitSha: string;
-  readonly repoFullName: string;
-  readonly externalRepoId: string;
-  readonly installationId: string;
+  /** Where the source is fetched from; null with no snapshot. */
+  readonly commitSha: string | null;
+  readonly repoFullName: string | null;
+  readonly externalRepoId: string | null;
+  readonly installationId: string | null;
   readonly sizeKb: number | null;
 }
 export interface NewArtifact {
@@ -83,11 +86,12 @@ export interface AnalysisRunStore {
    * A scope run reads a graph the same way and waits the same way. A
    * fixtures run names a slice run that must already have succeeded on the
    * same snapshot, so it needs no wait. A sandbox build names a succeeded
-   * slice run; the API checks that before enqueueing.
+   * slice run; the API checks that before enqueueing. A starter reads no
+   * snapshot: `snapshotId` is null, and its cache is the organization's.
    */
   enqueue(
     organizationId: string,
-    snapshotId: string,
+    snapshotId: string | null,
     input: {
       tool?: AnalysisTool;
       params: AnalysisParams;
@@ -150,7 +154,7 @@ const knownTool = (tool: string): AnalysisTool | undefined =>
 const KNOWN_TOOLS_SQL = sql.raw(
   ANALYSIS_TOOLS.map((name) => `'${name}'`).join(", "),
 );
-function toRun(row: AnalysisRunRow, repoId: string): StoredAnalysisRun {
+function toRun(row: AnalysisRunRow, repoId: string | null): StoredAnalysisRun {
   const tool = knownTool(row.tool);
   if (tool === undefined)
     throw new Error(`Unknown analysis tool ${row.tool} on run ${row.id}.`);
@@ -177,8 +181,7 @@ const expired = (now: Date) =>
     eq(analysisRun.status, "running"),
     or(lte(analysisRun.leaseExpiresAt, now), lte(analysisRun.deadlineAt, now)),
   );
-const owned = (owner: string) =>
-  sql`${analysisRun.snapshotId} in (select ${repoSnapshot.id} from ${repoSnapshot} join ${githubRepo} on ${githubRepo.id} = ${repoSnapshot.repoId} where ${githubRepo.organizationId} = ${owner})`;
+const owned = (owner: string) => eq(analysisRun.organizationId, owner);
 const fence = (owner: string, id: string, token: string, now: Date) =>
   and(
     owned(owner),
@@ -189,16 +192,12 @@ const fence = (owner: string, id: string, token: string, now: Date) =>
   );
 
 export function createAnalysisRunStore(db: Database): AnalysisRunStore {
+  // Left: a run with no snapshot has no repository either.
   const joined = (tx = db) =>
     tx
-      .select({
-        run: analysisRun,
-        repoId: githubRepo.id,
-        organizationId: githubRepo.organizationId,
-      })
+      .select({ run: analysisRun, repoId: repoSnapshot.repoId })
       .from(analysisRun)
-      .innerJoin(repoSnapshot, eq(repoSnapshot.id, analysisRun.snapshotId))
-      .innerJoin(githubRepo, eq(githubRepo.id, repoSnapshot.repoId));
+      .leftJoin(repoSnapshot, eq(repoSnapshot.id, analysisRun.snapshotId));
   return {
     async enqueue(owner, snapshotId, input) {
       return db.transaction(async (transaction) => {
@@ -211,25 +210,35 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
           .for("update");
         if (principal.length === 0)
           return { ok: false, reason: "not-found" } as const;
-        const snapshots = await tx
-          .select({ repoId: githubRepo.id })
-          .from(repoSnapshot)
-          .innerJoin(githubRepo, eq(githubRepo.id, repoSnapshot.repoId))
-          .where(
-            and(
-              eq(githubRepo.organizationId, owner),
-              eq(repoSnapshot.id, snapshotId),
-              ne(githubRepo.syncStatus, "gone"),
-            ),
-          )
-          .for("key share", { of: repoSnapshot });
-        const repoId = snapshots[0]?.repoId;
-        if (repoId === undefined)
-          return { ok: false, reason: "not-found" } as const;
         const tool = input.tool ?? "graphify";
         if (toolOfParams(input.params) !== tool)
           throw new Error("Analysis parameters do not match the tool.");
-        if (isSliceParams(input.params) || isScopeParams(input.params)) {
+        // A tool reads a snapshot exactly when it reads source.
+        if (readsSource(tool) !== (snapshotId !== null))
+          throw new Error("Analysis snapshot does not match the tool.");
+        let repoId: string | null = null;
+        if (snapshotId !== null) {
+          const snapshots = await tx
+            .select({ repoId: githubRepo.id })
+            .from(repoSnapshot)
+            .innerJoin(githubRepo, eq(githubRepo.id, repoSnapshot.repoId))
+            .where(
+              and(
+                eq(githubRepo.organizationId, owner),
+                eq(repoSnapshot.id, snapshotId),
+                ne(githubRepo.syncStatus, "gone"),
+              ),
+            )
+            .for("key share", { of: repoSnapshot });
+          const found = snapshots[0]?.repoId;
+          if (found === undefined)
+            return { ok: false, reason: "not-found" } as const;
+          repoId = found;
+        }
+        if (
+          snapshotId !== null &&
+          (isSliceParams(input.params) || isScopeParams(input.params))
+        ) {
           // The graph a slice or a scope reads must describe the very same commit.
           const graph = await tx
             .select({ id: analysisRun.id })
@@ -245,7 +254,7 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
           if (graph.length === 0)
             return { ok: false, reason: "graph_mismatch" } as const;
         }
-        if (isFixturesParams(input.params)) {
+        if (snapshotId !== null && isFixturesParams(input.params)) {
           // Fixtures are written for a finished slice of the very same commit.
           const slice = await tx
             .select({ id: analysisRun.id })
@@ -267,7 +276,10 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
           .update(canonicalJson(input.params))
           .digest("hex");
         const cache = and(
-          eq(analysisRun.snapshotId, snapshotId),
+          owned(owner),
+          snapshotId === null
+            ? isNull(analysisRun.snapshotId)
+            : eq(analysisRun.snapshotId, snapshotId),
           eq(analysisRun.tool, tool),
           eq(analysisRun.toolVersion, toolVersion),
           eq(analysisRun.paramsHash, paramsHash),
@@ -286,10 +298,12 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
             created: false,
           } as const;
         const maxActive = input.maxActive ?? 3;
-        const active = await joined(tx)
+        const active = await tx
+          .select({ id: analysisRun.id })
+          .from(analysisRun)
           .where(
             and(
-              eq(githubRepo.organizationId, owner),
+              owned(owner),
               or(
                 eq(analysisRun.status, "queued"),
                 eq(analysisRun.status, "running"),
@@ -305,6 +319,7 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
                 .insert(analysisRun)
                 .values({
                   id: generateId("arn"),
+                  organizationId: owner,
                   snapshotId,
                   tool,
                   toolVersion,
@@ -323,9 +338,7 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
                   finishedAt: null,
                   logKey: null,
                 })
-                .where(
-                  and(owned(owner), cache, eq(analysisRun.status, "failed")),
-                )
+                .where(and(cache, eq(analysisRun.status, "failed")))
                 .returning();
         const row = rows[0] as AnalysisRunRow | undefined;
         if (row === undefined)
@@ -342,9 +355,7 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
     },
     async get(owner, id) {
       const row = (
-        await joined().where(
-          and(eq(githubRepo.organizationId, owner), eq(analysisRun.id, id)),
-        )
+        await joined().where(and(owned(owner), eq(analysisRun.id, id)))
       )[0];
       return row === undefined || knownTool(row.run.tool) === undefined
         ? null
@@ -352,9 +363,7 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
     },
     async list(owner, repoId, limit = 25) {
       const rows = await joined()
-        .where(
-          and(eq(githubRepo.organizationId, owner), eq(githubRepo.id, repoId)),
-        )
+        .where(and(owned(owner), eq(repoSnapshot.repoId, repoId)))
         .orderBy(desc(analysisRun.createdAt), desc(analysisRun.id))
         .limit(Math.min(50, Math.max(1, limit)));
       return rows
@@ -377,11 +386,22 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
           // A slice or a scope waits for the graphify run it reads to finish
           // either way; the worker then fails it cleanly if that run did not
           // succeed.
-          sql`${analysisRun.id} = (select a.id from analysis_run a join repo_snapshot s on s.id = a.snapshot_id join github_repo r on r.id = s.repo_id where a.status = 'queued' and a.tool in (${KNOWN_TOOLS_SQL}) and (a.tool not in ('slice', 'scope') or not exists (select 1 from analysis_run g where g.id = a.params->>'graphRunId' and g.status in ('queued', 'running'))) order by a.created_at, a.id for update of a skip locked limit 1)`,
+          sql`${analysisRun.id} = (select a.id from analysis_run a where a.status = 'queued' and a.tool in (${KNOWN_TOOLS_SQL}) and (a.tool not in ('slice', 'scope') or not exists (select 1 from analysis_run g where g.id = a.params->>'graphRunId' and g.status in ('queued', 'running'))) order by a.created_at, a.id for update of a skip locked limit 1)`,
         )
         .returning();
       const run = rows[0];
       if (run === undefined) return null;
+      if (run.snapshotId === null)
+        return {
+          ...toRun(run, null),
+          organizationId: run.organizationId,
+          commitSha: null,
+          repoFullName: null,
+          externalRepoId: null,
+          installationId: null,
+          sizeKb: null,
+          leaseToken: token,
+        };
       const context = (
         await db
           .select({
@@ -491,7 +511,10 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
       return rows.length;
     },
     async organizationsWithExpiredRuns(now) {
-      const rows = await joined().where(expired(now));
+      const rows = await db
+        .select({ organizationId: analysisRun.organizationId })
+        .from(analysisRun)
+        .where(expired(now));
       return [...new Set(rows.map((row) => row.organizationId))];
     },
     async queueState(now) {

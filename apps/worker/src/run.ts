@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
@@ -8,17 +8,26 @@ import type {
   ObjectStore,
   SandboxStore,
 } from "@sandbox-factory/db";
+import { readsSource } from "sandbox-factory";
 import { fetchSource } from "./fetch-source.js";
 import { AnalysisError } from "./errors.js";
 import { uploadArtifacts } from "./upload.js";
-import type { AgentTask, ToolAdapter, ToolInputs } from "./tools/adapter.js";
+import type {
+  AgentTask,
+  ToolAdapter,
+  ToolInputs,
+  ToolRunInput,
+} from "./tools/adapter.js";
 
 export interface RunOptions {
   readonly runs: AnalysisRunStore;
   /** Earlier runs' artifacts, read owner-scoped for tools that build on them. */
   readonly artifacts?: Pick<ArtifactStore, "list">;
-  /** Sandbox versions, owner-scoped, for the build adapter. */
-  readonly sandboxes?: Pick<SandboxStore, "getVersion" | "recordBuildOutput">;
+  /** Sandbox versions, owner-scoped, for the build and starter adapters. */
+  readonly sandboxes?: Pick<
+    SandboxStore,
+    "getVersion" | "recordBuildOutput" | "recordStarterOutput"
+  >;
   /** Proposal specs, owner-scoped, for the agent adapters. */
   readonly tasks?: {
     get(
@@ -84,6 +93,16 @@ export async function executeRun(
             output,
             now(),
           ),
+    recordStarterOutput: (versionId, starterRunId, output) =>
+      options.sandboxes === undefined
+        ? Promise.resolve(false)
+        : options.sandboxes.recordStarterOutput(
+            run.organizationId,
+            versionId,
+            starterRunId,
+            output,
+            now(),
+          ),
   };
   options.shutdown?.addEventListener("abort", shutdown, { once: true });
   if (options.shutdown?.aborted) shutdown();
@@ -109,17 +128,29 @@ export async function executeRun(
       run.toolVersion !== options.tool.version
     )
       throw new AnalysisError("tool_failed");
-    const source = await (options.fetchSource ?? fetchSource)(run, directory, {
-      ...options.source,
-      signal: abort.signal,
-    });
-    lines.push("Source archive fetched and validated.");
+    // A tool that reads no source is given an empty directory, and no
+    // repository is fetched or even named.
+    let source: string;
+    let snapshot: ToolRunInput["run"] = null;
+    if (readsSource(run.tool)) {
+      if (run.snapshotId === null || run.commitSha === null)
+        throw new AnalysisError("source_unavailable");
+      snapshot = { snapshotId: run.snapshotId, commitSha: run.commitSha };
+      source = await (options.fetchSource ?? fetchSource)(run, directory, {
+        ...options.source,
+        signal: abort.signal,
+      });
+      lines.push("Source archive fetched and validated.");
+    } else {
+      source = join(directory, "empty");
+      await mkdir(source);
+    }
     stage = "tool";
     const files = await options.tool.run({
       sourceDir: source,
       outDir: join(directory, "out"),
       params: run.params,
-      run: { snapshotId: run.snapshotId, commitSha: run.commitSha },
+      run: snapshot,
       inputs,
       signal: abort.signal,
       log: (line) => {

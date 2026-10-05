@@ -10,14 +10,10 @@ import type {
   BountyOrigin,
   SandboxStatus,
 } from "sandbox-factory";
-import { clampBountyTitle, bountyKey } from "sandbox-factory";
-import { and, desc, eq, or, sql } from "drizzle-orm";
+import { clampBountyTitle } from "sandbox-factory";
+import { and, desc, eq, inArray, or, sql, type SQL } from "drizzle-orm";
 
-import {
-  isForeignKeyViolation,
-  isUniqueViolation,
-  type Database,
-} from "./errors.js";
+import { isForeignKeyViolation, type Database } from "./errors.js";
 import { generateId } from "./mapping.js";
 import {
   bounty,
@@ -50,11 +46,10 @@ export interface BountyJiraLink {
 export interface StoredBounty extends BountyContent {
   readonly id: string;
   readonly organizationId: string;
-  readonly number: number;
-  /** Its Jira key while it has one, `B-<number>` otherwise. */
-  readonly key: string;
   readonly origin: BountyOrigin;
   readonly repoId: string | null;
+  /** What the bounty adds to its repository's detected stack. */
+  readonly stack: readonly string[];
   readonly createdBy: string | null;
   readonly revision: number;
   readonly jira: BountyJiraLink | null;
@@ -92,20 +87,16 @@ export type ListedBounty = Omit<
 export interface NewBounty {
   readonly title: string;
   readonly description: string;
-  readonly issueType: string;
-  readonly priority: string | null;
-  readonly labels: readonly string[];
   readonly repoId: string | null;
+  readonly stack: readonly string[];
 }
 
 /** A change to a bounty; an absent field is left as it is. */
 export interface BountyChange {
   readonly title?: string | undefined;
   readonly description?: string | undefined;
-  readonly issueType?: string | undefined;
-  readonly priority?: string | null | undefined;
-  readonly labels?: readonly string[] | undefined;
   readonly repoId?: string | null | undefined;
+  readonly stack?: readonly string[] | undefined;
 }
 
 export type BountyMutationResult =
@@ -139,6 +130,15 @@ export interface BountyStore {
       cursor?: { readonly createdAt: string; readonly id: string };
       limit?: number;
     },
+  ): Promise<ListedBounty[]>;
+  /**
+   * The same list across several organizations at once, interleaved by age:
+   * the caller's own, for a page that shows all of their work. The caller
+   * names the organizations; the store never works out whose they are.
+   */
+  listAcross(
+    organizationIds: readonly string[],
+    options?: Parameters<BountyStore["list"]>[1],
   ): Promise<ListedBounty[]>;
   /** A change, against the revision the editor saw. */
   update(
@@ -266,17 +266,13 @@ function toBounty(
   return {
     id: row.id,
     organizationId: row.organizationId,
-    number: row.number,
-    key: bountyKey({ number: row.number, jiraKey: jira?.key }),
     title: row.title,
     description: row.description,
-    issueType: row.issueType,
-    priority: row.priority,
-    labels: row.labels,
     components: row.components,
     inputTruncated: row.inputTruncated,
     origin: row.origin,
     repoId: row.repoId,
+    stack: row.stack,
     createdBy: row.createdBy,
     revision: row.revision,
     jira,
@@ -299,50 +295,22 @@ export function followsJira(stored: Pick<StoredBounty, "jira">): boolean {
   return stored.jira !== null && stored.jira.removedAt === null;
 }
 
-/**
- * How many times a bounty's number is retried. Each retry follows a bounty
- * that took the number first, so it only runs out when that many were
- * created in the same organization at the same instant.
- */
-const NUMBER_ATTEMPTS = 8;
-
-/**
- * Inserts a bounty as the organization's next number.
- *
- * The next number is read in the insert itself, and a concurrent insert that
- * took it first is a unique violation, retried. Each attempt is its own
- * savepoint, so a lost race leaves an enclosing transaction usable.
- */
+/** Inserts a bounty in the organization, under a new id. */
 export async function insertBounty(
   db: Database,
   organizationId: string,
   values: Omit<
     typeof bounty.$inferInsert,
-    "id" | "organizationId" | "number" | "revision"
+    "id" | "organizationId" | "revision"
   >,
 ): Promise<BountyRow> {
-  for (let attempt = 1; ; attempt += 1) {
-    try {
-      return await db.transaction(async (transaction) => {
-        const tx = transaction;
-        const rows = (await tx
-          .insert(bounty)
-          .values({
-            ...values,
-            id: generateId("bty"),
-            organizationId,
-            number: sql`(select coalesce(max(${bounty.number}), 0) + 1 from ${bounty} where ${bounty.organizationId} = ${organizationId})`,
-          })
-          .returning()) as BountyRow[];
-        const created = rows[0];
-        if (created === undefined)
-          throw new Error("Bounty insert returned no row.");
-        return created;
-      });
-    } catch (error) {
-      if (!isUniqueViolation(error) || attempt >= NUMBER_ATTEMPTS) throw error;
-    }
-  }
+  const rows = (await db
+    .insert(bounty)
+    .values({ ...values, id: generateId("bty"), organizationId })
+    .returning()) as BountyRow[];
+  const created = rows[0];
+  if (created === undefined) throw new Error("Bounty insert returned no row.");
+  return created;
 }
 
 /** The columns Jira's text writes, or null when the bounty already says it. */
@@ -357,18 +325,12 @@ export function jiraContentChange(
         ? current.title
         : clampBountyTitle(content.title),
     description: content.description,
-    issueType: content.issueType,
-    priority: content.priority,
-    labels: [...content.labels],
     components: [...content.components],
     inputTruncated: content.inputTruncated,
   };
   const same =
     values.title === current.title &&
     values.description === current.description &&
-    values.issueType === current.issueType &&
-    values.priority === current.priority &&
-    JSON.stringify(values.labels) === JSON.stringify(current.labels) &&
     JSON.stringify(values.components) === JSON.stringify(current.components) &&
     values.inputTruncated === current.inputTruncated;
   return same ? null : values;
@@ -442,6 +404,66 @@ async function readBounty(
   return found === undefined ? null : toBounty(found.row, found, found);
 }
 
+/**
+ * Newest first, a page at a time, each with its live proposal. `owner` is
+ * the organization filter, which every caller supplies: one organization's
+ * list, or the list across the caller's own.
+ */
+async function listBounties(
+  db: Database,
+  owner: SQL,
+  options: Parameters<BountyStore["list"]>[1] = {},
+): Promise<ListedBounty[]> {
+  const limit = Math.min(Math.max(options.limit ?? 25, 1), 50);
+  const rows = (await db
+    .select({
+      id: bounty.id,
+      organizationId: bounty.organizationId,
+      title: bounty.title,
+      origin: bounty.origin,
+      repoId: bounty.repoId,
+      stack: bounty.stack,
+      revision: bounty.revision,
+      createdAt: bounty.createdAt,
+      updatedAt: bounty.updatedAt,
+      ...linkColumns,
+      ...sandboxColumns,
+      proposalId: bountyProposal.id,
+      proposalStatus: bountyProposal.status,
+      proposalComplexity: bountyProposal.complexity,
+      proposalAmountMinor: bountyProposal.amountMinor,
+      proposalCurrency: bountyProposal.currency,
+    })
+    .from(bounty)
+    .leftJoin(jiraIssue, eq(jiraIssue.bountyId, bounty.id))
+    .leftJoin(jiraBoard, eq(jiraBoard.id, jiraIssue.boardId))
+    .leftJoin(jiraConnection, eq(jiraConnection.id, jiraBoard.connectionId))
+    .leftJoin(sandbox, eq(sandbox.bountyId, bounty.id))
+    .leftJoin(sandboxSource, eq(sandboxSource.sandboxId, sandbox.id))
+    // The live one only, of which there is at most one per bounty.
+    .leftJoin(
+      bountyProposal,
+      and(
+        eq(bountyProposal.bountyId, bounty.id),
+        or(
+          eq(bountyProposal.status, "proposed"),
+          eq(bountyProposal.status, "approved"),
+        ),
+      ),
+    )
+    .where(
+      and(
+        owner,
+        options.cursor === undefined
+          ? undefined
+          : sql`(${createdMs}, ${bounty.id}) < (${options.cursor.createdAt}::timestamptz, ${options.cursor.id})`,
+      ),
+    )
+    .orderBy(desc(createdMs), desc(bounty.id))
+    .limit(limit)) as ListedRow[];
+  return rows.map(toListed);
+}
+
 export function createBountyStore(db: Database): BountyStore {
   return {
     async create(organizationId, createdBy, input) {
@@ -456,11 +478,9 @@ export function createBountyStore(db: Database): BountyStore {
         row = await insertBounty(db, organizationId, {
           title: input.title,
           description: input.description,
-          issueType: input.issueType,
-          priority: input.priority,
-          labels: [...input.labels],
           origin: "manual",
           repoId: input.repoId,
+          stack: [...input.stack],
           createdBy,
         });
       } catch (error) {
@@ -475,59 +495,18 @@ export function createBountyStore(db: Database): BountyStore {
 
     get: (organizationId, bountyId) => readBounty(db, organizationId, bountyId),
 
-    async list(organizationId, options = {}) {
-      const limit = Math.min(Math.max(options.limit ?? 25, 1), 50);
-      const rows = (await db
-        .select({
-          id: bounty.id,
-          organizationId: bounty.organizationId,
-          number: bounty.number,
-          title: bounty.title,
-          issueType: bounty.issueType,
-          priority: bounty.priority,
-          labels: bounty.labels,
-          origin: bounty.origin,
-          repoId: bounty.repoId,
-          revision: bounty.revision,
-          createdAt: bounty.createdAt,
-          updatedAt: bounty.updatedAt,
-          ...linkColumns,
-          ...sandboxColumns,
-          proposalId: bountyProposal.id,
-          proposalStatus: bountyProposal.status,
-          proposalComplexity: bountyProposal.complexity,
-          proposalAmountMinor: bountyProposal.amountMinor,
-          proposalCurrency: bountyProposal.currency,
-        })
-        .from(bounty)
-        .leftJoin(jiraIssue, eq(jiraIssue.bountyId, bounty.id))
-        .leftJoin(jiraBoard, eq(jiraBoard.id, jiraIssue.boardId))
-        .leftJoin(jiraConnection, eq(jiraConnection.id, jiraBoard.connectionId))
-        .leftJoin(sandbox, eq(sandbox.bountyId, bounty.id))
-        .leftJoin(sandboxSource, eq(sandboxSource.sandboxId, sandbox.id))
-        // The live one only, of which there is at most one per bounty.
-        .leftJoin(
-          bountyProposal,
-          and(
-            eq(bountyProposal.bountyId, bounty.id),
-            or(
-              eq(bountyProposal.status, "proposed"),
-              eq(bountyProposal.status, "approved"),
-            ),
+    list: (organizationId, options = {}) =>
+      listBounties(db, eq(bounty.organizationId, organizationId), options),
+
+    // None at all is no query: there is nothing they could own.
+    listAcross: async (organizationIds, options = {}) =>
+      organizationIds.length === 0
+        ? []
+        : listBounties(
+            db,
+            inArray(bounty.organizationId, [...organizationIds]),
+            options,
           ),
-        )
-        .where(
-          and(
-            eq(bounty.organizationId, organizationId),
-            options.cursor === undefined
-              ? undefined
-              : sql`(${createdMs}, ${bounty.id}) < (${options.cursor.createdAt}::timestamptz, ${options.cursor.id})`,
-          ),
-        )
-        .orderBy(desc(createdMs), desc(bounty.id))
-        .limit(limit)) as ListedRow[];
-      return rows.map(toListed);
-    },
 
     async update(organizationId, bountyId, expectedRevision, change) {
       const current = await readBounty(db, organizationId, bountyId);
@@ -535,7 +514,9 @@ export function createBountyStore(db: Database): BountyStore {
       if (current.revision !== expectedRevision) {
         return { ok: false, reason: "changed", current };
       }
-      const { repoId, ...text } = change;
+      // The repository and the stack are the workspace's to set, even on
+      // a bounty whose text is Jira's.
+      const { repoId, stack, ...text } = change;
       if (
         Object.values(text).some((value) => value !== undefined) &&
         followsJira(current)
@@ -547,13 +528,9 @@ export function createBountyStore(db: Database): BountyStore {
         (change.title === undefined || change.title === current.title) &&
         (change.description === undefined ||
           change.description === current.description) &&
-        (change.issueType === undefined ||
-          change.issueType === current.issueType) &&
-        (change.priority === undefined ||
-          change.priority === current.priority) &&
-        (change.labels === undefined ||
-          JSON.stringify(change.labels) === JSON.stringify(current.labels)) &&
-        (repoId === undefined || repoId === current.repoId);
+        (repoId === undefined || repoId === current.repoId) &&
+        (stack === undefined ||
+          JSON.stringify(stack) === JSON.stringify(current.stack));
       if (same) return { ok: true, bounty: current };
       if (
         repoId !== undefined &&
@@ -572,16 +549,8 @@ export function createBountyStore(db: Database): BountyStore {
             ...(change.description === undefined
               ? {}
               : { description: change.description }),
-            ...(change.issueType === undefined
-              ? {}
-              : { issueType: change.issueType }),
-            ...(change.priority === undefined
-              ? {}
-              : { priority: change.priority }),
-            ...(change.labels === undefined
-              ? {}
-              : { labels: [...change.labels] }),
             ...(repoId === undefined ? {} : { repoId }),
+            ...(stack === undefined ? {} : { stack: [...stack] }),
             revision: expectedRevision + 1,
             updatedAt: new Date(),
           })
@@ -611,7 +580,6 @@ export function createBountyStore(db: Database): BountyStore {
         ok: true,
         bounty: {
           ...toBounty(updated, NO_LINK),
-          key: current.key,
           jira: current.jira,
           sandbox: current.sandbox,
         },
@@ -680,13 +648,10 @@ type ListedRow = Pick<
   BountyRow,
   | "id"
   | "organizationId"
-  | "number"
   | "title"
-  | "issueType"
-  | "priority"
-  | "labels"
   | "origin"
   | "repoId"
+  | "stack"
   | "revision"
   | "createdAt"
   | "updatedAt"
@@ -705,14 +670,10 @@ function toListed(row: ListedRow): ListedBounty {
   return {
     id: row.id,
     organizationId: row.organizationId,
-    number: row.number,
-    key: bountyKey({ number: row.number, jiraKey: jira?.key }),
     title: row.title,
-    issueType: row.issueType,
-    priority: row.priority,
-    labels: row.labels,
     origin: row.origin,
     repoId: row.repoId,
+    stack: row.stack,
     revision: row.revision,
     jira,
     sandbox: toSandboxSummary(row),

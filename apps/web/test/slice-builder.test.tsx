@@ -1,3 +1,4 @@
+import { chooseOption } from "./combobox";
 import { render, screen, fireEvent, waitFor } from "./render";
 import { afterEach, expect, test, vi } from "vitest";
 import { GithubAnalysisClient } from "@sandbox-factory/client";
@@ -282,6 +283,7 @@ const repo: GithubRepoDto = {
   lastSyncedAt: stamp,
   syncStatus: "ok",
   syncError: null,
+  stack: null,
   createdAt: stamp,
 };
 const snapshot = {
@@ -483,9 +485,10 @@ test("switching snapshots clears entry points chosen from the old one", async ()
     (screen.getByRole("button", { name: "Slice now" }) as HTMLButtonElement)
       .disabled;
   expect(slice()).toBe(false);
-  fireEvent.change(screen.getByLabelText("Source snapshot"), {
-    target: { value: "rsn_0" },
-  });
+  await chooseOption(
+    screen.getByRole("combobox", { name: "Source snapshot" }),
+    /^0000000 · /,
+  );
   await waitFor(() => expect(slice()).toBe(true));
   expect(screen.queryByRole("button", { name: "Remove src/app.ts" })).toBe(
     null,

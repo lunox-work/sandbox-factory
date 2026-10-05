@@ -30,7 +30,6 @@ const facts = treeFacts([
 ]);
 
 const input: ProfileInput = {
-  bounty: { issueType: "Bug", priority: "High" },
   spec: {
     scenarios: [
       scenario("s1", "happy"),
@@ -73,7 +72,6 @@ const input: ProfileInput = {
 test("a profile measures the slice, where the change lands and what guards it", () => {
   const profile = buildComplexityProfile(input);
   assert.equal(profile.version, COMPLEXITY_PROFILE_VERSION);
-  assert.deepEqual(profile.bounty, { issueType: "Bug", priority: "High" });
   assert.deepEqual(profile.slice, {
     files: 3,
     bytes: 10_000,

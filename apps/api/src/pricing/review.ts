@@ -84,9 +84,6 @@ export async function freshProposal(
         .refreshFromJira(organizationId, bounty.id, {
           title: spec.summary,
           description: spec.descriptionText,
-          issueType: spec.issueType,
-          priority: spec.priority,
-          labels: spec.labels,
           components: spec.components,
           inputTruncated: spec.inputTruncated,
         })
@@ -97,7 +94,6 @@ export async function freshProposal(
       return compared(proposal, checkedAt, spec.pricingSpecHash, {
         summary: spec.summary,
         descriptionText: spec.descriptionText,
-        issueType: spec.issueType,
         key: spec.key,
         url: liveUrl,
         inputTruncated: spec.inputTruncated,
@@ -129,12 +125,11 @@ async function storedFreshness(
   return compared(
     proposal,
     checkedAt,
-    await bountySpecHash(bounty.title, bounty.description, bounty.issueType),
+    await bountySpecHash(bounty.title, bounty.description),
     {
       summary: bounty.title,
       descriptionText: bounty.description,
-      issueType: bounty.issueType,
-      key: bounty.key,
+      key: bounty.jira?.key ?? null,
       url: null,
       inputTruncated: bounty.inputTruncated,
     },
@@ -151,7 +146,7 @@ function compared(
     proposal,
     checkedAt,
     liveTitle: liveSpec.summary,
-    liveKey: liveSpec.key,
+    ...(liveSpec.key === null ? {} : { liveKey: liveSpec.key }),
     ...(liveSpec.url === null ? {} : { liveUrl: liveSpec.url }),
     liveSpec,
   };

@@ -187,9 +187,16 @@ test("the DTOs are strict, so no stray field reaches the browser", () => {
     lastSyncedAt: null,
     syncStatus: "pending",
     syncError: null,
+    stack: null,
     createdAt: "2026-10-01T00:00:00.000Z",
   };
   assert.equal(githubRepoDtoSchema.safeParse(repo).success, true);
+  // Null until the head has been read; then the names detected, maybe none.
+  for (const stack of [[], ["TypeScript", "PostgreSQL"]])
+    assert.equal(
+      githubRepoDtoSchema.safeParse({ ...repo, stack }).success,
+      true,
+    );
   assert.equal(
     githubRepoDtoSchema.safeParse({ ...repo, syncStatus: "stale" }).success,
     false,

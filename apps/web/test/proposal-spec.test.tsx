@@ -7,6 +7,7 @@ import {
   ProposalSpec,
   scenarioTotal,
   useProposalSpec,
+  type SinceSized,
   type SizeReason,
 } from "../src/ProposalSpec";
 
@@ -25,6 +26,7 @@ function Wired({
   canAnalyze,
   weightPoints,
   sizeReason,
+  sinceSized,
 }: {
   base: string;
   proposalId: string;
@@ -32,6 +34,7 @@ function Wired({
   canAnalyze: boolean;
   weightPoints?: { light: number; moderate: number; heavy: number };
   sizeReason?: SizeReason;
+  sinceSized?: SinceSized;
 }) {
   const { read, retry } = useProposalSpec(base, proposalId, specRevision);
   return (
@@ -41,6 +44,7 @@ function Wired({
       canAnalyze={canAnalyze}
       {...(weightPoints === undefined ? {} : { weightPoints })}
       {...(sizeReason === undefined ? {} : { sizeReason })}
+      {...(sinceSized === undefined ? {} : { sinceSized })}
     />
   );
 }
@@ -247,6 +251,55 @@ test("a scenario the first draft did not write says where it came from", async (
   expect(drafted.querySelector("[data-slot='badge']")).toBeNull();
 });
 
+test("what changed since sizing is marked inline, as a diff", async () => {
+  server(() => Response.json({ spec: spec() }));
+  block({
+    sinceSized: {
+      added: ["s3"],
+      removed: [
+        {
+          id: "s9",
+          kind: "happy",
+          title: "A copy goes to HR",
+          weight: "heavy",
+        },
+        {
+          id: "s8",
+          kind: "recovery",
+          title: "A bounce is retried",
+          weight: "light",
+        },
+      ],
+    },
+  });
+  const panel = await screen.findByTestId("proposal-spec");
+  await within(panel).findByText("Interview invitation delivery");
+
+  // Each kind's lines in place, the trimmed ones last under their kind; a
+  // kind trimmed to nothing still shows, as its removed line.
+  expect(
+    within(panel)
+      .getAllByRole("listitem")
+      .filter((item) => item.closest("section[aria-label]") !== null)
+      .flatMap((item) => {
+        const title = item.querySelector(".flex-1")?.textContent;
+        return title === undefined
+          ? []
+          : [[item.dataset["change"] ?? "", title]];
+      }),
+  ).toEqual([
+    ["", "An invitation is delivered"],
+    ["", "A reminder follows the invitation"],
+    ["removed", "Removed since sizing: A copy goes to HR"],
+    ["added", "Added since sizing: The last free slot"],
+    ["", "The mail provider is down"],
+    ["", "The candidate has no address"],
+    ["removed", "Removed since sizing: A bounce is retried"],
+  ]);
+  // A trimmed line does not count toward its kind's points.
+  expect(headings(panel)).not.toContain("Recovery1 pt");
+});
+
 test("a spec with one scenario and nothing else shows only that", async () => {
   server(() =>
     Response.json({
@@ -309,7 +362,7 @@ test("someone who can re-analyze is told that it drafts the scenarios", () => {
   server(() => Response.json({ spec: null }));
   block({ specRevision: null, canAnalyze: true });
   expect(screen.getByTestId("spec-empty").textContent).toBe(
-    "No scenarios were drafted for this proposal. Re-analyze, on the Price tab, drafts them from the bounty as it is now.",
+    "No scenarios were drafted for this proposal. Re-analyze drafts them from the bounty as it is now.",
   );
 });
 
@@ -559,7 +612,7 @@ test("a spec drafted before weights says so, and how to weigh it", async () => {
 
   expect(within(panel).getByText("5 scenarios · revision 1")).toBeDefined();
   expect(within(panel).getByTestId("spec-unweighed").textContent).toMatch(
-    /Re-analyze, on the Price tab, drafts it again with weights\./,
+    /Re-analyze drafts it again with weights\./,
   );
   expect(panel.querySelector("[data-weight]")).toBeNull();
   expect(headings(panel)).toContain("Happy path");

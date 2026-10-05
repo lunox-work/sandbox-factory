@@ -1008,6 +1008,21 @@ test("each tool is a square tab, under a Home tab that opens first", async () =>
   expect(connectionTabs().getAttribute("aria-orientation")).toBe("vertical");
 });
 
+test("the Home square's mark cannot be dragged off it", async () => {
+  // An `<img>`, unlike the tools' inline marks: a click that moved a pixel
+  // started a native image drag and trailed a ghost of it under the cursor.
+  showConnections();
+
+  const home = await within(connectionTabs()).findByRole("tab", {
+    name: "Home",
+  });
+  const marks = home.querySelectorAll("img");
+  expect(marks.length).toBe(2);
+  for (const mark of marks) {
+    expect(mark.getAttribute("draggable")).toBe("false");
+  }
+});
+
 test("Home counts only healthy Jira connections", async () => {
   // An unhealthy connection is one the organization cannot actually read, so
   // counting it would overstate what is working — but it is still reported.

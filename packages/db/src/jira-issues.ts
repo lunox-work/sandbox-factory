@@ -212,9 +212,6 @@ function importedText(content: BountyContent, key: string) {
   return {
     title: clampBountyTitle(content.title.trim() === "" ? key : content.title),
     description: content.description,
-    issueType: content.issueType,
-    priority: content.priority,
-    labels: [...content.labels],
     components: [...content.components],
     inputTruncated: content.inputTruncated,
   };

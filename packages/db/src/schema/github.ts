@@ -167,6 +167,15 @@ export const githubRepo = pgTable(
     syncStatus: text("sync_status").notNull().default("pending"),
     /** One line, for the UI. Never contents from the repository. */
     syncError: text("sync_error"),
+    /**
+     * The tech stack detected at `stack_commit_sha` by detection version
+     * `stack_version` (`packages/core/src/repo/stack.ts`): names only, the
+     * one thing kept from the manifests read to find it. All three null
+     * until the first detection; a stale commit or version is redone.
+     */
+    stack: jsonb("stack").$type<string[]>(),
+    stackCommitSha: text("stack_commit_sha"),
+    stackVersion: integer("stack_version"),
     createdAt: ts("created_at").notNull().defaultNow(),
     updatedAt: ts("updated_at").notNull().defaultNow(),
   },

@@ -8,6 +8,13 @@ import {
 import { ApiClient } from "./transport.js";
 export const ownerPath = (owner: string) =>
   `/api/v1/orgs/${encodeURIComponent(owner)}`;
+/** A list page's query: its size, and where the page before it ended. */
+function pageParams(query: { limit?: number; cursor?: string }) {
+  const params = new URLSearchParams();
+  if (query.limit !== undefined) params.set("limit", String(query.limit));
+  if (query.cursor !== undefined) params.set("cursor", query.cursor);
+  return params;
+}
 export class BountyClient extends ApiClient {
   async proposeBounty(
     owner: string,
@@ -31,11 +38,21 @@ export class BountyClient extends ApiClient {
     query: { limit?: number; cursor?: string } = {},
     signal?: AbortSignal,
   ) {
-    const params = new URLSearchParams();
-    if (query.limit !== undefined) params.set("limit", String(query.limit));
-    if (query.cursor !== undefined) params.set("cursor", query.cursor);
     return bountyListResponseSchema.parse(
-      await this.request(`${ownerPath(owner)}/bounties?${params}`, { signal }),
+      await this.request(`${ownerPath(owner)}/bounties?${pageParams(query)}`, {
+        signal,
+      }),
+    );
+  }
+  /** The caller's bounties across every organization they belong to. */
+  async myBounties(
+    query: { limit?: number; cursor?: string } = {},
+    signal?: AbortSignal,
+  ) {
+    return bountyListResponseSchema.parse(
+      await this.request(`/api/v1/me/bounties?${pageParams(query)}`, {
+        signal,
+      }),
     );
   }
   async bounty(owner: string, id: string, signal?: AbortSignal) {

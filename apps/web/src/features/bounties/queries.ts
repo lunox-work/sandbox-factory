@@ -107,6 +107,10 @@ function useBountiesStale(owner: string) {
       void cache.invalidateQueries({
         queryKey: queryKeys.resource(userId, owner, resource),
       });
+    // The list across workspaces shows the same rows.
+    void cache.invalidateQueries({
+      queryKey: queryKeys.me(userId, "bounties"),
+    });
   }, [cache, userId, owner]);
 }
 

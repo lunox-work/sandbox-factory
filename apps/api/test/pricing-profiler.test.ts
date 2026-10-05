@@ -38,7 +38,6 @@ const request: NewBountyProfile = {
   specRevision: 2,
   specHash: "h".repeat(64),
   snapshotId: "rsn_1",
-  bounty: { issueType: "Bug", priority: "High" },
 };
 
 const scopeMeta: ScopeProposalDto = {
@@ -450,7 +449,6 @@ test("a requested profile is scoped, sliced and built from what was measured", a
   assert.equal(h.launches(), launchesBefore);
   const profile = row.profile;
   assert.ok(profile !== null);
-  assert.deepEqual(profile.bounty, request.bounty);
   assert.equal(profile.slice.files, 3);
   assert.deepEqual(profile.slice.modules, ["src/mailer", "src/scheduler"]);
   assert.deepEqual(profile.touchedModules, ["src/mailer", "src/scheduler"]);

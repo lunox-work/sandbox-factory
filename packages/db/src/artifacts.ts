@@ -14,13 +14,12 @@ export interface ArtifactStore {
   ): Promise<StoredArtifact | null>;
 }
 export function createArtifactStore(db: Database): ArtifactStore {
+  // The run's own owner: a starter's run has no repository to go through.
   const joined = () =>
     db
       .select({ artifact })
       .from(artifact)
-      .innerJoin(analysisRun, eq(analysisRun.id, artifact.runId))
-      .innerJoin(repoSnapshot, eq(repoSnapshot.id, analysisRun.snapshotId))
-      .innerJoin(githubRepo, eq(githubRepo.id, repoSnapshot.repoId));
+      .innerJoin(analysisRun, eq(analysisRun.id, artifact.runId));
   const toStored = (row: ArtifactRow): StoredArtifact => ({
     ...row,
     createdAt: row.createdAt.toISOString(),
@@ -29,7 +28,7 @@ export function createArtifactStore(db: Database): ArtifactStore {
     async list(owner, runId) {
       const rows = await joined()
         .where(
-          and(eq(githubRepo.organizationId, owner), eq(artifact.runId, runId)),
+          and(eq(analysisRun.organizationId, owner), eq(artifact.runId, runId)),
         )
         .orderBy(asc(artifact.path));
       return rows.map((row) => toStored(row.artifact));
@@ -38,7 +37,7 @@ export function createArtifactStore(db: Database): ArtifactStore {
       const row = (
         await joined().where(
           and(
-            eq(githubRepo.organizationId, owner),
+            eq(analysisRun.organizationId, owner),
             eq(artifact.id, artifactId),
           ),
         )

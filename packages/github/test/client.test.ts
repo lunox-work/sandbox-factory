@@ -441,3 +441,31 @@ test("a tree or languages answer of the wrong shape is an error", async () => {
   const languages = clientWith(() => json({ TypeScript: "lots" }));
   await assert.rejects(languages.client.languages("acme/app"), GithubApiError);
 });
+
+test("a blob is read by its object id and decoded as text", async () => {
+  const { client, fetch } = clientWith(() =>
+    json({
+      sha: "b1",
+      encoding: "base64",
+      // GitHub wraps the base64 at 60 columns.
+      content: `${Buffer.from('{"dependencies":{"pg":"8"}}').toString("base64").slice(0, 20)}\n${Buffer.from('{"dependencies":{"pg":"8"}}').toString("base64").slice(20)}`,
+    }),
+  );
+  assert.equal(
+    await client.blobText("acme/app", "b1"),
+    '{"dependencies":{"pg":"8"}}',
+  );
+  assert.equal(
+    fetch.calls[0]?.url,
+    "https://api.github.com/repos/acme/app/git/blobs/b1",
+  );
+  const plain = clientWith(() =>
+    json({ sha: "b2", encoding: "utf-8", content: "gem 'rails'" }),
+  );
+  assert.equal(await plain.client.blobText("acme/app", "b2"), "gem 'rails'");
+  const malformed = clientWith(() => json({ sha: "b3" }));
+  await assert.rejects(
+    malformed.client.blobText("acme/app", "b3"),
+    GithubApiError,
+  );
+});

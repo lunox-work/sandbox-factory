@@ -28,16 +28,13 @@ function bountyRow(overrides: Partial<BountyRow> = {}): BountyRow {
   return {
     id: "bty_1",
     organizationId: "org_1",
-    number: 4,
     title: "Invitations are not sent",
     description: "Steps",
-    issueType: "Bug",
-    priority: null,
-    labels: [],
     components: [],
     inputTruncated: false,
     origin: "jira",
     repoId: null,
+    stack: [],
     createdBy: null,
     revision: 1,
     createdAt: new Date("2026-09-22T00:00:00Z"),
@@ -57,9 +54,6 @@ const facts = {
 const content: BountyContent = {
   title: "Invitations are not sent",
   description: "Steps",
-  issueType: "Bug",
-  priority: null,
-  labels: [],
   components: [],
   inputTruncated: false,
 };
@@ -96,7 +90,7 @@ test("a first read imports the issue as a new ticket", async () => {
     "org_1",
     "jrb_1",
     facts,
-    { ...content, labels: ["email"], components: ["Mailer"] },
+    { ...content, components: ["Mailer"] },
   );
   assert.equal(issue?.bountyId, "bty_new");
   const created = fake.calls[2];

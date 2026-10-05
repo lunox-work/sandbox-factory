@@ -66,3 +66,11 @@ export function money(
 export function plural(count: number, one: string): string {
   return `${count.toLocaleString("en-US")} ${one}${count === 1 ? "" : "s"}`;
 }
+
+/** A moment as a person reads it, in their own time zone: "Oct 5, 2026, 1:40 PM". */
+export function dateTime(iso: string): string {
+  return new Date(iso).toLocaleString("en-US", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+}

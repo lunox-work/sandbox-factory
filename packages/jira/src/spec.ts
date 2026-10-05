@@ -11,7 +11,7 @@ import { normalizeSpecText } from "@sandbox-factory/shared";
  * caller has to ask for it by name.
  */
 
-import { DEFAULT_ISSUE_TYPE, bountySpecHash } from "@sandbox-factory/shared";
+import { bountySpecHash } from "@sandbox-factory/shared";
 
 import { adfToTextResult } from "./adf.js";
 
@@ -21,7 +21,6 @@ export interface JiraIssueSpec {
   readonly summary: string;
   /** The description, flattened from ADF. Empty when the ticket has none. */
   readonly descriptionText: string;
-  readonly issueType: string;
   /**
    * The ticket's Jira components, by name: the one signal Jira gives for
    * free about which part of the product a ticket touches. Read for the
@@ -29,13 +28,6 @@ export interface JiraIssueSpec {
    * make a proposal stale.
    */
   readonly components: readonly string[];
-  /** The ticket's labels. Like `components`, read but not hashed. */
-  readonly labels: readonly string[];
-  /**
-   * Jira's priority name, or null when the site has priorities off. Read
-   * for the complexity profile; like `components`, not hashed.
-   */
-  readonly priority: string | null;
   /** Jira's own `updated`, for ordering and for staleness reporting. */
   readonly updated: string | null;
   /** True when ADF depth or length limits omitted any sizing input. */
@@ -47,8 +39,8 @@ export interface JiraIssueSpec {
    */
   readonly specHash: string;
   /**
-   * Version 1 of the ticket's own hash (`bountySpecHash`): the normalized
-   * summary, description and issue type as a JSON tuple. On review, the live
+   * The ticket's own hash (`bountySpecHash`, at its current version): the
+   * normalized summary and description as a JSON tuple. On review, the live
    * ticket is re-read and re-hashed: a difference means the spec changed
    * after it was priced, and the proposal is stale.
    */
@@ -62,10 +54,7 @@ export interface JiraIssueSpec {
 export const SPEC_FIELDS: readonly string[] = [
   "summary",
   "description",
-  "issuetype",
   "components",
-  "labels",
-  "priority",
   "updated",
 ];
 
@@ -104,7 +93,6 @@ export async function specHash(
 export const pricingSpecHash: (
   summary: string,
   descriptionText: string,
-  issueType: string,
 ) => Promise<string> = bountySpecHash;
 
 async function sha256(canonical: string): Promise<string> {
@@ -121,44 +109,22 @@ export async function toIssueSpec(
   fields: {
     summary?: unknown;
     description?: unknown;
-    issuetype?: { name?: unknown } | null;
     components?: unknown;
-    labels?: unknown;
-    priority?: { name?: unknown } | null;
     updated?: unknown;
   },
 ): Promise<JiraIssueSpec> {
   const summary = typeof fields.summary === "string" ? fields.summary : "";
   const description = adfToTextResult(fields.description);
-  const issueType =
-    typeof fields.issuetype?.name === "string"
-      ? fields.issuetype.name
-      : DEFAULT_ISSUE_TYPE;
   return {
     key,
     summary,
     descriptionText: description.text,
-    issueType,
     components: names(fields.components),
-    labels: strings(fields.labels),
-    priority:
-      typeof fields.priority?.name === "string" ? fields.priority.name : null,
     updated: typeof fields.updated === "string" ? fields.updated : null,
     inputTruncated: description.truncated,
     specHash: await specHash(summary, description.text),
-    pricingSpecHash: await pricingSpecHash(
-      summary,
-      description.text,
-      issueType,
-    ),
+    pricingSpecHash: await pricingSpecHash(summary, description.text),
   };
-}
-
-/** The strings of a list that may be missing or malformed. */
-function strings(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.filter((entry): entry is string => typeof entry === "string")
-    : [];
 }
 
 /** The `name` of each entry, which is how Jira sends components. */

@@ -2,7 +2,7 @@
  * The runnable package a version builds, and the evaluation it runs under.
  *
  * `build-manifest.json` binds the generated project to its inputs: the
- * slice manifest, the transform, the approved task, the toolchain and the
+ * slice manifest or the starter, the transform, the approved task, the toolchain and the
  * evaluator environment, with every file hashed and classified. The
  * evaluation-provider adapter is the seam between the worker and whichever
  * isolated runner executes checks; the worker ships a local process
@@ -202,11 +202,17 @@ export interface SandboxBuildManifest {
   readonly schemaVersion: typeof SANDBOX_BUILD_SCHEMA_VERSION;
   readonly toolVersion: string;
   readonly sandboxVersionId: string;
-  readonly sourceSnapshotId: string;
-  readonly sourceCommitSha: string;
-  readonly sliceRunId: string;
-  readonly manifestSha256: string;
-  readonly contractSha256: string;
+  /** The slice's inputs; null for a generated version, which has none. */
+  readonly sourceSnapshotId: string | null;
+  readonly sourceCommitSha: string | null;
+  readonly sliceRunId: string | null;
+  readonly manifestSha256: string | null;
+  readonly contractSha256: string | null;
+  /**
+   * A generated version's starter set, in place of the slice. Absent from
+   * a sliced version's manifest, which reads as it did before starters.
+   */
+  readonly starterSha256?: string;
   readonly transformConfigSha256: string;
   readonly approvedTaskSha256: string;
   readonly toolchain: Toolchain;

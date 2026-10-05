@@ -14,18 +14,22 @@ import { Breadcrumbs } from "./Breadcrumbs";
 import { Home } from "./Home";
 import { HomeBoard, writeHomeBoard } from "./HomeBoard";
 import { CreateOrganization, Organization } from "./Organization";
+import { workspaceLabel } from "./OrganizationSwitcher";
 import { Organizations } from "./Organizations";
 import { JiraBoard } from "./Jira";
 import { SideNav, type Screen } from "./SideNav";
 import { SignIn } from "./SignIn";
-import { Bounties } from "./Bounties";
+import { Bounties, BountyPage, NewBountyPage } from "./Bounties";
+import { SandboxFilesPage } from "./features/sandbox/SandboxFiles";
 import {
   boardForPath,
+  bountyForPath,
   canonicalUrl,
   connectionForPath,
   isPlainLeftClick,
   ORGANIZATIONS_PATH,
   pathForScreen,
+  sandboxFilesForPath,
   type ConnectionTab,
   screenForPath,
   slugForPath,
@@ -35,6 +39,9 @@ import { useOrganizations } from "./useOrganizations";
 
 export function App() {
   const { data: session, isPending } = useSession();
+  const { pathname } = useLocation();
+  // A version's files open in a tab of their own, outside the shell.
+  const sandboxFiles = sandboxFilesForPath(pathname);
 
   // Three states, not two: rendering sign-in while the session resolves would
   // flash it at a signed-in user on every reload.
@@ -58,13 +65,17 @@ export function App() {
    */
   return (
     <ServerDataProvider key={session.user.id} userId={session.user.id}>
-      <Signed
-        key={session.user.id}
-        userId={session.user.id}
-        name={session.user.name}
-        email={session.user.email}
-        image={session.user.image}
-      />
+      {sandboxFiles !== undefined ? (
+        <SandboxFilesPage address={sandboxFiles} />
+      ) : (
+        <Signed
+          key={session.user.id}
+          userId={session.user.id}
+          name={session.user.name}
+          email={session.user.email}
+          image={session.user.image}
+        />
+      )}
     </ServerDataProvider>
   );
 }
@@ -109,6 +120,16 @@ function Signed({
    * active last.
    */
   const organizations = useOrganizations(slugForPath(location.pathname));
+  // The workspace a bounty's own page is in, which its address names.
+  const bountyAddress =
+    screen === "bounty" ? bountyForPath(location.pathname) : undefined;
+  const bountyOrganization =
+    bountyAddress === undefined
+      ? undefined
+      : organizations.organizations.find(
+          ({ slug }) =>
+            slug.toLowerCase() === bountyAddress.workspace.toLowerCase(),
+        );
 
   /**
    * The name of the board on screen, reported up by `JiraBoard` so the trail
@@ -116,6 +137,9 @@ function Signed({
    * name comes from, and this is the seam between the two.
    */
   const [boardName, setBoardName] = useState<string | undefined>(undefined);
+
+  /** The bounty on its own page, reported up by `BountyPage` as the board's is. */
+  const [bountyName, setBountyName] = useState<string | undefined>(undefined);
 
   /**
    * Organizations waiting for an answer, for the mark on the avatar. Read in
@@ -150,11 +174,15 @@ function Signed({
               ? "New workspace"
               : screen === "org-jira-board"
                 ? (boardName ?? "Board")
-                : screen === "org-bounties"
+                : screen === "bounties"
                   ? "Bounties"
-                  : (organizations.active?.name ?? "Workspace");
+                  : screen === "new-bounty"
+                    ? "New bounty"
+                    : screen === "bounty"
+                      ? (bountyName ?? "Bounty")
+                      : (organizations.active?.name ?? "Workspace");
     document.title = `${page} · Lunox`;
-  }, [boardName, organizations.active?.name, screen]);
+  }, [boardName, bountyName, organizations.active?.name, screen]);
 
   /*
     The board on screen becomes the one home opens on, for this organization.
@@ -244,6 +272,18 @@ function Signed({
     ) {
       return;
     }
+    visit(
+      pathForScreen(next, slug ?? organizations.active?.slug, id, board, tab),
+    );
+  }
+
+  /**
+   * Goes to `url` as a new page: a history entry of its own, with the scroll
+   * position left behind remembered for Back and focus moved to the new
+   * page's heading. What `navigate` does once it has the path, for a page
+   * whose path a screen name alone cannot say, as a bounty's.
+   */
+  function visit(url: string) {
     // `pushState`, so each navigation is its own history entry and Back
     // returns to the previous screen rather than leaving the app.
     if (contentRef.current !== null) {
@@ -256,9 +296,7 @@ function Signed({
       );
     }
     shouldFocusPage.current = true;
-    pushLocation(
-      pathForScreen(next, slug ?? organizations.active?.slug, id, board, tab),
-    );
+    pushLocation(url);
   }
 
   /*
@@ -325,12 +363,11 @@ function Signed({
           // chosen one, so the URL and the page agree about which is shown. A
           // site or a board belongs to the old organization, so those land
           // on the new one's Jira list rather than on an id that is not its.
-          // Screens outside any organization stay where they are. The slug is
+          // Screens outside any organization, the bounties of every one
+          // included, stay where they are. The slug is
           // passed because `select` has not re-rendered yet — see `navigate`.
           if (screen === "org-settings") {
             navigate("org-settings", organization.slug);
-          } else if (screen === "org-bounties") {
-            navigate("org-bounties", organization.slug);
           } else if (screen === "org-jira-board") {
             navigate(
               "org-settings",
@@ -372,6 +409,15 @@ function Signed({
                 }
           }
           boardName={screen === "org-jira-board" ? boardName : undefined}
+          bountyName={screen === "bounty" ? bountyName : undefined}
+          bountyWorkspace={
+            bountyOrganization === undefined
+              ? undefined
+              : {
+                  name: workspaceLabel(bountyOrganization),
+                  slug: bountyOrganization.slug,
+                }
+          }
           onNavigate={navigate}
         />
         {screen === "account" ? (
@@ -440,22 +486,50 @@ function Signed({
               role={organizations.active.role}
             />
           )
-        ) : screen === "org-bounties" ? (
-          organizations.active === null ? (
-            <NoOrganization
-              loading={organizations.loading}
-              notFound={organizations.notFound}
-              onOpenOrganizations={() => navigate("organizations")}
-            />
-          ) : (
-            <Bounties
-              // Keyed by the organization: another workspace's bounties are
-              // a different list, and the previous one must not linger.
-              key={organizations.active.id}
-              organizationId={organizations.active.id}
-              role={organizations.active.role}
-            />
-          )
+        ) : screen === "bounties" ? (
+          <Bounties
+            organizations={organizations.organizations}
+            active={organizations.active}
+            organizationsLoading={organizations.loading}
+            viewer={{ id: userId, image }}
+            onCreate={() => navigate("new-bounty")}
+            onOpenPage={visit}
+          />
+        ) : screen === "bounty" ? (
+          <BountyPage
+            organizations={organizations.organizations}
+            organizationsLoading={organizations.loading}
+            viewer={{ id: userId, image }}
+            onTitle={setBountyName}
+            onOpenBounties={() => navigate("bounties")}
+          />
+        ) : screen === "new-bounty" ? (
+          <NewBountyPage
+            organizations={organizations.organizations}
+            active={organizations.active}
+            // Until the one in the rail is known, the form would open on
+            // another workspace and keep it.
+            organizationsLoading={
+              organizations.loading || organizations.settling
+            }
+            viewer={{ id: userId, image }}
+            // Back to the list this form was opened from, which the trail
+            // also names as its parent.
+            onCancel={() => navigate("bounties")}
+            // Into the chosen workspace's GitHub tab, where its repositories
+            // are connected. The slug is passed because `select` has not
+            // re-rendered yet — see `navigate`.
+            onConnectRepository={(organization) => {
+              organizations.select(organization.id);
+              navigate(
+                "org-settings",
+                organization.slug,
+                undefined,
+                undefined,
+                "github",
+              );
+            }}
+          />
         ) : screen === "org-settings" ? (
           organizations.active === null ? (
             <NoOrganization

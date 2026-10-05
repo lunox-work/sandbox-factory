@@ -36,7 +36,7 @@
  * toggling only moves the edge: nothing the eye was tracking jumps.
  */
 
-import { Building2, House, Target } from "lucide-react";
+import { Box, Building2, House } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import type { MembershipDto } from "@sandbox-factory/shared";
@@ -55,8 +55,12 @@ export type Screen =
   | "org-settings"
   /** One board, on a connected site. Carries a connection id and a board id. */
   | "org-jira-board"
-  /** The organization's bounties, and the proposals made from them. */
-  | "org-bounties"
+  /** Every workspace's bounties, and the proposals made from them. */
+  | "bounties"
+  /** The form for a new bounty, a page of its own under the bounties. */
+  | "new-bounty"
+  /** One bounty opened as a page of its own. Carries a workspace and an id. */
+  | "bounty"
   | "create-org";
 
 export function SideNav({
@@ -184,21 +188,23 @@ export function SideNav({
         </RailButton>
 
         {/*
-          The active workspace's bounties: what a proposal is made from,
-          whichever tool the bounty came from. Only once there is a
-          workspace to have them.
+          The bounties of every workspace: what a proposal is made from,
+          whichever tool the bounty came from. Not the active workspace's
+          alone, so it stays put when the switcher changes.
         */}
-        {organizations.active !== null && (
-          <RailButton
-            label="Bounties"
-            href={`/o/${organizations.active.slug}/bounties`}
-            expanded={expanded}
-            current={screen === "org-bounties"}
-            onClick={() => onNavigate("org-bounties")}
-          >
-            <Target strokeWidth={1.6} />
-          </RailButton>
-        )}
+        <RailButton
+          label="Bounties"
+          href={pathForScreen("bounties")}
+          expanded={expanded}
+          current={
+            screen === "bounties" ||
+            screen === "new-bounty" ||
+            screen === "bounty"
+          }
+          onClick={() => onNavigate("bounties")}
+        >
+          <Box strokeWidth={1.6} />
+        </RailButton>
 
         {children !== undefined && (
           <div className="hidden sm:mt-2 sm:flex sm:w-full sm:flex-col sm:border-t sm:pt-2">

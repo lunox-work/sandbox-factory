@@ -190,11 +190,14 @@ test("private provenance, the approved task and replay answers keep their exact 
     );
   const source = {
     sandboxVersionId: "sbv_1",
+    origin: "slice",
     sourceSnapshotId: "rsn_1",
     sourceCommitSha: "a".repeat(40),
     sliceRunId: "arn_slice",
     manifestSha256: "m".repeat(64),
     contractSha256: "c".repeat(64),
+    starterRunId: null,
+    starterSha256: null,
     transformConfigSha256: "t".repeat(64),
     approvedTaskSha256: "p".repeat(64),
     aliasRules: [],
@@ -220,6 +223,25 @@ test("private provenance, the approved task and replay answers keep their exact 
     updatedAt: stamp,
   };
   assert.equal(sandboxVersionSourceDtoSchema.safeParse(source).success, true);
+  // A generated version names its starter run and no slice.
+  assert.equal(
+    sandboxVersionSourceDtoSchema.safeParse({
+      ...source,
+      origin: "starter",
+      sourceSnapshotId: null,
+      sourceCommitSha: null,
+      sliceRunId: null,
+      manifestSha256: null,
+      contractSha256: null,
+      starterRunId: "arn_starter",
+    }).success,
+    true,
+  );
+  assert.equal(
+    sandboxVersionSourceDtoSchema.safeParse({ ...source, origin: "upload" })
+      .success,
+    false,
+  );
   // Strict: nothing private beyond the listed fields leaves the API.
   assert.equal(
     sandboxVersionSourceDtoSchema.safeParse({ ...source, organizationId: "o" })

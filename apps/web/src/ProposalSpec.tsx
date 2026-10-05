@@ -38,14 +38,15 @@ import type {
   BountySpecDto,
   BountySpecRevisionDto,
   RespecRequestDto,
+  StepResultDto,
 } from "@sandbox-factory/shared";
 import { ChevronRight, RefreshCw, X } from "lucide-react";
 import { useEffect, useId, useState } from "react";
 import {
   countScenarios,
-  groupScenarios,
   pointsOf,
   pointsOfScenarios,
+  SCENARIO_KIND_DEFINITIONS,
   SCENARIO_WEIGHT_DEFINITIONS,
   SCENARIO_WEIGHTS,
   WEIGHT_POINTS,
@@ -57,6 +58,7 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { LoadingLine } from "@/components/Message";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
 import {
   AnswerForm,
@@ -249,22 +251,30 @@ function SizeReasonBlock({ reason }: { reason: SizeReason }) {
         </>
       )}
       <p className="text-sm leading-relaxed">{reason.rationale}</p>
-      {reason.outline != null && (
-        <p
-          className="text-muted-foreground text-xs"
-          data-testid="spec-outline-source"
-        >
-          Drafted with the repository outline from{" "}
-          <span title={reason.outline.repoFullName}>
-            {reason.outline.repoFullName}
-          </span>{" "}
-          at{" "}
-          <code className="font-mono" title={reason.outline.commitSha}>
-            {reason.outline.commitSha.slice(0, 7)}
-          </code>
-        </p>
-      )}
+      {reason.outline != null && <OutlineSource outline={reason.outline} />}
     </section>
+  );
+}
+
+/** The repository snapshot a spec was drafted beside, said in a line. */
+export function OutlineSource({
+  outline,
+  className,
+}: {
+  outline: NonNullable<SizeReason["outline"]>;
+  className?: string;
+}) {
+  return (
+    <p
+      className={cn("text-muted-foreground text-xs", className)}
+      data-testid="spec-outline-source"
+    >
+      Drafted with the repository outline from{" "}
+      <span title={outline.repoFullName}>{outline.repoFullName}</span> at{" "}
+      <code className="font-mono" title={outline.commitSha}>
+        {outline.commitSha.slice(0, 7)}
+      </code>
+    </p>
   );
 }
 
@@ -290,6 +300,16 @@ export interface SpecChanges {
   readonly size: string;
 }
 
+/**
+ * What the spec gained and lost since it was sized, marked on the current
+ * revision: the ids of the scenarios added, and the scenarios trimmed,
+ * which the revision no longer has to show.
+ */
+export interface SinceSized {
+  readonly added: readonly string[];
+  readonly removed: readonly StepResultDto["added"][number][];
+}
+
 export function ProposalSpec({
   read,
   onRetry,
@@ -298,6 +318,7 @@ export function ProposalSpec({
   sizeReason,
   history,
   changes,
+  sinceSized,
 }: {
   read: SpecRead;
   onRetry: () => void;
@@ -317,6 +338,8 @@ export function ProposalSpec({
    * for a proposal whose spec cannot be changed (approved, or with no step).
    */
   changes?: SpecChanges;
+  /** Marked on the current revision only: an earlier one is not the diff. */
+  sinceSized?: SinceSized;
 }) {
   const current = history?.specRevision ?? null;
   // The revision on show, when it is not the current one.
@@ -359,7 +382,7 @@ export function ProposalSpec({
         <p className="text-muted-foreground text-sm" data-testid="spec-empty">
           No scenarios were drafted for this proposal.
           {canAnalyze &&
-            " Re-analyze, on the Price tab, drafts them from the bounty as it is now."}
+            " Re-analyze drafts them from the bounty as it is now."}
         </p>
       ) : (
         <SpecBody
@@ -372,6 +395,7 @@ export function ProposalSpec({
             setViewing(revision === current ? null : revision)
           }
           changes={viewing === null ? changes : undefined}
+          sinceSized={viewing === null ? sinceSized : undefined}
         />
       )}
     </div>
@@ -392,6 +416,7 @@ function SpecBody({
   current,
   onView,
   changes,
+  sinceSized,
 }: {
   spec: BountySpecDto;
   canAnalyze: boolean;
@@ -402,9 +427,20 @@ function SpecBody({
   current: number | null;
   onView: (revision: number) => void;
   changes: SpecChanges | undefined;
+  sinceSized: SinceSized | undefined;
 }) {
   const { draft } = spec;
-  const groups = groupScenarios(draft);
+  const added = new Set(sinceSized?.added ?? []);
+  const removed = sinceSized?.removed ?? [];
+  // Each kind with what it has, and after it what it lost: a kind trimmed
+  // to nothing still shows, as its removed lines.
+  const groups = SCENARIO_KIND_DEFINITIONS.flatMap(({ id, label }) => {
+    const scenarios = draft.scenarios.filter(({ kind }) => kind === id);
+    const gone = removed.filter(({ kind }) => kind === id);
+    return scenarios.length + gone.length === 0
+      ? []
+      : [{ kind: id, label, scenarios, gone }];
+  });
   // Null when any scenario has no weight: drafted before weights existed.
   const points = pointsOf(draft, weightPoints);
   const earlier = current !== null && spec.revision !== current;
@@ -520,8 +556,7 @@ function SpecBody({
         >
           Drafted before scenarios carried weights, so a scenario added to this
           spec cannot move the size.
-          {canAnalyze &&
-            " Re-analyze, on the Price tab, drafts it again with weights."}
+          {canAnalyze && " Re-analyze drafts it again with weights."}
         </p>
       )}
 
@@ -559,6 +594,7 @@ function SpecBody({
                   key={scenario.id}
                   scenario={scenario}
                   weightPoints={weightPoints}
+                  added={added.has(scenario.id)}
                   {...(changes === undefined
                     ? {}
                     : {
@@ -569,6 +605,14 @@ function SpecBody({
                             `Removing “${scenario.title}”…`,
                           ),
                       })}
+                />
+              ))}
+              {group.gone.map((scenario) => (
+                <RemovedRow
+                  key={`removed-${scenario.id}`}
+                  scenario={scenario}
+                  weightPoints={weightPoints}
+                  inset={changes !== undefined}
                 />
               ))}
             </ul>
@@ -596,11 +640,14 @@ function SpecBody({
 function ScenarioRow({
   scenario,
   weightPoints,
+  added = false,
   removing = false,
   onRemove,
 }: {
   scenario: Scenario;
   weightPoints: WeightPoints;
+  /** Added since sizing: drawn as a diff's added line. */
+  added?: boolean;
   /** A change is running: the remove control waits for it. */
   removing?: boolean;
   /** Takes the scenario out; absent for a reader who may not. */
@@ -609,9 +656,9 @@ function ScenarioRow({
   const [open, setOpen] = useState(false);
   const steps = useId();
   return (
-    <li className="relative">
+    <li className="relative" data-change={added ? "added" : undefined}>
       {onRemove !== undefined && (
-        <span className="absolute top-0 -right-1.5 flex min-h-[2.125rem] items-center">
+        <span className="absolute top-1 -right-1.5 flex h-lh items-center text-sm leading-relaxed">
           <ConfirmDialog
             trigger={
               <button
@@ -642,25 +689,36 @@ function ScenarioRow({
         type="button"
         aria-expanded={open}
         aria-controls={steps}
-        className={`hover:bg-muted/60 focus-visible:ring-ring/50 -mx-1.5 flex w-[calc(100%+0.75rem)] cursor-pointer items-start gap-1.5 rounded-md px-1.5 py-1 text-left text-sm outline-none focus-visible:ring-[3px] ${
-          onRemove === undefined ? "" : "pr-7"
-        }`}
+        className={cn(
+          "hover:bg-muted/60 focus-visible:ring-ring/50 relative -mx-1.5 flex w-[calc(100%+0.75rem)] cursor-pointer items-start gap-1.5 rounded-md px-1.5 py-1 text-left text-sm leading-relaxed outline-none focus-visible:ring-[3px]",
+          onRemove !== undefined && "pr-7",
+          added && [DIFF_LINE, DIFF_TONE.added, "hover:bg-emerald-500/15"],
+        )}
         onClick={() => setOpen((value) => !value)}
       >
-        <ChevronRight
-          aria-hidden="true"
-          className={`text-muted-foreground mt-0.5 size-3.5 shrink-0 transition-transform duration-150 motion-reduce:transition-none ${
-            open ? "rotate-90" : ""
-          }`}
-        />
-        <span className="min-w-0 flex-1 leading-relaxed">{scenario.title}</span>
-        {/* Centred on each other, level with the title's first line. */}
-        <span className="flex min-h-[1.625rem] shrink-0 items-center gap-1.5">
-          {scenario.origin !== "draft" && (
-            <Badge variant="outline" className="shrink-0">
-              {ORIGIN_LABEL[scenario.origin]}
-            </Badge>
-          )}
+        {added && <DiffMark change="added" />}
+        {/* Every mark is a line tall, so all of them centre on the title's
+            first line, however many lines it wraps to. */}
+        <span className="flex h-lh shrink-0 items-center">
+          <ChevronRight
+            aria-hidden="true"
+            className={`text-muted-foreground size-3.5 transition-transform duration-150 motion-reduce:transition-none ${
+              open ? "rotate-90" : ""
+            }`}
+          />
+        </span>
+        <span className="min-w-0 flex-1">
+          {added && <span className="sr-only">Added since sizing: </span>}
+          {scenario.title}
+        </span>
+        <span className="flex h-lh shrink-0 items-center gap-1.5">
+          {/* The "+" already says an expansion was added. */}
+          {scenario.origin !== "draft" &&
+            !(added && scenario.origin === "expansion") && (
+              <Badge variant="outline" className="shrink-0">
+                {ORIGIN_LABEL[scenario.origin]}
+              </Badge>
+            )}
           {scenario.weight !== undefined && (
             <WeightBadge
               weight={scenario.weight}
@@ -682,6 +740,72 @@ function ScenarioRow({
           <Steps steps={scenario.steps} />
         </div>
       )}
+    </li>
+  );
+}
+
+/**
+ * A diff line reaches left past the scenario column into a gutter for its
+ * mark, so its chevron and title stay in the column with every other row's
+ * and under the kind's heading.
+ */
+const DIFF_LINE = "-ml-6 w-[calc(100%+1.875rem)] pl-6";
+
+/** A diff line's tint and ink, as a change tracker draws them. */
+const DIFF_TONE = {
+  added: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
+  removed: "bg-red-500/10 text-red-700 dark:text-red-400",
+} as const;
+
+/** A diff line's "+" or "−", in the gutter its line reaches into. */
+function DiffMark({ change }: { change: keyof typeof DIFF_TONE }) {
+  return (
+    <span
+      aria-hidden="true"
+      className="absolute top-1 left-1.5 flex h-lh w-3 items-center justify-center font-mono select-none"
+    >
+      {change === "added" ? "+" : "−"}
+    </span>
+  );
+}
+
+/**
+ * A scenario trimmed since sizing, as a diff's removed line under its kind.
+ * Only its title and weight are kept, so it does not open.
+ */
+function RemovedRow({
+  scenario,
+  weightPoints,
+  inset,
+}: {
+  scenario: StepResultDto["added"][number];
+  weightPoints: WeightPoints;
+  /** Clear of the remove control the rows above it carry. */
+  inset: boolean;
+}) {
+  return (
+    <li
+      data-change="removed"
+      className={cn(
+        "relative -mr-1.5 flex items-start gap-1.5 rounded-md py-1 pr-1.5 text-sm leading-relaxed",
+        DIFF_LINE,
+        DIFF_TONE.removed,
+        inset && "pr-7",
+      )}
+    >
+      <DiffMark change="removed" />
+      {/* Where a chevron would be: it does not open. */}
+      <span aria-hidden="true" className="w-3.5 shrink-0" />
+      <span className="min-w-0 flex-1">
+        <span className="sr-only">Removed since sizing: </span>
+        {scenario.title}
+      </span>
+      <span className="flex h-lh shrink-0 items-center">
+        <WeightBadge
+          weight={scenario.weight}
+          points={pointsFor(scenario.weight, weightPoints)}
+        />
+      </span>
     </li>
   );
 }

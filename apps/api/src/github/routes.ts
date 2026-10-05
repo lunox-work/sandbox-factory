@@ -41,6 +41,7 @@ import type {
   GithubConnectionSummary,
   GithubGrantStore,
   GithubRepoStore,
+  GithubRepoSummary,
   RepoSnapshotStore,
   RepoSnapshotSummary,
   StoredRepoSnapshot,
@@ -63,6 +64,7 @@ import {
   type GithubInstallationRepositoryDto,
   type GithubInstallationResponse,
   githubInstallationSettingsUrl,
+  type GithubRepoDto,
   linkInstallationRequestSchema,
   registerRepoRequestSchema,
   type RepoSnapshotDetailDto,
@@ -659,8 +661,9 @@ export function mountGithubRoutes<Env extends GithubAppEnv>(
         }
         return c.json(
           {
-            repository:
+            repository: repoDto(
               (await repos.get(organizationId, registered.id)) ?? registered,
+            ),
           },
           201,
         );
@@ -673,7 +676,9 @@ export function mountGithubRoutes<Env extends GithubAppEnv>(
   /** The organization's registered repositories, with where each stands. */
   app.get("/api/v1/orgs/:orgId/github/repositories", async (c) => {
     return c.json({
-      repositories: await repos.list(c.get("member").organizationId),
+      repositories: (await repos.list(c.get("member").organizationId)).map(
+        repoDto,
+      ),
     });
   });
 
@@ -1014,4 +1019,13 @@ export function toConnectionDto(
     ),
     createdAt: connection.createdAt,
   };
+}
+
+/**
+ * A repository as the wire carries it. Which commit and detection version
+ * its stack came from is the snapshotter's business, not the page's.
+ */
+function repoDto(repo: GithubRepoSummary): GithubRepoDto {
+  const { stackCommitSha: _commit, stackVersion: _version, ...dto } = repo;
+  return { ...dto, stack: repo.stack === null ? null : [...repo.stack] };
 }

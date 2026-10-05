@@ -44,7 +44,10 @@ import {
   type GithubWebhookOptions,
 } from "./github/webhook.js";
 import { mountJiraRoutes, type JiraRouteOptions } from "./jira/routes.js";
-import { mountBountyRoutes } from "./bounties/routes.js";
+import {
+  mountBountyRoutes,
+  mountCallerBountyRoutes,
+} from "./bounties/routes.js";
 import {
   mountAnalysisRoutes,
   type AnalysisRouteOptions,
@@ -584,6 +587,11 @@ export function createApp({
       // The organization's own bounties, which need nothing but the
       // database: written here, they are sized with no Jira at all.
       mountBountyRoutes(app, pricing);
+      mountCallerBountyRoutes(app, {
+        bounties: pricing.bounties,
+        organizationsOf: async (userId) =>
+          (await organizations.listForUser(userId)).map(({ id }) => id),
+      });
     }
     if (sandbox !== undefined) mountSandboxRoutes(app, sandbox);
     else

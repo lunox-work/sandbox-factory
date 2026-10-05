@@ -8,17 +8,10 @@
  * not grow a control for it.
  */
 
-import { Check, ChevronDown, FolderGit2 } from "lucide-react";
+import { FolderGit2 } from "lucide-react";
 import { useState } from "react";
 
-import { Button } from "@/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+import { Combobox } from "@/components/Combobox";
 
 import { useGithubRepos } from "./useGithub";
 
@@ -80,42 +73,27 @@ export function BoardRepository({
         <FolderGit2 className="text-muted-foreground size-4 shrink-0" />
         <span className="text-muted-foreground">Repository</span>
         {canManage ? (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-7 gap-1.5 px-2.5 font-medium"
-                disabled={saving || loadError !== null}
-              >
-                {name}
-                <ChevronDown className="size-3.5" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" className="min-w-56">
-              {choices.map((repo) => (
-                <DropdownMenuItem
-                  key={repo.id}
-                  onSelect={() => void link(repo.id)}
-                  disabled={repo.id === sourceRepoId}
-                >
-                  <Check
-                    className={repo.id === sourceRepoId ? "" : "invisible"}
-                  />
-                  {repo.fullName}
-                </DropdownMenuItem>
-              ))}
-              {sourceRepoId !== null && (
-                <>
-                  {choices.length > 0 && <DropdownMenuSeparator />}
-                  <DropdownMenuItem onSelect={() => void link(null)}>
-                    <Check className="invisible" />
-                    No repository
-                  </DropdownMenuItem>
-                </>
-              )}
-            </DropdownMenuContent>
-          </DropdownMenu>
+          <Combobox
+            label="Repository"
+            searchPlaceholder="Search repositories…"
+            emptyMessage="No repository matches."
+            className="h-8 w-auto max-w-full font-medium"
+            contentClassName="w-72"
+            options={[
+              ...choices.map((repo) => ({
+                value: repo.id,
+                label: repo.fullName,
+              })),
+              ...(sourceRepoId === null
+                ? []
+                : [{ value: "", label: "No repository" }]),
+            ]}
+            value={sourceRepoId ?? ""}
+            // Names a linked repository the list no longer offers, too.
+            placeholder={name}
+            disabled={saving || loadError !== null}
+            onValueChange={(repoId) => void link(repoId === "" ? null : repoId)}
+          />
         ) : (
           <span className="font-medium">{name}</span>
         )}

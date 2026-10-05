@@ -22,6 +22,13 @@
  * one column and hide the list — a second layout to reason about, with a
  * bespoke "All bounties" control to undo it.
  *
+ * A list a reader moves through, as the bounties are, opens it with `modal`
+ * off, as Notion's side peek is: the list stays sharp and live beside it, a
+ * click on another of its rows (marked `data-peek-row`) shows that row in the
+ * same panel rather than closing it, and a click anywhere else still closes
+ * it. The page behind is neither dimmed nor locked, so the list scrolls on
+ * its own.
+ *
  * Built on Radix's Dialog rather than hand-rolled, which is what brings the
  * focus trap, the return of focus to the row on close, Escape, the click
  * outside, and `aria-modal` wiring. `ui/dialog.tsx` is a generated file kept
@@ -35,12 +42,30 @@ import { useEffect, useRef, type ReactNode } from "react";
 
 import { cn } from "@/lib/utils";
 
+/** An icon control in the peek's header, as Close is drawn. */
+export const PEEK_ACTION_CLASS =
+  "ring-offset-background focus-visible:ring-ring text-muted-foreground hover:bg-accent hover:text-foreground grid size-10 shrink-0 place-items-center rounded-md transition-colors focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none";
+
+/** Marks a row whose click shows it in an open, non-modal peek. */
+export const PEEK_ROW_ATTRIBUTE = "data-peek-row";
+
+/** Whether an interaction outside the peek landed on one of its rows. */
+function onPeekRow(target: EventTarget | null): boolean {
+  return (
+    target instanceof Element &&
+    target.closest(`[${PEEK_ROW_ATTRIBUTE}]`) !== null
+  );
+}
+
 export function PeekPanel({
   open,
   onOpenChange,
+  modal = true,
   title,
+  titleHidden = false,
   description,
   children,
+  actions,
   footer,
   className,
   ...rest
@@ -48,12 +73,28 @@ export function PeekPanel({
   open: boolean;
   onOpenChange: (open: boolean) => void;
   /**
+   * Over a dimmed, locked page, as a dialog is; or, when false, beside a
+   * list that stays live, whose rows switch what it shows. Defaults to true.
+   */
+  modal?: boolean;
+  /**
    * Names the panel and appears in its fixed header above the scrolling body.
    */
   title: string;
+  /**
+   * Names the panel without showing it, for a body that shows the title
+   * itself, as a record renamed in place does.
+   */
+  titleHidden?: boolean;
   /** The same, for the sentence under the title. Optional. */
   description?: string | undefined;
   children: ReactNode;
+  /**
+   * Controls at the head of the header, opposite Close, such as opening the
+   * record as a page of its own — where Notion's peek puts it. Sized and
+   * styled by the caller; `PEEK_ACTION_CLASS` matches Close.
+   */
+  actions?: ReactNode | undefined;
   /** Pinned to the foot, outside the scrolling region. */
   footer?: ReactNode | undefined;
   className?: string;
@@ -90,12 +131,13 @@ export function PeekPanel({
   const bodyRef = useRef<HTMLDivElement | null>(null);
 
   return (
-    <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
+    <DialogPrimitive.Root open={open} onOpenChange={onOpenChange} modal={modal}>
       <DialogPrimitive.Portal>
         {/*
           Dimmed and blurred, as the app's own dialog overlay is: on a
           near-black theme a plain `bg-black/50` over a black page is almost
-          invisible, and the blur is what separates the two planes.
+          invisible, and the blur is what separates the two planes. Radix
+          draws none when the peek is not modal.
         */}
         <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/40 backdrop-blur-[2px] data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0 motion-reduce:animate-none" />
 
@@ -118,6 +160,25 @@ export function PeekPanel({
               bodyRef.current.focus({ preventScroll: true });
             }
           }}
+          // A field edited in place takes its own Escape, to put back what
+          // it held, rather than closing the panel around it.
+          onEscapeKeyDown={(event) => {
+            if (
+              event.target instanceof Element &&
+              event.target.closest("[data-own-escape]") !== null
+            ) {
+              event.preventDefault();
+            }
+          }}
+          // Not modal: a click on another row shows it here rather than
+          // closing the peek, and focus leaving for the list, as Tab does,
+          // leaves it open. Any other click outside closes it.
+          onPointerDownOutside={(event) => {
+            if (!modal && onPeekRow(event.target)) event.preventDefault();
+          }}
+          onFocusOutside={(event) => {
+            if (!modal) event.preventDefault();
+          }}
           onCloseAutoFocus={(event) => {
             const opener = openerRef.current;
             if (opener !== null && document.contains(opener)) {
@@ -127,9 +188,24 @@ export function PeekPanel({
           }}
           {...rest}
         >
-          <header className="bg-background flex min-h-14 shrink-0 items-center gap-3 border-b px-4 sm:px-6">
-            <div className="min-w-0 flex-1">
-              <DialogPrimitive.Title className="text-sm font-semibold break-words">
+          {/*
+            Inset as the body is, with the icon controls at either end pulled
+            out by their own padding, so the glyphs rather than the hit areas
+            line up with the text below.
+          */}
+          <header className="bg-background flex min-h-14 shrink-0 items-center gap-1 border-b px-5 sm:px-6">
+            {actions !== undefined && (
+              <div className="-ml-3 flex shrink-0 items-center gap-1">
+                {actions}
+              </div>
+            )}
+            <div className="mx-2 min-w-0 flex-1 first:ml-0">
+              <DialogPrimitive.Title
+                className={cn(
+                  "text-sm font-semibold break-words",
+                  titleHidden && "sr-only",
+                )}
+              >
                 {title}
               </DialogPrimitive.Title>
               {description !== undefined && (
@@ -139,7 +215,7 @@ export function PeekPanel({
               )}
             </div>
             <DialogPrimitive.Close
-              className="ring-offset-background focus-visible:ring-ring text-muted-foreground hover:bg-accent hover:text-foreground grid size-10 shrink-0 place-items-center rounded-md transition-colors focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
+              className={cn(PEEK_ACTION_CLASS, "-mr-3")}
               aria-label="Close"
             >
               <X className="size-4" />
@@ -147,9 +223,9 @@ export function PeekPanel({
           </header>
 
           {/*
-            The only scrolling region on screen while this is open: Radix
-            locks the page behind it, so the wheel has one destination
-            wherever the cursor is.
+            Its own scrolling region. A modal peek is the only one on screen,
+            as Radix locks the page behind it; beside a live list, each
+            scrolls under the cursor.
           */}
           <div
             ref={bodyRef}

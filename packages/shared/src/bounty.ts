@@ -6,7 +6,6 @@
  */
 
 import {
-  DEFAULT_ISSUE_TYPE,
   BOUNTY_LIMITS,
   BOUNTY_ORIGINS,
   bountySpecHash,
@@ -18,13 +17,14 @@ import {
   bountyComplexitySchema,
   bountyProposalStatusSchema,
 } from "./pricing.js";
+import { stackDtoSchema, stackInputSchema } from "./stack.js";
 
 /**
- * The fingerprint a proposal is priced against, and the bounds and default
- * a bounty's text is held to, re-exported so `packages/jira` reads Jira's
- * text with the one definition of each.
+ * The fingerprint a proposal is priced against, and the bounds a bounty's
+ * text is held to, re-exported so `packages/jira` reads Jira's text with
+ * the one definition of each.
  */
-export { DEFAULT_ISSUE_TYPE, BOUNTY_LIMITS, bountySpecHash };
+export { BOUNTY_LIMITS, bountySpecHash };
 
 export const bountyOriginSchema = z.enum(BOUNTY_ORIGINS);
 
@@ -66,20 +66,19 @@ export const bountySandboxSummarySchema = z.object({
 export const bountySummaryDtoSchema = z.object({
   id: z.string().min(1),
   organizationId: z.string().min(1),
-  /** The organization's own count, which `key` falls back to. */
-  number: z.number().int().positive(),
-  /** Its Jira key while it has one, `B-<number>` otherwise. */
-  key: z.string().min(1),
   title: z.string().min(1),
-  issueType: z.string().min(1),
-  priority: z.string().nullable(),
-  labels: z.array(z.string()),
   origin: bountyOriginSchema,
   /**
    * The repository the bounty is about, when one was named for it. A Jira
    * bounty with none is drafted beside its board's repository instead.
    */
   repoId: z.string().nullable(),
+  /**
+   * What the bounty adds to its repository's detected stack. The
+   * repository's own is not repeated here: it is the repository's, follows
+   * it, and is shown beside these.
+   */
+  stack: stackDtoSchema,
   revision: z.number().int().positive(),
   jira: bountyJiraLinkSchema.nullable(),
   proposal: bountyProposalSummarySchema.nullable(),
@@ -105,44 +104,28 @@ export const bountyResponseSchema = z.object({ bounty: bountyDtoSchema });
 
 const titleSchema = z.string().trim().min(1).max(BOUNTY_LIMITS.title);
 const descriptionSchema = z.string().max(BOUNTY_LIMITS.description);
-const issueTypeSchema = z.string().trim().min(1).max(BOUNTY_LIMITS.issueType);
-const prioritySchema = z
-  .string()
-  .trim()
-  .min(1)
-  .max(BOUNTY_LIMITS.priority)
-  .nullable();
-/** Trimmed, and each kept once in the order first given. */
-const labelsSchema = z
-  .array(z.string().trim().min(1).max(BOUNTY_LIMITS.label))
-  .max(BOUNTY_LIMITS.labels)
-  .transform((labels) => [...new Set(labels)]);
 const repoIdSchema = z.string().min(1).nullable();
 
 /** A bounty written here. Only the title is required. */
 export const createBountySchema = z.strictObject({
   title: titleSchema,
   description: descriptionSchema.default(""),
-  issueType: issueTypeSchema.default(DEFAULT_ISSUE_TYPE),
-  priority: prioritySchema.default(null),
-  labels: labelsSchema.default([]),
   repoId: repoIdSchema.default(null),
+  stack: stackInputSchema.default([]),
 });
 
 /**
  * A change to a bounty, against the revision the editor saw. A Jira
- * bounty's text is Jira's to change, so only its repository may be set
- * here; the route refuses the rest.
+ * bounty's text is Jira's to change, so only its repository and stack may
+ * be set here; the route refuses the rest.
  */
 export const updateBountySchema = z
   .strictObject({
     expectedRevision: z.number().int().positive(),
     title: titleSchema.optional(),
     description: descriptionSchema.optional(),
-    issueType: issueTypeSchema.optional(),
-    priority: prioritySchema.optional(),
-    labels: labelsSchema.optional(),
     repoId: repoIdSchema.optional(),
+    stack: stackInputSchema.optional(),
   })
   .refine(
     ({ expectedRevision: _revision, ...change }) =>

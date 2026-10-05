@@ -17,6 +17,7 @@ import type {
   JiraIssueSignalsDto,
 } from "@sandbox-factory/shared";
 import {
+  BOUNTY_SPEC_HASH_VERSION,
   bountySpecHash,
   type BountySizingResult,
   type SpecDraft,
@@ -173,17 +174,13 @@ function bounty(overrides: Partial<StoredBounty> = {}): StoredBounty {
   return {
     id: "bty_1",
     organizationId: "org_1",
-    number: 1,
-    key: "APP-1",
     title: "Issue 1",
     description: "Clear acceptance criteria.",
-    issueType: "Story",
-    priority: "Medium",
-    labels: [],
     components: [],
     inputTruncated: false,
     origin: "jira",
     repoId: null,
+    stack: [],
     createdBy: null,
     revision: 1,
     jira: {
@@ -206,12 +203,8 @@ function bounty(overrides: Partial<StoredBounty> = {}): StoredBounty {
 function handWritten(overrides: Partial<StoredBounty> = {}): StoredBounty {
   return bounty({
     id: "bty_7",
-    number: 7,
-    key: "B-7",
     title: "Invitations are not sent",
     description: "Scheduling an interview sends the candidate one email.",
-    issueType: "Bug",
-    priority: null,
     origin: "manual",
     jira: null,
     ...overrides,
@@ -229,10 +222,7 @@ function spec(
     key: `APP-${id}`,
     summary: `Issue ${id}`,
     descriptionText: "Clear acceptance criteria.",
-    issueType: "Story",
     components: [],
-    labels: [],
-    priority: "Medium",
     updated: "2026-01-02T00:00:00.000Z",
     inputTruncated: false,
     specHash: "a".repeat(64),
@@ -381,8 +371,6 @@ function harness(options: {
         bountyId,
         bounty({
           id: bountyId,
-          number: pointer,
-          key: `APP-${input.externalId}`,
           ...content,
           jira: {
             ...bounty().jira!,
@@ -763,7 +751,7 @@ test("a run persists sized drafts with snapshot pricing and usage", async () => 
 test("a run drafts the spec first and stores it with the proposal", async () => {
   const state = harness({
     specs: {
-      "1": spec("1", { components: ["Reports"], labels: ["export"] }),
+      "1": spec("1", { components: ["Reports"] }),
     },
   });
   await state.executor.execute("org_1", "brn_1");
@@ -777,9 +765,7 @@ test("a run drafts the spec first and stores it with the proposal", async () => 
       input: {
         summary: "Issue 1",
         descriptionText: "Clear acceptance criteria.",
-        issueType: "Story",
         components: ["Reports"],
-        labels: ["export"],
       },
     },
     {
@@ -787,7 +773,6 @@ test("a run drafts the spec first and stores it with the proposal", async () => 
       input: {
         summary: "Issue 1",
         descriptionText: "Clear acceptance criteria.",
-        issueType: "Story",
       },
     },
   ]);
@@ -803,7 +788,7 @@ test("a run drafts the spec first and stores it with the proposal", async () => 
     draft,
     origin: "draft",
     actualModel: "drafting-model",
-    promptVersion: "draft-v3",
+    promptVersion: "draft-v4",
   });
 });
 
@@ -901,7 +886,6 @@ test("each spec drafted beside a snapshot asks for its complexity profile", asyn
     sourceRepoId: "ghr_1",
     outlineFor: () => Promise.resolve({ snapshotId: "rsn_1", text: "outline" }),
     candidates: [issue("1"), issue("2")],
-    specs: { "2": spec("2", { issueType: "Bug", priority: null }) },
     onProposalDrafted: (organizationId, input) =>
       void asked.push({ organizationId, ...input }),
   });
@@ -914,7 +898,6 @@ test("each spec drafted beside a snapshot asks for its complexity profile", asyn
       specRevision: 1,
       specHash: spec("1").pricingSpecHash,
       snapshotId: "rsn_1",
-      bounty: { issueType: "Story", priority: "Medium" },
     },
     {
       organizationId: "org_1",
@@ -922,7 +905,6 @@ test("each spec drafted beside a snapshot asks for its complexity profile", asyn
       specRevision: 1,
       specHash: spec("2").pricingSpecHash,
       snapshotId: "rsn_1",
-      bounty: { issueType: "Bug", priority: null },
     },
   ]);
 });
@@ -990,6 +972,7 @@ test("a sized bounty is written with a step of zero, priced at its own size", as
     steps: 0,
     addedPoints: 0,
     added: [],
+    removed: [],
     nextStepIn: 4,
     settings: {
       pointsPerStep: 4,
@@ -1522,7 +1505,7 @@ test("a bounty written here is sized with no Jira at all", async () => {
     [
       {
         externalIssueId: "bty_7",
-        issueKey: "B-7",
+        issueKey: null,
         summary: "Invitations are not sent",
         bountyId: "bty_7",
         categories: [],
@@ -1534,9 +1517,7 @@ test("a bounty written here is sized with no Jira at all", async () => {
     input: {
       summary: "Invitations are not sent",
       descriptionText: "Scheduling an interview sends the candidate one email.",
-      issueType: "Bug",
       components: [],
-      labels: [],
     },
   });
   const written = state.proposalInputs[0] as {
@@ -1551,13 +1532,12 @@ test("a bounty written here is sized with no Jira at all", async () => {
     await bountySpecHash(
       "Invitations are not sent",
       "Scheduling an interview sends the candidate one email.",
-      "Bug",
     ),
   );
-  assert.equal(written.specHashVersion, 1);
+  assert.equal(written.specHashVersion, BOUNTY_SPEC_HASH_VERSION);
   assert.deepEqual(state.outcomes[0], {
     externalIssueId: "bty_7",
-    issueKey: "B-7",
+    issueKey: null,
     bountyId: "bty_7",
     proposalId: "bpr_1",
     status: "proposed",
@@ -1592,10 +1572,9 @@ test("a bounty is drafted beside its own repository", async () => {
     (state.proposalInputs[0] as { repoSnapshotId: unknown }).repoSnapshotId,
     "rsn_9",
   );
-  assert.deepEqual((drafted[0] as { bounty: unknown }).bounty, {
-    issueType: "Bug",
-    priority: null,
-  });
+  // Nothing about the bounty rides along: the profile is measured from the
+  // spec and the code.
+  assert.equal("bounty" in (drafted[0] as object), false);
 });
 
 test("a bounty's repository comes before its board's", async () => {
@@ -1633,9 +1612,6 @@ test("a bounty following its Jira issue is read from Jira, and takes what it say
       content: {
         title: "Invitations go out twice",
         description: "Retries send a second email.",
-        issueType: "Story",
-        priority: "Medium",
-        labels: [],
         components: ["Mailer"],
         inputTruncated: false,
       },
@@ -1799,7 +1775,7 @@ test("a re-price of a bounty written here needs no Jira", async () => {
 test("a board's issue is imported with what Jira says about it", async () => {
   const state = harness({
     specs: {
-      "1": spec("1", { components: ["Reports"], labels: ["export"] }),
+      "1": spec("1", { components: ["Reports"] }),
     },
   });
   await state.executor.execute("org_1", "brn_1");
@@ -1807,9 +1783,6 @@ test("a board's issue is imported with what Jira says about it", async () => {
     {
       title: "Issue 1",
       description: "Clear acceptance criteria.",
-      issueType: "Story",
-      priority: "Medium",
-      labels: ["export"],
       components: ["Reports"],
       inputTruncated: false,
     },

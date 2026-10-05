@@ -12,22 +12,15 @@
  * connections list, which is where a site gets connected.
  */
 
-import { Check, ChevronDown, LayoutList } from "lucide-react";
+import { ChevronDown, LayoutList } from "lucide-react";
 import { useState, type ReactNode } from "react";
 
+import { Combobox } from "@/components/Combobox";
 import { LoadingLine } from "@/components/Message";
 import { Button } from "@/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 
 import { BoardIcon, JiraBoard } from "./Jira";
-import { isPlainLeftClick, pathForScreen } from "./routes";
+import { pathForScreen } from "./routes";
 import { useJiraBoards, type JiraBoard as Board } from "./useJira";
 
 export interface RememberedBoard {
@@ -116,16 +109,46 @@ function BoardPicker({
   onChoose: (board: Board) => void;
   onOpenBoard: (board: Board) => void;
 }) {
-  const [open, setOpen] = useState(false);
-
   return (
-    <DropdownMenu open={open} onOpenChange={setOpen}>
-      <DropdownMenuTrigger asChild>
+    <Combobox
+      label="Boards"
+      searchPlaceholder="Search boards…"
+      emptyMessage="No boards match."
+      contentClassName="w-64"
+      options={boards.map((board) => ({
+        value: board.id,
+        label: board.name,
+        icon: (
+          <span className="text-muted-foreground [&_svg]:size-4">
+            <BoardIcon boardType={board.boardType} />
+          </span>
+        ),
+      }))}
+      value={current.id}
+      onValueChange={(boardId) => {
+        const board = boards.find(({ id }) => id === boardId);
+        if (board !== undefined) onChoose(board);
+      }}
+      actions={[
+        {
+          key: "open",
+          label: "Open board page",
+          icon: <LayoutList />,
+          href: pathForScreen(
+            "org-jira-board",
+            organizationSlug,
+            current.connectionId,
+            current.id,
+          ),
+          onSelect: () => onOpenBoard(current),
+        },
+      ]}
+      trigger={
         <Button
           variant="ghost"
           size="sm"
           aria-label={`Switch board — ${current.name}`}
-          className="text-foreground -ml-1 h-7 max-w-full gap-1.5 px-1.5 [&_svg]:size-4"
+          className="text-foreground data-[state=open]:bg-accent -ml-1 h-7 max-w-full gap-1.5 px-1.5 [&_svg]:size-4"
         >
           <span className="text-muted-foreground shrink-0">
             <BoardIcon boardType={current.boardType} />
@@ -133,55 +156,8 @@ function BoardPicker({
           <span className="min-w-0 truncate">{current.name}</span>
           <ChevronDown className="text-muted-foreground shrink-0" />
         </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-64">
-        <DropdownMenuLabel className="text-muted-foreground text-xs font-medium">
-          Boards
-        </DropdownMenuLabel>
-        {boards.map((board) => {
-          const chosen = board.id === current.id;
-          return (
-            <DropdownMenuItem
-              key={board.id}
-              aria-current={chosen ? "true" : undefined}
-              onSelect={() => onChoose(board)}
-              className="[&_svg]:size-4"
-            >
-              <span className="text-muted-foreground shrink-0">
-                <BoardIcon boardType={board.boardType} />
-              </span>
-              <span className="min-w-0 flex-1 truncate">{board.name}</span>
-              {chosen && (
-                <Check aria-hidden="true" className="text-foreground" />
-              )}
-            </DropdownMenuItem>
-          );
-        })}
-
-        <DropdownMenuSeparator />
-
-        <DropdownMenuItem asChild>
-          <a
-            href={pathForScreen(
-              "org-jira-board",
-              organizationSlug,
-              current.connectionId,
-              current.id,
-            )}
-            onClick={(event) => {
-              if (isPlainLeftClick(event)) {
-                event.preventDefault();
-                setOpen(false);
-                onOpenBoard(current);
-              }
-            }}
-          >
-            <LayoutList />
-            Open board page
-          </a>
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
+      }
+    />
   );
 }
 

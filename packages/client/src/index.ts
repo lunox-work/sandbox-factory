@@ -21,11 +21,15 @@ import {
   artifactListSchema,
   artifactUrlSchema,
   enqueueSliceResponseSchema,
+  generateStarterResponseSchema,
+  publishVersionResponseSchema,
   repositoryProposalListSchema,
   repoTreePageDtoSchema,
   repoSnapshotListSchema,
   repoSnapshotDetailDtoSchema,
   replayResponseSchema,
+  sandboxFileContentSchema,
+  sandboxFileListSchema,
   sandboxListSchema,
   sandboxResponseSchema,
   sandboxVersionListSchema,
@@ -232,6 +236,19 @@ export class SandboxClient extends GithubAnalysisClient {
       ),
     ).versions;
   }
+  /**
+   * A draft version generated for a sandbox with no repository: the
+   * starter agent writes it from the bounty and builds it. Answers with
+   * the draft and its run, which is read like any analysis run.
+   */
+  async generateSandboxVersion(owner: string, sandboxId: string) {
+    return generateStarterResponseSchema.parse(
+      await this.request(
+        `${this.#sandboxes(owner)}/${encodeURIComponent(sandboxId)}/starter`,
+        { method: "POST" },
+      ),
+    );
+  }
   /** A draft version cut from a succeeded slice run. */
   async createSandboxVersion(
     owner: string,
@@ -265,6 +282,27 @@ export class SandboxClient extends GithubAnalysisClient {
       ),
     );
   }
+  /**
+   * Publishes a version whose build passed: approved, frozen, and the
+   * sandbox's published version.
+   */
+  async publishSandboxVersion(owner: string, versionId: string) {
+    return publishVersionResponseSchema.parse(
+      await this.request(
+        `${this.#sandboxes(owner)}/versions/${encodeURIComponent(versionId)}/publish`,
+        { method: "POST" },
+      ),
+    );
+  }
+  /** Takes the sandbox back to a draft with no published version. */
+  async unpublishSandbox(owner: string, sandboxId: string) {
+    return sandboxResponseSchema.parse(
+      await this.request(
+        `${this.#sandboxes(owner)}/${encodeURIComponent(sandboxId)}/unpublish`,
+        { method: "POST" },
+      ),
+    ).sandbox;
+  }
   /** Queues the build run for a draft; the run is read like any analysis run. */
   async buildSandboxVersion(owner: string, versionId: string) {
     return analysisRunResponseSchema.parse(
@@ -273,6 +311,29 @@ export class SandboxClient extends GithubAnalysisClient {
         { method: "POST" },
       ),
     ).run;
+  }
+  /** The private sandbox the version's build wrote: its file list. */
+  async sandboxFiles(owner: string, versionId: string, signal?: AbortSignal) {
+    return sandboxFileListSchema.parse(
+      await this.request(
+        `${this.#sandboxes(owner)}/versions/${encodeURIComponent(versionId)}/files`,
+        { signal },
+      ),
+    );
+  }
+  /** One of those files, as text when it is text and small enough. */
+  async sandboxFile(
+    owner: string,
+    versionId: string,
+    path: string,
+    signal?: AbortSignal,
+  ) {
+    return sandboxFileContentSchema.parse(
+      await this.request(
+        `${this.#sandboxes(owner)}/versions/${encodeURIComponent(versionId)}/files/content?${new URLSearchParams({ path }).toString()}`,
+        { signal },
+      ),
+    );
   }
   /** What replaying the version would use, or why it cannot be replayed. */
   async sandboxReplay(owner: string, versionId: string, signal?: AbortSignal) {

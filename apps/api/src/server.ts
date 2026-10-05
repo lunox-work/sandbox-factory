@@ -394,6 +394,8 @@ const sandbox =
         objects: analysis.objects,
         proposals: bountyProposals,
         specs: bountySpecs,
+        bounties,
+        repos: githubRepos,
         ensureWorker: () => workerLauncher.ensureWorker(),
         maxActive: env.MAX_ACTIVE_RUNS_PER_ORG,
         onLaunchError: () => console.error("analysis_worker_launch_failed"),

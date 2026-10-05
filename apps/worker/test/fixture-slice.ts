@@ -152,6 +152,7 @@ export function slice(): Promise<SliceOutput> {
         getVersion: async () => null,
         getTask: async () => null,
         recordBuildOutput: async () => false,
+        recordStarterOutput: async () => false,
       },
       signal: new AbortController().signal,
       log: () => {},

@@ -19,7 +19,7 @@ function proposal(
     issueKey: "APP-1",
     title: "Title",
     specHash: "a".repeat(64),
-    specHashVersion: 1,
+    specHashVersion: 2,
     rateCard: {
       currency: "USD",
       xsMinor: 1,
@@ -44,6 +44,8 @@ function proposal(
     currency: "USD",
     status: "proposed",
     revision: 1,
+    version: 0,
+    versionedAt: null,
     specRevision: null,
     step: null,
     decidedAt: null,
@@ -60,17 +62,13 @@ function bounty(overrides: Partial<StoredBounty> = {}): StoredBounty {
   return {
     id: "bty_1",
     organizationId: "org_1",
-    number: 1,
-    key: "APP-1",
     title: "Title",
     description: "Spec",
-    issueType: "Story",
-    priority: null,
-    labels: [],
     components: [],
     inputTruncated: false,
     origin: "jira",
     repoId: null,
+    stack: [],
     createdBy: null,
     revision: 1,
     jira: {
@@ -93,10 +91,7 @@ const jiraSpec = {
   key: "APP-1",
   summary: "Title",
   descriptionText: "Spec",
-  issueType: "Story",
   components: ["Mailer"],
-  labels: [],
-  priority: null,
   inputTruncated: false,
   pricingSpecHash: "a".repeat(64),
 };
@@ -176,7 +171,7 @@ test("freshness compares all versioned sizing inputs", async () => {
       await freshProposal(
         current.value,
         "org_1",
-        proposal({ specHashVersion: 2 }),
+        proposal({ specHashVersion: 1 }),
       )
     ).code,
     "hash_version",
@@ -185,7 +180,7 @@ test("freshness compares all versioned sizing inputs", async () => {
 
 test("a bounty gone from Jira keeps its text and is reviewed against it", async () => {
   const missing = options(new JiraApiError(404, "missing"));
-  const stored = await bountySpecHash("Title", "Spec", "Story");
+  const stored = await bountySpecHash("Title", "Spec");
   const fresh = await freshProposal(
     missing.value,
     "org_1",
@@ -201,7 +196,7 @@ test("a bounty gone from Jira keeps its text and is reviewed against it", async 
       await freshProposal(
         options(new JiraApiError(404, "missing")).value,
         "org_1",
-        proposal({ specHash: stored, specHashVersion: 2 }),
+        proposal({ specHash: stored, specHashVersion: 1 }),
       )
     ).code,
     "hash_version",
@@ -221,12 +216,11 @@ test("a bounty gone from Jira keeps its text and is reviewed against it", async 
 
 test("a bounty written here is reviewed as stored, with no Jira", async () => {
   const written = bounty({
-    key: "B-4",
     origin: "manual",
     jira: null,
     description: "New spec",
   });
-  const priced = await bountySpecHash("Title", "Spec", "Story");
+  const priced = await bountySpecHash("Title", "Spec");
   const state = options(new Error("never read"), written, "none");
   const fresh = await freshProposal(
     state.value,
@@ -235,7 +229,9 @@ test("a bounty written here is reviewed as stored, with no Jira", async () => {
   );
   // Its text changed after it was priced.
   assert.equal(fresh.freshness, "stale");
-  assert.equal(fresh.liveKey, "B-4");
+  // No Jira key to name it by.
+  assert.equal(fresh.liveKey, undefined);
+  assert.equal(fresh.liveSpec?.key, null);
   assert.equal(fresh.liveSpec?.url, null);
   assert.equal(fresh.liveSpec?.descriptionText, "New spec");
   assert.deepEqual(state.refreshed, []);
@@ -243,7 +239,7 @@ test("a bounty written here is reviewed as stored, with no Jira", async () => {
   const truncated = await freshProposal(
     options(null, { ...written, inputTruncated: true }, "none").value,
     "org_1",
-    proposal({ specHash: await bountySpecHash("Title", "New spec", "Story") }),
+    proposal({ specHash: await bountySpecHash("Title", "New spec") }),
   );
   assert.equal(truncated.freshness, "current");
   assert.equal(truncated.code, "spec_too_large");

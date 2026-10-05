@@ -1,16 +1,18 @@
 # Private repository analysis worker
 
-Five adapters run here. Graphify analyzes an immutable repository
+Six adapters run here. Graphify analyzes an immutable repository
 snapshot with `graphifyy==0.4.18`, pinned parser packages and NetworkX 3.4.2.
 Slice reads a graphify run's graph and the same source to describe
 the files one task needs and their boundary. Sandbox build
 turns a slice and a version's private transform into a runnable project and
 checks its baseline in an evaluation job. Scope and fixtures are agent runs:
 a model reads the source to propose a slice for a bounty, and to write
-behaviour for a succeeded slice's mocked calls. Graphify, slice and the
-agents never execute repository code or install its dependencies; the build
-executes the generated project only inside the evaluation provider's job.
-Only the agents call a model. DeepWiki Open and Archify remain candidates
+behaviour for a succeeded slice's mocked calls. Starter is the one run with
+no repository: a model writes a generated version's project from the
+bounty's own text, which is then built and checked like a slice's. Graphify,
+slice and the agents never execute repository code or install its
+dependencies; the build and the starter execute the generated project only
+inside the evaluation provider's job. Only the agents call a model. DeepWiki Open and Archify remain candidates
 for later adapters.
 
 ## Run locally
@@ -144,7 +146,11 @@ public or private; harness, public-test, private-test and public-project
 hashes; the toolchain and its digest; the evaluator environment; import
 rewrites, renames, dependencies, blockers and the baseline report),
 `baseline.json`, `project/<path>` for every public file including the
-lockfile, and `private/<path>` for hidden tests. `ready` is true only with
+lockfile, `private/<path>` for hidden tests, and `private/pseudonym.lunox`
+(kind `pseudonyms`), the alias rules the public files were renamed by. The
+public sandbox is `project/`; the private sandbox is the same files read
+back through the inverse of that table, so a build makes both without
+storing the project twice. `ready` is true only with
 no blockers and a passing baseline. Equal inputs and a fixed clock give
 byte-identical manifests, provided the registry resolves the trusted lock
 the same way; the lockfile is recorded so a difference is visible.
@@ -247,3 +253,42 @@ Dependencies added here: the worker uses the existing DB/GitHub/shared/core
 packages, Zod for boot configuration and `typescript-compiler` (an npm alias
 pinned to TypeScript 5.9.3) for its compiler API. The API adds the ECS SDK for
 batch launch. The web app uses the existing typed client package.
+
+### Starter
+
+A `sandbox_starter` run names a generated version (`params.sandboxVersionId`),
+the approved task's hash and the stack it follows; the API queues it from
+`POST /api/v1/orgs/:orgId/sandboxes/:id/starter`. It reads no snapshot, so no
+source is fetched and the agent has no repository tools. It needs both an
+agent model (`agent_unavailable` otherwise) and an evaluation provider
+(`evaluation_failed`), and fails `tool_failed` when the version is no longer
+the draft of that task.
+
+The agent writes a starter from the bounty's title, description, stack and,
+when its proposal has one, Gherkin spec: source under `src/`, public tests
+that pass on it, hidden tests marked with their expected baseline, exact
+package versions, the walkthrough and its pseudonyms. The starter is
+written in the bounty's own vocabulary, and the pseudonyms (`aliases`,
+identifier and text rules only, at least one), set with `set_pseudonyms`
+and applied by every other starter tool, rename it as a slice's alias table
+does: applied with the inverse proof to the source, both suites, the
+walkthrough and the spec, refusing a rule that renames nothing. The project
+is generated from the renamed starter. `set_pseudonyms` is the one tool sent
+without a strict schema: with the table in them, the three starter tools'
+strict schemas compile past the Messages API's grammar limit, so its input
+is checked when it runs. `check_starter` type-checks the project in memory
+as `npm run build` would, and `run_starter` runs its baseline in a fresh
+evaluation job and shows the agent each step and the output of the failing
+ones, since nothing in a starter is client code. `submit_starter` runs it
+once more and is accepted when the baseline passes; once the runs are
+spent, the last answer is kept as a build that is
+not ready. Logs stay fixed lines.
+
+Outputs: `starter-set.json` (the answer as written, its pseudonyms, the
+stack and the usage; its hash is the version's `starterSha256`) and the same `build-manifest.json`,
+`baseline.json`, `project/` and `private/` files a build writes, the
+manifest naming the starter where a build names its slice. After the run
+commits, the starter, its pseudonyms as the version's `aliasRules`, its
+hidden tests renamed as the build ran them, scope and transform, and a ready
+build's harness and toolchain are recorded on the draft while it still
+points at the run.

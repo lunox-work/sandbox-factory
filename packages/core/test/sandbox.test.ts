@@ -15,6 +15,7 @@ import {
   freezeReadiness,
   generateProject,
   invertAliasRules,
+  renameFile,
   OPERATION_POLICY,
   packageNameOf,
   relativeSpecifier,
@@ -121,6 +122,31 @@ test("aliases apply to whole identifiers only, rename paths, and prove the inver
       ["d", "c"],
       ["b", "a"],
     ],
+  );
+});
+
+test("a public file reads back in its private names through the inverse table", () => {
+  const rules = [
+    rule("AcmeClient", "WidgetClient"),
+    rule("Acme", "the vendor", "text", ["src"]),
+  ];
+  const private_ = {
+    path: "src/app.ts",
+    text: "// Acme's client\nnew AcmeClient();\n",
+  };
+  const applied = applyAliases([private_], rules);
+  assert.equal(applied.ok, true);
+  const stored = applied.files[0];
+  assert.ok(stored !== undefined);
+  assert.equal(stored.text, "// the vendor's client\nnew WidgetClient();\n");
+  assert.deepEqual(renameFile(stored, invertAliasRules(rules)), private_);
+  // A scoped rule leaves a file outside its scope alone.
+  assert.equal(
+    renameFile(
+      { path: "README.md", text: "the vendor" },
+      invertAliasRules(rules),
+    ).text,
+    "the vendor",
   );
 });
 
@@ -429,9 +455,12 @@ test("scope resolution classifies every dependency and blocks what it cannot sat
 
 const source: VersionSourceRecord = {
   sandboxVersionId: "sbv_1",
+  origin: "slice",
   sourceSnapshotId: "rsn_1",
   sliceRunId: "arn_slice",
   manifestSha256: "m".repeat(64),
+  starterRunId: null,
+  starterSha256: null,
   transformConfigSha256: "t".repeat(64),
   approvedTaskSha256: "a".repeat(64),
   aliasRules: [rule("Acme", "Widget")],
@@ -507,6 +536,23 @@ test("freeze needs matching evidence for every gate, and replay never substitute
     assert.equal(result.ok, false);
     if (!result.ok) assert.equal(result.reason, "source_unavailable");
   }
+  // A generated version has no source at all to replay.
+  const generated = replayOf(
+    {
+      ...source,
+      origin: "starter",
+      sourceSnapshotId: null,
+      sliceRunId: null,
+      manifestSha256: null,
+      contractSha256: null,
+      starterRunId: "arn_starter",
+      starterSha256: "s".repeat(64),
+    },
+    { commitSha: "a".repeat(40), repoGone: false },
+    { status: "succeeded", artifactsPresent: true },
+  );
+  assert.equal(generated.ok, false);
+  if (!generated.ok) assert.match(generated.detail, /generated, not sliced/);
 });
 
 test("an approved task snapshot is ready only with a usable spec and an approved price", () => {

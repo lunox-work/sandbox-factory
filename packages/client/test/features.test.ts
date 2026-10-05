@@ -77,6 +77,12 @@ test("bounty transport retains conflicts and cancels without dispatch", async ()
   );
   assert.match(paths[0] ?? "", /owner%20%2F.*limit=50.*cursor=page/);
   await client.bounties("owner");
+  assert.deepEqual(await client.myBounties({ cursor: "page /" }), {
+    bounties: [],
+    nextCursor: null,
+  });
+  assert.match(paths[2] ?? "", /^\/api\/v1\/me\/bounties\?cursor=page/);
+  await client.myBounties();
   await assert.rejects(client.bounty("owner", "1"));
   await client.deleteBounty("owner", "1");
   const malformed = new BountyRunClient(options);
@@ -95,10 +101,8 @@ test("bounty transport retains conflicts and cancels without dispatch", async ()
       conflicts.createBounty("owner", {
         title: "Task",
         description: "",
-        issueType: "Task",
-        priority: null,
-        labels: [],
         repoId: null,
+        stack: [],
       }),
     () =>
       conflicts.updateBounty("owner", "1", {
@@ -119,7 +123,7 @@ test("bounty transport retains conflicts and cancels without dispatch", async ()
     client.bounties("owner", {}, AbortSignal.abort(new Error("stopped"))),
     /stopped/,
   );
-  assert.equal(paths.length, 4);
+  assert.equal(paths.length, 6);
 });
 
 test("pricing detail and revision envelopes fail explicitly when malformed", async () => {
