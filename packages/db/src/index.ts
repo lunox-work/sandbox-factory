@@ -134,6 +134,7 @@ export type {
   GithubRepoRole,
   GithubRepoStore,
   GithubRepoSummary,
+  DetectedStack,
   RegisterGithubRepoInput,
 } from "./github-repos.js";
 export { createRepoSnapshotStore } from "./repo-snapshots.js";
@@ -198,13 +199,17 @@ export type {
   CreateVersionResult,
   LinkSourceResult,
   NewSandboxVersion,
+  NewSlicedSource,
+  NewStarterSource,
   ReplayContext,
   SandboxStore,
   SandboxVersionPatch,
+  StarterOutput,
   StoredSandbox,
   StoredSandboxVersion,
   StoredVersionSource,
   StoredVersionWithSource,
+  PublishVersionResult,
   UpdateVersionResult,
 } from "./sandboxes.js";
 export { createSubmissionStore } from "./submissions.js";

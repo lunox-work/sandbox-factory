@@ -3,6 +3,163 @@ import type { Screen } from "./SideNav";
 export const ACCOUNT_PATH = "/account";
 export const ORGANIZATIONS_PATH = "/workspaces";
 export const NEW_ORG_PATH = "/workspaces/new";
+/** Every workspace's bounties at once, so not under any one's path. */
+export const BOUNTIES_PATH = "/bounties";
+export const NEW_BOUNTY_PATH = "/bounties/new";
+
+/**
+ * An open bounty as an address names it: the workspace it is read and changed
+ * through, and its id.
+ *
+ * Written the same wherever a bounty opens, `acme/bty_1`: after `/bounties/`
+ * for its own page, and as `?peek=` for the panel over the list. Opening the
+ * panel as a page moves the same words from the query into the path.
+ */
+export interface BountyAddress {
+  workspace: string;
+  id: string;
+}
+
+/**
+ * What followed a bounty's address while its proposal was a tab of its own,
+ * `acme/bty_1/proposal`. Still read, landing on the bounty, whose proposal is
+ * part of it now; never written.
+ */
+const LEGACY_PROPOSAL_VIEW = "proposal";
+
+function bountyAddressText({ workspace, id }: BountyAddress): string {
+  return `${encodeURIComponent(workspace)}/${encodeURIComponent(id)}`;
+}
+
+function bountyAddressFrom(parts: string[]): BountyAddress | undefined {
+  const [workspace, id, view, ...rest] = parts;
+  if (
+    workspace === undefined ||
+    workspace === "" ||
+    id === undefined ||
+    id === "" ||
+    rest.length > 0 ||
+    (view !== undefined && view !== LEGACY_PROPOSAL_VIEW)
+  ) {
+    return undefined;
+  }
+  return { workspace, id };
+}
+
+/**
+ * The bounty's own address for one written with `/proposal` after it, in the
+ * path or in `?peek=`. Undefined for any other. Either opens its page on the
+ * Bounty tab, where the proposal now is: a panel does not show it.
+ */
+function legacyProposalViewUrl(
+  path: string,
+  search: string,
+): string | undefined {
+  const parts = path.split("/");
+  if (parts.length === 5 && parts[4] === LEGACY_PROPOSAL_VIEW) {
+    const bounty = bountyForPath(path);
+    if (bounty === undefined) return undefined;
+    const params = new URLSearchParams(search);
+    params.set("tab", "bounty");
+    return `${bountyPagePath(bounty)}?${params.toString()}`;
+  }
+  const peek = new URLSearchParams(search).get("peek");
+  if (path !== BOUNTIES_PATH || peek === null) return undefined;
+  const peekParts = peek.replace(/\/+$/, "").split("/");
+  if (peekParts.length !== 3 || peekParts[2] !== LEGACY_PROPOSAL_VIEW) {
+    return undefined;
+  }
+  const bounty = bountyForSearch(search);
+  return bounty === undefined ? undefined : bountyProposalPath(bounty);
+}
+
+/** A bounty's own page, open on the tab its proposal is in. */
+export function bountyProposalPath(address: BountyAddress): string {
+  return `${bountyPagePath(address)}?tab=bounty`;
+}
+
+/** A bounty's own page. */
+export function bountyPagePath(address: BountyAddress): string {
+  return `${BOUNTIES_PATH}/${bountyAddressText(address)}`;
+}
+
+/** The bounties, with `address` open over them, or none when null. */
+export function bountiesUrl(address: BountyAddress | null): string {
+  // Built by hand: `URLSearchParams` would write the slashes as `%2F`.
+  return address === null
+    ? BOUNTIES_PATH
+    : `${BOUNTIES_PATH}?peek=${bountyAddressText(address)}`;
+}
+
+/** The bounty whose page a path is: `/bounties/:workspace/:id`. */
+export function bountyForPath(pathname: string): BountyAddress | undefined {
+  const parts = pathname.replace(/\/+$/, "").split("/");
+  if (parts[0] !== "" || parts[1] !== "bounties") return undefined;
+  try {
+    return bountyAddressFrom(parts.slice(2).map(decodeURIComponent));
+  } catch {
+    // A malformed escape names nothing.
+    return undefined;
+  }
+}
+
+/** The bounty open over the list, which `?peek=` names. */
+export function bountyForSearch(search: string): BountyAddress | undefined {
+  const peek = new URLSearchParams(search).get("peek");
+  return peek === null
+    ? undefined
+    : bountyAddressFrom(peek.replace(/\/+$/, "").split("/"));
+}
+
+/**
+ * A sandbox version's files, as their own page: `/sandboxes/acme/sbv_1`.
+ * Opened in a tab of its own, beside the bounty, so it stands outside the
+ * app's shell. `?path=` names the file open in it.
+ */
+export const SANDBOX_FILES_PATH = "/sandboxes";
+
+export interface SandboxFilesAddress {
+  workspace: string;
+  versionId: string;
+}
+
+/** The page for a version's files, open on `path` when one is named. */
+export function sandboxFilesPath(
+  { workspace, versionId }: SandboxFilesAddress,
+  path?: string,
+): string {
+  const page = `${SANDBOX_FILES_PATH}/${encodeURIComponent(workspace)}/${encodeURIComponent(versionId)}`;
+  return path === undefined
+    ? page
+    : `${page}?${new URLSearchParams({ path }).toString()}`;
+}
+
+/** The version whose files a path is: `/sandboxes/:workspace/:versionId`. */
+export function sandboxFilesForPath(
+  pathname: string,
+): SandboxFilesAddress | undefined {
+  const parts = pathname.replace(/\/+$/, "").split("/");
+  const [root, section, workspace, versionId, ...rest] = parts;
+  if (
+    root !== "" ||
+    section !== "sandboxes" ||
+    workspace === undefined ||
+    workspace === "" ||
+    versionId === undefined ||
+    versionId === "" ||
+    rest.length > 0
+  ) {
+    return undefined;
+  }
+  try {
+    return {
+      workspace: decodeURIComponent(workspace),
+      versionId: decodeURIComponent(versionId),
+    };
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * The paths these pages had before organizations were called workspaces.
@@ -76,20 +233,61 @@ export function canonicalUrl(
   }
   const bountiesSlug = legacyBountiesSlug(path);
   if (bountiesSlug !== undefined) {
-    // The open bounty rode on `?ticket=`; it opens under its new name.
-    const params = new URLSearchParams(search);
-    const open = params.get("ticket");
-    params.delete("ticket");
-    if (open !== null) params.set("bounty", open);
-    const query = params.toString();
-    return `/o/${bountiesSlug}/bounties${query === "" ? "" : `?${query}`}`;
+    return legacyBountiesUrl(search, bountiesSlug) ?? BOUNTIES_PATH;
   }
+  const proposalView = legacyProposalViewUrl(path, search);
+  if (proposalView !== undefined) return proposalView;
+  if (path === BOUNTIES_PATH) return legacyBountiesUrl(search, undefined);
   return undefined;
 }
 
+/** The query the bounties page read before `?peek=`; see `legacyBountiesUrl`. */
+const LEGACY_BOUNTY_PARAMS = [
+  "bounty",
+  "ticket",
+  "workspace",
+  "proposal",
+  "tab",
+];
+
 /**
- * `/o/:slug/tickets`, where bounties lived while they were called tickets.
- * Still read, so an old link lands on the same page; never written.
+ * The bounties page for a query from before `?peek=`: the open bounty as
+ * `?bounty=` (`?ticket=` while bounties were called tickets), the workspace it
+ * is read through as `?workspace=` or the old path's, and its proposal as
+ * `?proposal=`, which opens the bounty's page on it now. `?tab=` chose
+ * between lists the page no longer has.
+ *
+ * A proposal named with no bounty, from when proposals had a list of their
+ * own, keeps its workspace and stays in the query: the page reads it for the
+ * bounty it belongs to. Anything naming no workspace names nothing that can
+ * be opened, and is dropped. Undefined when there is nothing to rewrite.
+ */
+function legacyBountiesUrl(
+  search: string,
+  slug: string | undefined,
+): string | undefined {
+  const params = new URLSearchParams(search);
+  if (!LEGACY_BOUNTY_PARAMS.some((name) => params.has(name))) return undefined;
+  const id = params.get("bounty") ?? params.get("ticket");
+  const workspace = params.get("workspace") ?? slug ?? null;
+  const proposal = params.get("proposal");
+  const url =
+    workspace !== null && id !== null
+      ? proposal !== null
+        ? bountyProposalPath({ workspace, id })
+        : bountiesUrl({ workspace, id })
+      : workspace !== null && proposal !== null
+        ? `${BOUNTIES_PATH}?${new URLSearchParams({ workspace, proposal }).toString()}`
+        : BOUNTIES_PATH;
+  // Already as it should be: rewriting it would be a no-op on every load.
+  return url === BOUNTIES_PATH + search ? undefined : url;
+}
+
+/**
+ * `/o/:slug/bounties`, where one workspace's bounties lived before the page
+ * showed every workspace's, and `/o/:slug/tickets` before that, while they
+ * were called tickets. Still read, so an old link lands on the same bounty;
+ * never written.
  */
 function legacyBountiesSlug(path: string): string | undefined {
   const parts = path.split("/");
@@ -97,7 +295,7 @@ function legacyBountiesSlug(path: string): string | undefined {
     parts[1] === "o" &&
     parts[2] !== undefined &&
     parts[2] !== "" &&
-    parts[3] === "tickets"
+    (parts[3] === "bounties" || parts[3] === "tickets")
     ? parts[2]
     : undefined;
 }
@@ -133,18 +331,6 @@ export function boardForPath(pathname: string): string | undefined {
     : undefined;
 }
 
-/** `/o/:slug/bounties`: the organization's bounties and proposals. */
-function isBountiesPath(pathname: string): boolean {
-  const parts = pathname.replace(/\/+$/, "").split("/");
-  return (
-    parts.length === 4 &&
-    parts[1] === "o" &&
-    parts[2] !== undefined &&
-    parts[2] !== "" &&
-    parts[3] === "bounties"
-  );
-}
-
 export function screenForPath(pathname: string): Screen {
   const path = pathname.replace(/\/+$/, "");
   if (path === ACCOUNT_PATH) return "account";
@@ -154,12 +340,17 @@ export function screenForPath(pathname: string): Screen {
   if (path === ORGANIZATIONS_PATH || path === LEGACY_ORGANIZATIONS_PATH) {
     return "organizations";
   }
+  if (path === NEW_BOUNTY_PATH) return "new-bounty";
+  if (bountyForPath(path) !== undefined) return "bounty";
+  // The old per-workspace addresses show the page while `canonicalUrl`
+  // rewrites them.
+  if (path === BOUNTIES_PATH || legacyBountiesSlug(path) !== undefined) {
+    return "bounties";
+  }
   if (slugForPath(pathname) !== undefined) {
     if (connectionForPath(pathname) !== undefined) {
       return "org-jira-board";
     }
-    if (isBountiesPath(pathname) || legacyBountiesSlug(path) !== undefined)
-      return "org-bounties";
     // `/o/:slug/jira` and `/o/:slug/jira/:site` included: both now live in
     // the Jira tab of settings, and `canonicalUrl` rewrites the address.
     return "org-settings";
@@ -188,8 +379,14 @@ export function pathForScreen(
         : connectionTab === undefined || connectionTab === "home"
           ? `/o/${slug}/settings`
           : `/o/${slug}/settings?connection=${connectionTab}`;
-    case "org-bounties":
-      return slug === undefined ? ORGANIZATIONS_PATH : `/o/${slug}/bounties`;
+    case "bounties":
+      return BOUNTIES_PATH;
+    // A bounty's page is addressed by `bountyPagePath`; with none named here,
+    // the list it is one of.
+    case "bounty":
+      return BOUNTIES_PATH;
+    case "new-bounty":
+      return NEW_BOUNTY_PATH;
     case "org-jira-board":
       return slug === undefined ||
         connectionId === undefined ||

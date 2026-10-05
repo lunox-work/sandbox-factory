@@ -21,6 +21,7 @@ import { createGraphifyAdapter } from "./tools/graphify.js";
 import { createSandboxBuildAdapter } from "./tools/sandbox-build.js";
 import { createScopeAdapter } from "./tools/scope.js";
 import { createSliceAdapter } from "./tools/slice.js";
+import { createStarterAdapter } from "./tools/starter.js";
 
 const env = parseWorkerEnv();
 const connection = createConnection({ url: env.DATABASE_URL, max: 3 });
@@ -97,7 +98,9 @@ try {
                 ? createScopeAdapter(agent)
                 : run.tool === "fixtures"
                   ? createFixturesAdapter(agent)
-                  : createGraphifyAdapter(),
+                  : run.tool === "sandbox_starter"
+                    ? createStarterAdapter({ agent, provider: evaluation })
+                    : createGraphifyAdapter(),
         shutdown: stopCurrent.signal,
         source: {
           maxBytes: env.MAX_TARBALL_BYTES,

@@ -40,8 +40,11 @@ export interface ReviseInput<R extends ExpandRequest | AnswerRequest> {
   readonly request: R;
 }
 
-/** Recorded on every revision a reviewer's request made. */
-export const REVISE_SPEC_PROMPT_VERSION = "revise-v1";
+/**
+ * Recorded on every revision a reviewer's request made. `revise-v2` is shown
+ * the bounty without an issue type or labels.
+ */
+export const REVISE_SPEC_PROMPT_VERSION = "revise-v2";
 
 export const REVISE_SPEC_SYSTEM_PROMPT = `You revise the behaviour specification of one Jira ticket: Gherkin scenarios that a reviewer reads before the work is priced, and that someone later builds against. A reviewer has read the current spec and asked for a change.
 

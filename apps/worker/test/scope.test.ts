@@ -132,6 +132,7 @@ async function inputs(
     getTask: async (id, revision) =>
       id === "bpr_1" && revision === 2 ? task : null,
     recordBuildOutput: async () => false,
+    recordStarterOutput: async () => false,
     ...overrides,
   };
 }

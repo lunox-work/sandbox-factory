@@ -14,7 +14,10 @@ import {
   scopeSubmissionSchema,
   sliceBoundarySummarySchema,
   sliceParamsSchema,
+  starterSetSchema,
+  starterSubmissionSchema,
 } from "../src/analysis.js";
+import { generateStarterResponseSchema } from "../src/sandbox.js";
 
 test("analysis defaults are canonical and tool parameters are bounded", () => {
   assert.deepEqual(enqueueAnalysisSchema.parse({ tool: "graphify" }), {
@@ -354,6 +357,81 @@ test("fixture submissions name a call shape and carry a scenario", () => {
     }).success,
     true,
   );
+});
+
+test("a starter run has no snapshot, and its submission keeps each part in its place", () => {
+  const run = analysisRunDtoSchema.parse({
+    ...runBase,
+    snapshotId: null,
+    repoId: null,
+    tool: "sandbox_starter",
+    params: {
+      agent: "starter",
+      sandboxVersionId: "sbv_1",
+      approvedTaskSha256: "a".repeat(64),
+      stack: ["TypeScript"],
+    },
+  });
+  assert.equal(run.tool, "sandbox_starter");
+  assert.equal(run.params.deadlineMinutes, 60);
+  assert.equal(
+    analysisRunDtoSchema.safeParse({
+      ...runBase,
+      tool: "sandbox_starter",
+      params: { agent: "starter", sandboxVersionId: "sbv_1", stack: [] },
+    }).success,
+    false,
+  );
+  const starter = {
+    files: [{ path: "src/a.ts", text: "export {};" }],
+    publicTests: [{ path: "tests/public/a.test.ts", text: "" }],
+    hiddenTests: [
+      { path: "tests/private/a.test.ts", text: "", expectedBaseline: "fail" },
+    ],
+    packages: [{ name: "zod", version: "3.25.76" }],
+    scenario: "console.log(1);",
+    summary: "A starter.",
+    aliases: [{ before: "AcmeCart", after: "Cart", kind: "identifier" }],
+  };
+  assert.equal(starterSubmissionSchema.safeParse(starter).success, true);
+  // A rule's scope defaults to every file.
+  assert.deepEqual(
+    starterSubmissionSchema.parse(starter).aliases[0]?.paths,
+    [],
+  );
+  for (const bad of [
+    { ...starter, files: [] },
+    { ...starter, files: [{ path: "lib/a.ts", text: "" }] },
+    { ...starter, files: [{ path: "src/../a.ts", text: "" }] },
+    { ...starter, publicTests: [{ path: "src/a.test.ts", text: "" }] },
+    { ...starter, hiddenTests: [] },
+    {
+      ...starter,
+      hiddenTests: [{ path: "tests/private/a.test.ts", text: "" }],
+    },
+    { ...starter, scenario: "" },
+    { ...starter, extra: true },
+    // Every starter has a name table, which renames names, not paths.
+    { ...starter, aliases: [] },
+    {
+      ...starter,
+      aliases: [{ before: "src/a.ts", after: "src/b.ts", kind: "path" }],
+    },
+  ])
+    assert.equal(starterSubmissionSchema.safeParse(bad).success, false);
+  assert.equal(
+    starterSetSchema.safeParse({
+      ...starter,
+      schemaVersion: 2,
+      toolVersion: "sandbox_starter@2",
+      sandboxVersionId: "sbv_1",
+      approvedTaskSha256: "a".repeat(64),
+      stack: [],
+      usage,
+    }).success,
+    true,
+  );
+  assert.equal(generateStarterResponseSchema.safeParse({ run }).success, false);
 });
 
 test("a repository's proposals name their spec revision and board", () => {

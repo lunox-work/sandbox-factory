@@ -32,9 +32,7 @@ import { sizeBountyTool } from "../src/sizing/tools/size-bounty.js";
 const bounty = {
   summary: "Add CSV export",
   descriptionText: "Export the filtered table.",
-  issueType: "Story",
   components: ["Reports"],
-  labels: ["export"],
 };
 
 function scenario(overrides: Record<string, unknown> = {}) {
@@ -158,17 +156,16 @@ test("a refinement's own message is used, and an empty error still reads", () =>
 
 test("the size tool keeps its name, prompt version and request shape", () => {
   assert.equal(sizeBountyTool.name, "size_bounty");
-  assert.equal(sizeBountyTool.promptVersion, "jira-size-v2");
+  assert.equal(sizeBountyTool.promptVersion, "jira-size-v3");
   assert.equal(sizeBountyTool.maxTokens, 1_024);
-  // Only the three fields a size is made from: not the components, which
+  // Only the two fields a size is made from: not the components, which
   // the size prompt was never evaluated with.
   assert.equal(
     sizeBountyTool.render({
       summary: "Add CSV export",
       descriptionText: "Export the filtered table.",
-      issueType: "Story",
     }),
-    'Ticket data:\n{"summary":"Add CSV export","descriptionText":"Export the filtered table.","issueType":"Story"}',
+    'Ticket data:\n{"summary":"Add CSV export","descriptionText":"Export the filtered table."}',
   );
 });
 
@@ -226,7 +223,12 @@ test("a size result that is wrong says which field", () => {
 test("the draft tool's prompt names every kind and its own limits", () => {
   assert.equal(draftSpecTool.name, "draft_spec");
   assert.equal(draftSpecTool.promptVersion, DRAFT_SPEC_PROMPT_VERSION);
-  assert.equal(draftSpecTool.promptVersion, "draft-v3");
+  assert.equal(draftSpecTool.promptVersion, "draft-v4");
+  // A bounty has no issue type or labels to show.
+  assert.match(
+    draftSpecTool.system,
+    /its summary, description and components\./,
+  );
   for (const id of [...SCENARIO_KINDS, ...SCENARIO_WEIGHTS]) {
     assert.ok(draftSpecTool.system.includes(`- ${id}: `), id);
   }
@@ -248,7 +250,7 @@ test("the draft tool's prompt names every kind and its own limits", () => {
   assert.ok(draftSpecTool.attemptTimeoutMs > sizeBountyTool.attemptTimeoutMs);
 });
 
-test("the draft is asked for with the ticket's components and labels", () => {
+test("the draft is asked for with the ticket's components", () => {
   assert.equal(
     draftSpecTool.render(bounty),
     `Ticket data:\n${JSON.stringify(bounty)}`,

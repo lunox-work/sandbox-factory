@@ -1,8 +1,10 @@
 /**
  * The organization's bounties: written here, or imported from Jira by a run.
  *
- * Every route sits behind the membership guard and takes the owner from the
- * path. Any member may read, write and edit a bounty, which costs nothing;
+ * Every route but one sits behind the membership guard and takes the owner
+ * from the path; the exception, `GET /api/v1/me/bounties`, lists across the
+ * caller's own memberships (see `mountCallerBountyRoutes`). Any member may
+ * read, write and edit a bounty, which costs nothing;
  * proposing one asks a model and is an owner's or admin's
  * (`POST .../bounties/:id/propose`, with the other bounty routes), and so is
  * deleting one.
@@ -25,7 +27,7 @@ import {
   type BountyProposalSummaryDto,
   type BountySummaryDto,
 } from "@sandbox-factory/shared";
-import type { Hono } from "hono";
+import type { Context, Hono } from "hono";
 
 import { isAtLeastAdmin } from "../access.js";
 import { boundedLimit, rowCursor } from "../paging.js";
@@ -51,23 +53,7 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
   /** Newest first, a page at a time, each with its live proposal. */
   app.get(base, async (c) => {
     const { organizationId } = c.get("member");
-    const limit = boundedLimit(c.req.query("limit"));
-    const cursor = rowCursor(c.req.query("cursor"));
-    if (cursor === null) return c.json({ error: "Invalid cursor." }, 400);
-    const bounties = await options.bounties.list(organizationId, {
-      limit,
-      ...(cursor === undefined ? {} : { cursor }),
-    });
-    const last = bounties.at(-1);
-    return c.json(
-      bountyListResponseSchema.parse({
-        bounties: bounties.map(summaryDto),
-        nextCursor:
-          bounties.length === limit && last !== undefined
-            ? `${last.createdAt}|${last.id}`
-            : null,
-      }),
-    );
+    return listPage(c, (page) => options.bounties.list(organizationId, page));
   });
 
   app.post(base, async (c) => {
@@ -108,8 +94,8 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
 
   /**
    * A change, against the revision the editor saw. A bounty still following
-   * its Jira issue takes its text from Jira, so only its repository can be
-   * set here; its title and description are changed in Jira.
+   * its Jira issue takes its text from Jira, so only its repository and
+   * stack can be set here; its title and description are changed in Jira.
    */
   app.patch(`${base}/:id`, async (c) => {
     const { organizationId } = c.get("member");
@@ -193,6 +179,62 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
   });
 }
 
+/**
+ * The caller's bounties across every organization they belong to, for the
+ * one Bounties page that shows all of their work.
+ *
+ * Outside the membership guard, since no one organization is named: the
+ * organizations are the caller's own memberships, read here, and nothing in
+ * the request can add to them. Each bounty carries its organization's id,
+ * and everything done to one after it is listed goes through that
+ * organization's own routes.
+ */
+export function mountCallerBountyRoutes<Env extends BountyAppEnv>(
+  app: Hono<Env>,
+  options: {
+    readonly bounties: Pick<BountyStore, "listAcross">;
+    /** The ids of the organizations the user is a member of. */
+    readonly organizationsOf: (userId: string) => Promise<readonly string[]>;
+  },
+): void {
+  app.get("/api/v1/me/bounties", async (c) => {
+    const organizationIds = await options.organizationsOf(c.get("user").id);
+    return listPage(c, (page) =>
+      options.bounties.listAcross(organizationIds, page),
+    );
+  });
+}
+
+/**
+ * One page of a newest-first bounty list, read by `read` from the query's
+ * `limit` and `cursor`, and the cursor for the page after it.
+ */
+async function listPage(
+  c: Context,
+  read: (page: {
+    limit: number;
+    cursor?: { createdAt: string; id: string };
+  }) => Promise<ListedBounty[]>,
+): Promise<Response> {
+  const limit = boundedLimit(c.req.query("limit"));
+  const cursor = rowCursor(c.req.query("cursor"));
+  if (cursor === null) return c.json({ error: "Invalid cursor." }, 400);
+  const bounties = await read({
+    limit,
+    ...(cursor === undefined ? {} : { cursor }),
+  });
+  const last = bounties.at(-1);
+  return c.json(
+    bountyListResponseSchema.parse({
+      bounties: bounties.map(summaryDto),
+      nextCursor:
+        bounties.length === limit && last !== undefined
+          ? `${last.createdAt}|${last.id}`
+          : null,
+    }),
+  );
+}
+
 async function detail(
   options: BountyRouteOptions,
   bounty: StoredBounty,
@@ -240,14 +282,10 @@ function summaryDto(bounty: ListedBounty): BountySummaryDto {
   return {
     id: bounty.id,
     organizationId: bounty.organizationId,
-    number: bounty.number,
-    key: bounty.key,
     title: bounty.title,
-    issueType: bounty.issueType,
-    priority: bounty.priority,
-    labels: [...bounty.labels],
     origin: bounty.origin,
     repoId: bounty.repoId,
+    stack: [...bounty.stack],
     revision: bounty.revision,
     jira: linkDto(bounty),
     proposal: bounty.proposal,

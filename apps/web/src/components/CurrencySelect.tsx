@@ -1,6 +1,6 @@
-import { Check, ChevronDown, ChevronUp } from "lucide-react";
-import { Select } from "radix-ui";
 import { useId } from "react";
+
+import { Combobox, type ComboboxOption } from "@/components/Combobox";
 
 const currenciesToAndFrom = [
   "AUD",
@@ -112,10 +112,22 @@ const currencyLabels: Record<CurrencyCode, string> = {
   ZAR: "South African Rand",
 };
 
-const currencies = currencyCodes.map((code) => ({
-  code,
-  label: currencyLabels[code],
-  logo: `https://wise.com/public-resources/assets/flags/rectangle/${code.toLowerCase()}.png`,
+/** A currency's flag, decorative: its code and name say which it is. */
+function Flag({ code, lazy = false }: { code: string; lazy?: boolean }) {
+  return (
+    <img
+      src={`https://wise.com/public-resources/assets/flags/rectangle/${code.toLowerCase()}.png`}
+      alt=""
+      className="h-4 w-6 shrink-0 rounded-xs object-cover"
+      loading={lazy ? "lazy" : undefined}
+    />
+  );
+}
+
+const currencies: ComboboxOption[] = currencyCodes.map((code) => ({
+  value: code,
+  label: `${code} — ${currencyLabels[code]}`,
+  icon: <Flag code={code} lazy />,
 }));
 
 export function CurrencySelect({
@@ -128,75 +140,22 @@ export function CurrencySelect({
   disabled: boolean;
 }) {
   const id = useId();
-  const selected = currencies.find((currency) => currency.code === value);
   return (
     <div className="grid gap-1 text-sm font-medium">
       <label htmlFor={id}>Currency</label>
-      <Select.Root
+      <Combobox
+        id={id}
+        label="Currency"
+        searchPlaceholder="Search by code or name…"
+        emptyMessage="No currency matches."
+        options={currencies}
         value={value}
         onValueChange={onValueChange}
+        // A code the list lacks is still shown as itself.
+        placeholder={value}
         disabled={disabled}
-      >
-        <Select.Trigger
-          id={id}
-          className="border-input focus-visible:border-ring focus-visible:ring-ring/50 flex h-9 w-full items-center justify-between gap-2 rounded-md border bg-transparent px-3 text-sm shadow-xs outline-none focus-visible:ring-[3px] disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          <Select.Value>
-            <span className="flex min-w-0 items-center gap-2">
-              {selected && (
-                <img
-                  src={selected.logo}
-                  alt=""
-                  className="h-4 w-6 shrink-0 rounded-xs object-cover"
-                />
-              )}
-              <span className="truncate">
-                {selected ? `${selected.code} — ${selected.label}` : value}
-              </span>
-            </span>
-          </Select.Value>
-          <Select.Icon>
-            <ChevronDown className="text-muted-foreground size-4 shrink-0" />
-          </Select.Icon>
-        </Select.Trigger>
-        <Select.Portal>
-          <Select.Content
-            position="popper"
-            sideOffset={4}
-            className="bg-popover text-popover-foreground z-50 max-h-[min(20rem,var(--radix-select-content-available-height))] w-(--radix-select-trigger-width) overflow-hidden rounded-md border shadow-md"
-          >
-            <Select.ScrollUpButton className="flex h-6 items-center justify-center">
-              <ChevronUp className="size-4" />
-            </Select.ScrollUpButton>
-            <Select.Viewport className="p-1">
-              {currencies.map((currency) => (
-                <Select.Item
-                  key={currency.code}
-                  value={currency.code}
-                  textValue={`${currency.code} ${currency.label}`}
-                  className="data-[highlighted]:bg-accent data-[highlighted]:text-accent-foreground relative flex cursor-default items-center gap-2 rounded-sm py-2 pr-8 pl-2 text-sm outline-none select-none"
-                >
-                  <img
-                    src={currency.logo}
-                    alt=""
-                    className="h-4 w-6 shrink-0 rounded-xs object-cover"
-                    loading="lazy"
-                  />
-                  <Select.ItemText>
-                    {currency.code} — {currency.label}
-                  </Select.ItemText>
-                  <Select.ItemIndicator className="absolute right-2">
-                    <Check className="size-4" />
-                  </Select.ItemIndicator>
-                </Select.Item>
-              ))}
-            </Select.Viewport>
-            <Select.ScrollDownButton className="flex h-6 items-center justify-center">
-              <ChevronDown className="size-4" />
-            </Select.ScrollDownButton>
-          </Select.Content>
-        </Select.Portal>
-      </Select.Root>
+        className="font-normal"
+      />
     </div>
   );
 }

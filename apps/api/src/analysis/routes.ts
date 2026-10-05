@@ -388,7 +388,7 @@ export function mountAnalysisRoutes(
       );
     const owner = c.req.param("orgId");
     const slice = await options.runs.get(owner, c.req.param("id"));
-    if (slice === null || slice.tool !== "slice")
+    if (slice === null || slice.tool !== "slice" || slice.snapshotId === null)
       return c.json({ error: "Not found." }, 404);
     if (slice.status !== "succeeded")
       return c.json(

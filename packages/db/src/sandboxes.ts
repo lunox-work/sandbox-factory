@@ -4,10 +4,12 @@
  * Every read joins `sandbox.organization_id`; every write is reached
  * through such a read inside one transaction. The store checks what the
  * schema cannot: the bounty and the source repository belong to the owner,
- * and the repository has `role = source`; a version's slice run succeeded
- * on a snapshot of that very repository; and private provenance stops
- * changing the moment a version is frozen. The schema holds the rest: one
- * sandbox per bounty.
+ * and the repository has `role = source`; a sliced version's slice run
+ * succeeded on a snapshot of that very repository, and a generated
+ * version's starter run is the owner's and was queued for it; and private
+ * provenance stops changing the moment a version is frozen. The schema
+ * holds the rest: one sandbox per bounty, and each version sliced or
+ * generated, never both.
  */
 
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
@@ -71,7 +73,8 @@ export interface StoredSandboxVersion {
   readonly createdAt: string;
 }
 export interface StoredVersionSource extends VersionSourceRecord {
-  readonly sourceCommitSha: string;
+  /** The sliced commit; null for a generated version. */
+  readonly sourceCommitSha: string | null;
   readonly approvedTask: StoredApprovedTaskSnapshot;
   readonly dependencyChoices: Readonly<Record<string, DependencyChoice>>;
   readonly acceptanceTests: readonly AcceptanceTest[];
@@ -80,27 +83,44 @@ export interface StoredVersionSource extends VersionSourceRecord {
   readonly createdAt: string;
   readonly updatedAt: string;
 }
+/** What every new version records, however it was made. */
+interface NewVersionTransform {
+  readonly transformConfigSha256: string;
+  readonly approvedTaskSha256: string;
+  /** Always the current version: a new version is never frozen as an old one. */
+  readonly approvedTask: ApprovedTaskSnapshot;
+  readonly aliasRules: readonly AliasRule[];
+  readonly dependencyChoices: Readonly<Record<string, DependencyChoice>>;
+  readonly acceptanceTests: readonly AcceptanceTest[];
+  readonly fixtures?: VersionFixtures | null;
+  readonly scope: ScopeRecord;
+}
+/** A version sliced from the sandbox's repository. */
+export interface NewSlicedSource extends NewVersionTransform {
+  readonly origin?: "slice";
+  readonly sourceSnapshotId: string;
+  readonly sliceRunId: string;
+  readonly manifestSha256: string;
+  readonly contractSha256: string;
+}
+/**
+ * A version generated without one. Its starter run is queued first, naming
+ * the version's id, so the version is created already pointing at it; the
+ * run is its build too.
+ */
+export interface NewStarterSource extends NewVersionTransform {
+  readonly origin: "starter";
+  readonly starterRunId: string;
+}
 export interface NewSandboxVersion {
+  /** Given when a run queued before the version must already name it. */
+  readonly id?: string;
   readonly title: string;
   readonly specSummary: string;
   readonly complexity: string;
   readonly tags: readonly string[];
   readonly testSummary?: readonly { label: string; count: number }[];
-  readonly source: {
-    readonly sourceSnapshotId: string;
-    readonly sliceRunId: string;
-    readonly manifestSha256: string;
-    readonly contractSha256: string;
-    readonly transformConfigSha256: string;
-    readonly approvedTaskSha256: string;
-    /** Always the current version: a new version is never frozen as an old one. */
-    readonly approvedTask: ApprovedTaskSnapshot;
-    readonly aliasRules: readonly AliasRule[];
-    readonly dependencyChoices: Readonly<Record<string, DependencyChoice>>;
-    readonly acceptanceTests: readonly AcceptanceTest[];
-    readonly fixtures?: VersionFixtures | null;
-    readonly scope: ScopeRecord;
-  };
+  readonly source: NewSlicedSource | NewStarterSource;
 }
 /** What may change on a draft. Everything here is private or pre-publication. */
 export interface SandboxVersionPatch {
@@ -129,6 +149,20 @@ export interface BuildOutput {
   readonly harnessSha256: string;
   readonly toolchainDigest: string;
 }
+/**
+ * What a committed starter run settles on its version: the starter it
+ * wrote, the hidden tests and scope that came with it and the transform
+ * they hash to, and, when its build was ready, what the build proved.
+ */
+export interface StarterOutput {
+  readonly starterSha256: string;
+  /** The starter's name table, which the project was renamed by. */
+  readonly aliasRules: readonly AliasRule[];
+  readonly acceptanceTests: readonly AcceptanceTest[];
+  readonly scope: ScopeRecord;
+  readonly transformConfigSha256: string;
+  readonly build: BuildOutput | null;
+}
 export type CreateSandboxResult =
   | { readonly ok: true; readonly sandbox: StoredSandbox }
   | {
@@ -154,8 +188,20 @@ export type CreateVersionResult =
   | ({ readonly ok: true } & StoredVersionWithSource)
   | {
       readonly ok: false;
-      readonly reason: "not-found" | "no_source" | "slice_mismatch";
+      readonly reason:
+        | "not-found"
+        | "no_source"
+        | "slice_mismatch"
+        | "source_linked"
+        | "starter_mismatch";
     };
+export type PublishVersionResult =
+  | {
+      readonly ok: true;
+      readonly sandbox: StoredSandbox;
+      readonly version: StoredVersionWithSource;
+    }
+  | { readonly ok: false; readonly reason: "not-found" | "not_ready" };
 export type UpdateVersionResult =
   | ({ readonly ok: true } & StoredVersionWithSource)
   | {
@@ -194,9 +240,11 @@ export interface SandboxStore {
     sourceRepoId: string,
   ): Promise<LinkSourceResult>;
   /**
-   * A new draft version from a succeeded slice run on the sandbox's own
-   * source repository. The version number is the next one; two drafts can
-   * carry different provenance without touching each other.
+   * A new draft version: from a succeeded slice run on the sandbox's own
+   * source repository, or, for a sandbox with none (`source_linked`
+   * otherwise), from the owner's starter run queued for this very version
+   * (`starter_mismatch` otherwise). The version number is the next one;
+   * two drafts can carry different provenance without touching each other.
    */
   createVersion(
     organizationId: string,
@@ -247,6 +295,40 @@ export interface SandboxStore {
     output: BuildOutput,
     now?: Date,
   ): Promise<boolean>;
+  /**
+   * Settles what a committed starter run wrote onto its draft. Applies only
+   * while the draft is not frozen and still points at that run; `false`
+   * otherwise.
+   */
+  recordStarterOutput(
+    organizationId: string,
+    versionId: string,
+    starterRunId: string,
+    output: StarterOutput,
+    now?: Date,
+  ): Promise<boolean>;
+  /**
+   * Publishes a version: records who approved it and when, freezes it, and
+   * makes it the sandbox's published version. Refused with `not_ready`
+   * unless a passing build is recorded on it. A version published before
+   * keeps its first approval and is only pointed at again.
+   */
+  publishVersion(
+    organizationId: string,
+    versionId: string,
+    actor: string,
+    now?: Date,
+  ): Promise<PublishVersionResult>;
+  /**
+   * Takes the sandbox back to a draft with no published version. Its
+   * versions stay frozen: what was published never changes. Null when the
+   * sandbox is not the organization's.
+   */
+  unpublish(
+    organizationId: string,
+    sandboxId: string,
+    now?: Date,
+  ): Promise<StoredSandbox | null>;
   /** What a replay needs to decide between the original source and `source_unavailable`. */
   replayContext(
     organizationId: string,
@@ -286,14 +368,18 @@ const toVersion = (row: SandboxVersionRow): StoredSandboxVersion => ({
 });
 const toSource = (
   row: SandboxVersionSourceRow,
-  sourceCommitSha: string,
+  sourceCommitSha: string | null,
 ): StoredVersionSource => ({
   sandboxVersionId: row.sandboxVersionId,
+  // The schema keeps a version sliced or generated, never both.
+  origin: row.sliceRunId === null ? "starter" : "slice",
   sourceSnapshotId: row.sourceSnapshotId,
   sourceCommitSha,
   sliceRunId: row.sliceRunId,
   manifestSha256: row.manifestSha256,
   contractSha256: row.contractSha256,
+  starterRunId: row.starterRunId,
+  starterSha256: row.starterSha256,
   transformConfigSha256: row.transformConfigSha256,
   approvedTaskSha256: row.approvedTaskSha256,
   approvedTask: row.approvedTask,
@@ -371,7 +457,8 @@ export function createSandboxStore(db: Database): SandboxStore {
         sandboxVersionSource,
         eq(sandboxVersionSource.sandboxVersionId, sandboxVersion.id),
       )
-      .innerJoin(
+      // Left: a generated version has no snapshot.
+      .leftJoin(
         repoSnapshot,
         eq(repoSnapshot.id, sandboxVersionSource.sourceSnapshotId),
       );
@@ -517,35 +604,62 @@ export function createSandboxStore(db: Database): SandboxStore {
         )[0];
         if (parent === undefined)
           return { ok: false, reason: "not-found" } as const;
-        // Slicing is the one thing a sandbox needs a repository for.
-        const sourceRepoId = parent.sourceRepoId;
-        if (sourceRepoId === null)
-          return { ok: false, reason: "no_source" } as const;
-        // The slice must have succeeded on a snapshot of this sandbox's own
-        // source repository, which is the owner's.
-        const slice = (
-          await tx
-            .select({ commitSha: repoSnapshot.commitSha })
-            .from(analysisRun)
-            .innerJoin(
-              repoSnapshot,
-              eq(repoSnapshot.id, analysisRun.snapshotId),
-            )
-            .innerJoin(githubRepo, eq(githubRepo.id, repoSnapshot.repoId))
-            .where(
-              and(
-                eq(analysisRun.id, input.source.sliceRunId),
-                eq(analysisRun.snapshotId, input.source.sourceSnapshotId),
-                eq(analysisRun.tool, "slice"),
-                eq(analysisRun.status, "succeeded"),
-                eq(githubRepo.id, sourceRepoId),
-                eq(githubRepo.organizationId, owner),
-              ),
-            )
-            .limit(1)
-        )[0];
-        if (slice === undefined)
-          return { ok: false, reason: "slice_mismatch" } as const;
+        const id = input.id ?? generateId("sbv");
+        const source = input.source;
+        let commitSha: string | null = null;
+        if (source.origin === "starter") {
+          // Generated only while there is no repository to slice instead.
+          if (parent.sourceRepoId !== null)
+            return { ok: false, reason: "source_linked" } as const;
+          // The owner's starter run, queued for this very version.
+          const run = (
+            await tx
+              .select({ id: analysisRun.id })
+              .from(analysisRun)
+              .where(
+                and(
+                  eq(analysisRun.id, source.starterRunId),
+                  eq(analysisRun.organizationId, owner),
+                  eq(analysisRun.tool, "sandbox_starter"),
+                  sql`${analysisRun.params}->>'sandboxVersionId' = ${id}`,
+                ),
+              )
+              .limit(1)
+          )[0];
+          if (run === undefined)
+            return { ok: false, reason: "starter_mismatch" } as const;
+        } else {
+          // Slicing is the one thing a sandbox needs a repository for.
+          const sourceRepoId = parent.sourceRepoId;
+          if (sourceRepoId === null)
+            return { ok: false, reason: "no_source" } as const;
+          // The slice must have succeeded on a snapshot of this sandbox's own
+          // source repository, which is the owner's.
+          const slice = (
+            await tx
+              .select({ commitSha: repoSnapshot.commitSha })
+              .from(analysisRun)
+              .innerJoin(
+                repoSnapshot,
+                eq(repoSnapshot.id, analysisRun.snapshotId),
+              )
+              .innerJoin(githubRepo, eq(githubRepo.id, repoSnapshot.repoId))
+              .where(
+                and(
+                  eq(analysisRun.id, source.sliceRunId),
+                  eq(analysisRun.snapshotId, source.sourceSnapshotId),
+                  eq(analysisRun.tool, "slice"),
+                  eq(analysisRun.status, "succeeded"),
+                  eq(githubRepo.id, sourceRepoId),
+                  eq(githubRepo.organizationId, owner),
+                ),
+              )
+              .limit(1)
+          )[0];
+          if (slice === undefined)
+            return { ok: false, reason: "slice_mismatch" } as const;
+          commitSha = slice.commitSha;
+        }
         const latest = (
           await tx
             .select({
@@ -557,7 +671,7 @@ export function createSandboxStore(db: Database): SandboxStore {
         const versionRows = await tx
           .insert(sandboxVersion)
           .values({
-            id: generateId("sbv"),
+            id,
             sandboxId,
             version: Number(latest?.version ?? 0) + 1,
             title: input.title,
@@ -574,18 +688,26 @@ export function createSandboxStore(db: Database): SandboxStore {
           .insert(sandboxVersionSource)
           .values({
             sandboxVersionId: versionRow.id,
-            sourceSnapshotId: input.source.sourceSnapshotId,
-            sliceRunId: input.source.sliceRunId,
-            manifestSha256: input.source.manifestSha256,
-            contractSha256: input.source.contractSha256,
-            transformConfigSha256: input.source.transformConfigSha256,
-            approvedTaskSha256: input.source.approvedTaskSha256,
-            approvedTask: input.source.approvedTask,
-            aliasRules: [...input.source.aliasRules],
-            dependencyChoices: { ...input.source.dependencyChoices },
-            acceptanceTests: [...input.source.acceptanceTests],
-            fixtures: input.source.fixtures ?? null,
-            scope: input.source.scope,
+            ...(source.origin === "starter"
+              ? // The starter run is the version's build as well.
+                {
+                  starterRunId: source.starterRunId,
+                  buildRunId: source.starterRunId,
+                }
+              : {
+                  sourceSnapshotId: source.sourceSnapshotId,
+                  sliceRunId: source.sliceRunId,
+                  manifestSha256: source.manifestSha256,
+                  contractSha256: source.contractSha256,
+                }),
+            transformConfigSha256: source.transformConfigSha256,
+            approvedTaskSha256: source.approvedTaskSha256,
+            approvedTask: source.approvedTask,
+            aliasRules: [...source.aliasRules],
+            dependencyChoices: { ...source.dependencyChoices },
+            acceptanceTests: [...source.acceptanceTests],
+            fixtures: source.fixtures ?? null,
+            scope: source.scope,
           })
           .returning();
         const sourceRow = sourceRows[0] as SandboxVersionSourceRow | undefined;
@@ -595,7 +717,7 @@ export function createSandboxStore(db: Database): SandboxStore {
         return {
           ok: true,
           version: toVersion(versionRow),
-          source: toSource(sourceRow, slice.commitSha),
+          source: toSource(sourceRow, commitSha),
         } as const;
       });
     },
@@ -773,6 +895,122 @@ export function createSandboxStore(db: Database): SandboxStore {
         return true;
       });
     },
+    async recordStarterOutput(
+      owner,
+      versionId,
+      starterRunId,
+      output,
+      now = new Date(),
+    ) {
+      return db.transaction(async (transaction) => {
+        const tx = transaction;
+        const current = await lockVersion(tx, owner, versionId);
+        if (
+          current === undefined ||
+          current.version.frozenAt !== null ||
+          current.source.starterRunId !== starterRunId ||
+          current.source.buildRunId !== starterRunId
+        )
+          return false;
+        await tx
+          .update(sandboxVersionSource)
+          .set({
+            starterSha256: output.starterSha256,
+            aliasRules: [...output.aliasRules],
+            acceptanceTests: [...output.acceptanceTests],
+            scope: output.scope,
+            transformConfigSha256: output.transformConfigSha256,
+            harnessSha256: output.build?.harnessSha256 ?? null,
+            toolchainDigest: output.build?.toolchainDigest ?? null,
+            updatedAt: now,
+          })
+          .where(eq(sandboxVersionSource.sandboxVersionId, versionId));
+        await touch(tx, current.version.sandboxId, now);
+        return true;
+      });
+    },
+    async publishVersion(owner, versionId, actor, now = new Date()) {
+      return db.transaction(async (transaction) => {
+        const tx = transaction;
+        const current = await lockVersion(tx, owner, versionId);
+        if (current === undefined)
+          return { ok: false, reason: "not-found" } as const;
+        // A ready build is what records the harness and the toolchain.
+        if (
+          current.source.harnessSha256 === null ||
+          current.source.toolchainDigest === null
+        )
+          return { ok: false, reason: "not_ready" } as const;
+        let versionRow = current.version;
+        let sourceRow = current.source;
+        if (versionRow.frozenAt === null) {
+          const frozen = (
+            await tx
+              .update(sandboxVersion)
+              .set({ frozenAt: now })
+              .where(eq(sandboxVersion.id, versionId))
+              .returning()
+          )[0];
+          const approved = (
+            await tx
+              .update(sandboxVersionSource)
+              .set({ approvedBy: actor, approvedAt: now, updatedAt: now })
+              .where(eq(sandboxVersionSource.sandboxVersionId, versionId))
+              .returning()
+          )[0];
+          if (frozen === undefined || approved === undefined)
+            return { ok: false, reason: "not-found" } as const;
+          versionRow = frozen;
+          sourceRow = approved;
+        }
+        const published = (
+          await tx
+            .update(sandbox)
+            .set({
+              status: "published",
+              currentVersionId: versionId,
+              updatedAt: now,
+            })
+            .where(eq(sandbox.id, versionRow.sandboxId))
+            .returning()
+        )[0];
+        if (published === undefined)
+          return { ok: false, reason: "not-found" } as const;
+        const sourceRepo = (
+          await tx
+            .select({ sourceRepoId: sandboxSource.sourceRepoId })
+            .from(sandboxSource)
+            .where(eq(sandboxSource.sandboxId, published.id))
+        )[0];
+        return {
+          ok: true,
+          sandbox: toSandbox(published, sourceRepo?.sourceRepoId ?? null),
+          version: {
+            version: toVersion(versionRow),
+            source: toSource(sourceRow, current.commitSha),
+          },
+        } as const;
+      });
+    },
+    async unpublish(owner, sandboxId, now = new Date()) {
+      const published = (
+        await db
+          .update(sandbox)
+          .set({ status: "draft", currentVersionId: null, updatedAt: now })
+          .where(
+            and(eq(sandbox.organizationId, owner), eq(sandbox.id, sandboxId)),
+          )
+          .returning()
+      )[0];
+      if (published === undefined) return null;
+      const sourceRepo = (
+        await db
+          .select({ sourceRepoId: sandboxSource.sourceRepoId })
+          .from(sandboxSource)
+          .where(eq(sandboxSource.sandboxId, sandboxId))
+      )[0];
+      return toSandbox(published, sourceRepo?.sourceRepoId ?? null);
+    },
     async replayContext(owner, versionId) {
       const row = (
         await db
@@ -791,32 +1029,40 @@ export function createSandboxStore(db: Database): SandboxStore {
           )
       )[0];
       if (row === undefined) return null;
-      const snapshot = (
-        await db
-          .select({
-            commitSha: repoSnapshot.commitSha,
-            syncStatus: githubRepo.syncStatus,
-          })
-          .from(repoSnapshot)
-          .innerJoin(githubRepo, eq(githubRepo.id, repoSnapshot.repoId))
-          .where(
-            and(
-              eq(repoSnapshot.id, row.source.sourceSnapshotId),
-              eq(githubRepo.organizationId, owner),
-            ),
-          )
-      )[0];
-      const run = (
-        await db
-          .select({
-            status: analysisRun.status,
-            artifacts: sql<number>`(select count(*) from ${artifact} where ${artifact.runId} = ${analysisRun.id})`,
-          })
-          .from(analysisRun)
-          .where(eq(analysisRun.id, row.source.sliceRunId))
-      )[0];
+      // A generated version has neither; replay says so without a read.
+      const { sourceSnapshotId, sliceRunId } = row.source;
+      const snapshot =
+        sourceSnapshotId === null
+          ? undefined
+          : (
+              await db
+                .select({
+                  commitSha: repoSnapshot.commitSha,
+                  syncStatus: githubRepo.syncStatus,
+                })
+                .from(repoSnapshot)
+                .innerJoin(githubRepo, eq(githubRepo.id, repoSnapshot.repoId))
+                .where(
+                  and(
+                    eq(repoSnapshot.id, sourceSnapshotId),
+                    eq(githubRepo.organizationId, owner),
+                  ),
+                )
+            )[0];
+      const run =
+        sliceRunId === null
+          ? undefined
+          : (
+              await db
+                .select({
+                  status: analysisRun.status,
+                  artifacts: sql<number>`(select count(*) from ${artifact} where ${artifact.runId} = ${analysisRun.id})`,
+                })
+                .from(analysisRun)
+                .where(eq(analysisRun.id, sliceRunId))
+            )[0];
       return {
-        source: toSource(row.source, snapshot?.commitSha ?? ""),
+        source: toSource(row.source, snapshot?.commitSha ?? null),
         snapshot:
           snapshot === undefined
             ? null

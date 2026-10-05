@@ -6,8 +6,10 @@
  * snapshots the approved task from the live proposal and spec, validates
  * the alias table, resolves the scope and writes the private provenance
  * in one store call. The build route queues a `sandbox_build` run whose
- * parameters carry every hash the output must bind to. Nothing here is
- * public; publication is phase 5D.
+ * parameters carry every hash the output must bind to. A sandbox with no
+ * repository has its versions generated instead: the starter route queues
+ * an agent run that writes one from the bounty's text and builds it.
+ * Nothing here is public; publication is phase 5D.
  */
 
 import type {
@@ -15,6 +17,8 @@ import type {
   ArtifactStore,
   BountyProposalStore,
   BountySpecStore,
+  BountyStore,
+  GithubRepoStore,
   ObjectStore,
   SandboxStore,
 } from "@sandbox-factory/db";
@@ -24,8 +28,12 @@ export interface SandboxRouteOptions {
   readonly runs: Pick<AnalysisRunStore, "get" | "enqueue">;
   readonly artifacts: Pick<ArtifactStore, "list">;
   readonly objects: Pick<ObjectStore, "get" | "remove">;
-  readonly proposals: Pick<BountyProposalStore, "get">;
+  readonly proposals: Pick<BountyProposalStore, "get" | "liveForBounty">;
   readonly specs: Pick<BountySpecStore, "get">;
+  /** The bounty a generated version is written from: its text and stack. */
+  readonly bounties: Pick<BountyStore, "get">;
+  /** The repository a bounty names, for the stack detected in it. */
+  readonly repos: Pick<GithubRepoStore, "get">;
   readonly ensureWorker: () => Promise<void>;
   readonly maxActive?: number;
   readonly onLaunchError?: () => void;

@@ -98,7 +98,7 @@ function proposal(
     issueKey: "APP-1",
     title: "Add CSV export",
     specHash: hash,
-    specHashVersion: 1,
+    specHashVersion: 2,
     rateCard,
     modelComplexity: "S",
     modelConfidence: "high",
@@ -115,6 +115,8 @@ function proposal(
     currency: "USD",
     status: "proposed",
     revision: 4,
+    version: 0,
+    versionedAt: null,
     specRevision: 3,
     step,
     decidedAt: null,
@@ -138,7 +140,7 @@ function storedSpec(
     proposalId: "bpr_1",
     revision,
     specHash: hash,
-    specHashVersion: 1,
+    specHashVersion: 2,
     draft,
     origin,
     instruction: null,
@@ -174,7 +176,7 @@ function respecRun(
     },
     rateCard,
     requestedModel: "model",
-    promptVersion: "revise-v1",
+    promptVersion: "revise-v2",
     planned: [],
     outcomes: [],
     candidatesScanned: 0,
@@ -193,9 +195,7 @@ const bounty = {
   key: "APP-1",
   summary: "Add CSV export",
   descriptionText: "Export the filtered table.",
-  issueType: "Story",
   components: ["Reports"],
-  labels: [],
   updated: "2026-01-02T00:00:00.000Z",
   inputTruncated: false,
   specHash: hash,
@@ -210,13 +210,11 @@ const storedBounty = {
   key: "APP-1",
   title: "Add CSV export",
   description: "Export the filtered table.",
-  issueType: "Story",
-  priority: null,
-  labels: [],
   components: ["Reports"],
   inputTruncated: false,
   origin: "jira",
   repoId: null,
+  stack: [],
   createdBy: null,
   revision: 1,
   jira: {
@@ -477,9 +475,7 @@ test("an expansion adds the model's new scenarios and the size climbs by the ste
       bounty: {
         summary: bounty.summary,
         descriptionText: bounty.descriptionText,
-        issueType: bounty.issueType,
         components: bounty.components,
-        labels: bounty.labels,
       },
       spec: currentDraft,
       request,
@@ -502,7 +498,7 @@ test("an expansion adds the model's new scenarios and the size climbs by the ste
   assert.equal(input.spec["origin"], "expand");
   assert.equal(input.spec["instruction"], "More permission scenarios");
   assert.equal(input.spec["actualModel"], "claude-test");
-  assert.equal(input.spec["promptVersion"], "revise-v1");
+  assert.equal(input.spec["promptVersion"], "revise-v2");
   // 3 points sized, 11 now: two half steps from S.
   assert.equal(input.step.complexity, "M");
   assert.deepEqual(
@@ -931,7 +927,7 @@ test("a spec change starts a respec run on the proposal's own card", async () =>
       selection: state.created[0]?.["selection"],
       rateCard,
       requestedModel: "model",
-      promptVersion: "revise-v1",
+      promptVersion: "revise-v2",
     },
   ]);
   assert.deepEqual(state.starts, ["brn_respec"]);

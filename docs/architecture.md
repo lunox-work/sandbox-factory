@@ -382,17 +382,20 @@ proposals those runs made (`bounty_run.board_id` and
 `bounty_proposal.run_id` cascade).
 
 **Freshness is the bounty's.** `bountySpecHash` in `packages/core`
-fingerprints a bounty's title, description and type, and
-`packages/jira`'s `pricingSpecHash` is that function, not a copy, so a
-proposal priced from Jira's text and one priced from the stored copy
-compare. A proposal is current while its bounty still hashes to what it
-was priced from: read live from Jira while the bounty follows an issue,
-and as stored otherwise.
+fingerprints a bounty's title and description, and `packages/jira`'s
+`pricingSpecHash` is that function, not a copy, so a proposal priced from
+Jira's text and one priced from the stored copy compare. A proposal is
+current while its bounty still hashes to what it was priced from: read live
+from Jira while the bounty follows an issue, and as stored otherwise. A
+bounty keeps no issue type, priority or labels; Jira's are read only to
+choose which issues a board's run sizes, never stored on the bounty or shown
+to the model.
 
-**A bounty is named by its Jira key while it has one, and by its
-organization's own number otherwise** (`B-12`, `bounty.number`, unique per
-organization and taken as the next after the highest in the insert
-itself, retried in a savepoint on the rare collision).
+**A bounty is identified by its id and shown by its title.** One from Jira
+also carries its issue's key (`bounty.jira.key`, a proposal's `issueKey`);
+one written here has no key, and those fields are null. There is no
+per-organization number: `bounty.number` and its `B-12` keys were dropped in
+migration 0048.
 
 **Runs.** A `bounty` run sizes one bounty someone proposed
 (`POST .../bounties/:id/propose`); `reprice` and `respec` runs name their
@@ -403,6 +406,17 @@ they reach. A bounty following its issue cannot be read while its site
 needs reconnecting, and its run fails `reconnect` rather than sizing
 stale text. Approval posts back to Jira only for a bounty still following
 an issue on a site that holds the write grant.
+
+**A proposal's revision and version.** `bounty_proposal.revision` moves on
+every write and is what each change is checked against (`expectedRevision`),
+what a write-back records and what a run starts from. `version` is the
+number people see: it moves only when an approval follows a change.
+`version_revision` holds the revision at which nothing has changed since
+the current version. An approval writes its own revision there and a
+withdrawal moves it on, so withdrawing and approving again keeps the version
+and `versioned_at`. A resize, re-price or spec change moves the revision past
+it, so the next approval is a new version (`packages/db/src/proposal-version.ts`,
+migration 0050).
 
 **A bounty has one sandbox, and the sandbox three faces.** `sandbox.bounty_id`
 is unique and required, and a bounty with a sandbox cannot be removed. The
@@ -424,14 +438,81 @@ or without one (`POST .../sandboxes` with `bountyId` and an optional
 version is a slice, so that alone needs it, and is refused `no_source`
 without. One made without a repository has it linked later, once
 (`PUT .../sandboxes/:id/source`): its versions are bound to the repository
-they were sliced from, so a different one is refused `source_linked`. The
-bounty's panel offers to link the bounty's own repository. A version's
+they were sliced from, so a different one is refused `source_linked`.
+
+**Without a repository, a version is generated.** `POST
+.../sandboxes/:id/starter` snapshots the task from the bounty itself (its
+title and description, with its live proposal's spec and price) and queues
+a `sandbox_starter` run. The proposal must be approved: a bounty with none,
+or with a draft one, is refused `task_not_ready`
+(`starterTaskReadiness`). The run: an agent writes a
+starter from the bounty's title, description and tech stack (its
+repository's detected stack, when it names one, and what it adds), and the
+worker builds it and checks its baseline as a build would. A starter is
+source under `src/`, public tests that pass on it, hidden tests marked with
+their outcome on it (at least one fails until the bounty is done), the
+packages it installs, the walkthrough and a name table; its rules are
+`packages/core/src/sandbox/starter.ts`. The starter is written in the
+bounty's own vocabulary and leaves the workspace as a slice does: its name
+table (identifier and text rules, at least one, each renaming something)
+is applied with the inverse proof before the project is generated, and
+becomes the version's `alias_rules`, so a generated version has a name
+table like a sliced one. The contract is the sliced
+project's: Node and TypeScript, so a stack that names only another runtime
+(Python, Django, Go, ...) is refused `stack_unsupported`. The run is queued
+first, naming the version's id, and the version is made pointing at it
+(`starter_run_id`, which is also its `build_run_id`); `sandbox_version_source`
+holds a version sliced or generated, never both. When the run commits, the
+starter's hash, name table, hidden tests, scope and transform settle on the draft, with
+the build's harness and toolchain when its baseline passed. A generated
+version changes its listing like any draft, but its transform, its build and
+its replay are refused (`generated_version`, or replay's
+`source_unavailable`): it changes by generating a new version. Such a run
+reads no snapshot, so `analysis_run.organization_id` owns every run (added
+in migration 0049, backfilled through each run's snapshot). The bounty's
+panel generates a version for a sandbox with no repository and follows its
+run, and still offers to link the bounty's own repository to slice instead. A version's
 frozen task names the bounty (`ApprovedTaskSnapshot.bountyId`, schema
 version 3), and its spec and price must be that bounty's proposal's
 (`proposal_mismatch` otherwise). Versions frozen earlier
 keep what they were frozen with, because the snapshot is named by its hash:
 version 2 lists `ticketIds`, from when a sandbox linked any number of
 tickets, and version 1 lists `jiraIssueIds`.
+
+**Publishing a version.** `POST .../sandboxes/versions/:vid/publish`
+(owners and admins) records who approved the version and when, freezes it,
+and makes it the sandbox's `current_version_id` with status `published`.
+Only a version with a passing build is published: one with no recorded
+harness and toolchain is refused `not_ready`. A version published before
+keeps its first approval and is only pointed at again. `POST
+.../sandboxes/:id/unpublish` takes the sandbox back to `draft` with no
+current version; its versions stay frozen. No public repository is pushed
+yet, and the round-trip and disclosure gates `freezeReadiness` names are
+not run: publication marks the version contributors are to get. The
+bounty's Sandbox tab shows the chosen version over its Slice card, as the
+Bounty tab shows its proposal's version, with Publish or Unpublish beside
+it.
+
+**A version's private sandbox can be read, not changed.** `GET
+.../sandboxes/versions/:id/files` lists what its build run (`build_run_id`,
+sliced or generated) wrote: `project/`, the hidden tests under `private/`
+and the build's own records, by path, size and hash; never storage keys.
+`GET .../files/content?path=` answers one of them as text through the API,
+since the bucket has no CORS for the browser to read a signed link. The
+path is matched against the run's artifact rows, never joined into a key; a
+file that is not UTF-8, or is over `SANDBOX_FILE_TEXT_MAX_BYTES`, is listed
+with `text: null` and why. Both are owners and admins only, as the hidden
+tests are among the files. The web app shows them at
+`/sandboxes/:workspace/:versionId?path=`, a page outside the shell that the
+bounty's Sandbox tab opens in a new tab once the build has succeeded.
+
+**Migration 0046** dropped a bounty's issue type, priority and labels, and
+the type and priority a profile froze. Version 1 of the spec hash read the
+type, so before dropping it the migration recomputes each proposal's and
+spec revision's version 1 hash in SQL. Where that matches the stored hash,
+it writes version 2, the hash without the type, so a proposal still
+current stays current; one that does not match was already stale and stays
+on version 1, which reads as stale (`hash_version`).
 
 **Migration 0045** renamed tickets to bounties: the `ticket` table, every
 `ticket_id` column, the `ticket` run kind and the `ticketId` keys inside a
@@ -449,16 +530,36 @@ run's plan, else the key); the rest arrives on the next Jira read. Until
 then such a bounty shows no description, and one whose issue has gone
 reviews as stale, since the stored text is not what was priced.
 
-The web app's Bounties page (`/o/:slug/bounties`) lists the organization's
-bounties, and writes and edits them. It has no list of proposals: a proposal
-is made from a bounty and opens inside it. A bounty's panel has two tabs.
-**Bounty** shows its two parts, Proposal and Sandbox, each with its state and
-the action that makes it, and under them Context: its Jira issue and
-repository, each optional. **Proposal** is the bounty's proposal in the same
-peek a board uses (`?bounty=…&proposal=…`), where it is reviewed and
-decided. The old `/o/:slug/tickets?ticket=…` address and the old
-`?tab=proposals&proposal=…` both still land on the right bounty. A Jira
-board's page keeps its own list of the proposals its runs made.
+The web app's Bounties page (`/bounties`) lists the bounties of every
+workspace the person is in, newest first, from `GET /api/v1/me/bounties`.
+That route is outside the membership guard: it reads the caller's own
+memberships and lists across them with `BountyStore.listAcross`, which takes
+the organizations as given. A team workspace's bounty is tagged with the
+workspace's name; a personal one's carries no tag. An opened bounty is read
+and changed through its own workspace's routes, as the role held there
+allows. A new one is written on its own page, `/bounties/new`, to the
+workspace in the rail unless the form names another; once saved, it opens on
+the Bounties page in the form's place in history. A bounty's tech stack is
+its repository's detected stack, shown locked and followed live rather than
+copied, plus what the bounty adds (`bounty.stack`), which is all a write
+sends. Like the repository, the stack can be set on a bounty whose text
+follows Jira. The page lists bounties as cards and has no list of
+proposals: a proposal is made from a bounty and opens inside it. A bounty
+opens in a panel over the list, `/bounties?peek=:workspace/:id`, or as a page
+of its own, `/bounties/:workspace/:id`, which the panel's Open as page leads
+to and whose trail leads back; a card links the page, and a plain click
+opens the panel. The workspace is its handle, naming the routes the bounty
+is read through. Either way it is one view, with no tabs: its description,
+then its **Proposal**, and beside them on a wide page (below them otherwise)
+its **Sandbox** and **Context**: its Jira issue and repository, each optional.
+A bounty with no proposal offers to make one in the proposal's place; once
+it has one, that place holds the live proposal in the same peek a board uses,
+where it is reviewed and decided, without the peek's Spec tab or Jira link,
+since the bounty shows both. The old `?bounty=…&workspace=…&proposal=…` query,
+the per-workspace `/o/:slug/bounties` and `/o/:slug/tickets?ticket=…`
+addresses, the old `?tab=proposals&proposal=…` and `/proposal` after either
+address, from when the proposal was a tab, all still land on the right
+bounty. A Jira board's page keeps its own list of the proposals its runs made.
 
 ## Pricing
 
@@ -500,7 +601,8 @@ asks for `read:user user:email` and only says who someone is.
 and there are two, both read-only: `discovery` (installation-wide,
 `metadata: read`) lists and counts what an installation covers;
 `repository` (one repository by GitHub's numeric id, `contents: read` and
-`metadata: read`) reads that repository's pointer, tree and languages. So a
+`metadata: read`) reads that repository's pointer, tree and languages, and
+the few dependency manifests its stack is detected from. So a
 wider grant the App takes on later cannot reach these calls, and a token
 minted for one repository cannot read its neighbours. A mint narrowed to a
 repository the installation no longer covers is refused with 422, which
@@ -576,6 +678,23 @@ before rechecking references.
 Snapshots need object storage: without a bucket none are taken and the
 snapshot routes answer 503.
 
+**A repository's tech stack is detected beside its snapshot.**
+`apps/api/src/github/stack.ts` picks up to 30 dependency manifests from the
+tree (`package.json`, `pyproject.toml`, `pom.xml`, `*.csproj`, `go.mod`,
+`Gemfile`, `Cargo.toml`, compose files and Dockerfiles, Terraform), shallowest
+first and none over 256 KiB, reads them by Git object id with the same
+narrowed token, and hands them with the language totals and the file list to
+`detectStack` (`packages/core/src/repo/stack.ts`). That is the one read of
+file contents outside the worker: each manifest's text is dropped once read,
+and only the names found are kept, on `github_repo.stack` with the commit and
+detection version they came from. Vendored code, fixtures and examples are
+skipped. A snapshot that already exists has its stack redone when either is
+stale, so the sweep backfills every repository within one interval and a new
+`STACK_DETECTION_VERSION` redoes them all; a failed read is reported and
+retried the same way, and never fails the snapshot. The names come from one
+catalog (`packages/core/src/stack.ts`), which also groups them by kind for the
+picker and stores other spellings (`postgres`, `k8s`) under its own.
+
 **A bounty can name the repository it is about** (`bounty.repo_id`), and
 **a board can name one for its bounties** (`jira_board.source_repo_id`);
 both same organization only, checked in the write. A bounty's own wins,
@@ -637,8 +756,8 @@ a key they fail `agent_unavailable` and nothing else changes.
 **A sized bounty is profiled from the code it touches.** When a spec is
 drafted beside its bounty's surviving repository snapshot and profiling is
 configured, the proposal/spec transaction inserts the pending profile intent
-(`bounty_profile`, one row per revision). It freezes issue type and priority
-from the sized bounty, with the owner, spec hash and locked snapshot. An intent
+(`bounty_profile`, one row per revision), with the owner, spec hash and
+locked snapshot. An intent
 insert failure rolls back the proposal and spec. The post-commit callback only
 wakes the profiler: a later sweep discovers committed intent without it. The
 unique proposal/revision constraint makes requests idempotent. Snapshot-less

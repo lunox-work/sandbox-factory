@@ -7,7 +7,7 @@
  * takes a `TokenProvider` and never learns which it holds:
  *
  *   installation   `tokens.provider(installationId, narrowing)` — the
- *                  repository calls, `tree` and `languages`
+ *                  repository calls, `tree`, `languages` and `blobText`
  *   user           `credential.token` — `user`, `userInstallations`,
  *                  `userInstallationRepositoryCount`
  *
@@ -16,6 +16,7 @@
  */
 
 import {
+  githubBlobResponseSchema,
   type GithubInstallationResponse,
   githubInstallationPageResponseSchema,
   type GithubLanguagesResponse,
@@ -103,7 +104,7 @@ export class GithubClient {
     this.#fetch = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.#now = options.now ?? Date.now;
     // No trailing slash, so `#nextPage`'s prefix check has one form to match.
-    this.#apiUrl = (options.apiUrl ?? API_URL).replace(/\/+$/, "");
+    this.#apiUrl = withoutTrailingSlashes(options.apiUrl ?? API_URL);
     this.#maxPages = options.maxPages ?? 50;
   }
 
@@ -253,6 +254,23 @@ export class GithubClient {
     return this.#parse(response, githubLanguagesResponseSchema, "languages");
   }
 
+  /**
+   * One file's text, by Git's object id, decoded as UTF-8. Needs
+   * `contents: read`. Read only for the dependency manifests a stack is
+   * detected from (`apps/api/src/github/stack.ts`), whose names are kept
+   * and whose text is not.
+   */
+  async blobText(fullName: string, sha: string): Promise<string> {
+    const response = await this.#get(
+      `/repos/${segments(fullName)}/git/blobs/${encodeURIComponent(sha)}`,
+      "blob",
+    );
+    const blob = await this.#parse(response, githubBlobResponseSchema, "blob");
+    return blob.encoding === "base64"
+      ? Buffer.from(blob.content, "base64").toString("utf8")
+      : blob.content;
+  }
+
   async #get(
     path: string,
     what: string,
@@ -371,4 +389,11 @@ export class GithubClient {
 /** Each `/`-separated part encoded, the slashes kept: `release/1.0` stays two. */
 function segments(value: string): string {
   return value.split("/").map(encodeURIComponent).join("/");
+}
+
+/** A URL with every trailing slash cut; a loop, as a regex is quadratic here. */
+function withoutTrailingSlashes(url: string): string {
+  let end = url.length;
+  while (end > 0 && url[end - 1] === "/") end -= 1;
+  return url.slice(0, end);
 }

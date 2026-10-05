@@ -125,6 +125,7 @@ export interface ProjectBlocker {
     | "alias_failed"
     | "scope_blocked"
     | "fixture_invalid"
+    | "starter_invalid"
     | "baseline_failed";
   readonly file: string | null;
   readonly detail: string;
@@ -255,8 +256,32 @@ function sourceCandidates(path: string): string[] {
   return [];
 }
 
-function isScript(path: string): boolean {
+/** A TypeScript source the project compiles, as opposed to a declaration or an asset. */
+export function isScript(path: string): boolean {
   return /\.(m|c)?tsx?$/.test(path) && !path.endsWith(".d.ts");
+}
+
+/**
+ * The relative imports in a walkthrough (`sandbox/run.ts`) that land on no
+ * file of the project, by the specifier as written.
+ */
+export function unresolvedScenarioImports(
+  scenario: string,
+  exists: (path: string) => boolean,
+): string[] {
+  const unresolved: string[] = [];
+  for (const match of scenario.matchAll(IMPORT_LITERAL)) {
+    const specifier = match[3] ?? "";
+    if (!specifier.startsWith(".") || onCommentLine(scenario, match.index))
+      continue;
+    const target = joinRelative(HARNESS_DIR, specifier);
+    if (
+      target === null ||
+      ![target, ...sourceCandidates(target)].some((path) => exists(path))
+    )
+      unresolved.push(specifier);
+  }
+  return unresolved;
 }
 
 /** Members of a `declare enum` declaration, as `[name, value]` pairs. */
@@ -534,7 +559,10 @@ export function projectCompilerOptions(
   };
 }
 
-function tsconfigFor(options: Readonly<Record<string, unknown>> | undefined) {
+/** `tsconfig.json` for a generated project. */
+export function tsconfigFor(
+  options: Readonly<Record<string, unknown>> | undefined,
+) {
   return `${JSON.stringify(
     {
       compilerOptions: projectCompilerOptions(options),
@@ -572,7 +600,8 @@ function escapeJs(text: string): string {
   return JSON.stringify(text);
 }
 
-function specTests(spec: SpecDraft | null): string {
+/** `tests/public/spec.test.ts`: the spec's scenarios as todo tests. */
+export function specTests(spec: SpecDraft | null): string {
   const lines = [
     "// Scenario skeletons from the approved spec. Each one names what a",
     "// contribution must make true; fill in the body as you go. They are",
@@ -1121,21 +1150,14 @@ export function generateProject(input: ProjectInput): GeneratedProject {
   // The walkthrough imports the task by relative path; each must land on
   // a generated file once the version's aliases have moved things.
   if (scenario !== null)
-    for (const match of scenario.matchAll(IMPORT_LITERAL)) {
-      const specifier = match[3] ?? "";
-      if (!specifier.startsWith(".") || onCommentLine(scenario, match.index))
-        continue;
-      const target = joinRelative(HARNESS_DIR, specifier);
-      const found =
-        target !== null &&
-        [target, ...sourceCandidates(target)].some((path) => files.has(path));
-      if (!found)
-        blockers.push({
-          code: "import_unrewritable",
-          file: RUN_PATH,
-          detail: `${specifier} does not resolve to a file in the project.`,
-        });
-    }
+    for (const specifier of unresolvedScenarioImports(scenario, (path) =>
+      files.has(path),
+    ))
+      blockers.push({
+        code: "import_unrewritable",
+        file: RUN_PATH,
+        detail: `${specifier} does not resolve to a file in the project.`,
+      });
   const emitted = [...files.values()]
     .filter((file) => isScript(file.path))
     .map((file) => runtimePath(file.path))

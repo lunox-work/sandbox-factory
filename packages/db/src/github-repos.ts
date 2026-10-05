@@ -51,7 +51,19 @@ export interface GithubRepoSummary {
   readonly lastSyncedAt: string | null;
   readonly syncStatus: "pending" | "ok" | "error" | "gone";
   readonly syncError: string | null;
+  /** The stack detected at the head; null until the first detection. */
+  readonly stack: readonly string[] | null;
+  /** The commit, and the detection version, `stack` was found at. */
+  readonly stackCommitSha: string | null;
+  readonly stackVersion: number | null;
   readonly createdAt: string;
+}
+
+/** A detection's result, for `recordStack`. */
+export interface DetectedStack {
+  readonly stack: readonly string[];
+  readonly commitSha: string;
+  readonly version: number;
 }
 
 /** What GitHub says about a repository, as a sync records it. */
@@ -159,6 +171,15 @@ export interface GithubRepoStore {
     organizationId: string,
     repoId: string,
     message: string,
+  ): Promise<boolean>;
+  /**
+   * Records the stack detected at a commit. Never on a `gone` row, like
+   * `recordSync`. False when the row is gone or absent.
+   */
+  recordStack(
+    organizationId: string,
+    repoId: string,
+    detected: DetectedStack,
   ): Promise<boolean>;
   /**
    * Repositories not read since `staleBefore`, on healthy connections,
@@ -392,6 +413,20 @@ export function createGithubRepoStore(db: Database): GithubRepoStore {
       return rows.length > 0;
     },
 
+    async recordStack(organizationId, repoId, detected) {
+      const rows = await db
+        .update(githubRepo)
+        .set({
+          stack: [...detected.stack],
+          stackCommitSha: detected.commitSha,
+          stackVersion: detected.version,
+          updatedAt: new Date(),
+        })
+        .where(live(organizationId, repoId))
+        .returning();
+      return rows.length > 0;
+    },
+
     async dueForSync(staleBefore, limit) {
       return (
         db
@@ -492,6 +527,9 @@ function toSummary(row: GithubRepoRow): GithubRepoSummary {
     syncStatus:
       SYNC_STATUSES.find((status) => status === row.syncStatus) ?? "error",
     syncError: row.syncError,
+    stack: row.stack,
+    stackCommitSha: row.stackCommitSha,
+    stackVersion: row.stackVersion,
     createdAt: row.createdAt.toISOString(),
   };
 }

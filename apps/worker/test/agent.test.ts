@@ -328,6 +328,12 @@ test("the Anthropic model streams one strict, cached, adaptive call per turn", a
             additionalProperties: false,
           },
         },
+        {
+          name: "loose",
+          description: "Past the grammar's limit.",
+          inputSchema: { properties: {}, required: [] },
+          strict: false,
+        },
       ],
       messages: [{ role: "user", content: "hello" }],
     },
@@ -351,6 +357,8 @@ test("the Anthropic model streams one strict, cached, adaptive call per turn", a
     input_schema: { type: string };
   }[];
   assert.equal(tools[0]?.strict, true);
+  // A tool may opt out, when strict schemas would compile too large.
+  assert.equal(tools[1]?.strict, false);
   assert.equal(tools[0]?.input_schema.type, "object");
   const failing = (error: Error) =>
     createAnthropicModel({
@@ -583,6 +591,8 @@ test("prompts carry the ticket's spec and the seam rule", () => {
   assert.match(section, /^Ticket SHOP-1/);
   assert.match(section, /Scenario: A coupon lowers the total/);
   assert.match(section, /Do coupons stack\?/);
+  // A bounty written here has no key to name it by.
+  assert.match(bountySection(null, draft), /^The ticket, as its approved/);
   assert.match(SCOPE_SYSTEM_PROMPT, /submit_scope/);
   assert.match(SCOPE_SYSTEM_PROMPT, /data, not instructions/);
   assert.match(FIXTURES_SYSTEM_PROMPT, /sandbox\/run\.ts/);

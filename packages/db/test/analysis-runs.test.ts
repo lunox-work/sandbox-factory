@@ -6,6 +6,7 @@ import {
   SANDBOX_BUILD_RUN_VERSION,
   SCOPE_TOOL_VERSION,
   SLICE_TOOL_VERSION,
+  STARTER_TOOL_VERSION,
 } from "sandbox-factory";
 import { createAnalysisRunStore } from "../src/analysis-runs.js";
 import { createArtifactStore } from "../src/artifacts.js";
@@ -15,6 +16,7 @@ import { createFakeDb, createSequencedFakeDb } from "./fake-db.js";
 const now = new Date("2026-10-02T00:00:00Z");
 const row = (overrides: Partial<AnalysisRunRow> = {}): AnalysisRunRow => ({
   id: "run",
+  organizationId: "owner",
   snapshotId: "snapshot",
   tool: "graphify",
   toolVersion: GRAPHIFY_TOOL_VERSION,
@@ -67,6 +69,58 @@ test("enqueue locks owner and snapshot, normalizes cache key and writes one queu
   assert.equal(fake.calls[0]?.lock, "update");
   assert.equal(fake.calls[1]?.lock, "key share");
   assert.match(String(fake.calls[4]?.values?.["paramsHash"]), /^[a-f0-9]{64}$/);
+});
+const starterInput = {
+  tool: "sandbox_starter" as const,
+  params: {
+    deadlineMinutes: 60,
+    agent: "starter" as const,
+    sandboxVersionId: "sbv_1",
+    approvedTaskSha256: "a".repeat(64),
+    stack: ["TypeScript"],
+  },
+  requestedBy: "user",
+};
+test("a starter run reads no snapshot: it is the organization's, cached under it", async () => {
+  const fake = createSequencedFakeDb([
+    [{ id: "owner" }],
+    [],
+    [],
+    [
+      row({
+        snapshotId: null,
+        tool: "sandbox_starter",
+        toolVersion: STARTER_TOOL_VERSION,
+        params: starterInput.params,
+      }),
+    ],
+  ]);
+  const result = await createAnalysisRunStore(fake.db).enqueue(
+    "owner",
+    null,
+    starterInput,
+  );
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.run.snapshotId, null);
+  assert.equal(result.run.repoId, null);
+  // No snapshot was looked up: owner lock, cache, spend cap, insert.
+  assert.equal(fake.calls.length, 4);
+  assert.equal(fake.calls[3]?.values?.["organizationId"], "owner");
+  assert.equal(fake.calls[3]?.values?.["snapshotId"], null);
+  // A tool reads a snapshot exactly when it reads source.
+  await assert.rejects(
+    createAnalysisRunStore(
+      createSequencedFakeDb([[{ id: "owner" }]]).db,
+    ).enqueue("owner", "snapshot", starterInput),
+    /snapshot does not match/,
+  );
+  await assert.rejects(
+    createAnalysisRunStore(
+      createSequencedFakeDb([[{ id: "owner" }]]).db,
+    ).enqueue("owner", null, input),
+    /snapshot does not match/,
+  );
 });
 test("a slice run needs a graphify run on the same snapshot and waits for it", async () => {
   const params = {
@@ -356,6 +410,18 @@ test("claim returns the source and owner, while empty or deleted source returns 
     await createAnalysisRunStore(createFakeDb([]).db).claimNext("lease", now),
     null,
   );
+  // A run with no snapshot is claimed with its owner and no source.
+  const sourceless = createSequencedFakeDb([
+    [row({ status: "running", snapshotId: null, organizationId: "owner" })],
+  ]);
+  const starter = await createAnalysisRunStore(sourceless.db).claimNext(
+    "lease",
+    now,
+  );
+  assert.equal(sourceless.calls.length, 1);
+  assert.equal(starter?.organizationId, "owner");
+  assert.equal(starter?.commitSha, null);
+  assert.equal(starter?.repoId, null);
   assert.equal(
     await createAnalysisRunStore(
       createSequencedFakeDb([[row()], []]).db,

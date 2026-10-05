@@ -9,7 +9,8 @@ import { Button } from "@/components/ui/button";
 
 /**
  * A bounty's own proposal, inside the bounty: its spec, its size and the
- * decision on it, in the same peek a board's list opens.
+ * decision on it, in the same peek a board's list opens, less the bounty's
+ * text and its way to Jira, which the bounty around it shows.
  *
  * A proposal is made from a bounty and belongs to it, so it is reached
  * through the bounty rather than through a list of its own. Read by id, so
@@ -44,7 +45,12 @@ export function BountyProposal({
     onChanged();
   };
   const { busy, error, mutate } = useProposalMutations(organizationId, {
-    apply,
+    // A change applied in place, as a resize is, moves the size and price
+    // the bounty shows too.
+    apply: (next) => {
+      apply(next);
+      onChanged();
+    },
     refresh: changed,
   });
 
@@ -94,6 +100,7 @@ export function BountyProposal({
         mutate={mutate}
         onChanged={changed}
         onRemoved={onRemoved}
+        withinBounty
       />
     </div>
   );

@@ -293,6 +293,15 @@ test("the step lists the scenarios behind the points, by title and kind", () => 
   );
 });
 
+test("the step lists the scenarios trimmed since sizing", () => {
+  const trimmed = stepUp("S", sized, spec(scenario("s2", "moderate")));
+  assert.deepEqual(trimmed?.removed, [
+    { id: "s1", kind: "happy", title: "Scenario s1", weight: "light" },
+  ]);
+  assert.deepEqual(trimmed?.added, []);
+  assert.deepEqual(stepUp("S", sized, sized)?.removed, []);
+});
+
 test("a revision drafted before weights has no step", () => {
   const weightless = spec(scenario("s1", undefined), scenario("s2", undefined));
   assert.equal(stepUp("S", weightless, weightless), null);

@@ -12,7 +12,7 @@ import { userEvent } from "@testing-library/user-event";
 import { useState } from "react";
 import { expect, test, vi } from "vitest";
 
-import { PeekPanel } from "../src/components/PeekPanel";
+import { PEEK_ROW_ATTRIBUTE, PeekPanel } from "../src/components/PeekPanel";
 
 /** A list whose rows open the peek, as the board page uses it. */
 function Harness({ onOpenChange }: { onOpenChange?: (open: boolean) => void }) {
@@ -97,6 +97,50 @@ test("the body scrolls inside the panel, not the page behind it", async () => {
   const scroller = panel.querySelector(".overflow-y-auto");
   expect(scroller).not.toBeNull();
   expect(scroller?.className).toContain("overscroll-contain");
+});
+
+/** A list whose rows show in one non-modal peek, as the bounties use it. */
+function SidePeek() {
+  const [open, setOpen] = useState<string | null>(null);
+  return (
+    <>
+      {["Row one", "Row two"].map((row) => (
+        <div key={row} {...{ [PEEK_ROW_ATTRIBUTE]: "" }}>
+          <button type="button" onClick={() => setOpen(row)}>
+            {row}
+          </button>
+        </div>
+      ))}
+      <button type="button">Elsewhere</button>
+      <PeekPanel
+        modal={false}
+        open={open !== null}
+        onOpenChange={(next) => {
+          if (!next) setOpen(null);
+        }}
+        title={open ?? ""}
+      >
+        <p>Showing {open}</p>
+      </PeekPanel>
+    </>
+  );
+}
+
+test("not modal, another row shows in the open peek and a click elsewhere closes it", async () => {
+  render(<SidePeek />);
+
+  await userEvent.click(screen.getByRole("button", { name: "Row one" }));
+  const dialog = await screen.findByRole("dialog");
+  expect(dialog.getAttribute("aria-modal")).toBeNull();
+
+  await userEvent.click(screen.getByRole("button", { name: "Row two" }));
+  expect(screen.getByRole("dialog")).toBe(dialog);
+  expect(screen.getByText("Showing Row two")).toBeDefined();
+
+  await userEvent.click(screen.getByRole("button", { name: "Elsewhere" }));
+  await waitFor(() => {
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
 });
 
 test("the close control is reachable and labelled", async () => {

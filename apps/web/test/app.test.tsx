@@ -159,3 +159,20 @@ test("a 401 clears the list rather than leaving it on screen", async () => {
     expect(screen.queryByText("alice-site")).toBeNull();
   });
 });
+
+test("a version's files open on their own, outside the shell", async () => {
+  window.history.replaceState(null, "", "/sandboxes/acme/sbv_1");
+  session({ id: "user_1", name: "Alice" });
+  render(<App />);
+
+  // Its explorer's page, reading that version; no rail beside it.
+  await waitFor(() =>
+    expect(
+      fetchMock.mock.calls.some(([input]) =>
+        String(input).endsWith("/orgs/org_1/sandboxes/versions/sbv_1/files"),
+      ),
+    ).toBe(true),
+  );
+  expect(screen.queryByRole("navigation", { name: "Main" })).toBeNull();
+  window.history.replaceState(null, "", "/");
+});

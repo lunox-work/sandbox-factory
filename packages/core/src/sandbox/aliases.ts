@@ -360,6 +360,32 @@ export function applyAliases(
       };
 }
 
+/**
+ * The name a build gives its alias table among the private files it writes:
+ * `private/pseudonym.lunox`, beside the hidden tests.
+ */
+export const PSEUDONYMS_FILE = "pseudonym.lunox";
+export const PSEUDONYMS_SCHEMA_VERSION = 1;
+
+/** `pseudonym.lunox`: the table a version's public files were renamed by. */
+export interface PseudonymTable {
+  readonly schemaVersion: typeof PSEUDONYMS_SCHEMA_VERSION;
+  readonly rules: readonly AliasRule[];
+}
+
+/**
+ * One file renamed by the rules, without the checks `applyAliases` makes:
+ * for reading back a file already proved to map back, such as a public
+ * file in its private names under the inverse table. `file.path` is its
+ * repository path, which scoped rules are matched against.
+ */
+export function renameFile(
+  file: AliasedFile,
+  rules: readonly AliasRule[],
+): AliasedFile {
+  return rewrite([file], rules, "forward", null, null).files[0] ?? file;
+}
+
 /** The inverse table, as a contribution's import applies it. */
 export function invertAliasRules(rules: readonly AliasRule[]): AliasRule[] {
   return [...rules]

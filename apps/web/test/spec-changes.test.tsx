@@ -1,3 +1,4 @@
+import { openCombobox } from "./combobox";
 import { act, render, renderHook, screen, within } from "./render";
 import { userEvent } from "@testing-library/user-event";
 import { useState } from "react";
@@ -527,8 +528,10 @@ test("an earlier revision is read from the picker, read-only, and the current on
     "Asked for: More boundary scenarios",
   );
   const picker = await screen.findByRole("combobox", { name: "Revision" });
+  expect(picker.textContent).toBe("revision 3, expanded (current)");
+  const list = await openCombobox(picker);
   expect(
-    within(picker)
+    within(list)
       .getAllByRole("option")
       .map((option) => option.textContent),
   ).toEqual([
@@ -537,9 +540,14 @@ test("an earlier revision is read from the picker, read-only, and the current on
     "revision 1, drafted",
   ]);
 
-  await user.selectOptions(picker, "1");
+  await user.click(
+    within(list).getByRole("option", { name: "revision 1, drafted" }),
+  );
   expect((await screen.findByTestId("spec-earlier")).textContent).toContain(
     "An earlier revision. The size goes with revision 3.",
+  );
+  expect(screen.getByRole("combobox", { name: "Revision" }).textContent).toBe(
+    "revision 1, drafted",
   );
   expect(
     requests.some(

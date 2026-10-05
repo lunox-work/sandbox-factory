@@ -35,6 +35,7 @@ import {
   repositoryOverview,
   repositoryTools,
 } from "../agent/repo-tools.js";
+import { snapshotOf } from "./adapter.js";
 import type { ArtifactFile, ToolAdapter, ToolRunInput } from "./adapter.js";
 import { checkFixtures } from "./fixtures-check.js";
 import { nearestCompilerOptions } from "./compiler-config.js";
@@ -94,6 +95,7 @@ export function createFixturesAdapter(settings: AgentSettings): ToolAdapter {
     async run(input: ToolRunInput): Promise<ArtifactFile[]> {
       const params = input.params;
       if (!isFixturesParams(params)) throw new AnalysisError("tool_failed");
+      const snapshot = snapshotOf(input);
       if (settings.model === null) {
         input.log("No agent model is configured on this worker.");
         throw new AnalysisError("agent_unavailable");
@@ -108,7 +110,7 @@ export function createFixturesAdapter(settings: AgentSettings): ToolAdapter {
       const slice = await loadSliceRun(
         input.inputs,
         params.sliceRunId,
-        input.run.snapshotId,
+        snapshot.snapshotId,
       );
       const included = await readIncludedSource(
         input.sourceDir,
@@ -203,7 +205,7 @@ export function createFixturesAdapter(settings: AgentSettings): ToolAdapter {
         system: FIXTURES_SYSTEM_PROMPT,
         prompt: [
           bountySection(task.issueKey, task.draft),
-          `The slice, at commit ${input.run.commitSha}. Entry points: ${slice.manifest.entryPoints.join(", ")}. Included files:\n${slice.manifest.included.map((file) => file.path).join("\n")}`,
+          `The slice, at commit ${snapshot.commitSha}. Entry points: ${slice.manifest.entryPoints.join(", ")}. Included files:\n${slice.manifest.included.map((file) => file.path).join("\n")}`,
           `Cut modules and their declaration stubs:\n\n${stubSections.join("\n\n") || "(none)"}${
             unquoted.length === 0
               ? ""
@@ -223,8 +225,8 @@ export function createFixturesAdapter(settings: AgentSettings): ToolAdapter {
         schemaVersion: FIXTURE_SET_SCHEMA_VERSION,
         toolVersion: FIXTURES_TOOL_VERSION,
         sliceRunId: slice.run.id,
-        sourceSnapshotId: input.run.snapshotId,
-        sourceCommitSha: input.run.commitSha,
+        sourceSnapshotId: snapshot.snapshotId,
+        sourceCommitSha: snapshot.commitSha,
         proposalId: params.proposalId,
         specRevision: params.specRevision,
         ...answer,

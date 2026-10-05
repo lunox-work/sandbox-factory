@@ -1,3 +1,4 @@
+import { Combobox } from "@/components/Combobox";
 import { ErrorBanner, LoadingLine } from "@/components/Message";
 import { PeekPanel } from "@/components/PeekPanel";
 import { Badge } from "@/components/ui/badge";
@@ -63,6 +64,8 @@ function runLabel(run: AnalysisRunDto): string {
       return "Fake data";
     case "sandbox_build":
       return "Sandbox build";
+    case "sandbox_starter":
+      return "Generated starter";
     case "graphify":
       return "Graphify";
   }
@@ -264,26 +267,25 @@ export function RepositoryAnalysis({
               </p>
             ) : (
               <>
-                <label className="text-sm">
-                  Commit{" "}
-                  <select
-                    aria-label="Source snapshot"
-                    className="bg-background ml-2 rounded border p-2 font-mono text-xs"
+                <div className="flex items-center gap-2 text-sm">
+                  Commit
+                  <Combobox
+                    label="Source snapshot"
+                    searchPlaceholder="Search by commit or date…"
+                    className="w-auto max-w-full font-mono"
+                    options={snapshots.map((s) => ({
+                      value: s.id,
+                      label: `${s.commitSha.slice(0, 7)} · ${new Date(s.createdAt).toLocaleString()}`,
+                      keywords: [s.commitSha],
+                    }))}
                     value={snapshotId}
-                    onChange={(event) => {
+                    onValueChange={(next) => {
                       // Entry points name files of one snapshot.
-                      setSnapshotId(event.target.value);
+                      setSnapshotId(next);
                       setEntryPoints([]);
                     }}
-                  >
-                    {snapshots.map((s) => (
-                      <option key={s.id} value={s.id}>
-                        {s.commitSha.slice(0, 7)} ·{" "}
-                        {new Date(s.createdAt).toLocaleString()}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+                  />
+                </div>
                 {current !== undefined && (
                   <p className="text-muted-foreground text-xs">
                     {current.fileCount.toLocaleString()} files ·{" "}
@@ -536,7 +538,8 @@ export function RepositoryAnalysis({
             <ScopeProposalView
               proposal={scopeProposal}
               manageable={manageable}
-              onUse={() => applyScope(selectedRun.snapshotId)}
+              // A scope run is always on a snapshot of this repository.
+              onUse={() => applyScope(selectedRun.snapshotId ?? snapshotId)}
             />
           </section>
         )}

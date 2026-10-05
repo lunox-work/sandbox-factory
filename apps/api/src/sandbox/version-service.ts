@@ -1,4 +1,5 @@
 import {
+  AGENT_DEADLINE_MINUTES,
   boundaryContractSchema,
   sliceManifestSchema,
 } from "@sandbox-factory/shared";
@@ -10,11 +11,19 @@ import {
  * snapshots the approved task from the live proposal and spec, validates
  * the alias table, resolves the scope and writes the private provenance
  * in one store call. The build route queues a `sandbox_build` run whose
- * parameters carry every hash the output must bind to. Nothing here is
- * public; publication is phase 5D.
+ * parameters carry every hash the output must bind to. A sandbox with no
+ * repository has its versions generated: `generate` snapshots the task
+ * from the bounty itself and queues the starter agent, which writes the
+ * version and builds it. Nothing here is public; publication is phase 5D.
  */
 
-import type { StoredArtifact, StoredSandbox } from "@sandbox-factory/db";
+import type {
+  StoredAnalysisRun,
+  StoredArtifact,
+  StoredSandbox,
+  StoredVersionWithSource,
+} from "@sandbox-factory/db";
+import { generateId } from "@sandbox-factory/db";
 import {
   createSandboxVersionSchema,
   fixtureSetSchema,
@@ -35,7 +44,11 @@ import {
   canonicalJson,
   fixtureProblems,
   isFixturesParams,
+  normalizeStack,
   resolveScope,
+  starterStackProblem,
+  starterTaskReadiness,
+  transformConfigOf,
   unknownDependencyChoices,
   validateAliasRules,
 } from "sandbox-factory";
@@ -52,16 +65,28 @@ export function transformConfigHash(input: {
   readonly acceptanceTests: readonly AcceptanceTest[];
   readonly fixtures?: VersionFixtures | null;
 }): string {
-  return sha256(
-    canonicalJson({
-      schemaVersion: 2,
-      aliasRules: input.aliasRules,
-      dependencyChoices: input.dependencyChoices,
-      acceptanceTests: input.acceptanceTests,
-      fixtures: input.fixtures ?? null,
-    }),
-  );
+  return sha256(canonicalJson(transformConfigOf(input)));
 }
+
+/** Text cut to `max` characters, never inside a surrogate pair. */
+function clip(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const cut = text.slice(0, max);
+  return /[\uD800-\uDBFF]$/.test(cut) ? cut.slice(0, -1) : cut;
+}
+/** What a version's listing may carry, as a sliced version's request bounds it. */
+const GENERATED_TITLE_MAX = 120;
+const GENERATED_SUMMARY_MAX = 4_000;
+const GENERATED_TAGS_MAX = 10;
+const GENERATED_TAG_MAX = 32;
+/** What a generated version starts with, until its run settles the rest. */
+const EMPTY_SCOPE = {
+  editablePaths: [],
+  generatedPaths: [],
+  permittedOperations: ["edit", "add"],
+  dependencies: [],
+  blockers: [],
+} as const;
 
 export function approvedTaskHash(snapshot: ApprovedTaskSnapshot): string {
   return sha256(canonicalJson(snapshot));
@@ -146,8 +171,9 @@ export function versionService(options: SandboxRouteOptions) {
   /** The slice run's manifest and contract, verified against their recorded hashes. */
   async function sliceInputs(owner: string, sliceRunId: string) {
     const run = await options.runs.get(owner, sliceRunId);
-    if (run === null || run.tool !== "slice")
+    if (run === null || run.tool !== "slice" || run.snapshotId === null)
       return { error: "not_found" } as const;
+    const snapshotId = run.snapshotId;
     if (run.status !== "succeeded")
       return { error: "slice_not_ready" } as const;
     const artifacts = await options.artifacts.list(owner, run.id);
@@ -165,6 +191,7 @@ export function versionService(options: SandboxRouteOptions) {
     try {
       return {
         run,
+        snapshotId,
         manifest: sliceManifestSchema.parse(JSON.parse(manifest.text)),
         manifestSha256: manifest.artifact.sha256,
         contract: boundaryContractSchema.parse(JSON.parse(contract.text)),
@@ -341,7 +368,7 @@ export function versionService(options: SandboxRouteOptions) {
       complexity: input.complexity,
       tags: input.tags,
       source: {
-        sourceSnapshotId: inputs.run.snapshotId,
+        sourceSnapshotId: inputs.snapshotId,
         sliceRunId: inputs.run.id,
         manifestSha256: inputs.manifestSha256,
         contractSha256: inputs.contractSha256,
@@ -375,5 +402,171 @@ export function versionService(options: SandboxRouteOptions) {
           : failure({ error: "Not found." }, "not-found");
     return { ok: true as const, result };
   }
-  return { sliceInputs, fixturesFromRun, create };
+
+  /**
+   * A generated version: the task snapshotted from the bounty's own title
+   * and description, with its live proposal's spec and price, and the
+   * starter agent queued to write and build it. The proposal must be
+   * approved: a bounty with none, or a draft one, is refused
+   * `task_not_ready`. The run is
+   * queued first, naming the version's id, and the version is then made
+   * pointing at it; a version that could not be made leaves a run whose
+   * version does not exist, which the worker fails.
+   */
+  async function generate(
+    owner: string,
+    actor: string,
+    sandbox: StoredSandbox,
+    now: Date,
+  ): Promise<
+    | ReturnType<typeof failure>
+    | {
+        ok: true;
+        result: StoredVersionWithSource;
+        run: StoredAnalysisRun;
+      }
+  > {
+    if (sandbox.sourceRepoId !== null)
+      return failure(
+        {
+          error:
+            "This sandbox is cut from its repository; slice a version instead.",
+          code: "source_linked",
+        },
+        "conflict",
+      );
+    const bounty = await options.bounties.get(owner, sandbox.bountyId);
+    if (bounty === null) return failure({ error: "Not found." }, "not-found");
+    // The stack it follows: what the bounty's repository was detected to
+    // use, if it names one, and what the bounty adds.
+    const repo =
+      bounty.repoId === null
+        ? null
+        : await options.repos.get(owner, bounty.repoId);
+    const stack = normalizeStack([...(repo?.stack ?? []), ...bounty.stack]);
+    const unsupported = starterStackProblem(stack);
+    if (unsupported !== null)
+      return failure(
+        { error: unsupported, code: "stack_unsupported" },
+        "conflict",
+      );
+    let spec: ApprovedTaskSnapshot["spec"] = null;
+    let pricing: ApprovedTaskSnapshot["pricing"] = null;
+    const proposalId = await options.proposals.liveForBounty(owner, bounty.id);
+    const proposal =
+      proposalId === null
+        ? null
+        : await options.proposals.get(owner, proposalId);
+    if (proposal !== null) {
+      const stored =
+        proposal.specRevision === null
+          ? null
+          : await options.specs.get(owner, proposal.id, proposal.specRevision);
+      if (stored !== null)
+        spec = {
+          proposalId: proposal.id,
+          specRevision: stored.revision,
+          specHash: stored.specHash,
+          draft: stored.draft,
+        };
+      pricing = {
+        proposalId: proposal.id,
+        proposalRevision: proposal.revision,
+        complexity: proposal.complexity,
+        amountMinor: proposal.amountMinor,
+        currency: proposal.currency,
+        status: proposal.status,
+        decidedAt: proposal.decidedAt,
+      };
+    }
+    const approvedTask: ApprovedTaskSnapshot = {
+      schemaVersion: APPROVED_TASK_SCHEMA_VERSION,
+      title: bounty.title,
+      summary: bounty.description,
+      spec,
+      pricing,
+      selectedBy: actor,
+      selectedAt: now.toISOString(),
+      bountyId: bounty.id,
+    };
+    const task = starterTaskReadiness(approvedTask);
+    if (!task.ready)
+      return failure(
+        {
+          error: "The bounty is not ready to generate from.",
+          code: "task_not_ready",
+          reasons: task.reasons,
+        },
+        "conflict",
+      );
+    const approvedTaskSha256 = approvedTaskHash(approvedTask);
+    const versionId = generateId("sbv");
+    const queued = await options.runs.enqueue(owner, null, {
+      tool: "sandbox_starter",
+      params: {
+        deadlineMinutes: AGENT_DEADLINE_MINUTES,
+        agent: "starter",
+        sandboxVersionId: versionId,
+        approvedTaskSha256,
+        stack,
+      },
+      requestedBy: actor,
+      maxActive: options.maxActive ?? 3,
+    });
+    if (!queued.ok)
+      return queued.reason === "run_limit"
+        ? failure(
+            {
+              error: "The active analysis limit has been reached.",
+              code: "run_limit",
+            },
+            "conflict",
+          )
+        : failure({ error: "Not found." }, "not-found");
+    if (queued.obsoleteLogKey !== undefined)
+      await options.objects.remove(queued.obsoleteLogKey).catch(() => {});
+    const acceptanceTests: AcceptanceTest[] = [];
+    const created = await options.sandboxes.createVersion(
+      owner,
+      sandbox.id,
+      {
+        id: versionId,
+        title: clip(bounty.title.trim(), GENERATED_TITLE_MAX),
+        specSummary: clip(bounty.description.trim(), GENERATED_SUMMARY_MAX),
+        complexity: proposal?.complexity ?? "unsized",
+        tags: stack
+          .filter((name) => name.length <= GENERATED_TAG_MAX)
+          .slice(0, GENERATED_TAGS_MAX),
+        source: {
+          origin: "starter",
+          starterRunId: queued.run.id,
+          transformConfigSha256: transformConfigHash({
+            aliasRules: [],
+            dependencyChoices: {},
+            acceptanceTests,
+          }),
+          approvedTaskSha256,
+          approvedTask,
+          aliasRules: [],
+          dependencyChoices: {},
+          acceptanceTests,
+          scope: EMPTY_SCOPE,
+        },
+      },
+      now,
+    );
+    if (!created.ok)
+      return created.reason === "source_linked"
+        ? failure(
+            {
+              error:
+                "This sandbox is cut from its repository; slice a version instead.",
+              code: "source_linked",
+            },
+            "conflict",
+          )
+        : failure({ error: "Not found." }, "not-found");
+    return { ok: true as const, result: created, run: queued.run };
+  }
+  return { sliceInputs, fixturesFromRun, create, generate };
 }

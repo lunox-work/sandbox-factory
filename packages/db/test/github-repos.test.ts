@@ -24,6 +24,9 @@ function repoRow(overrides: Partial<GithubRepoRow> = {}): GithubRepoRow {
     lastSyncedAt: new Date("2026-10-01T00:01:00.000Z"),
     syncStatus: "ok",
     syncError: null,
+    stack: null,
+    stackCommitSha: null,
+    stackVersion: null,
     createdAt: new Date("2026-10-01T00:00:00.000Z"),
     updatedAt: new Date("2026-10-01T00:00:00.000Z"),
     ...overrides,
@@ -58,6 +61,9 @@ test("a summary carries the pointer and no ETag", async () => {
     lastSyncedAt: "2026-10-01T00:01:00.000Z",
     syncStatus: "ok",
     syncError: null,
+    stack: null,
+    stackCommitSha: null,
+    stackVersion: null,
     createdAt: "2026-10-01T00:00:00.000Z",
   });
 });
@@ -295,4 +301,35 @@ test("remove deletes the owner's row, or reports a miss", async () => {
     await createGithubRepoStore(createFakeDb([]).db).remove("org_1", "ghr_1"),
     false,
   );
+});
+
+test("a detected stack is recorded with the commit and version it was found at", async () => {
+  const fake = createFakeDb([
+    repoRow({ stack: ["TypeScript"], stackCommitSha: sha, stackVersion: 1 }),
+  ]);
+  const store = createGithubRepoStore(fake.db);
+  assert.equal(
+    await store.recordStack("org_1", "ghr_1", {
+      stack: ["TypeScript", "PostgreSQL"],
+      commitSha: sha,
+      version: 1,
+    }),
+    true,
+  );
+  const write = fake.calls.find((call) => call.kind === "update");
+  assert.deepEqual(write?.values?.["stack"], ["TypeScript", "PostgreSQL"]);
+  assert.equal(write?.values?.["stackCommitSha"], sha);
+  assert.equal(write?.values?.["stackVersion"], 1);
+  // A row gone, or another organization's, is not written.
+  assert.equal(
+    await createGithubRepoStore(createFakeDb([]).db).recordStack(
+      "org_1",
+      "ghr_1",
+      { stack: [], commitSha: sha, version: 1 },
+    ),
+    false,
+  );
+  const read = await store.get("org_1", "ghr_1");
+  assert.deepEqual(read?.stack, ["TypeScript"]);
+  assert.equal(read?.stackVersion, 1);
 });

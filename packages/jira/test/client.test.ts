@@ -545,7 +545,6 @@ test("issueSpec reads the description and hashes what it read", async () => {
 
   assert.equal(spec.summary, "Add export");
   assert.equal(spec.descriptionText, "Adds CSV.");
-  assert.equal(spec.issueType, "Story");
   assert.match(spec.specHash, /^[0-9a-f]{64}$/);
   // The one call that asks Jira for `description`.
   assert.match(urls[0] ?? "", /fields=summary%2Cdescription/);

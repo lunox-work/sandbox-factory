@@ -84,6 +84,7 @@ describe("bounty database concurrency", () => {
       ["issue_lease", "board_bounty", "1003", "DEMO-3"],
       ["issue_states", "board_bounty", "1004", "DEMO-4"],
       ["issue_repriced", "board_bounty", "1005", "DEMO-5"],
+      ["issue_version", "board_bounty", "1090", "DEMO-90"],
     ]);
   });
 
@@ -111,12 +112,8 @@ describe("bounty database concurrency", () => {
   ) {
     for (const [id, boardId, externalId, key] of rows) {
       await sql`
-        insert into bounty (id, organization_id, number, title, origin)
-        values (
-          ${id}, 'org_bounty',
-          (select coalesce(max(number), 0) + 1 from bounty where organization_id = 'org_bounty'),
-          ${key}, 'jira'
-        )
+        insert into bounty (id, organization_id, title, origin)
+        values (${id}, 'org_bounty', ${key}, 'jira')
       `;
       await sql`
         insert into jira_issue (
@@ -387,7 +384,8 @@ describe("bounty database concurrency", () => {
       sql.begin(async (tx) => {
         await tx`
           update bounty_proposal
-          set status = 'approved'
+          set status = 'approved', version = 1, versioned_at = now(),
+            version_revision = 2
           where id = 'proposal_rollback'
         `;
         // A write-back of a kind the schema no longer knows.
@@ -450,8 +448,114 @@ describe("bounty database concurrency", () => {
     await assert.rejects(
       sql`update bounty_proposal set status = 'superseded' where id = 'proposal_states'`,
     );
-    await sql`update bounty_proposal set status = 'approved' where id = 'proposal_states'`;
+    // Approved only as a version.
+    await assert.rejects(
+      sql`update bounty_proposal set status = 'approved' where id = 'proposal_states'`,
+    );
+    await sql`
+      update bounty_proposal
+      set status = 'approved', version = 1, versioned_at = now(),
+        version_revision = 1
+      where id = 'proposal_states'
+    `;
     await sql`delete from bounty_proposal where id = 'proposal_states'`;
+  });
+
+  test("a proposal's version moves on an approval of something changed, not on a withdrawal", async () => {
+    await insertRun("run_version", "request-version", "succeeded");
+    await insertProposal("proposal_version", "run_version", "issue_version");
+    const connection = createConnection({ url: scratchUrl() });
+    const proposals = createBountyProposalStore(connection.db);
+    const writebacks = createBountyWritebackStore(connection.db);
+    try {
+      const approved = await proposals.approve(
+        "org_bounty",
+        "proposal_version",
+        1,
+        "user_bounty",
+        "off",
+      );
+      assert.ok(approved.ok);
+      assert.equal(approved.proposal.version, 1);
+      const first = approved.proposal.versionedAt;
+      assert.notEqual(first, null);
+
+      // Withdrawn and approved again as it was: the same version, from
+      // the same moment, whichever way the approval goes.
+      const withdrawn = await proposals.withdraw(
+        "org_bounty",
+        "proposal_version",
+        2,
+      );
+      assert.ok(withdrawn.ok);
+      assert.equal(withdrawn.proposal.version, 1);
+      const again = await writebacks.approveWithIntent(
+        "org_bounty",
+        "proposal_version",
+        3,
+        "user_bounty",
+        {
+          complexity: "M",
+          amountMinor: 200,
+          currency: "USD",
+          proposalUrl: "https://example.test/p",
+        },
+      );
+      assert.equal(again.status, "created");
+      let rows = await sql`
+        select revision, version, versioned_at from bounty_proposal
+        where id = 'proposal_version'
+      `;
+      assert.equal(rows[0]?.["revision"], 4);
+      assert.equal(rows[0]?.["version"], 1);
+      assert.equal((rows[0]?.["versioned_at"] as Date).toISOString(), first);
+
+      // Withdrawn, changed, and approved: the next version, from now.
+      const back = await writebacks.withdrawWithIntent(
+        "org_bounty",
+        "proposal_version",
+        4,
+        "user_bounty",
+        {
+          complexity: "M",
+          amountMinor: 200,
+          currency: "USD",
+          proposalUrl: "https://example.test/p",
+        },
+      );
+      assert.equal(back.status, "created");
+      const resized = await proposals.resize(
+        "org_bounty",
+        "proposal_version",
+        5,
+        "user_bounty",
+        "L",
+        300,
+        "USD",
+      );
+      assert.ok(resized.ok);
+      assert.equal(resized.proposal.version, 1);
+      const changed = await proposals.approve(
+        "org_bounty",
+        "proposal_version",
+        6,
+        "user_bounty",
+        "off",
+      );
+      assert.ok(changed.ok);
+      assert.equal(changed.proposal.version, 2);
+      assert.ok(
+        Date.parse(changed.proposal.versionedAt ?? "") >
+          Date.parse(first ?? ""),
+      );
+      rows = await sql`
+        select version_revision from bounty_proposal
+        where id = 'proposal_version'
+      `;
+      assert.equal(rows[0]?.["version_revision"], 7);
+    } finally {
+      await connection.close();
+    }
   });
   test("proposals are counted and filtered by the category their bounty was picked for", async () => {
     // The category lives in the run's plan, as jsonb, and both reads reach
@@ -582,7 +686,7 @@ describe("bounty database concurrency", () => {
           + right(id, 1)::int * 100 * interval '1 microsecond'
         where id like 'proposal_cat_%'
       `;
-      const paged: string[] = [];
+      const paged: (string | null)[] = [];
       let cursor: { createdAt: string; id: string } | undefined;
       for (;;) {
         const [row] = await proposals.list("org_bounty", {
@@ -666,7 +770,7 @@ describe("bounty database concurrency", () => {
     const input = (runId: string, bountyId: string) => ({
       runId,
       repoSnapshotId: "rsn_profile",
-      profileIntent: { issueType: "Bug", priority: "High" },
+      profileIntent: true,
       bountyId,
       specHash: "d".repeat(64),
       specHashVersion: 1,
@@ -762,13 +866,11 @@ describe("bounty database concurrency", () => {
       assert.equal(pending?.specRevision, 1);
       assert.equal(pending?.specHash, first.specHash);
       assert.equal(pending?.snapshotId, "rsn_profile");
-      assert.deepEqual(pending?.bounty, { issueType: "Bug", priority: "High" });
       await profiles.request("org_bounty", {
         proposalId,
         specRevision: 1,
         specHash: first.specHash,
         snapshotId: "rsn_profile",
-        bounty: { issueType: "Task", priority: null },
       });
       assert.equal(
         (await profiles.pending("org_bounty")).filter(
@@ -776,9 +878,10 @@ describe("bounty database concurrency", () => {
         ).length,
         1,
       );
-      assert.deepEqual(
-        (await profiles.latest("org_bounty", proposalId))?.bounty,
-        { issueType: "Bug", priority: "High" },
+      // Asked again, the revision keeps the row the sizing made.
+      assert.equal(
+        (await profiles.latest("org_bounty", proposalId))?.id,
+        pending?.id,
       );
       const stored = await specs.get("org_bounty", proposalId, 1);
       assert.match(stored?.id ?? "", /^bsp_/);
@@ -1210,17 +1313,17 @@ describe("bounty database concurrency", () => {
       insert into organization (id, name, slug)
       values ('org_paging', 'Paging Org', 'paging-org')
     `;
-    for (const [id, number, micros] of [
-      ["bty_ms_a", 1, 100],
-      ["bty_ms_b", 2, 400],
-      ["bty_ms_c", 3, 700],
+    for (const [id, micros] of [
+      ["bty_ms_a", 100],
+      ["bty_ms_b", 400],
+      ["bty_ms_c", 700],
     ] as const) {
       // Computed in SQL: a timestamp sent as a parameter goes through a JS
       // Date, which would cut it to the millisecond before it arrived.
       await sql`
-        insert into bounty (id, organization_id, number, title, created_at)
+        insert into bounty (id, organization_id, title, created_at)
         values (
-          ${id}, 'org_paging', ${number}, ${id},
+          ${id}, 'org_paging', ${id},
           timestamptz '2026-10-03 00:00:00.123Z'
             + ${micros}::int * interval '1 microsecond'
         )
@@ -1379,7 +1482,7 @@ describe("bounty database concurrency", () => {
     }
   });
 
-  test("bounties written at once each take their own number", async () => {
+  test("bounties written at once are each saved, under ids of their own", async () => {
     await sql`
       insert into organization (id, name, slug)
       values ('org_numbers', 'Numbers Org', 'numbers-org')
@@ -1392,19 +1495,14 @@ describe("bounty database concurrency", () => {
           bounties.create("org_numbers", "user_bounty", {
             title: `Bounty ${index}`,
             description: "",
-            issueType: "Task",
-            priority: null,
-            labels: [],
             repoId: null,
+            stack: [],
           }),
         ),
       );
-      assert.deepEqual(
-        created
-          .map((result) => (result.ok ? result.bounty.number : 0))
-          .sort((a, b) => a - b),
-        [1, 2, 3, 4, 5],
-      );
+      const ids = created.map((result) => (result.ok ? result.bounty.id : ""));
+      assert.equal(new Set(ids).size, 5);
+      assert.ok(ids.every((id) => id.startsWith("bty_")));
     } finally {
       await connection.close();
     }

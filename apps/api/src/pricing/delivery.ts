@@ -16,7 +16,7 @@ import {
   type JiraClient,
   type JiraWriteClient,
 } from "@sandbox-factory/jira";
-import { formatMinorUnits } from "sandbox-factory";
+import { BOUNTY_SPEC_HASH_VERSION, formatMinorUnits } from "sandbox-factory";
 
 const HEARTBEAT_MS = 15_000;
 
@@ -133,7 +133,7 @@ export class BountyDelivery {
           AbortSignal.any([leaseSignal, requestController.signal]),
         );
         if (
-          context.proposal.specHashVersion !== 1 ||
+          context.proposal.specHashVersion !== BOUNTY_SPEC_HASH_VERSION ||
           spec.pricingSpecHash !== context.proposal.specHash ||
           spec.inputTruncated
         ) {

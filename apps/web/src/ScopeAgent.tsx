@@ -11,6 +11,7 @@ import { queryKeys, useUserId } from "./data/query";
  * same way and shown for review before it is attached to a version.
  */
 
+import { Combobox } from "@/components/Combobox";
 import { ErrorBanner, LoadingLine } from "@/components/Message";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -97,22 +98,30 @@ export function AgentProposalPicker({
     );
   return (
     <div className="flex flex-wrap items-end gap-3">
-      <label className="text-xs">
+      <div className="flex max-w-full min-w-0 flex-col gap-1 text-xs">
         Bounty
-        <select
-          aria-label="Bounty"
-          className="bg-background mt-1 block max-w-full rounded border p-2 text-sm"
+        <Combobox
+          label="Bounty"
+          searchPlaceholder="Search bounties…"
+          className="w-80 max-w-full"
+          contentClassName="w-96"
+          options={proposals.map((proposal) => {
+            const where = [proposal.status, proposal.boardName].filter(
+              (part): part is string => part !== null,
+            );
+            return {
+              value: proposal.id,
+              label: [proposal.issueKey, proposal.title ?? "Untitled"]
+                .filter((part): part is string => part !== null)
+                .join(" · "),
+              keywords: where,
+              detail: where.join(", "),
+            };
+          })}
           value={chosen}
-          onChange={(event) => setChosen(event.target.value)}
-        >
-          {proposals.map((proposal) => (
-            <option key={proposal.id} value={proposal.id}>
-              {proposal.issueKey} · {proposal.title ?? "Untitled"} (
-              {proposal.status}, {proposal.boardName})
-            </option>
-          ))}
-        </select>
-      </label>
+          onValueChange={setChosen}
+        />
+      </div>
       <Button
         size="sm"
         disabled={pending || chosen === ""}

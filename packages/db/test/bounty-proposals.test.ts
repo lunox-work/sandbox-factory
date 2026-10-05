@@ -43,6 +43,9 @@ function row(overrides: Partial<BountyProposalRow> = {}): BountyProposalRow {
     currency: "USD",
     status: "proposed",
     revision: 1,
+    version: 0,
+    versionedAt: null,
+    versionRevision: null,
     specRevision: null,
     step: null,
     stepVersion: null,
@@ -58,7 +61,6 @@ function row(overrides: Partial<BountyProposalRow> = {}): BountyProposalRow {
 
 /** The bounty's name as a proposal read joins it. */
 const NAME = {
-  bountyNumber: 1,
   bountyTitle: "Add login",
   jiraKey: "APP-1",
 } as const;
@@ -169,8 +171,8 @@ test("a run writes only for its own bounty", async () => {
     [handWritten],
     [row()],
   ]).create("org_1", input);
-  // Named by its own number while it has no Jira key.
-  assert.equal(own?.issueKey, "B-1");
+  // No Jira key to name it by.
+  assert.equal(own?.issueKey, null);
 });
 
 test("creates under a live lease and classifies fencing outcomes", async () => {
@@ -492,7 +494,7 @@ test("a bounty written here is matched to its plan entry by its own id", async (
       planned: [
         {
           externalIssueId: "bty_1",
-          issueKey: "B-1",
+          issueKey: null,
           summary: "Add login",
           bountyId: "bty_1",
           categories: [{ id: "paper-cuts", label: "Paper cuts", reason: "r" }],
@@ -501,7 +503,7 @@ test("a bounty written here is matched to its plan entry by its own id", async (
     },
   ]);
   const listed = await createBountyProposalStore(fake.db).list("org_1");
-  assert.equal(listed[0]?.issueKey, "B-1");
+  assert.equal(listed[0]?.issueKey, null);
   assert.deepEqual(
     listed[0]?.categories.map(({ id }) => id),
     ["paper-cuts"],
@@ -676,7 +678,13 @@ test("finds each proposal's Jira issue, for reading live titles", async () => {
 });
 
 test("approves once and treats the exact replay as idempotent", async () => {
-  const approved = row({ status: "approved", revision: 2 });
+  const approved = row({
+    status: "approved",
+    revision: 2,
+    version: 1,
+    versionedAt: new Date("2026-10-05T00:00:00.000Z"),
+    versionRevision: 2,
+  });
   const fake = createSequencedFakeDb([
     [approved],
     [{ row: approved, ...NAME }],
@@ -689,6 +697,9 @@ test("approves once and treats the exact replay as idempotent", async () => {
     "off",
   );
   assert.equal(result.ok, true);
+  // Nothing has changed since its version as of the approval's revision.
+  assert.equal(fake.calls[0]?.values?.["versionRevision"], 2);
+  assert.ok(result.ok && result.proposal.version === 1);
 
   const replay = createSequencedFakeDb([[], [{ row: approved, ...NAME }]]);
   assert.equal(
@@ -725,6 +736,10 @@ test("withdraws and resizes through expected-revision filters", async () => {
   assert.equal(withdrawFake.calls[0]?.values?.["status"], "proposed");
   assert.equal(withdrawFake.calls[0]?.values?.["decidedBy"], null);
   assert.equal(withdrawFake.calls[0]?.values?.["decisionDeliveryPolicy"], null);
+  // A withdrawal changes nothing it says: its version stands at the
+  // withdrawal's revision too.
+  assert.equal(withdrawFake.calls[0]?.values?.["versionRevision"], 2);
+  assert.equal(withdrawFake.calls[0]?.values?.["version"], undefined);
 
   const resized = row({ revision: 2, complexity: "L", amountMinor: 300 });
   const resizeFake = createSequencedFakeDb([
@@ -1330,7 +1345,7 @@ test("profile intent uses the surviving locked snapshot and frozen bounty metada
         ...input,
         spec,
         repoSnapshotId: "rsn_1",
-        profileIntent: { issueType: "Bug", priority: "High" },
+        profileIntent: true,
       },
     );
     assert.equal(result.status, "created");
@@ -1344,10 +1359,6 @@ test("profile intent uses the surviving locked snapshot and frozen bounty metada
       assert.equal(intents[0]?.values?.["specRevision"], 1);
       assert.equal(intents[0]?.values?.["specHash"], spec.specHash);
       assert.equal(intents[0]?.values?.["snapshotId"], "rsn_1");
-      assert.deepEqual(intents[0]?.values?.["bounty"], {
-        issueType: "Bug",
-        priority: "High",
-      });
       assert.equal(intents[0]?.ignoredConflict, true);
     }
   }

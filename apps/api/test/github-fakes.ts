@@ -318,6 +318,9 @@ export function memoryGithub(): MemoryGithub {
         lastSyncedAt: existing?.lastSyncedAt ?? null,
         syncStatus: "pending",
         syncError: null,
+        stack: existing?.stack ?? null,
+        stackCommitSha: existing?.stackCommitSha ?? null,
+        stackVersion: existing?.stackVersion ?? null,
         createdAt: existing?.createdAt ?? stamp(),
       };
       repoRows.set(row.id, row);
@@ -416,6 +419,18 @@ export function memoryGithub(): MemoryGithub {
         syncStatus: "error",
         syncError: message,
         lastSyncedAt: stamp(),
+      });
+      return Promise.resolve(true);
+    },
+    recordStack: (organizationId, id, detected) => {
+      const row = ownedRepo(organizationId, id);
+      if (row === undefined || row.syncStatus === "gone") {
+        return Promise.resolve(false);
+      }
+      setRepo(row, {
+        stack: [...detected.stack],
+        stackCommitSha: detected.commitSha,
+        stackVersion: detected.version,
       });
       return Promise.resolve(true);
     },
@@ -742,6 +757,10 @@ export interface GithubWorld {
   outsideInstallation?: number[];
   /** Status the tree endpoint answers with instead, e.g. 500. */
   treeStatus?: number;
+  /** File text by Git object id, for the blob endpoint; absent is 404. */
+  blobs?: Record<string, string>;
+  /** Status the blob endpoint answers with instead, e.g. 500. */
+  blobStatus?: number;
 }
 
 export function world(overrides: Partial<GithubWorld> = {}): GithubWorld {
@@ -971,6 +990,20 @@ export function fakeGithub(state: GithubWorld): typeof globalThis.fetch & {
     const languages = /^\/repos\/([^/]+\/[^/]+)\/languages$/.exec(path);
     if (languages !== null) {
       return json(state.languages?.[languages[1] ?? ""] ?? {});
+    }
+    const blob = /^\/repos\/[^/]+\/[^/]+\/git\/blobs\/([^/]+)$/.exec(path);
+    if (blob !== null) {
+      if (state.blobStatus !== undefined) {
+        return json({ message: "Server Error" }, state.blobStatus);
+      }
+      const text = state.blobs?.[blob[1] ?? ""];
+      return text === undefined
+        ? json({ message: "Not Found" }, 404)
+        : json({
+            sha: blob[1],
+            encoding: "base64",
+            content: Buffer.from(text).toString("base64"),
+          });
     }
     throw new Error(`unexpected request to ${url.toString()}`);
   }) as typeof globalThis.fetch & { urls: string[]; mints: RecordedMint[] };

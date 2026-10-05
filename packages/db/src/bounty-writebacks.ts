@@ -2,6 +2,7 @@ import { and, eq, gt, lt, or, sql } from "drizzle-orm";
 
 import type { Database } from "./errors.js";
 import { generateId } from "./mapping.js";
+import { approvalVersion, withdrawalVersion } from "./proposal-version.js";
 import { bountyProposal, bountyWriteback } from "./schema.js";
 import type { BountyWritebackPayload, BountyWritebackRow } from "./schema.js";
 
@@ -146,6 +147,7 @@ export function createBountyWritebackStore(db: Database): BountyWritebackStore {
             decidedBy,
             decidedAt: now,
             decisionDeliveryPolicy: "requested",
+            ...approvalVersion(expectedRevision, now),
             updatedAt: now,
           })
           .where(
@@ -216,6 +218,7 @@ export function createBountyWritebackStore(db: Database): BountyWritebackStore {
             decidedAt: null,
             decisionDeliveryPolicy: null,
             updatedAt: now,
+            ...withdrawalVersion(expectedRevision),
           })
           .where(
             and(

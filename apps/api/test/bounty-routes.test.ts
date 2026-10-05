@@ -18,7 +18,10 @@ import {
   type PricingRouteOptions,
 } from "../src/pricing/routes.js";
 import type { AuthVariables } from "../src/routes.js";
-import { mountBountyRoutes } from "../src/bounties/routes.js";
+import {
+  mountBountyRoutes,
+  mountCallerBountyRoutes,
+} from "../src/bounties/routes.js";
 
 const stamp = "2026-10-03T00:00:00.000Z";
 const requestId = "8f0b4a1e-9a77-4c35-9a52-3f0f5b2d3c11";
@@ -27,17 +30,13 @@ function written(overrides: Partial<StoredBounty> = {}): StoredBounty {
   return {
     id: "bty_7",
     organizationId: "org_1",
-    number: 7,
-    key: "B-7",
     title: "Invitations are not sent",
     description: "Scheduling an interview sends the candidate one email.",
-    issueType: "Bug",
-    priority: null,
-    labels: ["email"],
     components: [],
     inputTruncated: false,
     origin: "manual",
     repoId: null,
+    stack: [],
     createdBy: "user_1",
     revision: 1,
     jira: null,
@@ -51,8 +50,6 @@ function written(overrides: Partial<StoredBounty> = {}): StoredBounty {
 function imported(overrides: Partial<StoredBounty> = {}): StoredBounty {
   return written({
     id: "bty_1",
-    number: 1,
-    key: "APP-1",
     origin: "jira",
     jira: {
       issueId: "jri_1",
@@ -76,10 +73,10 @@ function proposalOf(
     organizationId: "org_1",
     runId: "brn_1",
     bountyId: bounty.id,
-    issueKey: bounty.key,
+    issueKey: bounty.jira?.key ?? null,
     title: bounty.title,
     specHash: "a".repeat(64),
-    specHashVersion: 1,
+    specHashVersion: 2,
     rateCard: {
       currency: "USD",
       xsMinor: 100,
@@ -104,6 +101,8 @@ function proposalOf(
     currency: "USD",
     status: "proposed",
     revision: 1,
+    version: 0,
+    versionedAt: null,
     specRevision: null,
     step: null,
     repoSnapshotId: null,
@@ -303,19 +302,22 @@ function listedOf(bounty: StoredBounty): ListedBounty {
 
 test("any member lists the organization's bounties, a page at a time", async () => {
   const page = Array.from({ length: 2 }, (_, i) =>
-    listedOf(written({ id: `bty_${i}`, number: i + 1, key: `B-${i + 1}` })),
+    listedOf(written({ id: `bty_${i}`, title: `Bounty ${i + 1}` })),
   );
   const state = harness({ role: "member", listed: page });
   const response = await state.request("GET", "bounties?limit=2");
   assert.equal(response.status, 200);
   const body = (await response.json()) as {
-    bounties: { key: string; jira: unknown }[];
+    bounties: Record<string, unknown>[];
     nextCursor: string | null;
   };
   assert.deepEqual(
-    body.bounties.map(({ key }) => key),
-    ["B-1", "B-2"],
+    body.bounties.map(({ title }) => title),
+    ["Bounty 1", "Bounty 2"],
   );
+  // Named by its id and title: there is no count of the organization's.
+  assert.equal("key" in (body.bounties[0] ?? {}), false);
+  assert.equal("number" in (body.bounties[0] ?? {}), false);
   assert.equal(body.nextCursor, `${stamp}|bty_1`);
 
   const next = await state.request(
@@ -341,6 +343,61 @@ test("any member lists the organization's bounties, a page at a time", async () 
   );
 });
 
+test("the caller's bounties list across their own organizations only", async () => {
+  const asked: string[] = [];
+  const pages: unknown[] = [];
+  const app = new Hono<{ Variables: AuthVariables }>();
+  app.use("*", async (c, next) => {
+    c.set("user", { id: "user_1" } as never);
+    await next();
+  });
+  mountCallerBountyRoutes(app, {
+    organizationsOf: (userId) => {
+      asked.push(userId);
+      return Promise.resolve(["org_1", "org_2"]);
+    },
+    bounties: {
+      listAcross: (organizationIds, page) => {
+        pages.push({ organizationIds, ...page });
+        return Promise.resolve([
+          listedOf(written({ id: "bty_9", organizationId: "org_2" })),
+          listedOf(written()),
+        ]);
+      },
+    },
+  });
+
+  const response = await app.request("/api/v1/me/bounties?limit=2");
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as {
+    bounties: { id: string; organizationId: string }[];
+    nextCursor: string | null;
+  };
+  assert.deepEqual(
+    body.bounties.map(({ id, organizationId }) => [id, organizationId]),
+    [
+      ["bty_9", "org_2"],
+      ["bty_7", "org_1"],
+    ],
+  );
+  assert.equal(body.nextCursor, `${stamp}|bty_7`);
+  assert.deepEqual(asked, ["user_1"]);
+  assert.deepEqual(pages, [{ organizationIds: ["org_1", "org_2"], limit: 2 }]);
+
+  await app.request(
+    `/api/v1/me/bounties?cursor=${encodeURIComponent(`${stamp}|bty_7`)}`,
+  );
+  assert.deepEqual(pages.at(-1), {
+    organizationIds: ["org_1", "org_2"],
+    limit: 25,
+    cursor: { createdAt: stamp, id: "bty_7" },
+  });
+  assert.equal(
+    (await app.request("/api/v1/me/bounties?cursor=nope")).status,
+    400,
+  );
+});
+
 test("a listed Jira bounty links to its issue", async () => {
   const state = harness({ listed: [listedOf(imported())] });
   const body = (await (await state.request("GET", "bounties")).json()) as {
@@ -359,10 +416,10 @@ test("any member writes a bounty; only its title is needed", async () => {
   });
   assert.equal(response.status, 201);
   const body = (await response.json()) as {
-    bounty: { key: string; origin: string; proposal: unknown };
+    bounty: { origin: string; proposal: unknown; jira: unknown };
   };
-  assert.equal(body.bounty.key, "B-7");
   assert.equal(body.bounty.origin, "manual");
+  assert.equal(body.bounty.jira, null);
   assert.equal(body.bounty.proposal, null);
   assert.deepEqual(state.calls[0]?.args, [
     "org_1",
@@ -370,12 +427,28 @@ test("any member writes a bounty; only its title is needed", async () => {
     {
       title: "Invitations are not sent",
       description: "",
-      issueType: "Task",
-      priority: null,
-      labels: [],
       repoId: null,
+      stack: [],
     },
   ]);
+});
+
+test("a bounty's stack is stored under the catalog's names, each once", async () => {
+  const state = harness({ create: { ok: true, bounty: written() } });
+  const response = await state.request("POST", "bounties", {
+    title: "Invitations are not sent",
+    stack: ["postgres", "PostgreSQL", " Our mailer "],
+  });
+  assert.equal(response.status, 201);
+  assert.deepEqual((state.calls[0]?.args[2] as { stack: string[] }).stack, [
+    "PostgreSQL",
+    "Our mailer",
+  ]);
+  const tooMany = await state.request("POST", "bounties", {
+    title: "t",
+    stack: Array.from({ length: 31 }, (_, i) => `Tool ${i}`),
+  });
+  assert.equal(tooMany.status, 400);
 });
 
 test("a bounty that cannot be stored is refused with why", async () => {
@@ -515,7 +588,8 @@ test("proposing a bounty written here starts a bounty run, with no board", async
   assert.deepEqual(input["planned"], [
     {
       externalIssueId: "bty_7",
-      issueKey: "B-7",
+      // Written here: no Jira key to name it by.
+      issueKey: null,
       summary: "Invitations are not sent",
       bountyId: "bty_7",
       categories: [],
@@ -633,11 +707,7 @@ test("the organization's proposals list from every source, and count by category
 
 test("a bounty written here is reviewed and approved with no Jira", async () => {
   const bounty = written();
-  const priced = await bountySpecHash(
-    bounty.title,
-    bounty.description,
-    bounty.issueType,
-  );
+  const priced = await bountySpecHash(bounty.title, bounty.description);
   const proposal = proposalOf(bounty, { specHash: priced });
   const approved: unknown[] = [];
   const state = harness({
@@ -650,11 +720,11 @@ test("a bounty written here is reviewed and approved with no Jira", async () => 
   assert.equal(detail.status, 200);
   const body = (await detail.json()) as {
     freshness: { freshness: string; liveUrl?: string };
-    liveSpec: { url: null; key: string };
+    liveSpec: { url: null; key: string | null };
   };
   assert.equal(body.freshness.freshness, "current");
   assert.equal(body.freshness.liveUrl, undefined);
-  assert.equal(body.liveSpec.key, "B-7");
+  assert.equal(body.liveSpec.key, null);
   // Not on a board, so not on this one.
   assert.equal(
     (await state.request("GET", "proposals/bpr_1?boardId=jrb_1")).status,

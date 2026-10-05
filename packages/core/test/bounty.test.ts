@@ -6,42 +6,38 @@ import { BOUNTY_RUN_KINDS } from "../src/sizing.js";
 import { DESCRIPTOR_FORBIDDEN_KEYS } from "../src/sandbox/descriptor.js";
 import {
   clampBountyTitle,
-  DEFAULT_ISSUE_TYPE,
   normalizeSpecText,
   BOUNTY_LIMITS,
   BOUNTY_ORIGINS,
   BOUNTY_SPEC_HASH_VERSION,
-  bountyKey,
   bountySpecHash,
 } from "../src/bounty.js";
 
-test("hashes the normalized title, description and type as a JSON tuple", async () => {
-  // Version 1 is the hash proposals stored when Jira was read directly, so
-  // its encoding is pinned: a change here would make every one stale.
+test("hashes the normalized title and description as a JSON tuple", async () => {
+  // Version 2's encoding is pinned: migration 0046 computes it in SQL for
+  // the proposals it moves from version 1, and a change here would make
+  // every one stale.
   const expected = createHash("sha256")
-    .update(JSON.stringify(["Fix login", "Steps:\n1. open", "Bug"]))
+    .update(JSON.stringify(["Fix login", "Steps:\n1. open"]))
     .digest("hex");
-  assert.equal(
-    await bountySpecHash("Fix login", "Steps:\n1. open", "Bug"),
-    expected,
-  );
-  assert.equal(BOUNTY_SPEC_HASH_VERSION, 1);
+  assert.equal(await bountySpecHash("Fix login", "Steps:\n1. open"), expected);
+  assert.equal(BOUNTY_SPEC_HASH_VERSION, 2);
 });
 
 test("ignores line endings and trailing space, not words", async () => {
-  const clean = await bountySpecHash("Fix login", "One\nTwo", "Bug");
+  const clean = await bountySpecHash("Fix login", "One\nTwo");
   assert.equal(
-    await bountySpecHash("  Fix login \r\n", "One  \r\nTwo\r\n", "Bug "),
+    await bountySpecHash("  Fix login \r\n", "One  \r\nTwo\r\n"),
     clean,
   );
-  assert.notEqual(await bountySpecHash("Fix logout", "One\nTwo", "Bug"), clean);
-  assert.notEqual(await bountySpecHash("Fix login", "One\nTwo", "Task"), clean);
+  assert.notEqual(await bountySpecHash("Fix logout", "One\nTwo"), clean);
+  assert.notEqual(await bountySpecHash("Fix login", "One\nThree"), clean);
 });
 
 test("keeps fields apart so text cannot move between them", async () => {
   assert.notEqual(
-    await bountySpecHash("a", "b c", "Task"),
-    await bountySpecHash("a b", "c", "Task"),
+    await bountySpecHash("a", "b c"),
+    await bountySpecHash("a b", "c"),
   );
 });
 
@@ -49,16 +45,9 @@ test("normalizes only whitespace at line ends and around the text", () => {
   assert.equal(normalizeSpecText("\r\n a  \r b\t\n"), "a\n b");
 });
 
-test("names a bounty by its Jira key while it has one", () => {
-  assert.equal(bountyKey({ number: 12 }), "B-12");
-  assert.equal(bountyKey({ number: 12, jiraKey: null }), "B-12");
-  assert.equal(bountyKey({ number: 12, jiraKey: "APP-4" }), "APP-4");
-});
-
-test("declares a bounty's origins, bounds and default type", () => {
+test("declares a bounty's origins and bounds", () => {
   assert.deepEqual([...BOUNTY_ORIGINS], ["manual", "jira"]);
-  assert.equal(BOUNTY_LIMITS.description, 20_000);
-  assert.equal(DEFAULT_ISSUE_TYPE, "Task");
+  assert.deepEqual(BOUNTY_LIMITS, { title: 255, description: 20_000 });
   assert.ok(BOUNTY_RUN_KINDS.includes("bounty"));
   // A bounty id is private provenance, like the pointers it replaced.
   assert.ok(DESCRIPTOR_FORBIDDEN_KEYS.includes("bountyId"));

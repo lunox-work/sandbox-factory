@@ -138,14 +138,6 @@ export function ComplexityProfileBlock({
   ].filter((demand): demand is string => typeof demand === "string");
   const rows: [string, React.ReactNode][] = [
     [
-      "Bounty",
-      `${profile.bounty.issueType}${
-        profile.bounty.priority === null
-          ? ""
-          : `, priority ${profile.bounty.priority}`
-      }`,
-    ],
-    [
       "Slice",
       `${plural(slice.files, "file")} in ${plural(
         slice.modules.length,

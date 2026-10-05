@@ -53,7 +53,7 @@ function proposal(): StoredBountyProposal {
     issueKey: "APP-1",
     title: "Title",
     specHash: "a".repeat(64),
-    specHashVersion: 1,
+    specHashVersion: 2,
     rateCard: {
       currency: "USD",
       xsMinor: 100,
@@ -78,6 +78,8 @@ function proposal(): StoredBountyProposal {
     currency: "USD",
     status: "approved",
     revision: 2,
+    version: 0,
+    versionedAt: null,
     specRevision: null,
     step: null,
     decidedAt: "2026-09-22T00:00:00.000Z",

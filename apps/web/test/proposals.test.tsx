@@ -2707,12 +2707,15 @@ test("a proposal sized before specs has an uncounted tab saying so, without aski
 
   await userEvent.click(tab);
   expect(within(panel).getByTestId("spec-empty").textContent).toBe(
-    "No scenarios were drafted for this proposal. Re-analyze, on the Price tab, drafts them from the bounty as it is now.",
+    "No scenarios were drafted for this proposal. Re-analyze drafts them from the bounty as it is now.",
   );
   expect(server.specReads()).toEqual([]);
 });
 
-/** A step of S → S+: a heavy and a light scenario added since sizing. */
+/**
+ * A step of S → S+: a heavy and a light scenario added since sizing, and a
+ * draft one trimmed.
+ */
 const step = {
   base: "S",
   complexity: "S+",
@@ -2726,6 +2729,9 @@ const step = {
       weight: "heavy",
     },
     { id: "s4", kind: "boundary", title: "An empty table", weight: "light" },
+  ],
+  removed: [
+    { id: "s2", kind: "happy", title: "A CSV is exported", weight: "light" },
   ],
   nextStepIn: 3,
   settings: {
@@ -2850,26 +2856,15 @@ test("a half size shows on its whole size's card, and the row stays at five", as
   expect(within(panel).getByText(money(8150, "USD"))).toBeDefined();
 });
 
-test("the step says how the added weight moved the size, and what the next step needs", async () => {
+test("the changes since sizing are marked on the scenarios, not summed up over them", async () => {
   const server = steppedBoard();
   vi.stubGlobal("fetch", server.fetchMock);
   renderStreamedBoard();
   const list = await screen.findByTestId("proposal-list");
   await userEvent.click(within(list).getByRole("button", { name: /Bounty 1/ }));
   const panel = await screen.findByTestId("proposal-panel");
-
-  const block = await within(panel).findByTestId("proposal-step");
-  expect(block.querySelector("p + p")?.textContent).toBe(
-    "S → S+: 5 points added since it was sized (1 heavy, 1 light). M needs 3 more.",
-  );
-  expect(
-    within(block)
-      .getAllByRole("listitem")
-      .map((item) => item.textContent),
-  ).toEqual([
-    "A failed export is retriedHeavy· 4 pts",
-    "An empty tableLight· 1 pt",
-  ]);
+  await within(panel).findByText("One form and its validation.");
+  expect(within(panel).queryByTestId("proposal-step")).toBeNull();
   // A weighed size needs no nudge.
   expect(within(panel).queryByTestId("proposal-unweighed")).toBeNull();
   // The model's own reasoning still comes first.
@@ -2913,9 +2908,6 @@ test("a resize sets the base, and the step stays on top", async () => {
   ).toBe("true");
   expect(within(panel).getByText("the model said S")).toBeDefined();
   expect(within(panel).getByText("M set by a reviewer")).toBeDefined();
-  expect(within(panel).getByTestId("proposal-step").textContent).toMatch(
-    /^Added to the specM → M\+: /,
-  );
 
   // The Scenarios tab leads with the override, and keeps what the model
   // said and why.

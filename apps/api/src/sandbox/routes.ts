@@ -10,8 +10,10 @@ export { approvedTaskHash, transformConfigHash } from "./version-service.js";
  * snapshots the approved task from the live proposal and spec, validates
  * the alias table, resolves the scope and writes the private provenance
  * in one store call. The build route queues a `sandbox_build` run whose
- * parameters carry every hash the output must bind to. Nothing here is
- * public; publication is phase 5D.
+ * parameters carry every hash the output must bind to. A sandbox with no
+ * repository has its versions generated instead: the starter route queues
+ * an agent run that writes one from the bounty and builds it. Nothing here
+ * is public; publication is phase 5D.
  */
 
 import type {
@@ -23,8 +25,13 @@ import {
   analysisRunResponseSchema,
   createSandboxSchema,
   createSandboxVersionSchema,
+  generateStarterResponseSchema,
+  publishVersionResponseSchema,
   linkSandboxSourceSchema,
   replayResponseSchema,
+  SANDBOX_FILE_TEXT_MAX_BYTES,
+  sandboxFileContentSchema,
+  sandboxFileListSchema,
   sandboxListSchema,
   sandboxResponseSchema,
   sandboxVersionListSchema,
@@ -52,11 +59,14 @@ import type { AuthVariables } from "../http-context.js";
 const sandboxDto = ({ organizationId: _owner, ...dto }: StoredSandbox) => dto;
 const sourceDto = (source: StoredVersionSource) => ({
   sandboxVersionId: source.sandboxVersionId,
+  origin: source.origin,
   sourceSnapshotId: source.sourceSnapshotId,
   sourceCommitSha: source.sourceCommitSha,
   sliceRunId: source.sliceRunId,
   manifestSha256: source.manifestSha256,
   contractSha256: source.contractSha256,
+  starterRunId: source.starterRunId,
+  starterSha256: source.starterSha256,
   transformConfigSha256: source.transformConfigSha256,
   approvedTaskSha256: source.approvedTaskSha256,
   aliasRules: source.aliasRules,
@@ -83,6 +93,16 @@ const versionResponse = (
     version: stored.version,
     ...(privileged ? { source: sourceDto(stored.source) } : {}),
   });
+
+/** UTF-8 text, or null for bytes a text view cannot show. */
+function textOf(bytes: Uint8Array): string | null {
+  if (bytes.includes(0)) return null;
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    return null;
+  }
+}
 
 /** A dependency choice must name a package the slice requires. */
 function unknownChoices(
@@ -202,6 +222,21 @@ function sandboxRefused(
     : c.json({ error: "Not found." }, 404);
 }
 
+/**
+ * A generated version is written and built by its starter run, in one go:
+ * its transform has nothing to slice again, so it changes by generating a
+ * new version instead.
+ */
+function generatedRefused(c: Context, what: string): Response {
+  return c.json(
+    {
+      error: `A generated version's ${what} comes from its starter run; generate a new version instead.`,
+      code: "generated_version",
+    },
+    409,
+  );
+}
+
 /** A store refusal of a draft change, as the API reports it. */
 function refused(
   c: Context,
@@ -278,6 +313,45 @@ export function mountSandboxRoutes(
     if (!result.ok) return sandboxRefused(c, result.reason);
     return c.json(
       sandboxResponseSchema.parse({ sandbox: sandboxDto(result.sandbox) }),
+    );
+  });
+  /**
+   * A generated version, for a sandbox with no repository: the starter
+   * agent writes it from the bounty and builds it. Answers with the draft
+   * and its run, which the caller follows to see it finish.
+   */
+  app.post(`${base}/:id/starter`, async (c) => {
+    if (!admin(c.get("member").role))
+      return c.json(
+        { error: "Only owners and admins can generate a version." },
+        403,
+      );
+    const owner = c.req.param("orgId");
+    const sandbox = await options.sandboxes.get(owner, c.req.param("id"));
+    if (sandbox === null) return c.json({ error: "Not found." }, 404);
+    const generated = await service.generate(
+      owner,
+      c.get("user").id,
+      sandbox,
+      now(),
+    );
+    if (!generated.ok) {
+      const status = {
+        invalid: 400,
+        "not-found": 404,
+        conflict: 409,
+        unavailable: 502,
+      } as const;
+      return c.json(generated.body, status[generated.reason]);
+    }
+    await options.ensureWorker().catch(() => options.onLaunchError?.());
+    return c.json(
+      generateStarterResponseSchema.parse({
+        version: generated.result.version,
+        source: sourceDto(generated.result.source),
+        run: generated.run,
+      }),
+      202,
     );
   });
   app.get(base, async (c) =>
@@ -375,6 +449,7 @@ export function mountSandboxRoutes(
     if (!body.success) return c.json({ error: "Invalid version change." }, 400);
     const current = await options.sandboxes.getVersion(owner, versionId);
     if (current === null) return c.json({ error: "Not found." }, 404);
+    const sliceRunId = current.source.sliceRunId;
     const aliasRules = body.data.aliasRules ?? current.source.aliasRules;
     const dependencyChoices =
       body.data.dependencyChoices ?? current.source.dependencyChoices;
@@ -397,14 +472,16 @@ export function mountSandboxRoutes(
       body.data.dependencyChoices !== undefined ||
       body.data.acceptanceTests !== undefined ||
       fixturesChanged;
+    if (transformChanged && sliceRunId === null)
+      return generatedRefused(c, "transform");
     let scope = current.source.scope;
     let fixtures = current.source.fixtures;
     const needsSlice =
       body.data.dependencyChoices !== undefined ||
       body.data.fixtures !== undefined ||
       typeof body.data.fixtureRunId === "string";
-    if (needsSlice) {
-      const inputs = await sliceInputs(owner, current.source.sliceRunId);
+    if (needsSlice && sliceRunId !== null) {
+      const inputs = await sliceInputs(owner, sliceRunId);
       if ("error" in inputs)
         return c.json(
           {
@@ -426,7 +503,7 @@ export function mountSandboxRoutes(
         const copied = await fixturesFromRun(
           owner,
           body.data.fixtureRunId,
-          current.source.sliceRunId,
+          sliceRunId,
         );
         if ("error" in copied) return fixturesRefused(c, copied.error);
         fixtures = copied.fixtures;
@@ -475,6 +552,60 @@ export function mountSandboxRoutes(
   });
 
   /**
+   * Publishes a version: approves and freezes it, and makes it the
+   * sandbox's published version. Only a version whose build passed. No
+   * public repository is pushed yet; publication marks the version
+   * contributors are to get.
+   */
+  app.post(`${base}/versions/:vid/publish`, async (c) => {
+    if (!admin(c.get("member").role))
+      return c.json(
+        { error: "Only owners and admins can publish a version." },
+        403,
+      );
+    const result = await options.sandboxes.publishVersion(
+      c.req.param("orgId"),
+      c.req.param("vid"),
+      c.get("user").id,
+      now(),
+    );
+    if (!result.ok)
+      return result.reason === "not_ready"
+        ? c.json(
+            {
+              error: "Only a version whose build passed can be published.",
+              code: "not_ready",
+            },
+            409,
+          )
+        : c.json({ error: "Not found." }, 404);
+    return c.json(
+      publishVersionResponseSchema.parse({
+        sandbox: sandboxDto(result.sandbox),
+        version: result.version.version,
+        source: sourceDto(result.version.source),
+      }),
+    );
+  });
+
+  /** Back to a draft with no published version; versions stay frozen. */
+  app.post(`${base}/:id/unpublish`, async (c) => {
+    if (!admin(c.get("member").role))
+      return c.json(
+        { error: "Only owners and admins can unpublish a sandbox." },
+        403,
+      );
+    const sandbox = await options.sandboxes.unpublish(
+      c.req.param("orgId"),
+      c.req.param("id"),
+      now(),
+    );
+    return sandbox === null
+      ? c.json({ error: "Not found." }, 404)
+      : c.json(sandboxResponseSchema.parse({ sandbox: sandboxDto(sandbox) }));
+  });
+
+  /**
    * Queues the build. Its parameters are the version's hashes, so a changed
    * draft is a new run. A draft changed between the read and the record
    * leaves a queued run with stale hashes, which the worker rejects.
@@ -496,6 +627,15 @@ export function mountSandboxRoutes(
         { error: "A frozen version is not rebuilt.", code: "frozen" },
         409,
       );
+    const { sourceSnapshotId, sliceRunId, manifestSha256, contractSha256 } =
+      stored.source;
+    if (
+      sourceSnapshotId === null ||
+      sliceRunId === null ||
+      manifestSha256 === null ||
+      contractSha256 === null
+    )
+      return generatedRefused(c, "build");
     const task = approvedTaskReadiness(stored.source.approvedTask);
     if (!task.ready)
       return c.json(
@@ -515,24 +655,20 @@ export function mountSandboxRoutes(
         },
         409,
       );
-    const result = await options.runs.enqueue(
-      owner,
-      stored.source.sourceSnapshotId,
-      {
-        tool: "sandbox_build",
-        params: {
-          deadlineMinutes: 30,
-          sliceRunId: stored.source.sliceRunId,
-          sandboxVersionId: stored.version.id,
-          manifestSha256: stored.source.manifestSha256,
-          contractSha256: stored.source.contractSha256,
-          transformConfigSha256: stored.source.transformConfigSha256,
-          approvedTaskSha256: stored.source.approvedTaskSha256,
-        },
-        requestedBy: c.get("user").id,
-        maxActive: options.maxActive ?? 3,
+    const result = await options.runs.enqueue(owner, sourceSnapshotId, {
+      tool: "sandbox_build",
+      params: {
+        deadlineMinutes: 30,
+        sliceRunId,
+        sandboxVersionId: stored.version.id,
+        manifestSha256,
+        contractSha256,
+        transformConfigSha256: stored.source.transformConfigSha256,
+        approvedTaskSha256: stored.source.approvedTaskSha256,
       },
-    );
+      requestedBy: c.get("user").id,
+      maxActive: options.maxActive ?? 3,
+    });
     if (!result.ok)
       return result.reason === "run_limit"
         ? c.json(
@@ -555,6 +691,92 @@ export function mountSandboxRoutes(
     if (!recorded.ok) return refused(c, recorded.reason);
     await options.ensureWorker().catch(() => options.onLaunchError?.());
     return c.json(analysisRunResponseSchema.parse({ run: result.run }), 202);
+  });
+
+  /**
+   * The private sandbox a version's build wrote: the project, its hidden
+   * tests and the build's own records, read-only. Owners and admins only,
+   * since the hidden tests are among them.
+   */
+  app.get(`${base}/versions/:vid/files`, async (c) => {
+    if (!admin(c.get("member").role))
+      return c.json(
+        { error: "Only owners and admins can read a version's files." },
+        403,
+      );
+    const owner = c.req.param("orgId");
+    const stored = await options.sandboxes.getVersion(
+      owner,
+      c.req.param("vid"),
+    );
+    if (stored === null) return c.json({ error: "Not found." }, 404);
+    const runId = stored.source.buildRunId;
+    const run = runId === null ? null : await options.runs.get(owner, runId);
+    const files =
+      run === null ? [] : await options.artifacts.list(owner, run.id);
+    c.header("Cache-Control", "no-store");
+    return c.json(
+      sandboxFileListSchema.parse({
+        run: run === null ? null : { id: run.id, status: run.status },
+        files: files.map(({ path, sizeBytes, sha256 }) => ({
+          path,
+          sizeBytes,
+          sha256,
+        })),
+      }),
+    );
+  });
+  /**
+   * One of those files as text. Read through the API rather than a signed
+   * link, which the browser could not read across origins; named by its
+   * path, matched against what the run recorded, never joined into a key.
+   */
+  app.get(`${base}/versions/:vid/files/content`, async (c) => {
+    if (!admin(c.get("member").role))
+      return c.json(
+        { error: "Only owners and admins can read a version's files." },
+        403,
+      );
+    const owner = c.req.param("orgId");
+    const path = c.req.query("path");
+    if (path === undefined || path === "")
+      return c.json({ error: "Name a file with `path`." }, 400);
+    const stored = await options.sandboxes.getVersion(
+      owner,
+      c.req.param("vid"),
+    );
+    const runId = stored?.source.buildRunId ?? null;
+    if (runId === null) return c.json({ error: "Not found." }, 404);
+    const file = (await options.artifacts.list(owner, runId)).find(
+      (item) => item.path === path,
+    );
+    if (file === undefined) return c.json({ error: "Not found." }, 404);
+    c.header("Cache-Control", "no-store");
+    const answer = (
+      text: string | null,
+      omitted: "binary" | "too_large" | null,
+    ) =>
+      c.json(
+        sandboxFileContentSchema.parse({
+          path: file.path,
+          sizeBytes: file.sizeBytes,
+          text,
+          omitted,
+        }),
+      );
+    if (file.sizeBytes > SANDBOX_FILE_TEXT_MAX_BYTES)
+      return answer(null, "too_large");
+    const bytes = await options.objects.get(file.objectKey);
+    if (bytes === undefined)
+      return c.json(
+        {
+          error: "The file could not be read.",
+          code: "artifacts_unavailable",
+        },
+        502,
+      );
+    const text = textOf(bytes);
+    return text === null ? answer(null, "binary") : answer(text, null);
   });
 
   /** What a replay would use. Never the current branch head. */

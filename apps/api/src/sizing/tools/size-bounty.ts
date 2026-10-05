@@ -10,10 +10,10 @@ import { describeProblem, truncate } from "./parse.js";
 export interface SizingInput {
   readonly summary: string;
   readonly descriptionText: string;
-  readonly issueType: string;
 }
 
-export const JIRA_SIZE_PROMPT_VERSION = "jira-size-v2";
+/** `jira-size-v3` sizes from the summary and description, without a type. */
+export const JIRA_SIZE_PROMPT_VERSION = "jira-size-v3";
 
 export const JIRA_SIZE_SYSTEM_PROMPT = `You size software work using only the Jira ticket supplied by the application.
 

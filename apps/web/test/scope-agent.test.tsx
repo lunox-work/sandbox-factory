@@ -1,4 +1,6 @@
-import { render, screen, fireEvent, waitFor } from "./render";
+import { userEvent } from "@testing-library/user-event";
+import { openCombobox } from "./combobox";
+import { render, screen, fireEvent, waitFor, within } from "./render";
 import { afterEach, expect, test, vi } from "vitest";
 import type {
   AnalysisRunDto,
@@ -29,6 +31,7 @@ const repo: GithubRepoDto = {
   lastSyncedAt: stamp,
   syncStatus: "ok",
   syncError: null,
+  stack: null,
   createdAt: stamp,
 };
 const snapshot = {
@@ -282,8 +285,14 @@ test("an owner asks the agent for a scope, reviews it, and slices exactly that r
   );
   await screen.findByText(/10 files/);
   fireEvent.click(screen.getByRole("button", { name: "Suggest with agent" }));
-  await screen.findByText(/SHOP-7 · Stack discounts/);
-  expect(screen.getByText(/SHOP-8 · Untitled/)).toBeTruthy();
+  const picker = await screen.findByRole("combobox", { name: "Bounty" });
+  expect(picker.textContent).toBe("SHOP-7 · Stack discounts");
+  // The list says where each one stands.
+  const list = await openCombobox(picker);
+  expect(
+    within(list).getByRole("option", { name: /SHOP-8 · Untitled/ }).textContent,
+  ).toContain("proposed, Shop");
+  await userEvent.keyboard("{Escape}");
   expect(screen.getByText(/Nothing is sliced until you review/)).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Suggest scope" }));
   await screen.findByText("Scope suggestion");
@@ -342,8 +351,17 @@ test("a succeeded slice gets fake data written for a bounty, shown for review", 
   );
   await screen.findByText(/Slice \(1 entry point\)/);
   fireEvent.click(screen.getByRole("button", { name: "Write fake data" }));
-  const bounty = (await screen.findByLabelText("Bounty")) as HTMLSelectElement;
-  fireEvent.change(bounty, { target: { value: "bpr_2" } });
+  const bounty = await screen.findByRole("combobox", { name: "Bounty" });
+  expect(bounty.textContent).toBe("SHOP-7 · Stack discounts");
+  // Found by its status, which only the list shows beside it.
+  const list = await openCombobox(bounty);
+  await userEvent.type(
+    within(document.body).getByRole("combobox", { name: "Search bounty" }),
+    "proposed",
+  );
+  expect(within(list).getAllByRole("option")).toHaveLength(1);
+  await userEvent.keyboard("{Enter}");
+  expect(bounty.textContent).toBe("SHOP-8 · Untitled");
   fireEvent.click(screen.getByRole("button", { name: "Write fake data" }));
   await waitFor(() => expect(requests).toHaveLength(1));
   expect(requests[0]?.url).toMatch(/\/runs\/arn_slice\/fixtures$/);

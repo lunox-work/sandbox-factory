@@ -114,7 +114,8 @@ interface ReadBounty {
 
 interface OutcomeBase {
   readonly externalIssueId: string;
-  readonly issueKey: string;
+  /** Jira's key for a board's ticket; null for a bounty written here. */
+  readonly issueKey: string | null;
   readonly bountyId?: string;
 }
 
@@ -872,9 +873,7 @@ export class BountyExecutor {
         bounty: {
           summary: content.title,
           descriptionText: content.description,
-          issueType: content.issueType,
           components: content.components,
-          labels: content.labels,
         },
         spec: current.draft,
       };
@@ -1040,9 +1039,7 @@ export class BountyExecutor {
           {
             summary: content.title,
             descriptionText: content.description,
-            issueType: content.issueType,
             components: content.components,
-            labels: content.labels,
             ...(outline === null ? {} : { repositoryOutline: outline.text }),
           },
           request,
@@ -1068,7 +1065,6 @@ export class BountyExecutor {
           {
             summary: content.title,
             descriptionText: content.description,
-            issueType: content.issueType,
           },
           request,
         );
@@ -1133,12 +1129,7 @@ export class BountyExecutor {
         drafted === undefined || outline === null ? null : outline.snapshotId,
       ...(drafted === undefined ? {} : { spec: drafted }),
       ...(this.#options.profilingEnabled?.() === true
-        ? {
-            profileIntent: {
-              issueType: content.issueType,
-              priority: content.priority,
-            },
-          }
+        ? { profileIntent: true }
         : {}),
     };
     const created =
@@ -1193,7 +1184,6 @@ export class BountyExecutor {
           specRevision: created.proposal.specRevision,
           specHash: drafted.specHash,
           snapshotId: outline.snapshotId,
-          bounty: { issueType: content.issueType, priority: content.priority },
         });
       } catch (error) {
         this.#options.onBackgroundError?.(
@@ -1243,7 +1233,7 @@ function planKey(bounty: StoredBounty): string {
 function baseOf(bounty: StoredBounty): OutcomeBase {
   return {
     externalIssueId: planKey(bounty),
-    issueKey: bounty.key,
+    issueKey: bounty.jira?.key ?? null,
     bountyId: bounty.id,
   };
 }
@@ -1261,7 +1251,7 @@ function planEntry(candidate: Candidate): BountyRunPlannedIssue {
   const { bounty } = candidate;
   return {
     externalIssueId: planKey(bounty),
-    issueKey: bounty.key,
+    issueKey: bounty.jira?.key ?? null,
     summary: bounty.title,
     bountyId: bounty.id,
     categories: [...candidate.categories],
@@ -1273,9 +1263,6 @@ function jiraContent(spec: JiraIssueSpec): BountyContent {
   return {
     title: spec.summary,
     description: spec.descriptionText,
-    issueType: spec.issueType,
-    priority: spec.priority,
-    labels: spec.labels,
     components: spec.components,
     inputTruncated: spec.inputTruncated,
   };
@@ -1292,17 +1279,10 @@ async function stored(
     content: {
       title: bounty.title,
       description: bounty.description,
-      issueType: bounty.issueType,
-      priority: bounty.priority,
-      labels: bounty.labels,
       components: bounty.components,
       inputTruncated: bounty.inputTruncated,
     },
-    specHash: await bountySpecHash(
-      bounty.title,
-      bounty.description,
-      bounty.issueType,
-    ),
+    specHash: await bountySpecHash(bounty.title, bounty.description),
   };
 }
 

@@ -202,6 +202,7 @@ function inputsFor(
     getVersion: async () => null,
     getTask: async () => null,
     recordBuildOutput: async () => false,
+    recordStarterOutput: async () => false,
   };
   return inputs;
 }

@@ -42,6 +42,7 @@ import type {
 } from "sandbox-factory";
 import type { StoredAnalysisRun, StoredArtifact } from "@sandbox-factory/db";
 import { AnalysisError } from "../errors.js";
+import { snapshotOf } from "./adapter.js";
 import type {
   ArtifactFile,
   ToolAdapter,
@@ -532,18 +533,19 @@ export function createSliceAdapter(): ToolAdapter {
     async run(input: ToolRunInput): Promise<ArtifactFile[]> {
       const params = input.params;
       if (!isSliceParams(params)) throw new AnalysisError("tool_failed");
+      const snapshot = snapshotOf(input);
       input.log("Slice started.");
       const graph = await loadGraph(
         input.inputs,
         params.graphRunId,
-        input.run.snapshotId,
+        snapshot.snapshotId,
       );
       const { manifest, contract, contractJson, stubs, ready } =
         await analyseSlice({
           sourceDir: input.sourceDir,
           graph,
           params,
-          run: input.run,
+          run: snapshot,
           signal: input.signal,
           log: input.log,
         });

@@ -134,7 +134,8 @@ export interface BountyRunPlannedIssue {
    * matched to its proposal through this.
    */
   readonly externalIssueId: string;
-  readonly issueKey: string;
+  /** Jira's key for a board's ticket; null for a bounty written here. */
+  readonly issueKey: string | null;
   readonly summary: string;
   /**
    * The bounty, when it was known as the plan was written. Absent for a
@@ -150,7 +151,8 @@ export interface BountyRunPlannedIssue {
 
 export interface BountyRunOutcome {
   readonly externalIssueId: string;
-  readonly issueKey: string;
+  /** Jira's key for a board's ticket; null for a bounty written here. */
+  readonly issueKey: string | null;
   /** The bounty the outcome is about, once the run had one. */
   readonly bountyId?: string;
   /**

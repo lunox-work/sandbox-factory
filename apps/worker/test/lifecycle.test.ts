@@ -52,6 +52,58 @@ test("success uploads attempt-scoped artifacts, commits, and removes source", as
   assert.ok(state.bytes.has("runs/arn_1/lease_1/graph.json"));
   await assert.rejects(stat(directory));
 });
+test("a starter run reads no source, and a run that needs source has to have it", async () => {
+  const state = stores();
+  let fetched = false;
+  let seen: unknown = undefined;
+  await executeRun(
+    {
+      ...run,
+      tool: "sandbox_starter",
+      snapshotId: null,
+      repoId: null,
+      commitSha: null,
+      repoFullName: null,
+      externalRepoId: null,
+      installationId: null,
+    },
+    {
+      ...state,
+      tool: {
+        ...tool,
+        name: "sandbox_starter",
+        run: async (input) => {
+          seen = input.run;
+          return tool.run(input);
+        },
+      },
+      source,
+      fetchSource: async (r, d) => {
+        fetched = true;
+        return fetchSource(r, d);
+      },
+    },
+  );
+  assert.equal(fetched, false);
+  assert.equal(seen, null);
+  assert.deepEqual(state.calls, ["finish"]);
+  // A graph run whose snapshot is gone fails before any fetch.
+  const missing = stores();
+  await executeRun(
+    { ...run, snapshotId: null },
+    {
+      ...missing,
+      tool,
+      source,
+      fetchSource: async (r, d) => {
+        fetched = true;
+        return fetchSource(r, d);
+      },
+    },
+  );
+  assert.equal(fetched, false);
+  assert.deepEqual(missing.calls, ["source_unavailable"]);
+});
 test("a run for another tool or version never executes", async () => {
   for (const claimed of [
     { ...run, tool: "slice" as const },
@@ -138,6 +190,17 @@ test("a committed run hands its files to the tool; a failing hook does not undo 
       );
       return true;
     },
+    recordStarterOutput: async (
+      owner: string,
+      versionId: string,
+      runId: string,
+      output: { starterSha256: string },
+    ) => {
+      recorded.push(
+        `starter ${owner} ${versionId} ${runId} ${output.starterSha256}`,
+      );
+      return true;
+    },
   };
   const hooked = (fail: boolean): ToolAdapter => ({
     ...tool,
@@ -150,6 +213,20 @@ test("a committed run hands its files to the tool; a failing hook does not undo 
       await inputs.recordBuildOutput("sbv_1", runId, {
         harnessSha256: "h",
         toolchainDigest: "d",
+      });
+      await inputs.recordStarterOutput("sbv_1", runId, {
+        starterSha256: "s",
+        aliasRules: [],
+        acceptanceTests: [],
+        scope: {
+          editablePaths: [],
+          generatedPaths: [],
+          permittedOperations: ["edit"],
+          dependencies: [],
+          blockers: [],
+        },
+        transformConfigSha256: "t",
+        build: null,
       });
       if (fail) throw new Error("database went away");
     },
@@ -166,6 +243,7 @@ test("a committed run hands its files to the tool; a failing hook does not undo 
     "get org_1 sbv_1",
     "committed arn_1 graph.json",
     "record org_1 sbv_1 arn_1 h",
+    "starter org_1 sbv_1 arn_1 s",
   ]);
   const failing = stores();
   const errors: unknown[] = [];
@@ -208,6 +286,23 @@ test("a committed run hands its files to the tool; a failing hook does not undo 
           await input.inputs.recordBuildOutput("sbv_1", "arn_1", {
             harnessSha256: "h",
             toolchainDigest: "d",
+          }),
+          false,
+        );
+        assert.equal(
+          await input.inputs.recordStarterOutput("sbv_1", "arn_1", {
+            starterSha256: "s",
+            aliasRules: [],
+            acceptanceTests: [],
+            scope: {
+              editablePaths: [],
+              generatedPaths: [],
+              permittedOperations: ["edit"],
+              dependencies: [],
+              blockers: [],
+            },
+            transformConfigSha256: "t",
+            build: null,
           }),
           false,
         );

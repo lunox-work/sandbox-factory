@@ -242,11 +242,14 @@ const version: StoredSandboxVersion = {
 };
 const source: StoredVersionSource = {
   sandboxVersionId: "sbv_1",
+  origin: "slice",
   sourceSnapshotId: "rsn_1",
   sourceCommitSha: "a".repeat(40),
   sliceRunId: "arn_slice",
   manifestSha256: sha(manifestText),
   contractSha256: sha(contractText),
+  starterRunId: null,
+  starterSha256: null,
   transformConfigSha256: "1".repeat(64),
   approvedTaskSha256: "2".repeat(64),
   approvedTask: {
@@ -308,6 +311,14 @@ const source: StoredVersionSource = {
   updatedAt: stamp,
 };
 
+/** What a built version's run wrote, some of it not text or too big to show. */
+const builtFiles = [
+  { path: "project/src/index.ts", body: "export const sum = 1;\n" },
+  { path: "private/hidden.test.ts", body: "test('hidden', () => {});\n" },
+  { path: "project/logo.png", body: "\u0000PNG" },
+  { path: "project/huge.json", body: "x".repeat(1_000_001) },
+];
+
 function fixture(
   role = "owner",
   overrides: Partial<{
@@ -323,8 +334,12 @@ function fixture(
     blocked: boolean;
     noSpec: boolean;
     seam: boolean;
+    built: boolean;
+    /** The version has no passing build to publish. */
+    unready: boolean;
   }> = {},
 ) {
+  const published: { versionId: string; actor: string }[] = [];
   const manifestText = JSON.stringify(overrides.manifest ?? manifest);
   const contractText = JSON.stringify(overrides.contract ?? contract);
   const created: unknown[] = [];
@@ -348,7 +363,9 @@ function fixture(
           }
         : overrides.noSpec === true
           ? { ...source, approvedTask: { ...source.approvedTask, spec: null } }
-          : source,
+          : overrides.built === true
+            ? { ...source, buildRunId: buildRun.id }
+            : source,
   };
   const objects = new Map<string, Buffer>([
     [
@@ -361,6 +378,10 @@ function fixture(
     ],
     ["runs/arn_fixtures/lease/fixture-set.json", Buffer.from(fixtureSetText)],
     ["runs/arn_fixtures_bad/lease/fixture-set.json", Buffer.from("not json")],
+    ...builtFiles.map(
+      ({ path, body }) =>
+        [`runs/arn_build/lease/${path}`, Buffer.from(body)] as const,
+    ),
   ]);
   const artifacts = [
     artifactOf(
@@ -467,6 +488,29 @@ function fixture(
           ? { ok: false, reason: "conflict" }
           : { ok: true, ...stored };
       },
+      publishVersion: async (owner: string, id: string, actor: string) => {
+        if (owner !== "org_1" || id !== "sbv_1")
+          return { ok: false, reason: "not-found" };
+        if (overrides.unready === true)
+          return { ok: false, reason: "not_ready" };
+        published.push({ versionId: id, actor });
+        return {
+          ok: true,
+          sandbox: {
+            ...sandbox,
+            status: "published",
+            currentVersionId: id,
+          },
+          version: {
+            version: { ...version, frozenAt: stamp },
+            source: { ...source, approvedBy: actor, approvedAt: stamp },
+          },
+        };
+      },
+      unpublish: async (owner: string, id: string) =>
+        owner === "org_1" && id === "sbx_1"
+          ? { ...sandbox, status: "draft", currentVersionId: null }
+          : null,
       replayContext: async (owner: string, id: string) =>
         owner === "org_1" && id === "sbv_1"
           ? {
@@ -482,21 +526,23 @@ function fixture(
       get: async (owner: string, id: string) =>
         owner === "org_1" && id === "arn_slice"
           ? { ...sliceRun, status: overrides.sliceStatus ?? "succeeded" }
-          : owner === "org_1" && id === "arn_other"
-            ? { ...sliceRun, id: "arn_other" }
-            : owner === "org_1" && id === "arn_graph"
-              ? { ...sliceRun, id: "arn_graph", tool: "graphify" }
-              : owner === "org_1" && id === "arn_fixtures"
-                ? fixturesRunOf(id, "arn_slice")
-                : owner === "org_1" && id === "arn_fixtures_bad"
+          : owner === "org_1" && id === "arn_build"
+            ? { ...buildRun, status: "succeeded" }
+            : owner === "org_1" && id === "arn_other"
+              ? { ...sliceRun, id: "arn_other" }
+              : owner === "org_1" && id === "arn_graph"
+                ? { ...sliceRun, id: "arn_graph", tool: "graphify" }
+                : owner === "org_1" && id === "arn_fixtures"
                   ? fixturesRunOf(id, "arn_slice")
-                  : owner === "org_1" && id === "arn_fixtures_gone"
+                  : owner === "org_1" && id === "arn_fixtures_bad"
                     ? fixturesRunOf(id, "arn_slice")
-                    : owner === "org_1" && id === "arn_fixtures_running"
-                      ? fixturesRunOf(id, "arn_slice", "running")
-                      : owner === "org_1" && id === "arn_fixtures_elsewhere"
-                        ? fixturesRunOf(id, "arn_other")
-                        : null,
+                    : owner === "org_1" && id === "arn_fixtures_gone"
+                      ? fixturesRunOf(id, "arn_slice")
+                      : owner === "org_1" && id === "arn_fixtures_running"
+                        ? fixturesRunOf(id, "arn_slice", "running")
+                        : owner === "org_1" && id === "arn_fixtures_elsewhere"
+                          ? fixturesRunOf(id, "arn_other")
+                          : null,
       enqueue: async (_owner: string, snapshotId: string, input: unknown) => {
         enqueued.push({ snapshotId, ...(input as object) });
         return overrides.limit === true
@@ -513,13 +559,19 @@ function fixture(
       list: async (_owner: string, runId: string) =>
         runId === "arn_slice" || runId === "arn_other"
           ? artifacts
-          : runId === "arn_fixtures"
-            ? [fixtureArtifact(runId, fixtureSetText)]
-            : runId === "arn_fixtures_bad"
-              ? [fixtureArtifact(runId, "not json")]
-              : runId === "arn_fixtures_running"
-                ? [fixtureArtifact(runId, fixtureSetText)]
-                : [],
+          : runId === "arn_build"
+            ? builtFiles.map(({ path, body }) => ({
+                ...artifactOf("build_manifest", path, body),
+                runId,
+                objectKey: `runs/arn_build/lease/${path}`,
+              }))
+            : runId === "arn_fixtures"
+              ? [fixtureArtifact(runId, fixtureSetText)]
+              : runId === "arn_fixtures_bad"
+                ? [fixtureArtifact(runId, "not json")]
+                : runId === "arn_fixtures_running"
+                  ? [fixtureArtifact(runId, fixtureSetText)]
+                  : [],
     },
     objects: {
       get: async (key: string) => objects.get(key),
@@ -603,9 +655,52 @@ function fixture(
     builds,
     enqueued,
     removed,
+    published,
     launches: () => launches,
   };
 }
+
+test("an admin publishes a version whose build passed, and unpublishes the sandbox", async () => {
+  const f = fixture();
+  const response = await f.request("POST", "/versions/sbv_1/publish");
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as {
+    sandbox: { status: string; currentVersionId: string };
+    version: { frozenAt: string | null };
+    source: { approvedBy: string | null };
+  };
+  assert.equal(body.sandbox.status, "published");
+  assert.equal(body.sandbox.currentVersionId, "sbv_1");
+  assert.equal(body.version.frozenAt, stamp);
+  assert.equal(body.source.approvedBy, "user_1");
+  assert.deepEqual(f.published, [{ versionId: "sbv_1", actor: "user_1" }]);
+  const back = await f.request("POST", "/sbx_1/unpublish");
+  assert.equal(back.status, 200);
+  assert.equal(
+    ((await back.json()) as { sandbox: { status: string } }).sandbox.status,
+    "draft",
+  );
+  // Only a passing build, only an admin, only its own.
+  const unready = await fixture("owner", { unready: true }).request(
+    "POST",
+    "/versions/sbv_1/publish",
+  );
+  assert.equal(unready.status, 409);
+  assert.equal(((await unready.json()) as { code: string }).code, "not_ready");
+  assert.equal(
+    (await fixture("member").request("POST", "/versions/sbv_1/publish")).status,
+    403,
+  );
+  assert.equal(
+    (await fixture("member").request("POST", "/sbx_1/unpublish")).status,
+    403,
+  );
+  assert.equal(
+    (await f.request("POST", "/versions/sbv_x/publish")).status,
+    404,
+  );
+  assert.equal((await f.request("POST", "/sbx_9/unpublish")).status, 404);
+});
 
 test("a bounty's sandbox is created by admins, with or without a repository, and listed for members", async () => {
   const f = fixture();
@@ -1034,6 +1129,102 @@ test("members read a version without its private source; admins read provenance 
   );
 });
 
+test("admins read the files a version's build wrote, as text where it is text", async () => {
+  const f = fixture("admin", { built: true });
+  const listed = await f.request("GET", "/versions/sbv_1/files");
+  assert.equal(listed.status, 200);
+  assert.equal(listed.headers.get("Cache-Control"), "no-store");
+  const list = (await listed.json()) as {
+    run: { id: string; status: string } | null;
+    files: { path: string; sizeBytes: number; sha256: string }[];
+  };
+  assert.deepEqual(list.run, { id: "arn_build", status: "succeeded" });
+  assert.deepEqual(
+    list.files.map(({ path }) => path),
+    builtFiles.map(({ path }) => path),
+  );
+  // Storage keys stay on the server.
+  assert.equal(JSON.stringify(list).includes("runs/arn_build"), false);
+
+  const read = async (path: string) => {
+    const response = await f.request(
+      "GET",
+      `/versions/sbv_1/files/content?path=${encodeURIComponent(path)}`,
+    );
+    return {
+      status: response.status,
+      body: (await response.json()) as {
+        text?: string | null;
+        omitted?: string | null;
+        sizeBytes?: number;
+      },
+    };
+  };
+  const source = await read("project/src/index.ts");
+  assert.equal(source.status, 200);
+  assert.deepEqual(
+    [source.body.text, source.body.omitted],
+    ["export const sum = 1;\n", null],
+  );
+  // Hidden tests are part of the private sandbox an admin reads.
+  assert.equal(
+    (await read("private/hidden.test.ts")).body.text,
+    "test('hidden', () => {});\n",
+  );
+  assert.deepEqual([(await read("project/logo.png")).body.omitted], ["binary"]);
+  const huge = await read("project/huge.json");
+  assert.deepEqual(
+    [huge.body.text, huge.body.omitted, huge.body.sizeBytes],
+    [null, "too_large", 1_000_001],
+  );
+  // Only a path the run recorded; nothing is joined into a storage key.
+  assert.equal((await read("project/../private/hidden.test.ts")).status, 404);
+  assert.equal((await read("")).status, 400);
+});
+
+test("a version's files are for admins, and empty until it is built", async () => {
+  const member = fixture("member", { built: true });
+  assert.equal(
+    (await member.request("GET", "/versions/sbv_1/files")).status,
+    403,
+  );
+  assert.equal(
+    (
+      await member.request(
+        "GET",
+        "/versions/sbv_1/files/content?path=project%2Fsrc%2Findex.ts",
+      )
+    ).status,
+    403,
+  );
+  const unbuilt = await fixture().request("GET", "/versions/sbv_1/files");
+  assert.deepEqual(await unbuilt.json(), { run: null, files: [] });
+  assert.equal(
+    (
+      await fixture().request(
+        "GET",
+        "/versions/sbv_1/files/content?path=project%2Fsrc%2Findex.ts",
+      )
+    ).status,
+    404,
+  );
+  assert.equal(
+    (await fixture().request("GET", "/versions/sbv_x/files")).status,
+    404,
+  );
+  assert.equal(
+    (
+      await fixture("owner", { built: true }).request(
+        "GET",
+        "/versions/sbv_1/files",
+        undefined,
+        "org_2",
+      )
+    ).status,
+    404,
+  );
+});
+
 test("draft changes rehash the transform and recompute the scope; frozen versions refuse", async () => {
   const f = fixture();
   const titled = await f.request("PATCH", "/versions/sbv_1", {
@@ -1375,4 +1566,396 @@ test("hashed but malformed nested slice artifacts and unsupported versions are u
       "artifacts_unavailable",
     );
   }
+});
+
+/** A generated version: the starter run where the slice was. */
+const generatedSource: StoredVersionSource = {
+  ...source,
+  sandboxVersionId: "sbv_gen",
+  origin: "starter",
+  sourceSnapshotId: null,
+  sourceCommitSha: null,
+  sliceRunId: null,
+  manifestSha256: null,
+  contractSha256: null,
+  starterRunId: "arn_starter",
+  buildRunId: "arn_starter",
+};
+const starterRun: StoredAnalysisRun = {
+  ...sliceRun,
+  id: "arn_starter",
+  snapshotId: null,
+  repoId: null,
+  tool: "sandbox_starter",
+  toolVersion: "sandbox_starter@1",
+  status: "queued",
+  params: {
+    deadlineMinutes: 60,
+    agent: "starter",
+    sandboxVersionId: "sbv_gen",
+    approvedTaskSha256: "2".repeat(64),
+    stack: ["TypeScript"],
+  },
+};
+
+function starterFixture(
+  role = "owner",
+  overrides: Partial<{
+    sandbox: Partial<StoredSandbox> | null;
+    bounty: Record<string, unknown> | null;
+    repoStack: string[] | null;
+    proposal: boolean;
+    /** Approved unless said: a draft proposal is not generated from. */
+    proposalStatus: "proposed" | "approved";
+    limit: boolean;
+    created: "ok" | "source_linked" | "not-found";
+  }> = {},
+) {
+  const enqueued: { snapshotId: string | null; input: unknown }[] = [];
+  const created: { sandboxId: string; input: unknown }[] = [];
+  const patches: unknown[] = [];
+  const removed: string[] = [];
+  let launches = 0;
+  const bare = { ...sandbox, sourceRepoId: null };
+  const stored = {
+    version: { ...version, id: "sbv_gen" },
+    source: generatedSource,
+  };
+  const options = {
+    sandboxes: {
+      get: async (owner: string, id: string) =>
+        owner === "org_1" && id === "sbx_1" && overrides.sandbox !== null
+          ? { ...bare, ...overrides.sandbox }
+          : null,
+      createVersion: async (
+        _owner: string,
+        sandboxId: string,
+        input: { id: string },
+      ) => {
+        created.push({ sandboxId, input });
+        const result = overrides.created ?? "ok";
+        return result === "ok"
+          ? {
+              ok: true,
+              version: { ...version, id: input.id, version: 2 },
+              source: { ...generatedSource, sandboxVersionId: input.id },
+            }
+          : { ok: false, reason: result };
+      },
+      getVersion: async (owner: string, id: string) =>
+        owner === "org_1" && id === "sbv_gen" ? stored : null,
+      updateDraft: async (_owner: string, _id: string, patch: unknown) => {
+        patches.push(patch);
+        return { ok: true, ...stored };
+      },
+      replayContext: async () => ({
+        source: generatedSource,
+        snapshot: null,
+        sliceRun: null,
+      }),
+    },
+    runs: {
+      get: async () => null,
+      enqueue: async (
+        _owner: string,
+        snapshotId: string | null,
+        input: { params: { sandboxVersionId: string } },
+      ) => {
+        enqueued.push({ snapshotId, input });
+        return overrides.limit === true
+          ? { ok: false, reason: "run_limit" }
+          : {
+              ok: true,
+              created: true,
+              run: {
+                ...starterRun,
+                params: { ...starterRun.params, ...input.params },
+              },
+              obsoleteLogKey: "logs/old.log",
+            };
+      },
+    },
+    artifacts: { list: async () => [] },
+    objects: {
+      get: async () => undefined,
+      remove: async (key: string) => {
+        removed.push(key);
+      },
+    },
+    bounties: {
+      get: async (owner: string, id: string) =>
+        owner === "org_1" && id === "bty_1" && overrides.bounty !== null
+          ? {
+              id: "bty_1",
+              title: "Sum a cart",
+              description: "The cart adds up its prices.",
+              repoId: "ghr_1",
+              stack: ["Zod"],
+              ...overrides.bounty,
+            }
+          : null,
+    },
+    repos: {
+      get: async (owner: string, id: string) =>
+        owner === "org_1" && id === "ghr_1" && overrides.repoStack !== null
+          ? { id, stack: overrides.repoStack ?? ["TypeScript"] }
+          : null,
+    },
+    proposals: {
+      liveForBounty: async () =>
+        overrides.proposal === false ? null : "bpr_1",
+      get: async (_owner: string, id: string) =>
+        id === "bpr_1"
+          ? {
+              id,
+              bountyId: "bty_1",
+              revision: 3,
+              complexity: "M",
+              amountMinor: 10500,
+              currency: "USD",
+              status: overrides.proposalStatus ?? "approved",
+              decidedAt:
+                overrides.proposalStatus === "proposed"
+                  ? null
+                  : "2026-10-02T00:00:00.000Z",
+              specRevision: 2,
+            }
+          : null,
+    },
+    specs: {
+      get: async (_owner: string, proposalId: string, revision: number) =>
+        proposalId === "bpr_1" && revision === 2
+          ? {
+              revision,
+              specHash: "s".repeat(64),
+              draft: source.approvedTask.spec?.draft,
+            }
+          : null,
+    },
+    ensureWorker: async () => {
+      launches++;
+    },
+    now: () => new Date(stamp),
+  } as unknown as SandboxRouteOptions;
+  const app = new Hono<{ Variables: AuthVariables }>();
+  app.use("*", async (c, next) => {
+    c.set("user", { id: "user_1" } as never);
+    c.set("member", { role, organizationId: "org_1" } as never);
+    await next();
+  });
+  mountSandboxRoutes(app, options);
+  const request = (method: string, path: string, body?: unknown) =>
+    app.request(`/api/v1/orgs/org_1/sandboxes${path}`, {
+      method,
+      ...(body === undefined
+        ? {}
+        : {
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          }),
+    });
+  return {
+    request,
+    enqueued,
+    created,
+    patches,
+    removed,
+    launches: () => launches,
+  };
+}
+
+test("a sandbox with no repository has a version generated from its bounty, by an admin", async () => {
+  const f = starterFixture();
+  const response = await f.request("POST", "/sbx_1/starter");
+  assert.equal(response.status, 202);
+  const body = (await response.json()) as {
+    version: { id: string };
+    source: { origin: string; starterRunId: string };
+    run: { tool: string; snapshotId: string | null };
+  };
+  assert.equal(body.source.origin, "starter");
+  assert.equal(body.run.tool, "sandbox_starter");
+  assert.equal(body.run.snapshotId, null);
+  // The run is queued first, with no snapshot, naming the version to come.
+  const queued = f.enqueued[0];
+  assert.equal(queued?.snapshotId, null);
+  const params = queued?.input as {
+    tool: string;
+    params: {
+      agent: string;
+      sandboxVersionId: string;
+      approvedTaskSha256: string;
+      stack: string[];
+    };
+  };
+  assert.equal(params.tool, "sandbox_starter");
+  assert.equal(params.params.agent, "starter");
+  // The repository's detected stack, then what the bounty adds.
+  assert.deepEqual(params.params.stack, ["TypeScript", "Zod"]);
+  const made = f.created[0]?.input as {
+    id: string;
+    title: string;
+    specSummary: string;
+    complexity: string;
+    tags: string[];
+    source: {
+      origin: string;
+      starterRunId: string;
+      approvedTask: ApprovedTaskSnapshot;
+      approvedTaskSha256: string;
+      transformConfigSha256: string;
+      acceptanceTests: unknown[];
+    };
+  };
+  assert.equal(made.id, params.params.sandboxVersionId);
+  assert.equal(body.version.id, made.id);
+  assert.equal(made.source.origin, "starter");
+  assert.equal(made.source.starterRunId, "arn_starter");
+  assert.equal(made.title, "Sum a cart");
+  assert.equal(made.specSummary, "The cart adds up its prices.");
+  assert.equal(made.complexity, "M");
+  assert.deepEqual(made.tags, ["TypeScript", "Zod"]);
+  // The task is the bounty's own text, with its live proposal's spec and price.
+  assert.equal(made.source.approvedTask.title, "Sum a cart");
+  assert.equal(
+    made.source.approvedTask.summary,
+    "The cart adds up its prices.",
+  );
+  assert.equal(made.source.approvedTask.bountyId, "bty_1");
+  assert.equal(made.source.approvedTask.spec?.specRevision, 2);
+  assert.equal(made.source.approvedTask.pricing?.status, "approved");
+  assert.equal(
+    made.source.approvedTaskSha256,
+    approvedTaskHash(made.source.approvedTask),
+  );
+  assert.equal(
+    params.params.approvedTaskSha256,
+    made.source.approvedTaskSha256,
+  );
+  assert.equal(
+    made.source.transformConfigSha256,
+    transformConfigHash({
+      aliasRules: [],
+      dependencyChoices: {},
+      acceptanceTests: [],
+    }),
+  );
+  assert.deepEqual(f.removed, ["logs/old.log"]);
+  assert.equal(f.launches(), 1);
+});
+
+test("a generated version keeps its listing within bounds", async () => {
+  const f = starterFixture("admin", {
+    repoStack: null,
+    bounty: {
+      title: `  ${"t".repeat(130)}  `,
+      description: "d".repeat(5_000),
+      repoId: null,
+      stack: ["TypeScript", "A name far too long to be a listing tag"],
+    },
+  });
+  const response = await f.request("POST", "/sbx_1/starter");
+  assert.equal(response.status, 202);
+  const made = f.created[0]?.input as {
+    title: string;
+    specSummary: string;
+    complexity: string;
+    tags: string[];
+    source: { approvedTask: ApprovedTaskSnapshot };
+  };
+  assert.equal(made.title.length, 120);
+  assert.equal(made.specSummary.length, 4_000);
+  assert.equal(made.complexity, "M");
+  assert.deepEqual(made.tags, ["TypeScript"]);
+  // The full description is the task; only the listing is cut.
+  assert.equal(made.source.approvedTask.summary.length, 5_000);
+});
+
+test("generating is refused for members, a linked sandbox, an off-Node stack, an empty bounty and one not approved", async () => {
+  const cases: [ReturnType<typeof starterFixture>, number, string | null][] = [
+    [starterFixture("member"), 403, null],
+    [starterFixture("owner", { sandbox: null }), 404, null],
+    [starterFixture("owner", { bounty: null }), 404, null],
+    [
+      starterFixture("owner", { sandbox: { sourceRepoId: "ghr_1" } }),
+      409,
+      "source_linked",
+    ],
+    [
+      starterFixture("owner", {
+        repoStack: ["Python"],
+        bounty: { stack: ["Django"] },
+      }),
+      409,
+      "stack_unsupported",
+    ],
+    [
+      starterFixture("owner", { bounty: { description: "  " } }),
+      409,
+      "task_not_ready",
+    ],
+    // A bounty with no proposal, or a draft one, is not generated from.
+    [starterFixture("owner", { proposal: false }), 409, "task_not_ready"],
+    [
+      starterFixture("owner", { proposalStatus: "proposed" }),
+      409,
+      "task_not_ready",
+    ],
+    [starterFixture("owner", { limit: true }), 409, "run_limit"],
+    [
+      starterFixture("owner", { created: "source_linked" }),
+      409,
+      "source_linked",
+    ],
+    [starterFixture("owner", { created: "not-found" }), 404, null],
+  ];
+  for (const [f, status, code] of cases) {
+    const response = await f.request("POST", "/sbx_1/starter");
+    assert.equal(response.status, status);
+    if (code !== null)
+      assert.equal(((await response.json()) as { code: string }).code, code);
+  }
+  // Nothing was queued for a refusal before the run.
+  assert.equal(cases[3]?.[0].enqueued.length, 0);
+});
+
+test("a generated version changes its listing, but not its transform or build, and has nothing to replay", async () => {
+  const f = starterFixture();
+  const read = (await (await f.request("GET", "/versions/sbv_gen")).json()) as {
+    source: { origin: string; sliceRunId: string | null; starterRunId: string };
+  };
+  assert.equal(read.source.origin, "starter");
+  assert.equal(read.source.sliceRunId, null);
+  assert.equal(read.source.starterRunId, "arn_starter");
+  assert.equal(
+    (await f.request("PATCH", "/versions/sbv_gen", { title: "Renamed" }))
+      .status,
+    200,
+  );
+  for (const change of [
+    { acceptanceTests: [] },
+    { aliasRules: [] },
+    { dependencyChoices: {} },
+    { fixtureRunId: null },
+  ]) {
+    const refused = await f.request("PATCH", "/versions/sbv_gen", change);
+    assert.equal(refused.status, 409);
+    assert.equal(
+      ((await refused.json()) as { code: string }).code,
+      "generated_version",
+    );
+  }
+  assert.equal(f.patches.length, 1);
+  const build = await f.request("POST", "/versions/sbv_gen/build");
+  assert.equal(build.status, 409);
+  assert.equal(
+    ((await build.json()) as { code: string }).code,
+    "generated_version",
+  );
+  assert.equal(f.enqueued.length, 0);
+  const replay = (await (
+    await f.request("GET", "/versions/sbv_gen/replay")
+  ).json()) as { ok: boolean; detail: string };
+  assert.equal(replay.ok, false);
+  assert.match(replay.detail, /generated, not sliced/);
 });

@@ -88,7 +88,6 @@ const examples = (await readFile(path, "utf8"))
     if (
       typeof value.summary !== "string" ||
       typeof value.descriptionText !== "string" ||
-      typeof value.issueType !== "string" ||
       ![...sizes, "unsized"].includes(value.label) ||
       !validScenarioLabels(value.scenarios)
     ) {
@@ -128,7 +127,6 @@ for (const example of examples) {
     const result = await caller.call(sizeBountyTool, {
       summary: example.summary,
       descriptionText: example.descriptionText,
-      issueType: example.issueType,
     });
     const predicted = result.result.complexity;
     if (predicted === example.label) exact += 1;
@@ -155,9 +153,7 @@ for (const example of examples) {
   const bounty = {
     summary: example.summary,
     descriptionText: example.descriptionText,
-    issueType: example.issueType,
     components: example.components ?? [],
-    labels: example.labels ?? [],
   };
   /** Each labelled weight against the draft: [matched, agreed, withinOne]. */
   const matchFor = (scenarios, label) =>

@@ -50,18 +50,13 @@ function fixtureApp(token) {
   const rows = new Map();
   let sequence = 0;
   function addBounty(organizationId, createdBy, input) {
-    const number = ++sequence;
     const bounty = {
-      id: `bty_${number}`,
+      id: `bty_${++sequence}`,
       organizationId,
-      number,
-      key: `B-${number}`,
       title: input.title,
       description: input.description,
-      issueType: input.issueType,
-      priority: input.priority,
-      labels: input.labels,
       repoId: input.repoId,
+      stack: input.stack ?? [],
       components: [],
       inputTruncated: false,
       origin: "manual",
@@ -75,13 +70,14 @@ function fixtureApp(token) {
     rows.set(bounty.id, bounty);
     return bounty;
   }
-  for (const organization of memberships) {
+  // A workspace the user is not in, whose bounty no list may show them.
+  for (const organization of [
+    ...memberships,
+    { id: "org_hidden", name: "Hidden" },
+  ]) {
     addBounty(organization.id, user.id, {
       title: `${organization.name} private bounty`,
       description: `Work owned by ${organization.name}.`,
-      issueType: "Task",
-      priority: null,
-      labels: [],
       repoId: null,
     });
   }
@@ -124,6 +120,11 @@ function fixtureApp(token) {
         list: async (organizationId) =>
           [...rows.values()]
             .filter((bounty) => bounty.organizationId === organizationId)
+            .reverse()
+            .map((bounty) => ({ ...bounty, proposal: null })),
+        listAcross: async (organizationIds) =>
+          [...rows.values()]
+            .filter((bounty) => organizationIds.includes(bounty.organizationId))
             .reverse()
             .map((bounty) => ({ ...bounty, proposal: null })),
         get: async (organizationId, bountyId) => {

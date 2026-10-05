@@ -122,9 +122,12 @@ async function versionFor(
     },
     source: {
       sandboxVersionId: "sbv_1",
+      origin: "slice",
       sourceSnapshotId: "rsn_1",
       sourceCommitSha: "a".repeat(40),
       sliceRunId: sliceRun.id,
+      starterRunId: null,
+      starterSha256: null,
       manifestSha256: overrides.stale === true ? "0".repeat(64) : manifestSha,
       contractSha256: contractSha,
       transformConfigSha256: "1".repeat(64),
@@ -218,6 +221,7 @@ async function runBuild(
     getVersion: async (id) => (id === "sbv_1" ? version : null),
     getTask: async () => null,
     recordBuildOutput: async () => false,
+    recordStarterOutput: async () => false,
   };
   const input: ToolRunInput = {
     sourceDir: options.sourceDir ?? fixture,
@@ -476,6 +480,7 @@ test("build outputs are classified by path", () => {
   assert.equal(buildArtifactKind("baseline.json"), "baseline_report");
   assert.equal(buildArtifactKind("project/src/app.ts"), "project_file");
   assert.equal(buildArtifactKind("private/fix.test.ts"), "private_test");
+  assert.equal(buildArtifactKind("private/pseudonym.lunox"), "pseudonyms");
   assert.equal(buildArtifactKind("other.txt"), "other");
 });
 
@@ -543,6 +548,7 @@ test("a build refuses stale parameters, missing versions, an unfinished slice, t
         getVersion: async () => null,
         getTask: async () => null,
         recordBuildOutput: async () => false,
+        recordStarterOutput: async () => false,
       },
       signal: new AbortController().signal,
       log: () => {},
@@ -674,6 +680,7 @@ test("after commit, a ready build records its harness and toolchain on the draft
       recorded.push({ versionId, runId, output });
       return true;
     },
+    recordStarterOutput: async () => false,
   };
   const ready = await runBuild(fakeProvider().provider, {
     version: await versionFor({ acceptance: false }),

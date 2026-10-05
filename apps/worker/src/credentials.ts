@@ -8,7 +8,12 @@ export function repositoryToken(
 ): () => Promise<string> {
   return async () => {
     const id = Number(run.externalRepoId);
-    if (!Number.isSafeInteger(id) || id <= 0)
+    if (
+      run.externalRepoId === null ||
+      run.installationId === null ||
+      !Number.isSafeInteger(id) ||
+      id <= 0
+    )
       throw new AnalysisError("source_unavailable");
     return tokens.provider(run.installationId, {
       repositoryIds: [id],

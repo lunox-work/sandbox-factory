@@ -19,6 +19,8 @@
 import { TREE_FACTS_VERSION } from "sandbox-factory";
 import { z } from "zod";
 
+import { stackDtoSchema } from "./stack.js";
+
 /* -------------------------------------------------------------------------- */
 /* What GitHub sends                                                          */
 /* -------------------------------------------------------------------------- */
@@ -146,6 +148,18 @@ export const githubTreeResponseSchema = z
 
 /** `GET /repos/{o}/{r}/languages`: bytes of code per language. */
 export const githubLanguagesResponseSchema = z.record(z.string(), z.number());
+
+/**
+ * `GET /repos/{o}/{r}/git/blobs/{sha}`: one file's bytes, base64 encoded,
+ * by Git's object id.
+ */
+export const githubBlobResponseSchema = z
+  .object({
+    sha: z.string(),
+    content: z.string(),
+    encoding: z.string(),
+  })
+  .loose();
 
 /** `POST /app/installations/{id}/access_tokens`. */
 export const githubInstallationTokenResponseSchema = z
@@ -352,6 +366,11 @@ export const githubRepoDtoSchema = z.strictObject({
   lastSyncedAt: z.string().nullable(),
   syncStatus: githubSyncStatusSchema,
   syncError: z.string().nullable(),
+  /**
+   * The stack detected at the head, carried onto a bounty about this
+   * repository. Null until it has been read once.
+   */
+  stack: stackDtoSchema.nullable(),
   createdAt: z.string(),
 });
 
@@ -535,6 +554,7 @@ export type GithubRepositoryResponse = z.infer<
 >;
 export type GithubUserResponse = z.infer<typeof githubUserResponseSchema>;
 export type GithubTreeResponse = z.infer<typeof githubTreeResponseSchema>;
+export type GithubBlobResponse = z.infer<typeof githubBlobResponseSchema>;
 export type GithubTreeEntryResponse = z.infer<
   typeof githubTreeEntryResponseSchema
 >;

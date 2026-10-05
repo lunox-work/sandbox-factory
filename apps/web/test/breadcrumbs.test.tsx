@@ -257,6 +257,7 @@ test("no trail ends in a step that goes nowhere", () => {
     trailFor("account"),
     trailFor("organizations"),
     trailFor("create-org"),
+    trailFor("new-bounty"),
     trailFor("org-settings", ACME),
     trailFor("org-settings"),
     trailFor("org-jira-board", ACME, "Sprint Board"),

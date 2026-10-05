@@ -19,7 +19,7 @@ import type {
   BountySpecRevisionDto,
   RespecRequestDto,
 } from "@sandbox-factory/shared";
-import { ChevronDown, Loader2, Plus } from "lucide-react";
+import { ChevronDown, Loader2, Plus, Sparkles } from "lucide-react";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import {
   RESPEC_LIMITS,
@@ -27,6 +27,7 @@ import {
   type ScenarioKind,
 } from "sandbox-factory";
 
+import { Combobox } from "@/components/Combobox";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -309,7 +310,7 @@ export function expandLabel(kind: ScenarioKind): string {
 /**
  * The ways to grow the spec: more of any kind, scenarios for an
  * instruction, or answers to its open questions. Every kind is listed, so
- * "more of a kind" needs no second menu.
+ * "generate more" needs no second menu.
  */
 export function ExpandMenu({
   disabled,
@@ -335,8 +336,9 @@ export function ExpandMenu({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="min-w-56">
-        <DropdownMenuLabel className="text-muted-foreground text-xs font-normal">
-          More of a kind
+        <DropdownMenuLabel className="text-muted-foreground flex items-center gap-1.5 text-xs font-normal">
+          <Sparkles aria-hidden="true" className="size-3.5" />
+          Generate more
         </DropdownMenuLabel>
         {SCENARIO_KIND_DEFINITIONS.map(({ id, label, covers }) => (
           <DropdownMenuItem key={id} title={covers} onSelect={() => onKind(id)}>
@@ -523,19 +525,32 @@ export function RevisionPicker({
   viewing: number;
   onView: (revision: number) => void;
 }) {
+  // Lower case: it reads on from the counts before it.
+  const options = revisions.map(({ revision, origin, current }) => ({
+    value: String(revision),
+    label: `revision ${revision}, ${ORIGIN_NAME[origin] ?? origin}${current ? " (current)" : ""}`,
+  }));
+  const shown = options.find(({ value }) => value === String(viewing));
   return (
-    <select
-      aria-label="Revision"
-      className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 field-sizing-content -my-0.5 cursor-pointer rounded-sm bg-transparent text-xs outline-none focus-visible:ring-[3px]"
-      value={viewing}
-      onChange={(event) => onView(Number(event.target.value))}
-    >
-      {revisions.map(({ revision, origin, current }) => (
-        <option key={revision} value={revision}>
-          {/* Lower case: it reads on from the counts before it. */}
-          {`revision ${revision}, ${ORIGIN_NAME[origin] ?? origin}${current ? " (current)" : ""}`}
-        </option>
-      ))}
-    </select>
+    <Combobox
+      label="Revision"
+      searchPlaceholder="Search revisions…"
+      contentClassName="w-60"
+      options={options}
+      value={String(viewing)}
+      onValueChange={(next) => onView(Number(next))}
+      trigger={
+        // Text in a line of text, not a field: it reads as part of the line.
+        <button
+          type="button"
+          role="combobox"
+          aria-label="Revision"
+          className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 data-[state=open]:text-foreground -my-0.5 inline-flex cursor-pointer items-center gap-0.5 rounded-sm align-baseline text-xs outline-none focus-visible:ring-[3px]"
+        >
+          {shown?.label ?? `revision ${viewing}`}
+          <ChevronDown aria-hidden="true" className="size-3 self-center" />
+        </button>
+      }
+    />
   );
 }

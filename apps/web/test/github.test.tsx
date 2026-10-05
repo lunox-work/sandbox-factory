@@ -10,7 +10,15 @@
  * The server is faked at `fetch`, routed by method and path.
  */
 
-import { act, fireEvent, render, screen, waitFor, within } from "./render";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "./render";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import { GithubConnections } from "../src/Github";
@@ -42,6 +50,7 @@ const registered = {
   lastSyncedAt: "2026-10-01T00:05:00.000Z",
   syncStatus: "ok",
   syncError: null,
+  stack: null,
   createdAt: "2026-10-01T00:00:00.000Z",
 };
 
@@ -537,6 +546,7 @@ test("a repository that failed to sync shows the reason", async () => {
       ...registered,
       syncStatus: "error",
       syncError: "The repository has no commits yet.",
+      stack: null,
       headSha: null,
       lastSyncedAt: null,
     },
@@ -546,6 +556,35 @@ test("a repository that failed to sync shows the reason", async () => {
   await openRepository();
   expect(
     await screen.findByText("The repository has no commits yet."),
+  ).toBeDefined();
+});
+
+test("a repository's page shows the stack detected in it", async () => {
+  // Not read yet: the page says it is on the way.
+  renderTab();
+  await openRepository();
+  const reading = await screen.findByTestId("repository-stack");
+  expect(within(reading).getByText(/Reading the repository/)).toBeDefined();
+  cleanup();
+
+  server.repositories = [
+    { ...registered, stack: ["TypeScript", "PostgreSQL", "Amazon Cognito"] },
+  ];
+  renderTab();
+  await openRepository();
+  const detected = await screen.findByTestId("repository-stack");
+  expect(
+    within(within(detected).getByRole("list", { name: "Tech stack" }))
+      .getAllByRole("listitem")
+      .map((item) => item.textContent),
+  ).toEqual(["TypeScript", "PostgreSQL", "Amazon Cognito"]);
+  cleanup();
+
+  server.repositories = [{ ...registered, stack: [] }];
+  renderTab();
+  await openRepository();
+  expect(
+    await screen.findByText("Nothing detected at the latest commit."),
   ).toBeDefined();
 });
 

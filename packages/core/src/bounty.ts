@@ -23,19 +23,12 @@ export type BountyOrigin = (typeof BOUNTY_ORIGINS)[number];
  * description's is also where a Jira description is cut when it is
  * flattened, so a bounty asks a model for about as much whichever way it
  * was written. Jira's text is stored as read, and can run past these: a cut
- * description carries its truncation marker, and Jira bounds no labels.
+ * description carries its truncation marker.
  */
 export const BOUNTY_LIMITS = {
   title: 255,
   description: 20_000,
-  issueType: 64,
-  priority: 64,
-  labels: 20,
-  label: 64,
 } as const;
-
-/** The issue type a bounty has when nobody named one, as Jira's default. */
-export const DEFAULT_ISSUE_TYPE = "Task";
 
 /**
  * A title from a source the limit does not bound, cut to fit it. Never in
@@ -48,14 +41,14 @@ export function clampBountyTitle(title: string): string {
   return /[\uD800-\uDBFF]$/.test(cut) ? cut.slice(0, -1) : cut;
 }
 
-/** What a bounty says: everything a run sizes it from. */
+/**
+ * What a bounty says: everything a run sizes it from. A tracker's issue
+ * type, priority and labels are not part of it: what is to be done is in
+ * the title and the description.
+ */
 export interface BountyContent {
   readonly title: string;
   readonly description: string;
-  readonly issueType: string;
-  /** The priority's name, or null when the bounty has none. */
-  readonly priority: string | null;
-  readonly labels: readonly string[];
   /** Jira's components, by name. Empty for a bounty written here. */
   readonly components: readonly string[];
   /**
@@ -67,11 +60,13 @@ export interface BountyContent {
 }
 
 /**
- * The version of `bountySpecHash`: the normalized title, description and
- * issue type as a JSON tuple. Version 1 is the hash proposals stored when
- * bounties were read from Jira, so the proposals made then still compare.
+ * The version of `bountySpecHash`: the normalized title and description as
+ * a JSON tuple. Version 1 hashed the issue type as a third member, while
+ * bounties had one. Migration 0046 moved each proposal and spec revision
+ * whose version 1 hash still matched its bounty to version 2, so only those
+ * already stale were left on 1.
  */
-export const BOUNTY_SPEC_HASH_VERSION = 1;
+export const BOUNTY_SPEC_HASH_VERSION = 2;
 
 /**
  * A stable fingerprint of what a bounty was priced from.
@@ -85,9 +80,8 @@ export const BOUNTY_SPEC_HASH_VERSION = 1;
  * - **Insensitive to noise.** Trailing whitespace and CRLF do not, because
  *   opening a bounty in a different editor should not invalidate a bounty.
  *
- * Labels, components and priority are read for the draft and the profile,
- * and are deliberately not hashed: retagging a bounty does not make its
- * price stale.
+ * Components are read for the draft and are deliberately not hashed:
+ * retagging a bounty does not make its price stale.
  *
  * SHA-256 via `crypto.subtle`, which exists in Node, browsers and workers
  * alike, so this stays dependency-free.
@@ -95,12 +89,10 @@ export const BOUNTY_SPEC_HASH_VERSION = 1;
 export async function bountySpecHash(
   title: string,
   description: string,
-  issueType: string,
 ): Promise<string> {
   const canonical = JSON.stringify([
     normalizeSpecText(title),
     normalizeSpecText(description),
-    normalizeSpecText(issueType),
   ]);
   const digest = await crypto.subtle.digest(
     "SHA-256",
@@ -118,16 +110,4 @@ export function normalizeSpecText(value: string): string {
     .map((line) => line.trimEnd())
     .join("\n")
     .trim();
-}
-
-/**
- * How a bounty is named to a person: its Jira key while it has one, and its
- * number here otherwise. The number is the organization's own count, so
- * `B-12` is the twelfth bounty the organization has, whatever its source.
- */
-export function bountyKey(bounty: {
-  readonly number: number;
-  readonly jiraKey?: string | null | undefined;
-}): string {
-  return bounty.jiraKey ?? `B-${bounty.number}`;
 }

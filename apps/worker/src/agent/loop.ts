@@ -23,6 +23,12 @@ export interface AgentToolDefinition {
   readonly description: string;
   /** JSON Schema for strict tool use: every property required, no extras. */
   readonly inputSchema: Record<string, unknown>;
+  /**
+   * False to send the schema as guidance only. Strict schemas compile to
+   * one grammar per request, which has a size limit; a tool past it is
+   * loose, and its input is still checked when it runs.
+   */
+  readonly strict?: boolean;
 }
 export interface AgentToolResult {
   readonly content: string;
@@ -94,11 +100,14 @@ export async function runAgent(input: {
 }): Promise<AgentOutcome> {
   const { limits, signal, submitTool } = input;
   const byName = new Map(input.tools.map((tool) => [tool.name, tool]));
-  const definitions = input.tools.map(({ name, description, inputSchema }) => ({
-    name,
-    description,
-    inputSchema,
-  }));
+  const definitions = input.tools.map(
+    ({ name, description, inputSchema, strict }) => ({
+      name,
+      description,
+      inputSchema,
+      ...(strict === undefined ? {} : { strict }),
+    }),
+  );
   const messages: MessageParam[] = [
     { role: "user", content: [{ type: "text", text: input.prompt }] },
   ];

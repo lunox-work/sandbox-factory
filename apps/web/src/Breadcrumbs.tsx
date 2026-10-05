@@ -72,6 +72,7 @@ const ORGANIZATIONS: Crumb = {
   label: "Workspaces",
   screen: "organizations",
 };
+const BOUNTIES: Crumb = { label: "Bounties", screen: "bounties" };
 
 /**
  * The trail for a screen, root first.
@@ -97,6 +98,17 @@ export function trailFor(
    * would mark Jira as the current page while a board is on screen.
    */
   boardName?: string | undefined,
+  /**
+   * The bounty the last crumb names, on `bounty`. Passed in for the same
+   * reason as the board's, and read "Bounty" until it arrives.
+   */
+  bountyName?: string | undefined,
+  /**
+   * The workspace the bounty is in, named as the switcher names it:
+   * "Personal" for the person's own. Dropped until it is known, as the
+   * organization screens drop theirs.
+   */
+  bountyWorkspace?: TrailOrganization | undefined,
 ): Crumb[] {
   switch (screen) {
     case "home":
@@ -118,18 +130,28 @@ export function trailFor(
       return organization === undefined
         ? []
         : [HOME, ORGANIZATIONS, { label: organization.name }];
-    case "org-bounties":
-      return organization === undefined
-        ? [HOME, ORGANIZATIONS, { label: "Bounties" }]
+    case "bounties":
+      // Every workspace's, so under none of them.
+      return [HOME, { label: "Bounties" }];
+    case "new-bounty":
+      return [HOME, BOUNTIES, { label: "New bounty" }];
+    case "bounty":
+      /*
+        Under the list it opens over, then the workspace it is in, as its
+        address names them: `/bounties/acme/bty_1`. The workspace leads to
+        that workspace's own page, since the list is every workspace's.
+      */
+      return bountyWorkspace === undefined
+        ? [HOME, BOUNTIES, { label: bountyName ?? "Bounty" }]
         : [
             HOME,
-            ORGANIZATIONS,
+            BOUNTIES,
             {
-              label: organization.name,
+              label: bountyWorkspace.name,
               screen: "org-settings",
-              slug: organization.slug,
+              slug: bountyWorkspace.slug,
             },
-            { label: "Bounties" },
+            { label: bountyName ?? "Bounty" },
           ];
     case "org-jira-board": {
       /*
@@ -167,12 +189,18 @@ export function Breadcrumbs({
   screen,
   organization,
   boardName,
+  bountyName,
+  bountyWorkspace,
   onNavigate,
 }: {
   screen: Screen;
   organization?: TrailOrganization | undefined;
   /** The board `org-jira-board` is showing; see `trailFor`. */
   boardName?: string | undefined;
+  /** The bounty `bounty` is showing; see `trailFor`. */
+  bountyName?: string | undefined;
+  /** The workspace that bounty is in; see `trailFor`. */
+  bountyWorkspace?: TrailOrganization | undefined;
   onNavigate: (
     screen: Screen,
     slug?: string,
@@ -181,7 +209,13 @@ export function Breadcrumbs({
     connectionTab?: ConnectionTab,
   ) => void;
 }) {
-  const crumbs = trailFor(screen, organization, boardName);
+  const crumbs = trailFor(
+    screen,
+    organization,
+    boardName,
+    bountyName,
+    bountyWorkspace,
+  );
 
   // Nothing to show on home, and a bare trail of one crumb is chrome rather
   // than navigation — it names where you are without offering a way up.
@@ -219,7 +253,10 @@ export function Breadcrumbs({
         // right of the content. Read from the screen rather than taken as a
         // prop: which pages are wide is the trail's own business, and the
         // shell already tells it where it is.
-        screen === "org-jira-board" || screen === "org-bounties"
+        screen === "org-jira-board" ||
+          screen === "bounties" ||
+          screen === "new-bounty" ||
+          screen === "bounty"
           ? "max-w-5xl"
           : "max-w-2xl",
       )}
@@ -235,7 +272,13 @@ export function Breadcrumbs({
           */
           const target = index === crumbs.length - 1 ? undefined : crumb.screen;
           return (
-            <li key={crumb.label} className="flex items-center gap-1.5">
+            <li
+              // By place: a workspace may share a bounty's name.
+              key={index}
+              // Shrinks so a long name, a bounty's title, ends in an
+              // ellipsis rather than pushing the row wider than the column.
+              className="flex min-w-0 items-center gap-1.5"
+            >
               {index > 0 && (
                 <ChevronRight
                   aria-hidden="true"
@@ -250,7 +293,7 @@ export function Breadcrumbs({
                 */
                 <span
                   aria-current="page"
-                  className="text-foreground font-medium"
+                  className="text-foreground truncate font-medium"
                 >
                   {crumb.label}
                 </span>

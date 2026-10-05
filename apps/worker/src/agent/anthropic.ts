@@ -45,7 +45,7 @@ export function createAnthropicModel(options: {
                   type: "object" as const,
                   ...tool.inputSchema,
                 },
-                strict: true,
+                strict: tool.strict ?? true,
               })),
               messages: [...request.messages],
               thinking: { type: "adaptive" },

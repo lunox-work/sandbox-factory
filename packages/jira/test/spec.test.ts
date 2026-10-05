@@ -60,22 +60,12 @@ test("the pricing fingerprint is the ticket's own hash, not a copy", () => {
   assert.equal(pricingSpecHash, bountySpecHash);
 });
 
-test("an issue with no type is read as the default type", async () => {
-  const spec = await toIssueSpec("APP-1", { summary: "Untyped" });
-  assert.equal(spec.issueType, "Task");
-});
-
-test("pricing fingerprint includes issue type without changing legacy hashes", async () => {
+test("the pricing fingerprint is the summary and description alone", async () => {
   const legacy = await specHash("Title", "Description");
-  const story = await pricingSpecHash("Title", "Description", "Story");
-  const bug = await pricingSpecHash("Title", "Description", "Bug");
+  const priced = await pricingSpecHash("Title", "Description");
 
-  assert.notEqual(story, bug);
-  assert.notEqual(story, legacy);
-  assert.equal(
-    story,
-    await pricingSpecHash("Title  ", "Description\r\n", "Story"),
-  );
+  assert.notEqual(priced, legacy);
+  assert.equal(priced, await pricingSpecHash("Title  ", "Description\r\n"));
 });
 
 test("SPEC_FIELDS asks for the description, and the list reads do not", () => {
@@ -85,71 +75,51 @@ test("SPEC_FIELDS asks for the description, and the list reads do not", () => {
   assert.ok(SPEC_FIELDS.includes("summary"));
   // What the spec draft reads beside the text.
   assert.ok(SPEC_FIELDS.includes("components"));
-  assert.ok(SPEC_FIELDS.includes("labels"));
-  // What the complexity profile records about the ticket.
-  assert.ok(SPEC_FIELDS.includes("priority"));
+  // A bounty keeps no type, priority or labels, so none is asked for.
+  for (const field of ["issuetype", "priority", "labels"])
+    assert.ok(!SPEC_FIELDS.includes(field));
 });
 
-test("toIssueSpec reads the priority's name, and does not hash it", async () => {
-  const fields = { summary: "Add export" };
+test("a ticket's type, priority and labels are not read, nor hashed", async () => {
+  const fields = { summary: "Add export", description: "Adds CSV." };
   const bare = await toIssueSpec("ACME-1", fields);
-  const urgent = await toIssueSpec("ACME-1", {
+  // As Jira sends them, should a site return more than was asked for.
+  const tracked = {
     ...fields,
+    issuetype: { name: "Story" },
     priority: { name: "Highest" },
-  });
-  assert.equal(bare.priority, null);
-  assert.equal(urgent.priority, "Highest");
-  assert.equal(urgent.pricingSpecHash, bare.pricingSpecHash);
-  assert.equal(
-    (await toIssueSpec("ACME-1", { ...fields, priority: { name: 3 } }))
-      .priority,
-    null,
-  );
-  assert.equal(
-    (await toIssueSpec("ACME-1", { ...fields, priority: null })).priority,
-    null,
-  );
+    labels: ["export", "q4"],
+  };
+  assert.deepEqual(await toIssueSpec("ACME-1", tracked), bare);
 });
 
-test("toIssueSpec reads components and labels, and hashes neither", async () => {
-  const fields = {
-    summary: "Add export",
-    description: "Adds CSV.",
-    issuetype: { name: "Story" },
-  };
+test("toIssueSpec reads components, and does not hash them", async () => {
+  const fields = { summary: "Add export", description: "Adds CSV." };
   const bare = await toIssueSpec("ACME-1", fields);
   const tagged = await toIssueSpec("ACME-1", {
     ...fields,
     components: [{ id: "10000", name: "Reports" }, { name: "Billing" }],
-    labels: ["export", "q4"],
   });
 
   assert.deepEqual(bare.components, []);
-  assert.deepEqual(bare.labels, []);
   assert.deepEqual(tagged.components, ["Reports", "Billing"]);
-  assert.deepEqual(tagged.labels, ["export", "q4"]);
-  // A component edit must not turn a priced proposal stale: the price hash
-  // is still version 1, summary, description and issue type.
+  // A component edit must not turn a priced proposal stale.
   assert.equal(tagged.pricingSpecHash, bare.pricingSpecHash);
   assert.equal(tagged.specHash, bare.specHash);
 });
 
-test("malformed components and labels are dropped, not thrown on", async () => {
+test("malformed components are dropped, not thrown on", async () => {
   const spec = await toIssueSpec("ACME-1", {
     summary: "Add export",
     components: [null, "Reports", { name: 7 }, {}, { name: "Billing" }],
-    labels: ["export", 7, null, { name: "q4" }],
   });
   assert.deepEqual(spec.components, ["Billing"]);
-  assert.deepEqual(spec.labels, ["export"]);
 
   const absent = await toIssueSpec("ACME-1", {
     summary: "Add export",
     components: "Reports",
-    labels: { 0: "export" },
   });
   assert.deepEqual(absent.components, []);
-  assert.deepEqual(absent.labels, []);
 });
 
 test("toIssueSpec flattens the description and hashes what it read", async () => {
@@ -161,21 +131,19 @@ test("toIssueSpec flattens the description and hashes what it read", async () =>
         { type: "paragraph", content: [{ type: "text", text: "Adds CSV." }] },
       ],
     },
-    issuetype: { name: "Story" },
     updated: "2026-09-20T00:00:00.000Z",
   });
 
   assert.equal(spec.key, "ACME-1");
   assert.equal(spec.summary, "Add export");
   assert.equal(spec.descriptionText, "Adds CSV.");
-  assert.equal(spec.issueType, "Story");
   assert.equal(spec.updated, "2026-09-20T00:00:00.000Z");
   assert.equal(spec.inputTruncated, false);
   // The hash covers exactly the text that was priced.
   assert.equal(spec.specHash, await specHash("Add export", "Adds CSV."));
   assert.equal(
     spec.pricingSpecHash,
-    await pricingSpecHash("Add export", "Adds CSV.", "Story"),
+    await pricingSpecHash("Add export", "Adds CSV."),
   );
 });
 
@@ -195,16 +163,15 @@ test("a ticket with no description is a valid spec", async () => {
   const spec = await toIssueSpec("ACME-2", { summary: "Fix it" });
 
   assert.equal(spec.descriptionText, "");
-  assert.equal(spec.issueType, "Task");
   assert.equal(spec.updated, null);
 });
 
 test("missing fields fall back rather than throwing", async () => {
   const spec = await toIssueSpec("ACME-3", {
     summary: 42 as unknown as string,
-    issuetype: null,
+    components: null,
   });
 
   assert.equal(spec.summary, "");
-  assert.equal(spec.issueType, "Task");
+  assert.deepEqual(spec.components, []);
 });

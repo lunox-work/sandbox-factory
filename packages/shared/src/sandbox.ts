@@ -7,6 +7,7 @@
 
 import {
   ALIAS_KINDS,
+  ANALYSIS_STATUSES,
   ALIAS_RULES_MAX,
   APPROVED_TASK_SCHEMA_VERSION,
   DEPENDENCY_RESOLUTIONS,
@@ -17,7 +18,11 @@ import {
   TASK_DESCRIPTOR_SCHEMA_VERSION,
 } from "sandbox-factory";
 import { z } from "zod";
-import { entryPointSchema, sandboxFixtureSchema } from "./analysis.js";
+import {
+  analysisRunDtoSchema,
+  entryPointSchema,
+  sandboxFixtureSchema,
+} from "./analysis.js";
 import { specDraftSchema } from "./spec.js";
 
 export const ACCEPTANCE_TESTS_MAX = 50;
@@ -72,8 +77,8 @@ export const versionFixturesSchema = fixturesInputSchema.extend({
 
 /**
  * A bounty's sandbox. One per bounty. The repository it is cut from is
- * optional: a sandbox without one exists, but no version can be sliced for
- * it until one is linked.
+ * optional: a sandbox without one has its versions generated from the
+ * bounty instead, until one is linked.
  */
 export const createSandboxSchema = z.strictObject({
   bountyId: z.string().min(1),
@@ -225,14 +230,21 @@ export const approvedTaskSnapshotSchema = z.discriminatedUnion(
   ],
 );
 
-/** Private provenance, for owners and admins only. */
+/**
+ * Private provenance, for owners and admins only. A sliced version names
+ * its snapshot, commit, slice run, manifest and contract; a generated one
+ * names the run that wrote its starter instead.
+ */
 export const sandboxVersionSourceDtoSchema = z.strictObject({
   sandboxVersionId: z.string(),
-  sourceSnapshotId: z.string(),
-  sourceCommitSha: z.string(),
-  sliceRunId: z.string(),
-  manifestSha256: z.string(),
-  contractSha256: z.string(),
+  origin: z.enum(["slice", "starter"]),
+  sourceSnapshotId: z.string().nullable(),
+  sourceCommitSha: z.string().nullable(),
+  sliceRunId: z.string().nullable(),
+  manifestSha256: z.string().nullable(),
+  contractSha256: z.string().nullable(),
+  starterRunId: z.string().nullable(),
+  starterSha256: z.string().nullable(),
   transformConfigSha256: z.string(),
   approvedTaskSha256: z.string(),
   aliasRules: z.array(aliasRuleSchema),
@@ -254,10 +266,64 @@ export const sandboxVersionSourceDtoSchema = z.strictObject({
 export const sandboxVersionListSchema = z.object({
   versions: z.array(sandboxVersionDtoSchema),
 });
+/**
+ * `POST .../sandboxes/:id/starter`: a new draft version, and the run that
+ * writes its starter from the bounty and builds it.
+ */
+export const generateStarterResponseSchema = z.object({
+  version: sandboxVersionDtoSchema,
+  source: sandboxVersionSourceDtoSchema,
+  run: analysisRunDtoSchema,
+});
+/**
+ * `POST .../sandboxes/versions/:id/publish`: the sandbox, now published at
+ * that version, and the version, frozen and approved.
+ */
+export const publishVersionResponseSchema = z.object({
+  sandbox: sandboxDtoSchema,
+  version: sandboxVersionDtoSchema,
+  source: sandboxVersionSourceDtoSchema,
+});
+export type PublishVersionResponseDto = z.infer<
+  typeof publishVersionResponseSchema
+>;
 export const sandboxVersionResponseSchema = z.object({
   version: sandboxVersionDtoSchema,
   /** Present for owners and admins; members see the version alone. */
   source: sandboxVersionSourceDtoSchema.optional(),
+});
+/**
+ * The largest file `.../versions/:id/files/content` answers with as text.
+ * A larger one is still listed; its bytes stay in storage.
+ */
+export const SANDBOX_FILE_TEXT_MAX_BYTES = 1_000_000;
+/** One file a version's build wrote: under `project/`, `private/` or beside them. */
+export const sandboxFileDtoSchema = z.strictObject({
+  path: z.string().min(1),
+  sizeBytes: z.number().int().nonnegative(),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/),
+});
+/**
+ * `GET .../sandboxes/versions/:id/files`: what the version's build run wrote
+ * to private storage. `run` is null before a build was queued, and `files`
+ * is empty until the run commits.
+ */
+export const sandboxFileListSchema = z.object({
+  run: z
+    .object({ id: z.string(), status: z.enum(ANALYSIS_STATUSES) })
+    .nullable(),
+  files: z.array(sandboxFileDtoSchema),
+});
+/**
+ * `GET .../sandboxes/versions/:id/files/content?path=`: one file as text.
+ * `text` is null when it is not UTF-8 text or is over
+ * `SANDBOX_FILE_TEXT_MAX_BYTES`, which `omitted` says.
+ */
+export const sandboxFileContentSchema = z.object({
+  path: z.string(),
+  sizeBytes: z.number().int().nonnegative(),
+  text: z.string().nullable(),
+  omitted: z.enum(["binary", "too_large"]).nullable(),
 });
 export const replayResponseSchema = z.discriminatedUnion("ok", [
   z.object({
@@ -295,6 +361,12 @@ export type SandboxVersionResponseDto = z.infer<
   typeof sandboxVersionResponseSchema
 >;
 export type ReplayResponseDto = z.infer<typeof replayResponseSchema>;
+export type SandboxFileDto = z.infer<typeof sandboxFileDtoSchema>;
+export type SandboxFileListDto = z.infer<typeof sandboxFileListSchema>;
+export type SandboxFileContentDto = z.infer<typeof sandboxFileContentSchema>;
+export type GenerateStarterResponseDto = z.infer<
+  typeof generateStarterResponseSchema
+>;
 export type VersionFixturesDto = z.infer<typeof versionFixturesSchema>;
 
 /**

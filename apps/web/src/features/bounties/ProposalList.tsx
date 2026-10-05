@@ -343,7 +343,7 @@ export function ProposalList({
       ? null
       : {
           ...selectedView,
-          liveKey: selectedName.key,
+          ...(selectedName.key === null ? {} : { liveKey: selectedName.key }),
           ...(selectedName.title === undefined
             ? {}
             : { liveTitle: selectedName.title }),

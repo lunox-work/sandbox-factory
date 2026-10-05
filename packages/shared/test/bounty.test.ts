@@ -9,7 +9,6 @@ import {
   proposeBountySchema,
   bountyDtoSchema,
   bountyListResponseSchema,
-  DEFAULT_ISSUE_TYPE,
   BOUNTY_LIMITS,
   bountySpecHash,
   linkSandboxSourceSchema,
@@ -22,14 +21,10 @@ const stamp = "2026-10-03T00:00:00.000Z";
 const summary = {
   id: "bty_1",
   organizationId: "org_1",
-  number: 7,
-  key: "B-7",
   title: "Invitations are not sent",
-  issueType: "Bug",
-  priority: null,
-  labels: ["email"],
   origin: "manual",
   repoId: null,
+  stack: ["Zod"],
   revision: 1,
   jira: null,
   proposal: null,
@@ -42,10 +37,8 @@ test("a bounty written here needs only a title", () => {
   assert.deepEqual(createBountySchema.parse({ title: "  Fix login  " }), {
     title: "Fix login",
     description: "",
-    issueType: "Task",
-    priority: null,
-    labels: [],
     repoId: null,
+    stack: [],
   });
   assert.equal(createBountySchema.safeParse({ title: " " }).success, false);
   assert.equal(createBountySchema.safeParse({}).success, false);
@@ -72,19 +65,21 @@ test("a bounty written here is bounded at the description limit", () => {
   );
 });
 
-test("labels are trimmed and kept once each", () => {
-  assert.deepEqual(
-    createBountySchema.parse({ title: "t", labels: [" ui ", "ui", "email"] })
-      .labels,
-    ["ui", "email"],
-  );
-  assert.equal(
-    createBountySchema.safeParse({
-      title: "t",
-      labels: Array.from({ length: 21 }, (_, i) => `l${i}`),
-    }).success,
-    false,
-  );
+test("a tracker's type, priority and labels are not a bounty's", () => {
+  for (const field of [
+    { issueType: "Bug" },
+    { priority: "High" },
+    { labels: ["email"] },
+  ]) {
+    assert.equal(
+      createBountySchema.safeParse({ title: "t", ...field }).success,
+      false,
+    );
+    assert.equal(
+      updateBountySchema.safeParse({ expectedRevision: 1, ...field }).success,
+      false,
+    );
+  }
 });
 
 test("unknown fields are refused rather than dropped", () => {
@@ -104,6 +99,30 @@ test("a change names its revision and at least one field", () => {
     { expectedRevision: 2, repoId: null },
   );
   assert.equal(updateBountySchema.safeParse({ title: "t" }).success, false);
+});
+
+test("a stack is stored under the catalog's names, each once, within bounds", () => {
+  assert.deepEqual(
+    createBountySchema.parse({
+      title: "t",
+      stack: [" postgres ", "PostgreSQL", "Our billing API"],
+    }).stack,
+    ["PostgreSQL", "Our billing API"],
+  );
+  // A Jira bounty's stack is the workspace's to set, like its repository.
+  assert.deepEqual(
+    updateBountySchema.parse({ expectedRevision: 1, stack: ["k8s"] }),
+    { expectedRevision: 1, stack: ["Kubernetes"] },
+  );
+  for (const stack of [
+    [""],
+    ["x".repeat(41)],
+    Array.from({ length: 31 }, (_, i) => `Tool ${i}`),
+  ])
+    assert.equal(
+      createBountySchema.safeParse({ title: "t", stack }).success,
+      false,
+    );
 });
 
 test("a proposal for a bounty is named by its request id", () => {
@@ -244,9 +263,8 @@ test("a sandbox belongs to one bounty, with or without a repository", () => {
     assert.equal(linkSandboxSourceSchema.safeParse(body).success, false);
 });
 
-test("re-exports the one bounty hash, bounds and default, not copies", async () => {
+test("re-exports the one bounty hash and bounds, not copies", async () => {
   assert.equal(bountySpecHash, core.bountySpecHash);
   assert.equal(BOUNTY_LIMITS, core.BOUNTY_LIMITS);
-  assert.equal(DEFAULT_ISSUE_TYPE, core.DEFAULT_ISSUE_TYPE);
-  assert.equal((await bountySpecHash("a", "b", "Task")).length, 64);
+  assert.equal((await bountySpecHash("a", "b")).length, 64);
 });

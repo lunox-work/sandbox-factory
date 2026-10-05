@@ -46,6 +46,7 @@ import {
   repositoryOverview,
   repositoryTools,
 } from "../agent/repo-tools.js";
+import { snapshotOf } from "./adapter.js";
 import type { ArtifactFile, ToolAdapter, ToolRunInput } from "./adapter.js";
 import { analyseSlice, loadGraph } from "./slice.js";
 import type { LoadedGraph, SliceAnalysis } from "./slice.js";
@@ -121,6 +122,7 @@ export function createScopeAdapter(settings: AgentSettings): ToolAdapter {
     async run(input: ToolRunInput): Promise<ArtifactFile[]> {
       const params = input.params;
       if (!isScopeParams(params)) throw new AnalysisError("tool_failed");
+      const snapshot = snapshotOf(input);
       if (settings.model === null) {
         input.log("No agent model is configured on this worker.");
         throw new AnalysisError("agent_unavailable");
@@ -135,7 +137,7 @@ export function createScopeAdapter(settings: AgentSettings): ToolAdapter {
       const graph: LoadedGraph = await loadGraph(
         input.inputs,
         params.graphRunId,
-        input.run.snapshotId,
+        snapshot.snapshotId,
       );
       const index = await indexRepository(input.sourceDir, input.signal);
       const slice = (request: {
@@ -155,7 +157,7 @@ export function createScopeAdapter(settings: AgentSettings): ToolAdapter {
           sourceDir: input.sourceDir,
           graph,
           params: sliceParams,
-          run: input.run,
+          run: snapshot,
           signal: input.signal,
           log: () => {},
         });
@@ -335,7 +337,7 @@ export function createScopeAdapter(settings: AgentSettings): ToolAdapter {
         system: SCOPE_SYSTEM_PROMPT,
         prompt: [
           bountySection(task.issueKey, task.draft),
-          `The repository, at commit ${input.run.commitSha}:\n${repositoryOverview(index)}`,
+          `The repository, at commit ${snapshot.commitSha}:\n${repositoryOverview(index)}`,
           `The structure analysis has ${graph.graph.nodes.length} nodes and ${graph.graph.links.length} relations.`,
         ].join("\n\n"),
         tools: [
@@ -357,8 +359,8 @@ export function createScopeAdapter(settings: AgentSettings): ToolAdapter {
       const proposal: ScopeProposal = {
         schemaVersion: SCOPE_PROPOSAL_SCHEMA_VERSION,
         toolVersion: SCOPE_TOOL_VERSION,
-        sourceSnapshotId: input.run.snapshotId,
-        sourceCommitSha: input.run.commitSha,
+        sourceSnapshotId: snapshot.snapshotId,
+        sourceCommitSha: snapshot.commitSha,
         graphRunId: graph.run.id,
         proposalId: params.proposalId,
         specRevision: params.specRevision,

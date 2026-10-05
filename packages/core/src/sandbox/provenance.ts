@@ -11,6 +11,7 @@
 
 import type { SliceManifest, BoundaryContract } from "../slice/manifest.js";
 import type { AliasRule } from "./aliases.js";
+import type { VersionFixtures } from "./fixtures.js";
 
 export const SANDBOX_STATUSES = ["draft", "published", "closed"] as const;
 export type SandboxStatus = (typeof SANDBOX_STATUSES)[number];
@@ -199,19 +200,31 @@ export function packageNameOf(specifier: string): string {
 }
 
 /**
+ * Where a version's code came from: a slice of the sandbox's repository,
+ * or a starter an agent wrote from the bounty's text when it has none.
+ */
+export type VersionOrigin = "slice" | "starter";
+
+/**
  * What `sandbox_version_source` records, as the stores and the worker see
  * it. Hashes name immutable private artifacts; the rules below say what
- * each covers.
+ * each covers. A sliced version names its snapshot, slice run, manifest and
+ * contract and no starter; a generated one the reverse.
  */
 export interface VersionSourceRecord {
   readonly sandboxVersionId: string;
-  readonly sourceSnapshotId: string;
-  readonly sliceRunId: string;
-  readonly manifestSha256: string;
+  readonly origin: VersionOrigin;
+  readonly sourceSnapshotId: string | null;
+  readonly sliceRunId: string | null;
+  readonly manifestSha256: string | null;
+  /** The run that wrote a generated version's starter, and builds it. */
+  readonly starterRunId: string | null;
+  /** The `starter_set` artifact's hash; null until the run is committed. */
+  readonly starterSha256: string | null;
   readonly transformConfigSha256: string;
   readonly approvedTaskSha256: string;
   readonly aliasRules: readonly AliasRule[];
-  readonly contractSha256: string;
+  readonly contractSha256: string | null;
   readonly harnessSha256: string | null;
   readonly toolchainDigest: string | null;
   readonly buildRunId: string | null;
@@ -223,14 +236,39 @@ export interface VersionSourceRecord {
 
 /**
  * The transform configuration a version freezes: the ordered alias rules,
- * the dependency choices and the scope. Its canonical form is what
+ * the dependency choices, the hidden tests and the fixtures, and for a
+ * generated version the starter it builds. Its canonical form is what
  * `transformConfigSha256` hashes, so a changed rule is a changed version.
+ * A sliced version's form has no `starterSha256` key at all, so its hash
+ * is what it was before starters existed.
  */
 export interface TransformConfig {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: 2;
   readonly aliasRules: readonly AliasRule[];
   readonly dependencyChoices: Readonly<Record<string, DependencyChoice>>;
   readonly acceptanceTests: readonly AcceptanceTest[];
+  readonly fixtures: VersionFixtures | null;
+  readonly starterSha256?: string;
+}
+
+/** What `transformConfigSha256` hashes, once made canonical. */
+export function transformConfigOf(input: {
+  readonly aliasRules: readonly AliasRule[];
+  readonly dependencyChoices: Readonly<Record<string, DependencyChoice>>;
+  readonly acceptanceTests: readonly AcceptanceTest[];
+  readonly fixtures?: VersionFixtures | null;
+  readonly starterSha256?: string | null;
+}): TransformConfig {
+  return {
+    schemaVersion: 2,
+    aliasRules: input.aliasRules,
+    dependencyChoices: input.dependencyChoices,
+    acceptanceTests: input.acceptanceTests,
+    fixtures: input.fixtures ?? null,
+    ...(input.starterSha256 == null
+      ? {}
+      : { starterSha256: input.starterSha256 }),
+  };
 }
 
 /** An owner-authored hidden test, private to the version. */
@@ -314,6 +352,17 @@ export function replayOf(
     readonly artifactsPresent: boolean;
   } | null,
 ): ReplayResult {
+  if (
+    source.sourceSnapshotId === null ||
+    source.sliceRunId === null ||
+    source.manifestSha256 === null
+  )
+    return {
+      ok: false,
+      reason: "source_unavailable",
+      detail:
+        "The version was generated, not sliced; it has no source to replay.",
+    };
   if (snapshot === null)
     return {
       ok: false,

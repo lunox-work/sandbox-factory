@@ -12,7 +12,12 @@
  * delete a later snapshot of the same commit.
  *
  * **Pointers only.** Paths, sizes and Git's object ids, never a file's
- * contents; the tree endpoint does not send any.
+ * contents; the tree endpoint does not send any. Beside each snapshot the
+ * repository's tech stack is detected (`stack.ts`), which reads a capped
+ * set of dependency manifests and keeps only the names found in them, on
+ * the repository row. A snapshot that already exists has its stack redone
+ * when the stack was found at another commit or by an older detection, so
+ * the sweep brings every repository up to date within one interval.
  *
  * **The commit is read once, at the start.** Everything after describes
  * that commit, whatever the branch does meanwhile; a newer head is a newer
@@ -49,9 +54,10 @@ import {
   type StoredTreeEntry,
   storedTreeSchema,
 } from "@sandbox-factory/shared";
-import { treeFacts } from "sandbox-factory";
+import { STACK_DETECTION_VERSION, treeFacts } from "sandbox-factory";
 
 import { installationClient } from "./credential.js";
+import { readStack } from "./stack.js";
 
 /** Unreferenced snapshots kept per repository; older ones are pruned. */
 export const SNAPSHOT_RETAIN = 20;
@@ -84,7 +90,7 @@ export interface SnapshotTarget {
 export type SnapshotOutcome = "created" | "exists" | "refused" | "no-head";
 
 export interface GithubSnapshotterOptions {
-  readonly repos: Pick<GithubRepoStore, "get">;
+  readonly repos: Pick<GithubRepoStore, "get" | "recordStack">;
   readonly snapshots: RepoSnapshotStore;
   readonly objects: Pick<ObjectStore, "put" | "get" | "remove">;
   readonly installations: InstallationTokens;
@@ -148,18 +154,38 @@ export class GithubSnapshotter {
     if (repo === null || repo.syncStatus === "gone") return "refused";
     const commitSha = repo.headSha;
     if (commitSha === null) return "no-head";
-    if (
-      (await snapshots.findByCommit(organizationId, repoId, commitSha)) !== null
-    ) {
-      return "exists";
-    }
-
     const client = installationClient(
       installations,
       target.installationId,
       { kind: "repository", repositoryId: repo.externalId },
       this.#options.fetch,
     );
+    const existing = await snapshots.findByCommit(
+      organizationId,
+      repoId,
+      commitSha,
+    );
+    if (existing !== null) {
+      if (
+        repo.stackCommitSha !== commitSha ||
+        repo.stackVersion !== STACK_DETECTION_VERSION
+      ) {
+        const stored = await this.tree(existing.treeKey);
+        if (stored === null) {
+          this.#report(
+            "github_stack_failed",
+            new Error("The snapshot's tree could not be read."),
+          );
+        } else {
+          await this.#detectStack(target, client, repo.fullName, commitSha, {
+            entries: stored.entries,
+            languages: existing.languages,
+          });
+        }
+      }
+      return "exists";
+    }
+
     const [tree, languages] = await Promise.all([
       client.tree(repo.fullName, commitSha, { recursive: true }),
       client.languages(repo.fullName),
@@ -217,8 +243,44 @@ export class GithubSnapshotter {
       return created.status;
     }
 
+    await this.#detectStack(target, client, repo.fullName, commitSha, {
+      entries,
+      languages,
+    });
     await this.#prune(organizationId, repoId);
     return "created";
+  }
+
+  /**
+   * Detects the stack at a commit and records it on the repository. A
+   * failure is reported and left for the next sweep, which finds the stack
+   * still due; the snapshot it rides on stands either way.
+   */
+  async #detectStack(
+    target: SnapshotTarget,
+    client: Parameters<typeof readStack>[0],
+    fullName: string,
+    commitSha: string,
+    source: {
+      readonly entries: readonly StoredTreeEntry[];
+      readonly languages: Readonly<Record<string, number>>;
+    },
+  ): Promise<void> {
+    try {
+      const stack = await readStack(
+        client,
+        fullName,
+        source.entries,
+        source.languages,
+      );
+      await this.#options.repos.recordStack(
+        target.organizationId,
+        target.repoId,
+        { stack, commitSha, version: STACK_DETECTION_VERSION },
+      );
+    } catch (error) {
+      this.#report("github_stack_failed", error);
+    }
   }
 
   /**
