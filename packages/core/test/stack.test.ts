@@ -235,6 +235,34 @@ test("each ecosystem's manifest is read for its dependency names", () => {
   assert.deepEqual(manifestNames({ path: "README.md", text: "pg" }), []);
 });
 
+test("a hostile manifest is read in linear time", () => {
+  // Each of these once made a pattern rescan to the end of the file from
+  // every start position: an unclosed bracket, attribute list or tag, and an
+  // image reference of nothing but separators.
+  const hostile = [
+    { path: "pyproject.toml", text: '"0['.repeat(20_000) },
+    { path: "App.csproj", text: "<PackageReference ".repeat(20_000) },
+    { path: "packages.config", text: "<package ".repeat(20_000) },
+    { path: "App.csproj", text: "<Project ".repeat(20_000) },
+    { path: "Dockerfile", text: `FROM ${"@".repeat(50_000)}\n` },
+    { path: "Dockerfile", text: `FROM ${":".repeat(50_000)}\n` },
+  ];
+  for (const manifest of hostile) {
+    const started = performance.now();
+    manifestNames(manifest);
+    const elapsed = performance.now() - started;
+    assert.ok(elapsed < 1_000, `${manifest.path}: ${elapsed.toFixed(0)}ms`);
+  }
+  // A digest and a registry port are still cut from an image reference.
+  assert.deepEqual(
+    manifestNames({
+      path: "Dockerfile",
+      text: "FROM localhost:5000/library/postgres:16@sha256:abc\n",
+    }),
+    ["library/postgres", "postgres"],
+  );
+});
+
 test("a manifest is told by its file name", () => {
   assert.equal(manifestKind("apps/web/package.json"), "npm");
   assert.equal(manifestKind("requirements-dev.txt"), "pypi");

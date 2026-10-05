@@ -212,7 +212,7 @@ function pypiNames(path: string, text: string): string[] {
   return [
     ...captures(
       text,
-      /["']([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]]*\])?\s*(?=[<>=!~;@ ]|["'])/g,
+      /["']([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]\n]{0,200}\])?\s*(?=[<>=!~;@ ]|["'])/g,
     ),
     ...captures(text, /^\s*([A-Za-z0-9][A-Za-z0-9._-]*)\s*=/gm),
   ].map(pypiName);
@@ -259,10 +259,13 @@ function cargoNames(text: string): string[] {
 
 /** An image reference's name, without its registry, tag or digest. */
 function imageNames(reference: string): string[] {
-  const untagged = reference.replace(/@.*$/, "");
+  const at = reference.indexOf("@");
+  const untagged = at === -1 ? reference : reference.slice(0, at);
   const segments = untagged.split("/");
   const last = segments.length - 1;
-  segments[last] = (segments[last] ?? "").replace(/:.*$/, "");
+  const named = segments[last] ?? "";
+  const colon = named.indexOf(":");
+  segments[last] = colon === -1 ? named : named.slice(0, colon);
   const first = segments[0] ?? "";
   if (
     segments.length > 1 &&
@@ -302,10 +305,10 @@ export function manifestNames(manifest: StackManifest): string[] {
       return [
         ...captures(
           text,
-          /<Package(?:Reference|Version)\s[^>]*?Include\s*=\s*"([^"]+)"/gi,
+          /<Package(?:Reference|Version)\s[^>]{0,1000}?Include\s*=\s*"([^"]+)"/gi,
         ),
-        ...captures(text, /<package\s[^>]*?id\s*=\s*"([^"]+)"/gi),
-        ...captures(text, /<Project\s[^>]*?Sdk\s*=\s*"([^"]+)"/gi),
+        ...captures(text, /<package\s[^>]{0,1000}?id\s*=\s*"([^"]+)"/gi),
+        ...captures(text, /<Project\s[^>]{0,1000}?Sdk\s*=\s*"([^"]+)"/gi),
       ];
     case "go":
       return captures(

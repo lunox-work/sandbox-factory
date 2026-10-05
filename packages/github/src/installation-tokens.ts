@@ -96,7 +96,7 @@ export class InstallationTokens {
     this.#options = options;
     this.#fetch = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.#now = options.now ?? Date.now;
-    this.#apiUrl = (options.apiUrl ?? API_URL).replace(/\/+$/, "");
+    this.#apiUrl = withoutTrailingSlashes(options.apiUrl ?? API_URL);
   }
 
   /**
@@ -352,4 +352,11 @@ function cacheKey(
           .map((name) => `${name}=${narrowing.permissions?.[name] ?? ""}`)
           .join(",");
   return `${installationId}\n${ids}\n${permissions}`;
+}
+
+/** A URL with every trailing slash cut; a loop, as a regex is quadratic here. */
+function withoutTrailingSlashes(url: string): string {
+  let end = url.length;
+  while (end > 0 && url[end - 1] === "/") end -= 1;
+  return url.slice(0, end);
 }

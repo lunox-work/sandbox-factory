@@ -104,7 +104,7 @@ export class GithubClient {
     this.#fetch = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.#now = options.now ?? Date.now;
     // No trailing slash, so `#nextPage`'s prefix check has one form to match.
-    this.#apiUrl = (options.apiUrl ?? API_URL).replace(/\/+$/, "");
+    this.#apiUrl = withoutTrailingSlashes(options.apiUrl ?? API_URL);
     this.#maxPages = options.maxPages ?? 50;
   }
 
@@ -389,4 +389,11 @@ export class GithubClient {
 /** Each `/`-separated part encoded, the slashes kept: `release/1.0` stays two. */
 function segments(value: string): string {
   return value.split("/").map(encodeURIComponent).join("/");
+}
+
+/** A URL with every trailing slash cut; a loop, as a regex is quadratic here. */
+function withoutTrailingSlashes(url: string): string {
+  let end = url.length;
+  while (end > 0 && url[end - 1] === "/") end -= 1;
+  return url.slice(0, end);
 }
