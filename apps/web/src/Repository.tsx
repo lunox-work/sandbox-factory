@@ -3,36 +3,37 @@
  *
  * Stacked blocks, top to bottom: what the repository is, the snapshot the
  * rest of the page is about, the stack detected in it, the context
- * builders and where each stands on that snapshot, the result of the run
- * that is selected, and every run there has been. The builders are the
- * page's reason to exist: each reads a snapshot on its own and describes
- * it for people and agents, and this is where they are started and read.
- *
- * Slices, scope suggestions and fake data are no longer made here — a
- * bounty makes them — but their runs are still in the history, so their
- * read-only views stay for the run that is selected.
+ * builders and where each stands on that snapshot, with every run there
+ * has been folded into their footer. The builders are the page's reason to exist: each reads a
+ * snapshot on its own and describes it for people and agents. They are
+ * started here; what they wrote is read in the context viewer, and a
+ * run's log in the logs dialog, so the page itself stays a summary.
  *
  * Roles come from the API, which checks them again on every write; hiding
  * a control the API would refuse is courtesy, not security. Only an owner
  * or admin starts runs or reads logs; any member opens artifacts.
  */
 
-import type { AnalysisRunDto, GithubRepoDto } from "@sandbox-factory/shared";
+import type {
+  AnalysisRunDto,
+  ArtifactDto,
+  GithubRepoDto,
+} from "@sandbox-factory/shared";
 import {
   abstractionsSummarySchema,
   dataModelSummarySchema,
   deepwikiSummarySchema,
   dependencyCruiserSummarySchema,
-  fixtureSetSchema,
   graphifySummarySchema,
-  scopeProposalSchema,
-  sliceBoundarySummarySchema,
 } from "@sandbox-factory/shared";
 import {
+  ChevronDown,
   ExternalLink,
   FolderGit2,
+  GitBranch,
+  GitCommitHorizontal,
+  FolderOpen,
   Lock,
-  ScrollText,
   Trash2,
 } from "lucide-react";
 import {
@@ -40,37 +41,33 @@ import {
   rankAtLeast,
   type ContextBuilder,
 } from "sandbox-factory";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 
 import { Combobox } from "@/components/Combobox";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { ErrorBanner, LoadingLine } from "@/components/Message";
 import { StackChips } from "@/components/StackPicker";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
 import { clients } from "./data/query";
+import { BLOCK_ACTION, Block, FLUSH_LIST } from "./features/analysis/Blocks";
+import { BuilderRow } from "./features/analysis/BuilderRow";
 import {
-  FixtureSetView,
-  ScopeProposalView,
-} from "./features/analysis/AgentViews";
-import { AbstractionsResult } from "./features/analysis/AbstractionsResult";
-import { Block, StatusBadge } from "./features/analysis/Blocks";
-import { BuilderCard } from "./features/analysis/BuilderCard";
-import { DataModelResult } from "./features/analysis/DataModelResult";
-import { DeepwikiResult } from "./features/analysis/DeepwikiResult";
-import { DependencyResult } from "./features/analysis/DependencyResult";
-import { GraphifyResult } from "./features/analysis/GraphifyResult";
-import { SliceBoundary } from "./features/analysis/SliceBoundary";
+  ContextViewer,
+  type ContextBuild,
+} from "./features/analysis/ContextViewer";
+import { RunHistory } from "./features/analysis/RunHistory";
+import { RunLogs } from "./features/analysis/RunLogs";
 import { summaryOf } from "./features/analysis/artifacts";
+import { errorMessage, shortSha } from "./features/analysis/labels";
+import { sizeLabel } from "./features/sandbox/file-tree";
 import {
-  errorLabels,
-  errorMessage,
-  runDuration,
-  runLabel,
-  shortSha,
-} from "./features/analysis/labels";
-import { useAnalysisResources } from "./features/analysis/queries";
+  useAnalysisResources,
+  useRepoBranches,
+  useRunArtifacts,
+} from "./features/analysis/queries";
 import { REMOVE_REPOSITORY_WARNING } from "./Github";
 import { isPlainLeftClick, pathForScreen } from "./routes";
 import { useGithubRepos } from "./useGithub";
@@ -80,22 +77,13 @@ function canManage(role: string): boolean {
   return rankAtLeast(role, "admin");
 }
 
+/** How long a pull's snapshot is watched for before the page stops asking. */
+const PULL_WAIT_MS = 120_000;
+/** How long "Up to date" stands in for the pull button's label. */
+const UP_TO_DATE_MS = 2_500;
+
 const PAGE_CLASS =
   "mx-auto flex w-full max-w-5xl flex-col gap-6 px-4 py-10 sm:px-6 sm:py-14";
-
-/**
- * Where each builder's card sits in a six-column grid: the three that
- * describe a snapshot for people share the first row, and the two that
- * read Graphify's map for the pipeline share the second, each half wide.
- * Two columns below `lg`, where the last card takes a row of its own.
- */
-const BUILDER_SPANS: Record<ContextBuilder, string> = {
-  graphify: "lg:col-span-2",
-  dependency_cruiser: "lg:col-span-2",
-  deepwiki: "lg:col-span-2",
-  abstractions: "lg:col-span-3",
-  data_model: "sm:col-span-2 lg:col-span-3",
-};
 
 export function RepositoryPage({
   organizationId,
@@ -172,6 +160,7 @@ export function RepositoryPage({
       manageable={canManage(role)}
       onRemove={() => repos.remove(repo.id)}
       onRemoved={onRemoved}
+      onHeadMoved={() => void repos.refresh()}
     />
   );
 }
@@ -182,42 +171,119 @@ function RepositoryView({
   manageable,
   onRemove,
   onRemoved,
+  onHeadMoved,
 }: {
   organizationId: string;
   repo: GithubRepoDto;
   manageable: boolean;
   onRemove: () => Promise<{ ok: true } | { ok: false; error: string }>;
   onRemoved: () => void;
+  /** A pull of the default branch may have moved the repository's head. */
+  onHeadMoved: () => void;
 }) {
   const client = clients.analysis;
   const [snapshotId, setSnapshotId] = useState("");
-  const [selected, setSelected] = useState<string | null>(null);
+  const [branch, setBranch] = useState(repo.defaultBranch);
+  /** A pull whose snapshot is still being taken, until it lands. */
+  const [awaiting, setAwaiting] = useState<{
+    commitSha: string;
+    since: number;
+  } | null>(null);
+  const [pulling, setPulling] = useState(false);
+  const [upToDate, setUpToDate] = useState(false);
   const [error, setError] = useState<string | null>(null);
   /** The builder whose run was just asked for, until the API answers. */
   const [pending, setPending] = useState<ContextBuilder | null>(null);
   const [removing, setRemoving] = useState(false);
-  const resources = useAnalysisResources(organizationId, repo.id, selected);
+  const [viewing, setViewing] = useState(false);
+  /** The run the logs dialog is open on; null while it is closed. */
+  const [logsOn, setLogsOn] = useState<string | null>(null);
+  const resources = useAnalysisResources(organizationId, repo.id, {
+    watchSnapshots: awaiting !== null,
+  });
   const snapshots = resources.snapshots.data ?? [];
   const runs = resources.runs;
-  const artifacts = resources.artifacts.data ?? [];
   const loading = resources.loading;
-  const artifactLoading = selected !== null && resources.artifacts.isPending;
-  const selectedRun = runs.find((run) => run.id === selected);
+  const branchList = useRepoBranches(organizationId, repo.id);
+  const branches = branchList.data?.branches ?? [];
+  /** The commit the chosen branch is at, as last read. */
+  const branchHead =
+    branches.find((each) => each.name === branch)?.headSha ??
+    (branch === repo.defaultBranch ? repo.headSha : null);
+  // A commit is snapshotted once, under the branch it was first taken
+  // from; a branch also shows the snapshot of the commit it is at now.
+  const onBranch = snapshots.filter(
+    (s) => s.ref === `refs/heads/${branch}` || s.commitSha === branchHead,
+  );
+  const onBranchIds = onBranch.map((s) => s.id).join(" ");
 
-  // The snapshot at the head, or the newest, until one is chosen; the
-  // newest run, until one is selected.
+  // The branch's head, or its newest, until one of its own is chosen.
   useEffect(() => {
-    if (snapshots.length > 0)
-      setSnapshotId(
-        (current) =>
-          current ||
-          snapshots.find((s) => s.commitSha === repo.headSha)?.id ||
-          snapshots[0]?.id ||
-          "",
-      );
-    if (runs.length > 0)
-      setSelected((current) => current ?? runs[0]?.id ?? null);
-  }, [resources.snapshots.data, resources.runs, repo.headSha]);
+    setSnapshotId((current) =>
+      onBranch.some((s) => s.id === current)
+        ? current
+        : (onBranch.find((s) => s.commitSha === branchHead)?.id ??
+          onBranch[0]?.id ??
+          ""),
+    );
+  }, [onBranchIds, branchHead]);
+
+  // A pull's snapshot is chosen once it lands; past the wait, the page
+  // stops asking, and the list shows it whenever it is read again.
+  useEffect(() => {
+    if (awaiting === null) return;
+    const landed = resources.snapshots.data?.find(
+      (s) => s.commitSha === awaiting.commitSha,
+    );
+    if (landed !== undefined) {
+      setSnapshotId(landed.id);
+      setAwaiting(null);
+      return;
+    }
+    const timer = setTimeout(
+      () => setAwaiting(null),
+      Math.max(0, awaiting.since + PULL_WAIT_MS - Date.now()),
+    );
+    return () => clearTimeout(timer);
+  }, [awaiting, resources.snapshots.data]);
+
+  useEffect(() => {
+    if (!upToDate) return;
+    const timer = setTimeout(() => setUpToDate(false), UP_TO_DATE_MS);
+    return () => clearTimeout(timer);
+  }, [upToDate]);
+
+  function chooseBranch(name: string) {
+    setBranch(name);
+    setAwaiting(null);
+    setUpToDate(false);
+  }
+
+  /** Reads the branch's head and snapshots it, unless it was taken already. */
+  async function pull() {
+    setPulling(true);
+    setUpToDate(false);
+    setError(null);
+    try {
+      const pulled = await client.pullSnapshot(organizationId, repo.id, branch);
+      if (branch === repo.defaultBranch) onHeadMoved();
+      if (pulled.snapshot === null) {
+        void branchList.refetch();
+        setAwaiting({ commitSha: pulled.commitSha, since: Date.now() });
+      } else {
+        await Promise.all([
+          branchList.refetch(),
+          resources.snapshots.refetch(),
+        ]);
+        setUpToDate(pulled.snapshot.id === snapshotId);
+        setSnapshotId(pulled.snapshot.id);
+      }
+    } catch (cause) {
+      setError(errorMessage(cause));
+    } finally {
+      setPulling(false);
+    }
+  }
 
   const trackingError =
     resources.error === null ? null : errorMessage(resources.error);
@@ -233,16 +299,33 @@ function RepositoryView({
   /** This builder's run on the chosen snapshot, when there is one. */
   const builderRun = (builder: ContextBuilder) =>
     runs.find((run) => run.snapshotId === snapshotId && run.tool === builder);
+  /** Each builder's succeeded run on the chosen snapshot: what "View" opens. */
+  const built = CONTEXT_BUILDERS.flatMap((builder) => {
+    const run = runs.find(
+      (each) =>
+        each.snapshotId === snapshotId &&
+        each.tool === builder &&
+        each.status === "succeeded",
+    );
+    return run === undefined ? [] : [{ builder, run }];
+  });
+  const builtArtifacts = useRunArtifacts(
+    organizationId,
+    built.map(({ run }) => run.id),
+  );
+  const builds: ContextBuild[] = built.map((build) => ({
+    ...build,
+    artifacts: builtArtifacts.get(build.run.id),
+  }));
 
   async function build(builder: ContextBuilder) {
     setPending(builder);
     setError(null);
     try {
-      const result = await client.enqueue(organizationId, repo.id, {
+      await client.enqueue(organizationId, repo.id, {
         tool: builder,
         snapshotId,
       });
-      setSelected(result.id);
       resources.refresh();
     } catch (cause) {
       setError(errorMessage(cause));
@@ -275,154 +358,15 @@ function RepositoryView({
     void openArtifact({ artifactId });
   };
 
-  const graphify = useMemo(
-    () => summaryOf(artifacts, ["graph_json"], graphifySummarySchema),
-    [artifacts],
-  );
-  const dependency = useMemo(
-    () =>
-      summaryOf(
-        artifacts,
-        ["manifest", "dependency_graph"],
-        dependencyCruiserSummarySchema,
-      ),
-    [artifacts],
-  );
-  const deepwiki = useMemo(
-    () =>
-      summaryOf(
-        artifacts,
-        ["wiki_structure", "manifest"],
-        deepwikiSummarySchema,
-      ),
-    [artifacts],
-  );
-  const abstractions = useMemo(
-    () =>
-      summaryOf(
-        artifacts,
-        ["manifest", "abstraction_index"],
-        abstractionsSummarySchema,
-      ),
-    [artifacts],
-  );
-  const dataModel = useMemo(
-    () =>
-      summaryOf(artifacts, ["manifest", "data_model"], dataModelSummarySchema),
-    [artifacts],
-  );
-  const boundary = useMemo(
-    () =>
-      summaryOf(artifacts, ["boundary_contract"], sliceBoundarySummarySchema),
-    [artifacts],
-  );
-  const scopeProposal = useMemo(
-    () => summaryOf(artifacts, ["scope_proposal"], scopeProposalSchema),
-    [artifacts],
-  );
-  const fixtureSet = useMemo(
-    () => summaryOf(artifacts, ["fixture_set"], fixtureSetSchema),
-    [artifacts],
-  );
-
-  /**
-   * The figures a builder's card shows, known only for the selected run:
-   * they come from its artifacts, which are read for that run alone.
-   */
-  function figuresFor(
-    builder: ContextBuilder,
-    run: AnalysisRunDto | undefined,
-  ) {
-    if (run === undefined || run.id !== selected || run.status !== "succeeded")
-      return undefined;
-    switch (builder) {
-      case "graphify":
-        return graphify === null
-          ? undefined
-          : [
-              { label: "nodes", value: graphify.nodes },
-              { label: "edges", value: graphify.edges },
-              { label: "unresolved", value: graphify.unresolved },
-            ];
-      case "dependency_cruiser":
-        return dependency === null
-          ? undefined
-          : [
-              { label: "modules", value: dependency.counts.modules },
-              { label: "dependencies", value: dependency.counts.dependencies },
-              { label: "cycles", value: dependency.counts.circular },
-            ];
-      case "deepwiki":
-        return deepwiki === null
-          ? undefined
-          : [{ label: "pages", value: deepwiki.pages.length }];
-      case "abstractions":
-        return abstractions === null
-          ? undefined
-          : [
-              { label: "modules", value: abstractions.counts.modules },
-              { label: "exports", value: abstractions.counts.exports },
-              { label: "typed", value: abstractions.coverage.typed },
-            ];
-      case "data_model":
-        return dataModel === null
-          ? undefined
-          : [
-              { label: "entities", value: dataModel.counts.entities },
-              { label: "relations", value: dataModel.counts.relations },
-              { label: "accessors", value: dataModel.counts.accessors },
-            ];
-    }
+  /** The figures a builder's card shows, from its build's own artifacts. */
+  function figuresFor(builder: ContextBuilder) {
+    const artifacts = builds.find(
+      (build) => build.builder === builder,
+    )?.artifacts;
+    return artifacts === undefined
+      ? undefined
+      : builderFigures(builder, artifacts);
   }
-
-  const result =
-    selectedRun === undefined ? null : (
-      <>
-        {selectedRun.tool === "graphify" &&
-          selectedRun.status === "succeeded" && (
-            <GraphifyResult artifacts={artifacts} onOpen={open} />
-          )}
-        {selectedRun.tool === "dependency_cruiser" && dependency !== null && (
-          <DependencyResult
-            summary={dependency}
-            artifacts={artifacts}
-            onOpen={open}
-          />
-        )}
-        {selectedRun.tool === "deepwiki" && deepwiki !== null && (
-          <DeepwikiResult
-            summary={deepwiki}
-            artifacts={artifacts}
-            onOpen={open}
-          />
-        )}
-        {selectedRun.tool === "abstractions" && abstractions !== null && (
-          <AbstractionsResult
-            summary={abstractions}
-            artifacts={artifacts}
-            onOpen={open}
-          />
-        )}
-        {selectedRun.tool === "data_model" && dataModel !== null && (
-          <DataModelResult
-            summary={dataModel}
-            artifacts={artifacts}
-            onOpen={open}
-          />
-        )}
-        {boundary !== null && (
-          <SliceBoundary
-            summary={boundary}
-            artifacts={artifacts}
-            onOpen={open}
-          />
-        )}
-        {scopeProposal !== null && (
-          <ScopeProposalView proposal={scopeProposal} />
-        )}
-        {fixtureSet !== null && <FixtureSetView set={fixtureSet} />}
-      </>
-    );
 
   return (
     <main className={PAGE_CLASS}>
@@ -499,41 +443,168 @@ function RepositoryView({
 
       <Block
         title="Snapshot"
-        description="The commit the builders below read. A snapshot is taken as the default branch moves."
-      >
-        {loading ? (
-          <LoadingLine />
-        ) : snapshots.length === 0 ? (
-          <p className="text-muted-foreground text-sm">
-            A source snapshot will appear after the repository syncs.
-          </p>
-        ) : (
-          <div className="flex flex-col gap-2">
-            <div className="flex flex-wrap items-center gap-2 text-sm">
-              Commit
-              <Combobox
-                label="Source snapshot"
-                searchPlaceholder="Search by commit or date…"
-                className="w-auto max-w-full font-mono"
-                options={snapshots.map((s) => ({
-                  value: s.id,
-                  label: `${shortSha(s.commitSha)} · ${new Date(s.createdAt).toLocaleString()}`,
-                  keywords: [s.commitSha],
-                }))}
-                value={snapshotId}
-                onValueChange={setSnapshotId}
-              />
-            </div>
-            {current !== undefined && (
-              <p className="text-muted-foreground text-xs">
-                {current.fileCount.toLocaleString()} files ·{" "}
-                {(current.totalBytes / 1024).toFixed(1)} KiB
-                {current.treeTruncated ? " · Tree listing truncated" : ""}
-              </p>
+        description={
+          <>
+            <span className="block">
+              {loading ? (
+                "Loading…"
+              ) : awaiting !== null ? (
+                <>
+                  Taking a snapshot of{" "}
+                  <span className="font-mono">
+                    {shortSha(awaiting.commitSha)}
+                  </span>{" "}
+                  on {branch}…
+                </>
+              ) : current === undefined ? (
+                branch === repo.defaultBranch ? (
+                  "A source snapshot will appear after the repository syncs."
+                ) : (
+                  `No snapshot of ${branch} yet.${manageable ? " Pull it to take one." : ""}`
+                )
+              ) : (
+                <>
+                  <span className="text-foreground inline-flex items-center gap-1 font-mono">
+                    <GitBranch
+                      aria-hidden="true"
+                      className="size-3.5 shrink-0"
+                    />
+                    <span>
+                      {branch}@
+                      <span title={current.commitSha}>
+                        {shortSha(current.commitSha)}
+                      </span>
+                    </span>
+                  </span>{" "}
+                  · {shortDate(current.createdAt)} ·{" "}
+                  {current.fileCount.toLocaleString()} files ·{" "}
+                  {sizeLabel(current.totalBytes)}
+                  {current.treeTruncated ? " · tree listing truncated" : ""}
+                </>
+              )}
+            </span>
+            {manageable && !loading && (
+              <button
+                type="button"
+                className="text-primary mt-1 rounded-sm text-sm font-medium hover:underline disabled:opacity-60 disabled:hover:no-underline"
+                title={`Snapshot the newest commit on ${branch}, unless it was taken already.`}
+                disabled={pulling || awaiting !== null}
+                onClick={() => void pull()}
+              >
+                {pulling || awaiting !== null
+                  ? "Pulling…"
+                  : upToDate
+                    ? "Up to date"
+                    : "Pull latest"}
+              </button>
             )}
-          </div>
-        )}
-      </Block>
+          </>
+        }
+        aside={
+          !loading && (
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
+              <Combobox
+                label="Branch"
+                searchPlaceholder="Search branches…"
+                emptyMessage={
+                  branchList.isError
+                    ? "Branches could not be read from GitHub."
+                    : "No matches."
+                }
+                align="end"
+                contentClassName="w-72"
+                options={(branches.length > 0
+                  ? branches
+                  : [
+                      {
+                        name: repo.defaultBranch,
+                        headSha: repo.headSha ?? "",
+                        isDefault: true,
+                      },
+                    ]
+                ).map((each) => ({
+                  value: each.name,
+                  label: each.name,
+                  keywords: [each.name],
+                  detail: each.isDefault
+                    ? "default"
+                    : each.headSha === ""
+                      ? undefined
+                      : shortSha(each.headSha),
+                }))}
+                value={branch}
+                onValueChange={chooseBranch}
+                trigger={
+                  <button
+                    type="button"
+                    role="combobox"
+                    aria-label="Branch"
+                    title={
+                      branchList.data?.truncated === true
+                        ? "The branch the snapshots are of. Only the first 300 branches are listed."
+                        : "The branch the snapshots are of."
+                    }
+                    className={cn(
+                      buttonVariants({ variant: "secondary", size: "sm" }),
+                      BLOCK_ACTION,
+                      "data-[state=open]:text-foreground max-w-56",
+                    )}
+                  >
+                    <GitBranch aria-hidden="true" />
+                    <span className="text-foreground truncate font-mono">
+                      {branch}
+                    </span>
+                    <ChevronDown aria-hidden="true" />
+                  </button>
+                }
+              />
+              {current !== undefined && (
+                <Combobox
+                  label="Source snapshot"
+                  searchPlaceholder="Search by commit…"
+                  align="end"
+                  contentClassName="w-72"
+                  options={onBranch.map((s) => ({
+                    value: s.id,
+                    label: shortSha(s.commitSha),
+                    keywords: [s.commitSha],
+                    detail:
+                      s.commitSha === branchHead
+                        ? `${shortDate(s.createdAt)} · latest`
+                        : shortDate(s.createdAt),
+                  }))}
+                  value={snapshotId}
+                  onValueChange={setSnapshotId}
+                  trigger={
+                    <button
+                      type="button"
+                      role="combobox"
+                      aria-label="Source snapshot"
+                      title="The commit the builders read. The default branch is snapshotted as it moves; pull another branch to snapshot it."
+                      className={cn(
+                        buttonVariants({ variant: "secondary", size: "sm" }),
+                        BLOCK_ACTION,
+                        "data-[state=open]:text-foreground",
+                      )}
+                    >
+                      <GitCommitHorizontal aria-hidden="true" />
+                      <span className="text-foreground font-mono">
+                        {shortSha(current.commitSha)}
+                      </span>
+                      {current.commitSha === branchHead && (
+                        <span className="bg-background/60 rounded-[4px] px-1 py-px text-[10px] leading-none">
+                          Latest
+                        </span>
+                      )}
+                      <ChevronDown aria-hidden="true" />
+                    </button>
+                  }
+                />
+              )}
+            </div>
+          )
+        }
+      />
 
       <Block
         title="Tech stack"
@@ -559,164 +630,72 @@ function RepositoryView({
 
       <Block
         title="Context builders"
-        description="Each reads the chosen snapshot on its own and describes it for people and agents. A build on a snapshot is kept, so asking again shows the one there is."
+        description="Each reads the chosen snapshot and describes it for people and agents."
+        aside={
+          <Button
+            variant="secondary"
+            size="sm"
+            className={BLOCK_ACTION}
+            disabled={builds.length === 0}
+            title={
+              builds.length === 0
+                ? "Nothing is built on this snapshot yet."
+                : undefined
+            }
+            onClick={() => setViewing(true)}
+          >
+            <FolderOpen />
+            View files
+          </Button>
+        }
       >
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
-          {CONTEXT_BUILDERS.map((builder) => {
-            const run = builderRun(builder);
-            return (
-              <BuilderCard
-                key={builder}
-                className={BUILDER_SPANS[builder]}
-                builder={builder}
-                run={run}
-                manageable={manageable}
-                pending={pending === builder}
-                disabled={pending !== null || snapshotId === ""}
-                figures={figuresFor(builder, run)}
-                onBuild={() => {
-                  void build(builder);
-                }}
-                onView={() => {
-                  if (run !== undefined) setSelected(run.id);
-                }}
-              />
-            );
-          })}
+        <div className={FLUSH_LIST}>
+          {CONTEXT_BUILDERS.map((builder) => (
+            <BuilderRow
+              key={builder}
+              builder={builder}
+              run={builderRun(builder)}
+              manageable={manageable}
+              pending={pending === builder}
+              disabled={pending !== null || snapshotId === ""}
+              figures={figuresFor(builder)}
+              onBuild={() => {
+                void build(builder);
+              }}
+            />
+          ))}
+          <RunHistory
+            count={runs.length}
+            loading={loading}
+            unavailable={trackingError !== null}
+            manageable={manageable}
+            onOpenLogs={() => setLogsOn(runs[0]?.id ?? null)}
+          />
         </div>
       </Block>
 
-      {selectedRun !== undefined && (
-        <Block
-          title={
-            <>
-              <span>{runLabel(selectedRun)}</span>
-              <StatusBadge status={selectedRun.status} />
-            </>
-          }
-          description={
-            <>
-              Attempt {selectedRun.attempt + 1} of {selectedRun.maxAttempts} ·{" "}
-              {new Date(selectedRun.createdAt).toLocaleString()}
-              {runDuration(selectedRun) === null
-                ? ""
-                : ` · ${runDuration(selectedRun)}`}
-              {" · "}
-              <span className="font-mono">{commitOf(selectedRun)}</span>
-            </>
-          }
-          aside={
-            manageable &&
-            selectedRun.status !== "queued" && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  void openArtifact({ runId: selectedRun.id });
-                }}
-              >
-                <ScrollText />
-                Open run log
-              </Button>
-            )
-          }
-        >
-          {selectedRun.errorCode !== null && (
-            <p className="text-destructive text-sm">
-              {errorLabels[selectedRun.errorCode]}{" "}
-              <span className="text-muted-foreground">
-                ({selectedRun.errorCode})
-              </span>
-            </p>
-          )}
-          {artifactLoading ? <LoadingLine /> : result}
-          <div className="flex flex-col gap-2">
-            <h3 className="text-muted-foreground text-xs font-medium tracking-wide uppercase">
-              Artifacts
-            </h3>
-            {artifactLoading ? null : artifacts.length === 0 ? (
-              <p className="text-muted-foreground text-sm">
-                {selectedRun.status === "succeeded"
-                  ? "No artifacts are available."
-                  : "Artifacts appear when the run succeeds."}
-              </p>
-            ) : (
-              <ul className="divide-y">
-                {artifacts.map((artifact) => (
-                  <li
-                    className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 py-2"
-                    key={artifact.id}
-                  >
-                    <Button
-                      variant="link"
-                      className="h-auto p-0 font-mono text-xs"
-                      onClick={() => open(artifact.id)}
-                    >
-                      {artifact.path}
-                    </Button>
-                    <span className="text-muted-foreground text-xs">
-                      {(artifact.sizeBytes / 1024).toFixed(1)} KiB · SHA-256{" "}
-                      <span className="font-mono" title={artifact.sha256}>
-                        {artifact.sha256.slice(0, 12)}
-                      </span>
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        </Block>
-      )}
+      <ContextViewer
+        owner={organizationId}
+        commit={current === undefined ? undefined : shortSha(current.commitSha)}
+        builds={builds}
+        open={viewing}
+        onOpenChange={setViewing}
+        onOpenRaw={open}
+      />
 
-      <Block
-        title="Run history"
-        description="Every run on this repository, newest first. Select one to read it above."
-      >
-        {loading ? (
-          <LoadingLine />
-        ) : runs.length === 0 ? (
-          error === null && trackingError === null ? (
-            <p className="text-muted-foreground text-sm">No runs yet.</p>
-          ) : null
-        ) : (
-          <ul className="flex flex-col gap-2">
-            {runs.map((run) => (
-              <li key={run.id}>
-                <button
-                  type="button"
-                  className={`hover:bg-muted/60 focus-visible:ring-ring/50 flex w-full flex-col gap-1 rounded-[6px] border p-3 text-left transition-colors focus-visible:ring-2 focus-visible:outline-none ${
-                    selected === run.id
-                      ? "bg-muted/60 border-foreground/20"
-                      : ""
-                  }`}
-                  onClick={() => setSelected(run.id)}
-                  aria-pressed={selected === run.id}
-                >
-                  <span className="flex flex-wrap items-center justify-between gap-2">
-                    <span className="flex min-w-0 items-center gap-2 text-sm">
-                      <span className="font-medium">{runLabel(run)}</span>
-                      <span className="text-muted-foreground font-mono text-xs">
-                        {commitOf(run)}
-                      </span>
-                    </span>
-                    <StatusBadge status={run.status} />
-                  </span>
-                  <span className="text-muted-foreground text-xs">
-                    Attempt {run.attempt + 1} ·{" "}
-                    {new Date(run.createdAt).toLocaleString()}
-                    {runDuration(run) === null ? "" : ` · ${runDuration(run)}`}
-                  </span>
-                  {run.errorCode !== null && (
-                    <span className="text-destructive text-xs">
-                      {errorLabels[run.errorCode]}
-                    </span>
-                  )}
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </Block>
+      {manageable && (
+        <RunLogs
+          owner={organizationId}
+          repository={repo.fullName}
+          runs={runs}
+          commitOf={commitOf}
+          openOn={logsOn}
+          onClose={() => setLogsOn(null)}
+          onOpenRaw={(runId) => {
+            void openArtifact({ runId });
+          }}
+        />
+      )}
 
       {manageable && (
         <ConfirmDialog
@@ -735,4 +714,89 @@ function RepositoryView({
       )}
     </main>
   );
+}
+
+/** Two or three headline figures from a build's summary, once it has one. */
+function builderFigures(
+  builder: ContextBuilder,
+  artifacts: readonly ArtifactDto[],
+) {
+  switch (builder) {
+    case "graphify": {
+      const summary = summaryOf(
+        artifacts,
+        ["graph_json"],
+        graphifySummarySchema,
+      );
+      return summary === null
+        ? undefined
+        : [
+            { label: "nodes", value: summary.nodes },
+            { label: "edges", value: summary.edges },
+            { label: "unresolved", value: summary.unresolved },
+          ];
+    }
+    case "dependency_cruiser": {
+      const summary = summaryOf(
+        artifacts,
+        ["manifest", "dependency_graph"],
+        dependencyCruiserSummarySchema,
+      );
+      return summary === null
+        ? undefined
+        : [
+            { label: "modules", value: summary.counts.modules },
+            { label: "dependencies", value: summary.counts.dependencies },
+            { label: "cycles", value: summary.counts.circular },
+          ];
+    }
+    case "deepwiki": {
+      const summary = summaryOf(
+        artifacts,
+        ["wiki_structure", "manifest"],
+        deepwikiSummarySchema,
+      );
+      return summary === null
+        ? undefined
+        : [{ label: "pages", value: summary.pages.length }];
+    }
+    case "abstractions": {
+      const summary = summaryOf(
+        artifacts,
+        ["manifest", "abstraction_index"],
+        abstractionsSummarySchema,
+      );
+      return summary === null
+        ? undefined
+        : [
+            { label: "modules", value: summary.counts.modules },
+            { label: "exports", value: summary.counts.exports },
+            { label: "typed", value: summary.coverage.typed },
+          ];
+    }
+    case "data_model": {
+      const summary = summaryOf(
+        artifacts,
+        ["manifest", "data_model"],
+        dataModelSummarySchema,
+      );
+      return summary === null
+        ? undefined
+        : [
+            { label: "entities", value: summary.counts.entities },
+            { label: "relations", value: summary.counts.relations },
+            { label: "accessors", value: summary.counts.accessors },
+          ];
+    }
+  }
+}
+
+/** A time as a short date: `Oct 6, 12:55 PM`. */
+function shortDate(iso: string): string {
+  return new Date(iso).toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
 }

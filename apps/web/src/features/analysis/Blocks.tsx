@@ -1,18 +1,14 @@
 /**
  * The pieces the repository page is built from: a block with a heading, a
- * row of figures, a run's status as a badge. Shared by the page and by each
- * builder's result view, so every block carries the same inset and every
- * figure reads the same way.
+ * list flush with its edges, a run's status as a dot and a word.
  *
- * One grid for the insets: a block is padded 16px, what sits inside it
- * (a tile, a card, a row) 12px, so text lands on the same columns block
- * after block rather than drifting a few pixels between them.
+ * One grid for the insets: a block is padded 16px and so is every row of
+ * its list, so text lands on the same column block after block.
  */
 
 import type { AnalysisStatus } from "sandbox-factory";
 import { useId, type ComponentProps, type ReactNode } from "react";
 
-import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 
 import { statusLabels } from "./labels";
@@ -60,83 +56,55 @@ export function Block({
   );
 }
 
-/** A heading inside a block, for the parts of a result. */
-export function SubHeading({ children }: { children: ReactNode }) {
-  return (
-    <h3 className="text-muted-foreground text-xs font-medium tracking-wide uppercase">
-      {children}
-    </h3>
-  );
-}
-
-export interface Stat {
-  label: string;
-  value: number | string;
-}
+/**
+ * A list flush with its block's edges, under its heading: rows divided by
+ * the border and each padded as the block is, `px-4`, so text keeps the
+ * block's column.
+ */
+export const FLUSH_LIST = "-mx-4 -mb-4 divide-y border-t";
 
 /**
- * A row of figures, each a tile: the label in the muted ink, the value in
- * the text ink. Numbers are formatted for the locale; a string is shown as
- * given.
+ * A block's own action, beside its heading or in its footer: quiet, filled
+ * rather than outlined, and the same size wherever it sits, so two of them
+ * read as a pair.
  */
-export function StatTiles({ stats }: { stats: readonly Stat[] }) {
-  return (
-    <dl className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-      {stats.map((stat) => (
-        <div
-          key={stat.label}
-          className="bg-muted/40 flex flex-col gap-1 rounded-[6px] p-3"
-        >
-          <dt className="text-muted-foreground text-xs">{stat.label}</dt>
-          <dd className="text-lg leading-none font-semibold tabular-nums">
-            {typeof stat.value === "number"
-              ? stat.value.toLocaleString()
-              : stat.value}
-          </dd>
-        </div>
-      ))}
-    </dl>
-  );
-}
+export const BLOCK_ACTION =
+  "text-muted-foreground hover:text-foreground h-7 gap-1.5 rounded-[6px] px-2.5 text-xs has-[>svg]:px-2.5 [&_svg]:size-3.5";
 
-/** A run's status, coloured: only a failure is loud. */
-export function StatusBadge({
+const DOTS: Record<AnalysisStatus, string> = {
+  succeeded: "bg-emerald-500",
+  failed: "bg-destructive",
+  running: "bg-amber-500 animate-pulse motion-reduce:animate-none",
+  queued: "bg-muted-foreground/60",
+};
+
+/**
+ * A run's status as a dot and a word. Quiet but for a failure, whose word
+ * is in the destructive ink; null is a builder never run.
+ */
+export function StatusDot({
   status,
-  className,
+  label,
 }: {
-  status: AnalysisStatus;
-  className?: string;
+  status: AnalysisStatus | null;
+  /** In place of the status's own word: "Built" for a builder. */
+  label?: string | undefined;
 }) {
   return (
-    <Badge
-      variant={
-        status === "failed"
-          ? "destructive"
-          : status === "succeeded"
-            ? "default"
-            : "secondary"
-      }
-      className={cn("rounded-[4px]", className)}
+    <span
+      className={cn(
+        "inline-flex items-center gap-1.5 text-xs whitespace-nowrap",
+        status === "failed" ? "text-destructive" : "text-muted-foreground",
+      )}
     >
-      {statusLabels[status]}
-    </Badge>
-  );
-}
-
-/** A path, as a chip in monospace. */
-export function PathChip({ children }: { children: ReactNode }) {
-  return (
-    <li className="bg-muted max-w-full truncate rounded-[4px] px-1.5 py-0.5 font-mono text-xs">
-      {children}
-    </li>
-  );
-}
-
-/** A note that a summary was cut short, and where the whole is. */
-export function TruncatedNote({ whole }: { whole: string }) {
-  return (
-    <p className="text-muted-foreground text-xs">
-      This summary was truncated; the whole is in {whole}.
-    </p>
+      <span
+        aria-hidden="true"
+        className={cn(
+          "size-1.5 shrink-0 rounded-full",
+          status === null ? "border-muted-foreground/60 border" : DOTS[status],
+        )}
+      />
+      {label ?? (status === null ? "" : statusLabels[status])}
+    </span>
   );
 }

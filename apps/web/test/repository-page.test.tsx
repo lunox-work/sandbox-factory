@@ -11,22 +11,37 @@
  * The server is faked at `fetch`, routed by method and path suffix.
  */
 
-import { CONTEXT_BUILDERS } from "sandbox-factory";
+import { CONTEXT_BUILDERS, toolVersionOf } from "sandbox-factory";
 import { afterEach, expect, test, vi } from "vitest";
 import type {
-  AbstractionsSummaryDto,
   AnalysisRunDto,
   ArtifactDto,
-  DataModelSummaryDto,
-  DeepwikiSummaryDto,
   DependencyCruiserSummaryDto,
   GithubRepoDto,
-  ScopeProposalDto,
-  SliceBoundarySummaryDto,
 } from "@sandbox-factory/shared";
 
 import { RepositoryPage } from "../src/Repository";
+import { chooseOption } from "./combobox";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "./render";
+
+/*
+  Mermaid measures text and Graphviz is WebAssembly in a worker; neither
+  runs in jsdom. A diagram is drawn as a picture naming its kind, and one
+  whose text says `broken` fails as a parse error does. What the page does
+  with the drawing, making it safe and showing it, is the real code.
+*/
+vi.mock("../src/features/sandbox/diagrams", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../src/features/sandbox/diagrams")>();
+  return {
+    ...actual,
+    renderDiagram: async (kind: string, source: string) => {
+      if (source.includes("broken"))
+        throw new Error("Parse error on line 1:\nbroken\n^");
+      return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 40"><text>${kind} drawn</text><script>steal()</script></svg>`;
+    },
+  };
+});
 
 const stamp = "2026-10-01T00:00:00.000Z";
 const repo: GithubRepoDto = {
@@ -63,7 +78,7 @@ const graphRun: AnalysisRunDto = {
   snapshotId: snapshot.id,
   repoId: repo.id,
   tool: "graphify",
-  toolVersion: "test",
+  toolVersion: toolVersionOf("graphify"),
   params: { deadlineMinutes: 30 },
   status: "succeeded",
   attempt: 0,
@@ -80,6 +95,7 @@ function queuedRun(tool: AnalysisRunDto["tool"]): AnalysisRunDto {
   const base = {
     ...graphRun,
     id: `arn_${tool}`,
+    toolVersion: toolVersionOf(tool),
     status: "queued" as const,
     startedAt: null,
     finishedAt: null,
@@ -121,7 +137,21 @@ const artifact = (
 interface Server {
   runs: AnalysisRunDto[];
   artifacts?: Record<string, ArtifactDto[]>;
+  /** Artifact text by id; one not named here is too large to show. */
+  contents?: Record<string, string>;
+  /** Run logs by run id; a run not named here kept none. */
+  logs?: Record<string, string>;
   repositories?: GithubRepoDto[];
+  /** The repository's branches; main at the head alone when unsaid. */
+  branches?: { name: string; headSha: string; isDefault: boolean }[];
+  /**
+   * How a pull of a branch is answered: the snapshot already taken, or one
+   * that lands on the next read of the list.
+   */
+  pulls?: Record<
+    string,
+    { taken: typeof snapshot } | { lands: typeof snapshot }
+  >;
 }
 
 /** A fake API, routed by method and the end of the path. */
@@ -129,6 +159,7 @@ function server(options: Server) {
   const calls: string[] = [];
   const posts: unknown[] = [];
   let runs = options.runs;
+  let snapshots = [snapshot];
   const repositories = options.repositories ?? [repo];
   const fetch = vi.fn(async (url: string, init?: RequestInit) => {
     const method = init?.method ?? "GET";
@@ -138,7 +169,29 @@ function server(options: Server) {
       return new Response(null, { status: 204 });
     }
     if (url.endsWith("/github/repositories")) body = { repositories };
-    else if (url.endsWith("/snapshots")) body = { snapshots: [snapshot] };
+    else if (url.endsWith("/snapshots") && method === "POST") {
+      const { branch } = JSON.parse(String(init?.body)) as { branch: string };
+      posts.push({ branch });
+      const pull = options.pulls?.[branch];
+      if (pull === undefined)
+        return new Response('{"error":"Not found"}', { status: 404 });
+      if ("taken" in pull)
+        body = { commitSha: pull.taken.commitSha, snapshot: pull.taken };
+      else {
+        snapshots = [pull.lands, ...snapshots];
+        return new Response(
+          JSON.stringify({ commitSha: pull.lands.commitSha, snapshot: null }),
+          { status: 202 },
+        );
+      }
+    } else if (url.endsWith("/snapshots")) body = { snapshots };
+    else if (url.endsWith("/branches"))
+      body = {
+        branches: options.branches ?? [
+          { name: "main", headSha: "a".repeat(40), isDefault: true },
+        ],
+        truncated: false,
+      };
     else if (url.endsWith("/repositories/ghr_1/runs")) {
       if (method === "POST") {
         const input = JSON.parse(String(init?.body)) as {
@@ -152,6 +205,23 @@ function server(options: Server) {
     } else if (url.endsWith("/artifacts")) {
       const id = url.split("/runs/")[1]?.split("/")[0] ?? "";
       body = { artifacts: options.artifacts?.[id] ?? [] };
+    } else if (url.endsWith("/log/content")) {
+      const id = url.split("/runs/")[1]?.split("/")[0] ?? "";
+      const text = options.logs?.[id];
+      if (text === undefined)
+        return new Response('{"error":"No log is available."}', {
+          status: 404,
+        });
+      body = { sizeBytes: text.length, text, omitted: null };
+    } else if (url.endsWith("/content")) {
+      const id = url.split("/artifacts/")[1]?.split("/")[0] ?? "";
+      const text = options.contents?.[id];
+      body = {
+        path: id,
+        sizeBytes: 2048,
+        text: text ?? null,
+        omitted: text === undefined ? "too_large" : null,
+      };
     } else if (url.endsWith("/url"))
       body = { url: "https://objects.test/signed" };
     else if (url.includes("/runs/")) {
@@ -183,8 +253,26 @@ function renderPage(role = "owner") {
   return { onName, onRemoved };
 }
 
+/** The run history, the builders' footer: its count, and the way to the logs. */
+async function history(count: RegExp) {
+  const footer = await screen.findByRole("region", { name: "Run history" });
+  await within(footer).findByText(count);
+  // It lists nothing: the runs are listed in the logs dialog.
+  expect(within(footer).queryByRole("list")).toBe(null);
+  return footer;
+}
+
 function builderCard(name: string) {
   return screen.getByRole("region", { name: `${name} builder` });
+}
+
+/** The frame a web page runs in, once there is one. */
+function frameIn(dialog: HTMLElement) {
+  return waitFor(() => {
+    const frame = dialog.querySelector("iframe");
+    expect(frame).not.toBeNull();
+    return frame as HTMLIFrameElement;
+  });
 }
 
 /** A new tab, as `window.open` answers it, with what the page sets on it. */
@@ -230,7 +318,11 @@ test("the page names the repository, and owners see a card per builder", async (
       within(builderCard(name)).getByRole("button", { name: "Build" }),
     ).toBeTruthy();
   }
-  expect(screen.getByText("No runs yet.")).toBeTruthy();
+  expect(
+    within(screen.getByRole("region", { name: "Run history" })).getByText(
+      /No runs yet/,
+    ),
+  ).toBeTruthy();
 });
 
 test("Build on Graphify posts the builder and the snapshot, and the card follows the run", async () => {
@@ -240,16 +332,12 @@ test("Build on Graphify posts the builder and the snapshot, and the card follows
   fireEvent.click(
     within(builderCard("Graphify")).getByRole("button", { name: "Build" }),
   );
-  await within(builderCard("Graphify")).findByText("Building…");
-  expect(f.posts).toEqual([{ tool: "graphify", snapshotId: "rsn_1" }]);
   await within(builderCard("Graphify")).findByText("Queued");
+  expect(f.posts).toEqual([{ tool: "graphify", snapshotId: "rsn_1" }]);
+  // Nothing to press while it is queued.
   expect(
-    (
-      within(builderCard("Graphify")).getByRole("button", {
-        name: "Building…",
-      }) as HTMLButtonElement
-    ).disabled,
-  ).toBe(true);
+    within(builderCard("Graphify")).queryByRole("button", { name: "Build" }),
+  ).toBe(null);
   // The other builders are untouched.
   expect(
     within(builderCard("Dependency Cruiser")).getByRole("button", {
@@ -282,14 +370,34 @@ test.each(CONTEXT_BUILDERS)(
   },
 );
 
-test("a member opens artifacts through a signed URL but cannot build or read logs", async () => {
+test("a member opens a build's files but cannot build or read logs", async () => {
   const f = server({
     runs: [graphRun],
     artifacts: { arn_1: [artifact("arn_1", "graph.html", "graph_html")] },
   });
   const tab = spyOnOpen();
   renderPage("member");
-  fireEvent.click(await screen.findByRole("button", { name: "graph.html" }));
+  await screen.findByText(/10 files/);
+  expect(
+    await within(builderCard("Graphify")).findByText("Built"),
+  ).toBeTruthy();
+  // The one "View" is the block's, not the row's.
+  expect(
+    within(builderCard("Graphify")).queryByRole("button", {
+      name: "View files",
+    }),
+  ).toBe(null);
+  fireEvent.click(screen.getByRole("button", { name: "View files" }));
+  const dialog = await screen.findByRole("dialog");
+  fireEvent.click(
+    await within(dialog).findByRole("button", { name: "graph.html" }),
+  );
+  // It runs in the viewer; the bar opens it in a tab of its own.
+  fireEvent.click(
+    await within(dialog).findByRole("button", {
+      name: "Open graph.html in a new tab",
+    }),
+  );
   await waitFor(() =>
     expect(tab.location.href).toBe("https://objects.test/signed"),
   );
@@ -298,40 +406,282 @@ test("a member opens artifacts through a signed URL but cannot build or read log
     true,
   );
   expect(screen.queryByRole("button", { name: "Build" })).toBe(null);
-  expect(screen.queryByRole("button", { name: "Building…" })).toBe(null);
-  expect(screen.queryByRole("button", { name: "Open run log" })).toBe(null);
+  expect(screen.queryByRole("button", { name: "View logs" })).toBe(null);
   expect(screen.queryByRole("button", { name: /Remove/ })).toBe(null);
-  // Built, so there is something to view; "Open graph" opens the same artifact.
-  expect(within(builderCard("Graphify")).getByText("Built")).toBeTruthy();
+});
+
+test("View is disabled until a builder has built on the snapshot", async () => {
+  server({ runs: [] });
+  renderPage();
+  await screen.findByText(/10 files/);
   expect(
-    within(builderCard("Graphify")).getByRole("button", { name: "View" }),
+    (screen.getByRole("button", { name: "View files" }) as HTMLButtonElement)
+      .disabled,
+  ).toBe(true);
+});
+
+test("View opens every build in one explorer, a folder per builder, and reads a file", async () => {
+  const wiki: AnalysisRunDto = {
+    ...queuedRun("deepwiki"),
+    status: "succeeded",
+    startedAt: stamp,
+    finishedAt: stamp,
+  };
+  const f = server({
+    runs: [wiki, graphRun],
+    artifacts: {
+      arn_1: [
+        artifact("arn_1", "graph.json", "graph_json"),
+        artifact("arn_1", "graph.html", "graph_html"),
+      ],
+      [wiki.id]: [
+        artifact(wiki.id, "pages/intro.md", "manifest"),
+        artifact(wiki.id, "pages/export.csv", "other"),
+      ],
+    },
+    contents: {
+      art_pages_intro_md: "# Intro\n\nSee [the map](../graph.json).",
+      art_graph_json: '{"nodes":1}',
+    },
+  });
+  const tab = spyOnOpen();
+  renderPage();
+  await screen.findByText(/10 files/);
+  fireEvent.click(screen.getByRole("button", { name: "View files" }));
+  const dialog = await screen.findByRole("dialog");
+  const files = within(dialog).getByRole("navigation", { name: "Files" });
+  // A folder per build, in the builders' order, open from the start.
+  const folders = within(files)
+    .getAllByRole("button", { expanded: true })
+    .map((folder) => folder.textContent);
+  expect(folders).toEqual(["Graphify", "DeepWiki Open", "pages"]);
+  // The first document opens rendered.
+  expect(
+    await within(dialog).findByRole("heading", { name: "Intro" }),
   ).toBeTruthy();
-  expect(screen.getByRole("button", { name: "Open graph" })).toBeTruthy();
-  expect(screen.getByText(/SHA-256/)).toBeTruthy();
+  expect(
+    within(files)
+      .getByRole("button", { name: "intro.md" })
+      .getAttribute("aria-current"),
+  ).toBe("true");
+  // Another file is read through the API, not its signed link.
+  fireEvent.click(within(files).getByRole("button", { name: "graph.json" }));
+  await within(dialog).findByText(/"nodes"/);
+  expect(
+    f.calls.some((c) => c.endsWith("/artifacts/art_graph_json/content")),
+  ).toBe(true);
+  // A web page too large to read as text runs from its signed link, in a
+  // frame that may run scripts and nothing more.
+  fireEvent.click(within(files).getByRole("button", { name: "graph.html" }));
+  const frame = await frameIn(dialog);
+  expect(frame.getAttribute("sandbox")).toBe("allow-scripts");
+  await waitFor(() =>
+    expect(frame.getAttribute("src")).toBe("https://objects.test/signed"),
+  );
+  // Covered until the page's own scripts have run and it has loaded.
+  expect(within(dialog).getByText("Drawing graph.html…")).toBeTruthy();
+  fireEvent.load(frame);
+  expect(within(dialog).queryByText("Drawing graph.html…")).toBeNull();
+  expect(within(dialog).queryByText(/too large to show here/)).toBeNull();
+  // Any other file too large to show opens in a new tab instead.
+  fireEvent.click(within(files).getByRole("button", { name: "export.csv" }));
+  await within(dialog).findByText(/too large to show here/);
+  fireEvent.click(
+    within(dialog).getByRole("button", { name: "Open in a new tab" }),
+  );
+  await waitFor(() =>
+    expect(tab.location.href).toBe("https://objects.test/signed"),
+  );
+  expect(
+    f.calls.some((c) => c.endsWith("/artifacts/art_pages_export_csv/url")),
+  ).toBe(true);
+});
+
+test("what can be seen is shown: diagrams drawn, pages run, wiki links followed", async () => {
+  const model: AnalysisRunDto = {
+    ...queuedRun("data_model"),
+    status: "succeeded",
+    startedAt: stamp,
+    finishedAt: stamp,
+  };
+  server({
+    runs: [model, graphRun],
+    artifacts: {
+      arn_1: [
+        artifact("arn_1", "GRAPH_REPORT.md", "report_md"),
+        artifact("arn_1", "wiki/Community_0.md", "wiki_page"),
+        artifact("arn_1", "page.html", "graph_html"),
+      ],
+      [model.id]: [
+        artifact(model.id, "erd.mmd", "erd_mermaid"),
+        artifact(model.id, "deps.dot", "other"),
+      ],
+    },
+    contents: {
+      art_GRAPH_REPORT_md: [
+        "# Report",
+        "",
+        "- [[_COMMUNITY_Community 0|Community 0]]",
+        "",
+        "```mermaid",
+        "graph LR; a --> b",
+        "```",
+        "",
+        "```mermaid",
+        "broken",
+        "```",
+      ].join("\n"),
+      art_wiki_Community_0_md: "# Community 0\n\nBack to [[index]].",
+      art_page_html: "<!doctype html><title>Graph</title><p>graph</p>",
+      art_erd_mmd: "erDiagram\n  user ||--o{ session : has",
+      art_deps_dot: 'digraph { "a" -> "b" }',
+    },
+  });
+  renderPage();
+  await screen.findByText(/10 files/);
+  fireEvent.click(screen.getByRole("button", { name: "View files" }));
+  const dialog = await screen.findByRole("dialog");
+  const files = within(dialog).getByRole("navigation", { name: "Files" });
+
+  // A Mermaid fence is drawn where it stands, with nothing in it that runs.
+  await within(dialog).findByRole("heading", { name: "Report" });
+  const figure = await within(dialog).findByRole("figure", {
+    name: "Mermaid diagram",
+  });
+  await within(figure).findByText("mermaid drawn");
+  expect(figure.querySelector("script")).toBeNull();
+  // Read as written, and back.
+  fireEvent.click(within(figure).getByRole("button", { name: "Source" }));
+  expect(within(figure).getByText(/a --> b/)).toBeTruthy();
+  fireEvent.click(within(figure).getByRole("button", { name: "Diagram" }));
+  await within(figure).findByText("mermaid drawn");
+  // One that cannot be drawn reads as written, with why.
+  await within(dialog).findByText("Not drawn: Parse error on line 1:");
+  expect(within(dialog).getByText("broken")).toBeTruthy();
+
+  // A wiki link opens the note it names.
+  fireEvent.click(within(dialog).getByRole("link", { name: "Community 0" }));
+  await within(dialog).findByRole("heading", { name: "Community 0" });
+  // One that names nothing reads as its label.
+  expect(within(dialog).getByText(/Back to index\./)).toBeTruthy();
+
+  // A Mermaid file opens drawn on a canvas, with its text a toggle away.
+  fireEvent.click(within(files).getByRole("button", { name: "erd.mmd" }));
+  const canvas = await within(dialog).findByRole("group", { name: "erd.mmd" });
+  await within(canvas).findByText("mermaid drawn");
+  // Scrolling zooms rather than scrolls: a wheel's notch toward the
+  // reader zooms in, away zooms back out.
+  const zoom = within(dialog).getByRole("toolbar", { name: "Zoom" });
+  expect(within(zoom).getByText("100%")).toBeTruthy();
+  fireEvent.wheel(canvas, { deltaY: -100 });
+  expect(within(zoom).getByText("122%")).toBeTruthy();
+  fireEvent.wheel(canvas, { deltaY: 100 });
+  expect(within(zoom).getByText("100%")).toBeTruthy();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Preview" }));
+  expect(within(dialog).getByTestId("file-source").textContent).toContain(
+    "erDiagram",
+  );
+
+  // A Graphviz file the same.
+  fireEvent.click(within(files).getByRole("button", { name: "deps.dot" }));
+  await within(
+    await within(dialog).findByRole("group", { name: "deps.dot" }),
+  ).findByText("dot drawn");
+
+  // A small web page runs from its text, sandboxed.
+  fireEvent.click(within(files).getByRole("button", { name: "page.html" }));
+  const frame = await frameIn(dialog);
+  expect(frame.getAttribute("title")).toBe("page.html");
+  expect(frame.getAttribute("sandbox")).toBe("allow-scripts");
+  expect(frame.getAttribute("srcdoc")).toContain("<title>Graph</title>");
+  fireEvent.click(within(dialog).getByRole("button", { name: "Preview" }));
+  expect(within(dialog).getByTestId("file-source").textContent).toContain(
+    "<title>Graph</title>",
+  );
+});
+
+test("a run an older builder made stays on view and can be rebuilt", async () => {
+  const f = server({ runs: [{ ...graphRun, toolVersion: "graphifyy@0.1" }] });
+  renderPage();
+  const card = await screen.findByRole("region", { name: "Graphify builder" });
+  const rebuild = await within(card).findByRole("button", { name: "Rebuild" });
+  expect(within(card).getByText("Built")).toBeTruthy();
+  fireEvent.click(rebuild);
+  await waitFor(() =>
+    expect(
+      f.calls.some((c) => c.startsWith("POST ") && c.endsWith("/runs")),
+    ).toBe(true),
+  );
 });
 
 test("a failed run shows its error and the retry cap; admins open the log", async () => {
-  server({
+  const f = server({
     runs: [
       { ...graphRun, status: "failed", attempt: 2, errorCode: "too_large" },
     ],
+    logs: { arn_1: "Cloning…\nSource exceeds the size limit." },
   });
   const tab = spyOnOpen();
   renderPage();
   const card = await screen.findByRole("region", { name: "Graphify builder" });
   await within(card).findByText(/source size limit/);
   expect(within(card).getByText("Failed")).toBeTruthy();
+  expect(within(card).getByText("Retry limit reached")).toBeTruthy();
+  expect(within(card).queryByRole("button", { name: "Build" })).toBe(null);
+  // The footer opens its log, read through the API, printed as a terminal
+  // does and ending in how it exited. Failures are not counted there.
+  const footer = await history(/1 run$/);
+  fireEvent.click(within(footer).getByRole("button", { name: "View logs" }));
+  const dialog = await screen.findByRole("dialog");
+  await within(dialog).findByText("Source exceeds the size limit.");
   expect(
-    (
-      within(card).getByRole("button", {
-        name: "Retry limit reached",
-      }) as HTMLButtonElement
-    ).disabled,
-  ).toBe(true);
-  fireEvent.click(screen.getByRole("button", { name: "Open run log" }));
+    within(dialog).getByText(/✗ Failed: .*source size limit/),
+  ).toBeTruthy();
+  expect(f.calls.some((c) => c.endsWith("/runs/arn_1/log/content"))).toBe(true);
+  // And still opens raw, in a new tab, from there.
+  fireEvent.click(
+    within(dialog).getByRole("button", { name: "Open the log in a new tab" }),
+  );
   await waitFor(() =>
     expect(tab.location.href).toBe("https://objects.test/signed"),
   );
+});
+
+test("Logs lists every run down the side; each opens its own log", async () => {
+  const queued = {
+    ...queuedRun("deepwiki"),
+    createdAt: "2026-10-02T00:00:00.000Z",
+  };
+  const older: AnalysisRunDto = {
+    ...graphRun,
+    id: "arn_old",
+    createdAt: "2026-09-30T00:00:00.000Z",
+  };
+  server({
+    runs: [queued, graphRun, older],
+    logs: { arn_1: "Graph built." },
+  });
+  renderPage();
+  const footer = await history(/3 runs/);
+  fireEvent.click(within(footer).getByRole("button", { name: "View logs" }));
+  const dialog = await screen.findByRole("dialog");
+  const list = within(dialog).getByRole("navigation", { name: "Runs" });
+  expect(within(list).getAllByRole("button")).toHaveLength(3);
+  // It opens on the newest run, which is queued: no log yet.
+  await within(dialog).findByText(/its log is written when it finishes/);
+  const [, graph, old] = within(list).getAllByRole("button");
+  fireEvent.click(graph as HTMLElement);
+  await within(dialog).findByText("Graph built.");
+  expect(graph?.getAttribute("aria-current")).toBe("true");
+  fireEvent.click(old as HTMLElement);
+  await within(dialog).findByText("No log was kept for this run.");
+});
+
+test("a member has no logs to open", async () => {
+  server({ runs: [graphRun] });
+  renderPage("member");
+  const footer = await history(/1 run$/);
+  expect(within(footer).queryByRole("button")).toBe(null);
 });
 
 test("a failed run with retries left offers Build again, and says why it failed", async () => {
@@ -407,15 +757,15 @@ const cruise: DependencyCruiserSummaryDto = {
   truncated: true,
 };
 
-test("a Dependency Cruiser run draws its counts, the busiest modules and the cycles", async () => {
+test("each built row carries the headline figures of its own build", async () => {
   const run: AnalysisRunDto = {
     ...queuedRun("dependency_cruiser"),
     status: "succeeded",
     startedAt: stamp,
     finishedAt: stamp,
   };
-  const f = server({
-    runs: [run],
+  server({
+    runs: [run, graphRun],
     artifacts: {
       [run.id]: [
         artifact(
@@ -424,544 +774,32 @@ test("a Dependency Cruiser run draws its counts, the busiest modules and the cyc
           "manifest",
           cruise as unknown as Record<string, unknown>,
         ),
-        artifact(run.id, "dependency-cruiser.json", "dependency_graph"),
-        artifact(run.id, "dependency-cruiser.dot", "dependency_dot"),
       ],
-    },
-  });
-  const tab = spyOnOpen();
-  renderPage();
-  await screen.findByText("Most connected modules");
-  // The tiles, label over value.
-  const tile = (label: string) =>
-    screen.getByText(label, { selector: "dt" }).parentElement?.textContent;
-  expect(tile("Modules")).toBe("Modules12");
-  expect(tile("Cycles")).toBe("Cycles1");
-  // Bars are sized against the busiest module.
-  const bars = screen.getAllByTestId("module-bar");
-  expect(bars.map((bar) => bar.style.width)).toEqual(["100%", "40%"]);
-  expect(screen.getByText("3 in · 2 out")).toBeTruthy();
-  expect(screen.getByText("src/a.ts → src/b.ts → src/a.ts")).toBeTruthy();
-  expect(screen.getByText("src/unused.ts")).toBeTruthy();
-  expect(screen.getByText(/summary was truncated/)).toBeTruthy();
-  // The card carries the headline figures of the selected run.
-  const card = builderCard("Dependency Cruiser");
-  expect(within(card).getByText("Built")).toBeTruthy();
-  expect(
-    within(card).getByText("modules").previousElementSibling?.textContent,
-  ).toBe("12");
-  fireEvent.click(screen.getByRole("button", { name: "Open DOT" }));
-  await waitFor(() =>
-    expect(tab.location.href).toBe("https://objects.test/signed"),
-  );
-  expect(
-    f.calls.some((c) =>
-      c.endsWith("/artifacts/art_dependency_cruiser_dot/url"),
-    ),
-  ).toBe(true);
-});
-
-const surfaces: AbstractionsSummaryDto = {
-  schemaVersion: 1,
-  toolVersion: "abstractions@1",
-  counts: { modules: 42, exports: 537, omissions: 1 },
-  coverage: { typed: 40, syntactic: 1, "names-only": 1 },
-  languages: [
-    { language: "typescript", modules: 40, exports: 530 },
-    { language: "python", modules: 1, exports: 1 },
-  ],
-  modules: [
-    {
-      path: "src/errors.ts",
-      language: "typescript",
-      coverage: "typed",
-      importers: 26,
-      exports: 8,
-    },
-    {
-      path: "scripts/tool.py",
-      language: "python",
-      coverage: "syntactic",
-      importers: 13,
-      exports: 1,
-    },
-    {
-      path: "lib/run.lua",
-      language: "lua",
-      coverage: "names-only",
-      importers: 0,
-      exports: 2,
-    },
-  ],
-  omissions: [
-    {
-      code: "compiler_config",
-      file: "tsconfig.json",
-      detail: "File 'base.json' not found.",
-    },
-    { code: "program_too_large", file: null, detail: "Read syntactically." },
-  ],
-  truncated: true,
-};
-
-test("an Abstractions run draws its coverage, languages and the most imported modules", async () => {
-  const run: AnalysisRunDto = {
-    ...queuedRun("abstractions"),
-    status: "succeeded",
-    startedAt: stamp,
-    finishedAt: stamp,
-  };
-  const f = server({
-    runs: [run],
-    artifacts: {
-      [run.id]: [
-        artifact(
-          run.id,
-          "abstractions.json",
-          "abstraction_index",
-          surfaces as unknown as Record<string, unknown>,
-        ),
-        artifact(run.id, "abstractions.md", "other"),
-        artifact(
-          run.id,
-          "manifest.json",
-          "manifest",
-          surfaces as unknown as Record<string, unknown>,
-        ),
-      ],
-    },
-  });
-  const tab = spyOnOpen();
-  renderPage();
-  await screen.findByText("Most imported modules");
-  const tile = (label: string) =>
-    screen.getByText(label, { selector: "dt" }).parentElement?.textContent;
-  expect(tile("Exports")).toBe("Exports537");
-  expect(tile("Names only")).toBe("Names only1");
-  const languages = screen.getByRole("list", { name: "Languages" });
-  expect(within(languages).getByText("python")).toBeTruthy();
-  expect(within(languages).getByText(/1 module · 1 export$/)).toBeTruthy();
-  const modules = screen.getByRole("list", { name: "Most imported modules" });
-  expect(within(modules).getByText("Syntactic")).toBeTruthy();
-  expect(within(modules).getByText("26 in · 8 exports")).toBeTruthy();
-  expect(
-    screen.getAllByTestId("importer-bar").map((bar) => bar.style.width),
-  ).toEqual(["100%", "50%", "0%"]);
-  expect(screen.getByText("(project)")).toBeTruthy();
-  expect(
-    screen.getByText(/summary was truncated; the whole is in the index JSON/),
-  ).toBeTruthy();
-  const card = builderCard("Abstractions");
-  expect(within(card).getByText("Built")).toBeTruthy();
-  expect(
-    within(card).getByText("typed").previousElementSibling?.textContent,
-  ).toBe("40");
-  expect(
-    screen.getByRole("heading", { name: /Abstractions/, level: 2 }),
-  ).toBeTruthy();
-  fireEvent.click(screen.getByRole("button", { name: "Open readable view" }));
-  await waitFor(() =>
-    expect(tab.location.href).toBe("https://objects.test/signed"),
-  );
-  expect(
-    f.calls.some((c) => c.endsWith("/artifacts/art_abstractions_md/url")),
-  ).toBe(true);
-  fireEvent.click(screen.getByRole("button", { name: "Open index JSON" }));
-  await waitFor(() =>
-    expect(
-      f.calls.some((c) => c.endsWith("/artifacts/art_abstractions_json/url")),
-    ).toBe(true),
-  );
-});
-
-const model: DataModelSummaryDto = {
-  schemaVersion: 1,
-  toolVersion: "data_model@1",
-  storage: ["postgresql"],
-  sources: [
-    {
-      kind: "prisma",
-      storage: "postgresql",
-      files: ["prisma/schema.prisma"],
-      evidence: [],
-      entities: 2,
-      shadowed: 0,
-    },
-    {
-      kind: "sql_migrations",
-      storage: "postgresql",
-      files: ["m/1.sql"],
-      evidence: [],
-      entities: 1,
-      shadowed: 1,
-    },
-  ],
-  counts: {
-    entities: 3,
-    fields: 6,
-    enums: 1,
-    relations: 2,
-    accessors: 1,
-    omissions: 1,
-  },
-  entities: [
-    {
-      name: "User",
-      table: "users",
-      kind: "table",
-      source: "prisma",
-      file: "prisma/schema.prisma",
-      line: 12,
-      fieldCount: 4,
-      fields: [
-        {
-          name: "id",
-          type: "integer",
-          nativeType: "Int",
-          nullable: false,
-          list: false,
-          primaryKey: true,
-          unique: true,
-          foreignKey: false,
-          enum: null,
-        },
-        {
-          name: "role",
-          type: "enum",
-          nativeType: "Role",
-          nullable: false,
-          list: false,
-          primaryKey: false,
-          unique: false,
-          foreignKey: false,
-          enum: "Role",
-        },
-        {
-          name: "tags",
-          type: "string",
-          nativeType: "String",
-          nullable: true,
-          list: true,
-          primaryKey: false,
-          unique: true,
-          foreignKey: false,
-          enum: null,
-        },
-      ],
-    },
-    {
-      name: "ActiveUser",
-      table: "ActiveUser",
-      kind: "view",
-      source: "prisma",
-      file: "prisma/schema.prisma",
-      line: 40,
-      fieldCount: 1,
-      fields: [
-        {
-          name: "userId",
-          type: "integer",
-          nativeType: "Int",
-          nullable: false,
-          list: false,
-          primaryKey: false,
-          unique: false,
-          foreignKey: true,
-          enum: null,
-        },
-      ],
-    },
-  ],
-  enums: [{ name: "Role", values: ["ADMIN", "MEMBER"] }],
-  relations: [
-    {
-      from: "ActiveUser",
-      fromFields: ["userId"],
-      to: "User",
-      toFields: ["id"],
-      cardinality: "one-to-one",
-      onDelete: "cascade",
-    },
-    {
-      from: "Tag",
-      fromFields: [],
-      to: "User",
-      toFields: [],
-      cardinality: "many-to-many",
-      onDelete: null,
-    },
-  ],
-  accessors: [
-    {
-      module: "src/services/users.ts",
-      entities: ["ActiveUser", "User"],
-      importers: 4,
-    },
-  ],
-  omissions: [
-    {
-      code: "parse_failed",
-      file: null,
-      detail: "The schema could not be read.",
-    },
-  ],
-  truncated: false,
-};
-
-test("a Data model run lists its sources, entities with their fields, relations, enums and accessors", async () => {
-  const run: AnalysisRunDto = {
-    ...queuedRun("data_model"),
-    status: "succeeded",
-    startedAt: stamp,
-    finishedAt: stamp,
-  };
-  const f = server({
-    runs: [run],
-    artifacts: {
-      [run.id]: [
-        artifact(
-          run.id,
-          "data-model.json",
-          "data_model",
-          model as unknown as Record<string, unknown>,
-        ),
-        artifact(run.id, "erd.mmd", "erd_mermaid"),
-        artifact(
-          run.id,
-          "manifest.json",
-          "manifest",
-          model as unknown as Record<string, unknown>,
-        ),
-      ],
-    },
-  });
-  const tab = spyOnOpen();
-  renderPage();
-  const sources = await screen.findByRole("list", { name: "Sources" });
-  expect(within(sources).getByText("Prisma schema")).toBeTruthy();
-  expect(
-    within(sources).getByText("postgresql · 1 entity · 1 also declared above"),
-  ).toBeTruthy();
-  const entities = screen.getByRole("list", { name: "Entities" });
-  expect(within(entities).getByText("users")).toBeTruthy();
-  expect(within(entities).getByText("View")).toBeTruthy();
-  expect(within(entities).getByText("PK")).toBeTruthy();
-  expect(within(entities).getByText("unique · nullable")).toBeTruthy();
-  expect(within(entities).getByText("FK")).toBeTruthy();
-  // An enum field reads as its enum, beside the type the source wrote.
-  expect(within(entities).getAllByText("Role")).toHaveLength(2);
-  expect(
-    within(entities).getByText("1 more field is in the data model JSON."),
-  ).toBeTruthy();
-  const relations = screen.getByRole("list", { name: "Relations" });
-  expect(relations.textContent).toContain(
-    "ActiveUser.userId → User.id one-to-one · on delete cascade",
-  );
-  expect(relations.textContent).toContain("Tag → User many-to-many");
-  expect(screen.getByRole("list", { name: "Enums" }).textContent).toBe(
-    "Role ADMIN | MEMBER",
-  );
-  const accessors = screen.getByRole("list", { name: "Accessors" });
-  expect(within(accessors).getByText("src/services/users.ts")).toBeTruthy();
-  expect(within(accessors).getByText("imported by 4")).toBeTruthy();
-  expect(screen.getByText("(repository)")).toBeTruthy();
-  const card = builderCard("Data model");
-  expect(
-    within(card).getByText("accessors").previousElementSibling?.textContent,
-  ).toBe("1");
-  fireEvent.click(screen.getByRole("button", { name: "Open ERD (Mermaid)" }));
-  await waitFor(() =>
-    expect(tab.location.href).toBe("https://objects.test/signed"),
-  );
-  expect(f.calls.some((c) => c.endsWith("/artifacts/art_erd_mmd/url"))).toBe(
-    true,
-  );
-  fireEvent.click(screen.getByRole("button", { name: "Open data model JSON" }));
-  await waitFor(() =>
-    expect(
-      f.calls.some((c) => c.endsWith("/artifacts/art_data_model_json/url")),
-    ).toBe(true),
-  );
-});
-
-test("a Data model run that found nothing says so", async () => {
-  const run: AnalysisRunDto = {
-    ...queuedRun("data_model"),
-    status: "succeeded",
-    startedAt: stamp,
-    finishedAt: stamp,
-  };
-  const empty: DataModelSummaryDto = {
-    ...model,
-    storage: [],
-    sources: [],
-    counts: {
-      entities: 0,
-      fields: 0,
-      enums: 0,
-      relations: 0,
-      accessors: 0,
-      omissions: 0,
-    },
-    entities: [],
-    enums: [],
-    relations: [],
-    accessors: [],
-    omissions: [],
-  };
-  server({
-    runs: [run],
-    artifacts: {
-      [run.id]: [
-        artifact(
-          run.id,
-          "manifest.json",
-          "manifest",
-          empty as unknown as Record<string, unknown>,
-        ),
+      arn_1: [
+        artifact("arn_1", "graph.json", "graph_json", {
+          nodes: 40,
+          edges: 55,
+          unresolved: 2,
+          visualizationNodes: 40,
+        }),
       ],
     },
   });
   renderPage();
-  expect(
-    await screen.findByText(/No schema, ORM or migration directory was found/),
-  ).toBeTruthy();
-  expect(
-    screen.queryByRole("button", { name: "Open ERD (Mermaid)" }),
-  ).toBeNull();
+  await screen.findByText(/10 files/);
+  const figure = (name: string, label: string) =>
+    within(builderCard(name)).getByText(label).previousElementSibling
+      ?.textContent;
+  await within(builderCard("Dependency Cruiser")).findByText("modules");
+  expect(figure("Dependency Cruiser", "modules")).toBe("12");
+  expect(figure("Dependency Cruiser", "cycles")).toBe("1");
+  await within(builderCard("Graphify")).findByText("nodes");
+  expect(figure("Graphify", "edges")).toBe("55");
+  // A builder not built has none.
+  expect(within(builderCard("Abstractions")).queryByText("modules")).toBe(null);
 });
 
-const wiki: DeepwikiSummaryDto = {
-  schemaVersion: 1,
-  toolVersion: "deepwiki-open@driver-1",
-  title: "Widgets",
-  description: "How widgets are made.",
-  provider: "openai",
-  model: "gpt-5",
-  repositoryUrl: "https://github.com/acme/widgets",
-  requestedCommitSha: "a".repeat(40),
-  pages: [
-    {
-      id: "overview",
-      title: "Overview",
-      importance: "high",
-      filePaths: ["README.md", "src/index.ts"],
-      relatedPages: ["api"],
-      path: "wiki/overview.md",
-    },
-    {
-      id: "api",
-      title: "API",
-      importance: "low",
-      filePaths: [],
-      relatedPages: [],
-      path: "wiki/api.md",
-    },
-  ],
-  sections: [{ id: "s1", title: "Getting started", pages: ["overview"] }],
-};
-
-test("a DeepWiki run groups its pages by importance, and Open page opens that page", async () => {
-  const run: AnalysisRunDto = {
-    ...queuedRun("deepwiki"),
-    status: "succeeded",
-    startedAt: stamp,
-    finishedAt: stamp,
-  };
-  const f = server({
-    runs: [run],
-    artifacts: {
-      [run.id]: [
-        artifact(
-          run.id,
-          "wiki-structure.json",
-          "wiki_structure",
-          wiki as unknown as Record<string, unknown>,
-        ),
-        artifact(run.id, "wiki/overview.md", "wiki_page", null, "art_overview"),
-        artifact(run.id, "wiki/api.md", "wiki_page", null, "art_api"),
-      ],
-    },
-  });
-  const tab = spyOnOpen();
-  renderPage("member");
-  const key = await screen.findByRole("list", { name: "Key pages" });
-  expect(within(key).getByText("Overview")).toBeTruthy();
-  expect(within(key).getByText("README.md")).toBeTruthy();
-  expect(within(key).getByText("1 related page")).toBeTruthy();
-  expect(
-    within(screen.getByRole("list", { name: "Reference pages" })).getByText(
-      "API",
-    ),
-  ).toBeTruthy();
-  expect(screen.queryByRole("list", { name: "Supporting pages" })).toBe(null);
-  expect(screen.getByText("openai · gpt-5")).toBeTruthy();
-  expect(screen.getByText(/default branch at run time/).textContent).toContain(
-    "asked for aaaaaaa",
-  );
-  expect(screen.getByText("Getting started")).toBeTruthy();
-  fireEvent.click(screen.getByRole("button", { name: "Open page API" }));
-  await waitFor(() =>
-    expect(tab.location.href).toBe("https://objects.test/signed"),
-  );
-  expect(f.calls.some((c) => c.endsWith("/artifacts/art_api/url"))).toBe(true);
-});
-
-const boundary: SliceBoundarySummaryDto = {
-  schemaVersion: 1,
-  language: "typescript",
-  stubCoverage: "partial",
-  ready: false,
-  counts: {
-    includedFiles: 2,
-    includedBytes: 10,
-    outboundModules: 1,
-    inboundModules: 0,
-    stubs: 2,
-    publicSymbols: 1,
-    externals: 0,
-    blockers: 0,
-  },
-  included: ["src/app.ts"],
-  outbound: [],
-  inbound: [],
-  externals: { packages: [], environment: [] },
-  blockers: [],
-  truncated: false,
-};
-const usage = {
-  model: "test-model",
-  turns: 6,
-  inputTokens: 1000,
-  outputTokens: 200,
-  cacheReadTokens: 9000,
-  cacheWriteTokens: 300,
-};
-const proposal: ScopeProposalDto = {
-  schemaVersion: 1,
-  toolVersion: "scope@2",
-  sourceSnapshotId: "rsn_1",
-  sourceCommitSha: "a".repeat(40),
-  graphRunId: "arn_1",
-  proposalId: "bpr_1",
-  specRevision: 2,
-  entryPoints: [{ path: "src/rules.ts", reason: "the rule changes here" }],
-  budget: { maxFiles: 8, maxDepth: 0 },
-  includeInferred: false,
-  seams: [],
-  summary: "The developer changes how discounts stack.",
-  risks: [],
-  check: {
-    stubCoverage: "full",
-    ready: true,
-    includedFiles: 2,
-    outboundModules: 1,
-    blockers: 0,
-  },
-  usage,
-};
-
-test("runs a bounty made are readable, with nothing here that would make one", async () => {
+test("runs a bounty made are listed with the rest in the logs, with nothing here that would make one", async () => {
   const task = { proposalId: "bpr_1", specRevision: 2, specHash: "h" };
   const sliceRun: AnalysisRunDto = {
     ...graphRun,
@@ -1002,70 +840,20 @@ test("runs a bounty made are readable, with nothing here that would make one", a
       ...task,
     },
   };
-  const build: AnalysisRunDto = {
-    ...graphRun,
-    id: "arn_build",
-    tool: "sandbox_build",
-    createdAt: "2026-10-03T00:15:00.000Z",
-    params: {
-      deadlineMinutes: 30,
-      sliceRunId: "arn_slice",
-      sandboxVersionId: "sbv_1",
-      manifestSha256: "1".repeat(64),
-      contractSha256: "2".repeat(64),
-      transformConfigSha256: "3".repeat(64),
-      approvedTaskSha256: "4".repeat(64),
-    },
-  };
-  server({
-    runs: [sliceRun, scopeRun, fixturesRun, build, graphRun],
-    artifacts: {
-      arn_slice: [
-        artifact(
-          "arn_slice",
-          "boundary-contract.json",
-          "boundary_contract",
-          boundary as unknown as Record<string, unknown>,
-        ),
-        artifact("arn_slice", "boundary.md", "boundary_md"),
-      ],
-      arn_scope: [
-        artifact(
-          "arn_scope",
-          "scope-proposal.json",
-          "scope_proposal",
-          proposal as unknown as Record<string, unknown>,
-        ),
-      ],
-    },
-  });
+  server({ runs: [sliceRun, scopeRun, fixturesRun, graphRun] });
   renderPage();
-  // The newest run is selected: the slice, with its boundary.
-  await screen.findByText("Diagnostic only");
-  expect(screen.getByRole("button", { name: "Open boundary.md" })).toBeTruthy();
-  // Every kind reads plainly in the history, failures included.
-  const history = screen.getByRole("region", { name: "Run history" });
-  expect(within(history).getByText("Slice (1 entry point)")).toBeTruthy();
-  expect(within(history).getByText("Scope suggestion")).toBeTruthy();
-  expect(within(history).getByText("Fake data")).toBeTruthy();
-  expect(within(history).getByText("Sandbox build")).toBeTruthy();
-  expect(
-    within(history).getByText(/The agent stopped without an answer/),
-  ).toBeTruthy();
-  fireEvent.click(
-    within(history).getByRole("button", { name: /Scope suggestion/ }),
+  const footer = await history(/4 runs/);
+  fireEvent.click(within(footer).getByRole("button", { name: "View logs" }));
+  const runs = within(await screen.findByRole("dialog")).getByRole(
+    "navigation",
+    { name: "Runs" },
   );
-  await screen.findByText("The developer changes how discounts stack.");
-  expect(screen.getByText("the rule changes here")).toBeTruthy();
-  expect(
-    screen.getByText(/6 turns · 10,500 tokens \(9,000 cached\)/),
-  ).toBeTruthy();
-  // Nothing on the page starts a slice, a suggestion or fake data.
+  expect(within(runs).getByText("Slice (1 entry point)")).toBeTruthy();
+  expect(within(runs).getByText("Scope suggestion")).toBeTruthy();
+  const fixtures = within(runs).getByText("Fake data").closest("button");
+  expect(within(fixtures as HTMLElement).getByLabelText("Failed")).toBeTruthy();
   expect(screen.queryByText("Use this scope")).toBe(null);
   expect(screen.queryByText("Choose entry points")).toBe(null);
-  expect(screen.queryByText("Suggest with agent")).toBe(null);
-  expect(screen.queryByText("Write fake data")).toBe(null);
-  expect(screen.queryByLabelText("Directory filter")).toBe(null);
 });
 
 test("loading failures are visible and never rendered as an empty history", async () => {
@@ -1079,7 +867,9 @@ test("loading failures are visible and never rendered as an empty history", asyn
   );
   renderPage();
   await screen.findByText("Analysis unavailable");
-  expect(screen.queryByText("No runs yet.")).toBe(null);
+  const history = screen.getByRole("region", { name: "Run history" });
+  expect(history.textContent).toMatch(/Unavailable/);
+  expect(history.textContent).not.toMatch(/No runs yet/);
 });
 
 test("a repository that failed to sync shows the reason", async () => {
@@ -1156,4 +946,77 @@ test("a repository that is not registered here says so", async () => {
   expect(link.getAttribute("href")).toBe("/o/acme/settings?connection=github");
   fireEvent.click(link);
   expect(onRemoved).toHaveBeenCalled();
+});
+
+test("choosing a branch shows its snapshots, and pulling it takes its head", async () => {
+  const feature = {
+    ...snapshot,
+    id: "rsn_2",
+    commitSha: "d".repeat(40),
+    ref: "refs/heads/feature/x",
+    fileCount: 12,
+  };
+  const f = server({
+    runs: [],
+    branches: [
+      { name: "main", headSha: "a".repeat(40), isDefault: true },
+      { name: "feature/x", headSha: feature.commitSha, isDefault: false },
+    ],
+    pulls: { "feature/x": { lands: feature } },
+  });
+  renderPage();
+  await screen.findByText(/10 files/);
+  expect(
+    screen.getByRole("combobox", { name: "Source snapshot" }).textContent,
+  ).toContain("Latest");
+
+  await chooseOption(
+    screen.getByRole("combobox", { name: "Branch" }),
+    /feature\/x/,
+  );
+  // Main's snapshot is not this branch's: there is nothing to build on.
+  await screen.findByText("No snapshot of feature/x yet. Pull it to take one.");
+  expect(screen.queryByRole("combobox", { name: "Source snapshot" })).toBe(
+    null,
+  );
+  expect(
+    within(builderCard("Graphify"))
+      .getByRole("button", { name: "Build" })
+      .hasAttribute("disabled"),
+  ).toBe(true);
+
+  fireEvent.click(screen.getByRole("button", { name: "Pull latest" }));
+  await screen.findByText(/Taking a snapshot of/);
+  expect(f.posts).toContainEqual({ branch: "feature/x" });
+  // The list is read again until the snapshot lands, and it is chosen.
+  await screen.findByText(/12 files/, {}, { timeout: 5000 });
+  // The description names the branch and the commit it is of.
+  expect(screen.getByText(/12 files/).textContent).toMatch(
+    /^feature\/x@ddddddd · /,
+  );
+  const trigger = screen.getByRole("combobox", { name: "Source snapshot" });
+  expect(trigger.textContent).toContain("ddddddd");
+  expect(trigger.textContent).toContain("Latest");
+  expect(screen.getByRole("button", { name: "Pull latest" })).toBeTruthy();
+});
+
+test("pulling a branch with nothing new says it is up to date", async () => {
+  server({ runs: [], pulls: { main: { taken: snapshot } } });
+  renderPage();
+  await screen.findByText(/10 files/);
+
+  fireEvent.click(screen.getByRole("button", { name: "Pull latest" }));
+
+  await screen.findByRole("button", { name: "Up to date" });
+  expect(
+    screen.getByRole("combobox", { name: "Source snapshot" }).textContent,
+  ).toContain("aaaaaaa");
+});
+
+test("a member chooses a branch but cannot pull one", async () => {
+  server({ runs: [] });
+  renderPage("member");
+  await screen.findByText(/10 files/);
+  expect(screen.getByRole("combobox", { name: "Branch" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Pull latest" })).toBe(null);
 });

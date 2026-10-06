@@ -1,7 +1,7 @@
 /**
- * Reading a run's artifacts: finding one by kind or path, and reading the
- * bounded summary its row carries in `meta`. The summaries are what the
- * page draws; the documents themselves open through signed URLs.
+ * Reading the bounded summary a run's artifact row carries in `meta`: the
+ * figures the repository page draws. The documents themselves open in the
+ * context viewer.
  */
 
 import type { ArtifactDto } from "@sandbox-factory/shared";
@@ -13,20 +13,6 @@ import type { ArtifactKind } from "sandbox-factory";
  */
 interface Summary<T> {
   safeParse(value: unknown): { success: true; data: T } | { success: false };
-}
-
-export function artifactOfKind(
-  artifacts: readonly ArtifactDto[],
-  kind: ArtifactKind,
-): ArtifactDto | undefined {
-  return artifacts.find((artifact) => artifact.kind === kind);
-}
-
-export function artifactAtPath(
-  artifacts: readonly ArtifactDto[],
-  path: string,
-): ArtifactDto | undefined {
-  return artifacts.find((artifact) => artifact.path === path);
 }
 
 /**
