@@ -3,9 +3,11 @@
  *
  * What it must get right: connecting is a navigation, not a fetch; every
  * outcome the callback can append is explained and then removed from the
- * URL; `pick` opens a picker that links only a free installation; a
- * repository is registered from what the installation can see; and a plain
- * member is offered nothing the API would refuse.
+ * URL; `pick` opens a picker that links only a free installation; an
+ * account's repositories are managed in one dialog, registered from what the
+ * installation can see and removed only after a warning that what was read
+ * from them is gone for good; and a plain member is offered nothing the API
+ * would refuse.
  *
  * The server is faked at `fetch`, routed by method and path.
  */
@@ -244,7 +246,15 @@ beforeEach(() => {
         return new Response(null, { status: 204 });
       }
       if (method === "DELETE" && path === `${base}/repositories/ghr_1`) {
-        server.repositories = [];
+        server.repositories = server.repositories.filter(
+          (entry) => (entry as { id: string }).id !== "ghr_1",
+        );
+        server.installationRepositories = server.installationRepositories.map(
+          (entry) =>
+            (entry as { registeredId: string | null }).registeredId === "ghr_1"
+              ? { ...(entry as object), registeredId: null }
+              : entry,
+        );
         return new Response(null, { status: 204 });
       }
       return json({ error: "Not found" }, 404);
@@ -280,6 +290,16 @@ function withOutcome(outcome: string) {
       href: "",
     },
   });
+}
+
+/** Opens an account's repositories dialog from its menu. */
+async function openRepositories(login = "acme") {
+  fireEvent.click(
+    within(await openMenu(login)).getByRole("menuitem", {
+      name: "Manage repositories",
+    }),
+  );
+  return screen.findByRole("dialog", { name: `Repositories on ${login}` });
 }
 
 async function openMenu(login = "acme") {
@@ -341,7 +361,9 @@ test("a plain member can read but is offered nothing the API would refuse", asyn
 
   await screen.findByRole("list", { name: "Registered repositories" });
   expect(screen.queryByRole("button", { name: /Connect/ })).toBeNull();
-  expect(screen.queryByRole("button", { name: "Add a repository" })).toBeNull();
+  expect(
+    screen.queryByRole("menuitem", { name: "Manage repositories" }),
+  ).toBeNull();
   expect(screen.queryByRole("button", { name: /Remove/ })).toBeNull();
   expect(
     screen.getByText("Only an owner or admin can connect GitHub."),
@@ -447,58 +469,156 @@ test("pick opens the picker, which links only a free installation", async () => 
 test("a repository is registered from what the installation can see", async () => {
   renderTab();
 
-  fireEvent.click(
-    within(await openMenu()).getByRole("menuitem", {
-      name: "Add a repository",
-    }),
-  );
-  const picker = await screen.findByRole("region", {
-    name: "Repositories this account can see",
+  const dialog = await openRepositories();
+  // It says what registering does and does not read.
+  expect(within(dialog).getByText(/Its contents are not read/)).toBeDefined();
+  // Already registered: listed above, not offered again below.
+  const registeredHere = within(dialog).getByRole("list", {
+    name: "Registered from acme",
   });
-  // Already registered: says so rather than offering it again.
-  expect(await within(picker).findByText("Registered")).toBeDefined();
-  // And the page says what registering does and does not read.
-  expect(within(picker).getByText(/Its contents are not read/)).toBeDefined();
+  expect(within(registeredHere).getByText("acme/widgets")).toBeDefined();
+  const offered = await within(dialog).findByRole("list", {
+    name: "Repositories to register",
+  });
+  expect(within(offered).queryByText("acme/widgets")).toBeNull();
 
   fireEvent.click(
-    within(picker).getByRole("button", { name: "Register acme/gadgets" }),
+    within(offered).getByRole("button", { name: "Register acme/gadgets" }),
   );
 
-  const table = await screen.findByRole("list", {
-    name: "Registered repositories",
-  });
-  expect(await within(table).findByText("acme/gadgets")).toBeDefined();
+  // It moves across, and the page behind lists it too.
+  expect(await within(registeredHere).findByText("acme/gadgets")).toBeDefined();
   expect(calls).toContain(
     "POST /api/v1/orgs/org_1/github/connections/ghc_1/repositories",
   );
+  expect(
+    await within(dialog).findByText(/Every repository the App can see/),
+  ).toBeDefined();
+
+  fireEvent.click(within(dialog).getByRole("button", { name: "Done" }));
   await waitFor(() => {
-    expect(within(picker).getAllByText("Registered")).toHaveLength(2);
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
+  const table = screen.getByRole("list", { name: "Registered repositories" });
+  expect(within(table).getByText("acme/gadgets")).toBeDefined();
+});
+
+test("the search narrows what can be registered, and Escape clears it first", async () => {
+  server.installationRepositories = [
+    ...server.installationRepositories,
+    {
+      externalId: "3",
+      fullName: "acme/gizmos",
+      defaultBranch: "main",
+      isPrivate: false,
+      registeredId: null,
+    },
+  ];
+  renderTab();
+
+  const dialog = await openRepositories();
+  const offered = await within(dialog).findByRole("list", {
+    name: "Repositories to register",
+  });
+  expect(within(offered).getAllByRole("listitem")).toHaveLength(2);
+
+  const search = within(dialog).getByRole("searchbox", {
+    name: "Search repositories on acme",
+  });
+  // Where the dialog starts, rather than on a remove button.
+  expect(document.activeElement).toBe(search);
+  fireEvent.change(search, { target: { value: "GIZ" } });
+  expect(within(offered).getAllByRole("listitem")).toHaveLength(1);
+  expect(within(offered).getByText("acme/gizmos")).toBeDefined();
+
+  fireEvent.change(search, { target: { value: "nothing-like-it" } });
+  expect(
+    within(dialog).getByText(/No repository matches .nothing-like-it./),
+  ).toBeDefined();
+
+  fireEvent.keyDown(search, { key: "Escape" });
+  expect((search as HTMLInputElement).value).toBe("");
+  expect(screen.getByRole("dialog")).toBeDefined();
+});
+
+test("removing a repository warns that what was read from it is gone for good", async () => {
+  renderTab();
+
+  const dialog = await openRepositories();
+  fireEvent.click(
+    within(dialog).getByRole("button", { name: "Remove acme/widgets" }),
+  );
+  const question = await screen.findByRole("alertdialog");
+  expect(within(question).getByText("Remove acme/widgets?")).toBeDefined();
+  expect(
+    within(question).getByText(/every artifact they produced/),
+  ).toBeDefined();
+  expect(
+    within(question).getByText(/None of it can be recovered/),
+  ).toBeDefined();
+  // Asking removes nothing.
+  expect(calls).not.toContain(
+    "DELETE /api/v1/orgs/org_1/github/repositories/ghr_1",
+  );
+
+  fireEvent.click(within(question).getByRole("button", { name: "Remove" }));
+
+  expect(
+    await within(dialog).findByText("None yet. Find one below to register it."),
+  ).toBeDefined();
+  expect(calls).toContain(
+    "DELETE /api/v1/orgs/org_1/github/repositories/ghr_1",
+  );
+  // Removed, it can be registered again.
+  const offered = await within(dialog).findByRole("list", {
+    name: "Repositories to register",
+  });
+  expect(
+    await within(offered).findByRole("button", {
+      name: "Register acme/widgets",
+    }),
+  ).toBeDefined();
+});
+
+test("cancelling a removal keeps the repository", async () => {
+  renderTab();
+
+  const dialog = await openRepositories();
+  fireEvent.click(
+    within(dialog).getByRole("button", { name: "Remove acme/widgets" }),
+  );
+  const question = await screen.findByRole("alertdialog");
+  fireEvent.click(within(question).getByRole("button", { name: "Cancel" }));
+
+  await waitFor(() => {
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+  });
+  expect(
+    within(
+      within(dialog).getByRole("list", { name: "Registered from acme" }),
+    ).getByText("acme/widgets"),
+  ).toBeDefined();
+  expect(calls.some((call) => call.startsWith("DELETE"))).toBe(false);
 });
 
 test("a refused registration says why and registers nothing", async () => {
   server.failRegister = true;
   renderTab();
 
+  const dialog = await openRepositories();
   fireEvent.click(
-    within(await openMenu()).getByRole("menuitem", {
-      name: "Add a repository",
-    }),
-  );
-  const picker = await screen.findByRole("region", {
-    name: "Repositories this account can see",
-  });
-  fireEvent.click(
-    await within(picker).findByRole("button", {
+    await within(dialog).findByRole("button", {
       name: "Register acme/gadgets",
     }),
   );
 
   expect(
-    await within(picker).findByText("GitHub refused that request."),
+    await within(dialog).findByText("GitHub refused that request."),
   ).toBeDefined();
-  const table = screen.getByRole("list", { name: "Registered repositories" });
-  expect(within(table).queryByText("acme/gadgets")).toBeNull();
+  const registeredHere = within(dialog).getByRole("list", {
+    name: "Registered from acme",
+  });
+  expect(within(registeredHere).queryByText("acme/gadgets")).toBeNull();
 });
 
 test("disconnecting asks first, and says the App stays installed on GitHub", async () => {
@@ -531,7 +651,9 @@ test("an uninstalled account is flagged, and offers no registering", async () =>
 
   expect(await screen.findByText("Uninstalled")).toBeDefined();
   expect(await screen.findByText("acme/widgets")).toBeDefined();
-  expect(screen.queryByRole("button", { name: "Add a repository" })).toBeNull();
+  expect(
+    screen.queryByRole("menuitem", { name: "Manage repositories" }),
+  ).toBeNull();
 });
 
 test("a failed load says so rather than rendering an empty list", async () => {
@@ -685,11 +807,7 @@ test("an installation GitHub turned down mid-register re-reads the accounts", as
   };
   renderTab();
 
-  fireEvent.click(
-    within(await openMenu()).getByRole("menuitem", {
-      name: "Add a repository",
-    }),
-  );
+  await openRepositories();
   fireEvent.click(
     await screen.findByRole("button", { name: "Register acme/gadgets" }),
   );
@@ -702,9 +820,9 @@ test("an installation GitHub turned down mid-register re-reads the accounts", as
       ),
     ).toHaveLength(2);
   });
-  expect(
-    screen.queryByRole("region", { name: "Repositories this account can see" }),
-  ).toBeNull();
+  await waitFor(() => {
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
 });
 
 test("a 404 from the API is said in our words, not as Not found", async () => {

@@ -71,6 +71,7 @@ import {
   shortSha,
 } from "./features/analysis/labels";
 import { useAnalysisResources } from "./features/analysis/queries";
+import { REMOVE_REPOSITORY_WARNING } from "./Github";
 import { isPlainLeftClick, pathForScreen } from "./routes";
 import { useGithubRepos } from "./useGithub";
 
@@ -722,7 +723,7 @@ function RepositoryView({
           open={removing}
           onOpenChange={setRemoving}
           title={`Remove ${repo.fullName}?`}
-          description="Stops tracking it here. Nothing changes on GitHub, and you can register it again."
+          description={REMOVE_REPOSITORY_WARNING}
           confirmLabel="Remove"
           onConfirm={async () => {
             const result = await onRemove();
