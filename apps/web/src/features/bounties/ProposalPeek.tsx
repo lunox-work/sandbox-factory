@@ -7,9 +7,12 @@ import {
   ChevronDown,
   ChevronUp,
   ExternalLink,
+  ListChecks,
   Loader2,
   Minus,
   RefreshCw,
+  Sparkles,
+  Target,
   TriangleAlert,
 } from "lucide-react";
 import { useEffect, useRef, useState, type ReactElement } from "react";
@@ -26,6 +29,7 @@ import { type EnrichedProposal } from "./types";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { DisabledReason } from "@/components/DisabledReason";
 import { ErrorBanner } from "@/components/Message";
+import { ModelCard, SectionHeading } from "@/components/ReadSection";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
@@ -631,9 +635,7 @@ export function ProposalPeek({
       */}
       {proposal.categories !== undefined && proposal.categories.length > 0 && (
         <div data-testid="proposal-categories">
-          <p className="text-muted-foreground mb-1.5 text-xs font-medium">
-            Why this bounty
-          </p>
+          <SectionHeading icon={<Target />}>Why this bounty</SectionHeading>
           <ul className="flex flex-col gap-1.5">
             {proposal.categories.map((category) => (
               <li
@@ -674,25 +676,29 @@ export function ProposalPeek({
         since is marked on its scenarios.
       */}
       <div>
-        <p className="text-muted-foreground mb-1.5 text-xs font-medium">
+        <SectionHeading icon={<Sparkles />} tone="model">
           {(proposal.rubric ?? null) === null
             ? "Why this size"
             : `The model's read: ${proposal.modelComplexity}`}
-        </p>
-        <p className="text-sm leading-relaxed">{proposal.modelRationale}</p>
-        {canDecide && unweighed(proposal) && (
-          <p
-            className="text-muted-foreground mt-1.5 text-xs"
-            data-testid="proposal-unweighed"
-          >
-            This size has no weighed scenarios, so a scenario added later cannot
-            move it. Re-analyze drafts and weighs them.
+        </SectionHeading>
+        <ModelCard>
+          <p className="text-[15px] leading-relaxed">
+            {proposal.modelRationale}
           </p>
-        )}
-        {/* What the scenarios' own head says where they have a tab. */}
-        {withinBounty && outline !== null && (
-          <OutlineSource outline={outline} className="mt-1.5" />
-        )}
+          {canDecide && unweighed(proposal) && (
+            <p
+              className="text-muted-foreground mt-3 border-t pt-3 text-xs"
+              data-testid="proposal-unweighed"
+            >
+              This size has no weighed scenarios, so a scenario added later
+              cannot move it. Re-analyze drafts and weighs them.
+            </p>
+          )}
+          {/* What the scenarios' own head says where they have a tab. */}
+          {withinBounty && outline !== null && (
+            <OutlineSource outline={outline} className="mt-3" />
+          )}
+        </ModelCard>
       </div>
 
       <ComplexityProfileBlock
@@ -706,9 +712,7 @@ export function ProposalPeek({
       */}
       {withinBounty && (
         <div>
-          <p className="text-muted-foreground mb-1.5 text-xs font-medium">
-            Scenarios
-          </p>
+          <SectionHeading icon={<ListChecks />}>Scenarios</SectionHeading>
           {scenarioView}
         </div>
       )}

@@ -40,7 +40,16 @@ import type {
   RespecRequestDto,
   StepResultDto,
 } from "@sandbox-factory/shared";
-import { ChevronRight, RefreshCw, X } from "lucide-react";
+import {
+  ChevronRight,
+  CircleHelp,
+  CornerDownRight,
+  Lightbulb,
+  RefreshCw,
+  Sparkles,
+  X,
+  type LucideIcon,
+} from "lucide-react";
 import { useEffect, useId, useState } from "react";
 import {
   countScenarios,
@@ -56,6 +65,7 @@ import {
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { LoadingLine } from "@/components/Message";
+import { ModelCard } from "@/components/ReadSection";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -122,7 +132,7 @@ export function WeightBadge({
   return (
     <Badge
       variant="outline"
-      className="text-muted-foreground shrink-0 gap-1.5 font-normal"
+      className="text-muted-foreground bg-background/60 shrink-0 gap-1.5 rounded-full px-2 font-normal"
       title={reason}
       data-weight={weight}
     >
@@ -131,12 +141,14 @@ export function WeightBadge({
           <span
             key={height}
             className={`w-0.5 rounded-full ${height} ${
-              index < rank ? "bg-foreground/70" : "bg-foreground/15"
+              index < rank ? "bg-primary" : "bg-foreground/15"
             }`}
           />
         ))}
       </span>
-      {WEIGHT_LABEL[weight] ?? weight}
+      <span className="text-foreground/90">
+        {WEIGHT_LABEL[weight] ?? weight}
+      </span>
       {points !== undefined && (
         <span className="tabular-nums">· {plural(points, "pt")}</span>
       )}
@@ -208,7 +220,11 @@ export interface SizeReason {
 
 /** A size as it reads inside a sentence. */
 function SizeName({ size }: { size: string }) {
-  return <span className="font-mono font-semibold">{size}</span>;
+  return (
+    <span className="border-primary/30 bg-primary/10 text-primary mx-0.5 rounded-[4px] border px-1 py-px font-mono text-[11px] font-semibold">
+      {size}
+    </span>
+  );
 }
 
 /**
@@ -219,40 +235,53 @@ function SizeName({ size }: { size: string }) {
 function SizeReasonBlock({ reason }: { reason: SizeReason }) {
   const unsized = reason.modelSize === "unsized";
   return (
-    <section
+    <ModelCard
+      as="section"
       aria-label="Why this size"
       data-testid="spec-size-reason"
-      className="bg-muted/40 flex flex-col gap-1 rounded-md px-3 py-2.5"
     >
-      {reason.reviewerSize === null ? (
-        <p className="text-xs font-medium">
-          {unsized ? (
-            "Left unsized by the model"
+      <div className="flex items-start gap-2.5">
+        <span
+          aria-hidden="true"
+          className="flex size-6 shrink-0 items-center justify-center rounded-[6px] bg-(image:--brand-gradient) text-white shadow-sm shadow-blue-500/20 [&>svg]:size-3.5"
+        >
+          <Sparkles />
+        </span>
+        <div className="flex min-h-6 min-w-0 flex-col justify-center gap-0.5">
+          {reason.reviewerSize === null ? (
+            <p className="text-sm font-semibold tracking-tight">
+              {unsized ? (
+                "Left unsized by the model"
+              ) : (
+                <>
+                  Sized <SizeName size={reason.modelSize} /> by the model
+                </>
+              )}
+            </p>
           ) : (
             <>
-              Sized <SizeName size={reason.modelSize} /> by the model
+              <p className="text-sm font-semibold tracking-tight">
+                Overridden to <SizeName size={reason.reviewerSize} /> by a
+                reviewer
+              </p>
+              <p className="text-muted-foreground text-xs">
+                {unsized ? (
+                  "The model left it unsized:"
+                ) : (
+                  <>
+                    The model sized it <SizeName size={reason.modelSize} />:
+                  </>
+                )}
+              </p>
             </>
           )}
-        </p>
-      ) : (
-        <>
-          <p className="text-xs font-medium">
-            Overridden to <SizeName size={reason.reviewerSize} /> by a reviewer
-          </p>
-          <p className="text-muted-foreground text-xs">
-            {unsized ? (
-              "The model left it unsized:"
-            ) : (
-              <>
-                The model sized it <SizeName size={reason.modelSize} />:
-              </>
-            )}
-          </p>
-        </>
+        </div>
+      </div>
+      <p className="mt-3 text-[15px] leading-relaxed">{reason.rationale}</p>
+      {reason.outline != null && (
+        <OutlineSource outline={reason.outline} className="mt-3" />
       )}
-      <p className="text-sm leading-relaxed">{reason.rationale}</p>
-      {reason.outline != null && <OutlineSource outline={reason.outline} />}
-    </section>
+    </ModelCard>
   );
 }
 
@@ -555,8 +584,10 @@ function SpecBody({
       {/* What the bounty is about, and which revision of the spec this is. */}
       <div className="flex flex-col gap-1">
         <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-          <p className="text-sm leading-relaxed font-medium">{draft.feature}</p>
-          <p className="text-muted-foreground text-xs">
+          <p className="text-[15px] leading-snug font-semibold tracking-tight">
+            {draft.feature}
+          </p>
+          <p className="text-muted-foreground text-xs tabular-nums">
             {plural(countScenarios(draft).total, "scenario")}
             {points !== null &&
               draft.scenarios.length > 0 &&
@@ -581,19 +612,25 @@ function SpecBody({
         {/* What the reviewer asked for, on a revision that came from it. */}
         {spec.origin !== "draft" && spec.instruction !== null && (
           <p
-            className="text-muted-foreground text-xs whitespace-pre-line"
+            className="text-muted-foreground flex items-start gap-1.5 text-xs"
             data-testid="spec-instruction"
           >
-            {ASKED[spec.origin] === undefined
-              ? spec.instruction
-              : `${ASKED[spec.origin]}: ${spec.instruction}`}
+            <CornerDownRight
+              aria-hidden="true"
+              className="mt-px size-3.5 shrink-0"
+            />
+            <span className="min-w-0 whitespace-pre-line">
+              {ASKED[spec.origin] === undefined
+                ? spec.instruction
+                : `${ASKED[spec.origin]}: ${spec.instruction}`}
+            </span>
           </p>
         )}
       </div>
 
       {earlier && (
         <div
-          className="bg-muted/40 flex flex-wrap items-center justify-between gap-2 rounded-md px-3 py-2"
+          className="bg-muted/40 flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2"
           data-testid="spec-earlier"
         >
           <p className="text-muted-foreground text-xs">
@@ -665,82 +702,115 @@ function SpecBody({
         </p>
       )}
 
-      {draft.background.length > 0 && (
-        <section aria-label="Background">
-          <h4 className="mb-1 text-xs font-medium">Background</h4>
-          <Steps
-            steps={draft.background.map((text, index) => ({
-              keyword: index === 0 ? "Given" : "And",
-              text,
-            }))}
-          />
-        </section>
-      )}
+      {/*
+        The scenarios as one list, a band per kind: what the background
+        sets up, then each kind with what the step counts of it.
+      */}
+      {(draft.background.length > 0 || groups.length > 0) && (
+        <div className="bg-card divide-y overflow-hidden rounded-xl border">
+          {draft.background.length > 0 && (
+            <section aria-label="Background">
+              <h4 className={GROUP_HEAD}>
+                <span className="flex items-center gap-2">
+                  <span
+                    aria-hidden="true"
+                    className="bg-muted-foreground/50 size-1.5 rounded-full"
+                  />
+                  Background
+                </span>
+              </h4>
+              <div className={cn(STEPS_INSET, "py-3")}>
+                <Steps
+                  steps={draft.background.map((text, index) => ({
+                    keyword: index === 0 ? "Given" : "And",
+                    text,
+                  }))}
+                />
+              </div>
+            </section>
+          )}
 
-      {groups.map((group) => {
-        const groupPoints = pointsOfScenarios(group.scenarios, weightPoints);
-        return (
-          <section key={group.kind} aria-label={group.label}>
-            {/*
+          {groups.map((group) => {
+            const groupPoints = pointsOfScenarios(
+              group.scenarios,
+              weightPoints,
+            );
+            return (
+              <section key={group.kind} aria-label={group.label}>
+                {/*
               The kind, and at the right edge, over its scenarios' pills,
               what the step counts of it.
             */}
-            <h4 className="mb-1 flex items-baseline justify-between gap-3 text-xs font-medium">
-              {group.label}
-              {groupPoints !== null && (
-                <span className="text-muted-foreground font-normal tabular-nums">
-                  {plural(groupPoints, "pt")}
-                </span>
-              )}
-            </h4>
-            <ul className="flex flex-col">
-              {group.scenarios.map((scenario) => (
-                <ScenarioRow
-                  key={scenario.id}
-                  scenario={scenario}
-                  weightPoints={weightPoints}
-                  change={
-                    diff?.added.has(scenario.id)
-                      ? "added"
-                      : diff?.removed.has(scenario.id)
-                        ? "removed"
-                        : undefined
-                  }
-                  when={diff?.when}
-                  {...(changes === undefined
-                    ? {}
-                    : {
-                        removing: working,
-                        onRemove: () =>
-                          ask(
-                            { mode: "trim", removeScenarioIds: [scenario.id] },
-                            `Removing “${scenario.title}”…`,
-                          ),
-                      })}
-                />
-              ))}
-              {group.gained.map((scenario) => (
-                <ScenarioRow
-                  key={`added-${scenario.id}`}
-                  scenario={scenario}
-                  weightPoints={weightPoints}
-                  change="added"
-                  when={diff?.when}
-                />
-              ))}
-              {group.gone.map((scenario) => (
-                <RemovedRow
-                  key={`removed-${scenario.id}`}
-                  scenario={scenario}
-                  weightPoints={weightPoints}
-                  inset={changes !== undefined}
-                  when={diff?.when ?? "since sizing"}
-                />
-              ))}
-            </ul>
-          </section>
-        );
-      })}
+                <h4 className={GROUP_HEAD}>
+                  <span className="flex items-center gap-2">
+                    <span
+                      aria-hidden="true"
+                      className={cn(
+                        "size-1.5 rounded-full",
+                        KIND_TONE[group.kind] ?? "bg-muted-foreground/50",
+                      )}
+                    />
+                    {group.label}
+                  </span>
+                  {groupPoints !== null && (
+                    <span className="font-normal tracking-normal normal-case tabular-nums">
+                      {plural(groupPoints, "pt")}
+                    </span>
+                  )}
+                </h4>
+                <ul className="divide-border/60 divide-y">
+                  {group.scenarios.map((scenario) => (
+                    <ScenarioRow
+                      key={scenario.id}
+                      scenario={scenario}
+                      weightPoints={weightPoints}
+                      change={
+                        diff?.added.has(scenario.id)
+                          ? "added"
+                          : diff?.removed.has(scenario.id)
+                            ? "removed"
+                            : undefined
+                      }
+                      when={diff?.when}
+                      {...(changes === undefined
+                        ? {}
+                        : {
+                            removing: working,
+                            onRemove: () =>
+                              ask(
+                                {
+                                  mode: "trim",
+                                  removeScenarioIds: [scenario.id],
+                                },
+                                `Removing “${scenario.title}”…`,
+                              ),
+                          })}
+                    />
+                  ))}
+                  {group.gained.map((scenario) => (
+                    <ScenarioRow
+                      key={`added-${scenario.id}`}
+                      scenario={scenario}
+                      weightPoints={weightPoints}
+                      change="added"
+                      when={diff?.when}
+                    />
+                  ))}
+                  {group.gone.map((scenario) => (
+                    <RemovedRow
+                      key={`removed-${scenario.id}`}
+                      scenario={scenario}
+                      weightPoints={weightPoints}
+                      inset={changes !== undefined}
+                      when={diff?.when ?? "since sizing"}
+                    />
+                  ))}
+                </ul>
+              </section>
+            );
+          })}
+        </div>
+      )}
 
       {draft.scenarios.length === 0 && (
         <p className="text-muted-foreground text-sm">
@@ -748,8 +818,18 @@ function SpecBody({
         </p>
       )}
 
-      <Notes heading="Open questions" notes={draft.openQuestions} />
-      <Notes heading="Assumptions" notes={draft.assumptions} />
+      <Notes
+        heading="Open questions"
+        notes={draft.openQuestions}
+        icon={CircleHelp}
+        tone="text-amber-500"
+      />
+      <Notes
+        heading="Assumptions"
+        notes={draft.assumptions}
+        icon={Lightbulb}
+        tone="text-sky-500"
+      />
     </div>
   );
 }
@@ -784,7 +864,7 @@ function ScenarioRow({
   return (
     <li className="relative" data-change={change}>
       {onRemove !== undefined && (
-        <span className="absolute top-1 -right-1.5 flex h-lh items-center text-sm leading-relaxed">
+        <span className="absolute top-2.5 right-3 z-10 flex h-lh items-center text-sm leading-relaxed">
           <ConfirmDialog
             trigger={
               <button
@@ -816,9 +896,11 @@ function ScenarioRow({
         aria-expanded={open}
         aria-controls={steps}
         className={cn(
-          "hover:bg-muted/60 focus-visible:ring-ring/50 relative -mx-1.5 flex w-[calc(100%+0.75rem)] cursor-pointer items-start gap-1.5 rounded-md px-1.5 py-1 text-left text-sm leading-relaxed outline-none focus-visible:ring-[3px]",
-          onRemove !== undefined && "pr-7",
-          change !== undefined && [DIFF_LINE, DIFF_TONE[change]],
+          ROW,
+          "hover:bg-muted/40 focus-visible:ring-ring/50 w-full cursor-pointer text-left transition-colors outline-none focus-visible:ring-[3px] focus-visible:ring-inset",
+          open && "bg-muted/25",
+          onRemove !== undefined && "pr-12",
+          change !== undefined && DIFF_TONE[change],
           change === "added" && "hover:bg-emerald-500/15",
           change === "removed" && "hover:bg-red-500/15",
         )}
@@ -847,7 +929,10 @@ function ScenarioRow({
           {/* The "+" already says an expansion was added. */}
           {scenario.origin !== "draft" &&
             !(added && scenario.origin === "expansion") && (
-              <Badge variant="outline" className="shrink-0">
+              <Badge
+                variant="outline"
+                className="border-primary/25 bg-primary/10 text-primary shrink-0 rounded-full px-2"
+              >
                 {ORIGIN_LABEL[scenario.origin]}
               </Badge>
             )}
@@ -861,15 +946,23 @@ function ScenarioRow({
         </span>
       </button>
       {open && (
-        <div id={steps} className="flex flex-col gap-1.5 pt-0.5 pb-2 pl-5">
+        <div
+          id={steps}
+          className={cn(
+            STEPS_INSET,
+            "bg-muted/25 flex flex-col gap-2.5 pb-3.5",
+          )}
+        >
           {/* Why it weighs what it does, before what it does. */}
           {scenario.weightReason !== undefined && (
-            <p className="text-muted-foreground text-xs">
+            <p className="text-muted-foreground text-xs leading-relaxed">
               {WEIGHT_LABEL[scenario.weight ?? ""] ?? "Weighed"}:{" "}
               {scenario.weightReason}
             </p>
           )}
-          <Steps steps={scenario.steps} />
+          <div className="bg-background/60 rounded-lg border px-3 py-2.5">
+            <Steps steps={scenario.steps} />
+          </div>
         </div>
       )}
     </li>
@@ -877,11 +970,30 @@ function ScenarioRow({
 }
 
 /**
- * A diff line reaches left past the scenario column into a gutter for its
- * mark, so its chevron and title stay in the column with every other row's
- * and under the kind's heading.
+ * A row of the scenario list. Its inset leaves a gutter on the left for a
+ * diff line's mark, so a chevron and title stay in one column with every
+ * other row's, and under the kind's name.
  */
-const DIFF_LINE = "-ml-6 w-[calc(100%+1.875rem)] pl-6";
+const ROW =
+  "relative flex items-start gap-2 px-5 py-2.5 text-sm leading-relaxed";
+
+/** A kind's band at the head of its rows, its name in the rows' column. */
+const GROUP_HEAD =
+  "bg-muted/30 text-muted-foreground flex items-center justify-between gap-3 px-5 py-2 text-[11px] font-semibold tracking-wider uppercase";
+
+/** Under a row, in the title's column: past the inset, the chevron and the gap. */
+const STEPS_INSET = "pr-5 pl-[calc(1.25rem+0.875rem+0.5rem)]";
+
+/** Each kind's mark beside its name: green for the path that works, and on. */
+const KIND_TONE: Readonly<Record<string, string>> = {
+  happy: "bg-emerald-500",
+  boundary: "bg-amber-500",
+  unhappy: "bg-rose-500",
+  recovery: "bg-sky-500",
+  permission: "bg-violet-500",
+  concurrency: "bg-blue-500",
+  "non-functional": "bg-slate-400",
+};
 
 /** A diff line's tint and ink, as a change tracker draws them. */
 const DIFF_TONE = {
@@ -894,7 +1006,7 @@ function DiffMark({ change }: { change: keyof typeof DIFF_TONE }) {
   return (
     <span
       aria-hidden="true"
-      className="absolute top-1 left-1.5 flex h-lh w-3 items-center justify-center font-mono select-none"
+      className="absolute top-2.5 left-1.5 flex h-lh w-3 items-center justify-center font-mono select-none"
     >
       {change === "added" ? "+" : "−"}
     </span>
@@ -921,12 +1033,7 @@ function RemovedRow({
   return (
     <li
       data-change="removed"
-      className={cn(
-        "relative -mr-1.5 flex items-start gap-1.5 rounded-md py-1 pr-1.5 text-sm leading-relaxed",
-        DIFF_LINE,
-        DIFF_TONE.removed,
-        inset && "pr-7",
-      )}
+      className={cn(ROW, DIFF_TONE.removed, inset && "pr-12")}
     >
       <DiffMark change="removed" />
       {/* Where a chevron would be: it does not open. */}
@@ -952,10 +1059,10 @@ function Steps({
   steps: readonly { readonly keyword: string; readonly text: string }[];
 }) {
   return (
-    <ol className="flex flex-col gap-0.5 text-sm leading-relaxed">
+    <ol className="flex flex-col gap-1 text-sm leading-relaxed">
       {steps.map((step, index) => (
-        <li key={index} className="flex gap-2">
-          <span className="text-muted-foreground w-11 shrink-0 text-right font-medium">
+        <li key={index} className="flex items-baseline gap-2.5">
+          <span className="text-primary/80 w-11 shrink-0 text-right font-mono text-[11px] font-semibold tracking-wide uppercase">
             {step.keyword}
           </span>
           <span className="min-w-0">{step.text}</span>
@@ -965,27 +1072,39 @@ function Steps({
   );
 }
 
+/** The spec's open questions or its assumptions, as a card, numbered. */
 function Notes({
   heading,
   notes,
+  icon: Icon,
+  tone,
 }: {
   heading: string;
   notes: readonly string[];
+  icon: LucideIcon;
+  /** The icon's colour. */
+  tone: string;
 }) {
   if (notes.length === 0) return null;
   return (
-    <section aria-label={heading}>
-      <h4 className="mb-1 flex items-baseline gap-1.5 text-xs font-medium">
+    <section
+      aria-label={heading}
+      className="bg-card overflow-hidden rounded-xl border"
+    >
+      <h4 className="flex items-center gap-2 border-b px-5 py-2.5 text-sm font-semibold tracking-tight">
+        <Icon aria-hidden="true" className={cn("size-4 shrink-0", tone)} />
         {heading}
-        <span className="text-muted-foreground tabular-nums">
+        <span className="bg-muted text-muted-foreground rounded-full px-1.5 text-[11px] leading-[18px] font-medium tabular-nums">
           {notes.length}
         </span>
       </h4>
-      <ul className="list-disc space-y-1 pl-5 text-sm leading-relaxed">
+      <ol className="marker:text-muted-foreground list-decimal space-y-1.5 py-3 pr-5 pl-10 text-sm leading-relaxed marker:text-xs marker:tabular-nums">
         {notes.map((note, index) => (
-          <li key={index}>{note}</li>
+          <li key={index} className="pl-1">
+            {note}
+          </li>
         ))}
-      </ul>
+      </ol>
     </section>
   );
 }
