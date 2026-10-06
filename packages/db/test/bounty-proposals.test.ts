@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { stepUp, type SpecDraft } from "sandbox-factory";
+import {
+  assessRubric,
+  COMPLEXITY_PROFILE_VERSION,
+  stepUp,
+  type ComplexityProfile,
+  type SpecDraft,
+} from "sandbox-factory";
 
 import { createBountyProposalStore } from "../src/bounty-proposals.js";
 import type {
@@ -49,6 +55,7 @@ function row(overrides: Partial<BountyProposalRow> = {}): BountyProposalRow {
     specRevision: null,
     step: null,
     stepVersion: null,
+    rubric: null,
     repoSnapshotId: null,
     decidedBy: null,
     decidedAt: null,
@@ -58,6 +65,39 @@ function row(overrides: Partial<BountyProposalRow> = {}): BountyProposalRow {
     ...overrides,
   };
 }
+
+/** A measured profile for the rubric to score: one module, nothing mocked. */
+const PROFILE: ComplexityProfile = {
+  version: COMPLEXITY_PROFILE_VERSION,
+  slice: {
+    files: 2,
+    bytes: 4_000,
+    modules: ["src/export"],
+    stubCoverage: "full",
+    blockers: 0,
+    ready: true,
+  },
+  touchedModules: ["src/export"],
+  externals: { services: [], environment: 0, seams: 0 },
+  spec: {
+    scenarios: 1,
+    kinds: {
+      happy: 1,
+      boundary: 0,
+      unhappy: 0,
+      recovery: 0,
+      permission: 0,
+      concurrency: 0,
+      "non-functional": 0,
+    },
+    openQuestions: 0,
+    assumptions: 0,
+  },
+  tests: { files: 1, untestedModules: [] },
+  pattern: null,
+  nonFunctional: { scenarios: 0, migrations: false, ci: false },
+  risks: [],
+};
 
 /** The bounty's name as a proposal read joins it. */
 const NAME = {
@@ -1233,6 +1273,7 @@ test("a spec change writes the next revision and the stepped size, and nothing e
         promptVersion: "revise-v1",
       },
       step,
+      rubric: null,
       amountMinor: 250,
       currency: "USD",
     },
@@ -1251,6 +1292,7 @@ test("a spec change writes the next revision and the stepped size, and nothing e
     complexity: "M+",
     step,
     stepVersion: "step-v1",
+    rubric: null,
     amountMinor: 250,
     currency: "USD",
     specRevision: 3,
@@ -1267,6 +1309,146 @@ test("a spec change writes the next revision and the stepped size, and nothing e
   assert.equal(stored?.["instruction"], "More recovery scenarios");
 });
 
+test("a spec change on a rubric-sized proposal is priced at the rubric's size", async () => {
+  const sizedStep = stepUp("M", weighed, weighed);
+  const step = stepUp("M", weighed, grown);
+  assert.ok(sizedStep !== null && step !== null);
+  const rubric = assessRubric({
+    spec: grown,
+    code: { status: "measured", profile: PROFILE, specRevision: 2 },
+  });
+  const source = row({
+    revision: 4,
+    specRevision: 2,
+    sizedBy: "rubric",
+    step: sizedStep,
+    stepVersion: "step-v1",
+  });
+  const respecced = row({
+    revision: 5,
+    specRevision: 3,
+    sizedBy: "rubric",
+    complexity: "S+",
+    amountMinor: 150,
+    step,
+    stepVersion: "step-v1",
+    rubric,
+  });
+  const fake = createSequencedFakeDb([
+    [{ id: "brn_3", boardId: "jrb_1", startedBy: "user_1" } as BountyRunRow],
+    [source],
+    [{ revision: 2 }],
+    [respecced],
+    [],
+    [{ row: respecced, ...NAME }],
+  ]);
+  const result = await createBountyProposalStore(fake.db).respecForLease(
+    "org_1",
+    "lease_1",
+    "bpr_1",
+    4,
+    {
+      runId: "brn_3",
+      fromSpecRevision: 2,
+      spec: { ...spec, draft: grown, origin: "expand" },
+      step,
+      rubric,
+      complexity: "S+",
+      amountMinor: 150,
+      currency: "USD",
+    },
+  );
+  assert.equal(result.status, "respecced");
+  if (result.status === "respecced") {
+    assert.equal(result.proposal.sizedBy, "rubric");
+    assert.deepEqual(result.proposal.rubric, rubric);
+  }
+  assert.equal(fake.calls[3]?.values?.["complexity"], "S+");
+  assert.equal(fake.calls[3]?.values?.["amountMinor"], 150);
+  assert.deepEqual(fake.calls[3]?.values?.["rubric"], rubric);
+  // Who sized it is not the spec change's to say.
+  assert.equal(fake.calls[3]?.values?.["sizedBy"], undefined);
+});
+
+test("the rubric's assessment is recorded, and with a price it sets the size", async () => {
+  const rubric = assessRubric({
+    spec: weighed,
+    code: { status: "measured", profile: PROFILE, specRevision: 1 },
+  });
+  const recorded = row({ revision: 2, rubric });
+  const recordFake = createSequencedFakeDb([
+    [recorded],
+    [{ row: recorded, ...NAME }],
+  ]);
+  const record = await createBountyProposalStore(recordFake.db).applyRubric(
+    "org_1",
+    "bpr_1",
+    1,
+    { rubric, price: null },
+  );
+  assert.equal(record.ok, true);
+  if (record.ok) assert.deepEqual(record.proposal.rubric, rubric);
+  assert.ok(recordFake.calls[0]?.filtered);
+  // Recorded only: the size, its price and who set it stand.
+  assert.deepEqual(Object.keys(recordFake.calls[0]?.values ?? {}).sort(), [
+    "revision",
+    "rubric",
+    "updatedAt",
+  ]);
+  assert.equal(recordFake.calls[0]?.values?.["revision"], 2);
+
+  const sized = row({
+    revision: 3,
+    rubric,
+    sizedBy: "rubric",
+    complexity: "S",
+    amountMinor: 100,
+  });
+  const sizeFake = createSequencedFakeDb([[sized], [{ row: sized, ...NAME }]]);
+  const size = await createBountyProposalStore(sizeFake.db).applyRubric(
+    "org_1",
+    "bpr_1",
+    2,
+    {
+      rubric,
+      price: { complexity: "S", amountMinor: 100, currency: "USD" },
+    },
+  );
+  assert.equal(size.ok, true);
+  if (size.ok) assert.equal(size.proposal.sizedBy, "rubric");
+  const values = sizeFake.calls[0]?.values;
+  assert.equal(values?.["complexity"], "S");
+  assert.equal(values?.["amountMinor"], 100);
+  assert.equal(values?.["currency"], "USD");
+  assert.equal(values?.["sizedBy"], "rubric");
+  // A reviewer's resize gives way to it.
+  assert.equal(values?.["resizedBy"], null);
+  assert.equal(values?.["resizedAt"], null);
+
+  const moved = row({ revision: 5 });
+  const conflict = createSequencedFakeDb([[], [{ row: moved, ...NAME }]]);
+  const missed = await createBountyProposalStore(conflict.db).applyRubric(
+    "org_1",
+    "bpr_1",
+    2,
+    { rubric, price: null },
+  );
+  assert.equal(missed.ok, false);
+  if (!missed.ok) assert.equal(missed.reason, "changed");
+
+  // A row that vanishes between the write and the read is not found.
+  const vanished = createSequencedFakeDb([[sized], []]);
+  assert.deepEqual(
+    await createBountyProposalStore(vanished.db).applyRubric(
+      "org_1",
+      "bpr_1",
+      2,
+      { rubric, price: null },
+    ),
+    { ok: false, reason: "not-found" },
+  );
+});
+
 test("a spec change is fenced by its lease and refused once the proposal moved", async () => {
   const step = stepUp("M", weighed, grown);
   assert.ok(step !== null);
@@ -1275,6 +1457,7 @@ test("a spec change is fenced by its lease and refused once the proposal moved",
     fromSpecRevision: 2,
     spec: { ...spec, draft: grown, origin: "expand" },
     step,
+    rubric: null,
     amountMinor: 250,
     currency: "USD",
   } as const;

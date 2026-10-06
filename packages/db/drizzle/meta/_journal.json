@@ -358,6 +358,13 @@
       "when": 1791180467446,
       "tag": "0050_proposal_version",
       "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1791243826066,
+      "tag": "0051_proposal_rubric",
+      "breakpoints": true
     }
   ]
 }

@@ -65,6 +65,15 @@ export interface BountyProfilerOptions {
    */
   readonly maxActive?: number;
   readonly intervalMs?: number;
+  /**
+   * Called once a row this profiler moved is final, ready or failed: what
+   * the pricing rubric scores the code with. Its failure is reported, and
+   * leaves the profile as it is.
+   */
+  readonly onSettled?: (
+    owner: string,
+    profile: StoredBountyProfile,
+  ) => Promise<void>;
   readonly onError?: (code: string, error?: unknown) => void;
 }
 
@@ -291,15 +300,32 @@ export class BountyProfiler {
       return this.#fail(owner, profile, "source_unavailable");
     if (scope === null || summary === null)
       return this.#fail(owner, profile, "output_invalid");
-    return this.#advance(owner, profile, {
-      status: "ready",
-      profile: buildComplexityProfile({
-        spec: spec.draft,
-        facts: snapshot.facts,
-        scope,
-        slice: summary,
-      }),
+    const built = buildComplexityProfile({
+      spec: spec.draft,
+      facts: snapshot.facts,
+      scope,
+      slice: summary,
     });
+    const step = await this.#advance(owner, profile, {
+      status: "ready",
+      profile: built,
+    });
+    if (step === MOVED)
+      await this.#settled(owner, {
+        ...profile,
+        status: "ready",
+        profile: built,
+      });
+    return step;
+  }
+
+  /** Hands a final row on, without letting its trouble fail the sweep. */
+  async #settled(owner: string, profile: StoredBountyProfile): Promise<void> {
+    try {
+      await this.#options.onSettled?.(owner, profile);
+    } catch (error) {
+      this.#options.onError?.("bounty_profile_settled_failed", error);
+    }
   }
 
   /**
@@ -375,16 +401,24 @@ export class BountyProfiler {
       : WAIT;
   }
 
-  #fail(
+  async #fail(
     owner: string,
     profile: StoredBountyProfile,
     errorCode: ProfileErrorCode,
     runErrorCode: AnalysisErrorCode | null = null,
   ): Promise<Step> {
-    return this.#advance(owner, profile, {
+    const step = await this.#advance(owner, profile, {
       status: "failed",
       errorCode,
       runErrorCode,
     });
+    if (step === MOVED)
+      await this.#settled(owner, {
+        ...profile,
+        status: "failed",
+        errorCode,
+        runErrorCode,
+      });
+    return step;
   }
 }

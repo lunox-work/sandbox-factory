@@ -11,7 +11,7 @@ import {
   RefreshCw,
   TriangleAlert,
 } from "lucide-react";
-import { type ReactElement } from "react";
+import { useEffect, useRef, type ReactElement } from "react";
 import { WEIGHT_POINTS, WHOLE_BOUNTY_COMPLEXITIES } from "sandbox-factory";
 import { dateTime, modelLabel, money } from "../../lib/format";
 import { capitalize, unweighed } from "./presentation";
@@ -36,6 +36,7 @@ import {
   scenarioTotal,
   useProposalSpec,
 } from "../../ProposalSpec";
+import { PricingRubricBlock } from "../../PricingRubric";
 import { JiraIcon, ModelIcon } from "../../ProviderIcon";
 import { useRespec } from "../../SpecChanges";
 import { BountyText } from "../../BountyText";
@@ -60,6 +61,9 @@ function freshnessLabel(freshness: EnrichedProposal["freshness"]): {
       return { text: "Not checked", tone: "muted" };
   }
 }
+
+/** How long after the code settles the proposal is read again. */
+const RUBRIC_REREAD_MS = 1_500;
 
 const CONFIDENCE_MARK: Record<
   BountyProposalDto["modelConfidence"],
@@ -131,6 +135,32 @@ export function ProposalPeek({
     proposal.specRevision,
     (proposal.specRevision ?? null) !== null,
   );
+  /*
+    The code's measurement settling is what lets the rubric size the
+    proposal, server side, just after the profile is written. Read the
+    proposal again once, a moment later, so the new price shows without a
+    reload. Once per settled profile, so a proposal the rubric may not
+    change (an approved one) is not read in a loop.
+  */
+  const settled =
+    profile.state === "ready" &&
+    profile.profile !== null &&
+    (profile.profile.status === "ready" || profile.profile.status === "failed")
+      ? `${profile.profile.id}:${profile.profile.status}`
+      : null;
+  const awaitingCode = proposal.rubric?.code.status === "pending";
+  const reread = useRef<string | null>(null);
+  // The latest callback, so a parent's new function does not cancel the read.
+  const changed = useRef(onChanged);
+  changed.current = onChanged;
+  useEffect(() => {
+    if (settled === null || !awaitingCode || reread.current === settled) return;
+    const timer = setTimeout(() => {
+      reread.current = settled;
+      void changed.current();
+    }, RUBRIC_REREAD_MS);
+    return () => clearTimeout(timer);
+  }, [settled, awaitingCode]);
   const scenarios = scenarioTotal(spec.read);
   const step = proposal.step ?? null;
   // A reviewer's changes to the spec, and the run each one starts.
@@ -147,7 +177,7 @@ export function ProposalPeek({
   const sizeBase = step?.base ?? proposal.complexity;
   // The model pill and the XL warning drop a row when the notes are shown.
   const lowerRow =
-    proposal.sizedBy === "reviewer" ? "sm:row-start-3" : "sm:row-start-2";
+    proposal.sizedBy === "model" ? "sm:row-start-2" : "sm:row-start-3";
   /*
     What the bounty was taken to ask for when it was sized. In its own tab
     after the decision, which it supports; inside its bounty, on the one
@@ -436,13 +466,15 @@ export function ProposalPeek({
               <SizeCard size={proposal.complexity} current />
             )}
           </div>
-          {proposal.sizedBy === "reviewer" && (
+          {proposal.sizedBy !== "model" && (
             <div className="text-muted-foreground flex items-baseline justify-between gap-x-6 text-xs sm:col-span-2 sm:row-start-2">
               <span>the model said {proposal.modelComplexity}</span>
               <span className="text-right">
-                {step !== null && step.steps > 0
-                  ? `${step.base} set by a reviewer`
-                  : "set by a reviewer"}
+                {proposal.sizedBy === "rubric"
+                  ? "set by the rubric"
+                  : step !== null && step.steps > 0
+                    ? `${step.base} set by a reviewer`
+                    : "set by a reviewer"}
               </span>
             </div>
           )}
@@ -491,12 +523,32 @@ export function ProposalPeek({
       )}
 
       {/*
-        Why this size: what the model made of the bounty. What the
-        spec gained since is marked on its scenarios.
+        Why this price: the rubric's working, factor by factor, before
+        the model's opinion, which it replaces once the code is measured.
+      */}
+      <PricingRubricBlock
+        proposal={proposal}
+        canUse={canDecide && open}
+        busy={busy}
+        onUse={() =>
+          void mutate(
+            `/proposals/${proposal.id}/rubric`,
+            { expectedRevision: proposal.revision },
+            { apply: true },
+          )
+        }
+      />
+
+      {/*
+        What the model made of the bounty: why this size, without a
+        rubric; beside one, its second opinion. What the spec gained
+        since is marked on its scenarios.
       */}
       <div>
         <p className="text-muted-foreground mb-1.5 text-xs font-medium">
-          Why this size
+          {(proposal.rubric ?? null) === null
+            ? "Why this size"
+            : `The model's read: ${proposal.modelComplexity}`}
         </p>
         <p className="text-sm leading-relaxed">{proposal.modelRationale}</p>
         {canDecide && unweighed(proposal) && (

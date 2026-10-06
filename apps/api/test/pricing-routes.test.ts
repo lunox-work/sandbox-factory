@@ -13,7 +13,13 @@ import type {
 
 import { JiraApiError } from "@sandbox-factory/jira";
 import type { JiraIssueDto } from "@sandbox-factory/shared";
-import { DEFAULT_RATE_CARD, stepUp, type SpecDraft } from "sandbox-factory";
+import {
+  assessRubric,
+  COMPLEXITY_PROFILE_VERSION,
+  DEFAULT_RATE_CARD,
+  stepUp,
+  type SpecDraft,
+} from "sandbox-factory";
 
 import type { Auth } from "../src/auth.js";
 import type {
@@ -418,6 +424,7 @@ function reviewProposal(
     versionedAt: null,
     specRevision: null,
     step: null,
+    rubric: null,
     decidedAt: null,
     decidedBy: null,
     decisionDeliveryPolicy: null,
@@ -498,6 +505,24 @@ function reviewHarness(
         step,
         sizedBy: "reviewer",
         revision: 2,
+      };
+      return Promise.resolve({ ok: true, proposal: current });
+    },
+    applyRubric: (
+      _o: string,
+      _p: string,
+      revision: number,
+      input: import("@sandbox-factory/db").ApplyRubricInput,
+    ) => {
+      if (revision !== current.revision)
+        return Promise.resolve({ ok: false, reason: "changed", current });
+      current = {
+        ...current,
+        rubric: input.rubric,
+        ...(input.price === null
+          ? {}
+          : { ...input.price, sizedBy: "rubric", resizedBy: null }),
+        revision: revision + 1,
       };
       return Promise.resolve({ ok: true, proposal: current });
     },
@@ -1692,4 +1717,139 @@ test("a cancelled titles stream starts no further Jira reads", async () => {
   for (const release of held) release();
   for (let tries = 0; tries < 10; tries += 1) await settle();
   assert.equal(state.reads.length, 5);
+});
+
+/** A spec and code the rubric scores at 13 points: S. */
+const rubricSpec: SpecDraft = {
+  feature: "Export",
+  background: [],
+  scenarios: [
+    {
+      id: "s1",
+      kind: "happy",
+      title: "Exported",
+      steps: [
+        { keyword: "Then", text: "a file is downloaded" },
+        { keyword: "And", text: "it has a header row" },
+      ],
+      origin: "draft",
+      weight: "heavy",
+    },
+    {
+      id: "s2",
+      kind: "unhappy",
+      title: "Nothing to export",
+      steps: [{ keyword: "Then", text: "the button is disabled" }],
+      origin: "draft",
+      weight: "moderate",
+    },
+  ],
+  openQuestions: [],
+  assumptions: [],
+};
+
+function rubricOf(status: "measured" | "pending") {
+  return assessRubric({
+    spec: rubricSpec,
+    code:
+      status === "pending"
+        ? { status }
+        : {
+            status,
+            specRevision: 1,
+            profile: {
+              version: COMPLEXITY_PROFILE_VERSION,
+              slice: {
+                files: 3,
+                bytes: 30_000,
+                modules: ["src/export"],
+                stubCoverage: "partial",
+                blockers: 0,
+                ready: true,
+              },
+              touchedModules: ["src/export", "src/ui"],
+              externals: { services: [], environment: 0, seams: 0 },
+              spec: {
+                scenarios: 2,
+                kinds: {
+                  happy: 1,
+                  boundary: 0,
+                  unhappy: 1,
+                  recovery: 0,
+                  permission: 0,
+                  concurrency: 0,
+                  "non-functional": 0,
+                },
+                openQuestions: 0,
+                assumptions: 0,
+              },
+              tests: { files: 2, untestedModules: [] },
+              pattern: { path: "src/export/pdf.ts", reason: "same shape" },
+              nonFunctional: { scenarios: 0, migrations: false, ci: true },
+              risks: [],
+            },
+          },
+  });
+}
+
+test("a reviewer can put the rubric's size back in force over their own", async () => {
+  const rubric = rubricOf("measured");
+  // 6 for scenarios, 3 for tests, 1 + 3 + 1 - 2 = 3 for code: 12, S+.
+  assert.equal(rubric.points, 12);
+  assert.equal(rubric.size, "S+");
+  const state = reviewHarness(undefined, {
+    complexity: "L",
+    amountMinor: 300,
+    sizedBy: "reviewer",
+    resizedBy: "user_1",
+    rubric,
+  });
+  const response = await state.app.request(
+    "/api/v1/orgs/org_1/proposals/bpr_1/rubric",
+    { method: "POST", headers, body: JSON.stringify({ expectedRevision: 1 }) },
+  );
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as { proposal: StoredBountyProposal };
+  assert.equal(body.proposal.sizedBy, "rubric");
+  assert.equal(body.proposal.complexity, "S+");
+  // Between S and M on the proposal's own card.
+  assert.equal(body.proposal.amountMinor, 150);
+  assert.equal(body.proposal.resizedBy, null);
+
+  // Checked against the revision the reviewer saw.
+  const stale = await reviewHarness(undefined, { rubric }).app.request(
+    "/api/v1/orgs/org_1/proposals/bpr_1/rubric",
+    { method: "POST", headers, body: JSON.stringify({ expectedRevision: 7 }) },
+  );
+  assert.equal(stale.status, 409);
+  assert.equal(
+    ((await stale.json()) as { code: string }).code,
+    "proposal_changed",
+  );
+});
+
+test("the rubric's size is refused until the code is measured", async () => {
+  for (const rubric of [null, rubricOf("pending")]) {
+    const state = reviewHarness(undefined, { rubric });
+    const response = await state.app.request(
+      "/api/v1/orgs/org_1/proposals/bpr_1/rubric",
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ expectedRevision: 1 }),
+      },
+    );
+    assert.equal(response.status, 409);
+    assert.equal(
+      ((await response.json()) as { code: string }).code,
+      "rubric_unsized",
+    );
+    assert.equal(state.current().sizedBy, "model");
+  }
+
+  const invalid = await reviewHarness().app.request(
+    "/api/v1/orgs/org_1/proposals/bpr_1/rubric",
+    { method: "POST", headers, body: JSON.stringify({}) },
+  );
+  assert.equal(invalid.status, 400);
 });

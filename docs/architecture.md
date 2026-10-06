@@ -578,8 +578,26 @@ base, and XL is the cap. A fresh draft starts at step zero.
 
 Manual resize changes the base while preserving the step and saved card.
 Respec keeps the base, card, and step settings without another sizing call;
-reprice uses the current card and starts fresh. Complexity profiles are
-background evidence and do not set the price. Provider wiring is in
+reprice uses the current card and starts fresh.
+
+**The pricing rubric sizes a proposal once its code is measured**
+(`packages/core/src/pricing/rubric.ts`, `rubric-v1`). It scores three
+dimensions from countable evidence. Scenarios are scored by weight, with the
+step's points, plus open questions. Test cases are one per scenario, plus each
+outcome step after a test's first. Code comes from the complexity profile:
+slice size, touched modules, services, seams, untested modules, migrations,
+stubs and blockers, minus a discount for an analogous pattern. The total falls
+in a band of the nine priced sizes, and the rate card prices it. Sizing stores
+the assessment (`bounty_proposal.rubric`, migration 0051) with the code
+`pending` or `unavailable`, so the model's size stands. When the profiler
+settles a profile, `RubricPricer` (`apps/api/src/pricing/rubric.ts`)
+re-scores the current spec and sets `sized_by = 'rubric'` on a proposed
+proposal. A reviewer-sized proposal only has the assessment recorded, and an
+approved one is not touched. A respec of a rubric-sized proposal is priced at
+the rubric's score of the changed spec, and the step still records what
+changed. `POST .../proposals/:id/rubric` puts the rubric's size back over a
+reviewer's resize. Without a repository the rubric has no size, and the model
+and step price the bounty as before. Provider wiring is in
 `apps/api/src/server.ts`: Anthropic first with DeepSeek as fallback when both
 are configured, or either provider alone. See `.env.example` for configuration.
 

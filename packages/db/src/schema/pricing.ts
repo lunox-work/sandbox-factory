@@ -27,6 +27,7 @@ import type {
   RateCardSnapshot,
   PricedComplexity,
   RespecRequest,
+  RubricAssessment,
   SpecDraft,
   StepResult,
 } from "sandbox-factory";
@@ -248,6 +249,11 @@ export const bountyProposal = pgTable(
     // unsized bounty, no spec, or a spec drafted before weights.
     step: jsonb("step").$type<StepResult>(),
     stepVersion: text("step_version"),
+    // The pricing rubric's assessment of the spec and the measured code.
+    // When `sized_by` is `rubric`, `complexity` is its size. Stored as
+    // computed, like the step. Null without a spec, or from before the
+    // rubric.
+    rubric: jsonb("rubric").$type<RubricAssessment>(),
     // The repository snapshot whose outline the spec was drafted beside.
     // Null when the bounty had no repository or it had no snapshot yet;
     // a pruned snapshot clears it rather than taking the proposal with it.
@@ -295,7 +301,12 @@ export const bountyProposal = pgTable(
     ),
     check(
       "bounty_proposal_sized_by_check",
-      sql`${table.sizedBy} in ('model', 'reviewer')`,
+      sql`${table.sizedBy} in ('model', 'rubric', 'reviewer')`,
+    ),
+    // A size the rubric set is one it can show its working for.
+    check(
+      "bounty_proposal_rubric_check",
+      sql`${table.sizedBy} <> 'rubric' or ${table.rubric} IS NOT NULL`,
     ),
     check(
       "bounty_proposal_delivery_policy_check",

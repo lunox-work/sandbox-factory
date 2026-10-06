@@ -8,6 +8,7 @@ import type {
   ModelComplexity,
   RateCardSnapshot,
   PricedComplexity,
+  RubricAssessment,
   SizingConfidence,
   StepResult,
 } from "sandbox-factory";
@@ -61,6 +62,11 @@ export interface CreateBountyProposalInput {
    */
   readonly step?: StepResult | null;
   /**
+   * The pricing rubric's assessment of the spec, when there is one. A new
+   * proposal's is never what sizes it: its code is not measured yet.
+   */
+  readonly rubric?: RubricAssessment | null;
+  /**
    * The repository snapshot the spec was drafted beside, when the bounty
    * had a repository with one. Its organization is the bounty's, which the
    * caller read it through.
@@ -96,8 +102,29 @@ export interface RespecBountyProposalInput {
    */
   readonly fromSpecRevision: number;
   readonly step: StepResult;
+  /** The rubric's assessment of the changed spec, or null without one. */
+  readonly rubric: RubricAssessment | null;
+  /**
+   * The size the proposal is priced at, when it is not the step's: the
+   * rubric's, for a proposal the rubric sized. `amountMinor` is its price.
+   */
+  readonly complexity?: PricedComplexity;
   readonly amountMinor: number;
   readonly currency: string;
+}
+
+/**
+ * The rubric's assessment, and, when it sizes the proposal, the size and
+ * price it comes to.
+ */
+export interface ApplyRubricInput {
+  readonly rubric: RubricAssessment;
+  /** Null records the assessment and leaves the size as it is. */
+  readonly price: {
+    readonly complexity: PricedComplexity;
+    readonly amountMinor: number;
+    readonly currency: string;
+  } | null;
 }
 
 export type ProposalMutationResult =
@@ -244,6 +271,18 @@ export interface BountyProposalStore {
     step?: StepResult | null,
   ): Promise<ProposalMutationResult>;
   /**
+   * The pricing rubric's assessment, written to a proposal still proposed.
+   * With a price, the rubric sets the size: `sizedBy` becomes `rubric` and
+   * a reviewer's resize is cleared. Checked against `expectedRevision`
+   * like any other change.
+   */
+  applyRubric(
+    organizationId: string,
+    proposalId: string,
+    expectedRevision: number,
+    input: ApplyRubricInput,
+  ): Promise<ProposalMutationResult>;
+  /**
    * Deletes a proposed proposal, so the bounty has none and a later run may
    * propose it again. The returned proposal is the row as it was.
    */
@@ -329,7 +368,7 @@ export interface StoredBountyProposal {
   readonly actualModel: string;
   readonly promptVersion: string;
   readonly complexity: BountyComplexity;
-  readonly sizedBy: "model" | "reviewer";
+  readonly sizedBy: "model" | "rubric" | "reviewer";
   readonly resizedBy: string | null;
   readonly resizedAt: string | null;
   readonly amountMinor: number | null;
@@ -347,6 +386,8 @@ export interface StoredBountyProposal {
   readonly specRevision: number | null;
   /** How the spec's added weight moved the size, or null when nothing could. */
   readonly step: StepResult | null;
+  /** The pricing rubric's assessment, or null without a spec. */
+  readonly rubric: RubricAssessment | null;
   /** The repository snapshot the spec was drafted beside, if any. */
   readonly repoSnapshotId: string | null;
   readonly decidedAt: string | null;
@@ -412,6 +453,7 @@ function toDto(row: BountyProposalRow, name: BountyName): StoredBountyProposal {
     versionedAt: row.versionedAt?.toISOString() ?? null,
     specRevision: row.specRevision,
     step: row.step ?? null,
+    rubric: row.rubric ?? null,
     repoSnapshotId: row.repoSnapshotId ?? null,
     decidedAt: row.decidedAt?.toISOString() ?? null,
     decidedBy: row.decidedBy,
@@ -517,6 +559,7 @@ function insertValues(
     complexity: input.step?.complexity ?? input.sizing.complexity,
     step: input.step ?? null,
     stepVersion: input.step?.stepVersion ?? null,
+    rubric: input.rubric ?? null,
     repoSnapshotId: input.repoSnapshotId ?? null,
     amountMinor: input.amountMinor,
     currency: input.currency,
@@ -986,6 +1029,43 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
       return { ok: true, proposal: toDto(found.row, found.name) };
     },
 
+    async applyRubric(organizationId, proposalId, expectedRevision, input) {
+      const now = new Date();
+      const rows = (await db
+        .update(bountyProposal)
+        .set({
+          rubric: input.rubric,
+          ...(input.price === null
+            ? {}
+            : {
+                complexity: input.price.complexity,
+                amountMinor: input.price.amountMinor,
+                currency: input.price.currency,
+                sizedBy: "rubric",
+                resizedBy: null,
+                resizedAt: null,
+              }),
+          revision: expectedRevision + 1,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(bountyProposal.organizationId, organizationId),
+            eq(bountyProposal.id, proposalId),
+            eq(bountyProposal.status, "proposed"),
+            eq(bountyProposal.revision, expectedRevision),
+          ),
+        )
+        .returning()) as BountyProposalRow[];
+      const updated = rows[0];
+      if (updated === undefined) {
+        return mutationMiss(db, organizationId, proposalId, expectedRevision);
+      }
+      const found = await first(db, organizationId, updated.id);
+      if (found === undefined) return { ok: false, reason: "not-found" };
+      return { ok: true, proposal: toDto(found.row, found.name) };
+    },
+
     async remove(organizationId, proposalId, expectedRevision) {
       const found = await first(db, organizationId, proposalId);
       if (found === undefined) return { ok: false, reason: "not-found" };
@@ -1127,6 +1207,7 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
             complexity: values.complexity,
             step: values.step,
             stepVersion: values.stepVersion,
+            rubric: values.rubric,
             // The draft is new, and so is what it was drafted beside.
             repoSnapshotId: values.repoSnapshotId,
             sizedBy: "model",
@@ -1292,9 +1373,10 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
         const updated = (await tx
           .update(bountyProposal)
           .set({
-            complexity: input.step.complexity,
+            complexity: input.complexity ?? input.step.complexity,
             step: input.step,
             stepVersion: input.step.stepVersion,
+            rubric: input.rubric,
             amountMinor: input.amountMinor,
             currency: input.currency,
             specRevision,

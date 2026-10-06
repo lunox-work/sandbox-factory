@@ -48,6 +48,7 @@ import { boundedLimit, rowCursor } from "../paging.js";
 import { REVISE_SPEC_PROMPT_VERSION } from "../sizing/tools/revise-spec.js";
 import type { RunClientResult } from "./executor.js";
 import { freshProposal, mapConcurrent, proposalTitle } from "./review.js";
+import { rubricPrice } from "./rubric.js";
 
 export interface PricingAppEnv {
   Variables: {
@@ -822,6 +823,48 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
         amountMinor!,
         proposal.rateCard.currency,
         step,
+      ),
+    );
+  });
+
+  /**
+   * The rubric's size back in force: what a reviewer does to undo their
+   * resize. The assessment is the proposal's own, kept current by every
+   * spec change and by the code's measurement, so nothing is scored here;
+   * an assessment with no size (the code not measured) is refused.
+   */
+  app.post("/api/v1/orgs/:orgId/proposals/:id/rubric", async (c) => {
+    const parsed = proposalMutationSchema.safeParse(
+      await c.req.json().catch(() => null),
+    );
+    if (!parsed.success)
+      return c.json({ error: "Invalid proposal revision." }, 400);
+    const { organizationId, role } = c.get("member");
+    const denied = requireAdmin(role);
+    if (denied !== null) return c.json(denied, 403);
+    const proposal = await options.proposals.get(
+      organizationId,
+      c.req.param("id"),
+    );
+    if (proposal === null) return c.json({ error: "Not found" }, 404);
+    const price =
+      proposal.rubric === null ? null : rubricPrice(proposal.rubric, proposal);
+    if (proposal.rubric === null || price === null)
+      return c.json(
+        {
+          code: "rubric_unsized",
+          error: "The rubric has no size until the code is measured.",
+          proposal,
+        },
+        409,
+      );
+    return proposalMutationResponse(
+      c,
+      await options.proposals.applyRubric(
+        organizationId,
+        proposal.id,
+        parsed.data.expectedRevision,
+        { rubric: proposal.rubric, price },
       ),
     );
   });

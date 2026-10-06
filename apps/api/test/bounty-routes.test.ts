@@ -105,6 +105,7 @@ function proposalOf(
     versionedAt: null,
     specRevision: null,
     step: null,
+    rubric: null,
     repoSnapshotId: null,
     decidedAt: null,
     decidedBy: null,

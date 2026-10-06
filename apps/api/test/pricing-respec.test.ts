@@ -12,14 +12,18 @@ import type {
   BountySpecStore,
   JiraBoardStore,
   JiraIssueStore,
+  StoredBountyProfile,
   StoredBountyProposal,
   StoredBountyRun,
   StoredBountySpec,
 } from "@sandbox-factory/db";
 import { JiraApiError } from "@sandbox-factory/jira";
 import {
+  assessRubric,
+  COMPLEXITY_PROFILE_VERSION,
   stepUp,
   type RespecRequest,
+  type RubricAssessment,
   type Scenario,
   type ScenarioWeight,
   type SpecDraft,
@@ -119,6 +123,7 @@ function proposal(
     versionedAt: null,
     specRevision: 3,
     step,
+    rubric: null,
     decidedAt: null,
     decidedBy: null,
     decisionDeliveryPolicy: null,
@@ -248,6 +253,8 @@ function executorHarness(options: {
   written?: "respecced" | "changed" | "not-found" | "lost-lease";
   planHeld?: boolean;
   recorded?: boolean;
+  /** The proposal's newest profile; absent, the executor reads none. */
+  profile?: StoredBountyProfile | null;
 }) {
   const queued = respecRun(options.request);
   const plans: unknown[] = [];
@@ -381,6 +388,9 @@ function executorHarness(options: {
           },
         } as never,
       }),
+    ...(options.profile === undefined
+      ? {}
+      : { profileFor: () => Promise.resolve(options.profile ?? null) }),
     now: () => new Date("2026-10-01T00:00:00.000Z"),
     leaseToken: () => "lease_1",
     setInterval: (() => 0) as never,
@@ -448,6 +458,130 @@ test("a trim takes an added scenario out, asks no model, and the step comes back
     },
   ]);
   assert.deepEqual(state.finishes, [{ status: "succeeded", details: {} }]);
+});
+
+/** Code the rubric scores at 8: two modules, two services, 20 KB. */
+const measuredProfile: StoredBountyProfile = {
+  id: "bpf_1",
+  organizationId: "org_1",
+  proposalId: "bpr_1",
+  specRevision: 3,
+  specHash: hash,
+  snapshotId: "rsn_1",
+  status: "ready",
+  errorCode: null,
+  runErrorCode: null,
+  scopeRunId: "arn_scope",
+  sliceRunId: "arn_slice",
+  profile: {
+    version: COMPLEXITY_PROFILE_VERSION,
+    slice: {
+      files: 3,
+      bytes: 20_000,
+      modules: ["src/export", "src/notify"],
+      stubCoverage: "full",
+      blockers: 0,
+      ready: true,
+    },
+    touchedModules: ["src/export", "src/notify"],
+    externals: { services: ["email", "sms"], environment: 0, seams: 0 },
+    spec: {
+      scenarios: 3,
+      kinds: {
+        happy: 1,
+        boundary: 1,
+        unhappy: 0,
+        recovery: 1,
+        permission: 0,
+        concurrency: 0,
+        "non-functional": 0,
+      },
+      openQuestions: 1,
+      assumptions: 0,
+    },
+    tests: { files: 2, untestedModules: [] },
+    pattern: null,
+    nonFunctional: { scenarios: 0, migrations: false, ci: true },
+    risks: [],
+  },
+  createdAt: "2026-10-01T00:00:00.000Z",
+  updatedAt: "2026-10-01T00:00:00.000Z",
+};
+
+test("a proposal the rubric sized is priced by the rubric's score of the changed spec", async () => {
+  const before = assessRubric({
+    spec: currentDraft,
+    code: {
+      status: "measured",
+      profile: measuredProfile.profile!,
+      specRevision: 3,
+    },
+  });
+  const state = executorHarness({
+    request: { mode: "trim", removeScenarioIds: ["s3"] },
+    proposal: proposal({
+      sizedBy: "rubric",
+      rubric: before,
+      complexity: before.size ?? "M",
+    }),
+    profile: measuredProfile,
+  });
+  await state.run();
+  const input = state.written[0] as {
+    step: { complexity: string };
+    rubric: RubricAssessment;
+    complexity?: string;
+    amountMinor: number;
+  };
+  // 3 + 1 for the trimmed spec and its question, 2 for its tests, 1 + 3 + 4
+  // for the code: 14, S+. The step alone would have said S.
+  assert.equal(input.rubric.points, 14);
+  assert.equal(input.complexity, "S+");
+  assert.equal(input.step.complexity, "S");
+  assert.equal(input.amountMinor, 150);
+  assert.equal(input.rubric.code.specRevision, 3);
+  assert.deepEqual(state.finishes, [{ status: "succeeded", details: {} }]);
+});
+
+test("a proposal the model or a reviewer sized keeps the step's price, with the rubric beside it", async () => {
+  for (const sizedBy of ["model", "reviewer"] as const) {
+    const state = executorHarness({
+      request: { mode: "trim", removeScenarioIds: ["s3"] },
+      proposal: proposal({ sizedBy }),
+      profile: measuredProfile,
+    });
+    await state.run();
+    const input = state.written[0] as {
+      rubric: RubricAssessment;
+      complexity?: string;
+      amountMinor: number;
+    };
+    assert.equal(input.rubric.size, "S+");
+    assert.equal(input.complexity, undefined);
+    assert.equal(input.amountMinor, 100);
+  }
+
+  // Without a profile, the code is whatever the last assessment said it was.
+  const pending = executorHarness({
+    request: { mode: "trim", removeScenarioIds: ["s3"] },
+    proposal: proposal({
+      rubric: assessRubric({ spec: currentDraft, code: { status: "pending" } }),
+    }),
+    profile: null,
+  });
+  await pending.run();
+  assert.equal(
+    (pending.written[0] as { rubric: RubricAssessment }).rubric.code.status,
+    "pending",
+  );
+  const none = executorHarness({
+    request: { mode: "trim", removeScenarioIds: ["s3"] },
+  });
+  await none.run();
+  assert.equal(
+    (none.written[0] as { rubric: RubricAssessment }).rubric.code.status,
+    "unavailable",
+  );
 });
 
 test("an expansion adds the model's new scenarios and the size climbs by the step", async () => {

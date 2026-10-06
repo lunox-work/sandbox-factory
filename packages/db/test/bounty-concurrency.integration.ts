@@ -1078,6 +1078,7 @@ describe("bounty database concurrency", () => {
         promptVersion: null,
       },
       step: trimStep,
+      rubric: null,
       amountMinor: 200,
       currency: "USD",
     });

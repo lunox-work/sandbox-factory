@@ -10,6 +10,7 @@ import {
   type JiraIssueStore,
   type NewBountyProfile,
   type NewBountySpec,
+  type StoredBountyProfile,
   type StoredBountyProposal,
   type StoredBountyRun,
   type StoredBounty,
@@ -28,6 +29,7 @@ import {
 } from "@sandbox-factory/shared";
 import {
   answerSpec,
+  assessRubric,
   checkRespec,
   describeRespec,
   expandSpec,
@@ -63,6 +65,7 @@ import {
   REVISE_SPEC_PROMPT_VERSION,
 } from "../sizing/tools/revise-spec.js";
 import { sizeBountyTool } from "../sizing/tools/size-bounty.js";
+import { rubricCode, rubricPrice } from "./rubric.js";
 import { selectBacklog, type BacklogPageReader } from "./selection.js";
 
 const HEARTBEAT_MS = 15_000;
@@ -185,6 +188,14 @@ export interface BountyExecutorOptions {
     organizationId: string,
     input: NewBountyProfile,
   ) => void;
+  /**
+   * A proposal's newest complexity profile, for the pricing rubric to score
+   * a changed spec's code with. Absent, a spec change scores none.
+   */
+  readonly profileFor?: (
+    organizationId: string,
+    proposalId: string,
+  ) => Promise<StoredBountyProfile | null>;
   /**
    * Called when `execute` itself throws. `code` is fixed; `error` is the
    * thrown value, for the operator's log — it is never sent to a client.
@@ -932,7 +943,26 @@ export class BountyExecutor {
     if (step === null) {
       return { value: { ...failed("spec_unweighed").value, ...spent } };
     }
-    const amountMinor = priceFor(step.complexity, run.rateCard);
+    /*
+      The rubric scores the changed spec with the code as last measured.
+      A proposal the rubric sized stays sized by it: the whole spec is
+      counted, so the step only says what changed. Otherwise the step
+      prices the change, as it did before the rubric.
+    */
+    const profile =
+      (await this.#options.profileFor?.(organizationId, source.id)) ?? null;
+    const rubric = assessRubric({
+      spec: next,
+      code: rubricCode(
+        profile,
+        source.rubric?.code.status === "pending" ? "pending" : "unavailable",
+      ),
+      weightPoints: source.step.settings.weightPoints,
+    });
+    const priced =
+      source.sizedBy === "rubric" ? rubricPrice(rubric, run) : null;
+    const amountMinor =
+      priced?.amountMinor ?? priceFor(step.complexity, run.rateCard);
     if (amountMinor === null) return failed("spec_unweighed");
 
     const written = await this.#options.proposals.respecForLease(
@@ -953,6 +983,8 @@ export class BountyExecutor {
           promptVersion: model === null ? null : REVISE_SPEC_PROMPT_VERSION,
         },
         step,
+        rubric,
+        ...(priced === null ? {} : { complexity: priced.complexity }),
         amountMinor,
         currency: run.rateCard.currency,
       },
@@ -1111,6 +1143,21 @@ export class BountyExecutor {
       step?.complexity ?? sizing.complexity,
       run.rateCard,
     );
+    /*
+      The rubric scores the fresh draft now, so the reviewer sees what the
+      size will be built from; the code is measured after, and the rubric
+      takes the size over from the model only then (`./rubric.ts`).
+    */
+    const profiling =
+      outline !== null && this.#options.profilingEnabled?.() === true;
+    const rubric =
+      drafted === undefined
+        ? null
+        : assessRubric({
+            spec: drafted.draft,
+            code: { status: profiling ? "pending" : "unavailable" },
+            weightPoints: stepSettings.weightPoints,
+          });
     const input = {
       runId: run.id,
       bountyId: bounty.id,
@@ -1124,6 +1171,7 @@ export class BountyExecutor {
       amountMinor,
       currency: amountMinor === null ? null : run.rateCard.currency,
       step,
+      rubric,
       // What the spec was drafted beside; nothing when there is no spec.
       repoSnapshotId:
         drafted === undefined || outline === null ? null : outline.snapshotId,

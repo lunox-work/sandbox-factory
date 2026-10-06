@@ -23,6 +23,7 @@ import {
   screenForPath,
 } from "../src/routes";
 import { Bounties, BountyPage, NewBountyPage } from "../src/Bounties";
+import { assessRubric, COMPLEXITY_PROFILE_VERSION } from "sandbox-factory";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -2712,6 +2713,133 @@ test("a bounty's page splits into tabs, each one in the address", async () => {
   expect(
     within(page).getByRole("region", { name: "Describe task" }),
   ).toBeDefined();
+});
+
+test("a proposal waiting on its code is read again once the code is measured, and shows the rubric's size", async () => {
+  const spec = {
+    feature: "Invitations",
+    background: [],
+    scenarios: [
+      {
+        id: "s1",
+        kind: "happy",
+        title: "One invitation",
+        steps: [{ keyword: "Then", text: "one email" }],
+        origin: "draft",
+        weight: "heavy",
+      },
+    ],
+    openQuestions: [],
+    assumptions: [],
+  } as const;
+  const measured = {
+    version: COMPLEXITY_PROFILE_VERSION,
+    slice: {
+      files: 2,
+      bytes: 2_000,
+      modules: ["src/mailer"],
+      stubCoverage: "full",
+      blockers: 0,
+      ready: true,
+    },
+    touchedModules: ["src/mailer"],
+    externals: { services: [], environment: 0, seams: 0 },
+    spec: {
+      scenarios: 1,
+      kinds: {
+        happy: 1,
+        boundary: 0,
+        unhappy: 0,
+        recovery: 0,
+        permission: 0,
+        concurrency: 0,
+        "non-functional": 0,
+      },
+      openQuestions: 0,
+      assumptions: 0,
+    },
+    tests: { files: 1, untestedModules: [] },
+    pattern: null,
+    nonFunctional: { scenarios: 0, migrations: false, ci: false },
+    risks: [],
+  } as const;
+  // Sized by the model at M, the code still to measure...
+  const waiting = proposal({
+    specRevision: 1,
+    rubric: assessRubric({ spec, code: { status: "pending" } }),
+  });
+  // ...then, the code measured, sized by the rubric: 4 + 1 = 5 points, XS+.
+  const sized = proposal({
+    specRevision: 1,
+    revision: 2,
+    sizedBy: "rubric",
+    complexity: "XS+",
+    amountMinor: 100,
+    rubric: assessRubric({
+      spec,
+      code: { status: "measured", profile: measured, specRevision: 1 },
+    }),
+  });
+  let settled = false;
+  const detailFor = (body: unknown) =>
+    json({
+      proposal: body,
+      freshness: { freshness: "current", checkedAt: stamp },
+      liveSpec: null,
+      writebackOperations: [],
+    });
+  const { fetchMock, calls } = server([
+    [
+      "GET",
+      "/bounties/bty_7",
+      () => json({ bounty: detail({ proposal: liveProposal() }) }),
+    ],
+    [
+      "GET",
+      "/profile",
+      () => {
+        settled = true;
+        return json({
+          profile: {
+            id: "bpf_1",
+            proposalId: "bpr_9",
+            specRevision: 1,
+            status: "ready",
+            errorCode: null,
+            runErrorCode: null,
+            snapshotId: "rsn_1",
+            scopeRunId: "arn_1",
+            sliceRunId: "arn_2",
+            profile: measured,
+            createdAt: stamp,
+            updatedAt: stamp,
+          },
+        });
+      },
+    ],
+    ["GET", "/spec", () => json({ spec: null })],
+    ["GET", "/proposals/bpr_9", () => detailFor(settled ? sized : waiting)],
+  ]);
+  vi.stubGlobal("fetch", fetchMock);
+  window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=bounty");
+  render(<Shell {...inAcme("admin")} />);
+  const page = await screen.findByTestId("bounty-detail");
+  const rubric = await within(page).findByRole("region", {
+    name: "Why this price",
+  });
+  await waitFor(
+    () =>
+      expect(within(rubric).getByTestId("rubric-source").textContent).toBe(
+        "The rubric set this size.",
+      ),
+    { timeout: 4_000 },
+  );
+  expect(within(page).getByText("set by the rubric")).toBeDefined();
+  expect(within(page).getByText("The model's read: M")).toBeDefined();
+  const reads = calls.filter(
+    ({ method, url }) => method === "GET" && /\/proposals\/bpr_9$/.test(url),
+  );
+  expect(reads.length).toBeGreaterThanOrEqual(2);
 });
 
 test("a bounty's page keeps it at a glance, its context and workspace beside every tab", async () => {

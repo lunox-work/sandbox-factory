@@ -70,6 +70,7 @@ export type {
 } from "./bounty-runs.js";
 export { createBountyProposalStore } from "./bounty-proposals.js";
 export type {
+  ApplyRubricInput,
   BountyProposalStore,
   CreateBountyProposalInput,
   LeasedBountyProposalInput,
