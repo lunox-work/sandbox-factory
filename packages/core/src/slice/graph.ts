@@ -20,6 +20,8 @@ export interface SliceGraphNode {
   readonly community: number | null;
   /** Only on `dependency` nodes: a package, or an import nothing resolved. */
   readonly dependencyStatus: "external" | "unresolved" | null;
+  /** The line the driver read it at (`source_location` `L<n>`), when it says. */
+  readonly line: number | null;
 }
 
 export interface SliceGraphLink {
@@ -81,6 +83,9 @@ export function parseSliceGraph(value: unknown): SliceGraph {
       throw new SliceGraphError(`node ${id} has no source_file`);
     const community = raw["community"];
     const status = raw["dependencyStatus"];
+    const location = raw["source_location"];
+    const line =
+      typeof location === "string" ? /^L(\d+)$/.exec(location)?.[1] : undefined;
     nodes.push({
       id,
       kind: nodeKind(id),
@@ -92,6 +97,7 @@ export function parseSliceGraph(value: unknown): SliceGraph {
           : null,
       dependencyStatus:
         status === "external" || status === "unresolved" ? status : null,
+      line: line === undefined ? null : Number(line),
     });
   }
   const links: SliceGraphLink[] = [];

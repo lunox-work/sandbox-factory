@@ -422,6 +422,75 @@ test("a context builder names itself in its parameters", async () => {
     { tool: "deepwiki", params: { deadlineMinutes: 60, builder: "deepwiki" } },
   ]);
 });
+test("a builder that reads the map queues behind the snapshot's graph run", async () => {
+  const f = fixture();
+  for (const tool of ["abstractions", "data_model"])
+    assert.equal(
+      (await f.request("repositories/ghr_1/runs", { tool })).status,
+      202,
+    );
+  assert.deepEqual(f.enqueued, [
+    { tool: "graphify", params: { deadlineMinutes: 30 } },
+    {
+      tool: "abstractions",
+      params: {
+        deadlineMinutes: 30,
+        builder: "abstractions",
+        graphRunId: run.id,
+      },
+    },
+    { tool: "graphify", params: { deadlineMinutes: 30 } },
+    {
+      tool: "data_model",
+      params: {
+        deadlineMinutes: 30,
+        builder: "data_model",
+        graphRunId: run.id,
+      },
+    },
+  ]);
+  assert.equal(f.launches(), 2);
+  // A graph that failed is reported before anything is queued behind it.
+  f.options.runs.enqueue = async () => ({
+    ok: true,
+    created: false,
+    run: { ...run, status: "failed" },
+  });
+  const failed = await f.request("repositories/ghr_1/runs", {
+    tool: "abstractions",
+  });
+  assert.equal(failed.status, 409);
+  assert.equal(
+    ((await failed.json()) as { code: string }).code,
+    "graph_failed",
+  );
+  // A refused builder still wakes a worker for the graph it queued.
+  for (const [reason, status] of [
+    ["graph_mismatch", 409],
+    ["run_limit", 409],
+    ["not-found", 404],
+  ] as const) {
+    f.options.runs.enqueue = async (_owner, _snapshot, input) =>
+      input.tool === "graphify"
+        ? { ok: true, created: true, run: { ...run, status: "queued" } }
+        : { ok: false, reason };
+    const before = f.launches();
+    const response = await f.request("repositories/ghr_1/runs", {
+      tool: "data_model",
+    });
+    assert.equal(response.status, status);
+    assert.equal(f.launches(), before + 1);
+  }
+  f.options.runs.enqueue = async (_owner, _snapshot, input) =>
+    input.tool === "graphify"
+      ? { ok: false, reason: "run_limit" }
+      : { ok: true, created: false, run };
+  assert.equal(
+    (await f.request("repositories/ghr_1/runs", { tool: "abstractions" }))
+      .status,
+    409,
+  );
+});
 test("launch errors keep the queued response for watchdog recovery", async () => {
   const f = fixture();
   let caught = false;

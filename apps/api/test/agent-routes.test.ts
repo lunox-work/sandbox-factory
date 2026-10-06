@@ -87,8 +87,22 @@ function fixture(role = "owner") {
     "run_limit" | "graph_mismatch" | "slice_mismatch" | "not-found" | null =
     null;
   let graphStatus: StoredAnalysisRun["status"] = "succeeded";
+  /** The snapshot's succeeded context runs, by tool; none until a test adds them. */
+  const contexts = new Map<string, string>();
+  const asked: { snapshot: string; tool: string }[] = [];
   const options = {
     runs: {
+      latestSucceeded: async (
+        owner: string,
+        snapshot: string,
+        tool: string,
+      ) => {
+        asked.push({ snapshot, tool });
+        const id = owner === "org_1" ? contexts.get(tool) : undefined;
+        return id === undefined
+          ? null
+          : { ...graphRun, id, tool, snapshotId: snapshot };
+      },
       enqueue: async (
         _owner: string,
         snapshot: string,
@@ -200,6 +214,10 @@ function fixture(role = "owner") {
     graphFails: () => {
       graphStatus = "failed";
     },
+    withContext: (tool: string, id: string) => {
+      contexts.set(tool, id);
+    },
+    asked,
   };
 }
 
@@ -388,4 +406,43 @@ test("a repository's proposals are the specced ones whose bounties are about it,
   assert.equal(body.proposals[2]?.title, "Title bpr_1");
   assert.equal((await f.request("repositories/ghr_9/proposals")).status, 404);
   assert.equal(REPOSITORY_PROPOSALS_MAX, 100);
+});
+
+test("agent runs name the snapshot's succeeded context runs, and only those there are", async () => {
+  const f = fixture();
+  f.withContext("abstractions", "arn_abstractions");
+  f.withContext("data_model", "arn_model");
+  await f.request("repositories/ghr_1/scope", { proposalId: "bpr_1" });
+  assert.deepEqual(f.enqueued[1]?.params, {
+    deadlineMinutes: 60,
+    agent: "scope",
+    graphRunId: "arn_graph",
+    proposalId: "bpr_1",
+    specRevision: 2,
+    specHash: "h2",
+    abstractionsRunId: "arn_abstractions",
+    dataModelRunId: "arn_model",
+  });
+  await f.request("runs/arn_slice/fixtures", { proposalId: "bpr_1" });
+  assert.deepEqual(f.enqueued[2]?.params, {
+    deadlineMinutes: 60,
+    agent: "fixtures",
+    sliceRunId: "arn_slice",
+    proposalId: "bpr_1",
+    specRevision: 2,
+    specHash: "h2",
+    dataModelRunId: "arn_model",
+  });
+  // Fixtures read the data model alone, on the slice's own snapshot.
+  assert.deepEqual(f.asked, [
+    { snapshot: "rsn_1", tool: "abstractions" },
+    { snapshot: "rsn_1", tool: "data_model" },
+    { snapshot: "rsn_1", tool: "data_model" },
+  ]);
+  const one = fixture();
+  one.withContext("data_model", "arn_model");
+  await one.request("repositories/ghr_1/scope", { proposalId: "bpr_1" });
+  const params = one.enqueued[1]?.params as Record<string, unknown>;
+  assert.equal(params["dataModelRunId"], "arn_model");
+  assert.equal("abstractionsRunId" in params, false);
 });

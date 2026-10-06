@@ -14,8 +14,10 @@
 import { CONTEXT_BUILDERS } from "sandbox-factory";
 import { afterEach, expect, test, vi } from "vitest";
 import type {
+  AbstractionsSummaryDto,
   AnalysisRunDto,
   ArtifactDto,
+  DataModelSummaryDto,
   DeepwikiSummaryDto,
   DependencyCruiserSummaryDto,
   GithubRepoDto,
@@ -87,6 +89,13 @@ function queuedRun(tool: AnalysisRunDto["tool"]): AnalysisRunDto {
       return { ...base, tool, params: { deadlineMinutes: 30, builder: tool } };
     case "deepwiki":
       return { ...base, tool, params: { deadlineMinutes: 30, builder: tool } };
+    case "abstractions":
+    case "data_model":
+      return {
+        ...base,
+        tool,
+        params: { deadlineMinutes: 30, builder: tool, graphRunId: graphRun.id },
+      } as AnalysisRunDto;
     default:
       return { ...base, tool: "graphify", params: { deadlineMinutes: 30 } };
   }
@@ -204,7 +213,13 @@ test("the page names the repository, and owners see a card per builder", async (
       .getByRole("link", { name: /github\.com\/acme\/widgets/ })
       .getAttribute("href"),
   ).toBe("https://github.com/acme/widgets");
-  const names = ["Graphify", "Dependency Cruiser", "DeepWiki Open"];
+  const names = [
+    "Graphify",
+    "Dependency Cruiser",
+    "DeepWiki Open",
+    "Abstractions",
+    "Data model",
+  ];
   const cards = screen.getAllByRole("region", { name: / builder$/ });
   expect(cards.map((card) => card.getAttribute("aria-label"))).toEqual(
     names.map((name) => `${name} builder`),
@@ -254,6 +269,8 @@ test.each(CONTEXT_BUILDERS)(
       graphify: "Graphify",
       dependency_cruiser: "Dependency Cruiser",
       deepwiki: "DeepWiki Open",
+      abstractions: "Abstractions",
+      data_model: "Data model",
     };
     fireEvent.click(
       within(builderCard(names[builder])).getByRole("button", {
@@ -442,6 +459,376 @@ test("a Dependency Cruiser run draws its counts, the busiest modules and the cyc
       c.endsWith("/artifacts/art_dependency_cruiser_dot/url"),
     ),
   ).toBe(true);
+});
+
+const surfaces: AbstractionsSummaryDto = {
+  schemaVersion: 1,
+  toolVersion: "abstractions@1",
+  counts: { modules: 42, exports: 537, omissions: 1 },
+  coverage: { typed: 40, syntactic: 1, "names-only": 1 },
+  languages: [
+    { language: "typescript", modules: 40, exports: 530 },
+    { language: "python", modules: 1, exports: 1 },
+  ],
+  modules: [
+    {
+      path: "src/errors.ts",
+      language: "typescript",
+      coverage: "typed",
+      importers: 26,
+      exports: 8,
+    },
+    {
+      path: "scripts/tool.py",
+      language: "python",
+      coverage: "syntactic",
+      importers: 13,
+      exports: 1,
+    },
+    {
+      path: "lib/run.lua",
+      language: "lua",
+      coverage: "names-only",
+      importers: 0,
+      exports: 2,
+    },
+  ],
+  omissions: [
+    {
+      code: "compiler_config",
+      file: "tsconfig.json",
+      detail: "File 'base.json' not found.",
+    },
+    { code: "program_too_large", file: null, detail: "Read syntactically." },
+  ],
+  truncated: true,
+};
+
+test("an Abstractions run draws its coverage, languages and the most imported modules", async () => {
+  const run: AnalysisRunDto = {
+    ...queuedRun("abstractions"),
+    status: "succeeded",
+    startedAt: stamp,
+    finishedAt: stamp,
+  };
+  const f = server({
+    runs: [run],
+    artifacts: {
+      [run.id]: [
+        artifact(
+          run.id,
+          "abstractions.json",
+          "abstraction_index",
+          surfaces as unknown as Record<string, unknown>,
+        ),
+        artifact(run.id, "abstractions.md", "other"),
+        artifact(
+          run.id,
+          "manifest.json",
+          "manifest",
+          surfaces as unknown as Record<string, unknown>,
+        ),
+      ],
+    },
+  });
+  const tab = spyOnOpen();
+  renderPage();
+  await screen.findByText("Most imported modules");
+  const tile = (label: string) =>
+    screen.getByText(label, { selector: "dt" }).parentElement?.textContent;
+  expect(tile("Exports")).toBe("Exports537");
+  expect(tile("Names only")).toBe("Names only1");
+  const languages = screen.getByRole("list", { name: "Languages" });
+  expect(within(languages).getByText("python")).toBeTruthy();
+  expect(within(languages).getByText(/1 module · 1 export$/)).toBeTruthy();
+  const modules = screen.getByRole("list", { name: "Most imported modules" });
+  expect(within(modules).getByText("Syntactic")).toBeTruthy();
+  expect(within(modules).getByText("26 in · 8 exports")).toBeTruthy();
+  expect(
+    screen.getAllByTestId("importer-bar").map((bar) => bar.style.width),
+  ).toEqual(["100%", "50%", "0%"]);
+  expect(screen.getByText("(project)")).toBeTruthy();
+  expect(
+    screen.getByText(/summary was truncated; the whole is in the index JSON/),
+  ).toBeTruthy();
+  const card = builderCard("Abstractions");
+  expect(within(card).getByText("Built")).toBeTruthy();
+  expect(
+    within(card).getByText("typed").previousElementSibling?.textContent,
+  ).toBe("40");
+  expect(
+    screen.getByRole("heading", { name: /Abstractions/, level: 2 }),
+  ).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Open readable view" }));
+  await waitFor(() =>
+    expect(tab.location.href).toBe("https://objects.test/signed"),
+  );
+  expect(
+    f.calls.some((c) => c.endsWith("/artifacts/art_abstractions_md/url")),
+  ).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: "Open index JSON" }));
+  await waitFor(() =>
+    expect(
+      f.calls.some((c) => c.endsWith("/artifacts/art_abstractions_json/url")),
+    ).toBe(true),
+  );
+});
+
+const model: DataModelSummaryDto = {
+  schemaVersion: 1,
+  toolVersion: "data_model@1",
+  storage: ["postgresql"],
+  sources: [
+    {
+      kind: "prisma",
+      storage: "postgresql",
+      files: ["prisma/schema.prisma"],
+      evidence: [],
+      entities: 2,
+      shadowed: 0,
+    },
+    {
+      kind: "sql_migrations",
+      storage: "postgresql",
+      files: ["m/1.sql"],
+      evidence: [],
+      entities: 1,
+      shadowed: 1,
+    },
+  ],
+  counts: {
+    entities: 3,
+    fields: 6,
+    enums: 1,
+    relations: 2,
+    accessors: 1,
+    omissions: 1,
+  },
+  entities: [
+    {
+      name: "User",
+      table: "users",
+      kind: "table",
+      source: "prisma",
+      file: "prisma/schema.prisma",
+      line: 12,
+      fieldCount: 4,
+      fields: [
+        {
+          name: "id",
+          type: "integer",
+          nativeType: "Int",
+          nullable: false,
+          list: false,
+          primaryKey: true,
+          unique: true,
+          foreignKey: false,
+          enum: null,
+        },
+        {
+          name: "role",
+          type: "enum",
+          nativeType: "Role",
+          nullable: false,
+          list: false,
+          primaryKey: false,
+          unique: false,
+          foreignKey: false,
+          enum: "Role",
+        },
+        {
+          name: "tags",
+          type: "string",
+          nativeType: "String",
+          nullable: true,
+          list: true,
+          primaryKey: false,
+          unique: true,
+          foreignKey: false,
+          enum: null,
+        },
+      ],
+    },
+    {
+      name: "ActiveUser",
+      table: "ActiveUser",
+      kind: "view",
+      source: "prisma",
+      file: "prisma/schema.prisma",
+      line: 40,
+      fieldCount: 1,
+      fields: [
+        {
+          name: "userId",
+          type: "integer",
+          nativeType: "Int",
+          nullable: false,
+          list: false,
+          primaryKey: false,
+          unique: false,
+          foreignKey: true,
+          enum: null,
+        },
+      ],
+    },
+  ],
+  enums: [{ name: "Role", values: ["ADMIN", "MEMBER"] }],
+  relations: [
+    {
+      from: "ActiveUser",
+      fromFields: ["userId"],
+      to: "User",
+      toFields: ["id"],
+      cardinality: "one-to-one",
+      onDelete: "cascade",
+    },
+    {
+      from: "Tag",
+      fromFields: [],
+      to: "User",
+      toFields: [],
+      cardinality: "many-to-many",
+      onDelete: null,
+    },
+  ],
+  accessors: [
+    {
+      module: "src/services/users.ts",
+      entities: ["ActiveUser", "User"],
+      importers: 4,
+    },
+  ],
+  omissions: [
+    {
+      code: "parse_failed",
+      file: null,
+      detail: "The schema could not be read.",
+    },
+  ],
+  truncated: false,
+};
+
+test("a Data model run lists its sources, entities with their fields, relations, enums and accessors", async () => {
+  const run: AnalysisRunDto = {
+    ...queuedRun("data_model"),
+    status: "succeeded",
+    startedAt: stamp,
+    finishedAt: stamp,
+  };
+  const f = server({
+    runs: [run],
+    artifacts: {
+      [run.id]: [
+        artifact(
+          run.id,
+          "data-model.json",
+          "data_model",
+          model as unknown as Record<string, unknown>,
+        ),
+        artifact(run.id, "erd.mmd", "erd_mermaid"),
+        artifact(
+          run.id,
+          "manifest.json",
+          "manifest",
+          model as unknown as Record<string, unknown>,
+        ),
+      ],
+    },
+  });
+  const tab = spyOnOpen();
+  renderPage();
+  const sources = await screen.findByRole("list", { name: "Sources" });
+  expect(within(sources).getByText("Prisma schema")).toBeTruthy();
+  expect(
+    within(sources).getByText("postgresql · 1 entity · 1 also declared above"),
+  ).toBeTruthy();
+  const entities = screen.getByRole("list", { name: "Entities" });
+  expect(within(entities).getByText("users")).toBeTruthy();
+  expect(within(entities).getByText("View")).toBeTruthy();
+  expect(within(entities).getByText("PK")).toBeTruthy();
+  expect(within(entities).getByText("unique · nullable")).toBeTruthy();
+  expect(within(entities).getByText("FK")).toBeTruthy();
+  // An enum field reads as its enum, beside the type the source wrote.
+  expect(within(entities).getAllByText("Role")).toHaveLength(2);
+  expect(
+    within(entities).getByText("1 more field is in the data model JSON."),
+  ).toBeTruthy();
+  const relations = screen.getByRole("list", { name: "Relations" });
+  expect(relations.textContent).toContain(
+    "ActiveUser.userId → User.id one-to-one · on delete cascade",
+  );
+  expect(relations.textContent).toContain("Tag → User many-to-many");
+  expect(screen.getByRole("list", { name: "Enums" }).textContent).toBe(
+    "Role ADMIN | MEMBER",
+  );
+  const accessors = screen.getByRole("list", { name: "Accessors" });
+  expect(within(accessors).getByText("src/services/users.ts")).toBeTruthy();
+  expect(within(accessors).getByText("imported by 4")).toBeTruthy();
+  expect(screen.getByText("(repository)")).toBeTruthy();
+  const card = builderCard("Data model");
+  expect(
+    within(card).getByText("accessors").previousElementSibling?.textContent,
+  ).toBe("1");
+  fireEvent.click(screen.getByRole("button", { name: "Open ERD (Mermaid)" }));
+  await waitFor(() =>
+    expect(tab.location.href).toBe("https://objects.test/signed"),
+  );
+  expect(f.calls.some((c) => c.endsWith("/artifacts/art_erd_mmd/url"))).toBe(
+    true,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Open data model JSON" }));
+  await waitFor(() =>
+    expect(
+      f.calls.some((c) => c.endsWith("/artifacts/art_data_model_json/url")),
+    ).toBe(true),
+  );
+});
+
+test("a Data model run that found nothing says so", async () => {
+  const run: AnalysisRunDto = {
+    ...queuedRun("data_model"),
+    status: "succeeded",
+    startedAt: stamp,
+    finishedAt: stamp,
+  };
+  const empty: DataModelSummaryDto = {
+    ...model,
+    storage: [],
+    sources: [],
+    counts: {
+      entities: 0,
+      fields: 0,
+      enums: 0,
+      relations: 0,
+      accessors: 0,
+      omissions: 0,
+    },
+    entities: [],
+    enums: [],
+    relations: [],
+    accessors: [],
+    omissions: [],
+  };
+  server({
+    runs: [run],
+    artifacts: {
+      [run.id]: [
+        artifact(
+          run.id,
+          "manifest.json",
+          "manifest",
+          empty as unknown as Record<string, unknown>,
+        ),
+      ],
+    },
+  });
+  renderPage();
+  expect(
+    await screen.findByText(/No schema, ORM or migration directory was found/),
+  ).toBeTruthy();
+  expect(
+    screen.queryByRole("button", { name: "Open ERD (Mermaid)" }),
+  ).toBeNull();
 });
 
 const wiki: DeepwikiSummaryDto = {

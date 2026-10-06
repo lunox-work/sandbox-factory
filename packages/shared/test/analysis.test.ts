@@ -1,8 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { abstractionsSummary, dataModelSummary } from "sandbox-factory";
+import type { AbstractionIndex, DataModel } from "sandbox-factory";
 import {
+  abstractionIndexSchema,
+  abstractionsSummarySchema,
   analysisRunDtoSchema,
   artifactDtoSchema,
+  dataModelSchema,
+  dataModelSummarySchema,
   enqueueAnalysisSchema,
   enqueueFixturesSchema,
   enqueueScopeSchema,
@@ -142,6 +148,233 @@ test("run DTOs discriminate parameters by tool", () => {
       ...common,
       tool: "future_tool",
       params: {},
+    }).success,
+    false,
+  );
+});
+test("the map-reading builders' runs name their graph run, and agent runs may name them", () => {
+  const common = {
+    id: "arn_1",
+    snapshotId: "rsn_1",
+    repoId: "ghr_1",
+    toolVersion: "v",
+    status: "succeeded",
+    attempt: 0,
+    maxAttempts: 2,
+    errorCode: "context_unavailable",
+    errorDetail: null,
+    startedAt: null,
+    finishedAt: null,
+    deadlineAt: null,
+    createdAt: "2026-10-06T00:00:00Z",
+  };
+  for (const builder of ["abstractions", "data_model"] as const) {
+    const params = { deadlineMinutes: 30, builder, graphRunId: "arn_0" };
+    assert.equal(
+      analysisRunDtoSchema.safeParse({ ...common, tool: builder, params })
+        .success,
+      true,
+    );
+    assert.equal(
+      analysisRunDtoSchema.safeParse({
+        ...common,
+        tool: builder,
+        params: { deadlineMinutes: 30, builder },
+      }).success,
+      false,
+    );
+    assert.deepEqual(enqueueAnalysisSchema.parse({ tool: builder }), {
+      tool: builder,
+    });
+  }
+  const task = {
+    deadlineMinutes: 60,
+    proposalId: "p",
+    specRevision: 1,
+    specHash: "h",
+  };
+  assert.equal(
+    analysisRunDtoSchema.safeParse({
+      ...common,
+      tool: "scope",
+      params: {
+        ...task,
+        agent: "scope",
+        graphRunId: "g",
+        abstractionsRunId: "a",
+        dataModelRunId: "m",
+      },
+    }).success,
+    true,
+  );
+  assert.equal(
+    analysisRunDtoSchema.safeParse({
+      ...common,
+      tool: "fixtures",
+      params: {
+        ...task,
+        agent: "fixtures",
+        sliceRunId: "s",
+        dataModelRunId: "m",
+      },
+    }).success,
+    true,
+  );
+  assert.equal(
+    analysisRunDtoSchema.safeParse({
+      ...common,
+      tool: "fixtures",
+      params: {
+        ...task,
+        agent: "fixtures",
+        sliceRunId: "s",
+        abstractionsRunId: "a",
+      },
+    }).success,
+    false,
+  );
+});
+test("core's abstractions and data model documents, and their summaries, parse as the wire reads them", () => {
+  const index: AbstractionIndex = {
+    schemaVersion: 1,
+    toolVersion: "abstractions@1",
+    extractors: { typescript: "typescript@5.9.3", syntactic: null },
+    sourceSnapshotId: "rsn",
+    sourceCommitSha: "c",
+    graphRunId: "g",
+    graphSha256: "s",
+    modules: [
+      {
+        path: "a.ts",
+        language: "typescript",
+        coverage: "typed",
+        importers: 1,
+        exports: [
+          {
+            id: "symbol:a.ts#A",
+            name: "A",
+            kind: "interface",
+            signature: "export interface A {}",
+            line: 1,
+            references: ["pkg"],
+          },
+        ],
+      },
+    ],
+    externals: ["pkg"],
+    omissions: [{ code: "program_too_large", file: null, detail: "d" }],
+  };
+  assert.deepEqual(abstractionIndexSchema.parse(index), index);
+  assert.deepEqual(
+    abstractionsSummarySchema.parse(abstractionsSummary(index)),
+    abstractionsSummary(index),
+  );
+  assert.equal(
+    abstractionIndexSchema.safeParse({
+      ...index,
+      modules: [{ ...index.modules[0], coverage: "guessed" }],
+    }).success,
+    false,
+  );
+  const model: DataModel = {
+    schemaVersion: 1,
+    toolVersion: "data_model@1",
+    sourceSnapshotId: "rsn",
+    sourceCommitSha: "c",
+    graphRunId: "g",
+    graphSha256: "s",
+    sources: [
+      {
+        kind: "prisma",
+        storage: "postgresql",
+        files: ["s.prisma"],
+        evidence: ["file:s.prisma"],
+        entities: 2,
+        shadowed: 0,
+      },
+    ],
+    entities: [
+      {
+        name: "User",
+        table: "users",
+        kind: "table",
+        source: "prisma",
+        file: "s.prisma",
+        line: 3,
+        fields: [
+          {
+            name: "id",
+            column: "id",
+            type: "integer",
+            nativeType: "Int",
+            list: false,
+            nullable: false,
+            default: "autoincrement()",
+            unique: false,
+            primaryKey: true,
+            enum: null,
+          },
+        ],
+        primaryKey: ["id"],
+        uniques: [],
+      },
+      {
+        name: "Post",
+        table: "Post",
+        kind: "table",
+        source: "prisma",
+        file: "s.prisma",
+        line: 9,
+        fields: [
+          {
+            name: "authorId",
+            column: "author_id",
+            type: "integer",
+            nativeType: "Int",
+            list: false,
+            nullable: false,
+            default: null,
+            unique: false,
+            primaryKey: false,
+            enum: null,
+          },
+        ],
+        primaryKey: [],
+        uniques: [["authorId"]],
+      },
+    ],
+    enums: [
+      {
+        name: "Role",
+        values: ["A"],
+        source: "prisma",
+        file: "s.prisma",
+        line: 20,
+      },
+    ],
+    relations: [
+      {
+        name: null,
+        from: { entity: "Post", fields: ["authorId"] },
+        to: { entity: "User", fields: ["id"] },
+        cardinality: "many-to-one",
+        onDelete: "cascade",
+        onUpdate: null,
+        source: "prisma",
+      },
+    ],
+    accessors: [{ module: "src/users.ts", entities: ["User"], importers: 3 }],
+    omissions: [{ code: "statement_skipped", file: "1.sql", detail: "d" }],
+  };
+  assert.deepEqual(dataModelSchema.parse(model), model);
+  assert.deepEqual(
+    dataModelSummarySchema.parse(dataModelSummary(model)),
+    dataModelSummary(model),
+  );
+  assert.equal(
+    dataModelSchema.safeParse({
+      ...model,
+      relations: [{ ...model.relations[0], cardinality: "some" }],
     }).success,
     false,
   );

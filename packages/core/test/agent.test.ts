@@ -54,7 +54,7 @@ test("agent parameters name their tool, and a scope run is never a slice", () =>
   assert.equal(isScopeParams(slice), false);
 });
 
-test("a context builder names itself, and only slices and scopes read a graph", () => {
+test("a context builder names itself, and slices, scopes and the map-reading builders read a graph", () => {
   const cruise = {
     deadlineMinutes: 30,
     builder: "dependency_cruiser" as const,
@@ -67,16 +67,21 @@ test("a context builder names itself, and only slices and scopes read a graph", 
   assert.equal(isDependencyCruiserParams(wiki), false);
   assert.equal(isDeepwikiParams(wiki), true);
   assert.equal(isDeepwikiParams(slice), false);
-  assert.deepEqual(ANALYSIS_TOOLS.filter(readsGraph), ["slice", "scope"]);
-  assert.deepEqual(ANALYSIS_TOOLS.filter(readsSource).length, 7);
+  assert.deepEqual(ANALYSIS_TOOLS.filter(readsGraph), [
+    "abstractions",
+    "data_model",
+    "slice",
+    "scope",
+  ]);
+  assert.deepEqual(ANALYSIS_TOOLS.filter(readsSource).length, 9);
   for (const builder of CONTEXT_BUILDERS)
     assert.ok(ANALYSIS_TOOLS.includes(builder));
 });
 
 test("every tool has a version", () => {
   for (const tool of ANALYSIS_TOOLS) assert.match(toolVersionOf(tool), /@/);
-  assert.equal(toolVersionOf("scope"), "scope@2");
-  assert.equal(toolVersionOf("fixtures"), "fixtures@1");
+  assert.equal(toolVersionOf("scope"), "scope@3");
+  assert.equal(toolVersionOf("fixtures"), "fixtures@2");
 });
 
 const submission: ScopeSubmission = {

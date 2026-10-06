@@ -1,8 +1,8 @@
 /**
  * One context builder, as a card in the repository page's grid: what it
  * does, where its run on the chosen snapshot stands, and the one action
- * that stands for that state. Four of these, one per `CONTEXT_BUILDERS`
- * entry, in that order.
+ * that stands for that state. One per `CONTEXT_BUILDERS` entry, in that
+ * order.
  *
  * The status is read off the run the page found for this builder and
  * snapshot; the card decides nothing about runs itself. The action is
@@ -13,13 +13,16 @@
 
 import {
   BookOpenText,
+  Database,
   GitFork,
+  SquareFunction,
   Waypoints,
   type LucideIcon,
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import type { AnalysisRunDto } from "@sandbox-factory/shared";
 import type { ContextBuilder } from "sandbox-factory";
 
@@ -43,6 +46,16 @@ export const BUILDER_DETAILS: Record<
       "Writes a wiki of the repository with a model, through a DeepWiki-Open service.",
     icon: BookOpenText,
   },
+  abstractions: {
+    description:
+      "Lists every module's exports and their signatures: what a stub looks like at any cut. Builds on Graphify's map.",
+    icon: SquareFunction,
+  },
+  data_model: {
+    description:
+      "Reads the entities, fields and relations the schema and migrations declare, and the modules that touch them. Builds on Graphify's map.",
+    icon: Database,
+  },
 };
 
 export function BuilderCard({
@@ -54,6 +67,7 @@ export function BuilderCard({
   figures,
   onBuild,
   onView,
+  className,
 }: {
   builder: ContextBuilder;
   /** This builder's run on the chosen snapshot, when there is one. */
@@ -67,6 +81,8 @@ export function BuilderCard({
   figures?: readonly { label: string; value: number }[] | undefined;
   onBuild: () => void;
   onView: () => void;
+  /** Its place in the page's grid. */
+  className?: string;
 }) {
   const name = builderNames[builder];
   const { description, icon: Icon } = BUILDER_DETAILS[builder];
@@ -98,7 +114,7 @@ export function BuilderCard({
   return (
     <section
       aria-label={`${name} builder`}
-      className="flex flex-col gap-3 rounded-[6px] border p-3"
+      className={cn("flex flex-col gap-3 rounded-[6px] border p-3", className)}
     >
       <div className="flex items-start gap-2.5">
         <Icon className="text-muted-foreground mt-0.5 size-4 shrink-0" />

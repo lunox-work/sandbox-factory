@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
+import { createAbstractionsAdapter } from "../dist/tools/abstractions.js";
+import { createDataModelAdapter } from "../dist/tools/data-model.js";
 import { createGraphifyAdapter } from "../dist/tools/graphify.js";
 import { createSliceAdapter } from "../dist/tools/slice.js";
 import { createSandboxBuildAdapter } from "../dist/tools/sandbox-build.js";
@@ -466,6 +468,126 @@ try {
     `Smoke run failed: ${failure}; ${Buffer.from(bytes.get("logs/arn_fixture/lease_fixture.log") ?? []).toString()}`,
   );
   assert.equal(fetches, 2);
+  // The builders that read the map: the same bytes from two checkout paths,
+  // with real graphs, the compiler thread and the tree-sitter extractor.
+  const contextOf = async (fixtureName, builder, adapterFor) => {
+    const texts = [];
+    for (const name of ["context-a", "context-b"]) {
+      const source = join(directory, `${fixtureName}-${name}`);
+      await cp(
+        fileURLToPath(new URL(`../fixtures/${fixtureName}/`, import.meta.url)),
+        source,
+        { recursive: true },
+      );
+      const graphOut = join(directory, `${fixtureName}-${name}-graph`);
+      await adapter.run({
+        sourceDir: source,
+        outDir: graphOut,
+        params: { deadlineMinutes: 30 },
+        signal: new AbortController().signal,
+        log: () => {},
+      });
+      const graphBytes = await readFile(join(graphOut, "graph.json"));
+      const graphArtifact = {
+        id: "art_graph",
+        runId: graphRun.id,
+        kind: "graph_json",
+        path: "graph.json",
+        objectKey: `runs/${graphRun.id}/graph.json`,
+        contentType: "application/json",
+        sizeBytes: graphBytes.byteLength,
+        sha256: createHash("sha256").update(graphBytes).digest("hex"),
+        meta: null,
+        createdAt: graphRun.createdAt,
+      };
+      const out = join(directory, `${fixtureName}-${name}-${builder}`);
+      const files = await adapterFor().run({
+        sourceDir: source,
+        outDir: out,
+        params: { deadlineMinutes: 30, builder, graphRunId: graphRun.id },
+        run: { snapshotId: "rsn_fixture", commitSha: "a".repeat(40) },
+        inputs: {
+          getRun: async (id) => (id === graphRun.id ? graphRun : null),
+          listArtifacts: async () => [graphArtifact],
+          readArtifact: async () => graphBytes,
+        },
+        signal: new AbortController().signal,
+        log: () => {},
+      });
+      const written = {};
+      for (const f of files)
+        written[f.path] = await readFile(f.absolutePath, "utf8");
+      texts.push(written);
+    }
+    assert.deepEqual(
+      texts[0],
+      texts[1],
+      `${builder} must not depend on the checkout path`,
+    );
+    return texts[0];
+  };
+  const typedIndex = JSON.parse(
+    (
+      await contextOf("repository", "abstractions", () =>
+        createAbstractionsAdapter({ python }),
+      )
+    )["abstractions.json"],
+  );
+  const mainModule = typedIndex.modules.find((m) => m.path === "src/util.ts");
+  assert.equal(mainModule.coverage, "typed");
+  assert.ok(
+    mainModule.exports.some(
+      (e) =>
+        e.name === "helper" && /function helper\(\): number/.test(e.signature),
+    ),
+  );
+  const polyglot = JSON.parse(
+    (
+      await contextOf("polyglot", "abstractions", () =>
+        createAbstractionsAdapter({ python }),
+      )
+    )["abstractions.json"],
+  );
+  assert.match(polyglot.extractors.syntactic, /^tree-sitter@/);
+  for (const path of ["py/users.py", "go/store.go", "java/UserService.java"])
+    assert.equal(
+      polyglot.modules.find((m) => m.path === path)?.coverage,
+      "syntactic",
+      path,
+    );
+  const getUser = polyglot.modules
+    .find((m) => m.path === "py/users.py")
+    .exports.find((e) => e.name === "get_user");
+  assert.equal(getUser.signature, "def get_user(id: int) -> User");
+  assert.ok(getUser.id.startsWith("symbol:py/users.py:"), getUser.id);
+  assert.ok(
+    polyglot.modules
+      .find((m) => m.path === "go/store.go")
+      .exports.find((e) => e.name === "NewStore")
+      .references.some((id) => id.startsWith("symbol:go/store.go")),
+  );
+  const model = JSON.parse(
+    (await contextOf("data-model", "data_model", createDataModelAdapter))[
+      "data-model.json"
+    ],
+  );
+  assert.deepEqual(
+    model.sources.map((source) => [source.kind, source.entities]),
+    [
+      ["prisma", 5],
+      ["drizzle", 3],
+      ["sql_migrations", 1],
+    ],
+  );
+  assert.equal(model.entities.length, 9);
+  assert.ok(
+    model.accessors.some(
+      (accessor) =>
+        accessor.module === "src/services/members.ts" &&
+        accessor.entities.includes("memberships"),
+    ),
+    JSON.stringify(model.accessors),
+  );
   await command(
     python,
     [
@@ -480,7 +602,7 @@ try {
     { signal: new AbortController().signal },
   );
   console.log(
-    "Worker smoke passed: deterministic graph, import resolution, omissions, slice stubs and blockers, a sandbox build with a local baseline, archive validation, and artifact lifecycle.",
+    "Worker smoke passed: deterministic graph, import resolution, omissions, slice stubs and blockers, a sandbox build with a local baseline, deterministic abstractions and data model, archive validation, and artifact lifecycle.",
   );
 } finally {
   await rm(directory, { recursive: true, force: true });

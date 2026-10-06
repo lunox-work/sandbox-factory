@@ -29,6 +29,7 @@ import { AnalysisError } from "../errors.js";
 import type { AgentSettings, AgentTool } from "../agent/loop.js";
 import { runAgent } from "../agent/loop.js";
 import { FIXTURES_SYSTEM_PROMPT, bountySection } from "../agent/prompts.js";
+import { dataModelTool } from "../agent/context-tools.js";
 import {
   indexRepository,
   invalidInput,
@@ -36,6 +37,7 @@ import {
   repositoryTools,
 } from "../agent/repo-tools.js";
 import { snapshotOf } from "./adapter.js";
+import { loadDataModel } from "./context-runs.js";
 import type { ArtifactFile, ToolAdapter, ToolRunInput } from "./adapter.js";
 import { checkFixtures } from "./fixtures-check.js";
 import { nearestCompilerOptions } from "./compiler-config.js";
@@ -116,6 +118,14 @@ export function createFixturesAdapter(settings: AgentSettings): ToolAdapter {
         input.sourceDir,
         slice.manifest,
       );
+      const dataModel =
+        params.dataModelRunId === undefined
+          ? null
+          : await loadDataModel(
+              input.inputs,
+              params.dataModelRunId,
+              snapshot.snapshotId,
+            );
       const index = await indexRepository(input.sourceDir, input.signal);
       const first = slice.manifest.included[0]?.path;
       const sourceOptions =
@@ -212,8 +222,18 @@ export function createFixturesAdapter(settings: AgentSettings): ToolAdapter {
               : `\n\nAlso cut, stubs not quoted here (read the original source): ${unquoted.join(", ")}`
           }`,
           `The whole repository, for reading the original code behind the stubs:\n${repositoryOverview(index)}`,
+          ...(dataModel === null
+            ? []
+            : [
+                `The repository's data model has ${dataModel.entities.length} entities; \`data_model\` gives each one's fields, enum values and relations.`,
+              ]),
         ].join("\n\n"),
-        tools: [...repositoryTools(index), checkTool, submitTool],
+        tools: [
+          ...repositoryTools(index),
+          ...(dataModel === null ? [] : [dataModelTool(dataModel)]),
+          checkTool,
+          submitTool,
+        ],
         submitTool: "submit_fixtures",
         limits: settings.limits,
         signal: input.signal,

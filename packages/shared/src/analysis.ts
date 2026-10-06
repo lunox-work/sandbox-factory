@@ -1,8 +1,15 @@
 import {
+  ABSTRACTION_OMISSION_CODES,
   ANALYSIS_STATUSES,
   ANALYSIS_ERROR_CODES,
   ARTIFACT_KINDS,
   CONTEXT_BUILDERS,
+  DATA_MODEL_OMISSION_CODES,
+  DATA_SOURCE_KINDS,
+  FIELD_TYPES,
+  RELATION_CARDINALITIES,
+  SURFACE_COVERAGES,
+  SURFACE_KINDS,
   FIXTURE_CALLS,
   FIXTURE_LIMITS,
   SCOPE_LIMITS,
@@ -21,9 +28,11 @@ export const analysisParamsSchema = z.strictObject({
 /**
  * `POST .../repositories/:id/runs`: one context builder on one snapshot.
  * The parameters are graphify's for every builder; the API adds the
- * builder's name. With no parameters the deadline is the tool's own:
- * `GRAPH_DEADLINE_MINUTES` for the deterministic builders and
- * `AGENT_DEADLINE_MINUTES` for deepwiki, which waits on a model.
+ * builder's name, and for a builder that reads graphify's map
+ * (`readsGraph` in core) the graph run it enqueues or finds first. With no
+ * parameters the deadline is the tool's own: `GRAPH_DEADLINE_MINUTES` for
+ * the deterministic builders and `AGENT_DEADLINE_MINUTES` for deepwiki,
+ * which waits on a model.
  */
 export const enqueueAnalysisSchema = z.strictObject({
   tool: z.enum(CONTEXT_BUILDERS),
@@ -38,6 +47,17 @@ export const dependencyCruiserParamsSchema = z.strictObject({
 export const deepwikiParamsSchema = z.strictObject({
   deadlineMinutes: z.number().int().min(1).max(120).default(30),
   builder: z.literal("deepwiki"),
+});
+/** The builders that read graphify's map name the graph run they read. */
+export const abstractionsParamsSchema = z.strictObject({
+  deadlineMinutes: z.number().int().min(1).max(120).default(30),
+  builder: z.literal("abstractions"),
+  graphRunId: z.string().min(1),
+});
+export const dataModelParamsSchema = z.strictObject({
+  deadlineMinutes: z.number().int().min(1).max(120).default(30),
+  builder: z.literal("data_model"),
+  graphRunId: z.string().min(1),
 });
 
 /** A repository-relative path: no root, no `..`, no backslashes or NULs. */
@@ -116,11 +136,15 @@ export const scopeParamsSchema = z.strictObject({
   ...agentTaskFields,
   agent: z.literal("scope"),
   graphRunId: z.string().min(1),
+  /** Named only when the snapshot has a succeeded run of the builder. */
+  abstractionsRunId: z.string().min(1).optional(),
+  dataModelRunId: z.string().min(1).optional(),
 });
 export const fixturesParamsSchema = z.strictObject({
   ...agentTaskFields,
   agent: z.literal("fixtures"),
   sliceRunId: z.string().min(1),
+  dataModelRunId: z.string().min(1).optional(),
 });
 /**
  * `POST .../repositories/:id/scope` and `POST .../runs/:id/fixtures`. The
@@ -207,6 +231,16 @@ export const analysisRunDtoSchema = z.discriminatedUnion("tool", [
     ...runCommon,
     tool: z.literal("deepwiki"),
     params: deepwikiParamsSchema,
+  }),
+  z.strictObject({
+    ...runCommon,
+    tool: z.literal("abstractions"),
+    params: abstractionsParamsSchema,
+  }),
+  z.strictObject({
+    ...runCommon,
+    tool: z.literal("data_model"),
+    params: dataModelParamsSchema,
   }),
   z.strictObject({
     ...runCommon,
@@ -341,6 +375,204 @@ export const deepwikiSummarySchema = z.object({
   sections: z.array(
     z.object({ id: z.string(), title: z.string(), pages: z.array(z.string()) }),
   ),
+});
+
+const abstractionOmissionSchema = z.object({
+  code: z.enum(ABSTRACTION_OMISSION_CODES),
+  file: z.string().nullable(),
+  detail: z.string(),
+});
+/** One module's callable surface in `abstractions.json`. */
+export const moduleSurfaceSchema = z.object({
+  path: z.string(),
+  language: z.string(),
+  coverage: z.enum(SURFACE_COVERAGES),
+  importers: count,
+  exports: z.array(
+    z.object({
+      id: z.string(),
+      name: z.string(),
+      kind: z.enum(SURFACE_KINDS),
+      signature: z.string().nullable(),
+      line: z.number().int().positive(),
+      references: z.array(z.string()),
+    }),
+  ),
+});
+/** `abstractions.json`, as the agents read it back. */
+export const abstractionIndexSchema = z.object({
+  schemaVersion: z.literal(1),
+  toolVersion: z.string(),
+  extractors: z.object({
+    typescript: z.string().nullable(),
+    syntactic: z.string().nullable(),
+  }),
+  sourceSnapshotId: z.string(),
+  sourceCommitSha: z.string(),
+  graphRunId: z.string(),
+  graphSha256: z.string(),
+  modules: z.array(moduleSurfaceSchema),
+  externals: z.array(z.string()),
+  omissions: z.array(abstractionOmissionSchema),
+});
+/**
+ * What the abstractions `manifest.json` artifact's `meta` carries for the
+ * console: counts by coverage and language, the most imported modules with
+ * their export counts, and the first omissions.
+ */
+export const abstractionsSummarySchema = z.object({
+  schemaVersion: z.literal(1),
+  toolVersion: z.string(),
+  counts: z.object({ modules: count, exports: count, omissions: count }),
+  coverage: z.object({ typed: count, syntactic: count, "names-only": count }),
+  languages: z.array(
+    z.object({ language: z.string(), modules: count, exports: count }),
+  ),
+  modules: z.array(
+    z.object({
+      path: z.string(),
+      language: z.string(),
+      coverage: z.enum(SURFACE_COVERAGES),
+      importers: count,
+      exports: count,
+    }),
+  ),
+  omissions: z.array(abstractionOmissionSchema),
+  truncated: z.boolean(),
+});
+const dataModelOmissionSchema = z.object({
+  code: z.enum(DATA_MODEL_OMISSION_CODES),
+  file: z.string().nullable(),
+  detail: z.string(),
+});
+const dataSourceSchema = z.object({
+  kind: z.enum(DATA_SOURCE_KINDS),
+  storage: z.string(),
+  files: z.array(z.string()),
+  evidence: z.array(z.string()),
+  entities: count,
+  shadowed: count,
+});
+const dataAccessorSchema = z.object({
+  module: z.string(),
+  entities: z.array(z.string()),
+  importers: count,
+});
+/** `data-model.json`, as the agents read it back. */
+export const dataModelSchema = z.object({
+  schemaVersion: z.literal(1),
+  toolVersion: z.string(),
+  sourceSnapshotId: z.string(),
+  sourceCommitSha: z.string(),
+  graphRunId: z.string(),
+  graphSha256: z.string(),
+  sources: z.array(dataSourceSchema),
+  entities: z.array(
+    z.object({
+      name: z.string(),
+      table: z.string(),
+      kind: z.enum(["table", "view"]),
+      source: z.enum(DATA_SOURCE_KINDS),
+      file: z.string(),
+      line: z.number().int().positive(),
+      fields: z.array(
+        z.object({
+          name: z.string(),
+          column: z.string(),
+          type: z.enum(FIELD_TYPES),
+          nativeType: z.string(),
+          list: z.boolean(),
+          nullable: z.boolean(),
+          default: z.string().nullable(),
+          unique: z.boolean(),
+          primaryKey: z.boolean(),
+          enum: z.string().nullable(),
+        }),
+      ),
+      primaryKey: z.array(z.string()),
+      uniques: z.array(z.array(z.string())),
+    }),
+  ),
+  enums: z.array(
+    z.object({
+      name: z.string(),
+      values: z.array(z.string()),
+      source: z.enum(DATA_SOURCE_KINDS),
+      file: z.string(),
+      line: z.number().int().positive(),
+    }),
+  ),
+  relations: z.array(
+    z.object({
+      name: z.string().nullable(),
+      from: z.object({ entity: z.string(), fields: z.array(z.string()) }),
+      to: z.object({ entity: z.string(), fields: z.array(z.string()) }),
+      cardinality: z.enum(RELATION_CARDINALITIES),
+      onDelete: z.string().nullable(),
+      onUpdate: z.string().nullable(),
+      source: z.enum(DATA_SOURCE_KINDS),
+    }),
+  ),
+  accessors: z.array(dataAccessorSchema),
+  omissions: z.array(dataModelOmissionSchema),
+});
+/**
+ * What the data model `manifest.json` and `data-model.json` artifacts'
+ * `meta` carry for the console: the storage and sources, counts, and
+ * bounded lists of entities with their fields, enums, relations, accessors
+ * and omissions.
+ */
+export const dataModelSummarySchema = z.object({
+  schemaVersion: z.literal(1),
+  toolVersion: z.string(),
+  storage: z.array(z.string()),
+  sources: z.array(dataSourceSchema),
+  counts: z.object({
+    entities: count,
+    fields: count,
+    enums: count,
+    relations: count,
+    accessors: count,
+    omissions: count,
+  }),
+  entities: z.array(
+    z.object({
+      name: z.string(),
+      table: z.string(),
+      kind: z.enum(["table", "view"]),
+      source: z.enum(DATA_SOURCE_KINDS),
+      file: z.string(),
+      line: z.number().int().positive(),
+      fieldCount: count,
+      fields: z.array(
+        z.object({
+          name: z.string(),
+          type: z.enum(FIELD_TYPES),
+          nativeType: z.string(),
+          nullable: z.boolean(),
+          list: z.boolean(),
+          primaryKey: z.boolean(),
+          unique: z.boolean(),
+          foreignKey: z.boolean(),
+          enum: z.string().nullable(),
+        }),
+      ),
+    }),
+  ),
+  enums: z.array(z.object({ name: z.string(), values: z.array(z.string()) })),
+  relations: z.array(
+    z.object({
+      from: z.string(),
+      fromFields: z.array(z.string()),
+      to: z.string(),
+      toFields: z.array(z.string()),
+      cardinality: z.enum(RELATION_CARDINALITIES),
+      onDelete: z.string().nullable(),
+    }),
+  ),
+  accessors: z.array(dataAccessorSchema),
+  omissions: z.array(dataModelOmissionSchema),
+  truncated: z.boolean(),
 });
 
 const summaryModuleSchema = z.object({
@@ -572,3 +804,5 @@ export type DependencyCruiserSummaryDto = z.infer<
   typeof dependencyCruiserSummarySchema
 >;
 export type DeepwikiSummaryDto = z.infer<typeof deepwikiSummarySchema>;
+export type AbstractionsSummaryDto = z.infer<typeof abstractionsSummarySchema>;
+export type DataModelSummaryDto = z.infer<typeof dataModelSummarySchema>;

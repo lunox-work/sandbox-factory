@@ -41,6 +41,8 @@ export const errorLabels: Record<AnalysisErrorCode, string> = {
   agent_incomplete:
     "The agent stopped without an answer it could check. Try again.",
   builder_unavailable: "This builder is not configured on the worker.",
+  context_unavailable:
+    "A context build this run reads is gone or changed. Build it again, then retry.",
 };
 
 /** A run's status, as a word. */
@@ -56,6 +58,8 @@ export const builderNames: Record<ContextBuilder, string> = {
   graphify: "Graphify",
   dependency_cruiser: "Dependency Cruiser",
   deepwiki: "DeepWiki Open",
+  abstractions: "Abstractions",
+  data_model: "Data model",
 };
 
 /** What a run in the history is, in the page's words. */
@@ -77,6 +81,10 @@ export function runLabel(run: AnalysisRunDto): string {
       return "Dependency Cruiser";
     case "deepwiki":
       return "DeepWiki wiki";
+    case "abstractions":
+      return "Abstractions";
+    case "data_model":
+      return "Data model";
   }
 }
 

@@ -141,8 +141,38 @@ export function mountAnalysisRoutes(
       },
       404,
     );
+  const graphMismatch = (c: Context) =>
+    c.json(
+      {
+        error: "The structure analysis does not describe this snapshot.",
+        code: "graph_mismatch",
+      },
+      409,
+    );
+  /**
+   * The snapshot's succeeded context runs an agent reads, named only when
+   * there is one, so an agent run with none keeps its cache key.
+   */
+  async function contextRunsOf(
+    owner: string,
+    snapshotId: string,
+    tools: readonly ("abstractions" | "data_model")[],
+  ): Promise<{ abstractionsRunId?: string; dataModelRunId?: string }> {
+    const found: { abstractionsRunId?: string; dataModelRunId?: string } = {};
+    for (const tool of tools) {
+      const run = await options.runs.latestSucceeded(owner, snapshotId, tool);
+      if (run === null) continue;
+      if (tool === "abstractions") found.abstractionsRunId = run.id;
+      else found.dataModelRunId = run.id;
+    }
+    return found;
+  }
 
-  /** One context builder on one snapshot. */
+  /**
+   * One context builder on one snapshot. A builder that reads graphify's
+   * map (`abstractions`, `data_model`) names the snapshot's graph run, which
+   * is enqueued or found first, and waits for it in the queue.
+   */
   app.post(`${base}/repositories/:id/runs`, async (c) => {
     if (!rankAtLeast(c.get("member").role, "admin"))
       return c.json(
@@ -168,11 +198,24 @@ export function mountAnalysisRoutes(
     // A wiki waits on a model's pages, as an agent run does; the others are
     // deterministic and keep the graph runs' deadline, which is part of the
     // cache key the profiler's graph runs share.
-    let params: AnalysisParams = body.data.params ?? {
-      deadlineMinutes:
-        tool === "deepwiki" ? AGENT_DEADLINE_MINUTES : GRAPH_DEADLINE_MINUTES,
-    };
-    if (tool !== "graphify") params = { ...params, builder: tool };
+    const deadlineMinutes =
+      body.data.params?.deadlineMinutes ??
+      (tool === "deepwiki" ? AGENT_DEADLINE_MINUTES : GRAPH_DEADLINE_MINUTES);
+    let params: AnalysisParams = { deadlineMinutes };
+    let graphQueued = false;
+    if (tool === "abstractions" || tool === "data_model") {
+      // A builder that reads the map waits for the snapshot's graph run,
+      // enqueued or found first, as a slice does.
+      const graph = await graphRunFor(
+        c,
+        owner,
+        snapshot.id,
+        GRAPH_DEADLINE_MINUTES,
+      );
+      if ("response" in graph) return graph.response;
+      graphQueued = graph.run.status === "queued";
+      params = { deadlineMinutes, builder: tool, graphRunId: graph.run.id };
+    } else if (tool !== "graphify") params = { deadlineMinutes, builder: tool };
     const result = await enqueueAnalysis(
       {
         runs: options.runs,
@@ -187,10 +230,14 @@ export function mountAnalysisRoutes(
         maxActive: options.maxActive ?? 3,
       },
     );
+    if (!result.ok && graphQueued)
+      await options.ensureWorker().catch(() => options.onLaunchError?.());
     if (!result.ok)
       return result.reason === "run_limit"
         ? runLimit(c)
-        : c.json({ error: "Not found." }, 404);
+        : result.reason === "graph_mismatch"
+          ? graphMismatch(c)
+          : c.json({ error: "Not found." }, 404);
     await options.ensureWorker().catch(() => options.onLaunchError?.());
     return c.json(analysisRunResponseSchema.parse({ run: result.run }), 202);
   });
@@ -285,14 +332,7 @@ export function mountAnalysisRoutes(
             409,
           )
         : result.reason === "graph_mismatch"
-          ? c.json(
-              {
-                error:
-                  "The structure analysis does not describe this snapshot.",
-                code: "graph_mismatch",
-              },
-              409,
-            )
+          ? graphMismatch(c)
           : c.json({ error: "Not found." }, 404);
     await options.ensureWorker().catch(() => options.onLaunchError?.());
     return c.json(
@@ -357,6 +397,10 @@ export function mountAnalysisRoutes(
           agent: "scope",
           graphRunId: graph.run.id,
           ...task,
+          ...(await contextRunsOf(owner, snapshot.id, [
+            "abstractions",
+            "data_model",
+          ])),
         },
         requestedBy: c.get("user").id,
         maxActive: options.maxActive ?? 3,
@@ -368,14 +412,7 @@ export function mountAnalysisRoutes(
       return result.reason === "run_limit"
         ? runLimit(c)
         : result.reason === "graph_mismatch"
-          ? c.json(
-              {
-                error:
-                  "The structure analysis does not describe this snapshot.",
-                code: "graph_mismatch",
-              },
-              409,
-            )
+          ? graphMismatch(c)
           : c.json({ error: "Not found." }, 404);
     await options.ensureWorker().catch(() => options.onLaunchError?.());
     return c.json(
@@ -427,6 +464,7 @@ export function mountAnalysisRoutes(
           agent: "fixtures",
           sliceRunId: slice.id,
           ...task,
+          ...(await contextRunsOf(owner, slice.snapshotId, ["data_model"])),
         },
         requestedBy: c.get("user").id,
         maxActive: options.maxActive ?? 3,

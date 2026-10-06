@@ -21,6 +21,7 @@ export const ANALYSIS_ERROR_CODES = [
   "agent_unavailable",
   "agent_incomplete",
   "builder_unavailable",
+  "context_unavailable",
 ] as const;
 export type AnalysisErrorCode = (typeof ANALYSIS_ERROR_CODES)[number];
 export const ARTIFACT_KINDS = [
@@ -46,6 +47,9 @@ export const ARTIFACT_KINDS = [
   "dependency_graph",
   "dependency_dot",
   "wiki_structure",
+  "abstraction_index",
+  "data_model",
+  "erd_mermaid",
   "other",
 ] as const;
 export type ArtifactKind = (typeof ARTIFACT_KINDS)[number];
@@ -54,12 +58,18 @@ export type ArtifactKind = (typeof ARTIFACT_KINDS)[number];
  * The context builders: the tools that read a snapshot on their own and
  * describe it for people and agents. `graphify` maps a snapshot's
  * structure; `dependency_cruiser` cruises its module dependencies;
- * `deepwiki` asks a DeepWiki-Open service for a wiki of the repository. Any member can start one from a repository's page.
+ * `deepwiki` asks a DeepWiki-Open service for a wiki of the repository.
+ * `abstractions` lists every module's callable surface, and `data_model`
+ * the entities a repository stores and the modules that touch them; both
+ * read graphify's map of the same snapshot, and the scope and fixtures
+ * agents read them. An owner or admin can start one from a repository's page.
  */
 export const CONTEXT_BUILDERS = [
   "graphify",
   "dependency_cruiser",
   "deepwiki",
+  "abstractions",
+  "data_model",
 ] as const;
 export type ContextBuilder = (typeof CONTEXT_BUILDERS)[number];
 /**
@@ -88,12 +98,21 @@ export const DEPENDENCY_CRUISER_TOOL_VERSION =
   "dependency-cruiser@18.5.0+driver-1";
 /** Bumped when the DeepWiki-Open request or the artifacts written from its wiki change meaning. */
 export const DEEPWIKI_TOOL_VERSION = "deepwiki-open@driver-1";
+/** Bumped when an extractor, a visibility rule or the index's shape changes meaning. */
+export const ABSTRACTIONS_TOOL_VERSION = "abstractions@1";
+/** Bumped when a recognizer, the replay rules or the model's shape change meaning. */
+export const DATA_MODEL_TOOL_VERSION = "data_model@1";
 /**
  * Tools that read a graphify run of the same snapshot, named in
  * `params.graphRunId`. The queue hands one to a worker only once that run
  * has finished.
  */
-export const GRAPH_READERS = ["slice", "scope"] as const;
+export const GRAPH_READERS = [
+  "slice",
+  "scope",
+  "abstractions",
+  "data_model",
+] as const;
 export function readsGraph(tool: AnalysisTool): boolean {
   return GRAPH_READERS.some((name) => name === tool);
 }
@@ -102,9 +121,9 @@ export const SLICE_TOOL_VERSION = "slice@1";
 /** Bumped when the generated project, harness or baseline rules change meaning. */
 export const SANDBOX_BUILD_RUN_VERSION = "sandbox_build@1";
 /** Bumped when the scope agent's tools, prompt or proposal shape change meaning. */
-export const SCOPE_TOOL_VERSION = "scope@2";
+export const SCOPE_TOOL_VERSION = "scope@3";
 /** Bumped when the fixtures agent's tools, prompt or set shape change meaning. */
-export const FIXTURES_TOOL_VERSION = "fixtures@1";
+export const FIXTURES_TOOL_VERSION = "fixtures@2";
 /** Bumped when the starter agent's tools, prompt, set or project change meaning. */
 export const STARTER_TOOL_VERSION = "sandbox_starter@2";
 /** Tools that read a repository snapshot; every other one runs without source. */
@@ -129,6 +148,10 @@ export function toolVersionOf(tool: AnalysisTool): string {
       return DEPENDENCY_CRUISER_TOOL_VERSION;
     case "deepwiki":
       return DEEPWIKI_TOOL_VERSION;
+    case "abstractions":
+      return ABSTRACTIONS_TOOL_VERSION;
+    case "data_model":
+      return DATA_MODEL_TOOL_VERSION;
   }
 }
 
@@ -144,6 +167,18 @@ export interface DependencyCruiserParams extends GraphifyParams {
 }
 export interface DeepwikiParams extends GraphifyParams {
   readonly builder: "deepwiki";
+}
+/**
+ * The builders that read graphify's map name the succeeded graphify run on
+ * the same snapshot, as a slice does, and wait for it in the queue.
+ */
+export interface AbstractionsParams extends GraphifyParams {
+  readonly builder: "abstractions";
+  readonly graphRunId: string;
+}
+export interface DataModelParams extends GraphifyParams {
+  readonly builder: "data_model";
+  readonly graphRunId: string;
 }
 export interface SliceBudget {
   /** Files inside the slice; the first file past it on any path is a cut. */
@@ -184,15 +219,26 @@ export interface AgentTaskParams extends GraphifyParams {
   readonly specRevision: number;
   readonly specHash: string;
 }
-/** The scope agent reads the graphify run on the same snapshot. */
+/**
+ * The scope agent reads the graphify run on the same snapshot, and the
+ * succeeded `abstractions` and `data_model` runs on it when there are any.
+ * Those are optional and named only when present, so a scope with neither
+ * keeps the cache key it had, and one with them is a different run.
+ */
 export interface ScopeParams extends AgentTaskParams {
   readonly agent: "scope";
   readonly graphRunId: string;
+  readonly abstractionsRunId?: string;
+  readonly dataModelRunId?: string;
 }
-/** The fixtures agent writes for a succeeded slice run on the same snapshot. */
+/**
+ * The fixtures agent writes for a succeeded slice run on the same snapshot,
+ * and reads the snapshot's succeeded `data_model` run when there is one.
+ */
 export interface FixturesParams extends AgentTaskParams {
   readonly agent: "fixtures";
   readonly sliceRunId: string;
+  readonly dataModelRunId?: string;
 }
 /**
  * The starter agent writes the draft version it names, for the bounty the
@@ -209,6 +255,8 @@ export type AnalysisParams =
   | GraphifyParams
   | DependencyCruiserParams
   | DeepwikiParams
+  | AbstractionsParams
+  | DataModelParams
   | SliceParams
   | SandboxBuildParams
   | ScopeParams
@@ -223,6 +271,16 @@ export function isDeepwikiParams(
   params: AnalysisParams,
 ): params is DeepwikiParams {
   return "builder" in params && params.builder === "deepwiki";
+}
+export function isAbstractionsParams(
+  params: AnalysisParams,
+): params is AbstractionsParams {
+  return "builder" in params && params.builder === "abstractions";
+}
+export function isDataModelParams(
+  params: AnalysisParams,
+): params is DataModelParams {
+  return "builder" in params && params.builder === "data_model";
 }
 export function isScopeParams(params: AnalysisParams): params is ScopeParams {
   return "agent" in params && params.agent === "scope";

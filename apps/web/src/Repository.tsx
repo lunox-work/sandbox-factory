@@ -2,7 +2,7 @@
  * One registered repository, as a page of its own: `/o/:slug/repositories/:id`.
  *
  * Stacked blocks, top to bottom: what the repository is, the snapshot the
- * rest of the page is about, the stack detected in it, the four context
+ * rest of the page is about, the stack detected in it, the context
  * builders and where each stands on that snapshot, the result of the run
  * that is selected, and every run there has been. The builders are the
  * page's reason to exist: each reads a snapshot on its own and describes
@@ -19,6 +19,8 @@
 
 import type { AnalysisRunDto, GithubRepoDto } from "@sandbox-factory/shared";
 import {
+  abstractionsSummarySchema,
+  dataModelSummarySchema,
   deepwikiSummarySchema,
   dependencyCruiserSummarySchema,
   fixtureSetSchema,
@@ -52,8 +54,10 @@ import {
   FixtureSetView,
   ScopeProposalView,
 } from "./features/analysis/AgentViews";
+import { AbstractionsResult } from "./features/analysis/AbstractionsResult";
 import { Block, StatusBadge } from "./features/analysis/Blocks";
 import { BuilderCard } from "./features/analysis/BuilderCard";
+import { DataModelResult } from "./features/analysis/DataModelResult";
 import { DeepwikiResult } from "./features/analysis/DeepwikiResult";
 import { DependencyResult } from "./features/analysis/DependencyResult";
 import { GraphifyResult } from "./features/analysis/GraphifyResult";
@@ -77,6 +81,20 @@ function canManage(role: string): boolean {
 
 const PAGE_CLASS =
   "mx-auto flex w-full max-w-5xl flex-col gap-6 px-4 py-10 sm:px-6 sm:py-14";
+
+/**
+ * Where each builder's card sits in a six-column grid: the three that
+ * describe a snapshot for people share the first row, and the two that
+ * read Graphify's map for the pipeline share the second, each half wide.
+ * Two columns below `lg`, where the last card takes a row of its own.
+ */
+const BUILDER_SPANS: Record<ContextBuilder, string> = {
+  graphify: "lg:col-span-2",
+  dependency_cruiser: "lg:col-span-2",
+  deepwiki: "lg:col-span-2",
+  abstractions: "lg:col-span-3",
+  data_model: "sm:col-span-2 lg:col-span-3",
+};
 
 export function RepositoryPage({
   organizationId,
@@ -278,6 +296,20 @@ function RepositoryView({
       ),
     [artifacts],
   );
+  const abstractions = useMemo(
+    () =>
+      summaryOf(
+        artifacts,
+        ["manifest", "abstraction_index"],
+        abstractionsSummarySchema,
+      ),
+    [artifacts],
+  );
+  const dataModel = useMemo(
+    () =>
+      summaryOf(artifacts, ["manifest", "data_model"], dataModelSummarySchema),
+    [artifacts],
+  );
   const boundary = useMemo(
     () =>
       summaryOf(artifacts, ["boundary_contract"], sliceBoundarySummarySchema),
@@ -323,6 +355,22 @@ function RepositoryView({
         return deepwiki === null
           ? undefined
           : [{ label: "pages", value: deepwiki.pages.length }];
+      case "abstractions":
+        return abstractions === null
+          ? undefined
+          : [
+              { label: "modules", value: abstractions.counts.modules },
+              { label: "exports", value: abstractions.counts.exports },
+              { label: "typed", value: abstractions.coverage.typed },
+            ];
+      case "data_model":
+        return dataModel === null
+          ? undefined
+          : [
+              { label: "entities", value: dataModel.counts.entities },
+              { label: "relations", value: dataModel.counts.relations },
+              { label: "accessors", value: dataModel.counts.accessors },
+            ];
     }
   }
 
@@ -343,6 +391,20 @@ function RepositoryView({
         {selectedRun.tool === "deepwiki" && deepwiki !== null && (
           <DeepwikiResult
             summary={deepwiki}
+            artifacts={artifacts}
+            onOpen={open}
+          />
+        )}
+        {selectedRun.tool === "abstractions" && abstractions !== null && (
+          <AbstractionsResult
+            summary={abstractions}
+            artifacts={artifacts}
+            onOpen={open}
+          />
+        )}
+        {selectedRun.tool === "data_model" && dataModel !== null && (
+          <DataModelResult
+            summary={dataModel}
             artifacts={artifacts}
             onOpen={open}
           />
@@ -498,12 +560,13 @@ function RepositoryView({
         title="Context builders"
         description="Each reads the chosen snapshot on its own and describes it for people and agents. A build on a snapshot is kept, so asking again shows the one there is."
       >
-        <div className="grid gap-3 lg:grid-cols-3">
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
           {CONTEXT_BUILDERS.map((builder) => {
             const run = builderRun(builder);
             return (
               <BuilderCard
                 key={builder}
+                className={BUILDER_SPANS[builder]}
                 builder={builder}
                 run={run}
                 manageable={manageable}

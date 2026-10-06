@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  ABSTRACTIONS_TOOL_VERSION,
+  DATA_MODEL_TOOL_VERSION,
   FIXTURES_TOOL_VERSION,
   GRAPHIFY_TOOL_VERSION,
   SANDBOX_BUILD_RUN_VERSION,
@@ -243,6 +245,39 @@ test("a slice run needs a graphify run on the same snapshot and waits for it", a
     /Unknown analysis tool/,
   );
 });
+test("the builders that read the map need a graphify run on the same snapshot", async () => {
+  for (const [builder, version] of [
+    ["abstractions", ABSTRACTIONS_TOOL_VERSION],
+    ["data_model", DATA_MODEL_TOOL_VERSION],
+  ] as const) {
+    const params = { deadlineMinutes: 30, builder, graphRunId: "graph" };
+    const fake = createSequencedFakeDb([
+      [{ id: "owner" }],
+      [{ repoId: "repo" }],
+      [{ id: "graph" }],
+      [],
+      [],
+      [row({ tool: builder, toolVersion: version, params })],
+    ]);
+    const result = await createAnalysisRunStore(fake.db).enqueue(
+      "owner",
+      "snapshot",
+      { tool: builder, params, requestedBy: "user" },
+    );
+    assert.equal(result.ok && result.run.tool, builder);
+    assert.equal(fake.calls[5]?.values?.["toolVersion"], version);
+    assert.deepEqual(
+      await createAnalysisRunStore(
+        createSequencedFakeDb([[{ id: "owner" }], [{ repoId: "repo" }], []]).db,
+      ).enqueue("owner", "snapshot", {
+        tool: builder,
+        params,
+        requestedBy: "user",
+      }),
+      { ok: false, reason: "graph_mismatch" },
+    );
+  }
+});
 test("agent runs check the run they build on: a scope reads a graph, fixtures a finished slice", async () => {
   const task = {
     deadlineMinutes: 30,
@@ -389,6 +424,34 @@ test("get and list are owner scoped, ordered and bounded", async () => {
   assert.ok(fake.calls.every((call) => call.filtered));
   assert.equal(
     await createAnalysisRunStore(createFakeDb([]).db).get("other", "run"),
+    null,
+  );
+});
+test("the latest succeeded context run is owner scoped and one row", async () => {
+  const fake = createFakeDb([
+    {
+      run: row({
+        tool: "data_model",
+        toolVersion: DATA_MODEL_TOOL_VERSION,
+        params: { deadlineMinutes: 30, builder: "data_model", graphRunId: "g" },
+        status: "succeeded",
+        finishedAt: now,
+      }),
+      repoId: "repo",
+      organizationId: "owner",
+    },
+  ]);
+  const store = createAnalysisRunStore(fake.db);
+  const found = await store.latestSucceeded("owner", "snapshot", "data_model");
+  assert.equal(found?.tool, "data_model");
+  assert.equal(fake.calls[0]?.limited, 1);
+  assert.ok(fake.calls[0]?.filtered);
+  assert.equal(
+    await createAnalysisRunStore(createFakeDb([]).db).latestSucceeded(
+      "owner",
+      "snapshot",
+      "abstractions",
+    ),
     null,
   );
 });

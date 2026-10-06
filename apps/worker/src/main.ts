@@ -17,7 +17,9 @@ import { createAnthropicModel } from "./agent/anthropic.js";
 import type { AgentSettings } from "./agent/loop.js";
 import { createLocalProcessProvider } from "./evaluation/local-process.js";
 import { createTaskReader } from "./tasks.js";
+import { createAbstractionsAdapter } from "./tools/abstractions.js";
 import type { ToolAdapter } from "./tools/adapter.js";
+import { createDataModelAdapter } from "./tools/data-model.js";
 import { createDeepwikiAdapter } from "./tools/deepwiki.js";
 import { createDependencyCruiserAdapter } from "./tools/dependency-cruiser.js";
 import { createFixturesAdapter } from "./tools/fixtures.js";
@@ -93,6 +95,10 @@ function adapterFor(run: ClaimedAnalysisRun): ToolAdapter {
                 token: repositoryToken(tokens, run),
               },
       });
+    case "abstractions":
+      return createAbstractionsAdapter();
+    case "data_model":
+      return createDataModelAdapter();
     case "slice":
       return createSliceAdapter();
     case "sandbox_build":

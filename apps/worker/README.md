@@ -1,10 +1,12 @@
 # Private repository analysis worker
 
-Eight adapters run here. Graphify analyzes an immutable repository
+Ten adapters run here. Graphify analyzes an immutable repository
 snapshot with `graphifyy==0.4.18`, pinned parser packages and NetworkX 3.4.2.
-Dependency-cruiser and deepwiki are the other context builders: a module
-dependency cruise of the snapshot, and a wiki written by a self-hosted
-DeepWiki-Open service. Slice reads a graphify run's graph and the same
+Dependency-cruiser, deepwiki, abstractions and data model are the other
+context builders: a module dependency cruise of the snapshot, a wiki
+written by a self-hosted DeepWiki-Open service, every module's callable
+surface, and the entities the repository stores with the modules that
+touch them; the last two read graphify's map. Slice reads a graphify run's graph and the same
 source to describe the files one task needs and their boundary. Sandbox
 build turns a slice and a version's private transform into a runnable
 project and checks its baseline in an evaluation job. Scope and fixtures
@@ -12,8 +14,8 @@ are agent runs: a model reads the source to propose a slice for a bounty,
 and to write behaviour for a succeeded slice's mocked calls. Starter is the
 one run with no repository: a model writes a generated version's project
 from the bounty's own text, which is then built and checked like a slice's.
-Graphify, dependency-cruiser, slice and the agents never execute
-repository code or install its dependencies; the build and the starter
+Graphify, dependency-cruiser, abstractions, data model, slice and the
+agents never execute repository code or install its dependencies; the build and the starter
 execute the generated project only inside the evaluation provider's job.
 Only the agents call a model; deepwiki hands the repository to the
 configured DeepWiki-Open service, which uses its own.
@@ -30,9 +32,11 @@ member can open artifacts; owners and admins can start runs and read logs.
 the checked-in fixture without GitHub, database or AWS credentials. It checks
 archive validation, namespaced symbols, relative/directory/alias imports,
 unresolved and dynamic imports, ignore rules, graph direction, artifact upload,
-identical canonical graph facts from different checkout paths, and a slice of
-the resulting graph: deterministic stubs for the cut modules, blockers for
-the unresolved and dynamic imports, and a clean slice of a leaf file. Unit tests
+identical canonical graph facts from different checkout paths, a slice of
+the resulting graph (deterministic stubs for the cut modules, blockers for
+the unresolved and dynamic imports, and a clean slice of a leaf file), and
+the same `abstractions.json` and `data-model.json` bytes from two checkout
+paths, with the tree-sitter tier reading the polyglot fixture. Unit tests
 inject subprocesses and storage; real PostgreSQL tests exercise concurrent
 claims, spend limits and stale leases.
 
@@ -56,12 +60,14 @@ and do not participate in the graph digest.
 
 ### Context builders
 
-`dependency_cruiser` and `deepwiki` are the other context builders, queued
-like graphify from `POST .../repositories/:id/runs` with the builder's name
-as `tool`; their parameters are graphify's plus a `builder` discriminator.
-Each writes a `manifest.json` whose `meta` is the summary the console reads
-(`dependencyCruiserSummarySchema` and `deepwikiSummarySchema` in
-`packages/shared`).
+`dependency_cruiser`, `deepwiki`, `abstractions` and `data_model` are the
+other context builders, queued like graphify from
+`POST .../repositories/:id/runs` with the builder's name as `tool`; their
+parameters are graphify's plus a `builder` discriminator (and, for the two
+that read the map, `graphRunId`). Each writes a `manifest.json` whose
+`meta` is the summary the console reads (`dependencyCruiserSummarySchema`,
+`deepwikiSummarySchema`, `abstractionsSummarySchema` and
+`dataModelSummarySchema` in `packages/shared`).
 
 **dependency_cruiser** runs `dependency-cruiser` 18.5.0 in-process on the
 extracted source: every module system, TypeScript pre-compilation
@@ -114,6 +120,93 @@ every chunk through the sidecar, which runs on the CPU; an Ollama
 installed on the host uses the GPU and is pointed at with
 `DEEPWIKI_OLLAMA_HOST=http://host.docker.internal:11434` (pull
 `nomic-embed-text` there first).
+
+**abstractions** and **data_model** read graphify's map, as a slice does:
+their parameters add the succeeded graphify run on the same snapshot
+(`params.graphRunId`), which the API enqueues or finds first and which the
+queue waits for. A graph that did not succeed fails them
+`graph_unavailable`. Coverage is recorded per module or source, never
+implied, and finding nothing is a success with empty output.
+
+**abstractions** lists every module's callable surface: the graph's code
+files, tests aside, each with its language, its importer count from the
+graph and its exports (name, kind, signature with bodies elided, line, and
+the types it names by symbol id or package specifier). An export takes the
+graph's module-qualified symbol id when the graph has a node of its name at
+its line (or the only one of its name in the file), otherwise
+`symbol:<path>#<name>`, so the scope agent can move between the two. Three
+tiers:
+
+- `typed`: TypeScript and JavaScript, with the slice's declaration emitter
+  and `filterDeclaration` asking for every name, one program per nearest
+  `tsconfig.json` through the slice's bounded compiler host, in a worker
+  thread so a long compile cannot hold the lease heartbeat. A project whose
+  program would parse more than 2,000 repository files goes to the
+  syntactic tier with a `program_too_large` omission. Package types are
+  references by specifier, listed in `externals`.
+- `syntactic`: Python, Go and Java (and a capped TypeScript project) with
+  the tree-sitter grammars already pinned for graphify, by
+  `python/abstractions.py` in the graphify venv. Signatures read as written;
+  no type is resolved, so a reference is only to an export of the same
+  module, or for Go and Java of the same package directory. Exported means:
+  Python, `__all__` when declared, else module-level names without a
+  leading `_` (public methods and `__init__` as `Class.method`); Go, an
+  upper-case identifier (a method when it and its receiver are); Java,
+  `public` or `protected` (an interface's members unless `private`).
+- `names-only`: any other language graphify parses, and any module a tier
+  could not read: the graph's symbol nodes, with no signature.
+
+Outputs: `abstractions.json` (kind `abstraction_index`; modules sorted by
+path, with both extractors' versions and the graph's SHA-256),
+`abstractions.md` (kind `other`; the most imported modules first, at most
+300 modules or 256 KiB) and `manifest.json`, whose summary
+(`abstractionsSummarySchema`) holds counts by coverage and language, the 25
+most imported modules with their export counts, the first 25 omissions and
+`truncated`. A module lists at most 500 exports and a signature at most
+8,000 characters; each cut is an omission. The same snapshot gives the same
+bytes.
+
+**data_model** reads the entities, fields, enums and relations a
+repository stores, and the modules that touch them. A recognizer runs only
+on its evidence, never on folder names:
+
+- Prisma, on every `.prisma` file (as one schema, as Prisma merges them),
+  read with a parser for the schema language written here, so no
+  configuration is looked up: models and views, `@map`/`@@map`/`@@schema`,
+  `@id`/`@@id`, `@unique`/`@@unique`, defaults, `@db.*` native types,
+  enums, `@relation` foreign keys with their actions, and implicit
+  many-to-many lists. `@@ignore`d models and fields are left out.
+- Drizzle, on the files the graph shows importing `drizzle-orm/pg-core`,
+  `mysql-core` or `sqlite-core`, read from their syntax: `pgTable`,
+  `mysqlTable`, `sqliteTable` and `pgSchema(...).table`, column builders
+  (through a local helper such as `const ts = (n) => timestamp(n, ...)`,
+  and a spread of a constant object in the same file), chained modifiers,
+  `.references(() => t.column, { onDelete })`, `pgEnum`, and the extra
+  config's `primaryKey`, `unique`/`uniqueIndex().on` and `foreignKey`.
+- SQL migrations, on the `.sql` files in the tree facts' migration
+  directories and beside any Drizzle Kit `meta/_journal.json`, parsed with
+  libpg-query (Postgres's own parser as WebAssembly, `libpg-query@18.1.5`)
+  and replayed in the tool's order (the journal's, else natural filename
+  order, rollbacks left out) on an in-memory catalog: `CREATE`/`ALTER`/
+  `DROP`/`RENAME` of tables, columns, constraints, unique indexes and enum
+  types. A `DO` block is opened only for the idempotent-DDL idiom (`BEGIN
+<ddl> EXCEPTION WHEN duplicate_object THEN null; END`); functions,
+  triggers, data statements and other blocks are skipped and counted as
+  omissions per file. Nothing reaches a database.
+
+When two sources define one table, the declared schema wins (Prisma, then
+Drizzle, then migrations); the other counts it as `shadowed`, and its
+relations into the table point at the winner. Accessors are the modules
+that read or write entities: for Drizzle, the files the graph shows
+importing a defining file (through re-exporting barrels, three deep) and
+the names they take; for Prisma, the files that reach `@prisma/client` and
+call a model's delegate or import its type; for any table, code whose query
+strings name it after `FROM`, `JOIN`, `INTO` or `UPDATE`. They rank by
+entities touched, then importers. Outputs: `data-model.json` (kind
+`data_model`), `erd.mmd` (kind `erd_mermaid`, a Mermaid `erDiagram`) and
+`manifest.json`; both JSON artifacts carry the summary
+(`dataModelSummarySchema`): storage, sources, counts and bounded lists of
+entities with their fields, enums, relations, accessors and omissions.
 
 ### Slice
 
@@ -278,6 +371,17 @@ seams with kinds, summary, risks, the deterministic check of exactly that
 request and the token usage), also carried whole in its artifact row's
 `meta` for the console.
 
+When the snapshot has a succeeded `abstractions` or `data_model` run at
+queue time, the API names it in the scope run's parameters
+(`abstractionsRunId`, `dataModelRunId`), so it joins the cache key, and the
+agent also gets `module_surface(path)` (a module's exports and signatures:
+what its stub declares if the slice cuts it) and `data_model(entity)` (the
+storage, entities and accessors, or one entity's fields, enum values,
+relations and accessors). The prompt lists the top accessors as where a
+`database` seam belongs. Neither is required, and `check_scope` still
+decides. A named run that is gone, unfinished, on another snapshot or
+altered fails the run `context_unavailable`.
+
 A `fixtures` run names a succeeded slice run, a proposal and a spec
 revision. Its `check_fixtures` tool parses each implementation (exactly one
 function expression, so it cannot add statements to the runtime it is
@@ -286,7 +390,9 @@ the call it stands in for, read from the slice's stubs, and compiles the
 walkthrough as `sandbox/run.ts` beside the included source, with the
 generated project's compiler options, ambient declarations and mock
 runtime types, in memory. `submit_fixtures` is accepted only when that
-compiles. Output: `fixture-set.json` (fixtures with reasons, the
+compiles. With the snapshot's `data_model` run (`dataModelRunId`), the agent
+also has `data_model`, so a fixture standing in for a `database` seam keeps
+required fields, enum values and foreign keys across fixtures. Output: `fixture-set.json` (fixtures with reasons, the
 walkthrough, a summary and the token usage), also carried in `meta`.
 
 A version copies a fixture set into its transform. The build aliases the
