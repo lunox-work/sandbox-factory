@@ -213,7 +213,7 @@ test("a slice run needs a graphify run on the same snapshot and waits for it", a
   );
   // A row from a newer deploy is skipped by reads instead of failing them.
   const unknown = {
-    run: row({ tool: "deepwiki" }),
+    run: row({ tool: "future_tool" }),
     repoId: "repo",
     organizationId: "owner",
   };
@@ -236,7 +236,7 @@ test("a slice run needs a graphify run on the same snapshot and waits for it", a
   await assert.rejects(
     createAnalysisRunStore(
       createSequencedFakeDb([
-        [row({ tool: "deepwiki", status: "running" })],
+        [row({ tool: "future_tool", status: "running" })],
         [{ repoId: "repo" }],
       ]).db,
     ).claimNext("lease", now),

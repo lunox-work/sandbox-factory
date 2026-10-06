@@ -109,6 +109,11 @@ export function trailFor(
    * organization screens drop theirs.
    */
   bountyWorkspace?: TrailOrganization | undefined,
+  /**
+   * The repository the last crumb names, on `org-repository`. Passed in for
+   * the same reason as the board's, and read "Repository" until it arrives.
+   */
+  repositoryName?: string | undefined,
 ): Crumb[] {
   switch (screen) {
     case "home":
@@ -182,6 +187,33 @@ export function trailFor(
             board,
           ];
     }
+    case "org-repository": {
+      /*
+        The GitHub crumb leads to the GitHub tab of the organization's
+        settings, where the registered repositories are listed: a repository
+        has no list page of its own.
+      */
+      const github: Crumb = {
+        label: "GitHub",
+        screen: "org-settings",
+        slug: organization?.slug,
+        connectionTab: "github",
+      };
+      const repository: Crumb = { label: repositoryName ?? "Repository" };
+      return organization === undefined
+        ? [HOME, ORGANIZATIONS, github, repository]
+        : [
+            HOME,
+            ORGANIZATIONS,
+            {
+              label: organization.name,
+              screen: "org-settings",
+              slug: organization.slug,
+            },
+            github,
+            repository,
+          ];
+    }
   }
 }
 
@@ -191,6 +223,7 @@ export function Breadcrumbs({
   boardName,
   bountyName,
   bountyWorkspace,
+  repositoryName,
   onNavigate,
 }: {
   screen: Screen;
@@ -201,6 +234,8 @@ export function Breadcrumbs({
   bountyName?: string | undefined;
   /** The workspace that bounty is in; see `trailFor`. */
   bountyWorkspace?: TrailOrganization | undefined;
+  /** The repository `org-repository` is showing; see `trailFor`. */
+  repositoryName?: string | undefined;
   onNavigate: (
     screen: Screen,
     slug?: string,
@@ -215,6 +250,7 @@ export function Breadcrumbs({
     boardName,
     bountyName,
     bountyWorkspace,
+    repositoryName,
   );
 
   // Nothing to show on home, and a bare trail of one crumb is chrome rather
@@ -254,6 +290,7 @@ export function Breadcrumbs({
         // prop: which pages are wide is the trail's own business, and the
         // shell already tells it where it is.
         screen === "org-jira-board" ||
+          screen === "org-repository" ||
           screen === "bounties" ||
           screen === "new-bounty" ||
           screen === "bounty"

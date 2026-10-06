@@ -361,7 +361,7 @@ test("enqueue validates scope, role, parameters, cache result, and active cap", 
     403,
   );
   assert.equal(
-    (await f.request("repositories/ghr_1/runs", { tool: "deepwiki" })).status,
+    (await f.request("repositories/ghr_1/runs", { tool: "unknown" })).status,
     400,
   );
   assert.equal(
@@ -398,6 +398,29 @@ test("enqueue validates scope, role, parameters, cache result, and active cap", 
     (await f.request("repositories/ghr_1/runs", { tool: "graphify" })).status,
     404,
   );
+});
+test("a context builder names itself in its parameters", async () => {
+  const f = fixture();
+  assert.equal(
+    (
+      await f.request("repositories/ghr_1/runs", {
+        tool: "dependency_cruiser",
+        snapshotId: "rsn_1",
+      })
+    ).status,
+    202,
+  );
+  assert.equal(
+    (await f.request("repositories/ghr_1/runs", { tool: "deepwiki" })).status,
+    202,
+  );
+  assert.deepEqual(f.enqueued, [
+    {
+      tool: "dependency_cruiser",
+      params: { deadlineMinutes: 30, builder: "dependency_cruiser" },
+    },
+    { tool: "deepwiki", params: { deadlineMinutes: 60, builder: "deepwiki" } },
+  ]);
 });
 test("launch errors keep the queued response for watchdog recovery", async () => {
   const f = fixture();

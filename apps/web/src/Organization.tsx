@@ -16,7 +16,7 @@ import { pushLocation, subscribeLocation } from "./navigation/location";
  * courtesy, not security.
  */
 
-import type { MembershipDto } from "@sandbox-factory/shared";
+import type { GithubRepoDto, MembershipDto } from "@sandbox-factory/shared";
 import { LogOut, Trash2, UserPlus, Users } from "lucide-react";
 import {
   useCallback,
@@ -96,6 +96,7 @@ export function Organization({
   onChanged,
   onLeft,
   onOpenBoard,
+  onOpenRepository,
   onPictureChanged,
   viewer,
 }: {
@@ -117,6 +118,11 @@ export function Organization({
    * be opened.
    */
   onOpenBoard?: ((board: JiraBoard) => void) | undefined;
+  /**
+   * Opens a registered repository's page from the GitHub tab. Optional for
+   * the same reason: without it the row is a plain link to that page.
+   */
+  onOpenRepository?: ((repo: GithubRepoDto) => void) | undefined;
   /**
    * Whoever is looking. A personal organization is always the viewer's own —
    * nobody is ever in someone else's — so its picture is theirs, the one the
@@ -265,6 +271,7 @@ export function Organization({
               organizationSlug={organization.slug}
               role={organization.role}
               onOpenBoard={onOpenBoard}
+              onOpenRepository={onOpenRepository}
             />
           )}
         </TabsContent>

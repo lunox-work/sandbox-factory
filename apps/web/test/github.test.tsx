@@ -10,15 +10,7 @@
  * The server is faked at `fetch`, routed by method and path.
  */
 
-import {
-  act,
-  cleanup,
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-  within,
-} from "./render";
+import { act, fireEvent, render, screen, waitFor, within } from "./render";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import { GithubConnections } from "../src/Github";
@@ -126,6 +118,7 @@ beforeEach(() => {
   calls = [];
   assigned = [];
   replaced = [];
+  opened = [];
 
   Object.defineProperty(window, "location", {
     configurable: true,
@@ -264,8 +257,18 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+/** Repositories opened from a row, by id. */
+let opened: string[];
+
 function renderTab(role = "owner") {
-  return render(<GithubConnections organizationId="org_1" role={role} />);
+  return render(
+    <GithubConnections
+      organizationId="org_1"
+      organizationSlug="acme"
+      role={role}
+      onOpenRepository={(repo) => opened.push(repo.id)}
+    />,
+  );
 }
 
 function withOutcome(outcome: string) {
@@ -304,9 +307,17 @@ test("a linked account lists its repositories as rows, without sync columns", as
   expect(within(list).queryByText("main")).toBeNull();
 });
 
-async function openRepository() {
-  fireEvent.click(await screen.findByRole("button", { name: /acme\/widgets/ }));
-}
+test("a registered row is a link to the repository's page, opened in the app on a plain click", async () => {
+  renderTab();
+
+  const row = await screen.findByRole("link", { name: /acme\/widgets/ });
+  expect(row.getAttribute("href")).toBe("/o/acme/repositories/ghr_1");
+  fireEvent.click(row);
+  expect(opened).toEqual(["ghr_1"]);
+  // A modified click is the browser's: a new tab, nothing opened here.
+  fireEvent.click(row, { metaKey: true });
+  expect(opened).toEqual(["ghr_1"]);
+});
 
 test("connect navigates to the API, carrying where to come back to", async () => {
   renderTab();
@@ -511,23 +522,6 @@ test("disconnecting asks first, and says the App stays installed on GitHub", asy
   expect(calls).toContain("DELETE /api/v1/orgs/org_1/github/connections/ghc_1");
 });
 
-test("removing a repository asks first", async () => {
-  renderTab();
-
-  await openRepository();
-  fireEvent.click(
-    await screen.findByRole("button", { name: "Remove acme/widgets" }),
-  );
-  const dialog = await screen.findByRole("alertdialog");
-  fireEvent.click(within(dialog).getByRole("button", { name: "Remove" }));
-
-  expect(
-    await screen.findByText(
-      "No repositories registered from this account yet.",
-    ),
-  ).toBeDefined();
-});
-
 test("an uninstalled account is flagged, and offers no registering", async () => {
   server.connections = [
     { ...connection, healthy: false, uninstalledAt: "2026-10-01T01:00:00Z" },
@@ -538,54 +532,6 @@ test("an uninstalled account is flagged, and offers no registering", async () =>
   expect(await screen.findByText("Uninstalled")).toBeDefined();
   expect(await screen.findByText("acme/widgets")).toBeDefined();
   expect(screen.queryByRole("button", { name: "Add a repository" })).toBeNull();
-});
-
-test("a repository that failed to sync shows the reason", async () => {
-  server.repositories = [
-    {
-      ...registered,
-      syncStatus: "error",
-      syncError: "The repository has no commits yet.",
-      stack: null,
-      headSha: null,
-      lastSyncedAt: null,
-    },
-  ];
-  renderTab();
-
-  await openRepository();
-  expect(
-    await screen.findByText("The repository has no commits yet."),
-  ).toBeDefined();
-});
-
-test("a repository's page shows the stack detected in it", async () => {
-  // Not read yet: the page says it is on the way.
-  renderTab();
-  await openRepository();
-  const reading = await screen.findByTestId("repository-stack");
-  expect(within(reading).getByText(/Reading the repository/)).toBeDefined();
-  cleanup();
-
-  server.repositories = [
-    { ...registered, stack: ["TypeScript", "PostgreSQL", "Amazon Cognito"] },
-  ];
-  renderTab();
-  await openRepository();
-  const detected = await screen.findByTestId("repository-stack");
-  expect(
-    within(within(detected).getByRole("list", { name: "Tech stack" }))
-      .getAllByRole("listitem")
-      .map((item) => item.textContent),
-  ).toEqual(["TypeScript", "PostgreSQL", "Amazon Cognito"]);
-  cleanup();
-
-  server.repositories = [{ ...registered, stack: [] }];
-  renderTab();
-  await openRepository();
-  expect(
-    await screen.findByText("Nothing detected at the latest commit."),
-  ).toBeDefined();
 });
 
 test("a failed load says so rather than rendering an empty list", async () => {

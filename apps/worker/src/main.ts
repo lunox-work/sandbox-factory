@@ -7,6 +7,7 @@ import {
   createObjectStore,
   createSandboxStore,
 } from "@sandbox-factory/db";
+import type { ClaimedAnalysisRun } from "@sandbox-factory/db";
 import { InstallationTokens } from "@sandbox-factory/github";
 import { repositoryToken } from "./credentials.js";
 import { parseWorkerEnv } from "./env.js";
@@ -16,6 +17,9 @@ import { createAnthropicModel } from "./agent/anthropic.js";
 import type { AgentSettings } from "./agent/loop.js";
 import { createLocalProcessProvider } from "./evaluation/local-process.js";
 import { createTaskReader } from "./tasks.js";
+import type { ToolAdapter } from "./tools/adapter.js";
+import { createDeepwikiAdapter } from "./tools/deepwiki.js";
+import { createDependencyCruiserAdapter } from "./tools/dependency-cruiser.js";
 import { createFixturesAdapter } from "./tools/fixtures.js";
 import { createGraphifyAdapter } from "./tools/graphify.js";
 import { createSandboxBuildAdapter } from "./tools/sandbox-build.js";
@@ -68,6 +72,39 @@ const tokens = new InstallationTokens({
   appId: env.GITHUB_APP_ID,
   privateKey: env.GITHUB_APP_PRIVATE_KEY,
 });
+/** The adapter for a claimed run's tool; every tool has exactly one. */
+function adapterFor(run: ClaimedAnalysisRun): ToolAdapter {
+  switch (run.tool) {
+    case "graphify":
+      return createGraphifyAdapter();
+    case "dependency_cruiser":
+      return createDependencyCruiserAdapter();
+    case "deepwiki":
+      return createDeepwikiAdapter({
+        baseUrl: env.DEEPWIKI_OPEN_URL,
+        authCode: env.DEEPWIKI_OPEN_AUTH_CODE,
+        provider: env.DEEPWIKI_OPEN_PROVIDER,
+        model: env.DEEPWIKI_OPEN_MODEL,
+        repository:
+          run.repoFullName === null
+            ? null
+            : {
+                fullName: run.repoFullName,
+                token: repositoryToken(tokens, run),
+              },
+      });
+    case "slice":
+      return createSliceAdapter();
+    case "sandbox_build":
+      return createSandboxBuildAdapter({ provider: evaluation });
+    case "scope":
+      return createScopeAdapter(agent);
+    case "fixtures":
+      return createFixturesAdapter(agent);
+    case "sandbox_starter":
+      return createStarterAdapter({ agent, provider: evaluation });
+  }
+}
 const stopClaiming = new AbortController();
 const stopCurrent = new AbortController();
 let grace: ReturnType<typeof setTimeout> | undefined;
@@ -89,18 +126,7 @@ try {
         sandboxes,
         tasks,
         objects,
-        tool:
-          run.tool === "slice"
-            ? createSliceAdapter()
-            : run.tool === "sandbox_build"
-              ? createSandboxBuildAdapter({ provider: evaluation })
-              : run.tool === "scope"
-                ? createScopeAdapter(agent)
-                : run.tool === "fixtures"
-                  ? createFixturesAdapter(agent)
-                  : run.tool === "sandbox_starter"
-                    ? createStarterAdapter({ agent, provider: evaluation })
-                    : createGraphifyAdapter(),
+        tool: adapterFor(run),
         shutdown: stopCurrent.signal,
         source: {
           maxBytes: env.MAX_TARBALL_BYTES,

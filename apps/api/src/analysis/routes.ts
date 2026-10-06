@@ -14,6 +14,7 @@ import type {
   RepositoryProposalDto,
   StoredTree,
 } from "@sandbox-factory/shared";
+import type { AnalysisParams } from "sandbox-factory";
 import {
   analysisRunListSchema,
   analysisRunResponseSchema,
@@ -23,6 +24,7 @@ import {
   enqueueScopeSchema,
   enqueueSliceResponseSchema,
   enqueueSliceSchema,
+  AGENT_DEADLINE_MINUTES,
   GRAPH_DEADLINE_MINUTES,
   repositoryProposalListSchema,
 } from "@sandbox-factory/shared";
@@ -140,6 +142,7 @@ export function mountAnalysisRoutes(
       404,
     );
 
+  /** One context builder on one snapshot. */
   app.post(`${base}/repositories/:id/runs`, async (c) => {
     if (!rankAtLeast(c.get("member").role, "admin"))
       return c.json(
@@ -161,6 +164,15 @@ export function mountAnalysisRoutes(
         : await options.snapshots.get(owner, body.data.snapshotId);
     if (snapshot === null || snapshot.repoId !== repoId)
       return c.json({ error: "No source snapshot is available." }, 404);
+    const tool = body.data.tool;
+    // A wiki waits on a model's pages, as an agent run does; the others are
+    // deterministic and keep the graph runs' deadline, which is part of the
+    // cache key the profiler's graph runs share.
+    let params: AnalysisParams = body.data.params ?? {
+      deadlineMinutes:
+        tool === "deepwiki" ? AGENT_DEADLINE_MINUTES : GRAPH_DEADLINE_MINUTES,
+    };
+    if (tool !== "graphify") params = { ...params, builder: tool };
     const result = await enqueueAnalysis(
       {
         runs: options.runs,
@@ -169,20 +181,15 @@ export function mountAnalysisRoutes(
       owner,
       snapshot.id,
       {
-        params: body.data.params,
+        tool,
+        params,
         requestedBy: c.get("user").id,
         maxActive: options.maxActive ?? 3,
       },
     );
     if (!result.ok)
       return result.reason === "run_limit"
-        ? c.json(
-            {
-              error: "The active analysis limit has been reached.",
-              code: "run_limit",
-            },
-            409,
-          )
+        ? runLimit(c)
         : c.json({ error: "Not found." }, 404);
     await options.ensureWorker().catch(() => options.onLaunchError?.());
     return c.json(analysisRunResponseSchema.parse({ run: result.run }), 202);

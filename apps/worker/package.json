@@ -17,6 +17,7 @@
     "@sandbox-factory/db": "*",
     "@sandbox-factory/github": "*",
     "@sandbox-factory/shared": "*",
+    "dependency-cruiser": "18.5.0",
     "sandbox-factory": "*",
     "typescript-compiler": "npm:typescript@5.9.3",
     "zod": "^4.1.12"

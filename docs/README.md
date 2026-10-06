@@ -7,8 +7,10 @@ product proposals and historical explainers are optional design context.
 ## Current capabilities
 
 - Native bounties and optional Jira imports share proposals, spec review and pricing.
-- GitHub supplies private repository snapshots. Graphify, scope, slice and fixture
-  tools prepare the source for versioned private sandbox builds.
+- GitHub supplies private repository snapshots. Three context builders describe a
+  snapshot from a repository's own page: Graphify, dependency-cruiser and
+  DeepWiki-Open. Scope, slice and fixture tools prepare the source for
+  versioned private sandbox builds.
 - Builds generate a runnable project and check its baseline. The available
   evaluator is opt-in `local-process`, for development; it is not an isolation
   boundary. With the default provider `none`, builds fail closed.

@@ -1,0 +1,32 @@
+{
+  "default_provider": "litellm",
+  "providers": {
+    "litellm": {
+      "default_model": "deepseek-chat",
+      "supportsCustomModel": true,
+      "models": {
+        "deepseek-chat": {
+          "temperature": 0.7,
+          "top_p": 0.8
+        },
+        "deepseek-reasoner": {
+          "temperature": 0.7,
+          "top_p": 0.8
+        }
+      }
+    },
+    "ollama": {
+      "default_model": "qwen3:1.7b",
+      "supportsCustomModel": true,
+      "models": {
+        "qwen3:1.7b": {
+          "options": {
+            "temperature": 0.7,
+            "top_p": 0.8,
+            "num_ctx": 32000
+          }
+        }
+      }
+    }
+  }
+}

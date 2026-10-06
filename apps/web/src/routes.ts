@@ -321,6 +321,33 @@ export function connectionForPath(pathname: string): string | undefined {
     : undefined;
 }
 
+/**
+ * The repository whose page a path is: `/o/:slug/repositories/:repoId`.
+ * Undefined for any other path, a malformed escape included.
+ */
+export function repositoryForPath(pathname: string): string | undefined {
+  const [root, section, slug, kind, repoId, ...rest] = pathname
+    .replace(/\/+$/, "")
+    .split("/");
+  if (
+    root !== "" ||
+    section !== "o" ||
+    slug === undefined ||
+    slug === "" ||
+    kind !== "repositories" ||
+    repoId === undefined ||
+    repoId === "" ||
+    rest.length > 0
+  ) {
+    return undefined;
+  }
+  try {
+    return decodeURIComponent(repoId);
+  } catch {
+    return undefined;
+  }
+}
+
 export function boardForPath(pathname: string): string | undefined {
   const parts = pathname.replace(/\/+$/, "").split("/");
   return parts[1] === "o" &&
@@ -351,6 +378,9 @@ export function screenForPath(pathname: string): Screen {
     if (connectionForPath(pathname) !== undefined) {
       return "org-jira-board";
     }
+    if (repositoryForPath(pathname) !== undefined) {
+      return "org-repository";
+    }
     // `/o/:slug/jira` and `/o/:slug/jira/:site` included: both now live in
     // the Jira tab of settings, and `canonicalUrl` rewrites the address.
     return "org-settings";
@@ -361,7 +391,11 @@ export function screenForPath(pathname: string): Screen {
 export function pathForScreen(
   screen: Screen,
   slug?: string,
-  connectionId?: string,
+  /**
+   * The id the screen names: a connection id for `org-jira-board`, a
+   * repository id for `org-repository`. Nothing for the rest.
+   */
+  id?: string,
   boardId?: string,
   /** The Connections tab `org-settings` opens on; see `CONNECTION_TABS`. */
   connectionTab?: ConnectionTab,
@@ -388,11 +422,15 @@ export function pathForScreen(
     case "new-bounty":
       return NEW_BOUNTY_PATH;
     case "org-jira-board":
-      return slug === undefined ||
-        connectionId === undefined ||
-        boardId === undefined
+      return slug === undefined || id === undefined || boardId === undefined
         ? pathForScreen("org-settings", slug, undefined, undefined, "jira")
-        : `/o/${slug}/jira/${encodeURIComponent(connectionId)}/${encodeURIComponent(boardId)}`;
+        : `/o/${slug}/jira/${encodeURIComponent(id)}/${encodeURIComponent(boardId)}`;
+    // A repository's own page. With no repository named, the GitHub tab of
+    // settings, where the registered ones are listed.
+    case "org-repository":
+      return slug === undefined || id === undefined
+        ? pathForScreen("org-settings", slug, undefined, undefined, "github")
+        : `/o/${slug}/repositories/${encodeURIComponent(id)}`;
     case "home":
       return "/";
   }

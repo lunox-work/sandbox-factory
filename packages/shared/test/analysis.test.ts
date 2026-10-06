@@ -20,10 +20,14 @@ import {
 import { generateStarterResponseSchema } from "../src/sandbox.js";
 
 test("analysis defaults are canonical and tool parameters are bounded", () => {
+  // No parameters: the API chooses the tool's own deadline.
   assert.deepEqual(enqueueAnalysisSchema.parse({ tool: "graphify" }), {
     tool: "graphify",
-    params: { deadlineMinutes: 30 },
   });
+  assert.deepEqual(
+    enqueueAnalysisSchema.parse({ tool: "deepwiki", params: {} }),
+    { tool: "deepwiki", params: { deadlineMinutes: 30 } },
+  );
   for (const body of [
     { tool: "other" },
     { tool: "slice" },
@@ -134,8 +138,11 @@ test("run DTOs discriminate parameters by tool", () => {
     false,
   );
   assert.equal(
-    analysisRunDtoSchema.safeParse({ ...common, tool: "deepwiki", params: {} })
-      .success,
+    analysisRunDtoSchema.safeParse({
+      ...common,
+      tool: "future_tool",
+      params: {},
+    }).success,
     false,
   );
 });

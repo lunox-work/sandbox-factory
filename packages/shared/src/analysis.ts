@@ -2,6 +2,7 @@ import {
   ANALYSIS_STATUSES,
   ANALYSIS_ERROR_CODES,
   ARTIFACT_KINDS,
+  CONTEXT_BUILDERS,
   FIXTURE_CALLS,
   FIXTURE_LIMITS,
   SCOPE_LIMITS,
@@ -17,10 +18,26 @@ import { z } from "zod";
 export const analysisParamsSchema = z.strictObject({
   deadlineMinutes: z.number().int().min(1).max(120).default(30),
 });
+/**
+ * `POST .../repositories/:id/runs`: one context builder on one snapshot.
+ * The parameters are graphify's for every builder; the API adds the
+ * builder's name. With no parameters the deadline is the tool's own:
+ * `GRAPH_DEADLINE_MINUTES` for the deterministic builders and
+ * `AGENT_DEADLINE_MINUTES` for deepwiki, which waits on a model.
+ */
 export const enqueueAnalysisSchema = z.strictObject({
-  tool: z.literal("graphify"),
+  tool: z.enum(CONTEXT_BUILDERS),
   snapshotId: z.string().min(1).optional(),
-  params: analysisParamsSchema.default({ deadlineMinutes: 30 }),
+  params: analysisParamsSchema.optional(),
+});
+/** Stored parameters of the builders that name themselves; see core. */
+export const dependencyCruiserParamsSchema = z.strictObject({
+  deadlineMinutes: z.number().int().min(1).max(120).default(30),
+  builder: z.literal("dependency_cruiser"),
+});
+export const deepwikiParamsSchema = z.strictObject({
+  deadlineMinutes: z.number().int().min(1).max(120).default(30),
+  builder: z.literal("deepwiki"),
 });
 
 /** A repository-relative path: no root, no `..`, no backslashes or NULs. */
@@ -183,6 +200,16 @@ export const analysisRunDtoSchema = z.discriminatedUnion("tool", [
   }),
   z.strictObject({
     ...runCommon,
+    tool: z.literal("dependency_cruiser"),
+    params: dependencyCruiserParamsSchema,
+  }),
+  z.strictObject({
+    ...runCommon,
+    tool: z.literal("deepwiki"),
+    params: deepwikiParamsSchema,
+  }),
+  z.strictObject({
+    ...runCommon,
     tool: z.literal("slice"),
     params: sliceParamsSchema,
   }),
@@ -233,6 +260,88 @@ export const artifactListSchema = z.object({
   artifacts: z.array(artifactDtoSchema),
 });
 export const artifactUrlSchema = z.object({ url: z.url() });
+
+const count = z.number().int().nonnegative();
+/**
+ * What graphify's `manifest.json` carries, as its `graph_json` artifact's
+ * `meta` also does. Loose: the driver writes more, and the console reads
+ * these figures.
+ */
+export const graphifySummarySchema = z.looseObject({
+  nodes: count,
+  edges: count,
+  unresolved: count,
+  visualizationNodes: count,
+  files: z.array(z.string()).optional(),
+  confidence: z.record(z.string(), count).optional(),
+  skippedSensitive: z.array(z.unknown()).optional(),
+});
+/** Modules one list of a summary may name before it is cut short. */
+export const DEPENDENCY_SUMMARY_LIMITS = {
+  modules: 25,
+  cycles: 20,
+  orphans: 50,
+  unresolved: 50,
+} as const;
+/**
+ * What the dependency-cruiser `manifest.json` artifact's `meta` carries for
+ * the console: counts over the whole cruise, and bounded lists of the most
+ * connected modules, the cycles, the orphans and the unresolved imports.
+ * The full cruise is `dependency-cruiser.json`.
+ */
+export const dependencyCruiserSummarySchema = z.object({
+  schemaVersion: z.literal(1),
+  toolVersion: z.string(),
+  counts: z.object({
+    modules: count,
+    dependencies: count,
+    circular: count,
+    orphans: count,
+    unresolved: count,
+    external: count,
+  }),
+  /** Busiest first: modules by dependents plus dependencies. */
+  modules: z.array(
+    z.object({ source: z.string(), dependents: count, dependencies: count }),
+  ),
+  cycles: z.array(z.array(z.string()).min(1)),
+  orphans: z.array(z.string()),
+  unresolved: z.array(z.object({ from: z.string(), module: z.string() })),
+  truncated: z.boolean(),
+});
+/** How important DeepWiki-Open says a page is. */
+export const WIKI_IMPORTANCE = ["high", "medium", "low"] as const;
+/**
+ * What the deepwiki `wiki-structure.json` artifact's `meta` carries: the
+ * wiki's outline, each page naming the artifact its text is in. The
+ * repository is read by the DeepWiki-Open service at its default branch
+ * when the run happens, not from the snapshot, which the summary says.
+ */
+export const deepwikiSummarySchema = z.object({
+  schemaVersion: z.literal(1),
+  toolVersion: z.string(),
+  title: z.string(),
+  description: z.string(),
+  provider: z.string().nullable(),
+  model: z.string().nullable(),
+  repositoryUrl: z.string(),
+  /** The commit the run was asked for; the service read the branch head instead. */
+  requestedCommitSha: z.string(),
+  pages: z.array(
+    z.object({
+      id: z.string(),
+      title: z.string(),
+      importance: z.enum(WIKI_IMPORTANCE),
+      filePaths: z.array(z.string()),
+      relatedPages: z.array(z.string()),
+      /** The artifact path its text was written to. */
+      path: z.string(),
+    }),
+  ),
+  sections: z.array(
+    z.object({ id: z.string(), title: z.string(), pages: z.array(z.string()) }),
+  ),
+});
 
 const summaryModuleSchema = z.object({
   module: z.string(),
@@ -458,3 +567,8 @@ export type EnqueueSliceResponseDto = z.infer<
 export type SliceBoundarySummaryDto = z.infer<
   typeof sliceBoundarySummarySchema
 >;
+export type GraphifySummaryDto = z.infer<typeof graphifySummarySchema>;
+export type DependencyCruiserSummaryDto = z.infer<
+  typeof dependencyCruiserSummarySchema
+>;
+export type DeepwikiSummaryDto = z.infer<typeof deepwikiSummarySchema>;

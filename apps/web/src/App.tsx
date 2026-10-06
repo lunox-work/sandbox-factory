@@ -17,6 +17,7 @@ import { CreateOrganization, Organization } from "./Organization";
 import { workspaceLabel } from "./OrganizationSwitcher";
 import { Organizations } from "./Organizations";
 import { JiraBoard } from "./Jira";
+import { RepositoryPage } from "./Repository";
 import { SideNav, type Screen } from "./SideNav";
 import { SignIn } from "./SignIn";
 import { Bounties, BountyPage, NewBountyPage } from "./Bounties";
@@ -29,6 +30,7 @@ import {
   isPlainLeftClick,
   ORGANIZATIONS_PATH,
   pathForScreen,
+  repositoryForPath,
   sandboxFilesForPath,
   type ConnectionTab,
   screenForPath,
@@ -100,6 +102,7 @@ function Signed({
   const screen = screenForPath(location.pathname);
   const connectionId = connectionForPath(location.pathname);
   const boardId = boardForPath(location.pathname);
+  const repositoryId = repositoryForPath(location.pathname);
 
   // An old `/organizations` or `/o/acme/jira` link opens the page, then the
   // address bar is brought up to date. Replaced rather than pushed: it is the
@@ -141,6 +144,11 @@ function Signed({
   /** The bounty on its own page, reported up by `BountyPage` as the board's is. */
   const [bountyName, setBountyName] = useState<string | undefined>(undefined);
 
+  /** The repository on its own page, reported up by `RepositoryPage` likewise. */
+  const [repositoryName, setRepositoryName] = useState<string | undefined>(
+    undefined,
+  );
+
   /**
    * Organizations waiting for an answer, for the mark on the avatar. Read in
    * the shell rather than on the account page, because the rail is on every
@@ -180,9 +188,17 @@ function Signed({
                     ? "New bounty"
                     : screen === "bounty"
                       ? (bountyName ?? "Bounty")
-                      : (organizations.active?.name ?? "Workspace");
+                      : screen === "org-repository"
+                        ? (repositoryName ?? "Repository")
+                        : (organizations.active?.name ?? "Workspace");
     document.title = `${page} · Lunox`;
-  }, [boardName, bountyName, organizations.active?.name, screen]);
+  }, [
+    boardName,
+    bountyName,
+    organizations.active?.name,
+    repositoryName,
+    screen,
+  ]);
 
   /*
     The board on screen becomes the one home opens on, for this organization.
@@ -249,9 +265,10 @@ function Signed({
    * reading the active one here would write the *previous* organization's
    * handle into the URL.
    *
-   * `id` and `board` are the site and board `org-jira-board` names. They are
-   * part of what a navigation is, not a detail the target screen looks up
-   * afterwards — two boards are the same screen at different URLs.
+   * `id` and `board` are the site and board `org-jira-board` names, and `id`
+   * alone the repository `org-repository` names. They are part of what a
+   * navigation is, not a detail the target screen looks up afterwards — two
+   * boards are the same screen at different URLs.
    *
    * `tab` is the Connections tab `org-settings` opens on. The settings page
    * owns that choice once it is showing; this only says where it starts.
@@ -263,10 +280,12 @@ function Signed({
     board?: string,
     tab?: ConnectionTab,
   ) {
+    // The id the current screen names, for the comparison below.
+    const currentId = screen === "org-repository" ? repositoryId : connectionId;
     if (
       next === screen &&
       slug === undefined &&
-      id === connectionId &&
+      id === currentId &&
       board === boardId &&
       tab === undefined
     ) {
@@ -362,7 +381,8 @@ function Signed({
           // A screen inside an organization moves to the same screen in the
           // chosen one, so the URL and the page agree about which is shown. A
           // site or a board belongs to the old organization, so those land
-          // on the new one's Jira list rather than on an id that is not its.
+          // on the new one's Jira list rather than on an id that is not its;
+          // a repository likewise lands on the new one's GitHub tab.
           // Screens outside any organization, the bounties of every one
           // included, stay where they are. The slug is
           // passed because `select` has not re-rendered yet — see `navigate`.
@@ -375,6 +395,14 @@ function Signed({
               undefined,
               undefined,
               "jira",
+            );
+          } else if (screen === "org-repository") {
+            navigate(
+              "org-settings",
+              organization.slug,
+              undefined,
+              undefined,
+              "github",
             );
           }
         }}
@@ -417,6 +445,9 @@ function Signed({
                   name: workspaceLabel(bountyOrganization),
                   slug: bountyOrganization.slug,
                 }
+          }
+          repositoryName={
+            screen === "org-repository" ? repositoryName : undefined
           }
           onNavigate={navigate}
         />
@@ -484,6 +515,36 @@ function Signed({
               boardName={boardName}
               onBoardName={setBoardName}
               role={organizations.active.role}
+            />
+          )
+        ) : screen === "org-repository" ? (
+          organizations.active === null || repositoryId === undefined ? (
+            <NoOrganization
+              loading={organizations.loading}
+              notFound={organizations.notFound}
+              onOpenOrganizations={() => navigate("organizations")}
+            />
+          ) : (
+            <RepositoryPage
+              // Keyed by the repository, so moving between two remounts
+              // rather than showing the previous one's runs while the new
+              // ones load.
+              key={`${organizations.active.id}:${repositoryId}`}
+              organizationId={organizations.active.id}
+              organizationSlug={organizations.active.slug}
+              repoId={repositoryId}
+              role={organizations.active.role}
+              onName={setRepositoryName}
+              // Back to the GitHub tab once it is no longer registered.
+              onRemoved={() =>
+                navigate(
+                  "org-settings",
+                  organizations.active?.slug,
+                  undefined,
+                  undefined,
+                  "github",
+                )
+              }
             />
           )
         ) : screen === "bounties" ? (
@@ -576,6 +637,12 @@ function Signed({
                   board.connectionId,
                   board.id,
                 );
+              }}
+              onOpenRepository={(repo) => {
+                // The name is known already, so the trail and the title need
+                // not wait for the page to read the list again.
+                setRepositoryName(repo.fullName);
+                navigate("org-repository", organizations.active?.slug, repo.id);
               }}
               onLeft={() => {
                 void organizations.refresh();

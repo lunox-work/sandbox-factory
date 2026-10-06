@@ -59,6 +59,20 @@ const schema = z.object({
     blank,
     z.coerce.number().int().positive().max(200).default(40),
   ),
+  /**
+   * The DeepWiki-Open service the deepwiki builder asks for a wiki. Optional:
+   * without a URL deepwiki runs fail with `builder_unavailable`. The
+   * repository read token is sent to it, so it must be a trusted deployment.
+   * The provider and model are passed through only when set; the service
+   * applies its own defaults otherwise.
+   */
+  DEEPWIKI_OPEN_URL: z.preprocess(blank, z.url().optional()),
+  DEEPWIKI_OPEN_AUTH_CODE: z.preprocess(
+    unsetSecret,
+    z.string().min(1).optional(),
+  ),
+  DEEPWIKI_OPEN_PROVIDER: z.preprocess(blank, z.string().min(1).optional()),
+  DEEPWIKI_OPEN_MODEL: z.preprocess(blank, z.string().min(1).optional()),
 });
 export function parseWorkerEnv(
   values: Record<string, string | undefined> = process.env,

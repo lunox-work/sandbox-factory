@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { and, desc, eq, gt, isNull, lte, ne, or, sql } from "drizzle-orm";
 import {
   ANALYSIS_TOOLS,
+  GRAPH_READERS,
   canonicalJson,
   isFixturesParams,
   isScopeParams,
@@ -153,6 +154,10 @@ const knownTool = (tool: string): AnalysisTool | undefined =>
 /** Literal list for the claim query; the names are compile-time constants. */
 const KNOWN_TOOLS_SQL = sql.raw(
   ANALYSIS_TOOLS.map((name) => `'${name}'`).join(", "),
+);
+/** The tools that wait for the graphify run they name; see `GRAPH_READERS`. */
+const GRAPH_READERS_SQL = sql.raw(
+  GRAPH_READERS.map((name) => `'${name}'`).join(", "),
 );
 function toRun(row: AnalysisRunRow, repoId: string | null): StoredAnalysisRun {
   const tool = knownTool(row.tool);
@@ -383,10 +388,10 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
           finishedAt: null,
         })
         .where(
-          // A slice or a scope waits for the graphify run it reads to finish
-          // either way; the worker then fails it cleanly if that run did not
-          // succeed.
-          sql`${analysisRun.id} = (select a.id from analysis_run a where a.status = 'queued' and a.tool in (${KNOWN_TOOLS_SQL}) and (a.tool not in ('slice', 'scope') or not exists (select 1 from analysis_run g where g.id = a.params->>'graphRunId' and g.status in ('queued', 'running'))) order by a.created_at, a.id for update of a skip locked limit 1)`,
+          // A graph reader (a slice or a scope) waits for the graphify
+          // run it reads to finish either way; the worker then fails it
+          // cleanly if that run did not succeed.
+          sql`${analysisRun.id} = (select a.id from analysis_run a where a.status = 'queued' and a.tool in (${KNOWN_TOOLS_SQL}) and (a.tool not in (${GRAPH_READERS_SQL}) or not exists (select 1 from analysis_run g where g.id = a.params->>'graphRunId' and g.status in ('queued', 'running'))) order by a.created_at, a.id for update of a skip locked limit 1)`,
         )
         .returning();
       const run = rows[0];

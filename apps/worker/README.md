@@ -1,19 +1,22 @@
 # Private repository analysis worker
 
-Six adapters run here. Graphify analyzes an immutable repository
+Eight adapters run here. Graphify analyzes an immutable repository
 snapshot with `graphifyy==0.4.18`, pinned parser packages and NetworkX 3.4.2.
-Slice reads a graphify run's graph and the same source to describe
-the files one task needs and their boundary. Sandbox build
-turns a slice and a version's private transform into a runnable project and
-checks its baseline in an evaluation job. Scope and fixtures are agent runs:
-a model reads the source to propose a slice for a bounty, and to write
-behaviour for a succeeded slice's mocked calls. Starter is the one run with
-no repository: a model writes a generated version's project from the
-bounty's own text, which is then built and checked like a slice's. Graphify,
-slice and the agents never execute repository code or install its
-dependencies; the build and the starter execute the generated project only
-inside the evaluation provider's job. Only the agents call a model. DeepWiki Open and Archify remain candidates
-for later adapters.
+Dependency-cruiser and deepwiki are the other context builders: a module
+dependency cruise of the snapshot, and a wiki written by a self-hosted
+DeepWiki-Open service. Slice reads a graphify run's graph and the same
+source to describe the files one task needs and their boundary. Sandbox
+build turns a slice and a version's private transform into a runnable
+project and checks its baseline in an evaluation job. Scope and fixtures
+are agent runs: a model reads the source to propose a slice for a bounty,
+and to write behaviour for a succeeded slice's mocked calls. Starter is the
+one run with no repository: a model writes a generated version's project
+from the bounty's own text, which is then built and checked like a slice's.
+Graphify, dependency-cruiser, slice and the agents never execute
+repository code or install its dependencies; the build and the starter
+execute the generated project only inside the evaluation provider's job.
+Only the agents call a model; deepwiki hands the repository to the
+configured DeepWiki-Open service, which uses its own.
 
 ## Run locally
 
@@ -50,6 +53,67 @@ by degree. The full graph remains in JSON. Wiki pages are structural inventories
 and communities use neutral names. `manifest.json` records coverage, omissions,
 counts, confidence and the canonical graph SHA-256. Timing fields are diagnostic
 and do not participate in the graph digest.
+
+### Context builders
+
+`dependency_cruiser` and `deepwiki` are the other context builders, queued
+like graphify from `POST .../repositories/:id/runs` with the builder's name
+as `tool`; their parameters are graphify's plus a `builder` discriminator.
+Each writes a `manifest.json` whose `meta` is the summary the console reads
+(`dependencyCruiserSummarySchema` and `deepwikiSummarySchema` in
+`packages/shared`).
+
+**dependency_cruiser** runs `dependency-cruiser` 18.5.0 in-process on the
+extracted source: every module system, TypeScript pre-compilation
+dependencies, `node_modules`, `dist`, `build`, `vendor`, `third_party` and
+`.git` excluded, no rule set, and none of the repository's own
+`tsconfig`, Babel or webpack configuration, so nothing in the snapshot is
+read as configuration or executed; the cruiser only parses. Outputs:
+`dependency-cruiser.json` (the full cruise, kind `dependency_graph`),
+`dependency-cruiser.dot` (the dot rendering, kind `dependency_dot`) and
+`manifest.json`, whose summary holds counts (modules, dependencies,
+circular, orphans, unresolved, external) and bounded, sorted lists: the 25
+busiest modules by dependents plus dependencies, up to 20 distinct cycles,
+50 orphans and 50 unresolved imports, with `truncated` saying whether any
+list was cut. The snapshot carries no `node_modules`, so a package import
+resolves to nothing; `external` counts every bare specifier (a package or
+a `node:` built-in) whether or not it resolved, and `unresolved` only the
+relative, absolute and `#` subpath imports that name no file. The same
+snapshot gives the same summary.
+
+**deepwiki** asks a self-hosted DeepWiki-Open service (`DEEPWIKI_OPEN_URL`;
+`DEEPWIKI_OPEN_AUTH_CODE`, `DEEPWIKI_OPEN_PROVIDER` and
+`DEEPWIKI_OPEN_MODEL` optional) for a wiki of the repository: it deletes
+the service's cached wiki for the repository, submits a task with the
+repository-scoped read token, polls the task until it completes, then reads
+the cached wiki. Without a URL deepwiki runs fail with
+`builder_unavailable`; a run with no repository fails `source_unavailable`.
+The service clones the repository's **default branch** itself and reads
+it with its own model; it does not read the worker's snapshot, so the wiki
+may describe a newer commit than the run names. The summary records the
+commit the run was asked for as `requestedCommitSha`. Outputs:
+`wiki/<page id>.md` for every page (kind `wiki_page`, at most 500),
+`wiki-structure.json` (kind `wiki_structure`, the raw structure with the
+repository, provider and model) and `manifest.json`; both JSON artifacts
+carry the summary (title, description, provider, model, pages with their
+importance, file paths, related pages and artifact path, and sections).
+Trust boundary: the repository read token is sent to the configured
+DeepWiki-Open service, so that service must be a trusted deployment the
+operator controls; the worker never logs the token, the URLs it is sent
+in, or anything the service returns beyond fixed lifecycle lines.
+
+Locally, `make deepwiki-up` starts such a service: the `deepwiki` compose
+profile runs DeepWiki-Open with the configuration in `apps/worker/deepwiki/`
+and an Ollama sidecar for its embeddings. DeepWiki-Open has no Anthropic
+provider, so its LiteLLM provider is pointed at DeepSeek with the key sizing
+already uses (`DEEPSEEK_API_KEY`), and `.env.development` sets
+`DEEPWIKI_OPEN_URL=http://deepwiki:8001` and
+`DEEPWIKI_OPEN_PROVIDER=litellm` for the worker. A worker started before
+the profile needs a restart to read them. Indexing a repository embeds
+every chunk through the sidecar, which runs on the CPU; an Ollama
+installed on the host uses the GPU and is pointed at with
+`DEEPWIKI_OLLAMA_HOST=http://host.docker.internal:11434` (pull
+`nomic-embed-text` there first).
 
 ### Slice
 
@@ -166,7 +230,9 @@ run 60 seconds before cancellation and release.
 Sources are ephemeral. The fetcher sends the repository-scoped read token only
 to api.github.com and follows a validated codeload redirect without Authorization.
 Archive extraction validates paths, roots, member types, expanded size and file
-count before writing. Symlinks and hard links are refused. Parser processes
+count before writing. Symlinks, hard links and device members are skipped,
+never written, so a repository that keeps a link still has its files
+analyzed. Parser processes
 receive a minimal environment with no platform credentials. Logs contain fixed
 lifecycle messages and public error codes; raw subprocess output is not stored.
 Artifacts and logs remain private. Removing a repository or disconnecting an

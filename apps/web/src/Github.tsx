@@ -27,7 +27,6 @@ import type {
   GithubRepoDto,
 } from "@sandbox-factory/shared";
 import {
-  ArrowLeft,
   ChevronRight,
   EllipsisVertical,
   ExternalLink,
@@ -44,7 +43,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { ErrorBanner, LoadingLine } from "@/components/Message";
 import { OutcomeNotice, type OutcomeTone } from "@/components/OutcomeNotice";
-import { StackChips } from "@/components/StackPicker";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -64,7 +62,7 @@ import {
 import { Separator } from "@/components/ui/separator";
 
 import { ProviderIcon } from "./ProviderIcon";
-import { RepositoryAnalysis } from "./RepositoryAnalysis";
+import { isPlainLeftClick, pathForScreen } from "./routes";
 import {
   linkInstallation,
   useGithub,
@@ -173,10 +171,19 @@ export function describeGithubOutcome(
 
 export function GithubConnections({
   organizationId,
+  organizationSlug,
   role,
+  onOpenRepository,
 }: {
   organizationId: string;
+  /** For the registered rows' links, which address the repository's page. */
+  organizationSlug: string;
   role: string;
+  /**
+   * Opens a registered repository's page in the app. A plain click on a row
+   * calls it; a modified click, or a row without it, follows the link.
+   */
+  onOpenRepository?: ((repo: GithubRepoDto) => void) | undefined;
 }) {
   const {
     connections,
@@ -190,9 +197,7 @@ export function GithubConnections({
   const repos = useGithubRepos(organizationId);
   const { outcome, dismiss } = useGithubOutcome();
   const [picking, setPicking] = useState(false);
-  const [openRepoId, setOpenRepoId] = useState<string | null>(null);
   const manageable = canManage(role);
-  const openRepo = repos.repos.find((repo) => repo.id === openRepoId);
 
   // `pick` is a question, not just news: open the picker for it.
   useEffect(() => {
@@ -219,18 +224,6 @@ export function GithubConnections({
           here.
         </p>
       </div>
-    );
-  }
-
-  if (openRepo !== undefined) {
-    return (
-      <RepositoryPage
-        organizationId={organizationId}
-        repo={openRepo}
-        manageable={manageable}
-        onBack={() => setOpenRepoId(null)}
-        onRemove={(repoId) => repos.remove(repoId)}
-      />
     );
   }
 
@@ -287,7 +280,10 @@ export function GithubConnections({
             onRegister={(externalId) =>
               repos.register(connection.id, externalId)
             }
-            onOpenRepo={(repo) => setOpenRepoId(repo.id)}
+            repositoryHref={(repo) =>
+              pathForScreen("org-repository", organizationSlug, repo.id)
+            }
+            onOpenRepo={onOpenRepository}
             onDisconnect={async () => {
               const result = await disconnect(connection.id);
               if (result.ok) await repos.refresh();
@@ -556,6 +552,7 @@ function InstallationCard({
   manageable,
   onUnhealthy,
   onRegister,
+  repositoryHref,
   onOpenRepo,
   onDisconnect,
 }: {
@@ -571,7 +568,9 @@ function InstallationCard({
   onRegister: (
     externalId: string,
   ) => Promise<{ ok: true } | { ok: false; error: string; code?: string }>;
-  onOpenRepo: (repo: GithubRepoDto) => void;
+  /** Where a repository's page is, for its row's link. */
+  repositoryHref: (repo: GithubRepoDto) => string;
+  onOpenRepo: ((repo: GithubRepoDto) => void) | undefined;
   /** Resolves to an error to show in the question, or nothing on success. */
   onDisconnect: () => Promise<string | undefined>;
 }) {
@@ -691,6 +690,7 @@ function InstallationCard({
           repos={repos}
           loading={reposLoading}
           failed={reposFailed}
+          href={repositoryHref}
           onOpen={onOpenRepo}
         />
 
@@ -716,13 +716,15 @@ function RegisteredRepos({
   repos,
   loading,
   failed,
+  href,
   onOpen,
 }: {
   repos: GithubRepoDto[];
   loading: boolean;
   /** The read failed; the page says so once, above, for every card. */
   failed: boolean;
-  onOpen: (repo: GithubRepoDto) => void;
+  href: (repo: GithubRepoDto) => string;
+  onOpen: ((repo: GithubRepoDto) => void) | undefined;
 }) {
   // Never "none registered" before the list is known: that is a zero
   // nobody counted.
@@ -740,10 +742,20 @@ function RegisteredRepos({
     <ul aria-label="Registered repositories" className="-mx-3 flex flex-col">
       {repos.map((repo) => (
         <li key={repo.id}>
-          <button
-            type="button"
+          {/*
+            A link, as a board's row is: the page has an address of its
+            own, so a modified click opens it in a new tab and a plain one
+            stays in the app.
+          */}
+          <a
+            href={href(repo)}
             className="focus-visible:ring-ring/50 hover:bg-muted/60 focus-visible:bg-muted/60 flex w-full items-center gap-3 rounded-lg px-3 py-1.5 text-left transition-colors focus-visible:ring-2 focus-visible:outline-none"
-            onClick={() => onOpen(repo)}
+            onClick={(event) => {
+              if (onOpen !== undefined && isPlainLeftClick(event)) {
+                event.preventDefault();
+                onOpen(repo);
+              }
+            }}
           >
             <span className="text-muted-foreground size-4 shrink-0">
               <FolderGit2 className="size-full" />
@@ -758,138 +770,10 @@ function RegisteredRepos({
               />
             )}
             <ChevronRight className="text-muted-foreground size-4 shrink-0" />
-          </button>
+          </a>
         </li>
       ))}
     </ul>
-  );
-}
-
-/**
- * One registered repository, as a page of its own inside the GitHub tab: the
- * actions that used to sit in a table row, now that the row is only a way in.
- */
-function RepositoryPage({
-  organizationId,
-  repo,
-  manageable,
-  onBack,
-  onRemove,
-}: {
-  organizationId: string;
-  repo: GithubRepoDto;
-  manageable: boolean;
-  onBack: () => void;
-  onRemove: (
-    repoId: string,
-  ) => Promise<{ ok: true } | { ok: false; error: string }>;
-}) {
-  const [analyzing, setAnalyzing] = useState(false);
-  const [removing, setRemoving] = useState(false);
-
-  return (
-    <div className="flex flex-col gap-5">
-      <div>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="-ml-2 gap-1.5"
-          onClick={onBack}
-        >
-          <ArrowLeft className="size-4" />
-          GitHub
-        </Button>
-      </div>
-      <header className="flex items-center gap-3">
-        <span className="size-5 shrink-0">
-          <FolderGit2 className="size-full" />
-        </span>
-        <h3 className="min-w-0 truncate leading-none font-semibold">
-          {repo.fullName}
-        </h3>
-        {repo.isPrivate && (
-          <Lock
-            className="text-muted-foreground size-3.5 shrink-0"
-            aria-label="Private"
-          />
-        )}
-      </header>
-      {repo.syncError !== null && (
-        <ErrorBanner className="mt-0">{repo.syncError}</ErrorBanner>
-      )}
-      <section
-        aria-label="Tech stack"
-        className="flex flex-col gap-2"
-        data-testid="repository-stack"
-      >
-        <h4 className="text-muted-foreground text-xs font-medium tracking-wide uppercase">
-          Tech stack
-        </h4>
-        {repo.stack === null ? (
-          <p className="text-muted-foreground text-sm">
-            Reading the repository&rsquo;s stack&hellip;
-          </p>
-        ) : repo.stack.length === 0 ? (
-          <p className="text-muted-foreground text-sm">
-            Nothing detected at the latest commit.
-          </p>
-        ) : (
-          <StackChips
-            inherited={[]}
-            inheritedFrom={repo.fullName}
-            own={repo.stack}
-          />
-        )}
-        <p className="text-muted-foreground text-xs">
-          Detected from its languages, files and dependency manifests at the
-          latest commit. A bounty about this repository starts with it.
-        </p>
-      </section>
-      <div className="flex flex-wrap items-center gap-2">
-        <Button
-          variant="outline"
-          aria-label={`Analysis for ${repo.fullName}`}
-          onClick={() => setAnalyzing(true)}
-        >
-          Analysis
-        </Button>
-        {manageable && (
-          <Button
-            variant="outline"
-            className="text-destructive gap-2"
-            aria-label={`Remove ${repo.fullName}`}
-            onClick={() => setRemoving(true)}
-          >
-            <Trash2 className="size-4" />
-            Remove
-          </Button>
-        )}
-      </div>
-      {analyzing && (
-        <RepositoryAnalysis
-          key={repo.id}
-          organizationId={organizationId}
-          repo={repo}
-          manageable={manageable}
-          onClose={() => setAnalyzing(false)}
-        />
-      )}
-      {manageable && (
-        <ConfirmDialog
-          open={removing}
-          onOpenChange={setRemoving}
-          title={`Remove ${repo.fullName}?`}
-          description="Stops tracking it here. Nothing changes on GitHub, and you can register it again."
-          confirmLabel="Remove"
-          onConfirm={async () => {
-            const result = await onRemove(repo.id);
-            if (!result.ok) return result.error;
-            onBack();
-            return undefined;
-          }}
-        />
-      )}
-    </div>
   );
 }
 

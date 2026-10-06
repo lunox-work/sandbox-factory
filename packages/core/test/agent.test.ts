@@ -8,6 +8,11 @@ import {
   isSandboxBuildParams,
   isScopeParams,
   isSliceParams,
+  isDependencyCruiserParams,
+  isDeepwikiParams,
+  readsGraph,
+  readsSource,
+  CONTEXT_BUILDERS,
   scenarioProblems,
   scopeProblems,
   sliceRequestOf,
@@ -47,6 +52,25 @@ test("agent parameters name their tool, and a scope run is never a slice", () =>
   assert.equal(isFixturesParams(scope), false);
   assert.equal(isSandboxBuildParams(fixtures), false);
   assert.equal(isScopeParams(slice), false);
+});
+
+test("a context builder names itself, and only slices and scopes read a graph", () => {
+  const cruise = {
+    deadlineMinutes: 30,
+    builder: "dependency_cruiser" as const,
+  };
+  const wiki = { deadlineMinutes: 30, builder: "deepwiki" as const };
+  assert.equal(toolOfParams(cruise), "dependency_cruiser");
+  assert.equal(toolOfParams(wiki), "deepwiki");
+  assert.equal(isSliceParams(cruise), false);
+  assert.equal(isDependencyCruiserParams(cruise), true);
+  assert.equal(isDependencyCruiserParams(wiki), false);
+  assert.equal(isDeepwikiParams(wiki), true);
+  assert.equal(isDeepwikiParams(slice), false);
+  assert.deepEqual(ANALYSIS_TOOLS.filter(readsGraph), ["slice", "scope"]);
+  assert.deepEqual(ANALYSIS_TOOLS.filter(readsSource).length, 7);
+  for (const builder of CONTEXT_BUILDERS)
+    assert.ok(ANALYSIS_TOOLS.includes(builder));
 });
 
 test("every tool has a version", () => {

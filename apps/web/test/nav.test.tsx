@@ -66,11 +66,41 @@ const BOUNTY = {
   createdBy: "user_1",
 };
 
+/** The one registered repository, in Acme, for its page. */
+const REPO = {
+  id: "ghr_1",
+  connectionId: "ghc_1",
+  role: "source",
+  externalId: "1",
+  fullName: "acme/widgets",
+  defaultBranch: "main",
+  isPrivate: false,
+  sizeKb: 1,
+  headSha: "a".repeat(40),
+  pushedAt: "2026-10-01T00:00:00.000Z",
+  lastSyncedAt: "2026-10-01T00:00:00.000Z",
+  syncStatus: "ok",
+  syncError: null,
+  stack: [],
+  createdAt: "2026-10-01T00:00:00.000Z",
+};
+
 vi.stubGlobal(
   "fetch",
   vi.fn((input: RequestInfo | URL) => {
     const url = String(input);
     const boards = /\/orgs\/([^/]+)\/jira\/boards$/.exec(url);
+    if (url.endsWith("/github/repositories")) {
+      return Promise.resolve(
+        Response.json({ repositories: url.includes("org_1") ? [REPO] : [] }),
+      );
+    }
+    if (url.endsWith("/snapshots")) {
+      return Promise.resolve(Response.json({ snapshots: [] }));
+    }
+    if (url.endsWith("/runs")) {
+      return Promise.resolve(Response.json({ runs: [] }));
+    }
     if (boards !== null) {
       return Promise.resolve(
         Response.json({ boards: boardsByOrganization[boards[1]!] ?? [] }),
@@ -1173,6 +1203,50 @@ test("switching away from a board lands on the new organization's Jira tab", asy
   await waitFor(() => {
     expect(window.location.pathname).toBe("/o/globex/settings");
     expect(window.location.search).toBe("?connection=jira");
+  });
+});
+
+test("/o/:slug/repositories/:id opens the repository's page, under the GitHub tab", async () => {
+  window.history.replaceState(null, "", "/o/acme/repositories/ghr_1");
+  render(<App />);
+
+  expect(
+    await screen.findByRole("heading", { name: "acme/widgets", level: 1 }),
+  ).toBeTruthy();
+  await waitFor(() => expect(document.title).toBe("acme/widgets · Lunox"));
+  const trail = screen.getByRole("navigation", { name: "Breadcrumb" });
+  await waitFor(() =>
+    expect(
+      within(trail)
+        .getAllByRole("listitem")
+        .map((item) => item.textContent),
+    ).toEqual(["Home", "Workspaces", "Acme", "GitHub", "acme/widgets"]),
+  );
+  expect(
+    within(trail).getByText("acme/widgets").getAttribute("aria-current"),
+  ).toBe("page");
+
+  // The GitHub crumb leads to the tab the repository was registered on.
+  fireEvent.click(within(trail).getByRole("link", { name: "GitHub" }));
+  await waitFor(() => {
+    expect(window.location.pathname).toBe("/o/acme/settings");
+    expect(window.location.search).toBe("?connection=github");
+  });
+});
+
+test("switching away from a repository lands on the new organization's GitHub tab", async () => {
+  // The repository belongs to the old organization, so its id cannot
+  // follow; the nearest screen the new one has is its own GitHub tab.
+  window.history.replaceState(null, "", "/o/acme/repositories/ghr_1");
+  render(<App />);
+  await screen.findByRole("heading", { name: "acme/widgets", level: 1 });
+
+  const menu = await openSwitcher();
+  fireEvent.click(within(menu).getByRole("option", { name: /Globex/ }));
+
+  await waitFor(() => {
+    expect(window.location.pathname).toBe("/o/globex/settings");
+    expect(window.location.search).toBe("?connection=github");
   });
 });
 

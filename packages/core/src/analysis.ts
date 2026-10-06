@@ -20,6 +20,7 @@ export const ANALYSIS_ERROR_CODES = [
   "evaluation_failed",
   "agent_unavailable",
   "agent_incomplete",
+  "builder_unavailable",
 ] as const;
 export type AnalysisErrorCode = (typeof ANALYSIS_ERROR_CODES)[number];
 export const ARTIFACT_KINDS = [
@@ -42,23 +43,38 @@ export const ARTIFACT_KINDS = [
   "fixture_set",
   "starter_set",
   "pseudonyms",
+  "dependency_graph",
+  "dependency_dot",
+  "wiki_structure",
   "other",
 ] as const;
 export type ArtifactKind = (typeof ARTIFACT_KINDS)[number];
 
 /**
- * The analysis tools a run can name. `graphify` maps a snapshot's structure;
- * `slice` reads that map and the source to describe one task's boundary;
- * `sandbox_build` turns a slice and a version's private transform into a
- * runnable project and checks its baseline. `scope` and `fixtures` are
- * agent runs: a model reads the source to propose a slice for a bounty, and
- * to write believable behaviour for a succeeded slice's mocked seams.
+ * The context builders: the tools that read a snapshot on their own and
+ * describe it for people and agents. `graphify` maps a snapshot's
+ * structure; `dependency_cruiser` cruises its module dependencies;
+ * `deepwiki` asks a DeepWiki-Open service for a wiki of the repository. Any member can start one from a repository's page.
+ */
+export const CONTEXT_BUILDERS = [
+  "graphify",
+  "dependency_cruiser",
+  "deepwiki",
+] as const;
+export type ContextBuilder = (typeof CONTEXT_BUILDERS)[number];
+/**
+ * The analysis tools a run can name. The context builders above come first;
+ * `slice` reads graphify's map and the source to describe one task's
+ * boundary; `sandbox_build` turns a slice and a version's private transform
+ * into a runnable project and checks its baseline. `scope` and `fixtures`
+ * are agent runs: a model reads the source to propose a slice for a bounty,
+ * and to write believable behaviour for a succeeded slice's mocked seams.
  * `sandbox_starter` is the one run with no repository: a model writes a
  * starter project from the bounty's own text, which is then built and
  * checked like a slice's.
  */
 export const ANALYSIS_TOOLS = [
-  "graphify",
+  ...CONTEXT_BUILDERS,
   "slice",
   "sandbox_build",
   "scope",
@@ -67,6 +83,20 @@ export const ANALYSIS_TOOLS = [
 ] as const;
 export type AnalysisTool = (typeof ANALYSIS_TOOLS)[number];
 export const GRAPHIFY_TOOL_VERSION = "graphifyy@0.4.18+driver-1";
+/** Bumped when the cruise options, summary or artifact shapes change meaning. */
+export const DEPENDENCY_CRUISER_TOOL_VERSION =
+  "dependency-cruiser@18.5.0+driver-1";
+/** Bumped when the DeepWiki-Open request or the artifacts written from its wiki change meaning. */
+export const DEEPWIKI_TOOL_VERSION = "deepwiki-open@driver-1";
+/**
+ * Tools that read a graphify run of the same snapshot, named in
+ * `params.graphRunId`. The queue hands one to a worker only once that run
+ * has finished.
+ */
+export const GRAPH_READERS = ["slice", "scope"] as const;
+export function readsGraph(tool: AnalysisTool): boolean {
+  return GRAPH_READERS.some((name) => name === tool);
+}
 /** Bumped when the slice walk, extractor or artifact shapes change meaning. */
 export const SLICE_TOOL_VERSION = "slice@1";
 /** Bumped when the generated project, harness or baseline rules change meaning. */
@@ -95,11 +125,25 @@ export function toolVersionOf(tool: AnalysisTool): string {
       return FIXTURES_TOOL_VERSION;
     case "graphify":
       return GRAPHIFY_TOOL_VERSION;
+    case "dependency_cruiser":
+      return DEPENDENCY_CRUISER_TOOL_VERSION;
+    case "deepwiki":
+      return DEEPWIKI_TOOL_VERSION;
   }
 }
 
 export interface GraphifyParams {
   readonly deadlineMinutes: number;
+}
+/**
+ * A context builder other than graphify names itself: its parameters are
+ * otherwise graphify's, and the tool is read from the parameters.
+ */
+export interface DependencyCruiserParams extends GraphifyParams {
+  readonly builder: "dependency_cruiser";
+}
+export interface DeepwikiParams extends GraphifyParams {
+  readonly builder: "deepwiki";
 }
 export interface SliceBudget {
   /** Files inside the slice; the first file past it on any path is a cut. */
@@ -163,11 +207,23 @@ export interface StarterParams extends GraphifyParams {
 }
 export type AnalysisParams =
   | GraphifyParams
+  | DependencyCruiserParams
+  | DeepwikiParams
   | SliceParams
   | SandboxBuildParams
   | ScopeParams
   | FixturesParams
   | StarterParams;
+export function isDependencyCruiserParams(
+  params: AnalysisParams,
+): params is DependencyCruiserParams {
+  return "builder" in params && params.builder === "dependency_cruiser";
+}
+export function isDeepwikiParams(
+  params: AnalysisParams,
+): params is DeepwikiParams {
+  return "builder" in params && params.builder === "deepwiki";
+}
 export function isScopeParams(params: AnalysisParams): params is ScopeParams {
   return "agent" in params && params.agent === "scope";
 }
@@ -181,9 +237,11 @@ export function isStarterParams(
 ): params is StarterParams {
   return "agent" in params && params.agent === "starter";
 }
-/** A scope run names a graph run too; only a run with no agent is a slice. */
+/** A scope run names a graph run too; only a run with no agent and no builder is a slice. */
 export function isSliceParams(params: AnalysisParams): params is SliceParams {
-  return "graphRunId" in params && !("agent" in params);
+  return (
+    "graphRunId" in params && !("agent" in params) && !("builder" in params)
+  );
 }
 /** A starter names a version too; only a run with no agent is a build. */
 export function isSandboxBuildParams(
@@ -192,6 +250,7 @@ export function isSandboxBuildParams(
   return "sandboxVersionId" in params && !("agent" in params);
 }
 export function toolOfParams(params: AnalysisParams): AnalysisTool {
+  if ("builder" in params) return params.builder;
   if (isScopeParams(params)) return "scope";
   if (isFixturesParams(params)) return "fixtures";
   if (isStarterParams(params)) return "sandbox_starter";

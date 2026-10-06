@@ -741,20 +741,32 @@ Both connect flows sign their `state` with the same secret, so the state
 carries a `purpose` (`apps/api/src/connect-state.ts`) and each callback
 refuses the other's.
 
-**Analysis runs are private and cached.** A `graphify` run maps a snapshot's
-structure in a Fargate worker; a `slice` run reads that map and the same
-source to cut the files one task needs and describe their boundary (the stubs
-it imports from outside, the public surface outside code imports from it, the
-externals to mock). Both are `analysis_run` rows keyed by `(snapshot, tool,
+**Analysis runs are private and cached.** Three _context builders_ describe a
+snapshot on their own, started from a repository's page
+(`/o/:slug/repositories/:repoId`) by an owner or admin and read by any
+member: a `graphify` run maps a snapshot's structure in a Fargate worker; a
+`dependency_cruiser` run cruises its module dependencies, cycles and
+orphans; a `deepwiki` run asks a self-hosted DeepWiki-Open service for a
+wiki of the repository (and, unlike the others, that service reads the
+repository's default branch itself; the run records which commit it was
+asked for). A `slice` run reads the graphify map and the same source to cut
+the files one task needs and describe their boundary (the stubs it imports
+from outside, the public surface outside code imports from it, the
+externals to mock). All are `analysis_run` rows keyed by `(snapshot, tool,
 version, params)`, reached only through the repository's owner, with their
-artifacts in the private bucket under `runs/<runId>/`. A slice names the
-graphify run it reads and is handed to a worker only after that run has
-finished. The walk and the record shapes are pure code in
-`packages/core/src/slice`; `apps/worker/README.md` states the output contract.
-A slice is a proposal: `stubCoverage: "full"` with no blockers lets it proceed
-to the provenance checks in
+artifacts in the private bucket under `runs/<runId>/`. A builder other than
+graphify names itself in its parameters (`params.builder`), since their
+parameters are otherwise the same. A slice and a scope run name the
+graphify run they read (`params.graphRunId`) and are handed to a worker
+only after that run has finished; the API enqueues the graph run first when
+there is none. The walk and the record shapes are pure code in
+`packages/core/src/slice`; `apps/worker/README.md` states every output
+contract. A slice is a proposal: `stubCoverage: "full"` with no blockers
+lets it proceed to the provenance checks in
 [`packages/core/src/sandbox/provenance.ts`](../packages/core/src/sandbox/provenance.ts).
 Anything less remains diagnostic output and cannot produce a ready sandbox.
+A slice is cut for a bounty by the profiler and the sandbox flow, never by
+hand from the repository page, which only builds context.
 
 **Agents propose; deterministic code decides.** A `scope` run gives a model
 read-only tools over the extracted source and the bounty's approved spec,
