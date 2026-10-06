@@ -362,8 +362,15 @@ function Signed({
       nudged the centred column sideways each time. The wheel, trackpad and
       keyboard still scroll it. Both rules, because Safari before 18.2
       ignores `scrollbar-width`.
+
+      The panel is positioned, and the frame clips rather than hides. An
+      absolutely positioned box with no positioned ancestor (every `sr-only`
+      label is one) is placed against the document, not the panel, and one
+      far down a long page made the document taller than the window, so the
+      whole shell could be scrolled away. Positioned, the panel holds them;
+      clipped, the frame cannot be scrolled even by focus or find-in-page.
     */
-    <div className="flex min-h-dvh flex-col sm:bg-sidebar sm:h-dvh sm:flex-row sm:overflow-hidden">
+    <div className="flex min-h-dvh flex-col sm:bg-sidebar sm:h-dvh sm:flex-row sm:overflow-clip">
       <SideNav
         screen={screen}
         userId={userId}
@@ -411,7 +418,7 @@ function Signed({
       />
       <div
         ref={contentRef}
-        className={`min-w-0 flex-1 pb-[calc(4rem+env(safe-area-inset-bottom))] sm:bg-background sm:my-2 sm:mr-2 sm:overflow-y-auto sm:scrollbar-none sm:[&::-webkit-scrollbar]:hidden sm:rounded-[6px] sm:border sm:pb-0 ${
+        className={`relative min-w-0 flex-1 pb-[calc(4rem+env(safe-area-inset-bottom))] sm:bg-background sm:my-2 sm:mr-2 sm:overflow-y-auto sm:scrollbar-none sm:[&::-webkit-scrollbar]:hidden sm:rounded-[6px] sm:border sm:pb-0 ${
           screen === "home" ? "" : "[&>main]:!pt-4 sm:[&>main]:!pt-6"
         }`}
       >

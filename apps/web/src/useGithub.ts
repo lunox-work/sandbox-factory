@@ -87,9 +87,19 @@ export function useGithub(
         : null,
     unconfigured,
   };
+  // A connection linked or dropped changes which are left to link.
   const refresh = useCallback(async () => {
-    await query.refresh();
-  }, [query.refresh]);
+    await Promise.all([
+      query.refresh(),
+      cache.invalidateQueries({
+        queryKey: queryKeys.resource(
+          userId,
+          organizationId ?? "",
+          "github-available",
+        ),
+      }),
+    ]);
+  }, [query.refresh, cache, userId, organizationId]);
 
   const connect = useCallback(() => {
     if (organizationId === undefined) return;
@@ -223,6 +233,8 @@ export interface GithubRepos {
 export function useGithubRepos(
   organizationId: string | undefined,
 ): GithubRepos {
+  const cache = useQueryClient();
+  const userId = useUserId();
   const query = useOwnerQuery(
     organizationId,
     "github-repositories",
@@ -260,13 +272,29 @@ export function useGithubRepos(
       }
       try {
         await clients.github.remove(organizationId, repoId);
-        await refresh();
+        await Promise.all([
+          refresh(),
+          // It can be registered again, and the bounties linked to it lose
+          // the link.
+          ...[
+            "github-installation-repositories",
+            "bounties",
+            "bounty-detail",
+          ].map((resource) =>
+            cache.invalidateQueries({
+              queryKey: queryKeys.resource(userId, organizationId, resource),
+            }),
+          ),
+          cache.invalidateQueries({
+            queryKey: queryKeys.me(userId, "bounties"),
+          }),
+        ]);
         return { ok: true, value: undefined };
       } catch (error) {
         return failureOf(error, "Could not reach the server.");
       }
     },
-    [organizationId, refresh],
+    [organizationId, refresh, cache, userId],
   );
 
   return { ...state, refresh, register, remove };

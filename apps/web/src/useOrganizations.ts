@@ -87,9 +87,15 @@ export function useOrganizations(
   const [deselected, setDeselected] = useState(false);
 
   const refresh = useCallback(async () => {
-    await queryClient.invalidateQueries({
-      queryKey: queryKeys.me(userId, "memberships"),
-    });
+    await Promise.all([
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.me(userId, "memberships"),
+      }),
+      // The bounties across workspaces follow which workspaces there are.
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.me(userId, "bounties"),
+      }),
+    ]);
   }, [queryClient, userId]);
 
   // Settle on one organization once the list arrives: the one the URL names,
