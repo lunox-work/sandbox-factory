@@ -294,6 +294,32 @@ export const artifactListSchema = z.object({
   artifacts: z.array(artifactDtoSchema),
 });
 export const artifactUrlSchema = z.object({ url: z.url() });
+/**
+ * The largest artifact `.../artifacts/:id/content` answers with as text.
+ * A larger one still opens through its signed URL.
+ */
+export const ARTIFACT_TEXT_MAX_BYTES = 1_000_000;
+/**
+ * `GET .../artifacts/:id/content`: one artifact as text, for the console's
+ * viewer. `text` is null when it is not UTF-8 text or is over
+ * `ARTIFACT_TEXT_MAX_BYTES`, which `omitted` says.
+ */
+export const artifactContentSchema = z.object({
+  path: z.string(),
+  sizeBytes: z.number().int().nonnegative(),
+  text: z.string().nullable(),
+  omitted: z.enum(["binary", "too_large"]).nullable(),
+});
+/**
+ * `GET .../runs/:id/log/content`: a run's log as text, for owners and
+ * admins. `text` is null when it is not UTF-8 text or is over
+ * `ARTIFACT_TEXT_MAX_BYTES`, which `omitted` says.
+ */
+export const runLogContentSchema = z.object({
+  sizeBytes: z.number().int().nonnegative(),
+  text: z.string().nullable(),
+  omitted: z.enum(["binary", "too_large"]).nullable(),
+});
 
 const count = z.number().int().nonnegative();
 /**
@@ -785,6 +811,8 @@ export const starterSetSchema = starterSubmissionSchema.extend({
 export type AnalysisRunDto = z.infer<typeof analysisRunDtoSchema>;
 export type StarterSetDto = z.infer<typeof starterSetSchema>;
 export type ArtifactDto = z.infer<typeof artifactDtoSchema>;
+export type ArtifactContentDto = z.infer<typeof artifactContentSchema>;
+export type RunLogContentDto = z.infer<typeof runLogContentSchema>;
 export type EnqueueAnalysisInput = z.input<typeof enqueueAnalysisSchema>;
 export type EnqueueSliceInput = z.input<typeof enqueueSliceSchema>;
 export type EnqueueScopeInput = z.input<typeof enqueueScopeSchema>;

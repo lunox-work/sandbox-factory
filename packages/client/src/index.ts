@@ -18,7 +18,9 @@ export { ApiClient, ApiError, type ClientOptions } from "./transport.js";
 import {
   analysisRunListSchema,
   analysisRunResponseSchema,
+  artifactContentSchema,
   artifactListSchema,
+  runLogContentSchema,
   artifactUrlSchema,
   enqueueSliceResponseSchema,
   generateStarterResponseSchema,
@@ -191,6 +193,19 @@ export class GithubAnalysisClient extends ApiClient {
       ),
     ).url;
   }
+  /** An artifact as text, when it is text and small enough to show. */
+  async artifactContent(
+    owner: string,
+    artifactId: string,
+    signal?: AbortSignal,
+  ) {
+    return artifactContentSchema.parse(
+      await this.request(
+        `${this.#base(owner)}/artifacts/${encodeURIComponent(artifactId)}/content`,
+        { signal },
+      ),
+    );
+  }
   async logUrl(owner: string, runId: string, signal?: AbortSignal) {
     return artifactUrlSchema.parse(
       await this.request(
@@ -198,6 +213,15 @@ export class GithubAnalysisClient extends ApiClient {
         { signal },
       ),
     ).url;
+  }
+  /** A run's log as text; owners and admins only. */
+  async logContent(owner: string, runId: string, signal?: AbortSignal) {
+    return runLogContentSchema.parse(
+      await this.request(
+        `${this.#base(owner)}/runs/${encodeURIComponent(runId)}/log/content`,
+        { signal },
+      ),
+    );
   }
 }
 

@@ -56,6 +56,7 @@ import {
 } from "sandbox-factory";
 import { rankAtLeast } from "../access.js";
 import type { AuthVariables } from "../http-context.js";
+import { textOf } from "../object-text.js";
 
 const sandboxDto = ({ organizationId: _owner, ...dto }: StoredSandbox) => dto;
 const sourceDto = (source: StoredVersionSource) => ({
@@ -95,16 +96,6 @@ const versionResponse = (
     version: stored.version,
     ...(privileged ? { source: sourceDto(stored.source) } : {}),
   });
-
-/** UTF-8 text, or null for bytes a text view cannot show. */
-function textOf(bytes: Uint8Array): string | null {
-  if (bytes.includes(0)) return null;
-  try {
-    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-  } catch {
-    return null;
-  }
-}
 
 /** A dependency choice must name a package the slice requires. */
 function unknownChoices(

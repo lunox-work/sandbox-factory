@@ -18,7 +18,10 @@ import type { AnalysisParams } from "sandbox-factory";
 import {
   analysisRunListSchema,
   analysisRunResponseSchema,
+  ARTIFACT_TEXT_MAX_BYTES,
+  artifactContentSchema,
   artifactListSchema,
+  runLogContentSchema,
   enqueueAnalysisSchema,
   enqueueFixturesSchema,
   enqueueScopeSchema,
@@ -31,6 +34,7 @@ import {
 import type { Context, Hono } from "hono";
 import { rankAtLeast } from "../access.js";
 import type { AuthVariables } from "../http-context.js";
+import { textOf } from "../object-text.js";
 import { enqueueAnalysis } from "./enqueue.js";
 
 export interface AnalysisRouteOptions {
@@ -579,6 +583,43 @@ export function mountAnalysisRoutes(
       url: await options.objects.signedUrl(artifact.objectKey, 900),
     });
   });
+  /**
+   * One artifact as text, for the viewer. Read through the API rather than
+   * the signed link, which the browser could not read across origins.
+   */
+  app.get(`${base}/artifacts/:id/content`, async (c) => {
+    const artifact = await options.artifacts.get(
+      c.req.param("orgId"),
+      c.req.param("id"),
+    );
+    if (artifact === null) return c.json({ error: "Not found." }, 404);
+    c.header("Cache-Control", "no-store");
+    const answer = (
+      text: string | null,
+      omitted: "binary" | "too_large" | null,
+    ) =>
+      c.json(
+        artifactContentSchema.parse({
+          path: artifact.path,
+          sizeBytes: artifact.sizeBytes,
+          text,
+          omitted,
+        }),
+      );
+    if (artifact.sizeBytes > ARTIFACT_TEXT_MAX_BYTES)
+      return answer(null, "too_large");
+    const bytes = await options.objects.get(artifact.objectKey);
+    if (bytes === undefined)
+      return c.json(
+        {
+          error: "The artifact could not be read.",
+          code: "artifacts_unavailable",
+        },
+        502,
+      );
+    const text = textOf(bytes);
+    return text === null ? answer(null, "binary") : answer(text, null);
+  });
   app.get(`${base}/runs/:id/log/url`, async (c) => {
     if (!rankAtLeast(c.get("member").role, "admin"))
       return c.json(
@@ -592,5 +633,34 @@ export function mountAnalysisRoutes(
     if (key === null) return c.json({ error: "No log is available." }, 404);
     c.header("Cache-Control", "no-store");
     return c.json({ url: await options.objects.signedUrl(key, 900) });
+  });
+  /** The log as text, for the console's log viewer; owners and admins only. */
+  app.get(`${base}/runs/:id/log/content`, async (c) => {
+    if (!rankAtLeast(c.get("member").role, "admin"))
+      return c.json(
+        { error: "Only owners and admins can read analysis logs." },
+        403,
+      );
+    const key = await options.runs.logKey(
+      c.req.param("orgId"),
+      c.req.param("id"),
+    );
+    if (key === null) return c.json({ error: "No log is available." }, 404);
+    const bytes = await options.objects.get(key);
+    if (bytes === undefined)
+      return c.json(
+        { error: "The log could not be read.", code: "artifacts_unavailable" },
+        502,
+      );
+    c.header("Cache-Control", "no-store");
+    const tooLarge = bytes.byteLength > ARTIFACT_TEXT_MAX_BYTES;
+    const text = tooLarge ? null : textOf(bytes);
+    return c.json(
+      runLogContentSchema.parse({
+        sizeBytes: bytes.byteLength,
+        text,
+        omitted: tooLarge ? "too_large" : text === null ? "binary" : null,
+      }),
+    );
   });
 }

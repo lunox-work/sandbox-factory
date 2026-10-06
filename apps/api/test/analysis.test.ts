@@ -126,11 +126,39 @@ function fixture(role = "owner") {
         },
       ],
       get: async (owner: string, id: string) =>
-        owner === "org_1" && id === "art_1"
-          ? { objectKey: "runs/private/graph.html" }
-          : null,
+        owner !== "org_1"
+          ? null
+          : id === "art_1"
+            ? {
+                objectKey: "runs/private/graph.html",
+                path: "graph.html",
+                sizeBytes: 5,
+              }
+            : id === "art_png"
+              ? { objectKey: "runs/private/a.png", path: "a.png", sizeBytes: 3 }
+              : id === "art_big"
+                ? {
+                    objectKey: "runs/private/big.json",
+                    path: "big.json",
+                    sizeBytes: 2_000_000,
+                  }
+                : id === "art_gone"
+                  ? {
+                      objectKey: "runs/private/gone",
+                      path: "gone.md",
+                      sizeBytes: 1,
+                    }
+                  : null,
     },
     objects: {
+      get: async (key: string) =>
+        key === "logs/private.log"
+          ? new TextEncoder().encode("Analysis artifacts uploaded.")
+          : key === "runs/private/graph.html"
+            ? new TextEncoder().encode("<svg>")
+            : key === "runs/private/a.png"
+              ? new Uint8Array([137, 0, 1])
+              : undefined,
       signedUrl: async (key: string, ttl: number) => {
         assert.equal(ttl, 900);
         keys.push(key);
@@ -534,6 +562,52 @@ test("members read runs and artifacts; signed downloads are private and uncached
   const owner = fixture();
   assert.equal((await owner.request("runs/arn_1/log/url")).status, 200);
   assert.equal((await owner.request("runs/missing/log/url")).status, 404);
+});
+test("members read an artifact as text, unless it is binary or too large", async () => {
+  const f = fixture("member");
+  const text = await f.request("artifacts/art_1/content");
+  assert.equal(text.status, 200);
+  assert.equal(text.headers.get("Cache-Control"), "no-store");
+  assert.deepEqual(await text.json(), {
+    path: "graph.html",
+    sizeBytes: 5,
+    text: "<svg>",
+    omitted: null,
+  });
+  const binary = await f.request("artifacts/art_png/content");
+  assert.equal(
+    ((await binary.json()) as { omitted: string }).omitted,
+    "binary",
+  );
+  const big = await f.request("artifacts/art_big/content");
+  assert.equal(
+    ((await big.json()) as { omitted: string }).omitted,
+    "too_large",
+  );
+  assert.equal((await f.request("artifacts/art_gone/content")).status, 502);
+  assert.equal((await f.request("artifacts/missing/content")).status, 404);
+  assert.equal(
+    (await f.request("artifacts/art_1/content", undefined, "org_2")).status,
+    404,
+  );
+});
+test("owners and admins read a run's log as text; members cannot", async () => {
+  const owner = fixture();
+  const log = await owner.request("runs/arn_1/log/content");
+  assert.equal(log.status, 200);
+  assert.equal(log.headers.get("Cache-Control"), "no-store");
+  assert.deepEqual(await log.json(), {
+    sizeBytes: 28,
+    text: "Analysis artifacts uploaded.",
+    omitted: null,
+  });
+  assert.equal((await owner.request("runs/missing/log/content")).status, 404);
+  assert.equal(
+    (await owner.request("runs/arn_1/log/content", undefined, "org_2")).status,
+    404,
+  );
+  const member = fixture("member");
+  assert.equal((await member.request("runs/arn_1/log/content")).status, 403);
 });
 test("launcher coalesces launches and skips fresh workers, empty queues, and local mode", async () => {
   let count = 0,

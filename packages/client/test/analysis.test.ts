@@ -76,6 +76,10 @@ test("typed analysis client parses every response and encodes scoped identifiers
     else if (url.endsWith("/artifacts")) body = { artifacts: [] };
     else if (url.endsWith("/url"))
       body = { url: "https://objects.test/signed" };
+    else if (url.endsWith("/log/content"))
+      body = { sizeBytes: 4, text: "done", omitted: null };
+    else if (url.endsWith("/content"))
+      body = { path: "a.md", sizeBytes: 2, text: "# A", omitted: null };
     else if (url.endsWith("/runs") && init?.method !== "POST")
       body = { runs: [run] };
     else if (url.endsWith("/slices"))
@@ -129,6 +133,13 @@ test("typed analysis client parses every response and encodes scoped identifiers
     await client.artifactUrl("org/a", "art_1"),
     "https://objects.test/signed",
   );
+  assert.equal((await client.artifactContent("org/a", "art/1")).text, "# A");
+  assert.match(
+    calls.at(-1)!.url,
+    /org%2Fa\/github\/artifacts\/art%2F1\/content$/,
+  );
+  assert.equal((await client.logContent("org/a", "arn/1")).text, "done");
+  assert.match(calls.at(-1)!.url, /\/runs\/arn%2F1\/log\/content$/);
   assert.equal(
     await client.logUrl("org/a", "arn_1"),
     "https://objects.test/signed",
