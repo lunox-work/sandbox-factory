@@ -212,6 +212,17 @@ function Shell(props: Omit<ComponentProps<typeof Bounties>, "onCreate">) {
       viewer={viewer}
       onTitle={() => {}}
       onOpenBounties={() => pushLocation(BOUNTIES_PATH)}
+      onOpenSettings={(organization, tab) =>
+        pushLocation(
+          pathForScreen(
+            "org-settings",
+            organization.slug,
+            undefined,
+            undefined,
+            tab,
+          ),
+        )
+      }
     />
   ) : (
     <Bounties {...props} onCreate={() => pushLocation(NEW_BOUNTY_PATH)} />
@@ -454,6 +465,7 @@ test("a bounty's own page opens on its overview, and names it for the trail", as
       viewer={viewer}
       onTitle={onTitle}
       onOpenBounties={() => {}}
+      onOpenSettings={() => {}}
     />,
   );
   expect(
@@ -512,6 +524,7 @@ test("a bounty deleted from its page returns to the list", async () => {
       viewer={viewer}
       onTitle={() => {}}
       onOpenBounties={onOpenBounties}
+      onOpenSettings={() => {}}
     />,
   );
   const detail = await screen.findByTestId("bounty-detail");
@@ -535,6 +548,7 @@ test("a bounty's page in a workspace one is not in says so", async () => {
       viewer={viewer}
       onTitle={() => {}}
       onOpenBounties={() => {}}
+      onOpenSettings={() => {}}
     />,
   );
   expect(
@@ -1324,11 +1338,12 @@ test("a bounty following Jira is edited for its repository only", async () => {
   render(<Shell {...inAcme("member")} />);
 
   const panel = await screen.findByTestId("bounty-detail");
-  expect(within(panel).getByText("Follows its Jira issue")).toBeDefined();
+  const links = within(panel).getByRole("region", { name: "Links" });
   expect(
-    within(panel)
-      .getByRole("link", { name: /Open in Jira/ })
-      .getAttribute("href"),
+    within(links).getByText(/Its title and description follow/),
+  ).toBeDefined();
+  expect(
+    within(links).getByRole("link", { name: /APP-1/ }).getAttribute("href"),
   ).toBe("https://acme.atlassian.net/browse/APP-1");
 
   // Its text is Jira's: shown, and not offered.
@@ -1336,22 +1351,12 @@ test("a bounty following Jira is edited for its repository only", async () => {
   expect(
     within(panel).queryByRole("button", { name: "Edit description" }),
   ).toBeNull();
-  // Its repository is picked in place from its pencil, and saved on the
-  // pick, after which it reads as the one picked.
-  expect(
-    within(panel).queryByRole("combobox", { name: "Repository" }),
-  ).toBeNull();
-  await userEvent.click(
-    within(panel).getByRole("button", { name: "Edit repository" }),
+  // Its repository is picked from its card under the text, and saved on
+  // the pick.
+  await chooseOption(
+    within(links).getByRole("combobox", { name: "Repository" }),
+    "acme/app",
   );
-  await userEvent.click(
-    within(await screen.findByRole("listbox")).getByRole("option", {
-      name: "acme/app",
-    }),
-  );
-  expect(
-    within(panel).queryByRole("combobox", { name: "Repository" }),
-  ).toBeNull();
   await waitFor(() =>
     expect(state.calls.find(({ method }) => method === "PATCH")?.body).toEqual({
       expectedRevision: 1,
@@ -1359,6 +1364,190 @@ test("a bounty following Jira is edited for its repository only", async () => {
     }),
   );
   expect(await screen.findByTestId("bounty-detail")).toBeDefined();
+});
+
+const jiraConnection = {
+  id: "jrc_1",
+  cloudId: "cloud-1",
+  siteUrl: "https://acme.atlassian.net",
+  siteName: "Acme",
+  email: "dana@example.test",
+  healthy: true,
+  scopes: ["read:jira-work"],
+  resourceScopes: ["read:jira-work"],
+  writeGranted: false,
+  createdAt: stamp,
+};
+
+function foundIssue(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "100",
+    key: "APP-9",
+    summary: "Export the table",
+    status: "To Do",
+    issueType: "Task",
+    boardId: "jrb_1",
+    boardName: "App board",
+    bountyId: null,
+    ...overrides,
+  };
+}
+
+test("a bounty's Jira issue is found across the boards and linked once asked", async () => {
+  const state = server([
+    ["GET", "/jira/connections", () => json({ connections: [jiraConnection] })],
+    [
+      "GET",
+      "/jira/search?q=",
+      () =>
+        json({
+          issues: [
+            foundIssue(),
+            foundIssue({ id: "200", key: "APP-3", bountyId: "bty_other" }),
+          ],
+        }),
+    ],
+    [
+      "PUT",
+      "/bounties/bty_7/jira",
+      () =>
+        json({
+          bounty: detail({
+            title: "Export the table",
+            revision: 2,
+            jira: {
+              ...jiraLink,
+              key: "APP-9",
+              url: "https://acme.atlassian.net/browse/APP-9",
+            },
+          }),
+        }),
+    ],
+  ]);
+  vi.stubGlobal("fetch", state.fetchMock);
+  window.history.replaceState(null, "", "/bounties/acme/bty_7");
+  render(<Shell {...inAcme("member")} />);
+  const page = await screen.findByTestId("bounty-detail");
+  const links = within(page).getByRole("region", { name: "Links" });
+
+  const list = await openCombobox(
+    await within(links).findByRole("button", { name: "Jira issue" }),
+  );
+  // Under the results, the way to the workspace's Jira settings.
+  expect(
+    within(list)
+      .getByRole("option", { name: "Manage Jira accounts" })
+      .getAttribute("href"),
+  ).toBe("/o/acme/settings?connection=jira");
+
+  await userEvent.type(
+    screen.getByRole("combobox", { name: "Search jira issue" }),
+    "export",
+  );
+  // Each row as the board's own search lists them: key, summary, board.
+  const found = await within(list).findByRole("option", {
+    name: /APP-9.*Export the table.*App board/,
+  });
+  // Every board is searched at once, by what was typed.
+  expect(
+    state.calls.some(({ url }) => url.endsWith("/jira/search?q=export")),
+  ).toBe(true);
+  // An issue that is another bounty's is listed, and not offered.
+  expect(
+    within(list)
+      .getByRole("option", { name: /APP-3/ })
+      .getAttribute("aria-disabled"),
+  ).toBe("true");
+
+  // Its own text would be replaced, so it asks first.
+  await userEvent.click(found);
+  const dialog = await screen.findByRole("alertdialog");
+  expect(within(dialog).getByText("Link APP-9?")).toBeDefined();
+  expect(state.calls.some(({ method }) => method === "PUT")).toBe(false);
+  await userEvent.click(
+    within(dialog).getByRole("button", { name: "Link issue" }),
+  );
+  await waitFor(() =>
+    expect(state.calls.find(({ method }) => method === "PUT")?.body).toEqual({
+      boardId: "jrb_1",
+      issueId: "100",
+    }),
+  );
+  expect(
+    await within(links).findByText(/Its title and description follow/),
+  ).toBeDefined();
+  expect(
+    within(links).getByRole("link", { name: /APP-9/ }).getAttribute("href"),
+  ).toBe("https://acme.atlassian.net/browse/APP-9");
+});
+
+test("a bounty's Jira issue is let go from the same list, keeping its text", async () => {
+  const state = server([
+    ["GET", "/jira/connections", () => json({ connections: [jiraConnection] })],
+    [
+      "GET",
+      "/bounties/bty_1",
+      () => json({ bounty: detail({ ...fromJira, description: "Jira's." }) }),
+    ],
+    [
+      "DELETE",
+      "/bounties/bty_1/jira",
+      () =>
+        json({
+          bounty: detail({ ...fromJira, description: "Jira's.", jira: null }),
+        }),
+    ],
+  ]);
+  vi.stubGlobal("fetch", state.fetchMock);
+  window.history.replaceState(null, "", "/bounties/acme/bty_1");
+  render(<Shell {...inAcme("member")} />);
+  const page = await screen.findByTestId("bounty-detail");
+  const links = within(page).getByRole("region", { name: "Links" });
+  await chooseOption(
+    await within(links).findByRole("button", { name: "Jira issue" }),
+    "Remove the link",
+  );
+  await waitFor(() =>
+    expect(
+      state.calls.some(
+        ({ method, url }) => method === "DELETE" && url.endsWith("/jira"),
+      ),
+    ).toBe(true),
+  );
+  await waitFor(() =>
+    expect(
+      within(links).getByRole("button", { name: "Jira issue" }).textContent,
+    ).toBe("None"),
+  );
+});
+
+test("with no Jira account, the picker says so and leads to settings", async () => {
+  vi.stubGlobal(
+    "fetch",
+    server([["GET", "/jira/connections", () => json({ connections: [] })]])
+      .fetchMock,
+  );
+  window.history.replaceState(null, "", "/bounties/acme/bty_7");
+  render(<Shell {...inAcme("member")} />);
+  const page = await screen.findByTestId("bounty-detail");
+  const links = within(page).getByRole("region", { name: "Links" });
+  expect(
+    await within(links).findByText(
+      "No Jira account is connected to the workspace.",
+    ),
+  ).toBeDefined();
+  const list = await openCombobox(
+    within(links).getByRole("button", { name: "Jira issue" }),
+  );
+  expect(within(list).getByText("No Jira account is connected.")).toBeDefined();
+  const connect = within(list).getByRole("option", {
+    name: "Connect Jira in settings",
+  });
+  expect(connect.getAttribute("href")).toBe("/o/acme/settings?connection=jira");
+  await userEvent.click(connect);
+  expect(window.location.pathname + window.location.search).toBe(
+    "/o/acme/settings?connection=jira",
+  );
 });
 
 test("a stale edit says so and shows the bounty as it is now", async () => {
@@ -1619,6 +1808,7 @@ test("a bounty from Jira is named by its issue's key, and one written here by it
       viewer={viewer}
       onTitle={() => {}}
       onOpenBounties={() => {}}
+      onOpenSettings={() => {}}
     />,
   );
   await screen.findByTestId("bounty-detail");
@@ -2870,9 +3060,10 @@ test("a bounty's page keeps it at a glance, its context and workspace beside eve
     );
     expect(within(summary).getByText("M")).toBeDefined();
     expect(within(summary).getByText("No sandbox yet.")).toBeDefined();
+    // Its sources are linked under its text; beside it, its stack.
     const context = within(page).getByRole("region", { name: "Context" });
-    expect(within(context).getByText("Jira")).toBeDefined();
-    expect(within(context).getByText("Repository")).toBeDefined();
+    expect(within(context).getByText("Tech stack")).toBeDefined();
+    expect(within(context).queryByText("Repository")).toBeNull();
     expect(
       within(page).getByRole("region", { name: "Workspace" }),
     ).toBeDefined();

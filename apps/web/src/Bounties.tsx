@@ -110,6 +110,10 @@ import {
   StackField,
   type SaveField,
 } from "./features/bounties/BountyFields";
+import {
+  BountyLinks,
+  type OpenSettings,
+} from "./features/bounties/BountyLinks";
 import { BountyProposal } from "./features/bounties/BountyProposal";
 import { SandboxCard } from "./features/bounties/SandboxCard";
 import { SandboxGeneration } from "./features/bounties/SandboxGeneration";
@@ -456,6 +460,7 @@ export function BountyPage({
   viewer,
   onTitle,
   onOpenBounties,
+  onOpenSettings,
 }: {
   /** Every workspace the person is in: the one the address names among them. */
   organizations: MembershipDto[];
@@ -466,6 +471,11 @@ export function BountyPage({
   onTitle: (title: string | undefined) => void;
   /** Back to the list, once the bounty is deleted. */
   onOpenBounties: () => void;
+  /** Opens a tab of a workspace's settings: where its sources are connected. */
+  onOpenSettings: (
+    organization: MembershipDto,
+    tab: Parameters<OpenSettings>[0],
+  ) => void;
 }) {
   const { pathname } = useLocation();
   const address = bountyForPath(pathname);
@@ -501,6 +511,7 @@ export function BountyPage({
             bountyId={address.id}
             onLoaded={setRead}
             onDeleted={onOpenBounties}
+            onOpenSettings={(tab) => onOpenSettings(owner, tab)}
           />
         ))}
     </main>
@@ -691,6 +702,7 @@ function OpenBounty({
   listed,
   onLoaded,
   onDeleted,
+  onOpenSettings,
 }: {
   layout: "panel" | "page";
   organization: MembershipDto;
@@ -700,6 +712,8 @@ function OpenBounty({
   listed?: BountySummaryDto | undefined;
   onLoaded: (bounty: BountyDto) => void;
   onDeleted: () => void;
+  /** A page's way to its workspace's settings, from the links it offers. */
+  onOpenSettings?: OpenSettings | undefined;
 }) {
   const bounties = useBounties(organization.id);
   const repos = useGithubRepos(organization.id);
@@ -798,6 +812,7 @@ function OpenBounty({
         opened.reload();
       }}
       onDeleted={onDeleted}
+      onOpenSettings={onOpenSettings}
     />
   );
 }
@@ -1093,6 +1108,7 @@ function BountyDetail({
   proposal,
   onProposed,
   onDeleted,
+  onOpenSettings,
 }: {
   layout: "panel" | "page";
   /** The workspace it belongs to, named under its parts. */
@@ -1114,6 +1130,8 @@ function BountyDetail({
   /** A proposal was made from it. */
   onProposed: (proposalId: string) => void;
   onDeleted: () => void;
+  /** Where a page's links lead to connect a source; a panel offers none. */
+  onOpenSettings?: OpenSettings | undefined;
 }) {
   const propose = usePropose(bounties, bounty.id, onProposed);
   const [sandboxPending, setSandboxPending] = useState(false);
@@ -1502,10 +1520,25 @@ function BountyDetail({
     </>
   );
 
+  /*
+    A panel names its sources here. A page links them under its text, so
+    only the stack is left beside it.
+  */
   const contextPart = (
     <Part title="Context">
-      {jiraContext}
-      {codeContext}
+      {layout === "page" ? (
+        <StackField
+          bounty={bounty}
+          repos={repos}
+          readOnly={readOnly}
+          onSave={save}
+        />
+      ) : (
+        <>
+          {jiraContext}
+          {codeContext}
+        </>
+      )}
     </Part>
   );
 
@@ -1583,7 +1616,18 @@ function BountyDetail({
                 </TabsTrigger>
               ))}
             </TabsList>
-            <TabsContent value="overview">{description}</TabsContent>
+            <TabsContent value="overview" className="flex flex-col gap-8">
+              {description}
+              <BountyLinks
+                organization={organization}
+                bounty={bounty}
+                bounties={bounties}
+                repos={repos}
+                onSave={save}
+                onChange={onChange}
+                onOpenSettings={onOpenSettings ?? (() => undefined)}
+              />
+            </TabsContent>
             <TabsContent value="bounty">{proposalPart}</TabsContent>
             <TabsContent value="sandbox">{sandboxPart}</TabsContent>
           </Tabs>

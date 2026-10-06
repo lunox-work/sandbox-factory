@@ -104,6 +104,25 @@ export const jiraIssueSearchSchema = z.object({
   ),
 });
 
+/**
+ * The workspace's Jira issues that match a search, from every board it has:
+ * each with the board it was found on, and the bounty it already is, if any.
+ */
+export const jiraWorkspaceIssueSearchSchema = z.object({
+  issues: z.array(
+    z.object({
+      id: z.string(),
+      key: z.string(),
+      summary: z.string(),
+      status: z.string(),
+      issueType: z.string(),
+      boardId: z.string(),
+      boardName: z.string(),
+      bountyId: z.string().nullable(),
+    }),
+  ),
+});
+
 export const githubAvailableInstallationsSchema = z.object({
   grant: githubGrantDtoSchema,
   installations: z.array(githubAvailableInstallationDtoSchema),

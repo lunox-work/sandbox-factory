@@ -502,6 +502,18 @@ function Signed({
             viewer={{ id: userId, image }}
             onTitle={setBountyName}
             onOpenBounties={() => navigate("bounties")}
+            // Into the bounty's workspace's settings, where its Jira
+            // accounts and repositories are connected.
+            onOpenSettings={(organization, tab) => {
+              organizations.select(organization.id);
+              navigate(
+                "org-settings",
+                organization.slug,
+                undefined,
+                undefined,
+                tab,
+              );
+            }}
           />
         ) : screen === "new-bounty" ? (
           <NewBountyPage

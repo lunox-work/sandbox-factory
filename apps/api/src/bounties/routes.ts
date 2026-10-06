@@ -235,7 +235,7 @@ async function listPage(
   );
 }
 
-async function detail(
+export async function detail(
   options: BountyRouteOptions,
   bounty: StoredBounty,
 ): Promise<BountyDto> {

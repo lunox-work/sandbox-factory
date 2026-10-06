@@ -135,6 +135,16 @@ export const updateBountySchema = z
     "Nothing to change.",
   );
 
+/**
+ * Links a bounty to a Jira issue picked for it: one of the workspace's
+ * boards, and the issue by Jira's id. The bounty follows the issue from then
+ * on, so its text becomes Jira's.
+ */
+export const linkBountyJiraSchema = z.strictObject({
+  boardId: z.string().min(1),
+  issueId: z.string().min(1),
+});
+
 /** Size one bounty and make its proposal, named by `requestId`. */
 export const proposeBountySchema = z.object({ requestId: z.uuid() });
 
@@ -151,3 +161,4 @@ export type BountyDto = z.infer<typeof bountyDtoSchema>;
 export type BountyListResponse = z.infer<typeof bountyListResponseSchema>;
 export type CreateBountyInput = z.infer<typeof createBountySchema>;
 export type UpdateBountyInput = z.infer<typeof updateBountySchema>;
+export type LinkBountyJiraInput = z.infer<typeof linkBountyJiraSchema>;

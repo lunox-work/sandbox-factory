@@ -227,3 +227,157 @@ test("marks an issue removed by Jira's id, when it was imported", async () => {
     false,
   );
 });
+
+test("links a bounty written here to an issue, taking Jira's text", async () => {
+  const fake = createSequencedFakeDb([
+    [{ id: "jrb_1" }],
+    [bountyRow({ origin: "manual", description: "Written here", revision: 2 })],
+    // Not anyone's yet.
+    [],
+    // Whatever issue it followed before goes.
+    [],
+    [row({ bountyId: "bty_1" })],
+    [{ id: "bty_1" }],
+  ]);
+  const linked = await createJiraIssueStore(fake.db).link(
+    "org_1",
+    "jrb_1",
+    "bty_1",
+    facts,
+    content,
+  );
+  assert.equal(linked.ok, true);
+  assert.equal(linked.ok && linked.pointer.bountyId, "bty_1");
+  // The bounty, read under a lock, so the text is written over that read.
+  assert.equal(fake.calls[1]?.lock, "update");
+  assert.equal(fake.calls[3]?.kind, "delete");
+  assert.equal(fake.calls[3]?.filtered, true);
+  assert.equal(fake.calls[4]?.kind, "insert");
+  assert.equal(fake.calls[4]?.values?.["bountyId"], "bty_1");
+  assert.equal(fake.calls[4]?.values?.["externalId"], "10001");
+  assert.equal(fake.calls[5]?.kind, "update");
+  assert.equal(fake.calls[5]?.values?.["description"], "Steps");
+  assert.equal(fake.calls[5]?.values?.["revision"], 3);
+});
+
+test("an issue already the bounty's is read again, not linked twice", async () => {
+  const fake = createSequencedFakeDb([
+    [{ id: "jrb_1" }],
+    [bountyRow()],
+    [{ bountyId: "bty_1" }],
+    [row({ key: "APP-2" })],
+  ]);
+  const linked = await createJiraIssueStore(fake.db).link(
+    "org_1",
+    "jrb_1",
+    "bty_1",
+    { ...facts, key: "APP-2" },
+    content,
+  );
+  assert.equal(linked.ok && linked.pointer.key, "APP-2");
+  assert.equal(fake.calls[3]?.kind, "update");
+  assert.equal(fake.calls.filter(({ kind }) => kind === "insert").length, 0);
+  assert.equal(fake.calls.filter(({ kind }) => kind === "delete").length, 0);
+});
+
+test("an issue that is another bounty's is not linked", async () => {
+  const fake = createSequencedFakeDb([
+    [{ id: "jrb_1" }],
+    [bountyRow()],
+    [{ bountyId: "bty_other" }],
+  ]);
+  assert.deepEqual(
+    await createJiraIssueStore(fake.db).link(
+      "org_1",
+      "jrb_1",
+      "bty_1",
+      facts,
+      content,
+    ),
+    { ok: false, reason: "issue-linked", bountyId: "bty_other" },
+  );
+  assert.equal(fake.calls.length, 3);
+});
+
+test("a link that loses a race to an import names the bounty that won", async () => {
+  const fake = createSequencedFakeDb([
+    [{ id: "jrb_1" }],
+    [bountyRow()],
+    [],
+    [],
+    // The pointer insert met the import's row.
+    [],
+    [{ bountyId: "bty_won" }],
+  ]);
+  assert.deepEqual(
+    await createJiraIssueStore(fake.db).link(
+      "org_1",
+      "jrb_1",
+      "bty_1",
+      facts,
+      content,
+    ),
+    { ok: false, reason: "issue-linked", bountyId: "bty_won" },
+  );
+});
+
+test("does not link through a board or a bounty the organization cannot see", async () => {
+  const board = createSequencedFakeDb([[]]);
+  assert.deepEqual(
+    await createJiraIssueStore(board.db).link(
+      "org_2",
+      "jrb_1",
+      "bty_1",
+      facts,
+      content,
+    ),
+    { ok: false, reason: "not-found" },
+  );
+  const bounty = createSequencedFakeDb([[{ id: "jrb_1" }], []]);
+  assert.deepEqual(
+    await createJiraIssueStore(bounty.db).link(
+      "org_1",
+      "jrb_1",
+      "bty_9",
+      facts,
+      content,
+    ),
+    { ok: false, reason: "not-found" },
+  );
+  assert.equal(bounty.calls[1]?.filtered, true);
+});
+
+test("unlinks a bounty's issue through an owner filter", async () => {
+  const linked = createFakeDb([{ id: "jri_1" }]);
+  assert.equal(
+    await createJiraIssueStore(linked.db).unlink("org_1", "bty_1"),
+    true,
+  );
+  assert.equal(linked.calls[0]?.kind, "delete");
+  assert.equal(linked.calls[0]?.filtered, true);
+  const none = createFakeDb([]);
+  assert.equal(
+    await createJiraIssueStore(none.db).unlink("org_1", "bty_1"),
+    false,
+  );
+});
+
+test("names the bounty each of a board's issues is", async () => {
+  const fake = createFakeDb([{ externalId: "10001", bountyId: "bty_1" }]);
+  const found = await createJiraIssueStore(fake.db).bountiesFor(
+    "org_1",
+    "jrb_1",
+    ["10001", "10002"],
+  );
+  assert.equal(found.get("10001"), "bty_1");
+  assert.equal(found.has("10002"), false);
+  assert.equal(fake.calls[0]?.filtered, true);
+  // Nothing to ask about asks nothing.
+  const empty = createFakeDb([]);
+  assert.equal(
+    (await createJiraIssueStore(empty.db).bountiesFor("org_1", "jrb_1", []))
+      .size,
+    0,
+  );
+  assert.equal(empty.calls.length, 0);
+});

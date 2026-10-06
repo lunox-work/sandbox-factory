@@ -76,6 +76,16 @@ export interface Bounties {
   ) => Promise<BountyWrite>;
   remove: (bountyId: string) => Promise<string | null>;
   /**
+   * Links the bounty to a Jira issue on one of the workspace's boards, by
+   * Jira's id. It follows the issue from then on, so its text becomes Jira's.
+   */
+  linkJira: (
+    bountyId: string,
+    link: { boardId: string; issueId: string },
+  ) => Promise<BountyWrite>;
+  /** Takes its Jira issue from the bounty, which keeps its text. */
+  unlinkJira: (bountyId: string) => Promise<BountyWrite>;
+  /**
    * Makes the bounty's sandbox, cut from `sourceRepoId` when one is given.
    * Resolves to null, or to why there is none.
    */
@@ -280,6 +290,39 @@ export function useBounties(organizationId: string): Bounties {
     [organizationId, load],
   );
 
+  const jiraWrite = useCallback(
+    async (send: () => Promise<BountyDto>): Promise<BountyWrite> => {
+      try {
+        const bounty = await send();
+        await load();
+        return { ok: true, bounty };
+      } catch (error) {
+        return {
+          ok: false,
+          error:
+            error instanceof ApiError
+              ? error.message
+              : "Could not reach the server.",
+        };
+      }
+    },
+    [load],
+  );
+  const linkJira = useCallback(
+    (bountyId: string, link: { boardId: string; issueId: string }) =>
+      jiraWrite(() =>
+        clients.bounties.linkBountyJira(organizationId, bountyId, link),
+      ),
+    [jiraWrite, organizationId],
+  );
+  const unlinkJira = useCallback(
+    (bountyId: string) =>
+      jiraWrite(() =>
+        clients.bounties.unlinkBountyJira(organizationId, bountyId),
+      ),
+    [jiraWrite, organizationId],
+  );
+
   const createSandbox = useCallback(
     async (bountyId: string, sourceRepoId: string | null) => {
       try {
@@ -394,6 +437,8 @@ export function useBounties(organizationId: string): Bounties {
     create,
     update,
     remove,
+    linkJira,
+    unlinkJira,
     createSandbox,
     linkSandboxSource,
     propose,

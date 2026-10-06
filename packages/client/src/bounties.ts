@@ -3,6 +3,7 @@ import {
   bountyListResponseSchema,
   bountyResponseSchema,
   type CreateBountyInput,
+  type LinkBountyJiraInput,
   type UpdateBountyInput,
 } from "@sandbox-factory/shared";
 import { ApiClient } from "./transport.js";
@@ -76,6 +77,24 @@ export class BountyClient extends ApiClient {
       await this.request(
         `${ownerPath(owner)}/bounties/${encodeURIComponent(id)}`,
         { method: "PATCH", body: JSON.stringify(input) },
+      ),
+    ).bounty;
+  }
+  /** Links the bounty to a Jira issue, whose text it then follows. */
+  async linkBountyJira(owner: string, id: string, input: LinkBountyJiraInput) {
+    return bountyResponseSchema.parse(
+      await this.request(
+        `${ownerPath(owner)}/bounties/${encodeURIComponent(id)}/jira`,
+        { method: "PUT", body: JSON.stringify(input) },
+      ),
+    ).bounty;
+  }
+  /** Takes the bounty's Jira issue from it; its text stays. */
+  async unlinkBountyJira(owner: string, id: string) {
+    return bountyResponseSchema.parse(
+      await this.request(
+        `${ownerPath(owner)}/bounties/${encodeURIComponent(id)}/jira`,
+        { method: "DELETE" },
       ),
     ).bounty;
   }

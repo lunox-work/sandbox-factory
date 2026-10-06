@@ -54,6 +54,7 @@ export type {
   JiraIssueInput,
   JiraIssuePointer,
   JiraIssueStore,
+  JiraIssueLinkResult,
 } from "./jira-issues.js";
 export { createRateCardStore } from "./rate-cards.js";
 export type {

@@ -25,6 +25,10 @@
  *
  * Actions — "View all workspaces", "Open board page" — sit under the options,
  * are never filtered out, and are walked by the same arrow keys.
+ *
+ * A list searched elsewhere, as Jira's issues are, sets `filter` off and
+ * hears the query through `onSearchChange`: its options are then shown as
+ * given, the answer to what was typed.
  */
 
 import { Check, ChevronDown, Search } from "lucide-react";
@@ -52,6 +56,8 @@ export interface ComboboxOption {
   icon?: ReactNode;
   /** After the label in the list, muted: what tells two options apart. */
   detail?: string | undefined;
+  /** Listed, so it is found, but not picked: `detail` says why. */
+  disabled?: boolean | undefined;
 }
 
 export interface ComboboxAction {
@@ -101,7 +107,7 @@ function isPlainClick(event: MouseEvent): boolean {
   );
 }
 
-const triggerClass =
+export const comboboxTriggerClass =
   "border-input focus-visible:border-ring focus-visible:ring-ring/50 data-[state=open]:border-ring data-[state=open]:ring-ring/50 flex h-9 w-full min-w-0 items-center gap-2 rounded-md border bg-transparent px-3 py-1 text-left text-base shadow-xs transition-[color,box-shadow] outline-none focus-visible:ring-[3px] disabled:cursor-not-allowed disabled:opacity-50 data-[state=open]:ring-[3px] md:text-sm [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4";
 
 const itemClass =
@@ -127,6 +133,8 @@ export function Combobox({
   collisionPadding,
   defaultOpen = false,
   onOpenChange,
+  filter = true,
+  onSearchChange,
 }: {
   /**
    * What is being picked. Names the list and the search field, and the
@@ -162,6 +170,13 @@ export function Combobox({
   defaultOpen?: boolean;
   /** Told as the list opens and closes, by a pick or by being dismissed. */
   onOpenChange?: ((open: boolean) => void) | undefined;
+  /**
+   * Whether typing narrows `options` here. Off for a list searched
+   * elsewhere, whose options are already the answer to the query.
+   */
+  filter?: boolean;
+  /** Told what is typed into the search, as it changes. */
+  onSearchChange?: ((query: string) => void) | undefined;
 }) {
   const listId = useId();
   const searchRef = useRef<HTMLInputElement | null>(null);
@@ -170,10 +185,14 @@ export function Combobox({
     setOpenState(next);
     onOpenChange?.(next);
   };
-  const [query, setQuery] = useState("");
+  const [query, setQueryState] = useState("");
+  const setQuery = (next: string) => {
+    setQueryState(next);
+    onSearchChange?.(next);
+  };
   const [active, setActive] = useState(0);
 
-  const shown = filterOptions(options, query);
+  const shown = filter ? filterOptions(options, query) : [...options];
   const count = shown.length + actions.length;
   const activeIndex = count === 0 ? -1 : Math.min(active, count - 1);
   const itemId = (index: number) => `${listId}-item-${index}`;
@@ -197,8 +216,9 @@ export function Combobox({
   };
 
   const choose = (index: number) => {
-    setOpen(false);
     const option = shown[index];
+    if (option?.disabled === true) return;
+    setOpen(false);
     if (option !== undefined) {
       if (option.value !== value) onValueChange(option.value);
       return;
@@ -285,7 +305,7 @@ export function Combobox({
             id={id}
             aria-label={id === undefined ? label : undefined}
             aria-describedby={describedBy}
-            className={cn(triggerClass, className)}
+            className={cn(comboboxTriggerClass, className)}
           >
             {selected?.icon !== undefined && (
               <span className="flex shrink-0 items-center">
@@ -369,6 +389,11 @@ export function Combobox({
                   key={option.value}
                   {...itemProps(index)}
                   aria-selected={chosen}
+                  aria-disabled={option.disabled === true ? true : undefined}
+                  className={cn(
+                    itemClass,
+                    option.disabled === true && "cursor-default opacity-50",
+                  )}
                   onClick={() => choose(index)}
                 >
                   {option.icon !== undefined && (
