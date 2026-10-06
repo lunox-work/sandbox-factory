@@ -25,6 +25,8 @@ import {
   publishVersionResponseSchema,
   repositoryProposalListSchema,
   repoTreePageDtoSchema,
+  pullSnapshotResponseSchema,
+  repoBranchListSchema,
   repoSnapshotListSchema,
   repoSnapshotDetailDtoSchema,
   replayResponseSchema,
@@ -58,6 +60,24 @@ export class GithubAnalysisClient extends ApiClient {
         { signal },
       ),
     ).snapshots;
+  }
+  /** A repository's branches, the default first, each at its head. */
+  async branches(owner: string, repoId: string, signal?: AbortSignal) {
+    return repoBranchListSchema.parse(
+      await this.request(
+        `${this.#base(owner)}/repositories/${encodeURIComponent(repoId)}/branches`,
+        { signal },
+      ),
+    );
+  }
+  /** Snapshots a branch's head now, unless that commit was taken already. */
+  async pullSnapshot(owner: string, repoId: string, branch: string) {
+    return pullSnapshotResponseSchema.parse(
+      await this.request(
+        `${this.#base(owner)}/repositories/${encodeURIComponent(repoId)}/snapshots`,
+        { method: "POST", body: JSON.stringify({ branch }) },
+      ),
+    );
   }
   async snapshot(owner: string, snapshotId: string, signal?: AbortSignal) {
     const response = (await this.request(

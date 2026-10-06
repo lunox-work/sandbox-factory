@@ -731,6 +731,17 @@ before rechecking references.
 Snapshots need object storage: without a bucket none are taken and the
 snapshot routes answer 503.
 
+**Other branches are snapshotted when pulled.** A repository's page lists its
+branches (`GET .../repositories/:id/branches`, the first 300, each with its
+head) and an owner or admin can pull one (`POST .../repositories/:id/snapshots`
+with `{ branch }`). Pulling the default branch syncs it as the sweep does, so
+the head moves; any other branch's ref is read and that commit is queued with
+`refs/heads/<branch>` as its `ref`. A commit already snapshotted answers with
+its snapshot; otherwise the answer is 202 with the commit, and the page reads
+the list until it lands. A snapshot is still one per commit, under the branch
+it was first taken from, so a branch shows its own snapshots and the one at its
+head. Only the default branch's head redetects the stack.
+
 **A repository's tech stack is detected beside its snapshot.**
 `apps/api/src/github/stack.ts` picks up to 30 dependency manifests from the
 tree (`package.json`, `pyproject.toml`, `pom.xml`, `*.csproj`, `go.mod`,

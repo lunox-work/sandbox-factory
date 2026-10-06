@@ -63,7 +63,14 @@ test("typed analysis client parses every response and encodes scoped identifiers
         nextCursor: url.includes("cursor=") ? null : "src/main.ts",
         truncated: false,
       };
+    else if (url.endsWith("/snapshots") && init?.method === "POST")
+      body = { commitSha: "a".repeat(40), snapshot: null };
     else if (url.endsWith("/snapshots")) body = { snapshots: [snapshot] };
+    else if (url.endsWith("/branches"))
+      body = {
+        branches: [{ name: "main", headSha: "a".repeat(40), isDefault: true }],
+        truncated: false,
+      };
     else if (url.includes("/snapshots/"))
       body = { snapshot: { ...snapshot, repoFullName: "acme/widgets", facts } };
     else if (url.endsWith("/artifacts")) body = { artifacts: [] };
@@ -92,6 +99,20 @@ test("typed analysis client parses every response and encodes scoped identifiers
   const client = new GithubAnalysisClient({ baseUrl: "", fetch });
   assert.equal((await client.snapshots("org/a", "repo/b"))[0]?.id, "rsn_1");
   assert.match(calls[0]!.url, /org%2Fa.*repo%2Fb/);
+  assert.equal(
+    (await client.branches("org/a", "repo/b")).branches[0]?.name,
+    "main",
+  );
+  assert.match(calls.at(-1)!.url, /repo%2Fb\/branches$/);
+  assert.deepEqual(await client.pullSnapshot("org/a", "repo/b", "feature/x"), {
+    commitSha: "a".repeat(40),
+    snapshot: null,
+  });
+  assert.equal(calls.at(-1)?.init?.method, "POST");
+  assert.equal(
+    calls.at(-1)?.init?.body,
+    JSON.stringify({ branch: "feature/x" }),
+  );
   assert.equal(
     (await client.snapshot("org/a", "rsn_1")).repoFullName,
     "acme/widgets",

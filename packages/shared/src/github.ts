@@ -118,6 +118,16 @@ export const githubRefResponseSchema = z
   })
   .loose();
 
+/** `GET /repos/{o}/{r}/branches`: one page of branches, each with its head. */
+export const githubBranchPageResponseSchema = z.array(
+  z
+    .object({
+      name: z.string(),
+      commit: z.object({ sha: z.string() }).loose(),
+    })
+    .loose(),
+);
+
 /**
  * One entry of `GET /repos/{o}/{r}/git/trees/{sha}?recursive=1`: a file
  * (`blob`), a directory (`tree`) or a submodule (`commit`). Only a blob has
@@ -427,9 +437,10 @@ export const treeFactsDtoSchema = z.strictObject({
 });
 
 /**
- * One snapshot of a registered repository: the commit its default branch
- * was at, and what the tree there holds. Immutable once written — the
- * repository's head moves on, and each new head is a new snapshot.
+ * One snapshot of a registered repository: the commit a branch was at,
+ * and what the tree there holds. Immutable once written — the branch moves
+ * on, and each new head is a new snapshot. One commit is one snapshot,
+ * whichever branch it was first taken from.
  */
 export const repoSnapshotDtoSchema = z.strictObject({
   id: z.string(),
@@ -448,6 +459,34 @@ export const repoSnapshotDtoSchema = z.strictObject({
 
 export const repoSnapshotListSchema = z.object({
   snapshots: z.array(repoSnapshotDtoSchema),
+});
+
+/** One branch of a registered repository, and the commit it is at. */
+export const repoBranchDtoSchema = z.strictObject({
+  name: z.string(),
+  headSha: z.string(),
+  isDefault: z.boolean(),
+});
+
+/** `GET .../github/repositories/:id/branches`: the default first, then by name. */
+export const repoBranchListSchema = z.object({
+  branches: z.array(repoBranchDtoSchema),
+  /** More branches than one listing reads; the rest are left out. */
+  truncated: z.boolean(),
+});
+
+/** `POST .../github/repositories/:id/snapshots`: take a branch's head. */
+export const pullSnapshotRequestSchema = z.strictObject({
+  branch: z.string().trim().min(1).max(255),
+});
+
+/**
+ * The head the branch is at, and its snapshot when one is taken already;
+ * null while it is being taken, which the list shows once it lands.
+ */
+export const pullSnapshotResponseSchema = z.object({
+  commitSha: z.string(),
+  snapshot: repoSnapshotDtoSchema.nullable(),
 });
 
 /** One snapshot with its facts, and the repository it is of. */
@@ -585,6 +624,10 @@ export type StoredTree = z.infer<typeof storedTreeSchema>;
 export type TreeFactsDto = z.infer<typeof treeFactsDtoSchema>;
 export type RepoSnapshotDto = z.infer<typeof repoSnapshotDtoSchema>;
 export type RepoSnapshotDetailDto = z.infer<typeof repoSnapshotDetailDtoSchema>;
+export type RepoBranchDto = z.infer<typeof repoBranchDtoSchema>;
+export type RepoBranchList = z.infer<typeof repoBranchListSchema>;
+export type PullSnapshotRequest = z.infer<typeof pullSnapshotRequestSchema>;
+export type PullSnapshotResponse = z.infer<typeof pullSnapshotResponseSchema>;
 export type RepoTreeQuery = z.infer<typeof repoTreeQuerySchema>;
 export type RepoTreePageDto = z.infer<typeof repoTreePageDtoSchema>;
 export type RegisterRepoRequest = z.infer<typeof registerRepoRequestSchema>;

@@ -17,6 +17,7 @@
 
 import {
   githubBlobResponseSchema,
+  githubBranchPageResponseSchema,
   type GithubInstallationResponse,
   githubInstallationPageResponseSchema,
   type GithubLanguagesResponse,
@@ -79,6 +80,11 @@ export type BranchHead =
     }
   | { readonly status: "not-modified" }
   | { readonly status: "empty" };
+
+/** Branches one listing page holds, GitHub's most. */
+const BRANCH_PAGE_SIZE = 100;
+/** Pages of branches read at most: a repository's first 300. */
+const BRANCH_PAGES_MAX = 3;
 
 /**
  * What `#parse` needs from a schema. Structural rather than zod's own type,
@@ -220,6 +226,37 @@ export class GithubClient {
       sha: ref.object.sha,
       etag: response.headers.get("etag"),
     };
+  }
+
+  /**
+   * A repository's branches with the commit each is at, a page of 100 at a
+   * time up to `maxPages`; `truncated` when there were more. The listing
+   * embeds only a sha per branch, where `branches/{b}` embeds the commit.
+   */
+  async branches(
+    fullName: string,
+    maxPages = BRANCH_PAGES_MAX,
+  ): Promise<{
+    branches: { name: string; sha: string }[];
+    truncated: boolean;
+  }> {
+    const branches: { name: string; sha: string }[] = [];
+    for (let page = 1; page <= maxPages; page += 1) {
+      const response = await this.#get(
+        `/repos/${segments(fullName)}/branches?per_page=${BRANCH_PAGE_SIZE}&page=${page}`,
+        "branches",
+      );
+      const listed = await this.#parse(
+        response,
+        githubBranchPageResponseSchema,
+        "branches",
+      );
+      for (const branch of listed)
+        branches.push({ name: branch.name, sha: branch.commit.sha });
+      if (listed.length < BRANCH_PAGE_SIZE)
+        return { branches, truncated: false };
+    }
+    return { branches, truncated: true };
   }
 
   /**
