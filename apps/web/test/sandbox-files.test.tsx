@@ -456,6 +456,8 @@ test("a file's name picks its icon and its language, as the editor's would", () 
       ".env.local",
       "sandbox.env",
       "Dockerfile",
+      "erd.mmd",
+      "dependency-cruiser.dot",
       "notes",
     ].map(fileIconName),
   ).toEqual([
@@ -467,6 +469,8 @@ test("a file's name picks its icon and its language, as the editor's would", () 
     "file-type-dotenv",
     "file-type-dotenv",
     "file-type-docker",
+    "file-type-mermaid",
+    "file-type-graphviz",
     "default-file",
   ]);
   expect(folderIconName("src", false)).toBe("folder-type-src");
@@ -478,6 +482,10 @@ test("a file's name picks its icon and its language, as the editor's would", () 
   });
   expect(languageOf("project/sandbox.env").id).toBe("dotenv");
   expect(languageOf("Makefile").id).toBe("make");
+  expect(languageOf("data-model/erd.mmd")).toEqual({
+    id: "mermaid",
+    label: "Mermaid",
+  });
   expect(languageOf("project/.nvmrc")).toEqual({
     id: "text",
     label: "Plain Text",

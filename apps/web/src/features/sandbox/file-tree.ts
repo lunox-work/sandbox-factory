@@ -112,3 +112,39 @@ export function linkedFile(
   const inside = paths.filter((other) => other.startsWith(`${path}/`)).sort();
   return inside.find((other) => other === `${path}/README.md`) ?? inside[0];
 }
+
+/** A note's name as a wiki link and a file name compare: `community_0`. */
+function noteName(name: string): string {
+  return name.trim().toLowerCase().replace(/\s+/g, "_");
+}
+
+/**
+ * The note a wiki link, `[[Community 0]]`, in the file at `from` opens:
+ * the Markdown file of that name, spaces as underscores, looked for beside
+ * that file, then anywhere in its top folder, then anywhere. A Graphify
+ * report's `[[_COMMUNITY_Community 0]]` names its note after a prefix.
+ * Undefined when there is none.
+ */
+export function wikiLinkedFile(
+  paths: readonly string[],
+  from: string,
+  target: string,
+): string | undefined {
+  const name = target.split("#")[0] ?? "";
+  const names = new Set(
+    [name, name.replace(/^_[A-Z]+_/, "")].map(noteName).filter(Boolean),
+  );
+  const notes = paths.filter((path) => {
+    const file = path.slice(path.lastIndexOf("/") + 1);
+    return (
+      /\.mdx?$/i.test(file) && names.has(noteName(file.replace(/\.mdx?$/i, "")))
+    );
+  });
+  const folder = from.slice(0, from.lastIndexOf("/") + 1);
+  const top = from.slice(0, from.indexOf("/") + 1);
+  return (
+    notes.find((path) => path.slice(0, path.lastIndexOf("/") + 1) === folder) ??
+    notes.find((path) => path.startsWith(top)) ??
+    notes[0]
+  );
+}

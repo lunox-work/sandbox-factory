@@ -4,17 +4,21 @@
  * out, its code blocks in the editor's colours.
  *
  * Links and inline code that name a file in the sandbox open that file in
- * the editor, so a README's `src/app.ts` is one click from the code.
+ * the editor, so a README's `src/app.ts` is one click from the code, and
+ * so do wiki links, `[[Community 0]]`, as a Graphify wiki writes them.
+ * Mermaid and Graphviz fences are drawn as the diagrams they describe.
  */
 
-import type { ReactNode } from "react";
+import { useMemo, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { cn } from "@/lib/utils";
 
 import { Colored, useHighlighted } from "./Colored";
-import { linkedFile } from "./file-tree";
+import { DiagramFigure } from "./Diagram";
+import { diagramKind } from "./diagrams";
+import { linkedFile, wikiLinkedFile } from "./file-tree";
 import { languageOf } from "./file-types";
 
 /** The text of a parsed node and everything in it. */
@@ -54,6 +58,29 @@ function fenceLanguage(node: unknown): string {
   if (named === undefined) return "text";
   const byExtension = languageOf(`file.${named}`).id;
   return byExtension === "text" ? named : byExtension;
+}
+
+/**
+ * The text with each wiki link, `[[target]]` or `[[target|label]]`, as a
+ * Markdown link to the file it names, or as its label alone when it names
+ * none. Code is left as written: a span or fence of backticks is matched
+ * first and passed over.
+ */
+export function withWikiLinks(
+  text: string,
+  resolve: (target: string) => string | undefined,
+): string {
+  return text.replace(
+    /(`+)[\s\S]*?\1|\[\[([^\]\n]+?)\]\]/g,
+    (whole, code: string | undefined, link: string | undefined) => {
+      if (code !== undefined || link === undefined) return whole;
+      const bar = link.indexOf("|");
+      const target = (bar === -1 ? link : link.slice(0, bar)).trim();
+      const label = (bar === -1 ? target : link.slice(bar + 1)).trim();
+      const file = resolve(target);
+      return file === undefined ? label : `[${label}](</${file}>)`;
+    },
+  );
 }
 
 function CodeBlock({ text, language }: { text: string; language: string }) {
@@ -98,6 +125,13 @@ export function MarkdownDocument({
       </a>
     );
   };
+  const source = useMemo(
+    () =>
+      text.includes("[[")
+        ? withWikiLinks(text, (target) => wikiLinkedFile(paths, path, target))
+        : text,
+    [text, paths, path],
+  );
   const link =
     "text-[#4daafc] underline-offset-2 hover:underline focus-visible:outline-1 focus-visible:outline-(--wb-accent)";
   const inlineCode =
@@ -185,9 +219,17 @@ export function MarkdownDocument({
                 {alt === undefined || alt === "" ? "[image]" : `[${alt}]`}
               </span>
             ),
-            pre: ({ node }) => (
-              <CodeBlock text={textOf(node)} language={fenceLanguage(node)} />
-            ),
+            pre: ({ node }) => {
+              const text = textOf(node);
+              const language = fenceLanguage(node);
+              const block = <CodeBlock text={text} language={language} />;
+              const kind = diagramKind(language);
+              return kind === undefined ? (
+                block
+              ) : (
+                <DiagramFigure kind={kind} source={text} asWritten={block} />
+              );
+            },
             code: ({ children }) => {
               const named = textOf({ children: [{ value: String(children) }] });
               const looksLikePath =
@@ -225,7 +267,7 @@ export function MarkdownDocument({
             ),
           }}
         >
-          {text}
+          {source}
         </ReactMarkdown>
       </article>
     </div>

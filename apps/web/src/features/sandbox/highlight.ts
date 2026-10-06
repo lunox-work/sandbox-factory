@@ -60,6 +60,7 @@ const GRAMMARS: Readonly<Record<string, Grammar>> = {
   shellscript: () => import("shiki/langs/shellscript.mjs"),
   sql: () => import("shiki/langs/sql.mjs"),
   gherkin: () => import("shiki/langs/gherkin.mjs"),
+  mermaid: () => import("shiki/langs/mermaid.mjs"),
   docker: () => import("shiki/langs/docker.mjs"),
   make: () => import("shiki/langs/make.mjs"),
 };
