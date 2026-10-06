@@ -284,13 +284,17 @@ export class SandboxClient extends GithubAnalysisClient {
   }
   /**
    * Publishes a version whose build passed: approved, frozen, and the
-   * sandbox's published version.
+   * sandbox's published version until `expiresAt`, an ISO time ahead.
    */
-  async publishSandboxVersion(owner: string, versionId: string) {
+  async publishSandboxVersion(
+    owner: string,
+    versionId: string,
+    expiresAt: string,
+  ) {
     return publishVersionResponseSchema.parse(
       await this.request(
         `${this.#sandboxes(owner)}/versions/${encodeURIComponent(versionId)}/publish`,
-        { method: "POST" },
+        { method: "POST", body: JSON.stringify({ expiresAt }) },
       ),
     );
   }

@@ -81,6 +81,11 @@ export const sandbox = pgTable(
     publicRepoId: text("public_repo_id").references(() => githubRepo.id),
     /** Stores validate that this is one of this sandbox's published versions. */
     currentVersionId: text("current_version_id"),
+    /**
+     * When the publication lapses: set by each publish, cleared by an
+     * unpublish. Past it the sandbox reads as no longer published.
+     */
+    expiresAt: ts("expires_at"),
     createdAt: ts("created_at").notNull().defaultNow(),
     updatedAt: ts("updated_at").notNull().defaultNow(),
   },

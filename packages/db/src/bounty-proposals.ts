@@ -1,3 +1,4 @@
+import { approvalPublished, sandboxPublished } from "./approval-lock.js";
 import { snapshotForWrite } from "./snapshot-write.js";
 export { snapshotForWrite } from "./snapshot-write.js";
 import { insertProfileIntent } from "./profile-intent.js";
@@ -131,7 +132,8 @@ export type ProposalMutationResult =
   | { readonly ok: true; readonly proposal: StoredBountyProposal }
   | {
       readonly ok: false;
-      readonly reason: "not-found" | "changed" | "invalid-state";
+      readonly reason:
+        "not-found" | "changed" | "invalid-state" | "sandbox-published";
       readonly current?: StoredBountyProposal;
     };
 
@@ -248,7 +250,11 @@ export interface BountyProposalStore {
     decidedBy: string,
     deliveryPolicy: "off" | "requested",
   ): Promise<ProposalMutationResult>;
-  /** An approved proposal back to proposed, without re-sizing. */
+  /**
+   * An approved proposal back to proposed, without re-sizing. Refused with
+   * `sandbox-published` while the bounty's sandbox is published: the
+   * publication stands on the approval, so it is unpublished first.
+   */
   withdraw(
     organizationId: string,
     proposalId: string,
@@ -296,7 +302,9 @@ export interface BountyProposalStore {
    * proposed. Fenced by the run's lease and the source revision, like
    * `createForLease`. When the source was approved and its approval comment
    * is on the bounty, a `withdrawn` write-back is queued in the same
-   * transaction and its id returned.
+   * transaction and its id returned. An approved source whose bounty's
+   * sandbox is published is refused with `sandbox-published`, as an
+   * unapprove is.
    *
    * A spec on the input becomes the proposal's next spec revision, and the
    * proposal points at it. Without one the pointer is cleared: the earlier
@@ -316,7 +324,11 @@ export interface BountyProposalStore {
       }
     | {
         readonly status:
-          "lost-lease" | "not-found" | "changed" | "writeback-busy";
+          | "lost-lease"
+          | "not-found"
+          | "changed"
+          | "writeback-busy"
+          | "sandbox-published";
       }
   >;
   /**
@@ -954,36 +966,42 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
     },
 
     async withdraw(organizationId, proposalId, expectedRevision) {
-      // The decision columns are cleared rather than overwritten: a proposed
-      // proposal has no decision, and the write-back records who withdrew.
-      const now = new Date();
-      const rows = (await db
-        .update(bountyProposal)
-        .set({
-          status: "proposed",
-          revision: expectedRevision + 1,
-          decidedBy: null,
-          decidedAt: null,
-          decisionDeliveryPolicy: null,
-          updatedAt: now,
-          ...withdrawalVersion(expectedRevision),
-        })
-        .where(
-          and(
-            eq(bountyProposal.organizationId, organizationId),
-            eq(bountyProposal.id, proposalId),
-            eq(bountyProposal.status, "approved"),
-            eq(bountyProposal.revision, expectedRevision),
-          ),
-        )
-        .returning()) as BountyProposalRow[];
-      const updated = rows[0];
-      if (updated === undefined) {
-        return mutationMiss(db, organizationId, proposalId, expectedRevision);
-      }
-      const found = await first(db, organizationId, updated.id);
-      if (found === undefined) return { ok: false, reason: "not-found" };
-      return { ok: true, proposal: toDto(found.row, found.name) };
+      return db.transaction(async (transaction) => {
+        const tx = transaction;
+        if (await approvalPublished(tx, organizationId, proposalId))
+          return { ok: false, reason: "sandbox-published" } as const;
+        // The decision columns are cleared rather than overwritten: a proposed
+        // proposal has no decision, and the write-back records who withdrew.
+        const now = new Date();
+        const rows = (await tx
+          .update(bountyProposal)
+          .set({
+            status: "proposed",
+            revision: expectedRevision + 1,
+            decidedBy: null,
+            decidedAt: null,
+            decisionDeliveryPolicy: null,
+            updatedAt: now,
+            ...withdrawalVersion(expectedRevision),
+          })
+          .where(
+            and(
+              eq(bountyProposal.organizationId, organizationId),
+              eq(bountyProposal.id, proposalId),
+              eq(bountyProposal.status, "approved"),
+              eq(bountyProposal.revision, expectedRevision),
+            ),
+          )
+          .returning()) as BountyProposalRow[];
+        const updated = rows[0];
+        if (updated === undefined) {
+          return mutationMiss(tx, organizationId, proposalId, expectedRevision);
+        }
+        const found = await first(tx, organizationId, updated.id);
+        if (found === undefined)
+          return { ok: false, reason: "not-found" } as const;
+        return { ok: true, proposal: toDto(found.row, found.name) } as const;
+      });
     },
 
     async resize(
@@ -1148,6 +1166,13 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
             status: current === undefined ? "not-found" : "changed",
           } as const;
         }
+        // Sizing it again takes back its approval, which a published
+        // sandbox stands on.
+        if (
+          source.status === "approved" &&
+          (await sandboxPublished(tx, organizationId, source.bountyId))
+        )
+          return { status: "sandbox-published" } as const;
 
         let announced: BountyWritebackRow | undefined;
         if (

@@ -1196,13 +1196,15 @@ test("the actions sit in the bounty card, beside what they change, for those who
       Node.DOCUMENT_POSITION_FOLLOWING) !==
     0;
   expect(follows(within(card).getByText("A few files."), approve)).toBe(true);
+  // Approve sits in the span that says why it is disabled, when it is.
+  const approveSlot = approve.parentElement;
   expect(
     within(card).getByText("Not approved yet").parentElement?.parentElement,
-  ).toBe(approve.parentElement?.parentElement);
+  ).toBe(approveSlot?.parentElement?.parentElement);
   // Remove hangs under Approve.
   expect(
     within(card).getByRole("button", { name: "Remove" }).parentElement,
-  ).toBe(approve.parentElement);
+  ).toBe(approveSlot?.parentElement);
   // The model wears its vendor's mark.
   expect(
     within(card)

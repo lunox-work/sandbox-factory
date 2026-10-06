@@ -18,6 +18,7 @@ import { capitalize, unweighed } from "./presentation";
 import { type EnrichedProposal } from "./types";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { DisabledReason } from "@/components/DisabledReason";
 import { ErrorBanner } from "@/components/Message";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -82,6 +83,7 @@ export function ProposalPeek({
   bountyError,
   onRetryBounty,
   canDecide,
+  sandboxPublished = false,
   busy,
   mutate,
   onChanged,
@@ -101,6 +103,12 @@ export function ProposalPeek({
   bountyError: string | null;
   onRetryBounty: () => void;
   canDecide: boolean;
+  /**
+   * The bounty's sandbox is published. It stands on the approval, so the
+   * approval is not taken back, by an unapprove or a re-price, until it is
+   * unpublished.
+   */
+  sandboxPublished?: boolean;
   busy: boolean;
   mutate: (
     path: string,
@@ -262,35 +270,54 @@ export function ProposalPeek({
       </span>
     </span>
   );
+  // A published sandbox holds the approval it was published over.
+  const approvalHeld = !open && sandboxPublished;
+  const heldReason = approvalHeld
+    ? "Unpublish the bounty's sandbox before changing its approval."
+    : null;
+  // An approval is made on the bounty as it was sized, so only while it
+  // still says that.
+  const approveBlocked =
+    proposal.freshness === "current"
+      ? null
+      : proposal.freshness === "stale"
+        ? "The bounty changed since it was sized. Re-analyze it before approving."
+        : proposal.freshness === "missing"
+          ? "The bounty no longer exists."
+          : "Checking the bounty is unchanged since it was sized.";
   // Whether this proposal can still be approved, and so removed.
   const decidable = canDecide && open && proposal.complexity !== "unsized";
   // The decision itself: Approve for a proposed bounty, the way back for an
   // approved one.
   const decision = !canDecide ? null : open ? (
     decidable && (
+      <DisabledReason reason={approveBlocked}>
+        <Button
+          disabled={busy || approveBlocked !== null}
+          onClick={() =>
+            void mutate(`/proposals/${proposal.id}/approve`, {
+              expectedRevision: proposal.revision,
+            })
+          }
+        >
+          Approve
+        </Button>
+      </DisabledReason>
+    )
+  ) : (
+    <DisabledReason reason={heldReason}>
       <Button
-        disabled={busy || proposal.freshness !== "current"}
+        variant="outline"
+        disabled={busy || approvalHeld}
         onClick={() =>
-          void mutate(`/proposals/${proposal.id}/approve`, {
+          void mutate(`/proposals/${proposal.id}/unapprove`, {
             expectedRevision: proposal.revision,
           })
         }
       >
-        Approve
+        Unapprove
       </Button>
-    )
-  ) : (
-    <Button
-      variant="outline"
-      disabled={busy}
-      onClick={() =>
-        void mutate(`/proposals/${proposal.id}/unapprove`, {
-          expectedRevision: proposal.revision,
-        })
-      }
-    >
-      Unapprove
-    </Button>
+    </DisabledReason>
   );
   /*
     The way out: a muted text link rather than a button, since it is the
@@ -348,20 +375,22 @@ export function ProposalPeek({
             {capitalize(proposal.status)}
           </Badge>
           {canDecide && (
-            <button
-              type="button"
-              className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 flex cursor-pointer items-center gap-1.5 rounded-sm text-sm underline-offset-4 transition-colors hover:underline focus-visible:ring-[3px] focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
-              disabled={busy}
-              onClick={() =>
-                void mutate(`/proposals/${proposal.id}/reprice`, {
-                  expectedRevision: proposal.revision,
-                  requestId: crypto.randomUUID(),
-                })
-              }
-            >
-              <RefreshCw className="size-3.5" />
-              Re-analyze
-            </button>
+            <DisabledReason reason={heldReason}>
+              <button
+                type="button"
+                className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 flex cursor-pointer items-center gap-1.5 rounded-sm text-sm underline-offset-4 transition-colors hover:underline focus-visible:ring-[3px] focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
+                disabled={busy || approvalHeld}
+                onClick={() =>
+                  void mutate(`/proposals/${proposal.id}/reprice`, {
+                    expectedRevision: proposal.revision,
+                    requestId: crypto.randomUUID(),
+                  })
+                }
+              >
+                <RefreshCw className="size-3.5" />
+                Re-analyze
+              </button>
+            </DisabledReason>
           )}
         </div>
 

@@ -1854,7 +1854,8 @@ test("a bounty's panel is read, its text over its sandbox, with context that is 
   expect(within(panel).queryByRole("region", { name: "Bounty" })).toBeNull();
   // Its price heads its sandbox, where the work it pays for is done.
   const sandboxPart = within(panel).getByRole("region", { name: "Sandbox" });
-  expect(within(sandboxPart).getByText(/Not priced yet/)).toBeDefined();
+  // With no approved proposal, neither its price nor its size is settled.
+  expect(within(sandboxPart).getAllByText("—")).toHaveLength(2);
   // Said plainly: making one is offered on its page.
   expect(within(sandboxPart).getByText("No sandbox yet.")).toBeDefined();
   const context = within(panel).getByRole("region", { name: "Context" });
@@ -1881,6 +1882,7 @@ test("an admin makes a bounty's sandbox from its repository, and sees it after",
               status: "draft",
               publicRepoId: null,
               currentVersionId: null,
+              expiresAt: null,
               bountyId: "bty_7",
               sourceRepoId: "ghr_1",
               createdAt: stamp,
@@ -2001,6 +2003,7 @@ function sandboxOf(overrides: Record<string, unknown> = {}) {
     id: "sbx_1",
     status: "draft",
     currentVersionId: null,
+    expiresAt: null,
     sourceRepoId: null,
     ...overrides,
   };
@@ -2031,7 +2034,11 @@ test("a bounty with a sandbox is kept, and its panel says how far the sandbox go
   render(<Bounties {...inAcme("admin")} />);
   const panel = await screen.findByTestId("bounty-detail");
   const part = within(panel).getByRole("region", { name: "Sandbox" });
-  expect(within(part).getByText("Published")).toBeDefined();
+  // The pill opens the published sandbox, in a tab of its own.
+  const pill = within(part).getByRole("link", { name: /Published/ });
+  expect(pill.getAttribute("href")).toBe("/sandboxes/acme/sbv_1");
+  expect(pill.getAttribute("target")).toBe("_blank");
+  expect(pill.querySelector("svg")).not.toBeNull();
   expect(
     within(part).getByText("Contributors can work in its published version."),
   ).toBeDefined();
@@ -2058,6 +2065,7 @@ test("an admin links the bounty's repository to a sandbox made without one", asy
             status: "draft",
             publicRepoId: null,
             currentVersionId: null,
+            expiresAt: null,
             bountyId: "bty_7",
             sourceRepoId: "ghr_1",
             createdAt: stamp,
@@ -2650,9 +2658,18 @@ const proposed: [string, string, () => Promise<Response>] = [
   "/bounties/bty_7",
   () => json({ bounty: detail({ proposal: liveProposal() }) }),
 ];
+/** The same bounty with its proposal approved: its price is settled. */
+const approved: [string, string, () => Promise<Response>] = [
+  "GET",
+  "/bounties/bty_7",
+  () =>
+    json({
+      bounty: detail({ proposal: liveProposal({ status: "approved" }) }),
+    }),
+];
 
 test("a bounty's sandbox in the panel says what it pays and its size, at its head", async () => {
-  vi.stubGlobal("fetch", server([proposed]).fetchMock);
+  vi.stubGlobal("fetch", server([approved]).fetchMock);
   window.history.replaceState(null, "", "/bounties?peek=acme/bty_7");
   render(<Shell {...inAcme("member")} />);
   const page = await screen.findByTestId("bounty-detail");
@@ -2843,7 +2860,7 @@ test("a proposal waiting on its code is read again once the code is measured, an
 });
 
 test("a bounty's page keeps it at a glance, its context and workspace beside every tab", async () => {
-  vi.stubGlobal("fetch", server([proposed]).fetchMock);
+  vi.stubGlobal("fetch", server([approved]).fetchMock);
   window.history.replaceState(null, "", "/bounties/acme/bty_7");
   render(<Shell {...inAcme("admin")} />);
   const page = await screen.findByTestId("bounty-detail");
@@ -2876,7 +2893,7 @@ test("a bounty's page opens on the tab its address names", async () => {
   expect(within(page).getByRole("region", { name: "Sandbox" })).toBeDefined();
 });
 
-test("resizing a bounty's proposal moves the size and price its page shows", async () => {
+test("a bounty not yet approved shows no price at a glance, however it is resized", async () => {
   let resized = false;
   const live = () =>
     resized
@@ -2915,7 +2932,9 @@ test("resizing a bounty's proposal moves the size and price its page shows", asy
   render(<Shell {...inAcme("admin")} />);
   const page = await screen.findByTestId("bounty-detail");
   const row = () => within(page).getByRole("region", { name: "Bounty" });
-  await waitFor(() => expect(row().textContent).toContain(money(200, "USD")));
+  // Proposed: its price and size are not settled until it is approved.
+  await waitFor(() => expect(within(row()).getAllByText("—")).toHaveLength(2));
+  expect(row().textContent).not.toContain(money(200, "USD"));
 
   const peek = await screen.findByTestId("proposal-detail");
   const resize = await within(peek).findByRole("group", { name: "Resize" });
@@ -2924,9 +2943,17 @@ test("resizing a bounty's proposal moves the size and price its page shows", asy
     state.calls.find(({ url }) => url.endsWith("/proposals/bpr_9/resize"))
       ?.body,
   ).toEqual({ expectedRevision: 1, complexity: "L" });
-  // Applied in place to the proposal, and read again for the bounty.
-  await waitFor(() => expect(row().textContent).toContain(money(300, "USD")));
-  expect(row().textContent).toContain("L");
+  // Read again for the bounty, which still is not approved.
+  await waitFor(() =>
+    expect(
+      state.calls.filter(
+        ({ method, url }) =>
+          method === "GET" && url.endsWith("/bounties/bty_7"),
+      ).length,
+    ).toBeGreaterThanOrEqual(2),
+  );
+  expect(within(row()).getAllByText("—")).toHaveLength(2);
+  expect(row().textContent).not.toContain(money(300, "USD"));
 });
 
 test("a removed proposal returns to its bounty, which then has none", async () => {
@@ -3067,12 +3094,13 @@ test("an approved proposal names its version and when it was approved", async ()
   ).toBeDefined();
 });
 
-test("a version whose build passed is published from over the slice, and unpublished", async () => {
+test("a version whose build passed is published for a while from over the slice, and unpublished", async () => {
   const ready = {
     ...generatedSource,
     harnessSha256: "h".repeat(64),
     toolchainDigest: "d".repeat(64),
   };
+  const week = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
   let published = false;
   const state = generatingServer({
     versions: () => [generatedVersion],
@@ -3081,21 +3109,47 @@ test("a version whose build passed is published from over the slice, and unpubli
     source: () =>
       published ? { ...ready, approvedBy: "user_1", approvedAt: stamp } : ready,
     sandbox: () =>
-      published ? { status: "published", currentVersionId: "sbv_1" } : {},
+      published
+        ? { status: "published", currentVersionId: "sbv_1", expiresAt: week }
+        : {},
   });
   vi.stubGlobal("fetch", state.fetchMock);
   const part = await sandboxPart();
   expect(await within(part).findByText("Not published yet")).toBeDefined();
-  published = true;
+  // Publish asks until when, rather than publishing outright.
   await userEvent.click(
     await within(part).findByRole("button", { name: "Publish" }),
   );
+  const until = await screen.findByRole("dialog", { name: "Publish until" });
+  expect(state.calls.some(({ url }) => url.endsWith("/publish"))).toBe(false);
+  // Quick actions open beside it: a day, three, or a week from now.
+  await userEvent.click(
+    within(until).getByRole("button", { name: "Quick actions" }),
+  );
+  const quick = await screen.findByRole("menu");
   expect(
-    state.calls.some(
-      ({ method, url }) =>
-        method === "POST" && url.endsWith("/sandboxes/versions/sbv_1/publish"),
-    ),
-  ).toBe(true);
+    within(quick)
+      .getAllByRole("menuitem")
+      .map((item) => item.firstElementChild?.textContent),
+  ).toEqual(["1 day", "3 days", "7 days"]);
+  published = true;
+  const before = Date.now();
+  await userEvent.click(
+    within(quick).getByRole("menuitem", { name: /7 days/ }),
+  );
+  await waitFor(() =>
+    expect(state.calls.some(({ url }) => url.endsWith("/publish"))).toBe(true),
+  );
+  const call = state.calls.find(
+    ({ method, url }) =>
+      method === "POST" && url.endsWith("/sandboxes/versions/sbv_1/publish"),
+  );
+  const expiresAt = Date.parse((call?.body as { expiresAt: string }).expiresAt);
+  const weekMs = 7 * 24 * 60 * 60 * 1000;
+  expect(expiresAt).toBeGreaterThanOrEqual(before - 60_000 + weekMs);
+  expect(expiresAt).toBeLessThanOrEqual(Date.now() + weekMs);
+  // Published, and until when.
+  expect(await within(part).findByText(/Expires/)).toBeDefined();
   // Unpublishing takes the sandbox back to a draft.
   await userEvent.click(
     await within(part).findByRole("button", { name: "Unpublish" }),
@@ -3106,6 +3160,104 @@ test("a version whose build passed is published from over the slice, and unpubli
         method === "POST" && url.endsWith("/sandboxes/sbx_1/unpublish"),
     ),
   ).toBe(true);
+});
+
+test("a day picked on the calendar publishes until its end", async () => {
+  const state = generatingServer({
+    versions: () => [generatedVersion],
+    run: () => ({ status: "succeeded", finishedAt: stamp }),
+    artifacts: [artifactOf("build_manifest", { ready: true })],
+    source: () => ({
+      ...generatedSource,
+      harnessSha256: "h".repeat(64),
+      toolchainDigest: "d".repeat(64),
+    }),
+  });
+  vi.stubGlobal("fetch", state.fetchMock);
+  const part = await sandboxPart();
+  await userEvent.click(
+    await within(part).findByRole("button", { name: "Publish" }),
+  );
+  const until = await screen.findByRole("dialog", { name: "Publish until" });
+  const named = (day: Date) =>
+    day.toLocaleDateString(undefined, {
+      weekday: "long",
+      month: "long",
+      day: "numeric",
+      year: "numeric",
+    });
+  const today = new Date();
+  // A day gone by cannot be picked.
+  if (today.getDate() > 1) {
+    const yesterday = new Date(
+      today.getFullYear(),
+      today.getMonth(),
+      today.getDate() - 1,
+    );
+    expect(
+      within(until)
+        .getByRole("button", { name: named(yesterday) })
+        .hasAttribute("disabled"),
+    ).toBe(true);
+  }
+  // The months before this one are not offered; the next ones are.
+  expect(
+    within(until)
+      .getByRole("button", { name: "Previous month" })
+      .hasAttribute("disabled"),
+  ).toBe(true);
+  await userEvent.click(
+    within(until).getByRole("button", { name: "Next month" }),
+  );
+  const next = new Date(today.getFullYear(), today.getMonth() + 1, 15);
+  await userEvent.click(
+    within(until).getByRole("button", { name: named(next) }),
+  );
+  await waitFor(() =>
+    expect(state.calls.some(({ url }) => url.endsWith("/publish"))).toBe(true),
+  );
+  const call = state.calls.find(({ url }) => url.endsWith("/publish"));
+  expect(call?.body).toEqual({
+    expiresAt: new Date(
+      next.getFullYear(),
+      next.getMonth(),
+      next.getDate(),
+      23,
+      59,
+      59,
+      999,
+    ).toISOString(),
+  });
+});
+
+test("a publication past its date reads as expired, and can be published again", async () => {
+  const lapsed = "2026-01-01T00:00:00.000Z";
+  vi.stubGlobal(
+    "fetch",
+    generatingServer({
+      versions: () => [{ ...generatedVersion, frozenAt: stamp }],
+      run: () => ({ status: "succeeded", finishedAt: stamp }),
+      artifacts: [artifactOf("build_manifest", { ready: true })],
+      source: () => ({
+        ...generatedSource,
+        harnessSha256: "h".repeat(64),
+        toolchainDigest: "d".repeat(64),
+        approvedBy: "user_1",
+        approvedAt: stamp,
+      }),
+      sandbox: () => ({
+        status: "published",
+        currentVersionId: "sbv_1",
+        expiresAt: lapsed,
+      }),
+    }).fetchMock,
+  );
+  const part = await sandboxPart();
+  const expired = await within(part).findByText(/^Expired/);
+  expect(expired.querySelector("time")?.getAttribute("datetime")).toBe(lapsed);
+  const publish = await within(part).findByRole("button", { name: "Publish" });
+  expect(publish.hasAttribute("disabled")).toBe(false);
+  expect(within(part).queryByRole("button", { name: "Unpublish" })).toBeNull();
 });
 
 test("a version without a passing build cannot be published", async () => {
@@ -3120,6 +3272,75 @@ test("a version without a passing build cannot be published", async () => {
   const part = await sandboxPart();
   const publish = await within(part).findByRole("button", { name: "Publish" });
   expect(publish.hasAttribute("disabled")).toBe(true);
+});
+
+test("a sandbox of a bounty that is not approved cannot be published, and says why", async () => {
+  vi.stubGlobal(
+    "fetch",
+    generatingServer({
+      versions: () => [generatedVersion],
+      run: () => ({ status: "succeeded", finishedAt: stamp }),
+      artifacts: [artifactOf("build_manifest", { ready: true })],
+      source: () => ({
+        ...generatedSource,
+        harnessSha256: "h".repeat(64),
+        toolchainDigest: "d".repeat(64),
+      }),
+      proposal: { ...approvedSummary, status: "proposed" },
+    }).fetchMock,
+  );
+  const part = await sandboxPart();
+  const publish = await within(part).findByRole("button", { name: "Publish" });
+  expect(publish.hasAttribute("disabled")).toBe(true);
+  // The reason is on hover, from the span the disabled button sits in.
+  await userEvent.hover(publish.parentElement!);
+  expect(
+    (
+      await screen.findAllByText(
+        "Approve the bounty before publishing its sandbox.",
+      )
+    ).length,
+  ).toBeGreaterThan(0);
+});
+
+test("an approval a published sandbox stands on cannot be taken back, and says why", async () => {
+  const state = generatingServer({
+    versions: () => [generatedVersion],
+    sandbox: () => ({ status: "published", currentVersionId: "sbv_1" }),
+  });
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: string, init?: RequestInit) =>
+      /\/proposals\/bpr_7$/.test(String(input))
+        ? json({
+            proposal: proposal({ id: "bpr_7", status: "approved", version: 1 }),
+            freshness: { freshness: "current", checkedAt: stamp },
+            liveSpec: null,
+            writebackOperations: [],
+          })
+        : state.fetchMock(input, init),
+    ),
+  );
+  window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=bounty");
+  render(<Shell {...inAcme("admin")} />);
+  const proposalDetail = await screen.findByTestId("proposal-detail");
+  const unapprove = await within(proposalDetail).findByRole("button", {
+    name: "Unapprove",
+  });
+  expect(unapprove.hasAttribute("disabled")).toBe(true);
+  expect(
+    within(proposalDetail)
+      .getByRole("button", { name: "Re-analyze" })
+      .hasAttribute("disabled"),
+  ).toBe(true);
+  await userEvent.hover(unapprove.parentElement!);
+  expect(
+    (
+      await screen.findAllByText(
+        "Unpublish the bounty's sandbox before changing its approval.",
+      )
+    ).length,
+  ).toBeGreaterThan(0);
 });
 
 test("a bounty that is a draft, or has no proposal, generates no slice", async () => {

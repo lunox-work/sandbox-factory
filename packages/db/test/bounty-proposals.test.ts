@@ -759,6 +759,8 @@ test("approves once and treats the exact replay as idempotent", async () => {
 test("withdraws and resizes through expected-revision filters", async () => {
   const withdrawn = row({ revision: 2, status: "proposed" });
   const withdrawFake = createSequencedFakeDb([
+    [{ bountyId: "bty_1" }],
+    [],
     [withdrawn],
     [{ row: withdrawn, ...NAME }],
   ]);
@@ -772,14 +774,28 @@ test("withdraws and resizes through expected-revision filters", async () => {
     ).ok,
     true,
   );
+  // The row locked first, then the sandbox read, so a publish in flight
+  // is waited for.
+  assert.equal(withdrawFake.calls[0]?.lock, "update");
   // Back to proposed with no decision left on the row.
-  assert.equal(withdrawFake.calls[0]?.values?.["status"], "proposed");
-  assert.equal(withdrawFake.calls[0]?.values?.["decidedBy"], null);
-  assert.equal(withdrawFake.calls[0]?.values?.["decisionDeliveryPolicy"], null);
+  assert.equal(withdrawFake.calls[2]?.values?.["status"], "proposed");
+  assert.equal(withdrawFake.calls[2]?.values?.["decidedBy"], null);
+  assert.equal(withdrawFake.calls[2]?.values?.["decisionDeliveryPolicy"], null);
   // A withdrawal changes nothing it says: its version stands at the
   // withdrawal's revision too.
-  assert.equal(withdrawFake.calls[0]?.values?.["versionRevision"], 2);
-  assert.equal(withdrawFake.calls[0]?.values?.["version"], undefined);
+  assert.equal(withdrawFake.calls[2]?.values?.["versionRevision"], 2);
+  assert.equal(withdrawFake.calls[2]?.values?.["version"], undefined);
+
+  // A published sandbox stands on the approval: refused, nothing written.
+  const held = createSequencedFakeDb([
+    [{ bountyId: "bty_1" }],
+    [{ id: "sbx_1" }],
+  ]);
+  assert.deepEqual(
+    await createBountyProposalStore(held.db).withdraw("org_1", "bpr_1", 1),
+    { ok: false, reason: "sandbox-published" },
+  );
+  assert.equal(held.calls.length, 2);
 
   const resized = row({ revision: 2, complexity: "L", amountMinor: 300 });
   const resizeFake = createSequencedFakeDb([
@@ -838,7 +854,7 @@ test("a resize with a step writes the rebased step and the size it comes to", as
 });
 
 test("a missed mutation distinguishes not found from changed", async () => {
-  const missing = createSequencedFakeDb([[], []]);
+  const missing = createSequencedFakeDb([[], [], []]);
   assert.deepEqual(
     await createBountyProposalStore(missing.db).withdraw("org_2", "bpr_1", 1),
     { ok: false, reason: "not-found" },
@@ -861,7 +877,12 @@ test("a missed mutation distinguishes not found from changed", async () => {
   // Withdrawing what is already proposed: the revision matches, the state
   // does not.
   const invalid = row({ revision: 1, status: "proposed" });
-  const invalidState = createSequencedFakeDb([[], [{ row: invalid, ...NAME }]]);
+  const invalidState = createSequencedFakeDb([
+    [{ bountyId: "bty_1" }],
+    [],
+    [],
+    [{ row: invalid, ...NAME }],
+  ]);
   const invalidResult = await createBountyProposalStore(
     invalidState.db,
   ).withdraw("org_1", "bpr_1", 1);
@@ -1094,6 +1115,8 @@ test("re-price queues a withdrawal for a posted approval in the same transaction
       } as BountyRunRow,
     ],
     [source],
+    // No published sandbox holds the approval.
+    [],
     [approval],
     [repriced],
     [{ row: repriced, ...NAME }],
@@ -1135,6 +1158,7 @@ test("re-price completion refuses unresolved approval delivery", async () => {
   const fake = createSequencedFakeDb([
     [{ id: "brn_2", boardId: "jrb_1", bountyId: null } as BountyRunRow],
     [row({ status: "approved", decisionDeliveryPolicy: "requested" })],
+    [],
     [{ status: "uncertain" } as BountyWritebackRow],
   ]);
   const result = await createBountyProposalStore(fake.db).repriceForLease(
@@ -1145,6 +1169,24 @@ test("re-price completion refuses unresolved approval delivery", async () => {
     { ...input, runId: "brn_2" },
   );
   assert.equal(result.status, "writeback-busy");
+});
+
+test("re-price completion refuses an approval a published sandbox stands on", async () => {
+  const fake = createSequencedFakeDb([
+    [{ id: "brn_2", boardId: "jrb_1", bountyId: null } as BountyRunRow],
+    [row({ status: "approved" })],
+    [{ id: "sbx_1" }],
+  ]);
+  const result = await createBountyProposalStore(fake.db).repriceForLease(
+    "org_1",
+    "lease_1",
+    "bpr_1",
+    1,
+    { ...input, runId: "brn_2" },
+  );
+  assert.equal(result.status, "sandbox-published");
+  // Refused before the proposal is sized again.
+  assert.equal(fake.calls.length, 3);
 });
 
 test("re-price does not queue a withdrawal when the site holds no write grant", async () => {
@@ -1167,6 +1209,8 @@ test("re-price does not queue a withdrawal when the site holds no write grant", 
   const fake = createSequencedFakeDb([
     [{ id: "brn_2", boardId: "jrb_1", bountyId: null } as BountyRunRow],
     [source],
+    // No published sandbox holds the approval.
+    [],
     [approval],
     [repriced],
     [{ row: repriced, ...NAME }],

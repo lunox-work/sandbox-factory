@@ -30,6 +30,7 @@ import {
   toolOfParams,
   toolVersionOf,
   validateAliasRules,
+  isPublicationLive,
 } from "../src/index.js";
 import type {
   AliasRule,
@@ -1413,5 +1414,30 @@ test("a submission passes only when every public and hidden test passed", () => 
   assert.equal(
     submissionVerdict({ public: all, hidden: { passed: 0, total: 0 } }),
     "failed",
+  );
+});
+
+test("a publication stands until its expiry, and lapses at it", () => {
+  const now = new Date("2026-10-06T12:00:00.000Z");
+  const until = (expiresAt: string | null) =>
+    isPublicationLive({ status: "published", expiresAt }, now);
+  assert.equal(until("2026-10-07T00:00:00.000Z"), true);
+  // At the moment itself it has lapsed, and after it too.
+  assert.equal(until("2026-10-06T12:00:00.000Z"), false);
+  assert.equal(until("2026-10-01T00:00:00.000Z"), false);
+  // One published with no date stands until it is taken down.
+  assert.equal(until(null), true);
+  assert.equal(isPublicationLive({ status: "published" }, now), true);
+  // A sandbox never published, or closed, has no publication at all.
+  assert.equal(
+    isPublicationLive({ status: "draft", expiresAt: null }, now),
+    false,
+  );
+  assert.equal(
+    isPublicationLive(
+      { status: "closed", expiresAt: "2026-10-07T00:00:00.000Z" },
+      now,
+    ),
+    false,
   );
 });

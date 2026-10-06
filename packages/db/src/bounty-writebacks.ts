@@ -1,5 +1,6 @@
 import { and, eq, gt, lt, or, sql } from "drizzle-orm";
 
+import { approvalPublished } from "./approval-lock.js";
 import type { Database } from "./errors.js";
 import { generateId } from "./mapping.js";
 import { approvalVersion, withdrawalVersion } from "./proposal-version.js";
@@ -40,6 +41,8 @@ export interface BountyWritebackStore {
   /**
    * An approved proposal back to proposed, with the withdrawal comment queued
    * in the same transaction. For an approval whose comment reached Jira.
+   * Refused with `sandbox-published` while the bounty's sandbox is
+   * published, as `withdraw` is.
    */
   withdrawWithIntent(
     organizationId: string,
@@ -49,7 +52,10 @@ export interface BountyWritebackStore {
     payload: BountyWritebackPayload,
   ): Promise<
     | { readonly status: "created"; readonly operation: StoredBountyWriteback }
-    | { readonly status: "not-found" | "changed" | "invalid-state" }
+    | {
+        readonly status:
+          "not-found" | "changed" | "invalid-state" | "sandbox-published";
+      }
   >;
   get(
     organizationId: string,
@@ -208,6 +214,8 @@ export function createBountyWritebackStore(db: Database): BountyWritebackStore {
     ) {
       return db.transaction(async (transaction) => {
         const tx = transaction;
+        if (await approvalPublished(tx, organizationId, proposalId))
+          return { status: "sandbox-published" } as const;
         const now = new Date();
         const withdrawn = (await tx
           .update(bountyProposal)

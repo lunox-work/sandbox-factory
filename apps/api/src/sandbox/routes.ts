@@ -27,6 +27,7 @@ import {
   createSandboxVersionSchema,
   generateStarterResponseSchema,
   publishVersionResponseSchema,
+  publishVersionSchema,
   linkSandboxSourceSchema,
   replayResponseSchema,
   SANDBOX_FILE_TEXT_MAX_BYTES,
@@ -553,9 +554,10 @@ export function mountSandboxRoutes(
 
   /**
    * Publishes a version: approves and freezes it, and makes it the
-   * sandbox's published version. Only a version whose build passed. No
-   * public repository is pushed yet; publication marks the version
-   * contributors are to get.
+   * sandbox's published version until the date given, which must be
+   * ahead. Only a version whose build passed, of a bounty whose proposal is
+   * approved. No public repository is pushed yet; publication marks the
+   * version contributors are to get.
    */
   app.post(`${base}/versions/:vid/publish`, async (c) => {
     if (!admin(c.get("member").role))
@@ -563,11 +565,27 @@ export function mountSandboxRoutes(
         { error: "Only owners and admins can publish a version." },
         403,
       );
+    const parsed = publishVersionSchema.safeParse(
+      await c.req.json().catch(() => null),
+    );
+    if (!parsed.success)
+      return c.json({ error: "Give the date the publication expires." }, 400);
+    const at = now();
+    const expiresAt = new Date(parsed.data.expiresAt);
+    if (expiresAt.getTime() <= at.getTime())
+      return c.json(
+        {
+          error: "The expiry date must be in the future.",
+          code: "expiry_past",
+        },
+        400,
+      );
     const result = await options.sandboxes.publishVersion(
       c.req.param("orgId"),
       c.req.param("vid"),
       c.get("user").id,
-      now(),
+      expiresAt,
+      at,
     );
     if (!result.ok)
       return result.reason === "not_ready"
@@ -578,7 +596,15 @@ export function mountSandboxRoutes(
             },
             409,
           )
-        : c.json({ error: "Not found." }, 404);
+        : result.reason === "bounty_not_approved"
+          ? c.json(
+              {
+                error: "Approve the bounty before publishing its sandbox.",
+                code: "bounty_not_approved",
+              },
+              409,
+            )
+          : c.json({ error: "Not found." }, 404);
     return c.json(
       publishVersionResponseSchema.parse({
         sandbox: sandboxDto(result.sandbox),

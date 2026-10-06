@@ -177,6 +177,7 @@ test("a bounty reads with or without a Jira issue, a proposal and a sandbox", ()
         id: "sbx_1",
         status: "published",
         currentVersionId: "sbv_1",
+        expiresAt: null,
         sourceRepoId: "ghr_1",
       },
     }).success,
@@ -187,6 +188,7 @@ test("a bounty reads with or without a Jira issue, a proposal and a sandbox", ()
     id: "sbx_1",
     status: "draft",
     currentVersionId: null,
+    expiresAt: null,
     sourceRepoId: null,
   };
   assert.equal(
@@ -208,6 +210,7 @@ test("a bounty reads with or without a Jira issue, a proposal and a sandbox", ()
         id: "sbx_1",
         status: "building",
         currentVersionId: null,
+        expiresAt: null,
         sourceRepoId: null,
       },
     }).success,
@@ -249,6 +252,7 @@ test("a sandbox belongs to one bounty, with or without a repository", () => {
       status: "draft",
       publicRepoId: null,
       currentVersionId: null,
+      expiresAt: null,
       bountyId: "bty_1",
       sourceRepoId: null,
       createdAt: "2026-10-04T00:00:00.000Z",

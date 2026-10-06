@@ -64,6 +64,8 @@ export interface BountySandboxSummary {
   readonly id: string;
   readonly status: SandboxStatus;
   readonly currentVersionId: string | null;
+  /** When its publication lapses; null while it has none. */
+  readonly expiresAt: string | null;
   /** Null until a repository is linked, which cutting a version needs. */
   readonly sourceRepoId: string | null;
 }
@@ -207,6 +209,7 @@ const sandboxColumns = {
   sandboxId: sandbox.id,
   sandboxStatus: sandbox.status,
   sandboxVersionId: sandbox.currentVersionId,
+  sandboxExpiresAt: sandbox.expiresAt,
   sandboxSourceRepoId: sandboxSource.sourceRepoId,
 };
 
@@ -214,6 +217,7 @@ interface SandboxFields {
   readonly sandboxId: string | null;
   readonly sandboxStatus: SandboxStatus | null;
   readonly sandboxVersionId: string | null;
+  readonly sandboxExpiresAt: Date | null;
   readonly sandboxSourceRepoId: string | null;
 }
 
@@ -221,6 +225,7 @@ const NO_SANDBOX: SandboxFields = {
   sandboxId: null,
   sandboxStatus: null,
   sandboxVersionId: null,
+  sandboxExpiresAt: null,
   sandboxSourceRepoId: null,
 };
 
@@ -231,6 +236,7 @@ function toSandboxSummary(fields: SandboxFields): BountySandboxSummary | null {
         id: fields.sandboxId,
         status: fields.sandboxStatus,
         currentVersionId: fields.sandboxVersionId,
+        expiresAt: fields.sandboxExpiresAt?.toISOString() ?? null,
         sourceRepoId: fields.sandboxSourceRepoId,
       };
 }

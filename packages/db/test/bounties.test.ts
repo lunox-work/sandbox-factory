@@ -164,6 +164,7 @@ test("a bounty reads and lists with its sandbox, and the repository it is cut fr
     sandboxId: "sbx_1",
     sandboxStatus: "draft",
     sandboxVersionId: null,
+    sandboxExpiresAt: null,
     sandboxSourceRepoId: null,
   };
   const read = await createBountyStore(
@@ -174,6 +175,7 @@ test("a bounty reads and lists with its sandbox, and the repository it is cut fr
     id: "sbx_1",
     status: "draft",
     currentVersionId: null,
+    expiresAt: null,
     sourceRepoId: null,
   });
   const {
@@ -190,6 +192,7 @@ test("a bounty reads and lists with its sandbox, and the repository it is cut fr
         ...bare,
         sandboxStatus: "published",
         sandboxVersionId: "sbv_1",
+        sandboxExpiresAt: new Date("2026-10-13T00:00:00.000Z"),
         sandboxSourceRepoId: "ghr_1",
         proposalId: null,
         proposalStatus: null,
@@ -203,6 +206,7 @@ test("a bounty reads and lists with its sandbox, and the repository it is cut fr
     id: "sbx_1",
     status: "published",
     currentVersionId: "sbv_1",
+    expiresAt: "2026-10-13T00:00:00.000Z",
     sourceRepoId: "ghr_1",
   });
   const none = await createBountyStore(
@@ -213,6 +217,7 @@ test("a bounty reads and lists with its sandbox, and the repository it is cut fr
         sandboxId: null,
         sandboxStatus: null,
         sandboxVersionId: null,
+        sandboxExpiresAt: null,
         sandboxSourceRepoId: null,
       },
     ]).db,

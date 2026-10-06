@@ -37,7 +37,11 @@ import type {
   BountySandboxSummaryDto,
   BountySummaryDto,
 } from "@sandbox-factory/shared";
-import { BOUNTY_LIMITS, sameStackName } from "sandbox-factory";
+import {
+  BOUNTY_LIMITS,
+  isPublicationLive,
+  sameStackName,
+} from "sandbox-factory";
 import {
   Box,
   ExternalLink,
@@ -80,6 +84,8 @@ import {
   WorkspaceFace,
   type Viewer,
 } from "./OrganizationSwitcher";
+import { LunoxMark } from "@/components/LunoxMark";
+import { dateTime } from "./lib/format";
 import { money } from "./Proposals";
 import { JiraIcon } from "./ProviderIcon";
 import {
@@ -92,6 +98,7 @@ import {
   isPlainLeftClick,
   NEW_BOUNTY_PATH,
   pathForScreen,
+  sandboxFilesPath,
   type BountyAddress,
 } from "./routes";
 import { clients } from "./data/query";
@@ -118,6 +125,13 @@ import {
 /** How a sandbox's status reads. */
 const SANDBOX_STATUS_LABEL: Record<BountySandboxSummaryDto["status"], string> =
   { draft: "Draft", published: "Published", closed: "Closed" };
+
+/** Its status, or Expired for a publication past its date. */
+function sandboxLabel(sandbox: BountySandboxSummaryDto): string {
+  return sandbox.status === "published" && !isPublicationLive(sandbox)
+    ? "Expired"
+    : SANDBOX_STATUS_LABEL[sandbox.status];
+}
 
 /**
  * The tabs a bounty's own page splits it into: what it is and where it
@@ -761,6 +775,9 @@ function OpenBounty({
             bountyKey={bounty.jira?.key}
             bountyTitle={bounty.title}
             canDecide={manages}
+            sandboxPublished={
+              bounty.sandbox !== null && isPublicationLive(bounty.sandbox)
+            }
             onChanged={() => {
               void bounties.refresh();
               opened.reload();
@@ -993,7 +1010,7 @@ function BountyCard({
           {sandbox !== null && (
             <span className="text-muted-foreground inline-flex items-center gap-1 text-xs">
               <Box className="size-3" />
-              Sandbox {SANDBOX_STATUS_LABEL[sandbox.status]}
+              Sandbox {sandboxLabel(sandbox)}
             </span>
           )}
         </div>
@@ -1206,48 +1223,85 @@ function BountyDetail({
     the head of the sandbox the paid work is done in. The bounty names a
     removed proposal until it is read again, so only one the caller still
     knows of is shown. A page has the proposal in a tab of its own, which
-    says the price already, so only a panel shows it here.
+    says the price already, so only a panel shows it here. Until the bounty
+    is approved neither is settled, so both read as a dash.
   */
   const priced = proposal !== null ? bounty.proposal : null;
+  const settled = priced?.status === "approved" ? priced : null;
   const price = (
     <div className="mb-1 border-b pb-3">
-      {priced === null ? (
-        <p className="text-muted-foreground text-sm">
-          Not priced yet; its proposal prices it.
-        </p>
-      ) : (
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <span
-            className={cn(
-              "text-2xl leading-none font-semibold tracking-tight",
-              priced.amountMinor === null
-                ? "text-muted-foreground"
-                : "tabular-nums",
-            )}
-          >
-            {money(priced.amountMinor, priced.currency)}
-          </span>
-          <span className="flex items-center gap-1.5 text-sm">
-            <span className="text-muted-foreground">Size</span>
-            <Badge variant="outline" className="font-mono">
-              {priced.complexity}
-            </Badge>
-          </span>
-        </div>
-      )}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <span
+          className={cn(
+            "text-2xl leading-none font-semibold tracking-tight",
+            settled === null || settled.amountMinor === null
+              ? "text-muted-foreground"
+              : "tabular-nums",
+          )}
+        >
+          {settled === null
+            ? "—"
+            : money(settled.amountMinor, settled.currency)}
+        </span>
+        <span className="flex items-center gap-1.5 text-sm">
+          <span className="text-muted-foreground">Size</span>
+          <Badge variant="outline" className="font-mono">
+            {settled?.complexity ?? "—"}
+          </Badge>
+        </span>
+      </div>
     </div>
   );
 
   // Where the sandbox stands: its status and whether it can be worked in.
+  // A live publication's pill opens its sandbox, in a tab of its own.
+  const publishedVersion =
+    sandbox !== null && isPublicationLive(sandbox)
+      ? sandbox.currentVersionId
+      : null;
   const sandboxStatus = sandbox !== null && (
     <div className="flex flex-wrap items-center gap-2">
-      <Badge variant={sandbox.status === "published" ? "default" : "secondary"}>
-        {SANDBOX_STATUS_LABEL[sandbox.status]}
-      </Badge>
+      {publishedVersion !== null ? (
+        <Badge asChild>
+          <a
+            href={sandboxFilesPath({
+              workspace: organization.slug,
+              versionId: publishedVersion,
+            })}
+            target="_blank"
+            rel="noopener"
+            title="Open the published sandbox"
+            className="focus-visible:ring-ring/50 transition-opacity hover:opacity-90 focus-visible:ring-[3px] focus-visible:outline-none"
+          >
+            <LunoxMark />
+            {sandboxLabel(sandbox)}
+          </a>
+        </Badge>
+      ) : (
+        <Badge variant="secondary">{sandboxLabel(sandbox)}</Badge>
+      )}
       <span className="text-muted-foreground text-sm">
-        {sandbox.currentVersionId === null
-          ? "No version published yet."
-          : "Contributors can work in its published version."}
+        {sandbox.currentVersionId === null ? (
+          "No version published yet."
+        ) : sandbox.expiresAt === null ? (
+          "Contributors can work in its published version."
+        ) : isPublicationLive(sandbox) ? (
+          <>
+            Contributors can work in its published version until{" "}
+            <time dateTime={sandbox.expiresAt}>
+              {dateTime(sandbox.expiresAt)}
+            </time>
+            .
+          </>
+        ) : (
+          <>
+            Its publication expired{" "}
+            <time dateTime={sandbox.expiresAt}>
+              {dateTime(sandbox.expiresAt)}
+            </time>
+            .
+          </>
+        )}
       </span>
     </div>
   );
@@ -1299,6 +1353,12 @@ function BountyDetail({
                 : bounty.proposal.status !== "approved"
                   ? "The bounty is a draft. Approve it before generating its slice."
                   : null
+            }
+            // Published over an approved bounty only, as the server holds.
+            publishBlocked={
+              bounty.proposal?.status === "approved"
+                ? null
+                : "Approve the bounty before publishing its sandbox."
             }
             readOnly={readOnly}
             onPublished={onReload}

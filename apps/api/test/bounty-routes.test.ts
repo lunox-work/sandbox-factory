@@ -740,6 +740,53 @@ test("a bounty written here is reviewed and approved with no Jira", async () => 
   assert.equal((approved[0] as unknown[])[4], "off");
 });
 
+test("an approval a published sandbox stands on is not re-priced", async () => {
+  const bounty = written({
+    sandbox: {
+      id: "sbx_1",
+      status: "published",
+      currentVersionId: "sbv_1",
+      expiresAt: null,
+      sourceRepoId: null,
+    },
+  });
+  const state = harness({
+    bounties: [bounty],
+    live: { bty_7: proposalOf(bounty, { status: "approved" }) },
+  });
+  const response = await state.request("POST", "proposals/bpr_1/reprice", {
+    expectedRevision: 1,
+    requestId,
+  });
+  assert.equal(response.status, 409);
+  assert.equal(
+    ((await response.json()) as { code: string }).code,
+    "sandbox_published",
+  );
+  // Refused before a run is started.
+  assert.equal(state.created.length, 0);
+
+  // A publication past its date holds nothing: re-pricing goes ahead.
+  const lapsed = written({
+    sandbox: {
+      id: "sbx_1",
+      status: "published",
+      currentVersionId: "sbv_1",
+      expiresAt: "2026-01-01T00:00:00.000Z",
+      sourceRepoId: null,
+    },
+  });
+  const after = harness({
+    bounties: [lapsed],
+    live: { bty_7: proposalOf(lapsed, { status: "approved" }) },
+  });
+  const repriced = await after.request("POST", "proposals/bpr_1/reprice", {
+    expectedRevision: 1,
+    requestId,
+  });
+  assert.equal(repriced.status, 202);
+});
+
 test("a bounty written here is re-priced with no board", async () => {
   const bounty = written();
   const state = harness({

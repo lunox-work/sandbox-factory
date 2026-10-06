@@ -23,6 +23,7 @@ export function BountyProposal({
   bountyKey,
   bountyTitle,
   canDecide,
+  sandboxPublished = false,
   onChanged,
   onRemoved,
 }: {
@@ -31,6 +32,8 @@ export function BountyProposal({
   bountyKey: string | undefined;
   bountyTitle: string | undefined;
   canDecide: boolean;
+  /** The bounty's sandbox is published, which holds its approval. */
+  sandboxPublished?: boolean;
   /** After a change has landed, for whatever shows the bounty's proposal. */
   onChanged: () => void;
   onRemoved: () => void;
@@ -96,6 +99,7 @@ export function BountyProposal({
         bountyError={null}
         onRetryBounty={() => void detail.refetch()}
         canDecide={canDecide}
+        sandboxPublished={sandboxPublished}
         busy={busy}
         mutate={mutate}
         onChanged={changed}

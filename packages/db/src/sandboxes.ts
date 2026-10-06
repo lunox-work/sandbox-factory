@@ -24,6 +24,7 @@ import type {
   VersionFixtures,
   VersionSourceRecord,
 } from "sandbox-factory";
+import { lockApproval } from "./approval-lock.js";
 import { isUniqueViolation, type Database } from "./errors.js";
 import { generateId } from "./mapping.js";
 import {
@@ -50,6 +51,8 @@ export interface StoredSandbox {
   readonly status: SandboxStatus;
   readonly publicRepoId: string | null;
   readonly currentVersionId: string | null;
+  /** When its publication lapses; null while it has none. */
+  readonly expiresAt: string | null;
   /** The bounty this is the sandbox of. */
   readonly bountyId: string;
   /** Null until a repository is linked; no version can be sliced before. */
@@ -201,7 +204,10 @@ export type PublishVersionResult =
       readonly sandbox: StoredSandbox;
       readonly version: StoredVersionWithSource;
     }
-  | { readonly ok: false; readonly reason: "not-found" | "not_ready" };
+  | {
+      readonly ok: false;
+      readonly reason: "not-found" | "not_ready" | "bounty_not_approved";
+    };
 export type UpdateVersionResult =
   | ({ readonly ok: true } & StoredVersionWithSource)
   | {
@@ -310,13 +316,17 @@ export interface SandboxStore {
   /**
    * Publishes a version: records who approved it and when, freezes it, and
    * makes it the sandbox's published version. Refused with `not_ready`
-   * unless a passing build is recorded on it. A version published before
+   * unless a passing build is recorded on it, and with
+   * `bounty_not_approved` unless the bounty's proposal is approved: a
+   * publication stands on an approval. It stands until `expiresAt`, and
+   * each publish sets that afresh. A version published before
    * keeps its first approval and is only pointed at again.
    */
   publishVersion(
     organizationId: string,
     versionId: string,
     actor: string,
+    expiresAt: Date,
     now?: Date,
   ): Promise<PublishVersionResult>;
   /**
@@ -346,6 +356,7 @@ const toSandbox = (
   status: row.status,
   publicRepoId: row.publicRepoId,
   currentVersionId: row.currentVersionId,
+  expiresAt: row.expiresAt?.toISOString() ?? null,
   bountyId: row.bountyId,
   sourceRepoId,
   createdAt: row.createdAt.toISOString(),
@@ -929,7 +940,7 @@ export function createSandboxStore(db: Database): SandboxStore {
         return true;
       });
     },
-    async publishVersion(owner, versionId, actor, now = new Date()) {
+    async publishVersion(owner, versionId, actor, expiresAt, now = new Date()) {
       return db.transaction(async (transaction) => {
         const tx = transaction;
         const current = await lockVersion(tx, owner, versionId);
@@ -941,6 +952,18 @@ export function createSandboxStore(db: Database): SandboxStore {
           current.source.toolchainDigest === null
         )
           return { ok: false, reason: "not_ready" } as const;
+        // Published over an approved bounty only, held approved until the
+        // publish commits: an unapprove in flight waits, then sees it.
+        const owning = (
+          await tx
+            .select({ bountyId: sandbox.bountyId })
+            .from(sandbox)
+            .where(eq(sandbox.id, current.version.sandboxId))
+        )[0];
+        if (owning === undefined)
+          return { ok: false, reason: "not-found" } as const;
+        if (!(await lockApproval(tx, owner, owning.bountyId)))
+          return { ok: false, reason: "bounty_not_approved" } as const;
         let versionRow = current.version;
         let sourceRow = current.source;
         if (versionRow.frozenAt === null) {
@@ -969,6 +992,7 @@ export function createSandboxStore(db: Database): SandboxStore {
             .set({
               status: "published",
               currentVersionId: versionId,
+              expiresAt,
               updatedAt: now,
             })
             .where(eq(sandbox.id, versionRow.sandboxId))
@@ -996,7 +1020,12 @@ export function createSandboxStore(db: Database): SandboxStore {
       const published = (
         await db
           .update(sandbox)
-          .set({ status: "draft", currentVersionId: null, updatedAt: now })
+          .set({
+            status: "draft",
+            currentVersionId: null,
+            expiresAt: null,
+            updatedAt: now,
+          })
           .where(
             and(eq(sandbox.organizationId, owner), eq(sandbox.id, sandboxId)),
           )

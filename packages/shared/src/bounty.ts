@@ -58,6 +58,8 @@ export const bountySandboxSummarySchema = z.object({
   id: z.string().min(1),
   status: z.enum(SANDBOX_STATUSES),
   currentVersionId: z.string().nullable(),
+  /** When its publication lapses; null while it has none. */
+  expiresAt: z.iso.datetime().nullable(),
   /** Null until a repository is linked; no version is cut before. */
   sourceRepoId: z.string().nullable(),
 });

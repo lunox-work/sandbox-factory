@@ -18,6 +18,7 @@ const sandboxRow = (overrides: Partial<SandboxRow> = {}): SandboxRow => ({
   status: "draft",
   publicRepoId: null,
   currentVersionId: null,
+  expiresAt: null,
   createdAt: now,
   updatedAt: now,
   ...overrides,
@@ -874,6 +875,7 @@ test("replay context says whether the original source and slice are still there"
 });
 
 test("publishing freezes and approves a version with a passing build, and points its sandbox at it", async () => {
+  const expiresAt = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
   const ready = generatedRow({
     harnessSha256: "h".repeat(64),
     toolchainDigest: "d".repeat(64),
@@ -881,6 +883,8 @@ test("publishing freezes and approves a version with a passing build, and points
   const current = { version: versionRow(), source: ready, commitSha: null };
   const fake = createSequencedFakeDb([
     [current],
+    [{ bountyId: "bty_1" }],
+    [{ id: "bpr_1" }],
     [versionRow({ frozenAt: now })],
     [{ ...ready, approvedBy: "user_1", approvedAt: now }],
     [sandboxRow({ status: "published", currentVersionId: "sbv_1" })],
@@ -890,20 +894,25 @@ test("publishing freezes and approves a version with a passing build, and points
     "owner",
     "sbv_1",
     "user_1",
+    expiresAt,
     now,
   );
   assert.equal(result.ok, true);
   if (!result.ok) return;
   assert.equal(fake.calls[0]?.lock, "update");
-  assert.deepEqual(fake.calls[1]?.values, { frozenAt: now });
-  assert.deepEqual(fake.calls[2]?.values, {
+  // The bounty's approval, held until the publish commits.
+  assert.equal(fake.calls[2]?.lock, "share");
+  assert.deepEqual(fake.calls[3]?.values, { frozenAt: now });
+  assert.deepEqual(fake.calls[4]?.values, {
     approvedBy: "user_1",
     approvedAt: now,
     updatedAt: now,
   });
-  assert.deepEqual(fake.calls[3]?.values, {
+  // Published until the date given.
+  assert.deepEqual(fake.calls[5]?.values, {
     status: "published",
     currentVersionId: "sbv_1",
+    expiresAt,
     updatedAt: now,
   });
   assert.equal(result.sandbox.status, "published");
@@ -919,6 +928,8 @@ test("publishing freezes and approves a version with a passing build, and points
         commitSha: null,
       },
     ],
+    [{ bountyId: "bty_1" }],
+    [{ id: "bpr_1" }],
     [sandboxRow({ status: "published", currentVersionId: "sbv_1" })],
     [{ sourceRepoId: null }],
   ]);
@@ -926,13 +937,35 @@ test("publishing freezes and approves a version with a passing build, and points
     "owner",
     "sbv_1",
     "user_1",
+    expiresAt,
     now,
   );
   assert.equal(
     republished.ok && republished.version.source.approvedBy,
     "user_0",
   );
-  assert.equal(again.calls.length, 3);
+  assert.equal(again.calls.length, 5);
+
+  // A bounty not approved: refused before anything is frozen or published.
+  for (const rows of [
+    [[current], [{ bountyId: "bty_1" }], []],
+    [[current], []],
+  ]) {
+    const unapproved = createSequencedFakeDb(rows);
+    assert.deepEqual(
+      await createSandboxStore(unapproved.db).publishVersion(
+        "owner",
+        "sbv_1",
+        "user_1",
+        expiresAt,
+      ),
+      {
+        ok: false,
+        reason: rows.length === 3 ? "bounty_not_approved" : "not-found",
+      },
+    );
+    assert.equal(unapproved.calls.length, rows.length);
+  }
 
   // No passing build, or not the organization's: refused, nothing written.
   for (const [rows, reason] of [
@@ -945,6 +978,7 @@ test("publishing freezes and approves a version with a passing build, and points
         "owner",
         "sbv_1",
         "user_1",
+        expiresAt,
       ),
       { ok: false, reason },
     );
@@ -962,9 +996,11 @@ test("unpublishing takes a sandbox back to a draft with no published version", a
     "sbx_1",
     now,
   );
+  // Its expiry goes with the publication.
   assert.deepEqual(fake.calls[0]?.values, {
     status: "draft",
     currentVersionId: null,
+    expiresAt: null,
     updatedAt: now,
   });
   assert.equal(sandbox?.status, "draft");

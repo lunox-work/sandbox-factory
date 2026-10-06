@@ -138,6 +138,8 @@ export const sandboxDtoSchema = z.strictObject({
   status: z.enum(SANDBOX_STATUSES),
   publicRepoId: z.string().nullable(),
   currentVersionId: z.string().nullable(),
+  /** When its publication lapses; null while it has none. */
+  expiresAt: z.iso.datetime().nullable(),
   bountyId: z.string(),
   /** Null for a sandbox with no repository to slice from. */
   sourceRepoId: z.string().nullable(),
@@ -275,6 +277,14 @@ export const generateStarterResponseSchema = z.object({
   source: sandboxVersionSourceDtoSchema,
   run: analysisRunDtoSchema,
 });
+/**
+ * `POST .../sandboxes/versions/:id/publish` body: when the publication
+ * lapses. Every publication is made until a date, which must be ahead.
+ */
+export const publishVersionSchema = z.strictObject({
+  expiresAt: z.iso.datetime(),
+});
+export type PublishVersionInput = z.infer<typeof publishVersionSchema>;
 /**
  * `POST .../sandboxes/versions/:id/publish`: the sandbox, now published at
  * that version, and the version, frozen and approved.

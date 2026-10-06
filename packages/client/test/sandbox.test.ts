@@ -8,6 +8,7 @@ const sandbox = {
   status: "draft",
   publicRepoId: null,
   currentVersionId: null,
+  expiresAt: null,
   bountyId: "bty_1",
   sourceRepoId: "ghr_1",
   createdAt: stamp,
@@ -159,6 +160,17 @@ test("the sandbox client parses every response and scopes every path to the owne
         text: "a;\n",
         omitted: null,
       };
+    else if (url.endsWith("/publish"))
+      body = {
+        sandbox: {
+          ...sandbox,
+          status: "published",
+          currentVersionId: "sbv_1",
+          expiresAt: "2026-10-09T00:00:00.000Z",
+        },
+        version: { ...version, frozenAt: stamp },
+        source,
+      };
     else if (url.endsWith("/replay"))
       body = { ok: false, reason: "source_unavailable", detail: "gone" };
     else if (init?.method === "PATCH") body = { version };
@@ -196,6 +208,22 @@ test("the sandbox client parses every response and scopes every path to the owne
     complexity: "M",
   });
   assert.equal(created.source?.sourceCommitSha, "a".repeat(40));
+  // Published until the date given, which travels in the body.
+  const published = await client.publishSandboxVersion(
+    "org 1",
+    "sbv 1",
+    "2026-10-09T00:00:00.000Z",
+  );
+  assert.equal(published.sandbox.expiresAt, "2026-10-09T00:00:00.000Z");
+  const publishCall = calls.at(-1);
+  assert.equal(
+    publishCall?.url,
+    "https://api.test/api/v1/orgs/org%201/sandboxes/versions/sbv%201/publish",
+  );
+  assert.equal(
+    publishCall?.init?.body,
+    '{"expiresAt":"2026-10-09T00:00:00.000Z"}',
+  );
   const read = await client.sandboxVersion("org 1", "sbv_1");
   assert.deepEqual(read.source?.aliasRules, source.aliasRules);
   const patched = await client.updateSandboxVersion("org 1", "sbv_1", {
@@ -228,6 +256,10 @@ test("the sandbox client parses every response and scopes every path to the owne
         "https://api.test/api/v1/orgs/org%201/sandboxes/sbx%201/starter",
       ],
       ["POST", "https://api.test/api/v1/orgs/org%201/sandboxes/sbx_1/versions"],
+      [
+        "POST",
+        "https://api.test/api/v1/orgs/org%201/sandboxes/versions/sbv%201/publish",
+      ],
       ["GET", "https://api.test/api/v1/orgs/org%201/sandboxes/versions/sbv_1"],
       [
         "PATCH",

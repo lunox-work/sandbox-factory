@@ -16,6 +16,24 @@ import type { VersionFixtures } from "./fixtures.js";
 export const SANDBOX_STATUSES = ["draft", "published", "closed"] as const;
 export type SandboxStatus = (typeof SANDBOX_STATUSES)[number];
 
+/**
+ * Whether a sandbox's publication stands at `now`. A publication is made
+ * until a date, and lapses at it: past it the sandbox reads as no longer
+ * published, though its row still says it was. A publication with no date
+ * stands until it is taken down.
+ */
+export function isPublicationLive(
+  sandbox: {
+    readonly status: SandboxStatus;
+    readonly expiresAt?: string | null;
+  },
+  now: Date = new Date(),
+): boolean {
+  if (sandbox.status !== "published") return false;
+  const expiresAt = sandbox.expiresAt ?? null;
+  return expiresAt === null || Date.parse(expiresAt) > now.getTime();
+}
+
 export const DEPENDENCY_RESOLUTIONS = [
   "included-code",
   "runtime-mock",
