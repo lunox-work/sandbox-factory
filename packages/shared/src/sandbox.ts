@@ -249,6 +249,11 @@ export const sandboxVersionSourceDtoSchema = z.strictObject({
   starterSha256: z.string().nullable(),
   transformConfigSha256: z.string(),
   approvedTaskSha256: z.string(),
+  /**
+   * The bounty version (its proposal's approved version) the task was
+   * taken from; null for one taken before this was kept.
+   */
+  proposalVersion: z.number().int().positive().nullable(),
   aliasRules: z.array(aliasRuleSchema),
   dependencyChoices: dependencyChoicesSchema,
   acceptanceTests: z.array(acceptanceTestSchema),

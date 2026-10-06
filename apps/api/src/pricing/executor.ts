@@ -1218,9 +1218,7 @@ export class BountyExecutor {
                 ? "proposal_changed"
                 : created.status === "writeback-busy"
                   ? "writeback_busy"
-                  : created.status === "sandbox-published"
-                    ? "sandbox_published"
-                    : "not_found",
+                  : "not_found",
         },
       };
     }

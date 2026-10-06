@@ -83,7 +83,12 @@ test("bounty transport retains conflicts and cancels without dispatch", async ()
   });
   assert.match(paths[2] ?? "", /^\/api\/v1\/me\/bounties\?cursor=page/);
   await client.myBounties();
+  // An answer with no versions is not a list of them.
+  await assert.rejects(client.bountyVersions("owner", "1"));
+  assert.match(paths.at(-1) ?? "", /\/bounties\/1\/versions$/);
   await assert.rejects(client.bounty("owner", "1"));
+  await assert.rejects(client.decideBounty("owner", "1", "approve", 2));
+  assert.match(paths.at(-1) ?? "", /\/bounties\/1\/approve$/);
   await client.deleteBounty("owner", "1");
   const malformed = new BountyRunClient(options);
   await assert.rejects(malformed.run("owner", "1"));
@@ -123,7 +128,7 @@ test("bounty transport retains conflicts and cancels without dispatch", async ()
     client.bounties("owner", {}, AbortSignal.abort(new Error("stopped"))),
     /stopped/,
   );
-  assert.equal(paths.length, 6);
+  assert.equal(paths.length, 8);
 });
 
 test("pricing detail and revision envelopes fail explicitly when malformed", async () => {

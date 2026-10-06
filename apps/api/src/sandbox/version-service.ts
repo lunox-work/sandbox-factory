@@ -304,6 +304,8 @@ export function versionService(options: SandboxRouteOptions) {
     }
     let spec: ApprovedTaskSnapshot["spec"] = null;
     let pricing: ApprovedTaskSnapshot["pricing"] = null;
+    // The bounty version the task is taken from, while it is approved.
+    let proposalVersion: number | null = null;
     if (input.proposalId !== undefined) {
       const proposal = await options.proposals.get(owner, input.proposalId);
       if (proposal === null)
@@ -337,6 +339,7 @@ export function versionService(options: SandboxRouteOptions) {
           draft: stored.draft,
         };
       }
+      if (proposal.status === "approved") proposalVersion = proposal.version;
       pricing = {
         proposalId: proposal.id,
         proposalRevision: proposal.revision,
@@ -375,6 +378,7 @@ export function versionService(options: SandboxRouteOptions) {
         transformConfigSha256: transformConfigHash({ ...input, fixtures }),
         approvedTaskSha256: approvedTaskHash(approvedTask),
         approvedTask,
+        proposalVersion,
         aliasRules: input.aliasRules,
         dependencyChoices: input.dependencyChoices,
         acceptanceTests: input.acceptanceTests,
@@ -452,6 +456,8 @@ export function versionService(options: SandboxRouteOptions) {
       );
     let spec: ApprovedTaskSnapshot["spec"] = null;
     let pricing: ApprovedTaskSnapshot["pricing"] = null;
+    // The bounty version the task is taken from, while it is approved.
+    let proposalVersion: number | null = null;
     const proposalId = await options.proposals.liveForBounty(owner, bounty.id);
     const proposal =
       proposalId === null
@@ -469,6 +475,7 @@ export function versionService(options: SandboxRouteOptions) {
           specHash: stored.specHash,
           draft: stored.draft,
         };
+      if (proposal.status === "approved") proposalVersion = proposal.version;
       pricing = {
         proposalId: proposal.id,
         proposalRevision: proposal.revision,
@@ -547,6 +554,7 @@ export function versionService(options: SandboxRouteOptions) {
           }),
           approvedTaskSha256,
           approvedTask,
+          proposalVersion,
           aliasRules: [],
           dependencyChoices: {},
           acceptanceTests,

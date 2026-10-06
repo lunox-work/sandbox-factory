@@ -35,7 +35,6 @@ import { stream } from "hono/streaming";
 import {
   CATEGORIES,
   checkRespec,
-  isPublicationLive,
   priceFor,
   resetStep,
   SPEC_LIMITS,
@@ -875,8 +874,9 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
   });
 
   /**
-   * An approved proposal back to proposed, without re-sizing. Refused while
-   * the bounty's sandbox is published, which stands on the approval.
+   * An approved proposal back to proposed, without re-sizing. A sandbox
+   * published over the approval stays published, on the bounty version it
+   * was built from.
    *
    * If the approval's comment reached Jira and the site still holds the
    * write grant, the withdrawal is queued in the same transaction as the
@@ -933,8 +933,6 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
           c.get("user").id,
           announced.payload,
         );
-        if (result.status === "sandbox-published")
-          return c.json(SANDBOX_PUBLISHED, 409);
         if (result.status !== "created") {
           return c.json(
             {
@@ -1061,14 +1059,6 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
       proposal.bountyId,
     );
     if (bounty === null) return c.json({ error: "Not found" }, 404);
-    // Re-pricing takes back the approval; refused before the run, which
-    // would only be skipped when it lands.
-    if (
-      proposal.status === "approved" &&
-      bounty.sandbox !== null &&
-      isPublicationLive(bounty.sandbox)
-    )
-      return c.json(SANDBOX_PUBLISHED, 409);
     const board = await boardOf(options, organizationId, bounty);
     const card = await options.rateCards.get(organizationId);
     if (card === null)
@@ -1355,8 +1345,6 @@ function proposalMutationResponse<Env extends PricingAppEnv>(
 ) {
   if (result.ok) return c.json({ proposal: result.proposal });
   if (result.reason === "not-found") return c.json({ error: "Not found" }, 404);
-  if (result.reason === "sandbox-published")
-    return c.json(SANDBOX_PUBLISHED, 409);
   return c.json(
     {
       code: "proposal_changed",
@@ -1366,12 +1354,6 @@ function proposalMutationResponse<Env extends PricingAppEnv>(
     409,
   );
 }
-
-/** A published sandbox stands on its bounty's approval. */
-const SANDBOX_PUBLISHED = {
-  code: "sandbox_published",
-  error: "Unpublish the bounty's sandbox before changing its approval.",
-} as const;
 
 function requireAdmin(role: string): { error: string } | null {
   return isAtLeastAdmin(role)

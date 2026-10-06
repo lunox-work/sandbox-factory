@@ -41,12 +41,21 @@ const versionRow = (
   createdAt: now,
   ...overrides,
 });
+const approvedPricing = {
+  proposalId: "bpr_1",
+  proposalRevision: 2,
+  complexity: "M",
+  amountMinor: 50_000,
+  currency: "USD",
+  status: "approved",
+  decidedAt: now.toISOString(),
+} as const;
 const approvedTask: ApprovedTaskSnapshot = {
   schemaVersion: 3,
   title: "Fix it",
   summary: "Summary",
   spec: null,
-  pricing: null,
+  pricing: approvedPricing,
   selectedBy: "user",
   selectedAt: now.toISOString(),
   bountyId: "bty_1",
@@ -71,6 +80,7 @@ const sourceRow = (
   transformConfigSha256: "t".repeat(64),
   approvedTaskSha256: "a".repeat(64),
   approvedTask,
+  proposalVersion: 1,
   aliasRules: [],
   dependencyChoices: {},
   acceptanceTests: [],
@@ -100,6 +110,7 @@ const newVersion = {
     transformConfigSha256: "t".repeat(64),
     approvedTaskSha256: "a".repeat(64),
     approvedTask,
+    proposalVersion: 1,
     aliasRules: [
       {
         before: "Acme",
@@ -422,6 +433,7 @@ const starterVersion = {
     transformConfigSha256: "t".repeat(64),
     approvedTaskSha256: "a".repeat(64),
     approvedTask,
+    proposalVersion: 1,
     aliasRules: [],
     dependencyChoices: {},
     acceptanceTests: [],
@@ -883,8 +895,6 @@ test("publishing freezes and approves a version with a passing build, and points
   const current = { version: versionRow(), source: ready, commitSha: null };
   const fake = createSequencedFakeDb([
     [current],
-    [{ bountyId: "bty_1" }],
-    [{ id: "bpr_1" }],
     [versionRow({ frozenAt: now })],
     [{ ...ready, approvedBy: "user_1", approvedAt: now }],
     [sandboxRow({ status: "published", currentVersionId: "sbv_1" })],
@@ -900,16 +910,20 @@ test("publishing freezes and approves a version with a passing build, and points
   assert.equal(result.ok, true);
   if (!result.ok) return;
   assert.equal(fake.calls[0]?.lock, "update");
-  // The bounty's approval, held until the publish commits.
-  assert.equal(fake.calls[2]?.lock, "share");
-  assert.deepEqual(fake.calls[3]?.values, { frozenAt: now });
-  assert.deepEqual(fake.calls[4]?.values, {
+  // What it stands on is the approval its task was taken from: the
+  // bounty's approval now is not read, nor held.
+  assert.equal(
+    fake.calls.some(({ lock }) => lock === "share"),
+    false,
+  );
+  assert.deepEqual(fake.calls[1]?.values, { frozenAt: now });
+  assert.deepEqual(fake.calls[2]?.values, {
     approvedBy: "user_1",
     approvedAt: now,
     updatedAt: now,
   });
   // Published until the date given.
-  assert.deepEqual(fake.calls[5]?.values, {
+  assert.deepEqual(fake.calls[3]?.values, {
     status: "published",
     currentVersionId: "sbv_1",
     expiresAt,
@@ -928,8 +942,6 @@ test("publishing freezes and approves a version with a passing build, and points
         commitSha: null,
       },
     ],
-    [{ bountyId: "bty_1" }],
-    [{ id: "bpr_1" }],
     [sandboxRow({ status: "published", currentVersionId: "sbv_1" })],
     [{ sourceRepoId: null }],
   ]);
@@ -944,14 +956,19 @@ test("publishing freezes and approves a version with a passing build, and points
     republished.ok && republished.version.source.approvedBy,
     "user_0",
   );
-  assert.equal(again.calls.length, 5);
+  assert.equal(again.calls.length, 3);
 
-  // A bounty not approved: refused before anything is frozen or published.
-  for (const rows of [
-    [[current], [{ bountyId: "bty_1" }], []],
-    [[current], []],
-  ]) {
-    const unapproved = createSequencedFakeDb(rows);
+  // A task taken from a bounty not approved, or with no proposal at all:
+  // refused before anything is frozen or published.
+  for (const pricing of [{ ...approvedPricing, status: "proposed" }, null]) {
+    const unapproved = createSequencedFakeDb([
+      [
+        {
+          ...current,
+          source: { ...ready, approvedTask: { ...approvedTask, pricing } },
+        },
+      ],
+    ]);
     assert.deepEqual(
       await createSandboxStore(unapproved.db).publishVersion(
         "owner",
@@ -959,12 +976,9 @@ test("publishing freezes and approves a version with a passing build, and points
         "user_1",
         expiresAt,
       ),
-      {
-        ok: false,
-        reason: rows.length === 3 ? "bounty_not_approved" : "not-found",
-      },
+      { ok: false, reason: "bounty_not_approved" },
     );
-    assert.equal(unapproved.calls.length, rows.length);
+    assert.equal(unapproved.calls.length, 1);
   }
 
   // No passing build, or not the organization's: refused, nothing written.

@@ -86,6 +86,15 @@ export interface Bounties {
   /** Takes its Jira issue from the bounty, which keeps its text. */
   unlinkJira: (bountyId: string) => Promise<BountyWrite>;
   /**
+   * Approves the bounty's overview at its version, which holds it as it is
+   * until it is unapproved, or takes that back.
+   */
+  decide: (
+    bountyId: string,
+    decision: "approve" | "unapprove",
+    expectedRevision: number,
+  ) => Promise<BountyWrite>;
+  /**
    * Makes the bounty's sandbox, cut from `sourceRepoId` when one is given.
    * Resolves to null, or to why there is none.
    */
@@ -323,6 +332,23 @@ export function useBounties(organizationId: string): Bounties {
     [jiraWrite, organizationId],
   );
 
+  const decide = useCallback(
+    (
+      bountyId: string,
+      decision: "approve" | "unapprove",
+      expectedRevision: number,
+    ) =>
+      jiraWrite(() =>
+        clients.bounties.decideBounty(
+          organizationId,
+          bountyId,
+          decision,
+          expectedRevision,
+        ),
+      ),
+    [jiraWrite, organizationId],
+  );
+
   const createSandbox = useCallback(
     async (bountyId: string, sourceRepoId: string | null) => {
       try {
@@ -439,6 +465,7 @@ export function useBounties(organizationId: string): Bounties {
     remove,
     linkJira,
     unlinkJira,
+    decide,
     createSandbox,
     linkSandboxSource,
     propose,

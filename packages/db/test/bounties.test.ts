@@ -4,7 +4,12 @@ import { test } from "node:test";
 import { getTableConfig } from "drizzle-orm/pg-core";
 import type { BountyContent } from "sandbox-factory";
 
-import { jiraIssue, bounty, type BountyRow } from "../src/schema.js";
+import {
+  jiraIssue,
+  bounty,
+  bountyVersion,
+  type BountyRow,
+} from "../src/schema.js";
 import {
   createBountyStore,
   followsJira,
@@ -26,6 +31,10 @@ function bountyRow(overrides: Partial<BountyRow> = {}): BountyRow {
     stack: [],
     createdBy: "user_1",
     revision: 1,
+    version: 1,
+    approvedVersion: null,
+    approvedBy: null,
+    approvedAt: null,
     createdAt: new Date("2026-10-01T00:00:00Z"),
     updatedAt: new Date("2026-10-01T00:00:00Z"),
     ...overrides,
@@ -114,7 +123,16 @@ test("inserts a bounty once, and passes a failure on", async () => {
     origin: "manual",
   });
   assert.equal(created.id, "bty_1");
-  assert.equal(fake.calls.length, 1);
+  // The bounty, then its overview as version 1, by whoever wrote it.
+  assert.equal(fake.calls.length, 2);
+  assert.deepEqual(fake.calls[1]?.values, {
+    bountyId: "bty_1",
+    version: 1,
+    title: "Invitations are not sent",
+    description: "Steps",
+    createdBy: "user_1",
+    createdAt: new Date("2026-10-01T00:00:00Z"),
+  });
   await assert.rejects(
     insertBounty(createFakeDb([]).db, "org_1", { title: "t" }),
     /no row/,
@@ -177,6 +195,7 @@ test("a bounty reads and lists with its sandbox, and the repository it is cut fr
     currentVersionId: null,
     expiresAt: null,
     sourceRepoId: null,
+    build: null,
   });
   const {
     description: _d,
@@ -208,6 +227,7 @@ test("a bounty reads and lists with its sandbox, and the repository it is cut fr
     currentVersionId: "sbv_1",
     expiresAt: "2026-10-13T00:00:00.000Z",
     sourceRepoId: "ghr_1",
+    build: null,
   });
   const none = await createBountyStore(
     createFakeDb([
@@ -325,18 +345,54 @@ test("lists across the organizations it is given, and asks nothing of none", asy
 test("a change is made against the revision the editor saw", async () => {
   const fake = createSequencedFakeDb([
     [{ row: bountyRow({ revision: 2 }), ...unlinked }],
-    [bountyRow({ title: "Fixed title", revision: 3 })],
+    [
+      bountyRow({
+        title: "Fixed title",
+        description: "More",
+        revision: 3,
+        version: 2,
+      }),
+    ],
   ]);
-  const result = await createBountyStore(fake.db).update("org_1", "bty_1", 2, {
-    title: "Fixed title",
-    description: "More",
-  });
+  const result = await createBountyStore(fake.db).update(
+    "org_1",
+    "bty_1",
+    2,
+    { title: "Fixed title", description: "More" },
+    "user_2",
+  );
   assert.ok(result.ok);
   assert.equal(result.bounty.title, "Fixed title");
+  assert.equal(result.bounty.version, 2);
   const values = fake.calls[1]?.values;
   assert.equal(values?.["revision"], 3);
   assert.equal(values?.["description"], "More");
   assert.equal("repoId" in (values ?? {}), false);
+  // New words are the overview's next version, kept by whoever wrote them.
+  assert.equal(values?.["version"], 2);
+  assert.deepEqual(fake.calls[2]?.values, {
+    bountyId: "bty_1",
+    version: 2,
+    title: "Fixed title",
+    description: "More",
+    createdBy: "user_2",
+    createdAt: new Date("2026-10-01T00:00:00Z"),
+  });
+
+  // A stack is not what a proposal is sized from: no version moves.
+  const restacked = createSequencedFakeDb([
+    [{ row: bountyRow({ revision: 2 }), ...unlinked }],
+    [bountyRow({ revision: 3, stack: ["Redis"] })],
+  ]);
+  const stacked = await createBountyStore(restacked.db).update(
+    "org_1",
+    "bty_1",
+    2,
+    { stack: ["Redis"] },
+  );
+  assert.ok(stacked.ok);
+  assert.equal("version" in (restacked.calls[1]?.values ?? {}), false);
+  assert.equal(restacked.calls.length, 2);
 });
 
 test("a stale or missing bounty is not changed", async () => {
@@ -549,8 +605,8 @@ test("a refresh writes Jira's text only when it differs", async () => {
   assert.equal(same.calls.length, 1);
 
   const moved = createSequencedFakeDb([
-    [bountyRow({ revision: 5 })],
-    [{ id: "bty_1" }],
+    [bountyRow({ revision: 5, version: 2 })],
+    [bountyRow({ revision: 6, version: 3, description: "New steps" })],
   ]);
   assert.equal(
     await createBountyStore(moved.db).refreshFromJira("org_1", "bty_1", {
@@ -561,6 +617,37 @@ test("a refresh writes Jira's text only when it differs", async () => {
   );
   assert.equal(moved.calls[1]?.values?.["revision"], 6);
   assert.equal(moved.calls[1]?.values?.["description"], "New steps");
+  // New words are the overview's next version, which nobody here wrote.
+  assert.equal(moved.calls[1]?.values?.["version"], 3);
+  assert.equal(moved.calls[2]?.values?.["version"], 3);
+  assert.equal(moved.calls[2]?.values?.["description"], "New steps");
+  assert.equal(moved.calls[2]?.values?.["createdBy"], null);
+
+  // Jira's components alone are not what a proposal is sized from.
+  const regrouped = createSequencedFakeDb([
+    [bountyRow({ revision: 5 })],
+    [bountyRow({ revision: 6, components: ["Mailer"] })],
+  ]);
+  assert.equal(
+    await createBountyStore(regrouped.db).refreshFromJira("org_1", "bty_1", {
+      ...jiraText,
+      components: ["Mailer"],
+    }),
+    true,
+  );
+  assert.equal("version" in (regrouped.calls[1]?.values ?? {}), false);
+  assert.equal(regrouped.calls.length, 2);
+
+  // Changed by someone else since it was read: left for the next read.
+  const raced = createSequencedFakeDb([[bountyRow()], []]);
+  assert.equal(
+    await createBountyStore(raced.db).refreshFromJira("org_1", "bty_1", {
+      ...jiraText,
+      description: "New steps",
+    }),
+    false,
+  );
+  assert.equal(raced.calls.length, 2);
 
   assert.equal(
     await createBountyStore(createFakeDb([]).db).refreshFromJira(
@@ -581,10 +668,19 @@ test("a bounty is named by its id alone, and its columns are checked", () => {
   );
   assert.deepEqual(config.uniqueConstraints, []);
   assert.deepEqual(config.checks.map(({ name }) => name).sort(), [
+    "bounty_approved_version_check",
     "bounty_origin_check",
     "bounty_revision_check",
     "bounty_title_check",
+    "bounty_version_check",
   ]);
+  // One row per version of a bounty's overview, which goes with it.
+  const versions = getTableConfig(bountyVersion);
+  assert.deepEqual(
+    versions.primaryKeys[0]?.columns.map(({ name }) => name),
+    ["bounty_id", "version"],
+  );
+  assert.equal(versions.foreignKeys[0]?.onDelete, "cascade");
   // Removing a repository clears the link; the bounty stays.
   const repo = config.foreignKeys.find(
     (key) => key.reference().columns[0]?.name === "repo_id",
@@ -597,4 +693,187 @@ test("a bounty is named by its id alone, and its columns are checked", () => {
       ?.columns.map(({ name }) => name),
     ["bounty_id"],
   );
+});
+
+test("an overview's versions are listed newest first, through its owner", async () => {
+  const at = new Date("2026-10-02T00:00:00Z");
+  const fake = createFakeDb([
+    {
+      version: {
+        bountyId: "bty_1",
+        version: 2,
+        title: "Invitations are not sent",
+        description: "More steps",
+        createdBy: "user_1",
+        createdAt: at,
+      },
+    },
+  ]);
+  assert.deepEqual(
+    await createBountyStore(fake.db).versions("org_1", "bty_1"),
+    [
+      {
+        version: 2,
+        title: "Invitations are not sent",
+        description: "More steps",
+        createdBy: "user_1",
+        createdAt: at.toISOString(),
+      },
+    ],
+  );
+  assert.equal(fake.calls[0]?.filtered, true);
+  assert.equal(fake.calls[0]?.ordered, true);
+  // Every bounty has a first version: none is another owner's, or none.
+  assert.equal(
+    await createBountyStore(createFakeDb([]).db).versions("org_2", "bty_1"),
+    null,
+  );
+});
+
+test("a sandbox reads with the version it is built as, and the bounty version under it", async () => {
+  const read = await createBountyStore(
+    createFakeDb([
+      {
+        row: bountyRow(),
+        ...unlinked,
+        sandboxId: "sbx_1",
+        sandboxStatus: "published",
+        sandboxVersionId: "sbv_2",
+        sandboxExpiresAt: null,
+        sandboxSourceRepoId: null,
+        buildVersionId: "sbv_2",
+        buildVersion: 2,
+        buildBountyVersion: 4,
+      },
+    ]).db,
+  ).get("org_1", "bty_1");
+  assert.deepEqual(read?.sandbox?.build, {
+    versionId: "sbv_2",
+    version: 2,
+    bountyVersion: 4,
+  });
+});
+
+test("an approved overview is held until it is unapproved", async () => {
+  const at = new Date("2026-10-06T00:00:00Z");
+  const approvedRow = bountyRow({
+    revision: 3,
+    version: 2,
+    approvedVersion: 2,
+    approvedBy: "user_1",
+    approvedAt: at,
+  });
+
+  // Approved at the version it is at, by whoever approved it.
+  const approving = createSequencedFakeDb([
+    [{ row: bountyRow({ revision: 2, version: 2 }), ...unlinked }],
+    [approvedRow],
+  ]);
+  const approved = await createBountyStore(approving.db).approve(
+    "org_1",
+    "bty_1",
+    2,
+    "user_1",
+  );
+  assert.ok(approved.ok);
+  assert.deepEqual(approved.bounty.approval, {
+    version: 2,
+    approvedBy: "user_1",
+    approvedAt: at.toISOString(),
+  });
+  const set = approving.calls[1]?.values;
+  assert.equal(set?.["approvedVersion"], 2);
+  assert.equal(set?.["approvedBy"], "user_1");
+  assert.ok(set?.["approvedAt"] instanceof Date);
+  assert.equal(set?.["revision"], 3);
+
+  // Approved, nothing of it changes: not its text, repository or stack.
+  for (const change of [{ title: "Other" }, { stack: ["Redis"] }]) {
+    const held = createSequencedFakeDb([[{ row: approvedRow, ...unlinked }]]);
+    const refused = await createBountyStore(held.db).update(
+      "org_1",
+      "bty_1",
+      3,
+      change,
+    );
+    assert.equal(refused.ok, false);
+    if (!refused.ok) assert.equal(refused.reason, "overview-approved");
+    assert.equal(held.calls.length, 1);
+  }
+  // Asked again, it already stands: no change, no write.
+  const again = createSequencedFakeDb([[{ row: approvedRow, ...unlinked }]]);
+  assert.ok(
+    (await createBountyStore(again.db).approve("org_1", "bty_1", 3, "user_2"))
+      .ok,
+  );
+  assert.equal(again.calls.length, 1);
+
+  // Unapproved, it is open again.
+  const unapproving = createSequencedFakeDb([
+    [{ row: approvedRow, ...unlinked }],
+    [bountyRow({ revision: 4, version: 2 })],
+  ]);
+  const opened = await createBountyStore(unapproving.db).unapprove(
+    "org_1",
+    "bty_1",
+    3,
+  );
+  assert.ok(opened.ok);
+  assert.equal(opened.bounty.approval, null);
+  assert.deepEqual(
+    {
+      version: unapproving.calls[1]?.values?.["approvedVersion"],
+      by: unapproving.calls[1]?.values?.["approvedBy"],
+      at: unapproving.calls[1]?.values?.["approvedAt"],
+    },
+    { version: null, by: null, at: null },
+  );
+
+  // A version Jira wrote since is not the one approved: open to change.
+  const moved = bountyRow({
+    revision: 5,
+    version: 3,
+    approvedVersion: 2,
+    approvedBy: "user_1",
+    approvedAt: at,
+  });
+  const reopened = createSequencedFakeDb([
+    [{ row: moved, ...unlinked }],
+    [bountyRow({ revision: 6, version: 3, stack: ["Redis"] })],
+  ]);
+  assert.ok(
+    (
+      await createBountyStore(reopened.db).update("org_1", "bty_1", 5, {
+        stack: ["Redis"],
+      })
+    ).ok,
+  );
+});
+
+test("a decision on the overview is made against the revision seen", async () => {
+  const missing = createSequencedFakeDb([[]]);
+  assert.deepEqual(
+    await createBountyStore(missing.db).approve("org_1", "bty_x", 1, "user_1"),
+    { ok: false, reason: "not-found" },
+  );
+  const stale = await createBountyStore(
+    createSequencedFakeDb([[{ row: bountyRow({ revision: 2 }), ...unlinked }]])
+      .db,
+  ).approve("org_1", "bty_1", 1, "user_1");
+  assert.equal(stale.ok, false);
+  if (!stale.ok) assert.equal(stale.reason, "changed");
+  // Lost to a write between the read and its own.
+  const raced = await createBountyStore(
+    createSequencedFakeDb([
+      [{ row: bountyRow(), ...unlinked }],
+      [],
+      [{ row: bountyRow({ revision: 2 }), ...unlinked }],
+    ]).db,
+  ).approve("org_1", "bty_1", 1, "user_1");
+  assert.equal(raced.ok, false);
+  if (!raced.ok) assert.equal(raced.reason, "changed");
+  const gone = await createBountyStore(
+    createSequencedFakeDb([[{ row: bountyRow(), ...unlinked }], [], []]).db,
+  ).approve("org_1", "bty_1", 1, "user_1");
+  assert.deepEqual(gone, { ok: false, reason: "not-found" });
 });

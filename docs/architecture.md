@@ -418,6 +418,36 @@ and `versioned_at`. A resize, re-price or spec change moves the revision past
 it, so the next approval is a new version (`packages/db/src/proposal-version.ts`,
 migration 0050).
 
+**Three steps, each versioned, none locked.** A bounty is made in order:
+its overview (title and description), the bounty (its proposal's
+`version`) and its sandbox (`sandbox_version.version`). The overview's
+version is `bounty.version`, moved by a change to the title or the
+description, whether written here or refreshed from Jira; each one is kept
+in `bounty_version` (migration 0053, which backfilled every bounty's text
+as its version 1). Each step records the version of the step before it
+that it was built on. A proposal's overview version is the latest
+`bounty_version` whose text hashes to its `spec_hash` (`overviewVersionOf`
+in `packages/core/src/stages.ts`), so nothing is stored for it. A sandbox
+version's bounty version is `sandbox_version_source.proposal_version`, the
+proposal's version when its task was taken while approved, and null
+otherwise and for versions taken before it was kept. No step holds another:
+the overview is edited under an approved proposal, and a proposal is
+unapproved or re-priced while its sandbox is published. A step built on an
+earlier version than the step before is now at is behind (`stageDrift`),
+which the bounty's detail answers as `stages` and the page shows on the
+step's tab and at the top of its page. `GET .../bounties/:id/versions`
+lists the overview's versions.
+
+**An overview is approved as a proposal is.** `POST .../bounties/:id/approve`
+and `/unapprove` (owners and admins, against `expectedRevision`) record or
+clear `bounty.approved_version` with who and when (migration 0054). While
+that is the overview's version (`overviewApproved`) its title, description,
+repository, stack and Jira link are held: a change is refused
+`overview_approved` until it is unapproved. Jira is not held back: a refresh
+that makes a new version leaves the approval behind, and the overview reads
+as unapproved again. A proposal is re-analyzed only while it is not
+approved.
+
 **A bounty has one sandbox, and the sandbox three faces.** `sandbox.bounty_id`
 is unique and required, and a bounty with a sandbox cannot be removed. The
 private face is `sandbox_source` and `sandbox_version_source`: the source
@@ -483,7 +513,10 @@ tickets, and version 1 lists `jiraIssueIds`.
 (owners and admins) records who approved the version and when, freezes it,
 and makes it the sandbox's `current_version_id` with status `published`.
 Only a version with a passing build is published: one with no recorded
-harness and toolchain is refused `not_ready`. A version published before
+harness and toolchain is refused `not_ready`. It stands on the approval its
+task was taken from, not on the bounty's now: one whose task's proposal was
+not approved is refused `bounty_not_approved`, and one that was publishes
+whatever the bounty has done since. A version published before
 keeps its first approval and is only pointed at again. `POST
 .../sandboxes/:id/unpublish` takes the sandbox back to `draft` with no
 current version; its versions stay frozen. No public repository is pushed
@@ -549,7 +582,9 @@ opens in a panel over the list, `/bounties?peek=:workspace/:id`, or as a page
 of its own, `/bounties/:workspace/:id`, which the panel's Open as page leads
 to and whose trail leads back; a card links the page, and a plain click
 opens the panel. The workspace is its handle, naming the routes the bounty
-is read through. Either way it is one view, with no tabs: its description,
+is read through. Its page splits it into its three steps, numbered tabs
+named by `?tab=`, each with its version and a warning when it is behind;
+the panel is one view, with no tabs: its description,
 then its **Proposal**, and beside them on a wide page (below them otherwise)
 its **Sandbox** and **Context**: its Jira issue and repository, each optional.
 A bounty with no proposal offers to make one in the proposal's place; once

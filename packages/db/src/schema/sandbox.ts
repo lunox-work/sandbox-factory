@@ -155,6 +155,12 @@ export const sandboxVersionSource = pgTable(
     starterSha256: text("starter_sha256"),
     transformConfigSha256: text("transform_config_sha256").notNull(),
     approvedTaskSha256: text("approved_task_sha256").notNull(),
+    /**
+     * The bounty version (its proposal's approved version) the task was
+     * taken from. Null for one taken before this was kept, which reads as
+     * built on an earlier version.
+     */
+    proposalVersion: integer("proposal_version"),
     /** The approved task copied at selection; survives the live proposal. */
     approvedTask: jsonb("approved_task")
       .$type<StoredApprovedTaskSnapshot>()

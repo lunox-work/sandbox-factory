@@ -449,6 +449,8 @@ function jiraBounty(overrides: Partial<StoredBounty> = {}): StoredBounty {
     stack: [],
     createdBy: null,
     revision: 1,
+    version: 1,
+    approval: null,
     jira: {
       issueId: "jri_1",
       boardId: "jrb_1",
@@ -1134,23 +1136,6 @@ test("approval rechecks Jira; resize, unapprove and remove do not", async () => 
   assert.equal(unapproved.status, 200);
   assert.equal(unapprove.current().status, "proposed");
   assert.equal(unapprove.specReads(), 0);
-
-  // A published sandbox stands on the approval: the store refuses.
-  const held = reviewHarness(undefined, { status: "approved" });
-  const heldProposals = held.proposals as unknown as {
-    withdraw: () => Promise<unknown>;
-  };
-  heldProposals.withdraw = () =>
-    Promise.resolve({ ok: false, reason: "sandbox-published" });
-  const refused = await held.app.request(
-    "/api/v1/orgs/org_1/proposals/bpr_1/unapprove",
-    { method: "POST", headers, body: JSON.stringify({ expectedRevision: 1 }) },
-  );
-  assert.equal(refused.status, 409);
-  assert.equal(
-    ((await refused.json()) as { code: string }).code,
-    "sandbox_published",
-  );
 
   const remove = reviewHarness();
   const removed = await remove.app.request(

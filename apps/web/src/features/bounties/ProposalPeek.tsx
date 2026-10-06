@@ -98,12 +98,12 @@ export function ProposalPeek({
   bountyError,
   onRetryBounty,
   canDecide,
-  sandboxPublished = false,
   busy,
   mutate,
   onChanged,
   onRemoved,
   withinBounty = false,
+  overviewVersion = null,
 }: {
   /** The organization's API root, for the reads the peek makes itself. */
   base: string;
@@ -118,12 +118,6 @@ export function ProposalPeek({
   bountyError: string | null;
   onRetryBounty: () => void;
   canDecide: boolean;
-  /**
-   * The bounty's sandbox is published. It stands on the approval, so the
-   * approval is not taken back, by an unapprove or a re-price, until it is
-   * unpublished.
-   */
-  sandboxPublished?: boolean;
   busy: boolean;
   mutate: (
     path: string,
@@ -139,6 +133,11 @@ export function ProposalPeek({
    * they are left off, and the price and the scenarios share one page.
    */
   withinBounty?: boolean;
+  /**
+   * Inside its bounty, the overview version it was sized from, named under
+   * its version; null when no version says what it was sized from.
+   */
+  overviewVersion?: number | null;
 }) {
   const url = withinBounty ? null : (bounty?.url ?? proposal.liveUrl ?? null);
   const label = modelLabel(proposal.actualModel);
@@ -313,32 +312,40 @@ export function ProposalPeek({
     level.
   */
   const versionedAt = proposal.versionedAt ?? null;
+  const versionName =
+    proposal.version > 0 ? `Version ${proposal.version}` : "Not approved yet";
   const revision = (
     <span className="flex min-h-9 flex-col justify-center text-xs">
       <span className="flex flex-wrap items-center gap-x-1">
-        <span className="font-semibold">
-          {proposal.version > 0
-            ? `Version ${proposal.version}`
-            : "Not approved yet"}
-        </span>
-        {withinBounty && specRevision !== null && (
-          <>
-            <span className="text-muted-foreground">·</span>
-            <RevisionMenu
-              revisions={specRevisions}
-              current={specRevision}
-              viewing={viewing ?? specRevision}
-              onView={(revision) =>
-                setViewing(revision === specRevision ? null : revision)
-              }
-            />
-          </>
+        {/*
+          One number: the version, which chooses among the spec's revisions
+          inside its bounty. The current revision is what the version says.
+        */}
+        {withinBounty && specRevision !== null ? (
+          <RevisionMenu
+            revisions={specRevisions}
+            current={specRevision}
+            viewing={viewing ?? specRevision}
+            label={versionName}
+            onView={(revision) =>
+              setViewing(revision === specRevision ? null : revision)
+            }
+          />
+        ) : (
+          <span className="font-semibold">{versionName}</span>
         )}
       </span>
       <span className="flex flex-wrap gap-x-1">
         {versionedAt !== null && (
           <span className="text-muted-foreground">
             Approved <time dateTime={versionedAt}>{dateTime(versionedAt)}</time>
+            {(overviewVersion !== null || freshness !== null) && " ·"}
+          </span>
+        )}
+        {/* What it stands on: the step before it, by version. */}
+        {overviewVersion !== null && (
+          <span className="text-muted-foreground">
+            Overview v{overviewVersion}
             {freshness !== null && " ·"}
           </span>
         )}
@@ -358,11 +365,6 @@ export function ProposalPeek({
       </span>
     </span>
   );
-  // A published sandbox holds the approval it was published over.
-  const approvalHeld = !open && sandboxPublished;
-  const heldReason = approvalHeld
-    ? "Unpublish the bounty's sandbox before changing its approval."
-    : null;
   // An approval is made on the bounty as it was sized, so only while it
   // still says that.
   const approveBlocked =
@@ -395,21 +397,19 @@ export function ProposalPeek({
       </DisabledReason>
     )
   ) : (
-    <DisabledReason reason={heldReason}>
-      <Button
-        variant="outline"
-        disabled={busy || approvalHeld}
-        aria-busy={acting === "unapprove"}
-        onClick={() =>
-          void act("unapprove", `/proposals/${proposal.id}/unapprove`, {
-            expectedRevision: proposal.revision,
-          })
-        }
-      >
-        {acting === "unapprove" && <Loader2 className="animate-spin" />}
-        {acting === "unapprove" ? "Unapproving…" : "Unapprove"}
-      </Button>
-    </DisabledReason>
+    <Button
+      variant="outline"
+      disabled={busy}
+      aria-busy={acting === "unapprove"}
+      onClick={() =>
+        void act("unapprove", `/proposals/${proposal.id}/unapprove`, {
+          expectedRevision: proposal.revision,
+        })
+      }
+    >
+      {acting === "unapprove" && <Loader2 className="animate-spin" />}
+      {acting === "unapprove" ? "Unapproving…" : "Unapprove"}
+    </Button>
   );
   /*
     The way out: a muted text link rather than a button, since it is the
@@ -466,30 +466,29 @@ export function ProposalPeek({
           <Badge variant="secondary" className="w-fit">
             {capitalize(proposal.status)}
           </Badge>
-          {canDecide && (
-            <DisabledReason reason={heldReason}>
-              <button
-                type="button"
-                className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 flex cursor-pointer items-center gap-1.5 rounded-sm text-sm underline-offset-4 transition-colors hover:underline focus-visible:ring-[3px] focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
-                disabled={busy || approvalHeld}
-                aria-busy={acting === "reprice"}
-                onClick={() =>
-                  void act("reprice", `/proposals/${proposal.id}/reprice`, {
-                    expectedRevision: proposal.revision,
-                    requestId: crypto.randomUUID(),
-                  })
-                }
-              >
-                <RefreshCw
-                  className={`size-3.5 ${
-                    acting === "reprice"
-                      ? "animate-spin motion-reduce:animate-none"
-                      : ""
-                  }`}
-                />
-                Re-analyze
-              </button>
-            </DisabledReason>
+          {/* Sized again only while it is not approved: unapproved first. */}
+          {canDecide && open && (
+            <button
+              type="button"
+              className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 flex cursor-pointer items-center gap-1.5 rounded-sm text-sm underline-offset-4 transition-colors hover:underline focus-visible:ring-[3px] focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
+              disabled={busy}
+              aria-busy={acting === "reprice"}
+              onClick={() =>
+                void act("reprice", `/proposals/${proposal.id}/reprice`, {
+                  expectedRevision: proposal.revision,
+                  requestId: crypto.randomUUID(),
+                })
+              }
+            >
+              <RefreshCw
+                className={`size-3.5 ${
+                  acting === "reprice"
+                    ? "animate-spin motion-reduce:animate-none"
+                    : ""
+                }`}
+              />
+              Re-analyze
+            </button>
           )}
         </div>
 

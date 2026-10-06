@@ -564,21 +564,28 @@ function originName(origin: string): string {
 /**
  * Which revision of the spec is on show, in the header over the decision,
  * as a sandbox chooses its version: the revision, chosen from the others
- * when there are several.
+ * when there are several. While the current one is shown the trigger reads
+ * `label`, such as the proposal's version, so the header names one number;
+ * an earlier one is named as the revision it is.
  */
 export function RevisionMenu({
   revisions,
   current,
   viewing,
+  label,
   onView,
 }: {
   revisions: readonly BountySpecRevisionDto[];
   /** The revision the proposal points at. */
   current: number;
   viewing: number;
+  /** What the current revision is called; its revision number otherwise. */
+  label?: string;
   onView: (revision: number) => void;
 }) {
-  const name = <span className="font-semibold">Revision {viewing}</span>;
+  const text =
+    viewing === current && label !== undefined ? label : `Revision ${viewing}`;
+  const name = <span className="font-semibold">{text}</span>;
   if (revisions.length <= 1) return name;
   return (
     <DropdownMenu>
@@ -586,7 +593,7 @@ export function RevisionMenu({
         <button
           type="button"
           className="focus-visible:ring-ring/50 -mx-1 flex w-fit cursor-pointer items-center gap-1 rounded-sm px-1 hover:underline focus-visible:ring-[3px] focus-visible:outline-none"
-          aria-label={`Revision ${viewing}, choose another`}
+          aria-label={`${text}, choose another revision`}
         >
           {name}
           <ChevronDown className="text-muted-foreground size-3.5" />

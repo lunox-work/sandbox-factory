@@ -21,6 +21,7 @@ import {
   integer,
   jsonb,
   pgTable,
+  primaryKey,
   text,
   timestamp,
 } from "drizzle-orm/pg-core";
@@ -65,6 +66,24 @@ export const bounty = pgTable(
     }),
     /** Bumped by every change to the bounty, for an editor's stale check. */
     revision: integer("revision").notNull().default(1),
+    /**
+     * The overview's version: moved only by a change to the title or the
+     * description, which is what a proposal is sized from. Each one is kept
+     * in `bounty_version`.
+     */
+    version: integer("version").notNull().default(1),
+    /**
+     * The overview version an owner or admin approved, and who and when.
+     * While it is `version` the overview is approved, and its title, text,
+     * repository and stack are not changed until it is unapproved. A new
+     * version (from Jira, which no approval holds back) leaves it behind,
+     * and the overview reads as unapproved again.
+     */
+    approvedVersion: integer("approved_version"),
+    approvedBy: text("approved_by").references(() => user.id, {
+      onDelete: "set null",
+    }),
+    approvedAt: ts("approved_at"),
     createdAt: ts("created_at").notNull().defaultNow(),
     updatedAt: ts("updated_at").notNull().defaultNow(),
   },
@@ -81,8 +100,43 @@ export const bounty = pgTable(
     ),
     check("bounty_origin_check", sql`${table.origin} in ('manual', 'jira')`),
     check("bounty_revision_check", sql`${table.revision} > 0`),
+    check("bounty_version_check", sql`${table.version} > 0`),
+    check(
+      "bounty_approved_version_check",
+      sql`(${table.approvedVersion} IS NULL AND ${table.approvedAt} IS NULL) OR (${table.approvedVersion} BETWEEN 1 AND ${table.version} AND ${table.approvedAt} IS NOT NULL)`,
+    ),
   ],
 );
 
 export type BountyRow = typeof bounty.$inferSelect;
 export type NewBountyRow = typeof bounty.$inferInsert;
+
+/**
+ * A bounty's overview, one row per version: its title and description as
+ * they stood from that version until the next. Never edited: a change is a
+ * new row, as a proposal's spec revision is. A proposal is matched to the
+ * version it was sized from by the hash of this text, so nothing here
+ * points at a proposal.
+ */
+export const bountyVersion = pgTable(
+  "bounty_version",
+  {
+    bountyId: text("bounty_id")
+      .notNull()
+      .references(() => bounty.id, { onDelete: "cascade" }),
+    version: integer("version").notNull(),
+    title: text("title").notNull(),
+    description: text("description").notNull(),
+    /** Who wrote it; null for Jira's text, or a person since removed. */
+    createdBy: text("created_by").references(() => user.id, {
+      onDelete: "set null",
+    }),
+    createdAt: ts("created_at").notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.bountyId, table.version] }),
+    check("bounty_version_version_check", sql`${table.version} > 0`),
+  ],
+);
+
+export type BountyVersionRow = typeof bountyVersion.$inferSelect;

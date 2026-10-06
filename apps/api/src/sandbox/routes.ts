@@ -70,6 +70,7 @@ const sourceDto = (source: StoredVersionSource) => ({
   starterSha256: source.starterSha256,
   transformConfigSha256: source.transformConfigSha256,
   approvedTaskSha256: source.approvedTaskSha256,
+  proposalVersion: source.proposalVersion,
   aliasRules: source.aliasRules,
   dependencyChoices: source.dependencyChoices,
   acceptanceTests: source.acceptanceTests,
@@ -599,7 +600,8 @@ export function mountSandboxRoutes(
         : result.reason === "bounty_not_approved"
           ? c.json(
               {
-                error: "Approve the bounty before publishing its sandbox.",
+                error:
+                  "This version was not built from an approved bounty, so it cannot be published.",
                 code: "bounty_not_approved",
               },
               409,

@@ -160,6 +160,7 @@ const sourceWith = (
   starterSha256: null,
   transformConfigSha256: "t".repeat(64),
   approvedTaskSha256: "a".repeat(64),
+  proposalVersion: 1,
   aliasRules,
   dependencyChoices: {},
   acceptanceTests: [],

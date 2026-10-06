@@ -62,6 +62,18 @@ export const bountySandboxSummarySchema = z.object({
   expiresAt: z.iso.datetime().nullable(),
   /** Null until a repository is linked; no version is cut before. */
   sourceRepoId: z.string().nullable(),
+  /**
+   * The version contributors get, or the latest while none is published,
+   * and the bounty version it was built on: null for one built before that
+   * was kept. Null while it has no version.
+   */
+  build: z
+    .object({
+      versionId: z.string().min(1),
+      version: z.number().int().positive(),
+      bountyVersion: z.number().int().positive().nullable(),
+    })
+    .nullable(),
 });
 
 /** A bounty as a list shows it: everything but its longer text. */
@@ -82,11 +94,54 @@ export const bountySummaryDtoSchema = z.object({
    */
   stack: stackDtoSchema,
   revision: z.number().int().positive(),
+  /** The overview's version: moved by each change to its title or text. */
+  version: z.number().int().positive(),
+  /**
+   * The overview version an owner or admin approved; null until one is.
+   * While it is `version`, the overview is held as it is
+   * (`overviewApproved`).
+   */
+  approval: z
+    .object({
+      version: z.number().int().positive(),
+      approvedBy: z.string().nullable(),
+      approvedAt: z.iso.datetime(),
+    })
+    .nullable(),
   jira: bountyJiraLinkSchema.nullable(),
   proposal: bountyProposalSummarySchema.nullable(),
   sandbox: bountySandboxSummarySchema.nullable(),
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
+});
+
+/**
+ * A bounty's three steps, each built on the one before: the overview, the
+ * bounty (its live proposal) and the sandbox, with the version each is at
+ * and the version of the step before that it was built on. A step built on
+ * an older version than the one before it is at is behind
+ * (`stageDrift`); nothing locks one step to another.
+ */
+export const bountyStagesSchema = z.object({
+  overview: z.object({ version: z.number().int().positive() }),
+  /**
+   * The live proposal's version, 0 until first approved, and the overview
+   * version it was sized from: null when no version says what it was
+   * sized from.
+   */
+  bounty: z
+    .object({
+      version: z.number().int().nonnegative(),
+      overviewVersion: z.number().int().positive().nullable(),
+    })
+    .nullable(),
+  /** The sandbox's `build`, and the bounty version it was built on. */
+  sandbox: z
+    .object({
+      version: z.number().int().positive(),
+      bountyVersion: z.number().int().positive().nullable(),
+    })
+    .nullable(),
 });
 
 export const bountyDtoSchema = bountySummaryDtoSchema.extend({
@@ -95,6 +150,21 @@ export const bountyDtoSchema = bountySummaryDtoSchema.extend({
   /** True when Jira's description was longer than a bounty keeps. */
   inputTruncated: z.boolean(),
   createdBy: z.string().nullable(),
+  stages: bountyStagesSchema,
+});
+
+/** One version of a bounty's overview: its text from then until the next. */
+export const bountyVersionDtoSchema = z.object({
+  version: z.number().int().positive(),
+  title: z.string(),
+  description: z.string(),
+  /** Who wrote it; null for Jira's text, or a person since removed. */
+  createdBy: z.string().nullable(),
+  createdAt: z.iso.datetime(),
+});
+
+export const bountyVersionListSchema = z.object({
+  versions: z.array(bountyVersionDtoSchema),
 });
 
 export const bountyListResponseSchema = z.object({
@@ -145,6 +215,11 @@ export const linkBountyJiraSchema = z.strictObject({
   issueId: z.string().min(1),
 });
 
+/** Approves the overview, or takes that back, against the revision seen. */
+export const decideBountySchema = z.strictObject({
+  expectedRevision: z.number().int().positive(),
+});
+
 /** Size one bounty and make its proposal, named by `requestId`. */
 export const proposeBountySchema = z.object({ requestId: z.uuid() });
 
@@ -158,6 +233,9 @@ export type BountySandboxSummaryDto = z.infer<
 >;
 export type BountySummaryDto = z.infer<typeof bountySummaryDtoSchema>;
 export type BountyDto = z.infer<typeof bountyDtoSchema>;
+export type BountyStagesDto = z.infer<typeof bountyStagesSchema>;
+export type BountyVersionDto = z.infer<typeof bountyVersionDtoSchema>;
+export type BountyVersionList = z.infer<typeof bountyVersionListSchema>;
 export type BountyListResponse = z.infer<typeof bountyListResponseSchema>;
 export type CreateBountyInput = z.infer<typeof createBountySchema>;
 export type UpdateBountyInput = z.infer<typeof updateBountySchema>;

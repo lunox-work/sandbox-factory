@@ -1214,7 +1214,7 @@ test("the actions sit in the bounty card, beside what they change, for those who
   ).not.toBeNull();
 });
 
-test("an approved proposal offers the way back and a re-price, nothing else", async () => {
+test("an approved proposal offers only the way back", async () => {
   vi.stubGlobal(
     "fetch",
     routedFetch({
@@ -1235,9 +1235,8 @@ test("an approved proposal offers the way back and a re-price, nothing else", as
   const panel = await screen.findByTestId("proposal-panel");
   const card = within(panel).getByTestId("proposal-bounty");
   expect(within(card).getByRole("button", { name: "Unapprove" })).toBeDefined();
-  expect(
-    within(card).getByRole("button", { name: "Re-analyze" }),
-  ).toBeDefined();
+  // Sized again only once it is unapproved.
+  expect(within(card).queryByRole("button", { name: "Re-analyze" })).toBeNull();
   expect(within(card).queryByRole("button", { name: "Approve" })).toBeNull();
   expect(within(card).queryByRole("button", { name: "Remove" })).toBeNull();
   expect(within(card).queryByRole("group", { name: "Resize" })).toBeNull();

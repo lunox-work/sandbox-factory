@@ -41,6 +41,7 @@ const source = {
   starterSha256: null,
   transformConfigSha256: "2".repeat(64),
   approvedTaskSha256: "a".repeat(64),
+  proposalVersion: 1,
   aliasRules: [
     { before: "Acme", after: "Widget", kind: "identifier", paths: [] },
   ],

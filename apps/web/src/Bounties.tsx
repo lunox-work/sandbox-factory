@@ -40,6 +40,7 @@ import type {
 import {
   BOUNTY_LIMITS,
   isPublicationLive,
+  overviewApproved,
   sameStackName,
 } from "sandbox-factory";
 import {
@@ -53,6 +54,7 @@ import {
   RefreshCw,
   Sparkles,
 } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
 import {
   useCallback,
   useEffect,
@@ -75,7 +77,7 @@ import { StackPicker } from "@/components/StackPicker";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tabs, TabsContent, TabsList } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 
 import {
@@ -85,6 +87,7 @@ import {
   type Viewer,
 } from "./OrganizationSwitcher";
 import { LunoxMark } from "@/components/LunoxMark";
+import { BountyText } from "./BountyText";
 import { dateTime } from "./lib/format";
 import { money } from "./Proposals";
 import { JiraIcon } from "./ProviderIcon";
@@ -101,7 +104,7 @@ import {
   sandboxFilesPath,
   type BountyAddress,
 } from "./routes";
-import { clients } from "./data/query";
+import { clients, queryKeys, useUserId } from "./data/query";
 import {
   InlineDescription,
   InlineTitle,
@@ -115,6 +118,13 @@ import {
   type OpenSettings,
 } from "./features/bounties/BountyLinks";
 import { BountyProposal } from "./features/bounties/BountyProposal";
+import {
+  OverviewVersion,
+  StepLineage,
+  StepTriggers,
+  STEPS,
+  type Step,
+} from "./features/bounties/BountySteps";
 import { SandboxCard } from "./features/bounties/SandboxCard";
 import { SandboxGeneration } from "./features/bounties/SandboxGeneration";
 import { useGithubRepos, type GithubRepos } from "./useGithub";
@@ -138,20 +148,13 @@ function sandboxLabel(sandbox: BountySandboxSummaryDto): string {
 }
 
 /**
- * The tabs a bounty's own page splits it into: what it is and where it
- * came from, what it pays and why, and where the work is done.
+ * The steps a bounty's own page splits it into, in the order each is built
+ * on the one before: what it is, what it pays and why, and where the work
+ * is done. `?tab=` names the one open, or the overview when it names none.
  */
-const PAGE_TABS = [
-  { value: "overview", label: "Overview" },
-  { value: "bounty", label: "Bounty" },
-  { value: "sandbox", label: "Sandbox" },
-] as const;
-type PageTab = (typeof PAGE_TABS)[number]["value"];
-
-/** The tab `?tab=` names, or the overview when it names none. */
-function pageTabFrom(search: string): PageTab {
+function pageTabFrom(search: string): Step {
   const value = new URLSearchParams(search).get("tab");
-  return PAGE_TABS.find((tab) => tab.value === value)?.value ?? "overview";
+  return STEPS.find((tab) => tab.value === value)?.value ?? "overview";
 }
 
 /** Opens a tab in the address, so Back returns to the one before. */
@@ -789,9 +792,7 @@ function OpenBounty({
             bountyKey={bounty.jira?.key}
             bountyTitle={bounty.title}
             canDecide={manages}
-            sandboxPublished={
-              bounty.sandbox !== null && isPublicationLive(bounty.sandbox)
-            }
+            overviewVersion={bounty.stages.bounty?.overviewVersion ?? null}
             onChanged={() => {
               void bounties.refresh();
               opened.reload();
@@ -1139,6 +1140,29 @@ function BountyDetail({
   // Which tab a page has open; a panel has none.
   const { search } = useLocation();
   const tab = pageTabFrom(search);
+  /*
+    The overview's versions, read on a page only, where its version is
+    chosen; read again whenever it moves. The one being read, null for the
+    latest: an earlier one is shown, not changed.
+  */
+  const userId = useUserId();
+  const versions = useQuery({
+    queryKey: queryKeys.resource(
+      userId,
+      bounty.organizationId,
+      "bounty-versions",
+      bounty.id,
+      bounty.version,
+    ),
+    enabled: layout === "page",
+    queryFn: ({ signal }) =>
+      clients.bounties.bountyVersions(bounty.organizationId, bounty.id, signal),
+  });
+  const [viewing, setViewing] = useState<number | null>(null);
+  const earlier =
+    viewing === null || viewing === bounty.version
+      ? null
+      : (versions.data?.find(({ version }) => version === viewing) ?? null);
   // A panel is read; the bounty is changed on its page.
   const readOnly = layout === "panel";
   // Whether its sandbox is offered to be made, linked or generated here.
@@ -1146,6 +1170,27 @@ function BountyDetail({
 
   // A bounty following its Jira issue takes its text from Jira.
   const followsJira = bounty.jira !== null && bounty.jira.removedAt === null;
+  /*
+    An approved overview is held as it is: its title, text, links and stack
+    are shown, not changed, until an owner or admin unapproves it.
+  */
+  const approvedOverview = overviewApproved(bounty);
+  const [deciding, setDeciding] = useState(false);
+  const [decisionError, setDecisionError] = useState<string | null>(null);
+  const decideOverview = (decision: "approve" | "unapprove") => {
+    setDeciding(true);
+    setDecisionError(null);
+    void bounties
+      .decide(bounty.id, decision, bounty.revision)
+      .then((result) => {
+        setDeciding(false);
+        if (result.ok) onChange(result.bounty);
+        else {
+          setDecisionError(result.error);
+          onReload();
+        }
+      });
+  };
   const repo = repos.repos.find(({ id }) => id === bounty.repoId) ?? null;
   const { sandbox } = bounty;
   // A sandbox made before its bounty named a repository links that one.
@@ -1372,12 +1417,6 @@ function BountyDetail({
                   ? "The bounty is a draft. Approve it before generating its slice."
                   : null
             }
-            // Published over an approved bounty only, as the server holds.
-            publishBlocked={
-              bounty.proposal?.status === "approved"
-                ? null
-                : "Approve the bounty before publishing its sandbox."
-            }
             readOnly={readOnly}
             onPublished={onReload}
           >
@@ -1508,13 +1547,13 @@ function BountyDetail({
       <RepositoryField
         bounty={bounty}
         repos={repos}
-        readOnly={readOnly}
+        readOnly={readOnly || approvedOverview}
         onSave={save}
       />
       <StackField
         bounty={bounty}
         repos={repos}
-        readOnly={readOnly}
+        readOnly={readOnly || approvedOverview}
         onSave={save}
       />
     </>
@@ -1530,7 +1569,7 @@ function BountyDetail({
         <StackField
           bounty={bounty}
           repos={repos}
-          readOnly={readOnly}
+          readOnly={readOnly || approvedOverview}
           onSave={save}
         />
       ) : (
@@ -1569,7 +1608,7 @@ function BountyDetail({
   const description = (
     <InlineDescription
       bounty={bounty}
-      locked={followsJira || readOnly}
+      locked={followsJira || readOnly || approvedOverview}
       // A page's overview tab heads it, so it reads as a field there.
       labelled={layout !== "page"}
       {...(layout === "page" ? { label: "Describe task" } : {})}
@@ -1598,7 +1637,7 @@ function BountyDetail({
               as="h1"
               size="page"
               value={bounty.title}
-              locked={followsJira}
+              locked={followsJira || approvedOverview}
               onSave={save}
             />
             {/* Its workspace and source are named beside, not here too. */}
@@ -1609,15 +1648,86 @@ function BountyDetail({
             )}
           </header>
           <Tabs value={tab} onValueChange={selectPageTab} className="gap-6">
-            <TabsList variant="line">
-              {PAGE_TABS.map(({ value, label }) => (
-                <TabsTrigger key={value} value={value}>
-                  {label}
-                </TabsTrigger>
-              ))}
+            {/* The steps, in order, each with the version it is at. */}
+            <TabsList
+              variant="line"
+              aria-label="Steps"
+              className="gap-3 overflow-x-auto sm:gap-4"
+            >
+              <StepTriggers
+                stages={bounty.stages}
+                approved={{
+                  overview: approvedOverview,
+                  bounty: bounty.proposal?.status === "approved",
+                  // A sandbox version is approved as it is published.
+                  sandbox:
+                    sandbox !== null &&
+                    sandbox.build !== null &&
+                    sandbox.build.versionId === publishedVersion,
+                }}
+              />
             </TabsList>
             <TabsContent value="overview" className="flex flex-col gap-8">
-              {description}
+              <div className="flex flex-col gap-3">
+                {/*
+                  Which version, and the decision on it, level with each
+                  other as a proposal's are. Only the latest is decided.
+                */}
+                <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+                  <OverviewVersion
+                    versions={versions.data ?? []}
+                    current={bounty.version}
+                    viewing={earlier?.version ?? bounty.version}
+                    approvedAt={
+                      earlier === null && approvedOverview
+                        ? (bounty.approval?.approvedAt ?? null)
+                        : null
+                    }
+                    onView={(version) =>
+                      setViewing(version === bounty.version ? null : version)
+                    }
+                  />
+                  {canManage && earlier === null && (
+                    <Button
+                      variant={approvedOverview ? "outline" : "default"}
+                      disabled={deciding}
+                      aria-busy={deciding}
+                      onClick={() =>
+                        decideOverview(
+                          approvedOverview ? "unapprove" : "approve",
+                        )
+                      }
+                    >
+                      {deciding && <Loader2 className="animate-spin" />}
+                      {approvedOverview
+                        ? deciding
+                          ? "Unapproving…"
+                          : "Unapprove"
+                        : deciding
+                          ? "Approving…"
+                          : "Approve"}
+                    </Button>
+                  )}
+                </div>
+                {decisionError !== null && (
+                  <p role="alert" className="text-destructive text-xs">
+                    {decisionError}
+                  </p>
+                )}
+                {earlier === null ? (
+                  description
+                ) : (
+                  // An earlier version is read as it was, title and all.
+                  <section
+                    aria-label={`Version ${earlier.version}`}
+                    className="flex flex-col gap-2"
+                    data-testid="overview-earlier"
+                  >
+                    <h3 className="text-sm font-medium">{earlier.title}</h3>
+                    <BountyText description={earlier.description} />
+                  </section>
+                )}
+              </div>
               <BountyLinks
                 organization={organization}
                 bounty={bounty}
@@ -1626,10 +1736,35 @@ function BountyDetail({
                 onSave={save}
                 onChange={onChange}
                 onOpenSettings={onOpenSettings ?? (() => undefined)}
+                locked={approvedOverview}
               />
             </TabsContent>
-            <TabsContent value="bounty">{proposalPart}</TabsContent>
-            <TabsContent value="sandbox">{sandboxPart}</TabsContent>
+            <TabsContent value="bounty" className="flex flex-col gap-4">
+              <StepLineage
+                step="bounty"
+                stages={bounty.stages}
+                remedy={
+                  bounty.proposal?.status === "approved"
+                    ? "Unapprove the proposal, then re-analyze it to size it from the latest overview."
+                    : "Re-analyze the proposal to size it from the latest overview."
+                }
+                onOpen={selectPageTab}
+              />
+              {proposalPart}
+            </TabsContent>
+            <TabsContent value="sandbox" className="flex flex-col gap-4">
+              <StepLineage
+                step="sandbox"
+                stages={bounty.stages}
+                remedy={
+                  unlinked
+                    ? "Generate a new version to build from the latest bounty."
+                    : "Slice a new version to build from the latest bounty."
+                }
+                onOpen={selectPageTab}
+              />
+              {sandboxPart}
+            </TabsContent>
           </Tabs>
         </div>
         <div className="flex flex-col gap-5">

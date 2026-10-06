@@ -42,6 +42,8 @@ function summary(overrides: Record<string, unknown> = {}) {
     repoId: null,
     stack: [],
     revision: 1,
+    version: 1,
+    approval: null,
     jira: null,
     proposal: null,
     sandbox: null,
@@ -58,6 +60,7 @@ function detail(overrides: Record<string, unknown> = {}) {
     components: [],
     inputTruncated: false,
     createdBy: "user_1",
+    stages: { overview: { version: 1 }, bounty: null, sandbox: null },
     ...overrides,
   };
 }
@@ -485,7 +488,7 @@ test("a bounty's own page opens on its overview, and names it for the trail", as
     within(text).getByRole("button", { name: "Edit description" }),
   ).toBeDefined();
   expect(
-    within(detail).getByRole("tab", { name: "Overview", selected: true }),
+    within(detail).getByRole("tab", { name: /^Overview/, selected: true }),
   ).toBeDefined();
   // Its text, where it came from and whose it is; the rest in other tabs.
   for (const part of ["Workspace", "Context"]) {
@@ -2185,6 +2188,12 @@ const approvedSummary = {
   amountMinor: 5_800,
   currency: "USD",
 };
+/** A sandbox as its own routes answer it: no build, which a bounty's adds. */
+function sandboxRecord(overrides: Record<string, unknown> = {}) {
+  const { build: _build, ...record } = sandboxOf(overrides);
+  return record;
+}
+
 function sandboxOf(overrides: Record<string, unknown> = {}) {
   return {
     id: "sbx_1",
@@ -2192,6 +2201,7 @@ function sandboxOf(overrides: Record<string, unknown> = {}) {
     currentVersionId: null,
     expiresAt: null,
     sourceRepoId: null,
+    build: null,
     ...overrides,
   };
 }
@@ -2445,6 +2455,7 @@ const generatedSource = {
   starterSha256: null,
   transformConfigSha256: "t".repeat(64),
   approvedTaskSha256: "a".repeat(64),
+  proposalVersion: 1,
   aliasRules: [],
   dependencyChoices: {},
   acceptanceTests: [],
@@ -2454,7 +2465,15 @@ const generatedSource = {
     title: "Invitations are not sent",
     summary: "Scheduling an interview sends the candidate one email.",
     spec: null,
-    pricing: null,
+    pricing: {
+      proposalId: "bpr_7",
+      proposalRevision: 2,
+      complexity: "M",
+      amountMinor: 200,
+      currency: "USD",
+      status: "approved",
+      decidedAt: stamp,
+    },
     selectedBy: "user_1",
     selectedAt: stamp,
     bountyId: "bty_7",
@@ -2528,6 +2547,8 @@ function generatingServer(input: {
   unpublish?: () => Promise<Response>;
   /** A version's provenance, as owners read it. */
   source?: () => Record<string, unknown>;
+  /** Where each step stands; the overview alone by default. */
+  stages?: Record<string, unknown>;
 }) {
   return server([
     [
@@ -2539,6 +2560,7 @@ function generatingServer(input: {
             sandbox: sandboxOf(input.sandbox?.()),
             proposal:
               input.proposal === undefined ? approvedSummary : input.proposal,
+            ...(input.stages === undefined ? {} : { stages: input.stages }),
           }),
         }),
     ],
@@ -2549,7 +2571,10 @@ function generatingServer(input: {
         input.publish?.() ??
         json({
           sandbox: {
-            ...sandboxOf({ status: "published", currentVersionId: "sbv_1" }),
+            ...sandboxRecord({
+              status: "published",
+              currentVersionId: "sbv_1",
+            }),
             slug: "abc123def456",
             publicRepoId: null,
             bountyId: "bty_7",
@@ -2571,7 +2596,7 @@ function generatingServer(input: {
         input.unpublish?.() ??
         json({
           sandbox: {
-            ...sandboxOf(),
+            ...sandboxRecord(),
             slug: "abc123def456",
             publicRepoId: null,
             bountyId: "bty_7",
@@ -2885,11 +2910,17 @@ test("a bounty's page splits into tabs, each one in the address", async () => {
   window.history.replaceState(null, "", "/bounties/acme/bty_7");
   render(<Shell {...inAcme("member")} />);
   const page = await screen.findByTestId("bounty-detail");
+  // The steps in order, numbered, each with the version it is at.
   expect(
     within(page)
       .getAllByRole("tab")
       .map((tab) => tab.textContent),
-  ).toEqual(["Overview", "Bounty", "Sandbox"]);
+  ).toEqual(["1Overviewv1", "2Bounty", "3Sandbox"]);
+  // The number is drawn, not read: each is named for its step and version.
+  expect(within(page).getAllByRole("tab")[0]?.textContent).toMatch(/Overview/);
+  expect(
+    within(page).getByRole("tab", { name: "Overview v1", selected: true }),
+  ).toBeDefined();
 
   // The bounty: what it pays and why.
   const entries = window.history.length;
@@ -2912,7 +2943,7 @@ test("a bounty's page splits into tabs, each one in the address", async () => {
   expect(sandbox.textContent).not.toContain(money(200, "USD"));
 
   // The overview is the page's own address.
-  await userEvent.click(within(page).getByRole("tab", { name: "Overview" }));
+  await userEvent.click(within(page).getByRole("tab", { name: /^Overview/ }));
   expect(window.location.search).toBe("");
   expect(
     within(page).getByRole("region", { name: "Describe task" }),
@@ -3052,7 +3083,9 @@ test("a bounty's page keeps it at a glance, its context and workspace beside eve
   render(<Shell {...inAcme("admin")} />);
   const page = await screen.findByTestId("bounty-detail");
   for (const tab of ["Overview", "Bounty", "Sandbox"]) {
-    await userEvent.click(within(page).getByRole("tab", { name: tab }));
+    await userEvent.click(
+      within(page).getByRole("tab", { name: new RegExp(`^${tab}`) }),
+    );
     // What it pays and its size, over where its sandbox stands.
     const summary = await within(page).findByRole("region", { name: "Bounty" });
     await waitFor(() =>
@@ -3462,7 +3495,43 @@ test("a version without a passing build cannot be published", async () => {
   expect(publish.hasAttribute("disabled")).toBe(true);
 });
 
-test("a sandbox of a bounty that is not approved cannot be published, and says why", async () => {
+test("a version taken from a bounty not approved cannot be published, and says why", async () => {
+  vi.stubGlobal(
+    "fetch",
+    generatingServer({
+      versions: () => [generatedVersion],
+      run: () => ({ status: "succeeded", finishedAt: stamp }),
+      artifacts: [artifactOf("build_manifest", { ready: true })],
+      source: () => ({
+        ...generatedSource,
+        harnessSha256: "h".repeat(64),
+        toolchainDigest: "d".repeat(64),
+        proposalVersion: null,
+        approvedTask: {
+          ...generatedSource.approvedTask,
+          pricing: {
+            ...generatedSource.approvedTask.pricing,
+            status: "proposed",
+          },
+        },
+      }),
+    }).fetchMock,
+  );
+  const part = await sandboxPart();
+  const publish = await within(part).findByRole("button", { name: "Publish" });
+  expect(publish.hasAttribute("disabled")).toBe(true);
+  // The reason is on hover, from the span the disabled button sits in.
+  await userEvent.hover(publish.parentElement!);
+  expect(
+    (
+      await screen.findAllByText(
+        "This version was not built from an approved bounty.",
+      )
+    ).length,
+  ).toBeGreaterThan(0);
+});
+
+test("a version built from an approved bounty publishes while the bounty is a draft again", async () => {
   vi.stubGlobal(
     "fetch",
     generatingServer({
@@ -3478,30 +3547,34 @@ test("a sandbox of a bounty that is not approved cannot be published, and says w
     }).fetchMock,
   );
   const part = await sandboxPart();
+  // Its header names the bounty version it was built on, once its
+  // provenance is read; then it can be published.
+  expect(await within(part).findByText("· Bounty v1")).toBeDefined();
   const publish = await within(part).findByRole("button", { name: "Publish" });
-  expect(publish.hasAttribute("disabled")).toBe(true);
-  // The reason is on hover, from the span the disabled button sits in.
-  await userEvent.hover(publish.parentElement!);
-  expect(
-    (
-      await screen.findAllByText(
-        "Approve the bounty before publishing its sandbox.",
-      )
-    ).length,
-  ).toBeGreaterThan(0);
+  await waitFor(() => expect(publish.hasAttribute("disabled")).toBe(false));
 });
 
-test("an approval a published sandbox stands on cannot be taken back, and says why", async () => {
+test("an approval a published sandbox stands on is taken back, and the sandbox reads as behind", async () => {
   const state = generatingServer({
     versions: () => [generatedVersion],
-    sandbox: () => ({ status: "published", currentVersionId: "sbv_1" }),
+    sandbox: () => ({
+      status: "published",
+      currentVersionId: "sbv_1",
+      build: { versionId: "sbv_1", version: 1, bountyVersion: 1 },
+    }),
+    // Approved again since, as version 2: the sandbox is on version 1.
+    stages: {
+      overview: { version: 1 },
+      bounty: { version: 2, overviewVersion: 1 },
+      sandbox: { version: 1, bountyVersion: 1 },
+    },
   });
   vi.stubGlobal(
     "fetch",
     vi.fn((input: string, init?: RequestInit) =>
       /\/proposals\/bpr_7$/.test(String(input))
         ? json({
-            proposal: proposal({ id: "bpr_7", status: "approved", version: 1 }),
+            proposal: proposal({ id: "bpr_7", status: "approved", version: 2 }),
             freshness: { freshness: "current", checkedAt: stamp },
             liveSpec: null,
             writebackOperations: [],
@@ -3512,23 +3585,67 @@ test("an approval a published sandbox stands on cannot be taken back, and says w
   window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=bounty");
   render(<Shell {...inAcme("admin")} />);
   const proposalDetail = await screen.findByTestId("proposal-detail");
+  // Nothing locks the bounty to its sandbox.
   const unapprove = await within(proposalDetail).findByRole("button", {
     name: "Unapprove",
   });
-  expect(unapprove.hasAttribute("disabled")).toBe(true);
+  expect(unapprove.hasAttribute("disabled")).toBe(false);
+  // Approved, it is not sized again until it is unapproved.
   expect(
-    within(proposalDetail)
-      .getByRole("button", { name: "Re-analyze" })
-      .hasAttribute("disabled"),
-  ).toBe(true);
-  await userEvent.hover(unapprove.parentElement!);
+    within(proposalDetail).queryByRole("button", { name: "Re-analyze" }),
+  ).toBeNull();
+
+  // The sandbox's step warns, and its page says what it is behind.
+  const steps = screen.getByRole("tablist", { name: "Steps" });
+  const sandboxTab = within(steps).getByRole("tab", { name: /^Sandbox/ });
+  expect(sandboxTab.getAttribute("data-behind")).toBe("true");
+  expect(sandboxTab.textContent).toContain("v1");
   expect(
-    (
-      await screen.findAllByText(
-        "Unpublish the bounty's sandbox before changing its approval.",
-      )
-    ).length,
+    within(steps)
+      .getByRole("tab", { name: /^Bounty/ })
+      .hasAttribute("data-behind"),
+  ).toBe(false);
+  // The approved bounty's version wears the gradient; the version behind
+  // wears the warning instead.
+  expect(
+    within(steps)
+      .getByRole("tab", { name: /^Bounty/ })
+      .querySelector("[data-approved]")?.textContent,
+  ).toBe("v2");
+  expect(sandboxTab.querySelector("[data-approved]")).toBeNull();
+  await userEvent.click(sandboxTab);
+  // Chosen, it is the active tab, whatever its warning's tooltip is doing:
+  // the underline follows `data-state="active"`.
+  await waitFor(() =>
+    expect(sandboxTab.getAttribute("data-state")).toBe("active"),
+  );
+  await userEvent.hover(within(sandboxTab).getByText("Sandbox"));
+  expect(
+    (await screen.findAllByText("Built on bounty v1; the bounty is now at v2."))
+      .length,
   ).toBeGreaterThan(0);
+  expect(sandboxTab.getAttribute("data-state")).toBe("active");
+  const lineage = await screen.findByTestId("sandbox-lineage");
+  expect(lineage.textContent).toContain("Bounty has moved ahead.");
+  expect(lineage.textContent).toContain(
+    "Built on Bounty v1; the bounty is now at v2.",
+  );
+  // The version named opens the step it belongs to.
+  await userEvent.click(
+    within(lineage).getByRole("button", { name: "Bounty v1" }),
+  );
+  await waitFor(() =>
+    expect(new URLSearchParams(window.location.search).get("tab")).toBe(
+      "bounty",
+    ),
+  );
+  // Current, the bounty warns of nothing: its version line names the
+  // overview version it was sized from.
+  const header = await within(
+    await screen.findByTestId("proposal-detail"),
+  ).findByText("Overview v1");
+  expect(header).toBeDefined();
+  expect(screen.queryByTestId("bounty-lineage")).toBeNull();
 });
 
 test("a bounty that is a draft, or has no proposal, generates no slice", async () => {
@@ -3562,4 +3679,158 @@ test("a bounty that is a draft, or has no proposal, generates no slice", async (
       /Size and approve the bounty before generating its slice\./,
     ),
   ).toBeDefined();
+});
+
+test("the overview is versioned: an earlier one is read as it was, and the bounty sized from it warns", async () => {
+  const versionOf = (version: number, description: string) => ({
+    version,
+    title: "Invitations are not sent",
+    description,
+    createdBy: "user_1",
+    createdAt: stamp,
+  });
+  vi.stubGlobal(
+    "fetch",
+    server([
+      // Before the bounty's own route, which its address would also match.
+      [
+        "GET",
+        "/bounties/bty_7/versions",
+        () =>
+          json({
+            versions: [
+              versionOf(
+                2,
+                "Scheduling an interview sends the candidate one email.",
+              ),
+              versionOf(1, "Interview emails are missing."),
+            ],
+          }),
+      ],
+      [
+        "GET",
+        "/bounties/bty_7",
+        () =>
+          json({
+            bounty: detail({
+              version: 2,
+              proposal: liveProposal(),
+              stages: {
+                overview: { version: 2 },
+                bounty: { version: 0, overviewVersion: 1 },
+                sandbox: null,
+              },
+            }),
+          }),
+      ],
+    ]).fetchMock,
+  );
+  window.history.replaceState(null, "", "/bounties/acme/bty_7");
+  render(<Shell {...inAcme("member")} />);
+  const page = await screen.findByTestId("bounty-detail");
+
+  // The overview's version over its text, the latest until another is read.
+  const header = await within(page).findByTestId("overview-version");
+  await waitFor(() => expect(header.textContent).toContain("Edited"));
+  expect(header.textContent).toContain("Version 2");
+  expect(header.textContent).toContain("Latest");
+  await userEvent.click(
+    within(header).getByRole("button", { name: "Version 2, choose another" }),
+  );
+  await userEvent.click(
+    await screen.findByRole("menuitem", { name: /Version 1/ }),
+  );
+  const earlier = await within(page).findByTestId("overview-earlier");
+  expect(earlier.textContent).toContain("Interview emails are missing.");
+  // Read, not changed: no way to edit it, and the way back.
+  expect(
+    within(page).queryByRole("button", { name: "Edit description" }),
+  ).toBeNull();
+  expect(header.textContent).toContain("Read only");
+  await userEvent.click(
+    within(header).getByRole("button", { name: "Back to latest" }),
+  );
+  expect(within(page).queryByTestId("overview-earlier")).toBeNull();
+
+  // Sized from version 1, a draft never approved: the Bounty step warns.
+  const bountyTab = within(page).getByRole("tab", {
+    name: "Bounty Draft (behind)",
+  });
+  await userEvent.click(bountyTab);
+  const lineage = await within(page).findByTestId("bounty-lineage");
+  expect(lineage.textContent).toContain("Overview has moved ahead.");
+  expect(lineage.textContent).toContain(
+    "Sized from Overview v1; the overview is now at v2.",
+  );
+  expect(lineage.getAttribute("role")).toBe("status");
+});
+
+test("an approved overview is held as it is until an admin unapproves it", async () => {
+  let approved = false;
+  const decided: string[] = [];
+  const bountyNow = () =>
+    detail({
+      revision: approved ? 2 : 1,
+      approval: approved
+        ? { version: 1, approvedBy: "user_1", approvedAt: stamp }
+        : null,
+      proposal: liveProposal(),
+    });
+  vi.stubGlobal(
+    "fetch",
+    server([
+      ...(["approve", "unapprove"] as const).map(
+        (decision): [string, string, (body: unknown) => Promise<Response>] => [
+          "POST",
+          `/bounties/bty_7/${decision}`,
+          (body) => {
+            decided.push(
+              `${decision}@${(body as { expectedRevision: number }).expectedRevision}`,
+            );
+            approved = decision === "approve";
+            return json({ bounty: bountyNow() });
+          },
+        ],
+      ),
+      ["GET", "/bounties/bty_7", () => json({ bounty: bountyNow() })],
+    ]).fetchMock,
+  );
+  window.history.replaceState(null, "", "/bounties/acme/bty_7");
+  render(<Shell {...inAcme("admin")} />);
+  const page = await screen.findByTestId("bounty-detail");
+  // Open to change until approved.
+  expect(
+    await within(page).findByRole("button", { name: "Edit description" }),
+  ).toBeDefined();
+
+  await userEvent.click(within(page).getByRole("button", { name: "Approve" }));
+  await within(page).findByRole("button", { name: "Unapprove" });
+  expect(decided).toEqual(["approve@1"]);
+  // Held: no way to edit its text, and its links are shown, not changed.
+  expect(
+    within(page).queryByRole("button", { name: "Edit description" }),
+  ).toBeNull();
+  expect(
+    within(page).getByRole("combobox", { name: "Repository" }),
+  ).toHaveProperty("disabled", true);
+  expect(
+    within(page).getByRole("button", { name: "Jira issue" }),
+  ).toHaveProperty("disabled", true);
+  expect(within(page).getByTestId("overview-version").textContent).toContain(
+    "Approved",
+  );
+  // Its version wears the approved gradient on its step.
+  expect(
+    within(page)
+      .getByRole("tab", { name: /^Overview/ })
+      .querySelector("[data-approved]")?.textContent,
+  ).toBe("v1");
+
+  await userEvent.click(
+    within(page).getByRole("button", { name: "Unapprove" }),
+  );
+  expect(
+    await within(page).findByRole("button", { name: "Edit description" }),
+  ).toBeDefined();
+  expect(decided).toEqual(["approve@1", "unapprove@2"]);
 });

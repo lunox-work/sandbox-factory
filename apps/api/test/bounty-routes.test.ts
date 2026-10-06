@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type {
+  StoredBountyVersion,
   ListedBounty,
   StoredBountyProposal,
   StoredBountyRun,
@@ -39,6 +40,8 @@ function written(overrides: Partial<StoredBounty> = {}): StoredBounty {
     stack: [],
     createdBy: "user_1",
     revision: 1,
+    version: 1,
+    approval: null,
     jira: null,
     sandbox: null,
     createdAt: stamp,
@@ -167,6 +170,10 @@ function harness(
       | { ok: true; bounty: StoredBounty }
       | { ok: false; reason: "repo-not-found" };
     update?: BountyMutationResult;
+    /** What approving or unapproving the overview answers. */
+    decide?: BountyMutationResult;
+    /** Each bounty's overview versions; absent, its text as version 1. */
+    versions?: Record<string, StoredBountyVersion[]>;
     remove?: "removed" | "not-found" | "in-use";
     runCreate?: Record<string, unknown>;
     sizing?: boolean;
@@ -204,8 +211,53 @@ function harness(
           } as never),
         },
     ),
+    approve: record(
+      "approve-overview",
+      (_org, id, revision, by) =>
+        options.decide ?? {
+          ok: true,
+          bounty: written({
+            id: id as string,
+            revision: (revision as number) + 1,
+            approval: {
+              version: 1,
+              approvedBy: by as string,
+              approvedAt: stamp,
+            },
+          }),
+        },
+    ),
+    unapprove: record(
+      "unapprove-overview",
+      (_org, id, revision) =>
+        options.decide ?? {
+          ok: true,
+          bounty: written({
+            id: id as string,
+            revision: (revision as number) + 1,
+          }),
+        },
+    ),
     remove: record("remove", () => options.remove ?? "removed"),
     refreshFromJira: record("refreshFromJira", () => false),
+    // Read beside every read of a proposed bounty, so not recorded.
+    versions: (_org: string, id: string) => {
+      const bounty = held.get(id);
+      return Promise.resolve(
+        options.versions?.[id] ??
+          (bounty === undefined
+            ? null
+            : [
+                {
+                  version: bounty.version,
+                  title: bounty.title,
+                  description: bounty.description,
+                  createdBy: bounty.createdBy,
+                  createdAt: bounty.createdAt,
+                },
+              ]),
+      );
+    },
   };
   const proposals = {
     get: (_org: string, id: string) =>
@@ -499,6 +551,99 @@ test("a bounty reads with its live proposal, or 404", async () => {
   assert.equal((await state.request("GET", "bounties/bty_x")).status, 404);
 });
 
+test("a bounty reads with each step's version, and the one before it each was built on", async () => {
+  const old = { title: "Invitations are not sent", description: "Old steps" };
+  const bounty = written({
+    version: 3,
+    sandbox: {
+      id: "sbx_1",
+      status: "published",
+      currentVersionId: "sbv_2",
+      expiresAt: null,
+      sourceRepoId: null,
+      build: { versionId: "sbv_2", version: 2, bountyVersion: 1 },
+    },
+  });
+  const version = (
+    n: number,
+    text: { title: string; description: string },
+  ) => ({
+    version: n,
+    ...text,
+    createdBy: "user_1",
+    createdAt: stamp,
+  });
+  const state = harness({
+    bounties: [bounty],
+    // Sized from version 2's words, which version 1 also said.
+    live: {
+      bty_7: proposalOf(bounty, {
+        status: "approved",
+        version: 2,
+        specHash: await bountySpecHash(old.title, old.description),
+      }),
+    },
+    versions: {
+      bty_7: [version(3, bounty), version(2, old), version(1, old)],
+    },
+  });
+  const response = await state.request("GET", "bounties/bty_7");
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as { bounty: { stages: unknown } };
+  assert.deepEqual(body.bounty.stages, {
+    overview: { version: 3 },
+    bounty: { version: 2, overviewVersion: 2 },
+    sandbox: { version: 2, bountyVersion: 1 },
+  });
+
+  // A proposal hashed by an older function matches no version; a bounty
+  // with no proposal or sandbox has neither step.
+  const legacy = harness({
+    bounties: [written()],
+    live: {
+      bty_7: proposalOf(written(), { specHashVersion: 1 }),
+    },
+  });
+  const read = (await (
+    await legacy.request("GET", "bounties/bty_7")
+  ).json()) as { bounty: { stages: unknown } };
+  assert.deepEqual(read.bounty.stages, {
+    overview: { version: 1 },
+    bounty: { version: 0, overviewVersion: null },
+    sandbox: null,
+  });
+  const bare = harness({ bounties: [written()] });
+  const none = (await (await bare.request("GET", "bounties/bty_7")).json()) as {
+    bounty: { stages: unknown };
+  };
+  assert.deepEqual(none.bounty.stages, {
+    overview: { version: 1 },
+    bounty: null,
+    sandbox: null,
+  });
+});
+
+test("a bounty's overview versions are listed, or 404", async () => {
+  const state = harness({ role: "member", bounties: [written()] });
+  const response = await state.request("GET", "bounties/bty_7/versions");
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    versions: [
+      {
+        version: 1,
+        title: "Invitations are not sent",
+        description: "Scheduling an interview sends the candidate one email.",
+        createdBy: "user_1",
+        createdAt: stamp,
+      },
+    ],
+  });
+  assert.equal(
+    (await state.request("GET", "bounties/bty_x/versions")).status,
+    404,
+  );
+});
+
 test("a change is saved against the revision the editor saw", async () => {
   const state = harness({ role: "member", bounties: [written()] });
   const response = await state.request("PATCH", "bounties/bty_7", {
@@ -511,6 +656,8 @@ test("a change is saved against the revision the editor saw", async () => {
     "bty_7",
     1,
     { title: "Invitations go out twice" },
+    // Who wrote the overview's next version.
+    "user_1",
   ]);
   assert.equal(
     (await state.request("PATCH", "bounties/bty_7", { expectedRevision: 1 }))
@@ -740,7 +887,7 @@ test("a bounty written here is reviewed and approved with no Jira", async () => 
   assert.equal((approved[0] as unknown[])[4], "off");
 });
 
-test("an approval a published sandbox stands on is not re-priced", async () => {
+test("an approval a published sandbox stands on is re-priced, the sandbox left as it is", async () => {
   const bounty = written({
     sandbox: {
       id: "sbx_1",
@@ -748,6 +895,7 @@ test("an approval a published sandbox stands on is not re-priced", async () => {
       currentVersionId: "sbv_1",
       expiresAt: null,
       sourceRepoId: null,
+      build: { versionId: "sbv_1", version: 1, bountyVersion: 1 },
     },
   });
   const state = harness({
@@ -758,33 +906,9 @@ test("an approval a published sandbox stands on is not re-priced", async () => {
     expectedRevision: 1,
     requestId,
   });
-  assert.equal(response.status, 409);
-  assert.equal(
-    ((await response.json()) as { code: string }).code,
-    "sandbox_published",
-  );
-  // Refused before a run is started.
-  assert.equal(state.created.length, 0);
-
-  // A publication past its date holds nothing: re-pricing goes ahead.
-  const lapsed = written({
-    sandbox: {
-      id: "sbx_1",
-      status: "published",
-      currentVersionId: "sbv_1",
-      expiresAt: "2026-01-01T00:00:00.000Z",
-      sourceRepoId: null,
-    },
-  });
-  const after = harness({
-    bounties: [lapsed],
-    live: { bty_7: proposalOf(lapsed, { status: "approved" }) },
-  });
-  const repriced = await after.request("POST", "proposals/bpr_1/reprice", {
-    expectedRevision: 1,
-    requestId,
-  });
-  assert.equal(repriced.status, 202);
+  // Nothing locks the bounty to its sandbox: the sandbox keeps the bounty
+  // version it was built on, and reads as behind once another is approved.
+  assert.equal(response.status, 202);
 });
 
 test("a bounty written here is re-priced with no board", async () => {
@@ -802,4 +926,66 @@ test("a bounty written here is re-priced with no board", async () => {
   assert.equal(input["kind"], "reprice");
   assert.equal(input["boardId"], null);
   assert.equal(input["bountyId"], "bty_7");
+});
+
+test("an owner or admin approves the overview, and takes that back", async () => {
+  const state = harness({ bounties: [written()] });
+  const approved = await state.request("POST", "bounties/bty_7/approve", {
+    expectedRevision: 1,
+  });
+  assert.equal(approved.status, 200);
+  const body = (await approved.json()) as {
+    bounty: { approval: { version: number; approvedBy: string } | null };
+  };
+  assert.equal(body.bounty.approval?.version, 1);
+  assert.deepEqual(state.calls.at(-1), {
+    method: "approve-overview",
+    args: ["org_1", "bty_7", 1, "user_1"],
+  });
+
+  const unapproved = await state.request("POST", "bounties/bty_7/unapprove", {
+    expectedRevision: 2,
+  });
+  assert.equal(unapproved.status, 200);
+  assert.equal(
+    ((await unapproved.json()) as { bounty: { approval: unknown } }).bounty
+      .approval,
+    null,
+  );
+  assert.deepEqual(state.calls.at(-1)?.args, ["org_1", "bty_7", 2]);
+
+  // A decision names the revision it was made against.
+  assert.equal(
+    (await state.request("POST", "bounties/bty_7/approve", {})).status,
+    400,
+  );
+  // A member edits a bounty, but does not approve one.
+  const member = harness({ role: "member", bounties: [written()] });
+  assert.equal(
+    (
+      await member.request("POST", "bounties/bty_7/approve", {
+        expectedRevision: 1,
+      })
+    ).status,
+    403,
+  );
+});
+
+test("an approved overview is not changed until it is unapproved", async () => {
+  const approved = written({
+    approval: { version: 1, approvedBy: "user_1", approvedAt: stamp },
+  });
+  const state = harness({
+    bounties: [approved],
+    update: { ok: false, reason: "overview-approved", current: approved },
+  });
+  const response = await state.request("PATCH", "bounties/bty_7", {
+    expectedRevision: 1,
+    title: "Other",
+  });
+  assert.equal(response.status, 409);
+  assert.deepEqual(await response.json(), {
+    code: "overview_approved",
+    error: "The overview is approved. Unapprove it before changing it.",
+  });
 });

@@ -32,6 +32,8 @@ function bountyOf(overrides: Partial<StoredBounty> = {}): StoredBounty {
     stack: [],
     createdBy: "user_1",
     revision: 1,
+    version: 1,
+    approval: null,
     jira: null,
     sandbox: null,
     createdAt: stamp,
@@ -65,10 +67,12 @@ interface Setup {
   imported?: Record<string, Record<string, string>>;
   client?: RunClientResult | null;
   link?: JiraIssueLinkResult;
+  /** The bounty as it is before any request. */
+  bounty?: Partial<StoredBounty>;
 }
 
 function harness(setup: Setup = {}) {
-  let bounty = bountyOf();
+  let bounty = bountyOf(setup.bounty);
   const searched: { boardId: number; jql: string }[] = [];
   const links: {
     boardId: string;
@@ -364,4 +368,30 @@ test("removing the link returns the bounty without one", async () => {
   const body = (await response.json()) as { bounty: { jira: unknown } };
   assert.equal(body.bounty.jira, null);
   assert.deepEqual(unlinks, ["bty_7"]);
+});
+
+test("an approved overview's Jira link is neither changed nor removed", async () => {
+  const { request, links, unlinks } = harness({
+    bounty: {
+      approval: { version: 1, approvedBy: "user_1", approvedAt: stamp },
+    },
+  });
+  for (const [method, body] of [
+    ["PUT", { boardId: "jrb_1", issueId: "10009" }],
+    ["DELETE", undefined],
+  ] as const) {
+    const response = await request(method, "bounties/bty_7/jira", body);
+    assert.equal(response.status, 409);
+    assert.equal(
+      ((await response.json()) as { code: string }).code,
+      "overview_approved",
+    );
+  }
+  assert.deepEqual(links, []);
+  assert.deepEqual(unlinks, []);
+  // Removing the link of a bounty not found is not found.
+  assert.equal(
+    (await harness().request("DELETE", "bounties/bty_x/jira")).status,
+    404,
+  );
 });

@@ -55,6 +55,8 @@ const BOUNTY = {
   repoId: null,
   stack: [],
   revision: 1,
+  version: 1,
+  approval: null,
   jira: null,
   proposal: null,
   sandbox: null,
@@ -64,6 +66,7 @@ const BOUNTY = {
   components: [],
   inputTruncated: false,
   createdBy: "user_1",
+  stages: { overview: { version: 1 }, bounty: null, sandbox: null },
 };
 
 /** The one registered repository, in Acme, for its page. */

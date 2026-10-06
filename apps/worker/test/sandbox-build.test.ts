@@ -132,6 +132,7 @@ async function versionFor(
       contractSha256: contractSha,
       transformConfigSha256: "1".repeat(64),
       approvedTaskSha256: "2".repeat(64),
+      proposalVersion: 1,
       approvedTask: {
         schemaVersion: 1,
         title: "Fix the widget",

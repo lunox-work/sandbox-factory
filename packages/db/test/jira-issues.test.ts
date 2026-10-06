@@ -37,6 +37,10 @@ function bountyRow(overrides: Partial<BountyRow> = {}): BountyRow {
     stack: [],
     createdBy: null,
     revision: 1,
+    version: 1,
+    approvedVersion: null,
+    approvedBy: null,
+    approvedAt: null,
     createdAt: new Date("2026-09-22T00:00:00Z"),
     updatedAt: new Date("2026-09-22T00:00:00Z"),
     ...overrides,
@@ -84,6 +88,8 @@ test("a first read imports the issue as a new ticket", async () => {
     // Not seen before.
     [],
     [bountyRow({ id: "bty_new" })],
+    // Its overview's first version.
+    [],
     [row({ bountyId: "bty_new" })],
   ]);
   const issue = await createJiraIssueStore(fake.db).upsert(
@@ -99,8 +105,11 @@ test("a first read imports the issue as a new ticket", async () => {
   assert.equal(created?.values?.["origin"], "jira");
   assert.equal(created?.values?.["title"], "Invitations are not sent");
   assert.deepEqual(created?.values?.["components"], ["Mailer"]);
+  // Jira's text is its overview's version 1, which nobody here wrote.
+  assert.equal(fake.calls[3]?.values?.["version"], 1);
+  assert.equal(fake.calls[3]?.values?.["bountyId"], "bty_new");
   // The pointer names the ticket as it was stored.
-  const pointer = fake.calls[3];
+  const pointer = fake.calls[4];
   assert.equal(pointer?.values?.["bountyId"], "bty_new");
   assert.equal(pointer?.values?.["removedAt"], null);
   assert.equal(pointer?.ignoredConflict, true);
@@ -111,6 +120,7 @@ test("an issue with no summary is imported under its key", async () => {
     [{ id: "jrb_1" }],
     [],
     [bountyRow()],
+    [],
     [row()],
   ]);
   await createJiraIssueStore(fake.db).upsert("org_1", "jrb_1", facts, {
@@ -125,7 +135,7 @@ test("a later read refreshes the pointer and the ticket's text", async () => {
     [{ id: "jrb_1" }],
     [row({ key: "APP-2" })],
     [bountyRow({ description: "Old steps", revision: 3 })],
-    [{ id: "bty_1" }],
+    [bountyRow({ revision: 4, version: 2 })],
   ]);
   const issue = await createJiraIssueStore(fake.db).upsert(
     "org_1",
@@ -141,7 +151,11 @@ test("a later read refreshes the pointer and the ticket's text", async () => {
   assert.equal(fake.calls[2]?.lock, "update");
   assert.equal(fake.calls[3]?.values?.["description"], "Steps");
   assert.equal(fake.calls[3]?.values?.["revision"], 4);
-  assert.equal(fake.calls.filter(({ kind }) => kind === "insert").length, 0);
+  // New words: the overview's next version, and nothing else made.
+  assert.equal(fake.calls[3]?.values?.["version"], 2);
+  const inserts = fake.calls.filter(({ kind }) => kind === "insert");
+  assert.equal(inserts.length, 1);
+  assert.equal(inserts[0]?.values?.["version"], 2);
 });
 
 test("a later read that finds nothing new writes no ticket", async () => {
@@ -159,6 +173,7 @@ test("an import that loses a race keeps the winner's ticket", async () => {
     [{ id: "jrb_1" }],
     [],
     [bountyRow({ id: "bty_lost" })],
+    [],
     // The pointer insert met the other run's row.
     [],
     // So the ticket just made is deleted, and the winner's refreshed.
@@ -173,8 +188,8 @@ test("an import that loses a race keeps the winner's ticket", async () => {
     content,
   );
   assert.equal(issue?.bountyId, "bty_won");
-  assert.equal(fake.calls[4]?.kind, "delete");
-  assert.equal(fake.calls[4]?.filtered, true);
+  assert.equal(fake.calls[5]?.kind, "delete");
+  assert.equal(fake.calls[5]?.filtered, true);
 });
 
 test("an import whose race leaves no pointer imports nothing", async () => {

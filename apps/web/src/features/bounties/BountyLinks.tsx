@@ -55,6 +55,7 @@ export function BountyLinks({
   onSave,
   onChange,
   onOpenSettings,
+  locked = false,
 }: {
   organization: MembershipDto;
   bounty: BountyDto;
@@ -64,6 +65,8 @@ export function BountyLinks({
   /** Holds the bounty as a link or its removal returned it. */
   onChange: (bounty: BountyDto) => void;
   onOpenSettings: OpenSettings;
+  /** Its overview is approved: the links are shown, not changed. */
+  locked?: boolean;
 }) {
   const headingId = useId();
   return (
@@ -78,6 +81,7 @@ export function BountyLinks({
           repos={repos}
           onSave={onSave}
           onOpenSettings={onOpenSettings}
+          locked={locked}
         />
         <JiraLink
           organization={organization}
@@ -85,6 +89,7 @@ export function BountyLinks({
           bounties={bounties}
           onChange={onChange}
           onOpenSettings={onOpenSettings}
+          locked={locked}
         />
       </div>
     </section>
@@ -164,12 +169,14 @@ function RepositoryLink({
   repos,
   onSave,
   onOpenSettings,
+  locked,
 }: {
   organization: MembershipDto;
   bounty: BountyDto;
   repos: GithubRepos;
   onSave: SaveField;
   onOpenSettings: OpenSettings;
+  locked: boolean;
 }) {
   const titleId = useId();
   const [saving, setSaving] = useState(false);
@@ -208,7 +215,7 @@ function RepositoryLink({
             },
           ]}
           value={value}
-          disabled={saving}
+          disabled={saving || locked}
           onValueChange={(next) => {
             setSaving(true);
             setError(null);
@@ -244,12 +251,14 @@ function JiraLink({
   bounties,
   onChange,
   onOpenSettings,
+  locked,
 }: {
   organization: MembershipDto;
   bounty: BountyDto;
   bounties: Bounties;
   onChange: (bounty: BountyDto) => void;
   onOpenSettings: OpenSettings;
+  locked: boolean;
 }) {
   const titleId = useId();
   const userId = useUserId();
@@ -463,7 +472,7 @@ function JiraLink({
             options={options}
             actions={actions}
             value={value}
-            disabled={saving}
+            disabled={saving || locked}
             onValueChange={pick}
           />
         }

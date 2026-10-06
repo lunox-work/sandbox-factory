@@ -243,6 +243,7 @@ const version: StoredSandboxVersion = {
 };
 const source: StoredVersionSource = {
   sandboxVersionId: "sbv_1",
+  proposalVersion: 1,
   origin: "slice",
   sourceSnapshotId: "rsn_1",
   sourceCommitSha: "a".repeat(40),

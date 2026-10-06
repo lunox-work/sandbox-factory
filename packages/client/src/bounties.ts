@@ -2,6 +2,7 @@ import {
   proposalActionResponseSchema,
   bountyListResponseSchema,
   bountyResponseSchema,
+  bountyVersionListSchema,
   type CreateBountyInput,
   type LinkBountyJiraInput,
   type UpdateBountyInput,
@@ -64,6 +65,15 @@ export class BountyClient extends ApiClient {
       ),
     ).bounty;
   }
+  /** Its overview's versions, newest first. */
+  async bountyVersions(owner: string, id: string, signal?: AbortSignal) {
+    return bountyVersionListSchema.parse(
+      await this.request(
+        `${ownerPath(owner)}/bounties/${encodeURIComponent(id)}/versions`,
+        { signal },
+      ),
+    ).versions;
+  }
   async createBounty(owner: string, input: CreateBountyInput) {
     return bountyResponseSchema.parse(
       await this.request(`${ownerPath(owner)}/bounties`, {
@@ -77,6 +87,23 @@ export class BountyClient extends ApiClient {
       await this.request(
         `${ownerPath(owner)}/bounties/${encodeURIComponent(id)}`,
         { method: "PATCH", body: JSON.stringify(input) },
+      ),
+    ).bounty;
+  }
+  /**
+   * Approves the bounty's overview at its version, which holds it as it is,
+   * or takes that back, against the revision seen.
+   */
+  async decideBounty(
+    owner: string,
+    id: string,
+    decision: "approve" | "unapprove",
+    expectedRevision: number,
+  ) {
+    return bountyResponseSchema.parse(
+      await this.request(
+        `${ownerPath(owner)}/bounties/${encodeURIComponent(id)}/${decision}`,
+        { method: "POST", body: JSON.stringify({ expectedRevision }) },
       ),
     ).bounty;
   }

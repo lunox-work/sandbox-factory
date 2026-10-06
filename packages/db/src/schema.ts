@@ -63,8 +63,12 @@ export type {
   OrganizationRow,
 } from "./schema/organizations.js";
 
-export { bounty } from "./schema/bounty.js";
-export type { NewBountyRow, BountyRow } from "./schema/bounty.js";
+export { bounty, bountyVersion } from "./schema/bounty.js";
+export type {
+  NewBountyRow,
+  BountyRow,
+  BountyVersionRow,
+} from "./schema/bounty.js";
 
 export { jiraBoard, jiraConnection, jiraIssue } from "./schema/jira.js";
 export type {

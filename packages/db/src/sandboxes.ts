@@ -24,7 +24,6 @@ import type {
   VersionFixtures,
   VersionSourceRecord,
 } from "sandbox-factory";
-import { lockApproval } from "./approval-lock.js";
 import { isUniqueViolation, type Database } from "./errors.js";
 import { generateId } from "./mapping.js";
 import {
@@ -78,6 +77,11 @@ export interface StoredSandboxVersion {
 export interface StoredVersionSource extends VersionSourceRecord {
   /** The sliced commit; null for a generated version. */
   readonly sourceCommitSha: string | null;
+  /**
+   * The bounty version, its proposal's approved version, the task was
+   * taken from; null for a task taken before this was kept.
+   */
+  readonly proposalVersion: number | null;
   readonly approvedTask: StoredApprovedTaskSnapshot;
   readonly dependencyChoices: Readonly<Record<string, DependencyChoice>>;
   readonly acceptanceTests: readonly AcceptanceTest[];
@@ -92,6 +96,8 @@ interface NewVersionTransform {
   readonly approvedTaskSha256: string;
   /** Always the current version: a new version is never frozen as an old one. */
   readonly approvedTask: ApprovedTaskSnapshot;
+  /** The approved bounty version the task was taken from, if approved. */
+  readonly proposalVersion: number | null;
   readonly aliasRules: readonly AliasRule[];
   readonly dependencyChoices: Readonly<Record<string, DependencyChoice>>;
   readonly acceptanceTests: readonly AcceptanceTest[];
@@ -317,8 +323,10 @@ export interface SandboxStore {
    * Publishes a version: records who approved it and when, freezes it, and
    * makes it the sandbox's published version. Refused with `not_ready`
    * unless a passing build is recorded on it, and with
-   * `bounty_not_approved` unless the bounty's proposal is approved: a
-   * publication stands on an approval. It stands until `expiresAt`, and
+   * `bounty_not_approved` unless its task was taken from an approved
+   * bounty. That is the bounty version it is built on, and it stays so
+   * whatever the bounty does after: a later version only puts the sandbox
+   * behind, and does not take it down. It stands until `expiresAt`, and
    * each publish sets that afresh. A version published before
    * keeps its first approval and is only pointed at again.
    */
@@ -393,6 +401,7 @@ const toSource = (
   starterSha256: row.starterSha256,
   transformConfigSha256: row.transformConfigSha256,
   approvedTaskSha256: row.approvedTaskSha256,
+  proposalVersion: row.proposalVersion ?? null,
   approvedTask: row.approvedTask,
   aliasRules: row.aliasRules,
   dependencyChoices: row.dependencyChoices,
@@ -714,6 +723,7 @@ export function createSandboxStore(db: Database): SandboxStore {
             transformConfigSha256: source.transformConfigSha256,
             approvedTaskSha256: source.approvedTaskSha256,
             approvedTask: source.approvedTask,
+            proposalVersion: source.proposalVersion,
             aliasRules: [...source.aliasRules],
             dependencyChoices: { ...source.dependencyChoices },
             acceptanceTests: [...source.acceptanceTests],
@@ -952,17 +962,9 @@ export function createSandboxStore(db: Database): SandboxStore {
           current.source.toolchainDigest === null
         )
           return { ok: false, reason: "not_ready" } as const;
-        // Published over an approved bounty only, held approved until the
-        // publish commits: an unapprove in flight waits, then sees it.
-        const owning = (
-          await tx
-            .select({ bountyId: sandbox.bountyId })
-            .from(sandbox)
-            .where(eq(sandbox.id, current.version.sandboxId))
-        )[0];
-        if (owning === undefined)
-          return { ok: false, reason: "not-found" } as const;
-        if (!(await lockApproval(tx, owner, owning.bountyId)))
+        // Built over an approved bounty: that approval is what it stands
+        // on, not the bounty's approval now.
+        if (current.source.approvedTask.pricing?.status !== "approved")
           return { ok: false, reason: "bounty_not_approved" } as const;
         let versionRow = current.version;
         let sourceRow = current.source;
