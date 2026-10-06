@@ -85,6 +85,7 @@ export function BountyProposal({
     ...read.proposal,
     ...read.freshness,
     writebackOperations: read.writebackOperations,
+    activeRun: read.activeRun,
     ...(bountyKey === undefined ? {} : { liveKey: bountyKey }),
     ...(bountyTitle === undefined ? {} : { liveTitle: bountyTitle }),
   };

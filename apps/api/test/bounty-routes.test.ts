@@ -176,6 +176,7 @@ function harness(
     versions?: Record<string, StoredBountyVersion[]>;
     remove?: "removed" | "not-found" | "in-use";
     runCreate?: Record<string, unknown>;
+    activeRun?: StoredBountyRun;
     sizing?: boolean;
     jira?: boolean;
     /** Whether the Jira site answers; absent, it needs reconnecting. */
@@ -281,6 +282,8 @@ function harness(
           options.runCreate ?? { ok: true, created: true, run: runOf(input) },
         );
       },
+      activeForProposal: () => Promise.resolve(options.activeRun ?? null),
+      activeForBounty: () => Promise.resolve(options.activeRun ?? null),
     } as never,
     boards: {
       get: (_org: string, id: string) =>
@@ -873,6 +876,8 @@ test("a bounty written here is reviewed and approved with no Jira", async () => 
   assert.equal(body.freshness.freshness, "current");
   assert.equal(body.freshness.liveUrl, undefined);
   assert.equal(body.liveSpec.key, null);
+  // Nothing is rewriting it.
+  assert.equal((body as { activeRun?: unknown }).activeRun, null);
   // Not on a board, so not on this one.
   assert.equal(
     (await state.request("GET", "proposals/bpr_1?boardId=jrb_1")).status,
@@ -926,6 +931,56 @@ test("a bounty written here is re-priced with no board", async () => {
   assert.equal(input["kind"], "reprice");
   assert.equal(input["boardId"], null);
   assert.equal(input["bountyId"], "bty_7");
+});
+
+test("a proposal's page names the re-price in flight on it", async () => {
+  const bounty = written();
+  const run = runOf({ bountyId: "bty_7", kind: "reprice" });
+  const state = harness({
+    jira: false,
+    bounties: [bounty],
+    live: { bty_7: proposalOf(bounty) },
+    activeRun: run,
+  });
+  const detail = await state.request("GET", "proposals/bpr_1");
+  assert.equal(detail.status, 200);
+  const body = (await detail.json()) as { activeRun: { id: string } | null };
+  assert.equal(body.activeRun?.id, run.id);
+});
+
+test("a bounty's page reads the sizing in flight on it, and only its own", async () => {
+  const run = runOf({ bountyId: "bty_7", kind: "bounty" });
+  const state = harness({ bounties: [written()], activeRun: run });
+  const sizing = await state.request("GET", "bounties/bty_7/sizing");
+  assert.equal(sizing.status, 200);
+  assert.equal(
+    ((await sizing.json()) as { run: { id: string } }).run.id,
+    run.id,
+  );
+  assert.equal(
+    (await state.request("GET", "bounties/bty_missing/sizing")).status,
+    404,
+  );
+  const idle = harness({ bounties: [written()] });
+  const none = await idle.request("GET", "bounties/bty_7/sizing");
+  assert.deepEqual(await none.json(), { run: null });
+});
+
+test("a re-price refused for a run in the way names that run", async () => {
+  const bounty = written();
+  const state = harness({
+    bounties: [bounty],
+    live: { bty_7: proposalOf(bounty) },
+    runCreate: { ok: false, reason: "active", runId: "brn_9" },
+  });
+  const response = await state.request("POST", "proposals/bpr_1/reprice", {
+    expectedRevision: 1,
+    requestId,
+  });
+  assert.equal(response.status, 409);
+  const body = (await response.json()) as { code: string; runId: string };
+  assert.equal(body.code, "run_active");
+  assert.equal(body.runId, "brn_9");
 });
 
 test("an owner or admin approves the overview, and takes that back", async () => {

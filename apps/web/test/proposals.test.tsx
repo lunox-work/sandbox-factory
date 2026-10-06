@@ -854,6 +854,10 @@ function searchingBoard(options: {
   results: unknown[];
   add?: { status: number; body: unknown };
   runs?: unknown[];
+  /** The board's runs, as its list reads them. */
+  boardRuns?: unknown[];
+  /** Holds the add's answer until this resolves. */
+  addHeld?: Promise<void>;
 }) {
   const proposal = {
     id: "bpr_7",
@@ -880,7 +884,7 @@ function searchingBoard(options: {
       if (url.includes("/search?"))
         return Promise.resolve(bountyJson({ issues: options.results }));
       if (url.endsWith("/issues"))
-        return Promise.resolve(
+        return (options.addHeld ?? Promise.resolve()).then(() =>
           bountyJson(options.add?.body ?? {}, {
             status: options.add?.status ?? 202,
           }),
@@ -890,7 +894,9 @@ function searchingBoard(options: {
           bountyJson({ run: runs.length > 1 ? runs.shift() : runs[0] }),
         );
       if (url.includes("/runs"))
-        return Promise.resolve(bountyJson({ runs: [], sizingAvailable: true }));
+        return Promise.resolve(
+          bountyJson({ runs: options.boardRuns ?? [], sizingAvailable: true }),
+        );
       if (url.includes("/proposals/bpr_7?"))
         return Promise.resolve(
           bountyJson({
@@ -966,6 +972,80 @@ test("a bounty found by search is sized, then opened when its proposal lands", a
   expect(new URLSearchParams(window.location.search).get("proposal")).toBe(
     "bpr_7",
   );
+});
+
+const landedLogin = {
+  id: "brn_7",
+  kind: "issue",
+  status: "succeeded",
+  outcomes: [
+    {
+      externalIssueId: "10007",
+      issueKey: "APP-7",
+      status: "proposed",
+      proposalId: "bpr_7",
+    },
+  ],
+};
+
+test("picking a ticket says it is being sized before the server answers", async () => {
+  let answer = () => {};
+  searchingBoard({
+    results: [addLogin],
+    add: { status: 202, body: { run: { id: "brn_7" } } },
+    runs: [landedLogin],
+    addHeld: new Promise<void>((resolve) => {
+      answer = resolve;
+    }),
+  });
+  await userEvent.type(
+    await screen.findByRole("searchbox", { name: "Find a ticket to size" }),
+    "login",
+  );
+  const results = await screen.findByTestId("issue-results");
+  await userEvent.click(
+    await within(results).findByRole("button", { name: /APP-7/ }),
+  );
+  // The add is still out, and the page already says what it is doing.
+  expect((await screen.findByRole("status")).textContent).toContain(
+    "Sizing APP-7",
+  );
+  answer();
+  expect(
+    await screen.findByTestId("proposal-panel", {}, { timeout: 4000 }),
+  ).toBeDefined();
+});
+
+test("a board opened while a ticket is being sized says so, and opens it when it lands", async () => {
+  searchingBoard({
+    results: [],
+    runs: [
+      { id: "brn_7", kind: "issue", status: "running", outcomes: [] },
+      landedLogin,
+    ],
+    boardRuns: [
+      {
+        id: "brn_7",
+        kind: "issue",
+        status: "running",
+        planned: [
+          { externalIssueId: "10007", issueKey: "APP-7", summary: "Add login" },
+        ],
+        outcomes: [],
+      },
+    ],
+  });
+  // Nothing searched or picked here: the board's runs named it.
+  await waitFor(() => {
+    expect(
+      screen
+        .getAllByRole("status")
+        .some(({ textContent }) => textContent?.includes("Sizing APP-7")),
+    ).toBe(true);
+  });
+  expect(
+    await screen.findByTestId("proposal-panel", {}, { timeout: 4000 }),
+  ).toBeDefined();
 });
 
 test("a bounty proposed by the board's run meanwhile opens that proposal", async () => {

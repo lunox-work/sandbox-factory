@@ -940,21 +940,32 @@ function Source({ bounty }: { bounty: BountySummaryDto }) {
 
 /**
  * A proposal in brief: whether it is decided, and its price. Its size is
- * in the bounty, not on its card.
+ * in the bounty, not on its card. Until it is approved the price is not
+ * settled, so it reads as a dash, as the bounty itself has it.
  */
 function ProposalBrief({
   proposal,
 }: {
   proposal: NonNullable<BountySummaryDto["proposal"]>;
 }) {
+  const approved = proposal.status === "approved";
   return (
     <>
-      <Badge variant={proposal.status === "approved" ? "default" : "secondary"}>
-        {proposal.status === "approved" ? "Approved" : "Proposed"}
+      <Badge variant={approved ? "default" : "secondary"}>
+        {approved ? "Approved" : "Proposed"}
       </Badge>
-      <span className="ml-auto text-sm font-medium tabular-nums">
-        {money(proposal.amountMinor, proposal.currency)}
-      </span>
+      {approved ? (
+        <span className="ml-auto text-sm font-medium tabular-nums">
+          {money(proposal.amountMinor, proposal.currency)}
+        </span>
+      ) : (
+        <span
+          aria-hidden
+          className="text-muted-foreground/60 ml-auto text-sm tabular-nums"
+        >
+          —
+        </span>
+      )}
     </>
   );
 }
@@ -983,7 +994,7 @@ function BountyCard({
   selected: boolean;
   onOpen: (address: BountyAddress) => void;
 }) {
-  const { proposal, sandbox } = bounty;
+  const { proposal } = bounty;
   const heading = (
     <span className="line-clamp-2 text-sm font-medium sm:line-clamp-1">
       {bounty.title}
@@ -1023,12 +1034,6 @@ function BountyCard({
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
           {workspace !== undefined && <WorkspaceTag name={workspace} />}
           <Source bounty={bounty} />
-          {sandbox !== null && (
-            <span className="text-muted-foreground inline-flex items-center gap-1 text-xs">
-              <Box className="size-3" />
-              Sandbox {sandboxLabel(sandbox)}
-            </span>
-          )}
         </div>
       </div>
       <div className="shrink-0 border-t pt-3 sm:w-56 sm:border-t-0 sm:pt-0">
@@ -1064,26 +1069,55 @@ function BountyCard({
  */
 function usePropose(
   bounties: Bounties,
+  organizationId: string,
   bountyId: string,
+  /** Whether it has no proposal yet, and so may have a sizing to find. */
+  unproposed: boolean,
   onOpenProposal: (proposalId: string) => void,
 ) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const controller = useRef<AbortController | null>(null);
   useEffect(() => () => controller.current?.abort(), []);
-  const start = async () => {
+  const start = async (following?: string) => {
     controller.current?.abort();
     const current = new AbortController();
     controller.current = current;
     setPending(true);
     setError(null);
-    const result = await bounties.propose(bountyId, current.signal);
+    const result = await bounties.propose(bountyId, current.signal, following);
     if (current.signal.aborted) return;
     setPending(false);
     if (result.ok) onOpenProposal(result.proposalId);
     else setError(result.error);
   };
-  return { pending, error, start };
+  /*
+    A sizing already in flight, as after a reload mid-run: followed as if
+    Propose had just been pressed, so the page says it is at work rather
+    than offering to start a second.
+  */
+  const userId = useUserId();
+  const sizing = useQuery({
+    queryKey: queryKeys.resource(
+      userId,
+      organizationId,
+      "bounty-sizing",
+      bountyId,
+    ),
+    enabled: unproposed,
+    staleTime: 0,
+    queryFn: ({ signal }) =>
+      clients.bounties.bountySizing(organizationId, bountyId, signal),
+  });
+  const inFlight = unproposed ? (sizing.data?.id ?? null) : null;
+  const adopted = useRef<string | null>(null);
+  useEffect(() => {
+    if (inFlight === null || adopted.current === inFlight || pending) return;
+    adopted.current = inFlight;
+    void start(inFlight);
+    // `start` is remade each render; the run's id is what matters here.
+  }, [inFlight, pending]);
+  return { pending, error, start: () => start() };
 }
 
 /** Said when a save lost to someone else's, and the field now shows theirs. */
@@ -1134,7 +1168,13 @@ function BountyDetail({
   /** Where a page's links lead to connect a source; a panel offers none. */
   onOpenSettings?: OpenSettings | undefined;
 }) {
-  const propose = usePropose(bounties, bounty.id, onProposed);
+  const propose = usePropose(
+    bounties,
+    bounty.organizationId,
+    bounty.id,
+    proposal === null,
+    onProposed,
+  );
   const [sandboxPending, setSandboxPending] = useState(false);
   const [sandboxError, setSandboxError] = useState<string | null>(null);
   // Which tab a page has open; a panel has none.
@@ -1418,7 +1458,11 @@ function BountyDetail({
                   : null
             }
             readOnly={readOnly}
-            onPublished={onReload}
+            onChanged={() => {
+              // The lists hold the bounty as last read too.
+              void bounties.refresh();
+              onReload();
+            }}
           >
             {unlinked && managesSandbox && repoToLink !== null && (
               <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-4">

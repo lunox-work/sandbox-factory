@@ -373,11 +373,33 @@ test("gets and lists owner-scoped runs with a bounded page", async () => {
   assert.equal(fake.calls[1]?.limited, 50);
 });
 
+test("finds the sizing in flight on one bounty", async () => {
+  const fake = createFakeDb([
+    row({ kind: "bounty", boardId: null, bountyId: "bty_1" }),
+  ]);
+  const store = createBountyRunStore(fake.db);
+  assert.equal((await store.activeForBounty("org_1", "bty_1"))?.id, "brn_1");
+  assert.equal(fake.calls[0]?.limited, 1);
+});
+
+test("finds the change in flight on one proposal", async () => {
+  const fake = createFakeDb([
+    row({ kind: "reprice", sourceProposalId: "bpr_1", sourceRevision: 2 }),
+  ]);
+  const store = createBountyRunStore(fake.db);
+  const active = await store.activeForProposal("org_1", "bpr_1");
+  assert.equal(active?.id, "brn_1");
+  assert.equal(active?.kind, "reprice");
+  assert.equal(fake.calls[0]?.limited, 1);
+});
+
 test("run reads and lease writes report misses", async () => {
   const fake = createFakeDb([]);
   const store = createBountyRunStore(fake.db);
   assert.equal(await store.get("org_1", "brn_x"), null);
   assert.deepEqual(await store.listForBoard("org_1", "jrb_1"), []);
+  assert.equal(await store.activeForProposal("org_1", "bpr_x"), null);
+  assert.equal(await store.activeForBounty("org_1", "bty_x"), null);
   const now = new Date("2026-09-22T00:00:00Z");
   assert.equal(await store.claim("org_1", "brn_x", "lease", now), null);
   assert.equal(await store.heartbeat("org_1", "brn_x", "lease", now), false);

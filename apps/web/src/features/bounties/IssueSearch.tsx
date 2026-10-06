@@ -1,4 +1,5 @@
 import { ApiError } from "@sandbox-factory/client";
+import type { BountyRunDto } from "@sandbox-factory/shared";
 import { useQuery } from "@tanstack/react-query";
 import { Loader2, Plus, Search } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -38,21 +39,27 @@ function addable(ticket: IssueResult): boolean {
  * Picking one starts a run for that ticket alone, follows it, and opens the
  * proposal the moment it lands. A ticket split into sub-tasks is shown but
  * cannot be picked: its sub-tasks are what is sized.
+ *
+ * `activeRun` is a one-ticket run the board's own read says is in flight:
+ * followed as if picked here, so a reload mid-sizing still says so.
  */
 export function IssueSearch({
   base,
   boardId,
+  activeRun,
   onProposal,
 }: {
   base: string;
   boardId: string;
+  activeRun?: BountyRunDto | undefined;
   onProposal: (proposalId: string) => Promise<void>;
 }) {
   const [query, setQuery] = useState("");
+  // From the click: the run's id is null until the server names it.
   const [pending, setPending] = useState<{
     key: string;
     summary: string;
-    runId: string;
+    runId: string | null;
   } | null>(null);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -108,6 +115,19 @@ export function IssueSearch({
     startDelay: 1000,
   });
   const finished = useRef<string | null>(null);
+  const adopt =
+    activeRun !== undefined && finished.current !== activeRun.id
+      ? activeRun
+      : null;
+  useEffect(() => {
+    if (adopt === null || pending !== null) return;
+    const planned = adopt.planned[0];
+    setPending({
+      key: planned?.issueKey ?? "",
+      summary: planned?.summary ?? "",
+      runId: adopt.id,
+    });
+  }, [adopt, pending]);
   useEffect(() => {
     const run = following.data;
     if (pending === null || run === undefined || finished.current === run.id)
@@ -141,6 +161,9 @@ export function IssueSearch({
   async function pick(ticket: IssueResult) {
     const selection = `${base}:${boardId}`;
     setMessage(null);
+    // Said at once, before the server has answered.
+    setQuery("");
+    setPending({ key: ticket.key, summary: ticket.summary, runId: null });
     try {
       const body = await clients.jira.proposeIssue(
         owner,
@@ -149,17 +172,18 @@ export function IssueSearch({
         crypto.randomUUID(),
       );
       if (selectionRef.current !== selection) return;
-      setQuery("");
       if (body.proposalId !== undefined) {
         await onProposal(body.proposalId);
+        setPending(null);
       } else if (body.run !== undefined) {
         setPending({
           key: ticket.key,
           summary: ticket.summary,
           runId: body.run.id,
         });
-      }
+      } else setPending(null);
     } catch (error) {
+      setPending(null);
       setMessage(
         error instanceof ApiError
           ? error.message
@@ -262,8 +286,14 @@ export function IssueSearch({
           role="status"
         >
           <Loader2 className="size-4 animate-spin" />
-          Sizing <span className="font-mono text-xs">{pending.key}</span>
-          <span className="truncate">{pending.summary}</span>…
+          {pending.key === "" ? (
+            "Sizing a ticket…"
+          ) : (
+            <>
+              Sizing <span className="font-mono text-xs">{pending.key}</span>
+              <span className="truncate">{pending.summary}</span>…
+            </>
+          )}
         </p>
       )}
       {message !== null && (

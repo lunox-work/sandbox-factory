@@ -374,6 +374,23 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
     }
   });
 
+  /*
+    The run sizing a bounty for its first proposal, while one is in flight;
+    null otherwise. What the bounty's page follows from a reload, as it
+    follows the run its Propose started. Any member may read it, as any
+    member may read the bounty.
+  */
+  app.get("/api/v1/orgs/:orgId/bounties/:id/sizing", async (c) => {
+    const { organizationId } = c.get("member");
+    const bountyId = c.req.param("id");
+    if ((await options.bounties.get(organizationId, bountyId)) === null) {
+      return c.json({ error: "Not found" }, 404);
+    }
+    return c.json({
+      run: await options.runs.activeForBounty(organizationId, bountyId),
+    });
+  });
+
   /**
    * Size one of the organization's bounties and make its proposal, in
    * the background: the same answer as adding a board's issue. 202 with the
@@ -652,6 +669,10 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
               organizationId,
               proposal.id,
             ),
+      activeRun: await options.runs.activeForProposal(
+        organizationId,
+        proposal.id,
+      ),
     });
   });
 
@@ -1093,13 +1114,23 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
       promptVersion: options.promptVersion,
     });
     if (!created.ok) {
-      return c.json(
-        {
-          code: created.reason === "active" ? "run_active" : "proposal_changed",
-          error: "Could not start re-pricing.",
-        },
-        409,
-      );
+      // The run in the way, so the page can follow it rather than say no.
+      return created.reason === "active"
+        ? c.json(
+            {
+              code: "run_active",
+              error: "Another run is already under way. Wait for it to finish.",
+              runId: created.runId,
+            },
+            409,
+          )
+        : c.json(
+            {
+              code: "proposal_changed",
+              error: "Could not start re-pricing.",
+            },
+            409,
+          );
     }
     if (created.created) options.executor.start(organizationId, created.run.id);
     return c.json({ run: created.run }, 202);

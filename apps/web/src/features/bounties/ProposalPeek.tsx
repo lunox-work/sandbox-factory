@@ -25,6 +25,7 @@ import {
 import { dateTime, modelLabel, money } from "../../lib/format";
 import { capitalize, unweighed } from "./presentation";
 import { type EnrichedProposal } from "./types";
+import { useReanalyze } from "./useReanalyze";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { DisabledReason } from "@/components/DisabledReason";
@@ -194,6 +195,21 @@ export function ProposalPeek({
       setActing(null);
     }
   };
+  /*
+    Re-analyzing is a run: the model drafts and sizes the bounty again,
+    and the proposal changes only when it lands. Until then what it will
+    replace is set aside, so the old price never reads as the answer, and
+    every decision on it waits; the new one fills in as it arrives.
+  */
+  const reanalyze = useReanalyze(
+    base,
+    proposal.id,
+    proposal.revision,
+    proposal.activeRun,
+    onChanged,
+  );
+  const reanalyzing = reanalyze.state.phase === "working";
+  const locked = busy || reanalyzing;
   const key = proposal.liveKey ?? proposal.issueKey;
   // Read when the peek opens, like the bounty, so the tab opens on it.
   const spec = useProposalSpec(base, proposal.id, proposal.specRevision);
@@ -240,12 +256,19 @@ export function ProposalPeek({
   const [viewing, setViewing] = useRevisionView(specRevision);
   const step = proposal.step ?? null;
   // A reviewer's changes to the spec, and the run each one starts.
-  const respec = useRespec(base, proposal.id, proposal.revision, onChanged);
+  const respec = useRespec(
+    base,
+    proposal.id,
+    proposal.revision,
+    onChanged,
+    proposal.activeRun,
+  );
   // What a change moves is the step, so a proposal without one has nothing
   // to change; an approved one is unapproved first.
   const canChange =
     canDecide &&
     open &&
+    !reanalyzing &&
     step !== null &&
     (proposal.specRevision ?? null) !== null;
   // The size a resize replaces: the step's base when there is a step, so a
@@ -259,7 +282,9 @@ export function ProposalPeek({
     page under the price, where "Why this size" already says why, so the
     scenarios do not say it again.
   */
-  const scenarioView = (
+  const scenarioView = reanalyzing ? (
+    <AnalysisPlaceholder />
+  ) : (
     <ProposalSpec
       read={spec.read}
       onRetry={spec.retry}
@@ -383,7 +408,7 @@ export function ProposalPeek({
     decidable && (
       <DisabledReason reason={approveBlocked}>
         <Button
-          disabled={busy || approveBlocked !== null}
+          disabled={locked || approveBlocked !== null}
           aria-busy={acting === "approve"}
           onClick={() =>
             void act("approve", `/proposals/${proposal.id}/approve`, {
@@ -399,7 +424,7 @@ export function ProposalPeek({
   ) : (
     <Button
       variant="outline"
-      disabled={busy}
+      disabled={locked}
       aria-busy={acting === "unapprove"}
       onClick={() =>
         void act("unapprove", `/proposals/${proposal.id}/unapprove`, {
@@ -422,7 +447,7 @@ export function ProposalPeek({
         <button
           type="button"
           className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 rounded-sm text-xs underline-offset-2 transition-colors hover:underline focus-visible:ring-[3px] focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
-          disabled={busy}
+          disabled={locked}
         >
           Remove
         </button>
@@ -431,7 +456,7 @@ export function ProposalPeek({
       description="The bounty will have no proposal, and the next sizing run may propose it again. Nothing is posted to Jira."
       confirmLabel="Remove"
       tone="destructive"
-      busy={busy}
+      busy={locked}
       onConfirm={async () => {
         const removed = await mutate(`/proposals/${proposal.id}/remove`, {
           expectedRevision: proposal.revision,
@@ -467,27 +492,20 @@ export function ProposalPeek({
             {capitalize(proposal.status)}
           </Badge>
           {/* Sized again only while it is not approved: unapproved first. */}
-          {canDecide && open && (
+          {canDecide && (open || reanalyzing) && (
             <button
               type="button"
-              className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 flex cursor-pointer items-center gap-1.5 rounded-sm text-sm underline-offset-4 transition-colors hover:underline focus-visible:ring-[3px] focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
-              disabled={busy}
-              aria-busy={acting === "reprice"}
-              onClick={() =>
-                void act("reprice", `/proposals/${proposal.id}/reprice`, {
-                  expectedRevision: proposal.revision,
-                  requestId: crypto.randomUUID(),
-                })
-              }
+              className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 flex cursor-pointer items-center gap-1.5 rounded-sm text-sm underline-offset-4 transition-colors hover:underline focus-visible:ring-[3px] focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50 aria-busy:opacity-100"
+              disabled={locked}
+              aria-busy={reanalyzing}
+              onClick={reanalyze.start}
             >
               <RefreshCw
                 className={`size-3.5 ${
-                  acting === "reprice"
-                    ? "animate-spin motion-reduce:animate-none"
-                    : ""
+                  reanalyzing ? "animate-spin motion-reduce:animate-none" : ""
                 }`}
               />
-              Re-analyze
+              {reanalyzing ? "Re-analyzing…" : "Re-analyze"}
             </button>
           )}
         </div>
@@ -503,46 +521,58 @@ export function ProposalPeek({
           the heights above them. On a phone it stacks in reading
           order instead, the notes still sharing their line.
         */}
-        <div className="grid grid-cols-1 items-center gap-x-6 gap-y-2.5 sm:grid-cols-[1fr_auto]">
-          <span
-            className={`text-3xl leading-none font-semibold tracking-tight sm:col-start-1 sm:row-start-1 ${
-              priced ? "tabular-nums" : "text-muted-foreground"
-            }`}
-          >
-            {money(amountMinor, proposal.currency)}
-          </span>
-          {/* Who sized it, as a pill wearing the vendor's mark. */}
-          <span
-            className={`inline-flex w-fit items-center gap-1.5 rounded-full border py-1 pr-2.5 pl-2 text-xs sm:col-start-1 ${lowerRow}`}
-          >
-            <span className="flex size-3.5 shrink-0 items-center [&>svg]:size-3.5">
-              <ModelIcon model={proposal.actualModel} />
+        {reanalyze.state.phase === "ended" && (
+          <p role="alert" className="text-destructive text-sm">
+            {reanalyze.state.line}
+          </p>
+        )}
+        {reanalyzing ? (
+          <ReanalyzingPrice
+            queued={
+              reanalyze.state.phase === "working" && reanalyze.state.queued
+            }
+          />
+        ) : (
+          <div className="grid grid-cols-1 items-center gap-x-6 gap-y-2.5 sm:grid-cols-[1fr_auto]">
+            <span
+              className={`text-3xl leading-none font-semibold tracking-tight sm:col-start-1 sm:row-start-1 ${
+                priced ? "tabular-nums" : "text-muted-foreground"
+              }`}
+            >
+              {money(amountMinor, proposal.currency)}
             </span>
-            {label === null ? (
-              <span className="font-medium">{proposal.actualModel}</span>
-            ) : (
-              <span className="font-medium" title={proposal.actualModel}>
-                {label}
+            {/* Who sized it, as a pill wearing the vendor's mark. */}
+            <span
+              className={`inline-flex w-fit items-center gap-1.5 rounded-full border py-1 pr-2.5 pl-2 text-xs sm:col-start-1 ${lowerRow}`}
+            >
+              <span className="flex size-3.5 shrink-0 items-center [&>svg]:size-3.5">
+                <ModelIcon model={proposal.actualModel} />
               </span>
-            )}
-            {/*
+              {label === null ? (
+                <span className="font-medium">{proposal.actualModel}</span>
+              ) : (
+                <span className="font-medium" title={proposal.actualModel}>
+                  {label}
+                </span>
+              )}
+              {/*
                 The model's confidence as a mark: up in green, level
                 in neutral, down in red. Named for assistive
                 technology and on hover, since a shape and a colour
                 alone say nothing to a screen reader.
               */}
-            <span
-              role="img"
-              aria-label={`${proposal.modelConfidence} confidence`}
-              title={`${proposal.modelConfidence} confidence`}
-              className={`flex shrink-0 items-center [&>svg]:size-3.5 ${CONFIDENCE_MARK[proposal.modelConfidence].tone}`}
-            >
-              {CONFIDENCE_MARK[proposal.modelConfidence].icon}
+              <span
+                role="img"
+                aria-label={`${proposal.modelConfidence} confidence`}
+                title={`${proposal.modelConfidence} confidence`}
+                className={`flex shrink-0 items-center [&>svg]:size-3.5 ${CONFIDENCE_MARK[proposal.modelConfidence].tone}`}
+              >
+                {CONFIDENCE_MARK[proposal.modelConfidence].icon}
+              </span>
             </span>
-          </span>
-          <div className="sm:col-start-2 sm:row-start-1 sm:justify-self-end">
-            {canDecide && open ? (
-              /*
+            <div className="sm:col-start-2 sm:row-start-1 sm:justify-self-end">
+              {canDecide && open ? (
+                /*
                       The size is the resize: a row of cards, one per size,
                       with the current size drawn as the larger one. That
                       card is disabled, since it is not a change, but kept
@@ -555,75 +585,76 @@ export function ProposalPeek({
                       size below it, which reads "S+" while it is the size
                       in force, and a click there sets the whole size.
                     */
-              <div
-                role="group"
-                aria-label="Resize"
-                className="flex min-h-12 flex-wrap items-center gap-1.5 sm:justify-end"
-              >
-                {complexity === "unsized" && (
-                  <SizeCard size="unsized" current />
-                )}
-                {WHOLE_BOUNTY_COMPLEXITIES.map((size) => {
-                  const current =
-                    complexity === size || complexity === `${size}+`;
-                  return (
-                    <SizeCard
-                      key={size}
-                      size={current ? complexity : size}
-                      current={current}
-                      disabled={busy || complexity === size}
-                      onClick={() => void resizeTo(size)}
-                    />
-                  );
-                })}
-              </div>
-            ) : (
-              <SizeCard size={proposal.complexity} current />
-            )}
-          </div>
-          {sizedBy !== "model" && (
-            <div className="text-muted-foreground flex items-baseline justify-between gap-x-6 text-xs sm:col-span-2 sm:row-start-2">
-              <span>the model said {proposal.modelComplexity}</span>
-              {/*
+                <div
+                  role="group"
+                  aria-label="Resize"
+                  className="flex min-h-12 flex-wrap items-center gap-1.5 sm:justify-end"
+                >
+                  {complexity === "unsized" && (
+                    <SizeCard size="unsized" current />
+                  )}
+                  {WHOLE_BOUNTY_COMPLEXITIES.map((size) => {
+                    const current =
+                      complexity === size || complexity === `${size}+`;
+                    return (
+                      <SizeCard
+                        key={size}
+                        size={current ? complexity : size}
+                        current={current}
+                        disabled={locked || complexity === size}
+                        onClick={() => void resizeTo(size)}
+                      />
+                    );
+                  })}
+                </div>
+              ) : (
+                <SizeCard size={proposal.complexity} current />
+              )}
+            </div>
+            {sizedBy !== "model" && (
+              <div className="text-muted-foreground flex items-baseline justify-between gap-x-6 text-xs sm:col-span-2 sm:row-start-2">
+                <span>the model said {proposal.modelComplexity}</span>
+                {/*
                 "Saved" hangs under who set the size, out of the flow, so
                 coming and going it moves nothing around it.
               */}
-              <span className="relative text-right">
-                {sizedBy === "rubric"
-                  ? "set by the rubric"
-                  : chosen === null && step !== null && step.steps > 0
-                    ? `${step.base} set by a reviewer`
-                    : "set by a reviewer"}
-                <span
-                  aria-hidden="true"
-                  className={`pointer-events-none absolute top-full right-0 pt-0.5 transition-[opacity,translate] duration-300 ease-out motion-reduce:transition-none ${
-                    saved
-                      ? "translate-y-0 opacity-100"
-                      : "-translate-y-1 opacity-0"
-                  }`}
-                >
-                  Saved
+                <span className="relative text-right">
+                  {sizedBy === "rubric"
+                    ? "set by the rubric"
+                    : chosen === null && step !== null && step.steps > 0
+                      ? `${step.base} set by a reviewer`
+                      : "set by a reviewer"}
+                  <span
+                    aria-hidden="true"
+                    className={`pointer-events-none absolute top-full right-0 pt-0.5 transition-[opacity,translate] duration-300 ease-out motion-reduce:transition-none ${
+                      saved
+                        ? "translate-y-0 opacity-100"
+                        : "-translate-y-1 opacity-0"
+                    }`}
+                  >
+                    Saved
+                  </span>
+                  <span role="status" className="sr-only">
+                    {saved ? "Saved" : ""}
+                  </span>
                 </span>
-                <span role="status" className="sr-only">
-                  {saved ? "Saved" : ""}
-                </span>
-              </span>
-            </div>
-          )}
-          {/*
+              </div>
+            )}
+            {/*
             The one warning a size can carry, level with the model
             and under the size it is about: an XL is a hint that
             the bounty is two.
           */}
-          {complexity === "XL" && (
-            <span
-              className={`flex items-center gap-1 text-xs text-amber-700 dark:text-amber-400 sm:col-start-2 sm:justify-self-end ${lowerRow}`}
-            >
-              <TriangleAlert className="size-3.5 shrink-0" />
-              Consider splitting
-            </span>
-          )}
-        </div>
+            {complexity === "XL" && (
+              <span
+                className={`flex items-center gap-1 text-xs text-amber-700 dark:text-amber-400 sm:col-start-2 sm:justify-self-end ${lowerRow}`}
+              >
+                <TriangleAlert className="size-3.5 shrink-0" />
+                Consider splitting
+              </span>
+            )}
+          </div>
+        )}
       </div>
 
       {/*
@@ -656,54 +687,60 @@ export function ProposalPeek({
         Why this price: the rubric's working, factor by factor, before
         the model's opinion, which it replaces once the code is measured.
       */}
-      <PricingRubricBlock
-        proposal={proposal}
-        canUse={canDecide && open}
-        busy={busy}
-        onUse={() =>
-          void mutate(
-            `/proposals/${proposal.id}/rubric`,
-            { expectedRevision: proposal.revision },
-            { apply: true },
-          )
-        }
-      />
+      {reanalyzing ? (
+        <AnalysisPlaceholder />
+      ) : (
+        <>
+          <PricingRubricBlock
+            proposal={proposal}
+            canUse={canDecide && open}
+            busy={locked}
+            onUse={() =>
+              void mutate(
+                `/proposals/${proposal.id}/rubric`,
+                { expectedRevision: proposal.revision },
+                { apply: true },
+              )
+            }
+          />
 
-      {/*
+          {/*
         What the model made of the bounty: why this size, without a
         rubric; beside one, its second opinion. What the spec gained
         since is marked on its scenarios.
       */}
-      <div>
-        <SectionHeading icon={<Sparkles />} tone="model">
-          {(proposal.rubric ?? null) === null
-            ? "Why this size"
-            : `The model's read: ${proposal.modelComplexity}`}
-        </SectionHeading>
-        <ModelCard>
-          <p className="text-[15px] leading-relaxed">
-            {proposal.modelRationale}
-          </p>
-          {canDecide && unweighed(proposal) && (
-            <p
-              className="text-muted-foreground mt-3 border-t pt-3 text-xs"
-              data-testid="proposal-unweighed"
-            >
-              This size has no weighed scenarios, so a scenario added later
-              cannot move it. Re-analyze drafts and weighs them.
-            </p>
-          )}
-          {/* What the scenarios' own head says where they have a tab. */}
-          {withinBounty && outline !== null && (
-            <OutlineSource outline={outline} className="mt-3" />
-          )}
-        </ModelCard>
-      </div>
+          <div>
+            <SectionHeading icon={<Sparkles />} tone="model">
+              {(proposal.rubric ?? null) === null
+                ? "Why this size"
+                : `The model's read: ${proposal.modelComplexity}`}
+            </SectionHeading>
+            <ModelCard>
+              <p className="text-[15px] leading-relaxed">
+                {proposal.modelRationale}
+              </p>
+              {canDecide && unweighed(proposal) && (
+                <p
+                  className="text-muted-foreground mt-3 border-t pt-3 text-xs"
+                  data-testid="proposal-unweighed"
+                >
+                  This size has no weighed scenarios, so a scenario added later
+                  cannot move it. Re-analyze drafts and weighs them.
+                </p>
+              )}
+              {/* What the scenarios' own head says where they have a tab. */}
+              {withinBounty && outline !== null && (
+                <OutlineSource outline={outline} className="mt-3" />
+              )}
+            </ModelCard>
+          </div>
 
-      <ComplexityProfileBlock
-        read={profile}
-        specRevision={proposal.specRevision}
-      />
+          <ComplexityProfileBlock
+            read={profile}
+            specRevision={proposal.specRevision}
+          />
+        </>
+      )}
 
       {/*
         Inside its bounty, the scenarios too, on the same page: the
@@ -749,7 +786,7 @@ export function ProposalPeek({
           <p className="text-muted-foreground mb-1.5 text-xs font-medium">
             Jira
           </p>
-          <DeliveryStatus operation={delivery} busy={busy} mutate={mutate} />
+          <DeliveryStatus operation={delivery} busy={locked} mutate={mutate} />
         </div>
       )}
     </div>
@@ -777,7 +814,7 @@ export function ProposalPeek({
             <TabsTrigger value="price">Price</TabsTrigger>
             <TabsTrigger value="scenarios">
               Scenarios
-              {scenarios !== null && (
+              {scenarios !== null && !reanalyzing && (
                 <span className="text-muted-foreground text-xs tabular-nums">
                   {scenarios}
                 </span>
@@ -839,6 +876,53 @@ export function ProposalPeek({
           )}
         </TabsContent>
       </Tabs>
+    </div>
+  );
+}
+
+/**
+ * The price card while the model analyzes the bounty again: what it is
+ * doing in place of the amount and size it will replace, so the old ones
+ * are not read as the answer.
+ */
+function ReanalyzingPrice({ queued }: { queued: boolean }) {
+  return (
+    <div
+      className="grid grid-cols-1 items-center gap-x-6 gap-y-2.5 sm:grid-cols-[1fr_auto]"
+      data-testid="proposal-reanalyzing"
+    >
+      <div aria-hidden="true" className="skeleton h-8 w-36 rounded" />
+      <div
+        aria-hidden="true"
+        className="skeleton h-12 w-12 rounded-md sm:col-start-2 sm:row-start-1 sm:justify-self-end"
+      />
+      <p
+        role="status"
+        className="text-muted-foreground flex items-center gap-2 text-sm sm:col-span-2"
+      >
+        <Loader2 className="size-3.5 shrink-0 animate-spin motion-reduce:animate-none" />
+        {queued
+          ? "Waiting for room to start the analysis…"
+          : "Reading the bounty, drafting its scenarios and sizing them…"}
+      </p>
+    </div>
+  );
+}
+
+/** Where the reasoning goes while it is drafted again. */
+function AnalysisPlaceholder() {
+  return (
+    <div
+      aria-hidden="true"
+      className="flex flex-col gap-2.5 rounded-lg border p-4"
+      data-testid="analysis-placeholder"
+    >
+      <div className="skeleton h-4 w-32 rounded" />
+      <div className="skeleton h-3 w-full rounded" />
+      <div className="skeleton h-3 w-11/12 rounded" />
+      <div className="skeleton h-3 w-4/5 rounded" />
+      <div className="skeleton mt-2 h-3 w-2/3 rounded" />
+      <div className="skeleton h-3 w-3/4 rounded" />
     </div>
   );
 }

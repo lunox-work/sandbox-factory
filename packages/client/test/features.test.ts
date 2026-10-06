@@ -279,4 +279,16 @@ test("Jira writes and detail reads validate their envelopes", async () => {
     await new BountyClient(options).proposeBounty("o", "id", "request"),
     {},
   );
+  // A bounty's sizing must say whether a run is in flight, even as null.
+  await assert.rejects(new BountyClient(options).bountySizing("o", "id"));
+  const requested: string[] = [];
+  const sizing = new BountyClient({
+    baseUrl: "",
+    fetch: (async (input: string) => {
+      requested.push(input);
+      return Response.json({ run: null });
+    }) as typeof fetch,
+  });
+  assert.equal(await sizing.bountySizing("o /", "b /"), null);
+  assert.equal(requested[0], "/api/v1/orgs/o%20%2F/bounties/b%20%2F/sizing");
 });

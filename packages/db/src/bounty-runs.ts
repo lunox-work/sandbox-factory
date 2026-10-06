@@ -65,6 +65,24 @@ export interface BountyRunStore {
     input: CreateBountyRunInput,
   ): Promise<CreateBountyRunResult>;
   get(organizationId: string, runId: string): Promise<StoredBountyRun | null>;
+  /**
+   * The re-price or spec change in flight on one proposal, if any: at most
+   * one, by `bounty_run_proposal_active_unique`. What a proposal's own page
+   * follows, so a reload mid-run still shows the run at work.
+   */
+  activeForProposal(
+    organizationId: string,
+    proposalId: string,
+  ): Promise<StoredBountyRun | null>;
+  /**
+   * The run sizing a bounty for its first proposal, if one is in flight:
+   * at most one, by `bounty_run_bounty_active_unique`. What the bounty's
+   * page follows, so a reload mid-sizing still shows it at work.
+   */
+  activeForBounty(
+    organizationId: string,
+    bountyId: string,
+  ): Promise<StoredBountyRun | null>;
   listForBoard(
     organizationId: string,
     boardId: string,
@@ -418,6 +436,38 @@ export function createBountyRunStore(db: Database): BountyRunStore {
             eq(bountyRun.id, runId),
           ),
         )) as BountyRunRow[];
+      return rows[0] === undefined ? null : toDto(rows[0]);
+    },
+
+    async activeForProposal(organizationId, proposalId) {
+      const rows = (await db
+        .select()
+        .from(bountyRun)
+        .where(
+          and(
+            eq(bountyRun.organizationId, organizationId),
+            eq(bountyRun.sourceProposalId, proposalId),
+            inArray(bountyRun.kind, ["reprice", "respec"]),
+            inArray(bountyRun.status, ["queued", "running"]),
+          ),
+        )
+        .limit(1)) as BountyRunRow[];
+      return rows[0] === undefined ? null : toDto(rows[0]);
+    },
+
+    async activeForBounty(organizationId, bountyId) {
+      const rows = (await db
+        .select()
+        .from(bountyRun)
+        .where(
+          and(
+            eq(bountyRun.organizationId, organizationId),
+            eq(bountyRun.bountyId, bountyId),
+            eq(bountyRun.kind, "bounty"),
+            inArray(bountyRun.status, ["queued", "running"]),
+          ),
+        )
+        .limit(1)) as BountyRunRow[];
       return rows[0] === undefined ? null : toDto(rows[0]);
     },
 

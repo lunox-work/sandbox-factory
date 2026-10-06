@@ -150,6 +150,7 @@ function harness(
     listForBoard: () => Promise.resolve(options.previousRuns ?? [run]),
     get: (_org: string, id: string) =>
       Promise.resolve(id === run.id ? run : null),
+    activeForProposal: () => Promise.resolve(null),
   } as unknown as BountyRunStore;
   const board = {
     id: "jrb_1",
@@ -536,7 +537,7 @@ function reviewHarness(
     organizations: { roleOf: () => Promise.resolve("owner") } as never,
     pricing: {
       rateCards: { get: () => Promise.resolve(card) } as never,
-      runs: {} as never,
+      runs: { activeForProposal: () => Promise.resolve(null) } as never,
       proposals,
       specs: {} as never,
       issues: {

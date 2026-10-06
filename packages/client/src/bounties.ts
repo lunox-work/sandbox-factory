@@ -1,6 +1,7 @@
 import {
   proposalActionResponseSchema,
   bountyListResponseSchema,
+  bountySizingResponseSchema,
   bountyResponseSchema,
   bountyVersionListSchema,
   type CreateBountyInput,
@@ -18,6 +19,15 @@ function pageParams(query: { limit?: number; cursor?: string }) {
   return params;
 }
 export class BountyClient extends ApiClient {
+  /** The run sizing the bounty for its first proposal, or null. */
+  async bountySizing(owner: string, id: string, signal?: AbortSignal) {
+    return bountySizingResponseSchema.parse(
+      await this.request(
+        `${ownerPath(owner)}/bounties/${encodeURIComponent(id)}/sizing`,
+        signal === undefined ? {} : { signal },
+      ),
+    ).run;
+  }
   async proposeBounty(
     owner: string,
     id: string,

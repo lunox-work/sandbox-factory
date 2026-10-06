@@ -84,6 +84,17 @@ export const proposalDetailResponseSchema = z.object({
   freshness: proposalFreshnessDtoSchema,
   liveSpec: proposalLiveSpecSchema.nullable().optional(),
   writebackOperations: z.array(bountyWritebackDtoSchema).default([]),
+  /**
+   * The re-price or spec change rewriting the proposal now, or null when
+   * none is: what its page follows to the end, from a reload as from the
+   * click that started it.
+   */
+  activeRun: bountyRunDtoSchema.nullable().default(null),
+});
+
+/** A bounty's first sizing while it is in flight, or null when none is. */
+export const bountySizingResponseSchema = z.object({
+  run: bountyRunDtoSchema.nullable(),
 });
 
 export const proposalActionResponseSchema = z.object({

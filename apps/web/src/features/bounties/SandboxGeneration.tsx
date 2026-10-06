@@ -19,7 +19,7 @@ import type {
 } from "@sandbox-factory/shared";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronDown, RefreshCw, Sparkles } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { isPublicationLive } from "sandbox-factory";
 
@@ -123,7 +123,7 @@ export function SandboxGeneration({
   canGenerate = true,
   generationBlocked = null,
   readOnly = false,
-  onPublished,
+  onChanged,
   children,
 }: {
   organizationId: string;
@@ -142,8 +142,12 @@ export function SandboxGeneration({
    * still a draft; null when it is not.
    */
   generationBlocked?: string | null;
-  /** The sandbox was published or unpublished: read it again. */
-  onPublished?: () => void;
+  /**
+   * A version was generated, finished its run, or was published or
+   * unpublished: what the bounty says of its sandbox, such as which bounty
+   * version it stands on, has moved, so read it again.
+   */
+  onChanged?: () => void;
   /** Its versions alone, with no way to generate, as in a panel. */
   readOnly?: boolean;
   /** Under its versions, such as the way to link a repository. */
@@ -211,6 +215,9 @@ export function SandboxGeneration({
   });
   // Once its run is over, the version holds what the run settled.
   const runEnded = run.data !== undefined && terminalRun(run.data);
+  // Seen running here, so its end is news to the bounty too.
+  const watched = useRef(false);
+  if (run.data !== undefined && !runEnded) watched.current = true;
   useEffect(() => {
     if (!runEnded) return;
     void queryClient.invalidateQueries({
@@ -221,7 +228,11 @@ export function SandboxGeneration({
         selectedId,
       ),
     });
-  }, [runEnded, queryClient, userId, organizationId, selectedId]);
+    if (watched.current) {
+      watched.current = false;
+      onChanged?.();
+    }
+  }, [runEnded, queryClient, userId, organizationId, selectedId, onChanged]);
 
   async function generate() {
     setPending(true);
@@ -243,6 +254,7 @@ export function SandboxGeneration({
       // The new version is the one to follow.
       setChosenId(null);
       await queryClient.invalidateQueries({ queryKey: versionsKey });
+      onChanged?.();
     } catch (failure) {
       setError(
         failure instanceof ApiError
@@ -283,7 +295,7 @@ export function SandboxGeneration({
         );
       }
       await queryClient.invalidateQueries({ queryKey: versionsKey });
-      onPublished?.();
+      onChanged?.();
     } catch (failure) {
       setError(
         failure instanceof ApiError

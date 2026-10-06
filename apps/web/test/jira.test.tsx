@@ -1214,6 +1214,190 @@ test("the actions sit in the bounty card, beside what they change, for those who
   ).not.toBeNull();
 });
 
+/**
+ * A board whose first proposal is re-analyzed: the re-price starts a run,
+ * which runs for `running` reads and then ends as `ending` says. Once it
+ * has succeeded, the proposal reads as `after`.
+ */
+function reanalyzeFetch(
+  options: {
+    running?: number;
+    ending?: { status: string; outcome: object };
+    activeOnOpen?: boolean;
+  } = {},
+) {
+  const base = routedFetch();
+  const run = {
+    id: "brn_r",
+    kind: "reprice",
+    boardId: "jrb_1",
+    bountyId: "bty_1",
+    sourceProposalId: "bpr_1",
+    sourceRevision: 1,
+  };
+  const ending: { status: string; outcome: { status?: string } } =
+    options.ending ?? {
+      status: "succeeded",
+      outcome: {
+        externalIssueId: "1",
+        issueKey: "ACME-1",
+        status: "proposed",
+        proposalId: "bpr_1",
+      },
+    };
+  const after = {
+    ...proposal(1),
+    modelRationale: "More files than it looked.",
+    complexity: "L",
+    amountMinor: 300,
+    revision: 2,
+  };
+  let reads = 0;
+  let ended = false;
+  const landed = () => ended && ending.outcome.status === "proposed";
+  const json = (body: unknown, status = 200) =>
+    Promise.resolve(
+      new Response(JSON.stringify(completeBountyFixture(body)), {
+        status,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+  const fetchMock = vi.fn((input: string, init?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith("/proposals/bpr_1/reprice"))
+      return json({ run: { ...run, status: "queued" } }, 202);
+    if (url.includes("/runs/brn_r")) {
+      reads += 1;
+      ended = reads > (options.running ?? 1);
+      return json({
+        run: ended
+          ? { ...run, status: ending.status, outcomes: [ending.outcome] }
+          : { ...run, status: "running" },
+      });
+    }
+    if (/\/proposals\/bpr_1(\?|$)/.test(url))
+      return json({
+        proposal: landed() ? after : proposal(1),
+        freshness: {
+          freshness: "current",
+          checkedAt: "now",
+          liveKey: "ACME-1",
+          liveTitle: "Ticket 1",
+        },
+        writebackOperations: [],
+        activeRun:
+          options.activeOnOpen === true && !ended
+            ? { ...completeRun(run), status: "running" }
+            : null,
+      });
+    if (url.includes("/proposals?") && landed())
+      return json({ proposals: [after, proposal(2)] });
+    return base(input, init);
+  });
+  return fetchMock;
+}
+
+/** A run as the detail read nests it, which the fixture does not fill. */
+function completeRun(run: object) {
+  return (completeBountyFixture({ run }) as { run: object }).run;
+}
+
+test("re-analyzing sets the old analysis aside, then shows the new one as it lands", async () => {
+  const fetchMock = reanalyzeFetch();
+  vi.stubGlobal("fetch", fetchMock);
+  renderBoard("jrb_1", "owner");
+  await screen.findByTestId("proposal-list");
+  await userEvent.click(await screen.findByText("Ticket 1"));
+  const panel = await screen.findByTestId("proposal-panel");
+  const card = within(panel).getByTestId("proposal-bounty");
+  expect(within(card).getByText("A few files.")).toBeDefined();
+
+  await userEvent.click(
+    within(card).getByRole("button", { name: "Re-analyze" }),
+  );
+  // At once, before the run has said anything: the old price and reasoning
+  // are gone, and the button says it is at work.
+  expect(await within(card).findByTestId("proposal-reanalyzing")).toBeDefined();
+  expect(within(card).queryByText("A few files.")).toBeNull();
+  expect(within(card).queryByRole("group", { name: "Resize" })).toBeNull();
+  const working = within(card).getByRole("button", { name: "Re-analyzing…" });
+  expect((working as HTMLButtonElement).disabled).toBe(true);
+  expect(
+    (within(card).getByRole("button", { name: "Approve" }) as HTMLButtonElement)
+      .disabled,
+  ).toBe(true);
+  expect(
+    fetchMock.mock.calls.some(([input]) =>
+      String(input).endsWith("/proposals/bpr_1/reprice"),
+    ),
+  ).toBe(true);
+
+  // The run ends and the proposal is read again: the new analysis in place.
+  expect(
+    await within(card).findByText(
+      "More files than it looked.",
+      {},
+      { timeout: 5_000 },
+    ),
+  ).toBeDefined();
+  expect(within(card).queryByTestId("proposal-reanalyzing")).toBeNull();
+  expect(
+    within(card).getByRole("button", { name: "Re-analyze" }),
+  ).toBeDefined();
+});
+
+test("a proposal opened mid re-analysis shows the run at work", async () => {
+  vi.stubGlobal("fetch", reanalyzeFetch({ activeOnOpen: true, running: 1 }));
+  renderBoard("jrb_1", "owner");
+  await screen.findByTestId("proposal-list");
+  await userEvent.click(await screen.findByText("Ticket 1"));
+  const panel = await screen.findByTestId("proposal-panel");
+  const card = within(panel).getByTestId("proposal-bounty");
+  // Nothing clicked here: the proposal's own read named the run.
+  expect(await within(card).findByTestId("proposal-reanalyzing")).toBeDefined();
+  expect(within(card).queryByText("A few files.")).toBeNull();
+  expect(
+    await within(card).findByText(
+      "More files than it looked.",
+      {},
+      { timeout: 5_000 },
+    ),
+  ).toBeDefined();
+});
+
+test("a re-analysis that fails puts the proposal back and says why", async () => {
+  vi.stubGlobal(
+    "fetch",
+    reanalyzeFetch({
+      ending: {
+        status: "succeeded",
+        outcome: {
+          externalIssueId: "1",
+          issueKey: "ACME-1",
+          status: "failed",
+          code: "sizing_failed",
+        },
+      },
+    }),
+  );
+  renderBoard("jrb_1", "owner");
+  await screen.findByTestId("proposal-list");
+  await userEvent.click(await screen.findByText("Ticket 1"));
+  const panel = await screen.findByTestId("proposal-panel");
+  const card = within(panel).getByTestId("proposal-bounty");
+  await userEvent.click(
+    within(card).getByRole("button", { name: "Re-analyze" }),
+  );
+  expect(await within(card).findByTestId("proposal-reanalyzing")).toBeDefined();
+
+  expect(
+    (await within(card).findByRole("alert", {}, { timeout: 5_000 }))
+      .textContent,
+  ).toMatch(/could not analyze this bounty/);
+  expect(within(card).getByText("A few files.")).toBeDefined();
+  expect(within(card).queryByTestId("proposal-reanalyzing")).toBeNull();
+});
+
 test("an approved proposal offers only the way back", async () => {
   vi.stubGlobal(
     "fetch",

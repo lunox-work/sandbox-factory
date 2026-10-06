@@ -1,6 +1,7 @@
 import type {
   BountyCategoryMatch,
   BountyProposalDto,
+  BountyRunDto,
   BountyWritebackDto,
   ProposalLiveSpecDto,
 } from "@sandbox-factory/shared";
@@ -18,6 +19,11 @@ export type EnrichedProposal = BountyProposalDto & {
   liveKey?: string;
   liveUrl?: string;
   writebackOperations?: BountyWritebackDto[];
+  /**
+   * The re-price or spec change rewriting it now, from its detail read:
+   * null when none is, and absent until that read lands.
+   */
+  activeRun?: BountyRunDto | null;
 };
 
 /** A line of the titles stream: a row's live title, or why it has none. */
@@ -52,4 +58,5 @@ export interface ProposalDetail {
    */
   liveSpec?: ProposalLiveSpecDto | null;
   writebackOperations: BountyWritebackDto[];
+  activeRun?: BountyRunDto | null;
 }

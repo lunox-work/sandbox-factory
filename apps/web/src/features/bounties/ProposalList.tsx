@@ -175,6 +175,12 @@ export function ProposalList({
       run.kind !== "bounty" &&
       (run.status === "queued" || run.status === "running"),
   );
+  // A one-ticket run in flight, which the search follows after a reload.
+  const issueRun = runs.find(
+    (run) =>
+      run.kind === "issue" &&
+      (run.status === "queued" || run.status === "running"),
+  );
   /*
     While a run is active, the run alone is polled, every second: it is one
     local read, and it carries the plan and each result as it lands. The
@@ -288,6 +294,7 @@ export function ProposalList({
           ...detail.proposal,
           ...detail.freshness,
           writebackOperations: detail.writebackOperations,
+          activeRun: detail.activeRun,
         };
   const visibleProposals =
     detailProposal === null ||
@@ -333,6 +340,7 @@ export function ProposalList({
             ...selectedRow,
             ...detail.freshness,
             writebackOperations: detail.writebackOperations,
+            activeRun: detail.activeRun,
           }
         : detailFailure !== null && detailFailure.id === selectedRow.id
           ? { ...selectedRow, freshness: "unknown" }
@@ -406,7 +414,12 @@ export function ProposalList({
       )}
 
       {canManage(role) && sizingAvailable && boardId !== undefined && (
-        <IssueSearch base={base} boardId={boardId} onProposal={showProposal} />
+        <IssueSearch
+          base={base}
+          boardId={boardId}
+          activeRun={issueRun}
+          onProposal={showProposal}
+        />
       )}
 
       {/*

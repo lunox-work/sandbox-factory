@@ -114,7 +114,15 @@ export interface Bounties {
    * Sizes the bounty and makes its proposal, following the run until the
    * proposal lands. Resolves to the proposal, or to why there is none.
    */
-  propose: (bountyId: string, signal?: AbortSignal) => Promise<ProposeResult>;
+  /**
+   * Sizes a bounty and waits for its proposal. With `following`, the run
+   * already sizing it is waited on instead, and nothing new is asked for.
+   */
+  propose: (
+    bountyId: string,
+    signal?: AbortSignal,
+    following?: string,
+  ) => Promise<ProposeResult>;
 }
 
 /** What a sizing run that ended without a proposal is told as. */
@@ -385,7 +393,11 @@ export function useBounties(organizationId: string): Bounties {
   );
 
   const propose = useCallback(
-    async (bountyId: string, signal?: AbortSignal): Promise<ProposeResult> => {
+    async (
+      bountyId: string,
+      signal?: AbortSignal,
+      following?: string,
+    ): Promise<ProposeResult> => {
       const readRun = async (runId: string) => {
         return queryClient.fetchQuery({
           queryKey: queryKeys.resource(
@@ -409,25 +421,28 @@ export function useBounties(organizationId: string): Bounties {
         let started: Awaited<
           ReturnType<typeof clients.bounties.proposeBounty>
         > = {};
-        let active: string | null = null;
-        try {
-          started = await clients.bounties.proposeBounty(
-            organizationId,
-            bountyId,
-            crypto.randomUUID(),
-            signal,
-          );
-        } catch (error) {
-          const conflict =
-            error instanceof ApiError
-              ? activeRunConflictSchema.safeParse(error.details)
-              : null;
-          if (conflict?.success) active = conflict.data.runId;
-          else if (error instanceof ApiError)
-            return { ok: false, error: error.message };
-          else throw error;
+        let active: string | null = following ?? null;
+        if (active === null) {
+          try {
+            started = await clients.bounties.proposeBounty(
+              organizationId,
+              bountyId,
+              crypto.randomUUID(),
+              signal,
+            );
+          } catch (error) {
+            const conflict =
+              error instanceof ApiError
+                ? activeRunConflictSchema.safeParse(error.details)
+                : null;
+            if (conflict?.success) active = conflict.data.runId;
+            else if (error instanceof ApiError)
+              return { ok: false, error: error.message };
+            else throw error;
+          }
         }
         if (started?.proposalId !== undefined) {
+          await load();
           return { ok: true, proposalId: started.proposalId };
         }
         const initial = active === null ? started?.run : await readRun(active);

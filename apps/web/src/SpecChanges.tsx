@@ -122,12 +122,17 @@ export function respecResult(run: BountyRunDto): RespecState {
  * before the tab says what it did, so the line and the size beside it
  * agree. A change refused because another is running follows that one
  * instead, since its result is the one the reader is waiting on.
+ *
+ * `activeRun` is the change the proposal's own read says is rewriting it;
+ * a spec change there is followed too, so a reload mid-change still says
+ * the change is at work rather than offering a second.
  */
 export function useRespec(
   base: string,
   proposalId: string,
   revision: number,
   onLanded: () => Promise<void> | void,
+  activeRun?: BountyRunDto | null,
 ): RespecControl {
   const [state, setState] = useState<RespecState>({ phase: "idle" });
   const [following, setFollowing] = useState<string | null>(null);
@@ -135,12 +140,24 @@ export function useRespec(
   useEffect(() => {
     landed.current = onLanded;
   }, [onLanded]);
+  // The last change seen to its end, so a read still naming it is not
+  // followed again.
+  const completed = useRef<string | null>(null);
 
   // Another proposal: what was said about the last one goes with it.
   useEffect(() => {
     setState({ phase: "idle" });
     setFollowing(null);
   }, [base, proposalId, revision]);
+  const adopt =
+    activeRun?.kind === "respec" && completed.current !== activeRun.id
+      ? activeRun.id
+      : null;
+  useEffect(() => {
+    if (adopt === null || following !== null) return;
+    setState({ phase: "working", label: "Changing the scenarios…" });
+    setFollowing(adopt);
+  }, [adopt, following]);
 
   const selection = `${base}:${proposalId}:${revision}`;
   const selectionRef = useRef(selection);
@@ -159,7 +176,6 @@ export function useRespec(
         signal,
       ),
   });
-  const completed = useRef<string | null>(null);
   useEffect(() => {
     const run = observed.data;
     if (
