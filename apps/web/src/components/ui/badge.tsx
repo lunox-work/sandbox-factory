@@ -1,5 +1,8 @@
 /**
- * shadcn/ui badge (new-york). Generated component — kept as upstream ships it.
+ * shadcn/ui badge (new-york). Generated component, kept as upstream ships
+ * it but for the default variant, which wears the brand fill: it marks what
+ * is live or decided (approved, published, owner), and that is the brand's
+ * word rather than a neutral count.
  */
 
 import { Slot } from "@radix-ui/react-slot";
@@ -13,7 +16,8 @@ const badgeVariants = cva(
   {
     variants: {
       variant: {
-        default: "border-transparent bg-primary text-primary-foreground",
+        default:
+          "border-transparent bg-(image:--brand-fill) text-brand-foreground",
         secondary: "border-transparent bg-secondary text-secondary-foreground",
         destructive:
           "border-transparent bg-destructive text-destructive-foreground",

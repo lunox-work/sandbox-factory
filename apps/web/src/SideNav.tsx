@@ -345,13 +345,15 @@ function RailButton({
         // because the rail clips anything past its edge.
         "sm:justify-start sm:gap-3 sm:pl-[17px] sm:focus-visible:outline-offset-[-2px]",
         // Tablet up: the reference's marker — a border down the leading edge,
-        // transparent when inactive so the icon never shifts.
-        "sm:border-l-2 sm:border-transparent",
+        // transparent always, so the icon never shifts. The marker itself is
+        // the pseudo-element below, painted over the border in the brand's
+        // ramp: a plain border takes one colour, not a gradient.
+        "sm:relative sm:border-l-2 sm:border-transparent",
         current
           ? // The marker over a filled row: on the phone bar a tile tinted
             // with the brand, in the rail the neutral accent, the same fill
             // the cursor gives an inactive row, made solid.
-            "bg-primary/12 text-primary sm:bg-accent sm:border-l-foreground sm:text-foreground"
+            "bg-primary/12 text-primary sm:bg-accent sm:text-foreground sm:before:absolute sm:before:inset-y-0 sm:before:-left-0.5 sm:before:w-0.5 sm:before:bg-(image:--brand-gradient-vertical)"
           : // The fill is what answers the cursor. It used to be cancelled at
             // `sm` and up — exactly the widths the rail proper exists at — so
             // the destinations gave no feedback at all on a desktop. Weaker

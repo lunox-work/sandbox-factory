@@ -866,14 +866,23 @@ test("the docs view lists the version's frozen scenarios after its documents and
       .map((region) => region.getAttribute("aria-label")),
   ).toEqual(["Bounty", "project", "Bounty scenarios", "Features"]);
   expect(outline.textContent).toContain("3 pts");
+  // Each under its kind, with its weight beside it; the whole of it in the
+  // tooltip, since the row cuts a long title short.
+  const invitee = within(outline).getByRole("link", {
+    name: /The invitee gets one email/,
+  });
+  expect(invitee.textContent).toContain("Light · 1 pt");
+  expect(invitee.getAttribute("title")).toMatch(/Happy path · Light · 1 pt$/);
   expect(
-    within(outline).getByRole("link", { name: /The invitee gets one email/ })
-      .textContent,
-  ).toContain("Happy path · Light · 1 pt");
+    invitee.closest("li")?.parentElement?.closest("li")?.textContent,
+  ).toMatch(/^Happy path/);
+  const refusedRow = within(outline).getByRole("link", {
+    name: /A bad address is refused/,
+  });
+  expect(refusedRow.textContent).toContain("Moderate · 2 pts");
   expect(
-    within(outline).getByRole("link", { name: /A bad address is refused/ })
-      .textContent,
-  ).toContain("Unhappy path · Moderate · 2 pts");
+    refusedRow.closest("li")?.parentElement?.closest("li")?.textContent,
+  ).toMatch(/^Unhappy path/);
 
   await userEvent.click(
     within(outline).getByRole("link", { name: /A bad address is refused/ }),

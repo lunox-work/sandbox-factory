@@ -60,7 +60,9 @@ function CodeBlock({ text, language }: { text: string; language: string }) {
   const code = text.endsWith("\n") ? text.slice(0, -1) : text;
   const tokens = useHighlighted(code, language);
   return (
-    <pre className="my-4 overflow-x-auto rounded-md border border-(--wb-border) bg-(--wb-chrome) px-4 py-3 font-(family-name:--wb-font-code) text-[13px] leading-[19px] text-(--wb-code)">
+    // A block of the chrome's colour and nothing more, as the editor's
+    // preview draws one: a border and a radius on it make a widget of it.
+    <pre className="my-4 overflow-x-auto rounded-[3px] bg-(--wb-chrome) px-4 py-3 font-(family-name:--wb-font-code) text-[13px] leading-[19px] text-(--wb-code)">
       <code>
         <Colored text={code} tokens={tokens} />
       </code>
@@ -106,12 +108,15 @@ export function MarkdownDocument({
       className="min-h-0 flex-1 overflow-auto"
       data-testid="markdown-document"
     >
-      <article className="mx-auto max-w-[52rem] px-8 pt-6 pb-[40vh] text-[14px] leading-[1.65] text-(--wb-foreground) sm:px-12">
+      {/* Against the left and no wider than reads well, as the editor's
+          own preview is; a column centred in the editor reads as a web
+          page opened in it. */}
+      <article className="max-w-[52rem] px-8 pt-5 pb-[40vh] text-[14px] leading-[1.65] text-(--wb-foreground)">
         <ReactMarkdown
           remarkPlugins={[remarkGfm]}
           components={{
             h1: ({ children }) => (
-              <h1 className="mt-6 mb-4 border-b border-(--wb-border) pb-2 text-[2em] leading-tight font-semibold text-(--wb-strong) first:mt-0">
+              <h1 className="mt-6 mb-4 border-b border-(--wb-border) pb-2 text-[1.75em] leading-tight font-semibold text-(--wb-strong) first:mt-0">
                 {children}
               </h1>
             ),

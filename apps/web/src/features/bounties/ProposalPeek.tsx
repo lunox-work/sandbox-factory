@@ -891,7 +891,7 @@ function SizeCard({
   // enough that "XS" and "XL" fit inside it. "unsized" and a half size
   // such as "XS+" grow wider.
   const shape = current
-    ? "bg-primary text-primary-foreground border-primary h-12 min-w-12 px-2 text-lg font-extrabold shadow-sm"
+    ? "bg-(image:--brand-fill) text-brand-foreground border-transparent h-12 min-w-12 px-2 text-lg font-extrabold shadow-sm shadow-blue-600/20"
     : "bg-card text-muted-foreground hover:text-foreground hover:border-foreground/30 h-7 min-w-7 px-1 text-xs";
   const className = `inline-flex items-center justify-center rounded-md border font-mono font-medium transition-[height,min-width,padding,font-size,font-weight,color,background-color,border-color,box-shadow,transform] duration-300 ease-[cubic-bezier(0.2,0,0,1)] motion-reduce:transition-none ${shape}`;
   if (onClick === undefined) {

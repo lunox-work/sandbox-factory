@@ -109,7 +109,7 @@ function Table({ rows }: { rows: string[][] }) {
 
 function StepRow({ step }: { step: Step }) {
   return (
-    <li className="grid grid-cols-[3.5rem_minmax(0,1fr)] gap-x-3 border-t border-white/[0.04] px-4 py-1.5 first:border-t-0">
+    <li className="grid grid-cols-[3.5rem_minmax(0,1fr)] gap-x-3 border-t border-white/[0.04] py-1.5 first:border-t-0">
       <span
         className={cn(
           "text-right font-semibold",
@@ -139,7 +139,7 @@ function Tags({ tags }: { tags: readonly string[] }) {
   return tags.map((tag) => (
     <span
       key={tag}
-      className="rounded-full border border-(--wb-input-border) px-2 text-[11px] leading-[18px] text-[#9cdcfe]"
+      className="rounded-sm border border-(--wb-input-border) px-1.5 text-[11px] leading-[18px] text-[#9cdcfe]"
     >
       {tag}
     </span>
@@ -170,21 +170,23 @@ export function ScenarioCard({
   const background = scenario.kind === "background";
   const title = scenario.name || (background ? "Background" : "Scenario");
   return (
-    <section
-      aria-label={title}
-      className={cn(
-        "group/card mt-4 overflow-hidden rounded-lg border",
-        background
-          ? "border-dashed border-(--wb-input-border)"
-          : "border-(--wb-border) bg-(--wb-chrome)",
-      )}
-    >
-      <header className="grid grid-cols-[3.5rem_minmax(0,1fr)] items-center gap-x-3 gap-y-1 border-b border-(--wb-border) px-4 py-2.5">
+    // Laid out as a document's section, not boxed: a heading on a rule,
+    // the steps under it on the same grid. The background's heading is
+    // quieter, since it is what every scenario shares rather than one.
+    <section aria-label={title} className="group/card mt-6">
+      <header className="grid grid-cols-[3.5rem_minmax(0,1fr)] items-baseline gap-x-3 gap-y-1 border-b border-(--wb-border) pb-2">
         <span className="text-right font-(family-name:--wb-font-code) text-xs text-(--wb-gutter) tabular-nums">
           {number === undefined ? "BG" : String(number).padStart(2, "0")}
         </span>
-        <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
-          <h2 className="min-w-0 font-medium text-(--wb-strong)">{title}</h2>
+        <div className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1">
+          <h2
+            className={cn(
+              "min-w-0 text-[15px] font-semibold",
+              background ? "text-(--wb-muted)" : "text-(--wb-strong)",
+            )}
+          >
+            {title}
+          </h2>
           {scenario.kind === "outline" && (
             <span className="rounded-sm border border-[#c586c0]/40 px-1.5 text-[11px] text-[#c586c0]">
               Outline
@@ -215,9 +217,9 @@ export function ScenarioCard({
       {scenario.examples.map((examples, index) => (
         <div
           key={index}
-          className="grid grid-cols-[3.5rem_minmax(0,1fr)] gap-x-3 gap-y-1.5 border-t border-(--wb-border) px-4 py-3"
+          className="grid grid-cols-[3.5rem_minmax(0,1fr)] gap-x-3 gap-y-1.5 border-t border-white/[0.04] py-3"
         >
-          <span className="col-start-2 text-[11px] tracking-wider text-(--wb-muted) uppercase">
+          <span className="col-start-2 text-xs font-semibold text-(--wb-muted)">
             Examples{examples.name === "" ? "" : ` — ${examples.name}`}
           </span>
           <div className="col-start-2">
@@ -229,10 +231,10 @@ export function ScenarioCard({
   );
 }
 
-/** A section's small uppercase label, in the document's own column. */
+/** A group's heading in a document: a quiet line, as a sub-heading is. */
 export function DocumentLabel({ children }: { children: ReactNode }) {
   return (
-    <h2 className="mt-8 flex items-baseline justify-between gap-3 text-[11px] tracking-wider text-(--wb-muted) uppercase">
+    <h2 className="mt-6 mb-1 flex items-baseline justify-between gap-3 text-xs font-semibold text-(--wb-muted)">
       {children}
     </h2>
   );
@@ -260,11 +262,10 @@ function FeatureView({
       className="min-h-0 flex-1 overflow-auto"
       data-testid="gherkin-document"
     >
-      <article className="mx-auto max-w-[52rem] px-8 pt-8 pb-[40vh] text-[14px] sm:px-12">
-        <p className="text-[11px] tracking-wider text-(--wb-muted) uppercase">
-          Feature
-        </p>
-        <h1 className="mt-1 text-[26px] leading-tight font-semibold text-(--wb-strong)">
+      {/* Against the left, as the editor's own previews are. */}
+      <article className="max-w-[52rem] px-8 pt-6 pb-[40vh] text-[14px]">
+        <p className="text-xs text-(--wb-muted)">Feature</p>
+        <h1 className="mt-0.5 text-[22px] leading-tight font-semibold text-(--wb-strong)">
           {feature.name || "Untitled feature"}
         </h1>
         {feature.description !== "" && (
@@ -272,7 +273,7 @@ function FeatureView({
             {feature.description}
           </p>
         )}
-        <div className="mt-4 flex flex-wrap items-center gap-2 text-xs text-(--wb-muted)">
+        <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-(--wb-muted)">
           <Tags tags={feature.tags} />
           <span>
             {scenarios} {scenarios === 1 ? "scenario" : "scenarios"} · {steps}{" "}

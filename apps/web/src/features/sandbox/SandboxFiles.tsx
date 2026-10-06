@@ -668,24 +668,24 @@ function SidePill({
   );
 }
 
-/** The Lunox code mark, `public/brand/svg`'s drawing in one ink. */
+/**
+ * The Lunox code mark in its own gradient, the dark variant: the workbench
+ * is always dark. The one coloured thing in the title bar, so the page is
+ * recognisably the product's and not only an editor's.
+ *
+ * Not draggable: an `<img>` is in hit-testing, and a click that moved a
+ * pixel before release would pick it up as a native image drag.
+ */
 function LunoxMark() {
   return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 512 512"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={56}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
+    <img
+      src="/brand/svg/logo-gradient-dark.svg"
+      alt=""
+      width={16}
+      height={16}
+      draggable={false}
       className="size-4"
-    >
-      <path d="M48 168 148 256 48 342" />
-      <path d="M300 118 230 394" />
-      <path d="M464 168 364 256 464 342" />
-    </svg>
+    />
   );
 }
 
@@ -721,8 +721,11 @@ function ActivityBar({
           onClick={() => onView(view === each ? null : each)}
           className={cn(
             "relative flex size-12 items-center justify-center text-(--wb-muted) hover:text-(--wb-strong) focus-visible:outline-1 focus-visible:-outline-offset-1 focus-visible:outline-(--wb-accent)",
+            // The open view's marker in the product's ramp rather than the
+            // editor's blue, as the status bar's chip is: the one place the
+            // workbench says whose it is.
             view === each &&
-              "text-(--wb-strong) before:absolute before:inset-y-0 before:left-0 before:w-0.5 before:bg-(--wb-accent)",
+              "text-(--wb-strong) before:absolute before:inset-y-0 before:left-0 before:w-0.5 before:bg-(image:--brand-gradient-vertical)",
           )}
         >
           <Icon aria-hidden="true" className="size-6" strokeWidth={1.25} />
@@ -924,24 +927,12 @@ function Explorer({
 
   const row =
     "relative flex h-[22px] w-full items-center gap-1.5 pr-3 text-left whitespace-nowrap hover:bg-(--wb-hover) focus-visible:outline-1 focus-visible:-outline-offset-1 focus-visible:outline-(--wb-accent)";
-  // Indent per level, and where a level's guide line runs: under the middle
-  // of its folder's chevron.
+  // Indent per level. No guide lines down the levels: the indent alone says
+  // what is in what, and a tree this shallow needs no more.
   const indent = (depth: number) => depth * 8 + 12;
 
   const render = (nodes: readonly TreeNode[], depth: number) => (
-    <ul
-      role={depth === 0 ? undefined : "group"}
-      className={cn(
-        "relative",
-        depth > 0 &&
-          "before:pointer-events-none before:absolute before:inset-y-0 before:left-(--guide) before:z-10 before:w-px before:bg-(--wb-guide) before:opacity-0 before:transition-opacity group-hover/tree:before:opacity-100",
-      )}
-      style={
-        depth > 0
-          ? ({ "--guide": `${indent(depth - 1) + 8}px` } as React.CSSProperties)
-          : undefined
-      }
-    >
+    <ul role={depth === 0 ? undefined : "group"}>
       {nodes.map((node) => {
         if (node.kind === "folder") {
           const isOpen = expanded.has(node.path);
@@ -1034,10 +1025,7 @@ function Explorer({
         </button>
       </div>
       {sectionOpen && (
-        <nav
-          aria-label="Files"
-          className="group/tree min-h-0 flex-1 overflow-auto pb-4"
-        >
+        <nav aria-label="Files" className="min-h-0 flex-1 overflow-auto pb-4">
           {render(tree, 0)}
         </nav>
       )}
@@ -1229,7 +1217,7 @@ function Editor({
                 className={cn(
                   "group/tab relative flex h-full shrink-0 items-center border-r border-b border-(--wb-border) text-(--wb-muted)",
                   active &&
-                    "border-b-transparent bg-(--wb-editor) text-(--wb-strong) before:absolute before:inset-x-0 before:top-0 before:h-px before:bg-(--wb-accent)",
+                    "border-b-transparent bg-(--wb-editor) text-(--wb-strong) before:absolute before:inset-x-0 before:top-0 before:h-px before:bg-(image:--brand-gradient)",
                 )}
               >
                 <a

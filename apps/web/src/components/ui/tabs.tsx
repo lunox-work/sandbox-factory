@@ -140,8 +140,10 @@ function TabsList({
           data-slot="tabs-thumb"
           className={cn(
             "pointer-events-none absolute left-0",
+            // The bar is the brand's ramp: a page's sections are headed in
+            // Lunox's colour, where a pill is a neutral control.
             line
-              ? "bg-foreground -bottom-px h-0.5 rounded-full"
+              ? "bg-(image:--brand-gradient) -bottom-px h-0.5 rounded-full"
               : "bg-muted ring-border/60 top-0 rounded-lg ring-1 ring-inset",
             settled &&
               "transition-[transform,width,height,opacity] duration-380 ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none",
