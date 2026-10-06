@@ -414,6 +414,50 @@ const FENCE: Readonly<Record<string, string>> = {
   cpp: "cpp",
 };
 
+/** One name's re-export, as the index writes each: `export type { a as b } from "./x.js";`. */
+const ONE_NAME_EXPORT = /^export (type )?\{ ([^{}]+) \}( from .+)?;$/;
+
+/**
+ * The lines a module's surface reads as. The index gives each name of an
+ * `export { a, b, c } from` statement its own entry; here the names that
+ * follow one another out of the same module are one statement again, so a
+ * barrel reads as a line per module rather than one per name. Its names
+ * stand a line apart when the statement is wrapped, so the line cannot
+ * tell one statement from the next; two statements in a row from one
+ * module read as one, which says the same.
+ */
+function surfaceLines(exports: readonly SurfaceExport[]): string[] {
+  const lines: string[] = [];
+  let open: { head: string; tail: string; names: string[] } | undefined;
+  const close = () => {
+    if (open !== undefined)
+      lines.push(
+        `export ${open.head}{ ${open.names.join(", ")} }${open.tail};`,
+      );
+    open = undefined;
+  };
+  for (const entry of exports) {
+    const match =
+      entry.signature === null ? null : ONE_NAME_EXPORT.exec(entry.signature);
+    const name = match?.[2];
+    if (match === null || name === undefined) {
+      close();
+      lines.push(entry.signature ?? entry.name);
+      continue;
+    }
+    const head = match[1] ?? "";
+    const tail = match[3] ?? "";
+    if (open !== undefined && open.head === head && open.tail === tail)
+      open.names.push(name);
+    else {
+      close();
+      open = { head, tail, names: [name] };
+    }
+  }
+  close();
+  return lines;
+}
+
 /**
  * `abstractions.md`: the readable view, most-imported modules first, cut at
  * a number of modules and characters, never carrying what the index does
@@ -444,11 +488,7 @@ export function renderAbstractionsMarkdown(index: AbstractionIndex): string {
         ? module.exports.map(
             (entry) => `- \`${entry.name}\` (${entry.kind}, L${entry.line})`,
           )
-        : [
-            `\`\`\`${fence}`,
-            ...module.exports.map((entry) => entry.signature ?? entry.name),
-            "```",
-          ]),
+        : [`\`\`\`${fence}`, ...surfaceLines(module.exports), "```"]),
       "",
     ].join("\n");
     if (size + block.length > limits.markdownChars) break;

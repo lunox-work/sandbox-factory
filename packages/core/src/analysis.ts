@@ -99,7 +99,7 @@ export const DEPENDENCY_CRUISER_TOOL_VERSION =
 /** Bumped when the DeepWiki-Open request or the artifacts written from its wiki change meaning. */
 export const DEEPWIKI_TOOL_VERSION = "deepwiki-open@driver-1";
 /** Bumped when an extractor, a visibility rule or the index's shape changes meaning. */
-export const ABSTRACTIONS_TOOL_VERSION = "abstractions@1";
+export const ABSTRACTIONS_TOOL_VERSION = "abstractions@2";
 /** Bumped when a recognizer, the replay rules or the model's shape change meaning. */
 export const DATA_MODEL_TOOL_VERSION = "data_model@1";
 /**

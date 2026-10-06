@@ -371,6 +371,42 @@ test("the readable view lists modules most imported first, fenced by language, w
   assert.match(one, /1 more module is in abstractions\.json\./);
 });
 
+test("the readable view shows a barrel's statements once each, not once per name", () => {
+  const entry = (name: string, signature: string, line: number) => ({
+    id: `symbol:schema.ts#${name}`,
+    name,
+    kind: "const" as const,
+    signature,
+    line,
+    references: [],
+  });
+  const text = renderAbstractionsMarkdown(
+    index([
+      {
+        ...surface("schema.ts", 44, 0),
+        exports: [
+          // Wrapped as a formatter writes it: a name to a line.
+          entry("account", 'export { account } from "./auth.js";', 2),
+          entry("user", 'export { user } from "./auth.js";', 3),
+          entry(
+            "AccountRow",
+            'export type { AccountRow } from "./auth.js";',
+            6,
+          ),
+          entry("UserRow", 'export type { UserRow } from "./auth.js";', 7),
+          entry("bounty", 'export { bounty as b } from "./bounty.js";', 9),
+          entry("KINDS", "export declare const KINDS: string[];", 10),
+          entry("member", 'export { member } from "./orgs.js";', 11),
+        ],
+      },
+    ]),
+  );
+  assert.match(
+    text,
+    /```ts\nexport \{ account, user \} from "\.\/auth\.js";\nexport type \{ AccountRow, UserRow \} from "\.\/auth\.js";\nexport \{ bounty as b \} from "\.\/bounty\.js";\nexport declare const KINDS: string\[\];\nexport \{ member \} from "\.\/orgs\.js";\n```/,
+  );
+});
+
 test("SQL types normalize from any dialect's spelling", () => {
   const cases: [string, string][] = [
     ["character varying(200)", "string"],

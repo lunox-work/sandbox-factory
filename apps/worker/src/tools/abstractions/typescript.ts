@@ -238,6 +238,40 @@ function declaredNames(statement: ts.Statement): string[] {
   return [];
 }
 
+/**
+ * One name's part of an `export { a, b, c }` statement, which the emitted
+ * declaration gives every name it lists: `export { b } from "./x.js";`, so
+ * a barrel does not repeat each line once per name. Any other signature is
+ * returned as it is.
+ */
+function ownSpecifier(signature: string, name: string): string {
+  const parsed = ts.createSourceFile(
+    "s.d.ts",
+    signature,
+    ts.ScriptTarget.Latest,
+    true,
+  );
+  const [statement, ...rest] = parsed.statements;
+  if (
+    statement === undefined ||
+    rest.length > 0 ||
+    !ts.isExportDeclaration(statement) ||
+    statement.exportClause === undefined ||
+    !ts.isNamedExports(statement.exportClause) ||
+    statement.exportClause.elements.length < 2
+  )
+    return signature;
+  const element = statement.exportClause.elements.find(
+    (each) => each.name.text === name,
+  );
+  if (element === undefined) return signature;
+  const from =
+    statement.moduleSpecifier === undefined
+      ? ""
+      : ` from ${statement.moduleSpecifier.getText(parsed)}`;
+  return `export ${statement.isTypeOnly ? "type " : ""}{ ${element.getText(parsed)} }${from};`;
+}
+
 /** A specifier from one repository module to another, as an import would read. */
 function specifierBetween(from: string, to: string): string {
   const path = relative(dirname(from), to)
@@ -409,7 +443,7 @@ export function extractTypedSurfaces(input: TypedInput): TypedSurfaces {
         let signature: string;
         const references: RawReference[] = [];
         if (emitted !== undefined) {
-          signature = emitted.declaration;
+          signature = ownSpecifier(emitted.declaration, name);
           const assigned = /^export default ([A-Za-z_$][\w$]*);$/.exec(
             signature,
           );

@@ -783,3 +783,37 @@ test("the adapter refuses other parameters, a missing graph and an aborted run",
     await rm(out, { recursive: true, force: true });
   }
 });
+
+test("a barrel's names each read as their own re-export, not the whole statement", async () => {
+  const root = await mkdtemp(join(tmpdir(), "typed-"));
+  try {
+    await writeFile(
+      join(root, "tsconfig.json"),
+      JSON.stringify({ compilerOptions: { strict: true } }),
+    );
+    await writeFile(
+      join(root, "model.ts"),
+      "export const a = 1;\nexport const b = 2;\nexport interface T { id: number }\nexport interface U { id: number }\n",
+    );
+    await writeFile(
+      join(root, "index.ts"),
+      'export { a, b as bee } from "./model";\nexport type { T, U } from "./model";\n',
+    );
+    const typed = extractTypedSurfaces({
+      root,
+      files: ["index.ts", "model.ts"],
+    });
+    const barrel = typed.modules.find((module) => module.path === "index.ts");
+    assert.deepEqual(
+      barrel?.exports.map((entry) => [entry.name, entry.signature]),
+      [
+        ["a", 'export { a } from "./model";'],
+        ["bee", 'export { b as bee } from "./model";'],
+        ["T", 'export type { T } from "./model";'],
+        ["U", 'export type { U } from "./model";'],
+      ],
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
