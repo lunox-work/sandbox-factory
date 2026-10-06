@@ -836,9 +836,14 @@ export class BountyExecutor {
     });
 
     const { specs } = this.#options;
+    // The step counts from where its base was set: a reviewer's resize,
+    // or else the sizing draft.
+    const baseRevision = source.step.baseRevision;
     const [current, sized] = await Promise.all([
       specs.get(organizationId, source.id, source.specRevision),
-      specs.sizedRevision(organizationId, source.id, source.specRevision),
+      baseRevision === undefined
+        ? specs.sizedRevision(organizationId, source.id, source.specRevision)
+        : specs.get(organizationId, source.id, baseRevision),
     ]);
     if (current === null || sized === null) return failed("spec_missing");
     // Checked when it was asked for, against the revision this run reads,
@@ -934,12 +939,16 @@ export class BountyExecutor {
         value: { ...base, status: "skipped", code: "nothing_added", ...spent },
       };
     }
-    const step = stepUp(
+    const counted = stepUp(
       source.step.base,
       sized.draft,
       next,
       source.step.settings,
     );
+    const step =
+      counted === null || baseRevision === undefined
+        ? counted
+        : { ...counted, baseRevision };
     if (step === null) {
       return { value: { ...failed("spec_unweighed").value, ...spent } };
     }

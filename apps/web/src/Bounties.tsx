@@ -1462,9 +1462,7 @@ function BountyDetail({
           */}
         <span className="font-medium">Jira</span>
         {bounty.jira === null ? (
-          <span className="text-muted-foreground">
-            Not linked; created in Lunox
-          </span>
+          <span className="text-muted-foreground">None</span>
         ) : (
           <span className="inline-flex items-center gap-1.5">
             <span className="size-3.5 shrink-0">

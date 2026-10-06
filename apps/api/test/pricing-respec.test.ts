@@ -21,6 +21,7 @@ import { JiraApiError } from "@sandbox-factory/jira";
 import {
   assessRubric,
   COMPLEXITY_PROFILE_VERSION,
+  resetStep,
   stepUp,
   type RespecRequest,
   type RubricAssessment,
@@ -250,6 +251,8 @@ function executorHarness(options: {
   bountyError?: Error;
   current?: StoredBountySpec | null;
   sized?: StoredBountySpec | null;
+  /** Each revision by number, over `current`, for a step counted from one. */
+  specAt?: Readonly<Record<number, StoredBountySpec>>;
   written?: "respecced" | "changed" | "not-found" | "lost-lease";
   planHeld?: boolean;
   recorded?: boolean;
@@ -327,11 +330,12 @@ function executorHarness(options: {
     },
   } as unknown as BountyProposalStore;
   const specs = {
-    get: () =>
+    get: (_org: string, _id: string, revision: number) =>
       Promise.resolve(
-        options.current === undefined
-          ? storedSpec(3, currentDraft, "expand")
-          : options.current,
+        options.specAt?.[revision] ??
+          (options.current === undefined
+            ? storedSpec(3, currentDraft, "expand")
+            : options.current),
       ),
     sizedRevision: () =>
       Promise.resolve(
@@ -458,6 +462,40 @@ test("a trim takes an added scenario out, asks no model, and the step comes back
     },
   ]);
   assert.deepEqual(state.finishes, [{ status: "succeeded", details: {} }]);
+});
+
+test("after a resize, a change counts only from the revision the reviewer sized", async () => {
+  // Resized to M at revision 3, which already had two heavy scenarios.
+  const doubled: SpecDraft = {
+    ...currentDraft,
+    scenarios: [
+      ...currentDraft.scenarios,
+      scenario("s4", "heavy", { kind: "unhappy", title: "A locked table" }),
+    ],
+  };
+  const resized = proposal({
+    complexity: "M",
+    sizedBy: "reviewer",
+    amountMinor: 200,
+    step: resetStep(step, "M", 3),
+  });
+  const state = executorHarness({
+    request: { mode: "trim", removeScenarioIds: ["s2"] },
+    proposal: resized,
+    specAt: { 3: storedSpec(3, doubled, "expand") },
+    // Counted from the sizing draft, the two heavies would step it to M+.
+    sized: storedSpec(1, sizedDraft),
+  });
+  await state.run();
+
+  const input = state.written[0] as {
+    step: { base: string; complexity: string; baseRevision?: number };
+    amountMinor: number;
+  };
+  assert.equal(input.step.base, "M");
+  assert.equal(input.step.complexity, "M");
+  assert.equal(input.step.baseRevision, 3);
+  assert.equal(input.amountMinor, 200);
 });
 
 /** Code the rubric scores at 8: two modules, two services, 20 KB. */

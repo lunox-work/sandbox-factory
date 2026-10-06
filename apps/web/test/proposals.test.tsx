@@ -2248,6 +2248,16 @@ function streamedBoard(storedTitles: Record<number, string> = {}) {
   };
 }
 
+/**
+ * Waits for the open proposal's own read to say whether the bounty
+ * changed: an unchanged one says nothing, so it is the check that goes.
+ */
+async function checked(panel: HTMLElement) {
+  await waitFor(() =>
+    expect(within(panel).queryByText("Checking the bounty…")).toBeNull(),
+  );
+}
+
 function renderStreamedBoard() {
   return render(
     <ProposalList
@@ -2337,9 +2347,7 @@ test("opening a proposal reads it alone, and approval waits for its check", asyn
   expect(approve.disabled).toBe(true);
 
   server.releaseDetail();
-  expect(
-    await within(panel).findByText("Unchanged since sizing"),
-  ).toBeDefined();
+  await checked(panel);
   await waitFor(() => expect(approve.disabled).toBe(false));
   // One read: the proposal. Neither the list nor the titles again.
   expect(server.calls.slice(before)).toEqual([
@@ -2555,9 +2563,7 @@ test("a row says why its bounty was picked, and the peek lists every reason", as
   ]);
   expect(iconsIn(why)).toEqual(["left-behind", "paper-cuts"]);
   // Still there once the proposal's own read has landed over the row.
-  expect(
-    await within(panel).findByText("Unchanged since sizing"),
-  ).toBeDefined();
+  await checked(panel);
   expect(within(panel).getByTestId("proposal-categories")).toBeDefined();
 });
 
@@ -2699,9 +2705,7 @@ test("a proposal sized before specs has an uncounted tab saying so, without aski
   const panel = await screen.findByTestId("proposal-panel");
   // The stored reasoning is still what explains the size.
   expect(within(panel).getByText("A few files.")).toBeDefined();
-  expect(
-    await within(panel).findByText("Unchanged since sizing"),
-  ).toBeDefined();
+  await checked(panel);
   const tab = within(panel).getByRole("tab", { name: /^Scenarios/ });
   expect(tab.textContent).toBe("Scenarios");
 
@@ -2744,9 +2748,9 @@ const step = {
 /**
  * A board of two proposals: one whose spec grew a step since it was sized,
  * one sized before scenarios were weighed. Answers a resize as the server
- * would, the step rebased on the reviewer's size.
+ * would: the reviewer's size exactly, the step started again from it.
  */
-function steppedBoard() {
+function steppedBoard(options: { bpr1?: object; spec?: object | null } = {}) {
   const posts: { url: string; body: unknown }[] = [];
   const rows: Record<string, Record<string, unknown>> = {
     bpr_1: {
@@ -2766,6 +2770,7 @@ function steppedBoard() {
       step,
       title: "Bounty 1",
       categories: [],
+      ...options.bpr1,
     },
     bpr_2: {
       id: "bpr_2",
@@ -2791,13 +2796,24 @@ function steppedBoard() {
     if (init?.method === "POST") {
       const body = JSON.parse(String(init.body)) as { complexity: string };
       posts.push({ url, body });
+      // The size chosen is the size: the step starts again from it.
       const resized = {
         ...rows["bpr_1"],
-        complexity: "M+",
-        amountMinor: 12900,
+        complexity: body.complexity,
+        amountMinor: 10500,
         sizedBy: "reviewer",
         revision: 2,
-        step: { ...step, base: body.complexity, complexity: "M+" },
+        step: {
+          ...step,
+          base: body.complexity,
+          complexity: body.complexity,
+          steps: 0,
+          addedPoints: 0,
+          added: [],
+          removed: [],
+          nextStepIn: 4,
+          baseRevision: 2,
+        },
       };
       rows["bpr_1"] = resized;
       return Promise.resolve(bountyJson({ proposal: resized }));
@@ -2809,7 +2825,7 @@ function steppedBoard() {
       return Promise.resolve(bountyJson({ runs: [], sizingAvailable: true }));
     }
     if (/\/spec$/.test(url)) {
-      return Promise.resolve(bountyJson({ spec: null }));
+      return Promise.resolve(bountyJson({ spec: options.spec ?? null }));
     }
     const id = /proposals\/(bpr_\d+)/.exec(url)?.[1];
     if (id !== undefined) {
@@ -2849,10 +2865,10 @@ test("a half size shows on its whole size's card, and the row stays at five", as
       .getAllByRole("button")
       .map((button) => button.textContent),
   ).toEqual(["XS", "S+", "M", "L", "XL"]);
-  // It is the size in force, and the whole size the step stands on.
+  // It is the size in force, and a click sets the whole size it stands on.
   const base = within(resize).getByRole("button", { name: "S+" });
   expect(base.getAttribute("aria-pressed")).toBe("true");
-  expect((base as HTMLButtonElement).disabled).toBe(true);
+  expect((base as HTMLButtonElement).disabled).toBe(false);
   expect(within(panel).getByText(money(8150, "USD"))).toBeDefined();
 });
 
@@ -2876,7 +2892,76 @@ test("the changes since sizing are marked on the scenarios, not summed up over t
   expect(reason.querySelector("p")?.textContent).toBe("Sized S by the model");
 });
 
-test("a resize sets the base, and the step stays on top", async () => {
+/** A spec for the stepped board's first proposal: s1 drafted, s3 and s4 added. */
+function steppedSpec() {
+  const scenario = (id: string, kind: string, title: string) => ({
+    id,
+    kind,
+    title,
+    steps: [{ keyword: "Then", text: `the outcome of ${id}` }],
+    origin: id === "s1" ? "draft" : "expansion",
+    weight: "light",
+  });
+  return {
+    id: "bsp_2",
+    organizationId: "org_1",
+    proposalId: "bpr_1",
+    revision: 2,
+    specHash: "a".repeat(64),
+    specHashVersion: 1,
+    draft: {
+      feature: "CSV export",
+      background: [],
+      scenarios: [
+        scenario("s1", "happy", "A table is exported"),
+        scenario("s3", "recovery", "A failed export is retried"),
+        scenario("s4", "boundary", "An empty table"),
+      ],
+      openQuestions: [],
+      assumptions: [],
+    },
+    origin: "expand",
+    instruction: null,
+    createdBy: null,
+    runId: "brn_1",
+    actualModel: "claude-sonnet-5",
+    promptVersion: "draft-v2",
+    createdAt: "2026-10-01T00:00:00.000Z",
+  };
+}
+
+/** How the first proposal's scenario lines are marked, at a status. */
+async function steppedChanges(status: string) {
+  const server = steppedBoard({ bpr1: { status }, spec: steppedSpec() });
+  vi.stubGlobal("fetch", server.fetchMock);
+  renderStreamedBoard();
+  const list = await screen.findByTestId("proposal-list");
+  await userEvent.click(within(list).getByRole("button", { name: /Bounty 1/ }));
+  const panel = await screen.findByTestId("proposal-panel");
+  await userEvent.click(
+    await within(panel).findByRole("tab", { name: /^Scenarios/ }),
+  );
+  await within(panel).findByText("An empty table");
+  return [...panel.querySelectorAll("[data-change]")].map((line) =>
+    line.getAttribute("data-change"),
+  );
+}
+
+test("a proposed proposal's scenarios are marked with what changed since sizing", async () => {
+  // The one trimmed, under its kind first, and the two added.
+  expect(await steppedChanges("proposed")).toEqual([
+    "removed",
+    "added",
+    "added",
+  ]);
+});
+
+test("an approved proposal's scenarios are no longer marked as changed since sizing", async () => {
+  // What was changed is what was approved, so nothing is marked.
+  expect(await steppedChanges("approved")).toEqual([]);
+});
+
+test("a resize sets the size clicked, whatever the step had added", async () => {
   const server = steppedBoard();
   vi.stubGlobal("fetch", server.fetchMock);
   renderStreamedBoard();
@@ -2892,22 +2977,25 @@ test("a resize sets the base, and the step stays on top", async () => {
       body: { expectedRevision: 1, complexity: "M" },
     },
   ]);
-  // M, then the heavy and the light on top of it: the M card reads M+,
-  // and S is back to a plain S.
+  // M, and nothing on top of it: the scenarios added before the resize
+  // are what the reviewer sized. S is back to a plain S.
   await waitFor(() =>
     expect(
       within(resize)
         .getAllByRole("button")
         .map((button) => button.textContent),
-    ).toEqual(["XS", "S", "M+", "L", "XL"]),
+    ).toEqual(["XS", "S", "M", "L", "XL"]),
   );
+  const chosen = within(resize).getByRole("button", { name: "M" });
+  expect(chosen.getAttribute("aria-pressed")).toBe("true");
+  expect((chosen as HTMLButtonElement).disabled).toBe(true);
+  // The size the step had raised is a size like any other.
   expect(
-    within(resize)
-      .getByRole("button", { name: "M+" })
-      .getAttribute("aria-pressed"),
-  ).toBe("true");
+    (within(resize).getByRole("button", { name: "S" }) as HTMLButtonElement)
+      .disabled,
+  ).toBe(false);
   expect(within(panel).getByText("the model said S")).toBeDefined();
-  expect(within(panel).getByText("M set by a reviewer")).toBeDefined();
+  expect(within(panel).getByText("set by a reviewer")).toBeDefined();
 
   // The Scenarios tab leads with the override, and keeps what the model
   // said and why.
@@ -2920,6 +3008,96 @@ test("a resize sets the base, and the step stays on top", async () => {
     "The model sized it S:",
     "One form and its validation.",
   ]);
+});
+
+/**
+ * The stepped board with its resize held until released, answered as the
+ * server would, or refused as a proposal that moved since it was read.
+ */
+function heldResize(refuse = false) {
+  const server = steppedBoard();
+  let release: (() => void) | undefined;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: string, init?: RequestInit) =>
+      init?.method === "POST"
+        ? new Promise<Response>((resolve) => {
+            release = () =>
+              resolve(
+                refuse
+                  ? Response.json(
+                      {
+                        code: "proposal_changed",
+                        error:
+                          "The proposal changed. Reload it before continuing.",
+                      },
+                      { status: 409 },
+                    )
+                  : server.fetchMock(input, init),
+              );
+          })
+        : server.fetchMock(input, init),
+    ),
+  );
+  return { release: () => release?.() };
+}
+
+/** Whether a screen reader has been told the size was saved. */
+function toldSaved(panel: HTMLElement) {
+  return within(panel)
+    .queryAllByRole("status")
+    .some((status) => status.textContent === "Saved");
+}
+
+/** The size cards' labels, in order. */
+function sizes(resize: HTMLElement) {
+  return within(resize)
+    .getAllByRole("button")
+    .map((button) => button.textContent);
+}
+
+test("a size clicked shows at once, and says Saved once it lands", async () => {
+  const held = heldResize();
+  renderStreamedBoard();
+  const list = await screen.findByTestId("proposal-list");
+  await userEvent.click(within(list).getByRole("button", { name: /Bounty 1/ }));
+  const panel = await screen.findByTestId("proposal-panel");
+  const resize = await within(panel).findByRole("group", { name: "Resize" });
+
+  await userEvent.click(within(resize).getByRole("button", { name: "M" }));
+  // Before the server answers: M is the size, at M's price on the card.
+  expect(sizes(resize)).toEqual(["XS", "S", "M", "L", "XL"]);
+  expect(
+    within(resize)
+      .getByRole("button", { name: "M" })
+      .getAttribute("aria-pressed"),
+  ).toBe("true");
+  expect(within(panel).getByText("set by a reviewer")).toBeDefined();
+  expect(toldSaved(panel)).toBe(false);
+
+  held.release();
+  await waitFor(() => expect(toldSaved(panel)).toBe(true));
+  expect(sizes(resize)).toEqual(["XS", "S", "M", "L", "XL"]);
+});
+
+test("a size the server refuses goes back to the one in force", async () => {
+  const held = heldResize(true);
+  renderStreamedBoard();
+  const list = await screen.findByTestId("proposal-list");
+  await userEvent.click(within(list).getByRole("button", { name: /Bounty 1/ }));
+  const panel = await screen.findByTestId("proposal-panel");
+  const resize = await within(panel).findByRole("group", { name: "Resize" });
+
+  await userEvent.click(within(resize).getByRole("button", { name: "L" }));
+  expect(sizes(resize)).toEqual(["XS", "S", "M", "L", "XL"]);
+
+  held.release();
+  await waitFor(() =>
+    expect(sizes(resize)).toEqual(["XS", "S+", "M", "L", "XL"]),
+  );
+  // The model's size again, with nothing said about saving.
+  expect(within(panel).queryByText("set by a reviewer")).toBeNull();
+  expect(toldSaved(panel)).toBe(false);
 });
 
 test("a size with no weighed scenarios is marked on its row and explained in the peek", async () => {
@@ -2952,9 +3130,7 @@ test("a proposal for a hand-picked bounty shows no reason in the peek", async ()
 
   await userEvent.click(within(list).getByRole("button"));
   const panel = await screen.findByTestId("proposal-panel");
-  expect(
-    await within(panel).findByText("Unchanged since sizing"),
-  ).toBeDefined();
+  await checked(panel);
   expect(within(panel).queryByTestId("proposal-categories")).toBeNull();
 });
 

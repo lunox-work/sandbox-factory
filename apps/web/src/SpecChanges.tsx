@@ -554,3 +554,58 @@ export function RevisionPicker({
     />
   );
 }
+
+/** A revision's origin as the header menu names it. */
+function originName(origin: string): string {
+  const name = ORIGIN_NAME[origin] ?? origin;
+  return name.charAt(0).toUpperCase() + name.slice(1);
+}
+
+/**
+ * Which revision of the spec is on show, in the header over the decision,
+ * as a sandbox chooses its version: the revision, chosen from the others
+ * when there are several.
+ */
+export function RevisionMenu({
+  revisions,
+  current,
+  viewing,
+  onView,
+}: {
+  revisions: readonly BountySpecRevisionDto[];
+  /** The revision the proposal points at. */
+  current: number;
+  viewing: number;
+  onView: (revision: number) => void;
+}) {
+  const name = <span className="font-semibold">Revision {viewing}</span>;
+  if (revisions.length <= 1) return name;
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          className="focus-visible:ring-ring/50 -mx-1 flex w-fit cursor-pointer items-center gap-1 rounded-sm px-1 hover:underline focus-visible:ring-[3px] focus-visible:outline-none"
+          aria-label={`Revision ${viewing}, choose another`}
+        >
+          {name}
+          <ChevronDown className="text-muted-foreground size-3.5" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="min-w-48">
+        {revisions.map(({ revision, origin }) => (
+          <DropdownMenuItem
+            key={revision}
+            onSelect={() => onView(revision)}
+            className="justify-between gap-4"
+          >
+            <span>Revision {revision}</span>
+            <span className="text-muted-foreground text-xs">
+              {revision === current ? "Current" : originName(origin)}
+            </span>
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}

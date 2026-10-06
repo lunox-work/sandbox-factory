@@ -8,6 +8,7 @@ import {
   pointsOf,
   pointsOfScenarios,
   rebaseStep,
+  resetStep,
   resolveStepSettings,
   SCENARIO_WEIGHT_DEFINITIONS,
   SCENARIO_WEIGHTS,
@@ -329,6 +330,24 @@ test("a resize rebases the step: the added weight stays, the base moves", () => 
   assert.ok(coarse !== null);
   assert.equal(rebaseStep(coarse, "M").complexity, "M");
   assert.equal(rebaseStep(coarse, "M").nextStepIn, 4);
+});
+
+test("a resize resets the step: the size chosen is the size, counted from its revision", () => {
+  const coarse = resolveStepSettings({ pointsPerStep: 8 });
+  const step = stepUp("S", sized, grown("heavy", "light"), coarse);
+  assert.ok(step !== null);
+  const reset = resetStep(step, "M", 3);
+  assert.equal(reset.base, "M");
+  assert.equal(reset.complexity, "M");
+  assert.equal(reset.steps, 0);
+  assert.equal(reset.addedPoints, 0);
+  assert.deepEqual(reset.added, []);
+  assert.deepEqual(reset.removed, []);
+  assert.equal(reset.baseRevision, 3);
+  // Kept with the settings it was computed with.
+  assert.deepEqual(reset.settings, coarse);
+  assert.equal(reset.nextStepIn, 8);
+  assert.equal(resetStep(step, "XL", 3).nextStepIn, null);
 });
 
 test("a board's step settings lie over the defaults, and nonsense is ignored", () => {

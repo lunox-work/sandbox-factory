@@ -273,6 +273,8 @@ export const stepResultSchema = z.object({
   nextStepIn: z.number().int().positive().nullable(),
   settings: stepSettingsSchema,
   stepVersion: z.string().min(1),
+  /** The spec revision a reviewer's resize set the base against. */
+  baseRevision: z.number().int().positive().optional(),
 });
 
 const rubricPointsSchema = z.number().int().nonnegative();

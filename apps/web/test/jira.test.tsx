@@ -1199,7 +1199,8 @@ test("the actions sit in the bounty card, beside what they change, for those who
   // Approve sits in the span that says why it is disabled, when it is.
   const approveSlot = approve.parentElement;
   expect(
-    within(card).getByText("Not approved yet").parentElement?.parentElement,
+    within(card).getByText("Not approved yet").parentElement?.parentElement
+      ?.parentElement,
   ).toBe(approveSlot?.parentElement?.parentElement);
   // Remove hangs under Approve.
   expect(

@@ -37,7 +37,7 @@ import {
   checkRespec,
   isPublicationLive,
   priceFor,
-  rebaseStep,
+  resetStep,
   SPEC_LIMITS,
   UNCATEGORIZED,
   validateRateCard,
@@ -783,7 +783,7 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
     const denied = requireAdmin(role);
     if (denied !== null) return c.json(denied, 403);
     // A resize is a reviewer's own call on the size, and changes nothing
-    // but the size and the amount it prices to. It does not read Jira: the
+    // but the size and the amount it prices to: the size chosen is the size. It does not read Jira: the
     // bounty is checked when the proposal is approved, which is the
     // decision that depends on it.
     const proposal = await options.proposals.get(
@@ -802,15 +802,19 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
       );
     }
     /*
-      The reviewer's size is the base, and the step stays on top: weight a
-      reviewer added to the spec is never silently absorbed by a manual
-      size. The revision check above is what makes the step read here the
-      one being replaced.
+      The reviewer's size covers the spec as it stands, so the step starts
+      again from it: only what the spec gains after this moves the size.
+      The revision check above is what makes the spec revision read here
+      the one the reviewer saw.
     */
     const step =
-      proposal.step === null
+      proposal.step === null || proposal.specRevision === null
         ? null
-        : rebaseStep(proposal.step, parsed.data.complexity);
+        : resetStep(
+            proposal.step,
+            parsed.data.complexity,
+            proposal.specRevision,
+          );
     const complexity = step?.complexity ?? parsed.data.complexity;
     const amountMinor = priceFor(complexity, proposal.rateCard);
     return proposalMutationResponse(

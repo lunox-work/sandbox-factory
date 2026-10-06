@@ -1859,11 +1859,8 @@ test("a bounty's panel is read, its text over its sandbox, with context that is 
   // Said plainly: making one is offered on its page.
   expect(within(sandboxPart).getByText("No sandbox yet.")).toBeDefined();
   const context = within(panel).getByRole("region", { name: "Context" });
-  expect(
-    within(context).getByText("Not linked; created in Lunox"),
-  ).toBeDefined();
-  // No repository and no stack, each read as none.
-  expect(within(context).getAllByText("None")).toHaveLength(2);
+  // No Jira issue, no repository and no stack, each read as none.
+  expect(within(context).getAllByText("None")).toHaveLength(3);
 });
 
 test("an admin makes a bounty's sandbox from its repository, and sees it after", async () => {

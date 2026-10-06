@@ -1197,7 +1197,7 @@ test("reviewers can resize a proposal to XS using its snapshot", async () => {
   assert.equal(state.current().amountMinor, card.xsMinor);
 });
 
-test("a resize sets the base and the step stays on top", async () => {
+test("a resize sets the size chosen, and the step starts again from it", async () => {
   // A spec that grew a heavy scenario after it was sized at M.
   const sized: SpecDraft = {
     feature: "Export",
@@ -1234,6 +1234,7 @@ test("a resize sets the base and the step stays on top", async () => {
   const state = reviewHarness(undefined, {
     complexity: "M+",
     amountMinor: 250,
+    specRevision: 2,
     step,
   });
   const response = await state.app.request(
@@ -1245,12 +1246,15 @@ test("a resize sets the base and the step stays on top", async () => {
     },
   );
   assert.equal(response.status, 200);
-  // The reviewer said S; the heavy scenario still counts, so S+, priced
-  // between S and M on the proposal's own card.
-  assert.equal(state.current().complexity, "S+");
-  assert.equal(state.current().amountMinor, 150);
+  // The reviewer said S, and S it is: the heavy scenario was there when
+  // they chose it. Only what the spec gains after this revision counts.
+  assert.equal(state.current().complexity, "S");
+  assert.equal(state.current().amountMinor, 100);
   assert.equal(state.current().step?.base, "S");
-  assert.equal(state.current().step?.addedPoints, 4);
+  assert.equal(state.current().step?.complexity, "S");
+  assert.equal(state.current().step?.addedPoints, 0);
+  assert.deepEqual(state.current().step?.added, []);
+  assert.equal(state.current().step?.baseRevision, 2);
 });
 
 test("a resize refuses a half size: those are only where a step lands", async () => {

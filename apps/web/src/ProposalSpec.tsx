@@ -293,6 +293,22 @@ export interface SpecHistory {
   readonly specRevision: number | null;
 }
 
+/**
+ * Which revision is on show: null for the current one. A change that lands
+ * moves the current revision, and the view goes with it.
+ */
+export function useRevisionView(current: number | null) {
+  const [viewing, setViewing] = useState<number | null>(null);
+  useEffect(() => setViewing(null), [current]);
+  return [viewing, setViewing] as const;
+}
+
+/** The revision on show, when it is chosen above the spec. */
+export interface RevisionView {
+  readonly viewing: number | null;
+  readonly onView: (revision: number | null) => void;
+}
+
 /** The ways to change the spec, for a reader who may change it. */
 export interface SpecChanges {
   readonly control: RespecControl;
@@ -310,6 +326,52 @@ export interface SinceSized {
   readonly removed: readonly StepResultDto["added"][number][];
 }
 
+/**
+ * The changes a revision on show is marked with, as a change tracker draws
+ * them. Some of its scenarios are marked where they stand; the other side's
+ * scenarios, which it does not have, follow under their kind.
+ */
+interface SpecDiff {
+  /** Scenarios on show, drawn as added. */
+  readonly added: ReadonlySet<string>;
+  /** Scenarios on show, drawn as removed. */
+  readonly removed: ReadonlySet<string>;
+  /** Scenarios not on show, drawn as added: the next revision's. */
+  readonly gained: readonly Scenario[];
+  /** Scenarios not on show, drawn as removed: trimmed since sizing. */
+  readonly lost: readonly StepResultDto["added"][number][];
+  /** When the changes were made, as a screen reader hears it. */
+  readonly when: string;
+}
+
+/** The current revision's changes: what it gained and lost since sizing. */
+function sinceSizedDiff(since: SinceSized): SpecDiff {
+  return {
+    added: new Set(since.added),
+    removed: new Set(),
+    gained: [],
+    lost: since.removed,
+    when: "since sizing",
+  };
+}
+
+/**
+ * An earlier revision's changes: what the revision after it took out of
+ * it and put in. Scenarios keep their ids across revisions, so the two
+ * are matched by id.
+ */
+function nextRevisionDiff(shown: BountySpecDto, next: BountySpecDto): SpecDiff {
+  const before = new Set(shown.draft.scenarios.map(({ id }) => id));
+  const after = new Set(next.draft.scenarios.map(({ id }) => id));
+  return {
+    added: new Set(),
+    removed: new Set([...before].filter((id) => !after.has(id))),
+    gained: next.draft.scenarios.filter(({ id }) => !before.has(id)),
+    lost: [],
+    when: `in revision ${next.revision}`,
+  };
+}
+
 export function ProposalSpec({
   read,
   onRetry,
@@ -319,6 +381,7 @@ export function ProposalSpec({
   history,
   changes,
   sinceSized,
+  view,
 }: {
   read: SpecRead;
   onRetry: () => void;
@@ -338,14 +401,22 @@ export function ProposalSpec({
    * for a proposal whose spec cannot be changed (approved, or with no step).
    */
   changes?: SpecChanges;
-  /** Marked on the current revision only: an earlier one is not the diff. */
+  /**
+   * Marked on the current revision. An earlier one is marked with what the
+   * revision after it changed instead.
+   */
   sinceSized?: SinceSized;
+  /**
+   * The revision on show, chosen above the spec, as inside a bounty: the
+   * spec follows it and has no picker of its own.
+   */
+  view?: RevisionView;
 }) {
   const current = history?.specRevision ?? null;
   // The revision on show, when it is not the current one.
-  const [viewing, setViewing] = useState<number | null>(null);
-  // A change that lands moves the current revision: show it.
-  useEffect(() => setViewing(null), [current]);
+  const own = useRevisionView(current);
+  const viewing = view === undefined ? own[0] : view.viewing;
+  const setViewing = view === undefined ? own[1] : view.onView;
   const revisions = useSpecRevisions(
     history?.base ?? "",
     history?.proposalId ?? "",
@@ -359,6 +430,32 @@ export function ProposalSpec({
   );
   const shown = viewing === null ? read : earlier.read;
   const spec = shown.state === "ready" ? shown.spec : null;
+  // The revision after the earlier one on show, which its changes are read
+  // against: the current one is already read.
+  const next =
+    viewing === null
+      ? null
+      : (revisions
+          .map(({ revision }) => revision)
+          .filter((revision) => revision > viewing)
+          .sort((a, b) => a - b)[0] ?? null);
+  const following = useProposalSpec(
+    history?.base ?? "",
+    history?.proposalId ?? "",
+    next === current ? null : next,
+    next ?? undefined,
+  );
+  const nextRead =
+    next === null ? null : next === current ? read : following.read;
+  const nextSpec = nextRead?.state === "ready" ? nextRead.spec : null;
+  const diff =
+    viewing === null
+      ? sinceSized === undefined
+        ? undefined
+        : sinceSizedDiff(sinceSized)
+      : spec === null || nextSpec === null
+        ? undefined
+        : nextRevisionDiff(spec, nextSpec);
 
   return (
     <div data-testid="proposal-spec" className="flex flex-col gap-4">
@@ -390,12 +487,13 @@ export function ProposalSpec({
           canAnalyze={canAnalyze}
           weightPoints={weightPoints}
           revisions={revisions}
+          picker={view === undefined}
           current={current}
           onView={(revision) =>
             setViewing(revision === current ? null : revision)
           }
           changes={viewing === null ? changes : undefined}
-          sinceSized={viewing === null ? sinceSized : undefined}
+          diff={diff}
         />
       )}
     </div>
@@ -413,33 +511,35 @@ function SpecBody({
   canAnalyze,
   weightPoints,
   revisions,
+  picker,
   current,
   onView,
   changes,
-  sinceSized,
+  diff,
 }: {
   spec: BountySpecDto;
   canAnalyze: boolean;
   weightPoints: WeightPoints;
   /** Every revision, when there is more than one; else empty. */
   revisions: readonly BountySpecRevisionDto[];
+  /** Whether the revision is named, and chosen, here. */
+  picker: boolean;
   /** The revision the proposal points at. */
   current: number | null;
   onView: (revision: number) => void;
   changes: SpecChanges | undefined;
-  sinceSized: SinceSized | undefined;
+  diff: SpecDiff | undefined;
 }) {
   const { draft } = spec;
-  const added = new Set(sinceSized?.added ?? []);
-  const removed = sinceSized?.removed ?? [];
-  // Each kind with what it has, and after it what it lost: a kind trimmed
-  // to nothing still shows, as its removed lines.
+  // Each kind with what it has, and after it what the other side of the
+  // diff has instead: a kind with nothing on show still shows its lines.
   const groups = SCENARIO_KIND_DEFINITIONS.flatMap(({ id, label }) => {
     const scenarios = draft.scenarios.filter(({ kind }) => kind === id);
-    const gone = removed.filter(({ kind }) => kind === id);
-    return scenarios.length + gone.length === 0
+    const gained = (diff?.gained ?? []).filter(({ kind }) => kind === id);
+    const gone = (diff?.lost ?? []).filter(({ kind }) => kind === id);
+    return scenarios.length + gained.length + gone.length === 0
       ? []
-      : [{ kind: id, label, scenarios, gone }];
+      : [{ kind: id, label, scenarios, gained, gone }];
   });
   // Null when any scenario has no weight: drafted before weights existed.
   const points = pointsOf(draft, weightPoints);
@@ -460,16 +560,21 @@ function SpecBody({
             {plural(countScenarios(draft).total, "scenario")}
             {points !== null &&
               draft.scenarios.length > 0 &&
-              ` · ${plural(points, "point")}`}{" "}
-            ·{" "}
-            {revisions.length > 1 ? (
-              <RevisionPicker
-                revisions={revisions}
-                viewing={spec.revision}
-                onView={onView}
-              />
-            ) : (
-              `revision ${spec.revision}`
+              ` · ${plural(points, "point")}`}
+            {picker && (
+              <>
+                {" "}
+                ·{" "}
+                {revisions.length > 1 ? (
+                  <RevisionPicker
+                    revisions={revisions}
+                    viewing={spec.revision}
+                    onView={onView}
+                  />
+                ) : (
+                  `revision ${spec.revision}`
+                )}
+              </>
             )}
           </p>
         </div>
@@ -594,7 +699,14 @@ function SpecBody({
                   key={scenario.id}
                   scenario={scenario}
                   weightPoints={weightPoints}
-                  added={added.has(scenario.id)}
+                  change={
+                    diff?.added.has(scenario.id)
+                      ? "added"
+                      : diff?.removed.has(scenario.id)
+                        ? "removed"
+                        : undefined
+                  }
+                  when={diff?.when}
                   {...(changes === undefined
                     ? {}
                     : {
@@ -607,12 +719,22 @@ function SpecBody({
                       })}
                 />
               ))}
+              {group.gained.map((scenario) => (
+                <ScenarioRow
+                  key={`added-${scenario.id}`}
+                  scenario={scenario}
+                  weightPoints={weightPoints}
+                  change="added"
+                  when={diff?.when}
+                />
+              ))}
               {group.gone.map((scenario) => (
                 <RemovedRow
                   key={`removed-${scenario.id}`}
                   scenario={scenario}
                   weightPoints={weightPoints}
                   inset={changes !== undefined}
+                  when={diff?.when ?? "since sizing"}
                 />
               ))}
             </ul>
@@ -640,14 +762,17 @@ function SpecBody({
 function ScenarioRow({
   scenario,
   weightPoints,
-  added = false,
+  change,
+  when = "since sizing",
   removing = false,
   onRemove,
 }: {
   scenario: Scenario;
   weightPoints: WeightPoints;
-  /** Added since sizing: drawn as a diff's added line. */
-  added?: boolean;
+  /** Added or removed by the diff on show: drawn as that diff line. */
+  change?: keyof typeof DIFF_TONE | undefined;
+  /** When it was, as a screen reader hears it. */
+  when?: string | undefined;
   /** A change is running: the remove control waits for it. */
   removing?: boolean;
   /** Takes the scenario out; absent for a reader who may not. */
@@ -655,8 +780,9 @@ function ScenarioRow({
 }) {
   const [open, setOpen] = useState(false);
   const steps = useId();
+  const added = change === "added";
   return (
-    <li className="relative" data-change={added ? "added" : undefined}>
+    <li className="relative" data-change={change}>
       {onRemove !== undefined && (
         <span className="absolute top-1 -right-1.5 flex h-lh items-center text-sm leading-relaxed">
           <ConfirmDialog
@@ -692,11 +818,13 @@ function ScenarioRow({
         className={cn(
           "hover:bg-muted/60 focus-visible:ring-ring/50 relative -mx-1.5 flex w-[calc(100%+0.75rem)] cursor-pointer items-start gap-1.5 rounded-md px-1.5 py-1 text-left text-sm leading-relaxed outline-none focus-visible:ring-[3px]",
           onRemove !== undefined && "pr-7",
-          added && [DIFF_LINE, DIFF_TONE.added, "hover:bg-emerald-500/15"],
+          change !== undefined && [DIFF_LINE, DIFF_TONE[change]],
+          change === "added" && "hover:bg-emerald-500/15",
+          change === "removed" && "hover:bg-red-500/15",
         )}
         onClick={() => setOpen((value) => !value)}
       >
-        {added && <DiffMark change="added" />}
+        {change !== undefined && <DiffMark change={change} />}
         {/* Every mark is a line tall, so all of them centre on the title's
             first line, however many lines it wraps to. */}
         <span className="flex h-lh shrink-0 items-center">
@@ -708,7 +836,11 @@ function ScenarioRow({
           />
         </span>
         <span className="min-w-0 flex-1">
-          {added && <span className="sr-only">Added since sizing: </span>}
+          {change !== undefined && (
+            <span className="sr-only">
+              {change === "added" ? "Added" : "Removed"} {when}:{" "}
+            </span>
+          )}
           {scenario.title}
         </span>
         <span className="flex h-lh shrink-0 items-center gap-1.5">
@@ -777,11 +909,14 @@ function RemovedRow({
   scenario,
   weightPoints,
   inset,
+  when,
 }: {
   scenario: StepResultDto["added"][number];
   weightPoints: WeightPoints;
   /** Clear of the remove control the rows above it carry. */
   inset: boolean;
+  /** When it was removed, as a screen reader hears it. */
+  when: string;
 }) {
   return (
     <li
@@ -797,7 +932,7 @@ function RemovedRow({
       {/* Where a chevron would be: it does not open. */}
       <span aria-hidden="true" className="w-3.5 shrink-0" />
       <span className="min-w-0 flex-1">
-        <span className="sr-only">Removed since sizing: </span>
+        <span className="sr-only">Removed {when}: </span>
         {scenario.title}
       </span>
       <span className="flex h-lh shrink-0 items-center">

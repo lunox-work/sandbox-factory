@@ -7,12 +7,18 @@ import {
   ChevronDown,
   ChevronUp,
   ExternalLink,
+  Loader2,
   Minus,
   RefreshCw,
   TriangleAlert,
 } from "lucide-react";
-import { useEffect, useRef, type ReactElement } from "react";
-import { WEIGHT_POINTS, WHOLE_BOUNTY_COMPLEXITIES } from "sandbox-factory";
+import { useEffect, useRef, useState, type ReactElement } from "react";
+import {
+  priceFor,
+  WEIGHT_POINTS,
+  WHOLE_BOUNTY_COMPLEXITIES,
+  type WholeComplexity,
+} from "sandbox-factory";
 import { dateTime, modelLabel, money } from "../../lib/format";
 import { capitalize, unweighed } from "./presentation";
 import { type EnrichedProposal } from "./types";
@@ -36,21 +42,23 @@ import {
   ProposalSpec,
   scenarioTotal,
   useProposalSpec,
+  useRevisionView,
 } from "../../ProposalSpec";
 import { PricingRubricBlock } from "../../PricingRubric";
 import { JiraIcon, ModelIcon } from "../../ProviderIcon";
-import { useRespec } from "../../SpecChanges";
+import { RevisionMenu, useRespec, useSpecRevisions } from "../../SpecChanges";
 import { BountyText } from "../../BountyText";
 import { useRepoSnapshot } from "../../useGithub";
 import type { JiraIssueDetail } from "../../useJira";
 
+/** What the bounty's freshness says; nothing while it is unchanged. */
 function freshnessLabel(freshness: EnrichedProposal["freshness"]): {
   text: string;
   tone: "muted" | "warn" | "bad";
-} {
+} | null {
   switch (freshness) {
     case "current":
-      return { text: "Unchanged since sizing", tone: "muted" };
+      return null;
     case "stale":
       return { text: "Changed since sizing", tone: "warn" };
     case "missing":
@@ -62,6 +70,9 @@ function freshnessLabel(freshness: EnrichedProposal["freshness"]): {
       return { text: "Not checked", tone: "muted" };
   }
 }
+
+/** How long "Saved" shows after a resize lands. */
+const SAVED_MS = 2_500;
 
 /** How long after the code settles the proposal is read again. */
 const RUBRIC_REREAD_MS = 1_500;
@@ -129,8 +140,57 @@ export function ProposalPeek({
   const label = modelLabel(proposal.actualModel);
   const delivery = proposal.writebackOperations?.at(-1);
   const freshness = freshnessLabel(proposal.freshness);
-  const priced = proposal.amountMinor !== null;
   const open = proposal.status === "proposed";
+  /*
+    A size clicked shows at once, priced from the proposal's own card, and
+    the server's answer takes its place when it lands; one it refuses goes
+    back. "Saved" then shows under who set it, for a moment.
+  */
+  const [chosen, setChosen] = useState<WholeComplexity | null>(null);
+  const [savedAt, setSavedAt] = useState(0);
+  const [saved, setSaved] = useState(false);
+  useEffect(() => {
+    if (savedAt === 0) return;
+    setSaved(true);
+    const timer = setTimeout(() => setSaved(false), SAVED_MS);
+    return () => clearTimeout(timer);
+  }, [savedAt]);
+  const complexity = chosen ?? proposal.complexity;
+  const amountMinor =
+    chosen === null
+      ? proposal.amountMinor
+      : priceFor(chosen, proposal.rateCard);
+  const sizedBy = chosen === null ? proposal.sizedBy : "reviewer";
+  const priced = amountMinor !== null;
+  const resizeTo = async (size: WholeComplexity) => {
+    setChosen(size);
+    const done = await mutate(
+      `/proposals/${proposal.id}/resize`,
+      { expectedRevision: proposal.revision, complexity: size },
+      { apply: true },
+    );
+    setChosen(null);
+    if (done) setSavedAt(Date.now());
+  };
+  /*
+    The decision under way, so the button that started it says it is
+    working. Every control waits on `busy` as before; this is only which
+    one says so.
+  */
+  const [acting, setActing] = useState<string | null>(null);
+  const act = async (
+    key: string,
+    path: string,
+    body: object,
+    options?: { apply?: boolean },
+  ) => {
+    setActing(key);
+    try {
+      return await mutate(path, body, options);
+    } finally {
+      setActing(null);
+    }
+  };
   const key = proposal.liveKey ?? proposal.issueKey;
   // Read when the peek opens, like the bounty, so the tab opens on it.
   const spec = useProposalSpec(base, proposal.id, proposal.specRevision);
@@ -170,6 +230,11 @@ export function ProposalPeek({
     return () => clearTimeout(timer);
   }, [settled, awaitingCode]);
   const scenarios = scenarioTotal(spec.read);
+  // Inside its bounty, the spec's revision is chosen in the header, over
+  // the decision, as a sandbox's version is.
+  const specRevision = proposal.specRevision ?? null;
+  const specRevisions = useSpecRevisions(base, proposal.id, specRevision);
+  const [viewing, setViewing] = useRevisionView(specRevision);
   const step = proposal.step ?? null;
   // A reviewer's changes to the spec, and the run each one starts.
   const respec = useRespec(base, proposal.id, proposal.revision, onChanged);
@@ -184,8 +249,7 @@ export function ProposalPeek({
   // reviewer sees which whole size the half size stands on.
   const sizeBase = step?.base ?? proposal.complexity;
   // The model pill and the XL warning drop a row when the notes are shown.
-  const lowerRow =
-    proposal.sizedBy === "model" ? "sm:row-start-2" : "sm:row-start-3";
+  const lowerRow = sizedBy === "model" ? "sm:row-start-2" : "sm:row-start-3";
   /*
     What the bounty was taken to ask for when it was sized. In its own tab
     after the decision, which it supports; inside its bounty, on the one
@@ -221,10 +285,12 @@ export function ProposalPeek({
         proposalId: proposal.id,
         specRevision: proposal.specRevision ?? null,
       }}
+      {...(withinBounty ? { view: { viewing, onView: setViewing } } : {})}
       {...(canChange
         ? { changes: { control: respec, size: proposal.complexity } }
         : {})}
-      {...(step === null
+      // Once approved, what changed since sizing is what was approved.
+      {...(step === null || !open
         ? {}
         : {
             sinceSized: {
@@ -238,35 +304,53 @@ export function ProposalPeek({
   /*
     What the decision is checked against: which version this is, moved
     only by an approval of something changed, and under it when that
-    version was approved and whether the bounty still says what it said
-    when sized. Given the button's height so the two sit level.
+    version was approved and, when the bounty no longer says what it said
+    when sized, that it changed. Given the button's height so the two sit
+    level.
   */
   const versionedAt = proposal.versionedAt ?? null;
   const revision = (
     <span className="flex min-h-9 flex-col justify-center text-xs">
-      <span className="font-semibold">
-        {proposal.version > 0
-          ? `Version ${proposal.version}`
-          : "Not approved yet"}
+      <span className="flex flex-wrap items-center gap-x-1">
+        <span className="font-semibold">
+          {proposal.version > 0
+            ? `Version ${proposal.version}`
+            : "Not approved yet"}
+        </span>
+        {withinBounty && specRevision !== null && (
+          <>
+            <span className="text-muted-foreground">·</span>
+            <RevisionMenu
+              revisions={specRevisions}
+              current={specRevision}
+              viewing={viewing ?? specRevision}
+              onView={(revision) =>
+                setViewing(revision === specRevision ? null : revision)
+              }
+            />
+          </>
+        )}
       </span>
       <span className="flex flex-wrap gap-x-1">
         {versionedAt !== null && (
           <span className="text-muted-foreground">
             Approved <time dateTime={versionedAt}>{dateTime(versionedAt)}</time>
-            {" ·"}
+            {freshness !== null && " ·"}
           </span>
         )}
-        <span
-          className={
-            freshness.tone === "warn"
-              ? "text-amber-700 dark:text-amber-400"
-              : freshness.tone === "bad"
-                ? "text-destructive"
-                : "text-muted-foreground"
-          }
-        >
-          {freshness.text}
-        </span>
+        {freshness !== null && (
+          <span
+            className={
+              freshness.tone === "warn"
+                ? "text-amber-700 dark:text-amber-400"
+                : freshness.tone === "bad"
+                  ? "text-destructive"
+                  : "text-muted-foreground"
+            }
+          >
+            {freshness.text}
+          </span>
+        )}
       </span>
     </span>
   );
@@ -294,13 +378,15 @@ export function ProposalPeek({
       <DisabledReason reason={approveBlocked}>
         <Button
           disabled={busy || approveBlocked !== null}
+          aria-busy={acting === "approve"}
           onClick={() =>
-            void mutate(`/proposals/${proposal.id}/approve`, {
+            void act("approve", `/proposals/${proposal.id}/approve`, {
               expectedRevision: proposal.revision,
             })
           }
         >
-          Approve
+          {acting === "approve" && <Loader2 className="animate-spin" />}
+          {acting === "approve" ? "Approving…" : "Approve"}
         </Button>
       </DisabledReason>
     )
@@ -309,13 +395,15 @@ export function ProposalPeek({
       <Button
         variant="outline"
         disabled={busy || approvalHeld}
+        aria-busy={acting === "unapprove"}
         onClick={() =>
-          void mutate(`/proposals/${proposal.id}/unapprove`, {
+          void act("unapprove", `/proposals/${proposal.id}/unapprove`, {
             expectedRevision: proposal.revision,
           })
         }
       >
-        Unapprove
+        {acting === "unapprove" && <Loader2 className="animate-spin" />}
+        {acting === "unapprove" ? "Unapproving…" : "Unapprove"}
       </Button>
     </DisabledReason>
   );
@@ -380,14 +468,21 @@ export function ProposalPeek({
                 type="button"
                 className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 flex cursor-pointer items-center gap-1.5 rounded-sm text-sm underline-offset-4 transition-colors hover:underline focus-visible:ring-[3px] focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
                 disabled={busy || approvalHeld}
+                aria-busy={acting === "reprice"}
                 onClick={() =>
-                  void mutate(`/proposals/${proposal.id}/reprice`, {
+                  void act("reprice", `/proposals/${proposal.id}/reprice`, {
                     expectedRevision: proposal.revision,
                     requestId: crypto.randomUUID(),
                   })
                 }
               >
-                <RefreshCw className="size-3.5" />
+                <RefreshCw
+                  className={`size-3.5 ${
+                    acting === "reprice"
+                      ? "animate-spin motion-reduce:animate-none"
+                      : ""
+                  }`}
+                />
                 Re-analyze
               </button>
             </DisabledReason>
@@ -411,7 +506,7 @@ export function ProposalPeek({
               priced ? "tabular-nums" : "text-muted-foreground"
             }`}
           >
-            {money(proposal.amountMinor, proposal.currency)}
+            {money(amountMinor, proposal.currency)}
           </span>
           {/* Who sized it, as a pill wearing the vendor's mark. */}
           <span
@@ -450,43 +545,31 @@ export function ProposalPeek({
                       card is disabled, since it is not a change, but kept
                       solid rather than faded — it is the fact being shown.
 
-                      Five cards, one per whole size. A half size is where
-                      the scenario step lands, never a reviewer's choice,
-                      so it has no card of its own: it is shown on the
-                      card of the whole size below it, which reads "S+"
-                      while it is the size in force. A reviewer sets the
-                      whole size the step stands on.
+                      Five cards, one per whole size, and the size clicked
+                      is the size set. A half size is where the scenario
+                      step lands, never a reviewer's choice, so it has no
+                      card of its own: it is shown on the card of the whole
+                      size below it, which reads "S+" while it is the size
+                      in force, and a click there sets the whole size.
                     */
               <div
                 role="group"
                 aria-label="Resize"
                 className="flex min-h-12 flex-wrap items-center gap-1.5 sm:justify-end"
               >
-                {proposal.complexity === "unsized" && (
+                {complexity === "unsized" && (
                   <SizeCard size="unsized" current />
                 )}
                 {WHOLE_BOUNTY_COMPLEXITIES.map((size) => {
                   const current =
-                    proposal.complexity === size ||
-                    proposal.complexity === `${size}+`;
-                  const isBase = sizeBase === size;
+                    complexity === size || complexity === `${size}+`;
                   return (
                     <SizeCard
                       key={size}
-                      size={current ? proposal.complexity : size}
+                      size={current ? complexity : size}
                       current={current}
-                      pressed={isBase}
-                      disabled={busy || isBase}
-                      onClick={() =>
-                        void mutate(
-                          `/proposals/${proposal.id}/resize`,
-                          {
-                            expectedRevision: proposal.revision,
-                            complexity: size,
-                          },
-                          { apply: true },
-                        )
-                      }
+                      disabled={busy || complexity === size}
+                      onClick={() => void resizeTo(size)}
                     />
                   );
                 })}
@@ -495,15 +578,32 @@ export function ProposalPeek({
               <SizeCard size={proposal.complexity} current />
             )}
           </div>
-          {proposal.sizedBy !== "model" && (
+          {sizedBy !== "model" && (
             <div className="text-muted-foreground flex items-baseline justify-between gap-x-6 text-xs sm:col-span-2 sm:row-start-2">
               <span>the model said {proposal.modelComplexity}</span>
-              <span className="text-right">
-                {proposal.sizedBy === "rubric"
+              {/*
+                "Saved" hangs under who set the size, out of the flow, so
+                coming and going it moves nothing around it.
+              */}
+              <span className="relative text-right">
+                {sizedBy === "rubric"
                   ? "set by the rubric"
-                  : step !== null && step.steps > 0
+                  : chosen === null && step !== null && step.steps > 0
                     ? `${step.base} set by a reviewer`
                     : "set by a reviewer"}
+                <span
+                  aria-hidden="true"
+                  className={`pointer-events-none absolute top-full right-0 pt-0.5 transition-[opacity,translate] duration-300 ease-out motion-reduce:transition-none ${
+                    saved
+                      ? "translate-y-0 opacity-100"
+                      : "-translate-y-1 opacity-0"
+                  }`}
+                >
+                  Saved
+                </span>
+                <span role="status" className="sr-only">
+                  {saved ? "Saved" : ""}
+                </span>
               </span>
             </div>
           )}
@@ -512,7 +612,7 @@ export function ProposalPeek({
             and under the size it is about: an XL is a hint that
             the bounty is two.
           */}
-          {proposal.complexity === "XL" && (
+          {complexity === "XL" && (
             <span
               className={`flex items-center gap-1 text-xs text-amber-700 dark:text-amber-400 sm:col-start-2 sm:justify-self-end ${lowerRow}`}
             >
