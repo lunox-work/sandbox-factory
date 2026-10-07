@@ -73,6 +73,7 @@ const sourceDto = (source: StoredVersionSource) => ({
   transformConfigSha256: source.transformConfigSha256,
   approvedTaskSha256: source.approvedTaskSha256,
   proposalVersion: source.proposalVersion,
+  contextVersions: { ...source.contextVersions },
   aliasRules: source.aliasRules,
   dependencyChoices: source.dependencyChoices,
   acceptanceTests: source.acceptanceTests,

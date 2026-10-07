@@ -11,7 +11,9 @@
  */
 
 import type {
+  BountyContextStore,
   BountyProposalStore,
+  JiraBoardStore,
   ListedBounty,
   StoredBounty,
   BountyMutationResult,
@@ -32,14 +34,26 @@ import {
   type BountySummaryDto,
 } from "@sandbox-factory/shared";
 import type { Context, Hono } from "hono";
-import { BOUNTY_SPEC_HASH_VERSION, overviewVersionOf } from "sandbox-factory";
+import {
+  BOUNTY_SPEC_HASH_VERSION,
+  NO_CONTEXT,
+  overviewVersionOf,
+} from "sandbox-factory";
 
 import { isAtLeastAdmin } from "../access.js";
 import { boundedLimit, rowCursor } from "../paging.js";
+import { contextVersionsOf, heldContext } from "./held-context.js";
 
 export interface BountyRouteOptions {
   readonly bounties: BountyStore;
   readonly proposals: Pick<BountyProposalStore, "get" | "liveForBounty">;
+  /**
+   * The bounty's synced context, and the boards a Jira bounty's repository
+   * may come from. Absent, the overview holds no context, and nothing is
+   * behind on any.
+   */
+  readonly contexts?: Pick<BountyContextStore, "latest">;
+  readonly boards?: Pick<JiraBoardStore, "forRun">;
 }
 
 interface BountyAppEnv {
@@ -346,13 +360,35 @@ export async function detail(
     );
   }
   const build = bounty.sandbox?.build ?? null;
+  // The context the overview holds, from the sources linked now.
+  const held =
+    options.contexts === undefined || options.boards === undefined
+      ? NO_CONTEXT
+      : contextVersionsOf(
+          await heldContext(
+            { contexts: options.contexts, boards: options.boards },
+            bounty.organizationId,
+            bounty,
+          ),
+        );
   const stages: BountyStagesDto = {
-    overview: { version: bounty.version },
-    bounty: live === null ? null : { version: live.version, overviewVersion },
+    overview: { version: bounty.version, context: { ...held } },
+    bounty:
+      live === null
+        ? null
+        : {
+            version: live.version,
+            overviewVersion,
+            context: { ...live.contextVersions },
+          },
     sandbox:
       build === null
         ? null
-        : { version: build.version, bountyVersion: build.bountyVersion },
+        : {
+            version: build.version,
+            bountyVersion: build.bountyVersion,
+            context: { ...build.context },
+          },
   };
   return bountyDtoSchema.parse(
     bountyDto(

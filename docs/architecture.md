@@ -389,9 +389,44 @@ fingerprints a bounty's title and description, and `packages/jira`'s
 Jira's text and one priced from the stored copy compare. A proposal is
 current while its bounty still hashes to what it was priced from: read live
 from Jira while the bounty follows an issue, and as stored otherwise. A
-bounty keeps no issue type, priority or labels; Jira's are read only to
-choose which issues a board's run sizes, never stored on the bounty or shown
-to the model.
+bounty's row keeps no issue type, priority or labels. A board's run reads
+them to choose which issues it sizes, and they reach the model only as
+context a person synced (below).
+
+**Sources are synced into a bounty as context.** Each source a bounty links
+adds context beyond its text, read only when a person asks: `POST
+.../bounties/:id/context/jira/sync` reads its issue's fields
+(`JiraClient.issueContext`: type, status, priority, labels, components,
+releases, due date, story points found by the site's own field name,
+estimates, demand and links; never a person or a comment) and takes its
+text as a run's read does; `POST .../context/github/sync` reads the
+Markdown of its repository (its own, or its board's) at the newest
+snapshot, chosen by `contextDocuments` in `packages/core/src/sources.ts`
+(the README, guides and docs first, a path naming a word of the title
+earlier, vendored code and boilerplate never) and cut to its caps. Any
+member may sync, and an approved overview does not hold a sync back, as it
+does not hold back Jira's text. Each sync that finds something new is the
+source's next version in `bounty_context` (migration 0056), kept with the
+revision it was read at (Jira's `updated`, the commit); one that finds the
+same content moves only that version's revision. The hash leaves those
+revisions out, so an edit to the issue's text or a commit that changes no
+document makes no version. `GET .../context` says where each source stands:
+`unlinked`, `unsynced` (including a latest version from an issue or
+repository since replaced), `current`, `ahead` (Jira's `updated`, or the
+newest snapshot's commit, is past the sync) or `unavailable` with a reason.
+The overview holds the latest version of each source while it came from the
+source linked now (`heldContext` in `apps/api/src/bounties/held-context.ts`),
+and that is the context sizing and generation are given:
+`renderSourceContext` puts it after the bounty's text and outline under
+headings of its own (`draft-v5`, `jira-size-v4`, the starter agent's
+prompt). A proposal records the versions it was sized with
+(`bounty_proposal.jira_context_version` and `github_context_version`); a
+sandbox version freezes the context itself into its approved task (an
+optional `context` on schema version 3, so a task frozen before keeps its
+hash) and records its versions on `sandbox_version_source`. The bounty's
+`stages` carry all three, and a step made with an older version than the
+overview holds is behind on that source (`contextDrift`), as a step built
+on an older overview is behind on it.
 
 **A bounty is identified by its id and shown by its title.** One from Jira
 also carries its issue's key (`bounty.jira.key`, a proposal's `issueKey`);
@@ -588,7 +623,8 @@ of its own, `/bounties/:workspace/:id`, which the panel's Open as page leads
 to and whose trail leads back; a card links the page, and a plain click
 opens the panel. The workspace is its handle, naming the routes the bounty
 is read through. Its page splits it into its three steps, numbered tabs
-named by `?tab=`, each with its version and a warning when it is behind;
+named by `?tab=`, each with its version and a warning when it is behind
+(or, for the overview, when a source has moved past its sync);
 the panel is a glance, read and not changed, in one column with no tabs: its
 description, its **Sandbox** under its price, its **Context** (its Jira issue
 and repository, each optional) and its workspace. Its proposal, and every
@@ -596,7 +632,11 @@ change, are on its page, which the panel's Open as page leads to. On the page,
 a bounty with no proposal offers to make one in the proposal's place; once it
 has one, that place holds the live proposal in the same peek a board uses,
 where it is reviewed and decided, without the peek's Spec tab or Jira link,
-since the bounty shows both. The old `?bounty=…&workspace=…&proposal=…` query,
+since the bounty shows both. Each link on the overview has its sync under
+it: its state, what its latest version adds, a Sync button and, while its
+source is ahead, a warning. Each step names the context versions it holds
+or was made with, and the bounty and sandbox steps warn at the top of their
+page when the overview holds newer context. The old `?bounty=…&workspace=…&proposal=…` query,
 the per-workspace `/o/:slug/bounties` and `/o/:slug/tickets?ticket=…`
 addresses, the old `?tab=proposals&proposal=…` and `/proposal` after either
 address, from when the proposal was a tab, all still land on the right
@@ -759,8 +799,8 @@ tree (`package.json`, `pyproject.toml`, `pom.xml`, `*.csproj`, `go.mod`,
 `Gemfile`, `Cargo.toml`, compose files and Dockerfiles, Terraform), shallowest
 first and none over 256 KiB, reads them by Git object id with the same
 narrowed token, and hands them with the language totals and the file list to
-`detectStack` (`packages/core/src/repo/stack.ts`). That is the one read of
-file contents outside the worker: each manifest's text is dropped once read,
+`detectStack` (`packages/core/src/repo/stack.ts`). That is one of two reads
+of file contents outside the worker: each manifest's text is dropped once read,
 and only the names found are kept, on `github_repo.stack` with the commit and
 detection version they came from. Vendored code, fixtures and examples are
 skipped. A snapshot that already exists has its stack redone when either is
@@ -768,7 +808,9 @@ stale, so the sweep backfills every repository within one interval and a new
 `STACK_DETECTION_VERSION` redoes them all; a failed read is reported and
 retried the same way, and never fails the snapshot. The names come from one
 catalog (`packages/core/src/stack.ts`), which also groups them by kind for the
-picker and stores other spellings (`postgres`, `k8s`) under its own.
+picker and stores other spellings (`postgres`, `k8s`) under its own. The other is a bounty's GitHub sync, which reads
+only Markdown documents, with the same narrowed token, and keeps them cut to
+their caps on `bounty_context` as the bounty's context (see Bounties).
 
 **A bounty can name the repository it is about** (`bounty.repo_id`), and
 **a board can name one for its bounties** (`jira_board.source_repo_id`);

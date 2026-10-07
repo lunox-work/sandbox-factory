@@ -7,6 +7,7 @@
 import type {
   BountyComplexity,
   BountyContent,
+  ContextVersions,
   BountyOrigin,
   SandboxStatus,
 } from "sandbox-factory";
@@ -91,6 +92,8 @@ export interface BountySandboxSummary {
     readonly versionId: string;
     readonly version: number;
     readonly bountyVersion: number | null;
+    /** The bounty's synced context versions it was taken with. */
+    readonly context: ContextVersions;
   } | null;
 }
 
@@ -288,6 +291,8 @@ const sandboxColumns = {
   buildVersionId: sandboxVersion.id,
   buildVersion: sandboxVersion.version,
   buildBountyVersion: sandboxVersionSource.proposalVersion,
+  buildJiraContextVersion: sandboxVersionSource.jiraContextVersion,
+  buildGithubContextVersion: sandboxVersionSource.githubContextVersion,
 };
 
 interface SandboxFields {
@@ -299,6 +304,8 @@ interface SandboxFields {
   readonly buildVersionId: string | null;
   readonly buildVersion: number | null;
   readonly buildBountyVersion: number | null;
+  readonly buildJiraContextVersion: number | null;
+  readonly buildGithubContextVersion: number | null;
 }
 
 const NO_SANDBOX: SandboxFields = {
@@ -310,6 +317,8 @@ const NO_SANDBOX: SandboxFields = {
   buildVersionId: null,
   buildVersion: null,
   buildBountyVersion: null,
+  buildJiraContextVersion: null,
+  buildGithubContextVersion: null,
 };
 
 /** The sandbox's published version, or else its latest. */
@@ -331,6 +340,10 @@ function toSandboxSummary(fields: SandboxFields): BountySandboxSummary | null {
                 versionId: fields.buildVersionId,
                 version: fields.buildVersion,
                 bountyVersion: fields.buildBountyVersion ?? null,
+                context: {
+                  jira: fields.buildJiraContextVersion ?? null,
+                  github: fields.buildGithubContextVersion ?? null,
+                },
               },
       };
 }

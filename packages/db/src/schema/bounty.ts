@@ -25,7 +25,12 @@ import {
   text,
   timestamp,
 } from "drizzle-orm/pg-core";
-import type { BountyOrigin } from "sandbox-factory";
+import type {
+  BountyOrigin,
+  ContextSource,
+  GithubContext,
+  JiraContext,
+} from "sandbox-factory";
 
 import { user } from "./auth.js";
 import { githubRepo } from "./github.js";
@@ -140,3 +145,60 @@ export const bountyVersion = pgTable(
 );
 
 export type BountyVersionRow = typeof bountyVersion.$inferSelect;
+
+/**
+ * The context a bounty's sources added to it, one row per version per
+ * source: what its Jira issue said beyond its text, or what its
+ * repository's documents said, as a sync read them. A sync that finds
+ * what the latest version already holds moves only that version's
+ * `revision` and `checked_at`; one that finds something new is a new
+ * version. Sizing and generation record the versions they were made with
+ * (`bounty_proposal` and `sandbox_version_source`), so nothing here points
+ * at them.
+ *
+ * The documents are a repository's own Markdown, cut to the caps in
+ * `packages/core/src/sources.ts`; never its code. Private to the
+ * organization, as the bounty is.
+ */
+export const bountyContext = pgTable(
+  "bounty_context",
+  {
+    bountyId: text("bounty_id")
+      .notNull()
+      .references(() => bounty.id, { onDelete: "cascade" }),
+    /** `jira` or `github`. */
+    source: text("source").$type<ContextSource>().notNull(),
+    version: integer("version").notNull(),
+    /** What the source is called: the issue's key, the repository's name. */
+    ref: text("ref").notNull(),
+    /**
+     * What the source is, which survives a rename: Jira's issue id, the
+     * platform's repository id. A sync of another one is a new version.
+     */
+    refId: text("ref_id").notNull(),
+    /**
+     * Where the source stood when it was last read: Jira's `updated`, the
+     * commit the documents were read at. A source past it is ahead.
+     */
+    revision: text("revision").notNull(),
+    content: jsonb("content").$type<JiraContext | GithubContext>().notNull(),
+    /** SHA-256 of the content, so a sync with nothing new is no version. */
+    contentHash: text("content_hash").notNull(),
+    syncedBy: text("synced_by").references(() => user.id, {
+      onDelete: "set null",
+    }),
+    createdAt: ts("created_at").notNull().defaultNow(),
+    /** The last sync that found this version still what the source says. */
+    checkedAt: ts("checked_at").notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.bountyId, table.source, table.version] }),
+    check(
+      "bounty_context_source_check",
+      sql`${table.source} in ('jira', 'github')`,
+    ),
+    check("bounty_context_version_check", sql`${table.version} > 0`),
+  ],
+);
+
+export type BountyContextRow = typeof bountyContext.$inferSelect;

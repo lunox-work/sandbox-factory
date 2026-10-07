@@ -11,6 +11,9 @@
  * results sits the way to the workspace's Jira settings, where accounts are
  * connected and managed. Linking an issue makes the bounty follow it, so a
  * bounty with text of its own asks first: Jira's replaces it.
+ *
+ * Under each row, the source's sync: whether its context is in use and up
+ * to date, and the way to sync it into the overview (`ContextSync`).
  */
 
 import type { BountyDto, MembershipDto } from "@sandbox-factory/shared";
@@ -41,6 +44,7 @@ import { pathForScreen, type ConnectionTab } from "../../routes";
 import type { Bounties } from "../../useBounties";
 import type { GithubRepos } from "../../useGithub";
 import { useJira } from "../../useJira";
+import { ContextSync, type BountyContextState } from "./BountyContext";
 import { repositoryOptions, type SaveField } from "./BountyFields";
 
 /** Opens a tab of the workspace's settings. */
@@ -55,6 +59,7 @@ export function BountyLinks({
   onSave,
   onChange,
   onOpenSettings,
+  context,
   locked = false,
 }: {
   organization: MembershipDto;
@@ -65,6 +70,8 @@ export function BountyLinks({
   /** Holds the bounty as a link or its removal returned it. */
   onChange: (bounty: BountyDto) => void;
   onOpenSettings: OpenSettings;
+  /** Where each source's sync stands, and the way to sync it. */
+  context?: BountyContextState | undefined;
   /** Its overview is approved: the links are shown, not changed. */
   locked?: boolean;
 }) {
@@ -82,6 +89,11 @@ export function BountyLinks({
           onSave={onSave}
           onOpenSettings={onOpenSettings}
           locked={locked}
+          sync={
+            context === undefined ? null : (
+              <ContextSync source="github" context={context} canSync />
+            )
+          }
         />
         <JiraLink
           organization={organization}
@@ -90,6 +102,15 @@ export function BountyLinks({
           onChange={onChange}
           onOpenSettings={onOpenSettings}
           locked={locked}
+          sync={
+            context === undefined ? null : (
+              <ContextSync
+                source="jira"
+                context={context}
+                canSync={bounty.jira !== null && bounty.jira.removedAt === null}
+              />
+            )
+          }
         />
       </div>
     </section>
@@ -109,6 +130,7 @@ function LinkRow({
   busy,
   error,
   control,
+  sync,
 }: {
   icon: ReactNode;
   title: string;
@@ -117,6 +139,8 @@ function LinkRow({
   busy: boolean;
   error: string | null;
   control: ReactNode;
+  /** The source's sync, under the row. */
+  sync?: ReactNode;
 }) {
   return (
     <div className="flex flex-col gap-2 p-4">
@@ -145,6 +169,7 @@ function LinkRow({
           {error}
         </p>
       )}
+      {sync}
     </div>
   );
 }
@@ -170,6 +195,7 @@ function RepositoryLink({
   onSave,
   onOpenSettings,
   locked,
+  sync,
 }: {
   organization: MembershipDto;
   bounty: BountyDto;
@@ -177,6 +203,7 @@ function RepositoryLink({
   onSave: SaveField;
   onOpenSettings: OpenSettings;
   locked: boolean;
+  sync: ReactNode;
 }) {
   const titleId = useId();
   const [saving, setSaving] = useState(false);
@@ -196,6 +223,7 @@ function RepositoryLink({
       }
       busy={saving}
       error={error}
+      sync={sync}
       control={
         <Combobox
           label="Repository"
@@ -252,6 +280,7 @@ function JiraLink({
   onChange,
   onOpenSettings,
   locked,
+  sync,
 }: {
   organization: MembershipDto;
   bounty: BountyDto;
@@ -259,6 +288,7 @@ function JiraLink({
   onChange: (bounty: BountyDto) => void;
   onOpenSettings: OpenSettings;
   locked: boolean;
+  sync: ReactNode;
 }) {
   const titleId = useId();
   const userId = useUserId();
@@ -445,6 +475,7 @@ function JiraLink({
         description={description}
         busy={saving}
         error={error}
+        sync={sync}
         control={
           <Combobox
             label="Jira issue"

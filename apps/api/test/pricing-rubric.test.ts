@@ -124,6 +124,7 @@ function proposal(
     step,
     rubric: null,
     repoSnapshotId: "rsn_1",
+    contextVersions: { jira: null, github: null },
     decidedAt: null,
     decidedBy: null,
     decisionDeliveryPolicy: null,

@@ -15,6 +15,7 @@
 
 import type { SpecDraft } from "../pricing/spec.js";
 import type { BountyComplexity } from "../sizing.js";
+import type { GithubContext, JiraContext } from "../sources.js";
 
 /**
  * Version 3 names the one bounty the sandbox belongs to (`bountyId`).
@@ -22,6 +23,10 @@ import type { BountyComplexity } from "../sizing.js";
  * named by its hash, so it stays exactly as it was. Version 2 linked any
  * number of tickets, as bounties were called then (`ticketIds`); version 1
  * linked Jira issue pointers (`jiraIssueIds`).
+ *
+ * A version 3 snapshot may carry the bounty's synced `context`. It is
+ * optional, so a snapshot frozen before context was kept reads, and
+ * hashes, exactly as it was written.
  */
 export const APPROVED_TASK_SCHEMA_VERSION = 3;
 
@@ -54,11 +59,28 @@ interface ApprovedTaskSelection {
   readonly selectedAt: string;
 }
 
+/**
+ * The context the bounty's sources had added to it when the task was
+ * taken: each source's latest synced version, with what it said.
+ */
+export interface ApprovedTaskContext {
+  readonly jira: {
+    readonly version: number;
+    readonly content: JiraContext;
+  } | null;
+  readonly github: {
+    readonly version: number;
+    readonly content: GithubContext;
+  } | null;
+}
+
 /** What a version is frozen with now. */
 export interface ApprovedTaskSnapshot extends ApprovedTaskSelection {
   readonly schemaVersion: typeof APPROVED_TASK_SCHEMA_VERSION;
   /** The bounty the sandbox belongs to, by id; never its text. */
   readonly bountyId: string;
+  /** Its synced context; absent from one frozen before it was kept. */
+  readonly context?: ApprovedTaskContext;
 }
 
 /**

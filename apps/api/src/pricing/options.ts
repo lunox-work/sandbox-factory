@@ -1,4 +1,5 @@
 import {
+  type BountyContextStore,
   type BountyProfileStore,
   type BountyProposalStore,
   type BountyRunStore,
@@ -11,6 +12,7 @@ import {
   type BountyStore,
 } from "@sandbox-factory/db";
 
+import type { GithubContextSource } from "../bounties/context.js";
 import type { BountyDelivery } from "./delivery.js";
 import type { BountyExecutor, RunClientResult } from "./executor.js";
 
@@ -23,6 +25,13 @@ export interface PricingRouteOptions {
   readonly issues: JiraIssueStore;
   /** The organization's bounties, which every proposal prices. */
   readonly bounties: BountyStore;
+  /**
+   * Bounties' synced context. Absent, the context routes are not mounted
+   * and every bounty holds none.
+   */
+  readonly contexts?: BountyContextStore;
+  /** Reads a repository's documents; absent without GitHub and storage. */
+  readonly githubContext?: GithubContextSource;
   /** Complexity profiles; absent, a proposal reads as never profiled. */
   readonly profiles?: Pick<BountyProfileStore, "latest">;
   readonly connections?: JiraConnectionStore;

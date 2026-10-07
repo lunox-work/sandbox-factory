@@ -119,6 +119,12 @@ import {
   BountyLinks,
   type OpenSettings,
 } from "./features/bounties/BountyLinks";
+import {
+  ContextLineage,
+  sourcesAhead,
+  StepContext,
+  useBountyContext,
+} from "./features/bounties/BountyContext";
 import { BountyProposal } from "./features/bounties/BountyProposal";
 import {
   OverviewVersion,
@@ -1276,6 +1282,11 @@ function BountyDetail({
       clients.bounties.bountyVersions(bounty.organizationId, bounty.id, signal),
   });
   const [viewing, setViewing] = useState<number | null>(null);
+  /*
+    Where each source's sync stands, read on a page only, where they are
+    synced; a sync's answer holds the bounty as it then is.
+  */
+  const context = useBountyContext(bounty, layout === "page", onChange);
   const earlier =
     viewing === null || viewing === bounty.version
       ? null
@@ -1309,6 +1320,12 @@ function BountyDetail({
       });
   };
   const repo = repos.repos.find(({ id }) => id === bounty.repoId) ?? null;
+  // What each source is called on the steps' context lines.
+  const contextNames = {
+    jira: bounty.jira?.key ?? null,
+    github: context.status?.github.linked?.ref ?? repo?.fullName ?? null,
+  };
+  const heldContext = bounty.stages.overview.context;
   const { sandbox } = bounty;
   // A sandbox made before its bounty named a repository links that one.
   const unlinked = sandbox !== null && sandbox.sourceRepoId === null;
@@ -1778,6 +1795,7 @@ function BountyDetail({
             >
               <StepTriggers
                 stages={bounty.stages}
+                ahead={sourcesAhead(context.status)}
                 approved={{
                   overview: approvedOverview,
                   bounty: bounty.proposal?.status === "approved",
@@ -1836,6 +1854,12 @@ function BountyDetail({
                     {decisionError}
                   </p>
                 )}
+                {/* The context the overview holds, as its links synced it. */}
+                <StepContext
+                  label="Holds"
+                  versions={heldContext}
+                  names={contextNames}
+                />
                 {earlier === null ? (
                   description
                 ) : (
@@ -1858,6 +1882,7 @@ function BountyDetail({
                 onSave={save}
                 onChange={onChange}
                 onOpenSettings={onOpenSettings ?? (() => undefined)}
+                context={context}
                 locked={approvedOverview}
               />
             </TabsContent>
@@ -1877,6 +1902,26 @@ function BountyDetail({
                 }
                 onOpen={selectPageTab}
               />
+              {bounty.stages.bounty !== null && (
+                <>
+                  <ContextLineage
+                    step="bounty"
+                    versions={bounty.stages.bounty.context}
+                    held={heldContext}
+                    remedy={
+                      bounty.proposal?.status === "approved"
+                        ? "Unapprove the bounty, then re-analyze it to size it with the latest context."
+                        : "Re-analyze the bounty to size it with the latest context."
+                    }
+                  />
+                  <StepContext
+                    label="Sized with"
+                    versions={bounty.stages.bounty.context}
+                    held={heldContext}
+                    names={contextNames}
+                  />
+                </>
+              )}
               {proposalPart}
             </TabsContent>
             <TabsContent value="sandbox" className="flex flex-col gap-4">
@@ -1890,6 +1935,26 @@ function BountyDetail({
                 }
                 onOpen={selectPageTab}
               />
+              {bounty.stages.sandbox !== null && (
+                <>
+                  <ContextLineage
+                    step="sandbox"
+                    versions={bounty.stages.sandbox.context}
+                    held={heldContext}
+                    remedy={
+                      unlinked
+                        ? "Generate a new version to build with the latest context."
+                        : "A new version would freeze the latest context; slicing is not available from this page yet."
+                    }
+                  />
+                  <StepContext
+                    label={unlinked ? "Generated with" : "Taken with"}
+                    versions={bounty.stages.sandbox.context}
+                    held={heldContext}
+                    names={contextNames}
+                  />
+                </>
+              )}
               {sandboxPart}
             </TabsContent>
           </Tabs>

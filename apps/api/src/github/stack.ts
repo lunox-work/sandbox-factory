@@ -1,7 +1,8 @@
 /**
  * A repository's tech stack, read beside a snapshot of its head.
  *
- * The one place the platform reads a repository's files outside the worker,
+ * One of two places the platform reads a repository's files outside the
+ * worker (the other is a bounty's GitHub sync, which reads its documents),
  * and only a few of them: the dependency manifests `stackManifests` picks
  * from the snapshot's tree, by Git object id, with the same narrowed
  * `contents: read` token the tree was read with. Each manifest's text is

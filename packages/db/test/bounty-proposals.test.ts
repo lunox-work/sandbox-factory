@@ -57,6 +57,8 @@ function row(overrides: Partial<BountyProposalRow> = {}): BountyProposalRow {
     stepVersion: null,
     rubric: null,
     repoSnapshotId: null,
+    jiraContextVersion: null,
+    githubContextVersion: null,
     decidedBy: null,
     decidedAt: null,
     decisionDeliveryPolicy: null,

@@ -364,6 +364,7 @@ const stored: StoredVersionWithSource = {
     transformConfigSha256: "t".repeat(64),
     approvedTaskSha256: "a".repeat(64),
     proposalVersion: 1,
+    contextVersions: { jira: null, github: null },
     approvedTask: {
       schemaVersion: 3,
       title: "Sum a cart",
@@ -508,7 +509,7 @@ test("the starter agent checks, runs and submits a starter that is built as the 
     assert.equal(manifest.sliceRunId, null);
     assert.equal(manifest.sourceSnapshotId, null);
     assert.equal(manifest.starterSha256, sha(setText));
-    assert.equal(manifest.toolVersion, "sandbox_starter@2");
+    assert.equal(manifest.toolVersion, "sandbox_starter@3");
     assert.equal(
       manifest.transformConfigSha256,
       sha(

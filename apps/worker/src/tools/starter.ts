@@ -417,6 +417,7 @@ export function createStarterAdapter(options: {
           description: task.summary,
           stack: params.stack,
           spec,
+          context: "context" in task ? task.context : undefined,
         }),
         tools: [pseudonymsTool, checkTool, runTool, submitTool],
         submitTool: "submit_starter",

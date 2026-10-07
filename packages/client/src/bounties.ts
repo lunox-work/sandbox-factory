@@ -4,6 +4,9 @@ import {
   bountySizingResponseSchema,
   bountyResponseSchema,
   bountyVersionListSchema,
+  bountyContextResponseSchema,
+  syncBountyContextResponseSchema,
+  type ContextSourceDto,
   type CreateBountyInput,
   type LinkBountyJiraInput,
   type UpdateBountyInput,
@@ -83,6 +86,27 @@ export class BountyClient extends ApiClient {
         { signal },
       ),
     ).versions;
+  }
+  /** Where each of its sources stands against its latest sync. */
+  async bountyContext(owner: string, id: string, signal?: AbortSignal) {
+    return bountyContextResponseSchema.parse(
+      await this.request(
+        `${ownerPath(owner)}/bounties/${encodeURIComponent(id)}/context`,
+        { signal },
+      ),
+    );
+  }
+  /**
+   * Reads one of its sources now and keeps what it found as the source's
+   * next context version, when it is new.
+   */
+  async syncBountyContext(owner: string, id: string, source: ContextSourceDto) {
+    return syncBountyContextResponseSchema.parse(
+      await this.request(
+        `${ownerPath(owner)}/bounties/${encodeURIComponent(id)}/context/${source}/sync`,
+        { method: "POST" },
+      ),
+    );
   }
   async createBounty(owner: string, input: CreateBountyInput) {
     return bountyResponseSchema.parse(

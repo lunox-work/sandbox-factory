@@ -4020,3 +4020,349 @@ test("a Jira update under way is read until it settles, with no refresh", async 
   await new Promise((resolve) => setTimeout(resolve, 3_500));
   expect(reads).toBe(settled);
 }, 15_000);
+
+/** One version of a source's context, as the context route names it. */
+function jiraContextVersion(
+  version: number,
+  overrides: Record<string, unknown> = {},
+) {
+  return {
+    source: "jira",
+    version,
+    ref: "APP-1",
+    revision: "2026-10-05T00:00:00.000+0000",
+    syncedBy: "user_1",
+    createdAt: stamp,
+    checkedAt: stamp,
+    content: {
+      key: "APP-1",
+      issueType: "Story",
+      status: "To Do",
+      statusCategory: "new",
+      priority: "High",
+      labels: ["billing"],
+      components: [],
+      fixVersions: [],
+      parentKey: null,
+      dueDate: null,
+      storyPoints: 5,
+      originalEstimateSeconds: 7200,
+      remainingEstimateSeconds: null,
+      votes: null,
+      watchers: null,
+      subtaskCount: 0,
+      links: [
+        { type: "Blocks", direction: "inward", key: "APP-9", done: false },
+      ],
+      updated: "2026-10-05T00:00:00.000+0000",
+    },
+    ...overrides,
+  };
+}
+
+function githubContextVersion(version: number) {
+  return {
+    source: "github",
+    version,
+    ref: "acme/app",
+    revision: "abcdef1234567",
+    syncedBy: "user_1",
+    createdAt: stamp,
+    checkedAt: stamp,
+    content: {
+      fullName: "acme/app",
+      branch: "main",
+      commitSha: "abcdef1234567",
+      documents: [
+        { path: "README.md", bytes: 120, text: "# App", truncated: false },
+        {
+          path: "docs/invites.md",
+          bytes: 99_000,
+          text: "Invites",
+          truncated: true,
+        },
+      ],
+      omitted: 2,
+    },
+  };
+}
+
+test("each link says whether its sync is in use, warns when its source is ahead, and syncs it", async () => {
+  const linked = detail({
+    repoId: "ghr_1",
+    jira: jiraLink,
+    stages: {
+      overview: { version: 1, context: { jira: 2, github: null } },
+      bounty: null,
+      sandbox: null,
+    },
+  });
+  const state = server([
+    ["GET", "/jira/connections", () => json({ connections: [jiraConnection] })],
+    [
+      "GET",
+      "/bounties/bty_7/context",
+      () =>
+        json({
+          jira: {
+            state: "ahead",
+            reason: null,
+            linked: { ref: "APP-1", url: jiraLink.url },
+            liveRevision: "2026-10-07T00:00:00.000+0000",
+            latest: jiraContextVersion(2),
+          },
+          github: {
+            state: "unsynced",
+            reason: null,
+            linked: { ref: "acme/app", url: "https://github.com/acme/app" },
+            liveRevision: "abcdef1234567",
+            latest: null,
+          },
+        }),
+    ],
+    [
+      "POST",
+      "/bounties/bty_7/context/jira/sync",
+      () =>
+        json({
+          bounty: {
+            ...linked,
+            revision: 2,
+            stages: {
+              ...linked.stages,
+              overview: { version: 1, context: { jira: 3, github: null } },
+            },
+          },
+          context: {
+            jira: {
+              state: "current",
+              reason: null,
+              linked: { ref: "APP-1", url: jiraLink.url },
+              liveRevision: "2026-10-07T00:00:00.000+0000",
+              latest: jiraContextVersion(3, {
+                revision: "2026-10-07T00:00:00.000+0000",
+              }),
+            },
+            github: {
+              state: "unsynced",
+              reason: null,
+              linked: { ref: "acme/app", url: "https://github.com/acme/app" },
+              liveRevision: "abcdef1234567",
+              latest: null,
+            },
+          },
+          changed: true,
+        }),
+    ],
+    ["GET", "/bounties/bty_7", () => json({ bounty: linked })],
+  ]);
+  vi.stubGlobal("fetch", state.fetchMock);
+  window.history.replaceState(null, "", "/bounties/acme/bty_7");
+  render(<Shell {...inAcme("member")} />);
+  const page = await screen.findByTestId("bounty-detail");
+
+  // The repository's sync is not in use yet, and says what syncing adds.
+  const github = await within(page).findByTestId("github-context");
+  expect(await within(github).findByText("Not synced")).toBeDefined();
+  expect(
+    within(github).getByText(/Sync to add what it says to sizing/),
+  ).toBeDefined();
+
+  // Jira's is, at v2, and its issue has changed since.
+  const jira = within(page).getByTestId("jira-context");
+  expect(within(jira).getByText("Ahead of v2")).toBeDefined();
+  expect(
+    within(jira).getByText("Story · High priority · 5 points · 1 link"),
+  ).toBeDefined();
+  expect(within(jira).getByRole("status").textContent).toContain(
+    "APP-1 has changed in Jira since v2 was synced.",
+  );
+  // The overview's tab warns of it too.
+  const steps = screen.getByRole("tablist", { name: "Steps" });
+  expect(
+    within(steps)
+      .getByRole("tab", { name: /^Overview/ })
+      .getAttribute("data-behind"),
+  ).toBe("true");
+  // What v2 holds is a click away.
+  await userEvent.click(
+    within(jira).getByRole("button", { name: "What v2 adds" }),
+  );
+  expect(within(jira).getByText("Story points")).toBeDefined();
+  expect(within(jira).getByText("2h")).toBeDefined();
+  // The overview names the context it holds.
+  const held = within(page).getAllByTestId("step-context")[0]!;
+  expect(within(held).getByTestId("context-jira").textContent).toContain("v2");
+  expect(within(held).getByTestId("context-github").textContent).toContain(
+    "none",
+  );
+
+  await userEvent.click(
+    within(jira).getByRole("button", { name: "Sync Jira context" }),
+  );
+  expect(await within(jira).findByText("Synced v3")).toBeDefined();
+  expect(
+    state.calls.some(
+      ({ method, url }) =>
+        method === "POST" && url.endsWith("/bounties/bty_7/context/jira/sync"),
+    ),
+  ).toBe(true);
+  expect(within(jira).queryByRole("status")).toBeNull();
+  await waitFor(() =>
+    expect(
+      within(within(page).getAllByTestId("step-context")[0]!).getByTestId(
+        "context-jira",
+      ).textContent,
+    ).toContain("v3"),
+  );
+  expect(
+    within(steps)
+      .getByRole("tab", { name: /^Overview/ })
+      .hasAttribute("data-behind"),
+  ).toBe(false);
+});
+
+test("a refused sync says why, and an unlinked source cannot be synced", async () => {
+  const state = server([
+    [
+      "GET",
+      "/bounties/bty_7/context",
+      () =>
+        json({
+          jira: {
+            state: "unlinked",
+            reason: null,
+            linked: null,
+            liveRevision: null,
+            latest: null,
+          },
+          github: {
+            state: "current",
+            reason: null,
+            linked: { ref: "acme/app", url: "https://github.com/acme/app" },
+            liveRevision: "abcdef1234567",
+            latest: githubContextVersion(1),
+          },
+        }),
+    ],
+    [
+      "POST",
+      "/context/github/sync",
+      () =>
+        json(
+          {
+            code: "no_snapshot",
+            error:
+              "The repository has no snapshot yet. Try again once it has been read.",
+          },
+          409,
+        ),
+    ],
+    [
+      "GET",
+      "/bounties/bty_7",
+      () => json({ bounty: detail({ repoId: "ghr_1" }) }),
+    ],
+  ]);
+  vi.stubGlobal("fetch", state.fetchMock);
+  window.history.replaceState(null, "", "/bounties/acme/bty_7");
+  render(<Shell {...inAcme("member")} />);
+  const page = await screen.findByTestId("bounty-detail");
+
+  const jira = await within(page).findByTestId("jira-context");
+  expect(await within(jira).findByText("Not in use")).toBeDefined();
+  expect(
+    within(jira)
+      .getByRole("button", { name: "Sync Jira context" })
+      .hasAttribute("disabled"),
+  ).toBe(true);
+
+  const github = within(page).getByTestId("github-context");
+  expect(await within(github).findByText("Synced v1")).toBeDefined();
+  expect(within(github).getByText("2 documents at abcdef1")).toBeDefined();
+  await userEvent.click(
+    within(github).getByRole("button", { name: "What v1 adds" }),
+  );
+  expect(within(github).getByText("docs/invites.md")).toBeDefined();
+  expect(within(github).getByText("cut short")).toBeDefined();
+  expect(
+    within(github).getByText("2 more documents left out for length."),
+  ).toBeDefined();
+
+  await userEvent.click(
+    within(github).getByRole("button", { name: "Sync GitHub context" }),
+  );
+  expect((await within(github).findByRole("alert")).textContent).toContain(
+    "no snapshot yet",
+  );
+});
+
+test("a bounty sized and a sandbox generated with older context than the overview holds are behind on it", async () => {
+  const state = server([
+    [
+      "GET",
+      "/bounties/bty_7",
+      () =>
+        json({
+          bounty: detail({
+            repoId: "ghr_1",
+            jira: jiraLink,
+            stages: {
+              overview: { version: 1, context: { jira: 2, github: 1 } },
+              bounty: {
+                version: 0,
+                overviewVersion: 1,
+                context: { jira: 1, github: 1 },
+              },
+              sandbox: {
+                version: 1,
+                bountyVersion: null,
+                context: { jira: null, github: 1 },
+              },
+            },
+          }),
+        }),
+    ],
+  ]);
+  vi.stubGlobal("fetch", state.fetchMock);
+  window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=bounty");
+  render(<Shell {...inAcme("member")} />);
+
+  const lineage = await screen.findByTestId("bounty-context-lineage");
+  expect(lineage.textContent).toContain(
+    "The overview's context has moved ahead.",
+  );
+  expect(lineage.textContent).toContain(
+    "Sized with older context than it holds: Jira v1, now v2.",
+  );
+  expect(lineage.textContent).toContain("Re-analyze the bounty");
+  // Its line names what it was sized with, the source behind marked.
+  const line = screen
+    .getAllByTestId("step-context")
+    .find((element) => element.textContent?.startsWith("Sized with"));
+  expect(within(line!).getByTestId("context-jira").textContent).toContain("v1");
+  expect(within(line!).getByLabelText("behind")).toBeDefined();
+  expect(within(line!).getByTestId("context-github").textContent).toContain(
+    "v1",
+  );
+
+  // Both later steps' tabs warn: each is behind on Jira.
+  const steps = screen.getByRole("tablist", { name: "Steps" });
+  for (const name of [/^Bounty/, /^Sandbox/]) {
+    expect(
+      within(steps).getByRole("tab", { name }).getAttribute("data-behind"),
+    ).toBe("true");
+  }
+  await userEvent.hover(
+    within(within(steps).getByRole("tab", { name: /^Bounty/ })).getByText(
+      "Bounty",
+    ),
+  );
+  expect(
+    (
+      await screen.findAllByText(
+        "Sized with older context than the overview holds.",
+      )
+    ).length,
+  ).toBeGreaterThan(0);
+});

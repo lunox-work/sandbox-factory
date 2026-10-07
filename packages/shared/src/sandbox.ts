@@ -23,6 +23,11 @@ import {
   entryPointSchema,
   sandboxFixtureSchema,
 } from "./analysis.js";
+import {
+  contextVersionsDefault,
+  githubContextSchema,
+  jiraContextSchema,
+} from "./context.js";
 import { specDraftSchema } from "./spec.js";
 
 export const ACCEPTANCE_TESTS_MAX = 50;
@@ -220,6 +225,23 @@ export const approvedTaskSnapshotSchema = z.discriminatedUnion(
     approvedTaskSelectionSchema.extend({
       schemaVersion: z.literal(APPROVED_TASK_SCHEMA_VERSION),
       bountyId: z.string(),
+      // Optional: a version frozen before context was kept has none.
+      context: z
+        .object({
+          jira: z
+            .object({
+              version: z.number().int().positive(),
+              content: jiraContextSchema,
+            })
+            .nullable(),
+          github: z
+            .object({
+              version: z.number().int().positive(),
+              content: githubContextSchema,
+            })
+            .nullable(),
+        })
+        .optional(),
     }),
     approvedTaskSelectionSchema.extend({
       schemaVersion: z.literal(2),
@@ -254,6 +276,8 @@ export const sandboxVersionSourceDtoSchema = z.strictObject({
    * taken from; null for one taken before this was kept.
    */
   proposalVersion: z.number().int().positive().nullable(),
+  /** The bounty's synced context versions the task was taken with. */
+  contextVersions: contextVersionsDefault,
   aliasRules: z.array(aliasRuleSchema),
   dependencyChoices: dependencyChoicesSchema,
   acceptanceTests: z.array(acceptanceTestSchema),

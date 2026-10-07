@@ -21,6 +21,7 @@ import {
   createJiraBoardStore,
   createJiraConnectionStore,
   createJiraIssueStore,
+  createBountyContextStore,
   createBountyStore,
   createObjectStore,
   createOrganizationStore,
@@ -59,6 +60,8 @@ import { GithubSnapshotter } from "./github/snapshot.js";
 import { resolveImageDigest } from "./image-digest.js";
 import { jiraClientFor, jiraClientsFor } from "./jira/credential.js";
 import { createApp } from "./routes.js";
+import { heldContext } from "./bounties/held-context.js";
+import { installationClient } from "./github/credential.js";
 import {
   AnthropicCaller,
   DeepSeekCaller,
@@ -92,6 +95,17 @@ const bountyProfiles = createBountyProfileStore(connection.db);
 const jiraIssues = createJiraIssueStore(connection.db);
 /** The organization's bounties: what every proposal prices, from any source. */
 const bounties = createBountyStore(connection.db);
+const bountyContexts = createBountyContextStore(connection.db);
+/** The context a bounty holds from the sources it is linked to now. */
+const contextFor = (
+  organizationId: string,
+  bounty: Parameters<typeof heldContext>[2],
+) =>
+  heldContext(
+    { contexts: bountyContexts, boards: jiraBoards },
+    organizationId,
+    bounty,
+  );
 const rateCards = createRateCardStore(connection.db);
 const bountyWritebacks = createBountyWritebackStore(connection.db);
 
@@ -233,6 +247,7 @@ const bountyExecutor =
         specs: bountySpecs,
         caller,
         clientFor: runClientFor,
+        contextFor,
         outlineFor: async (organizationId, repoId) => {
           const snapshot = await repoSnapshots.current(organizationId, repoId);
           return snapshot === null
@@ -400,6 +415,7 @@ const sandbox =
         specs: bountySpecs,
         bounties,
         repos: githubRepos,
+        contextFor,
         ensureWorker: () => workerLauncher.ensureWorker(),
         maxActive: env.MAX_ACTIVE_RUNS_PER_ORG,
         onLaunchError: () => console.error("analysis_worker_launch_failed"),
@@ -441,6 +457,35 @@ const analysisWatchdog =
         onError: () => console.error("analysis_watchdog_failed"),
       });
 
+/**
+ * A repository's documents, for a bounty's GitHub sync: read from its
+ * newest snapshot's file list with a token narrowed to it, so it needs the
+ * App and a bucket as snapshots do.
+ */
+const githubContext =
+  github === undefined || githubSnapshotter === undefined
+    ? undefined
+    : {
+        repos: githubRepos,
+        snapshots: repoSnapshots,
+        tree: async (treeKey: string) => githubSnapshotter.tree(treeKey),
+        readerFor: async (
+          organizationId: string,
+          repo: { connectionId: string; externalId: string },
+        ) => {
+          const found = await github.connections.get(
+            organizationId,
+            repo.connectionId,
+          );
+          return found === null || !found.healthy
+            ? null
+            : installationClient(github.installations, found.installationId, {
+                kind: "repository",
+                repositoryId: repo.externalId,
+              });
+        },
+      };
+
 const app = createApp({
   corsOrigins: env.CORS_ORIGINS,
   auth,
@@ -459,6 +504,8 @@ const app = createApp({
     specs: bountySpecs,
     issues: jiraIssues,
     bounties,
+    contexts: bountyContexts,
+    ...(githubContext === undefined ? {} : { githubContext }),
     profiles: bountyProfiles,
     connections: jiraConnections,
     writebacks: bountyWritebacks,

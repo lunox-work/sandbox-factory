@@ -244,6 +244,7 @@ const version: StoredSandboxVersion = {
 const source: StoredVersionSource = {
   sandboxVersionId: "sbv_1",
   proposalVersion: 1,
+  contextVersions: { jira: null, github: null },
   origin: "slice",
   sourceSnapshotId: "rsn_1",
   sourceCommitSha: "a".repeat(40),
@@ -1662,6 +1663,8 @@ function starterFixture(
     created: "ok" | "source_linked" | "not-found" | "starter_in_progress";
     /** The newest version's starter run, still under way. */
     inFlight: boolean;
+    /** What the bounty's sources hold, as `heldContext` reads it. */
+    context: unknown;
   }> = {},
 ) {
   const enqueued: { snapshotId: string | null; input: unknown }[] = [];
@@ -1793,6 +1796,9 @@ function starterFixture(
     ensureWorker: async () => {
       launches++;
     },
+    ...(overrides.context === undefined
+      ? {}
+      : { contextFor: async () => overrides.context }),
     now: () => new Date(stamp),
   } as unknown as SandboxRouteOptions;
   const app = new Hono<{ Variables: AuthVariables }>();
@@ -2031,4 +2037,60 @@ test("a generated version changes its listing, but not its transform or build, a
   ).json()) as { ok: boolean; detail: string };
   assert.equal(replay.ok, false);
   assert.match(replay.detail, /generated, not sliced/);
+});
+
+test("a generated version freezes the context its bounty holds into its task", async () => {
+  const jira = {
+    key: "APP-1",
+    issueType: "Story",
+    status: null,
+    statusCategory: null,
+    priority: "High",
+    labels: [],
+    components: [],
+    fixVersions: [],
+    parentKey: null,
+    dueDate: null,
+    storyPoints: 3,
+    originalEstimateSeconds: null,
+    remainingEstimateSeconds: null,
+    votes: null,
+    watchers: null,
+    subtaskCount: 0,
+    links: [],
+    updated: null,
+  };
+  const f = starterFixture("owner", {
+    context: {
+      jira: { version: 2, content: jira, ref: "APP-1" },
+      github: null,
+    },
+  });
+  const response = await f.request("POST", "/sbx_1/starter");
+  assert.equal(response.status, 202);
+  const input = f.created[0]?.input as {
+    source: {
+      approvedTask: { context?: unknown };
+      approvedTaskSha256: string;
+    };
+  };
+  // What it said, by version: the starter agent reads it from the task.
+  assert.deepEqual(input.source.approvedTask.context, {
+    jira: { version: 2, content: jira },
+    github: null,
+  });
+  // And the task's hash covers it, as it covers the rest of the task.
+  const without = starterFixture();
+  await without.request("POST", "/sbx_1/starter");
+  const plain = without.created[0]?.input as {
+    source: { approvedTask: { context?: unknown }; approvedTaskSha256: string };
+  };
+  assert.deepEqual(plain.source.approvedTask.context, {
+    jira: null,
+    github: null,
+  });
+  assert.notEqual(
+    plain.source.approvedTaskSha256,
+    input.source.approvedTaskSha256,
+  );
 });

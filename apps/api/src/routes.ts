@@ -1,3 +1,4 @@
+import { mountBountyContextRoutes } from "./bounties/context.js";
 import { sizeIfNeverSized } from "./pricing/start-run.js";
 import type { AuthVariables } from "./http-context.js";
 export type { AuthVariables } from "./http-context.js";
@@ -590,6 +591,12 @@ export function createApp({
       mountBountyRoutes(app, pricing);
       // Its Jira issue, picked for it from any of the workspace's boards.
       mountBountyJiraRoutes(app, pricing);
+      // What its Jira issue and repository add to it, synced on request.
+      if (pricing.contexts !== undefined)
+        mountBountyContextRoutes(app, {
+          ...pricing,
+          contexts: pricing.contexts,
+        });
       mountCallerBountyRoutes(app, {
         bounties: pricing.bounties,
         organizationsOf: async (userId) =>

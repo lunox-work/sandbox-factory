@@ -21,6 +21,7 @@ import { withDeadline, abortableSleep } from "./transport.js";
 import {
   jiraBoardPageResponseSchema,
   type JiraBoardDto,
+  type JiraContextDto,
   type JiraIssueDetailDto,
   type JiraIssueDto,
   type JiraIssuePageDto,
@@ -43,6 +44,12 @@ import {
   toIssueSignalsDto,
   toSprintDto,
 } from "./mapping.js";
+import {
+  CONTEXT_FIELDS,
+  storyPointFields,
+  toFieldDefinitions,
+  toJiraContext,
+} from "./context.js";
 import { type JiraIssueSpec, SPEC_FIELDS, toIssueSpec } from "./spec.js";
 
 /** A non-2xx from Jira, with the status kept so callers can branch on it. */
@@ -350,6 +357,37 @@ export class JiraClient {
     );
     const issue = jiraIssueResponseSchema.parse(payload);
     return toIssueSpec(issue.key, issue.fields ?? {});
+  }
+
+  /**
+   * One issue's **context**: what it says about its bounty beyond its text
+   * (`toJiraContext`), with its story points when the site keeps them. The
+   * site's story points fields are found by name from its field list; a
+   * site whose list cannot be read is read without them, as a site with
+   * none is. Nothing it returns names a person.
+   */
+  async issueContext(
+    keyOrId: string,
+    signal?: AbortSignal,
+  ): Promise<JiraContextDto> {
+    let pointFields: string[] = [];
+    try {
+      pointFields = storyPointFields(
+        toFieldDefinitions(await this.#get("/rest/api/3/field", signal)),
+      );
+    } catch (error) {
+      // Only the points are lost; a credential that is refused here is
+      // refused by the issue read below too, which says so.
+      if (signal?.aborted === true) throw error;
+    }
+    const query = new URLSearchParams({
+      fields: [...CONTEXT_FIELDS, ...pointFields].join(","),
+    });
+    const payload = await this.#get(
+      `/rest/api/3/issue/${encodeURIComponent(keyOrId)}?${query}`,
+      signal,
+    );
+    return toJiraContext(jiraIssueResponseSchema.parse(payload), pointFields);
   }
 
   /** Comments are read only for explicit recovery of an ambiguous write. */

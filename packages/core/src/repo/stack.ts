@@ -89,6 +89,14 @@ function baseName(path: string): string {
   return slash === -1 ? path : path.slice(slash + 1);
 }
 
+/**
+ * Whether a path sits under vendored or generated code, fixtures or
+ * examples: a directory whose files say nothing of the repository's own.
+ */
+export function inSkippedDirectory(path: string): boolean {
+  return skipped(path);
+}
+
 function skipped(path: string): boolean {
   return path
     .split("/")

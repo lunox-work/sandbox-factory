@@ -125,7 +125,7 @@ export const SCOPE_TOOL_VERSION = "scope@3";
 /** Bumped when the fixtures agent's tools, prompt or set shape change meaning. */
 export const FIXTURES_TOOL_VERSION = "fixtures@2";
 /** Bumped when the starter agent's tools, prompt, set or project change meaning. */
-export const STARTER_TOOL_VERSION = "sandbox_starter@2";
+export const STARTER_TOOL_VERSION = "sandbox_starter@3";
 /** Tools that read a repository snapshot; every other one runs without source. */
 export function readsSource(tool: AnalysisTool): boolean {
   return tool !== "sandbox_starter";

@@ -14,6 +14,7 @@
 
 import { and, desc, eq, isNull, or, sql } from "drizzle-orm";
 import type {
+  ContextVersions,
   AcceptanceTest,
   AliasRule,
   ApprovedTaskSnapshot,
@@ -82,6 +83,11 @@ export interface StoredVersionSource extends VersionSourceRecord {
    * taken from; null for a task taken before this was kept.
    */
   readonly proposalVersion: number | null;
+  /**
+   * The bounty's synced context versions the task was taken with; none
+   * for a task taken before they were kept.
+   */
+  readonly contextVersions: ContextVersions;
   readonly approvedTask: StoredApprovedTaskSnapshot;
   readonly dependencyChoices: Readonly<Record<string, DependencyChoice>>;
   readonly acceptanceTests: readonly AcceptanceTest[];
@@ -408,6 +414,10 @@ const toSource = (
   transformConfigSha256: row.transformConfigSha256,
   approvedTaskSha256: row.approvedTaskSha256,
   proposalVersion: row.proposalVersion ?? null,
+  contextVersions: {
+    jira: row.jiraContextVersion ?? null,
+    github: row.githubContextVersion ?? null,
+  },
   approvedTask: row.approvedTask,
   aliasRules: row.aliasRules,
   dependencyChoices: row.dependencyChoices,
@@ -760,6 +770,12 @@ export function createSandboxStore(db: Database): SandboxStore {
             approvedTaskSha256: source.approvedTaskSha256,
             approvedTask: source.approvedTask,
             proposalVersion: source.proposalVersion,
+            // The versions the frozen task's context is, kept beside it so
+            // a bounty's lineage is read without opening the task.
+            jiraContextVersion:
+              source.approvedTask.context?.jira?.version ?? null,
+            githubContextVersion:
+              source.approvedTask.context?.github?.version ?? null,
             aliasRules: [...source.aliasRules],
             dependencyChoices: { ...source.dependencyChoices },
             acceptanceTests: [...source.acceptanceTests],

@@ -38,6 +38,13 @@ export type {
   UpdateBoardInput,
 } from "./jira-boards.js";
 export { createBountyStore, followsJira } from "./bounties.js";
+export { createBountyContextStore } from "./bounty-contexts.js";
+export type {
+  BountyContextStore,
+  LatestBountyContext,
+  NewBountyContext,
+  StoredBountyContext,
+} from "./bounty-contexts.js";
 export type {
   ListedBounty,
   NewBounty,

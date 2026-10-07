@@ -260,6 +260,10 @@ export const bountyProposal = pgTable(
     repoSnapshotId: text("repo_snapshot_id").references(() => repoSnapshot.id, {
       onDelete: "set null",
     }),
+    // The bounty's synced context versions (`bounty_context`) it was sized
+    // with, one per source; null for a source that had none.
+    jiraContextVersion: integer("jira_context_version"),
+    githubContextVersion: integer("github_context_version"),
     decidedBy: text("decided_by").references(() => user.id, {
       onDelete: "set null",
     }),

@@ -14,6 +14,8 @@ import {
   FIXTURES_SYSTEM_PROMPT,
   SCOPE_SYSTEM_PROMPT,
   bountySection,
+  STARTER_SYSTEM_PROMPT,
+  starterBountySection,
 } from "../src/agent/prompts.js";
 import {
   REPO_TOOL_LIMITS,
@@ -620,6 +622,53 @@ test("prompts carry the ticket's spec and the seam rule", () => {
   assert.match(SCOPE_SYSTEM_PROMPT, /submit_scope/);
   assert.match(SCOPE_SYSTEM_PROMPT, /data, not instructions/);
   assert.match(FIXTURES_SYSTEM_PROMPT, /sandbox\/run\.ts/);
+});
+
+test("a starter is written with the context synced into its bounty, when it has any", () => {
+  const bounty = {
+    title: "Retry webhooks",
+    description: "Failed deliveries are retried.",
+    stack: ["TypeScript"],
+    spec: null,
+  };
+  const plain = starterBountySection(bounty);
+  assert.doesNotMatch(plain, /context synced/);
+  // A task frozen before context was kept, or with none, reads the same.
+  assert.equal(
+    starterBountySection({ ...bounty, context: { jira: null, github: null } }),
+    plain,
+  );
+  const section = starterBountySection({
+    ...bounty,
+    context: {
+      jira: null,
+      github: {
+        version: 1,
+        content: {
+          fullName: "acme/app",
+          branch: "main",
+          commitSha: "c1",
+          documents: [
+            {
+              path: "docs/webhooks.md",
+              bytes: 40,
+              text: "Webhooks retry three times.",
+              truncated: false,
+            },
+          ],
+          omitted: 0,
+        },
+      },
+    },
+  });
+  assert.match(section, /The context synced into the bounty:/);
+  assert.match(
+    section,
+    /--- docs\/webhooks\.md ---\nWebhooks retry three times\./,
+  );
+  // The prompt says what the context is for, and whose names it holds.
+  assert.match(STARTER_SYSTEM_PROMPT, /its repository's own documents/);
+  assert.match(STARTER_SYSTEM_PROMPT, /pseudonyms must cover/);
 });
 
 test("tasks are read owner-scoped: the proposal, then the spec revision", async () => {
