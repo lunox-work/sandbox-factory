@@ -760,7 +760,21 @@ function RepositoryView({
         title="Context builders"
         description="Each reads the chosen snapshot and describes it for people and agents."
         aside={
-          <div className="flex items-center gap-2">
+          // One action at a time: "Build all" while a builder is left to
+          // start, then "View files". A member, who starts nothing, views.
+          manageable && toBuild.length > 0 ? (
+            <Button
+              size="sm"
+              className="h-7 gap-1.5 rounded-[6px] px-2.5 text-xs has-[>svg]:px-2.5 [&_svg]:size-3.5"
+              disabled={building || snapshotId === ""}
+              onClick={() => {
+                void buildAll();
+              }}
+            >
+              <Hammer />
+              Build all
+            </Button>
+          ) : (
             <Button
               variant="secondary"
               size="sm"
@@ -776,25 +790,7 @@ function RepositoryView({
               <FolderOpen />
               View files
             </Button>
-            {manageable && (
-              <Button
-                size="sm"
-                className="h-7 gap-1.5 rounded-[6px] px-2.5 text-xs has-[>svg]:px-2.5 [&_svg]:size-3.5"
-                disabled={building || snapshotId === "" || toBuild.length === 0}
-                title={
-                  toBuild.length === 0 && snapshotId !== ""
-                    ? "Every builder has run on this snapshot."
-                    : undefined
-                }
-                onClick={() => {
-                  void buildAll();
-                }}
-              >
-                <Hammer />
-                Build all
-              </Button>
-            )}
-          </div>
+          )
         }
       >
         <div className={FLUSH_LIST}>

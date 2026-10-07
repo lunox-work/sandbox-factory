@@ -288,6 +288,12 @@ async function history(count: RegExp) {
   return footer;
 }
 
+function viewFiles() {
+  return screen.getByRole("button", {
+    name: "View files",
+  }) as HTMLButtonElement;
+}
+
 function buildAll() {
   return screen.getByRole("button", { name: "Build all" }) as HTMLButtonElement;
 }
@@ -348,6 +354,8 @@ test("the page names the repository, and owners see a card per builder", async (
     expect(within(builderCard(name)).queryByRole("button")).toBe(null);
   }
   expect(buildAll().disabled).toBe(false);
+  // One action at a time: there is nothing built yet to view.
+  expect(screen.queryByRole("button", { name: "View files" })).toBe(null);
   expect(
     within(screen.getByRole("region", { name: "Run history" })).getByText(
       /No runs yet/,
@@ -371,11 +379,15 @@ test("Build all posts the snapshot once, and every card follows its run", async 
   expect(f.posts).toEqual([{ snapshotId: "rsn_1" }]);
   expect(f.calls.filter((c) => c.startsWith("POST"))).toHaveLength(1);
   // Nothing is left to start while they are queued.
-  await waitFor(() => expect(buildAll().disabled).toBe(true));
-  expect(buildAll().title).toBe("Every builder has run on this snapshot.");
+  // Nothing is left to start while they are queued: the block offers
+  // their files instead, held until one is built.
+  await waitFor(() =>
+    expect(screen.queryByRole("button", { name: "Build all" })).toBe(null),
+  );
+  expect(viewFiles().disabled).toBe(true);
 });
 
-test("Build all is held once every builder has built on the snapshot", async () => {
+test("View files takes Build all's place once every builder has built", async () => {
   server({
     runs: CONTEXT_BUILDERS.map(
       (tool) => ({ ...queuedRun(tool), status: "succeeded" }) as AnalysisRunDto,
@@ -385,7 +397,8 @@ test("Build all is held once every builder has built on the snapshot", async () 
   await within(
     await screen.findByRole("region", { name: "Data model builder" }),
   ).findByText("Built");
-  await waitFor(() => expect(buildAll().disabled).toBe(true));
+  await waitFor(() => expect(viewFiles().disabled).toBe(false));
+  expect(screen.queryByRole("button", { name: "Build all" })).toBe(null);
 });
 
 test("a member opens a build's files but cannot build or read logs", async () => {
@@ -437,7 +450,8 @@ test("a member opens a build's files but cannot build or read logs", async () =>
 
 test("View is disabled until a builder has built on the snapshot", async () => {
   server({ runs: [] });
-  renderPage();
+  // A member: an owner is offered Build all instead.
+  renderPage("member");
   await screen.findByText(/10 files/);
   expect(
     (screen.getByRole("button", { name: "View files" }) as HTMLButtonElement)
@@ -454,7 +468,8 @@ test("a build older than the repository's newest page of runs is still shown bui
     snapshotId: "rsn_other",
   }));
   server({ runs: [...newer, graphRun] });
-  renderPage();
+  // A member: an owner with builders left to start is offered Build all.
+  renderPage("member");
   await waitFor(() =>
     expect(
       (screen.getByRole("button", { name: "View files" }) as HTMLButtonElement)
@@ -488,7 +503,8 @@ test("View opens every build in one explorer, a folder per builder, and reads a 
     },
   });
   const tab = spyOnOpen();
-  renderPage();
+  // A member: an owner with builders left to start is offered Build all.
+  renderPage("member");
   await screen.findByText(/10 files/);
   // Enabled once the snapshot's own runs have been read.
   await waitFor(() =>
@@ -587,7 +603,8 @@ test("what can be seen is shown: diagrams drawn, pages run, wiki links followed"
       art_deps_dot: 'digraph { "a" -> "b" }',
     },
   });
-  renderPage();
+  // A member: an owner with builders left to start is offered Build all.
+  renderPage("member");
   await screen.findByText(/10 files/);
   // Enabled once the snapshot's own runs have been read.
   await waitFor(() =>
@@ -789,7 +806,8 @@ test("a graph out of retries leaves nothing for its readers to build", async () 
     name: "DeepWiki Open builder",
   });
   await within(card).findByText("Built");
-  await waitFor(() => expect(buildAll().disabled).toBe(true));
+  await waitFor(() => expect(viewFiles().disabled).toBe(false));
+  expect(screen.queryByRole("button", { name: "Build all" })).toBe(null);
 });
 
 test("the API's refusal of a build is shown on the page", async () => {
