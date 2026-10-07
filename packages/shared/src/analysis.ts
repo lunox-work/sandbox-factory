@@ -39,6 +39,18 @@ export const enqueueAnalysisSchema = z.strictObject({
   snapshotId: z.string().min(1).optional(),
   params: analysisParamsSchema.optional(),
 });
+/**
+ * `POST .../repositories/:id/builds`: every context builder on one
+ * snapshot, as one request. Each is enqueued as `.../runs` would enqueue it
+ * with no parameters, so a builder already built (or queued, or out of
+ * retries) is answered with its run as is, and an outdated one is built
+ * again. The set is admitted against the organization's active-run cap
+ * once, by the first run it creates, so a full set is never refused
+ * halfway.
+ */
+export const buildAllSchema = z.strictObject({
+  snapshotId: z.string().min(1).optional(),
+});
 /** Stored parameters of the builders that name themselves; see core. */
 export const dependencyCruiserParamsSchema = z.strictObject({
   deadlineMinutes: z.number().int().min(1).max(120).default(30),
@@ -824,6 +836,7 @@ export type ArtifactDto = z.infer<typeof artifactDtoSchema>;
 export type ArtifactContentDto = z.infer<typeof artifactContentSchema>;
 export type RunLogContentDto = z.infer<typeof runLogContentSchema>;
 export type EnqueueAnalysisInput = z.input<typeof enqueueAnalysisSchema>;
+export type BuildAllInput = z.input<typeof buildAllSchema>;
 export type EnqueueSliceInput = z.input<typeof enqueueSliceSchema>;
 export type EnqueueScopeInput = z.input<typeof enqueueScopeSchema>;
 export type RepositoryProposalDto = z.infer<typeof repositoryProposalSchema>;

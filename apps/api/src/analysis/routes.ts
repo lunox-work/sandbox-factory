@@ -14,13 +14,20 @@ import type {
   RepositoryProposalDto,
   StoredTree,
 } from "@sandbox-factory/shared";
-import type { AnalysisParams, AnalysisTool } from "sandbox-factory";
+import {
+  CONTEXT_BUILDERS,
+  readsGraph,
+  type AnalysisParams,
+  type AnalysisTool,
+  type ContextBuilder,
+} from "sandbox-factory";
 import {
   analysisRunListSchema,
   analysisRunResponseSchema,
   ARTIFACT_TEXT_MAX_BYTES,
   artifactContentSchema,
   artifactListSchema,
+  buildAllSchema,
   runLogContentSchema,
   enqueueAnalysisSchema,
   enqueueFixturesSchema,
@@ -72,6 +79,27 @@ const SANDBOX_TOOLS: ReadonlySet<AnalysisTool> = new Set([
 ]);
 const hiddenFrom = (role: string, run: StoredAnalysisRun) =>
   SANDBOX_TOOLS.has(run.tool) && !isAtLeastAdmin(role);
+/**
+ * A context builder's stored parameters: graphify's, plus its own name and,
+ * for a map reader, the graph run it reads. A wiki waits on a model's
+ * pages, as an agent run does; the others are deterministic and keep the
+ * graph runs' deadline, which is part of the cache key the profiler's graph
+ * runs share.
+ */
+function builderParams(
+  tool: ContextBuilder,
+  asked: number | undefined,
+  graphRunId: string | undefined,
+): AnalysisParams {
+  const deadlineMinutes =
+    asked ??
+    (tool === "deepwiki" ? AGENT_DEADLINE_MINUTES : GRAPH_DEADLINE_MINUTES);
+  if (tool === "graphify") return { deadlineMinutes };
+  if (!readsGraph(tool)) return { deadlineMinutes, builder: tool };
+  if (graphRunId === undefined)
+    throw new Error(`The ${tool} builder needs a graph run.`);
+  return { deadlineMinutes, builder: tool, graphRunId };
+}
 export function mountAnalysisRoutes(
   app: Hono<{ Variables: AuthVariables }>,
   options: AnalysisRouteOptions,
@@ -212,15 +240,9 @@ export function mountAnalysisRoutes(
     if (snapshot === null || snapshot.repoId !== repoId)
       return c.json({ error: "No source snapshot is available." }, 404);
     const tool = body.data.tool;
-    // A wiki waits on a model's pages, as an agent run does; the others are
-    // deterministic and keep the graph runs' deadline, which is part of the
-    // cache key the profiler's graph runs share.
-    const deadlineMinutes =
-      body.data.params?.deadlineMinutes ??
-      (tool === "deepwiki" ? AGENT_DEADLINE_MINUTES : GRAPH_DEADLINE_MINUTES);
-    let params: AnalysisParams = { deadlineMinutes };
+    let graphRunId: string | undefined;
     let graphQueued = false;
-    if (tool === "abstractions" || tool === "data_model") {
+    if (readsGraph(tool)) {
       // A builder that reads the map waits for the snapshot's graph run,
       // enqueued or found first, as a slice does.
       const graph = await graphRunFor(
@@ -231,8 +253,13 @@ export function mountAnalysisRoutes(
       );
       if ("response" in graph) return graph.response;
       graphQueued = graph.run.status === "queued";
-      params = { deadlineMinutes, builder: tool, graphRunId: graph.run.id };
-    } else if (tool !== "graphify") params = { deadlineMinutes, builder: tool };
+      graphRunId = graph.run.id;
+    }
+    const params = builderParams(
+      tool,
+      body.data.params?.deadlineMinutes,
+      graphRunId,
+    );
     const result = await enqueueAnalysis(
       {
         runs: options.runs,
@@ -257,6 +284,83 @@ export function mountAnalysisRoutes(
           : c.json({ error: "Not found." }, 404);
     await options.ensureWorker().catch(() => options.onLaunchError?.());
     return c.json(analysisRunResponseSchema.parse({ run: result.run }), 202);
+  });
+  /**
+   * Every context builder on one snapshot, in `CONTEXT_BUILDERS` order, so
+   * graphify's run is there for the map readers to wait on. The first run
+   * the set creates is held to the active cap; the rest follow it in, so a
+   * set the cap admits is queued whole rather than refused halfway. A
+   * builder already built, queued or out of retries is answered as is.
+   */
+  app.post(`${base}/repositories/:id/builds`, async (c) => {
+    if (!isAtLeastAdmin(c.get("member").role))
+      return c.json(
+        { error: "Only owners and admins can start analysis." },
+        403,
+      );
+    const owner = c.get("member").organizationId;
+    const repoId = c.req.param("id");
+    const repo = await options.repos.get(owner, repoId);
+    if (repo === null) return c.json({ error: "Not found." }, 404);
+    const body = buildAllSchema.safeParse(await c.req.json().catch(() => ({})));
+    if (!body.success)
+      return c.json({ error: "Invalid analysis request." }, 400);
+    const snapshot =
+      body.data.snapshotId === undefined
+        ? await options.snapshots.current(owner, repoId)
+        : await options.snapshots.get(owner, body.data.snapshotId);
+    if (snapshot === null || snapshot.repoId !== repoId)
+      return c.json({ error: "No source snapshot is available." }, 404);
+    const maxActive = options.maxActive ?? 3;
+    const runs: StoredAnalysisRun[] = [];
+    let graph: StoredAnalysisRun | undefined;
+    let admitted = false;
+    let refused: Response | null = null;
+    for (const tool of CONTEXT_BUILDERS) {
+      // A map reader has nothing to read once the graph is out of retries.
+      if (
+        readsGraph(tool) &&
+        (graph === undefined || graph.status === "failed")
+      )
+        continue;
+      const result = await enqueueAnalysis(
+        {
+          runs: options.runs,
+          removeObject: (key) => options.objects.remove(key),
+        },
+        owner,
+        snapshot.id,
+        {
+          tool,
+          params: builderParams(tool, undefined, graph?.id),
+          requestedBy: c.get("user").id,
+          maxActive: admitted ? maxActive + CONTEXT_BUILDERS.length : maxActive,
+        },
+      );
+      if (!result.ok) {
+        refused =
+          result.reason === "run_limit"
+            ? runLimit(c)
+            : result.reason === "graph_mismatch"
+              ? graphMismatch(c)
+              : c.json({ error: "Not found." }, 404);
+        break;
+      }
+      if (result.created) admitted = true;
+      if (tool === "graphify") graph = result.run;
+      runs.push(result.run);
+    }
+    if (runs.some((run) => run.status === "queued"))
+      await options.ensureWorker().catch(() => options.onLaunchError?.());
+    return (
+      refused ??
+      c.json(
+        analysisRunListSchema.parse({
+          runs: runs.filter((run) => !hiddenFrom(c.get("member").role, run)),
+        }),
+        202,
+      )
+    );
   });
   /**
    * A slice needs the snapshot's graph, so the graphify run is enqueued (or

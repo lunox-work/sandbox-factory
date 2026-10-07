@@ -40,6 +40,7 @@ import {
   sandboxVersionResponseSchema,
 } from "@sandbox-factory/shared";
 import type {
+  BuildAllInput,
   CreateSandboxInput,
   CreateSandboxVersionInput,
   EnqueueAnalysisInput,
@@ -121,6 +122,15 @@ export class GithubAnalysisClient extends ApiClient {
         { method: "POST", body: JSON.stringify(input) },
       ),
     ).run;
+  }
+  /** Every context builder on a repository's snapshot, as one request. */
+  async buildAll(owner: string, repoId: string, input: BuildAllInput) {
+    return analysisRunListSchema.parse(
+      await this.request(
+        `${this.#base(owner)}/repositories/${encodeURIComponent(repoId)}/builds`,
+        { method: "POST", body: JSON.stringify(input) },
+      ),
+    ).runs;
   }
   /** A slice run on a repository's snapshot, queued behind its graph run. */
   async enqueueSlice(owner: string, repoId: string, input: EnqueueSliceInput) {

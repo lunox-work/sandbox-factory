@@ -1,8 +1,8 @@
 /**
  * A repository's own page: the context builders and what they built.
  *
- * What it must get right: an owner can start each builder on the chosen
- * snapshot and sees the card follow the run; a member can read and open
+ * What it must get right: an owner starts every builder on the chosen
+ * snapshot at once and sees each card follow its run; a member can read and open
  * artifacts but start nothing; each builder's result is drawn from the
  * summary its artifacts carry; the runs a bounty made are still readable
  * here, with nothing left that would make one; and a failed read is said
@@ -192,7 +192,22 @@ function server(options: Server) {
         ],
         truncated: false,
       };
-    else if (/\/repositories\/ghr_1\/runs(\?|$)/.test(url)) {
+    else if (url.endsWith("/repositories/ghr_1/builds") && method === "POST") {
+      posts.push(JSON.parse(String(init?.body)));
+      // As the API does: a builder already built at its version, or queued,
+      // is answered as is; the rest are queued.
+      const queued = CONTEXT_BUILDERS.filter(
+        (tool) =>
+          !runs.some(
+            (run) =>
+              run.tool === tool &&
+              run.status !== "failed" &&
+              run.toolVersion === toolVersionOf(tool),
+          ),
+      ).map(queuedRun);
+      runs = [...queued, ...runs];
+      return new Response(JSON.stringify({ runs: queued }), { status: 202 });
+    } else if (/\/repositories\/ghr_1\/runs(\?|$)/.test(url)) {
       // As the API does: one snapshot's runs when the query names it.
       const onSnapshot = new URL(url, "http://localhost").searchParams.get(
         "snapshotId",
@@ -273,6 +288,10 @@ async function history(count: RegExp) {
   return footer;
 }
 
+function buildAll() {
+  return screen.getByRole("button", { name: "Build all" }) as HTMLButtonElement;
+}
+
 function builderCard(name: string) {
   return screen.getByRole("region", { name: `${name} builder` });
 }
@@ -325,10 +344,10 @@ test("the page names the repository, and owners see a card per builder", async (
   );
   for (const name of names) {
     expect(within(builderCard(name)).getByText("Not built")).toBeTruthy();
-    expect(
-      within(builderCard(name)).getByRole("button", { name: "Build" }),
-    ).toBeTruthy();
+    // Builders are started together, from the block, not one by one.
+    expect(within(builderCard(name)).queryByRole("button")).toBe(null);
   }
+  expect(buildAll().disabled).toBe(false);
   expect(
     within(screen.getByRole("region", { name: "Run history" })).getByText(
       /No runs yet/,
@@ -336,50 +355,38 @@ test("the page names the repository, and owners see a card per builder", async (
   ).toBeTruthy();
 });
 
-test("Build on Graphify posts the builder and the snapshot, and the card follows the run", async () => {
+test("Build all posts the snapshot once, and every card follows its run", async () => {
   const f = server({ runs: [] });
   renderPage();
   await screen.findByText(/10 files/);
-  fireEvent.click(
-    within(builderCard("Graphify")).getByRole("button", { name: "Build" }),
-  );
-  await within(builderCard("Graphify")).findByText("Queued");
-  expect(f.posts).toEqual([{ tool: "graphify", snapshotId: "rsn_1" }]);
-  // Nothing to press while it is queued.
-  expect(
-    within(builderCard("Graphify")).queryByRole("button", { name: "Build" }),
-  ).toBe(null);
-  // The other builders are untouched.
-  expect(
-    within(builderCard("Dependency Cruiser")).getByRole("button", {
-      name: "Build",
-    }),
-  ).toBeTruthy();
+  fireEvent.click(buildAll());
+  for (const name of [
+    "Graphify",
+    "Dependency Cruiser",
+    "DeepWiki Open",
+    "Abstractions",
+    "Data model",
+  ])
+    await within(builderCard(name)).findByText("Queued");
+  expect(f.posts).toEqual([{ snapshotId: "rsn_1" }]);
   expect(f.calls.filter((c) => c.startsWith("POST"))).toHaveLength(1);
+  // Nothing is left to start while they are queued.
+  await waitFor(() => expect(buildAll().disabled).toBe(true));
+  expect(buildAll().title).toBe("Every builder has run on this snapshot.");
 });
 
-test.each(CONTEXT_BUILDERS)(
-  "Build on %s posts that builder",
-  async (builder) => {
-    const f = server({ runs: [] });
-    renderPage();
-    await screen.findByText(/10 files/);
-    const names = {
-      graphify: "Graphify",
-      dependency_cruiser: "Dependency Cruiser",
-      deepwiki: "DeepWiki Open",
-      abstractions: "Abstractions",
-      data_model: "Data model",
-    };
-    fireEvent.click(
-      within(builderCard(names[builder])).getByRole("button", {
-        name: "Build",
-      }),
-    );
-    await within(builderCard(names[builder])).findByText("Queued");
-    expect(f.posts).toEqual([{ tool: builder, snapshotId: "rsn_1" }]);
-  },
-);
+test("Build all is held once every builder has built on the snapshot", async () => {
+  server({
+    runs: CONTEXT_BUILDERS.map(
+      (tool) => ({ ...queuedRun(tool), status: "succeeded" }) as AnalysisRunDto,
+    ),
+  });
+  renderPage();
+  await within(
+    await screen.findByRole("region", { name: "Data model builder" }),
+  ).findByText("Built");
+  await waitFor(() => expect(buildAll().disabled).toBe(true));
+});
 
 test("a member opens a build's files but cannot build or read logs", async () => {
   const f = server({
@@ -423,7 +430,7 @@ test("a member opens a build's files but cannot build or read logs", async () =>
   expect(f.calls.some((c) => c.endsWith("/artifacts/art_graph_html/url"))).toBe(
     true,
   );
-  expect(screen.queryByRole("button", { name: "Build" })).toBe(null);
+  expect(screen.queryByRole("button", { name: "Build all" })).toBe(null);
   expect(screen.queryByRole("button", { name: "View logs" })).toBe(null);
   expect(screen.queryByRole("button", { name: /Remove/ })).toBe(null);
 });
@@ -650,16 +657,28 @@ test("what can be seen is shown: diagrams drawn, pages run, wiki links followed"
   );
 });
 
-test("a run an older builder made stays on view and can be rebuilt", async () => {
-  const f = server({ runs: [{ ...graphRun, toolVersion: "graphifyy@0.1" }] });
+test("a run an older builder made stays on view, says so, and Build all builds it again", async () => {
+  const f = server({
+    runs: CONTEXT_BUILDERS.map(
+      (tool) =>
+        ({
+          ...queuedRun(tool),
+          status: "succeeded",
+          toolVersion:
+            tool === "graphify" ? "graphifyy@0.1" : toolVersionOf(tool),
+        }) as AnalysisRunDto,
+    ),
+  });
   renderPage();
   const card = await screen.findByRole("region", { name: "Graphify builder" });
-  const rebuild = await within(card).findByRole("button", { name: "Rebuild" });
+  const outdated = await within(card).findByText("Outdated");
+  expect(outdated.getAttribute("title")).toMatch(/^Built by graphifyy@0\.1;/);
   expect(within(card).getByText("Built")).toBeTruthy();
-  fireEvent.click(rebuild);
+  await waitFor(() => expect(buildAll().disabled).toBe(false));
+  fireEvent.click(buildAll());
   await waitFor(() =>
     expect(
-      f.calls.some((c) => c.startsWith("POST ") && c.endsWith("/runs")),
+      f.calls.some((c) => c.startsWith("POST ") && c.endsWith("/builds")),
     ).toBe(true),
   );
 });
@@ -677,7 +696,7 @@ test("a failed run shows its error and the retry cap; admins open the log", asyn
   await within(card).findByText(/source size limit/);
   expect(within(card).getByText("Failed")).toBeTruthy();
   expect(within(card).getByText(/Retry limit reached/)).toBeTruthy();
-  expect(within(card).queryByRole("button", { name: "Build" })).toBe(null);
+  expect(within(card).queryByRole("button", { name: /Build/ })).toBe(null);
   // The footer opens its log, read through the API, printed as a terminal
   // does and ending in how it exited. Failures are not counted there.
   const footer = await history(/1 run$/);
@@ -734,7 +753,7 @@ test("a member has no logs to open", async () => {
   expect(within(footer).queryByRole("button")).toBe(null);
 });
 
-test("a failed run with retries left offers Build again, and says why it failed", async () => {
+test("a failed run with retries left is built again by Build all, and says why it failed", async () => {
   server({
     runs: [
       {
@@ -752,7 +771,25 @@ test("a failed run with retries left offers Build again, and says why it failed"
   await within(card).findByText(
     "This builder is not configured on the worker.",
   );
-  expect(within(card).getByRole("button", { name: "Build" })).toBeTruthy();
+  expect(buildAll().disabled).toBe(false);
+});
+
+test("a graph out of retries leaves nothing for its readers to build", async () => {
+  server({
+    runs: [
+      { ...graphRun, status: "failed", attempt: 2, errorCode: "too_large" },
+      ...(["dependency_cruiser", "deepwiki"] as const).map(
+        (tool) =>
+          ({ ...queuedRun(tool), status: "succeeded" }) as AnalysisRunDto,
+      ),
+    ],
+  });
+  renderPage();
+  const card = await screen.findByRole("region", {
+    name: "DeepWiki Open builder",
+  });
+  await within(card).findByText("Built");
+  await waitFor(() => expect(buildAll().disabled).toBe(true));
 });
 
 test("the API's refusal of a build is shown on the page", async () => {
@@ -778,11 +815,7 @@ test("the API's refusal of a build is shown on the page", async () => {
           ),
     ),
   );
-  fireEvent.click(
-    within(builderCard("Dependency Cruiser")).getByRole("button", {
-      name: "Build",
-    }),
-  );
+  fireEvent.click(buildAll());
   await screen.findByText("The active analysis limit has been reached.");
 });
 
@@ -1029,11 +1062,7 @@ test("choosing a branch shows its snapshots, and pulling it takes its head", asy
   expect(screen.queryByRole("combobox", { name: "Source snapshot" })).toBe(
     null,
   );
-  expect(
-    within(builderCard("Graphify"))
-      .getByRole("button", { name: "Build" })
-      .hasAttribute("disabled"),
-  ).toBe(true);
+  expect(buildAll().hasAttribute("disabled")).toBe(true);
 
   fireEvent.click(screen.getByRole("button", { name: "Pull latest" }));
   await screen.findByText(/Taking a snapshot of/);

@@ -540,6 +540,146 @@ test("a builder that reads the map queues behind the snapshot's graph run", asyn
     409,
   );
 });
+test("Build all queues the whole set once the cap admits its first run", async () => {
+  const f = fixture();
+  // One slot left under the default cap of three.
+  let active = 2;
+  const caps: number[] = [];
+  f.options.runs.enqueue = async (_owner, _snapshot, input) => {
+    const cap = input.maxActive ?? 3;
+    caps.push(cap);
+    if (active >= cap) return { ok: false, reason: "run_limit" };
+    active++;
+    const tool = input.tool ?? "graphify";
+    return {
+      ok: true,
+      created: true,
+      run: {
+        ...run,
+        id: `arn_${tool}`,
+        tool,
+        params: input.params,
+        status: "queued",
+      } as StoredAnalysisRun,
+    };
+  };
+  const response = await f.request("repositories/ghr_1/builds", {
+    snapshotId: "rsn_1",
+  });
+  assert.equal(response.status, 202);
+  const { runs } = (await response.json()) as { runs: StoredAnalysisRun[] };
+  assert.deepEqual(
+    runs.map((each) => each.tool),
+    [
+      "graphify",
+      "dependency_cruiser",
+      "deepwiki",
+      "abstractions",
+      "data_model",
+    ],
+  );
+  // The map readers read the graph run the set queued first.
+  assert.deepEqual(runs[4]?.params, {
+    deadlineMinutes: 30,
+    builder: "data_model",
+    graphRunId: "arn_graphify",
+  });
+  assert.deepEqual(caps, [3, 8, 8, 8, 8]);
+  assert.equal(f.launches(), 1);
+  // With no slot left, the first run is refused and nothing is queued.
+  caps.length = 0;
+  const full = await f.request("repositories/ghr_1/builds", {});
+  assert.equal(full.status, 409);
+  assert.equal(((await full.json()) as { code: string }).code, "run_limit");
+  assert.deepEqual(caps, [3]);
+  assert.equal(f.launches(), 1);
+});
+test("Build all answers built runs as is, with each builder's parameters", async () => {
+  const f = fixture();
+  const response = await f.request("repositories/ghr_1/builds", {});
+  assert.equal(response.status, 202);
+  assert.deepEqual(f.enqueued, [
+    { tool: "graphify", params: { deadlineMinutes: 30 } },
+    {
+      tool: "dependency_cruiser",
+      params: { deadlineMinutes: 30, builder: "dependency_cruiser" },
+    },
+    { tool: "deepwiki", params: { deadlineMinutes: 60, builder: "deepwiki" } },
+    {
+      tool: "abstractions",
+      params: {
+        deadlineMinutes: 30,
+        builder: "abstractions",
+        graphRunId: run.id,
+      },
+    },
+    {
+      tool: "data_model",
+      params: {
+        deadlineMinutes: 30,
+        builder: "data_model",
+        graphRunId: run.id,
+      },
+    },
+  ]);
+  // Nothing new was queued, so no worker is woken.
+  assert.equal(f.launches(), 0);
+});
+test("Build all skips the map readers when the graph is out of retries", async () => {
+  const f = fixture();
+  const tools: string[] = [];
+  f.options.runs.enqueue = async (_owner, _snapshot, input) => {
+    tools.push(input.tool ?? "graphify");
+    return {
+      ok: true,
+      created: false,
+      run:
+        input.tool === "graphify"
+          ? { ...run, status: "failed", attempt: 2 }
+          : run,
+    };
+  };
+  const response = await f.request("repositories/ghr_1/builds", {});
+  assert.equal(response.status, 202);
+  assert.deepEqual(tools, ["graphify", "dependency_cruiser", "deepwiki"]);
+  assert.equal(((await response.json()) as { runs: unknown[] }).runs.length, 3);
+});
+test("Build all is refused for members, bad input, and other repositories", async () => {
+  const f = fixture();
+  assert.equal(
+    (await fixture("member").request("repositories/ghr_1/builds", {})).status,
+    403,
+  );
+  assert.equal(
+    (await f.request("repositories/ghr_1/builds", { tool: "graphify" })).status,
+    400,
+  );
+  for (const snapshotId of ["other-repo", "missing"])
+    assert.equal(
+      (await f.request("repositories/ghr_1/builds", { snapshotId })).status,
+      404,
+    );
+  assert.equal(
+    (await f.request("repositories/ghr_1/builds", {}, "org_2")).status,
+    404,
+  );
+  assert.deepEqual(f.enqueued, []);
+});
+test("a set refused partway still wakes a worker for what it queued", async () => {
+  for (const [reason, status] of [
+    ["graph_mismatch", 409],
+    ["not-found", 404],
+  ] as const) {
+    const f = fixture();
+    f.options.runs.enqueue = async (_owner, _snapshot, input) =>
+      input.tool === "graphify"
+        ? { ok: true, created: true, run: { ...run, status: "queued" } }
+        : { ok: false, reason };
+    const response = await f.request("repositories/ghr_1/builds", {});
+    assert.equal(response.status, status);
+    assert.equal(f.launches(), 1);
+  }
+});
 test("launch errors keep the queued response for watchdog recovery", async () => {
   const f = fixture();
   let caught = false;
