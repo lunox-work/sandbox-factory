@@ -10,6 +10,7 @@ import {
   type JiraIssueStore,
   type NewBountyProfile,
   type NewBountySpec,
+  type StoredBountyProfile,
   type StoredBountyProposal,
   type StoredBountyRun,
   type StoredBounty,
@@ -28,6 +29,7 @@ import {
 } from "@sandbox-factory/shared";
 import {
   answerSpec,
+  assessRubric,
   checkRespec,
   describeRespec,
   expandSpec,
@@ -63,6 +65,7 @@ import {
   REVISE_SPEC_PROMPT_VERSION,
 } from "../sizing/tools/revise-spec.js";
 import { sizeBountyTool } from "../sizing/tools/size-bounty.js";
+import { rubricCode, rubricPrice } from "./rubric.js";
 import { selectBacklog, type BacklogPageReader } from "./selection.js";
 
 const HEARTBEAT_MS = 15_000;
@@ -114,7 +117,7 @@ interface ReadBounty {
 
 interface OutcomeBase {
   readonly externalIssueId: string;
-  /** Jira's key for a board's ticket; null for a bounty written here. */
+  /** Jira's key for a board's issue; null for a bounty written here. */
   readonly issueKey: string | null;
   readonly bountyId?: string;
 }
@@ -137,6 +140,17 @@ export interface RunJiraClient extends BacklogPageReader {
 export type RunClientResult =
   | { readonly ok: true; readonly client: RunJiraClient }
   | { readonly ok: false; readonly reason: "not-found" | "reconnect" };
+
+/**
+ * A client that could not be had, as a run records it: in snake case, as
+ * every other code is. A connection that is gone leaves the board with
+ * nothing to read through.
+ */
+function clientFailureCode(
+  reason: Extract<RunClientResult, { ok: false }>["reason"],
+): string {
+  return reason === "not-found" ? "board_unavailable" : reason;
+}
 
 export interface BountyExecutorOptions {
   readonly boards: JiraBoardStore;
@@ -174,17 +188,26 @@ export interface BountyExecutorOptions {
     organizationId: string,
     operationId: string,
   ) => void;
+  /** Resolved by server composition independently of the wake-up callback. */
+  readonly profilingEnabled?: () => boolean;
   /**
    * Called for each proposal whose spec was drafted beside a repository
    * snapshot, to measure its complexity profile from that snapshot's code.
-   * Must not throw: the proposal is already written.
+   * The profile row itself is written with the proposal; this only wakes
+   * the profiler. Must not throw: the proposal is already written.
    */
-  /** Resolved by server composition independently of the wake-up callback. */
-  readonly profilingEnabled?: () => boolean;
   readonly onProposalDrafted?: (
     organizationId: string,
     input: NewBountyProfile,
   ) => void;
+  /**
+   * A proposal's newest complexity profile, for the pricing rubric to score
+   * a changed spec's code with. Absent, a spec change scores none.
+   */
+  readonly profileFor?: (
+    organizationId: string,
+    proposalId: string,
+  ) => Promise<StoredBountyProfile | null>;
   /**
    * Called when `execute` itself throws. `code` is fixed; `error` is the
    * thrown value, for the operator's log — it is never sent to a client.
@@ -239,6 +262,19 @@ export class BountyExecutor {
       } else {
         await this.#oneBountyRun(organizationId, run, leaseToken, controller);
       }
+    } catch (error) {
+      // A fault nothing above expected, such as a write the database
+      // refused. The workers still sizing are stopped, rather than spending
+      // model calls until the lease runs out, and the run ends now as failed
+      // instead of reading as running until the watchdog calls it lost. A
+      // run already finished keeps its outcome: the lease guards the write.
+      controller.abort();
+      await runs
+        .finish(organizationId, run.id, leaseToken, "failed", {
+          fatalErrorCode: "internal_error",
+        })
+        .catch(() => undefined);
+      throw error;
     } finally {
       (this.#options.clearInterval ?? clearInterval)(heartbeat);
     }
@@ -269,7 +305,7 @@ export class BountyExecutor {
       registered.connectionId,
     );
     if (!clientResult.ok) {
-      await fail(clientResult.reason);
+      await fail(clientFailureCode(clientResult.reason));
       return;
     }
 
@@ -443,7 +479,7 @@ export class BountyExecutor {
     );
     return ready.ok
       ? { value: { board: registered, client: ready.client } }
-      : { fatalCode: ready.reason };
+      : { fatalCode: clientFailureCode(ready.reason) };
   }
 
   /**
@@ -669,9 +705,6 @@ export class BountyExecutor {
       {
         externalId: issue.id,
         key: issue.key,
-        statusCategory: issue.statusCategory,
-        remoteCreatedAt: issue.created,
-        remoteUpdatedAt: issue.updated,
       },
       content,
     );
@@ -825,9 +858,14 @@ export class BountyExecutor {
     });
 
     const { specs } = this.#options;
+    // The step counts from where its base was set: a reviewer's resize,
+    // or else the sizing draft.
+    const baseRevision = source.step.baseRevision;
     const [current, sized] = await Promise.all([
       specs.get(organizationId, source.id, source.specRevision),
-      specs.sizedRevision(organizationId, source.id, source.specRevision),
+      baseRevision === undefined
+        ? specs.sizedRevision(organizationId, source.id, source.specRevision)
+        : specs.get(organizationId, source.id, baseRevision),
     ]);
     if (current === null || sized === null) return failed("spec_missing");
     // Checked when it was asked for, against the revision this run reads,
@@ -923,16 +961,39 @@ export class BountyExecutor {
         value: { ...base, status: "skipped", code: "nothing_added", ...spent },
       };
     }
-    const step = stepUp(
+    const counted = stepUp(
       source.step.base,
       sized.draft,
       next,
       source.step.settings,
     );
+    const step =
+      counted === null || baseRevision === undefined
+        ? counted
+        : { ...counted, baseRevision };
     if (step === null) {
       return { value: { ...failed("spec_unweighed").value, ...spent } };
     }
-    const amountMinor = priceFor(step.complexity, run.rateCard);
+    /*
+      The rubric scores the changed spec with the code as last measured.
+      A proposal the rubric sized stays sized by it: the whole spec is
+      counted, so the step only says what changed. Otherwise the step
+      prices the change, as it did before the rubric.
+    */
+    const profile =
+      (await this.#options.profileFor?.(organizationId, source.id)) ?? null;
+    const rubric = assessRubric({
+      spec: next,
+      code: rubricCode(
+        profile,
+        source.rubric?.code.status === "pending" ? "pending" : "unavailable",
+      ),
+      weightPoints: source.step.settings.weightPoints,
+    });
+    const priced =
+      source.sizedBy === "rubric" ? rubricPrice(rubric, run) : null;
+    const amountMinor =
+      priced?.amountMinor ?? priceFor(step.complexity, run.rateCard);
     if (amountMinor === null) return failed("spec_unweighed");
 
     const written = await this.#options.proposals.respecForLease(
@@ -953,6 +1014,8 @@ export class BountyExecutor {
           promptVersion: model === null ? null : REVISE_SPEC_PROMPT_VERSION,
         },
         step,
+        rubric,
+        ...(priced === null ? {} : { complexity: priced.complexity }),
         amountMinor,
         currency: run.rateCard.currency,
       },
@@ -1111,6 +1174,21 @@ export class BountyExecutor {
       step?.complexity ?? sizing.complexity,
       run.rateCard,
     );
+    /*
+      The rubric scores the fresh draft now, so the reviewer sees what the
+      size will be built from; the code is measured after, and the rubric
+      takes the size over from the model only then (`./rubric.ts`).
+    */
+    const profiling =
+      outline !== null && this.#options.profilingEnabled?.() === true;
+    const rubric =
+      drafted === undefined
+        ? null
+        : assessRubric({
+            spec: drafted.draft,
+            code: { status: profiling ? "pending" : "unavailable" },
+            weightPoints: stepSettings.weightPoints,
+          });
     const input = {
       runId: run.id,
       bountyId: bounty.id,
@@ -1124,6 +1202,7 @@ export class BountyExecutor {
       amountMinor,
       currency: amountMinor === null ? null : run.rateCard.currency,
       step,
+      rubric,
       // What the spec was drafted beside; nothing when there is no spec.
       repoSnapshotId:
         drafted === undefined || outline === null ? null : outline.snapshotId,

@@ -150,9 +150,15 @@ export class ApiClient {
       headers: { Accept: "application/x-ndjson" },
     });
     if (!response.ok) {
-      const payload: unknown = JSON.parse(
-        await abortable(response.text(), signal),
-      );
+      // Guarded as `request` is: a proxy's HTML error page is not JSON, and
+      // a SyntaxError would escape as something other than an ApiError.
+      const text = await abortable(response.text(), signal);
+      let payload: unknown = undefined;
+      try {
+        payload = text === "" ? undefined : JSON.parse(text);
+      } catch {
+        payload = undefined;
+      }
       const error = errorSchema.safeParse(payload);
       throw new ApiError(
         response.status,

@@ -231,6 +231,10 @@ function retryAfterMs(error: unknown): number | undefined {
   }
   const headers = error.headers;
   if (!(headers instanceof Headers)) return undefined;
-  const seconds = Number(headers.get("retry-after"));
+  // Absent or blank is no answer, not zero: `Number(null)` is 0, which
+  // would retry at once instead of after the default wait.
+  const value = headers.get("retry-after")?.trim() ?? "";
+  if (value === "") return undefined;
+  const seconds = Number(value);
   return Number.isFinite(seconds) && seconds >= 0 ? seconds * 1_000 : undefined;
 }

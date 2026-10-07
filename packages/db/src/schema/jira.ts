@@ -253,19 +253,6 @@ export const jiraIssue = pgTable(
     bountyId: text("bounty_id")
       .notNull()
       .references(() => bounty.id, { onDelete: "cascade" }),
-    /** `new`, `indeterminate` or `done`, normalised by `toIssueDto`. */
-    statusCategory: text("status_category").notNull(),
-    /** Jira's own created time, which is what a ticket's age is counted from. */
-    remoteCreatedAt: timestamp("remote_created_at", {
-      withTimezone: true,
-    }).notNull(),
-    /** Jira's own updated time, for noticing a ticket has changed since. */
-    remoteUpdatedAt: timestamp("remote_updated_at", {
-      withTimezone: true,
-    }).notNull(),
-    lastSeenAt: timestamp("last_seen_at", { withTimezone: true })
-      .notNull()
-      .defaultNow(),
     /**
      * When Jira stopped returning the ticket: deleted, moved out of reach, or
      * no longer visible to this connection's grant. Set rather than deleting

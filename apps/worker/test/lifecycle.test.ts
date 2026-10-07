@@ -602,6 +602,32 @@ test("worker validates credentials, modes, and bounded limits", () => {
     "none",
   );
   assert.throws(() => parseWorkerEnv({ ...env, EVALUATION_PROVIDER: "e2b" }));
+  // Context builders: the optional DeepWiki-Open service.
+  const builders = parseWorkerEnv({
+    ...env,
+    DEEPWIKI_OPEN_URL: "",
+    DEEPWIKI_OPEN_AUTH_CODE: "REPLACE_ME",
+    DEEPWIKI_OPEN_PROVIDER: "",
+    DEEPWIKI_OPEN_MODEL: "",
+  });
+  assert.equal(builders.DEEPWIKI_OPEN_URL, undefined);
+  assert.equal(builders.DEEPWIKI_OPEN_AUTH_CODE, undefined);
+  assert.equal(builders.DEEPWIKI_OPEN_PROVIDER, undefined);
+  assert.equal(builders.DEEPWIKI_OPEN_MODEL, undefined);
+  const configured = parseWorkerEnv({
+    ...env,
+    DEEPWIKI_OPEN_URL: "http://deepwiki:8001",
+    DEEPWIKI_OPEN_AUTH_CODE: "code",
+    DEEPWIKI_OPEN_PROVIDER: "openai",
+    DEEPWIKI_OPEN_MODEL: "gpt-4o",
+  });
+  assert.equal(configured.DEEPWIKI_OPEN_URL, "http://deepwiki:8001");
+  assert.equal(configured.DEEPWIKI_OPEN_AUTH_CODE, "code");
+  assert.equal(configured.DEEPWIKI_OPEN_PROVIDER, "openai");
+  assert.equal(configured.DEEPWIKI_OPEN_MODEL, "gpt-4o");
+  assert.throws(() =>
+    parseWorkerEnv({ ...env, DEEPWIKI_OPEN_URL: "not a url" }),
+  );
 });
 
 test("source tokens use repository-scoped read permissions", async () => {

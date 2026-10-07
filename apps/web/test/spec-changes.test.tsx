@@ -1,5 +1,5 @@
 import { openCombobox } from "./combobox";
-import { act, render, renderHook, screen, within } from "./render";
+import { act, render, renderHook, screen, waitFor, within } from "./render";
 import { userEvent } from "@testing-library/user-event";
 import { useState } from "react";
 import { afterEach, expect, test, vi } from "vitest";
@@ -175,10 +175,16 @@ function Wired({
   onLanded?: () => void;
 }) {
   const [size, setSize] = useState("S");
+  // A landing re-reads the proposal at its next revision, as the peek does:
+  // the result has to survive that.
+  const [revision, setRevision] = useState(4);
   const { read, retry } = useProposalSpec(BASE, "bpr_1", specRevision);
-  const control = useRespec(BASE, "bpr_1", 4, () => {
+  const control = useRespec(BASE, "bpr_1", revision, async () => {
     onLanded?.();
     setSize("S+");
+    setRevision((current) => current + 1);
+    // The read again resolves once the new revision has been rendered.
+    await new Promise((resolve) => setTimeout(resolve, 20));
   });
   return (
     <ProposalSpec
@@ -251,6 +257,10 @@ test("more of a kind is asked for, followed, and said in one line once it lands"
   // line says what the change did to the size.
   const status = await screen.findByText("S → S+", {}, { timeout: 3_000 });
   expect(status.parentElement?.textContent).toBe("S → S+: +4 points");
+  // And it stays: the landing moved the proposal's revision, which is not
+  // another proposal.
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(screen.getByText("S → S+")).toBeDefined();
   expect(onLanded).toHaveBeenCalledOnce();
   expect(requests.some(({ url }) => url === `${BASE}/runs/brn_respec`)).toBe(
     true,
@@ -563,6 +573,92 @@ test("an earlier revision is read from the picker, read-only, and the current on
     await screen.findByRole("button", { name: /add scenarios/i }),
   ).toBeDefined();
   expect(screen.queryByTestId("spec-earlier")).toBeNull();
+});
+
+test("an earlier revision is marked with what the revision after it changed", async () => {
+  const revision = (n: number, origin: string, current = false) => ({
+    revision: n,
+    origin,
+    instruction: null,
+    scenarioCount: 2,
+    openQuestionCount: 2,
+    createdBy: null,
+    createdAt: `2026-10-01T0${n}:00:00.000Z`,
+    current,
+  });
+  const scenarios = {
+    1: [
+      scenario("s1", "happy", "An invitation is delivered"),
+      scenario("s2", "unhappy", "The mail provider is down"),
+    ],
+    // s2 trimmed.
+    2: [scenario("s1", "happy", "An invitation is delivered")],
+    // s3 added.
+    3: [
+      scenario("s1", "happy", "An invitation is delivered"),
+      scenario("s3", "boundary", "The last free slot"),
+    ],
+  } as const;
+  const specAt = (n: 1 | 2 | 3) =>
+    spec(n, {
+      draft: { ...spec(n).draft, scenarios: scenarios[n] },
+    });
+  server({
+    revisions: [
+      revision(3, "expand", true),
+      revision(2, "trim"),
+      revision(1, "draft"),
+    ],
+    specFor: (n) => specAt(n === "1" ? 1 : n === "2" ? 2 : 3),
+  });
+  const user = userEvent.setup();
+  render(<Wired />);
+  const panel = await screen.findByTestId("proposal-spec");
+  await within(panel).findByText("The last free slot");
+
+  /** Each scenario line: how the diff marks it, and its title. */
+  const lines = () =>
+    within(panel)
+      .getAllByRole("listitem")
+      .filter((item) => item.closest("section[aria-label]") !== null)
+      .flatMap((item) => {
+        const title = item.querySelector(".flex-1")?.textContent;
+        return title === undefined
+          ? []
+          : [[item.dataset["change"] ?? "", title]];
+      });
+  // The current revision has no sizing to read against here: no marks.
+  expect(lines()).toEqual([
+    ["", "An invitation is delivered"],
+    ["", "The last free slot"],
+  ]);
+
+  // Revision 2 is marked with what revision 3 put in: the current one.
+  await user.click(
+    within(
+      await openCombobox(screen.getByRole("combobox", { name: "Revision" })),
+    ).getByRole("option", { name: "revision 2, trimmed" }),
+  );
+  await screen.findByTestId("spec-earlier");
+  await waitFor(() =>
+    expect(lines()).toEqual([
+      ["", "An invitation is delivered"],
+      ["added", "Added in revision 3: The last free slot"],
+    ]),
+  );
+
+  // Revision 1 is marked with what revision 2 took out.
+  await user.click(
+    within(
+      await openCombobox(screen.getByRole("combobox", { name: "Revision" })),
+    ).getByRole("option", { name: "revision 1, drafted" }),
+  );
+  await waitFor(() =>
+    expect(lines()).toEqual([
+      ["", "An invitation is delivered"],
+      ["removed", "Removed in revision 2: The mail provider is down"],
+    ]),
+  );
 });
 
 test("a spec at its first revision has no history to read", async () => {

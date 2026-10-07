@@ -15,12 +15,14 @@
 export * from "./handle.js";
 export * from "./sizing.js";
 export * from "./bounty.js";
+export * from "./stages.js";
 export * from "./stack.js";
 export * from "./selection/index.js";
 export * from "./pricing/index.js";
 export * from "./repo/index.js";
 export * from "./analysis.js";
 export * from "./slice/index.js";
+export * from "./context/index.js";
 export * from "./sandbox/index.js";
 
 export * from "./roles.js";

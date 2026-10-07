@@ -7,7 +7,12 @@ import type {
   StoredAnalysisRun,
   StoredVersionWithSource,
 } from "@sandbox-factory/db";
-import { descriptorPublic, resolveScope } from "sandbox-factory";
+import {
+  canonicalJson,
+  descriptorPublic,
+  resolveScope,
+  transformConfigOf,
+} from "sandbox-factory";
 import type {
   AliasRule,
   EvaluationCommand,
@@ -21,10 +26,22 @@ import {
   buildArtifactKind,
   createSandboxBuildAdapter,
   nearestCompilerOptions,
+  privateTestOutcome,
 } from "../src/tools/sandbox-build.js";
 import { stubModules } from "../src/tools/slice-run.js";
+import { sha256 } from "../src/tools/slice/hash.js";
 import type { ToolInputs, ToolRunInput } from "../src/tools/adapter.js";
 import { fixture, slice, sliceRun, stamp } from "./fixture-slice.js";
+
+/**
+ * What the test runner reports for a hidden test that failed as one should:
+ * a test that ran and failed, which is not a file that never ran.
+ */
+const TAP_FAILED = {
+  exitCode: 1,
+  stdout:
+    "TAP version 13\nnot ok 1 - fails\n  failureType: 'testCodeFailure'\n1..1\n# tests 1\n# pass 0\n# fail 1\n",
+};
 
 function fakeProvider(
   script: (
@@ -104,7 +121,7 @@ async function versionFor(
             expectedBaseline: "fail" as const,
           },
         ];
-  return {
+  const stored: StoredVersionWithSource = {
     version: {
       id: "sbv_1",
       sandboxId: "sbx_1",
@@ -130,8 +147,10 @@ async function versionFor(
       starterSha256: null,
       manifestSha256: overrides.stale === true ? "0".repeat(64) : manifestSha,
       contractSha256: contractSha,
-      transformConfigSha256: "1".repeat(64),
-      approvedTaskSha256: "2".repeat(64),
+      // Computed below from the content, as the API stores them.
+      transformConfigSha256: "",
+      approvedTaskSha256: "",
+      proposalVersion: 1,
       approvedTask: {
         schemaVersion: 1,
         title: "Fix the widget",
@@ -186,6 +205,25 @@ async function versionFor(
       approvedAt: null,
       createdAt: stamp,
       updatedAt: stamp,
+    },
+  };
+  const { source } = stored;
+  return {
+    ...stored,
+    source: {
+      ...source,
+      transformConfigSha256: sha256(
+        canonicalJson(
+          transformConfigOf({
+            aliasRules: source.aliasRules,
+            dependencyChoices: source.dependencyChoices,
+            acceptanceTests: source.acceptanceTests,
+            fixtures: source.fixtures,
+            starterSha256: source.starterSha256,
+          }),
+        ),
+      ),
+      approvedTaskSha256: sha256(canonicalJson(source.approvedTask)),
     },
   };
 }
@@ -257,7 +295,7 @@ async function runBuild(
 
 test("a build produces a standalone project, hidden tests apart, a verified baseline and a bound manifest", async () => {
   const fake = fakeProvider((argv) =>
-    argv.includes("--test") && !argv.includes("test") ? { exitCode: 1 } : {},
+    argv.includes("--test") && !argv.includes("test") ? TAP_FAILED : {},
   );
   const { files, manifest, read } = await runBuild(fake.provider, {
     version: await versionFor({
@@ -384,7 +422,7 @@ test("a build produces a standalone project, hidden tests apart, a verified base
   // Deterministic for the same inputs and clock.
   const again = await runBuild(
     fakeProvider((argv) =>
-      argv.includes("--test") && !argv.includes("test") ? { exitCode: 1 } : {},
+      argv.includes("--test") && !argv.includes("test") ? TAP_FAILED : {},
     ).provider,
     {
       version: await versionFor({
@@ -426,7 +464,7 @@ test("fixtures and the walkthrough are aliased with the version, generated, and 
     paths: [],
   };
   const fake = fakeProvider((argv) =>
-    argv.includes("--test") && !argv.includes("test") ? { exitCode: 1 } : {},
+    argv.includes("--test") && !argv.includes("test") ? TAP_FAILED : {},
   );
   const { manifest, read } = await runBuild(fake.provider, {
     version: await versionFor({ aliasRules: [rule], fixtures }),
@@ -452,7 +490,7 @@ test("fixtures and the walkthrough are aliased with the version, generated, and 
     argv.join(" ") === "npm run dev"
       ? { exitCode: 1 }
       : argv.includes("--test") && !argv.includes("test")
-        ? { exitCode: 1 }
+        ? TAP_FAILED
         : {},
   );
   const broken = await runBuild(failing.provider, {
@@ -473,6 +511,29 @@ test("fixtures and the walkthrough are aliased with the version, generated, and 
     invalid.manifest.blockers.map((blocker) => blocker.code),
     ["fixture_invalid"],
   );
+});
+
+test("a rule named like a key renames text, never the keys of the spec, contract or fixtures", async () => {
+  // A quote is a word boundary, so aliasing them serialized renamed
+  // `"name":` and `"kind":` too, and the project came out with mocks of
+  // `undefined`.
+  const fake = fakeProvider((argv) =>
+    argv.includes("--test") && !argv.includes("test") ? TAP_FAILED : {},
+  );
+  const { manifest, files } = await runBuild(fake.provider, {
+    version: await versionFor({
+      aliasRules: [
+        { before: "name", after: "aliasedName", kind: "identifier", paths: [] },
+        { before: "kind", after: "aliasedKind", kind: "identifier", paths: [] },
+      ],
+    }),
+  });
+  assert.deepEqual(manifest.blockers, []);
+  assert.equal(manifest.ready, true);
+  const mocks = files.filter((file) => file.path.startsWith("project/mocks/"));
+  assert.ok(mocks.length > 0);
+  for (const file of mocks)
+    assert.doesNotMatch(await readFile(file.absolutePath, "utf8"), /undefined/);
 });
 
 test("build outputs are classified by path", () => {
@@ -506,6 +567,33 @@ test("a build refuses stale parameters, missing versions, an unfinished slice, t
     await code(runBuild(fake.provider, { version: null })),
     "tool_failed",
   );
+  // The hashes match, but the content under them moved: a hidden test or
+  // the approved task changed without the hash that names it.
+  const hashed = await versionFor();
+  for (const tampered of [
+    {
+      ...hashed.source,
+      acceptanceTests: [
+        ...hashed.source.acceptanceTests,
+        {
+          path: "tests/private/extra.test.ts",
+          text: "",
+          expectedBaseline: "pass" as const,
+        },
+      ],
+    },
+    {
+      ...hashed.source,
+      approvedTask: { ...hashed.source.approvedTask, title: "Changed" },
+    },
+  ])
+    assert.equal(
+      await code(
+        runBuild(fake.provider, { version: { ...hashed, source: tampered } }),
+      ),
+      "tool_failed",
+    );
+  assert.equal(fake.calls.length, 0);
   assert.equal(
     await code(runBuild(fake.provider, { snapshotId: "rsn_other" })),
     "tool_failed",
@@ -654,11 +742,16 @@ test("alias collisions and scope blockers stop before any job runs; a failing ba
     ),
     ["prepare", "install"],
   );
+  // A sandbox no hidden test judges could never accept a submission, so
+  // it is not ready, however green its harness.
   const noTests = await runBuild(fakeProvider().provider, {
     version: await versionFor({ acceptance: false }),
   });
-  assert.equal(noTests.manifest.ready, true);
+  assert.equal(noTests.manifest.ready, false);
   assert.deepEqual(noTests.manifest.baseline?.privateTests, []);
+  assert.deepEqual(noTests.manifest.baseline?.reasons, [
+    "No hidden test judges a submission.",
+  ]);
 });
 
 test("after commit, a ready build records its harness and toolchain on the draft; a diagnostic one does not", async () => {
@@ -682,9 +775,11 @@ test("after commit, a ready build records its harness and toolchain on the draft
     },
     recordStarterOutput: async () => false,
   };
-  const ready = await runBuild(fakeProvider().provider, {
-    version: await versionFor({ acceptance: false }),
-  });
+  const ready = await runBuild(
+    fakeProvider((argv) =>
+      argv.includes("--test") && !argv.includes("test") ? TAP_FAILED : {},
+    ).provider,
+  );
   assert.equal(ready.manifest.ready, true);
   await adapter.committed?.({ runId: "arn_build", files: ready.files, inputs });
   assert.deepEqual(recorded, [
@@ -816,4 +911,64 @@ test("the nearest tsconfig's raw compiler options are carried, and none when the
   } finally {
     await rm(bare, { recursive: true, force: true });
   }
+});
+
+test("a hidden test that never ran is an error, not the failure it was expected to show", () => {
+  // As Node's runner reports each: a failed assertion, a file that threw
+  // while loading, and one that imported something missing.
+  const failed = TAP_FAILED.stdout;
+  const fileFailed = [
+    "TAP version 13",
+    "# Error: boom at load",
+    "# Subtest: load.test.js",
+    "not ok 1 - load.test.js",
+    "  failureType: 'testCodeFailure'",
+    "  exitCode: 1",
+    "  signal: ~",
+    "  error: 'test failed'",
+    "  code: 'ERR_TEST_FAILURE'",
+    "1..1",
+    "# tests 1",
+    "# pass 0",
+    "# fail 1",
+  ].join("\n");
+  const exited = { exitCode: 1, timedOut: false };
+  assert.equal(privateTestOutcome(exited, failed), "fail");
+  // Tests that ran and failed: one asserting on an `exitCode`, one throwing
+  // something other than an assertion, which the runner also codes.
+  const testsFailed = [
+    "TAP version 13",
+    "not ok 1 - exits cleanly",
+    "  failureType: 'testCodeFailure'",
+    "  error: 'Expected values to be strictly deep-equal'",
+    "  code: 'ERR_ASSERTION'",
+    "  expected:",
+    "    exitCode: 0",
+    "  actual:",
+    "    exitCode: 1",
+    "not ok 2 - builds",
+    "  failureType: 'testCodeFailure'",
+    "  error: 'x is not a function'",
+    "  code: 'ERR_TEST_FAILURE'",
+    "1..2",
+    "# tests 2",
+    "# pass 0",
+    "# fail 2",
+  ].join("\n");
+  assert.equal(privateTestOutcome(exited, testsFailed), "fail");
+  assert.equal(privateTestOutcome(exited, fileFailed), "error");
+  // A report cut short, or none at all, says nothing ran and failed.
+  assert.equal(privateTestOutcome(exited, ""), "error");
+  assert.equal(
+    privateTestOutcome({ exitCode: 0, timedOut: false }, ""),
+    "pass",
+  );
+  assert.equal(
+    privateTestOutcome({ exitCode: 2, timedOut: false }, failed),
+    "error",
+  );
+  assert.equal(
+    privateTestOutcome({ exitCode: null, timedOut: true }, failed),
+    "error",
+  );
 });

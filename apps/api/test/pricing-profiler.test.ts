@@ -333,6 +333,8 @@ function harness() {
   ]);
   const errors: string[] = [];
   const removed: string[] = [];
+  const settled: StoredBountyProfile[] = [];
+  let settleFails = false;
   let launches = 0;
   let launchFails = false;
   const profiler = new BountyProfiler({
@@ -355,6 +357,10 @@ function harness() {
     },
     maxActive: 4,
     intervalMs: 60_000,
+    onSettled: async (_owner, profile) => {
+      settled.push(profile);
+      if (settleFails) throw new Error("rubric down");
+    },
     onError: (code) => errors.push(code),
   });
   return {
@@ -366,6 +372,10 @@ function harness() {
     specs,
     errors,
     removed,
+    settled,
+    failSettling: () => {
+      settleFails = true;
+    },
     launches: () => launches,
     failLaunches: () => {
       launchFails = true;
@@ -791,4 +801,44 @@ test("a sweep asked for mid-sweep runs again after it, and the timer starts once
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(passes, 0);
   assert.equal(h.profiles.only().status, "queued");
+});
+
+test("a profile that settles, ready or failed, is handed on once, and its trouble is only reported", async () => {
+  const h = harness();
+  await h.profiler.request(OWNER, request);
+  await h.profiler.sweep();
+  scoped(h);
+  await h.profiler.sweep();
+  assert.equal(h.settled.length, 0);
+  sliced(h);
+  h.failSettling();
+  await h.profiler.sweep();
+  // Ready, and handed on with what was measured, as the row now holds it.
+  assert.equal(h.profiles.only().status, "ready");
+  assert.equal(h.settled.length, 1);
+  assert.equal(h.settled[0]?.status, "ready");
+  assert.deepEqual(h.settled[0]?.profile, h.profiles.only().profile);
+  assert.deepEqual(h.errors, ["bounty_profile_settled_failed"]);
+  await h.profiler.sweep();
+  assert.equal(h.settled.length, 1);
+
+  const failed = harness();
+  failed.runs.startAs.set("scope", "failed");
+  await failed.profiler.request(OWNER, request);
+  await failed.profiler.sweep();
+  assert.equal(failed.profiles.only().status, "failed");
+  assert.deepEqual(
+    failed.settled.map(({ status, errorCode, runErrorCode }) => ({
+      status,
+      errorCode,
+      runErrorCode,
+    })),
+    [
+      {
+        status: "failed",
+        errorCode: "scope_failed",
+        runErrorCode: "tool_failed",
+      },
+    ],
+  );
 });

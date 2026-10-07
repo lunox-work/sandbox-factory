@@ -51,6 +51,12 @@ export default defineConfig({
       "@": fileURLToPath(new URL("./src", import.meta.url)),
     },
   },
+  optimizeDeps: {
+    // Imported only by the Graphviz worker, which the dependency scan does
+    // not read. Found on first use instead, it was bundled then and the dev
+    // server reloaded the page, closing whatever dialog had asked for it.
+    include: ["@viz-js/viz"],
+  },
   server: {
     port: 5173,
     // Same-origin like production (see nginx.conf), so cookie and CORS

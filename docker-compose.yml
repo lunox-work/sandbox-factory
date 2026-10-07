@@ -222,8 +222,16 @@ services:
       # it agent runs fail with agent_unavailable and nothing else changes.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       AGENT_MODEL: ${AGENT_MODEL:-claude-opus-5-5}
+      AGENT_TOKEN_BUDGET: ${AGENT_TOKEN_BUDGET:-}
+      AGENT_MAX_TURNS: ${AGENT_MAX_TURNS:-}
       MAX_TARBALL_BYTES: ${MAX_TARBALL_BYTES:-209715200}
       MAX_FILES: ${MAX_FILES:-20000}
+      # Context builders. DeepWiki-Open is optional: without a URL deepwiki
+      # runs fail with builder_unavailable.
+      DEEPWIKI_OPEN_URL: ${DEEPWIKI_OPEN_URL:-}
+      DEEPWIKI_OPEN_AUTH_CODE: ${DEEPWIKI_OPEN_AUTH_CODE:-}
+      DEEPWIKI_OPEN_PROVIDER: ${DEEPWIKI_OPEN_PROVIDER:-}
+      DEEPWIKI_OPEN_MODEL: ${DEEPWIKI_OPEN_MODEL:-}
     volumes:
       - .:/repo
       - /repo/node_modules
@@ -242,6 +250,59 @@ services:
         condition: service_healthy
       seaweedfs:
         condition: service_healthy
+
+  # ---- deepwiki -----------------------------------------------------------
+  # The service behind the worker's deepwiki context builder, as a profile of
+  # its own: `make deepwiki-up`. DeepWiki-Open writes the wiki with a model
+  # and retrieves over embeddings; it has no Anthropic provider, so its
+  # LiteLLM provider is pointed at DeepSeek (OpenAI-compatible, the key sizing
+  # already uses) and the embeddings come from the Ollama sidecar, which
+  # pulls `nomic-embed-text` on first start. The configuration it loads is
+  # `apps/worker/deepwiki/`. The worker reaches it as `http://deepwiki:8001`
+  # (`DEEPWIKI_OPEN_URL` in .env.development); the web UI is on :3000.
+  ollama:
+    profiles: [deepwiki]
+    image: ollama/ollama:latest
+    container_name: sandbox-factory-ollama
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-c"]
+    command: >
+      "ollama serve & until ollama list >/dev/null 2>&1; do sleep 1; done;
+      ollama pull nomic-embed-text; wait"
+    volumes:
+      - ollama-data:/root/.ollama
+
+  deepwiki:
+    profiles: [deepwiki]
+    # Pinned by digest: the LiteLLM patch below replaces one file of this
+    # exact image, and a moved `latest` could break or bypass it silently.
+    image: ghcr.io/asyncfuncai/deepwiki-open:latest@sha256:730b72494f407397c896c586af0a31af9671d509af420e6792d834ff094a9c8f
+    container_name: sandbox-factory-deepwiki
+    restart: unless-stopped
+    environment:
+      PORT: "8001"
+      SERVER_BASE_URL: http://localhost:8001
+      DEEPWIKI_CONFIG_DIR: /config
+      DEEPWIKI_EMBEDDER_TYPE: ollama
+      # A native Ollama on the host embeds far faster than the sidecar, which
+      # has no GPU: DEEPWIKI_OLLAMA_HOST=http://host.docker.internal:11434.
+      OLLAMA_HOST: ${DEEPWIKI_OLLAMA_HOST:-http://ollama:11434}
+      LITELLM_BASE_URL: ${DEEPWIKI_LITELLM_BASE_URL:-https://api.deepseek.com}
+      LITELLM_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPWIKI_AUTH_MODE: "false"
+    # Loopback only: auth is off and its cache holds private repositories'
+    # wikis. The worker reaches it over the compose network, not these.
+    ports:
+      - "127.0.0.1:${DEEPWIKI_PORT:-8001}:8001"
+      - "127.0.0.1:${DEEPWIKI_UI_PORT:-3000}:3000"
+    volumes:
+      - ./apps/worker/deepwiki:/config:ro
+      # The image's LiteLLM client cannot construct against its own adalflow;
+      # see the patch's docstring.
+      - ./apps/worker/deepwiki/patches/litellm.py:/app/api/clients/litellm.py:ro
+      - deepwiki-data:/root/.adalflow
+    depends_on:
+      - ollama
 
   # ---- prod ---------------------------------------------------------------
 
@@ -320,3 +381,7 @@ volumes:
     name: sandbox-factory-postgres-data
   seaweedfs-data:
     name: sandbox-factory-seaweedfs-data
+  ollama-data:
+    name: sandbox-factory-ollama-data
+  deepwiki-data:
+    name: sandbox-factory-deepwiki-data

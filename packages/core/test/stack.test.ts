@@ -158,6 +158,15 @@ test("each ecosystem's manifest is read for its dependency names", () => {
     ),
     ["Django", "PostgreSQL"],
   );
+  // setup.cfg lists requirements one per indented line under the key,
+  // which is neither a string nor a key of its own.
+  assert.deepEqual(
+    read(
+      "setup.cfg",
+      "[metadata]\nname = app\n\n[options]\npackages = find:\ninstall_requires =\n    django>=4\n    # a comment\n\n    celery\nstray\n    flask\npython_requires = >=3.10\n    flask\n\n[options.extras_require]\nfast = sqlalchemy[asyncio]>=2\npg =\n    psycopg2-binary\n",
+    ),
+    ["Django", "Celery", "PostgreSQL", "SQLAlchemy"],
+  );
   assert.deepEqual(
     read(
       "pyproject.toml",

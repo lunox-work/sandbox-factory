@@ -59,6 +59,8 @@ export interface AllBounties {
   error: string | null;
   more: boolean;
   loadMore: () => Promise<void>;
+  /** Reads the list again after it failed. */
+  retry: () => void;
 }
 
 /** What can be done with one workspace's bounties. */
@@ -75,6 +77,25 @@ export interface Bounties {
     change: Partial<BountyDraft>,
   ) => Promise<BountyWrite>;
   remove: (bountyId: string) => Promise<string | null>;
+  /**
+   * Links the bounty to a Jira issue on one of the workspace's boards, by
+   * Jira's id. It follows the issue from then on, so its text becomes Jira's.
+   */
+  linkJira: (
+    bountyId: string,
+    link: { boardId: string; issueId: string },
+  ) => Promise<BountyWrite>;
+  /** Takes its Jira issue from the bounty, which keeps its text. */
+  unlinkJira: (bountyId: string) => Promise<BountyWrite>;
+  /**
+   * Approves the bounty's overview at its version, which holds it as it is
+   * until it is unapproved, or takes that back.
+   */
+  decide: (
+    bountyId: string,
+    decision: "approve" | "unapprove",
+    expectedRevision: number,
+  ) => Promise<BountyWrite>;
   /**
    * Makes the bounty's sandbox, cut from `sourceRepoId` when one is given.
    * Resolves to null, or to why there is none.
@@ -93,9 +114,15 @@ export interface Bounties {
   ) => Promise<string | null>;
   /**
    * Sizes the bounty and makes its proposal, following the run until the
-   * proposal lands. Resolves to the proposal, or to why there is none.
+   * proposal lands. Resolves to the proposal, or to why there is none. With
+   * `following`, the run already sizing it is waited on instead, and nothing
+   * new is asked for.
    */
-  propose: (bountyId: string, signal?: AbortSignal) => Promise<ProposeResult>;
+  propose: (
+    bountyId: string,
+    signal?: AbortSignal,
+    following?: string,
+  ) => Promise<ProposeResult>;
 }
 
 /** What a sizing run that ended without a proposal is told as. */
@@ -140,12 +167,16 @@ export function useAllBounties(): AllBounties {
   const loadMore = useCallback(async () => {
     await query.fetchNextPage();
   }, [query.fetchNextPage]);
+  const retry = useCallback(() => {
+    void query.refetch();
+  }, [query.refetch]);
   return {
     bounties: query.data?.pages.flatMap((page) => page.bounties) ?? [],
     loading: query.isPending,
     error: query.isError ? "Could not load the bounties." : null,
     more: query.hasNextPage,
     loadMore,
+    retry,
   };
 }
 
@@ -280,6 +311,56 @@ export function useBounties(organizationId: string): Bounties {
     [organizationId, load],
   );
 
+  const jiraWrite = useCallback(
+    async (send: () => Promise<BountyDto>): Promise<BountyWrite> => {
+      try {
+        const bounty = await send();
+        await load();
+        return { ok: true, bounty };
+      } catch (error) {
+        return {
+          ok: false,
+          error:
+            error instanceof ApiError
+              ? error.message
+              : "Could not reach the server.",
+        };
+      }
+    },
+    [load],
+  );
+  const linkJira = useCallback(
+    (bountyId: string, link: { boardId: string; issueId: string }) =>
+      jiraWrite(() =>
+        clients.bounties.linkBountyJira(organizationId, bountyId, link),
+      ),
+    [jiraWrite, organizationId],
+  );
+  const unlinkJira = useCallback(
+    (bountyId: string) =>
+      jiraWrite(() =>
+        clients.bounties.unlinkBountyJira(organizationId, bountyId),
+      ),
+    [jiraWrite, organizationId],
+  );
+
+  const decide = useCallback(
+    (
+      bountyId: string,
+      decision: "approve" | "unapprove",
+      expectedRevision: number,
+    ) =>
+      jiraWrite(() =>
+        clients.bounties.decideBounty(
+          organizationId,
+          bountyId,
+          decision,
+          expectedRevision,
+        ),
+      ),
+    [jiraWrite, organizationId],
+  );
+
   const createSandbox = useCallback(
     async (bountyId: string, sourceRepoId: string | null) => {
       try {
@@ -316,7 +397,11 @@ export function useBounties(organizationId: string): Bounties {
   );
 
   const propose = useCallback(
-    async (bountyId: string, signal?: AbortSignal): Promise<ProposeResult> => {
+    async (
+      bountyId: string,
+      signal?: AbortSignal,
+      following?: string,
+    ): Promise<ProposeResult> => {
       const readRun = async (runId: string) => {
         return queryClient.fetchQuery({
           queryKey: queryKeys.resource(
@@ -340,25 +425,28 @@ export function useBounties(organizationId: string): Bounties {
         let started: Awaited<
           ReturnType<typeof clients.bounties.proposeBounty>
         > = {};
-        let active: string | null = null;
-        try {
-          started = await clients.bounties.proposeBounty(
-            organizationId,
-            bountyId,
-            crypto.randomUUID(),
-            signal,
-          );
-        } catch (error) {
-          const conflict =
-            error instanceof ApiError
-              ? activeRunConflictSchema.safeParse(error.details)
-              : null;
-          if (conflict?.success) active = conflict.data.runId;
-          else if (error instanceof ApiError)
-            return { ok: false, error: error.message };
-          else throw error;
+        let active: string | null = following ?? null;
+        if (active === null) {
+          try {
+            started = await clients.bounties.proposeBounty(
+              organizationId,
+              bountyId,
+              crypto.randomUUID(),
+              signal,
+            );
+          } catch (error) {
+            const conflict =
+              error instanceof ApiError
+                ? activeRunConflictSchema.safeParse(error.details)
+                : null;
+            if (conflict?.success) active = conflict.data.runId;
+            else if (error instanceof ApiError)
+              return { ok: false, error: error.message };
+            else throw error;
+          }
         }
         if (started?.proposalId !== undefined) {
+          await load();
           return { ok: true, proposalId: started.proposalId };
         }
         const initial = active === null ? started?.run : await readRun(active);
@@ -394,6 +482,9 @@ export function useBounties(organizationId: string): Bounties {
     create,
     update,
     remove,
+    linkJira,
+    unlinkJira,
+    decide,
     createSandbox,
     linkSandboxSource,
     propose,

@@ -88,6 +88,10 @@ const EXTENSIONS: ReadonlyMap<string, string> = new Map([
   ["bash", "shell"],
   ["zsh", "shell"],
   ["sql", "sql"],
+  ["mmd", "mermaid"],
+  ["mermaid", "mermaid"],
+  ["dot", "graphviz"],
+  ["gv", "graphviz"],
   ["feature", "cucumber"],
   ["txt", "text"],
   ["log", "log"],
@@ -196,6 +200,7 @@ const LANGUAGE_BY_EXTENSION: ReadonlyMap<string, Language> = new Map(
       [["sh", "bash", "zsh"], "shellscript", "Shell Script"],
       [["sql"], "sql", "SQL"],
       [["feature"], "gherkin", "Gherkin"],
+      [["mmd", "mermaid"], "mermaid", "Mermaid"],
     ] as const
   ).flatMap(([extensions, id, label]) =>
     extensions.map((extension) => [extension, { id, label }] as const),

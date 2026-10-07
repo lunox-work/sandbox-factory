@@ -219,6 +219,30 @@ test("refusals, cut-off calls, failing tools and limits each stop or steer the l
   });
   assert.ok(lines.includes("Tool boom failed."));
   assert.ok(lines.every((line) => !line.includes("secret")));
+  // A coded failure is the platform's: the run ends under its code instead
+  // of telling the agent its input was bad.
+  await assert.rejects(
+    runAgent({
+      model: scripted([turn([call("stage", {})])]),
+      system: "s",
+      prompt: "p",
+      tools: [
+        {
+          ...echo,
+          name: "stage",
+          async run() {
+            throw new AnalysisError("evaluation_failed");
+          },
+        },
+      ],
+      submitTool: "submit",
+      limits,
+      signal,
+      log: () => {},
+    }),
+    (thrown) =>
+      thrown instanceof AnalysisError && thrown.code === "evaluation_failed",
+  );
   // Past 80 % of the budget the agent is told to submit; past it, the loop stops.
   const heavy = { ...usage, inputTokens: 4_500 };
   const budget = scripted([

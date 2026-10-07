@@ -51,12 +51,14 @@ repo. Both `apps/api` and `apps/worker` import it.
 
 [`packages/core`](../packages/core/src/index.ts) owns the shared domain rules:
 
-| Area                                              | Source under `packages/core/src/`     |
-| ------------------------------------------------- | ------------------------------------- |
-| Public handles and bounty text                    | `handle.ts`, `bounty.ts`              |
-| Bounty selection and pricing                      | `selection/`, `pricing/`, `bounty.ts` |
-| Repository facts and slices                       | `repo/`, `analysis.ts`, `slice/`      |
-| Sandbox provenance, generation, and task contract | `sandbox/`                            |
+| Area                                              | Source under `packages/core/src/`            |
+| ------------------------------------------------- | -------------------------------------------- |
+| Public handles and organization roles             | `handle.ts`, `roles.ts`                      |
+| Bounty text and the stages built on it            | `bounty.ts`, `stages.ts`                     |
+| Bounty selection, sizing and pricing              | `selection/`, `sizing.ts`, `pricing/`        |
+| Tech stack catalog                                | `stack.ts`                                   |
+| Repository facts, slices and context documents    | `repo/`, `analysis.ts`, `slice/`, `context/` |
+| Sandbox provenance, generation, and task contract | `sandbox/`                                   |
 
 For handles, `apps/api` calls `normalizeHandle()` before
 storing one and maps the refusal to a 400; `apps/web` calls `isValidHandle()`
@@ -100,7 +102,7 @@ Its controller is in `features/pricing/useRateCardAutosave.ts`; proposal lists,
 categories, peeks, search, titles and sizing progress are in `features/bounties`.
 
 API context and access rules live in `http-context.ts` and `access.ts`.
-`bounty/start-run.ts`, `bounty/approve-proposal.ts` and
+`pricing/start-run.ts`, `pricing/approve-proposal.ts` and
 `sandbox/version-service.ts` take explicit owner/input/dependencies; routes keep
 membership checks, request parsing and HTTP mapping. `analysis/enqueue.ts` shares
 queue/log cleanup while callers retain interactive or profiler capacity policy.
@@ -418,6 +420,36 @@ and `versioned_at`. A resize, re-price or spec change moves the revision past
 it, so the next approval is a new version (`packages/db/src/proposal-version.ts`,
 migration 0050).
 
+**Three steps, each versioned, none locked.** A bounty is made in order:
+its overview (title and description), the bounty (its proposal's
+`version`) and its sandbox (`sandbox_version.version`). The overview's
+version is `bounty.version`, moved by a change to the title or the
+description, whether written here or refreshed from Jira; each one is kept
+in `bounty_version` (migration 0053, which backfilled every bounty's text
+as its version 1). Each step records the version of the step before it
+that it was built on. A proposal's overview version is the latest
+`bounty_version` whose text hashes to its `spec_hash` (`overviewVersionOf`
+in `packages/core/src/stages.ts`), so nothing is stored for it. A sandbox
+version's bounty version is `sandbox_version_source.proposal_version`, the
+proposal's version when its task was taken while approved, and null
+otherwise and for versions taken before it was kept. No step holds another:
+the overview is edited under an approved proposal, and a proposal is
+unapproved or re-priced while its sandbox is published. A step built on an
+earlier version than the step before is now at is behind (`stageDrift`),
+which the bounty's detail answers as `stages` and the page shows on the
+step's tab and at the top of its page. `GET .../bounties/:id/versions`
+lists the overview's versions.
+
+**An overview is approved as a proposal is.** `POST .../bounties/:id/approve`
+and `/unapprove` (owners and admins, against `expectedRevision`) record or
+clear `bounty.approved_version` with who and when (migration 0054). While
+that is the overview's version (`overviewApproved`) its title, description,
+repository, stack and Jira link are held: a change is refused
+`overview_approved` until it is unapproved. Jira is not held back: a refresh
+that makes a new version leaves the approval behind, and the overview reads
+as unapproved again. A proposal is re-analyzed only while it is not
+approved.
+
 **A bounty has one sandbox, and the sandbox three faces.** `sandbox.bounty_id`
 is unique and required, and a bounty with a sandbox cannot be removed. The
 private face is `sandbox_source` and `sandbox_version_source`: the source
@@ -483,10 +515,16 @@ tickets, and version 1 lists `jiraIssueIds`.
 (owners and admins) records who approved the version and when, freezes it,
 and makes it the sandbox's `current_version_id` with status `published`.
 Only a version with a passing build is published: one with no recorded
-harness and toolchain is refused `not_ready`. A version published before
+harness and toolchain is refused `not_ready`. It stands on the approval its
+task was taken from, not on the bounty's now: one whose task's proposal was
+not approved is refused `bounty_not_approved`, and one that was publishes
+whatever the bounty has done since. A version published before
 keeps its first approval and is only pointed at again. `POST
 .../sandboxes/:id/unpublish` takes the sandbox back to `draft` with no
-current version; its versions stay frozen. No public repository is pushed
+current version and clears its `expires_at`; its versions stay frozen. A
+publication lasts until a date: the body names `expiresAt`, refused
+`expiry_past` unless it is in the future, and an expired publication no
+longer holds the version's approval. No public repository is pushed
 yet, and the round-trip and disclosure gates `freezeReadiness` names are
 not run: publication marks the version contributors are to get. The
 bounty's Sandbox tab shows the chosen version over its Slice card, as the
@@ -549,11 +587,14 @@ opens in a panel over the list, `/bounties?peek=:workspace/:id`, or as a page
 of its own, `/bounties/:workspace/:id`, which the panel's Open as page leads
 to and whose trail leads back; a card links the page, and a plain click
 opens the panel. The workspace is its handle, naming the routes the bounty
-is read through. Either way it is one view, with no tabs: its description,
-then its **Proposal**, and beside them on a wide page (below them otherwise)
-its **Sandbox** and **Context**: its Jira issue and repository, each optional.
-A bounty with no proposal offers to make one in the proposal's place; once
-it has one, that place holds the live proposal in the same peek a board uses,
+is read through. Its page splits it into its three steps, numbered tabs
+named by `?tab=`, each with its version and a warning when it is behind;
+the panel is a glance, read and not changed, in one column with no tabs: its
+description, its **Sandbox** under its price, its **Context** (its Jira issue
+and repository, each optional) and its workspace. Its proposal, and every
+change, are on its page, which the panel's Open as page leads to. On the page,
+a bounty with no proposal offers to make one in the proposal's place; once it
+has one, that place holds the live proposal in the same peek a board uses,
 where it is reviewed and decided, without the peek's Spec tab or Jira link,
 since the bounty shows both. The old `?bounty=…&workspace=…&proposal=…` query,
 the per-workspace `/o/:slug/bounties` and `/o/:slug/tickets?ticket=…`
@@ -576,10 +617,30 @@ default to 1, 2, and 4 points, with four points per half step; board overrides
 are snapshotted with the run. Trimming can reduce the step, never below its
 base, and XL is the cap. A fresh draft starts at step zero.
 
-Manual resize changes the base while preserving the step and saved card.
+Manual resize sets a new base and restarts the step from zero at the current
+spec revision (`resetStep`), keeping the saved card and step settings: the
+reviewer's size already covers the spec as it stands.
 Respec keeps the base, card, and step settings without another sizing call;
-reprice uses the current card and starts fresh. Complexity profiles are
-background evidence and do not set the price. Provider wiring is in
+reprice uses the current card and starts fresh.
+
+**The pricing rubric sizes a proposal once its code is measured**
+(`packages/core/src/pricing/rubric.ts`, `rubric-v1`). It scores three
+dimensions from countable evidence. Scenarios are scored by weight, with the
+step's points, plus open questions. Test cases are one per scenario, plus each
+outcome step after a test's first. Code comes from the complexity profile:
+slice size, touched modules, services, seams, untested modules, migrations,
+stubs and blockers, minus a discount for an analogous pattern. The total falls
+in a band of the nine priced sizes, and the rate card prices it. Sizing stores
+the assessment (`bounty_proposal.rubric`, migration 0051) with the code
+`pending` or `unavailable`, so the model's size stands. When the profiler
+settles a profile, `RubricPricer` (`apps/api/src/pricing/rubric.ts`)
+re-scores the current spec and sets `sized_by = 'rubric'` on a proposed
+proposal. A reviewer-sized proposal only has the assessment recorded, and an
+approved one is not touched. A respec of a rubric-sized proposal is priced at
+the rubric's score of the changed spec, and the step still records what
+changed. `POST .../proposals/:id/rubric` puts the rubric's size back over a
+reviewer's resize. Without a repository the rubric has no size, and the model
+and step price the bounty as before. Provider wiring is in
 `apps/api/src/server.ts`: Anthropic first with DeepSeek as fallback when both
 are configured, or either provider alone. See `.env.example` for configuration.
 
@@ -633,7 +694,10 @@ personal account's installation must be the person's own account, and an
 organization's must cover no repository the person cannot already read
 (their per-installation repository count equals the installation's). That
 needs no App permission beyond Contents and Metadata; proving the person
-administers the organization would need Members: read.
+administers the organization would need Members: read. The check is made when
+the installation is linked and not again: repositories later added to the
+installation, or its selection widened to all, become registrable by the
+organization without a second check.
 
 **The flow starts at the OAuth authorize URL, not the install page.** The
 install page returns to the callback only for a fresh install, so
@@ -677,6 +741,17 @@ and omit a snapshot deleted during drafting. Pruning waits for these writers
 before rechecking references.
 Snapshots need object storage: without a bucket none are taken and the
 snapshot routes answer 503.
+
+**Other branches are snapshotted when pulled.** A repository's page lists its
+branches (`GET .../repositories/:id/branches`, the first 300, each with its
+head) and an owner or admin can pull one (`POST .../repositories/:id/snapshots`
+with `{ branch }`). Pulling the default branch syncs it as the sweep does, so
+the head moves; any other branch's ref is read and that commit is queued with
+`refs/heads/<branch>` as its `ref`. A commit already snapshotted answers with
+its snapshot; otherwise the answer is 202 with the commit, and the page reads
+the list until it lands. A snapshot is still one per commit, under the branch
+it was first taken from, so a branch shows its own snapshots and the one at its
+head. Only the default branch's head redetects the stack.
 
 **A repository's tech stack is detected beside its snapshot.**
 `apps/api/src/github/stack.ts` picks up to 30 dependency manifests from the
@@ -723,27 +798,47 @@ Both connect flows sign their `state` with the same secret, so the state
 carries a `purpose` (`apps/api/src/connect-state.ts`) and each callback
 refuses the other's.
 
-**Analysis runs are private and cached.** A `graphify` run maps a snapshot's
-structure in a Fargate worker; a `slice` run reads that map and the same
-source to cut the files one task needs and describe their boundary (the stubs
-it imports from outside, the public surface outside code imports from it, the
-externals to mock). Both are `analysis_run` rows keyed by `(snapshot, tool,
+**Analysis runs are private and cached.** Five _context builders_ describe a
+snapshot on their own, started from a repository's page
+(`/o/:slug/repositories/:repoId`) by an owner or admin and read by any
+member: a `graphify` run maps a snapshot's structure in a Fargate worker; a
+`dependency_cruiser` run cruises its module dependencies, cycles and
+orphans; a `deepwiki` run asks a self-hosted DeepWiki-Open service for a
+wiki of the repository (and, unlike the others, that service reads the
+repository's default branch itself; the run records which commit it was
+asked for); an `abstractions` run lists every module's exported surface
+with its signatures, typed, syntactic or names only; and a `data_model` run
+reads the entities, enums and relations the repository's Prisma schema,
+Drizzle tables or SQL migrations declare, with the modules that touch them.
+The last two read graphify's map and are what the agents read. A `slice` run reads the graphify map and the same source to cut
+the files one task needs and describe their boundary (the stubs it imports
+from outside, the public surface outside code imports from it, the
+externals to mock). All are `analysis_run` rows keyed by `(snapshot, tool,
 version, params)`, reached only through the repository's owner, with their
-artifacts in the private bucket under `runs/<runId>/`. A slice names the
-graphify run it reads and is handed to a worker only after that run has
-finished. The walk and the record shapes are pure code in
-`packages/core/src/slice`; `apps/worker/README.md` states the output contract.
-A slice is a proposal: `stubCoverage: "full"` with no blockers lets it proceed
-to the provenance checks in
+artifacts in the private bucket under `runs/<runId>/`. A builder other than
+graphify names itself in its parameters (`params.builder`), since their
+parameters are otherwise the same. A slice, a scope run and the
+`abstractions` and `data_model` builders name the graphify run they read
+(`params.graphRunId`) and are handed to a worker only after that run has
+finished; the API enqueues the graph run first when there is none. The walk and the record shapes are pure code in
+`packages/core/src/slice`; `apps/worker/README.md` states every output
+contract. A slice is a proposal: `stubCoverage: "full"` with no blockers
+lets it proceed to the provenance checks in
 [`packages/core/src/sandbox/provenance.ts`](../packages/core/src/sandbox/provenance.ts).
 Anything less remains diagnostic output and cannot produce a ready sandbox.
+A slice is cut for a bounty by the profiler and the sandbox flow, never by
+hand from the repository page, which only builds context.
 
 **Agents propose; deterministic code decides.** A `scope` run gives a model
 read-only tools over the extracted source and the bounty's approved spec,
 and it proposes a slice request: entry points and a budget chosen so the
 cuts fall on input/output seams. Its `check_scope` tool runs the very slice
 computation the `slice` tool runs, and an answer is recorded only when that
-computation agrees with it. The proposal fills the slice picker; a person
+computation agrees with it. When the snapshot has succeeded `abstractions`
+or `data_model` runs, the scope run names them (so they join its cache key)
+and the agent can read a module's surface and the data model, whose
+accessor modules are where a `database` seam belongs; the fixtures agent
+reads the data model too. Neither decides anything. The proposal fills the slice picker; a person
 starts the slice. A `fixtures` run, for a succeeded slice, writes default
 behaviour for mocked calls and the `npm run dev` walkthrough, type-checked
 against the slice's own stubs; a version copies them into its transform,

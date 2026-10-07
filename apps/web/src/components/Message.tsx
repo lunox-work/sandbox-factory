@@ -11,8 +11,9 @@
  * like.
  */
 
-import { Loader2 } from "lucide-react";
+import { Loader2, RefreshCw } from "lucide-react";
 
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 /**
@@ -46,6 +47,30 @@ export function ErrorBanner({
     >
       {children}
     </p>
+  );
+}
+
+/**
+ * A read that failed, and the way to read it again. Errors stop tracking
+ * until somebody asks deliberately, so the button is the only retry.
+ */
+export function RetryableError({
+  children,
+  onRetry,
+  className,
+}: {
+  children: React.ReactNode;
+  onRetry: () => void;
+  className?: string;
+}) {
+  return (
+    <div className={cn("flex flex-col items-start gap-3", className)}>
+      <ErrorBanner className="mt-0">{children}</ErrorBanner>
+      <Button type="button" variant="outline" size="sm" onClick={onRetry}>
+        <RefreshCw />
+        Try again
+      </Button>
+    </div>
   );
 }
 

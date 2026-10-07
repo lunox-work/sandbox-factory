@@ -4,6 +4,7 @@ import { test } from "node:test";
 import * as core from "sandbox-factory";
 
 import {
+  decideBountySchema,
   createSandboxSchema,
   createBountySchema,
   proposeBountySchema,
@@ -26,6 +27,8 @@ const summary = {
   repoId: null,
   stack: ["Zod"],
   revision: 1,
+  version: 1,
+  approval: null,
   jira: null,
   proposal: null,
   sandbox: null,
@@ -145,8 +148,48 @@ test("a bounty reads with or without a Jira issue, a proposal and a sandbox", ()
     components: [],
     inputTruncated: false,
     createdBy: "user_1",
+    stages: { overview: { version: 1 }, bounty: null, sandbox: null },
   };
   assert.equal(bountyDtoSchema.safeParse(detail).success, true);
+  // Each step names the version of the one before it was built on, or
+  // null when that is not known; a proposal never approved is version 0.
+  assert.equal(
+    bountyDtoSchema.safeParse({
+      ...detail,
+      stages: {
+        overview: { version: 4 },
+        bounty: { version: 0, overviewVersion: null },
+        sandbox: { version: 2, bountyVersion: null },
+      },
+    }).success,
+    true,
+  );
+  assert.equal(
+    bountyDtoSchema.safeParse({
+      ...detail,
+      stages: { overview: { version: 0 }, bounty: null, sandbox: null },
+    }).success,
+    false,
+  );
+  // An approved overview names the version approved, by whom and when.
+  assert.equal(
+    bountyDtoSchema.safeParse({
+      ...detail,
+      approval: { version: 1, approvedBy: null, approvedAt: stamp },
+    }).success,
+    true,
+  );
+  assert.equal(
+    bountyDtoSchema.safeParse({
+      ...detail,
+      approval: { version: 0, approvedBy: "user_1", approvedAt: stamp },
+    }).success,
+    false,
+  );
+  assert.deepEqual(decideBountySchema.parse({ expectedRevision: 2 }), {
+    expectedRevision: 2,
+  });
+  assert.equal(decideBountySchema.safeParse({}).success, false);
   assert.equal(
     bountyDtoSchema.safeParse({
       ...detail,
@@ -177,7 +220,9 @@ test("a bounty reads with or without a Jira issue, a proposal and a sandbox", ()
         id: "sbx_1",
         status: "published",
         currentVersionId: "sbv_1",
+        expiresAt: null,
         sourceRepoId: "ghr_1",
+        build: { versionId: "sbv_1", version: 1, bountyVersion: 3 },
       },
     }).success,
     true,
@@ -187,7 +232,9 @@ test("a bounty reads with or without a Jira issue, a proposal and a sandbox", ()
     id: "sbx_1",
     status: "draft",
     currentVersionId: null,
+    expiresAt: null,
     sourceRepoId: null,
+    build: null,
   };
   assert.equal(
     bountyDtoSchema.safeParse({ ...detail, sandbox: bare }).success,
@@ -208,7 +255,9 @@ test("a bounty reads with or without a Jira issue, a proposal and a sandbox", ()
         id: "sbx_1",
         status: "building",
         currentVersionId: null,
+        expiresAt: null,
         sourceRepoId: null,
+        build: null,
       },
     }).success,
     false,
@@ -249,6 +298,7 @@ test("a sandbox belongs to one bounty, with or without a repository", () => {
       status: "draft",
       publicRepoId: null,
       currentVersionId: null,
+      expiresAt: null,
       bountyId: "bty_1",
       sourceRepoId: null,
       createdAt: "2026-10-04T00:00:00.000Z",

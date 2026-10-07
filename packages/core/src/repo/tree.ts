@@ -49,9 +49,19 @@ export interface TreeFacts {
   readonly extensions: Readonly<Record<string, number>>;
   /** Paths of dependency lockfiles, sorted, at most `PATH_LIST_MAX`. */
   readonly lockfiles: readonly string[];
-  /** Directories holding schema migrations, sorted, at most `PATH_LIST_MAX`. */
+  /**
+   * Directories holding schema migrations, sorted. Not capped: the pricing
+   * profile asks whether a touched module holds migrations, and a cap would
+   * answer no for every module past it. Only the outermost are kept, so a
+   * repository lists about one per module that keeps migrations, and the
+   * module list is not capped either; surfaces that show it cap what they
+   * show.
+   */
   readonly migrationDirectories: readonly string[];
-  /** Directories holding deployment or CI configuration, sorted, capped. */
+  /**
+   * Directories holding deployment or CI configuration, and CI files known
+   * by name (`CI_FILE_NAMES`, as their paths), sorted, capped.
+   */
   readonly infraDirectories: readonly string[];
 }
 
@@ -131,12 +141,25 @@ export const INFRA_DIRECTORY_NAMES: readonly string[] = [
   ".circleci",
 ];
 
+/**
+ * Files that configure CI by their name alone, in any directory. They are
+ * listed among `infraDirectories` by path, since a repository whose only CI
+ * is a root `.gitlab-ci.yml` has no directory to name.
+ */
+export const CI_FILE_NAMES: readonly string[] = [
+  ".gitlab-ci.yml",
+  "Jenkinsfile",
+  "azure-pipelines.yml",
+  "bitbucket-pipelines.yml",
+];
+
 /** Directory names whose files are all tests. */
 const TEST_DIRECTORY_NAMES: readonly string[] = ["__tests__", "test", "tests"];
 
 const LOCKFILES = new Set(LOCKFILE_NAMES);
 const MIGRATION_DIRECTORIES = new Set(MIGRATION_DIRECTORY_NAMES);
 const INFRA_DIRECTORIES = new Set(INFRA_DIRECTORY_NAMES);
+const CI_FILES = new Set(CI_FILE_NAMES);
 const TEST_DIRECTORIES = new Set(TEST_DIRECTORY_NAMES);
 const ROOTS = new Set(MODULE_ROOTS);
 
@@ -204,6 +227,7 @@ export function treeFacts(
   const lockfiles = new Set<string>();
   const migrationDirectories = new Set<string>();
   const infraDirectories = new Set<string>();
+  const ciFiles = new Set<string>();
   let totalBytes = 0;
   let testFiles = 0;
   let fileCount = 0;
@@ -253,6 +277,7 @@ export function treeFacts(
     if (extension === "tf" && directories.length > 0) {
       infraDirectories.add(directories.join("/"));
     }
+    if (CI_FILES.has(name)) ciFiles.add(path);
   }
 
   return {
@@ -273,7 +298,11 @@ export function treeFacts(
     extensions: sortedCounts(extensions),
     lockfiles: capped(lockfiles),
     migrationDirectories: outermost(migrationDirectories),
-    infraDirectories: outermost(infraDirectories),
+    // A CI file is kept even inside a listed directory (`infra/Jenkinsfile`
+    // under `infra`): it is what says the repository runs CI.
+    infraDirectories: capped(
+      new Set([...outermost(infraDirectories), ...ciFiles]),
+    ),
   };
 }
 
@@ -351,15 +380,16 @@ function capped(paths: Set<string>): string[] {
   return [...paths].sort(compare).slice(0, PATH_LIST_MAX);
 }
 
-/** The directories not inside another listed one: `infra`, not `infra/env`. */
+/**
+ * The directories not inside another listed one, sorted: `infra`, not
+ * `infra/env`. Uncapped; a caller that stores a display list caps it.
+ */
 function outermost(directories: Set<string>): string[] {
   const sorted = [...directories].sort(compare);
-  return sorted
-    .filter(
-      (directory) =>
-        !sorted.some(
-          (other) => other !== directory && directory.startsWith(`${other}/`),
-        ),
-    )
-    .slice(0, PATH_LIST_MAX);
+  return sorted.filter(
+    (directory) =>
+      !sorted.some(
+        (other) => other !== directory && directory.startsWith(`${other}/`),
+      ),
+  );
 }

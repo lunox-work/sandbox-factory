@@ -106,7 +106,7 @@ day. It still needs Postgres: `make migrate` starts it and applies the schema.
 | `make reset`        | Stop everything and **delete** the data volumes    |
 
 Run `make` on its own for the full list. Every target delegates to an npm
-script, so `make test` and `npm test` cannot drift apart.
+script or to docker compose, so `make test` and `npm test` cannot drift apart.
 
 Scope a check to one workspace:
 

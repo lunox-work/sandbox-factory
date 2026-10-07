@@ -182,6 +182,19 @@ function toSummary(row: {
 }
 
 export function createOrganizationStore(db: Database): OrganizationStore {
+  /** The user as their personal organization's owner; nothing if already. */
+  async function ensureOwner(organizationId: string, userId: string) {
+    await db
+      .insert(member)
+      .values({
+        id: generateId("mbr"),
+        organizationId,
+        userId,
+        role: "owner",
+      })
+      .onConflictDoNothing();
+  }
+
   return {
     async listForUser(userId) {
       const rows = await db
@@ -223,6 +236,10 @@ export function createOrganizationStore(db: Database): OrganizationStore {
         .where(eq(organization.personalUserId, userId))
         .limit(1);
       if (existing !== undefined) {
+        // And the membership again, which is idempotent: a first run that
+        // made the organization and failed before the membership left it
+        // invisible to `listForUser`, and only a retry can repair it.
+        await ensureOwner(existing.id, userId);
         return toSummary(existing);
       }
 
@@ -262,15 +279,7 @@ export function createOrganizationStore(db: Database): OrganizationStore {
       // because the adapter hands this store a plain connection; a personal
       // organization with no membership would be invisible to `listForUser`,
       // so the membership is written immediately after and is idempotent.
-      await db
-        .insert(member)
-        .values({
-          id: generateId("mbr"),
-          organizationId: id,
-          userId,
-          role: "owner",
-        })
-        .onConflictDoNothing();
+      await ensureOwner(id, userId);
 
       return toSummary(created);
     },

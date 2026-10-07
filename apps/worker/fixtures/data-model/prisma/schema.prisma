@@ -1,0 +1,64 @@
+// The application's own store.
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+/// Someone who signs in.
+model User {
+  id        Int      @id @default(autoincrement())
+  email     String   @unique @db.VarChar(200)
+  name      String?
+  role      Role     @default(MEMBER)
+  posts     Post[]
+  profile   Profile?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("users")
+}
+
+model Post {
+  id         String     @id @default(cuid())
+  title      String
+  tags       String[]
+  author     User       @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  authorId   Int        @map("author_id")
+  categories Category[]
+
+  @@unique([title, authorId])
+  @@index([authorId])
+}
+
+model Profile {
+  user   User   @relation(fields: [userId], references: [id], onDelete: SetNull)
+  userId Int    @unique
+  bio    String @default("")
+
+  @@id([userId])
+}
+
+model Category {
+  id    Int    @id
+  name  String
+  posts Post[]
+}
+
+model Legacy {
+  id Int @id
+
+  @@ignore
+}
+
+view ActiveUser {
+  id    Int    @unique
+  email String
+}
+
+enum Role {
+  ADMIN
+  MEMBER  @map("member")
+}

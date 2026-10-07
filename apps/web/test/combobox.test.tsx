@@ -239,3 +239,42 @@ test("one put up only to be picked from opens as it mounts, and says when it clo
   await userEvent.click(screen.getByRole("option", { name: "acme/api" }));
   expect(onOpenChange).toHaveBeenLastCalledWith(false);
 });
+
+test("a list searched elsewhere hears the query and shows its options as given", async () => {
+  const heard: string[] = [];
+  const picked = vi.fn();
+  render(
+    <Combobox
+      label="Issue"
+      filter={false}
+      onSearchChange={(query) => heard.push(query)}
+      options={[
+        { value: "a", label: "APP-1 Export" },
+        { value: "b", label: "APP-2 Import", disabled: true },
+      ]}
+      value=""
+      onValueChange={picked}
+    />,
+  );
+  const list = await openCombobox(
+    screen.getByRole("combobox", { name: "Issue" }),
+  );
+  await userEvent.type(
+    screen.getByRole("combobox", { name: "Search issue" }),
+    "zz",
+  );
+  // Nothing here matches "zz"; the options are the answer all the same.
+  expect(heard.at(-1)).toBe("zz");
+  expect(shown(list)).toEqual(["APP-1 Export", "APP-2 Import"]);
+
+  // A disabled option is listed but not picked, and the list stays open.
+  const disabled = within(list).getByRole("option", { name: "APP-2 Import" });
+  expect(disabled.getAttribute("aria-disabled")).toBe("true");
+  await userEvent.click(disabled);
+  expect(picked).not.toHaveBeenCalled();
+  expect(screen.getByRole("listbox")).toBeDefined();
+  await userEvent.click(
+    within(list).getByRole("option", { name: "APP-1 Export" }),
+  );
+  expect(picked).toHaveBeenCalledWith("a");
+});

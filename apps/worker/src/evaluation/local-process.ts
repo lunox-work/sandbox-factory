@@ -43,6 +43,9 @@ function inside(root: string, path: string): string {
   return absolute;
 }
 
+/** How long a finished command's output pipes are read before closing. */
+const PIPE_DRAIN_MS = 250;
+
 export function runProcess(
   command: EvaluationCommand,
   options: { cwd: string; env: Record<string, string>; signal: AbortSignal },
@@ -99,29 +102,65 @@ export function runProcess(
     };
     child.stdout.on("data", (chunk: Buffer) => collect(chunk, true));
     child.stderr.on("data", (chunk: Buffer) => collect(chunk, false));
-    const abort = () => stop();
+    /*
+      Settled once, on the first of: the process failing to start, the
+      run being aborted, or the process exiting. Not on "close": that waits
+      for every holder of the output pipes, and a grandchild that left the
+      process group holds them for as long as it lives, past any timeout or
+      abort, so the build would never end.
+    */
+    let settled = false;
+    const settle = (outcome: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      options.signal.removeEventListener("abort", abort);
+      outcome();
+    };
+    const abort = () => {
+      stop();
+      settle(() => reject(options.signal.reason));
+    };
     options.signal.addEventListener("abort", abort, { once: true });
     if (options.signal.aborted) abort();
     child.on("error", (error) => {
-      clearTimeout(timer);
       clearTimeout(killTimer);
-      options.signal.removeEventListener("abort", abort);
-      reject(error);
+      settle(() => reject(error));
     });
-    child.on("close", (code) => {
-      clearTimeout(timer);
+    child.on("exit", (code) => {
       clearTimeout(killTimer);
-      options.signal.removeEventListener("abort", abort);
-      if (options.signal.aborted) reject(options.signal.reason);
-      else
-        resolvePromise({
-          exitCode: code,
-          timedOut,
-          outputTruncated: truncated,
-          stdout,
-          stderr,
-          durationMs: Date.now() - started,
-        });
+      // What the command left running in its group goes with it: a server
+      // a test started and never stopped would otherwise outlive the job,
+      // holding its port, after the directory is removed.
+      kill("SIGKILL");
+      // Output still in the pipes is read for a moment; a holder outside
+      // the group is not waited for.
+      const drained = Promise.all(
+        [child.stdout, child.stderr].map(
+          (stream) =>
+            new Promise<void>((done) => {
+              if (stream.readableEnded || stream.destroyed) done();
+              else stream.once("close", () => done());
+            }),
+        ),
+      );
+      const cap = new Promise<void>((done) => {
+        setTimeout(done, PIPE_DRAIN_MS).unref();
+      });
+      void Promise.race([drained, cap]).then(() => {
+        child.stdout.destroy();
+        child.stderr.destroy();
+        settle(() =>
+          resolvePromise({
+            exitCode: code,
+            timedOut,
+            outputTruncated: truncated,
+            stdout,
+            stderr,
+            durationMs: Date.now() - started,
+          }),
+        );
+      });
     });
   });
 }
@@ -139,8 +178,14 @@ export function createLocalProcessProvider(
       );
       const home = join(directory, "home");
       const work = join(directory, "work");
-      await mkdir(home);
-      await mkdir(work);
+      try {
+        await mkdir(home);
+        await mkdir(work);
+      } catch (error) {
+        // No job to destroy it later: the directory goes now.
+        await rm(directory, { recursive: true, force: true });
+        throw error;
+      }
       // No platform variables reach the processes: PATH to find node and
       // npm, a private HOME and npm cache, and nothing else.
       const env: Record<string, string> = {

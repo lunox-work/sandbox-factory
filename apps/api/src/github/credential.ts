@@ -183,9 +183,24 @@ export async function userClientFor(
 }
 
 /**
+ * What a failed user call meant for the grant it was made with.
+ *
+ * - `flagged` — the grant is finished, and is now marked so: the person
+ *   must connect again.
+ * - `superseded` — it would have been, but the grant was replaced while the
+ *   call was out (the person reconnected), so nothing was flagged. The new
+ *   grant is untried, and telling the person to reconnect would be wrong.
+ * - `other` — the failure says nothing about the grant.
+ */
+export type GrantFailure = "flagged" | "superseded" | "other";
+
+/**
  * Whether a failed user call means the grant is finished, and if so, flags
  * it — fenced on the revision the call began from, so a person who
- * reconnected meanwhile is not flagged for the old grant's failure.
+ * reconnected meanwhile is not flagged for the old grant's failure. The
+ * answer is what the fenced write did, not what the error suggested: a
+ * caller that said `reconnect` over a grant still healthy would send the
+ * person round a loop that changes nothing.
  *
  * A 401 from the REST API is a revoked token; a refused refresh is a spent
  * one. A 403 is not: it is a permission the person lacks, which a reconnect
@@ -199,16 +214,15 @@ export async function noteGrantFailure(
     readonly credentialRevision: number;
   },
   error: unknown,
-): Promise<boolean> {
+): Promise<GrantFailure> {
   const finished =
     (error instanceof GithubAuthError && error.status === 401) ||
     (error instanceof GithubOAuthError && error.needsReconnect);
-  if (finished) {
-    await grants.markUnhealthy(
-      target.organizationId,
-      target.userId,
-      target.credentialRevision,
-    );
-  }
-  return finished;
+  if (!finished) return "other";
+  const flagged = await grants.markUnhealthy(
+    target.organizationId,
+    target.userId,
+    target.credentialRevision,
+  );
+  return flagged ? "flagged" : "superseded";
 }

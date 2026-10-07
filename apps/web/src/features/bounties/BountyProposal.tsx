@@ -23,6 +23,7 @@ export function BountyProposal({
   bountyKey,
   bountyTitle,
   canDecide,
+  overviewVersion = null,
   onChanged,
   onRemoved,
 }: {
@@ -31,6 +32,8 @@ export function BountyProposal({
   bountyKey: string | undefined;
   bountyTitle: string | undefined;
   canDecide: boolean;
+  /** The overview version it was sized from, when one says what it did. */
+  overviewVersion?: number | null;
   /** After a change has landed, for whatever shows the bounty's proposal. */
   onChanged: () => void;
   onRemoved: () => void;
@@ -82,6 +85,7 @@ export function BountyProposal({
     ...read.proposal,
     ...read.freshness,
     writebackOperations: read.writebackOperations,
+    activeRun: read.activeRun,
     ...(bountyKey === undefined ? {} : { liveKey: bountyKey }),
     ...(bountyTitle === undefined ? {} : { liveTitle: bountyTitle }),
   };
@@ -101,6 +105,7 @@ export function BountyProposal({
         onChanged={changed}
         onRemoved={onRemoved}
         withinBounty
+        overviewVersion={overviewVersion}
       />
     </div>
   );

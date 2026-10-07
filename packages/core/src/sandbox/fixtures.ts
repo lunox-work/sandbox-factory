@@ -13,6 +13,7 @@
  * check live in the worker.
  */
 
+import { isFunctionExpressionText } from "./expression.js";
 import type { AgentUsage } from "../analysis.js";
 import type { BoundaryModule } from "../slice/manifest.js";
 
@@ -68,8 +69,6 @@ export interface VersionFixtures {
 }
 
 const IDENTIFIER = /^[A-Za-z_$][\w$]*$/;
-const FUNCTION_EXPRESSION =
-  /^\s*(async\s+)?(function\b|\(|[A-Za-z_$][\w$]*\s*=>)/;
 const IMPORTING = /\bimport\s*[({'"*\w]|\brequire\s*\(/;
 const TYPE_KINDS: readonly string[] = ["interface", "type"];
 
@@ -133,7 +132,9 @@ export function fixtureProblems(
       report(
         `The implementation is longer than ${FIXTURE_LIMITS.implementationChars} characters.`,
       );
-    if (!FUNCTION_EXPRESSION.test(fixture.implementation))
+    // Read as code, not matched by its start: it is spliced into the
+    // public runtime as it stands (`isFunctionExpressionText`).
+    if (!isFunctionExpressionText(fixture.implementation))
       report("The implementation must be one function expression.");
     if (IMPORTING.test(fixture.implementation))
       report("The implementation must not import anything.");

@@ -200,6 +200,7 @@ test("private provenance, the approved task and replay answers keep their exact 
     starterSha256: null,
     transformConfigSha256: "t".repeat(64),
     approvedTaskSha256: "p".repeat(64),
+    proposalVersion: 2,
     aliasRules: [],
     dependencyChoices: { pg: "runtime-mock" },
     acceptanceTests: [],

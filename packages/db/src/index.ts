@@ -42,6 +42,8 @@ export type {
   ListedBounty,
   NewBounty,
   StoredBounty,
+  StoredBountyVersion,
+  BountyApproval,
   BountyChange,
   BountyJiraLink,
   BountyMutationResult,
@@ -54,6 +56,7 @@ export type {
   JiraIssueInput,
   JiraIssuePointer,
   JiraIssueStore,
+  JiraIssueLinkResult,
 } from "./jira-issues.js";
 export { createRateCardStore } from "./rate-cards.js";
 export type {
@@ -70,6 +73,7 @@ export type {
 } from "./bounty-runs.js";
 export { createBountyProposalStore } from "./bounty-proposals.js";
 export type {
+  ApplyRubricInput,
   BountyProposalStore,
   CreateBountyProposalInput,
   LeasedBountyProposalInput,

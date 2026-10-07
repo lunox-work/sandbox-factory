@@ -1,6 +1,6 @@
-import { and, eq, gt, lt, or, sql } from "drizzle-orm";
+import { and, asc, eq, gt, lt, or, sql } from "drizzle-orm";
 
-import type { Database } from "./errors.js";
+import { isUniqueViolation, type Database } from "./errors.js";
 import { generateId } from "./mapping.js";
 import { approvalVersion, withdrawalVersion } from "./proposal-version.js";
 import { bountyProposal, bountyWriteback } from "./schema.js";
@@ -290,31 +290,48 @@ export function createBountyWritebackStore(db: Database): BountyWritebackStore {
             eq(bountyWriteback.organizationId, organizationId),
             eq(bountyWriteback.proposalId, proposalId),
           ),
+        )
+        // Oldest first, so the last is the latest: the proposal's page reads
+        // it as the current delivery, and Postgres keeps no order of its own
+        // once rows are updated.
+        .orderBy(
+          asc(bountyWriteback.createdAt),
+          asc(bountyWriteback.id),
         )) as BountyWritebackRow[];
       return rows.map(dto);
     },
 
     async claim(organizationId, id, leaseToken, now) {
-      const rows = (await db
-        .update(bountyWriteback)
-        .set({
-          status: "running",
-          leaseToken,
-          leaseExpiresAt: new Date(now.getTime() + 60_000),
-          errorCode: null,
-          updatedAt: now,
-        })
-        .where(
-          and(
-            eq(bountyWriteback.organizationId, organizationId),
-            eq(bountyWriteback.id, id),
-            or(
-              eq(bountyWriteback.status, "pending"),
-              eq(bountyWriteback.status, "failed"),
+      let rows: BountyWritebackRow[];
+      try {
+        rows = (await db
+          .update(bountyWriteback)
+          .set({
+            status: "running",
+            leaseToken,
+            leaseExpiresAt: new Date(now.getTime() + 60_000),
+            errorCode: null,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(bountyWriteback.organizationId, organizationId),
+              eq(bountyWriteback.id, id),
+              or(
+                eq(bountyWriteback.status, "pending"),
+                eq(bountyWriteback.status, "failed"),
+              ),
             ),
-          ),
-        )
-        .returning()) as BountyWritebackRow[];
+          )
+          .returning()) as BountyWritebackRow[];
+      } catch (error) {
+        // Another write for the same proposal is running
+        // (`bounty_writeback_proposal_running_unique`). Not claimed, as for
+        // any other row already taken: this one stays as it was, to be
+        // retried once that one has finished.
+        if (isUniqueViolation(error)) return null;
+        throw error;
+      }
       return rows[0] === undefined ? null : dto(rows[0]);
     },
 

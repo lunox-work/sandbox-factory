@@ -9,7 +9,7 @@
  * where pills would read as a control floating above it.
  */
 
-import * as TabsPrimitive from "@radix-ui/react-tabs";
+import { Tabs as TabsPrimitive } from "radix-ui";
 import * as React from "react";
 
 import { cn } from "@/lib/utils";
@@ -127,8 +127,12 @@ function TabsList({
         "group/tabs",
         variant === "default" &&
           "text-muted-foreground relative inline-flex h-9 w-fit items-center justify-center gap-1",
+        // The rule is an inset shadow, not a border, so the bar can sit on
+        // it inside the list's box. Hung a pixel below onto a border, the bar
+        // overflowed the list, and a list that scrolls sideways (overflow-x
+        // makes y scroll too) drew a scrollbar for that one pixel.
         line &&
-          "text-muted-foreground relative flex h-10 w-full items-stretch gap-5 border-b",
+          "text-muted-foreground relative flex h-10 w-full items-stretch gap-5 shadow-[inset_0_-1px_0_var(--border)]",
         !thumbed && "inline-flex w-fit items-center",
         className,
       )}
@@ -140,8 +144,10 @@ function TabsList({
           data-slot="tabs-thumb"
           className={cn(
             "pointer-events-none absolute left-0",
+            // The bar is the brand's ramp: a page's sections are headed in
+            // Lunox's colour, where a pill is a neutral control.
             line
-              ? "bg-foreground -bottom-px h-0.5 rounded-full"
+              ? "bg-(image:--brand-gradient) bottom-0 h-0.5 rounded-full"
               : "bg-muted ring-border/60 top-0 rounded-lg ring-1 ring-inset",
             settled &&
               "transition-[transform,width,height,opacity] duration-380 ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none",

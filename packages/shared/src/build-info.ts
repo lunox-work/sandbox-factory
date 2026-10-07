@@ -48,9 +48,6 @@ export const buildInfoSchema = z.object({
 
 export type BuildInfoDto = z.infer<typeof buildInfoSchema>;
 
-/** Response body for `GET /version`; the web app compares against it. */
-export const versionResponseSchema = buildInfoSchema;
-
 /** The fallback value, shared by the injection sites and their tests. */
 export const unknownBuildInfo: BuildInfoDto = {
   version: "0.0.0",

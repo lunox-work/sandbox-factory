@@ -29,7 +29,13 @@
  * still shown: both are something to act on rather than nothing.
  */
 
-import { ArrowRight, Link2, TriangleAlert } from "lucide-react";
+import {
+  ArrowRight,
+  Link2,
+  Plus,
+  RefreshCw,
+  TriangleAlert,
+} from "lucide-react";
 import type { MembershipDto } from "@sandbox-factory/shared";
 
 import { ErrorBanner, LoadingLine } from "@/components/Message";
@@ -45,7 +51,7 @@ import {
 } from "@/components/ui/card";
 
 import { describeGithubOutcome } from "./Github";
-import { JiraIcon } from "./ProviderIcon";
+import { JiraIcon, ProviderIcon } from "./ProviderIcon";
 import { useConnections, type ConnectionGroup } from "./useConnections";
 import { useGithubOutcome } from "./useGithub";
 import { useJiraOutcome } from "./useJira";
@@ -198,6 +204,10 @@ export function Home({
   organizationsLoading,
   activeOrganization,
   onOpen,
+  onConnectGithub,
+  onNewBounty,
+  onOpenBounties,
+  onCreateWorkspace,
 }: {
   organizations: MembershipDto[];
   organizationsLoading: boolean;
@@ -208,8 +218,13 @@ export function Home({
    * to add.
    */
   onOpen: (organization: MembershipDto) => void;
+  /** Opens the organization's settings on its GitHub tab. */
+  onConnectGithub?: ((organization: MembershipDto) => void) | undefined;
+  onNewBounty?: (() => void) | undefined;
+  onOpenBounties?: (() => void) | undefined;
+  onCreateWorkspace?: (() => void) | undefined;
 }) {
-  const { groups, loading, error, total } = useConnections(
+  const { groups, loading, error, total, refresh } = useConnections(
     organizations,
     organizationsLoading,
   );
@@ -236,10 +251,12 @@ export function Home({
     <main className="mx-auto flex w-full max-w-2xl flex-col gap-6 px-4 py-10 sm:px-6 sm:py-14">
       <header>
         <h1 className="text-2xl font-semibold tracking-tight">
-          {onboarding ? "Onboarding" : "Connections"}
+          {onboarding ? "Get started" : "Connections"}
         </h1>
         <p className="text-muted-foreground mt-1.5 text-sm">
-          Jira sites you and your workspaces can read boards from.
+          {onboarding
+            ? "A bounty is a proposal that sizes and prices the work, and a sandbox contributors work in. Jira and GitHub are optional."
+            : "Jira sites you and your workspaces can read boards from."}
         </p>
       </header>
 
@@ -260,32 +277,106 @@ export function Home({
 
       {loading ? (
         <LoadingLine />
-      ) : error !== null ? (
-        <ErrorBanner className="mt-0">{error}</ErrorBanner>
-      ) : visible.length === 0 ? (
-        <Card>
-          <CardHeader>
-            <CardTitle>No sites connected yet</CardTitle>
-            <CardDescription>
-              {groups.length === 0
-                ? "You are not in a workspace yet, so there is nowhere to connect a site."
-                : "Connecting happens in a workspace\u2019s own settings, because a site belongs to one owner."}
-            </CardDescription>
-          </CardHeader>
-          {groups.length > 0 && activeOrganization !== null && (
-            <CardContent>
+      ) : error !== null || visible.length === 0 ? (
+        /*
+          No site to list, or none could be read. Neither stops the work:
+          a bounty needs no Jira, so writing one is what home offers first,
+          and the tools follow as the optional context they are. A failed
+          read says so where the sites would be, with a way to read again.
+        */
+        <>
+          {groups.length === 0 ? (
+            <Card>
+              <CardHeader>
+                <CardTitle>You are not in a workspace yet</CardTitle>
+                <CardDescription>
+                  Bounties belong to a workspace. Create one to write the first.
+                </CardDescription>
+              </CardHeader>
+              {onCreateWorkspace !== undefined && (
+                <CardContent>
+                  <Button size="sm" onClick={onCreateWorkspace}>
+                    New workspace
+                  </Button>
+                </CardContent>
+              )}
+            </Card>
+          ) : (
+            <Card>
+              <CardHeader>
+                <CardTitle>Write a bounty</CardTitle>
+                <CardDescription>
+                  Describe the work. It is sized and priced as a proposal, and a
+                  sandbox is cut for contributors to work in.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="flex flex-wrap gap-2">
+                {onNewBounty !== undefined && (
+                  <Button size="sm" className="gap-2" onClick={onNewBounty}>
+                    <Plus />
+                    New bounty
+                  </Button>
+                )}
+                {onOpenBounties !== undefined && (
+                  <Button variant="ghost" size="sm" onClick={onOpenBounties}>
+                    View bounties
+                  </Button>
+                )}
+              </CardContent>
+            </Card>
+          )}
+          {error !== null ? (
+            <div className="flex flex-col items-start gap-3">
+              <ErrorBanner className="mt-0">{error}</ErrorBanner>
               <Button
+                type="button"
                 variant="outline"
                 size="sm"
-                className="gap-2"
-                onClick={() => onOpen(activeOrganization)}
+                onClick={() => void refresh()}
               >
-                <JiraIcon />
-                Connect Jira
+                <RefreshCw />
+                Try again
               </Button>
-            </CardContent>
+            </div>
+          ) : (
+            groups.length > 0 &&
+            activeOrganization !== null && (
+              <Card>
+                <CardHeader>
+                  <CardTitle>Connect your tools</CardTitle>
+                  <CardDescription>
+                    Optional. Jira brings a board&rsquo;s issues in as bounties;
+                    GitHub gives a bounty the code it is about. Each connects in
+                    a workspace&rsquo;s own settings, because it belongs to one
+                    owner.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="flex flex-wrap gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="gap-2"
+                    onClick={() => onOpen(activeOrganization)}
+                  >
+                    <JiraIcon />
+                    Connect Jira
+                  </Button>
+                  {onConnectGithub !== undefined && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="gap-2"
+                      onClick={() => onConnectGithub(activeOrganization)}
+                    >
+                      <ProviderIcon provider="github" />
+                      Connect GitHub
+                    </Button>
+                  )}
+                </CardContent>
+              </Card>
+            )
           )}
-        </Card>
+        </>
       ) : (
         <>
           {total === 0 && (

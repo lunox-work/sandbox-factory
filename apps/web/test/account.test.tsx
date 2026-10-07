@@ -9,7 +9,7 @@
  * what a person sees given a server response.
  */
 
-import { act, fireEvent, render, screen, waitFor } from "./render";
+import { act, fireEvent, render, screen, waitFor, within } from "./render";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
 const listAccounts = vi.fn();
@@ -205,6 +205,25 @@ describe("addresses and connected accounts", () => {
   });
 });
 
+test("a failed read offers a retry, not every provider to connect", async () => {
+  // Nothing is known to be linked when the read fails; listing every provider
+  // under "Connect" said the person had connected none.
+  listAccounts.mockResolvedValue({ error: { message: "down" } });
+  serverWith({ emails: [] });
+
+  render(<Account />);
+
+  expect(await screen.findByText("Could not load your account.")).toBeDefined();
+  expect(screen.queryByRole("button", { name: /Connect/ })).toBeNull();
+
+  listAccounts.mockResolvedValue({ data: [] });
+  fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+  await waitFor(() =>
+    expect(screen.queryByText("Could not load your account.")).toBeNull(),
+  );
+  expect(screen.getAllByRole("button", { name: /Connect/ }).length).toBe(2);
+});
+
 test("does not show an address for a provider that is not linked", async () => {
   // A stale proof: Google is unlinked but once still displayed the address it
   // used to prove.
@@ -242,6 +261,31 @@ test("does not show an address for a provider that is not linked", async () => {
   // Only GitHub is linked, so the address appears once and never on the
   // unlinked Google row.
   expect(screen.getAllByText("dana@example.test")).toHaveLength(1);
+});
+
+test("a link the server refuses says so and gives the buttons back", async () => {
+  // Better Auth answers a refusal with `{ error }` rather than throwing, and no
+  // navigation follows it: the page used to stay busy with every button off.
+  linkSocial.mockResolvedValue({
+    data: null,
+    error: { message: "This account is already linked to another user." },
+  });
+  serverWith({ emails: [] });
+  render(<Account />);
+
+  await waitFor(() => {
+    expect(screen.getAllByRole("button", { name: /Connect/ })).toHaveLength(2);
+  });
+  fireEvent.click(
+    screen.getAllByRole("button", { name: /Connect/ })[0] as HTMLElement,
+  );
+
+  expect(
+    await screen.findByText(/already linked to another user/),
+  ).toBeDefined();
+  for (const button of screen.getAllByRole("button", { name: /Connect/ })) {
+    expect((button as HTMLButtonElement).disabled).toBe(false);
+  }
 });
 
 describe("unlinking", () => {
@@ -481,6 +525,13 @@ test("each account section is a level-two heading", async () => {
 });
 
 describe("organization invitations", () => {
+  /** Declines through the question it asks first. */
+  async function decline() {
+    fireEvent.click(await screen.findByRole("button", { name: "Decline" }));
+    const dialog = await screen.findByRole("alertdialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Decline" }));
+  }
+
   const invitation = {
     id: "inv_1",
     organization: { id: "org_1", name: "Acme", slug: "acme" },
@@ -527,12 +578,27 @@ describe("organization invitations", () => {
     serverWith({ invitations: [invitation] });
     render(<Account />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Decline" }));
+    await decline();
 
     await waitFor(() =>
       expect(rejectInvitation).toHaveBeenCalledWith({ invitationId: "inv_1" }),
     );
     expect(acceptInvitation).not.toHaveBeenCalled();
+  });
+
+  test("declining asks first, and backing out declines nothing", async () => {
+    // It sits one button from Accept, and an invitation declined does not
+    // come back: only the workspace can send another.
+    serverWith({ invitations: [invitation] });
+    render(<Account />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Decline" }));
+    const dialog = await screen.findByRole("alertdialog");
+    expect(within(dialog).getByText(/invitation to Acme/)).toBeDefined();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(rejectInvitation).not.toHaveBeenCalled();
   });
 
   test("accepting tells the app to reload its organizations", async () => {
@@ -551,7 +617,7 @@ describe("organization invitations", () => {
     serverWith({ invitations: [invitation] });
     render(<Account onJoined={onJoined} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Decline" }));
+    await decline();
 
     await waitFor(() => expect(rejectInvitation).toHaveBeenCalled());
     expect(onJoined).not.toHaveBeenCalled();

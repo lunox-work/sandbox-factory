@@ -40,6 +40,11 @@ import type { AgentSettings, AgentTool } from "../agent/loop.js";
 import { runAgent } from "../agent/loop.js";
 import { SCOPE_SYSTEM_PROMPT, bountySection } from "../agent/prompts.js";
 import {
+  accessorHint,
+  dataModelTool,
+  moduleSurfaceTool,
+} from "../agent/context-tools.js";
+import {
   graphNeighboursTool,
   indexRepository,
   invalidInput,
@@ -47,6 +52,7 @@ import {
   repositoryTools,
 } from "../agent/repo-tools.js";
 import { snapshotOf } from "./adapter.js";
+import { loadAbstractions, loadDataModel } from "./context-runs.js";
 import type { ArtifactFile, ToolAdapter, ToolRunInput } from "./adapter.js";
 import { analyseSlice, loadGraph } from "./slice.js";
 import type { LoadedGraph, SliceAnalysis } from "./slice.js";
@@ -139,6 +145,23 @@ export function createScopeAdapter(settings: AgentSettings): ToolAdapter {
         params.graphRunId,
         snapshot.snapshotId,
       );
+      // The context builders' runs, when the snapshot had them at queue time.
+      const abstractions =
+        params.abstractionsRunId === undefined
+          ? null
+          : await loadAbstractions(
+              input.inputs,
+              params.abstractionsRunId,
+              snapshot.snapshotId,
+            );
+      const dataModel =
+        params.dataModelRunId === undefined
+          ? null
+          : await loadDataModel(
+              input.inputs,
+              params.dataModelRunId,
+              snapshot.snapshotId,
+            );
       const index = await indexRepository(input.sourceDir, input.signal);
       const slice = (request: {
         entryPoints: readonly string[];
@@ -339,10 +362,18 @@ export function createScopeAdapter(settings: AgentSettings): ToolAdapter {
           bountySection(task.issueKey, task.draft),
           `The repository, at commit ${snapshot.commitSha}:\n${repositoryOverview(index)}`,
           `The structure analysis has ${graph.graph.nodes.length} nodes and ${graph.graph.links.length} relations.`,
+          ...(abstractions === null
+            ? []
+            : [
+                `The abstractions index describes ${abstractions.modules.length} modules; \`module_surface\` shows what a stub for any of them declares.`,
+              ]),
+          ...(dataModel === null ? [] : [accessorHint(dataModel)]),
         ].join("\n\n"),
         tools: [
           ...repositoryTools(index),
           graphNeighboursTool(graph.graph),
+          ...(abstractions === null ? [] : [moduleSurfaceTool(abstractions)]),
+          ...(dataModel === null ? [] : [dataModelTool(dataModel)]),
           checkScope,
           submitScope,
         ],

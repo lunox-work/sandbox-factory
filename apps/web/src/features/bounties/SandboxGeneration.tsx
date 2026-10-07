@@ -19,8 +19,13 @@ import type {
 } from "@sandbox-factory/shared";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronDown, RefreshCw, Sparkles } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
+import { isPublicationLive } from "sandbox-factory";
+
+import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { DisabledReason } from "@/components/DisabledReason";
+import { RetryableError } from "@/components/Message";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -34,6 +39,9 @@ import { terminalRun, useObservation } from "../../data/observe";
 import { clients, queryKeys, useUserId } from "../../data/query";
 import { dateTime } from "../../lib/format";
 import { sandboxFilesPath } from "../../routes";
+import { LunoxMark } from "@/components/LunoxMark";
+
+import { PublishMenu } from "./PublishMenu";
 import { SandboxCard } from "./SandboxCard";
 
 /** How often a generation in progress is asked about. */
@@ -118,14 +126,17 @@ export function SandboxGeneration({
   canGenerate = true,
   generationBlocked = null,
   readOnly = false,
-  onPublished,
+  onChanged,
   children,
 }: {
   organizationId: string;
   /** The workspace's handle, which a version's files page is addressed by. */
   workspace: string;
   /** Which version, if any, it has published. */
-  sandbox: Pick<BountySandboxSummaryDto, "id" | "status" | "currentVersionId">;
+  sandbox: Pick<
+    BountySandboxSummaryDto,
+    "id" | "status" | "currentVersionId" | "expiresAt"
+  >;
   canManage: boolean;
   /** Whether its versions are generated; a linked one's are sliced. */
   canGenerate?: boolean;
@@ -134,8 +145,12 @@ export function SandboxGeneration({
    * still a draft; null when it is not.
    */
   generationBlocked?: string | null;
-  /** The sandbox was published or unpublished: read it again. */
-  onPublished?: () => void;
+  /**
+   * A version was generated, finished its run, or was published or
+   * unpublished: what the bounty says of its sandbox, such as which bounty
+   * version it stands on, has moved, so read it again.
+   */
+  onChanged?: () => void;
   /** Its versions alone, with no way to generate, as in a panel. */
   readOnly?: boolean;
   /** Under its versions, such as the way to link a repository. */
@@ -146,6 +161,8 @@ export function SandboxGeneration({
   const queryClient = useQueryClient();
   const [pending, setPending] = useState(false);
   const [publishing, setPublishing] = useState(false);
+  // Asking whether to take the sandbox from contributors.
+  const [unpublishing, setUnpublishing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // The version being looked at; the latest until another is chosen.
   const [chosenId, setChosenId] = useState<string | null>(null);
@@ -203,6 +220,14 @@ export function SandboxGeneration({
   });
   // Once its run is over, the version holds what the run settled.
   const runEnded = run.data !== undefined && terminalRun(run.data);
+  // Seen running here, so its end is news to the bounty too.
+  const watched = useRef(false);
+  if (run.data !== undefined && !runEnded) watched.current = true;
+  // Held, not depended on: the parent passes a new function every render,
+  // and as a dependency it re-read the version on each one after the run
+  // had ended.
+  const changed = useRef(onChanged);
+  changed.current = onChanged;
   useEffect(() => {
     if (!runEnded) return;
     void queryClient.invalidateQueries({
@@ -213,6 +238,10 @@ export function SandboxGeneration({
         selectedId,
       ),
     });
+    if (watched.current) {
+      watched.current = false;
+      changed.current?.();
+    }
   }, [runEnded, queryClient, userId, organizationId, selectedId]);
 
   async function generate() {
@@ -235,6 +264,7 @@ export function SandboxGeneration({
       // The new version is the one to follow.
       setChosenId(null);
       await queryClient.invalidateQueries({ queryKey: versionsKey });
+      onChanged?.();
     } catch (failure) {
       setError(
         failure instanceof ApiError
@@ -248,20 +278,21 @@ export function SandboxGeneration({
 
   /*
     Publishing approves and freezes the chosen version and makes it the one
-    contributors get; unpublishing takes the sandbox back to a draft, its
-    versions still frozen.
+    contributors get until `expiresAt`; unpublishing, with no date, takes the
+    sandbox back to a draft, its versions still frozen.
   */
-  async function publish(unpublish: boolean) {
+  async function publish(expiresAt: string | null) {
     if (selectedId === null) return;
     setPublishing(true);
     setError(null);
     try {
-      if (unpublish)
+      if (expiresAt === null)
         await clients.sandbox.unpublishSandbox(organizationId, sandboxId);
       else {
         const published = await clients.sandbox.publishSandboxVersion(
           organizationId,
           selectedId,
+          expiresAt,
         );
         queryClient.setQueryData(
           queryKeys.resource(
@@ -274,7 +305,7 @@ export function SandboxGeneration({
         );
       }
       await queryClient.invalidateQueries({ queryKey: versionsKey });
-      onPublished?.();
+      onChanged?.();
     } catch (failure) {
       setError(
         failure instanceof ApiError
@@ -295,6 +326,14 @@ export function SandboxGeneration({
   const publishable =
     source.data?.source?.harnessSha256 != null &&
     source.data.source.toolchainDigest != null;
+  /*
+    What it stands on is the bounty version its task was taken from, not
+    the bounty now: a version taken from an approved one can be published
+    whatever the bounty has done since.
+  */
+  const fromApproved =
+    source.data?.source?.approvedTask.pricing?.status === "approved";
+  const bountyVersion = source.data?.source?.proposalVersion ?? null;
   // Generated by an owner or admin, and not from a read-only view.
   const generates =
     canGenerate &&
@@ -306,20 +345,23 @@ export function SandboxGeneration({
   // The first generation is the card's one action, so it leads; after that,
   // opening what was generated does, and generating again sits beside it.
   const generateButton = generates && (
-    <Button
-      type="button"
-      variant={latest === null ? "default" : "outline"}
-      disabled={generating || generationBlocked !== null}
-      title={generationBlocked ?? undefined}
-      onClick={() => void generate()}
-    >
-      {latest === null ? <Sparkles /> : <RefreshCw />}
-      {generating
-        ? "Generating…"
-        : latest === null
-          ? "Generate"
-          : "Generate again"}
-    </Button>
+    // Said on hover and focus, as Publish says why it is held: a disabled
+    // button's own title is shown by few browsers and read by no keyboard.
+    <DisabledReason reason={generating ? null : generationBlocked}>
+      <Button
+        type="button"
+        variant={latest === null ? "default" : "outline"}
+        disabled={generating || generationBlocked !== null}
+        onClick={() => void generate()}
+      >
+        {latest === null ? <Sparkles /> : <RefreshCw />}
+        {generating
+          ? "Generating…"
+          : latest === null
+            ? "Generate"
+            : "Generate again"}
+      </Button>
+    </DisabledReason>
   );
 
   let standing: Standing | null = null;
@@ -366,9 +408,9 @@ export function SandboxGeneration({
     );
   else if (versions.isError)
     body = (
-      <p className="text-muted-foreground text-sm">
+      <RetryableError onRetry={() => void versions.refetch()}>
         Its versions could not be read.
-      </p>
+      </RetryableError>
     );
   else if (selected === null)
     body = (
@@ -383,6 +425,14 @@ export function SandboxGeneration({
           (canManage
             ? " Generate one: an agent writes a starter from the bounty's title, description and tech stack, then it is built and checked."
             : " An owner or admin can generate one from the bounty.")}
+        {/*
+          Said, rather than left without an action: a linked sandbox's
+          versions are sliced from its repository, which this page does
+          not do.
+        */}
+        {!readOnly &&
+          !canGenerate &&
+          " Its versions are sliced from its repository; slicing is not available from this page yet."}
       </p>
     );
   else {
@@ -435,11 +485,16 @@ export function SandboxGeneration({
   /*
     Which version the card is about, over it as a bounty's proposal has its
     version: the version, chosen from the others when there are several,
-    under it whether it is published, and the decision that publishes it.
-    Given the button's height so the two sit level.
+    under it whether it is published and until when, and the decision that
+    publishes it. Given the button's height so the two sit level. A
+    publication past its date has lapsed: it reads as expired, and the
+    version can be published again.
   */
-  const published =
+  const live = isPublicationLive(sandbox);
+  const current =
     sandbox.status === "published" && sandbox.currentVersionId === selectedId;
+  const published = current && live;
+  const expiresAt = sandbox.expiresAt;
   const approvedAt = source.data?.source?.approvedAt ?? null;
   const frozenAt = selected?.frozenAt ?? null;
   const versionName = selected !== null && (
@@ -471,8 +526,7 @@ export function SandboxGeneration({
                 >
                   <span>Version {item.version}</span>
                   <span className="text-muted-foreground text-xs">
-                    {item.id === sandbox.currentVersionId &&
-                    sandbox.status === "published"
+                    {item.id === sandbox.currentVersionId && live
                       ? "Published"
                       : item.id === latest?.id
                         ? "Latest"
@@ -490,6 +544,17 @@ export function SandboxGeneration({
             <span>
               Published{" "}
               <time dateTime={approvedAt}>{dateTime(approvedAt)}</time>
+              {expiresAt !== null && (
+                <>
+                  {" "}
+                  · Expires{" "}
+                  <time dateTime={expiresAt}>{dateTime(expiresAt)}</time>
+                </>
+              )}
+            </span>
+          ) : current && expiresAt !== null ? (
+            <span>
+              Expired <time dateTime={expiresAt}>{dateTime(expiresAt)}</time>
             </span>
           ) : frozenAt !== null ? (
             <span>
@@ -500,29 +565,47 @@ export function SandboxGeneration({
             <span>Not published yet</span>
           )}
           {selected.id === latest?.id && <span>· Latest</span>}
+          {/* What it stands on: the step before it, by version. */}
+          {bountyVersion !== null ? (
+            <span>· Bounty v{bountyVersion}</span>
+          ) : (
+            source.data?.source != null && <span>· Bounty draft</span>
+          )}
         </span>
       </span>
       {publishes &&
         (published ? (
-          <Button
-            variant="outline"
-            disabled={publishing}
-            onClick={() => void publish(true)}
-          >
-            Unpublish
-          </Button>
+          <>
+            <Button
+              variant="outline"
+              disabled={publishing}
+              onClick={() => setUnpublishing(true)}
+            >
+              Unpublish
+            </Button>
+            <ConfirmDialog
+              open={unpublishing}
+              onOpenChange={setUnpublishing}
+              title="Unpublish this version?"
+              description="Contributors lose access to the sandbox until a version is published again. The version itself is kept."
+              confirmLabel="Unpublish"
+              pendingLabel="Unpublishing…"
+              busy={publishing}
+              onConfirm={() => publish(null)}
+            />
+          </>
         ) : (
-          <Button
-            disabled={publishing || !publishable}
-            title={
-              publishable
-                ? undefined
-                : "Only a version whose build passed can be published."
+          <PublishMenu
+            disabledReason={
+              !publishable
+                ? "Only a version whose build passed can be published."
+                : !fromApproved
+                  ? "This version was not built from an approved bounty."
+                  : null
             }
-            onClick={() => void publish(false)}
-          >
-            Publish
-          </Button>
+            busy={publishing}
+            onPublish={(until) => void publish(until)}
+          />
         ))}
     </div>
   );
@@ -549,7 +632,11 @@ export function SandboxGeneration({
         // The mark in the foreground's ink: white on the dark theme.
         iconClassName="text-foreground"
         title="Slice"
-        description="A slice of your repository, cut down to the task. Only your workspace can see it; each generation is kept as a version."
+        description={
+          canGenerate
+            ? "The task as a runnable project, written from the bounty. Only your workspace can see it; each generation is kept as a version."
+            : "A slice of your repository, cut down to the task. Only your workspace can see it; each generation is kept as a version."
+        }
       >
         <div className="flex flex-col gap-4" data-testid="sandbox-generation">
           {body}
@@ -571,30 +658,5 @@ export function SandboxGeneration({
         </div>
       </SandboxCard>
     </div>
-  );
-}
-
-/**
- * The Lunox code mark from brand/svg/logo-gradient.svg, drawn in the current
- * color so it sits in a button, or beside the slice's name, like any other
- * icon; the gradient would fight the button's fill. Decorative: the label
- * beside it says what it is.
- */
-function LunoxMark({ className }: { className?: string }) {
-  return (
-    <svg
-      className={className}
-      viewBox="0 0 512 512"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={56}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M48 168 148 256 48 342" />
-      <path d="M300 118 230 394" />
-      <path d="M464 168 364 256 464 342" />
-    </svg>
   );
 }

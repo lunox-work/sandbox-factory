@@ -9,7 +9,8 @@
  * parameters carry every hash the output must bind to. A sandbox with no
  * repository has its versions generated instead: the starter route queues
  * an agent run that writes one from the bounty's text and builds it.
- * Nothing here is public; publication is phase 5D.
+ * Publishing makes a built version the sandbox's current one until a date;
+ * no public repository is pushed yet.
  */
 
 import type {

@@ -24,10 +24,11 @@
  */
 
 import type { TreeFacts } from "../repo/tree.js";
-import { modulesFor } from "../repo/tree.js";
+import { CI_FILE_NAMES, modulesFor } from "../repo/tree.js";
+import { entryPointPath } from "../slice/graph.js";
 import type { StubCoverage } from "../slice/manifest.js";
 import type { ScopePattern, ScopeSubmission } from "../slice/scope.js";
-import { SCENARIO_KINDS } from "./spec.js";
+import { countScenarios } from "./spec.js";
 import type { ScenarioKind, SpecDraft } from "./spec.js";
 
 /** Bumped when what a stored profile's fields mean changes. */
@@ -61,11 +62,18 @@ export const PROFILE_ERROR_CODES = [
 ] as const;
 export type ProfileErrorCode = (typeof PROFILE_ERROR_CODES)[number];
 
-/** Whether an infrastructure directory `TreeFacts` lists holds CI configuration. */
-const isCiDirectory = (directory: string) =>
-  directory === ".github/workflows" ||
-  directory === ".circleci" ||
-  directory.endsWith("/.circleci");
+const CI_FILES = new Set(CI_FILE_NAMES);
+
+/**
+ * Whether an infrastructure path `TreeFacts` lists is CI configuration: a
+ * CI directory, or a CI file it lists by path (`.gitlab-ci.yml`).
+ */
+const isCiPath = (path: string) => {
+  const name = path.slice(path.lastIndexOf("/") + 1);
+  return (
+    path === ".github/workflows" || name === ".circleci" || CI_FILES.has(name)
+  );
+};
 
 export interface ComplexityProfile {
   readonly version: typeof COMPLEXITY_PROFILE_VERSION;
@@ -86,7 +94,10 @@ export interface ComplexityProfile {
   readonly externals: {
     /** Services the slice's packages reach (`email`, `postgres`), sorted, unique. */
     readonly services: readonly string[];
-    /** Environment variables the slice reads. */
+    /**
+     * Environment variables the slice reads, as its summary lists them: at
+     * most `SUMMARY_LIMITS.environment`.
+     */
     readonly environment: number;
     /** Cut modules the scope agent judged safe to mock. */
     readonly seams: number;
@@ -151,19 +162,20 @@ const compare = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 
 export function buildComplexityProfile(input: ProfileInput): ComplexityProfile {
   const { facts, scope, slice, spec } = input;
+  // An entry point may be a graph node id (`symbol:src/a.ts:run`), which
+  // the slice walk accepts; as a path it would match no module.
   const touchedModules = modulesFor(
     facts,
-    scope.entryPoints.map((entry) => entry.path),
+    scope.entryPoints.flatMap((entry) => entryPointPath(entry.path) ?? []),
   );
   const touched = new Set(touchedModules);
   const touchedFacts = facts.modules.filter((module) =>
     touched.has(module.path),
   );
 
-  const kinds = Object.fromEntries(
-    SCENARIO_KINDS.map((kind) => [kind, 0]),
-  ) as Record<ScenarioKind, number>;
-  for (const scenario of spec.scenarios) kinds[scenario.kind] += 1;
+  // Stored specs may hold a kind the registry has since retired; counting
+  // it here would add to a key that is not there and make NaN.
+  const kinds = countScenarios(spec).byKind;
 
   return {
     version: COMPLEXITY_PROFILE_VERSION,
@@ -201,7 +213,7 @@ export function buildComplexityProfile(input: ProfileInput): ComplexityProfile {
       migrations: modulesFor(facts, facts.migrationDirectories).some((module) =>
         touched.has(module),
       ),
-      ci: facts.infraDirectories.some(isCiDirectory),
+      ci: facts.infraDirectories.some(isCiPath),
     },
     risks: [...scope.risks],
   };

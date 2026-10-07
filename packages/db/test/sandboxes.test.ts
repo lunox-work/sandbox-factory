@@ -18,6 +18,7 @@ const sandboxRow = (overrides: Partial<SandboxRow> = {}): SandboxRow => ({
   status: "draft",
   publicRepoId: null,
   currentVersionId: null,
+  expiresAt: null,
   createdAt: now,
   updatedAt: now,
   ...overrides,
@@ -40,12 +41,21 @@ const versionRow = (
   createdAt: now,
   ...overrides,
 });
+const approvedPricing = {
+  proposalId: "bpr_1",
+  proposalRevision: 2,
+  complexity: "M",
+  amountMinor: 50_000,
+  currency: "USD",
+  status: "approved",
+  decidedAt: now.toISOString(),
+} as const;
 const approvedTask: ApprovedTaskSnapshot = {
   schemaVersion: 3,
   title: "Fix it",
   summary: "Summary",
   spec: null,
-  pricing: null,
+  pricing: approvedPricing,
   selectedBy: "user",
   selectedAt: now.toISOString(),
   bountyId: "bty_1",
@@ -70,6 +80,7 @@ const sourceRow = (
   transformConfigSha256: "t".repeat(64),
   approvedTaskSha256: "a".repeat(64),
   approvedTask,
+  proposalVersion: 1,
   aliasRules: [],
   dependencyChoices: {},
   acceptanceTests: [],
@@ -99,6 +110,7 @@ const newVersion = {
     transformConfigSha256: "t".repeat(64),
     approvedTaskSha256: "a".repeat(64),
     approvedTask,
+    proposalVersion: 1,
     aliasRules: [
       {
         before: "Acme",
@@ -421,6 +433,7 @@ const starterVersion = {
     transformConfigSha256: "t".repeat(64),
     approvedTaskSha256: "a".repeat(64),
     approvedTask,
+    proposalVersion: 1,
     aliasRules: [],
     dependencyChoices: {},
     acceptanceTests: [],
@@ -432,6 +445,7 @@ test("a version is generated only without a repository, from the owner's run que
   const fake = createSequencedFakeDb([
     [{ sandbox: sandboxRow(), sourceRepoId: null }],
     [{ id: "arn_starter" }],
+    [],
     [{ version: 1 }],
     [versionRow({ id: "sbv_new", version: 2 })],
     [generatedRow({ sandboxVersionId: "sbv_new" })],
@@ -448,10 +462,13 @@ test("a version is generated only without a repository, from the owner's run que
   assert.equal(result.source.starterRunId, "arn_starter");
   // The run was looked up under the owner, and is the version's build too.
   assert.equal(fake.calls[1]?.filtered, true);
-  assert.equal(fake.calls[3]?.values?.["id"], "sbv_new");
-  assert.equal(fake.calls[4]?.values?.["starterRunId"], "arn_starter");
-  assert.equal(fake.calls[4]?.values?.["buildRunId"], "arn_starter");
-  assert.equal(fake.calls[4]?.values?.["sliceRunId"], undefined);
+  // Another version's starter under way was looked for, under the owner.
+  assert.equal(fake.calls[2]?.filtered, true);
+  assert.equal(fake.calls[2]?.limited, 1);
+  assert.equal(fake.calls[4]?.values?.["id"], "sbv_new");
+  assert.equal(fake.calls[5]?.values?.["starterRunId"], "arn_starter");
+  assert.equal(fake.calls[5]?.values?.["buildRunId"], "arn_starter");
+  assert.equal(fake.calls[5]?.values?.["sliceRunId"], undefined);
   // A sandbox with a repository slices its versions instead.
   assert.deepEqual(
     await createSandboxStore(
@@ -471,6 +488,23 @@ test("a version is generated only without a repository, from the owner's run que
     ).createVersion("owner", "sbx_1", starterVersion),
     { ok: false, reason: "starter_mismatch" },
   );
+  // A second Generate while the first version's starter is still queued
+  // or running makes no second version.
+  const busy = createSequencedFakeDb([
+    [{ sandbox: sandboxRow(), sourceRepoId: null }],
+    [{ id: "arn_starter" }],
+    [{ id: "arn_earlier" }],
+  ]);
+  assert.deepEqual(
+    await createSandboxStore(busy.db).createVersion(
+      "owner",
+      "sbx_1",
+      starterVersion,
+    ),
+    { ok: false, reason: "starter_in_progress" },
+  );
+  assert.equal(busy.calls[0]?.lock, "update");
+  assert.equal(busy.calls.length, 3);
 });
 
 test("a starter run's output settles on its draft only while the draft still points at it", async () => {
@@ -728,7 +762,7 @@ test("fixtures are part of the transform: replacing or dropping them clears evid
   assert.equal(dropped.calls[1]?.values?.["buildRunId"], null);
 });
 
-test("recording a build clears the old build's evidence, and refuses a changed transform", async () => {
+test("recording a build clears the old build's evidence but not its own, and refuses and cancels a changed or frozen one", async () => {
   const current = {
     version: versionRow(),
     source: sourceRow({
@@ -757,25 +791,54 @@ test("recording a build clears the old build's evidence, and refuses a changed t
   assert.deepEqual(fake.calls[2]?.values, { updatedAt: now });
   const store = (rows: readonly (readonly unknown[])[]) =>
     createSandboxStore(createSequencedFakeDb(rows).db);
-  assert.deepEqual(
-    await store([[current]]).recordBuild(
-      "owner",
-      "sbv_1",
-      "arn_new",
-      "x".repeat(64),
-    ),
-    { ok: false, reason: "conflict" },
-  );
-  assert.deepEqual(
-    await store([
+  // A refused build is cancelled while it is still queued, so it gives back
+  // its active slot; the draft is not touched.
+  for (const [rows, expectedHash, reason] of [
+    [[current], "x".repeat(64), "conflict"],
+    [
       [{ ...current, version: versionRow({ frozenAt: now }) }],
-    ]).recordBuild("owner", "sbv_1", "arn_new", "t".repeat(64)),
-    { ok: false, reason: "frozen" },
-  );
+      "t".repeat(64),
+      "frozen",
+    ],
+  ] as const) {
+    const refused = createSequencedFakeDb([rows]);
+    assert.deepEqual(
+      await createSandboxStore(refused.db).recordBuild(
+        "owner",
+        "sbv_1",
+        "arn_new",
+        expectedHash,
+        now,
+      ),
+      { ok: false, reason },
+    );
+    assert.equal(refused.calls.length, 2);
+    assert.equal(refused.calls[1]?.kind, "update");
+    assert.equal(refused.calls[1]?.filtered, true);
+    assert.deepEqual(refused.calls[1]?.values, {
+      status: "failed",
+      errorCode: "cancelled",
+      errorDetail: null,
+      finishedAt: now,
+    });
+  }
   assert.deepEqual(
     await store([[]]).recordBuild("owner", "sbv_x", "arn_new", "t".repeat(64)),
     { ok: false, reason: "not-found" },
   );
+  // The build the draft already points at, asked for again, keeps what it
+  // proved: nothing is written.
+  const same = createSequencedFakeDb([[current]]);
+  const kept = await createSandboxStore(same.db).recordBuild(
+    "owner",
+    "sbv_1",
+    "arn_old",
+    "t".repeat(64),
+    now,
+  );
+  assert.equal(kept.ok && kept.source.harnessSha256, "h".repeat(64));
+  assert.equal(kept.ok && kept.source.toolchainDigest, "d".repeat(64));
+  assert.equal(same.calls.length, 1);
   assert.deepEqual(
     await store([[current], []]).recordBuild(
       "owner",
@@ -874,6 +937,7 @@ test("replay context says whether the original source and slice are still there"
 });
 
 test("publishing freezes and approves a version with a passing build, and points its sandbox at it", async () => {
+  const expiresAt = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
   const ready = generatedRow({
     harnessSha256: "h".repeat(64),
     toolchainDigest: "d".repeat(64),
@@ -890,20 +954,29 @@ test("publishing freezes and approves a version with a passing build, and points
     "owner",
     "sbv_1",
     "user_1",
+    expiresAt,
     now,
   );
   assert.equal(result.ok, true);
   if (!result.ok) return;
   assert.equal(fake.calls[0]?.lock, "update");
+  // What it stands on is the approval its task was taken from: the
+  // bounty's approval now is not read, nor held.
+  assert.equal(
+    fake.calls.some(({ lock }) => lock === "share"),
+    false,
+  );
   assert.deepEqual(fake.calls[1]?.values, { frozenAt: now });
   assert.deepEqual(fake.calls[2]?.values, {
     approvedBy: "user_1",
     approvedAt: now,
     updatedAt: now,
   });
+  // Published until the date given.
   assert.deepEqual(fake.calls[3]?.values, {
     status: "published",
     currentVersionId: "sbv_1",
+    expiresAt,
     updatedAt: now,
   });
   assert.equal(result.sandbox.status, "published");
@@ -926,6 +999,7 @@ test("publishing freezes and approves a version with a passing build, and points
     "owner",
     "sbv_1",
     "user_1",
+    expiresAt,
     now,
   );
   assert.equal(
@@ -933,6 +1007,29 @@ test("publishing freezes and approves a version with a passing build, and points
     "user_0",
   );
   assert.equal(again.calls.length, 3);
+
+  // A task taken from a bounty not approved, or with no proposal at all:
+  // refused before anything is frozen or published.
+  for (const pricing of [{ ...approvedPricing, status: "proposed" }, null]) {
+    const unapproved = createSequencedFakeDb([
+      [
+        {
+          ...current,
+          source: { ...ready, approvedTask: { ...approvedTask, pricing } },
+        },
+      ],
+    ]);
+    assert.deepEqual(
+      await createSandboxStore(unapproved.db).publishVersion(
+        "owner",
+        "sbv_1",
+        "user_1",
+        expiresAt,
+      ),
+      { ok: false, reason: "bounty_not_approved" },
+    );
+    assert.equal(unapproved.calls.length, 1);
+  }
 
   // No passing build, or not the organization's: refused, nothing written.
   for (const [rows, reason] of [
@@ -945,6 +1042,7 @@ test("publishing freezes and approves a version with a passing build, and points
         "owner",
         "sbv_1",
         "user_1",
+        expiresAt,
       ),
       { ok: false, reason },
     );
@@ -962,9 +1060,11 @@ test("unpublishing takes a sandbox back to a draft with no published version", a
     "sbx_1",
     now,
   );
+  // Its expiry goes with the publication.
   assert.deepEqual(fake.calls[0]?.values, {
     status: "draft",
     currentVersionId: null,
+    expiresAt: null,
     updatedAt: now,
   });
   assert.equal(sandbox?.status, "draft");

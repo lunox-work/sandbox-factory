@@ -49,9 +49,9 @@ export const RECONCILE_INTERVAL_MS = 5 * 60_000;
 /** How long a repository's last read stays good enough. */
 export const RECONCILE_STALE_MS = 15 * 60_000;
 /** The most repositories one sweep reads. */
-export const RECONCILE_BATCH = 100;
+const RECONCILE_BATCH = 100;
 /** The most flagged connections one sweep asks GitHub about. */
-export const PROBE_BATCH = 20;
+const PROBE_BATCH = 20;
 
 export interface GithubReconcilerOptions {
   readonly repos: GithubRepoStore;

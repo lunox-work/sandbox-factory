@@ -21,7 +21,10 @@ export const EXTERNAL_SERVICE_RULES: readonly ExternalServiceRule[] = [
     service: "aws",
     specifiers: ["@aws-sdk/*", "aws-sdk", "boto3", "botocore"],
   },
-  { service: "github", specifiers: ["@octokit/*", "octokit", "PyGithub"] },
+  // Not PyGithub: it is installed under that name but imported as
+  // `github`, and `github` would also match every Go import from
+  // `github.com/...`, since non-Python files share one import pattern.
+  { service: "github", specifiers: ["@octokit/*", "octokit"] },
   { service: "google", specifiers: ["googleapis", "@google-cloud/*"] },
   { service: "stripe", specifiers: ["stripe"] },
   {

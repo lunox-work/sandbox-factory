@@ -187,11 +187,13 @@ export interface GithubRepoStore {
    */
   dueForSync(staleBefore: Date, limit: number): Promise<DueGithubRepo[]>;
   /**
-   * Transactional cascade with private object keys. Optional for legacy
-   * stores. Both removals throw `RepositoryInUseError` while a sandbox is
-   * built from the repository.
+   * Removes the repository and returns the private object keys its rows
+   * named (snapshot trees, analysis logs and artifacts), read in the same
+   * transaction as the cascade so the caller can delete the objects after.
+   * What the route uses; `remove` is the rows alone. Both throw
+   * `RepositoryInUseError` while a sandbox is built from the repository.
    */
-  removeWithObjects?(
+  removeWithObjects(
     organizationId: string,
     repoId: string,
   ): Promise<{ removed: boolean; objectKeys: string[] }>;

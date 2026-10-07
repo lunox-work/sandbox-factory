@@ -16,8 +16,8 @@ import type { JsonSchema, ParseResult, StructuredCall } from "../caller.js";
 import { describeProblem, oneLine, truncate } from "./parse.js";
 
 /**
- * What a spec is drafted from: the ticket, and — when the board names the
- * repository its tickets are about — an outline of that repository.
+ * What a spec is drafted from: the bounty, and — when the bounty or its
+ * board names the repository it is about — an outline of that repository.
  */
 export interface DraftInput {
   readonly summary: string;
@@ -30,7 +30,7 @@ export interface DraftInput {
 /**
  * `draft-v2` weighs every scenario. A spec stored under `draft-v1` has no
  * weights, and so no scenario step until its proposal is re-priced.
- * `draft-v3` may be shown a repository outline beside the ticket; the
+ * `draft-v3` may be shown a repository outline beside the bounty; the
  * proposal's `repoSnapshotId` says whether this one was. `draft-v4` sees
  * no issue type or labels, which a bounty no longer has.
  */

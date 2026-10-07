@@ -1,8 +1,8 @@
 import type {
   BountyCategoryMatch,
   BountyProposalDto,
+  BountyRunDto,
   BountyWritebackDto,
-  ProposalLiveSpecDto,
 } from "@sandbox-factory/shared";
 export type EnrichedProposal = BountyProposalDto & {
   /**
@@ -18,6 +18,11 @@ export type EnrichedProposal = BountyProposalDto & {
   liveKey?: string;
   liveUrl?: string;
   writebackOperations?: BountyWritebackDto[];
+  /**
+   * The re-price or spec change rewriting it now, from its detail read:
+   * null when none is, and absent until that read lands.
+   */
+  activeRun?: BountyRunDto | null;
 };
 
 /** A line of the titles stream: a row's live title, or why it has none. */
@@ -37,19 +42,4 @@ export function titleLine(value: unknown): ProposalTitle | null {
   }
   const code = line["code"];
   return typeof code === "string" ? { id, code } : null;
-}
-
-export interface ProposalDetail {
-  proposal: BountyProposalDto;
-  freshness: {
-    freshness: "current" | "stale" | "missing" | "unknown";
-    checkedAt: string;
-    code?: string;
-  };
-  /**
-   * What the bounty says now: Jira's text for a bounty following an issue,
-   * and the bounty as stored otherwise. Null when it could not be read.
-   */
-  liveSpec?: ProposalLiveSpecDto | null;
-  writebackOperations: BountyWritebackDto[];
 }

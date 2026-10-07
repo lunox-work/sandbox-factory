@@ -61,10 +61,21 @@ export function SignIn() {
   const [error, setError] = useState<string | null>(initialError);
 
   // Drop the `?error=` once it has been read into state, so a refresh does not
-  // resurrect an error the user has already seen and moved past.
+  // resurrect an error the user has already seen and moved past. Only that
+  // parameter: the rest of the query is the page being signed in to, which
+  // the callback carries back — see `signInCallbackURL`.
   useEffect(() => {
     if (initialError !== null) {
-      window.history.replaceState(null, "", window.location.pathname);
+      const params = new URLSearchParams(window.location.search);
+      params.delete("error");
+      const query = params.toString();
+      window.history.replaceState(
+        null,
+        "",
+        window.location.pathname +
+          (query === "" ? "" : `?${query}`) +
+          window.location.hash,
+      );
     }
   }, []);
 
@@ -72,9 +83,14 @@ export function SignIn() {
     setPending(provider);
     setError(null);
     try {
-      await signInWith(provider);
       // On success the browser navigates away, so there is no success branch
-      // to write here — reaching the next line at all means it did not.
+      // to write here. A refusal comes back as `false` rather than a throw,
+      // and has to give the buttons back just the same.
+      if (await signInWith(provider)) {
+        return;
+      }
+      setError("Could not start sign-in. Please try again.");
+      setPending(null);
     } catch {
       setError("Could not start sign-in. Please try again.");
       setPending(null);

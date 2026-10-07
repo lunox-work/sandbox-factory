@@ -69,6 +69,7 @@ const RUN_FAILURES: Readonly<Record<string, string>> = {
     "The proposal changed before the change could start. Try again.",
   board_unavailable: "The board is no longer connected.",
   worker_lost: "The change was interrupted. Try again.",
+  internal_error: "Something went wrong on our side. Try again.",
 };
 
 /** What a change's outcome says when it did not land, by its code. */
@@ -122,12 +123,17 @@ export function respecResult(run: BountyRunDto): RespecState {
  * before the tab says what it did, so the line and the size beside it
  * agree. A change refused because another is running follows that one
  * instead, since its result is the one the reader is waiting on.
+ *
+ * `activeRun` is the change the proposal's own read says is rewriting it;
+ * a spec change there is followed too, so a reload mid-change still says
+ * the change is at work rather than offering a second.
  */
 export function useRespec(
   base: string,
   proposalId: string,
   revision: number,
   onLanded: () => Promise<void> | void,
+  activeRun?: BountyRunDto | null,
 ): RespecControl {
   const [state, setState] = useState<RespecState>({ phase: "idle" });
   const [following, setFollowing] = useState<string | null>(null);
@@ -135,14 +141,28 @@ export function useRespec(
   useEffect(() => {
     landed.current = onLanded;
   }, [onLanded]);
+  // The last change seen to its end, so a read still naming it is not
+  // followed again.
+  const completed = useRef<string | null>(null);
 
-  // Another proposal: what was said about the last one goes with it.
+  // Another proposal: what was said about the last one goes with it. Not
+  // another revision of this one: a change that lands moves the revision,
+  // and its result is what the tab is about to say.
   useEffect(() => {
     setState({ phase: "idle" });
     setFollowing(null);
-  }, [base, proposalId, revision]);
+  }, [base, proposalId]);
+  const adopt =
+    activeRun?.kind === "respec" && completed.current !== activeRun.id
+      ? activeRun.id
+      : null;
+  useEffect(() => {
+    if (adopt === null || following !== null) return;
+    setState({ phase: "working", label: "Changing the scenarios…" });
+    setFollowing(adopt);
+  }, [adopt, following]);
 
-  const selection = `${base}:${proposalId}:${revision}`;
+  const selection = `${base}:${proposalId}`;
   const selectionRef = useRef(selection);
   selectionRef.current = selection;
   const observed = useObservation({
@@ -159,7 +179,6 @@ export function useRespec(
         signal,
       ),
   });
-  const completed = useRef<string | null>(null);
   useEffect(() => {
     const run = observed.data;
     if (
@@ -552,5 +571,67 @@ export function RevisionPicker({
         </button>
       }
     />
+  );
+}
+
+/** A revision's origin as the header menu names it. */
+function originName(origin: string): string {
+  const name = ORIGIN_NAME[origin] ?? origin;
+  return name.charAt(0).toUpperCase() + name.slice(1);
+}
+
+/**
+ * Which revision of the spec is on show, in the header over the decision,
+ * as a sandbox chooses its version: the revision, chosen from the others
+ * when there are several. While the current one is shown the trigger reads
+ * `label`, such as the proposal's version, so the header names one number;
+ * an earlier one is named as the revision it is.
+ */
+export function RevisionMenu({
+  revisions,
+  current,
+  viewing,
+  label,
+  onView,
+}: {
+  revisions: readonly BountySpecRevisionDto[];
+  /** The revision the proposal points at. */
+  current: number;
+  viewing: number;
+  /** What the current revision is called; its revision number otherwise. */
+  label?: string;
+  onView: (revision: number) => void;
+}) {
+  const text =
+    viewing === current && label !== undefined ? label : `Revision ${viewing}`;
+  const name = <span className="font-semibold">{text}</span>;
+  if (revisions.length <= 1) return name;
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          className="focus-visible:ring-ring/50 -mx-1 flex w-fit cursor-pointer items-center gap-1 rounded-sm px-1 hover:underline focus-visible:ring-[3px] focus-visible:outline-none"
+          aria-label={`${text}, choose another revision`}
+        >
+          {name}
+          <ChevronDown className="text-muted-foreground size-3.5" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="min-w-48">
+        {revisions.map(({ revision, origin }) => (
+          <DropdownMenuItem
+            key={revision}
+            onSelect={() => onView(revision)}
+            className="justify-between gap-4"
+          >
+            <span>Revision {revision}</span>
+            <span className="text-muted-foreground text-xs">
+              {revision === current ? "Current" : originName(origin)}
+            </span>
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }

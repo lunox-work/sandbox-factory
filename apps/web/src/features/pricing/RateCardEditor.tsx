@@ -1,7 +1,8 @@
-import { rankAtLeast } from "sandbox-factory";
+import { useState } from "react";
 import { fractionDigits } from "../../lib/format";
-import { useRateCardAutosave } from "./useRateCardAutosave";
+import { canManage, useRateCardAutosave } from "./useRateCardAutosave";
 
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { CurrencySelect } from "@/components/CurrencySelect";
 import { ErrorBanner, LoadingLine } from "@/components/Message";
 import { RateSlider } from "@/components/RateSlider";
@@ -13,9 +14,6 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 
-function canManage(role: string) {
-  return rankAtLeast(role, "admin");
-}
 const RATE_SAVE_STATUSES = {
   saving: "Saving…",
   failed: "Changes not saved.",
@@ -45,6 +43,8 @@ export function RateCardEditor({
     save,
     saveStatus,
   } = useRateCardAutosave(organizationId, role);
+  /** A currency chosen and not yet confirmed. */
+  const [nextCurrency, setNextCurrency] = useState<string | null>(null);
   return (
     <Card>
       <CardHeader>
@@ -81,8 +81,26 @@ export function RateCardEditor({
               value={currency}
               disabled={!canManage(role) || loadFailed}
               onValueChange={(next) => {
-                setCurrency(next);
-                void save(next, values);
+                if (next !== currency) setNextCurrency(next);
+              }}
+            />
+            {/*
+              Asked first: the amounts are kept as they are, not converted,
+              so 200 dollars would become 200 rupiah the moment it saved.
+            */}
+            <ConfirmDialog
+              open={nextCurrency !== null}
+              onOpenChange={(open) => {
+                if (!open) setNextCurrency(null);
+              }}
+              title={`Price in ${nextCurrency ?? ""}?`}
+              description={`The amounts stay as they are; they are not converted from ${currency}. Change each rate afterwards if they should differ.`}
+              confirmLabel="Change currency"
+              pendingLabel="Changing…"
+              onConfirm={async () => {
+                if (nextCurrency === null) return;
+                setCurrency(nextCurrency);
+                await save(nextCurrency, values);
               }}
             />
             <RateSlider

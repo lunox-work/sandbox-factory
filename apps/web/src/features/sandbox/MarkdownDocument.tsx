@@ -4,17 +4,21 @@
  * out, its code blocks in the editor's colours.
  *
  * Links and inline code that name a file in the sandbox open that file in
- * the editor, so a README's `src/app.ts` is one click from the code.
+ * the editor, so a README's `src/app.ts` is one click from the code, and
+ * so do wiki links, `[[Community 0]]`, as a Graphify wiki writes them.
+ * Mermaid and Graphviz fences are drawn as the diagrams they describe.
  */
 
-import type { ReactNode } from "react";
+import { useMemo, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { cn } from "@/lib/utils";
 
 import { Colored, useHighlighted } from "./Colored";
-import { linkedFile } from "./file-tree";
+import { DiagramFigure } from "./Diagram";
+import { diagramKind } from "./diagrams";
+import { linkedFile, wikiLinkedFile } from "./file-tree";
 import { languageOf } from "./file-types";
 
 /** The text of a parsed node and everything in it. */
@@ -56,11 +60,36 @@ function fenceLanguage(node: unknown): string {
   return byExtension === "text" ? named : byExtension;
 }
 
+/**
+ * The text with each wiki link, `[[target]]` or `[[target|label]]`, as a
+ * Markdown link to the file it names, or as its label alone when it names
+ * none. Code is left as written: a span or fence of backticks is matched
+ * first and passed over.
+ */
+export function withWikiLinks(
+  text: string,
+  resolve: (target: string) => string | undefined,
+): string {
+  return text.replace(
+    /(`+)[\s\S]*?\1|\[\[([^\]\n]+?)\]\]/g,
+    (whole, code: string | undefined, link: string | undefined) => {
+      if (code !== undefined || link === undefined) return whole;
+      const bar = link.indexOf("|");
+      const target = (bar === -1 ? link : link.slice(0, bar)).trim();
+      const label = (bar === -1 ? target : link.slice(bar + 1)).trim();
+      const file = resolve(target);
+      return file === undefined ? label : `[${label}](</${file}>)`;
+    },
+  );
+}
+
 function CodeBlock({ text, language }: { text: string; language: string }) {
   const code = text.endsWith("\n") ? text.slice(0, -1) : text;
   const tokens = useHighlighted(code, language);
   return (
-    <pre className="my-4 overflow-x-auto rounded-md border border-(--wb-border) bg-(--wb-chrome) px-4 py-3 font-(family-name:--wb-font-code) text-[13px] leading-[19px] text-(--wb-code)">
+    // A block of the chrome's colour and nothing more, as the editor's
+    // preview draws one: a border and a radius on it make a widget of it.
+    <pre className="my-4 overflow-x-auto rounded-[3px] bg-(--wb-chrome) px-4 py-3 font-(family-name:--wb-font-code) text-[13px] leading-[19px] text-(--wb-code)">
       <code>
         <Colored text={code} tokens={tokens} />
       </code>
@@ -96,6 +125,13 @@ export function MarkdownDocument({
       </a>
     );
   };
+  const source = useMemo(
+    () =>
+      text.includes("[[")
+        ? withWikiLinks(text, (target) => wikiLinkedFile(paths, path, target))
+        : text,
+    [text, paths, path],
+  );
   const link =
     "text-[#4daafc] underline-offset-2 hover:underline focus-visible:outline-1 focus-visible:outline-(--wb-accent)";
   const inlineCode =
@@ -106,12 +142,15 @@ export function MarkdownDocument({
       className="min-h-0 flex-1 overflow-auto"
       data-testid="markdown-document"
     >
-      <article className="mx-auto max-w-[52rem] px-8 pt-6 pb-[40vh] text-[14px] leading-[1.65] text-(--wb-foreground) sm:px-12">
+      {/* Against the left and no wider than reads well, as the editor's
+          own preview is; a column centred in the editor reads as a web
+          page opened in it. */}
+      <article className="max-w-[52rem] px-8 pt-5 pb-[40vh] text-[14px] leading-[1.65] text-(--wb-foreground)">
         <ReactMarkdown
           remarkPlugins={[remarkGfm]}
           components={{
             h1: ({ children }) => (
-              <h1 className="mt-6 mb-4 border-b border-(--wb-border) pb-2 text-[2em] leading-tight font-semibold text-(--wb-strong) first:mt-0">
+              <h1 className="mt-6 mb-4 border-b border-(--wb-border) pb-2 text-[1.75em] leading-tight font-semibold text-(--wb-strong) first:mt-0">
                 {children}
               </h1>
             ),
@@ -180,9 +219,17 @@ export function MarkdownDocument({
                 {alt === undefined || alt === "" ? "[image]" : `[${alt}]`}
               </span>
             ),
-            pre: ({ node }) => (
-              <CodeBlock text={textOf(node)} language={fenceLanguage(node)} />
-            ),
+            pre: ({ node }) => {
+              const text = textOf(node);
+              const language = fenceLanguage(node);
+              const block = <CodeBlock text={text} language={language} />;
+              const kind = diagramKind(language);
+              return kind === undefined ? (
+                block
+              ) : (
+                <DiagramFigure kind={kind} source={text} asWritten={block} />
+              );
+            },
             code: ({ children }) => {
               const named = textOf({ children: [{ value: String(children) }] });
               const looksLikePath =
@@ -220,7 +267,7 @@ export function MarkdownDocument({
             ),
           }}
         >
-          {text}
+          {source}
         </ReactMarkdown>
       </article>
     </div>

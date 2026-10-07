@@ -4,7 +4,8 @@ import { test } from "node:test";
 import type { OrganizationStore } from "@sandbox-factory/db";
 
 import type { Auth } from "../src/auth.js";
-import { createApp, rankAtLeast } from "../src/routes.js";
+import { rankAtLeast } from "../src/access.js";
+import { createApp } from "../src/routes.js";
 
 /**
  * The organization routes.

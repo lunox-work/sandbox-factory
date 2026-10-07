@@ -464,6 +464,11 @@ export function memoryGithub(): MemoryGithub {
       repoRows.delete(id);
       return Promise.resolve(true);
     },
+    // No object store here: the rows are what the fake holds.
+    removeWithObjects: async (organizationId, id) => ({
+      removed: await repos.remove(organizationId, id),
+      objectKeys: [],
+    }),
   };
 
   return { connections, grants, repos };
@@ -959,6 +964,22 @@ export function fakeGithub(state: GithubWorld): typeof globalThis.fetch & {
         return json({ message: "Not Found" }, 404);
       }
       return json(repo);
+    }
+    const branches = /^\/repos\/([^/]+\/[^/]+)\/branches$/.exec(path);
+    if (branches !== null) {
+      // Every head the world knows for the repository, on one page.
+      return json(
+        Object.entries(state.heads)
+          .filter(
+            ([key, head]) =>
+              key.startsWith(`${branches[1]}@`) && head !== "empty",
+          )
+          .map(([key, head]) => ({
+            name: key.slice(key.indexOf("@") + 1),
+            commit: { sha: head },
+            protected: false,
+          })),
+      );
     }
     const ref = /^\/repos\/([^/]+\/[^/]+)\/git\/ref\/heads\/(.+)$/.exec(path);
     if (ref !== null) {

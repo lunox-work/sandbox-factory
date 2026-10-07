@@ -1,7 +1,6 @@
 import { sizeIfNeverSized } from "./pricing/start-run.js";
 import type { AuthVariables } from "./http-context.js";
 export type { AuthVariables } from "./http-context.js";
-export { rankAtLeast } from "./access.js";
 /**
  * HTTP routes, built by a factory that takes its dependencies so tests run
  * against fakes without binding a port or a database.
@@ -44,6 +43,7 @@ import {
   type GithubWebhookOptions,
 } from "./github/webhook.js";
 import { mountJiraRoutes, type JiraRouteOptions } from "./jira/routes.js";
+import { mountBountyJiraRoutes } from "./bounties/jira.js";
 import {
   mountBountyRoutes,
   mountCallerBountyRoutes,
@@ -405,10 +405,11 @@ export function createApp({
     });
 
     /**
-     * One organization by its public handle, for a signed-out reader.
+     * One organization by its public handle, for any signed-in reader.
      *
-     * Deliberately outside the membership guard and deliberately thin: two
-     * names and nothing else. Mounted before `/:orgId` so the literal segment
+     * Behind the session guard every `/api/v1` route is, but deliberately
+     * outside the membership guard and deliberately thin: two names and
+     * nothing else. Mounted before `/:orgId` so the literal segment
      * wins over the parameter.
      */
     app.get("/api/v1/orgs/by-handle/:slug", async (c) => {
@@ -587,6 +588,8 @@ export function createApp({
       // The organization's own bounties, which need nothing but the
       // database: written here, they are sized with no Jira at all.
       mountBountyRoutes(app, pricing);
+      // Its Jira issue, picked for it from any of the workspace's boards.
+      mountBountyJiraRoutes(app, pricing);
       mountCallerBountyRoutes(app, {
         bounties: pricing.bounties,
         organizationsOf: async (userId) =>

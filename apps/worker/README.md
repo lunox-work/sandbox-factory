@@ -1,35 +1,43 @@
 # Private repository analysis worker
 
-Six adapters run here. Graphify analyzes an immutable repository
+Ten adapters run here. Graphify analyzes an immutable repository
 snapshot with `graphifyy==0.4.18`, pinned parser packages and NetworkX 3.4.2.
-Slice reads a graphify run's graph and the same source to describe
-the files one task needs and their boundary. Sandbox build
-turns a slice and a version's private transform into a runnable project and
-checks its baseline in an evaluation job. Scope and fixtures are agent runs:
-a model reads the source to propose a slice for a bounty, and to write
-behaviour for a succeeded slice's mocked calls. Starter is the one run with
-no repository: a model writes a generated version's project from the
-bounty's own text, which is then built and checked like a slice's. Graphify,
-slice and the agents never execute repository code or install its
-dependencies; the build and the starter execute the generated project only
-inside the evaluation provider's job. Only the agents call a model. DeepWiki Open and Archify remain candidates
-for later adapters.
+Dependency-cruiser, deepwiki, abstractions and data model are the other
+context builders: a module dependency cruise of the snapshot, a wiki
+written by a self-hosted DeepWiki-Open service, every module's callable
+surface, and the entities the repository stores with the modules that
+touch them; the last two read graphify's map. Slice reads a graphify run's graph and the same
+source to describe the files one task needs and their boundary. Sandbox
+build turns a slice and a version's private transform into a runnable
+project and checks its baseline in an evaluation job. Scope and fixtures
+are agent runs: a model reads the source to propose a slice for a bounty,
+and to write behaviour for a succeeded slice's mocked calls. Starter is the
+one run with no repository: a model writes a generated version's project
+from the bounty's own text, which is then built and checked like a slice's.
+Graphify, dependency-cruiser, abstractions, data model, slice and the
+agents never execute repository code or install its dependencies; the build and the starter
+execute the generated project only inside the evaluation provider's job.
+Only the agents call a model; deepwiki hands the repository to the
+configured DeepWiki-Open service, which uses its own.
 
 ## Run locally
 
 Configure the GitHub App in `.env.development`, start dependencies, and apply
 local database migrations with `make migrate`. `make up` starts the polling
-worker alongside the API and web app. In GitHub settings, open a registered
-repository's **Analysis** panel and choose **Analyse now**. Any organization
-member can open artifacts; owners and admins can start runs and read logs.
+worker alongside the API and web app. Open a registered repository's page
+and choose **Build** on a context builder. Any organization member can open
+artifacts; owners and admins can start runs and read logs. A sandbox
+build's artifacts, hidden tests among them, are owners' and admins' only.
 
 `make worker-smoke` builds the production image and runs the real pipeline on
 the checked-in fixture without GitHub, database or AWS credentials. It checks
 archive validation, namespaced symbols, relative/directory/alias imports,
 unresolved and dynamic imports, ignore rules, graph direction, artifact upload,
-identical canonical graph facts from different checkout paths, and a slice of
-the resulting graph: deterministic stubs for the cut modules, blockers for
-the unresolved and dynamic imports, and a clean slice of a leaf file. Unit tests
+identical canonical graph facts from different checkout paths, a slice of
+the resulting graph (deterministic stubs for the cut modules, blockers for
+the unresolved and dynamic imports, and a clean slice of a leaf file), and
+the same `abstractions.json` and `data-model.json` bytes from two checkout
+paths, with the tree-sitter tier reading the polyglot fixture. Unit tests
 inject subprocesses and storage; real PostgreSQL tests exercise concurrent
 claims, spend limits and stale leases.
 
@@ -50,6 +58,160 @@ by degree. The full graph remains in JSON. Wiki pages are structural inventories
 and communities use neutral names. `manifest.json` records coverage, omissions,
 counts, confidence and the canonical graph SHA-256. Timing fields are diagnostic
 and do not participate in the graph digest.
+
+### Context builders
+
+`dependency_cruiser`, `deepwiki`, `abstractions` and `data_model` are the
+other context builders, queued like graphify from
+`POST .../repositories/:id/runs` with the builder's name as `tool`; their
+parameters are graphify's plus a `builder` discriminator (and, for the two
+that read the map, `graphRunId`). Each writes a `manifest.json` whose
+`meta` is the summary the console reads (`dependencyCruiserSummarySchema`,
+`deepwikiSummarySchema`, `abstractionsSummarySchema` and
+`dataModelSummarySchema` in `packages/shared`).
+
+**dependency_cruiser** runs `dependency-cruiser` 18.5.0 on a thread of its
+own (an abort terminates it) over the extracted source: every module system,
+TypeScript parsed by swc (the worker's own `@swc/core`, so production reads
+`.ts` as development does) with pre-compilation dependencies, only modules
+inside the snapshot, `node_modules`, `dist`, `build`, `vendor`,
+`third_party` and `.git` excluded, no rule set, and none of the repository's own
+`tsconfig`, Babel or webpack configuration, so nothing in the snapshot is
+read as configuration or executed; the cruiser only parses. Outputs:
+`dependency-cruiser.json` (the full cruise, kind `dependency_graph`),
+`dependency-cruiser.dot` (the dot rendering, kind `dependency_dot`) and
+`manifest.json`, whose summary holds counts (modules, dependencies,
+circular, orphans, unresolved, external) and bounded, sorted lists: the 25
+busiest modules by dependents plus dependencies, up to 20 distinct cycles,
+50 orphans and 50 unresolved imports, with `truncated` saying whether any
+list was cut. The snapshot carries no `node_modules`, so a package import
+resolves to nothing; `external` counts every bare specifier (a package or
+a `node:` built-in) whether or not it resolved, and `unresolved` only the
+relative, absolute and `#` subpath imports that name no file. The same
+snapshot gives the same summary.
+
+**deepwiki** asks a self-hosted DeepWiki-Open service (`DEEPWIKI_OPEN_URL`;
+`DEEPWIKI_OPEN_AUTH_CODE`, `DEEPWIKI_OPEN_PROVIDER` and
+`DEEPWIKI_OPEN_MODEL` optional) for a wiki of the repository: it deletes
+the service's cached wiki for the repository, submits a task with the
+repository-scoped read token, polls the task until it completes, then reads
+the cached wiki. Without a URL deepwiki runs fail with
+`builder_unavailable`; a run with no repository fails `source_unavailable`.
+The service clones the repository's **default branch** itself and reads
+it with its own model; it does not read the worker's snapshot, so the wiki
+may describe a newer commit than the run names. The summary records the
+commit the run was asked for as `requestedCommitSha`. Outputs:
+`wiki/<name>.md` for every page (kind `wiki_page`, at most 500, one per
+page id), the name its id made file-safe, a long one cut to 100 characters
+with a short hash, a repeated one suffixed `-2`, `-3`,
+`wiki-structure.json` (kind `wiki_structure`, the raw structure with the
+repository, provider and model) and `manifest.json`; both JSON artifacts
+carry the summary (title, description, provider, model, pages with their
+importance, file paths, related pages and artifact path, and sections).
+Trust boundary: the repository read token is sent to the configured
+DeepWiki-Open service, so that service must be a trusted deployment the
+operator controls; the worker never logs the token, the URLs it is sent
+in, or anything the service returns beyond fixed lifecycle lines.
+
+Locally, `make deepwiki-up` starts such a service: the `deepwiki` compose
+profile runs DeepWiki-Open with the configuration in `apps/worker/deepwiki/`
+and an Ollama sidecar for its embeddings. DeepWiki-Open has no Anthropic
+provider, so its LiteLLM provider is pointed at DeepSeek with the key sizing
+already uses (`DEEPSEEK_API_KEY`), and `.env.development` sets
+`DEEPWIKI_OPEN_URL=http://deepwiki:8001` and
+`DEEPWIKI_OPEN_PROVIDER=litellm` for the worker. A worker started before
+the profile needs a restart to read them. Indexing a repository embeds
+every chunk through the sidecar, which runs on the CPU; an Ollama
+installed on the host uses the GPU and is pointed at with
+`DEEPWIKI_OLLAMA_HOST=http://host.docker.internal:11434` (pull
+`nomic-embed-text` there first).
+
+**abstractions** and **data_model** read graphify's map, as a slice does:
+their parameters add the succeeded graphify run on the same snapshot
+(`params.graphRunId`), which the API enqueues or finds first and which the
+queue waits for. A graph that did not succeed fails them
+`graph_unavailable`. Coverage is recorded per module or source, never
+implied, and finding nothing is a success with empty output.
+
+**abstractions** lists every module's callable surface: the graph's code
+files, tests aside, each with its language, its importer count from the
+graph and its exports (name, kind, signature with bodies elided, line, and
+the types it names by symbol id or package specifier). An export takes the
+graph's module-qualified symbol id when the graph has a node of its name at
+its line (or the only one of its name in the file), otherwise
+`symbol:<path>#<name>`, so the scope agent can move between the two. Three
+tiers:
+
+- `typed`: TypeScript and JavaScript, with the slice's declaration emitter
+  and `filterDeclaration` asking for every name, one program per nearest
+  `tsconfig.json` through the slice's bounded compiler host, in a worker
+  thread so a long compile cannot hold the lease heartbeat. A project whose
+  program would parse more than 2,000 repository files goes to the
+  syntactic tier with a `program_too_large` omission. Package types are
+  references by specifier, listed in `externals`.
+- `syntactic`: Python, Go and Java (and a capped TypeScript project) with
+  the tree-sitter grammars already pinned for graphify, by
+  `python/abstractions.py` in the graphify venv. Signatures read as written;
+  no type is resolved, so a reference is only to an export of the same
+  module, or for Go and Java of the same package directory. Exported means:
+  Python, `__all__` when declared, else module-level names without a
+  leading `_` (public methods and `__init__` as `Class.method`); Go, an
+  upper-case identifier (a method when it and its receiver are); Java,
+  `public` or `protected` (an interface's members unless `private`).
+- `names-only`: any other language graphify parses, and any module a tier
+  could not read: the graph's symbol nodes, with no signature.
+
+Outputs: `abstractions.json` (kind `abstraction_index`; modules sorted by
+path, with both extractors' versions and the graph's SHA-256),
+`abstractions.md` (kind `other`; the most imported modules first, at most
+300 modules or 256 Ki characters) and `manifest.json`, whose summary
+(`abstractionsSummarySchema`) holds counts by coverage and language, the 25
+most imported modules with their export counts, the first 25 omissions and
+`truncated`. A module lists at most 500 exports and a signature at most
+8,000 characters; each cut is an omission. The same snapshot gives the same
+bytes.
+
+**data_model** reads the entities, fields, enums and relations a
+repository stores, and the modules that touch them. A recognizer runs only
+on its evidence, never on folder names:
+
+- Prisma, on every `.prisma` file (as one schema, as Prisma merges them),
+  read with a parser for the schema language written here, so no
+  configuration is looked up: models and views, `@map`/`@@map`/`@@schema`,
+  `@id`/`@@id`, `@unique`/`@@unique`, defaults, `@db.*` native types,
+  enums, `@relation` foreign keys with their actions, and implicit
+  many-to-many lists. `@@ignore`d models and fields are left out.
+- Drizzle, on the files the graph shows importing `drizzle-orm/pg-core`,
+  `mysql-core` or `sqlite-core`, read from their syntax: `pgTable`,
+  `mysqlTable`, `sqliteTable` and `pgSchema(...).table`, column builders
+  (through a local helper such as `const ts = (n) => timestamp(n, ...)`,
+  and a spread of a constant object in the same file), chained modifiers,
+  `.references(() => t.column, { onDelete })`, `pgEnum`, and the extra
+  config's `primaryKey`, `unique`/`uniqueIndex().on` and `foreignKey`.
+- SQL migrations, on the `.sql` files in the tree facts' migration
+  directories and beside any Drizzle Kit `meta/_journal.json`, parsed with
+  libpg-query (Postgres's own parser as WebAssembly, `libpg-query@18.1.5`)
+  and replayed in the tool's order (the journal's, else natural filename
+  order, rollbacks left out) on an in-memory catalog: `CREATE`/`ALTER`/
+  `DROP`/`RENAME` of tables, columns, constraints, unique indexes and enum
+  types. A `DO` block is opened only for the idempotent-DDL idiom (`BEGIN
+<ddl> EXCEPTION WHEN duplicate_object THEN null; END`); functions,
+  triggers, data statements and other blocks are skipped and counted as
+  omissions per file. Nothing reaches a database.
+
+When two sources define one table, the declared schema wins (Prisma, then
+Drizzle, then migrations); the other counts it as `shadowed`, and its
+relations into the table point at the winner. Accessors are the modules
+that read or write entities: for Drizzle, the files the graph shows
+importing a defining file (through re-exporting barrels, three deep) and
+the names they take; for Prisma, the files that reach `@prisma/client` and
+call a model's delegate or import its type; for any table, code whose query
+strings name it after `FROM`, `JOIN`, `INTO` or `UPDATE`. They rank by
+entities touched, then importers. Outputs: `data-model.json` (kind
+`data_model`), `erd.mmd` (kind `erd_mermaid`, a Mermaid `erDiagram`) and
+`manifest.json`; both JSON artifacts carry the summary
+(`dataModelSummarySchema`): storage, sources, counts and bounded lists of
+entities with their fields, enums, relations, accessors and omissions.
 
 ### Slice
 
@@ -94,19 +256,24 @@ never read. The same entry points and budget on the same commit are one run.
 
 A `sandbox_build` run names a sandbox version (`params.sandboxVersionId`),
 its slice run and every hash the output must bind to: the slice manifest
-and contract, the transform (alias rules, dependency choices and hidden
-tests) and the approved task. The API queues it from
+and contract, the transform (alias rules, dependency choices, hidden tests
+and fixtures, with the starter's hash for a generated version) and the
+approved task. The API queues it from
 `POST /api/v1/orgs/:orgId/sandboxes/versions/:id/build`; the worker reads
 the version's private provenance owner-scoped, refuses a run whose hashes no
-longer match the draft (`tool_failed`), a slice that is not a succeeded run
+longer match the draft, or whose draft's content no longer hashes to them
+(`tool_failed`), a slice that is not a succeeded run
 on the same snapshot or whose artifacts fail their hashes
 (`slice_unavailable`), and source bytes that differ from the manifest
 (`source_unavailable`).
 
 The alias table is applied to the included source, the declaration stubs,
-the contract's symbols and the approved spec with the inverse proof from
-`packages/core/src/sandbox/aliases.ts`; a collision or an irreversible rule
-is an `alias_failed` blocker and nothing is generated. The project generator
+the contract's symbols, the approved spec and the fixtures with the inverse
+proof from `packages/core/src/sandbox/aliases.ts`, paths included. The
+contract, spec and fixtures are renamed value by value, never their keys,
+and must still read as their schemas afterwards. A collision, an
+irreversible rule or a broken value is an `alias_failed` blocker and nothing
+is generated. The project generator
 (`packages/core/src/sandbox/project.ts`) then writes: copied source at its
 aliased paths with compiler-alias imports rewritten to relative paths and
 recorded; every cut module as a `.d.ts` stub beside a generated `.js` whose
@@ -123,10 +290,12 @@ contract is `npm ci`, `npm run dev`, `npm run build`, `npm test` on Node
 
 The baseline runs in a fresh job from the evaluation provider: trusted
 preparation pins the lockfile (`npm install --package-lock-only`), then
-`npm ci`, `npm run build`, `npm run dev`, `npm test`, and each hidden test on its own. A
-hidden test must do what its `expectedBaseline` says (a bug's acceptance
-test fails before the fix); a build or harness failure is never accepted as
-that baseline. The job is destroyed on every path and its execution record
+`npm ci`, `npm run build`, `npm run dev`, `npm test`, and each hidden test on its own,
+reported as TAP. At least one hidden test must be expected to fail, and each
+must do what its `expectedBaseline` says (a bug's acceptance test fails
+before the fix); a build or harness failure is never accepted as that
+baseline, and neither is a test file that fails before any test in it ran,
+which is an error. The job is destroyed on every path and its execution record
 (provider, job id, environment, input hash, state, teardown) is kept in the
 report. The worker ships `local-process` (`src/evaluation/local-process.ts`):
 a temporary directory and child processes with a scrubbed environment. It
@@ -152,8 +321,11 @@ public sandbox is `project/`; the private sandbox is the same files read
 back through the inverse of that table, so a build makes both without
 storing the project twice. `ready` is true only with
 no blockers and a passing baseline. Equal inputs and a fixed clock give
-byte-identical manifests, provided the registry resolves the trusted lock
-the same way; the lockfile is recorded so a difference is visible.
+manifests that differ only in the evaluation job's id in the execution
+record, provided the registry resolves the trusted lock the same way; the
+lockfile is recorded so a difference is visible. Only registry versions are
+installed: a dependency pinned to a URL, a path or an alias is
+`dependency_unresolved`.
 
 Runs cache `(snapshot, tool, version, canonical params hash)`. Each attempt owns
 a unique lease and storage prefix, so a late worker cannot overwrite its
@@ -166,7 +338,9 @@ run 60 seconds before cancellation and release.
 Sources are ephemeral. The fetcher sends the repository-scoped read token only
 to api.github.com and follows a validated codeload redirect without Authorization.
 Archive extraction validates paths, roots, member types, expanded size and file
-count before writing. Symlinks and hard links are refused. Parser processes
+count before writing. Symlinks, hard links and device members are skipped,
+never written, so a repository that keeps a link still has its files
+analyzed. Parser processes
 receive a minimal environment with no platform credentials. Logs contain fixed
 lifecycle messages and public error codes; raw subprocess output is not stored.
 Artifacts and logs remain private. Removing a repository or disconnecting an
@@ -212,6 +386,17 @@ seams with kinds, summary, risks, the deterministic check of exactly that
 request and the token usage), also carried whole in its artifact row's
 `meta` for the console.
 
+When the snapshot has a succeeded `abstractions` or `data_model` run at
+queue time, the API names it in the scope run's parameters
+(`abstractionsRunId`, `dataModelRunId`), so it joins the cache key, and the
+agent also gets `module_surface(path)` (a module's exports and signatures:
+what its stub declares if the slice cuts it) and `data_model(entity)` (the
+storage, entities and accessors, or one entity's fields, enum values,
+relations and accessors). The prompt lists the top accessors as where a
+`database` seam belongs. Neither is required, and `check_scope` still
+decides. A named run that is gone, unfinished, on another snapshot or
+altered fails the run `context_unavailable`.
+
 A `fixtures` run names a succeeded slice run, a proposal and a spec
 revision. Its `check_fixtures` tool parses each implementation (exactly one
 function expression, so it cannot add statements to the runtime it is
@@ -220,7 +405,9 @@ the call it stands in for, read from the slice's stubs, and compiles the
 walkthrough as `sandbox/run.ts` beside the included source, with the
 generated project's compiler options, ambient declarations and mock
 runtime types, in memory. `submit_fixtures` is accepted only when that
-compiles. Output: `fixture-set.json` (fixtures with reasons, the
+compiles. With the snapshot's `data_model` run (`dataModelRunId`), the agent
+also has `data_model`, so a fixture standing in for a `database` seam keeps
+required fields, enum values and foreign keys across fixtures. Output: `fixture-set.json` (fixtures with reasons, the
 walkthrough, a summary and the token usage), also carried in `meta`.
 
 A version copies a fixture set into its transform. The build aliases the
@@ -231,28 +418,6 @@ fixture as its mock path's default behaviour (`fixture(path, fn)` in
 blocks on a fixture for a module the slice does not mock or a walkthrough
 import that resolves to no generated file. Every baseline runs
 `npm run dev` after the build, and a non-zero exit fails it.
-
-## Deployment order
-
-Apply the origin DNS service filter in `infra/lambda/origin_dns.py` and
-`infra/discovery.tf` before running any worker in the cluster. Ship that
-prerequisite separately when preparing PRs. Both scheduled discovery and ECS
-state events must exclude worker and migration tasks. CD verifies the configured
-API service group before registering worker revisions.
-
-Apply the worker ECR repository, egress-only security group, task role, task
-definition and API launcher settings. Then CD builds and pushes the worker,
-registers a revision, runs database migrations and updates the API. There is no
-worker service: the API launches Fargate batches using the latest ACTIVE family
-revision. Terraform ignores the worker's container definition after bootstrap,
-so an unrelated apply cannot replace the latest worker image with bootstrap.
-Container environment or secret-list changes must be applied to the active
-revision through CD when that list changes.
-
-Dependencies added here: the worker uses the existing DB/GitHub/shared/core
-packages, Zod for boot configuration and `typescript-compiler` (an npm alias
-pinned to TypeScript 5.9.3) for its compiler API. The API adds the ECS SDK for
-batch launch. The web app uses the existing typed client package.
 
 ### Starter
 
@@ -292,3 +457,26 @@ commits, the starter, its pseudonyms as the version's `aliasRules`, its
 hidden tests renamed as the build ran them, scope and transform, and a ready
 build's harness and toolchain are recorded on the draft while it still
 points at the run.
+
+## Deployment order
+
+Apply the origin DNS service filter in `infra/lambda/origin_dns.py` and
+`infra/discovery.tf` before running any worker in the cluster. Ship that
+prerequisite separately when preparing PRs. Both scheduled discovery and ECS
+state events must exclude worker and migration tasks. CD verifies the configured
+API service group before registering worker revisions.
+
+Apply the worker ECR repository, egress-only security group, task role, task
+definition and API launcher settings. Then CD builds and pushes the worker,
+registers a revision, runs database migrations and updates the API. There is no
+worker service: the API launches Fargate batches using the latest ACTIVE family
+revision. Terraform ignores the worker's container definition after bootstrap,
+so an unrelated apply cannot replace the latest worker image with bootstrap.
+Container environment or secret-list changes must be applied to the active
+revision through CD when that list changes.
+
+Dependencies added here: the worker uses the existing DB/GitHub/shared/core
+packages, Zod for boot configuration, `typescript-compiler` (an npm alias
+pinned to TypeScript 5.9.3) for its compiler API and `@swc/core`, which
+dependency-cruiser parses TypeScript with. The API adds the ECS SDK for
+batch launch. The web app uses the existing typed client package.

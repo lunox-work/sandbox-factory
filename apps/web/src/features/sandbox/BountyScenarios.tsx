@@ -9,6 +9,7 @@
  * a `.feature` file is.
  */
 
+import { plural } from "../../lib/format";
 import type { SpecDraftDto } from "@sandbox-factory/shared";
 import {
   ArrowUpRight,
@@ -27,14 +28,13 @@ import {
   type Scenario as SpecScenario,
 } from "sandbox-factory";
 
-import { Badge } from "@/components/ui/badge";
 import { money } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 import { isPlainLeftClick } from "../../routes";
 import type { Feature, Scenario } from "./gherkin";
 import { DocumentLabel, ScenarioCard } from "./GherkinDocument";
-import { card, currentCard, SectionLabel } from "./SidePanels";
+import { currentRow, row, rowCount, SectionLabel } from "./SidePanels";
 
 const WEIGHT_LABEL: ReadonlyMap<string, string> = new Map(
   SCENARIO_WEIGHT_DEFINITIONS.map(({ id, label }) => [id, label]),
@@ -47,7 +47,7 @@ const ORIGIN_LABEL: Readonly<Record<string, string>> = {
 };
 
 /** The anchor a scenario is scrolled to by: `#scenario-s1`. */
-export function scenarioAnchor(id: string): string {
+function scenarioAnchor(id: string): string {
   return `scenario-${id}`;
 }
 
@@ -55,14 +55,10 @@ export function scenarioAnchor(id: string): string {
 const BACKGROUND_ANCHOR = "background";
 
 /** The anchor of the questions the bounty left open. */
-export const QUESTIONS_ANCHOR = "open-questions";
+const QUESTIONS_ANCHOR = "open-questions";
 
 /** The anchor of what the spec took as given. */
-export const ASSUMPTIONS_ANCHOR = "assumptions";
-
-function plural(count: number, one: string, many = `${one}s`): string {
-  return `${count} ${count === 1 ? one : many}`;
-}
+const ASSUMPTIONS_ANCHOR = "assumptions";
 
 /** A weight as it reads: `Light · 1 pt`. */
 function weightText(weight: string | undefined): string | undefined {
@@ -130,12 +126,15 @@ function featureOf(draft: SpecDraftDto): {
   };
 }
 
+/** A word beside a title: a weight, where a scenario came from. Square, as
+    the editor's own badges are; a pill is a web page's. */
 const chip =
-  "rounded-full border border-(--wb-input-border) px-2 text-[11px] leading-[18px] text-(--wb-muted)";
+  "rounded-[4px] border border-(--wb-input-border) px-1.5 text-[11px] leading-[18px] text-(--wb-muted)";
 
 /**
- * The spec's open questions or its assumptions, as one card on the scenario
- * cards' grid: each numbered in the column their steps' keywords take.
+ * The spec's open questions or its assumptions, laid out as a scenario is:
+ * a heading on a rule, then each numbered in the column the steps' keywords
+ * take.
  */
 function Notes({
   heading,
@@ -146,21 +145,20 @@ function Notes({
 }) {
   if (notes.length === 0) return null;
   return (
-    <section
-      aria-label={heading}
-      className="mt-4 overflow-hidden rounded-lg border border-(--wb-border) bg-(--wb-chrome)"
-    >
-      <header className="grid grid-cols-[3.5rem_minmax(0,1fr)] items-center gap-x-3 border-b border-(--wb-border) px-4 py-2.5">
+    <section aria-label={heading} className="mt-6">
+      <header className="grid grid-cols-[3.5rem_minmax(0,1fr)] items-baseline gap-x-3 border-b border-(--wb-border) pb-2">
         <span className="text-right font-(family-name:--wb-font-code) text-xs text-(--wb-gutter) tabular-nums">
           {notes.length}
         </span>
-        <h2 className="font-medium text-(--wb-strong)">{heading}</h2>
+        <h2 className="text-[15px] font-semibold text-(--wb-strong)">
+          {heading}
+        </h2>
       </header>
       <ol className="py-1 text-[13px]">
         {notes.map((note, index) => (
           <li
             key={index}
-            className="grid grid-cols-[3.5rem_minmax(0,1fr)] items-baseline gap-x-3 border-t border-white/[0.04] px-4 py-1.5 leading-relaxed first:border-t-0"
+            className="grid grid-cols-[3.5rem_minmax(0,1fr)] items-baseline gap-x-3 border-t border-white/[0.04] py-1.5 leading-relaxed first:border-t-0"
           >
             <span className="text-right font-(family-name:--wb-font-code) text-xs text-(--wb-gutter) tabular-nums">
               {index + 1}
@@ -311,15 +309,15 @@ export function ScenariosDocument({
       0,
     );
     let group: string | undefined;
+    // Scenarios are numbered as the document numbers them; the background
+    // and the notes are not.
+    let number = 0;
     body = (
       <>
-        <p className="text-[11px] tracking-wider text-(--wb-muted) uppercase">
-          Bounty scenarios
-        </p>
-        <h1 className="mt-1 text-[26px] leading-tight font-semibold text-(--wb-strong)">
+        <h1 className="text-[22px] leading-tight font-semibold text-(--wb-strong)">
           {draft.feature}
         </h1>
-        <div className="mt-4 flex items-center gap-2 text-xs text-(--wb-muted)">
+        <div className="mt-2 flex items-center gap-2 text-xs text-(--wb-muted)">
           <span>
             {[
               plural(draft.scenarios.length, "scenario"),
@@ -332,14 +330,22 @@ export function ScenariosDocument({
         {items.map((each) => {
           const opensGroup = each.group !== group;
           group = each.group;
+          const numbered = each.anchor.startsWith("scenario-");
+          if (numbered) number += 1;
           return (
             <Fragment key={each.anchor}>
               {opensGroup && <DocumentLabel>{each.group}</DocumentLabel>}
+              {/* A row on the steps' grid, the number where their keyword
+                  goes: the overview reads as the document's table of
+                  contents, not a stack of cards. */}
               {link(
                 each.anchor,
-                "mt-2 flex items-baseline gap-3 rounded-lg border border-(--wb-border) bg-(--wb-chrome) px-4 py-2.5 hover:border-(--wb-input-border) hover:bg-(--wb-hover)",
+                "-mx-2 grid grid-cols-[3.5rem_minmax(0,1fr)_auto] items-baseline gap-x-3 rounded-[4px] px-2 py-1.5 hover:bg-(--wb-hover)",
                 <>
-                  <span className="min-w-0 flex-1 font-medium text-(--wb-strong)">
+                  <span className="text-right font-(family-name:--wb-font-code) text-xs text-(--wb-gutter) tabular-nums">
+                    {numbered ? String(number).padStart(2, "0") : ""}
+                  </span>
+                  <span className="min-w-0 text-(--wb-strong)">
                     {each.title}
                   </span>
                   {each.detail !== undefined && (
@@ -362,6 +368,7 @@ export function ScenariosDocument({
         ? items[(at - 1 + items.length) % items.length]
         : undefined;
     const next = items.length > 1 ? items[(at + 1) % items.length] : undefined;
+    // A line of text either way, as a book's running foot: no tiles.
     const step = (to: Item | undefined, direction: "Previous" | "Next") =>
       to === undefined ? (
         <span />
@@ -369,22 +376,17 @@ export function ScenariosDocument({
         link(
           to.anchor,
           cn(
-            "flex min-w-0 flex-col gap-0.5 rounded-lg border border-(--wb-border) px-4 py-2.5 hover:border-(--wb-input-border) hover:bg-(--wb-hover)",
-            direction === "Next" && "items-end text-right",
+            "flex min-w-0 items-center gap-1 text-(--wb-muted) hover:text-(--wb-strong)",
+            direction === "Next" && "text-right",
           ),
           <>
-            <span className="flex items-center gap-0.5 text-[11px] tracking-wider text-(--wb-muted) uppercase">
-              {direction === "Previous" && (
-                <ChevronLeft aria-hidden="true" className="size-3.5" />
-              )}
-              {direction}
-              {direction === "Next" && (
-                <ChevronRight aria-hidden="true" className="size-3.5" />
-              )}
-            </span>
-            <span className="max-w-full truncate text-(--wb-strong)">
-              {to.title}
-            </span>
+            {direction === "Previous" && (
+              <ChevronLeft aria-hidden="true" className="size-3.5 shrink-0" />
+            )}
+            <span className="truncate">{to.title}</span>
+            {direction === "Next" && (
+              <ChevronRight aria-hidden="true" className="size-3.5 shrink-0" />
+            )}
           </>,
           `${direction}: ${to.title}`,
         )
@@ -393,20 +395,18 @@ export function ScenariosDocument({
       <>
         <nav
           aria-label="Scenarios"
-          className="flex items-center gap-1.5 text-[11px] tracking-wider text-(--wb-muted) uppercase"
+          className="flex items-center gap-1.5 text-xs text-(--wb-muted)"
         >
           {link(undefined, "hover:text-(--wb-strong)", "Bounty scenarios")}
           <ChevronRight aria-hidden="true" className="size-3.5 shrink-0" />
           <span className="truncate">{item.group}</span>
-          <span className="shrink-0 normal-case tracking-normal tabular-nums">
+          <span className="shrink-0 tabular-nums">
             · {at + 1} of {items.length}
           </span>
-          <span className="ml-auto text-xs tracking-normal normal-case">
-            {openBounty}
-          </span>
+          <span className="ml-auto">{openBounty}</span>
         </nav>
         {item.view}
-        <div className="mt-6 grid grid-cols-2 gap-3">
+        <div className="mt-8 grid grid-cols-2 gap-6 border-t border-(--wb-border) pt-3 text-xs">
           {step(previous, "Previous")}
           {step(next, "Next")}
         </div>
@@ -421,7 +421,9 @@ export function ScenariosDocument({
       className="min-h-0 flex-1 overflow-auto"
       data-testid="scenarios-document"
     >
-      <article className="mx-auto max-w-[52rem] px-8 pt-8 pb-16 text-[14px] sm:px-12">
+      {/* Against the left, as the editor's own previews are; a column
+          centred in the editor reads as a web page opened in it. */}
+      <article className="max-w-[52rem] px-8 pt-6 pb-16 text-[14px]">
         {body}
       </article>
     </div>
@@ -448,13 +450,27 @@ export function ScenariosOutline({
   onOpen: (anchor?: string) => void;
   iconUrl: (name: string) => string | undefined;
 }) {
-  const link = (anchor: string | undefined, body: ReactNode) => (
+  /*
+    Rows of the outline, as the editor's own outline view draws symbols:
+    one line each, the title cut to the width, the whole of it in the
+    tooltip. The feature at the top level; its scenarios and notes a level
+    in, as the explorer indents a folder's files.
+  */
+  const link = (
+    anchor: string | undefined,
+    title: string,
+    body: ReactNode,
+    depth = 1,
+  ) => (
     <a
       href={href(anchor)}
       aria-current={current === anchor ? "location" : undefined}
+      title={title}
       className={cn(
-        card,
-        current === anchor && currentCard,
+        row,
+        depth === 1 && "pl-[34px]",
+        depth === 2 && "pl-[42px]",
+        current === anchor && currentRow,
         "focus-visible:outline-1 focus-visible:-outline-offset-1 focus-visible:outline-(--wb-accent)",
       )}
       onClick={(event) => {
@@ -468,27 +484,23 @@ export function ScenariosOutline({
   );
   const icon = "size-4 shrink-0 text-(--wb-muted)";
   const points = pointsOfScenarios(draft.scenarios, WEIGHT_POINTS);
-  const kindOf = new Map(
-    groupScenarios(draft).flatMap(({ label, scenarios }) =>
-      scenarios.map(({ id }) => [id, label] as const),
-    ),
-  );
   return (
     <section aria-label="Bounty scenarios">
       <SectionLabel>
-        <span className="flex items-baseline justify-between gap-2">
-          Bounty scenarios
+        <span className="flex min-w-0 items-baseline justify-between gap-2">
+          <span className="truncate">Bounty scenarios</span>
           {points !== null && (
-            <span className="font-normal tabular-nums">
+            <span className="shrink-0 font-normal tabular-nums">
               {plural(points, "pt")}
             </span>
           )}
         </span>
       </SectionLabel>
-      <ul className="flex flex-col gap-1.5">
+      <ul>
         <li>
           {link(
             undefined,
+            draft.feature,
             <>
               <img
                 src={iconUrl("file-type-cucumber")}
@@ -496,40 +508,51 @@ export function ScenariosOutline({
                 aria-hidden="true"
                 className="size-4 shrink-0"
               />
-              <span className="flex min-w-0 flex-col">
-                <span className="text-(--wb-strong)">{draft.feature}</span>
-                <span className="text-[11px] text-(--wb-muted)">
-                  {plural(draft.scenarios.length, "scenario")}
-                </span>
+              <span className="truncate">{draft.feature}</span>
+              <span className={rowCount}>
+                {plural(draft.scenarios.length, "scenario")}
               </span>
             </>,
+            0,
           )}
         </li>
-        {groupScenarios(draft)
-          .flatMap(({ scenarios }) => scenarios)
-          .map((scenario) => (
-            <li key={scenario.id}>
-              {link(
-                scenarioAnchor(scenario.id),
-                <>
-                  <ListChecks aria-hidden="true" className={icon} />
-                  <span className="flex min-w-0 flex-col">
-                    <span className="leading-snug text-(--wb-strong)">
-                      {scenario.title}
-                    </span>
-                    <span className="text-[11px] text-(--wb-muted)">
-                      {[kindOf.get(scenario.id), weightText(scenario.weight)]
-                        .filter((part) => part !== undefined)
-                        .join(" · ")}
-                    </span>
-                  </span>
-                </>,
-              )}
+        {/* By kind, as the document groups them: the kind is a row the
+            scenarios sit under, a level in, rather than a word on each. */}
+        {groupScenarios(draft).map(({ label, scenarios }) =>
+          scenarios.length === 0 ? null : (
+            <li key={label}>
+              <span className={cn(row, "pl-[34px] text-(--wb-muted)")}>
+                <span className="truncate">{label}</span>
+              </span>
+              <ul>
+                {scenarios.map((scenario) => {
+                  const weight = weightText(scenario.weight);
+                  return (
+                    <li key={scenario.id}>
+                      {link(
+                        scenarioAnchor(scenario.id),
+                        [scenario.title, label, weight]
+                          .filter((part) => part !== undefined)
+                          .join(" · "),
+                        <>
+                          <ListChecks aria-hidden="true" className={icon} />
+                          <span className="truncate">{scenario.title}</span>
+                          {weight !== undefined && (
+                            <span className={rowCount}>{weight}</span>
+                          )}
+                        </>,
+                        2,
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
             </li>
-          ))}
+          ),
+        )}
       </ul>
       {(draft.openQuestions.length > 0 || draft.assumptions.length > 0) && (
-        <ul aria-label="Notes" className="mt-1.5 flex flex-col gap-1.5">
+        <ul aria-label="Notes">
           {(
             [
               [
@@ -545,14 +568,11 @@ export function ScenariosOutline({
               <li key={anchor}>
                 {link(
                   anchor,
+                  heading,
                   <>
                     <Icon aria-hidden="true" className={icon} />
-                    <span className="min-w-0 flex-1 text-(--wb-strong)">
-                      {heading}
-                    </span>
-                    <span className="text-[11px] text-(--wb-muted) tabular-nums">
-                      {notes.length}
-                    </span>
+                    <span className="truncate">{heading}</span>
+                    <span className={rowCount}>{notes.length}</span>
                   </>,
                 )}
               </li>
@@ -582,30 +602,31 @@ export function BountyCard({
   href: string | undefined;
 }) {
   const priced = amountMinor !== null && currency !== null;
+  // One row, as the view's others are: the price where a name goes, the
+  // size where a count goes.
   const body = (
     <>
       <span
         className={cn(
-          "text-2xl leading-none font-semibold tracking-tight",
+          "truncate font-semibold",
           priced ? "text-(--wb-strong) tabular-nums" : "text-(--wb-muted)",
         )}
       >
         {money(amountMinor, currency)}
       </span>
-      <span className="flex items-center gap-1.5 text-sm">
-        <span className="text-(--wb-muted)">Size</span>
-        <Badge variant="outline" className="font-mono">
+      <span className={cn(rowCount, "flex items-baseline gap-1")}>
+        Size
+        <span className="font-(family-name:--wb-font-code) text-xs text-(--wb-foreground)">
           {size}
-        </Badge>
+        </span>
       </span>
     </>
   );
-  const box = cn(card, "justify-between py-3");
   return (
     <section aria-label="Bounty">
       <SectionLabel>Bounty</SectionLabel>
       {href === undefined ? (
-        <div className={box}>{body}</div>
+        <div className={row}>{body}</div>
       ) : (
         <a
           href={href}
@@ -613,7 +634,7 @@ export function BountyCard({
           rel="noreferrer"
           title="Open the bounty"
           className={cn(
-            box,
+            row,
             "focus-visible:outline-1 focus-visible:-outline-offset-1 focus-visible:outline-(--wb-accent)",
           )}
         >

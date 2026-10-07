@@ -1,4 +1,5 @@
 import { useQueries, useQueryClient } from "@tanstack/react-query";
+import { withoutJira } from "./useJira";
 import { clients, queryKeys, useUserId } from "./data/query";
 /**
  * Every Jira connection the signed-in person can see, grouped by who owns it.
@@ -53,7 +54,7 @@ export function useConnections(
       queryKey: queryKeys.resource(userId, organization.id, "jira-connections"),
       enabled: !organizationsLoading,
       queryFn: ({ signal }: { signal: AbortSignal }) =>
-        clients.jira.connections(organization.id, signal),
+        withoutJira(clients.jira.connections(organization.id, signal)),
     })),
   });
   const groups = organizations.map((organization, index) => ({

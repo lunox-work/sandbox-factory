@@ -16,7 +16,11 @@ import {
   type JiraWriteClient,
 } from "@sandbox-factory/jira";
 
-import { BountyDelivery, commentText } from "../src/pricing/delivery.js";
+import {
+  BountyDelivery,
+  commentText,
+  describesProposal,
+} from "../src/pricing/delivery.js";
 
 function operation(
   overrides: Partial<StoredBountyWriteback> = {},
@@ -44,7 +48,9 @@ function operation(
   };
 }
 
-function proposal(): StoredBountyProposal {
+function proposal(
+  overrides: Partial<StoredBountyProposal> = {},
+): StoredBountyProposal {
   return {
     id: "bpr_1",
     organizationId: "org_1",
@@ -82,18 +88,22 @@ function proposal(): StoredBountyProposal {
     versionedAt: null,
     specRevision: null,
     step: null,
+    rubric: null,
     decidedAt: "2026-09-22T00:00:00.000Z",
     decidedBy: "usr_1",
     decisionDeliveryPolicy: "requested",
     repoSnapshotId: null,
     createdAt: "2026-09-22T00:00:00.000Z",
     updatedAt: "2026-09-22T00:00:00.000Z",
+    ...overrides,
   };
 }
 
 function harness(
   options: {
     op?: StoredBountyWriteback;
+    /** The proposal as the worker finds it; default as the write was queued. */
+    proposal?: Partial<StoredBountyProposal>;
     commentError?: Error;
     labelError?: Error;
     comments?: unknown[];
@@ -203,7 +213,7 @@ function harness(
   const delivery = new BountyDelivery({
     writebacks,
     proposals: {
-      get: () => Promise.resolve(proposal()),
+      get: () => Promise.resolve(proposal(options.proposal)),
     } as unknown as BountyProposalStore,
     bounties: {
       get: () =>
@@ -346,6 +356,60 @@ test("a missing board fails preflight and an already-finished operation is a rea
   );
 });
 
+test("a write for a proposal decided again since it was queued sends nothing", async () => {
+  // A failed approval, retried after the proposal was unapproved and
+  // re-priced: posting it would announce the old price as approved.
+  const repriced = harness({
+    op: operation({ status: "failed" }),
+    proposal: { status: "proposed", revision: 4 },
+  });
+  const result = await repriced.delivery.execute("org_1", "bwo_1");
+  assert.equal(result?.status, "failed");
+  assert.equal(result?.errorCode, "proposal_changed");
+  assert.deepEqual(repriced.events, ["failed:proposal_changed"]);
+
+  // Approved again at a later revision: still not the approval queued.
+  const reapproved = harness({ proposal: { revision: 4 } });
+  await reapproved.delivery.execute("org_1", "bwo_1");
+  assert.deepEqual(reapproved.events, ["failed:proposal_changed"]);
+
+  // A label owed for an approval since withdrawn is not added either.
+  const withdrawn = harness({
+    op: operation({
+      status: "failed",
+      step: "label",
+      jiraCommentId: "comment_1",
+    }),
+    proposal: { status: "proposed", revision: 3 },
+  });
+  await withdrawn.delivery.execute("org_1", "bwo_1");
+  assert.deepEqual(withdrawn.events, ["failed:proposal_changed"]);
+
+  // A withdrawal is for a proposal back in proposed.
+  const approvedAgain = harness({ op: operation({ kind: "withdrawn" }) });
+  await approvedAgain.delivery.execute("org_1", "bwo_1");
+  assert.deepEqual(approvedAgain.events, ["failed:proposal_changed"]);
+});
+
+test("a withdrawal still posts after the proposal was resized", () => {
+  // Unapproved, then resized before Jira took the withdrawal: it names no
+  // price, and dropping it would leave the approval standing in Jira.
+  const withdrawal = { kind: "withdrawn" as const, proposalRevision: 3 };
+  assert.equal(
+    describesProposal(withdrawal, { status: "proposed", revision: 5 }),
+    true,
+  );
+  assert.equal(
+    describesProposal(withdrawal, { status: "approved", revision: 5 }),
+    false,
+  );
+  const approval = { kind: "approved" as const, proposalRevision: 3 };
+  assert.equal(
+    describesProposal(approval, { status: "approved", revision: 5 }),
+    false,
+  );
+});
+
 test("a label retry never posts a second comment", async () => {
   const state = harness({
     op: operation({
@@ -373,7 +437,10 @@ test("a failed label remains safely retryable without reposting", async () => {
 });
 
 test("a follow-up comment completes without adding the bounty label", async () => {
-  const state = harness({ op: operation({ kind: "withdrawn" }) });
+  const state = harness({
+    op: operation({ kind: "withdrawn" }),
+    proposal: { status: "proposed" },
+  });
   const result = await state.delivery.execute("org_1", "bwo_1");
   assert.equal(result?.status, "done");
   assert.deepEqual(state.events, ["attempt", "comment:comment_1"]);

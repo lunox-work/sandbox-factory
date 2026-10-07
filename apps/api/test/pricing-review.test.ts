@@ -48,6 +48,7 @@ function proposal(
     versionedAt: null,
     specRevision: null,
     step: null,
+    rubric: null,
     decidedAt: null,
     decidedBy: null,
     decisionDeliveryPolicy: null,
@@ -71,6 +72,8 @@ function bounty(overrides: Partial<StoredBounty> = {}): StoredBounty {
     stack: [],
     createdBy: null,
     revision: 1,
+    version: 1,
+    approval: null,
     jira: {
       issueId: "jri_1",
       boardId: "jrb_1",

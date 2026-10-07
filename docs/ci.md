@@ -85,7 +85,8 @@ keys.
   `dist-test/`, catching module-resolution and emit problems a TypeScript-native
   runner would paper over.
 - **`npm test` enforces coverage**, per workspace, in each workspace's own
-  `test` script: 90% for the packages, 80% for `apps/api`; `apps/web` runs
+  `test` script: 90% for the packages, 80% for `apps/api`, `apps/worker` and
+  `apps/extension`; `apps/web` runs
   Vitest without thresholds. Do not lower one to make a PR pass — add the test.
 - **`--ignore-scripts`** skips husky's `prepare`, which fails outside a git work
   tree.
@@ -165,20 +166,21 @@ not "this merged".
 [`scripts/next-version.mjs`](../scripts/next-version.mjs) decides the bump from
 the commit subjects since the last tag:
 
-| Commit                                                 | Bump           |
-| ------------------------------------------------------ | -------------- |
-| `!` suffix, or a `BREAKING CHANGE:` footer             | major          |
-| `feat`                                                 | minor          |
-| `fix`, `perf`, `revert`, `build`, `refactor`           | patch          |
-| anything else (`docs`, `chore`, `ci`, `test`, `style`) | **no release** |
+| Commit                                                   | Bump           |
+| -------------------------------------------------------- | -------------- |
+| `!` suffix, or a `BREAKING CHANGE:` footer               | major          |
+| `feat`                                                   | minor          |
+| any other conventional type (`fix`, `chore`, `docs`, …)  | patch          |
+| no conventional commit at all (an empty range or merges) | **no release** |
 
-- A chore-only merge still deploys; it just cuts no version.
+- Every deploy carries a version that names it, so a chore-only merge cuts a
+  patch.
 - A **docs-only** merge does not deploy: `cd.yml` has `paths-ignore` for
   `**.md`, `docs/**` and `.github/ISSUE_TEMPLATE/**`. A docs fix therefore
   cannot force a redeploy.
 - **The PR title is the squash commit**, and so decides the version. Branch
-  commit subjects are not parsed: a PR titled `docs:` releases nothing even if
-  it contains a `fix:` commit. If an expected release did not happen, check the
+  commit subjects are not parsed: a PR titled `docs:` releases a patch even if
+  it contains a `feat:` commit. If an expected release did not happen, check the
   merged commit's subject on `main` first.
 - **One release is one sha.** The tag is cut on the deployed commit and nothing
   is pushed to `main`, so the footer's `1.2.3+abc1234`, the release page, the

@@ -60,9 +60,9 @@ import { installationClient } from "./credential.js";
 import { readStack } from "./stack.js";
 
 /** Unreferenced snapshots kept per repository; older ones are pruned. */
-export const SNAPSHOT_RETAIN = 20;
+const SNAPSHOT_RETAIN = 20;
 /** Snapshots taken at once, across every repository. */
-export const SNAPSHOT_CONCURRENCY = 2;
+const SNAPSHOT_CONCURRENCY = 2;
 
 /** Where a snapshot's file list lives in the private bucket. */
 export function treeKey(
@@ -78,6 +78,12 @@ export interface SnapshotTarget {
   readonly repoId: string;
   /** The repository's connection's installation, to mint with. */
   readonly installationId: string;
+  /**
+   * A commit another branch was seen at, asked for by a person pulling that
+   * branch. Absent, the job takes the default branch's head as it is when
+   * the job starts.
+   */
+  readonly commit?: { readonly sha: string; readonly branch: string };
 }
 
 /**
@@ -106,7 +112,7 @@ export interface GithubSnapshotterOptions {
 
 export class GithubSnapshotter {
   readonly #options: GithubSnapshotterOptions;
-  /** Repositories waiting for a turn, by `org\nrepo`. */
+  /** Repositories waiting for a turn, by `org\nrepo\nbranch`; `branch` empty for the head. */
   readonly #pending = new Map<string, SnapshotTarget>();
   readonly #running = new Set<string>();
   #waiters: (() => void)[] = [];
@@ -117,12 +123,14 @@ export class GithubSnapshotter {
   }
 
   /**
-   * Asks for a snapshot of the repository's head, in the background.
+   * Asks for a snapshot of the repository's head, in the background, or of
+   * the branch commit the target names.
    *
    * Asking again while one is waiting changes nothing: the job reads the
    * head when it starts, so it takes whichever head is newest by then.
    * Asking while one is running queues one more turn, for a head that may
-   * have moved since that run read it.
+   * have moved since that run read it. Each branch waits in its own line,
+   * the newest commit asked for replacing an older one still waiting.
    */
   schedule(target: SnapshotTarget): void {
     if (this.#stopping) return;
@@ -152,8 +160,11 @@ export class GithubSnapshotter {
 
     const repo = await repos.get(organizationId, repoId);
     if (repo === null || repo.syncStatus === "gone") return "refused";
-    const commitSha = repo.headSha;
+    const commitSha = target.commit?.sha ?? repo.headSha;
     if (commitSha === null) return "no-head";
+    // The stack is the repository's at its default branch's head; another
+    // branch's commit is snapshotted without touching it.
+    const atHead = commitSha === repo.headSha;
     const client = installationClient(
       installations,
       target.installationId,
@@ -167,8 +178,9 @@ export class GithubSnapshotter {
     );
     if (existing !== null) {
       if (
-        repo.stackCommitSha !== commitSha ||
-        repo.stackVersion !== STACK_DETECTION_VERSION
+        atHead &&
+        (repo.stackCommitSha !== commitSha ||
+          repo.stackVersion !== STACK_DETECTION_VERSION)
       ) {
         const stored = await this.tree(existing.treeKey);
         if (stored === null) {
@@ -186,6 +198,12 @@ export class GithubSnapshotter {
       return "exists";
     }
 
+    // The tree is the commit's; the languages are not. GitHub's languages
+    // endpoint takes no ref and answers for the default branch as it is
+    // now, so a snapshot of another branch, or of a head the branch has
+    // since left, records the default branch's totals at the time it was
+    // taken. Counting them from the tree would need linguist's rules; the
+    // field is documented as what it is instead.
     const [tree, languages] = await Promise.all([
       client.tree(repo.fullName, commitSha, { recursive: true }),
       client.languages(repo.fullName),
@@ -211,7 +229,7 @@ export class GithubSnapshotter {
       .create(organizationId, {
         repoId,
         commitSha,
-        ref: `refs/heads/${repo.defaultBranch}`,
+        ref: `refs/heads/${target.commit?.branch ?? repo.defaultBranch}`,
         treeSha: tree.sha,
         treeKey: key,
         treeTruncated: truncated,
@@ -243,10 +261,11 @@ export class GithubSnapshotter {
       return created.status;
     }
 
-    await this.#detectStack(target, client, repo.fullName, commitSha, {
-      entries,
-      languages,
-    });
+    if (atHead)
+      await this.#detectStack(target, client, repo.fullName, commitSha, {
+        entries,
+        languages,
+      });
     await this.#prune(organizationId, repoId);
     return "created";
   }
@@ -319,8 +338,8 @@ export class GithubSnapshotter {
 
   async #prune(organizationId: string, repoId: string): Promise<void> {
     try {
-      // At least one: the snapshot just taken is the head's, and pruning
-      // it would only have the next sweep take it again.
+      // At least one: the snapshot just taken, which is newest; pruning it
+      // would only have the next sweep, or the next pull, take it again.
       const removed = await this.#options.snapshots.prune(
         organizationId,
         repoId,
@@ -403,7 +422,7 @@ export function storedEntries(
 }
 
 function keyOf(target: SnapshotTarget): string {
-  return `${target.organizationId}\n${target.repoId}`;
+  return `${target.organizationId}\n${target.repoId}\n${target.commit?.branch ?? ""}`;
 }
 
 /**

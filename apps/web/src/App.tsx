@@ -6,7 +6,10 @@ import {
 } from "./navigation/location";
 import { useEffect, useRef, useState } from "react";
 
-import { LoadingLine } from "@/components/Message";
+import { RefreshCw } from "lucide-react";
+
+import { ErrorBanner, LoadingLine } from "@/components/Message";
+import { Button } from "@/components/ui/button";
 
 import { Account } from "./Account";
 import { signOut, useSession } from "./auth";
@@ -17,6 +20,7 @@ import { CreateOrganization, Organization } from "./Organization";
 import { workspaceLabel } from "./OrganizationSwitcher";
 import { Organizations } from "./Organizations";
 import { JiraBoard } from "./Jira";
+import { RepositoryPage } from "./Repository";
 import { SideNav, type Screen } from "./SideNav";
 import { SignIn } from "./SignIn";
 import { Bounties, BountyPage, NewBountyPage } from "./Bounties";
@@ -27,8 +31,10 @@ import {
   canonicalUrl,
   connectionForPath,
   isPlainLeftClick,
+  NEW_ORG_PATH,
   ORGANIZATIONS_PATH,
   pathForScreen,
+  repositoryForPath,
   sandboxFilesForPath,
   type ConnectionTab,
   screenForPath,
@@ -100,6 +106,7 @@ function Signed({
   const screen = screenForPath(location.pathname);
   const connectionId = connectionForPath(location.pathname);
   const boardId = boardForPath(location.pathname);
+  const repositoryId = repositoryForPath(location.pathname);
 
   // An old `/organizations` or `/o/acme/jira` link opens the page, then the
   // address bar is brought up to date. Replaced rather than pushed: it is the
@@ -141,6 +148,11 @@ function Signed({
   /** The bounty on its own page, reported up by `BountyPage` as the board's is. */
   const [bountyName, setBountyName] = useState<string | undefined>(undefined);
 
+  /** The repository on its own page, reported up by `RepositoryPage` likewise. */
+  const [repositoryName, setRepositoryName] = useState<string | undefined>(
+    undefined,
+  );
+
   /**
    * Organizations waiting for an answer, for the mark on the avatar. Read in
    * the shell rather than on the account page, because the rail is on every
@@ -180,9 +192,19 @@ function Signed({
                     ? "New bounty"
                     : screen === "bounty"
                       ? (bountyName ?? "Bounty")
-                      : (organizations.active?.name ?? "Workspace");
+                      : screen === "org-repository"
+                        ? (repositoryName ?? "Repository")
+                        : screen === "not-found"
+                          ? "Page not found"
+                          : (organizations.active?.name ?? "Workspace");
     document.title = `${page} · Lunox`;
-  }, [boardName, bountyName, organizations.active?.name, screen]);
+  }, [
+    boardName,
+    bountyName,
+    organizations.active?.name,
+    repositoryName,
+    screen,
+  ]);
 
   /*
     The board on screen becomes the one home opens on, for this organization.
@@ -249,9 +271,10 @@ function Signed({
    * reading the active one here would write the *previous* organization's
    * handle into the URL.
    *
-   * `id` and `board` are the site and board `org-jira-board` names. They are
-   * part of what a navigation is, not a detail the target screen looks up
-   * afterwards — two boards are the same screen at different URLs.
+   * `id` and `board` are the site and board `org-jira-board` names, and `id`
+   * alone the repository `org-repository` names. They are part of what a
+   * navigation is, not a detail the target screen looks up afterwards — two
+   * boards are the same screen at different URLs.
    *
    * `tab` is the Connections tab `org-settings` opens on. The settings page
    * owns that choice once it is showing; this only says where it starts.
@@ -263,12 +286,17 @@ function Signed({
     board?: string,
     tab?: ConnectionTab,
   ) {
+    // The id the current screen names, for the comparison below.
+    const currentId = screen === "org-repository" ? repositoryId : connectionId;
+    // The same screen, but not the same page while its query holds more:
+    // Bounties in the rail closes a bounty open over the list.
     if (
       next === screen &&
       slug === undefined &&
-      id === connectionId &&
+      id === currentId &&
       board === boardId &&
-      tab === undefined
+      tab === undefined &&
+      location.search === ""
     ) {
       return;
     }
@@ -321,6 +349,19 @@ function Signed({
           "jira",
         );
       }}
+      onConnectGithub={(organization) => {
+        organizations.select(organization.id);
+        navigate(
+          "org-settings",
+          organization.slug,
+          undefined,
+          undefined,
+          "github",
+        );
+      }}
+      onNewBounty={() => navigate("new-bounty")}
+      onOpenBounties={() => navigate("bounties")}
+      onCreateWorkspace={() => navigate("create-org")}
     />
   );
 
@@ -343,8 +384,15 @@ function Signed({
       nudged the centred column sideways each time. The wheel, trackpad and
       keyboard still scroll it. Both rules, because Safari before 18.2
       ignores `scrollbar-width`.
+
+      The panel is positioned, and the frame clips rather than hides. An
+      absolutely positioned box with no positioned ancestor (every `sr-only`
+      label is one) is placed against the document, not the panel, and one
+      far down a long page made the document taller than the window, so the
+      whole shell could be scrolled away. Positioned, the panel holds them;
+      clipped, the frame cannot be scrolled even by focus or find-in-page.
     */
-    <div className="flex min-h-dvh flex-col sm:bg-sidebar sm:h-dvh sm:flex-row sm:overflow-hidden">
+    <div className="flex min-h-dvh flex-col sm:bg-sidebar sm:h-dvh sm:flex-row sm:overflow-clip">
       <SideNav
         screen={screen}
         userId={userId}
@@ -362,7 +410,8 @@ function Signed({
           // A screen inside an organization moves to the same screen in the
           // chosen one, so the URL and the page agree about which is shown. A
           // site or a board belongs to the old organization, so those land
-          // on the new one's Jira list rather than on an id that is not its.
+          // on the new one's Jira list rather than on an id that is not its;
+          // a repository likewise lands on the new one's GitHub tab.
           // Screens outside any organization, the bounties of every one
           // included, stay where they are. The slug is
           // passed because `select` has not re-rendered yet — see `navigate`.
@@ -376,6 +425,14 @@ function Signed({
               undefined,
               "jira",
             );
+          } else if (screen === "org-repository") {
+            navigate(
+              "org-settings",
+              organization.slug,
+              undefined,
+              undefined,
+              "github",
+            );
           }
         }}
         onNavigate={navigate}
@@ -383,7 +440,7 @@ function Signed({
       />
       <div
         ref={contentRef}
-        className={`min-w-0 flex-1 pb-[calc(4rem+env(safe-area-inset-bottom))] sm:bg-background sm:my-2 sm:mr-2 sm:overflow-y-auto sm:scrollbar-none sm:[&::-webkit-scrollbar]:hidden sm:rounded-[6px] sm:border sm:pb-0 ${
+        className={`relative min-w-0 flex-1 pb-[calc(4rem+env(safe-area-inset-bottom))] sm:bg-background sm:my-2 sm:mr-2 sm:overflow-y-auto sm:scrollbar-none sm:[&::-webkit-scrollbar]:hidden sm:rounded-[6px] sm:border sm:pb-0 ${
           screen === "home" ? "" : "[&>main]:!pt-4 sm:[&>main]:!pt-6"
         }`}
       >
@@ -418,6 +475,9 @@ function Signed({
                   slug: bountyOrganization.slug,
                 }
           }
+          repositoryName={
+            screen === "org-repository" ? repositoryName : undefined
+          }
           onNavigate={navigate}
         />
         {screen === "account" ? (
@@ -432,7 +492,13 @@ function Signed({
             // The rename also renamed the personal organization, so the
             // switcher would otherwise keep showing the previous name.
             onRenamed={() => void organizations.refresh()}
-            organizationCount={organizations.organizations.length}
+            // Unknown while the list loads, or when it failed: "0
+            // workspaces" would be said of someone who has some.
+            organizationCount={
+              organizations.loading || organizations.error !== null
+                ? undefined
+                : organizations.organizations.length
+            }
             onOpenOrganizations={() => navigate("organizations")}
           />
         ) : screen === "organizations" ? (
@@ -441,6 +507,7 @@ function Signed({
             viewer={{ id: userId, image }}
             loading={organizations.loading}
             error={organizations.error}
+            onRetry={organizations.retry}
             onOpen={(organization) => {
               // Selecting here is what makes `org-settings` show this one:
               // the settings screen reads the active organization.
@@ -470,7 +537,10 @@ function Signed({
             <NoOrganization
               loading={organizations.loading}
               notFound={organizations.notFound}
+              error={organizations.error}
+              onRetry={organizations.retry}
               onOpenOrganizations={() => navigate("organizations")}
+              onCreateWorkspace={() => navigate("create-org")}
             />
           ) : (
             <JiraBoard
@@ -484,6 +554,39 @@ function Signed({
               boardName={boardName}
               onBoardName={setBoardName}
               role={organizations.active.role}
+            />
+          )
+        ) : screen === "org-repository" ? (
+          organizations.active === null || repositoryId === undefined ? (
+            <NoOrganization
+              loading={organizations.loading}
+              notFound={organizations.notFound}
+              error={organizations.error}
+              onRetry={organizations.retry}
+              onOpenOrganizations={() => navigate("organizations")}
+              onCreateWorkspace={() => navigate("create-org")}
+            />
+          ) : (
+            <RepositoryPage
+              // Keyed by the repository, so moving between two remounts
+              // rather than showing the previous one's runs while the new
+              // ones load.
+              key={`${organizations.active.id}:${repositoryId}`}
+              organizationId={organizations.active.id}
+              organizationSlug={organizations.active.slug}
+              repoId={repositoryId}
+              role={organizations.active.role}
+              onName={setRepositoryName}
+              // Back to the GitHub tab once it is no longer registered.
+              onRemoved={() =>
+                navigate(
+                  "org-settings",
+                  organizations.active?.slug,
+                  undefined,
+                  undefined,
+                  "github",
+                )
+              }
             />
           )
         ) : screen === "bounties" ? (
@@ -502,6 +605,18 @@ function Signed({
             viewer={{ id: userId, image }}
             onTitle={setBountyName}
             onOpenBounties={() => navigate("bounties")}
+            // Into the bounty's workspace's settings, where its Jira
+            // accounts and repositories are connected.
+            onOpenSettings={(organization, tab) => {
+              organizations.select(organization.id);
+              navigate(
+                "org-settings",
+                organization.slug,
+                undefined,
+                undefined,
+                tab,
+              );
+            }}
           />
         ) : screen === "new-bounty" ? (
           <NewBountyPage
@@ -530,12 +645,17 @@ function Signed({
               );
             }}
           />
+        ) : screen === "not-found" ? (
+          <NotFound onOpenHome={() => navigate("home")} />
         ) : screen === "org-settings" ? (
           organizations.active === null ? (
             <NoOrganization
               loading={organizations.loading}
               notFound={organizations.notFound}
+              error={organizations.error}
+              onRetry={organizations.retry}
               onOpenOrganizations={() => navigate("organizations")}
+              onCreateWorkspace={() => navigate("create-org")}
             />
           ) : (
             <Organization
@@ -544,11 +664,10 @@ function Signed({
               key={organizations.active.id}
               organization={organizations.active}
               onChanged={(slug) => {
-                const params = window.location.search;
-                window.history.replaceState(
-                  null,
-                  "",
-                  pathForScreen("org-settings", slug) + params,
+                // Through the location store, so the shell re-reads the new
+                // handle now rather than once the membership refetch lands.
+                replaceLocation(
+                  pathForScreen("org-settings", slug) + window.location.search,
                 );
                 void organizations.refresh();
               }}
@@ -565,6 +684,12 @@ function Signed({
                   board.id,
                 );
               }}
+              onOpenRepository={(repo) => {
+                // The name is known already, so the trail and the title need
+                // not wait for the page to read the list again.
+                setRepositoryName(repo.fullName);
+                navigate("org-repository", organizations.active?.slug, repo.id);
+              }}
               onLeft={() => {
                 void organizations.refresh();
                 navigate("home");
@@ -576,6 +701,16 @@ function Signed({
             <main className="mx-auto w-full max-w-5xl px-4 py-10 sm:px-6 sm:py-14">
               <LoadingLine />
             </main>
+          ) : organizations.error !== null ? (
+            // A list that failed is not one with no workspace in it.
+            <NoOrganization
+              loading={false}
+              notFound={false}
+              error={organizations.error}
+              onRetry={organizations.retry}
+              onOpenOrganizations={() => navigate("organizations")}
+              onCreateWorkspace={() => navigate("create-org")}
+            />
           ) : (
             homeConnections
           )
@@ -622,16 +757,31 @@ function Signed({
 function NoOrganization({
   loading,
   notFound,
+  error,
+  onRetry,
   onOpenOrganizations,
+  onCreateWorkspace,
 }: {
   loading: boolean;
   notFound: boolean;
+  /** The list failed: nothing is known to be missing from it. */
+  error: string | null;
+  onRetry: () => void;
   onOpenOrganizations: () => void;
+  onCreateWorkspace: () => void;
 }) {
   return (
     <main className="mx-auto w-full max-w-2xl px-4 py-10 sm:px-6 sm:py-14">
       {loading ? (
         <LoadingLine />
+      ) : error !== null ? (
+        <div className="flex flex-col items-start gap-3">
+          <ErrorBanner className="mt-0">{error}</ErrorBanner>
+          <Button type="button" variant="outline" size="sm" onClick={onRetry}>
+            <RefreshCw />
+            Try again
+          </Button>
+        </div>
       ) : notFound ? (
         <div className="flex flex-col items-start gap-3">
           <div>
@@ -654,10 +804,53 @@ function NoOrganization({
           </a>
         </div>
       ) : (
-        <p className="text-muted-foreground text-sm">
-          You are not in a workspace yet.
-        </p>
+        <div className="flex flex-col items-start gap-3">
+          <p className="text-muted-foreground text-sm">
+            You are not in a workspace yet.
+          </p>
+          <a
+            href={NEW_ORG_PATH}
+            className="text-primary rounded-sm text-sm font-medium hover:underline"
+            onClick={(event) => {
+              if (isPlainLeftClick(event)) {
+                event.preventDefault();
+                onCreateWorkspace();
+              }
+            }}
+          >
+            Create a workspace
+          </a>
+        </div>
       )}
+    </main>
+  );
+}
+
+/** What an address that names no page shows, in place of guessing one. */
+function NotFound({ onOpenHome }: { onOpenHome: () => void }) {
+  return (
+    <main className="mx-auto w-full max-w-2xl px-4 py-10 sm:px-6 sm:py-14">
+      <div className="flex flex-col items-start gap-3">
+        <div>
+          <h1 className="text-xl font-semibold">Page not found</h1>
+          <p className="text-muted-foreground mt-1 text-sm">
+            Nothing is at this address. The link may be mistyped, or the page
+            may have moved.
+          </p>
+        </div>
+        <a
+          href="/"
+          className="text-primary rounded-sm text-sm font-medium hover:underline"
+          onClick={(event) => {
+            if (isPlainLeftClick(event)) {
+              event.preventDefault();
+              onOpenHome();
+            }
+          }}
+        >
+          Go home
+        </a>
+      </div>
     </main>
   );
 }

@@ -12,7 +12,7 @@ import {
   ListTree,
   Lock,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 
 import { cn } from "@/lib/utils";
 
@@ -30,7 +30,7 @@ import {
 } from "./outline";
 
 /** Opens a file in the editor, at a line when one is given. */
-export type OpenFile = (path: string, line?: number) => void;
+type OpenFile = (path: string, line?: number) => void;
 
 interface PanelProps {
   /** Whether the view is the one showing; a hidden one reads nothing. */
@@ -102,19 +102,39 @@ function FileIcon({ name, url }: { name: string; url: IconUrl }) {
 }
 
 /** The url of a vscode-icons drawing, by its name. */
-export type IconUrl = (name: string) => string | undefined;
+type IconUrl = (name: string) => string | undefined;
 
 function Hint({ children }: { children: React.ReactNode }) {
-  return <p className="px-2 py-1 text-xs text-(--wb-muted)">{children}</p>;
+  return <p className="px-5 py-1 text-xs text-(--wb-muted)">{children}</p>;
 }
 
+/**
+ * A view's section header, as the editor heads a pane: the explorer's
+ * "VERSION 3", the outline's, at the row height and in the row's own left
+ * padding, so what it heads lines up under it.
+ */
 export function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
-    <h3 className="mb-1.5 truncate px-2 text-[11px] font-bold tracking-wide text-(--wb-muted) uppercase">
+    <h3 className="flex h-[22px] shrink-0 items-center truncate pr-3 pl-5 text-[11px] font-bold tracking-wide text-(--wb-muted) uppercase">
       {children}
     </h3>
   );
 }
+
+/**
+ * A row of a view, as the explorer draws a file: the editor's 22px, the
+ * cursor's fill under it, and the chosen one's fill held. Not a card: the
+ * editor's side views are trees of rows, and a stack of bordered boxes in
+ * a sidebar reads as a web page's, not an editor's.
+ */
+export const row =
+  "flex h-[22px] w-full min-w-0 items-center gap-1.5 pr-3 pl-5 text-left whitespace-nowrap hover:bg-(--wb-hover)";
+export const currentRow =
+  "bg-(--wb-selected) text-(--wb-strong) hover:bg-(--wb-selected)";
+
+/** A count at a row's right edge, in the gutter's quiet figures. */
+export const rowCount =
+  "ml-auto shrink-0 pl-2 text-[11px] text-(--wb-muted) tabular-nums";
 
 export function SearchPanel({
   active,
@@ -142,22 +162,25 @@ export function SearchPanel({
   if (active && query !== "" && !wanted) setWanted(true);
   const { texts, pending } = useFileTexts(source, paths, wanted);
 
+  // Searched behind the typing: every file is scanned for each query, and
+  // the field should not wait for that.
+  const searched = useDeferredValue(query);
   const results = useMemo(
     () =>
       paths.flatMap((path) => {
         const text = texts.get(path);
         if (text === undefined || text === null) return [];
-        const matches = searchLines(text, query, matchCase);
+        const matches = searchLines(text, searched, matchCase);
         return matches.length === 0 ? [] : [{ path, matches }];
       }),
-    [paths, texts, query, matchCase],
+    [paths, texts, searched, matchCase],
   );
   const total = results.reduce((sum, { matches }) => sum + matches.length, 0);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="px-3 pb-2">
-        <div className="flex h-[26px] items-center rounded-sm border border-(--wb-input-border) bg-(--wb-input) focus-within:border-(--wb-accent)">
+        <div className="flex h-[26px] items-center rounded-[4px] border border-(--wb-input-border) bg-(--wb-input) focus-within:border-(--wb-accent)">
           <input
             ref={input}
             type="search"
@@ -174,7 +197,7 @@ export function SearchPanel({
             title="Match Case"
             onClick={() => setMatchCase((value) => !value)}
             className={cn(
-              "mr-0.5 flex size-5 items-center justify-center rounded-sm text-(--wb-muted) hover:bg-(--wb-hover)",
+              "mr-0.5 flex size-5 items-center justify-center rounded-[4px] text-(--wb-muted) hover:bg-(--wb-hover)",
               matchCase &&
                 "border border-(--wb-accent) bg-(--wb-accent)/25 text-(--wb-strong)",
             )}
@@ -259,11 +282,6 @@ export function SearchPanel({
   );
 }
 
-export const card =
-  "flex items-center gap-2 rounded-md border border-(--wb-border) bg-white/[0.02] px-[7px] py-2 hover:border-(--wb-input-border) hover:bg-(--wb-hover)";
-export const currentCard =
-  "border-(--wb-accent)/60 bg-(--wb-selected) hover:border-(--wb-accent)/60 hover:bg-(--wb-selected)";
-
 export function DocsPanel({
   active,
   files,
@@ -300,18 +318,14 @@ export function DocsPanel({
     features.length === 0 &&
     documents.length === 0
   )
-    return (
-      <div className="px-3">
-        <Hint>This version has no documents.</Hint>
-      </div>
-    );
+    return <Hint>This version has no documents.</Hint>;
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto px-3 pb-4">
+    <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-auto pb-4">
       {bounty}
       {byFolder(documents, (path) => path).map(([folder, paths]) => (
         <section key={folder} aria-label={folder || "Top level"}>
           <SectionLabel>{folder || "Top level"}</SectionLabel>
-          <ul className="flex flex-col gap-1.5">
+          <ul>
             {paths.map((path) => (
               <li key={path}>
                 <FileLink
@@ -319,12 +333,10 @@ export function DocsPanel({
                   href={href}
                   onOpen={onOpen}
                   current={path === selected}
-                  className={cn(card, path === selected && currentCard)}
+                  className={cn(row, path === selected && currentRow)}
                 >
                   <FileIcon name={nameOf(path)} url={iconUrl} />
-                  <span className="truncate text-(--wb-strong)">
-                    {nameOf(path)}
-                  </span>
+                  <span className="truncate">{nameOf(path)}</span>
                 </FileLink>
               </li>
             ))}
@@ -335,7 +347,7 @@ export function DocsPanel({
       {features.length > 0 && (
         <section aria-label="Features">
           <SectionLabel>Features</SectionLabel>
-          <ul className="flex flex-col gap-1.5">
+          <ul>
             {features.map((path) => {
               const text = texts.get(path);
               const feature =
@@ -351,20 +363,17 @@ export function DocsPanel({
                     href={href}
                     onOpen={onOpen}
                     current={path === selected}
-                    className={cn(card, path === selected && currentCard)}
+                    className={cn(row, path === selected && currentRow)}
                   >
                     <FileIcon name={nameOf(path)} url={iconUrl} />
-                    <span className="flex min-w-0 flex-col">
-                      <span className="truncate text-(--wb-strong)">
-                        {feature?.name ||
-                          nameOf(path).replace(/\.feature$/i, "")}
-                      </span>
-                      <span className="truncate text-[11px] text-(--wb-muted)">
-                        {count === undefined
-                          ? path
-                          : `${count} ${count === 1 ? "scenario" : "scenarios"}`}
-                      </span>
+                    <span className="truncate" title={path}>
+                      {feature?.name || nameOf(path).replace(/\.feature$/i, "")}
                     </span>
+                    {count !== undefined && (
+                      <span className={rowCount}>
+                        {count} {count === 1 ? "scenario" : "scenarios"}
+                      </span>
+                    )}
                   </FileLink>
                 </li>
               );
@@ -415,17 +424,15 @@ export function TestsPanel({
   ];
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto px-3 pb-4">
+    <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-auto pb-4">
       {summary.length > 0 && (
         <section aria-label="Summary">
           <SectionLabel>Summary</SectionLabel>
-          <ul className="flex flex-col gap-0.5 px-2">
+          <ul>
             {summary.map(({ label, count }) => (
-              <li key={label} className="flex items-center gap-2 text-xs">
-                <span className="min-w-0 flex-1 truncate">{label}</span>
-                <span className="rounded-full bg-(--wb-selected) px-1.5 leading-4 tabular-nums">
-                  {count}
-                </span>
+              <li key={label} className={row}>
+                <span className="min-w-0 truncate">{label}</span>
+                <span className={rowCount}>{count}</span>
               </li>
             ))}
           </ul>
@@ -445,7 +452,7 @@ export function TestsPanel({
               )}
             </span>
           </SectionLabel>
-          <ul className="flex flex-col gap-1.5">
+          <ul>
             {paths.map((path) => {
               const text = texts.get(path);
               const cases =
@@ -459,14 +466,15 @@ export function TestsPanel({
               const open = !collapsed.has(path);
               const count = cases?.filter(({ group }) => !group).length;
               return (
-                <li
-                  key={path}
-                  className={cn(
-                    "overflow-hidden rounded-md border border-(--wb-border) bg-white/[0.02]",
-                    path === selected && "border-(--wb-accent)/60",
-                  )}
-                >
-                  <div className="flex items-center">
+                <li key={path}>
+                  {/* A folder's row in the explorer: the chevron, then the
+                      file, one fill under both. */}
+                  <div
+                    className={cn(
+                      "flex h-[22px] items-center pr-3 pl-3 hover:bg-(--wb-hover)",
+                      path === selected && currentRow,
+                    )}
+                  >
                     <button
                       type="button"
                       aria-label={`${open ? "Hide" : "Show"} the tests in ${nameOf(path)}`}
@@ -477,7 +485,7 @@ export function TestsPanel({
                         else next.delete(path);
                         setCollapsed(next);
                       }}
-                      className="flex h-8 w-[27px] shrink-0 items-center pl-[7px] hover:bg-(--wb-hover)"
+                      className="flex h-full w-[22px] shrink-0 items-center focus-visible:outline-1 focus-visible:-outline-offset-1 focus-visible:outline-(--wb-accent)"
                     >
                       <ChevronRight
                         aria-hidden="true"
@@ -489,21 +497,19 @@ export function TestsPanel({
                       href={href}
                       onOpen={onOpen}
                       current={path === selected}
-                      className="flex h-8 min-w-0 flex-1 items-center gap-2 pr-[7px] hover:bg-(--wb-hover)"
+                      className="flex h-full min-w-0 flex-1 items-center gap-1.5 whitespace-nowrap"
                     >
                       <FileIcon name={nameOf(path)} url={iconUrl} />
-                      <span className="truncate text-(--wb-strong)">
-                        {nameOf(path)}
-                      </span>
+                      <span className="truncate">{nameOf(path)}</span>
                       {count !== undefined && (
-                        <span className="ml-auto shrink-0 text-[11px] text-(--wb-muted) tabular-nums">
+                        <span className={rowCount}>
                           {count} {count === 1 ? "test" : "tests"}
                         </span>
                       )}
                     </FileLink>
                   </div>
                   {open && cases !== undefined && cases.length > 0 && (
-                    <ul className="border-t border-(--wb-border) py-1">
+                    <ul>
                       {cases.map(({ name, line, group }) => (
                         <li key={line}>
                           <FileLink
@@ -512,7 +518,8 @@ export function TestsPanel({
                             href={href}
                             onOpen={onOpen}
                             className={cn(
-                              "flex min-h-[22px] items-center gap-[9px] py-0.5 pr-[7px] pl-[28px] text-[12.5px] hover:bg-(--wb-hover)",
+                              row,
+                              "pl-[42px]",
                               group && "text-(--wb-muted)",
                             )}
                           >

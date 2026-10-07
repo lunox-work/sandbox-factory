@@ -147,6 +147,13 @@ export interface StepResult {
   /** The settings it was computed with, so it can be read, and rebased, later. */
   readonly settings: StepSettings;
   readonly stepVersion: string;
+  /**
+   * The spec revision a reviewer's resize set the base against. The step
+   * counts from there rather than from the sizing draft, since the size a
+   * reviewer chose already covers the spec as it then stood. Absent for a
+   * base the model set.
+   */
+  readonly baseRevision?: number;
 }
 
 /** A size moved `steps` positions up the half-size order, stopping at XL. */
@@ -233,7 +240,23 @@ export function stepUp(
 }
 
 /**
- * The same step from a different base: what a reviewer's resize does. The
+ * A reviewer's resize: the size chosen is the size, for the spec as it
+ * stands at `revision`. Nothing added before it counts on top, so the step
+ * starts again from zero there, with the settings it was computed with.
+ */
+export function resetStep(
+  step: StepResult,
+  base: WholeComplexity,
+  revision: number,
+): StepResult {
+  return {
+    ...stepFrom(base, 0, [], [], step.settings),
+    baseRevision: revision,
+  };
+}
+
+/**
+ * The same step from a different base. The
  * added weight is the spec's, not the base's, so it carries over, counted
  * with the settings it was computed with.
  */

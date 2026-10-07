@@ -1,8 +1,11 @@
 import {
   proposalActionResponseSchema,
   bountyListResponseSchema,
+  bountySizingResponseSchema,
   bountyResponseSchema,
+  bountyVersionListSchema,
   type CreateBountyInput,
+  type LinkBountyJiraInput,
   type UpdateBountyInput,
 } from "@sandbox-factory/shared";
 import { ApiClient } from "./transport.js";
@@ -16,6 +19,15 @@ function pageParams(query: { limit?: number; cursor?: string }) {
   return params;
 }
 export class BountyClient extends ApiClient {
+  /** The run sizing the bounty for its first proposal, or null. */
+  async bountySizing(owner: string, id: string, signal?: AbortSignal) {
+    return bountySizingResponseSchema.parse(
+      await this.request(
+        `${ownerPath(owner)}/bounties/${encodeURIComponent(id)}/sizing`,
+        signal === undefined ? {} : { signal },
+      ),
+    ).run;
+  }
   async proposeBounty(
     owner: string,
     id: string,
@@ -63,6 +75,15 @@ export class BountyClient extends ApiClient {
       ),
     ).bounty;
   }
+  /** Its overview's versions, newest first. */
+  async bountyVersions(owner: string, id: string, signal?: AbortSignal) {
+    return bountyVersionListSchema.parse(
+      await this.request(
+        `${ownerPath(owner)}/bounties/${encodeURIComponent(id)}/versions`,
+        { signal },
+      ),
+    ).versions;
+  }
   async createBounty(owner: string, input: CreateBountyInput) {
     return bountyResponseSchema.parse(
       await this.request(`${ownerPath(owner)}/bounties`, {
@@ -76,6 +97,41 @@ export class BountyClient extends ApiClient {
       await this.request(
         `${ownerPath(owner)}/bounties/${encodeURIComponent(id)}`,
         { method: "PATCH", body: JSON.stringify(input) },
+      ),
+    ).bounty;
+  }
+  /**
+   * Approves the bounty's overview at its version, which holds it as it is,
+   * or takes that back, against the revision seen.
+   */
+  async decideBounty(
+    owner: string,
+    id: string,
+    decision: "approve" | "unapprove",
+    expectedRevision: number,
+  ) {
+    return bountyResponseSchema.parse(
+      await this.request(
+        `${ownerPath(owner)}/bounties/${encodeURIComponent(id)}/${decision}`,
+        { method: "POST", body: JSON.stringify({ expectedRevision }) },
+      ),
+    ).bounty;
+  }
+  /** Links the bounty to a Jira issue, whose text it then follows. */
+  async linkBountyJira(owner: string, id: string, input: LinkBountyJiraInput) {
+    return bountyResponseSchema.parse(
+      await this.request(
+        `${ownerPath(owner)}/bounties/${encodeURIComponent(id)}/jira`,
+        { method: "PUT", body: JSON.stringify(input) },
+      ),
+    ).bounty;
+  }
+  /** Takes the bounty's Jira issue from it; its text stays. */
+  async unlinkBountyJira(owner: string, id: string) {
+    return bountyResponseSchema.parse(
+      await this.request(
+        `${ownerPath(owner)}/bounties/${encodeURIComponent(id)}/jira`,
+        { method: "DELETE" },
       ),
     ).bounty;
   }

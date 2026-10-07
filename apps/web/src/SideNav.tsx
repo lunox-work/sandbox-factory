@@ -55,13 +55,17 @@ export type Screen =
   | "org-settings"
   /** One board, on a connected site. Carries a connection id and a board id. */
   | "org-jira-board"
+  /** One registered repository, as a page of its own. Carries a repository id. */
+  | "org-repository"
   /** Every workspace's bounties, and the proposals made from them. */
   | "bounties"
   /** The form for a new bounty, a page of its own under the bounties. */
   | "new-bounty"
   /** One bounty opened as a page of its own. Carries a workspace and an id. */
   | "bounty"
-  | "create-org";
+  | "create-org"
+  /** An address that names no page. */
+  | "not-found";
 
 export function SideNav({
   screen,
@@ -172,7 +176,9 @@ export function SideNav({
         </button>
       </div>
 
-      <div className="flex sm:mt-5 sm:w-full sm:flex-col">
+      {/* The same gap inside each group as between them, so the phone bar's
+          four items are evenly spaced. */}
+      <div className="flex gap-6 sm:mt-5 sm:w-full sm:flex-col sm:gap-0">
         <RailButton
           label="Home"
           href="/"
@@ -217,7 +223,7 @@ export function SideNav({
           opposite the switcher however tall it is. In the phone bar the margin is
           dropped, or it would push the avatar to the far right and split it
           from the destinations. */}
-      <div className="flex sm:mt-auto sm:w-full sm:flex-col">
+      <div className="flex gap-6 sm:mt-auto sm:w-full sm:flex-col sm:gap-0">
         {/*
           The full list of workspaces, with the create form beneath it. A row
           of its own above the avatar rather than an item in its menu, so it is
@@ -345,13 +351,15 @@ function RailButton({
         // because the rail clips anything past its edge.
         "sm:justify-start sm:gap-3 sm:pl-[17px] sm:focus-visible:outline-offset-[-2px]",
         // Tablet up: the reference's marker — a border down the leading edge,
-        // transparent when inactive so the icon never shifts.
-        "sm:border-l-2 sm:border-transparent",
+        // transparent always, so the icon never shifts. The marker itself is
+        // the pseudo-element below, painted over the border in the brand's
+        // ramp: a plain border takes one colour, not a gradient.
+        "sm:relative sm:border-l-2 sm:border-transparent",
         current
           ? // The marker over a filled row: on the phone bar a tile tinted
             // with the brand, in the rail the neutral accent, the same fill
             // the cursor gives an inactive row, made solid.
-            "bg-primary/12 text-primary sm:bg-accent sm:border-l-foreground sm:text-foreground"
+            "bg-primary/12 text-primary sm:bg-accent sm:text-foreground sm:before:absolute sm:before:inset-y-0 sm:before:-left-0.5 sm:before:w-0.5 sm:before:bg-(image:--brand-gradient-vertical)"
           : // The fill is what answers the cursor. It used to be cancelled at
             // `sm` and up — exactly the widths the rail proper exists at — so
             // the destinations gave no feedback at all on a desktop. Weaker

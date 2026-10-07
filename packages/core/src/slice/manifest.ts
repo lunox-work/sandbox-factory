@@ -12,7 +12,7 @@
  */
 
 import type { SliceBudget, SliceParams } from "../analysis.js";
-import type { SliceExternals } from "./externals.js";
+import type { ExternalPackage, SliceExternals } from "./externals.js";
 import type { CutEdge } from "./reach.js";
 
 export const SLICE_MANIFEST_SCHEMA_VERSION = 1;
@@ -239,7 +239,35 @@ export const SUMMARY_LIMITS = {
   symbols: 50,
   importers: 10,
   blockers: 50,
+  externalPackages: 100,
+  environment: 100,
 } as const;
+
+/**
+ * The packages a summary lists: one for each service first, then the rest
+ * by specifier, up to the limit, and sorted again by specifier. The pricing
+ * profile counts services from this list, so a cut must not drop one.
+ */
+function summarizePackages(
+  packages: readonly ExternalPackage[],
+): { specifier: string; service: string }[] {
+  const services = new Set<string>();
+  const first: ExternalPackage[] = [];
+  const rest: ExternalPackage[] = [];
+  for (const entry of packages) {
+    if (services.has(entry.service)) rest.push(entry);
+    else {
+      services.add(entry.service);
+      first.push(entry);
+    }
+  }
+  return [...first, ...rest]
+    .slice(0, SUMMARY_LIMITS.externalPackages)
+    .sort((a, b) =>
+      a.specifier < b.specifier ? -1 : a.specifier > b.specifier ? 1 : 0,
+    )
+    .map(({ specifier, service }) => ({ specifier, service }));
+}
 
 function summarizeModules(modules: readonly BoundaryModule[]): {
   modules: SummaryModule[];
@@ -294,18 +322,19 @@ export function boundarySummary(
     outbound: outbound.modules,
     inbound: inbound.modules,
     externals: {
-      packages: manifest.externals.packages.map(({ specifier, service }) => ({
-        specifier,
-        service,
-      })),
-      environment: manifest.externals.environment.map(({ name }) => name),
+      packages: summarizePackages(manifest.externals.packages),
+      environment: manifest.externals.environment
+        .slice(0, SUMMARY_LIMITS.environment)
+        .map(({ name }) => name),
     },
     blockers: contract.blockers.slice(0, SUMMARY_LIMITS.blockers),
     truncated:
       outbound.truncated ||
       inbound.truncated ||
       manifest.included.length > SUMMARY_LIMITS.files ||
-      contract.blockers.length > SUMMARY_LIMITS.blockers,
+      contract.blockers.length > SUMMARY_LIMITS.blockers ||
+      manifest.externals.packages.length > SUMMARY_LIMITS.externalPackages ||
+      manifest.externals.environment.length > SUMMARY_LIMITS.environment,
   };
 }
 

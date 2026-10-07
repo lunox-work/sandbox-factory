@@ -181,22 +181,26 @@ export function reach(
   }
   const maxFiles = Math.max(0, Math.floor(budget.maxFiles));
   const maxDepth = Math.max(0, Math.floor(budget.maxDepth));
-  const depthOf: Record<string, number> = {};
+  // A Map, not an object: paths are repository data, and a file named
+  // `constructor` or `__proto__` would read as already reached through the
+  // prototype under `in`. The size is kept by the Map rather than recounted
+  // per file.
+  const depthOf = new Map<string, number>();
   let level = [...entries].sort(compare);
   let depth = 0;
   while (level.length > 0 && depth <= maxDepth) {
     const next = new Set<string>();
     for (const file of level) {
-      if (file in depthOf) continue;
-      if (Object.keys(depthOf).length >= maxFiles) break;
-      depthOf[file] = depth;
+      if (depthOf.has(file)) continue;
+      if (depthOf.size >= maxFiles) break;
+      depthOf.set(file, depth);
       for (const edge of outgoing.get(file) ?? [])
-        if (!(edge.to in depthOf)) next.add(edge.to);
+        if (!depthOf.has(edge.to)) next.add(edge.to);
     }
-    level = [...next].filter((file) => !(file in depthOf)).sort(compare);
+    level = [...next].filter((file) => !depthOf.has(file)).sort(compare);
     depth++;
   }
-  const included = Object.keys(depthOf).sort(compare);
+  const included = [...depthOf.keys()].sort(compare);
   const inside = new Set(included);
   const outbound = new Map<string, CutEdge>();
   const inbound = new Map<string, CutEdge>();
@@ -224,7 +228,8 @@ export function reach(
     entries: [...entries].sort(compare),
     unknownEntryPoints,
     included,
-    depthOf,
+    // `fromEntries` defines own properties, so even `__proto__` is a key.
+    depthOf: Object.fromEntries(depthOf),
     cuts: {
       outbound: sortEdges(outbound.values()),
       inbound: sortEdges(inbound.values()),

@@ -32,6 +32,7 @@ export function ConfirmDialog({
   title,
   description,
   confirmLabel,
+  pendingLabel = "Working…",
   tone = "destructive",
   typeToConfirm,
   busy = false,
@@ -49,6 +50,14 @@ export function ConfirmDialog({
   description: ReactNode;
   /** What the confirming button says. Names the act, never "OK". */
   confirmLabel: string;
+  /**
+   * What the confirming button says while `onConfirm` is in flight, the act
+   * in progress: "Deleting…" for "Delete bounty". Said by the caller, since
+   * a label is not reliably turned into its "-ing" form by rule ("Remove
+   * scenario" is not "Remove scenarioing"); without one, a neutral word that
+   * reads right under any label.
+   */
+  pendingLabel?: string | undefined;
   /**
    * `danger` is the brand red kept for deleting an organization; see the token
    * note in `index.css`. Everything else is the ordinary destructive red.
@@ -208,9 +217,7 @@ export function ConfirmDialog({
                   void confirm();
                 }}
               >
-                {pending
-                  ? `${confirmLabel.endsWith("e") ? confirmLabel.slice(0, -1) : confirmLabel}ing…`
-                  : confirmLabel}
+                {pending ? pendingLabel : confirmLabel}
               </Button>
             </AlertDialogPrimitive.Action>
           </div>

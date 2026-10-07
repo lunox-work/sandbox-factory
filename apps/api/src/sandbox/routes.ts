@@ -1,5 +1,13 @@
 import type { SandboxRouteOptions } from "./options.js";
-import { transformConfigHash, versionService } from "./version-service.js";
+import type { Failure } from "./version-service.js";
+import {
+  FAILURE_STATUS,
+  fixturesRefused,
+  invalidFixtures,
+  transformConfigHash,
+  unknownChoices,
+  versionService,
+} from "./version-service.js";
 export type { SandboxRouteOptions } from "./options.js";
 export { approvedTaskHash, transformConfigHash } from "./version-service.js";
 /**
@@ -12,8 +20,9 @@ export { approvedTaskHash, transformConfigHash } from "./version-service.js";
  * in one store call. The build route queues a `sandbox_build` run whose
  * parameters carry every hash the output must bind to. A sandbox with no
  * repository has its versions generated instead: the starter route queues
- * an agent run that writes one from the bounty and builds it. Nothing here
- * is public; publication is phase 5D.
+ * an agent run that writes one from the bounty and builds it. Publishing
+ * makes a built version the sandbox's current one until a date; no public
+ * repository is pushed yet.
  */
 
 import type {
@@ -27,6 +36,7 @@ import {
   createSandboxVersionSchema,
   generateStarterResponseSchema,
   publishVersionResponseSchema,
+  publishVersionSchema,
   linkSandboxSourceSchema,
   replayResponseSchema,
   SANDBOX_FILE_TEXT_MAX_BYTES,
@@ -39,22 +49,15 @@ import {
   updateSandboxVersionSchema,
 } from "@sandbox-factory/shared";
 import type { Context, Hono } from "hono";
-import type {
-  BoundaryContract,
-  DependencyChoice,
-  SandboxFixture,
-  SliceManifest,
-} from "sandbox-factory";
 import {
   approvedTaskReadiness,
-  fixtureProblems,
   replayOf,
   resolveScope,
-  unknownDependencyChoices,
   validateAliasRules,
 } from "sandbox-factory";
-import { rankAtLeast } from "../access.js";
+import { isAtLeastAdmin } from "../access.js";
 import type { AuthVariables } from "../http-context.js";
+import { textOf } from "../object-text.js";
 
 const sandboxDto = ({ organizationId: _owner, ...dto }: StoredSandbox) => dto;
 const sourceDto = (source: StoredVersionSource) => ({
@@ -69,6 +72,7 @@ const sourceDto = (source: StoredVersionSource) => ({
   starterSha256: source.starterSha256,
   transformConfigSha256: source.transformConfigSha256,
   approvedTaskSha256: source.approvedTaskSha256,
+  proposalVersion: source.proposalVersion,
   aliasRules: source.aliasRules,
   dependencyChoices: source.dependencyChoices,
   acceptanceTests: source.acceptanceTests,
@@ -94,86 +98,9 @@ const versionResponse = (
     ...(privileged ? { source: sourceDto(stored.source) } : {}),
   });
 
-/** UTF-8 text, or null for bytes a text view cannot show. */
-function textOf(bytes: Uint8Array): string | null {
-  if (bytes.includes(0)) return null;
-  try {
-    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-  } catch {
-    return null;
-  }
-}
-
-/** A dependency choice must name a package the slice requires. */
-function unknownChoices(
-  c: Context,
-  manifest: SliceManifest,
-  choices: Readonly<Record<string, DependencyChoice>>,
-): Response | null {
-  const names = unknownDependencyChoices(manifest, choices);
-  return names.length === 0
-    ? null
-    : c.json(
-        {
-          error:
-            "A dependency choice names a package the slice does not require.",
-          code: "dependency_choice_unknown",
-          names,
-        },
-        400,
-      );
-}
-
-type FixturesFailure =
-  | "not_found"
-  | "fixtures_not_ready"
-  | "fixtures_mismatch"
-  | "artifacts_unavailable";
-/** Why fixtures could not be copied from a run, as the API reports it. */
-function fixturesRefused(c: Context, error: FixturesFailure): Response {
-  if (error === "not_found") return c.json({ error: "Not found." }, 404);
-  if (error === "fixtures_not_ready")
-    return c.json(
-      {
-        error: "The fixtures run has not succeeded.",
-        code: "fixtures_not_ready",
-      },
-      409,
-    );
-  if (error === "fixtures_mismatch")
-    return c.json(
-      {
-        error: "The fixtures were written for a different slice.",
-        code: "fixtures_mismatch",
-      },
-      409,
-    );
-  return c.json(
-    {
-      error: "The fixture set could not be read.",
-      code: "artifacts_unavailable",
-    },
-    502,
-  );
-}
-/** Fixtures must name values the version's slice mocks. */
-function invalidFixtures(
-  c: Context,
-  fixtures: readonly SandboxFixture[],
-  contract: BoundaryContract,
-): Response | null {
-  const problems = fixtureProblems(fixtures, contract.outbound);
-  return problems.length === 0
-    ? null
-    : c.json(
-        {
-          error: "The fixtures do not fit the slice.",
-          code: "fixtures_invalid",
-          problems,
-        },
-        400,
-      );
-}
+/** A refusal the version service settled on, answered with its status. */
+const failed = (c: Context, refusal: Failure): Response =>
+  c.json(refusal.body, FAILURE_STATUS[refusal.reason]);
 
 /** A store refusal to make a sandbox or link its repository. */
 function sandboxRefused(
@@ -267,13 +194,12 @@ export function mountSandboxRoutes(
 ): void {
   const base = "/api/v1/orgs/:orgId/sandboxes";
   const now = options.now ?? (() => new Date());
-  const admin = (role: string) => rankAtLeast(role, "admin");
 
   const service = versionService(options);
   const { sliceInputs, fixturesFromRun } = service;
 
   app.post(base, async (c) => {
-    if (!admin(c.get("member").role))
+    if (!isAtLeastAdmin(c.get("member").role))
       return c.json(
         { error: "Only owners and admins can create a sandbox." },
         403,
@@ -284,7 +210,7 @@ export function mountSandboxRoutes(
     if (!body.success)
       return c.json({ error: "Invalid sandbox request." }, 400);
     const result = await options.sandboxes.create(
-      c.req.param("orgId"),
+      c.get("member").organizationId,
       body.data,
     );
     if (!result.ok) return sandboxRefused(c, result.reason);
@@ -295,7 +221,7 @@ export function mountSandboxRoutes(
   });
   // A sandbox made without a repository gets one here, once.
   app.put(`${base}/:id/source`, async (c) => {
-    if (!admin(c.get("member").role))
+    if (!isAtLeastAdmin(c.get("member").role))
       return c.json(
         { error: "Only owners and admins can link a sandbox's repository." },
         403,
@@ -306,7 +232,7 @@ export function mountSandboxRoutes(
     if (!body.success)
       return c.json({ error: "Invalid sandbox request." }, 400);
     const result = await options.sandboxes.linkSource(
-      c.req.param("orgId"),
+      c.get("member").organizationId,
       c.req.param("id"),
       body.data.sourceRepoId,
     );
@@ -321,12 +247,12 @@ export function mountSandboxRoutes(
    * and its run, which the caller follows to see it finish.
    */
   app.post(`${base}/:id/starter`, async (c) => {
-    if (!admin(c.get("member").role))
+    if (!isAtLeastAdmin(c.get("member").role))
       return c.json(
         { error: "Only owners and admins can generate a version." },
         403,
       );
-    const owner = c.req.param("orgId");
+    const owner = c.get("member").organizationId;
     const sandbox = await options.sandboxes.get(owner, c.req.param("id"));
     if (sandbox === null) return c.json({ error: "Not found." }, 404);
     const generated = await service.generate(
@@ -335,15 +261,7 @@ export function mountSandboxRoutes(
       sandbox,
       now(),
     );
-    if (!generated.ok) {
-      const status = {
-        invalid: 400,
-        "not-found": 404,
-        conflict: 409,
-        unavailable: 502,
-      } as const;
-      return c.json(generated.body, status[generated.reason]);
-    }
+    if (!generated.ok) return failed(c, generated);
     await options.ensureWorker().catch(() => options.onLaunchError?.());
     return c.json(
       generateStarterResponseSchema.parse({
@@ -357,24 +275,24 @@ export function mountSandboxRoutes(
   app.get(base, async (c) =>
     c.json(
       sandboxListSchema.parse({
-        sandboxes: (await options.sandboxes.list(c.req.param("orgId"))).map(
-          sandboxDto,
-        ),
+        sandboxes: (
+          await options.sandboxes.list(c.get("member").organizationId)
+        ).map(sandboxDto),
       }),
     ),
   );
   app.get(`${base}/versions/:vid`, async (c) => {
     const stored = await options.sandboxes.getVersion(
-      c.req.param("orgId"),
+      c.get("member").organizationId,
       c.req.param("vid"),
     );
     return stored === null
       ? c.json({ error: "Not found." }, 404)
-      : c.json(versionResponse(stored, admin(c.get("member").role)));
+      : c.json(versionResponse(stored, isAtLeastAdmin(c.get("member").role)));
   });
   app.get(`${base}/:id`, async (c) => {
     const sandbox = await options.sandboxes.get(
-      c.req.param("orgId"),
+      c.get("member").organizationId,
       c.req.param("id"),
     );
     return sandbox === null
@@ -382,7 +300,7 @@ export function mountSandboxRoutes(
       : c.json(sandboxResponseSchema.parse({ sandbox: sandboxDto(sandbox) }));
   });
   app.get(`${base}/:id/versions`, async (c) => {
-    const owner = c.req.param("orgId");
+    const owner = c.get("member").organizationId;
     const sandboxId = c.req.param("id");
     if ((await options.sandboxes.get(owner, sandboxId)) === null)
       return c.json({ error: "Not found." }, 404);
@@ -398,12 +316,12 @@ export function mountSandboxRoutes(
    * the approved task copied from the proposal and spec as they are now.
    */
   app.post(`${base}/:id/versions`, async (c) => {
-    if (!admin(c.get("member").role))
+    if (!isAtLeastAdmin(c.get("member").role))
       return c.json(
         { error: "Only owners and admins can create a version." },
         403,
       );
-    const owner = c.req.param("orgId");
+    const owner = c.get("member").organizationId;
     const sandbox = await options.sandboxes.get(owner, c.req.param("id"));
     if (sandbox === null) return c.json({ error: "Not found." }, 404);
     const body = createSandboxVersionSchema.safeParse(
@@ -418,15 +336,7 @@ export function mountSandboxRoutes(
       body.data,
       now(),
     );
-    if (!created.ok) {
-      const status = {
-        invalid: 400,
-        "not-found": 404,
-        conflict: 409,
-        unavailable: 502,
-      } as const;
-      return c.json(created.body, status[created.reason]);
-    }
+    if (!created.ok) return failed(c, created);
     return c.json(versionResponse(created.result, true), 201);
   });
 
@@ -436,12 +346,12 @@ export function mountSandboxRoutes(
    * read here, so the store refuses it if another change landed in between.
    */
   app.patch(`${base}/versions/:vid`, async (c) => {
-    if (!admin(c.get("member").role))
+    if (!isAtLeastAdmin(c.get("member").role))
       return c.json(
         { error: "Only owners and admins can change a version." },
         403,
       );
-    const owner = c.req.param("orgId");
+    const owner = c.get("member").organizationId;
     const versionId = c.req.param("vid");
     const body = updateSandboxVersionSchema.safeParse(
       await c.req.json().catch(() => null),
@@ -491,8 +401,8 @@ export function mountSandboxRoutes(
           502,
         );
       if (body.data.dependencyChoices !== undefined) {
-        const unknown = unknownChoices(c, inputs.manifest, dependencyChoices);
-        if (unknown !== null) return unknown;
+        const unknown = unknownChoices(inputs.manifest, dependencyChoices);
+        if (unknown !== null) return failed(c, unknown);
         scope = resolveScope({
           manifest: inputs.manifest,
           contract: inputs.contract,
@@ -505,13 +415,13 @@ export function mountSandboxRoutes(
           body.data.fixtureRunId,
           sliceRunId,
         );
-        if ("error" in copied) return fixturesRefused(c, copied.error);
+        if ("error" in copied) return failed(c, fixturesRefused(copied.error));
         fixtures = copied.fixtures;
       } else if (body.data.fixtures !== undefined)
         fixtures = { fixtureRunId: null, ...body.data.fixtures };
       if (fixtures !== null) {
-        const invalid = invalidFixtures(c, fixtures.fixtures, inputs.contract);
-        if (invalid !== null) return invalid;
+        const invalid = invalidFixtures(fixtures.fixtures, inputs.contract);
+        if (invalid !== null) return failed(c, invalid);
       }
     }
     if (body.data.fixtureRunId === null) fixtures = null;
@@ -553,21 +463,38 @@ export function mountSandboxRoutes(
 
   /**
    * Publishes a version: approves and freezes it, and makes it the
-   * sandbox's published version. Only a version whose build passed. No
-   * public repository is pushed yet; publication marks the version
-   * contributors are to get.
+   * sandbox's published version until the date given, which must be
+   * ahead. Only a version whose build passed, of a bounty whose proposal is
+   * approved. No public repository is pushed yet; publication marks the
+   * version contributors are to get.
    */
   app.post(`${base}/versions/:vid/publish`, async (c) => {
-    if (!admin(c.get("member").role))
+    if (!isAtLeastAdmin(c.get("member").role))
       return c.json(
         { error: "Only owners and admins can publish a version." },
         403,
       );
+    const parsed = publishVersionSchema.safeParse(
+      await c.req.json().catch(() => null),
+    );
+    if (!parsed.success)
+      return c.json({ error: "Give the date the publication expires." }, 400);
+    const at = now();
+    const expiresAt = new Date(parsed.data.expiresAt);
+    if (expiresAt.getTime() <= at.getTime())
+      return c.json(
+        {
+          error: "The expiry date must be in the future.",
+          code: "expiry_past",
+        },
+        400,
+      );
     const result = await options.sandboxes.publishVersion(
-      c.req.param("orgId"),
+      c.get("member").organizationId,
       c.req.param("vid"),
       c.get("user").id,
-      now(),
+      expiresAt,
+      at,
     );
     if (!result.ok)
       return result.reason === "not_ready"
@@ -578,7 +505,16 @@ export function mountSandboxRoutes(
             },
             409,
           )
-        : c.json({ error: "Not found." }, 404);
+        : result.reason === "bounty_not_approved"
+          ? c.json(
+              {
+                error:
+                  "This version was not built from an approved bounty, so it cannot be published.",
+                code: "bounty_not_approved",
+              },
+              409,
+            )
+          : c.json({ error: "Not found." }, 404);
     return c.json(
       publishVersionResponseSchema.parse({
         sandbox: sandboxDto(result.sandbox),
@@ -590,13 +526,13 @@ export function mountSandboxRoutes(
 
   /** Back to a draft with no published version; versions stay frozen. */
   app.post(`${base}/:id/unpublish`, async (c) => {
-    if (!admin(c.get("member").role))
+    if (!isAtLeastAdmin(c.get("member").role))
       return c.json(
         { error: "Only owners and admins can unpublish a sandbox." },
         403,
       );
     const sandbox = await options.sandboxes.unpublish(
-      c.req.param("orgId"),
+      c.get("member").organizationId,
       c.req.param("id"),
       now(),
     );
@@ -607,16 +543,18 @@ export function mountSandboxRoutes(
 
   /**
    * Queues the build. Its parameters are the version's hashes, so a changed
-   * draft is a new run. A draft changed between the read and the record
-   * leaves a queued run with stale hashes, which the worker rejects.
+   * draft is a new run, and an unchanged one is the same run again. A draft
+   * changed or frozen between the read and the record is refused, and the
+   * store cancels the run if it is still queued, so it does not hold one of
+   * the organization's active slots for a build nothing will record.
    */
   app.post(`${base}/versions/:vid/build`, async (c) => {
-    if (!admin(c.get("member").role))
+    if (!isAtLeastAdmin(c.get("member").role))
       return c.json(
         { error: "Only owners and admins can build a version." },
         403,
       );
-    const owner = c.req.param("orgId");
+    const owner = c.get("member").organizationId;
     const stored = await options.sandboxes.getVersion(
       owner,
       c.req.param("vid"),
@@ -681,6 +619,13 @@ export function mountSandboxRoutes(
         : c.json({ error: "Not found." }, 404);
     if (result.obsoleteLogKey !== undefined)
       await options.objects.remove(result.obsoleteLogKey).catch(() => {});
+    // Asked again for the build the draft already points at: the same run,
+    // queued, running or done. Recording it again would clear what it
+    // proved, which a run that has already succeeded never records twice.
+    if (!result.created && stored.source.buildRunId === result.run.id) {
+      await options.ensureWorker().catch(() => options.onLaunchError?.());
+      return c.json(analysisRunResponseSchema.parse({ run: result.run }), 202);
+    }
     const recorded = await options.sandboxes.recordBuild(
       owner,
       stored.version.id,
@@ -699,12 +644,12 @@ export function mountSandboxRoutes(
    * since the hidden tests are among them.
    */
   app.get(`${base}/versions/:vid/files`, async (c) => {
-    if (!admin(c.get("member").role))
+    if (!isAtLeastAdmin(c.get("member").role))
       return c.json(
         { error: "Only owners and admins can read a version's files." },
         403,
       );
-    const owner = c.req.param("orgId");
+    const owner = c.get("member").organizationId;
     const stored = await options.sandboxes.getVersion(
       owner,
       c.req.param("vid"),
@@ -732,12 +677,12 @@ export function mountSandboxRoutes(
    * path, matched against what the run recorded, never joined into a key.
    */
   app.get(`${base}/versions/:vid/files/content`, async (c) => {
-    if (!admin(c.get("member").role))
+    if (!isAtLeastAdmin(c.get("member").role))
       return c.json(
         { error: "Only owners and admins can read a version's files." },
         403,
       );
-    const owner = c.req.param("orgId");
+    const owner = c.get("member").organizationId;
     const path = c.req.query("path");
     if (path === undefined || path === "")
       return c.json({ error: "Name a file with `path`." }, 400);
@@ -781,13 +726,13 @@ export function mountSandboxRoutes(
 
   /** What a replay would use. Never the current branch head. */
   app.get(`${base}/versions/:vid/replay`, async (c) => {
-    if (!admin(c.get("member").role))
+    if (!isAtLeastAdmin(c.get("member").role))
       return c.json(
         { error: "Only owners and admins can read provenance." },
         403,
       );
     const context = await options.sandboxes.replayContext(
-      c.req.param("orgId"),
+      c.get("member").organizationId,
       c.req.param("vid"),
     );
     if (context === null) return c.json({ error: "Not found." }, 404);

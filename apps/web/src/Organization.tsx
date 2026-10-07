@@ -16,7 +16,7 @@ import { pushLocation, subscribeLocation } from "./navigation/location";
  * courtesy, not security.
  */
 
-import type { MembershipDto } from "@sandbox-factory/shared";
+import type { GithubRepoDto, MembershipDto } from "@sandbox-factory/shared";
 import { LogOut, Trash2, UserPlus, Users } from "lucide-react";
 import {
   useCallback,
@@ -96,6 +96,7 @@ export function Organization({
   onChanged,
   onLeft,
   onOpenBoard,
+  onOpenRepository,
   onPictureChanged,
   viewer,
 }: {
@@ -117,6 +118,11 @@ export function Organization({
    * be opened.
    */
   onOpenBoard?: ((board: JiraBoard) => void) | undefined;
+  /**
+   * Opens a registered repository's page from the GitHub tab. Optional for
+   * the same reason: without it the row is a plain link to that page.
+   */
+  onOpenRepository?: ((repo: GithubRepoDto) => void) | undefined;
   /**
    * Whoever is looking. A personal organization is always the viewer's own —
    * nobody is ever in someone else's — so its picture is theirs, the one the
@@ -265,6 +271,7 @@ export function Organization({
               organizationSlug={organization.slug}
               role={organization.role}
               onOpenBoard={onOpenBoard}
+              onOpenRepository={onOpenRepository}
             />
           )}
         </TabsContent>
@@ -618,7 +625,7 @@ function HandleForm({
         <CardDescription>
           {personal
             ? "Your username, which your personal pages live under."
-            : "The workspace\u2019s public name."}
+            : "The workspace\u2019s address: its pages live under it."}
         </CardDescription>
       </CardHeader>
 
@@ -782,7 +789,9 @@ function InviteForm({
       setDraft("");
       setMessage(`Invited ${value}. They will see it on their account page.`);
     } catch (error) {
-      onError(
+      // Beside the form that sent it, as a refused input is: the page's
+      // banner sits above the tabs, out of sight of the field.
+      setValidationError(
         error instanceof ApiError
           ? error.message
           : "Could not send that invitation.",
@@ -1002,8 +1011,8 @@ export function CreateOrganization({
             Name
           </CardTitle>
           <CardDescription>
-            What people will read. A public handle is made from it, and both can
-            be changed later.
+            What people will read. A handle is made from it, which can be
+            changed later in the workspace&rsquo;s settings.
           </CardDescription>
         </CardHeader>
 

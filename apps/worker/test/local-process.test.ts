@@ -136,3 +136,65 @@ test("processes are bounded in time and output, and abort or missing executables
     /gone/,
   );
 });
+
+/** Whether a process is still running. */
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+test("what a command leaves running in its group is stopped when it exits", async () => {
+  // A test that starts a server and never stops it: the server would
+  // outlive the job, holding its port, after the directory is gone.
+  const result = await runProcess(
+    {
+      argv: [
+        "node",
+        "-e",
+        "const c = require('child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' }); c.unref(); console.log(c.pid);",
+      ],
+      limits: { timeoutMs: 10_000, maxOutputBytes: 1024 },
+    },
+    {
+      cwd: process.cwd(),
+      env: { PATH: process.env["PATH"] ?? "" },
+      signal: new AbortController().signal,
+    },
+  );
+  assert.equal(result.exitCode, 0);
+  const pid = Number(result.stdout.trim());
+  await new Promise((done) => setTimeout(done, 200));
+  assert.equal(alive(pid), false);
+});
+
+test("a holder of the output outside the group does not keep the command running", async () => {
+  // It left the process group, so neither the timeout nor the group kill
+  // reaches it; settling on "close" waited for it for as long as it lived.
+  const started = Date.now();
+  const result = await runProcess(
+    {
+      argv: [
+        "node",
+        "-e",
+        "const c = require('child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], { detached: true, stdio: 'inherit' }); c.unref(); console.log(c.pid);",
+      ],
+      limits: { timeoutMs: 10_000, maxOutputBytes: 1024 },
+    },
+    {
+      cwd: process.cwd(),
+      env: { PATH: process.env["PATH"] ?? "" },
+      signal: new AbortController().signal,
+    },
+  );
+  const pid = Number(result.stdout.trim());
+  try {
+    assert.equal(result.exitCode, 0);
+    assert.ok(Date.now() - started < 5_000);
+  } finally {
+    if (alive(pid)) process.kill(pid, "SIGKILL");
+  }
+});

@@ -6,6 +6,7 @@ import {
   jiraIssueDetailResponseSchema,
   jiraBacklogPreviewSchema,
   jiraIssueSearchSchema,
+  jiraWorkspaceIssueSearchSchema,
   proposalActionResponseSchema,
   jiraBoardListSchema,
 } from "@sandbox-factory/shared";
@@ -58,6 +59,15 @@ export class JiraManagementClient extends ApiClient {
     return jiraIssueSearchSchema.parse(
       await this.request(
         `${ownerPath(owner)}/jira/boards/${encodeURIComponent(boardId)}/search?q=${encodeURIComponent(query)}`,
+        { signal },
+      ),
+    ).issues;
+  }
+  /** The workspace's issues matching `query`, from every board it has. */
+  async searchAll(owner: string, query: string, signal?: AbortSignal) {
+    return jiraWorkspaceIssueSearchSchema.parse(
+      await this.request(
+        `${ownerPath(owner)}/jira/search?q=${encodeURIComponent(query)}`,
         { signal },
       ),
     ).issues;

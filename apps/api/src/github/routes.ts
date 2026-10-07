@@ -53,6 +53,7 @@ import {
   GithubAuthError,
   GithubClient,
   GithubInstallationUnavailable,
+  GithubNotFound,
   GithubOAuthError,
   GithubRateLimited,
   type InstallationTokens,
@@ -66,7 +67,10 @@ import {
   githubInstallationSettingsUrl,
   type GithubRepoDto,
   linkInstallationRequestSchema,
+  pullSnapshotRequestSchema,
+  type PullSnapshotResponse,
   registerRepoRequestSchema,
+  type RepoBranchDto,
   type RepoSnapshotDetailDto,
   type RepoSnapshotDto,
   type RepoTreePageDto,
@@ -358,6 +362,28 @@ export function mountGithubRoutes<Env extends GithubAppEnv>(
       // picker says which is which, and offers the install page as well.
       if (free.length > 0) {
         return c.redirect(back(returnTo, "pick"));
+      }
+
+      // Nothing free, but some already linked here. Connecting again is how
+      // a connection flagged "Needs attention" is cleared, and the install
+      // page would only show GitHub's settings for an account that has the
+      // App already, stranding the person there. So each one this person
+      // may still link is linked again, as `setup_action=update` would: the
+      // link refreshes it and sets `healthy` from what GitHub reports now.
+      const ours = listed.filter(
+        (installation) =>
+          owners.get(String(installation.id)) === organizationId,
+      );
+      if (ours.length > 0) {
+        let relinked = false;
+        for (const installation of ours) {
+          if ((await authority(person, installation)) !== "yours") continue;
+          if ((await link(organizationId, installation)).status === "linked") {
+            relinked = true;
+          }
+        }
+        // None could be: the picker says why for each.
+        return c.redirect(back(returnTo, relinked ? "connected" : "pick"));
       }
 
       // Nothing to link: install the App somewhere. A fresh state, because
@@ -690,23 +716,14 @@ export function mountGithubRoutes<Env extends GithubAppEnv>(
         403,
       );
     }
-    const repoId = c.req.param("id");
-    if (repos.removeWithObjects !== undefined) {
-      const result = await repos.removeWithObjects(organizationId, repoId);
-      if (!result.removed) return c.json({ error: "Not found" }, 404);
-      await snapshots?.snapshotter.removeObjects(result.objectKeys);
-      return c.body(null, 204);
-    }
-    // Read before the cascade takes the rows, so the trees can go too.
-    const trees =
-      snapshots === undefined
-        ? []
-        : (
-            await snapshots.store.list(organizationId, repoId, REMOVE_TREES_MAX)
-          ).map(({ treeKey }) => treeKey);
-    const removed = await repos.remove(organizationId, repoId);
-    if (!removed) return c.json({ error: "Not found" }, 404);
-    await snapshots?.snapshotter.removeObjects(trees);
+    // The object keys are read in the cascade's own transaction, so the
+    // trees, logs and artifacts can go after the rows do.
+    const result = await repos.removeWithObjects(
+      organizationId,
+      c.req.param("id"),
+    );
+    if (!result.removed) return c.json({ error: "Not found" }, 404);
+    await snapshots?.snapshotter.removeObjects(result.objectKeys);
     return c.body(null, 204);
   });
 
@@ -729,6 +746,171 @@ export function mountGithubRoutes<Env extends GithubAppEnv>(
         SNAPSHOT_LIST_MAX,
       );
       return c.json({ snapshots: listed.map(toSnapshotDto) });
+    },
+  );
+
+  /**
+   * A repository's branches, the default first, each with the commit it is
+   * at, read from GitHub with the repository's own token. Any member may
+   * read them, as they may read its snapshots.
+   */
+  app.get("/api/v1/orgs/:orgId/github/repositories/:id/branches", async (c) => {
+    const { organizationId } = c.get("member");
+    const repo = await repos.get(organizationId, c.req.param("id"));
+    if (repo === null) return c.json({ error: "Not found" }, 404);
+    if (repo.syncStatus === "gone") return repoGone(c);
+    const connection = await connections.get(organizationId, repo.connectionId);
+    if (connection === null) return c.json({ error: "Not found" }, 404);
+    if (!connection.healthy) return unhealthy(c);
+    try {
+      const listed = await installationClient(
+        installations,
+        connection.installationId,
+        { kind: "repository", repositoryId: repo.externalId },
+        fetchImpl,
+      ).branches(repo.fullName);
+      const branches: RepoBranchDto[] = listed.branches
+        .map((branch) => ({
+          name: branch.name,
+          headSha: branch.sha,
+          isDefault: branch.name === repo.defaultBranch,
+        }))
+        .sort(
+          (a, b) =>
+            Number(b.isDefault) - Number(a.isDefault) ||
+            a.name.localeCompare(b.name),
+        );
+      return c.json({ branches, truncated: listed.truncated });
+    } catch (error) {
+      return installationFailure(c, organizationId, connection, error);
+    }
+  });
+
+  /**
+   * Pull a branch: read the commit it is at now and snapshot it, unless
+   * that commit was snapshotted already. The default branch is read as the
+   * sweep reads it, so the repository's head moves with it; any other is
+   * read by its ref and snapshotted under its own name. The snapshot is
+   * taken in the background, as a large tree takes longer than a click
+   * should wait: the answer names the commit, and the snapshot once there
+   * is one.
+   */
+  app.post(
+    "/api/v1/orgs/:orgId/github/repositories/:id/snapshots",
+    async (c) => {
+      const { organizationId, role } = c.get("member");
+      if (!isAtLeastAdmin(role)) {
+        return c.json(
+          { error: "Only an owner or admin may pull a branch." },
+          403,
+        );
+      }
+      if (snapshots === undefined) return snapshotsUnconfigured(c);
+      const parsed = pullSnapshotRequestSchema.safeParse(
+        await c.req.json().catch(() => null),
+      );
+      if (!parsed.success) return c.json({ error: "Name a branch." }, 400);
+      const { branch } = parsed.data;
+      const repoId = c.req.param("id");
+      const repo = await repos.get(organizationId, repoId);
+      if (repo === null) return c.json({ error: "Not found" }, 404);
+      if (repo.syncStatus === "gone") return repoGone(c);
+      const connection = await connections.get(
+        organizationId,
+        repo.connectionId,
+      );
+      if (connection === null) return c.json({ error: "Not found" }, 404);
+      if (!connection.healthy) return unhealthy(c);
+      const client = installationClient(
+        installations,
+        connection.installationId,
+        { kind: "repository", repositoryId: repo.externalId },
+        fetchImpl,
+      );
+
+      let commitSha: string;
+      let pinned: { sha: string; branch: string } | undefined;
+      try {
+        if (branch === repo.defaultBranch) {
+          const outcome = await syncRepo(repos, client, {
+            organizationId,
+            repoId,
+            externalId: repo.externalId,
+            // Asked for by a person: read the head, never a cached answer.
+            headEtag: null,
+          });
+          if (outcome === "gone") return repoGone(c);
+          const synced = await repos.get(organizationId, repoId);
+          if (
+            outcome === "error" ||
+            synced === null ||
+            synced.headSha === null
+          ) {
+            return c.json(
+              {
+                error:
+                  synced?.syncError ??
+                  `The branch ${branch} could not be read.`,
+              },
+              409,
+            );
+          }
+          commitSha = synced.headSha;
+        } else {
+          const head = await client.branchHead(repo.fullName, branch);
+          if (head.status !== "modified") {
+            return c.json(
+              { error: `The branch ${branch} has no commits yet.` },
+              409,
+            );
+          }
+          commitSha = head.sha;
+          pinned = { sha: head.sha, branch };
+        }
+      } catch (error) {
+        // Only the other-branch read can get here with a 404: `syncRepo`
+        // answers its own. A ref GitHub cannot find is a missing branch or
+        // a repository no longer shared (a token narrowed to one the
+        // installation dropped is refused the same way), so the repository
+        // is read before the branch is blamed, as the sweep would read it.
+        if (error instanceof GithubNotFound) {
+          try {
+            await client.repository(repo.externalId);
+          } catch (second) {
+            if (second instanceof GithubNotFound) {
+              await repos.markGone(organizationId, [repoId]);
+              return repoGone(c);
+            }
+            return installationFailure(c, organizationId, connection, second);
+          }
+          return c.json(
+            { error: `The branch ${branch} was not found on GitHub.` },
+            404,
+          );
+        }
+        return installationFailure(c, organizationId, connection, error);
+      }
+
+      const existing = await snapshots.store.findByCommit(
+        organizationId,
+        repoId,
+        commitSha,
+      );
+      if (existing !== null) {
+        const pulled: PullSnapshotResponse = {
+          commitSha,
+          snapshot: toSnapshotDto(existing),
+        };
+        return c.json(pulled);
+      }
+      snapshots.snapshotter.schedule({
+        organizationId,
+        repoId,
+        installationId: connection.installationId,
+        ...(pinned === undefined ? {} : { commit: pinned }),
+      });
+      const pending: PullSnapshotResponse = { commitSha, snapshot: null };
+      return c.json(pending, 202);
     },
   );
 
@@ -816,7 +998,7 @@ export function mountGithubRoutes<Env extends GithubAppEnv>(
         installations: await result.client.userInstallations(),
       };
     } catch (error) {
-      const finished = await noteGrantFailure(
+      const failed = await noteGrantFailure(
         grants,
         {
           organizationId,
@@ -825,12 +1007,23 @@ export function mountGithubRoutes<Env extends GithubAppEnv>(
         },
         error,
       );
-      if (finished) {
+      if (failed === "flagged") {
         return c.json(
           {
             error:
               "Your GitHub authorization has lapsed. Connect GitHub again.",
             code: "reconnect",
+          },
+          409,
+        );
+      }
+      if (failed === "superseded") {
+        // The grant this call used was replaced meanwhile, so the refusal
+        // was the old one's. The new one is untried: try again, not reconnect.
+        return c.json(
+          {
+            error:
+              "Your GitHub authorization changed while we were using it. Try again.",
           },
           409,
         );
@@ -880,11 +1073,6 @@ export function mountGithubRoutes<Env extends GithubAppEnv>(
 
 /** The most snapshots one listing returns. */
 const SNAPSHOT_LIST_MAX = 50;
-/**
- * The most snapshots whose trees go when a repository is removed. Past it
- * the rest are left in the bucket, which costs storage and nothing else.
- */
-const REMOVE_TREES_MAX = 1_000;
 
 function snapshotsUnconfigured(c: Context): Response {
   return c.json(
@@ -937,7 +1125,7 @@ export function treePage(
 }
 
 /** The wire shape: the bucket key left out. */
-export function toSnapshotDto(snapshot: RepoSnapshotSummary): RepoSnapshotDto {
+function toSnapshotDto(snapshot: RepoSnapshotSummary): RepoSnapshotDto {
   return {
     id: snapshot.id,
     repoId: snapshot.repoId,
@@ -961,6 +1149,16 @@ function toSnapshotDetailDto(
     // The same shape; core's is merely the read-only spelling of it.
     facts: snapshot.facts as RepoSnapshotDetailDto["facts"],
   };
+}
+
+function repoGone(c: Context): Response {
+  return c.json(
+    {
+      error: "This repository is no longer on GitHub, or no longer shared.",
+      code: "gone",
+    },
+    409,
+  );
 }
 
 function unhealthy(c: Context): Response {
@@ -996,11 +1194,34 @@ function githubFailure(c: Context, error: unknown): Response {
       502,
     );
   }
+  if (error instanceof GithubOAuthError) {
+    // A person's token failed to refresh. Not answered, or answered with
+    // something other than a refusal, is GitHub's trouble and worth a retry;
+    // a spent grant, flagged by `noteGrantFailure` before reaching here, is
+    // what only connecting again replaces. Any other refusal is about this
+    // server's app credentials: connecting again would fail the same way, so
+    // it is thrown and logged rather than sent round that loop.
+    if (error.unanswered || error.code === "malformed") {
+      return c.json(
+        { error: "GitHub did not answer properly. Try again.", code: "github" },
+        502,
+      );
+    }
+    if (error.needsReconnect) {
+      return c.json(
+        {
+          error: "Your GitHub authorization has lapsed. Connect GitHub again.",
+          code: "reconnect",
+        },
+        409,
+      );
+    }
+  }
   throw error;
 }
 
 /** The wire shape: the settings link added, permissions left out. */
-export function toConnectionDto(
+function toConnectionDto(
   connection: GithubConnectionSummary,
 ): GithubConnectionDto {
   return {

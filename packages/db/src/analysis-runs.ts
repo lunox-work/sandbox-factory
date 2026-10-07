@@ -2,7 +2,10 @@ import { createHash } from "node:crypto";
 import { and, desc, eq, gt, isNull, lte, ne, or, sql } from "drizzle-orm";
 import {
   ANALYSIS_TOOLS,
+  GRAPH_READERS,
   canonicalJson,
+  isAbstractionsParams,
+  isDataModelParams,
   isFixturesParams,
   isScopeParams,
   isSliceParams,
@@ -83,7 +86,8 @@ export interface AnalysisRunStore {
    * is not a retryable failure is returned as is. A slice run names the
    * graphify run it reads in `params.graphRunId`, which must be a graphify
    * run on the same snapshot; the worker claims it once that run is over.
-   * A scope run reads a graph the same way and waits the same way. A
+   * A scope run and the `abstractions` and `data_model` builders read a
+   * graph the same way and wait the same way. A
    * fixtures run names a slice run that must already have succeeded on the
    * same snapshot, so it needs no wait. A sandbox build names a succeeded
    * slice run; the API checks that before enqueueing. A starter reads no
@@ -101,10 +105,25 @@ export interface AnalysisRunStore {
     },
   ): Promise<EnqueueAnalysisResult>;
   get(organizationId: string, runId: string): Promise<StoredAnalysisRun | null>;
+  /**
+   * The newest succeeded run of a tool, at the tool's current version, on
+   * one snapshot: the context run an agent run reads, when there is one.
+   */
+  latestSucceeded(
+    organizationId: string,
+    snapshotId: string,
+    tool: AnalysisTool,
+  ): Promise<StoredAnalysisRun | null>;
+  /**
+   * A repository's runs, newest first, at most 50. With `snapshotId`, only
+   * the runs on that snapshot: a page reads one snapshot's builds from it,
+   * where the whole repository's newest would push older builds out.
+   */
   list(
     organizationId: string,
     repoId: string,
     limit?: number,
+    snapshotId?: string,
   ): Promise<StoredAnalysisRun[]>;
   /** Privileged worker queue discovery. Ownership is returned with the lease. */
   claimNext(leaseToken: string, now: Date): Promise<ClaimedAnalysisRun | null>;
@@ -153,6 +172,10 @@ const knownTool = (tool: string): AnalysisTool | undefined =>
 /** Literal list for the claim query; the names are compile-time constants. */
 const KNOWN_TOOLS_SQL = sql.raw(
   ANALYSIS_TOOLS.map((name) => `'${name}'`).join(", "),
+);
+/** The tools that wait for the graphify run they name; see `GRAPH_READERS`. */
+const GRAPH_READERS_SQL = sql.raw(
+  GRAPH_READERS.map((name) => `'${name}'`).join(", "),
 );
 function toRun(row: AnalysisRunRow, repoId: string | null): StoredAnalysisRun {
   const tool = knownTool(row.tool);
@@ -237,9 +260,12 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
         }
         if (
           snapshotId !== null &&
-          (isSliceParams(input.params) || isScopeParams(input.params))
+          (isSliceParams(input.params) ||
+            isScopeParams(input.params) ||
+            isAbstractionsParams(input.params) ||
+            isDataModelParams(input.params))
         ) {
-          // The graph a slice or a scope reads must describe the very same commit.
+          // The graph a graph reader reads must describe the very same commit.
           const graph = await tx
             .select({ id: analysisRun.id })
             .from(analysisRun)
@@ -361,9 +387,34 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
         ? null
         : toRun(row.run, row.repoId);
     },
-    async list(owner, repoId, limit = 25) {
+    async latestSucceeded(owner, snapshotId, tool) {
+      const row = (
+        await joined()
+          .where(
+            and(
+              owned(owner),
+              eq(analysisRun.snapshotId, snapshotId),
+              eq(analysisRun.tool, tool),
+              eq(analysisRun.toolVersion, toolVersionOf(tool)),
+              eq(analysisRun.status, "succeeded"),
+            ),
+          )
+          .orderBy(desc(analysisRun.finishedAt), desc(analysisRun.id))
+          .limit(1)
+      )[0];
+      return row === undefined ? null : toRun(row.run, row.repoId);
+    },
+    async list(owner, repoId, limit = 25, snapshotId) {
       const rows = await joined()
-        .where(and(owned(owner), eq(repoSnapshot.repoId, repoId)))
+        .where(
+          and(
+            owned(owner),
+            eq(repoSnapshot.repoId, repoId),
+            snapshotId === undefined
+              ? undefined
+              : eq(analysisRun.snapshotId, snapshotId),
+          ),
+        )
         .orderBy(desc(analysisRun.createdAt), desc(analysisRun.id))
         .limit(Math.min(50, Math.max(1, limit)));
       return rows
@@ -383,10 +434,10 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
           finishedAt: null,
         })
         .where(
-          // A slice or a scope waits for the graphify run it reads to finish
-          // either way; the worker then fails it cleanly if that run did not
-          // succeed.
-          sql`${analysisRun.id} = (select a.id from analysis_run a where a.status = 'queued' and a.tool in (${KNOWN_TOOLS_SQL}) and (a.tool not in ('slice', 'scope') or not exists (select 1 from analysis_run g where g.id = a.params->>'graphRunId' and g.status in ('queued', 'running'))) order by a.created_at, a.id for update of a skip locked limit 1)`,
+          // A graph reader (a slice, a scope or a builder that reads the
+          // map) waits for the graphify run it reads to finish either way;
+          // the worker then fails it cleanly if that run did not succeed.
+          sql`${analysisRun.id} = (select a.id from analysis_run a where a.status = 'queued' and a.tool in (${KNOWN_TOOLS_SQL}) and (a.tool not in (${GRAPH_READERS_SQL}) or not exists (select 1 from analysis_run g where g.id = a.params->>'graphRunId' and g.status in ('queued', 'running'))) order by a.created_at, a.id for update of a skip locked limit 1)`,
         )
         .returning();
       const run = rows[0];

@@ -21,8 +21,8 @@ cannot verify, preserving the service-free local verification path.
 
 - Node tests run compiled `dist-test/` output via `tsconfig.test.json`; do not
   introduce a runner that executes TypeScript directly.
-- Coverage thresholds live in workspace scripts: 90% for packages, 80% for API
-  and worker. Preserve the thresholds and `--test-coverage-include="dist-test/src/**"`.
+- Coverage thresholds live in workspace scripts: 90% for packages, 80% for API,
+  worker and extension. Preserve the thresholds and `--test-coverage-include="dist-test/src/**"`.
   A relative exclude alone misses the intended scope across workspace depths.
 - `assert-all-covered` catches files no test imports. Add a test when it fails;
   exclude a compiled file in the workspace test script only if it cannot load

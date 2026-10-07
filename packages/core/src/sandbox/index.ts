@@ -12,6 +12,7 @@ export * from "./provenance.js";
 export * from "./build.js";
 export * from "./descriptor.js";
 export * from "./project.js";
+export * from "./expression.js";
 export * from "./fixtures.js";
 export * from "./starter.js";
 export * from "./submission.js";

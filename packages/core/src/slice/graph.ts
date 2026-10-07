@@ -20,6 +20,8 @@ export interface SliceGraphNode {
   readonly community: number | null;
   /** Only on `dependency` nodes: a package, or an import nothing resolved. */
   readonly dependencyStatus: "external" | "unresolved" | null;
+  /** The line the driver read it at (`source_location` `L<n>`), when it says. */
+  readonly line: number | null;
 }
 
 export interface SliceGraphLink {
@@ -53,6 +55,31 @@ export function nodeKind(id: string): SliceNodeKind {
   return "other";
 }
 
+/**
+ * The repository path an entry point names, without the graph: the file of
+ * a `file:` or `symbol:` node id, or the entry itself, which is then a path.
+ * A `dependency:` id names no file, so null. The slice walk resolves ids
+ * against the graph (`reach`); this is for readers that only have the tree,
+ * such as the pricing profile mapping entry points to modules. A symbol's
+ * name is what follows the first colon after its path, since a name such as
+ * `Type::method` may hold colons where a path rarely does.
+ */
+export function entryPointPath(entry: string): string | null {
+  switch (nodeKind(entry)) {
+    case "file":
+      return entry.slice("file:".length);
+    case "symbol": {
+      const rest = entry.slice("symbol:".length);
+      const colon = rest.indexOf(":");
+      return colon === -1 ? rest : rest.slice(0, colon);
+    }
+    case "dependency":
+      return null;
+    case "other":
+      return entry;
+  }
+}
+
 /** The file a node belongs to; a dependency placeholder belongs to none. */
 export function fileOf(node: SliceGraphNode): string | null {
   return node.kind === "file" || node.kind === "symbol"
@@ -81,6 +108,9 @@ export function parseSliceGraph(value: unknown): SliceGraph {
       throw new SliceGraphError(`node ${id} has no source_file`);
     const community = raw["community"];
     const status = raw["dependencyStatus"];
+    const location = raw["source_location"];
+    const line =
+      typeof location === "string" ? /^L(\d+)$/.exec(location)?.[1] : undefined;
     nodes.push({
       id,
       kind: nodeKind(id),
@@ -92,6 +122,7 @@ export function parseSliceGraph(value: unknown): SliceGraph {
           : null,
       dependencyStatus:
         status === "external" || status === "unresolved" ? status : null,
+      line: line === undefined ? null : Number(line),
     });
   }
   const links: SliceGraphLink[] = [];

@@ -7,8 +7,12 @@ product proposals and historical explainers are optional design context.
 ## Current capabilities
 
 - Native bounties and optional Jira imports share proposals, spec review and pricing.
-- GitHub supplies private repository snapshots. Graphify, scope, slice and fixture
-  tools prepare the source for versioned private sandbox builds.
+- GitHub supplies private repository snapshots. Five context builders describe a
+  snapshot from a repository's own page: Graphify, dependency-cruiser,
+  DeepWiki-Open, abstractions (every module's surface) and data model (the
+  entities a schema or migrations declare). Scope, slice and fixture tools
+  prepare the source for versioned private sandbox builds; the scope and
+  fixtures agents read the last two.
 - Builds generate a runnable project and check its baseline. The available
   evaluator is opt-in `local-process`, for development; it is not an isolation
   boundary. With the default provider `none`, builds fail closed.
@@ -19,18 +23,18 @@ product proposals and historical explainers are optional design context.
 
 ## Read by task
 
-| Task                          | Reference                                                                                                             | Source entry points                                                                                                  |
-| ----------------------------- | --------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| Setup and daily development   | [Run it](../README.md#run-it), [development](./development.md)                                                        | `Makefile`, `docker-compose.yml`, `package.json`                                                                     |
-| Auth and ownership            | [Auth](./architecture.md#auth), [organizations](./architecture.md#organizations)                                      | `apps/api/src/auth.ts`, `apps/api/src/routes.ts`, `packages/db/src/schema.ts`                                        |
-| Bounties and Jira             | [Bounties](./architecture.md#bounties)                                                                                | `apps/api/src/bounties/routes.ts`, `apps/api/src/jira/`, `packages/core/src/bounty.ts`                               |
-| Pricing and specs             | [Pricing](./architecture.md#pricing)                                                                                  | `packages/core/src/sizing.ts`, `packages/core/src/pricing/`, `apps/api/src/sizing/`, `apps/api/src/pricing/`         |
-| GitHub snapshots              | [GitHub](./architecture.md#github), [App setup](./github-apps.md)                                                     | `apps/api/src/github/`, `packages/github/`                                                                           |
-| Analysis and sandboxes        | [Worker contract](../apps/worker/README.md)                                                                           | `apps/worker/src/tools/`, `apps/api/src/sandbox/routes.ts`, `packages/core/src/slice/`, `packages/core/src/sandbox/` |
-| Web and extension             | [Dependency direction](./architecture.md#dependency-direction), [extension setup](../README.md#the-vs-code-extension) | `apps/web/src/App.tsx`, `apps/web/src/routes.ts`, `apps/extension/src/commands.ts`, `packages/client/`               |
-| Tests and coverage            | [Testing](./development.md#testing)                                                                                   | Workspace `package.json`, `test/`, `tooling/coverage-guard/`                                                         |
-| CI, PRs and releases          | [CI](./ci.md), [shipping](../scripts/README.md)                                                                       | `.github/workflows/`, `.github/main-ruleset.json`, `scripts/ship.sh`                                                 |
-| Build identity and deployment | [Versioning](./versioning.md), [AWS](../infra/README.md)                                                              | `scripts/build-info.mjs`, `infra/`, `.github/workflows/cd.yml`                                                       |
+| Task                          | Reference                                                                                                             | Source entry points                                                                                                                                |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Setup and daily development   | [Run it](../README.md#run-it), [development](./development.md)                                                        | `Makefile`, `docker-compose.yml`, `package.json`                                                                                                   |
+| Auth and ownership            | [Auth](./architecture.md#auth), [organizations](./architecture.md#organizations)                                      | `apps/api/src/auth.ts`, `apps/api/src/routes.ts`, `packages/db/src/schema.ts`                                                                      |
+| Bounties and Jira             | [Bounties](./architecture.md#bounties)                                                                                | `apps/api/src/bounties/routes.ts`, `apps/api/src/jira/`, `packages/core/src/bounty.ts`                                                             |
+| Pricing and specs             | [Pricing](./architecture.md#pricing)                                                                                  | `packages/core/src/sizing.ts`, `packages/core/src/pricing/`, `apps/api/src/sizing/`, `apps/api/src/pricing/`                                       |
+| GitHub snapshots              | [GitHub](./architecture.md#github), [App setup](./github-apps.md)                                                     | `apps/api/src/github/`, `packages/github/`                                                                                                         |
+| Analysis and sandboxes        | [Worker contract](../apps/worker/README.md)                                                                           | `apps/worker/src/tools/`, `apps/api/src/sandbox/routes.ts`, `packages/core/src/slice/`, `packages/core/src/context/`, `packages/core/src/sandbox/` |
+| Web and extension             | [Dependency direction](./architecture.md#dependency-direction), [extension setup](../README.md#the-vs-code-extension) | `apps/web/src/App.tsx`, `apps/web/src/routes.ts`, `apps/extension/src/commands.ts`, `packages/client/`                                             |
+| Tests and coverage            | [Testing](./development.md#testing)                                                                                   | Workspace `package.json`, `test/`, `tooling/coverage-guard/`                                                                                       |
+| CI, PRs and releases          | [CI](./ci.md), [shipping](../scripts/README.md)                                                                       | `.github/workflows/`, `.github/main-ruleset.json`, `scripts/ship.sh`                                                                               |
+| Build identity and deployment | [Versioning](./versioning.md), [AWS](../infra/README.md)                                                              | `scripts/build-info.mjs`, `infra/`, `.github/workflows/cd.yml`                                                                                     |
 
 ## Workspaces
 

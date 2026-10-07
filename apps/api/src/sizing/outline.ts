@@ -1,5 +1,5 @@
 /**
- * A repository outline: what the spec draft is shown of the code a ticket
+ * A repository outline: what the spec draft is shown of the code a bounty
  * is about.
  *
  * Drawn from a snapshot's `TreeFacts` and nothing else — module names,

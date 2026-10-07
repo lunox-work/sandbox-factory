@@ -18,7 +18,7 @@
  */
 
 import { Check, Loader2, Pencil, X } from "lucide-react";
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -108,7 +108,10 @@ export function EditableField({
   const valid = validation === true;
   const validationMessage =
     touched && typeof validation === "string" ? validation : null;
-  const messageId = `field-${label}-message`;
+  // From React rather than the label: a label has spaces, which break the
+  // id reference, and two fields can share one.
+  const fieldId = useId();
+  const messageId = `${fieldId}-message`;
 
   /*
    * Clear the tick a moment after it appears. It confirms something the
@@ -270,10 +273,10 @@ export function EditableField({
       onSubmit={(event) => void submit(event)}
       className={cn("flex flex-col gap-0.5", className)}
     >
-      <FieldLabel htmlFor={`field-${label}`}>{label}</FieldLabel>
+      <FieldLabel htmlFor={fieldId}>{label}</FieldLabel>
       <div className="flex items-center gap-1.5">
         <Input
-          id={`field-${label}`}
+          id={fieldId}
           ref={inputRef}
           aria-label={label}
           aria-invalid={validationMessage !== null || error !== null}

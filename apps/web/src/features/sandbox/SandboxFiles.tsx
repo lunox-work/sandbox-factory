@@ -31,14 +31,14 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   PSEUDONYMS_FILE,
   invertAliasRules,
   rankAtLeast,
 } from "sandbox-factory";
 
-import { ErrorBanner, LoadingLine } from "@/components/Message";
+import { ErrorBanner, LoadingLine, RetryableError } from "@/components/Message";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -59,13 +59,13 @@ import {
   type TreeNode,
 } from "./file-tree";
 import { fileIconName, folderIconName, languageOf } from "./file-types";
-import { Colored, useHighlighted } from "./Colored";
 import { fileContentQuery, type FileSource } from "./file-content";
 import { GherkinDocument } from "./GherkinDocument";
 import { formatJson } from "./json-format";
 import { MarkdownDocument } from "./MarkdownDocument";
 import { PseudonymDocument } from "./Pseudonyms";
 import { DocsPanel, SearchPanel, TestsPanel } from "./SidePanels";
+import { Centered, ICONS, Source, TypeIcon } from "./workbench";
 import {
   BountyCard,
   ScenariosDocument,
@@ -73,7 +73,7 @@ import {
 } from "./BountyScenarios";
 
 /** How often a build still running is asked about. */
-export const FILES_POLL_MS = 3_000;
+const FILES_POLL_MS = 3_000;
 
 /** The folder that holds the hidden tests, marked as such in the tree. */
 const PRIVATE_FOLDER = "private";
@@ -85,7 +85,7 @@ const PUBLIC_FOLDER = "project";
  * and `pseudonym.lunox`, or the public one contributors work in. Private
  * unless `?side=public` says otherwise.
  */
-export type SandboxSide = "private" | "public";
+type SandboxSide = "private" | "public";
 const SIDE_PARAM = "side";
 
 function isPublicPath(path: string): boolean {
@@ -111,7 +111,11 @@ export function SandboxFilesPage({
   let body: React.ReactNode;
   if (memberships.isPending) body = <LoadingLine />;
   else if (memberships.isError)
-    body = <ErrorBanner>Could not load your workspaces.</ErrorBanner>;
+    body = (
+      <RetryableError onRetry={() => void memberships.refetch()}>
+        Could not load your workspaces.
+      </RetryableError>
+    );
   else if (organization === undefined)
     body = (
       <Notice title="Workspace unavailable">
@@ -337,6 +341,15 @@ function SandboxFiles({
         This version does not exist in {workspaceLabel(organization)}.
       </Centered>
     );
+  else if (version.isError && !notFound)
+    // Not "approved without a spec": the version could not be read at all.
+    content = (
+      <Centered>
+        <RetryableError onRetry={() => void version.refetch()}>
+          This version could not be read.
+        </RetryableError>
+      </Centered>
+    );
   else if (listing.isError)
     content = (
       <Centered>
@@ -366,7 +379,7 @@ function SandboxFiles({
         {listing.data.run === null
           ? "This version has not been built yet, so it has no files."
           : listing.data.run.status === "failed"
-            ? "Its build failed before it wrote any files."
+            ? "Its build failed before it wrote any files. Its bounty's sandbox says why."
             : listing.data.run.status === "succeeded"
               ? "Its build wrote no files."
               : "Its build is still running; its files appear when it finishes."}
@@ -551,7 +564,7 @@ function SandboxFiles({
     );
 
   return (
-    <div className="workbench dark flex h-dvh flex-col overflow-hidden text-[13px]">
+    <div className="workbench dark relative flex h-dvh flex-col overflow-clip text-[13px]">
       <TitleBar
         heading={heading}
         workspace={workspaceLabel(organization)}
@@ -600,7 +613,7 @@ function TitleBar({
             href="/"
             aria-label="Lunox home"
             title="Home"
-            className="flex rounded-sm text-(--wb-strong) focus-visible:outline-1 focus-visible:outline-(--wb-accent)"
+            className="flex rounded-[4px] text-(--wb-strong) focus-visible:outline-1 focus-visible:outline-(--wb-accent)"
           >
             <LunoxMark />
           </a>
@@ -609,7 +622,7 @@ function TitleBar({
       </div>
       {/* The title centred in the box, the link held at its right edge,
           the same room kept clear either side so the centre is true. */}
-      <div className="relative flex h-[24px] min-w-0 items-center justify-center rounded-md border border-(--wb-input-border) bg-(--wb-input) px-7 text-xs">
+      <div className="relative flex h-[24px] min-w-0 items-center justify-center rounded-[4px] border border-(--wb-input-border) bg-(--wb-input) px-7 text-xs">
         <h1 className="min-w-0 truncate font-normal text-(--wb-foreground)">
           {heading}
         </h1>
@@ -620,7 +633,7 @@ function TitleBar({
             rel="noreferrer"
             aria-label="Open the bounty"
             title="Open the bounty"
-            className="absolute right-2 flex items-center rounded-sm text-(--wb-muted) hover:text-(--wb-strong) focus-visible:outline-1 focus-visible:outline-(--wb-accent)"
+            className="absolute right-2 flex items-center rounded-[4px] text-(--wb-muted) hover:text-(--wb-strong) focus-visible:outline-1 focus-visible:outline-(--wb-accent)"
           >
             <ExternalLink aria-hidden="true" className="size-3.5" />
           </a>
@@ -668,24 +681,24 @@ function SidePill({
   );
 }
 
-/** The Lunox code mark, `public/brand/svg`'s drawing in one ink. */
+/**
+ * The Lunox code mark in its own gradient, the dark variant: the workbench
+ * is always dark. The one coloured thing in the title bar, so the page is
+ * recognisably the product's and not only an editor's.
+ *
+ * Not draggable: an `<img>` is in hit-testing, and a click that moved a
+ * pixel before release would pick it up as a native image drag.
+ */
 function LunoxMark() {
   return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 512 512"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={56}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
+    <img
+      src="/brand/svg/logo-gradient-dark.svg"
+      alt=""
+      width={16}
+      height={16}
+      draggable={false}
       className="size-4"
-    >
-      <path d="M48 168 148 256 48 342" />
-      <path d="M300 118 230 394" />
-      <path d="M464 168 364 256 464 342" />
-    </svg>
+    />
   );
 }
 
@@ -721,8 +734,11 @@ function ActivityBar({
           onClick={() => onView(view === each ? null : each)}
           className={cn(
             "relative flex size-12 items-center justify-center text-(--wb-muted) hover:text-(--wb-strong) focus-visible:outline-1 focus-visible:-outline-offset-1 focus-visible:outline-(--wb-accent)",
+            // The open view's marker in the product's ramp rather than the
+            // editor's blue, as the status bar's chip is: the one place the
+            // workbench says whose it is.
             view === each &&
-              "text-(--wb-strong) before:absolute before:inset-y-0 before:left-0 before:w-0.5 before:bg-(--wb-accent)",
+              "text-(--wb-strong) before:absolute before:inset-y-0 before:left-0 before:w-0.5 before:bg-(image:--brand-gradient-vertical)",
           )}
         >
           <Icon aria-hidden="true" className="size-6" strokeWidth={1.25} />
@@ -802,42 +818,6 @@ function Watermark() {
       />
       <p>Open a file from the explorer to read it.</p>
     </div>
-  );
-}
-
-function Centered({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="flex min-w-0 flex-1 flex-col items-center justify-center gap-3 bg-(--wb-editor) p-6 text-center text-sm text-(--wb-muted)">
-      {children}
-    </div>
-  );
-}
-
-/**
- * vscode-icons' drawings, written by `scripts/file-icons.mjs`. Files, not
- * inlined: a tree shows a few dozen, and the same few over and over.
- */
-const ICON_FILES = import.meta.glob<string>("../../assets/files/*.svg", {
-  eager: true,
-  query: "?no-inline",
-  import: "default",
-});
-const ICONS: ReadonlyMap<string, string> = new Map(
-  Object.entries(ICON_FILES).map(([path, url]) => [
-    path.slice(path.lastIndexOf("/") + 1, -".svg".length),
-    url,
-  ]),
-);
-
-/** A file or folder's icon; decoration, as its name is always beside it. */
-function TypeIcon({ name }: { name: string }) {
-  return (
-    <img
-      src={ICONS.get(name) ?? ICONS.get("default-file")}
-      alt=""
-      aria-hidden="true"
-      className="size-4 shrink-0"
-    />
   );
 }
 
@@ -924,24 +904,12 @@ function Explorer({
 
   const row =
     "relative flex h-[22px] w-full items-center gap-1.5 pr-3 text-left whitespace-nowrap hover:bg-(--wb-hover) focus-visible:outline-1 focus-visible:-outline-offset-1 focus-visible:outline-(--wb-accent)";
-  // Indent per level, and where a level's guide line runs: under the middle
-  // of its folder's chevron.
+  // Indent per level. No guide lines down the levels: the indent alone says
+  // what is in what, and a tree this shallow needs no more.
   const indent = (depth: number) => depth * 8 + 12;
 
   const render = (nodes: readonly TreeNode[], depth: number) => (
-    <ul
-      role={depth === 0 ? undefined : "group"}
-      className={cn(
-        "relative",
-        depth > 0 &&
-          "before:pointer-events-none before:absolute before:inset-y-0 before:left-(--guide) before:z-10 before:w-px before:bg-(--wb-guide) before:opacity-0 before:transition-opacity group-hover/tree:before:opacity-100",
-      )}
-      style={
-        depth > 0
-          ? ({ "--guide": `${indent(depth - 1) + 8}px` } as React.CSSProperties)
-          : undefined
-      }
-    >
+    <ul role={depth === 0 ? undefined : "group"}>
       {nodes.map((node) => {
         if (node.kind === "folder") {
           const isOpen = expanded.has(node.path);
@@ -1028,16 +996,13 @@ function Explorer({
             setExpanded(new Set());
             setSectionOpen(true);
           }}
-          className="flex size-5 shrink-0 items-center justify-center rounded-sm text-(--wb-foreground) opacity-0 group-hover/section:opacity-100 hover:bg-(--wb-hover) focus-visible:opacity-100 coarse:opacity-100"
+          className="flex size-5 shrink-0 items-center justify-center rounded-[4px] text-(--wb-foreground) opacity-0 group-hover/section:opacity-100 hover:bg-(--wb-hover) focus-visible:opacity-100 coarse:opacity-100"
         >
           <CopyMinus aria-hidden="true" className="size-4" strokeWidth={1.5} />
         </button>
       </div>
       {sectionOpen && (
-        <nav
-          aria-label="Files"
-          className="group/tree min-h-0 flex-1 overflow-auto pb-4"
-        >
+        <nav aria-label="Files" className="min-h-0 flex-1 overflow-auto pb-4">
           {render(tree, 0)}
         </nav>
       )}
@@ -1100,22 +1065,28 @@ function SideBar({
   onResize: (width: number) => void;
   children: React.ReactNode;
 }) {
+  const clamp = (next: number) =>
+    Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, next));
+  // The drag in progress, ended by a release, a cancelled pointer or the
+  // sidebar going away mid-drag: its listeners never outlive it.
+  const dragging = useRef<(() => void) | null>(null);
+  useEffect(() => () => dragging.current?.(), []);
   const startResize = (event: React.PointerEvent) => {
     event.preventDefault();
+    dragging.current?.();
     const fromX = event.clientX;
     const move = (moved: PointerEvent) =>
-      onResize(
-        Math.min(
-          SIDEBAR_MAX,
-          Math.max(SIDEBAR_MIN, width + moved.clientX - fromX),
-        ),
-      );
+      onResize(clamp(width + moved.clientX - fromX));
     const stop = () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", stop);
+      window.removeEventListener("pointercancel", stop);
+      dragging.current = null;
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", stop);
+    window.addEventListener("pointercancel", stop);
+    dragging.current = stop;
   };
   return (
     <aside
@@ -1131,11 +1102,27 @@ function SideBar({
         {title}
       </h2>
       {children}
+      {/* A separator a keyboard can move too, as the editor's sash is. */}
       <div
-        aria-hidden="true"
-        className="absolute inset-y-0 -right-[3px] z-20 w-[5px] cursor-col-resize transition-colors delay-150 hover:bg-(--wb-accent) max-sm:hidden"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label={`Resize ${title.toLowerCase()}`}
+        aria-valuemin={SIDEBAR_MIN}
+        aria-valuemax={SIDEBAR_MAX}
+        aria-valuenow={width}
+        tabIndex={0}
+        className="absolute inset-y-0 -right-[3px] z-20 w-[5px] cursor-col-resize transition-colors delay-150 hover:bg-(--wb-accent) focus-visible:bg-(--wb-accent) focus-visible:outline-none max-sm:hidden"
         onPointerDown={startResize}
         onDoubleClick={() => onResize(SIDEBAR_WIDTH)}
+        onKeyDown={(event) => {
+          const step = event.shiftKey ? 50 : 10;
+          if (event.key === "ArrowLeft") onResize(clamp(width - step));
+          else if (event.key === "ArrowRight") onResize(clamp(width + step));
+          else if (event.key === "Home") onResize(SIDEBAR_MIN);
+          else if (event.key === "End") onResize(SIDEBAR_MAX);
+          else return;
+          event.preventDefault();
+        }}
       />
     </aside>
   );
@@ -1229,7 +1216,7 @@ function Editor({
                 className={cn(
                   "group/tab relative flex h-full shrink-0 items-center border-r border-b border-(--wb-border) text-(--wb-muted)",
                   active &&
-                    "border-b-transparent bg-(--wb-editor) text-(--wb-strong) before:absolute before:inset-x-0 before:top-0 before:h-px before:bg-(--wb-accent)",
+                    "border-b-transparent bg-(--wb-editor) text-(--wb-strong) before:absolute before:inset-x-0 before:top-0 before:h-px before:bg-(image:--brand-gradient)",
                 )}
               >
                 <a
@@ -1253,7 +1240,7 @@ function Editor({
                   title="Close"
                   onClick={() => close(path)}
                   className={cn(
-                    "mx-1 flex size-5 items-center justify-center rounded-sm opacity-0 group-hover/tab:opacity-100 hover:bg-white/10 focus-visible:opacity-100 coarse:opacity-100",
+                    "mx-1 flex size-5 items-center justify-center rounded-[4px] opacity-0 group-hover/tab:opacity-100 hover:bg-white/10 focus-visible:opacity-100 coarse:opacity-100",
                     active && "opacity-100",
                   )}
                 >
@@ -1449,7 +1436,7 @@ function Viewer({
               if (line !== undefined) onOpenAt(file.path);
             }}
             className={cn(
-              "flex h-[18px] shrink-0 items-center gap-1 rounded-sm px-1.5 text-xs text-(--wb-muted) hover:bg-(--wb-hover) hover:text-(--wb-foreground) focus-visible:outline-1 focus-visible:-outline-offset-1 focus-visible:outline-(--wb-accent)",
+              "flex h-[18px] shrink-0 items-center gap-1 rounded-[4px] px-1.5 text-xs text-(--wb-muted) hover:bg-(--wb-hover) hover:text-(--wb-foreground) focus-visible:outline-1 focus-visible:-outline-offset-1 focus-visible:outline-(--wb-accent)",
               showRendered && "bg-(--wb-selected) text-(--wb-foreground)",
             )}
           >
@@ -1469,65 +1456,4 @@ interface Rendering {
   icon: LucideIcon;
   title: string;
   view: React.ReactNode;
-}
-
-/** The source view's line height, in pixels: `leading-[19px]`. */
-const LINE_HEIGHT = 19;
-
-/** Text with its line numbers, scrolled together; long lines scroll, not wrap. */
-function Source({
-  text,
-  language,
-  line,
-  reveals = 0,
-}: {
-  text: string;
-  language: string;
-  /** A line to scroll to and mark. */
-  line?: number;
-  reveals?: number;
-}) {
-  const lines = text.endsWith("\n") ? text.slice(0, -1) : text;
-  const count = lines === "" ? 1 : lines.split("\n").length;
-  const numbers = Array.from({ length: count }, (_, index) => index + 1).join(
-    "\n",
-  );
-  const tokens = useHighlighted(lines, language);
-  const scroller = useRef<HTMLDivElement>(null);
-  useLayoutEffect(() => {
-    const element = scroller.current;
-    if (line === undefined || element === null) return;
-    // A third of the way down, where the eye lands, as the editor puts it.
-    element.scrollTop = Math.max(
-      0,
-      (line - 1) * LINE_HEIGHT - element.clientHeight / 3,
-    );
-  }, [line, reveals]);
-  return (
-    <div
-      ref={scroller}
-      className="relative flex min-h-0 flex-1 overflow-auto font-(family-name:--wb-font-code) text-[13px] leading-[19px] text-(--wb-code)"
-    >
-      {line !== undefined && line <= count && (
-        <div
-          aria-hidden="true"
-          data-testid="revealed-line"
-          className="pointer-events-none absolute inset-x-0 border-y border-white/[0.08] bg-white/[0.05]"
-          style={{ top: (line - 1) * LINE_HEIGHT, height: LINE_HEIGHT }}
-        />
-      )}
-      <pre
-        aria-hidden="true"
-        className="sticky left-0 z-10 shrink-0 bg-(--wb-editor) pr-[26px] pl-4 text-right text-(--wb-gutter) select-none"
-        style={{ minWidth: `${String(count).length + 4}ch` }}
-      >
-        {numbers}
-      </pre>
-      <pre className="flex-1 pr-8 pb-[50vh]" data-testid="file-source">
-        <code>
-          <Colored text={lines} tokens={tokens} />
-        </code>
-      </pre>
-    </div>
-  );
 }

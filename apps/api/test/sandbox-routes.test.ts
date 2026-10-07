@@ -220,6 +220,7 @@ const sandbox: StoredSandbox = {
   status: "draft",
   publicRepoId: null,
   currentVersionId: null,
+  expiresAt: null,
   bountyId: "bty_1",
   sourceRepoId: "ghr_1",
   createdAt: stamp,
@@ -242,6 +243,7 @@ const version: StoredSandboxVersion = {
 };
 const source: StoredVersionSource = {
   sandboxVersionId: "sbv_1",
+  proposalVersion: 1,
   origin: "slice",
   sourceSnapshotId: "rsn_1",
   sourceCommitSha: "a".repeat(40),
@@ -337,9 +339,12 @@ function fixture(
     built: boolean;
     /** The version has no passing build to publish. */
     unready: boolean;
+    /** The bounty's proposal is not approved. */
+    unapproved: boolean;
   }> = {},
 ) {
-  const published: { versionId: string; actor: string }[] = [];
+  const published: { versionId: string; actor: string; expiresAt: string }[] =
+    [];
   const manifestText = JSON.stringify(overrides.manifest ?? manifest);
   const contractText = JSON.stringify(overrides.contract ?? contract);
   const created: unknown[] = [];
@@ -488,18 +493,30 @@ function fixture(
           ? { ok: false, reason: "conflict" }
           : { ok: true, ...stored };
       },
-      publishVersion: async (owner: string, id: string, actor: string) => {
+      publishVersion: async (
+        owner: string,
+        id: string,
+        actor: string,
+        expiresAt: Date,
+      ) => {
         if (owner !== "org_1" || id !== "sbv_1")
           return { ok: false, reason: "not-found" };
         if (overrides.unready === true)
           return { ok: false, reason: "not_ready" };
-        published.push({ versionId: id, actor });
+        if (overrides.unapproved === true)
+          return { ok: false, reason: "bounty_not_approved" };
+        published.push({
+          versionId: id,
+          actor,
+          expiresAt: expiresAt.toISOString(),
+        });
         return {
           ok: true,
           sandbox: {
             ...sandbox,
             status: "published",
             currentVersionId: id,
+            expiresAt: expiresAt.toISOString(),
           },
           version: {
             version: { ...version, frozenAt: stamp },
@@ -623,13 +640,18 @@ function fixture(
     now: () => new Date(stamp),
   } as unknown as SandboxRouteOptions;
   const app = new Hono<{ Variables: AuthVariables }>();
-  app.use("*", async (c, next) => {
+  // As `requireMembership` does: the owner is the path's, so a request for
+  // another workspace reads that workspace's rows, of which there are none.
+  app.use("/api/v1/orgs/:orgId/*", async (c, next) => {
     c.set("user", {
       id: "user_1",
       email: "u@example.test",
       name: "User",
     } as never);
-    c.set("member", { role, organizationId: "org_1" } as never);
+    c.set("member", {
+      role,
+      organizationId: c.req.param("orgId"),
+    } as never);
     await next();
   });
   mountSandboxRoutes(app, options);
@@ -662,10 +684,12 @@ function fixture(
 
 test("an admin publishes a version whose build passed, and unpublishes the sandbox", async () => {
   const f = fixture();
-  const response = await f.request("POST", "/versions/sbv_1/publish");
+  // A week past the fixture's clock.
+  const until = { expiresAt: "2026-10-09T00:00:00.000Z" };
+  const response = await f.request("POST", "/versions/sbv_1/publish", until);
   assert.equal(response.status, 200);
   const body = (await response.json()) as {
-    sandbox: { status: string; currentVersionId: string };
+    sandbox: { status: string; currentVersionId: string; expiresAt: string };
     version: { frozenAt: string | null };
     source: { approvedBy: string | null };
   };
@@ -673,7 +697,21 @@ test("an admin publishes a version whose build passed, and unpublishes the sandb
   assert.equal(body.sandbox.currentVersionId, "sbv_1");
   assert.equal(body.version.frozenAt, stamp);
   assert.equal(body.source.approvedBy, "user_1");
-  assert.deepEqual(f.published, [{ versionId: "sbv_1", actor: "user_1" }]);
+  assert.deepEqual(f.published, [
+    { versionId: "sbv_1", actor: "user_1", expiresAt: until.expiresAt },
+  ]);
+  assert.equal(body.sandbox.expiresAt, until.expiresAt);
+  // An expiry is required, and must be ahead.
+  for (const [given, code] of [
+    [undefined, undefined],
+    [{ expiresAt: "next week" }, undefined],
+    [{ expiresAt: stamp }, "expiry_past"],
+  ] as const) {
+    const refused = await f.request("POST", "/versions/sbv_1/publish", given);
+    assert.equal(refused.status, 400);
+    assert.equal(((await refused.json()) as { code?: string }).code, code);
+  }
+  assert.equal(f.published.length, 1);
   const back = await f.request("POST", "/sbx_1/unpublish");
   assert.equal(back.status, 200);
   assert.equal(
@@ -684,11 +722,24 @@ test("an admin publishes a version whose build passed, and unpublishes the sandb
   const unready = await fixture("owner", { unready: true }).request(
     "POST",
     "/versions/sbv_1/publish",
+    until,
   );
   assert.equal(unready.status, 409);
   assert.equal(((await unready.json()) as { code: string }).code, "not_ready");
+  // Only over an approved bounty.
+  const unapproved = await fixture("owner", { unapproved: true }).request(
+    "POST",
+    "/versions/sbv_1/publish",
+    until,
+  );
+  assert.equal(unapproved.status, 409);
   assert.equal(
-    (await fixture("member").request("POST", "/versions/sbv_1/publish")).status,
+    ((await unapproved.json()) as { code: string }).code,
+    "bounty_not_approved",
+  );
+  assert.equal(
+    (await fixture("member").request("POST", "/versions/sbv_1/publish", until))
+      .status,
     403,
   );
   assert.equal(
@@ -696,7 +747,7 @@ test("an admin publishes a version whose build passed, and unpublishes the sandb
     403,
   );
   assert.equal(
-    (await f.request("POST", "/versions/sbv_x/publish")).status,
+    (await f.request("POST", "/versions/sbv_x/publish", until)).status,
     404,
   );
   assert.equal((await f.request("POST", "/sbx_9/unpublish")).status, 404);
@@ -1608,7 +1659,9 @@ function starterFixture(
     /** Approved unless said: a draft proposal is not generated from. */
     proposalStatus: "proposed" | "approved";
     limit: boolean;
-    created: "ok" | "source_linked" | "not-found";
+    created: "ok" | "source_linked" | "not-found" | "starter_in_progress";
+    /** The newest version's starter run, still under way. */
+    inFlight: boolean;
   }> = {},
 ) {
   const enqueued: { snapshotId: string | null; input: unknown }[] = [];
@@ -1642,6 +1695,8 @@ function starterFixture(
             }
           : { ok: false, reason: result };
       },
+      listVersions: async () =>
+        overrides.inFlight === true ? [stored.version] : [],
       getVersion: async (owner: string, id: string) =>
         owner === "org_1" && id === "sbv_gen" ? stored : null,
       updateDraft: async (_owner: string, _id: string, patch: unknown) => {
@@ -1655,7 +1710,10 @@ function starterFixture(
       }),
     },
     runs: {
-      get: async () => null,
+      get: async (_owner: string, id: string) =>
+        overrides.inFlight === true && id === starterRun.id
+          ? { ...starterRun, status: "running" }
+          : null,
       enqueue: async (
         _owner: string,
         snapshotId: string | null,
@@ -1738,9 +1796,14 @@ function starterFixture(
     now: () => new Date(stamp),
   } as unknown as SandboxRouteOptions;
   const app = new Hono<{ Variables: AuthVariables }>();
-  app.use("*", async (c, next) => {
+  // As `requireMembership` does: the owner is the path's, so a request for
+  // another workspace reads that workspace's rows, of which there are none.
+  app.use("/api/v1/orgs/:orgId/*", async (c, next) => {
     c.set("user", { id: "user_1" } as never);
-    c.set("member", { role, organizationId: "org_1" } as never);
+    c.set("member", {
+      role,
+      organizationId: c.req.param("orgId"),
+    } as never);
     await next();
   });
   mountSandboxRoutes(app, options);
@@ -1908,6 +1971,15 @@ test("generating is refused for members, a linked sandbox, an off-Node stack, an
       "source_linked",
     ],
     [starterFixture("owner", { created: "not-found" }), 404, null],
+    // One version is generated at a time: a second Generate, a double
+    // click, is refused while the first is under way, before or under the
+    // store's lock.
+    [starterFixture("owner", { inFlight: true }), 409, "starter_in_progress"],
+    [
+      starterFixture("owner", { created: "starter_in_progress" }),
+      409,
+      "starter_in_progress",
+    ],
   ];
   for (const [f, status, code] of cases) {
     const response = await f.request("POST", "/sbx_1/starter");
@@ -1917,6 +1989,7 @@ test("generating is refused for members, a linked sandbox, an off-Node stack, an
   }
   // Nothing was queued for a refusal before the run.
   assert.equal(cases[3]?.[0].enqueued.length, 0);
+  assert.equal(cases[11]?.[0].enqueued.length, 0);
 });
 
 test("a generated version changes its listing, but not its transform or build, and has nothing to replay", async () => {

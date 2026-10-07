@@ -12,6 +12,7 @@
 
 import type Anthropic from "@anthropic-ai/sdk";
 import type { AgentUsage } from "sandbox-factory";
+import { AnalysisError } from "../errors.js";
 
 type MessageParam = Anthropic.Beta.Messages.BetaMessageParam;
 type ContentBlock = Anthropic.Beta.Messages.BetaContentBlock;
@@ -196,7 +197,11 @@ export async function runAgent(input: {
         try {
           result = await tool.run(call.input, signal);
         } catch (error) {
-          if (signal.aborted) throw error;
+          // A coded failure is the platform's, not the agent's to correct:
+          // the evaluator would not start, or a stage failed. It ends the
+          // run under its own code rather than reading as a bad input the
+          // agent spends its next run on.
+          if (signal.aborted || error instanceof AnalysisError) throw error;
           input.log(`Tool ${call.name} failed.`);
           result = { content: "The tool failed on that input.", isError: true };
         }

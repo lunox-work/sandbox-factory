@@ -14,21 +14,27 @@ import type {
   RepositoryProposalDto,
   StoredTree,
 } from "@sandbox-factory/shared";
+import type { AnalysisParams, AnalysisTool } from "sandbox-factory";
 import {
   analysisRunListSchema,
   analysisRunResponseSchema,
+  ARTIFACT_TEXT_MAX_BYTES,
+  artifactContentSchema,
   artifactListSchema,
+  runLogContentSchema,
   enqueueAnalysisSchema,
   enqueueFixturesSchema,
   enqueueScopeSchema,
   enqueueSliceResponseSchema,
   enqueueSliceSchema,
+  AGENT_DEADLINE_MINUTES,
   GRAPH_DEADLINE_MINUTES,
   repositoryProposalListSchema,
 } from "@sandbox-factory/shared";
 import type { Context, Hono } from "hono";
-import { rankAtLeast } from "../access.js";
+import { isAtLeastAdmin } from "../access.js";
 import type { AuthVariables } from "../http-context.js";
+import { textOf } from "../object-text.js";
 import { enqueueAnalysis } from "./enqueue.js";
 
 export interface AnalysisRouteOptions {
@@ -53,6 +59,19 @@ export const REPOSITORY_PROPOSALS_MAX = 100;
 /** The proposal store's largest page. */
 const REPOSITORY_PROPOSALS_PAGE = 50;
 const publicArtifact = ({ objectKey: _key, ...dto }: StoredArtifact) => dto;
+/**
+ * Runs whose artifacts are a version's private sandbox: a build's hidden
+ * tests and the table its names were changed by are among them. They are
+ * read through the sandbox routes, owners and admins only, so here a member
+ * is not shown them, and asking for one by id is answered as for any run
+ * that is not there.
+ */
+const SANDBOX_TOOLS: ReadonlySet<AnalysisTool> = new Set([
+  "sandbox_build",
+  "sandbox_starter",
+]);
+const hiddenFrom = (role: string, run: StoredAnalysisRun) =>
+  SANDBOX_TOOLS.has(run.tool) && !isAtLeastAdmin(role);
 export function mountAnalysisRoutes(
   app: Hono<{ Variables: AuthVariables }>,
   options: AnalysisRouteOptions,
@@ -139,14 +158,45 @@ export function mountAnalysisRoutes(
       },
       404,
     );
+  const graphMismatch = (c: Context) =>
+    c.json(
+      {
+        error: "The structure analysis does not describe this snapshot.",
+        code: "graph_mismatch",
+      },
+      409,
+    );
+  /**
+   * The snapshot's succeeded context runs an agent reads, named only when
+   * there is one, so an agent run with none keeps its cache key.
+   */
+  async function contextRunsOf(
+    owner: string,
+    snapshotId: string,
+    tools: readonly ("abstractions" | "data_model")[],
+  ): Promise<{ abstractionsRunId?: string; dataModelRunId?: string }> {
+    const found: { abstractionsRunId?: string; dataModelRunId?: string } = {};
+    for (const tool of tools) {
+      const run = await options.runs.latestSucceeded(owner, snapshotId, tool);
+      if (run === null) continue;
+      if (tool === "abstractions") found.abstractionsRunId = run.id;
+      else found.dataModelRunId = run.id;
+    }
+    return found;
+  }
 
+  /**
+   * One context builder on one snapshot. A builder that reads graphify's
+   * map (`abstractions`, `data_model`) names the snapshot's graph run, which
+   * is enqueued or found first, and waits for it in the queue.
+   */
   app.post(`${base}/repositories/:id/runs`, async (c) => {
-    if (!rankAtLeast(c.get("member").role, "admin"))
+    if (!isAtLeastAdmin(c.get("member").role))
       return c.json(
         { error: "Only owners and admins can start analysis." },
         403,
       );
-    const owner = c.req.param("orgId");
+    const owner = c.get("member").organizationId;
     const repoId = c.req.param("id");
     const repo = await options.repos.get(owner, repoId);
     if (repo === null) return c.json({ error: "Not found." }, 404);
@@ -161,6 +211,28 @@ export function mountAnalysisRoutes(
         : await options.snapshots.get(owner, body.data.snapshotId);
     if (snapshot === null || snapshot.repoId !== repoId)
       return c.json({ error: "No source snapshot is available." }, 404);
+    const tool = body.data.tool;
+    // A wiki waits on a model's pages, as an agent run does; the others are
+    // deterministic and keep the graph runs' deadline, which is part of the
+    // cache key the profiler's graph runs share.
+    const deadlineMinutes =
+      body.data.params?.deadlineMinutes ??
+      (tool === "deepwiki" ? AGENT_DEADLINE_MINUTES : GRAPH_DEADLINE_MINUTES);
+    let params: AnalysisParams = { deadlineMinutes };
+    let graphQueued = false;
+    if (tool === "abstractions" || tool === "data_model") {
+      // A builder that reads the map waits for the snapshot's graph run,
+      // enqueued or found first, as a slice does.
+      const graph = await graphRunFor(
+        c,
+        owner,
+        snapshot.id,
+        GRAPH_DEADLINE_MINUTES,
+      );
+      if ("response" in graph) return graph.response;
+      graphQueued = graph.run.status === "queued";
+      params = { deadlineMinutes, builder: tool, graphRunId: graph.run.id };
+    } else if (tool !== "graphify") params = { deadlineMinutes, builder: tool };
     const result = await enqueueAnalysis(
       {
         runs: options.runs,
@@ -169,21 +241,20 @@ export function mountAnalysisRoutes(
       owner,
       snapshot.id,
       {
-        params: body.data.params,
+        tool,
+        params,
         requestedBy: c.get("user").id,
         maxActive: options.maxActive ?? 3,
       },
     );
+    if (!result.ok && graphQueued)
+      await options.ensureWorker().catch(() => options.onLaunchError?.());
     if (!result.ok)
       return result.reason === "run_limit"
-        ? c.json(
-            {
-              error: "The active analysis limit has been reached.",
-              code: "run_limit",
-            },
-            409,
-          )
-        : c.json({ error: "Not found." }, 404);
+        ? runLimit(c)
+        : result.reason === "graph_mismatch"
+          ? graphMismatch(c)
+          : c.json({ error: "Not found." }, 404);
     await options.ensureWorker().catch(() => options.onLaunchError?.());
     return c.json(analysisRunResponseSchema.parse({ run: result.run }), 202);
   });
@@ -193,12 +264,12 @@ export function mountAnalysisRoutes(
    * must name files or directories the snapshot lists.
    */
   app.post(`${base}/repositories/:id/slices`, async (c) => {
-    if (!rankAtLeast(c.get("member").role, "admin"))
+    if (!isAtLeastAdmin(c.get("member").role))
       return c.json(
         { error: "Only owners and admins can start a slice." },
         403,
       );
-    const owner = c.req.param("orgId");
+    const owner = c.get("member").organizationId;
     const repoId = c.req.param("id");
     const repo = await options.repos.get(owner, repoId);
     if (repo === null) return c.json({ error: "Not found." }, 404);
@@ -239,11 +310,13 @@ export function mountAnalysisRoutes(
       );
     const requestedBy = c.get("user").id;
     const maxActive = options.maxActive ?? 3;
+    // The graph run is cached by its parameters, so it keeps the default
+    // deadline; the one asked for is the slice's own.
     const graph = await graphRunFor(
       c,
       owner,
       snapshot.id,
-      body.data.deadlineMinutes,
+      GRAPH_DEADLINE_MINUTES,
     );
     if ("response" in graph) return graph.response;
     const result = await enqueueAnalysis(
@@ -278,14 +351,7 @@ export function mountAnalysisRoutes(
             409,
           )
         : result.reason === "graph_mismatch"
-          ? c.json(
-              {
-                error:
-                  "The structure analysis does not describe this snapshot.",
-                code: "graph_mismatch",
-              },
-              409,
-            )
+          ? graphMismatch(c)
           : c.json({ error: "Not found." }, 404);
     await options.ensureWorker().catch(() => options.onLaunchError?.());
     return c.json(
@@ -302,12 +368,12 @@ export function mountAnalysisRoutes(
    * waits for it.
    */
   app.post(`${base}/repositories/:id/scope`, async (c) => {
-    if (!rankAtLeast(c.get("member").role, "admin"))
+    if (!isAtLeastAdmin(c.get("member").role))
       return c.json(
         { error: "Only owners and admins can ask for a scope." },
         403,
       );
-    const owner = c.req.param("orgId");
+    const owner = c.get("member").organizationId;
     const repoId = c.req.param("id");
     const repo = await options.repos.get(owner, repoId);
     if (repo === null) return c.json({ error: "Not found." }, 404);
@@ -350,6 +416,10 @@ export function mountAnalysisRoutes(
           agent: "scope",
           graphRunId: graph.run.id,
           ...task,
+          ...(await contextRunsOf(owner, snapshot.id, [
+            "abstractions",
+            "data_model",
+          ])),
         },
         requestedBy: c.get("user").id,
         maxActive: options.maxActive ?? 3,
@@ -361,14 +431,7 @@ export function mountAnalysisRoutes(
       return result.reason === "run_limit"
         ? runLimit(c)
         : result.reason === "graph_mismatch"
-          ? c.json(
-              {
-                error:
-                  "The structure analysis does not describe this snapshot.",
-                code: "graph_mismatch",
-              },
-              409,
-            )
+          ? graphMismatch(c)
           : c.json({ error: "Not found." }, 404);
     await options.ensureWorker().catch(() => options.onLaunchError?.());
     return c.json(
@@ -381,12 +444,12 @@ export function mountAnalysisRoutes(
   });
   /** The fixtures agent writes behaviour for a succeeded slice's seams. */
   app.post(`${base}/runs/:id/fixtures`, async (c) => {
-    if (!rankAtLeast(c.get("member").role, "admin"))
+    if (!isAtLeastAdmin(c.get("member").role))
       return c.json(
         { error: "Only owners and admins can ask for fixtures." },
         403,
       );
-    const owner = c.req.param("orgId");
+    const owner = c.get("member").organizationId;
     const slice = await options.runs.get(owner, c.req.param("id"));
     if (slice === null || slice.tool !== "slice" || slice.snapshotId === null)
       return c.json({ error: "Not found." }, 404);
@@ -420,6 +483,7 @@ export function mountAnalysisRoutes(
           agent: "fixtures",
           sliceRunId: slice.id,
           ...task,
+          ...(await contextRunsOf(owner, slice.snapshotId, ["data_model"])),
         },
         requestedBy: c.get("user").id,
         maxActive: options.maxActive ?? 3,
@@ -446,7 +510,7 @@ export function mountAnalysisRoutes(
    * the same list.
    */
   app.get(`${base}/repositories/:id/proposals`, async (c) => {
-    const owner = c.req.param("orgId");
+    const owner = c.get("member").organizationId;
     const repoId = c.req.param("id");
     if ((await options.repos.get(owner, repoId)) === null)
       return c.json({ error: "Not found." }, 404);
@@ -493,27 +557,52 @@ export function mountAnalysisRoutes(
       }),
     );
   });
+  /**
+   * The run a member may see, or null: one of the owner's, and not a
+   * version's private sandbox unless the member is an owner or admin.
+   */
+  async function visibleRun(c: Context, id: string) {
+    const { organizationId, role } = c.get("member");
+    const run = await options.runs.get(organizationId, id);
+    return run === null || hiddenFrom(role, run) ? null : run;
+  }
+  /** The artifact a member may read, or null; its run decides, as above. */
+  async function visibleArtifact(c: Context, id: string) {
+    const { organizationId, role } = c.get("member");
+    const artifact = await options.artifacts.get(organizationId, id);
+    if (artifact === null || isAtLeastAdmin(role)) return artifact;
+    return (await visibleRun(c, artifact.runId)) === null ? null : artifact;
+  }
   app.get(`${base}/repositories/:id/runs`, async (c) => {
-    const owner = c.req.param("orgId");
+    const { organizationId: owner, role } = c.get("member");
     const repoId = c.req.param("id");
     if ((await options.repos.get(owner, repoId)) === null)
       return c.json({ error: "Not found." }, 404);
     return c.json(
       analysisRunListSchema.parse({
-        runs: await options.runs.list(owner, repoId),
+        // One snapshot's, when named: its builds, however many runs the
+        // repository's other snapshots have had since.
+        runs: (
+          await options.runs.list(
+            owner,
+            repoId,
+            c.req.query("snapshotId") === undefined ? undefined : 50,
+            c.req.query("snapshotId") || undefined,
+          )
+        ).filter((run) => !hiddenFrom(role, run)),
       }),
     );
   });
   app.get(`${base}/runs/:id`, async (c) => {
-    const run = await options.runs.get(c.req.param("orgId"), c.req.param("id"));
+    const run = await visibleRun(c, c.req.param("id"));
     return run === null
       ? c.json({ error: "Not found." }, 404)
       : c.json(analysisRunResponseSchema.parse({ run }));
   });
   app.get(`${base}/runs/:id/artifacts`, async (c) => {
-    const owner = c.req.param("orgId"),
+    const owner = c.get("member").organizationId,
       id = c.req.param("id");
-    if ((await options.runs.get(owner, id)) === null)
+    if ((await visibleRun(c, id)) === null)
       return c.json({ error: "Not found." }, 404);
     return c.json(
       artifactListSchema.parse({
@@ -524,28 +613,88 @@ export function mountAnalysisRoutes(
     );
   });
   app.get(`${base}/artifacts/:id/url`, async (c) => {
-    const artifact = await options.artifacts.get(
-      c.req.param("orgId"),
-      c.req.param("id"),
-    );
+    const artifact = await visibleArtifact(c, c.req.param("id"));
     if (artifact === null) return c.json({ error: "Not found." }, 404);
     c.header("Cache-Control", "no-store");
     return c.json({
       url: await options.objects.signedUrl(artifact.objectKey, 900),
     });
   });
+  /**
+   * One artifact as text, for the viewer. Read through the API rather than
+   * the signed link, which the browser could not read across origins.
+   */
+  app.get(`${base}/artifacts/:id/content`, async (c) => {
+    const artifact = await visibleArtifact(c, c.req.param("id"));
+    if (artifact === null) return c.json({ error: "Not found." }, 404);
+    c.header("Cache-Control", "no-store");
+    const answer = (
+      text: string | null,
+      omitted: "binary" | "too_large" | null,
+    ) =>
+      c.json(
+        artifactContentSchema.parse({
+          path: artifact.path,
+          sizeBytes: artifact.sizeBytes,
+          text,
+          omitted,
+        }),
+      );
+    if (artifact.sizeBytes > ARTIFACT_TEXT_MAX_BYTES)
+      return answer(null, "too_large");
+    const bytes = await options.objects.get(artifact.objectKey);
+    if (bytes === undefined)
+      return c.json(
+        {
+          error: "The artifact could not be read.",
+          code: "artifacts_unavailable",
+        },
+        502,
+      );
+    const text = textOf(bytes);
+    return text === null ? answer(null, "binary") : answer(text, null);
+  });
   app.get(`${base}/runs/:id/log/url`, async (c) => {
-    if (!rankAtLeast(c.get("member").role, "admin"))
+    if (!isAtLeastAdmin(c.get("member").role))
       return c.json(
         { error: "Only owners and admins can read analysis logs." },
         403,
       );
     const key = await options.runs.logKey(
-      c.req.param("orgId"),
+      c.get("member").organizationId,
       c.req.param("id"),
     );
     if (key === null) return c.json({ error: "No log is available." }, 404);
     c.header("Cache-Control", "no-store");
     return c.json({ url: await options.objects.signedUrl(key, 900) });
+  });
+  /** The log as text, for the console's log viewer; owners and admins only. */
+  app.get(`${base}/runs/:id/log/content`, async (c) => {
+    if (!isAtLeastAdmin(c.get("member").role))
+      return c.json(
+        { error: "Only owners and admins can read analysis logs." },
+        403,
+      );
+    const key = await options.runs.logKey(
+      c.get("member").organizationId,
+      c.req.param("id"),
+    );
+    if (key === null) return c.json({ error: "No log is available." }, 404);
+    const bytes = await options.objects.get(key);
+    if (bytes === undefined)
+      return c.json(
+        { error: "The log could not be read.", code: "artifacts_unavailable" },
+        502,
+      );
+    c.header("Cache-Control", "no-store");
+    const tooLarge = bytes.byteLength > ARTIFACT_TEXT_MAX_BYTES;
+    const text = tooLarge ? null : textOf(bytes);
+    return c.json(
+      runLogContentSchema.parse({
+        sizeBytes: bytes.byteLength,
+        text,
+        omitted: tooLarge ? "too_large" : text === null ? "binary" : null,
+      }),
+    );
   });
 }

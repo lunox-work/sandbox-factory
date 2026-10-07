@@ -94,7 +94,8 @@ on `containerInsights` in `ecs.tf` to arm it. Green here does not mean up.
 
 Prerequisites: AWS CLI configured, Terraform >= 1.11 (see
 [More than one machine](#more-than-one-machine) for why Homebrew's own formula
-is not enough), the three OAuth apps registered, and a Neon project.
+is not enough), the OAuth apps registered (Google, GitHub, an Atlassian app for sign-in and
+another for the Jira connection), and a Neon project.
 
 ### 0. Neon
 
@@ -137,10 +138,11 @@ CD run pushes a real image and the service recovers.
 make secrets-template   # writes .env.production, mode 600
 # paste the Neon connection string into DATABASE_URL
 make secrets-check      # validates it the way the API does at boot
-make secrets-push       # writes the eight values into Secrets Manager
+make secrets-push       # writes every app_secrets key into Secrets Manager
 ```
 
-`secrets-template` copies the six OAuth values from `.env.development` when
+`secrets-template` copies the OAuth values and the sizing-model keys from
+`.env.development` when
 present and generates a fresh `BETTER_AUTH_SECRET` — production should not share
 a signing key with a dev machine.
 

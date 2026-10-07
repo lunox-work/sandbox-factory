@@ -52,6 +52,8 @@ export const rateCardResponseSchema = z.object({
 export const bountyRunResponseSchema = z.object({ run: bountyRunDtoSchema });
 export const bountyRunListResponseSchema = z.object({
   runs: z.array(bountyRunDtoSchema),
+  /** The page after this one, `createdAt|id`; null on the last. */
+  nextCursor: z.string().nullable().default(null),
   sizingAvailable: z.boolean(),
 });
 export const listedProposalSchema = bountyProposalDtoSchema.extend({
@@ -61,9 +63,6 @@ export const listedProposalSchema = bountyProposalDtoSchema.extend({
 export const proposalListResponseSchema = z.object({
   proposals: z.array(listedProposalSchema),
   nextCursor: z.string().nullable(),
-});
-export const proposalResponseSchema = z.object({
-  proposal: bountyProposalDtoSchema,
 });
 export const accountResponseSchema = z.object({
   user: z.object({ id: z.string(), username: z.string().nullable() }),
@@ -84,6 +83,17 @@ export const proposalDetailResponseSchema = z.object({
   freshness: proposalFreshnessDtoSchema,
   liveSpec: proposalLiveSpecSchema.nullable().optional(),
   writebackOperations: z.array(bountyWritebackDtoSchema).default([]),
+  /**
+   * The re-price or spec change rewriting the proposal now, or null when
+   * none is: what its page follows to the end, from a reload as from the
+   * click that started it.
+   */
+  activeRun: bountyRunDtoSchema.nullable().default(null),
+});
+
+/** A bounty's first sizing while it is in flight, or null when none is. */
+export const bountySizingResponseSchema = z.object({
+  run: bountyRunDtoSchema.nullable(),
 });
 
 export const proposalActionResponseSchema = z.object({
@@ -100,6 +110,25 @@ export const jiraIssueSearchSchema = z.object({
       status: z.string(),
       issueType: z.string(),
       subtaskCount: z.number().int().nonnegative().optional(),
+    }),
+  ),
+});
+
+/**
+ * The workspace's Jira issues that match a search, from every board it has:
+ * each with the board it was found on, and the bounty it already is, if any.
+ */
+export const jiraWorkspaceIssueSearchSchema = z.object({
+  issues: z.array(
+    z.object({
+      id: z.string(),
+      key: z.string(),
+      summary: z.string(),
+      status: z.string(),
+      issueType: z.string(),
+      boardId: z.string(),
+      boardName: z.string(),
+      bountyId: z.string().nullable(),
     }),
   ),
 });

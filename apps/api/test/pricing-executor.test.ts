@@ -20,6 +20,7 @@ import {
   BOUNTY_SPEC_HASH_VERSION,
   bountySpecHash,
   type BountySizingResult,
+  type RubricAssessment,
   type SpecDraft,
   type BountyContent,
 } from "sandbox-factory";
@@ -183,6 +184,8 @@ function bounty(overrides: Partial<StoredBounty> = {}): StoredBounty {
     stack: [],
     createdBy: null,
     revision: 1,
+    version: 1,
+    approval: null,
     jira: {
       issueId: "jri_1",
       boardId: "jrb_1",
@@ -260,6 +263,9 @@ function harness(options: {
   outlineFor?: BountyExecutorOptions["outlineFor"];
   onBackgroundError?: BountyExecutorOptions["onBackgroundError"];
   onProposalDrafted?: BountyExecutorOptions["onProposalDrafted"];
+  profilingEnabled?: boolean;
+  /** Recording an outcome fails with this, as a database fault would. */
+  outcomeError?: Error;
 }) {
   const current = run(options.runOverrides);
   const plans: unknown[] = [];
@@ -315,6 +321,8 @@ function harness(options: {
       _lease: string,
       outcome: unknown,
     ) => {
+      if (options.outcomeError !== undefined)
+        return Promise.reject(options.outcomeError);
       outcomes.push(outcome);
       return Promise.resolve(true);
     },
@@ -386,9 +394,6 @@ function harness(options: {
         bountyId,
         externalId: input.externalId,
         key: `APP-${input.externalId}`,
-        statusCategory: "new",
-        remoteCreatedAt: "2026-01-01T00:00:00.000Z",
-        remoteUpdatedAt: "2026-01-02T00:00:00.000Z",
         removedAt: null,
       });
     },
@@ -514,6 +519,9 @@ function harness(options: {
     ...(options.onProposalDrafted === undefined
       ? {}
       : { onProposalDrafted: options.onProposalDrafted }),
+    ...(options.profilingEnabled === undefined
+      ? {}
+      : { profilingEnabled: () => options.profilingEnabled === true }),
     now: () => new Date("2026-09-22T00:00:00.000Z"),
     leaseToken: () => "lease_1",
     onWritebackCreated: (_organizationId, operationId) => {
@@ -716,6 +724,27 @@ test("an issue run without a bounty, or whose bounty is gone, fails", async () =
   await gone.executor.execute("org_1", "brn_1");
   assert.equal(gone.finishes[0]?.status, "failed");
   assert.equal(gone.caller.calls.length, 0);
+});
+
+test("a fault nothing expected ends the run as failed, and is still thrown", async () => {
+  // Rather than reading as running until the watchdog calls it lost, with
+  // the other workers still spending model calls.
+  const state = harness({ outcomeError: new Error("database down") });
+  await assert.rejects(
+    state.executor.execute("org_1", "brn_1"),
+    /database down/,
+  );
+  assert.deepEqual(state.finishes, [
+    { status: "failed", details: { fatalErrorCode: "internal_error" } },
+  ]);
+});
+
+test("a connection that is gone fails the run as the board's, in snake case", async () => {
+  const state = harness({ clientResult: { ok: false, reason: "not-found" } });
+  await state.executor.execute("org_1", "brn_1");
+  assert.deepEqual(state.finishes, [
+    { status: "failed", details: { fatalErrorCode: "board_unavailable" } },
+  ]);
 });
 
 test("a run persists sized drafts with snapshot pricing and usage", async () => {
@@ -981,6 +1010,48 @@ test("a sized bounty is written with a step of zero, priced at its own size", as
     stepVersion: "step-v1",
   });
   assert.equal(written.amountMinor, 200);
+});
+
+test("a sized bounty records the rubric's score of its draft, which sizes nothing yet", async () => {
+  // No repository: nothing will measure the code, so the model's size is it.
+  const state = harness({
+    pricing: { step: { weightPoints: { moderate: 5 } } },
+  });
+  await state.executor.execute("org_1", "brn_1");
+  const written = state.proposalInputs[0] as {
+    amountMinor: number;
+    rubric: RubricAssessment | null;
+  };
+  assert.ok(written.rubric !== null);
+  assert.equal(written.rubric.code.status, "unavailable");
+  assert.equal(written.rubric.size, null);
+  // Scored with the board's weights, as the step is.
+  assert.equal(written.rubric.weightPoints.moderate, 5);
+  assert.equal(written.rubric.counts.scenarios, 1);
+  assert.equal(written.amountMinor, 200);
+
+  // Beside a snapshot, with profiling on, the code is on its way.
+  const profiled = harness({
+    sourceRepoId: "ghr_1",
+    outlineFor: () => Promise.resolve({ snapshotId: "rsn_1", text: "outline" }),
+    profilingEnabled: true,
+  });
+  await profiled.executor.execute("org_1", "brn_1");
+  const pending = profiled.proposalInputs[0] as { rubric: RubricAssessment };
+  assert.equal(pending.rubric.code.status, "pending");
+
+  // Beside a snapshot without profiling, it is not.
+  const unprofiled = harness({
+    sourceRepoId: "ghr_1",
+    outlineFor: () => Promise.resolve({ snapshotId: "rsn_1", text: "outline" }),
+    profilingEnabled: false,
+  });
+  await unprofiled.executor.execute("org_1", "brn_1");
+  assert.equal(
+    (unprofiled.proposalInputs[0] as { rubric: RubricAssessment }).rubric.code
+      .status,
+    "unavailable",
+  );
 });
 
 test("the step is counted with the board's own pricing settings", async () => {

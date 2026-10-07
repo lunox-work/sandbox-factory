@@ -63,7 +63,7 @@ export function SizingStream({
             aria-valuenow={done.size}
           >
             <div
-              className="bg-primary h-full transition-[width] duration-500 ease-out"
+              className="h-full bg-(image:--brand-gradient) transition-[width] duration-500 ease-out"
               style={{ width: `${(done.size / total) * 100}%` }}
             />
           </div>

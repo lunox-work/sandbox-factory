@@ -59,7 +59,11 @@ import {
 } from "../agent/prompts.js";
 import { invalidInput } from "../agent/repo-tools.js";
 import type { ArtifactFile, ToolAdapter, ToolRunInput } from "./adapter.js";
-import { baselineOf, writeBuildOutputs } from "./sandbox-build.js";
+import {
+  baselineOf,
+  privateTestOutcome,
+  writeBuildOutputs,
+} from "./sandbox-build.js";
 import { sha256 } from "./slice/hash.js";
 import { checkStarter } from "./starter-check.js";
 
@@ -262,13 +266,8 @@ export function createStarterAdapter(options: {
             // A hidden test is judged by what it was expected to do.
             const surprising =
               step.name === "private-test"
-                ? (step.timedOut || step.exitCode === null
-                    ? "error"
-                    : step.exitCode === 0
-                      ? "pass"
-                      : step.exitCode === 1
-                        ? "fail"
-                        : "error") !== expected.get(step.path ?? "")
+                ? privateTestOutcome(step, output.stdout) !==
+                  expected.get(step.path ?? "")
                 : !step.ok;
             if (!surprising) return;
             failed.push(
@@ -518,7 +517,9 @@ export function createStarterAdapter(options: {
       ) as SandboxBuildManifest;
       // The hidden tests as the build ran them: renamed by the set's table,
       // which renames each file alone, so the spec is not needed for them.
-      const renamed = aliasStarter(set, null);
+      // A rule only the spec uses renames nothing here, and was checked
+      // against the spec when the starter was accepted.
+      const renamed = aliasStarter(set, null, { requireUse: false });
       if (!renamed.ok) throw new AnalysisError("tool_failed");
       await inputs.recordStarterOutput(set.sandboxVersionId, runId, {
         starterSha256: sha256(setText),

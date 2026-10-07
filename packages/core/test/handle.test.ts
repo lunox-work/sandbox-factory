@@ -120,7 +120,46 @@ test("a run of only hyphens does not hang", () => {
   // Pins the hand-rolled `trimHyphens`, which replaces a regex CodeQL flags
   // as polynomial ReDoS. The result is short and still invalid, which is
   // this function's documented contract: a stem is a starting point.
-  assert.equal(toHandleStem("-".repeat(200)), "-user");
+  assert.equal(toHandleStem("-".repeat(200)), "user");
+});
+
+test("a stem never starts or ends with a hyphen", () => {
+  // Text that reduces to nothing falls back to `user`, not `-user`.
+  for (const text of ["", "!!!", "---", "   "])
+    assert.equal(toHandleStem(text), "user", JSON.stringify(text));
+  assert.equal(handleStemFromEmail("@example.test"), "user");
+  // The cut at the maximum length can land just after a hyphen.
+  const cut = toHandleStem(`${"a".repeat(HANDLE_MAX_LENGTH - 1)} tail`);
+  assert.equal(cut, "a".repeat(HANDLE_MAX_LENGTH - 1));
+  // Padding a short stem keeps its own hyphen inside.
+  assert.equal(toHandleStem("jo!"), "jo-user");
+  for (const text of ["", "!!!", "@x.com", `${"b".repeat(29)}.c`, "x-"]) {
+    const stem = toHandleStem(text);
+    assert.ok(
+      !stem.startsWith("-") && !stem.endsWith("-"),
+      `${JSON.stringify(text)} yielded ${JSON.stringify(stem)}`,
+    );
+  }
+});
+
+test("an address with no @ is all local part", () => {
+  assert.equal(handleStemFromEmail("dana"), "dana");
+});
+
+test("raw input outside printable ASCII is refused, even if it lowercases into the charset", () => {
+  // U+212A KELVIN SIGN lowercases to an ASCII `k`.
+  const kelvin = "\u212Aaren";
+  assert.equal(kelvin.toLowerCase(), "karen");
+  assert.deepEqual(normalizeHandle(kelvin), {
+    status: "invalid",
+    problem: "charset",
+    reason: "Can use letters, numbers, hyphens and underscores only.",
+  });
+  assert.equal(isValidHandle(kelvin), false);
+  assert.equal(normalizeHandle("Karen").status, "ok");
+  // Length is still reported first, as for any other refusal.
+  const short = normalizeHandle("\u212A");
+  assert.equal(short.status === "invalid" && short.problem, "length");
 });
 
 test("an organization name becomes a reasonable stem", () => {

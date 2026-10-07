@@ -8,7 +8,7 @@ import type {
   ObjectStore,
   SandboxStore,
 } from "@sandbox-factory/db";
-import { readsSource } from "sandbox-factory";
+import { downloadsSource, readsSource } from "sandbox-factory";
 import { fetchSource } from "./fetch-source.js";
 import { AnalysisError } from "./errors.js";
 import { uploadArtifacts } from "./upload.js";
@@ -129,13 +129,16 @@ export async function executeRun(
     )
       throw new AnalysisError("tool_failed");
     // A tool that reads no source is given an empty directory, and no
-    // repository is fetched or even named.
+    // repository is fetched or even named; one that reads a snapshot's
+    // commit but not its files (DeepWiki) is named it and fetches nothing.
     let source: string;
     let snapshot: ToolRunInput["run"] = null;
     if (readsSource(run.tool)) {
       if (run.snapshotId === null || run.commitSha === null)
         throw new AnalysisError("source_unavailable");
       snapshot = { snapshotId: run.snapshotId, commitSha: run.commitSha };
+    }
+    if (downloadsSource(run.tool)) {
       source = await (options.fetchSource ?? fetchSource)(run, directory, {
         ...options.source,
         signal: abort.signal,

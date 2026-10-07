@@ -81,6 +81,11 @@ export const sandbox = pgTable(
     publicRepoId: text("public_repo_id").references(() => githubRepo.id),
     /** Stores validate that this is one of this sandbox's published versions. */
     currentVersionId: text("current_version_id"),
+    /**
+     * When the publication lapses: set by each publish, cleared by an
+     * unpublish. Past it the sandbox reads as no longer published.
+     */
+    expiresAt: ts("expires_at"),
     createdAt: ts("created_at").notNull().defaultNow(),
     updatedAt: ts("updated_at").notNull().defaultNow(),
   },
@@ -88,16 +93,21 @@ export const sandbox = pgTable(
 );
 
 /** The repository a sandbox is cut from, when it has one. */
-export const sandboxSource = pgTable("sandbox_source", {
-  sandboxId: text("sandbox_id")
-    .primaryKey()
-    .references(() => sandbox.id, { onDelete: "cascade" }),
-  /** Must have `role = source`; checked by the store. */
-  sourceRepoId: text("source_repo_id")
-    .notNull()
-    .references(() => githubRepo.id),
-  updatedAt: ts("updated_at").notNull().defaultNow(),
-});
+export const sandboxSource = pgTable(
+  "sandbox_source",
+  {
+    sandboxId: text("sandbox_id")
+      .primaryKey()
+      .references(() => sandbox.id, { onDelete: "cascade" }),
+    /** Must have `role = source`; checked by the store. */
+    sourceRepoId: text("source_repo_id")
+      .notNull()
+      .references(() => githubRepo.id),
+    updatedAt: ts("updated_at").notNull().defaultNow(),
+  },
+  // A repository's delete is checked against it.
+  (t) => [index("sandbox_source_repo_idx").on(t.sourceRepoId)],
+);
 
 export const sandboxVersion = pgTable(
   "sandbox_version",
@@ -150,6 +160,12 @@ export const sandboxVersionSource = pgTable(
     starterSha256: text("starter_sha256"),
     transformConfigSha256: text("transform_config_sha256").notNull(),
     approvedTaskSha256: text("approved_task_sha256").notNull(),
+    /**
+     * The bounty version (its proposal's approved version) the task was
+     * taken from. Null for one taken before this was kept, which reads as
+     * built on an earlier version.
+     */
+    proposalVersion: integer("proposal_version"),
     /** The approved task copied at selection; survives the live proposal. */
     approvedTask: jsonb("approved_task")
       .$type<StoredApprovedTaskSnapshot>()
@@ -175,12 +191,24 @@ export const sandboxVersionSource = pgTable(
     buildRunId: text("build_run_id").references(() => analysisRun.id),
     roundTripRunId: text("round_trip_run_id").references(() => analysisRun.id),
     disclosureRunId: text("disclosure_run_id").references(() => analysisRun.id),
-    approvedBy: text("approved_by").references(() => user.id),
+    // Set null, as every other reference to a person is: removing an
+    // account must not be refused for having approved a version.
+    approvedBy: text("approved_by").references(() => user.id, {
+      onDelete: "set null",
+    }),
     approvedAt: ts("approved_at"),
     createdAt: ts("created_at").notNull().defaultNow(),
     updatedAt: ts("updated_at").notNull().defaultNow(),
   },
   (t) => [
+    /*
+      Each column a parent's delete is checked against: without an index,
+      removing a snapshot or a run scans every version's source.
+    */
+    index("sandbox_version_source_snapshot_idx").on(t.sourceSnapshotId),
+    index("sandbox_version_source_slice_run_idx").on(t.sliceRunId),
+    index("sandbox_version_source_starter_run_idx").on(t.starterRunId),
+    index("sandbox_version_source_build_run_idx").on(t.buildRunId),
     // Sliced or generated, never both and never neither.
     check(
       "sandbox_version_source_origin_check",

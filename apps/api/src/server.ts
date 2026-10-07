@@ -37,6 +37,7 @@ import { createAuth } from "./auth.js";
 import { createAvatarService } from "./avatars/service.js";
 import { BountyExecutor } from "./pricing/executor.js";
 import { BountyProfiler } from "./pricing/profiler.js";
+import { RubricPricer } from "./pricing/rubric.js";
 import { BountyDelivery } from "./pricing/delivery.js";
 import { BountyWatchdog } from "./pricing/watchdog.js";
 import {
@@ -253,7 +254,10 @@ const bountyExecutor =
         // run is under way, by which time it is set or known to be absent.
         profilingEnabled: () => bountyProfiler !== undefined,
         onProposalDrafted: () => bountyProfiler?.kick(),
-        onBackgroundError: (code, error) => console.error(code, error),
+        profileFor: (organizationId, proposalId) =>
+          bountyProfiles.latest(organizationId, proposalId),
+        onBackgroundError: (code, error) =>
+          console.error(code, describeError(error)),
       });
 const jira =
   jiraOAuth === undefined
@@ -340,7 +344,7 @@ const github =
         apiUrl: env.BETTER_AUTH_URL,
         appUrl: appUrl(env),
         onBackgroundError: (code: string, error: unknown) =>
-          console.error(code, error),
+          console.error(code, describeError(error)),
       };
 const githubReconciler =
   github === undefined
@@ -401,6 +405,15 @@ const sandbox =
         onLaunchError: () => console.error("analysis_worker_launch_failed"),
       };
 /**
+ * The pricing rubric: scores each settled profile's code with its spec, and
+ * sizes the proposal by it (`pricing/rubric.ts`).
+ */
+const rubricPricer = new RubricPricer({
+  proposals: bountyProposals,
+  specs: bountySpecs,
+  onError: (code, error) => console.error(code, error),
+});
+/**
  * Complexity profiles, on the same footing as analysis: each proposal sized
  * beside a snapshot is scoped and sliced on the worker, then profiled.
  */
@@ -416,6 +429,7 @@ const bountyProfiler =
         ensureWorker: () => workerLauncher.ensureWorker(),
         removeObject: (key) => analysis.objects.remove(key),
         maxActive: env.MAX_ACTIVE_RUNS_PER_ORG,
+        onSettled: (owner, profile) => rubricPricer.settled(owner, profile),
         onError: (code, error) => console.error(code, error),
       });
 const analysisWatchdog =
@@ -504,4 +518,15 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
       });
     });
   });
+}
+
+/**
+ * A background fault as the log shows it: its kind and sentence, never the
+ * error itself, which can carry a request or a row. The reconciler and the
+ * snapshotter log theirs the same way.
+ */
+function describeError(error: unknown): string {
+  return error instanceof Error
+    ? `${error.name}: ${error.message}`
+    : "non-Error value thrown";
 }

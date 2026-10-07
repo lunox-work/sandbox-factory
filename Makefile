@@ -106,6 +106,14 @@ down: ## Stop the dev containers, keeping data
 logs: ## Follow container logs
 	$(COMPOSE) --profile dev logs -f
 
+deepwiki-up: ## Start DeepWiki-Open and its Ollama sidecar for the deepwiki builder
+	$(COMPOSE) --profile deepwiki up -d
+	@echo "deepwiki api http://localhost:$${DEEPWIKI_PORT:-8001}  ui http://localhost:$${DEEPWIKI_UI_PORT:-3000}"
+	@echo "(first start pulls the embedding model — give it a minute; restart the worker if it was already running)"
+
+deepwiki-down: ## Stop DeepWiki-Open and Ollama, keeping their data
+	$(COMPOSE) --profile deepwiki down
+
 ps: ## Show container status
 	$(COMPOSE) ps
 
@@ -183,7 +191,7 @@ ext-watch: ext-deps ## Rebuild the extension on save; F5 in VS Code runs and rel
 
 ext-package: ext-deps ## Build a .vsix into apps/extension/
 	npm run build --workspace sandbox-factory-vscode
-	cd apps/extension && npx --yes @vscode/vsce package --no-dependencies
+	cd apps/extension && npm run package
 	@echo "packaged:"; ls -1 apps/extension/*.vsix
 
 ## ---- infrastructure (aws) -----------------------------------------------

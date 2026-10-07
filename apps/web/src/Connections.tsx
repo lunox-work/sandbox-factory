@@ -17,6 +17,7 @@ import { pushLocation, subscribeLocation } from "./navigation/location";
  * the default and is never written, so a plain settings URL opens there.
  */
 
+import type { GithubRepoDto } from "@sandbox-factory/shared";
 import { ChevronRight, TriangleAlert } from "lucide-react";
 import {
   useCallback,
@@ -162,11 +163,14 @@ export function Connections({
   organizationSlug,
   role,
   onOpenBoard,
+  onOpenRepository,
 }: {
   organizationId: string;
   organizationSlug: string;
   role: string;
   onOpenBoard: (board: JiraBoard) => void;
+  /** Opens a registered repository's page; see `GithubConnections`. */
+  onOpenRepository?: ((repo: GithubRepoDto) => void) | undefined;
 }) {
   const [tab, select] = useConnectionTab();
   const visited = useVisited(tab);
@@ -266,7 +270,12 @@ export function Connections({
               />
             </Panel>
             <Panel value="github" tab={tab} visited={visited}>
-              <GithubConnections organizationId={organizationId} role={role} />
+              <GithubConnections
+                organizationId={organizationId}
+                organizationSlug={organizationSlug}
+                role={role}
+                onOpenRepository={onOpenRepository}
+              />
             </Panel>
             {TOOLS.filter((tool) => !tool.ready).map((tool) => (
               <Panel
@@ -469,8 +478,22 @@ function Overview({
           {loading
             ? "\u00a0"
             : failed
-              ? "Could not load this workspace\u2019s connections."
-              : `${active} active connection${active === 1 ? "" : "s"} across ${TOOLS.length} tools.`}
+              ? "Could not load this workspace\u2019s connections. "
+              : // Counted over the tools that can be connected: one still
+                // to come has nothing to be active in.
+                `${active} active connection${active === 1 ? "" : "s"} across ${TOOLS.filter((tool) => tool.ready).length} tools.`}
+          {!loading && failed && (
+            <button
+              type="button"
+              className="text-primary rounded-sm font-medium hover:underline"
+              onClick={() => {
+                void refreshJira();
+                void refreshGithub();
+              }}
+            >
+              Try again
+            </button>
+          )}
         </p>
       </header>
 

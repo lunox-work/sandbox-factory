@@ -6,7 +6,7 @@
  * errors, which is the case the rail's own hand-rolled `onError` used to cover.
  */
 
-import * as AvatarPrimitive from "@radix-ui/react-avatar";
+import { Avatar as AvatarPrimitive } from "radix-ui";
 import * as React from "react";
 
 import { cn } from "@/lib/utils";

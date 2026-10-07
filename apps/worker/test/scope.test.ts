@@ -25,6 +25,7 @@ import {
 } from "../src/tools/fixtures.js";
 import { SCOPE_CHECKS_MAX, createScopeAdapter } from "../src/tools/scope.js";
 import { readIncludedSource } from "../src/tools/slice-run.js";
+import { contextIndex, contextModel, contextRun } from "./context-fixtures.js";
 import {
   fixture,
   graph,
@@ -534,4 +535,125 @@ test("the fixtures agent runs out of checks and refuses a missing model, task or
     ),
     isCode("slice_unavailable"),
   );
+});
+
+/** The slice fixture's inputs, with succeeded context runs beside them. */
+async function contextInputs(): Promise<ToolInputs> {
+  const base = await inputs();
+  const served = [
+    contextRun("arn_abstractions", "abstractions", contextIndex),
+    contextRun("arn_model", "data_model", contextModel),
+  ];
+  return {
+    ...base,
+    getRun: async (id) =>
+      served.find((entry) => entry.run.id === id)?.run ?? base.getRun(id),
+    listArtifacts: async (id) => {
+      const entry = served.find((candidate) => candidate.run.id === id);
+      return entry === undefined ? base.listArtifacts(id) : [entry.artifact];
+    },
+    readArtifact: async (key) =>
+      served.find((entry) => entry.artifact.objectKey === key)?.bytes ??
+      base.readArtifact(key),
+  };
+}
+
+test("with the context builders, the scope agent names an accessor module as a database seam and check_scope agrees", async () => {
+  const model = scripted([
+    turn([
+      call("data_model", { entity: null }),
+      call("module_surface", { path: "lib/service.ts" }),
+      call("data_model", { entity: "things" }),
+    ]),
+    turn([
+      call("submit_scope", {
+        ...submission,
+        seams: [
+          {
+            module: "lib/service.ts",
+            kind: "database",
+            reason: "The accessor that reads and writes things.",
+          },
+        ],
+      }),
+    ]),
+  ]);
+  const { files, texts } = await runTool(
+    createScopeAdapter({ model, limits }),
+    {
+      ...scopeParams,
+      abstractionsRunId: "arn_abstractions",
+      dataModelRunId: "arn_model",
+    },
+    await contextInputs(),
+  );
+  const prompt = model.prompts[0] ?? "";
+  assert.match(prompt, /The abstractions index describes 2 modules/);
+  assert.match(prompt, /where a `database` seam belongs/);
+  assert.match(prompt, /lib\/service\.ts: owners, things/);
+  const [overview, surface, entity] = (model.results[0] ?? []).map(contentOf);
+  assert.match(
+    overview?.content ?? "",
+    /Accessors, most entities first \(1\):\nlib\/service\.ts/,
+  );
+  assert.match(surface?.content ?? "", /createService \(function, L18\)/);
+  assert.match(entity?.content ?? "", /^things → table app\.things/);
+  const proposal = JSON.parse(texts[0] ?? "{}") as ScopeProposal;
+  assert.equal(files[0]?.kind, "scope_proposal");
+  assert.deepEqual(
+    proposal.seams.map((seam) => [seam.module, seam.kind]),
+    [["lib/service.ts", "database"]],
+  );
+  assert.ok(proposal.check.outboundModules >= 1);
+});
+
+test("a scope or fixtures run fails cleanly when a context run it names is gone", async () => {
+  await assert.rejects(
+    runTool(
+      createScopeAdapter({ model: scripted([]), limits }),
+      { ...scopeParams, abstractionsRunId: "arn_gone" },
+      await contextInputs(),
+    ),
+    isCode("context_unavailable"),
+  );
+  await assert.rejects(
+    runTool(
+      createScopeAdapter({ model: scripted([]), limits }),
+      { ...scopeParams, dataModelRunId: "arn_abstractions" },
+      await contextInputs(),
+    ),
+    isCode("context_unavailable"),
+  );
+  await assert.rejects(
+    runTool(
+      createFixturesAdapter({ model: scripted([]), limits }),
+      { ...fixturesParams, dataModelRunId: "arn_gone" },
+      await contextInputs(),
+    ),
+    isCode("context_unavailable"),
+  );
+});
+
+test("with a data model, the fixtures agent reads the entities its samples must obey", async () => {
+  const model = scripted([
+    turn([call("data_model", { entity: "things" })]),
+    turn([
+      call("submit_fixtures", {
+        fixtures: [passing],
+        scenario,
+        summary: "Things are labelled.",
+      }),
+    ]),
+  ]);
+  const { files } = await runTool(
+    createFixturesAdapter({ model, limits }),
+    { ...fixturesParams, dataModelRunId: "arn_model" },
+    await contextInputs(),
+  );
+  assert.match(model.prompts[0] ?? "", /data model has 2 entities/);
+  assert.match(
+    contentOf((model.results[0] ?? [])[0]).content,
+    /state: enum as state, required, default 'new', one of new \| done/,
+  );
+  assert.equal(files[0]?.kind, "fixture_set");
 });

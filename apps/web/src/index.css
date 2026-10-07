@@ -33,6 +33,26 @@
     #3976ff 75%,
     #9985ff 100%
   );
+  /* The same ramp top to bottom, for a marker drawn down an edge: the rail's
+     current row, the workbench's open view. */
+  --brand-gradient-vertical: linear-gradient(
+    180deg,
+    #47c6f5 0%,
+    #1684fc 25%,
+    #0864ed 50%,
+    #3976ff 75%,
+    #9985ff 100%
+  );
+  /*
+   * The gradient as a fill, for the one control on a screen that asks to be
+   * pressed and the badge that says a thing is live. The ramp's deep middle
+   * only, laid diagonally: the cyan and lilac ends are too light to carry a
+   * white label, and a 100px button is too short to show the whole sweep
+   * without reading as a stripe. Not themed: a filled control keeps its colour
+   * on a dark page, where only the text and hairline blues are lifted.
+   */
+  --brand-fill: linear-gradient(135deg, #1b90fb 0%, #0864ed 50%, #4d7bff 100%);
+  --brand-fill-foreground: oklch(0.985 0 0);
 
   --secondary: oklch(0.967 0.001 286.375);
   --secondary-foreground: oklch(0.21 0.006 285.885);
@@ -102,6 +122,14 @@
     #718fff 75%,
     #b0a0ff 100%
   );
+  --brand-gradient-vertical: linear-gradient(
+    180deg,
+    #66d7ff 0%,
+    #389eff 25%,
+    #4385ff 50%,
+    #718fff 75%,
+    #b0a0ff 100%
+  );
 
   --secondary: oklch(0.274 0.006 286.033);
   --secondary-foreground: oklch(0.985 0 0);
@@ -153,6 +181,8 @@
   --color-input: var(--input);
   --color-ring: var(--ring);
   --color-sidebar: var(--sidebar);
+  /* Text over `--brand-fill`; the fill itself is used as `bg-(image:--brand-fill)`. */
+  --color-brand-foreground: var(--brand-fill-foreground);
 
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
@@ -210,6 +240,22 @@
     --popover-foreground: oklch(0.985 0 0);
     --primary: oklch(0.707 0.165 254.624);
     --primary-foreground: oklch(0.21 0.006 285.885);
+    --brand-gradient: linear-gradient(
+      90deg,
+      #66d7ff 0%,
+      #389eff 25%,
+      #4385ff 50%,
+      #718fff 75%,
+      #b0a0ff 100%
+    );
+    --brand-gradient-vertical: linear-gradient(
+      180deg,
+      #66d7ff 0%,
+      #389eff 25%,
+      #4385ff 50%,
+      #718fff 75%,
+      #b0a0ff 100%
+    );
     --secondary: oklch(0.274 0.006 286.033);
     --secondary-foreground: oklch(0.985 0 0);
     --muted: oklch(0.274 0.006 286.033);
@@ -739,7 +785,6 @@
   --wb-selected: #37373d;
   --wb-accent: #0078d4;
   --wb-gutter: #6e7681;
-  --wb-guide: #585858;
   --wb-input: #2a2a2a;
   --wb-input-border: #3c3c3c;
   --wb-code: #d4d4d4;

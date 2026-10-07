@@ -125,7 +125,15 @@ const MAX_SCENARIO_ID = 999;
  * revision may see its number again. Past `s999`, the lowest free number.
  */
 function newIds(current: SpecDraft): () => string {
-  const used = new Set(current.scenarios.map(({ id }) => Number(id.slice(1))));
+  // Only `s<digits>` ids hold a number. Any other id read as one is NaN,
+  // which would make `next` NaN; and since a Set finds NaN in itself, the
+  // search for a free number below would then never end.
+  const used = new Set(
+    current.scenarios.flatMap(({ id }) => {
+      const number = /^s(\d+)$/.test(id) ? Number(id.slice(1)) : Number.NaN;
+      return Number.isSafeInteger(number) ? [number] : [];
+    }),
+  );
   let next = Math.max(0, ...used) + 1;
   return () => {
     if (next > MAX_SCENARIO_ID) next = 1;

@@ -17,7 +17,7 @@ import {
 } from "sandbox-factory";
 
 /** Manifests read at once, so one repository does not burst the rate limit. */
-export const STACK_READ_CONCURRENCY = 4;
+const STACK_READ_CONCURRENCY = 4;
 
 export interface BlobReader {
   blobText(fullName: string, sha: string): Promise<string>;

@@ -160,6 +160,7 @@ const sourceWith = (
   starterSha256: null,
   transformConfigSha256: "t".repeat(64),
   approvedTaskSha256: "a".repeat(64),
+  proposalVersion: 1,
   aliasRules,
   dependencyChoices: {},
   acceptanceTests: [],
@@ -455,6 +456,8 @@ test("a file's name picks its icon and its language, as the editor's would", () 
       ".env.local",
       "sandbox.env",
       "Dockerfile",
+      "erd.mmd",
+      "dependency-cruiser.dot",
       "notes",
     ].map(fileIconName),
   ).toEqual([
@@ -466,6 +469,8 @@ test("a file's name picks its icon and its language, as the editor's would", () 
     "file-type-dotenv",
     "file-type-dotenv",
     "file-type-docker",
+    "file-type-mermaid",
+    "file-type-graphviz",
     "default-file",
   ]);
   expect(folderIconName("src", false)).toBe("folder-type-src");
@@ -477,6 +482,10 @@ test("a file's name picks its icon and its language, as the editor's would", () 
   });
   expect(languageOf("project/sandbox.env").id).toBe("dotenv");
   expect(languageOf("Makefile").id).toBe("make");
+  expect(languageOf("data-model/erd.mmd")).toEqual({
+    id: "mermaid",
+    label: "Mermaid",
+  });
   expect(languageOf("project/.nvmrc")).toEqual({
     id: "text",
     label: "Plain Text",
@@ -866,14 +875,23 @@ test("the docs view lists the version's frozen scenarios after its documents and
       .map((region) => region.getAttribute("aria-label")),
   ).toEqual(["Bounty", "project", "Bounty scenarios", "Features"]);
   expect(outline.textContent).toContain("3 pts");
+  // Each under its kind, with its weight beside it; the whole of it in the
+  // tooltip, since the row cuts a long title short.
+  const invitee = within(outline).getByRole("link", {
+    name: /The invitee gets one email/,
+  });
+  expect(invitee.textContent).toContain("Light · 1 pt");
+  expect(invitee.getAttribute("title")).toMatch(/Happy path · Light · 1 pt$/);
   expect(
-    within(outline).getByRole("link", { name: /The invitee gets one email/ })
-      .textContent,
-  ).toContain("Happy path · Light · 1 pt");
+    invitee.closest("li")?.parentElement?.closest("li")?.textContent,
+  ).toMatch(/^Happy path/);
+  const refusedRow = within(outline).getByRole("link", {
+    name: /A bad address is refused/,
+  });
+  expect(refusedRow.textContent).toContain("Moderate · 2 pts");
   expect(
-    within(outline).getByRole("link", { name: /A bad address is refused/ })
-      .textContent,
-  ).toContain("Unhappy path · Moderate · 2 pts");
+    refusedRow.closest("li")?.parentElement?.closest("li")?.textContent,
+  ).toMatch(/^Unhappy path/);
 
   await userEvent.click(
     within(outline).getByRole("link", { name: /A bad address is refused/ }),
@@ -1150,4 +1168,14 @@ test("the private sandbox reads the stored, public files back in their private n
   await waitFor(async () =>
     expect(await source()).toBe("export function invite() {\n  return 1;\n}"),
   );
+});
+
+test("a version that cannot be read says so, with a retry, not that it has no spec", async () => {
+  server({ versionStatus: 500 });
+  open();
+  expect(
+    await screen.findByText("This version could not be read."),
+  ).toBeDefined();
+  expect(screen.getByRole("button", { name: "Try again" })).toBeDefined();
+  expect(screen.queryByText(/approved without a spec/)).toBeNull();
 });

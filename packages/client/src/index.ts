@@ -18,13 +18,17 @@ export { ApiClient, ApiError, type ClientOptions } from "./transport.js";
 import {
   analysisRunListSchema,
   analysisRunResponseSchema,
+  artifactContentSchema,
   artifactListSchema,
+  runLogContentSchema,
   artifactUrlSchema,
   enqueueSliceResponseSchema,
   generateStarterResponseSchema,
   publishVersionResponseSchema,
   repositoryProposalListSchema,
   repoTreePageDtoSchema,
+  pullSnapshotResponseSchema,
+  repoBranchListSchema,
   repoSnapshotListSchema,
   repoSnapshotDetailDtoSchema,
   replayResponseSchema,
@@ -59,6 +63,24 @@ export class GithubAnalysisClient extends ApiClient {
       ),
     ).snapshots;
   }
+  /** A repository's branches, the default first, each at its head. */
+  async branches(owner: string, repoId: string, signal?: AbortSignal) {
+    return repoBranchListSchema.parse(
+      await this.request(
+        `${this.#base(owner)}/repositories/${encodeURIComponent(repoId)}/branches`,
+        { signal },
+      ),
+    );
+  }
+  /** Snapshots a branch's head now, unless that commit was taken already. */
+  async pullSnapshot(owner: string, repoId: string, branch: string) {
+    return pullSnapshotResponseSchema.parse(
+      await this.request(
+        `${this.#base(owner)}/repositories/${encodeURIComponent(repoId)}/snapshots`,
+        { method: "POST", body: JSON.stringify({ branch }) },
+      ),
+    );
+  }
   async snapshot(owner: string, snapshotId: string, signal?: AbortSignal) {
     const response = (await this.request(
       `${this.#base(owner)}/snapshots/${encodeURIComponent(snapshotId)}`,
@@ -66,10 +88,20 @@ export class GithubAnalysisClient extends ApiClient {
     )) as { snapshot?: unknown };
     return repoSnapshotDetailDtoSchema.parse(response.snapshot);
   }
-  async runs(owner: string, repoId: string, signal?: AbortSignal) {
+  /** A repository's runs, newest first; with `snapshotId`, that snapshot's. */
+  async runs(
+    owner: string,
+    repoId: string,
+    signal?: AbortSignal,
+    snapshotId?: string,
+  ) {
+    const query =
+      snapshotId === undefined
+        ? ""
+        : `?${new URLSearchParams({ snapshotId }).toString()}`;
     return analysisRunListSchema.parse(
       await this.request(
-        `${this.#base(owner)}/repositories/${encodeURIComponent(repoId)}/runs`,
+        `${this.#base(owner)}/repositories/${encodeURIComponent(repoId)}/runs${query}`,
         { signal },
       ),
     ).runs;
@@ -171,6 +203,19 @@ export class GithubAnalysisClient extends ApiClient {
       ),
     ).url;
   }
+  /** An artifact as text, when it is text and small enough to show. */
+  async artifactContent(
+    owner: string,
+    artifactId: string,
+    signal?: AbortSignal,
+  ) {
+    return artifactContentSchema.parse(
+      await this.request(
+        `${this.#base(owner)}/artifacts/${encodeURIComponent(artifactId)}/content`,
+        { signal },
+      ),
+    );
+  }
   async logUrl(owner: string, runId: string, signal?: AbortSignal) {
     return artifactUrlSchema.parse(
       await this.request(
@@ -178,6 +223,15 @@ export class GithubAnalysisClient extends ApiClient {
         { signal },
       ),
     ).url;
+  }
+  /** A run's log as text; owners and admins only. */
+  async logContent(owner: string, runId: string, signal?: AbortSignal) {
+    return runLogContentSchema.parse(
+      await this.request(
+        `${this.#base(owner)}/runs/${encodeURIComponent(runId)}/log/content`,
+        { signal },
+      ),
+    );
   }
 }
 
@@ -284,13 +338,17 @@ export class SandboxClient extends GithubAnalysisClient {
   }
   /**
    * Publishes a version whose build passed: approved, frozen, and the
-   * sandbox's published version.
+   * sandbox's published version until `expiresAt`, an ISO time ahead.
    */
-  async publishSandboxVersion(owner: string, versionId: string) {
+  async publishSandboxVersion(
+    owner: string,
+    versionId: string,
+    expiresAt: string,
+  ) {
     return publishVersionResponseSchema.parse(
       await this.request(
         `${this.#sandboxes(owner)}/versions/${encodeURIComponent(versionId)}/publish`,
-        { method: "POST" },
+        { method: "POST", body: JSON.stringify({ expiresAt }) },
       ),
     );
   }

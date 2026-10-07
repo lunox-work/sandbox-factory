@@ -123,10 +123,7 @@ export async function selectBacklog(
     projectKey: board.projectKey ?? undefined,
     now,
   });
-  const externalBoardId = Number(board.externalId);
-  if (!Number.isInteger(externalBoardId)) {
-    throw new InvalidBoardIdError();
-  }
+  const boardId = externalBoardId(board);
 
   const categories = resolveCategories(selection.categories);
   const classify = createClassifier(selection.categories);
@@ -154,7 +151,7 @@ export async function selectBacklog(
 
   while (selected.length < cap && candidatesScanned < scanLimit) {
     const requested = Math.min(PAGE_SIZE, scanLimit - candidatesScanned);
-    const page = await client.boardIssueSignals(externalBoardId, {
+    const page = await client.boardIssueSignals(boardId, {
       jql,
       startAt,
       maxResults: requested,
@@ -280,4 +277,15 @@ export class InvalidBoardIdError extends Error {
     super("That board has an unusable id.");
     this.name = "InvalidBoardIdError";
   }
+}
+
+/**
+ * The number Jira's Agile API knows a board by. Stored as text, as Jira
+ * sends it; one that is not a whole number cannot be asked about, and
+ * reading it as `NaN` would send Jira a request for a board called "NaN".
+ */
+export function externalBoardId(board: { readonly externalId: string }) {
+  const id = Number(board.externalId);
+  if (!Number.isInteger(id)) throw new InvalidBoardIdError();
+  return id;
 }

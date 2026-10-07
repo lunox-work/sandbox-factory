@@ -30,10 +30,16 @@ class ArchiveTest(unittest.TestCase):
         self.assertEqual(self.extract([("repo/a", b"ab", tarfile.REGTYPE)], size=1)[0], 2)
         self.assertEqual(self.extract([("repo/a", b"", tarfile.REGTYPE), ("repo/b", b"", tarfile.REGTYPE)], files=1), (3, []))
 
-    def test_traversal_links_and_multiple_roots(self):
-        for name, kind in [("repo/../../escape", tarfile.REGTYPE), ("/etc/passwd", tarfile.REGTYPE), ("repo/link", tarfile.SYMTYPE), ("repo/link", tarfile.LNKTYPE)]:
-            self.assertEqual(self.extract([(name, b"", kind)]), (4, []))
+    def test_traversal_and_multiple_roots(self):
+        for name in ["repo/../../escape", "/etc/passwd"]:
+            self.assertEqual(self.extract([(name, b"", tarfile.REGTYPE)]), (4, []))
         self.assertEqual(self.extract([("one/a", b"", tarfile.REGTYPE), ("two/b", b"", tarfile.REGTYPE)]), (4, []))
+
+    def test_links_are_skipped_never_written(self):
+        for kind in [tarfile.SYMTYPE, tarfile.LNKTYPE]:
+            # Links alone leave nothing to analyze; beside a file they are left out.
+            self.assertEqual(self.extract([("repo/link", b"", kind)]), (4, []))
+            self.assertEqual(self.extract([("repo/link", b"", kind), ("repo/src/file.ts", b"source", tarfile.REGTYPE)]), (0, ["src/file.ts"]))
 
 
 if __name__ == "__main__":

@@ -30,6 +30,7 @@ import {
   toolOfParams,
   toolVersionOf,
   validateAliasRules,
+  isPublicationLive,
 } from "../src/index.js";
 import type {
   AliasRule,
@@ -177,6 +178,34 @@ test("a target already present in the text is a collision, not a silent merge", 
   );
   assert.equal(shared.ok, false);
   assert.ok(shared.problems.some((p) => p.code === "target_collision"));
+  // Onto a directory the repository already has, a path no longer says
+  // where it came from: `lib/x.ts` would map back to `src/x.ts`.
+  const merged = applyAliases(
+    [
+      { path: "lib/x.ts", text: "" },
+      { path: "src/y.ts", text: "" },
+    ],
+    [rule("src", "lib", "path")],
+  );
+  assert.equal(merged.ok, false);
+  assert.ok(
+    merged.problems.some(
+      (p) => p.code === "irreversible" && p.file === "lib/x.ts",
+    ),
+  );
+  // A rename into a directory of its own maps back.
+  const moved = applyAliases(
+    [
+      { path: "lib/x.ts", text: "" },
+      { path: "src/y.ts", text: "" },
+    ],
+    [rule("src", "app", "path")],
+  );
+  assert.equal(moved.ok, true);
+  assert.deepEqual(
+    moved.files.map((file) => file.path),
+    ["lib/x.ts", "app/y.ts"],
+  );
 });
 
 const manifest: SliceManifest = {
@@ -386,6 +415,57 @@ test("a mock needs no pin, and a choice must name a package the slice requires",
   );
   assert.deepEqual(
     unknownDependencyChoices(manifest, { pg: "runtime-mock" }),
+    [],
+  );
+});
+
+test("only a registry version is installed; a URL, a path or an alias blocks", () => {
+  const pinnedTo = (version: string) =>
+    resolveScope({
+      manifest: {
+        ...manifest,
+        requiredBuildInputs: {
+          ...manifest.requiredBuildInputs,
+          packages: [{ name: "zod", version, declaredIn: "package.json" }],
+        },
+      },
+      contract,
+      choices: { zod: "approved-package" },
+    });
+  for (const version of ["^4.0.0", "4.1.2", ">=1 <2 || 3.x", "latest", "~1.2"])
+    assert.deepEqual(pinnedTo(version).blockers, [], version);
+  for (const version of [
+    "file:../../..",
+    "link:../secrets",
+    "git+https://example.test/x.git",
+    "github:owner/repo",
+    "owner/repo",
+    "https://example.test/x.tgz",
+    "npm:other@1",
+    "workspace:*",
+  ]) {
+    const scope = pinnedTo(version);
+    assert.equal(scope.blockers[0]?.code, "dependency_unresolved", version);
+    assert.equal(
+      scope.dependencies.find((d) => d.name === "zod")?.resolution,
+      "unresolved",
+    );
+  }
+  // A mock installs nothing, so its pin is not read.
+  assert.deepEqual(
+    resolveScope({
+      manifest: {
+        ...manifest,
+        requiredBuildInputs: {
+          ...manifest.requiredBuildInputs,
+          packages: [
+            { name: "zod", version: "file:..", declaredIn: "package.json" },
+          ],
+        },
+      },
+      contract,
+      choices: { zod: "runtime-mock" },
+    }).blockers,
     [],
   );
 });
@@ -701,9 +781,19 @@ test("the baseline verdict accepts only expected hidden-test outcomes over a gre
   assert.deepEqual(bad.reasons, [
     "build exited with 2.",
     "public-tests timed out.",
+    "No hidden test is expected to fail before the fix.",
     "tests/private/a.test.ts was expected to pass on the baseline and failed.",
     "tests/private/b.test.ts could not run.",
   ]);
+  // A sandbox no hidden test judges could never accept a submission.
+  const unjudged = baselineVerdict({
+    steps: [],
+    privateTests: [],
+  });
+  assert.deepEqual(unjudged, {
+    ok: false,
+    reasons: ["No hidden test judges a submission."],
+  });
 });
 
 test("path helpers map TypeScript paths to their emitted and declaration forms", () => {
@@ -1413,5 +1503,30 @@ test("a submission passes only when every public and hidden test passed", () => 
   assert.equal(
     submissionVerdict({ public: all, hidden: { passed: 0, total: 0 } }),
     "failed",
+  );
+});
+
+test("a publication stands until its expiry, and lapses at it", () => {
+  const now = new Date("2026-10-06T12:00:00.000Z");
+  const until = (expiresAt: string | null) =>
+    isPublicationLive({ status: "published", expiresAt }, now);
+  assert.equal(until("2026-10-07T00:00:00.000Z"), true);
+  // At the moment itself it has lapsed, and after it too.
+  assert.equal(until("2026-10-06T12:00:00.000Z"), false);
+  assert.equal(until("2026-10-01T00:00:00.000Z"), false);
+  // One published with no date stands until it is taken down.
+  assert.equal(until(null), true);
+  assert.equal(isPublicationLive({ status: "published" }, now), true);
+  // A sandbox never published, or closed, has no publication at all.
+  assert.equal(
+    isPublicationLive({ status: "draft", expiresAt: null }, now),
+    false,
+  );
+  assert.equal(
+    isPublicationLive(
+      { status: "closed", expiresAt: "2026-10-07T00:00:00.000Z" },
+      now,
+    ),
+    false,
   );
 });

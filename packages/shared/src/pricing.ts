@@ -4,6 +4,8 @@ import {
   maximumRateCardMinor,
   MODEL_BOUNTY_COMPLEXITIES,
   PRICED_BOUNTY_COMPLEXITIES,
+  RUBRIC_CODE_STATUSES,
+  RUBRIC_DIMENSION_IDS,
   SCENARIO_WEIGHTS,
   STEP_SETTING_LIMITS,
   WHOLE_BOUNTY_COMPLEXITIES,
@@ -271,7 +273,55 @@ export const stepResultSchema = z.object({
   nextStepIn: z.number().int().positive().nullable(),
   settings: stepSettingsSchema,
   stepVersion: z.string().min(1),
+  /** The spec revision a reviewer's resize set the base against. */
+  baseRevision: z.number().int().positive().optional(),
 });
+
+const rubricPointsSchema = z.number().int().nonnegative();
+
+/**
+ * A pricing rubric's assessment: `pricing/rubric` in core. Stored on the
+ * proposal as computed, so it reads the same after the rubric changes.
+ */
+export const rubricAssessmentSchema = z.object({
+  version: z.string().min(1),
+  dimensions: z.array(
+    z.object({
+      id: z.enum(RUBRIC_DIMENSION_IDS),
+      label: z.string(),
+      points: rubricPointsSchema,
+      measured: z.boolean(),
+      factors: z.array(
+        z.object({
+          id: z.string().min(1),
+          label: z.string(),
+          evidence: z.string(),
+          // A discount is a negative factor; its dimension is never below zero.
+          points: z.number().int(),
+        }),
+      ),
+    }),
+  ),
+  points: rubricPointsSchema,
+  counts: z.object({
+    scenarios: rubricPointsSchema,
+    testCases: rubricPointsSchema,
+    checks: rubricPointsSchema,
+  }),
+  code: z.object({
+    status: z.enum(RUBRIC_CODE_STATUSES),
+    specRevision: z.number().int().positive().nullable(),
+  }),
+  size: pricedComplexitySchema.nullable(),
+  nextSizeIn: z.number().int().positive().nullable(),
+  weightPoints: stepSettingsSchema.shape.weightPoints,
+});
+
+/**
+ * Who set a proposal's size: the sizing model, the pricing rubric once the
+ * code was measured, or a reviewer's resize.
+ */
+export const proposalSizedBySchema = z.enum(["model", "rubric", "reviewer"]);
 
 export const bountyProposalStatusSchema = z.enum(["proposed", "approved"]);
 export const proposalFreshnessSchema = z.enum([
@@ -302,7 +352,7 @@ export const bountyProposalDtoSchema = z.object({
   actualModel: z.string().min(1),
   promptVersion: z.string().min(1),
   complexity: bountyComplexitySchema,
-  sizedBy: z.enum(["model", "reviewer"]),
+  sizedBy: proposalSizedBySchema,
   resizedBy: z.string().nullable(),
   resizedAt: z.iso.datetime().nullable(),
   amountMinor: minorAmountSchema.nullable(),
@@ -336,6 +386,12 @@ export const bountyProposalDtoSchema = z.object({
    * drafted before weights. Then `complexity` is the base itself.
    */
   step: stepResultSchema.nullable(),
+  /**
+   * The pricing rubric's assessment of the current spec and the measured
+   * code. When `sizedBy` is `rubric`, `complexity` is its size. Null on a
+   * proposal with no spec, and on one sized before the rubric.
+   */
+  rubric: rubricAssessmentSchema.nullable().default(null),
   decidedAt: z.iso.datetime().nullable(),
   decidedBy: z.string().nullable(),
   decisionDeliveryPolicy: z.enum(["off", "requested"]).nullable(),
@@ -431,6 +487,7 @@ export type ProposalCategoriesDto = z.infer<typeof proposalCategoriesDtoSchema>;
 export type BountyRunPlannedIssue = z.infer<typeof bountyRunPlannedIssueSchema>;
 export type BountyRunDto = z.infer<typeof bountyRunDtoSchema>;
 export type BountyProposalDto = z.infer<typeof bountyProposalDtoSchema>;
+export type RubricAssessmentDto = z.infer<typeof rubricAssessmentSchema>;
 export type ProposalFreshnessDto = z.infer<typeof proposalFreshnessDtoSchema>;
 export type ProposalLiveSpecDto = z.infer<typeof proposalLiveSpecSchema>;
 export type BountyWritebackDto = z.infer<typeof bountyWritebackDtoSchema>;

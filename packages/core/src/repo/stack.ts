@@ -198,14 +198,56 @@ function jsonKeys(text: string, fields: readonly string[]): string[] {
 /** A Python distribution's name as PyPI compares it. */
 const pypiName = (name: string) => name.toLowerCase().replace(/[-_.]+/g, "-");
 
+/** The distribution a requirement line names, as requirements.txt writes one. */
+function requirementName(line: string): string[] {
+  const match = /^\s*([A-Za-z0-9][A-Za-z0-9._-]*)/.exec(
+    line.replace(/#.*/, ""),
+  );
+  return match?.[1] === undefined ? [] : [pypiName(match[1])];
+}
+
+/**
+ * The requirements a `setup.cfg` lists under `[options] install_requires`
+ * and in `[options.extras_require]`. Each is an INI value whose
+ * requirements usually sit on indented lines below the key, one per line,
+ * which the whole-file pass cannot see: a bare `django>=4` is neither in a
+ * string nor a key.
+ */
+function setupCfgNames(text: string): string[] {
+  const names: string[] = [];
+  let section = "";
+  let listing = false;
+  for (const line of text.split(/\r?\n/)) {
+    // Blank and comment lines may sit inside a value without ending it.
+    if (line.trim() === "" || /^\s*[#;]/.test(line)) continue;
+    const header = /^\s*\[([^\]]+)\]\s*$/.exec(line);
+    if (header?.[1] !== undefined) {
+      section = header[1].trim().toLowerCase();
+      listing = false;
+      continue;
+    }
+    // A continuation is indented; an unindented line starts the next key.
+    if (/^\s/.test(line)) {
+      if (listing) names.push(...requirementName(line));
+      continue;
+    }
+    const entry = /^([^=:]+)[=:](.*)$/.exec(line);
+    if (entry?.[1] === undefined || entry[2] === undefined) {
+      listing = false;
+      continue;
+    }
+    listing =
+      (section === "options" &&
+        entry[1].trim().toLowerCase() === "install_requires") ||
+      section === "options.extras_require";
+    if (listing) names.push(...requirementName(entry[2]));
+  }
+  return names;
+}
+
 function pypiNames(path: string, text: string): string[] {
   if (/\.txt$/i.test(path)) {
-    return text.split(/\r?\n/).flatMap((line) => {
-      const match = /^\s*([A-Za-z0-9][A-Za-z0-9._-]*)/.exec(
-        line.replace(/#.*/, ""),
-      );
-      return match?.[1] === undefined ? [] : [pypiName(match[1])];
-    });
+    return text.split(/\r?\n/).flatMap(requirementName);
   }
   // A requirement in a string (`"django>=5"`), or a table's key (Poetry,
   // Pipfile): both forms, over the whole file.
@@ -215,6 +257,9 @@ function pypiNames(path: string, text: string): string[] {
       /["']([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]\n"']{0,200}\])?\s*(?=[<>=!~;@ ]|["'])/g,
     ),
     ...captures(text, /^\s*([A-Za-z0-9][A-Za-z0-9._-]*)\s*=/gm),
+    ...(baseName(path).toLowerCase() === "setup.cfg"
+      ? setupCfgNames(text)
+      : []),
   ].map(pypiName);
 }
 

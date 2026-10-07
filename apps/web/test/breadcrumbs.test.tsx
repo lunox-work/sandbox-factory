@@ -229,6 +229,47 @@ test("the Jira crumb on a board leads to the Jira tab of settings", () => {
   expect(jira?.connectionTab).toBe("jira");
 });
 
+test("a repository sits under its organization's GitHub tab", () => {
+  // A repository has no list page of its own: the registered ones are on
+  // the GitHub tab of settings, which is where the crumb before it leads.
+  const trail = trailFor(
+    "org-repository",
+    ACME,
+    undefined,
+    undefined,
+    undefined,
+    "acme/widgets",
+  );
+  expect(trail.map((c) => c.label)).toEqual([
+    "Home",
+    "Workspaces",
+    "Acme",
+    "GitHub",
+    "acme/widgets",
+  ]);
+  const github = trail.find((crumb) => crumb.label === "GitHub");
+  expect(github?.screen).toBe("org-settings");
+  expect(github?.slug).toBe("acme");
+  expect(github?.connectionTab).toBe("github");
+});
+
+test("a repository whose name has not arrived keeps its place in the trail", () => {
+  expect(trailFor("org-repository", ACME).map((c) => c.label)).toEqual([
+    "Home",
+    "Workspaces",
+    "Acme",
+    "GitHub",
+    "Repository",
+  ]);
+  // Only its organization crumb goes missing while that loads.
+  expect(trailFor("org-repository").map((c) => c.label)).toEqual([
+    "Home",
+    "Workspaces",
+    "GitHub",
+    "Repository",
+  ]);
+});
+
 test("an organization still loading is left out rather than guessed at", () => {
   /*
    * A crumb reading "Loading…" shifts the row under the cursor when the name
@@ -262,6 +303,15 @@ test("no trail ends in a step that goes nowhere", () => {
     trailFor("org-settings"),
     trailFor("org-jira-board", ACME, "Sprint Board"),
     trailFor("org-jira-board"),
+    trailFor(
+      "org-repository",
+      ACME,
+      undefined,
+      undefined,
+      undefined,
+      "acme/widgets",
+    ),
+    trailFor("org-repository"),
   ];
 
   for (const trail of screens) {

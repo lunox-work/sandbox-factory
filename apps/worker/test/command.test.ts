@@ -12,6 +12,16 @@ test("parser environment excludes platform credentials", async () => {
     { signal: new AbortController().signal },
   );
   assert.deepEqual(JSON.parse(out), { seed: "0" });
+  // A tool's fixed settings join the base; the worker's own still do not.
+  const extended = await command(
+    process.execPath,
+    [
+      "-e",
+      "process.stdout.write(JSON.stringify({db:process.env.DATABASE_URL,seed:process.env.PYTHONHASHSEED,extra:process.env.TOOL_SETTING}));",
+    ],
+    { signal: new AbortController().signal, env: { TOOL_SETTING: "1" } },
+  );
+  assert.deepEqual(JSON.parse(extended), { seed: "0", extra: "1" });
 });
 test("command failures, missing executables and excessive output reject", async () => {
   const options = { signal: new AbortController().signal };

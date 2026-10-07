@@ -63,12 +63,23 @@ test("typed analysis client parses every response and encodes scoped identifiers
         nextCursor: url.includes("cursor=") ? null : "src/main.ts",
         truncated: false,
       };
+    else if (url.endsWith("/snapshots") && init?.method === "POST")
+      body = { commitSha: "a".repeat(40), snapshot: null };
     else if (url.endsWith("/snapshots")) body = { snapshots: [snapshot] };
+    else if (url.endsWith("/branches"))
+      body = {
+        branches: [{ name: "main", headSha: "a".repeat(40), isDefault: true }],
+        truncated: false,
+      };
     else if (url.includes("/snapshots/"))
       body = { snapshot: { ...snapshot, repoFullName: "acme/widgets", facts } };
     else if (url.endsWith("/artifacts")) body = { artifacts: [] };
     else if (url.endsWith("/url"))
       body = { url: "https://objects.test/signed" };
+    else if (url.endsWith("/log/content"))
+      body = { sizeBytes: 4, text: "done", omitted: null };
+    else if (url.endsWith("/content"))
+      body = { path: "a.md", sizeBytes: 2, text: "# A", omitted: null };
     else if (url.endsWith("/runs") && init?.method !== "POST")
       body = { runs: [run] };
     else if (url.endsWith("/slices"))
@@ -93,6 +104,20 @@ test("typed analysis client parses every response and encodes scoped identifiers
   assert.equal((await client.snapshots("org/a", "repo/b"))[0]?.id, "rsn_1");
   assert.match(calls[0]!.url, /org%2Fa.*repo%2Fb/);
   assert.equal(
+    (await client.branches("org/a", "repo/b")).branches[0]?.name,
+    "main",
+  );
+  assert.match(calls.at(-1)!.url, /repo%2Fb\/branches$/);
+  assert.deepEqual(await client.pullSnapshot("org/a", "repo/b", "feature/x"), {
+    commitSha: "a".repeat(40),
+    snapshot: null,
+  });
+  assert.equal(calls.at(-1)?.init?.method, "POST");
+  assert.equal(
+    calls.at(-1)?.init?.body,
+    JSON.stringify({ branch: "feature/x" }),
+  );
+  assert.equal(
     (await client.snapshot("org/a", "rsn_1")).repoFullName,
     "acme/widgets",
   );
@@ -108,6 +133,13 @@ test("typed analysis client parses every response and encodes scoped identifiers
     await client.artifactUrl("org/a", "art_1"),
     "https://objects.test/signed",
   );
+  assert.equal((await client.artifactContent("org/a", "art/1")).text, "# A");
+  assert.match(
+    calls.at(-1)!.url,
+    /org%2Fa\/github\/artifacts\/art%2F1\/content$/,
+  );
+  assert.equal((await client.logContent("org/a", "arn/1")).text, "done");
+  assert.match(calls.at(-1)!.url, /\/runs\/arn%2F1\/log\/content$/);
   assert.equal(
     await client.logUrl("org/a", "arn_1"),
     "https://objects.test/signed",

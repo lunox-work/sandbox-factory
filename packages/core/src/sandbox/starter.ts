@@ -23,7 +23,9 @@ import type { SpecDraft } from "../pricing/spec.js";
 import { stackTechnology } from "../stack.js";
 import {
   applyAliases,
+  jsonLeaves,
   validateAliasRules,
+  withJsonLeaves,
   type AliasKind,
   type AliasRule,
 } from "./aliases.js";
@@ -204,9 +206,19 @@ function starterFileProblems(
 ): string[] {
   const problems: string[] = [];
   const seen = new Set<string>();
+  // Folded as a case-insensitive disk folds them: `src/Foo.ts` and
+  // `src/foo.ts` are one file there, so the baseline would test a tree
+  // other than the one the manifest hashes.
+  const folded = new Map<string, string>();
   const unique = (path: string) => {
     if (seen.has(path)) problems.push(`${path} is given twice.`);
+    else {
+      const same = folded.get(path.toLowerCase());
+      if (same !== undefined)
+        problems.push(`${path} and ${same} differ only in case.`);
+    }
     seen.add(path);
+    folded.set(path.toLowerCase(), path);
   };
   if (starter.files.length === 0)
     problems.push(
@@ -312,6 +324,14 @@ function starterFileProblems(
     problems.push(
       `The starter is longer than ${STARTER_LIMITS.totalChars} characters in all.`,
     );
+  // A file cannot also be a directory: staging `src/a.ts/b.ts` after
+  // `src/a.ts` fails on any disk.
+  for (const path of seen)
+    for (let at = path.indexOf("/"); at > 0; at = path.indexOf("/", at + 1)) {
+      const parent = path.slice(0, at);
+      if (seen.has(parent))
+        problems.push(`${parent} is a file, so ${path} cannot be under it.`);
+    }
   return problems;
 }
 
@@ -339,6 +359,15 @@ export type AliasedStarter =
 export function aliasStarter(
   starter: StarterSubmission,
   spec: SpecDraft | null,
+  options: {
+    /**
+     * Whether a rule that renames nothing is refused; on by default. Off
+     * when the table is applied again to part of a starter already accepted
+     * whole: a rule that only the spec's text uses then renames nothing in
+     * the part, and was checked when the starter was accepted.
+     */
+    readonly requireUse?: boolean;
+  } = {},
 ): AliasedStarter {
   const groups = [
     starter.files,
@@ -348,9 +377,9 @@ export function aliasStarter(
   const inputs = [
     ...groups.flat().map(({ path, text }) => ({ path, text })),
     { path: RUN_PATH, text: starter.scenario },
-    ...(spec === null
-      ? []
-      : [{ path: SPEC_PSEUDO_PATH, text: JSON.stringify(spec) }]),
+    // The spec's text, leaf by leaf: renaming it as one serialized string
+    // renamed its keys as well (`jsonLeaves`).
+    ...(spec === null ? [] : jsonLeaves(SPEC_PSEUDO_PATH, spec)),
   ];
   const aliased = applyAliases(inputs, starter.aliases);
   if (!aliased.ok)
@@ -362,7 +391,7 @@ export function aliasStarter(
       ),
     };
   const unused = starter.aliases.flatMap((rule, index) =>
-    (aliased.applied[index] ?? 0) === 0
+    options.requireUse !== false && (aliased.applied[index] ?? 0) === 0
       ? [
           `Name ${index + 1}: ${rule.before} does not occur in the starter, so it renames nothing.`,
         ]
@@ -384,17 +413,13 @@ export function aliasStarter(
     text: textOf(test.text),
   }));
   const scenario = textOf(starter.scenario);
-  let renamedSpec: SpecDraft | null = null;
-  if (spec !== null) {
-    try {
-      renamedSpec = JSON.parse(textOf("null")) as SpecDraft;
-    } catch {
-      return {
-        ok: false,
-        problems: ["Name table: renaming broke the spec's serialization."],
-      };
-    }
-  }
+  const renamedSpec =
+    spec === null
+      ? null
+      : withJsonLeaves(
+          spec,
+          aliased.files.slice(at).map((file) => file.text),
+        );
   return {
     ok: true,
     starter: { ...starter, files, publicTests, hiddenTests, scenario },

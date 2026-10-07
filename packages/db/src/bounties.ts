@@ -10,21 +10,28 @@ import type {
   BountyOrigin,
   SandboxStatus,
 } from "sandbox-factory";
-import { clampBountyTitle } from "sandbox-factory";
+import { clampBountyTitle, overviewApproved } from "sandbox-factory";
 import { and, desc, eq, inArray, or, sql, type SQL } from "drizzle-orm";
 
-import { isForeignKeyViolation, type Database } from "./errors.js";
+import {
+  isForeignKeyViolation,
+  type Database,
+  type QueryExecutor,
+} from "./errors.js";
 import { generateId } from "./mapping.js";
 import {
   bounty,
   bountyProposal,
   bountyRun,
+  bountyVersion,
   githubRepo,
   jiraBoard,
   jiraConnection,
   jiraIssue,
   sandbox,
   sandboxSource,
+  sandboxVersion,
+  sandboxVersionSource,
 } from "./schema.js";
 import type { BountyRow } from "./schema.js";
 
@@ -52,6 +59,13 @@ export interface StoredBounty extends BountyContent {
   readonly stack: readonly string[];
   readonly createdBy: string | null;
   readonly revision: number;
+  /** The overview's version: moved by each change to its title or text. */
+  readonly version: number;
+  /**
+   * The overview version approved, by whom and when; null until one is.
+   * The overview is approved while this is its version (`overviewApproved`).
+   */
+  readonly approval: BountyApproval | null;
   readonly jira: BountyJiraLink | null;
   /** The bounty's sandbox, in brief, once it has one. */
   readonly sandbox: BountySandboxSummary | null;
@@ -64,8 +78,37 @@ export interface BountySandboxSummary {
   readonly id: string;
   readonly status: SandboxStatus;
   readonly currentVersionId: string | null;
+  /** When its publication lapses; null while it has none. */
+  readonly expiresAt: string | null;
   /** Null until a repository is linked, which cutting a version needs. */
   readonly sourceRepoId: string | null;
+  /**
+   * The version contributors get, or the latest while none is published,
+   * and the bounty version it was built on (null for one built before that
+   * was kept). Null while it has no version.
+   */
+  readonly build: {
+    readonly versionId: string;
+    readonly version: number;
+    readonly bountyVersion: number | null;
+  } | null;
+}
+
+/** An overview version an owner or admin approved. */
+export interface BountyApproval {
+  readonly version: number;
+  /** Null for a person since removed. */
+  readonly approvedBy: string | null;
+  readonly approvedAt: string;
+}
+
+/** One version of a bounty's overview: its text from then until the next. */
+export interface StoredBountyVersion {
+  readonly version: number;
+  readonly title: string;
+  readonly description: string;
+  readonly createdBy: string | null;
+  readonly createdAt: string;
 }
 
 /** A bounty's live proposal, in brief. */
@@ -106,10 +149,16 @@ export type BountyMutationResult =
       /**
        * `jira-owned`: a change to the text of a bounty whose Jira issue is
        * still there, which is Jira's to change. `repo-not-found`: a
-       * repository the organization does not have.
+       * repository the organization does not have. `overview-approved`: a
+       * change to an overview that stands approved, which is unapproved
+       * first.
        */
       readonly reason:
-        "not-found" | "changed" | "jira-owned" | "repo-not-found";
+        | "not-found"
+        | "changed"
+        | "jira-owned"
+        | "repo-not-found"
+        | "overview-approved";
       readonly current?: StoredBounty;
     };
 
@@ -140,13 +189,39 @@ export interface BountyStore {
     organizationIds: readonly string[],
     options?: Parameters<BountyStore["list"]>[1],
   ): Promise<ListedBounty[]>;
-  /** A change, against the revision the editor saw. */
+  /**
+   * A change, against the revision the editor saw. A change to the title
+   * or the description is a new version of the overview, by `editedBy`.
+   */
   update(
     organizationId: string,
     bountyId: string,
     expectedRevision: number,
     change: BountyChange,
+    editedBy?: string | null,
   ): Promise<BountyMutationResult>;
+  /**
+   * Approves the overview at the version it is at, against the revision
+   * the approver saw, which locks it until it is unapproved. Approving one
+   * already approved at its version is no change.
+   */
+  approve(
+    organizationId: string,
+    bountyId: string,
+    expectedRevision: number,
+    approvedBy: string,
+  ): Promise<BountyMutationResult>;
+  /** Takes the overview's approval back, against the revision seen. */
+  unapprove(
+    organizationId: string,
+    bountyId: string,
+    expectedRevision: number,
+  ): Promise<BountyMutationResult>;
+  /** Its overview's versions, newest first; null for a bounty not found. */
+  versions(
+    organizationId: string,
+    bountyId: string,
+  ): Promise<StoredBountyVersion[] | null>;
   /**
    * Deletes a bounty nothing has been built on: no proposal, live or
    * otherwise, no sandbox, and no run sizing it now. `in-use` otherwise,
@@ -201,28 +276,44 @@ const NO_LINK: LinkFields = {
 
 /**
  * The bounty's sandbox, joined on the one-per-bounty key, with the
- * repository it is cut from when it has one.
+ * repository it is cut from when it has one, and the version it is built
+ * as: its published one, or its latest.
  */
 const sandboxColumns = {
   sandboxId: sandbox.id,
   sandboxStatus: sandbox.status,
   sandboxVersionId: sandbox.currentVersionId,
+  sandboxExpiresAt: sandbox.expiresAt,
   sandboxSourceRepoId: sandboxSource.sourceRepoId,
+  buildVersionId: sandboxVersion.id,
+  buildVersion: sandboxVersion.version,
+  buildBountyVersion: sandboxVersionSource.proposalVersion,
 };
 
 interface SandboxFields {
   readonly sandboxId: string | null;
   readonly sandboxStatus: SandboxStatus | null;
   readonly sandboxVersionId: string | null;
+  readonly sandboxExpiresAt: Date | null;
   readonly sandboxSourceRepoId: string | null;
+  readonly buildVersionId: string | null;
+  readonly buildVersion: number | null;
+  readonly buildBountyVersion: number | null;
 }
 
 const NO_SANDBOX: SandboxFields = {
   sandboxId: null,
   sandboxStatus: null,
   sandboxVersionId: null,
+  sandboxExpiresAt: null,
   sandboxSourceRepoId: null,
+  buildVersionId: null,
+  buildVersion: null,
+  buildBountyVersion: null,
 };
+
+/** The sandbox's published version, or else its latest. */
+const buildVersionId = sql`coalesce(${sandbox.currentVersionId}, (select ${sandboxVersion.id} from ${sandboxVersion} where ${sandboxVersion.sandboxId} = ${sandbox.id} order by ${sandboxVersion.version} desc limit 1))`;
 
 function toSandboxSummary(fields: SandboxFields): BountySandboxSummary | null {
   return fields.sandboxId === null || fields.sandboxStatus === null
@@ -231,7 +322,16 @@ function toSandboxSummary(fields: SandboxFields): BountySandboxSummary | null {
         id: fields.sandboxId,
         status: fields.sandboxStatus,
         currentVersionId: fields.sandboxVersionId,
+        expiresAt: fields.sandboxExpiresAt?.toISOString() ?? null,
         sourceRepoId: fields.sandboxSourceRepoId,
+        build:
+          fields.buildVersionId == null || fields.buildVersion == null
+            ? null
+            : {
+                versionId: fields.buildVersionId,
+                version: fields.buildVersion,
+                bountyVersion: fields.buildBountyVersion ?? null,
+              },
       };
 }
 
@@ -257,6 +357,18 @@ function toLink(fields: LinkFields): BountyJiraLink | null {
   };
 }
 
+function toApproval(
+  row: Pick<BountyRow, "approvedVersion" | "approvedBy" | "approvedAt">,
+): BountyApproval | null {
+  return row.approvedVersion == null || row.approvedAt == null
+    ? null
+    : {
+        version: row.approvedVersion,
+        approvedBy: row.approvedBy ?? null,
+        approvedAt: row.approvedAt.toISOString(),
+      };
+}
+
 function toBounty(
   row: BountyRow,
   fields: LinkFields,
@@ -275,6 +387,8 @@ function toBounty(
     stack: row.stack,
     createdBy: row.createdBy,
     revision: row.revision,
+    version: row.version,
+    approval: toApproval(row),
     jira,
     sandbox: toSandboxSummary(joined),
     createdAt: row.createdAt.toISOString(),
@@ -295,13 +409,35 @@ export function followsJira(stored: Pick<StoredBounty, "jira">): boolean {
   return stored.jira !== null && stored.jira.removedAt === null;
 }
 
-/** Inserts a bounty in the organization, under a new id. */
+/**
+ * Keeps the overview as the row now says it, as the row's version. Written
+ * beside the change that made the version, by whoever made it.
+ */
+async function keepVersion(
+  db: QueryExecutor,
+  row: BountyRow,
+  createdBy: string | null,
+): Promise<void> {
+  await db.insert(bountyVersion).values({
+    bountyId: row.id,
+    version: row.version,
+    title: row.title,
+    description: row.description,
+    createdBy,
+    createdAt: row.updatedAt,
+  });
+}
+
+/**
+ * Inserts a bounty in the organization, under a new id, as its overview's
+ * version 1. Called inside a transaction, so the two land together.
+ */
 export async function insertBounty(
-  db: Database,
+  db: QueryExecutor,
   organizationId: string,
   values: Omit<
     typeof bounty.$inferInsert,
-    "id" | "organizationId" | "revision"
+    "id" | "organizationId" | "revision" | "version"
   >,
 ): Promise<BountyRow> {
   const rows = (await db
@@ -310,6 +446,7 @@ export async function insertBounty(
     .returning()) as BountyRow[];
   const created = rows[0];
   if (created === undefined) throw new Error("Bounty insert returned no row.");
+  await keepVersion(db, created, created.createdBy);
   return created;
 }
 
@@ -336,24 +473,40 @@ export function jiraContentChange(
   return same ? null : values;
 }
 
+/** Whether a change says something new in the overview's title or text. */
+function changesText(
+  current: Pick<BountyRow, "title" | "description">,
+  change: { readonly title?: unknown; readonly description?: unknown },
+): boolean {
+  return (
+    (change.title !== undefined && change.title !== current.title) ||
+    (change.description !== undefined &&
+      change.description !== current.description)
+  );
+}
+
 /**
  * Writes Jira's text over the bounty's, when it differs, against the
  * revision it was read at. A bounty changed in between is left for the next
- * read, which compares again.
+ * read, which compares again. New words are a new overview version, which
+ * nobody here wrote; a change of components alone is not. Called inside a
+ * transaction, so the version is kept with the change.
  */
 export async function refreshBounty(
-  db: Database,
+  db: QueryExecutor,
   organizationId: string,
   current: BountyRow,
   content: BountyContent,
 ): Promise<boolean> {
   const change = jiraContentChange(current, content);
   if (change === null) return false;
-  const rows = await db
+  const versioned = changesText(current, change);
+  const rows = (await db
     .update(bounty)
     .set({
       ...change,
       revision: current.revision + 1,
+      ...(versioned ? { version: current.version + 1 } : {}),
       updatedAt: new Date(),
     })
     .where(
@@ -363,8 +516,11 @@ export async function refreshBounty(
         eq(bounty.revision, current.revision),
       ),
     )
-    .returning({ id: bounty.id });
-  return rows.length > 0;
+    .returning()) as BountyRow[];
+  const updated = rows[0];
+  if (updated === undefined) return false;
+  if (versioned) await keepVersion(db, updated, null);
+  return true;
 }
 
 async function ownsRepo(
@@ -397,6 +553,11 @@ async function readBounty(
     .leftJoin(jiraConnection, eq(jiraConnection.id, jiraBoard.connectionId))
     .leftJoin(sandbox, eq(sandbox.bountyId, bounty.id))
     .leftJoin(sandboxSource, eq(sandboxSource.sandboxId, sandbox.id))
+    .leftJoin(sandboxVersion, eq(sandboxVersion.id, buildVersionId))
+    .leftJoin(
+      sandboxVersionSource,
+      eq(sandboxVersionSource.sandboxVersionId, sandboxVersion.id),
+    )
     .where(
       and(eq(bounty.organizationId, organizationId), eq(bounty.id, bountyId)),
     )) as ({ row: BountyRow } & LinkFields & SandboxFields)[];
@@ -424,6 +585,10 @@ async function listBounties(
       repoId: bounty.repoId,
       stack: bounty.stack,
       revision: bounty.revision,
+      version: bounty.version,
+      approvedVersion: bounty.approvedVersion,
+      approvedBy: bounty.approvedBy,
+      approvedAt: bounty.approvedAt,
       createdAt: bounty.createdAt,
       updatedAt: bounty.updatedAt,
       ...linkColumns,
@@ -440,6 +605,11 @@ async function listBounties(
     .leftJoin(jiraConnection, eq(jiraConnection.id, jiraBoard.connectionId))
     .leftJoin(sandbox, eq(sandbox.bountyId, bounty.id))
     .leftJoin(sandboxSource, eq(sandboxSource.sandboxId, sandbox.id))
+    .leftJoin(sandboxVersion, eq(sandboxVersion.id, buildVersionId))
+    .leftJoin(
+      sandboxVersionSource,
+      eq(sandboxVersionSource.sandboxVersionId, sandboxVersion.id),
+    )
     // The live one only, of which there is at most one per bounty.
     .leftJoin(
       bountyProposal,
@@ -464,6 +634,61 @@ async function listBounties(
   return rows.map(toListed);
 }
 
+/**
+ * Approves the overview at its version (`approvedBy` given) or takes the
+ * approval back (null), against the revision the decider saw. Asking for
+ * what already stands is no change, and keeps the revision.
+ */
+async function decide(
+  db: Database,
+  organizationId: string,
+  bountyId: string,
+  expectedRevision: number,
+  approvedBy: string | null,
+): Promise<BountyMutationResult> {
+  const current = await readBounty(db, organizationId, bountyId);
+  if (current === null) return { ok: false, reason: "not-found" };
+  if (current.revision !== expectedRevision) {
+    return { ok: false, reason: "changed", current };
+  }
+  if (overviewApproved(current) === (approvedBy !== null)) {
+    return { ok: true, bounty: current };
+  }
+  const now = new Date();
+  const rows = (await db
+    .update(bounty)
+    .set({
+      approvedVersion: approvedBy === null ? null : current.version,
+      approvedBy,
+      approvedAt: approvedBy === null ? null : now,
+      revision: expectedRevision + 1,
+      updatedAt: now,
+    })
+    .where(
+      and(
+        eq(bounty.organizationId, organizationId),
+        eq(bounty.id, bountyId),
+        eq(bounty.revision, expectedRevision),
+      ),
+    )
+    .returning()) as BountyRow[];
+  const updated = rows[0];
+  if (updated === undefined) {
+    const latest = await readBounty(db, organizationId, bountyId);
+    return latest === null
+      ? { ok: false, reason: "not-found" }
+      : { ok: false, reason: "changed", current: latest };
+  }
+  return {
+    ok: true,
+    bounty: {
+      ...toBounty(updated, NO_LINK),
+      jira: current.jira,
+      sandbox: current.sandbox,
+    },
+  };
+}
+
 export function createBountyStore(db: Database): BountyStore {
   return {
     async create(organizationId, createdBy, input) {
@@ -475,14 +700,16 @@ export function createBountyStore(db: Database): BountyStore {
       }
       let row: BountyRow;
       try {
-        row = await insertBounty(db, organizationId, {
-          title: input.title,
-          description: input.description,
-          origin: "manual",
-          repoId: input.repoId,
-          stack: [...input.stack],
-          createdBy,
-        });
+        row = await db.transaction((tx) =>
+          insertBounty(tx, organizationId, {
+            title: input.title,
+            description: input.description,
+            origin: "manual",
+            repoId: input.repoId,
+            stack: [...input.stack],
+            createdBy,
+          }),
+        );
       } catch (error) {
         // The repository was removed between the check and the insert.
         if (input.repoId !== null && isForeignKeyViolation(error)) {
@@ -508,7 +735,13 @@ export function createBountyStore(db: Database): BountyStore {
             options,
           ),
 
-    async update(organizationId, bountyId, expectedRevision, change) {
+    async update(
+      organizationId,
+      bountyId,
+      expectedRevision,
+      change,
+      editedBy = null,
+    ) {
       const current = await readBounty(db, organizationId, bountyId);
       if (current === null) return { ok: false, reason: "not-found" };
       if (current.revision !== expectedRevision) {
@@ -532,6 +765,10 @@ export function createBountyStore(db: Database): BountyStore {
         (stack === undefined ||
           JSON.stringify(stack) === JSON.stringify(current.stack));
       if (same) return { ok: true, bounty: current };
+      // Approved, the overview is held as it is until it is unapproved.
+      if (overviewApproved(current)) {
+        return { ok: false, reason: "overview-approved", current };
+      }
       if (
         repoId !== undefined &&
         repoId !== null &&
@@ -540,28 +777,38 @@ export function createBountyStore(db: Database): BountyStore {
       ) {
         return { ok: false, reason: "repo-not-found" };
       }
+      // New words are the overview's next version; a repository or a
+      // stack is not what a proposal is sized from, so moves none.
+      const versioned = changesText(current, change);
       let rows: BountyRow[];
       try {
-        rows = (await db
-          .update(bounty)
-          .set({
-            ...(change.title === undefined ? {} : { title: change.title }),
-            ...(change.description === undefined
-              ? {}
-              : { description: change.description }),
-            ...(repoId === undefined ? {} : { repoId }),
-            ...(stack === undefined ? {} : { stack: [...stack] }),
-            revision: expectedRevision + 1,
-            updatedAt: new Date(),
-          })
-          .where(
-            and(
-              eq(bounty.organizationId, organizationId),
-              eq(bounty.id, bountyId),
-              eq(bounty.revision, expectedRevision),
-            ),
-          )
-          .returning()) as BountyRow[];
+        rows = await db.transaction(async (tx) => {
+          const written = (await tx
+            .update(bounty)
+            .set({
+              ...(change.title === undefined ? {} : { title: change.title }),
+              ...(change.description === undefined
+                ? {}
+                : { description: change.description }),
+              ...(repoId === undefined ? {} : { repoId }),
+              ...(stack === undefined ? {} : { stack: [...stack] }),
+              revision: expectedRevision + 1,
+              ...(versioned ? { version: current.version + 1 } : {}),
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(bounty.organizationId, organizationId),
+                eq(bounty.id, bountyId),
+                eq(bounty.revision, expectedRevision),
+              ),
+            )
+            .returning()) as BountyRow[];
+          const updated = written[0];
+          if (updated !== undefined && versioned)
+            await keepVersion(tx, updated, editedBy);
+          return written;
+        });
       } catch (error) {
         // The repository was removed between the check and the write.
         if (repoId != null && isForeignKeyViolation(error)) {
@@ -584,6 +831,37 @@ export function createBountyStore(db: Database): BountyStore {
           sandbox: current.sandbox,
         },
       };
+    },
+
+    approve: (organizationId, bountyId, expectedRevision, approvedBy) =>
+      decide(db, organizationId, bountyId, expectedRevision, approvedBy),
+
+    unapprove: (organizationId, bountyId, expectedRevision) =>
+      decide(db, organizationId, bountyId, expectedRevision, null),
+
+    async versions(organizationId, bountyId) {
+      const rows = (await db
+        .select({ version: bountyVersion })
+        .from(bountyVersion)
+        .innerJoin(bounty, eq(bounty.id, bountyVersion.bountyId))
+        .where(
+          and(
+            eq(bounty.organizationId, organizationId),
+            eq(bounty.id, bountyId),
+          ),
+        )
+        .orderBy(desc(bountyVersion.version))) as {
+        version: typeof bountyVersion.$inferSelect;
+      }[];
+      // Every bounty has its first version, so none is a bounty not found.
+      if (rows.length === 0) return null;
+      return rows.map(({ version: row }) => ({
+        version: row.version,
+        title: row.title,
+        description: row.description,
+        createdBy: row.createdBy,
+        createdAt: row.createdAt.toISOString(),
+      }));
     },
 
     remove(organizationId, bountyId) {
@@ -639,7 +917,9 @@ export function createBountyStore(db: Database): BountyStore {
       const current = rows[0];
       return current === undefined
         ? false
-        : refreshBounty(db, organizationId, current, content);
+        : db.transaction((tx) =>
+            refreshBounty(tx, organizationId, current, content),
+          );
     },
   };
 }
@@ -653,6 +933,10 @@ type ListedRow = Pick<
   | "repoId"
   | "stack"
   | "revision"
+  | "version"
+  | "approvedVersion"
+  | "approvedBy"
+  | "approvedAt"
   | "createdAt"
   | "updatedAt"
 > &
@@ -675,6 +959,8 @@ function toListed(row: ListedRow): ListedBounty {
     repoId: row.repoId,
     stack: row.stack,
     revision: row.revision,
+    version: row.version,
+    approval: toApproval(row),
     jira,
     sandbox: toSandboxSummary(row),
     proposal:

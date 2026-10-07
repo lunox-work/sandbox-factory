@@ -10,6 +10,22 @@ import { clients, queryKeys, useUserId } from "../../data/query";
 import type { EnrichedProposal } from "./types";
 
 type Page = { proposals: EnrichedProposal[]; nextCursor: string | null };
+type Detail = Awaited<ReturnType<typeof clients.pricing.detail>>;
+
+/** How often a proposal is read again while its Jira update is under way. */
+export const DELIVERY_POLL_MS = 3_000;
+
+/**
+ * A Jira update is posted after its approval or retry answers, so the
+ * proposal is read again until none is pending or running: otherwise its
+ * "pending" stays on screen until the page is reloaded.
+ */
+const whileDelivering = (query: { state: { data: Detail | undefined } }) =>
+  query.state.data?.writebackOperations.some(
+    ({ status }) => status === "pending" || status === "running",
+  )
+    ? DELIVERY_POLL_MS
+    : false;
 export function useProposalResources(
   owner: string,
   boardId: string | undefined,
@@ -61,6 +77,7 @@ export function useProposalResources(
     queryKey: detailKey,
     enabled: selectedId !== null,
     staleTime: 0,
+    refetchInterval: whileDelivering,
     queryFn: ({ signal }) =>
       clients.pricing.detail(owner, selectedId ?? "", boardId, signal),
   });
@@ -123,8 +140,10 @@ function useProposalRefresh(owner: string) {
   const userId = useUserId();
   const cache = useQueryClient();
   return useCallback(async () => {
-    await Promise.all(
-      [
+    await Promise.all([
+      // The list across workspaces shows the same rows.
+      cache.invalidateQueries({ queryKey: queryKeys.me(userId, "bounties") }),
+      ...[
         "proposals",
         "proposal-detail",
         "proposal-categories",
@@ -139,7 +158,7 @@ function useProposalRefresh(owner: string) {
           queryKey: queryKeys.resource(userId, owner, resource),
         }),
       ),
-    );
+    ]);
   }, [cache, userId, owner]);
 }
 
@@ -161,6 +180,7 @@ export function useProposalDetail(owner: string, proposalId: string) {
   const detail = useQuery({
     queryKey: detailKey,
     staleTime: 0,
+    refetchInterval: whileDelivering,
     queryFn: ({ signal }) =>
       clients.pricing.detail(owner, proposalId, undefined, signal),
   });

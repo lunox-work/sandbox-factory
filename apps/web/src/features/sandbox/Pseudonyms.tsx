@@ -24,7 +24,7 @@ const KIND_LABEL: Record<Rule["kind"], string> = {
 };
 
 /** `3 rules: 2 identifiers, 1 path`, counted by kind in the order of kinds. */
-export function pseudonymSummary(rules: readonly Rule[]): string {
+function pseudonymSummary(rules: readonly Rule[]): string {
   const counts = new Map<Rule["kind"], number>();
   for (const rule of rules)
     counts.set(rule.kind, (counts.get(rule.kind) ?? 0) + 1);
@@ -50,7 +50,7 @@ export function PseudonymDocument({
   generated: boolean;
 }) {
   return (
-    <div className="min-h-0 flex-1 overflow-auto px-6 pt-4 pb-16">
+    <div className="min-h-0 flex-1 overflow-auto px-8 pt-4 pb-16">
       <div className="max-w-5xl">
         <h2 className="text-lg font-semibold text-(--wb-strong)">Pseudonyms</h2>
         <p className="mt-1 max-w-2xl text-(--wb-muted)">
@@ -61,7 +61,7 @@ export function PseudonymDocument({
         {rules.length === 0 ? (
           <p
             role="status"
-            className="mt-6 rounded-md border border-dashed border-(--wb-input-border) px-4 py-6 text-center text-(--wb-muted)"
+            className="mt-6 rounded-[4px] border border-dashed border-(--wb-input-border) px-4 py-6 text-center text-(--wb-muted)"
           >
             {generated
               ? "No names are aliased. This version's starter was written before starters had pseudonyms; generate it again to give it some."
@@ -72,7 +72,7 @@ export function PseudonymDocument({
             <p className="mt-4 text-xs text-(--wb-muted) tabular-nums">
               {pseudonymSummary(rules)}
             </p>
-            <div className="mt-2 overflow-x-auto rounded-md border border-(--wb-border)">
+            <div className="mt-2 overflow-x-auto rounded-[4px] border border-(--wb-border)">
               <table className="w-full border-collapse text-left">
                 <caption className="sr-only">
                   Private names and the public names they become

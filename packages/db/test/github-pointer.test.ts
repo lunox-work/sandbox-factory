@@ -461,7 +461,7 @@ describe("GitHub pointers in Postgres", { skip }, () => {
       const issueId = `jri_sf_${kind}`;
       const bountyId = `bty_sf_${kind}`;
       await sql`insert into bounty (id, organization_id, title, origin) values (${bountyId}, 'o_a', 'Bounty', 'jira')`;
-      await sql`insert into jira_issue (id, organization_id, board_id, external_id, key, bounty_id, status_category, remote_created_at, remote_updated_at) values (${issueId}, 'o_a', 'jrb_sf', ${kind}, 'ACME-1', ${bountyId}, 'new', now(), now())`;
+      await sql`insert into jira_issue (id, organization_id, board_id, external_id, key, bounty_id) values (${issueId}, 'o_a', 'jrb_sf', ${kind}, 'ACME-1', ${bountyId})`;
       await sql`insert into bounty_run (id, organization_id, board_id, kind, request_id, selection, rate_card, requested_model, prompt_version, status, lease_token, lease_expires_at, deadline_at) values (${runId}, 'o_a', 'jrb_sf', 'issue', ${kind}, ${sql.json({})}, ${sql.json(rateCard)}, 'model', 'v', 'running', 'lease', now() + interval '1 hour', now() + interval '1 hour')`;
       const result = await createBountyProposalStore(
         connection.db,
@@ -521,7 +521,7 @@ describe("GitHub pointers in Postgres", { skip }, () => {
     await sql`insert into jira_connection (id, organization_id, cloud_id, site_url, site_name) values ('jrc_p', 'o_a', 'cloud', 'https://acme.example', 'Acme')`;
     await sql`insert into jira_board (id, organization_id, connection_id, external_id, name, board_type) values ('jrb_p', 'o_a', 'jrc_p', '1', 'Board', 'scrum')`;
     await sql`insert into bounty (id, organization_id, title, origin) values ('bty_p', 'o_a', 'Bounty', 'jira')`;
-    await sql`insert into jira_issue (id, organization_id, board_id, external_id, key, bounty_id, status_category, remote_created_at, remote_updated_at) values ('jri_p', 'o_a', 'jrb_p', '10', 'ACME-1', 'bty_p', 'new', now(), now())`;
+    await sql`insert into jira_issue (id, organization_id, board_id, external_id, key, bounty_id) values ('jri_p', 'o_a', 'jrb_p', '10', 'ACME-1', 'bty_p')`;
     const rateCard = sql.json({
       currency: "USD",
       xsMinor: 1,
@@ -666,7 +666,7 @@ describe("GitHub pointers in Postgres", { skip }, () => {
     assert.equal(await artifacts.get("o_b", listed[0]?.id ?? "missing"), null);
     assert.equal((await runs.get("o_a", claimed.id))?.status, "succeeded");
     assert.equal(await runs.logKey("o_a", claimed.id), "logs/analysis.log");
-    const removed = await repos.removeWithObjects!("o_a", repo.id);
+    const removed = await repos.removeWithObjects("o_a", repo.id);
     assert.equal(removed.removed, true);
     assert.deepEqual(
       removed.objectKeys.sort(),
@@ -676,7 +676,7 @@ describe("GitHub pointers in Postgres", { skip }, () => {
         "logs/analysis.log",
       ].sort(),
     );
-    assert.deepEqual(await repos.removeWithObjects!("o_b", repo.id), {
+    assert.deepEqual(await repos.removeWithObjects("o_b", repo.id), {
       removed: false,
       objectKeys: [],
     });
@@ -754,7 +754,7 @@ describe("GitHub pointers in Postgres", { skip }, () => {
     });
     assert.equal(created.ok, true);
     await assert.rejects(
-      repos.removeWithObjects!("o_a", repo.id),
+      repos.removeWithObjects("o_a", repo.id),
       RepositoryInUseError,
     );
     await assert.rejects(repos.remove("o_a", repo.id), RepositoryInUseError);
@@ -771,9 +771,6 @@ describe("GitHub pointers in Postgres", { skip }, () => {
     if (created.ok)
       await sql`delete from sandbox where id = ${created.sandbox.id}`;
     await sql`delete from bounty where id = 'bty_pointer'`;
-    assert.equal(
-      (await repos.removeWithObjects!("o_a", repo.id)).removed,
-      true,
-    );
+    assert.equal((await repos.removeWithObjects("o_a", repo.id)).removed, true);
   });
 });

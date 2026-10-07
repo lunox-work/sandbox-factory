@@ -41,7 +41,11 @@ const sliceRun: StoredAnalysisRun = {
     includeInferred: false,
   },
 };
-function fixture(role = "owner") {
+function fixture(role = "owner", tool: StoredAnalysisRun["tool"] = run.tool) {
+  // The run the repository's list and lookups answer with.
+  const shown: StoredAnalysisRun = { ...run, tool };
+  /** What the runs list was asked for, call by call. */
+  const listed: unknown[][] = [];
   let launches = 0;
   const keys: string[] = [];
   let limit = false;
@@ -62,9 +66,12 @@ function fixture(role = "owner") {
               run: input.tool === "slice" ? sliceRun : run,
             };
       },
-      list: async () => [run],
+      list: async (...args: unknown[]) => {
+        listed.push(args);
+        return [shown];
+      },
       get: async (owner: string, id: string) =>
-        owner === "org_1" && id === run.id ? run : null,
+        owner === "org_1" && id === run.id ? shown : null,
       logKey: async (owner: string, id: string) =>
         owner === "org_1" && id === run.id ? "logs/private.log" : null,
     },
@@ -126,11 +133,47 @@ function fixture(role = "owner") {
         },
       ],
       get: async (owner: string, id: string) =>
-        owner === "org_1" && id === "art_1"
-          ? { objectKey: "runs/private/graph.html" }
-          : null,
+        owner !== "org_1"
+          ? null
+          : id === "art_1"
+            ? {
+                runId: run.id,
+                objectKey: "runs/private/graph.html",
+                path: "graph.html",
+                sizeBytes: 5,
+              }
+            : id === "art_png"
+              ? {
+                  runId: run.id,
+                  objectKey: "runs/private/a.png",
+                  path: "a.png",
+                  sizeBytes: 3,
+                }
+              : id === "art_big"
+                ? {
+                    runId: run.id,
+                    objectKey: "runs/private/big.json",
+                    path: "big.json",
+                    sizeBytes: 2_000_000,
+                  }
+                : id === "art_gone"
+                  ? {
+                      runId: run.id,
+                      objectKey: "runs/private/gone",
+                      path: "gone.md",
+                      sizeBytes: 1,
+                    }
+                  : null,
     },
     objects: {
+      get: async (key: string) =>
+        key === "logs/private.log"
+          ? new TextEncoder().encode("Analysis artifacts uploaded.")
+          : key === "runs/private/graph.html"
+            ? new TextEncoder().encode("<svg>")
+            : key === "runs/private/a.png"
+              ? new Uint8Array([137, 0, 1])
+              : undefined,
       signedUrl: async (key: string, ttl: number) => {
         assert.equal(ttl, 900);
         keys.push(key);
@@ -142,13 +185,18 @@ function fixture(role = "owner") {
     },
   } as unknown as AnalysisRouteOptions;
   const app = new Hono<{ Variables: AuthVariables }>();
-  app.use("*", async (c, next) => {
+  // As `requireMembership` does: the owner is the path's, so a request for
+  // another workspace reads that workspace's rows, of which there are none.
+  app.use("/api/v1/orgs/:orgId/*", async (c, next) => {
     c.set("user", {
       id: "user_1",
       email: "test@example.test",
       name: "User",
     } as never);
-    c.set("member", { role, organizationId: "org_1" } as never);
+    c.set("member", {
+      role,
+      organizationId: c.req.param("orgId"),
+    } as never);
     await next();
   });
   mountAnalysisRoutes(app, options);
@@ -168,6 +216,7 @@ function fixture(role = "owner") {
     options,
     keys,
     enqueued,
+    listed,
     setLimit: () => {
       limit = true;
     },
@@ -361,7 +410,7 @@ test("enqueue validates scope, role, parameters, cache result, and active cap", 
     403,
   );
   assert.equal(
-    (await f.request("repositories/ghr_1/runs", { tool: "deepwiki" })).status,
+    (await f.request("repositories/ghr_1/runs", { tool: "unknown" })).status,
     400,
   );
   assert.equal(
@@ -397,6 +446,98 @@ test("enqueue validates scope, role, parameters, cache result, and active cap", 
   assert.equal(
     (await f.request("repositories/ghr_1/runs", { tool: "graphify" })).status,
     404,
+  );
+});
+test("a context builder names itself in its parameters", async () => {
+  const f = fixture();
+  assert.equal(
+    (
+      await f.request("repositories/ghr_1/runs", {
+        tool: "dependency_cruiser",
+        snapshotId: "rsn_1",
+      })
+    ).status,
+    202,
+  );
+  assert.equal(
+    (await f.request("repositories/ghr_1/runs", { tool: "deepwiki" })).status,
+    202,
+  );
+  assert.deepEqual(f.enqueued, [
+    {
+      tool: "dependency_cruiser",
+      params: { deadlineMinutes: 30, builder: "dependency_cruiser" },
+    },
+    { tool: "deepwiki", params: { deadlineMinutes: 60, builder: "deepwiki" } },
+  ]);
+});
+test("a builder that reads the map queues behind the snapshot's graph run", async () => {
+  const f = fixture();
+  for (const tool of ["abstractions", "data_model"])
+    assert.equal(
+      (await f.request("repositories/ghr_1/runs", { tool })).status,
+      202,
+    );
+  assert.deepEqual(f.enqueued, [
+    { tool: "graphify", params: { deadlineMinutes: 30 } },
+    {
+      tool: "abstractions",
+      params: {
+        deadlineMinutes: 30,
+        builder: "abstractions",
+        graphRunId: run.id,
+      },
+    },
+    { tool: "graphify", params: { deadlineMinutes: 30 } },
+    {
+      tool: "data_model",
+      params: {
+        deadlineMinutes: 30,
+        builder: "data_model",
+        graphRunId: run.id,
+      },
+    },
+  ]);
+  assert.equal(f.launches(), 2);
+  // A graph that failed is reported before anything is queued behind it.
+  f.options.runs.enqueue = async () => ({
+    ok: true,
+    created: false,
+    run: { ...run, status: "failed" },
+  });
+  const failed = await f.request("repositories/ghr_1/runs", {
+    tool: "abstractions",
+  });
+  assert.equal(failed.status, 409);
+  assert.equal(
+    ((await failed.json()) as { code: string }).code,
+    "graph_failed",
+  );
+  // A refused builder still wakes a worker for the graph it queued.
+  for (const [reason, status] of [
+    ["graph_mismatch", 409],
+    ["run_limit", 409],
+    ["not-found", 404],
+  ] as const) {
+    f.options.runs.enqueue = async (_owner, _snapshot, input) =>
+      input.tool === "graphify"
+        ? { ok: true, created: true, run: { ...run, status: "queued" } }
+        : { ok: false, reason };
+    const before = f.launches();
+    const response = await f.request("repositories/ghr_1/runs", {
+      tool: "data_model",
+    });
+    assert.equal(response.status, status);
+    assert.equal(f.launches(), before + 1);
+  }
+  f.options.runs.enqueue = async (_owner, _snapshot, input) =>
+    input.tool === "graphify"
+      ? { ok: false, reason: "run_limit" }
+      : { ok: true, created: false, run };
+  assert.equal(
+    (await f.request("repositories/ghr_1/runs", { tool: "abstractions" }))
+      .status,
+    409,
   );
 });
 test("launch errors keep the queued response for watchdog recovery", async () => {
@@ -442,6 +583,90 @@ test("members read runs and artifacts; signed downloads are private and uncached
   const owner = fixture();
   assert.equal((await owner.request("runs/arn_1/log/url")).status, 200);
   assert.equal((await owner.request("runs/missing/log/url")).status, 404);
+});
+test("a repository's runs can be read for one snapshot", async () => {
+  // A page shows one snapshot's builds; the repository's newest page of
+  // runs may no longer hold them.
+  const f = fixture("member");
+  assert.equal((await f.request("repositories/ghr_1/runs")).status, 200);
+  assert.equal(
+    (await f.request("repositories/ghr_1/runs?snapshotId=rsn_1")).status,
+    200,
+  );
+  assert.deepEqual(f.listed, [
+    ["org_1", "ghr_1", undefined, undefined],
+    ["org_1", "ghr_1", 50, "rsn_1"],
+  ]);
+});
+
+test("a sandbox build's run and artifacts are not a member's to read", async () => {
+  // Its artifacts are a version's private sandbox, hidden tests among them,
+  // which the sandbox routes keep to owners and admins.
+  for (const tool of ["sandbox_build", "sandbox_starter"] as const) {
+    const member = fixture("member", tool);
+    const listed = (await (
+      await member.request("repositories/ghr_1/runs")
+    ).json()) as { runs: unknown[] };
+    assert.deepEqual(listed.runs, []);
+    for (const path of [
+      "runs/arn_1",
+      "runs/arn_1/artifacts",
+      "artifacts/art_1/url",
+      "artifacts/art_1/content",
+    ])
+      assert.equal((await member.request(path)).status, 404, path);
+    assert.deepEqual(member.keys, []);
+    // An admin still reads them here. (The run itself is not read: this
+    // fixture's parameters are a graph run's, not a build's.)
+    const admin = fixture("admin", tool);
+    assert.equal((await admin.request("artifacts/art_1/url")).status, 200);
+  }
+});
+test("members read an artifact as text, unless it is binary or too large", async () => {
+  const f = fixture("member");
+  const text = await f.request("artifacts/art_1/content");
+  assert.equal(text.status, 200);
+  assert.equal(text.headers.get("Cache-Control"), "no-store");
+  assert.deepEqual(await text.json(), {
+    path: "graph.html",
+    sizeBytes: 5,
+    text: "<svg>",
+    omitted: null,
+  });
+  const binary = await f.request("artifacts/art_png/content");
+  assert.equal(
+    ((await binary.json()) as { omitted: string }).omitted,
+    "binary",
+  );
+  const big = await f.request("artifacts/art_big/content");
+  assert.equal(
+    ((await big.json()) as { omitted: string }).omitted,
+    "too_large",
+  );
+  assert.equal((await f.request("artifacts/art_gone/content")).status, 502);
+  assert.equal((await f.request("artifacts/missing/content")).status, 404);
+  assert.equal(
+    (await f.request("artifacts/art_1/content", undefined, "org_2")).status,
+    404,
+  );
+});
+test("owners and admins read a run's log as text; members cannot", async () => {
+  const owner = fixture();
+  const log = await owner.request("runs/arn_1/log/content");
+  assert.equal(log.status, 200);
+  assert.equal(log.headers.get("Cache-Control"), "no-store");
+  assert.deepEqual(await log.json(), {
+    sizeBytes: 28,
+    text: "Analysis artifacts uploaded.",
+    omitted: null,
+  });
+  assert.equal((await owner.request("runs/missing/log/content")).status, 404);
+  assert.equal(
+    (await owner.request("runs/arn_1/log/content", undefined, "org_2")).status,
+    404,
+  );
+  const member = fixture("member");
+  assert.equal((await member.request("runs/arn_1/log/content")).status, 403);
 });
 test("launcher coalesces launches and skips fresh workers, empty queues, and local mode", async () => {
   let count = 0,

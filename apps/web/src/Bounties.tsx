@@ -18,10 +18,11 @@ import {
  * or GitHub; a bounty from Jira links to its issue, and one about a
  * repository is drafted beside an outline of it and cut from it.
  *
- * The page lists bounties only, a card each, one to a row. A proposal is made from a bounty
- * and lives inside it: an open bounty shows its proposal in full under its
- * text, and proposing a bounty follows its sizing run and then shows the
- * proposal in the same place.
+ * The page lists bounties only, a card each, one to a row. A proposal is
+ * made from a bounty and lives inside it: a bounty's page shows its proposal
+ * in full in its Bounty step, and proposing a bounty follows its sizing run
+ * and then shows the proposal in the same place. The panel over the list is
+ * a read-only glance without it.
  *
  * A bounty opens in a panel over the list, `/bounties?peek=acme/bty_1`, or as
  * a page of its own, `/bounties/acme/bty_1`, which the panel opens and whose
@@ -37,7 +38,12 @@ import type {
   BountySandboxSummaryDto,
   BountySummaryDto,
 } from "@sandbox-factory/shared";
-import { BOUNTY_LIMITS, sameStackName } from "sandbox-factory";
+import {
+  BOUNTY_LIMITS,
+  isPublicationLive,
+  overviewApproved,
+  sameStackName,
+} from "sandbox-factory";
 import {
   Box,
   ExternalLink,
@@ -49,6 +55,7 @@ import {
   RefreshCw,
   Sparkles,
 } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
 import {
   useCallback,
   useEffect,
@@ -71,7 +78,7 @@ import { StackPicker } from "@/components/StackPicker";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tabs, TabsContent, TabsList } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 
 import {
@@ -80,6 +87,9 @@ import {
   WorkspaceFace,
   type Viewer,
 } from "./OrganizationSwitcher";
+import { LunoxMark } from "@/components/LunoxMark";
+import { BountyText } from "./BountyText";
+import { dateTime } from "./lib/format";
 import { money } from "./Proposals";
 import { JiraIcon } from "./ProviderIcon";
 import {
@@ -91,10 +101,12 @@ import {
   bountyProposalPath,
   isPlainLeftClick,
   NEW_BOUNTY_PATH,
+  NEW_ORG_PATH,
   pathForScreen,
+  sandboxFilesPath,
   type BountyAddress,
 } from "./routes";
-import { clients } from "./data/query";
+import { clients, queryKeys, useUserId } from "./data/query";
 import {
   InlineDescription,
   InlineTitle,
@@ -103,7 +115,18 @@ import {
   StackField,
   type SaveField,
 } from "./features/bounties/BountyFields";
+import {
+  BountyLinks,
+  type OpenSettings,
+} from "./features/bounties/BountyLinks";
 import { BountyProposal } from "./features/bounties/BountyProposal";
+import {
+  OverviewVersion,
+  StepLineage,
+  StepTriggers,
+  STEPS,
+  type Step,
+} from "./features/bounties/BountySteps";
 import { SandboxCard } from "./features/bounties/SandboxCard";
 import { SandboxGeneration } from "./features/bounties/SandboxGeneration";
 import { useGithubRepos, type GithubRepos } from "./useGithub";
@@ -119,21 +142,21 @@ import {
 const SANDBOX_STATUS_LABEL: Record<BountySandboxSummaryDto["status"], string> =
   { draft: "Draft", published: "Published", closed: "Closed" };
 
-/**
- * The tabs a bounty's own page splits it into: what it is and where it
- * came from, what it pays and why, and where the work is done.
- */
-const PAGE_TABS = [
-  { value: "overview", label: "Overview" },
-  { value: "bounty", label: "Bounty" },
-  { value: "sandbox", label: "Sandbox" },
-] as const;
-type PageTab = (typeof PAGE_TABS)[number]["value"];
+/** Its status, or Expired for a publication past its date. */
+function sandboxLabel(sandbox: BountySandboxSummaryDto): string {
+  return sandbox.status === "published" && !isPublicationLive(sandbox)
+    ? "Expired"
+    : SANDBOX_STATUS_LABEL[sandbox.status];
+}
 
-/** The tab `?tab=` names, or the overview when it names none. */
-function pageTabFrom(search: string): PageTab {
+/**
+ * The steps a bounty's own page splits it into, in the order each is built
+ * on the one before: what it is, what it pays and why, and where the work
+ * is done. `?tab=` names the one open, or the overview when it names none.
+ */
+function pageTabFrom(search: string): Step {
   const value = new URLSearchParams(search).get("tab");
-  return PAGE_TABS.find((tab) => tab.value === value)?.value ?? "overview";
+  return STEPS.find((tab) => tab.value === value)?.value ?? "overview";
 }
 
 /** Opens a tab in the address, so Back returns to the one before. */
@@ -142,6 +165,21 @@ function selectPageTab(next: string) {
     if (next === "overview") params.delete("tab");
     else params.set("tab", next);
   });
+}
+
+/**
+ * The history state a panel opened from the list is pushed with: the mark
+ * that the entry under it is the list, so closing the panel can go back to
+ * it rather than leave an entry behind that Back would reopen.
+ */
+const PEEK_ENTRY = { bountyPeek: true } as const;
+
+function isPeekEntry(state: unknown): boolean {
+  return (
+    typeof state === "object" &&
+    state !== null &&
+    (state as Record<string, unknown>)["bountyPeek"] === true
+  );
 }
 
 function canManage(role: string): boolean {
@@ -220,16 +258,23 @@ export function Bounties({
   /*
     Opening one from the list is a step Back undoes; moving from one open
     bounty to another replaces it, so Back closes the panel rather than
-    walking through every card looked at.
+    walking through every card looked at. Closing it is that same Back when
+    the panel was opened here, so the entry it was opened on is not left
+    for Back to reopen; one opened from a link or a reload has no list
+    entry under it to go back to, so its address is replaced with the list.
   */
   const open = (address: BountyAddress | null) => {
-    if (address !== null && peek !== null) {
+    if (address === null) {
+      if (peek === null) return;
+      if (isPeekEntry(window.history.state)) window.history.back();
+      else replaceLocation(bountiesUrl(null));
+    } else if (peek !== null) {
       if (address.workspace === peek.workspace && address.id === peek.id) {
         return;
       }
       replaceLocation(bountiesUrl(address));
     } else {
-      pushLocation(bountiesUrl(address));
+      pushLocation(bountiesUrl(address), PEEK_ENTRY);
     }
   };
 
@@ -317,8 +362,9 @@ export function Bounties({
  * A proposal named with no bounty, from when proposals had a list of their
  * own; `canonicalUrl` keeps it in the query with its workspace. It is read
  * for the bounty it belongs to, whose page then opens on its proposal, in
- * the address's place: a panel does not show the proposal. Only once the workspace is known: with none, there is
- * nowhere to read it from, and the address is dropped.
+ * the address's place: a panel does not show the proposal. Only once the
+ * workspace is known: with none, there is nowhere to read it from, and the
+ * address is dropped.
  */
 function useLegacyProposal(
   search: string,
@@ -432,6 +478,29 @@ function NewBountyLink({
 }
 
 /**
+ * The way to the page a workspace is made on, for someone in none. A link,
+ * so it can be opened in another tab; a plain click stays in the app.
+ */
+function NewWorkspaceLink() {
+  return (
+    <Button variant="outline" size="sm" asChild>
+      <a
+        href={NEW_ORG_PATH}
+        onClick={(event) => {
+          if (isPlainLeftClick(event)) {
+            event.preventDefault();
+            pushLocation(NEW_ORG_PATH);
+          }
+        }}
+      >
+        <Plus />
+        New workspace
+      </a>
+    </Button>
+  );
+}
+
+/**
  * One bounty as a page of its own: what the panel over the list shows, with
  * the room of a page, the description beside the bounty's parts. The trail
  * above it leads back to the list.
@@ -442,6 +511,7 @@ export function BountyPage({
   viewer,
   onTitle,
   onOpenBounties,
+  onOpenSettings,
 }: {
   /** Every workspace the person is in: the one the address names among them. */
   organizations: MembershipDto[];
@@ -452,6 +522,11 @@ export function BountyPage({
   onTitle: (title: string | undefined) => void;
   /** Back to the list, once the bounty is deleted. */
   onOpenBounties: () => void;
+  /** Opens a tab of a workspace's settings: where its sources are connected. */
+  onOpenSettings: (
+    organization: MembershipDto,
+    tab: Parameters<OpenSettings>[0],
+  ) => void;
 }) {
   const { pathname } = useLocation();
   const address = bountyForPath(pathname);
@@ -487,6 +562,7 @@ export function BountyPage({
             bountyId={address.id}
             onLoaded={setRead}
             onDeleted={onOpenBounties}
+            onOpenSettings={(tab) => onOpenSettings(owner, tab)}
           />
         ))}
     </main>
@@ -539,9 +615,13 @@ export function NewBountyPage({
       {organizationsLoading ? (
         <LoadingLine />
       ) : target === null ? (
-        <p className="text-muted-foreground text-sm">
-          You are not in a workspace yet.
-        </p>
+        // A bounty is written to a workspace, so the way on is to make one.
+        <div className="flex flex-col items-start gap-3">
+          <p className="text-muted-foreground text-sm">
+            You are not in a workspace yet. Create one to write bounties in.
+          </p>
+          <NewWorkspaceLink />
+        </div>
       ) : (
         <NewBounty
           organizations={organizations}
@@ -587,7 +667,6 @@ function NewBounty({
   const chosen = organizations.find(({ id }) => id === organizationId);
   return (
     <BountyForm
-      layout="page"
       repos={repos}
       // Shown even with one to choose from, so it says where the bounty goes.
       workspace={{
@@ -677,6 +756,7 @@ function OpenBounty({
   listed,
   onLoaded,
   onDeleted,
+  onOpenSettings,
 }: {
   layout: "panel" | "page";
   organization: MembershipDto;
@@ -686,6 +766,8 @@ function OpenBounty({
   listed?: BountySummaryDto | undefined;
   onLoaded: (bounty: BountyDto) => void;
   onDeleted: () => void;
+  /** A page's way to its workspace's settings, from the links it offers. */
+  onOpenSettings?: OpenSettings | undefined;
 }) {
   const bounties = useBounties(organization.id);
   const repos = useGithubRepos(organization.id);
@@ -761,6 +843,7 @@ function OpenBounty({
             bountyKey={bounty.jira?.key}
             bountyTitle={bounty.title}
             canDecide={manages}
+            overviewVersion={bounty.stages.bounty?.overviewVersion ?? null}
             onChanged={() => {
               void bounties.refresh();
               opened.reload();
@@ -781,6 +864,7 @@ function OpenBounty({
         opened.reload();
       }}
       onDeleted={onDeleted}
+      onOpenSettings={onOpenSettings}
     />
   );
 }
@@ -809,16 +893,30 @@ function BountyList({
   return (
     <div className="flex flex-col gap-4">
       {bounties.error !== null && (
-        <ErrorBanner className="mt-0">{bounties.error}</ErrorBanner>
+        <div className="flex flex-col items-start gap-3">
+          <ErrorBanner className="mt-0">{bounties.error}</ErrorBanner>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={bounties.retry}
+          >
+            <RefreshCw />
+            Try again
+          </Button>
+        </div>
       )}
       {bounties.bounties.length === 0 ? (
-        <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed px-4 py-10 text-center">
-          <p className="text-muted-foreground text-sm">
-            No bounties yet. Write one, or connect Jira and its boards&rsquo;
-            bounties arrive here as they are sized.
-          </p>
-          <NewBountyLink variant="outline" onCreate={onCreate} />
-        </div>
+        // A list that failed to load is not known to be empty.
+        bounties.error === null && (
+          <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed px-4 py-10 text-center">
+            <p className="text-muted-foreground text-sm">
+              No bounties yet. Write one, or connect Jira and its boards&rsquo;
+              bounties arrive here as they are sized.
+            </p>
+            <NewBountyLink variant="outline" onCreate={onCreate} />
+          </div>
+        )
       ) : (
         <>
           <ul className="flex flex-col gap-2" data-testid="bounty-list">
@@ -882,6 +980,8 @@ function WorkspaceTag({ name }: { name: string }) {
     <Badge
       variant="outline"
       className="text-muted-foreground max-w-40 px-1.5 py-0 font-normal"
+      // Cut short at the badge's width; the whole name on hover.
+      title={name}
     >
       <span className="truncate">{name}</span>
     </Badge>
@@ -907,32 +1007,44 @@ function Source({ bounty }: { bounty: BountySummaryDto }) {
 
 /**
  * A proposal in brief: whether it is decided, and its price. Its size is
- * in the bounty, not on its card.
+ * in the bounty, not on its card. Until it is approved the price is not
+ * settled, so it reads as a dash, as the bounty itself has it.
  */
 function ProposalBrief({
   proposal,
 }: {
   proposal: NonNullable<BountySummaryDto["proposal"]>;
 }) {
+  const approved = proposal.status === "approved";
   return (
     <>
-      <Badge variant={proposal.status === "approved" ? "default" : "secondary"}>
-        {proposal.status === "approved" ? "Approved" : "Proposed"}
+      <Badge variant={approved ? "default" : "secondary"}>
+        {approved ? "Approved" : "Proposed"}
       </Badge>
-      <span className="ml-auto text-sm font-medium tabular-nums">
-        {money(proposal.amountMinor, proposal.currency)}
-      </span>
+      {approved ? (
+        <span className="ml-auto text-sm font-medium tabular-nums">
+          {money(proposal.amountMinor, proposal.currency)}
+        </span>
+      ) : (
+        <span
+          aria-hidden
+          className="text-muted-foreground/60 ml-auto text-sm tabular-nums"
+        >
+          —
+        </span>
+      )}
     </>
   );
 }
 
 /**
  * One bounty in the list, as a card the width of the list: its title with
- * where it came from under it, and its proposal at the far end. A click
- * anywhere on it opens the bounty over the list, its proposal with it; it is
- * a link to the bounty's own page, so it can be opened in another tab. While
- * the panel is open, a click on another card shows that one in it instead.
- * A bounty is proposed from inside it, never from its card.
+ * where it came from under it, and its proposal in brief at the far end. A
+ * click anywhere on it opens the bounty in the panel beside the list, a
+ * glance whose proposal is on the bounty's own page; it is a link to that
+ * page, so it can be opened in another tab. While the panel is open, a
+ * click on another card shows that one in it instead. A bounty is proposed
+ * from its page, never from its card.
  */
 function BountyCard({
   bounty,
@@ -950,9 +1062,13 @@ function BountyCard({
   selected: boolean;
   onOpen: (address: BountyAddress) => void;
 }) {
-  const { proposal, sandbox } = bounty;
+  const { proposal } = bounty;
   const heading = (
-    <span className="line-clamp-2 text-sm font-medium sm:line-clamp-1">
+    <span
+      className="line-clamp-2 text-sm font-medium sm:line-clamp-1"
+      // Clamped to a line or two; the whole title on hover.
+      title={bounty.title}
+    >
       {bounty.title}
     </span>
   );
@@ -990,12 +1106,6 @@ function BountyCard({
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
           {workspace !== undefined && <WorkspaceTag name={workspace} />}
           <Source bounty={bounty} />
-          {sandbox !== null && (
-            <span className="text-muted-foreground inline-flex items-center gap-1 text-xs">
-              <Box className="size-3" />
-              Sandbox {SANDBOX_STATUS_LABEL[sandbox.status]}
-            </span>
-          )}
         </div>
       </div>
       <div className="shrink-0 border-t pt-3 sm:w-56 sm:border-t-0 sm:pt-0">
@@ -1031,26 +1141,59 @@ function BountyCard({
  */
 function usePropose(
   bounties: Bounties,
+  organizationId: string,
   bountyId: string,
+  /**
+   * Whether it has no proposal yet, and so may have a sizing to find, where
+   * the proposal's place is shown: a sizing followed where nothing says so
+   * would be polled for nothing.
+   */
+  unproposed: boolean,
   onOpenProposal: (proposalId: string) => void,
 ) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const controller = useRef<AbortController | null>(null);
   useEffect(() => () => controller.current?.abort(), []);
-  const start = async () => {
+  const start = async (following?: string) => {
     controller.current?.abort();
     const current = new AbortController();
     controller.current = current;
     setPending(true);
     setError(null);
-    const result = await bounties.propose(bountyId, current.signal);
+    const result = await bounties.propose(bountyId, current.signal, following);
     if (current.signal.aborted) return;
     setPending(false);
     if (result.ok) onOpenProposal(result.proposalId);
     else setError(result.error);
   };
-  return { pending, error, start };
+  /*
+    A sizing already in flight, as after a reload mid-run: followed as if
+    Propose had just been pressed, so the page says it is at work rather
+    than offering to start a second.
+  */
+  const userId = useUserId();
+  const sizing = useQuery({
+    queryKey: queryKeys.resource(
+      userId,
+      organizationId,
+      "bounty-sizing",
+      bountyId,
+    ),
+    enabled: unproposed,
+    staleTime: 0,
+    queryFn: ({ signal }) =>
+      clients.bounties.bountySizing(organizationId, bountyId, signal),
+  });
+  const inFlight = unproposed ? (sizing.data?.id ?? null) : null;
+  const adopted = useRef<string | null>(null);
+  useEffect(() => {
+    if (inFlight === null || adopted.current === inFlight || pending) return;
+    adopted.current = inFlight;
+    void start(inFlight);
+    // `start` is remade each render; the run's id is what matters here.
+  }, [inFlight, pending]);
+  return { pending, error, start: () => start() };
 }
 
 /** Said when a save lost to someone else's, and the field now shows theirs. */
@@ -1076,6 +1219,7 @@ function BountyDetail({
   proposal,
   onProposed,
   onDeleted,
+  onOpenSettings,
 }: {
   layout: "panel" | "page";
   /** The workspace it belongs to, named under its parts. */
@@ -1097,13 +1241,45 @@ function BountyDetail({
   /** A proposal was made from it. */
   onProposed: (proposalId: string) => void;
   onDeleted: () => void;
+  /** Where a page's links lead to connect a source; a panel offers none. */
+  onOpenSettings?: OpenSettings | undefined;
 }) {
-  const propose = usePropose(bounties, bounty.id, onProposed);
+  // A panel has no proposal's place, so a sizing in flight is not followed.
+  const propose = usePropose(
+    bounties,
+    bounty.organizationId,
+    bounty.id,
+    layout === "page" && proposal === null,
+    onProposed,
+  );
   const [sandboxPending, setSandboxPending] = useState(false);
   const [sandboxError, setSandboxError] = useState<string | null>(null);
   // Which tab a page has open; a panel has none.
   const { search } = useLocation();
   const tab = pageTabFrom(search);
+  /*
+    The overview's versions, read on a page only, where its version is
+    chosen; read again whenever it moves. The one being read, null for the
+    latest: an earlier one is shown, not changed.
+  */
+  const userId = useUserId();
+  const versions = useQuery({
+    queryKey: queryKeys.resource(
+      userId,
+      bounty.organizationId,
+      "bounty-versions",
+      bounty.id,
+      bounty.version,
+    ),
+    enabled: layout === "page",
+    queryFn: ({ signal }) =>
+      clients.bounties.bountyVersions(bounty.organizationId, bounty.id, signal),
+  });
+  const [viewing, setViewing] = useState<number | null>(null);
+  const earlier =
+    viewing === null || viewing === bounty.version
+      ? null
+      : (versions.data?.find(({ version }) => version === viewing) ?? null);
   // A panel is read; the bounty is changed on its page.
   const readOnly = layout === "panel";
   // Whether its sandbox is offered to be made, linked or generated here.
@@ -1111,6 +1287,27 @@ function BountyDetail({
 
   // A bounty following its Jira issue takes its text from Jira.
   const followsJira = bounty.jira !== null && bounty.jira.removedAt === null;
+  /*
+    An approved overview is held as it is: its title, text, links and stack
+    are shown, not changed, until an owner or admin unapproves it.
+  */
+  const approvedOverview = overviewApproved(bounty);
+  const [deciding, setDeciding] = useState(false);
+  const [decisionError, setDecisionError] = useState<string | null>(null);
+  const decideOverview = (decision: "approve" | "unapprove") => {
+    setDeciding(true);
+    setDecisionError(null);
+    void bounties
+      .decide(bounty.id, decision, bounty.revision)
+      .then((result) => {
+        setDeciding(false);
+        if (result.ok) onChange(result.bounty);
+        else {
+          setDecisionError(result.error);
+          onReload();
+        }
+      });
+  };
   const repo = repos.repos.find(({ id }) => id === bounty.repoId) ?? null;
   const { sandbox } = bounty;
   // A sandbox made before its bounty named a repository links that one.
@@ -1206,48 +1403,85 @@ function BountyDetail({
     the head of the sandbox the paid work is done in. The bounty names a
     removed proposal until it is read again, so only one the caller still
     knows of is shown. A page has the proposal in a tab of its own, which
-    says the price already, so only a panel shows it here.
+    says the price already, so only a panel shows it here. Until the bounty
+    is approved neither is settled, so both read as a dash.
   */
   const priced = proposal !== null ? bounty.proposal : null;
+  const settled = priced?.status === "approved" ? priced : null;
   const price = (
     <div className="mb-1 border-b pb-3">
-      {priced === null ? (
-        <p className="text-muted-foreground text-sm">
-          Not priced yet; its proposal prices it.
-        </p>
-      ) : (
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <span
-            className={cn(
-              "text-2xl leading-none font-semibold tracking-tight",
-              priced.amountMinor === null
-                ? "text-muted-foreground"
-                : "tabular-nums",
-            )}
-          >
-            {money(priced.amountMinor, priced.currency)}
-          </span>
-          <span className="flex items-center gap-1.5 text-sm">
-            <span className="text-muted-foreground">Size</span>
-            <Badge variant="outline" className="font-mono">
-              {priced.complexity}
-            </Badge>
-          </span>
-        </div>
-      )}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <span
+          className={cn(
+            "text-2xl leading-none font-semibold tracking-tight",
+            settled === null || settled.amountMinor === null
+              ? "text-muted-foreground"
+              : "tabular-nums",
+          )}
+        >
+          {settled === null
+            ? "—"
+            : money(settled.amountMinor, settled.currency)}
+        </span>
+        <span className="flex items-center gap-1.5 text-sm">
+          <span className="text-muted-foreground">Size</span>
+          <Badge variant="outline" className="font-mono">
+            {settled?.complexity ?? "—"}
+          </Badge>
+        </span>
+      </div>
     </div>
   );
 
   // Where the sandbox stands: its status and whether it can be worked in.
+  // A live publication's pill opens its sandbox, in a tab of its own.
+  const publishedVersion =
+    sandbox !== null && isPublicationLive(sandbox)
+      ? sandbox.currentVersionId
+      : null;
   const sandboxStatus = sandbox !== null && (
     <div className="flex flex-wrap items-center gap-2">
-      <Badge variant={sandbox.status === "published" ? "default" : "secondary"}>
-        {SANDBOX_STATUS_LABEL[sandbox.status]}
-      </Badge>
+      {publishedVersion !== null ? (
+        <Badge asChild>
+          <a
+            href={sandboxFilesPath({
+              workspace: organization.slug,
+              versionId: publishedVersion,
+            })}
+            target="_blank"
+            rel="noopener"
+            title="Open the published sandbox"
+            className="focus-visible:ring-ring/50 transition-opacity hover:opacity-90 focus-visible:ring-[3px] focus-visible:outline-none"
+          >
+            <LunoxMark />
+            {sandboxLabel(sandbox)}
+          </a>
+        </Badge>
+      ) : (
+        <Badge variant="secondary">{sandboxLabel(sandbox)}</Badge>
+      )}
       <span className="text-muted-foreground text-sm">
-        {sandbox.currentVersionId === null
-          ? "No version published yet."
-          : "Contributors can work in its published version."}
+        {sandbox.currentVersionId === null ? (
+          "No version published yet."
+        ) : sandbox.expiresAt === null ? (
+          "Contributors can work in its published version."
+        ) : isPublicationLive(sandbox) ? (
+          <>
+            Contributors can work in its published version until{" "}
+            <time dateTime={sandbox.expiresAt}>
+              {dateTime(sandbox.expiresAt)}
+            </time>
+            .
+          </>
+        ) : (
+          <>
+            Its publication expired{" "}
+            <time dateTime={sandbox.expiresAt}>
+              {dateTime(sandbox.expiresAt)}
+            </time>
+            .
+          </>
+        )}
       </span>
     </div>
   );
@@ -1301,7 +1535,11 @@ function BountyDetail({
                   : null
             }
             readOnly={readOnly}
-            onPublished={onReload}
+            onChanged={() => {
+              // The lists hold the bounty as last read too.
+              void bounties.refresh();
+              onReload();
+            }}
           >
             {unlinked && managesSandbox && repoToLink !== null && (
               <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-4">
@@ -1402,9 +1640,7 @@ function BountyDetail({
           */}
         <span className="font-medium">Jira</span>
         {bounty.jira === null ? (
-          <span className="text-muted-foreground">
-            Not linked; created in Lunox
-          </span>
+          <span className="text-muted-foreground">None</span>
         ) : (
           <span className="inline-flex items-center gap-1.5">
             <span className="size-3.5 shrink-0">
@@ -1432,22 +1668,37 @@ function BountyDetail({
       <RepositoryField
         bounty={bounty}
         repos={repos}
-        readOnly={readOnly}
+        readOnly={readOnly || approvedOverview}
         onSave={save}
       />
       <StackField
         bounty={bounty}
         repos={repos}
-        readOnly={readOnly}
+        readOnly={readOnly || approvedOverview}
         onSave={save}
       />
     </>
   );
 
+  /*
+    A panel names its sources here. A page links them under its text, so
+    only the stack is left beside it.
+  */
   const contextPart = (
     <Part title="Context">
-      {jiraContext}
-      {codeContext}
+      {layout === "page" ? (
+        <StackField
+          bounty={bounty}
+          repos={repos}
+          readOnly={readOnly || approvedOverview}
+          onSave={save}
+        />
+      ) : (
+        <>
+          {jiraContext}
+          {codeContext}
+        </>
+      )}
     </Part>
   );
 
@@ -1465,6 +1716,7 @@ function BountyDetail({
         title="Delete this bounty?"
         description="The bounty is removed from this workspace. A bounty with a proposal or a sandbox, or one being sized, cannot be deleted."
         confirmLabel="Delete bounty"
+        pendingLabel="Deleting…"
         onConfirm={async () => {
           // A failure stays in the dialog, which says it.
           const failure = await bounties.remove(bounty.id);
@@ -1478,7 +1730,7 @@ function BountyDetail({
   const description = (
     <InlineDescription
       bounty={bounty}
-      locked={followsJira || readOnly}
+      locked={followsJira || readOnly || approvedOverview}
       // A page's overview tab heads it, so it reads as a field there.
       labelled={layout !== "page"}
       {...(layout === "page" ? { label: "Describe task" } : {})}
@@ -1507,7 +1759,7 @@ function BountyDetail({
               as="h1"
               size="page"
               value={bounty.title}
-              locked={followsJira}
+              locked={followsJira || approvedOverview}
               onSave={save}
             />
             {/* Its workspace and source are named beside, not here too. */}
@@ -1518,16 +1770,128 @@ function BountyDetail({
             )}
           </header>
           <Tabs value={tab} onValueChange={selectPageTab} className="gap-6">
-            <TabsList variant="line">
-              {PAGE_TABS.map(({ value, label }) => (
-                <TabsTrigger key={value} value={value}>
-                  {label}
-                </TabsTrigger>
-              ))}
+            {/* The steps, in order, each with the version it is at. */}
+            <TabsList
+              variant="line"
+              aria-label="Steps"
+              className="gap-3 overflow-x-auto sm:gap-4"
+            >
+              <StepTriggers
+                stages={bounty.stages}
+                approved={{
+                  overview: approvedOverview,
+                  bounty: bounty.proposal?.status === "approved",
+                  // A sandbox version is approved as it is published.
+                  sandbox:
+                    sandbox !== null &&
+                    sandbox.build !== null &&
+                    sandbox.build.versionId === publishedVersion,
+                }}
+              />
             </TabsList>
-            <TabsContent value="overview">{description}</TabsContent>
-            <TabsContent value="bounty">{proposalPart}</TabsContent>
-            <TabsContent value="sandbox">{sandboxPart}</TabsContent>
+            <TabsContent value="overview" className="flex flex-col gap-8">
+              <div className="flex flex-col gap-3">
+                {/*
+                  Which version, and the decision on it, level with each
+                  other as a proposal's are. Only the latest is decided.
+                */}
+                <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+                  <OverviewVersion
+                    versions={versions.data ?? []}
+                    current={bounty.version}
+                    viewing={earlier?.version ?? bounty.version}
+                    approvedAt={
+                      earlier === null && approvedOverview
+                        ? (bounty.approval?.approvedAt ?? null)
+                        : null
+                    }
+                    onView={(version) =>
+                      setViewing(version === bounty.version ? null : version)
+                    }
+                  />
+                  {canManage && earlier === null && (
+                    <Button
+                      variant={approvedOverview ? "outline" : "default"}
+                      disabled={deciding}
+                      aria-busy={deciding}
+                      onClick={() =>
+                        decideOverview(
+                          approvedOverview ? "unapprove" : "approve",
+                        )
+                      }
+                    >
+                      {deciding && <Loader2 className="animate-spin" />}
+                      {approvedOverview
+                        ? deciding
+                          ? "Unapproving…"
+                          : "Unapprove"
+                        : deciding
+                          ? "Approving…"
+                          : "Approve"}
+                    </Button>
+                  )}
+                </div>
+                {decisionError !== null && (
+                  <p role="alert" className="text-destructive text-xs">
+                    {decisionError}
+                  </p>
+                )}
+                {earlier === null ? (
+                  description
+                ) : (
+                  // An earlier version is read as it was, title and all.
+                  <section
+                    aria-label={`Version ${earlier.version}`}
+                    className="flex flex-col gap-2"
+                    data-testid="overview-earlier"
+                  >
+                    <h3 className="text-sm font-medium">{earlier.title}</h3>
+                    <BountyText description={earlier.description} />
+                  </section>
+                )}
+              </div>
+              <BountyLinks
+                organization={organization}
+                bounty={bounty}
+                bounties={bounties}
+                repos={repos}
+                onSave={save}
+                onChange={onChange}
+                onOpenSettings={onOpenSettings ?? (() => undefined)}
+                locked={approvedOverview}
+              />
+            </TabsContent>
+            <TabsContent value="bounty" className="flex flex-col gap-4">
+              {/*
+                Named as its tab is, the Bounty step, as the sandbox's
+                lineage and the way to generate it name it too: the
+                proposal is what the step holds, not what it is called.
+              */}
+              <StepLineage
+                step="bounty"
+                stages={bounty.stages}
+                remedy={
+                  bounty.proposal?.status === "approved"
+                    ? "Unapprove the bounty, then re-analyze it to size it from the latest overview."
+                    : "Re-analyze the bounty to size it from the latest overview."
+                }
+                onOpen={selectPageTab}
+              />
+              {proposalPart}
+            </TabsContent>
+            <TabsContent value="sandbox" className="flex flex-col gap-4">
+              <StepLineage
+                step="sandbox"
+                stages={bounty.stages}
+                remedy={
+                  unlinked
+                    ? "Generate a new version to build from the latest bounty."
+                    : "A new version sliced from its repository would build from the latest bounty; slicing is not available from this page yet."
+                }
+                onOpen={selectPageTab}
+              />
+              {sandboxPart}
+            </TabsContent>
           </Tabs>
         </div>
         <div className="flex flex-col gap-5">
@@ -1607,16 +1971,15 @@ const fieldClass =
   "border-input focus-visible:border-ring focus-visible:ring-ring/50 w-full rounded-md border bg-transparent px-3 py-2 text-base shadow-xs outline-none focus-visible:ring-[3px] disabled:cursor-not-allowed disabled:opacity-50 md:text-sm";
 
 /**
- * A bounty's fields, for writing one or changing it. `textLocked` is a
- * bounty following its Jira issue: its text is Jira's, so only its
- * repository is offered.
+ * A new bounty's fields, on the page it is written on: the title and
+ * description in a wide column with the rest of the fields beside them,
+ * below them on a narrow screen. A bounty that exists is changed a field at
+ * a time where it is shown, not here.
  *
- * `layout` is the room it has: one column in a panel, or on a page the
- * title and description in a wide column with the rest of the fields
- * beside them, below them on a narrow screen.
+ * What is typed lives only here until it is saved, so leaving the page by
+ * Cancel or by connecting a repository asks first once there is any.
  */
 function BountyForm({
-  layout = "panel",
   repos,
   workspace,
   newRepository,
@@ -1624,20 +1987,14 @@ function BountyForm({
   onSubmit,
   onCancel,
 }: {
-  layout?: "panel" | "page";
   repos: GithubRepos;
-  /**
-   * The workspace a new bounty goes to. A bounty that exists stays in its
-   * own, so editing one offers none.
-   */
-  workspace?:
-    | {
-        organizations: MembershipDto[];
-        viewer: Viewer;
-        value: string;
-        onChange: (organizationId: string) => void;
-      }
-    | undefined;
+  /** The workspace the bounty goes to, which the form offers to change. */
+  workspace: {
+    organizations: MembershipDto[];
+    viewer: Viewer;
+    value: string;
+    onChange: (organizationId: string) => void;
+  };
   /**
    * Where a repository the list lacks is connected, offered under the
    * repositories: the workspace's GitHub settings.
@@ -1665,9 +2022,18 @@ function BountyForm({
     (name) => !inherited.some((repo) => sameStackName(repo, name)),
   );
 
-  const page = layout === "page";
+  /*
+    Where the person was about to go when they had something unsaved: held
+    while they are asked whether to leave it, and taken if they say so.
+  */
+  const [leaving, setLeaving] = useState<(() => void) | null>(null);
+  const unsaved = title.trim() !== "" || description.trim() !== "";
+  const leave = (go: () => void) => {
+    if (unsaved) setLeaving(() => go);
+    else go();
+  };
 
-  const workspaceField = workspace !== undefined && (
+  const workspaceField = (
     <Labelled label="Workspace">
       {(field) => (
         <Combobox
@@ -1736,10 +2102,11 @@ function BountyForm({
               : [
                   {
                     key: "new-repository",
-                    label: "New repository",
+                    // As a bounty's links name it, once the bounty exists.
+                    label: "Connect a repository",
                     icon: <Plus />,
                     href: newRepository.href,
-                    onSelect: newRepository.onOpen,
+                    onSelect: () => leave(newRepository.onOpen),
                   },
                 ]
           }
@@ -1792,11 +2159,7 @@ function BountyForm({
         <textarea
           id={field.id}
           aria-describedby={field.describedBy}
-          className={cn(
-            fieldClass,
-            "font-mono",
-            page ? "min-h-72 lg:min-h-[28rem]" : "min-h-48",
-          )}
+          className={cn(fieldClass, "font-mono min-h-72 lg:min-h-[28rem]")}
           value={description}
           maxLength={BOUNTY_LIMITS.description}
           onChange={(event) => setDescription(event.target.value)}
@@ -1808,7 +2171,7 @@ function BountyForm({
     <>
       {error !== null && <ErrorBanner className="mt-0">{error}</ErrorBanner>}
       <div className="flex justify-end gap-2">
-        <Button type="button" variant="ghost" onClick={onCancel}>
+        <Button type="button" variant="ghost" onClick={() => leave(onCancel)}>
           Cancel
         </Button>
         <Button type="submit" disabled={saving}>
@@ -1821,11 +2184,7 @@ function BountyForm({
 
   return (
     <form
-      className={
-        page
-          ? "grid gap-x-8 gap-y-6 lg:grid-cols-[minmax(0,1fr)_17rem]"
-          : "flex flex-col gap-4"
-      }
+      className="grid gap-x-8 gap-y-6 lg:grid-cols-[minmax(0,1fr)_17rem]"
       data-testid="bounty-form"
       onSubmit={(event) => {
         event.preventDefault();
@@ -1847,33 +2206,33 @@ function BountyForm({
         });
       }}
     >
-      {page ? (
-        <>
-          <div className="flex min-w-0 flex-col gap-4">
-            {titleField}
-            {descriptionField}
-          </div>
-          {/*
-            Beside the description from `lg`, the full height of the form;
-            under it on a narrower screen, two to a row while there is room.
-          */}
-          <div className="grid content-start gap-4 sm:grid-cols-2 lg:row-span-2 lg:grid-cols-1">
-            {workspaceField}
-            {repoField}
-            {stackField}
-          </div>
-          <div className="flex flex-col gap-4">{footer}</div>
-        </>
-      ) : (
-        <>
-          {workspaceField}
-          {titleField}
-          {repoField}
-          {stackField}
-          {descriptionField}
-          {footer}
-        </>
-      )}
+      <div className="flex min-w-0 flex-col gap-4">
+        {titleField}
+        {descriptionField}
+      </div>
+      {/*
+        Beside the description from `lg`, the full height of the form;
+        under it on a narrower screen, two to a row while there is room.
+      */}
+      <div className="grid content-start gap-4 sm:grid-cols-2 lg:row-span-2 lg:grid-cols-1">
+        {workspaceField}
+        {repoField}
+        {stackField}
+      </div>
+      <div className="flex flex-col gap-4">{footer}</div>
+      <ConfirmDialog
+        open={leaving !== null}
+        onOpenChange={(open) => {
+          if (!open) setLeaving(null);
+        }}
+        title="Discard this bounty?"
+        description="It has not been created yet, so what you have written here is lost if you leave."
+        confirmLabel="Discard"
+        pendingLabel="Leaving…"
+        onConfirm={() => {
+          leaving?.();
+        }}
+      />
     </form>
   );
 }

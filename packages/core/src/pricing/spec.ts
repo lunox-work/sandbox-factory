@@ -156,7 +156,9 @@ export interface ScenarioCounts {
   readonly byKind: Readonly<Record<ScenarioKind, number>>;
 }
 
-export function countScenarios(draft: SpecDraft): ScenarioCounts {
+export function countScenarios(
+  draft: Pick<SpecDraft, "scenarios">,
+): ScenarioCounts {
   const byKind = Object.fromEntries(
     SCENARIO_KINDS.map((kind) => [kind, 0]),
   ) as Record<ScenarioKind, number>;

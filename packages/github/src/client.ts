@@ -17,6 +17,7 @@
 
 import {
   githubBlobResponseSchema,
+  githubBranchPageResponseSchema,
   type GithubInstallationResponse,
   githubInstallationPageResponseSchema,
   type GithubLanguagesResponse,
@@ -79,6 +80,11 @@ export type BranchHead =
     }
   | { readonly status: "not-modified" }
   | { readonly status: "empty" };
+
+/** Branches one listing page holds, GitHub's most. */
+const BRANCH_PAGE_SIZE = 100;
+/** Pages of branches read at most: a repository's first 300. */
+const BRANCH_PAGES_MAX = 3;
 
 /**
  * What `#parse` needs from a schema. Structural rather than zod's own type,
@@ -167,7 +173,7 @@ export class GithubClient {
     installationId: string,
   ): Promise<number> {
     return this.#count(
-      `/user/installations/${encodeURIComponent(installationId)}/repositories?per_page=1`,
+      `/user/installations/${segment(installationId)}/repositories?per_page=1`,
       "installation repositories",
     );
   }
@@ -186,7 +192,7 @@ export class GithubClient {
    */
   async repository(externalId: string): Promise<GithubRepositoryResponse> {
     const response = await this.#get(
-      `/repositories/${encodeURIComponent(externalId)}`,
+      `/repositories/${segment(externalId)}`,
       "repository",
     );
     return this.#parse(response, githubRepositoryResponseSchema, "repository");
@@ -223,6 +229,39 @@ export class GithubClient {
   }
 
   /**
+   * A repository's branches with the commit each is at, a page of 100 at a
+   * time up to `maxPages`; `truncated` when there were more. The listing
+   * embeds only a sha per branch, where `branches/{b}` embeds the commit.
+   *
+   * Whether there are more is GitHub's `Link: rel="next"`, not a full page:
+   * a repository with exactly 300 branches fills the last page read and has
+   * nothing after it, which a page count would report as cut.
+   */
+  async branches(
+    fullName: string,
+    maxPages = BRANCH_PAGES_MAX,
+  ): Promise<{
+    branches: { name: string; sha: string }[];
+    truncated: boolean;
+  }> {
+    const branches: { name: string; sha: string }[] = [];
+    let next: string | undefined =
+      `/repos/${segments(fullName)}/branches?per_page=${BRANCH_PAGE_SIZE}`;
+    for (let page = 0; next !== undefined && page < maxPages; page += 1) {
+      const response = await this.#get(next, "branches");
+      const listed = await this.#parse(
+        response,
+        githubBranchPageResponseSchema,
+        "branches",
+      );
+      for (const branch of listed)
+        branches.push({ name: branch.name, sha: branch.commit.sha });
+      next = this.#nextPage(response.headers.get("link"));
+    }
+    return { branches, truncated: next !== undefined };
+  }
+
+  /**
    * The tree at a commit (or any tree-ish), every level of it when
    * `recursive`. `truncated` is GitHub's cap cutting the listing short,
    * which the caller records rather than treating as a failure: the entries
@@ -238,7 +277,7 @@ export class GithubClient {
   ): Promise<GithubTreeResponse> {
     const query = options.recursive === true ? "?recursive=1" : "";
     const response = await this.#get(
-      `/repos/${segments(fullName)}/git/trees/${encodeURIComponent(sha)}${query}`,
+      `/repos/${segments(fullName)}/git/trees/${segment(sha)}${query}`,
       "tree",
       TREE_TIMEOUT_MS,
     );
@@ -262,7 +301,7 @@ export class GithubClient {
    */
   async blobText(fullName: string, sha: string): Promise<string> {
     const response = await this.#get(
-      `/repos/${segments(fullName)}/git/blobs/${encodeURIComponent(sha)}`,
+      `/repos/${segments(fullName)}/git/blobs/${segment(sha)}`,
       "blob",
     );
     const blob = await this.#parse(response, githubBlobResponseSchema, "blob");
@@ -388,7 +427,22 @@ export class GithubClient {
 
 /** Each `/`-separated part encoded, the slashes kept: `release/1.0` stays two. */
 function segments(value: string): string {
-  return value.split("/").map(encodeURIComponent).join("/");
+  return value.split("/").map(segment).join("/");
+}
+
+/**
+ * One path segment, encoded. `.` and `..` are refused rather than encoded:
+ * `encodeURIComponent` leaves dots alone, and a URL parser resolves `%2E%2E`
+ * as it does `..`, so either would walk the request to another endpoint
+ * with this client's token. Branch names are checked where they enter
+ * (`pullSnapshotRequestSchema`); this is the last line, so a value that
+ * slipped past is a bug, not a request.
+ */
+function segment(value: string): string {
+  if (value === "." || value === "..") {
+    throw new Error("A GitHub API path segment cannot be . or ..");
+  }
+  return encodeURIComponent(value);
 }
 
 /** A URL with every trailing slash cut; a loop, as a regex is quadratic here. */

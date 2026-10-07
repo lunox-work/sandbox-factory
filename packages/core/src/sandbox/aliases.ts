@@ -247,6 +247,22 @@ const patternFor = (rule: AliasRule, name: string) =>
       ? pathPattern(name)
       : textPattern(name);
 
+/**
+ * A path renamed by the table, renamed back: the path rules undone in
+ * reverse order, each scoped by the original path as the forward pass was.
+ */
+function invertPath(
+  path: string,
+  original: string,
+  reversed: readonly AliasRule[],
+): string {
+  let back = path;
+  for (const rule of reversed)
+    if (rule.kind === "path" && inScope(original, rule.paths))
+      back = back.replace(patternFor(rule, rule.after), rule.before);
+  return back;
+}
+
 function rewrite(
   files: readonly AliasedFile[],
   rules: readonly AliasRule[],
@@ -339,6 +355,17 @@ export function applyAliases(
         file: file.path,
         detail: `Applying the inverse table to ${file.path} does not give the original back.`,
       });
+    // Paths too: with `src → lib` beside a `lib/` the repository already
+    // has, `lib/x.ts` would map back to `src/x.ts`, and the table alone
+    // could not say where a public file came from.
+    const aliased = forward.files[index]?.path ?? file.path;
+    if (invertPath(aliased, file.path, reversed) !== file.path)
+      problems.push({
+        code: "irreversible",
+        rule: null,
+        file: file.path,
+        detail: `${aliased} does not map back to ${file.path}.`,
+      });
   });
   const renamedPaths = new Set(forward.files.map((file) => file.path));
   if (renamedPaths.size !== files.length)
@@ -358,6 +385,54 @@ export function applyAliases(
         problems: [],
         applied: counts,
       };
+}
+
+/**
+ * A JSON value's string leaves, each as a file of its own, for aliasing a
+ * structure without touching its shape.
+ *
+ * Aliasing a serialized object as one text renames its keys too: a quote is
+ * a word boundary, so a rule `name → label` turned `"name":` into
+ * `"label":` and the object lost the field. Leaves alone keep every key,
+ * number and boolean as they were. Each is named `base#pointer`, and
+ * `withJsonLeaves` puts them back in the same order.
+ */
+export function jsonLeaves(base: string, value: unknown): AliasedFile[] {
+  const leaves: AliasedFile[] = [];
+  const walk = (node: unknown, pointer: string) => {
+    if (typeof node === "string") {
+      leaves.push({ path: `${base}#${pointer}`, text: node });
+    } else if (Array.isArray(node)) {
+      node.forEach((item, index) => walk(item, `${pointer}/${index}`));
+    } else if (node !== null && typeof node === "object") {
+      for (const [key, item] of Object.entries(node))
+        walk(
+          item,
+          `${pointer}/${key.replace(/~/g, "~0").replace(/\//g, "~1")}`,
+        );
+    }
+  };
+  walk(value, "");
+  return leaves;
+}
+
+/**
+ * `value` with its string leaves replaced by `texts`, in `jsonLeaves`'s
+ * order; a leaf with no text left keeps its own. A fresh value: the one
+ * given is not changed.
+ */
+export function withJsonLeaves<T>(value: T, texts: readonly string[]): T {
+  let at = 0;
+  const walk = (node: unknown): unknown => {
+    if (typeof node === "string") return texts[at++] ?? node;
+    if (Array.isArray(node)) return node.map(walk);
+    if (node !== null && typeof node === "object")
+      return Object.fromEntries(
+        Object.entries(node).map(([key, item]) => [key, walk(item)]),
+      );
+    return node;
+  };
+  return walk(value) as T;
 }
 
 /**

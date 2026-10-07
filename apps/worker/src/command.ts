@@ -1,11 +1,15 @@
 import { spawn } from "node:child_process";
 import { CommandError } from "./errors.js";
 
-/** Platform credentials never enter parser subprocesses. Abort their whole group. */
+/**
+ * Platform credentials never enter parser subprocesses. Abort their whole group.
+ * `env` adds fixed, non-secret settings a tool needs over the minimal base;
+ * nothing of the worker's own environment passes through.
+ */
 export function command(
   executable: string,
   args: readonly string[],
-  options: { signal: AbortSignal; cwd?: string },
+  options: { signal: AbortSignal; cwd?: string; env?: Record<string, string> },
 ): Promise<string> {
   options.signal.throwIfAborted();
   return new Promise((resolve, reject) => {
@@ -19,6 +23,7 @@ export function command(
         PYTHONHASHSEED: "0",
         PYTHONUTF8: "1",
         PYTHONDONTWRITEBYTECODE: "1",
+        ...options.env,
       },
     });
     let output = "";

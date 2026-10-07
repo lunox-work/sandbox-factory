@@ -83,7 +83,12 @@ test("bounty transport retains conflicts and cancels without dispatch", async ()
   });
   assert.match(paths[2] ?? "", /^\/api\/v1\/me\/bounties\?cursor=page/);
   await client.myBounties();
+  // An answer with no versions is not a list of them.
+  await assert.rejects(client.bountyVersions("owner", "1"));
+  assert.match(paths.at(-1) ?? "", /\/bounties\/1\/versions$/);
   await assert.rejects(client.bounty("owner", "1"));
+  await assert.rejects(client.decideBounty("owner", "1", "approve", 2));
+  assert.match(paths.at(-1) ?? "", /\/bounties\/1\/approve$/);
   await client.deleteBounty("owner", "1");
   const malformed = new BountyRunClient(options);
   await assert.rejects(malformed.run("owner", "1"));
@@ -123,7 +128,7 @@ test("bounty transport retains conflicts and cancels without dispatch", async ()
     client.bounties("owner", {}, AbortSignal.abort(new Error("stopped"))),
     /stopped/,
   );
-  assert.equal(paths.length, 6);
+  assert.equal(paths.length, 8);
 });
 
 test("pricing detail and revision envelopes fail explicitly when malformed", async () => {
@@ -273,5 +278,34 @@ test("Jira writes and detail reads validate their envelopes", async () => {
   assert.deepEqual(
     await new BountyClient(options).proposeBounty("o", "id", "request"),
     {},
+  );
+  // A bounty's sizing must say whether a run is in flight, even as null.
+  await assert.rejects(new BountyClient(options).bountySizing("o", "id"));
+  const requested: string[] = [];
+  const sizing = new BountyClient({
+    baseUrl: "",
+    fetch: (async (input: string) => {
+      requested.push(input);
+      return Response.json({ run: null });
+    }) as typeof fetch,
+  });
+  assert.equal(await sizing.bountySizing("o /", "b /"), null);
+  assert.equal(requested[0], "/api/v1/orgs/o%20%2F/bounties/b%20%2F/sizing");
+});
+
+test("a stream refused with a proxy's HTML page is an ApiError, not a SyntaxError", async () => {
+  const client = new PricingClient({
+    baseUrl: "",
+    fetch: (async () =>
+      new Response("<html>502 Bad Gateway</html>", {
+        status: 502,
+      })) as typeof fetch,
+  });
+  await assert.rejects(
+    client.titles("o", "b", [], () => {}, new AbortController().signal),
+    (error: unknown) =>
+      error instanceof ApiError &&
+      error.status === 502 &&
+      /HTTP 502/.test(error.message),
   );
 });

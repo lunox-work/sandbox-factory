@@ -189,18 +189,6 @@ function asState(value: unknown): ConnectState | undefined {
 }
 
 /**
- * Whether a role may connect or disconnect a tool.
- *
- * Owners and admins only: a connection grants the platform access to a
- * client's tickets or repositories for as long as it lives, which is not a
- * decision an ordinary member should make for the organization. A member may
- * hold several comma-separated roles — the organization plugin splits on `,`
- * when it checks permissions — so any one of them being high enough is
- * enough.
- */
-export { isAtLeastAdmin } from "./access.js";
-
-/**
  * Reduces a caller-supplied `returnTo` to a path within the web app, or to
  * `fallback`.
  *

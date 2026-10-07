@@ -4,6 +4,7 @@ import {
   SliceGraphError,
   boundarySummary,
   detectExternals,
+  entryPointPath,
   fileOf,
   isSliceParams,
   isTraversed,
@@ -442,6 +443,45 @@ test("externals list service packages and environment names, never values", () =
   assert.equal(serviceOf("pg-promise"), "postgres");
   assert.equal(serviceOf("pgx"), null);
   assert.equal(serviceOf("zod"), null);
+  // PyGithub is imported as `github`, which as a rule would also claim
+  // every Go import from github.com; it is not in the table at all.
+  assert.equal(serviceOf("PyGithub"), null);
+  assert.equal(serviceOf("github.com/jackc/pgx/v5"), null);
+});
+
+test("an entry point maps to the file its node id or path names", () => {
+  assert.equal(entryPointPath("file:src/a.ts"), "src/a.ts");
+  assert.equal(entryPointPath("symbol:src/a.ts:run"), "src/a.ts");
+  assert.equal(entryPointPath("symbol:src/a.rs:Store::get"), "src/a.rs");
+  assert.equal(entryPointPath("symbol:src/a.ts"), "src/a.ts");
+  assert.equal(entryPointPath("dependency:src/a.ts:pg"), null);
+  assert.equal(entryPointPath("src/a.ts"), "src/a.ts");
+});
+
+test("reach takes files named like Object's own properties at face value", () => {
+  // Under a plain object and `in`, these read as reached before they were.
+  const names = ["constructor", "toString", "__proto__", "hasOwnProperty"];
+  const graph = parseSliceGraph({
+    nodes: [
+      { id: "file:main.ts", source_file: "main.ts" },
+      ...names.map((name) => ({ id: `file:${name}`, source_file: name })),
+    ],
+    links: names.map((name) => ({
+      source: "file:main.ts",
+      target: `file:${name}`,
+      relation: "imports",
+      specifier: `./${name}`,
+    })),
+  });
+  const result = reach(graph, ["main.ts"], { maxFiles: 10, maxDepth: 2 });
+  assert.deepEqual(result.included, [...names, "main.ts"].sort());
+  assert.equal(Object.keys(result.depthOf).length, names.length + 1);
+  assert.equal(Object.hasOwn(result.depthOf, "__proto__"), true);
+  assert.equal(result.depthOf["constructor"], 1);
+  assert.deepEqual(result.cuts.outbound, []);
+  // The budget still counts every file, these included.
+  const tight = reach(graph, ["main.ts"], { maxFiles: 2, maxDepth: 2 });
+  assert.deepEqual(tight.included, ["__proto__", "main.ts"]);
 });
 
 const symbol = (
@@ -681,4 +721,44 @@ test("the boundary summary is bounded and reports truncation", () => {
   assert.equal(big.outbound.length, SUMMARY_LIMITS.modules);
   assert.equal(big.outbound[0]?.symbols.length, SUMMARY_LIMITS.symbols);
   assert.equal(big.outbound[0]?.truncated, true);
+});
+
+test("the boundary summary caps externals and keeps every service", () => {
+  const packages = [
+    ...Array.from({ length: SUMMARY_LIMITS.externalPackages + 5 }, (_, i) => ({
+      specifier: `@aws-sdk/client-${String(i).padStart(3, "0")}`,
+      service: "aws",
+      files: ["src/main.ts"],
+    })),
+    // Sorts after every AWS client, so a plain cut would drop it.
+    { specifier: "stripe", service: "stripe", files: ["src/main.ts"] },
+  ];
+  const environment = Array.from(
+    { length: SUMMARY_LIMITS.environment + 1 },
+    (_, i) => ({ name: `VAR_${i}`, files: ["src/main.ts"] }),
+  );
+  const crowded = boundarySummary(contract, {
+    ...manifest,
+    externals: { packages, environment },
+  });
+  assert.equal(
+    crowded.externals.packages.length,
+    SUMMARY_LIMITS.externalPackages,
+  );
+  assert.deepEqual(
+    [...new Set(crowded.externals.packages.map(({ service }) => service))],
+    ["aws", "stripe"],
+  );
+  assert.equal(crowded.externals.packages.at(-1)?.specifier, "stripe");
+  assert.equal(
+    crowded.externals.environment.length,
+    SUMMARY_LIMITS.environment,
+  );
+  assert.equal(crowded.counts.externals, packages.length + environment.length);
+  assert.equal(crowded.truncated, true);
+  const envOnly = boundarySummary(contract, {
+    ...manifest,
+    externals: { packages: [], environment },
+  });
+  assert.equal(envOnly.truncated, true);
 });

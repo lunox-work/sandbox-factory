@@ -23,6 +23,7 @@ import {
   screenForPath,
 } from "../src/routes";
 import { Bounties, BountyPage, NewBountyPage } from "../src/Bounties";
+import { assessRubric, COMPLEXITY_PROFILE_VERSION } from "sandbox-factory";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -41,6 +42,8 @@ function summary(overrides: Record<string, unknown> = {}) {
     repoId: null,
     stack: [],
     revision: 1,
+    version: 1,
+    approval: null,
     jira: null,
     proposal: null,
     sandbox: null,
@@ -57,6 +60,7 @@ function detail(overrides: Record<string, unknown> = {}) {
     components: [],
     inputTruncated: false,
     createdBy: "user_1",
+    stages: { overview: { version: 1 }, bounty: null, sandbox: null },
     ...overrides,
   };
 }
@@ -211,6 +215,17 @@ function Shell(props: Omit<ComponentProps<typeof Bounties>, "onCreate">) {
       viewer={viewer}
       onTitle={() => {}}
       onOpenBounties={() => pushLocation(BOUNTIES_PATH)}
+      onOpenSettings={(organization, tab) =>
+        pushLocation(
+          pathForScreen(
+            "org-settings",
+            organization.slug,
+            undefined,
+            undefined,
+            tab,
+          ),
+        )
+      }
     />
   ) : (
     <Bounties {...props} onCreate={() => pushLocation(NEW_BOUNTY_PATH)} />
@@ -453,6 +468,7 @@ test("a bounty's own page opens on its overview, and names it for the trail", as
       viewer={viewer}
       onTitle={onTitle}
       onOpenBounties={() => {}}
+      onOpenSettings={() => {}}
     />,
   );
   expect(
@@ -472,7 +488,7 @@ test("a bounty's own page opens on its overview, and names it for the trail", as
     within(text).getByRole("button", { name: "Edit description" }),
   ).toBeDefined();
   expect(
-    within(detail).getByRole("tab", { name: "Overview", selected: true }),
+    within(detail).getByRole("tab", { name: /^Overview/, selected: true }),
   ).toBeDefined();
   // Its text, where it came from and whose it is; the rest in other tabs.
   for (const part of ["Workspace", "Context"]) {
@@ -511,6 +527,7 @@ test("a bounty deleted from its page returns to the list", async () => {
       viewer={viewer}
       onTitle={() => {}}
       onOpenBounties={onOpenBounties}
+      onOpenSettings={() => {}}
     />,
   );
   const detail = await screen.findByTestId("bounty-detail");
@@ -534,6 +551,7 @@ test("a bounty's page in a workspace one is not in says so", async () => {
       viewer={viewer}
       onTitle={() => {}}
       onOpenBounties={() => {}}
+      onOpenSettings={() => {}}
     />,
   );
   expect(
@@ -894,7 +912,9 @@ test("a repository the workspace lacks is connected in its GitHub settings", asy
   );
   // A link, so it can be opened in another tab; a plain click stays in the
   // app, in the workspace chosen rather than the one in the rail.
-  const link = within(list).getByRole("option", { name: "New repository" });
+  const link = within(list).getByRole("option", {
+    name: "Connect a repository",
+  });
   expect(link.getAttribute("href")).toBe("/o/beta/settings?connection=github");
   await userEvent.click(link);
   expect(onConnectRepository).toHaveBeenCalledWith(
@@ -1112,6 +1132,57 @@ test("a bounty with no title is not sent", async () => {
   expect(state.calls.some(({ method }) => method === "POST")).toBe(false);
 });
 
+test("a bounty opened mid-sizing says so, and lands on its proposal without a second Propose", async () => {
+  let polls = 0;
+  const state = server([
+    ["GET", "/bounties/bty_7/sizing", () => json({ run: run() })],
+    [
+      "GET",
+      "/runs/brn_1",
+      () => {
+        polls += 1;
+        // Still at work the first time it is read.
+        return json({
+          run:
+            polls === 1
+              ? run()
+              : run(
+                  [
+                    {
+                      externalIssueId: "bty_7",
+                      issueKey: null,
+                      bountyId: "bty_7",
+                      proposalId: "bpr_9",
+                      status: "proposed",
+                    },
+                  ],
+                  "succeeded",
+                ),
+        });
+      },
+    ],
+  ]);
+  vi.stubGlobal("fetch", state.fetchMock);
+  window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=bounty");
+  render(<Shell {...inAcme("admin")} />);
+  const detail = await screen.findByTestId("bounty-detail");
+  const part = within(detail).getByRole("region", { name: "Proposal" });
+  // Nothing pressed: the bounty's own read named the run at work.
+  expect(await within(part).findByText("Sizing…")).toBeDefined();
+  expect(
+    await within(detail).findByTestId(
+      "proposal-detail",
+      {},
+      { timeout: 3_000 },
+    ),
+  ).toBeDefined();
+  expect(
+    state.calls.some(
+      ({ method, url }) => method === "POST" && url.endsWith("/propose"),
+    ),
+  ).toBe(false);
+});
+
 test("an admin proposes a bounty from inside it, follows its sizing, and lands on its proposal", async () => {
   let polls = 0;
   const state = server([
@@ -1323,11 +1394,12 @@ test("a bounty following Jira is edited for its repository only", async () => {
   render(<Shell {...inAcme("member")} />);
 
   const panel = await screen.findByTestId("bounty-detail");
-  expect(within(panel).getByText("Follows its Jira issue")).toBeDefined();
+  const links = within(panel).getByRole("region", { name: "Links" });
   expect(
-    within(panel)
-      .getByRole("link", { name: /Open in Jira/ })
-      .getAttribute("href"),
+    within(links).getByText(/Its title and description follow/),
+  ).toBeDefined();
+  expect(
+    within(links).getByRole("link", { name: /APP-1/ }).getAttribute("href"),
   ).toBe("https://acme.atlassian.net/browse/APP-1");
 
   // Its text is Jira's: shown, and not offered.
@@ -1335,22 +1407,12 @@ test("a bounty following Jira is edited for its repository only", async () => {
   expect(
     within(panel).queryByRole("button", { name: "Edit description" }),
   ).toBeNull();
-  // Its repository is picked in place from its pencil, and saved on the
-  // pick, after which it reads as the one picked.
-  expect(
-    within(panel).queryByRole("combobox", { name: "Repository" }),
-  ).toBeNull();
-  await userEvent.click(
-    within(panel).getByRole("button", { name: "Edit repository" }),
+  // Its repository is picked from its card under the text, and saved on
+  // the pick.
+  await chooseOption(
+    within(links).getByRole("combobox", { name: "Repository" }),
+    "acme/app",
   );
-  await userEvent.click(
-    within(await screen.findByRole("listbox")).getByRole("option", {
-      name: "acme/app",
-    }),
-  );
-  expect(
-    within(panel).queryByRole("combobox", { name: "Repository" }),
-  ).toBeNull();
   await waitFor(() =>
     expect(state.calls.find(({ method }) => method === "PATCH")?.body).toEqual({
       expectedRevision: 1,
@@ -1358,6 +1420,190 @@ test("a bounty following Jira is edited for its repository only", async () => {
     }),
   );
   expect(await screen.findByTestId("bounty-detail")).toBeDefined();
+});
+
+const jiraConnection = {
+  id: "jrc_1",
+  cloudId: "cloud-1",
+  siteUrl: "https://acme.atlassian.net",
+  siteName: "Acme",
+  email: "dana@example.test",
+  healthy: true,
+  scopes: ["read:jira-work"],
+  resourceScopes: ["read:jira-work"],
+  writeGranted: false,
+  createdAt: stamp,
+};
+
+function foundIssue(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "100",
+    key: "APP-9",
+    summary: "Export the table",
+    status: "To Do",
+    issueType: "Task",
+    boardId: "jrb_1",
+    boardName: "App board",
+    bountyId: null,
+    ...overrides,
+  };
+}
+
+test("a bounty's Jira issue is found across the boards and linked once asked", async () => {
+  const state = server([
+    ["GET", "/jira/connections", () => json({ connections: [jiraConnection] })],
+    [
+      "GET",
+      "/jira/search?q=",
+      () =>
+        json({
+          issues: [
+            foundIssue(),
+            foundIssue({ id: "200", key: "APP-3", bountyId: "bty_other" }),
+          ],
+        }),
+    ],
+    [
+      "PUT",
+      "/bounties/bty_7/jira",
+      () =>
+        json({
+          bounty: detail({
+            title: "Export the table",
+            revision: 2,
+            jira: {
+              ...jiraLink,
+              key: "APP-9",
+              url: "https://acme.atlassian.net/browse/APP-9",
+            },
+          }),
+        }),
+    ],
+  ]);
+  vi.stubGlobal("fetch", state.fetchMock);
+  window.history.replaceState(null, "", "/bounties/acme/bty_7");
+  render(<Shell {...inAcme("member")} />);
+  const page = await screen.findByTestId("bounty-detail");
+  const links = within(page).getByRole("region", { name: "Links" });
+
+  const list = await openCombobox(
+    await within(links).findByRole("button", { name: "Jira issue" }),
+  );
+  // Under the results, the way to the workspace's Jira settings.
+  expect(
+    within(list)
+      .getByRole("option", { name: "Manage Jira accounts" })
+      .getAttribute("href"),
+  ).toBe("/o/acme/settings?connection=jira");
+
+  await userEvent.type(
+    screen.getByRole("combobox", { name: "Search jira issue" }),
+    "export",
+  );
+  // Each row as the board's own search lists them: key, summary, board.
+  const found = await within(list).findByRole("option", {
+    name: /APP-9.*Export the table.*App board/,
+  });
+  // Every board is searched at once, by what was typed.
+  expect(
+    state.calls.some(({ url }) => url.endsWith("/jira/search?q=export")),
+  ).toBe(true);
+  // An issue that is another bounty's is listed, and not offered.
+  expect(
+    within(list)
+      .getByRole("option", { name: /APP-3/ })
+      .getAttribute("aria-disabled"),
+  ).toBe("true");
+
+  // Its own text would be replaced, so it asks first.
+  await userEvent.click(found);
+  const dialog = await screen.findByRole("alertdialog");
+  expect(within(dialog).getByText("Link APP-9?")).toBeDefined();
+  expect(state.calls.some(({ method }) => method === "PUT")).toBe(false);
+  await userEvent.click(
+    within(dialog).getByRole("button", { name: "Link issue" }),
+  );
+  await waitFor(() =>
+    expect(state.calls.find(({ method }) => method === "PUT")?.body).toEqual({
+      boardId: "jrb_1",
+      issueId: "100",
+    }),
+  );
+  expect(
+    await within(links).findByText(/Its title and description follow/),
+  ).toBeDefined();
+  expect(
+    within(links).getByRole("link", { name: /APP-9/ }).getAttribute("href"),
+  ).toBe("https://acme.atlassian.net/browse/APP-9");
+});
+
+test("a bounty's Jira issue is let go from the same list, keeping its text", async () => {
+  const state = server([
+    ["GET", "/jira/connections", () => json({ connections: [jiraConnection] })],
+    [
+      "GET",
+      "/bounties/bty_1",
+      () => json({ bounty: detail({ ...fromJira, description: "Jira's." }) }),
+    ],
+    [
+      "DELETE",
+      "/bounties/bty_1/jira",
+      () =>
+        json({
+          bounty: detail({ ...fromJira, description: "Jira's.", jira: null }),
+        }),
+    ],
+  ]);
+  vi.stubGlobal("fetch", state.fetchMock);
+  window.history.replaceState(null, "", "/bounties/acme/bty_1");
+  render(<Shell {...inAcme("member")} />);
+  const page = await screen.findByTestId("bounty-detail");
+  const links = within(page).getByRole("region", { name: "Links" });
+  await chooseOption(
+    await within(links).findByRole("button", { name: "Jira issue" }),
+    "Remove the link",
+  );
+  await waitFor(() =>
+    expect(
+      state.calls.some(
+        ({ method, url }) => method === "DELETE" && url.endsWith("/jira"),
+      ),
+    ).toBe(true),
+  );
+  await waitFor(() =>
+    expect(
+      within(links).getByRole("button", { name: "Jira issue" }).textContent,
+    ).toBe("None"),
+  );
+});
+
+test("with no Jira account, the picker says so and leads to settings", async () => {
+  vi.stubGlobal(
+    "fetch",
+    server([["GET", "/jira/connections", () => json({ connections: [] })]])
+      .fetchMock,
+  );
+  window.history.replaceState(null, "", "/bounties/acme/bty_7");
+  render(<Shell {...inAcme("member")} />);
+  const page = await screen.findByTestId("bounty-detail");
+  const links = within(page).getByRole("region", { name: "Links" });
+  expect(
+    await within(links).findByText(
+      "No Jira account is connected to the workspace.",
+    ),
+  ).toBeDefined();
+  const list = await openCombobox(
+    within(links).getByRole("button", { name: "Jira issue" }),
+  );
+  expect(within(list).getByText("No Jira account is connected.")).toBeDefined();
+  const connect = within(list).getByRole("option", {
+    name: "Connect Jira in settings",
+  });
+  expect(connect.getAttribute("href")).toBe("/o/acme/settings?connection=jira");
+  await userEvent.click(connect);
+  expect(window.location.pathname + window.location.search).toBe(
+    "/o/acme/settings?connection=jira",
+  );
 });
 
 test("a stale edit says so and shows the bounty as it is now", async () => {
@@ -1618,6 +1864,7 @@ test("a bounty from Jira is named by its issue's key, and one written here by it
       viewer={viewer}
       onTitle={() => {}}
       onOpenBounties={() => {}}
+      onOpenSettings={() => {}}
     />,
   );
   await screen.findByTestId("bounty-detail");
@@ -1648,6 +1895,10 @@ test("the page lists bounties alone; a bounty opens over them without its propos
   expect(screen.queryByRole("tab", { name: "Proposals" })).toBeNull();
   // Not proposable from the row: a proposal is made inside its bounty.
   expect(within(list).queryByRole("button", { name: "Propose" })).toBeNull();
+  // Not approved, so its price is not settled: a dash, not $105.
+  const brief = within(list).getByTestId("proposal-brief");
+  expect(brief.textContent).toContain("—");
+  expect(brief.textContent).not.toContain("105");
 
   await userEvent.click(
     within(list).getByRole("link", { name: "Invitations are not sent" }),
@@ -1680,6 +1931,22 @@ test("an address from when proposals had a tab opens the proposal on its bounty'
   expect(await screen.findByTestId("proposal-detail")).toBeDefined();
 });
 
+test("an address that names no page is not found, not home", () => {
+  expect(screenForPath("/")).toBe("home");
+  expect(screenForPath("")).toBe("home");
+  expect(screenForPath("/nonexistent")).toBe("not-found");
+  expect(screenForPath("/settings/jira")).toBe("not-found");
+  expect(screenForPath("/o/acme/members")).toBe("not-found");
+  // A workspace's own pages, and the Jira ones that moved into settings.
+  expect(screenForPath("/o/acme")).toBe("org-settings");
+  expect(screenForPath("/o/acme/settings/")).toBe("org-settings");
+  expect(screenForPath("/o/acme/jira")).toBe("org-settings");
+  expect(screenForPath("/o/acme/jira/site_1")).toBe("org-settings");
+  expect(screenForPath("/o/acme/jira/site_1/42")).toBe("org-jira-board");
+  expect(screenForPath("/o/acme/repositories/repo_1")).toBe("org-repository");
+  expect(pathForScreen("not-found")).toBe("/");
+});
+
 test("the bounties page has a path and a trail of its own", () => {
   // Every workspace's, so under none of them.
   expect(screenForPath("/bounties")).toBe("bounties");
@@ -1691,7 +1958,7 @@ test("the bounties page has a path and a trail of its own", () => {
   // under its new name, with the workspace the path named.
   expect(screenForPath("/o/acme/bounties")).toBe("bounties");
   expect(screenForPath("/o/acme/tickets")).toBe("bounties");
-  expect(screenForPath("/o/acme/bounties/more")).toBe("org-settings");
+  expect(screenForPath("/o/acme/bounties/more")).toBe("not-found");
   expect(canonicalUrl("/o/acme/bounties", "")).toBe("/bounties");
   expect(canonicalUrl("/o/acme/tickets", "")).toBe("/bounties");
   expect(canonicalUrl("/o/acme/bounties", "?bounty=bty_1")).toBe(
@@ -1853,15 +2120,13 @@ test("a bounty's panel is read, its text over its sandbox, with context that is 
   expect(within(panel).queryByRole("region", { name: "Bounty" })).toBeNull();
   // Its price heads its sandbox, where the work it pays for is done.
   const sandboxPart = within(panel).getByRole("region", { name: "Sandbox" });
-  expect(within(sandboxPart).getByText(/Not priced yet/)).toBeDefined();
+  // With no approved proposal, neither its price nor its size is settled.
+  expect(within(sandboxPart).getAllByText("—")).toHaveLength(2);
   // Said plainly: making one is offered on its page.
   expect(within(sandboxPart).getByText("No sandbox yet.")).toBeDefined();
   const context = within(panel).getByRole("region", { name: "Context" });
-  expect(
-    within(context).getByText("Not linked; created in Lunox"),
-  ).toBeDefined();
-  // No repository and no stack, each read as none.
-  expect(within(context).getAllByText("None")).toHaveLength(2);
+  // No Jira issue, no repository and no stack, each read as none.
+  expect(within(context).getAllByText("None")).toHaveLength(3);
 });
 
 test("an admin makes a bounty's sandbox from its repository, and sees it after", async () => {
@@ -1880,6 +2145,7 @@ test("an admin makes a bounty's sandbox from its repository, and sees it after",
               status: "draft",
               publicRepoId: null,
               currentVersionId: null,
+              expiresAt: null,
               bountyId: "bty_7",
               sourceRepoId: "ghr_1",
               createdAt: stamp,
@@ -1961,7 +2227,7 @@ test("a sandbox that could not be made says why, and the bounty stays as it was"
   });
 });
 
-test("a bounty's row says when it has a sandbox, and how far it got", async () => {
+test("a bounty's row leaves its sandbox to the bounty", async () => {
   vi.stubGlobal(
     "fetch",
     server(
@@ -1982,7 +2248,8 @@ test("a bounty's row says when it has a sandbox, and how far it got", async () =
   const rows = within(await screen.findByTestId("bounty-list")).getAllByRole(
     "listitem",
   );
-  expect(within(rows[0]!).getByText("Sandbox Published")).toBeDefined();
+  // A sandbox is shown inside the bounty, not on its row.
+  expect(within(rows[0]!).queryByText(/^Sandbox /)).toBeNull();
   expect(within(rows[1]!).queryByText(/^Sandbox /)).toBeNull();
 });
 
@@ -1995,12 +2262,20 @@ const approvedSummary = {
   amountMinor: 5_800,
   currency: "USD",
 };
+/** A sandbox as its own routes answer it: no build, which a bounty's adds. */
+function sandboxRecord(overrides: Record<string, unknown> = {}) {
+  const { build: _build, ...record } = sandboxOf(overrides);
+  return record;
+}
+
 function sandboxOf(overrides: Record<string, unknown> = {}) {
   return {
     id: "sbx_1",
     status: "draft",
     currentVersionId: null,
+    expiresAt: null,
     sourceRepoId: null,
+    build: null,
     ...overrides,
   };
 }
@@ -2030,7 +2305,11 @@ test("a bounty with a sandbox is kept, and its panel says how far the sandbox go
   render(<Bounties {...inAcme("admin")} />);
   const panel = await screen.findByTestId("bounty-detail");
   const part = within(panel).getByRole("region", { name: "Sandbox" });
-  expect(within(part).getByText("Published")).toBeDefined();
+  // The pill opens the published sandbox, in a tab of its own.
+  const pill = within(part).getByRole("link", { name: /Published/ });
+  expect(pill.getAttribute("href")).toBe("/sandboxes/acme/sbv_1");
+  expect(pill.getAttribute("target")).toBe("_blank");
+  expect(pill.querySelector("svg")).not.toBeNull();
   expect(
     within(part).getByText("Contributors can work in its published version."),
   ).toBeDefined();
@@ -2057,6 +2336,7 @@ test("an admin links the bounty's repository to a sandbox made without one", asy
             status: "draft",
             publicRepoId: null,
             currentVersionId: null,
+            expiresAt: null,
             bountyId: "bty_7",
             sourceRepoId: "ghr_1",
             createdAt: stamp,
@@ -2249,6 +2529,7 @@ const generatedSource = {
   starterSha256: null,
   transformConfigSha256: "t".repeat(64),
   approvedTaskSha256: "a".repeat(64),
+  proposalVersion: 1,
   aliasRules: [],
   dependencyChoices: {},
   acceptanceTests: [],
@@ -2258,7 +2539,15 @@ const generatedSource = {
     title: "Invitations are not sent",
     summary: "Scheduling an interview sends the candidate one email.",
     spec: null,
-    pricing: null,
+    pricing: {
+      proposalId: "bpr_7",
+      proposalRevision: 2,
+      complexity: "M",
+      amountMinor: 200,
+      currency: "USD",
+      status: "approved",
+      decidedAt: stamp,
+    },
     selectedBy: "user_1",
     selectedAt: stamp,
     bountyId: "bty_7",
@@ -2332,7 +2621,11 @@ function generatingServer(input: {
   unpublish?: () => Promise<Response>;
   /** A version's provenance, as owners read it. */
   source?: () => Record<string, unknown>;
+  /** Where each step stands; the overview alone by default. */
+  stages?: Record<string, unknown> | (() => Record<string, unknown>);
 }) {
+  const stages = () =>
+    typeof input.stages === "function" ? input.stages() : input.stages;
   return server([
     [
       "GET",
@@ -2343,6 +2636,7 @@ function generatingServer(input: {
             sandbox: sandboxOf(input.sandbox?.()),
             proposal:
               input.proposal === undefined ? approvedSummary : input.proposal,
+            ...(stages() === undefined ? {} : { stages: stages() }),
           }),
         }),
     ],
@@ -2353,7 +2647,10 @@ function generatingServer(input: {
         input.publish?.() ??
         json({
           sandbox: {
-            ...sandboxOf({ status: "published", currentVersionId: "sbv_1" }),
+            ...sandboxRecord({
+              status: "published",
+              currentVersionId: "sbv_1",
+            }),
             slug: "abc123def456",
             publicRepoId: null,
             bountyId: "bty_7",
@@ -2375,7 +2672,7 @@ function generatingServer(input: {
         input.unpublish?.() ??
         json({
           sandbox: {
-            ...sandboxOf(),
+            ...sandboxRecord(),
             slug: "abc123def456",
             publicRepoId: null,
             bountyId: "bty_7",
@@ -2477,6 +2774,48 @@ test("an admin generates a version for a sandbox with no repository, and follows
       }) as HTMLButtonElement
     ).disabled,
   ).toBe(true);
+});
+
+test("a version generated from the latest bounty takes back the sandbox's warning at once", async () => {
+  let generated = false;
+  const state = generatingServer({
+    versions: () => [generatedVersion],
+    run: () => ({ status: "succeeded", finishedAt: stamp }),
+    generate: () => {
+      generated = true;
+      return json(
+        {
+          version: { ...generatedVersion, id: "sbv_2", version: 2 },
+          source: { ...generatedSource, sandboxVersionId: "sbv_2" },
+          run: starterRun({ status: "queued" }),
+        },
+        202,
+      );
+    },
+    // Built on bounty v1 until the new version, built on v2, is generated.
+    stages: () => ({
+      overview: { version: 1 },
+      bounty: { version: 2, overviewVersion: 1 },
+      sandbox: generated
+        ? { version: 2, bountyVersion: 2 }
+        : { version: 1, bountyVersion: 1 },
+    }),
+  });
+  vi.stubGlobal("fetch", state.fetchMock);
+  const part = await sandboxPart();
+  expect(await screen.findByTestId("sandbox-lineage")).toBeDefined();
+  await userEvent.click(
+    await within(part).findByRole("button", { name: "Generate again" }),
+  );
+  // The bounty is read again, with no refresh, and warns of nothing.
+  await waitFor(() =>
+    expect(screen.queryByTestId("sandbox-lineage")).toBeNull(),
+  );
+  expect(
+    within(screen.getByRole("tablist", { name: "Steps" }))
+      .getByRole("tab", { name: /^Sandbox/ })
+      .hasAttribute("data-behind"),
+  ).toBe(false);
 });
 
 test("a generated version says whether its baseline passes, and what the starter holds", async () => {
@@ -2649,9 +2988,18 @@ const proposed: [string, string, () => Promise<Response>] = [
   "/bounties/bty_7",
   () => json({ bounty: detail({ proposal: liveProposal() }) }),
 ];
+/** The same bounty with its proposal approved: its price is settled. */
+const approved: [string, string, () => Promise<Response>] = [
+  "GET",
+  "/bounties/bty_7",
+  () =>
+    json({
+      bounty: detail({ proposal: liveProposal({ status: "approved" }) }),
+    }),
+];
 
 test("a bounty's sandbox in the panel says what it pays and its size, at its head", async () => {
-  vi.stubGlobal("fetch", server([proposed]).fetchMock);
+  vi.stubGlobal("fetch", server([approved]).fetchMock);
   window.history.replaceState(null, "", "/bounties?peek=acme/bty_7");
   render(<Shell {...inAcme("member")} />);
   const page = await screen.findByTestId("bounty-detail");
@@ -2680,11 +3028,17 @@ test("a bounty's page splits into tabs, each one in the address", async () => {
   window.history.replaceState(null, "", "/bounties/acme/bty_7");
   render(<Shell {...inAcme("member")} />);
   const page = await screen.findByTestId("bounty-detail");
+  // The steps in order, numbered, each with the version it is at.
   expect(
     within(page)
       .getAllByRole("tab")
       .map((tab) => tab.textContent),
-  ).toEqual(["Overview", "Bounty", "Sandbox"]);
+  ).toEqual(["1Overviewv1", "2Bounty", "3Sandbox"]);
+  // The number is drawn, not read: each is named for its step and version.
+  expect(within(page).getAllByRole("tab")[0]?.textContent).toMatch(/Overview/);
+  expect(
+    within(page).getByRole("tab", { name: "Overview v1", selected: true }),
+  ).toBeDefined();
 
   // The bounty: what it pays and why.
   const entries = window.history.length;
@@ -2707,20 +3061,149 @@ test("a bounty's page splits into tabs, each one in the address", async () => {
   expect(sandbox.textContent).not.toContain(money(200, "USD"));
 
   // The overview is the page's own address.
-  await userEvent.click(within(page).getByRole("tab", { name: "Overview" }));
+  await userEvent.click(within(page).getByRole("tab", { name: /^Overview/ }));
   expect(window.location.search).toBe("");
   expect(
     within(page).getByRole("region", { name: "Describe task" }),
   ).toBeDefined();
 });
 
+test("a proposal waiting on its code is read again once the code is measured, and shows the rubric's size", async () => {
+  const spec = {
+    feature: "Invitations",
+    background: [],
+    scenarios: [
+      {
+        id: "s1",
+        kind: "happy",
+        title: "One invitation",
+        steps: [{ keyword: "Then", text: "one email" }],
+        origin: "draft",
+        weight: "heavy",
+      },
+    ],
+    openQuestions: [],
+    assumptions: [],
+  } as const;
+  const measured = {
+    version: COMPLEXITY_PROFILE_VERSION,
+    slice: {
+      files: 2,
+      bytes: 2_000,
+      modules: ["src/mailer"],
+      stubCoverage: "full",
+      blockers: 0,
+      ready: true,
+    },
+    touchedModules: ["src/mailer"],
+    externals: { services: [], environment: 0, seams: 0 },
+    spec: {
+      scenarios: 1,
+      kinds: {
+        happy: 1,
+        boundary: 0,
+        unhappy: 0,
+        recovery: 0,
+        permission: 0,
+        concurrency: 0,
+        "non-functional": 0,
+      },
+      openQuestions: 0,
+      assumptions: 0,
+    },
+    tests: { files: 1, untestedModules: [] },
+    pattern: null,
+    nonFunctional: { scenarios: 0, migrations: false, ci: false },
+    risks: [],
+  } as const;
+  // Sized by the model at M, the code still to measure...
+  const waiting = proposal({
+    specRevision: 1,
+    rubric: assessRubric({ spec, code: { status: "pending" } }),
+  });
+  // ...then, the code measured, sized by the rubric: 4 + 1 = 5 points, XS+.
+  const sized = proposal({
+    specRevision: 1,
+    revision: 2,
+    sizedBy: "rubric",
+    complexity: "XS+",
+    amountMinor: 100,
+    rubric: assessRubric({
+      spec,
+      code: { status: "measured", profile: measured, specRevision: 1 },
+    }),
+  });
+  let settled = false;
+  const detailFor = (body: unknown) =>
+    json({
+      proposal: body,
+      freshness: { freshness: "current", checkedAt: stamp },
+      liveSpec: null,
+      writebackOperations: [],
+    });
+  const { fetchMock, calls } = server([
+    [
+      "GET",
+      "/bounties/bty_7",
+      () => json({ bounty: detail({ proposal: liveProposal() }) }),
+    ],
+    [
+      "GET",
+      "/profile",
+      () => {
+        settled = true;
+        return json({
+          profile: {
+            id: "bpf_1",
+            proposalId: "bpr_9",
+            specRevision: 1,
+            status: "ready",
+            errorCode: null,
+            runErrorCode: null,
+            snapshotId: "rsn_1",
+            scopeRunId: "arn_1",
+            sliceRunId: "arn_2",
+            profile: measured,
+            createdAt: stamp,
+            updatedAt: stamp,
+          },
+        });
+      },
+    ],
+    ["GET", "/spec", () => json({ spec: null })],
+    ["GET", "/proposals/bpr_9", () => detailFor(settled ? sized : waiting)],
+  ]);
+  vi.stubGlobal("fetch", fetchMock);
+  window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=bounty");
+  render(<Shell {...inAcme("admin")} />);
+  const page = await screen.findByTestId("bounty-detail");
+  const rubric = await within(page).findByRole("region", {
+    name: "Why this price",
+  });
+  await waitFor(
+    () =>
+      expect(within(rubric).getByTestId("rubric-source").textContent).toBe(
+        "The rubric set this size.",
+      ),
+    { timeout: 4_000 },
+  );
+  expect(within(page).getByText("set by the rubric")).toBeDefined();
+  expect(within(page).getByText("The model's read: M")).toBeDefined();
+  const reads = calls.filter(
+    ({ method, url }) => method === "GET" && /\/proposals\/bpr_9$/.test(url),
+  );
+  expect(reads.length).toBeGreaterThanOrEqual(2);
+});
+
 test("a bounty's page keeps it at a glance, its context and workspace beside every tab", async () => {
-  vi.stubGlobal("fetch", server([proposed]).fetchMock);
+  vi.stubGlobal("fetch", server([approved]).fetchMock);
   window.history.replaceState(null, "", "/bounties/acme/bty_7");
   render(<Shell {...inAcme("admin")} />);
   const page = await screen.findByTestId("bounty-detail");
   for (const tab of ["Overview", "Bounty", "Sandbox"]) {
-    await userEvent.click(within(page).getByRole("tab", { name: tab }));
+    await userEvent.click(
+      within(page).getByRole("tab", { name: new RegExp(`^${tab}`) }),
+    );
     // What it pays and its size, over where its sandbox stands.
     const summary = await within(page).findByRole("region", { name: "Bounty" });
     await waitFor(() =>
@@ -2728,9 +3211,10 @@ test("a bounty's page keeps it at a glance, its context and workspace beside eve
     );
     expect(within(summary).getByText("M")).toBeDefined();
     expect(within(summary).getByText("No sandbox yet.")).toBeDefined();
+    // Its sources are linked under its text; beside it, its stack.
     const context = within(page).getByRole("region", { name: "Context" });
-    expect(within(context).getByText("Jira")).toBeDefined();
-    expect(within(context).getByText("Repository")).toBeDefined();
+    expect(within(context).getByText("Tech stack")).toBeDefined();
+    expect(within(context).queryByText("Repository")).toBeNull();
     expect(
       within(page).getByRole("region", { name: "Workspace" }),
     ).toBeDefined();
@@ -2748,7 +3232,7 @@ test("a bounty's page opens on the tab its address names", async () => {
   expect(within(page).getByRole("region", { name: "Sandbox" })).toBeDefined();
 });
 
-test("resizing a bounty's proposal moves the size and price its page shows", async () => {
+test("a bounty not yet approved shows no price at a glance, however it is resized", async () => {
   let resized = false;
   const live = () =>
     resized
@@ -2787,7 +3271,9 @@ test("resizing a bounty's proposal moves the size and price its page shows", asy
   render(<Shell {...inAcme("admin")} />);
   const page = await screen.findByTestId("bounty-detail");
   const row = () => within(page).getByRole("region", { name: "Bounty" });
-  await waitFor(() => expect(row().textContent).toContain(money(200, "USD")));
+  // Proposed: its price and size are not settled until it is approved.
+  await waitFor(() => expect(within(row()).getAllByText("—")).toHaveLength(2));
+  expect(row().textContent).not.toContain(money(200, "USD"));
 
   const peek = await screen.findByTestId("proposal-detail");
   const resize = await within(peek).findByRole("group", { name: "Resize" });
@@ -2796,9 +3282,17 @@ test("resizing a bounty's proposal moves the size and price its page shows", asy
     state.calls.find(({ url }) => url.endsWith("/proposals/bpr_9/resize"))
       ?.body,
   ).toEqual({ expectedRevision: 1, complexity: "L" });
-  // Applied in place to the proposal, and read again for the bounty.
-  await waitFor(() => expect(row().textContent).toContain(money(300, "USD")));
-  expect(row().textContent).toContain("L");
+  // Read again for the bounty, which still is not approved.
+  await waitFor(() =>
+    expect(
+      state.calls.filter(
+        ({ method, url }) =>
+          method === "GET" && url.endsWith("/bounties/bty_7"),
+      ).length,
+    ).toBeGreaterThanOrEqual(2),
+  );
+  expect(within(row()).getAllByText("—")).toHaveLength(2);
+  expect(row().textContent).not.toContain(money(300, "USD"));
 });
 
 test("a removed proposal returns to its bounty, which then has none", async () => {
@@ -2939,12 +3433,13 @@ test("an approved proposal names its version and when it was approved", async ()
   ).toBeDefined();
 });
 
-test("a version whose build passed is published from over the slice, and unpublished", async () => {
+test("a version whose build passed is published for a while from over the slice, and unpublished", async () => {
   const ready = {
     ...generatedSource,
     harnessSha256: "h".repeat(64),
     toolchainDigest: "d".repeat(64),
   };
+  const week = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
   let published = false;
   const state = generatingServer({
     versions: () => [generatedVersion],
@@ -2953,24 +3448,65 @@ test("a version whose build passed is published from over the slice, and unpubli
     source: () =>
       published ? { ...ready, approvedBy: "user_1", approvedAt: stamp } : ready,
     sandbox: () =>
-      published ? { status: "published", currentVersionId: "sbv_1" } : {},
+      published
+        ? { status: "published", currentVersionId: "sbv_1", expiresAt: week }
+        : {},
   });
   vi.stubGlobal("fetch", state.fetchMock);
   const part = await sandboxPart();
   expect(await within(part).findByText("Not published yet")).toBeDefined();
-  published = true;
+  // Publish asks until when, rather than publishing outright.
   await userEvent.click(
     await within(part).findByRole("button", { name: "Publish" }),
   );
+  const until = await screen.findByRole("dialog", { name: "Publish until" });
+  expect(state.calls.some(({ url }) => url.endsWith("/publish"))).toBe(false);
+  // Quick actions open beside it: a day, three, or a week from now.
+  await userEvent.click(
+    within(until).getByRole("button", { name: "Quick actions" }),
+  );
+  const quick = await screen.findByRole("menu");
   expect(
-    state.calls.some(
-      ({ method, url }) =>
-        method === "POST" && url.endsWith("/sandboxes/versions/sbv_1/publish"),
-    ),
-  ).toBe(true);
-  // Unpublishing takes the sandbox back to a draft.
+    within(quick)
+      .getAllByRole("menuitem")
+      .map((item) => item.firstElementChild?.textContent),
+  ).toEqual(["1 day", "3 days", "7 days"]);
+  published = true;
+  const before = Date.now();
+  await userEvent.click(
+    within(quick).getByRole("menuitem", { name: /7 days/ }),
+  );
+  await waitFor(() =>
+    expect(state.calls.some(({ url }) => url.endsWith("/publish"))).toBe(true),
+  );
+  const call = state.calls.find(
+    ({ method, url }) =>
+      method === "POST" && url.endsWith("/sandboxes/versions/sbv_1/publish"),
+  );
+  const expiresAt = Date.parse((call?.body as { expiresAt: string }).expiresAt);
+  const weekMs = 7 * 24 * 60 * 60 * 1000;
+  expect(expiresAt).toBeGreaterThanOrEqual(before - 60_000 + weekMs);
+  expect(expiresAt).toBeLessThanOrEqual(Date.now() + weekMs);
+  // Published, and until when.
+  expect(await within(part).findByText(/Expires/)).toBeDefined();
+  // Unpublishing takes the sandbox back to a draft, once confirmed: it
+  // takes the sandbox from contributors.
   await userEvent.click(
     await within(part).findByRole("button", { name: "Unpublish" }),
+  );
+  expect(
+    state.calls.some(({ url }) => url.endsWith("/sandboxes/sbx_1/unpublish")),
+  ).toBe(false);
+  const asked = await screen.findByRole("alertdialog", {
+    name: "Unpublish this version?",
+  });
+  await userEvent.click(
+    within(asked).getByRole("button", { name: "Unpublish" }),
+  );
+  await waitFor(() =>
+    expect(
+      state.calls.some(({ url }) => url.endsWith("/sandboxes/sbx_1/unpublish")),
+    ).toBe(true),
   );
   expect(
     state.calls.some(
@@ -2978,6 +3514,104 @@ test("a version whose build passed is published from over the slice, and unpubli
         method === "POST" && url.endsWith("/sandboxes/sbx_1/unpublish"),
     ),
   ).toBe(true);
+});
+
+test("a day picked on the calendar publishes until its end", async () => {
+  const state = generatingServer({
+    versions: () => [generatedVersion],
+    run: () => ({ status: "succeeded", finishedAt: stamp }),
+    artifacts: [artifactOf("build_manifest", { ready: true })],
+    source: () => ({
+      ...generatedSource,
+      harnessSha256: "h".repeat(64),
+      toolchainDigest: "d".repeat(64),
+    }),
+  });
+  vi.stubGlobal("fetch", state.fetchMock);
+  const part = await sandboxPart();
+  await userEvent.click(
+    await within(part).findByRole("button", { name: "Publish" }),
+  );
+  const until = await screen.findByRole("dialog", { name: "Publish until" });
+  const named = (day: Date) =>
+    day.toLocaleDateString(undefined, {
+      weekday: "long",
+      month: "long",
+      day: "numeric",
+      year: "numeric",
+    });
+  const today = new Date();
+  // A day gone by cannot be picked.
+  if (today.getDate() > 1) {
+    const yesterday = new Date(
+      today.getFullYear(),
+      today.getMonth(),
+      today.getDate() - 1,
+    );
+    expect(
+      within(until)
+        .getByRole("button", { name: named(yesterday) })
+        .hasAttribute("disabled"),
+    ).toBe(true);
+  }
+  // The months before this one are not offered; the next ones are.
+  expect(
+    within(until)
+      .getByRole("button", { name: "Previous month" })
+      .hasAttribute("disabled"),
+  ).toBe(true);
+  await userEvent.click(
+    within(until).getByRole("button", { name: "Next month" }),
+  );
+  const next = new Date(today.getFullYear(), today.getMonth() + 1, 15);
+  await userEvent.click(
+    within(until).getByRole("button", { name: named(next) }),
+  );
+  await waitFor(() =>
+    expect(state.calls.some(({ url }) => url.endsWith("/publish"))).toBe(true),
+  );
+  const call = state.calls.find(({ url }) => url.endsWith("/publish"));
+  expect(call?.body).toEqual({
+    expiresAt: new Date(
+      next.getFullYear(),
+      next.getMonth(),
+      next.getDate(),
+      23,
+      59,
+      59,
+      999,
+    ).toISOString(),
+  });
+});
+
+test("a publication past its date reads as expired, and can be published again", async () => {
+  const lapsed = "2026-01-01T00:00:00.000Z";
+  vi.stubGlobal(
+    "fetch",
+    generatingServer({
+      versions: () => [{ ...generatedVersion, frozenAt: stamp }],
+      run: () => ({ status: "succeeded", finishedAt: stamp }),
+      artifacts: [artifactOf("build_manifest", { ready: true })],
+      source: () => ({
+        ...generatedSource,
+        harnessSha256: "h".repeat(64),
+        toolchainDigest: "d".repeat(64),
+        approvedBy: "user_1",
+        approvedAt: stamp,
+      }),
+      sandbox: () => ({
+        status: "published",
+        currentVersionId: "sbv_1",
+        expiresAt: lapsed,
+      }),
+    }).fetchMock,
+  );
+  const part = await sandboxPart();
+  const expired = await within(part).findByText(/^Expired/);
+  expect(expired.querySelector("time")?.getAttribute("datetime")).toBe(lapsed);
+  const publish = await within(part).findByRole("button", { name: "Publish" });
+  expect(publish.hasAttribute("disabled")).toBe(false);
+  expect(within(part).queryByRole("button", { name: "Unpublish" })).toBeNull();
 });
 
 test("a version without a passing build cannot be published", async () => {
@@ -2992,6 +3626,159 @@ test("a version without a passing build cannot be published", async () => {
   const part = await sandboxPart();
   const publish = await within(part).findByRole("button", { name: "Publish" });
   expect(publish.hasAttribute("disabled")).toBe(true);
+});
+
+test("a version taken from a bounty not approved cannot be published, and says why", async () => {
+  vi.stubGlobal(
+    "fetch",
+    generatingServer({
+      versions: () => [generatedVersion],
+      run: () => ({ status: "succeeded", finishedAt: stamp }),
+      artifacts: [artifactOf("build_manifest", { ready: true })],
+      source: () => ({
+        ...generatedSource,
+        harnessSha256: "h".repeat(64),
+        toolchainDigest: "d".repeat(64),
+        proposalVersion: null,
+        approvedTask: {
+          ...generatedSource.approvedTask,
+          pricing: {
+            ...generatedSource.approvedTask.pricing,
+            status: "proposed",
+          },
+        },
+      }),
+    }).fetchMock,
+  );
+  const part = await sandboxPart();
+  const publish = await within(part).findByRole("button", { name: "Publish" });
+  expect(publish.hasAttribute("disabled")).toBe(true);
+  // The reason is on hover, from the span the disabled button sits in.
+  await userEvent.hover(publish.parentElement!);
+  expect(
+    (
+      await screen.findAllByText(
+        "This version was not built from an approved bounty.",
+      )
+    ).length,
+  ).toBeGreaterThan(0);
+});
+
+test("a version built from an approved bounty publishes while the bounty is a draft again", async () => {
+  vi.stubGlobal(
+    "fetch",
+    generatingServer({
+      versions: () => [generatedVersion],
+      run: () => ({ status: "succeeded", finishedAt: stamp }),
+      artifacts: [artifactOf("build_manifest", { ready: true })],
+      source: () => ({
+        ...generatedSource,
+        harnessSha256: "h".repeat(64),
+        toolchainDigest: "d".repeat(64),
+      }),
+      proposal: { ...approvedSummary, status: "proposed" },
+    }).fetchMock,
+  );
+  const part = await sandboxPart();
+  // Its header names the bounty version it was built on, once its
+  // provenance is read; then it can be published.
+  expect(await within(part).findByText("· Bounty v1")).toBeDefined();
+  const publish = await within(part).findByRole("button", { name: "Publish" });
+  await waitFor(() => expect(publish.hasAttribute("disabled")).toBe(false));
+});
+
+test("an approval a published sandbox stands on is taken back, and the sandbox reads as behind", async () => {
+  const state = generatingServer({
+    versions: () => [generatedVersion],
+    sandbox: () => ({
+      status: "published",
+      currentVersionId: "sbv_1",
+      build: { versionId: "sbv_1", version: 1, bountyVersion: 1 },
+    }),
+    // Approved again since, as version 2: the sandbox is on version 1.
+    stages: {
+      overview: { version: 1 },
+      bounty: { version: 2, overviewVersion: 1 },
+      sandbox: { version: 1, bountyVersion: 1 },
+    },
+  });
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: string, init?: RequestInit) =>
+      /\/proposals\/bpr_7$/.test(String(input))
+        ? json({
+            proposal: proposal({ id: "bpr_7", status: "approved", version: 2 }),
+            freshness: { freshness: "current", checkedAt: stamp },
+            liveSpec: null,
+            writebackOperations: [],
+          })
+        : state.fetchMock(input, init),
+    ),
+  );
+  window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=bounty");
+  render(<Shell {...inAcme("admin")} />);
+  const proposalDetail = await screen.findByTestId("proposal-detail");
+  // Nothing locks the bounty to its sandbox.
+  const unapprove = await within(proposalDetail).findByRole("button", {
+    name: "Unapprove",
+  });
+  expect(unapprove.hasAttribute("disabled")).toBe(false);
+  // Approved, it is not sized again until it is unapproved.
+  expect(
+    within(proposalDetail).queryByRole("button", { name: "Re-analyze" }),
+  ).toBeNull();
+
+  // The sandbox's step warns, and its page says what it is behind.
+  const steps = screen.getByRole("tablist", { name: "Steps" });
+  const sandboxTab = within(steps).getByRole("tab", { name: /^Sandbox/ });
+  expect(sandboxTab.getAttribute("data-behind")).toBe("true");
+  expect(sandboxTab.textContent).toContain("v1");
+  expect(
+    within(steps)
+      .getByRole("tab", { name: /^Bounty/ })
+      .hasAttribute("data-behind"),
+  ).toBe(false);
+  // The approved bounty's version wears the gradient; the version behind
+  // wears the warning instead.
+  expect(
+    within(steps)
+      .getByRole("tab", { name: /^Bounty/ })
+      .querySelector("[data-approved]")?.textContent,
+  ).toBe("v2");
+  expect(sandboxTab.querySelector("[data-approved]")).toBeNull();
+  await userEvent.click(sandboxTab);
+  // Chosen, it is the active tab, whatever its warning's tooltip is doing:
+  // the underline follows `data-state="active"`.
+  await waitFor(() =>
+    expect(sandboxTab.getAttribute("data-state")).toBe("active"),
+  );
+  await userEvent.hover(within(sandboxTab).getByText("Sandbox"));
+  expect(
+    (await screen.findAllByText("Built on bounty v1; the bounty is now at v2."))
+      .length,
+  ).toBeGreaterThan(0);
+  expect(sandboxTab.getAttribute("data-state")).toBe("active");
+  const lineage = await screen.findByTestId("sandbox-lineage");
+  expect(lineage.textContent).toContain("Bounty has moved ahead.");
+  expect(lineage.textContent).toContain(
+    "Built on Bounty v1; the bounty is now at v2.",
+  );
+  // The version named opens the step it belongs to.
+  await userEvent.click(
+    within(lineage).getByRole("button", { name: "Bounty v1" }),
+  );
+  await waitFor(() =>
+    expect(new URLSearchParams(window.location.search).get("tab")).toBe(
+      "bounty",
+    ),
+  );
+  // Current, the bounty warns of nothing: its version line names the
+  // overview version it was sized from.
+  const header = await within(
+    await screen.findByTestId("proposal-detail"),
+  ).findByText("Overview v1");
+  expect(header).toBeDefined();
+  expect(screen.queryByTestId("bounty-lineage")).toBeNull();
 });
 
 test("a bounty that is a draft, or has no proposal, generates no slice", async () => {
@@ -3026,3 +3813,210 @@ test("a bounty that is a draft, or has no proposal, generates no slice", async (
     ),
   ).toBeDefined();
 });
+
+test("the overview is versioned: an earlier one is read as it was, and the bounty sized from it warns", async () => {
+  const versionOf = (version: number, description: string) => ({
+    version,
+    title: "Invitations are not sent",
+    description,
+    createdBy: "user_1",
+    createdAt: stamp,
+  });
+  vi.stubGlobal(
+    "fetch",
+    server([
+      // Before the bounty's own route, which its address would also match.
+      [
+        "GET",
+        "/bounties/bty_7/versions",
+        () =>
+          json({
+            versions: [
+              versionOf(
+                2,
+                "Scheduling an interview sends the candidate one email.",
+              ),
+              versionOf(1, "Interview emails are missing."),
+            ],
+          }),
+      ],
+      [
+        "GET",
+        "/bounties/bty_7",
+        () =>
+          json({
+            bounty: detail({
+              version: 2,
+              proposal: liveProposal(),
+              stages: {
+                overview: { version: 2 },
+                bounty: { version: 0, overviewVersion: 1 },
+                sandbox: null,
+              },
+            }),
+          }),
+      ],
+    ]).fetchMock,
+  );
+  window.history.replaceState(null, "", "/bounties/acme/bty_7");
+  render(<Shell {...inAcme("member")} />);
+  const page = await screen.findByTestId("bounty-detail");
+
+  // The overview's version over its text, the latest until another is read.
+  const header = await within(page).findByTestId("overview-version");
+  await waitFor(() => expect(header.textContent).toContain("Edited"));
+  expect(header.textContent).toContain("Version 2");
+  expect(header.textContent).toContain("Latest");
+  await userEvent.click(
+    within(header).getByRole("button", { name: "Version 2, choose another" }),
+  );
+  await userEvent.click(
+    await screen.findByRole("menuitem", { name: /Version 1/ }),
+  );
+  const earlier = await within(page).findByTestId("overview-earlier");
+  expect(earlier.textContent).toContain("Interview emails are missing.");
+  // Read, not changed: no way to edit it, and the way back.
+  expect(
+    within(page).queryByRole("button", { name: "Edit description" }),
+  ).toBeNull();
+  expect(header.textContent).toContain("Read only");
+  await userEvent.click(
+    within(header).getByRole("button", { name: "Back to latest" }),
+  );
+  expect(within(page).queryByTestId("overview-earlier")).toBeNull();
+
+  // Sized from version 1, a draft never approved: the Bounty step warns.
+  const bountyTab = within(page).getByRole("tab", {
+    name: "Bounty Draft (behind)",
+  });
+  await userEvent.click(bountyTab);
+  const lineage = await within(page).findByTestId("bounty-lineage");
+  expect(lineage.textContent).toContain("Overview has moved ahead.");
+  expect(lineage.textContent).toContain(
+    "Sized from Overview v1; the overview is now at v2.",
+  );
+  expect(lineage.getAttribute("role")).toBe("status");
+});
+
+test("an approved overview is held as it is until an admin unapproves it", async () => {
+  let approved = false;
+  const decided: string[] = [];
+  const bountyNow = () =>
+    detail({
+      revision: approved ? 2 : 1,
+      approval: approved
+        ? { version: 1, approvedBy: "user_1", approvedAt: stamp }
+        : null,
+      proposal: liveProposal(),
+    });
+  vi.stubGlobal(
+    "fetch",
+    server([
+      ...(["approve", "unapprove"] as const).map(
+        (decision): [string, string, (body: unknown) => Promise<Response>] => [
+          "POST",
+          `/bounties/bty_7/${decision}`,
+          (body) => {
+            decided.push(
+              `${decision}@${(body as { expectedRevision: number }).expectedRevision}`,
+            );
+            approved = decision === "approve";
+            return json({ bounty: bountyNow() });
+          },
+        ],
+      ),
+      ["GET", "/bounties/bty_7", () => json({ bounty: bountyNow() })],
+    ]).fetchMock,
+  );
+  window.history.replaceState(null, "", "/bounties/acme/bty_7");
+  render(<Shell {...inAcme("admin")} />);
+  const page = await screen.findByTestId("bounty-detail");
+  // Open to change until approved.
+  expect(
+    await within(page).findByRole("button", { name: "Edit description" }),
+  ).toBeDefined();
+
+  await userEvent.click(within(page).getByRole("button", { name: "Approve" }));
+  await within(page).findByRole("button", { name: "Unapprove" });
+  expect(decided).toEqual(["approve@1"]);
+  // Held: no way to edit its text, and its links are shown, not changed.
+  expect(
+    within(page).queryByRole("button", { name: "Edit description" }),
+  ).toBeNull();
+  expect(
+    within(page).getByRole("combobox", { name: "Repository" }),
+  ).toHaveProperty("disabled", true);
+  expect(
+    within(page).getByRole("button", { name: "Jira issue" }),
+  ).toHaveProperty("disabled", true);
+  expect(within(page).getByTestId("overview-version").textContent).toContain(
+    "Approved",
+  );
+  // Its version wears the approved gradient on its step.
+  expect(
+    within(page)
+      .getByRole("tab", { name: /^Overview/ })
+      .querySelector("[data-approved]")?.textContent,
+  ).toBe("v1");
+
+  await userEvent.click(
+    within(page).getByRole("button", { name: "Unapprove" }),
+  );
+  expect(
+    await within(page).findByRole("button", { name: "Edit description" }),
+  ).toBeDefined();
+  expect(decided).toEqual(["approve@1", "unapprove@2"]);
+});
+
+test("a Jira update under way is read until it settles, with no refresh", async () => {
+  let reads = 0;
+  const writeback = (status: string) => ({
+    id: "bwo_1",
+    organizationId: "org_1",
+    proposalId: "bpr_7",
+    proposalRevision: 1,
+    kind: "approved",
+    status,
+    step: "comment",
+    payload: {
+      complexity: "S",
+      amountMinor: 5_800,
+      currency: "USD",
+      proposalUrl: "https://example.test/proposals/bpr_7",
+    },
+    jiraCommentId: status === "done" ? "10001" : null,
+    errorCode: null,
+    commentAttemptedAt: null,
+    createdAt: stamp,
+    updatedAt: stamp,
+  });
+  const state = generatingServer({ versions: () => [] });
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: string, init?: RequestInit) => {
+      if (!/\/proposals\/bpr_7$/.test(String(input)))
+        return state.fetchMock(input, init);
+      reads += 1;
+      return json({
+        proposal: proposal({ id: "bpr_7", status: "approved", version: 1 }),
+        freshness: { freshness: "current", checkedAt: stamp },
+        liveSpec: null,
+        // Posted in the background: pending when first read, then done.
+        writebackOperations: [writeback(reads === 1 ? "pending" : "done")],
+      });
+    }),
+  );
+  window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=bounty");
+  render(<Shell {...inAcme("admin")} />);
+  const proposalDetail = await screen.findByTestId("proposal-detail");
+  expect(await within(proposalDetail).findByText("pending")).toBeDefined();
+  expect(
+    await within(proposalDetail).findByText("done", undefined, {
+      timeout: 5_000,
+    }),
+  ).toBeDefined();
+  // Settled, it is not read again.
+  const settled = reads;
+  await new Promise((resolve) => setTimeout(resolve, 3_500));
+  expect(reads).toBe(settled);
+}, 15_000);

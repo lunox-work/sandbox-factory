@@ -7,6 +7,8 @@ import {
   GithubNotFound,
 } from "@sandbox-factory/github";
 import {
+  pullSnapshotResponseSchema,
+  repoBranchListSchema,
   repoSnapshotDetailDtoSchema,
   repoSnapshotDtoSchema,
   repoTreePageDtoSchema,
@@ -740,11 +742,20 @@ test("without object storage the snapshot routes say so with a 503", async () =>
 });
 
 test("removing a repository removes its snapshots' trees", async () => {
-  const { app, snapshotter, objects, snapshots, target, repoId } =
+  const { app, snapshotter, objects, snapshots, stores, target, repoId } =
     await appWith({
       role: "owner",
     });
   await snapshotter.snapshot(target);
+  // The store reads the keys in the cascade's transaction; the route
+  // deletes what it names, after the rows are gone.
+  const remove = stores.repos.remove;
+  stores.repos.removeWithObjects = async (owner, id) => ({
+    removed: await remove(owner, id),
+    objectKeys: [...snapshots.rows.values()]
+      .filter((row) => row.repoId === id)
+      .map(({ treeKey }) => treeKey),
+  });
 
   const response = await app.request(
     `/api/v1/orgs/org_1/github/repositories/${repoId}`,
@@ -820,6 +831,146 @@ test("registering a repository schedules its first snapshot", async () => {
           mint.repositoryIds[0] === 1296269 &&
           mint.permissions?.["contents"] === "read",
       ),
+  );
+});
+
+test("another branch's commit is snapshotted under its own ref, leaving the stack alone", async () => {
+  // The branch's tree has manifests a detection would find.
+  const { snapshotter, snapshots, stores, target, repoId } = await setup(
+    stackedWorld(SHA_C),
+  );
+
+  assert.equal(
+    await snapshotter.snapshot({
+      ...target,
+      commit: { sha: SHA_C, branch: "feature/x" },
+    }),
+    "created",
+  );
+
+  const [row] = [...snapshots.rows.values()];
+  assert.equal(row?.commitSha, SHA_C);
+  assert.equal(row?.ref, "refs/heads/feature/x");
+  // The stack is the default branch's; a branch pull does not detect it.
+  assert.equal(stores.repos.rows.get(repoId)?.stackCommitSha, null);
+});
+
+test("a branch pull and the head wait in separate lines, and both are taken", async () => {
+  const { snapshotter, snapshots, target } = await setup();
+
+  snapshotter.schedule(target);
+  snapshotter.schedule({ ...target, commit: { sha: SHA_C, branch: "dev" } });
+  await snapshotter.idle();
+
+  assert.deepEqual(
+    [...snapshots.rows.values()].map((row) => [row.commitSha, row.ref]).sort(),
+    [
+      [SHA_A, "refs/heads/main"],
+      [SHA_C, "refs/heads/dev"],
+    ],
+  );
+});
+
+test("a member lists a repository's branches, the default first", async () => {
+  const { state, repoId, get } = await appWith();
+  state.heads["acme/widgets@feature/x"] = SHA_C;
+  state.heads["acme/widgets@alpha"] = SHA_A;
+
+  const response = await get(`/repositories/${repoId}/branches`);
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(repoBranchListSchema.parse(await response.json()), {
+    branches: [
+      { name: "main", headSha: SHA_B, isDefault: true },
+      { name: "alpha", headSha: SHA_A, isDefault: false },
+      { name: "feature/x", headSha: SHA_C, isDefault: false },
+    ],
+    truncated: false,
+  });
+});
+
+test("pulling a branch snapshots its head once, and answers with it after", async () => {
+  const { app, state, snapshotter, snapshots, repoId } = await appWith({
+    role: "admin",
+  });
+  state.heads["acme/widgets@feature/x"] = SHA_C;
+  const pull = (branch: string) =>
+    app.request(`/api/v1/orgs/org_1/github/repositories/${repoId}/snapshots`, {
+      method: "POST",
+      headers: { cookie: "session=1", "content-type": "application/json" },
+      body: JSON.stringify({ branch }),
+    });
+
+  // Taken in the background: the answer names the commit, not yet a snapshot.
+  const first = await pull("feature/x");
+  assert.equal(first.status, 202);
+  assert.deepEqual(pullSnapshotResponseSchema.parse(await first.json()), {
+    commitSha: SHA_C,
+    snapshot: null,
+  });
+  await snapshotter.idle();
+  assert.equal(
+    [...snapshots.rows.values()].find((row) => row.commitSha === SHA_C)?.ref,
+    "refs/heads/feature/x",
+  );
+
+  // Pulled again with nothing new, it is the snapshot already taken.
+  const again = await pull("feature/x");
+  assert.equal(again.status, 200);
+  const pulled = pullSnapshotResponseSchema.parse(await again.json());
+  assert.equal(pulled.snapshot?.commitSha, SHA_C);
+  assert.equal(snapshots.rows.size, 1);
+});
+
+test("pulling the default branch moves the repository's head", async () => {
+  const { app, stores, snapshotter, snapshots, repoId } = await appWith({
+    role: "owner",
+  });
+  // Seeded at SHA_A; GitHub's main is at SHA_B.
+  const response = await app.request(
+    `/api/v1/orgs/org_1/github/repositories/${repoId}/snapshots`,
+    {
+      method: "POST",
+      headers: { cookie: "session=1", "content-type": "application/json" },
+      body: JSON.stringify({ branch: "main" }),
+    },
+  );
+
+  assert.equal(response.status, 202);
+  assert.equal(stores.repos.rows.get(repoId)?.headSha, SHA_B);
+  await snapshotter.idle();
+  assert.deepEqual(
+    [...snapshots.rows.values()].map((row) => [row.commitSha, row.ref]),
+    [[SHA_B, "refs/heads/main"]],
+  );
+});
+
+test("a pull is refused to a member, for a missing branch, and without storage", async () => {
+  const pullWith = async (
+    options: { role?: string; snapshots?: boolean },
+    body: unknown,
+  ) => {
+    const { app, repoId } = await appWith(options);
+    return app.request(
+      `/api/v1/orgs/org_1/github/repositories/${repoId}/snapshots`,
+      {
+        method: "POST",
+        headers: { cookie: "session=1", "content-type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    );
+  };
+
+  assert.equal((await pullWith({}, { branch: "main" })).status, 403);
+  assert.equal(
+    (await pullWith({ role: "admin" }, { branch: "nowhere" })).status,
+    404,
+  );
+  assert.equal((await pullWith({ role: "admin" }, {})).status, 400);
+  assert.equal(
+    (await pullWith({ role: "admin", snapshots: false }, { branch: "main" }))
+      .status,
+    503,
   );
 });
 

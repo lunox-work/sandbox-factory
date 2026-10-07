@@ -18,6 +18,8 @@ import {
   toolOfParams,
   toolVersionOf,
   transformConfigOf,
+  jsonLeaves,
+  withJsonLeaves,
 } from "../src/index.js";
 import type {
   ApprovedTaskPricing,
@@ -322,6 +324,20 @@ test("a starter's name table renames its source, tests, walkthrough and spec, or
       ],
     },
   );
+  // Applied again to part of a starter already accepted whole, a rule that
+  // only the spec used renames nothing there, and is not refused for it.
+  const specOnly = aliasStarter(
+    {
+      ...withNames,
+      aliases: [
+        ...withNames.aliases,
+        { before: "Globex", after: "Vendor", kind: "text", paths: [] },
+      ],
+    },
+    null,
+    { requireUse: false },
+  );
+  assert.equal(specOnly.ok, true);
   // A public name already in a file could not be mapped back.
   const colliding = aliasStarter(
     {
@@ -520,4 +536,90 @@ test("a starter that breaks the rules still generates, with blockers", () => {
   const codes = project.blockers.map((blocker) => blocker.code);
   assert.ok(codes.includes("starter_invalid"));
   assert.ok(codes.includes("path_conflict"));
+});
+
+test("a name the spec uses as a key renames its text, never the key", () => {
+  // Renamed as one serialized string, `"feature":` became `"title":` and
+  // the spec lost its feature.
+  const named: SpecDraft = {
+    feature: "Carts add up their total",
+    background: [],
+    scenarios: [],
+    openQuestions: [],
+    assumptions: [],
+  };
+  const renamed = aliasStarter(
+    {
+      ...starter,
+      aliases: [
+        { before: "total", after: "sum", kind: "identifier", paths: [] },
+        { before: "feature", after: "title", kind: "identifier", paths: [] },
+      ],
+    },
+    named,
+  );
+  // `feature` is in the spec's keys alone, so it renames nothing.
+  assert.equal(renamed.ok, false);
+  const kept = aliasStarter(
+    {
+      ...starter,
+      aliases: [
+        { before: "total", after: "sum", kind: "identifier", paths: [] },
+      ],
+    },
+    named,
+  );
+  assert.equal(kept.ok, true);
+  if (!kept.ok) return;
+  assert.deepEqual(Object.keys(kept.spec ?? {}), Object.keys(named));
+  assert.equal(kept.spec?.feature, "Carts add up their sum");
+});
+
+test("a JSON value's leaves go out and come back in order, its keys untouched", () => {
+  const value = {
+    name: "a",
+    list: [{ kind: "b", n: 1, ok: true }, "c"],
+    "x/y~": "d",
+    none: null,
+  };
+  const leaves = jsonLeaves("doc", value);
+  assert.deepEqual(
+    leaves.map((leaf) => [leaf.path, leaf.text]),
+    [
+      ["doc#/name", "a"],
+      ["doc#/list/0/kind", "b"],
+      ["doc#/list/1", "c"],
+      ["doc#/x~1y~0", "d"],
+    ],
+  );
+  const back = withJsonLeaves(value, ["A", "B", "C", "D"]);
+  assert.deepEqual(back, {
+    name: "A",
+    list: [{ kind: "B", n: 1, ok: true }, "C"],
+    "x/y~": "D",
+    none: null,
+  });
+  // The value given is left as it was.
+  assert.equal(value.name, "a");
+});
+
+test("paths that are one file on a case-insensitive disk, or a file under a file, are refused", () => {
+  const problems = starterProblems({
+    ...starter,
+    files: [
+      ...starter.files,
+      { path: "src/Cart.ts", text: "export {};\n" },
+      { path: "src/util.ts", text: "export {};\n" },
+      { path: "src/util.ts/inner.ts", text: "export {};\n" },
+    ],
+  });
+  assert.ok(
+    problems.some((problem) => /differ only in case/.test(problem)),
+    problems.join("\n"),
+  );
+  assert.ok(
+    problems.some((problem) =>
+      /src\/util\.ts is a file, so src\/util\.ts\/inner\.ts/.test(problem),
+    ),
+  );
 });

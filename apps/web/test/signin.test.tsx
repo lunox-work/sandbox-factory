@@ -99,6 +99,41 @@ test("a sign-in that fails to start shows an alert and gives the buttons back", 
   }
 });
 
+test("a sign-in the server refuses gives the buttons back rather than waiting", async () => {
+  // Better Auth answers a refusal with `{ error }` instead of throwing, so the
+  // screen used to sit on "Redirecting…" with every button disabled.
+  signInWith.mockResolvedValue(false);
+  render(<SignIn />);
+
+  await userEvent.click(
+    screen.getByRole("button", { name: "Continue with GitHub" }),
+  );
+
+  expect((await screen.findByRole("alert")).textContent).toContain(
+    "Could not start sign-in",
+  );
+  expect(screen.queryByRole("button", { name: "Redirecting…" })).toBeNull();
+  for (const button of screen.getAllByRole("button")) {
+    expect((button as HTMLButtonElement).disabled).toBe(false);
+  }
+});
+
+test("reading the error drops only the error, not the page being signed in to", async () => {
+  window.history.replaceState(
+    null,
+    "",
+    "/bounties?peek=acme/bty_1&error=state_mismatch",
+  );
+  vi.resetModules();
+  const { SignIn: Fresh } = await import("../src/SignIn");
+  render(<Fresh />);
+
+  expect((await screen.findByRole("alert")).textContent).toContain("expired");
+  expect(window.location.pathname).toBe("/bounties");
+  expect(window.location.search).toBe("?peek=acme%2Fbty_1");
+  window.history.replaceState(null, "", "/");
+});
+
 /*
  * The build readout, which this screen showed only the version of.
  *

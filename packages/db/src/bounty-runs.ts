@@ -23,6 +23,12 @@ import { generateId } from "./mapping.js";
 import { bountyRun, jiraBoard, bounty } from "./schema.js";
 import type { BountyRunRow } from "./schema.js";
 
+/**
+ * A run's creation time at the millisecond a cursor carries: Postgres keeps
+ * microseconds, and a cursor compared against them skips or repeats a row.
+ */
+const runCreatedMs = sql`date_trunc('milliseconds', ${bountyRun.createdAt})`;
+
 export interface CreateBountyRunInput {
   /**
    * The Jira board the run reads: required for a `backlog` or `issue` run,
@@ -65,10 +71,35 @@ export interface BountyRunStore {
     input: CreateBountyRunInput,
   ): Promise<CreateBountyRunResult>;
   get(organizationId: string, runId: string): Promise<StoredBountyRun | null>;
+  /**
+   * The re-price or spec change in flight on one proposal, if any: at most
+   * one, by `bounty_run_proposal_active_unique`. What a proposal's own page
+   * follows, so a reload mid-run still shows the run at work.
+   */
+  activeForProposal(
+    organizationId: string,
+    proposalId: string,
+  ): Promise<StoredBountyRun | null>;
+  /**
+   * The run sizing a bounty for its first proposal, if one is in flight:
+   * at most one, by `bounty_run_bounty_active_unique`. What the bounty's
+   * page follows, so a reload mid-sizing still shows it at work.
+   */
+  activeForBounty(
+    organizationId: string,
+    bountyId: string,
+  ): Promise<StoredBountyRun | null>;
   listForBoard(
     organizationId: string,
     boardId: string,
-    options?: { cursor?: string; limit?: number },
+    /**
+     * The page after `cursor`, the last row of the one before: its time and
+     * id, since a time alone skips every run made in the same millisecond.
+     */
+    options?: {
+      cursor?: { readonly createdAt: string; readonly id: string };
+      limit?: number;
+    },
   ): Promise<StoredBountyRun[]>;
   claim(
     organizationId: string,
@@ -421,6 +452,38 @@ export function createBountyRunStore(db: Database): BountyRunStore {
       return rows[0] === undefined ? null : toDto(rows[0]);
     },
 
+    async activeForProposal(organizationId, proposalId) {
+      const rows = (await db
+        .select()
+        .from(bountyRun)
+        .where(
+          and(
+            eq(bountyRun.organizationId, organizationId),
+            eq(bountyRun.sourceProposalId, proposalId),
+            inArray(bountyRun.kind, ["reprice", "respec"]),
+            inArray(bountyRun.status, ["queued", "running"]),
+          ),
+        )
+        .limit(1)) as BountyRunRow[];
+      return rows[0] === undefined ? null : toDto(rows[0]);
+    },
+
+    async activeForBounty(organizationId, bountyId) {
+      const rows = (await db
+        .select()
+        .from(bountyRun)
+        .where(
+          and(
+            eq(bountyRun.organizationId, organizationId),
+            eq(bountyRun.bountyId, bountyId),
+            eq(bountyRun.kind, "bounty"),
+            inArray(bountyRun.status, ["queued", "running"]),
+          ),
+        )
+        .limit(1)) as BountyRunRow[];
+      return rows[0] === undefined ? null : toDto(rows[0]);
+    },
+
     async listForBoard(organizationId, boardId, options = {}) {
       const limit = Math.min(Math.max(options.limit ?? 25, 1), 50);
       const rows = (await db
@@ -432,10 +495,10 @@ export function createBountyRunStore(db: Database): BountyRunStore {
             eq(bountyRun.boardId, boardId),
             options.cursor === undefined
               ? sql`true`
-              : lt(bountyRun.createdAt, new Date(options.cursor)),
+              : sql`(${runCreatedMs}, ${bountyRun.id}) < (${options.cursor.createdAt}::timestamptz, ${options.cursor.id})`,
           ),
         )
-        .orderBy(desc(bountyRun.createdAt))
+        .orderBy(desc(runCreatedMs), desc(bountyRun.id))
         .limit(limit)) as BountyRunRow[];
       return rows.map(toDto);
     },

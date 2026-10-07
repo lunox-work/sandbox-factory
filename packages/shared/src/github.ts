@@ -118,6 +118,16 @@ export const githubRefResponseSchema = z
   })
   .loose();
 
+/** `GET /repos/{o}/{r}/branches`: one page of branches, each with its head. */
+export const githubBranchPageResponseSchema = z.array(
+  z
+    .object({
+      name: z.string(),
+      commit: z.object({ sha: z.string() }).loose(),
+    })
+    .loose(),
+);
+
 /**
  * One entry of `GET /repos/{o}/{r}/git/trees/{sha}?recursive=1`: a file
  * (`blob`), a directory (`tree`) or a submodule (`commit`). Only a blob has
@@ -427,9 +437,10 @@ export const treeFactsDtoSchema = z.strictObject({
 });
 
 /**
- * One snapshot of a registered repository: the commit its default branch
- * was at, and what the tree there holds. Immutable once written — the
- * repository's head moves on, and each new head is a new snapshot.
+ * One snapshot of a registered repository: the commit a branch was at,
+ * and what the tree there holds. Immutable once written — the branch moves
+ * on, and each new head is a new snapshot. One commit is one snapshot,
+ * whichever branch it was first taken from.
  */
 export const repoSnapshotDtoSchema = z.strictObject({
   id: z.string(),
@@ -441,13 +452,84 @@ export const repoSnapshotDtoSchema = z.strictObject({
   treeTruncated: z.boolean(),
   fileCount: z.number().int().nonnegative(),
   totalBytes: z.number().int().nonnegative(),
-  /** Bytes per language, as GitHub counts them. */
+  /**
+   * Bytes per language, as GitHub counted them when the snapshot was taken.
+   * GitHub counts only the default branch, so these describe that branch
+   * then, not necessarily `commitSha`.
+   */
   languages: z.record(z.string(), z.number()),
   createdAt: z.string(),
 });
 
 export const repoSnapshotListSchema = z.object({
   snapshots: z.array(repoSnapshotDtoSchema),
+});
+
+/** One branch of a registered repository, and the commit it is at. */
+export const repoBranchDtoSchema = z.strictObject({
+  name: z.string(),
+  headSha: z.string(),
+  isDefault: z.boolean(),
+});
+
+/** `GET .../github/repositories/:id/branches`: the default first, then by name. */
+export const repoBranchListSchema = z.object({
+  branches: z.array(repoBranchDtoSchema),
+  /** More branches than one listing reads; the rest are left out. */
+  truncated: z.boolean(),
+});
+
+/** Characters Git refuses anywhere in a ref name, beside the controls. */
+const REF_FORBIDDEN = /[ ~^:?*[\\]/;
+
+/**
+ * Whether `name` is a branch name Git itself would accept, by the rules of
+ * `git check-ref-format --branch`.
+ *
+ * Checked because the name does not stay a name: the API puts it into a
+ * GitHub REST path (`.../git/ref/heads/<branch>`), keeping its slashes, so a
+ * name of `../../..` would walk that path up to some other endpoint and read
+ * it with the repository's token. Every name Git refuses is refused here,
+ * which takes `..` with it; no real branch is lost, because Git could not
+ * have created one.
+ */
+function isBranchName(name: string): boolean {
+  if (
+    name === "@" ||
+    name.startsWith("-") ||
+    name.endsWith(".") ||
+    name.includes("..") ||
+    name.includes("@{") ||
+    REF_FORBIDDEN.test(name)
+  ) {
+    return false;
+  }
+  for (const character of name) {
+    const code = character.charCodeAt(0);
+    if (code < 0x20 || code === 0x7f) return false;
+  }
+  // A leading, trailing or doubled slash is an empty component.
+  return name
+    .split("/")
+    .every(
+      (part) => part !== "" && !part.startsWith(".") && !part.endsWith(".lock"),
+    );
+}
+
+/** `POST .../github/repositories/:id/snapshots`: take a branch's head. */
+export const pullSnapshotRequestSchema = z.strictObject({
+  branch: z.string().trim().min(1).max(255).refine(isBranchName, {
+    message: "Not a branch name Git would accept.",
+  }),
+});
+
+/**
+ * The head the branch is at, and its snapshot when one is taken already;
+ * null while it is being taken, which the list shows once it lands.
+ */
+export const pullSnapshotResponseSchema = z.object({
+  commitSha: z.string(),
+  snapshot: repoSnapshotDtoSchema.nullable(),
 });
 
 /** One snapshot with its facts, and the repository it is of. */
@@ -585,6 +667,10 @@ export type StoredTree = z.infer<typeof storedTreeSchema>;
 export type TreeFactsDto = z.infer<typeof treeFactsDtoSchema>;
 export type RepoSnapshotDto = z.infer<typeof repoSnapshotDtoSchema>;
 export type RepoSnapshotDetailDto = z.infer<typeof repoSnapshotDetailDtoSchema>;
+export type RepoBranchDto = z.infer<typeof repoBranchDtoSchema>;
+export type RepoBranchList = z.infer<typeof repoBranchListSchema>;
+export type PullSnapshotRequest = z.infer<typeof pullSnapshotRequestSchema>;
+export type PullSnapshotResponse = z.infer<typeof pullSnapshotResponseSchema>;
 export type RepoTreeQuery = z.infer<typeof repoTreeQuerySchema>;
 export type RepoTreePageDto = z.infer<typeof repoTreePageDtoSchema>;
 export type RegisterRepoRequest = z.infer<typeof registerRepoRequestSchema>;

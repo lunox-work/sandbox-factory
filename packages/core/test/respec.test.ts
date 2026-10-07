@@ -151,6 +151,24 @@ test("new scenarios are numbered past every id the revision has", () => {
   );
 });
 
+test("ids that are not s<digits> are skipped when numbering, not read as NaN", () => {
+  // Read as numbers these were NaN, which a Set finds in itself, so the
+  // search for a free number never ended.
+  const odd = spec([
+    scenario("x"),
+    scenario("s2"),
+    scenario("s1e3", "light", { title: "Exponent" }),
+    scenario(`s${"9".repeat(20)}`, "light", { title: "Huge" }),
+    scenario("legacy-7", "light", { title: "Legacy" }),
+  ]);
+  const expanded = expandSpec(odd, {
+    scenarios: [scenario("s1", "light", { title: "New" })],
+    openQuestions: [],
+    assumptions: [],
+  });
+  assert.equal(expanded.scenarios.at(-1)?.id, "s3");
+});
+
 test("an answered spec keeps the scenarios it kept, and drops the answered questions", () => {
   const revised = spec(
     [
