@@ -177,18 +177,29 @@ export interface DataModel {
 
 const compare = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 
+const NUMERIC_ATTRIBUTES = new Set(["unsigned", "signed", "zerofill"]);
+
+/** A type without its `(…)`, from the first `(` to the last `)`. */
+function withoutParameters(type: string): string {
+  const open = type.indexOf("(");
+  const close = type.lastIndexOf(")");
+  return open < 0 || close < open
+    ? type
+    : type.slice(0, open) + type.slice(close + 1);
+}
+
 /** What a SQL type, as any dialect writes it, holds. */
 export function normalizeSqlType(native: string): FieldType {
-  const type = native
-    .toLowerCase()
-    .replace(/\[\]$/, "")
-    .replace(/\(.*\)/, "")
-    .replace(/\s+/g, " ")
+  const words = withoutParameters(native.toLowerCase().replace(/\[\]$/, ""))
     .replace(/^pg_catalog\./, "")
-    .trim()
-    // MySQL's numeric attributes say how a number is stored or shown, not
-    // what it holds: `int(11) unsigned zerofill` is an integer.
-    .replace(/(?: (?:unsigned|signed|zerofill))+$/, "");
+    .split(/\s+/)
+    .filter((word) => word !== "");
+  // MySQL's numeric attributes say how a number is stored or shown, not
+  // what it holds: `int(11) unsigned zerofill` is an integer. Dropped word
+  // by word rather than by a repeated pattern, which backtracks.
+  while (words.length > 1 && NUMERIC_ATTRIBUTES.has(words.at(-1) ?? ""))
+    words.pop();
+  const type = words.join(" ");
   if (
     /^(text|varchar|varchar2|character varying|char|character|bpchar|citext|name|nvarchar|nvarchar2|nchar|tinytext|mediumtext|longtext|string|clob)$/.test(
       type,

@@ -309,7 +309,7 @@ test("the page names the repository, and owners see a card per builder", async (
   expect(screen.getByText("Private")).toBeTruthy();
   expect(
     screen
-      .getByRole("link", { name: /github\.com\/acme\/widgets/ })
+      .getByRole("link", { name: "github.com/acme/widgets" })
       .getAttribute("href"),
   ).toBe("https://github.com/acme/widgets");
   const names = [

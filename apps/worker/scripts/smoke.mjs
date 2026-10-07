@@ -10,7 +10,11 @@ import { createGraphifyAdapter } from "../dist/tools/graphify.js";
 import { createSliceAdapter } from "../dist/tools/slice.js";
 import { createSandboxBuildAdapter } from "../dist/tools/sandbox-build.js";
 import { createLocalProcessProvider } from "../dist/evaluation/local-process.js";
-import { resolveScope } from "sandbox-factory";
+import {
+  canonicalJson,
+  resolveScope,
+  transformConfigOf,
+} from "sandbox-factory";
 import { executeRun } from "../dist/run.js";
 import { fetchSource } from "../dist/fetch-source.js";
 import { command } from "../dist/command.js";
@@ -239,8 +243,9 @@ try {
   const hashes = {
     manifestSha256: sliceManifest.artifact.sha256,
     contractSha256: sliceContract.artifact.sha256,
-    transformConfigSha256: "1".repeat(64),
-    approvedTaskSha256: "2".repeat(64),
+    // Set from the draft below: a build refuses one that does not match.
+    transformConfigSha256: "",
+    approvedTaskSha256: "",
   };
   const sandboxVersion = {
     version: {
@@ -301,6 +306,13 @@ try {
           text: 'import { test } from "node:test";\nimport assert from "node:assert/strict";\nimport { helper } from "../../src/util.js";\ntest("helper", () => assert.equal(helper(), 1));\n',
           expectedBaseline: "pass",
         },
+        {
+          // What the task asks for, so not there before the fix: a build
+          // needs one hidden test that tells done from not.
+          path: "tests/private/helper-two.test.ts",
+          text: 'import { test } from "node:test";\nimport assert from "node:assert/strict";\nimport { helper } from "../../src/util.js";\ntest("helper is two", () => assert.equal(helper(), 2));\n',
+          expectedBaseline: "fail",
+        },
       ],
       scope: resolveScope({
         manifest: JSON.parse(sliceManifest.bytes.toString("utf8")),
@@ -317,6 +329,14 @@ try {
       updatedAt: sliceRun.createdAt,
     },
   };
+  const sha256 = (text) => createHash("sha256").update(text).digest("hex");
+  hashes.transformConfigSha256 = sha256(
+    canonicalJson(transformConfigOf(sandboxVersion.source)),
+  );
+  hashes.approvedTaskSha256 = sha256(
+    canonicalJson(sandboxVersion.source.approvedTask),
+  );
+  Object.assign(sandboxVersion.source, hashes);
   const buildLog = [];
   const builder = createSandboxBuildAdapter({
     provider: createLocalProcessProvider(),
@@ -361,6 +381,8 @@ try {
       ["build", true],
       ["dev", true],
       ["public-tests", true],
+      // One per hidden test: the one expected to fail did, as expected.
+      ["private-test", true],
       ["private-test", true],
     ],
     JSON.stringify(buildManifest.baseline, null, 2),
