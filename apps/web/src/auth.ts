@@ -39,13 +39,38 @@ export const PROVIDERS = [
 export type ProviderId = (typeof PROVIDERS)[number]["id"];
 
 /**
+ * Where a provider sends the person back to: the page they were trying to
+ * open, so a deep link survives signing in rather than landing on home.
+ *
+ * Same-origin by construction — the origin is this page's own — and less any
+ * `?error=` from an earlier attempt, which would otherwise come back with the
+ * new session and announce a failure that has since been fixed.
+ */
+export function signInCallbackURL(
+  location: Pick<
+    Location,
+    "origin" | "pathname" | "search" | "hash"
+  > = window.location,
+): string {
+  const params = new URLSearchParams(location.search);
+  params.delete("error");
+  const query = params.toString();
+  return `${location.origin}${location.pathname}${query === "" ? "" : `?${query}`}${location.hash}`;
+}
+
+/**
  * Starts a provider redirect. `callbackURL` must be in the API's trusted
  * origins or Better Auth refuses it, which stops a crafted callback handing a
  * session to another site.
+ *
+ * Resolves to whether the redirect is under way. Better Auth reports a refusal
+ * as `{ error }` rather than by throwing, so a caller that only caught would
+ * wait forever for a navigation that is never coming.
  */
-export async function signInWith(provider: ProviderId): Promise<void> {
-  await authClient.signIn.social({
+export async function signInWith(provider: ProviderId): Promise<boolean> {
+  const result = await authClient.signIn.social({
     provider,
-    callbackURL: window.location.origin,
+    callbackURL: signInCallbackURL(),
   });
+  return result.error === null || result.error === undefined;
 }

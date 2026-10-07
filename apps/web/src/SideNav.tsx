@@ -63,7 +63,9 @@ export type Screen =
   | "new-bounty"
   /** One bounty opened as a page of its own. Carries a workspace and an id. */
   | "bounty"
-  | "create-org";
+  | "create-org"
+  /** An address that names no page. */
+  | "not-found";
 
 export function SideNav({
   screen,
@@ -174,7 +176,9 @@ export function SideNav({
         </button>
       </div>
 
-      <div className="flex sm:mt-5 sm:w-full sm:flex-col">
+      {/* The same gap inside each group as between them, so the phone bar's
+          four items are evenly spaced. */}
+      <div className="flex gap-6 sm:mt-5 sm:w-full sm:flex-col sm:gap-0">
         <RailButton
           label="Home"
           href="/"
@@ -219,7 +223,7 @@ export function SideNav({
           opposite the switcher however tall it is. In the phone bar the margin is
           dropped, or it would push the avatar to the far right and split it
           from the destinations. */}
-      <div className="flex sm:mt-auto sm:w-full sm:flex-col">
+      <div className="flex gap-6 sm:mt-auto sm:w-full sm:flex-col sm:gap-0">
         {/*
           The full list of workspaces, with the create form beneath it. A row
           of its own above the avatar rather than an item in its menu, so it is

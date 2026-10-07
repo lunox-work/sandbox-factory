@@ -229,8 +229,8 @@ export function mountBountyJiraRoutes<Env extends BountyJiraAppEnv>(
         : c.json({ error: "Jira could not be read." }, 502);
     }
 
-    // A ticket's age is counted from these, so one without them is not
-    // linked, as a run does not import one.
+    // A ticket's age is counted from these, so a run never imports one
+    // without them; it is not linked here either.
     const { created, updated } = issue;
     if (created === null || updated === null) {
       return c.json(
@@ -246,9 +246,6 @@ export function mountBountyJiraRoutes<Env extends BountyJiraAppEnv>(
       {
         externalId: issue.id,
         key: issue.key,
-        statusCategory: issue.statusCategory,
-        remoteCreatedAt: created,
-        remoteUpdatedAt: updated,
       },
       {
         title: spec.summary,

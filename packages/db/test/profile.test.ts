@@ -257,7 +257,8 @@ test("a local part of only hyphens still yields a valid handle", async () => {
 
   const suggested = await store.suggest(`${"-".repeat(200)}@example.test`);
 
-  assert.equal(suggested, "-user");
+  // Never a stem that starts with a hyphen.
+  assert.equal(suggested, "user");
   assert.ok(suggested.length >= 3);
 });
 

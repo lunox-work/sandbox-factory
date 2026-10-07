@@ -176,20 +176,6 @@ export function useGithubOutcome(): {
   };
 }
 
-/** The installations the signed-in person can see, for the picker. */
-export async function fetchAvailableInstallations(
-  organizationId: string,
-  signal?: AbortSignal,
-) {
-  try {
-    return {
-      ok: true as const,
-      value: await clients.github.available(organizationId, signal),
-    };
-  } catch (error) {
-    return failureOf(error, "Could not list your GitHub installations.");
-  }
-}
 export async function linkInstallation(
   organizationId: string,
   installationId: string,
@@ -201,25 +187,6 @@ export async function linkInstallation(
     return failureOf(error, "Could not connect that installation.");
   }
 }
-export async function fetchInstallationRepositories(
-  organizationId: string,
-  connectionId: string,
-  signal?: AbortSignal,
-) {
-  try {
-    return {
-      ok: true as const,
-      value: await clients.github.installationRepositories(
-        organizationId,
-        connectionId,
-        signal,
-      ),
-    };
-  } catch (error) {
-    return failureOf(error, "Could not list that account's repositories.");
-  }
-}
-
 export interface GithubRepos {
   repos: GithubRepoDto[];
   loading: boolean;

@@ -57,6 +57,11 @@ export class WorkerLauncher {
         },
       },
     };
+    // Stamped before the attempt, not after a success: the thirty seconds
+    // are a backoff as much as a debounce. A failing RunTask (no capacity,
+    // a bad task definition, throttling) would otherwise be retried on
+    // every `ensureWorker()`, each one another ECS call that fails the same.
+    this.#lastLaunch = now.getTime();
     let output;
     if (this.options.launch !== undefined)
       output = await this.options.launch(input);
@@ -66,6 +71,5 @@ export class WorkerLauncher {
     }
     if (output.failures?.length || !output.tasks?.length)
       throw new Error("The analysis worker could not be launched.");
-    this.#lastLaunch = now.getTime();
   }
 }

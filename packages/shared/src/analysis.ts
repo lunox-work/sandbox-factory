@@ -484,6 +484,16 @@ const dataAccessorSchema = z.object({
   entities: z.array(z.string()),
   importers: count,
 });
+/**
+ * One end of a relation. `table` says which entity is meant where two
+ * sources each keep one by the same name; absent on older documents, which
+ * are matched by name.
+ */
+const relationEndSchema = z.object({
+  entity: z.string(),
+  fields: z.array(z.string()),
+  table: z.string().optional(),
+});
 /** `data-model.json`, as the agents read it back. */
 export const dataModelSchema = z.object({
   schemaVersion: z.literal(1),
@@ -531,8 +541,8 @@ export const dataModelSchema = z.object({
   relations: z.array(
     z.object({
       name: z.string().nullable(),
-      from: z.object({ entity: z.string(), fields: z.array(z.string()) }),
-      to: z.object({ entity: z.string(), fields: z.array(z.string()) }),
+      from: relationEndSchema,
+      to: relationEndSchema,
       cardinality: z.enum(RELATION_CARDINALITIES),
       onDelete: z.string().nullable(),
       onUpdate: z.string().nullable(),

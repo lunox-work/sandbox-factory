@@ -1,7 +1,7 @@
 {
   "name": "sandbox-factory",
   "version": "1.0.0",
-  "description": "Core domain rules shared by every surface: public handle validation and normalization.",
+  "description": "Dependency-free domain rules shared by every surface: handles and roles, bounties and their stages, selection, sizing and pricing, the tech stack catalog, repository facts, slices, context documents and sandbox contracts.",
   "license": "MIT",
   "author": "feversoul",
   "repository": {

@@ -34,6 +34,11 @@ export interface RepoSnapshotSummary {
   readonly treeTruncated: boolean;
   readonly fileCount: number;
   readonly totalBytes: number;
+  /**
+   * Bytes per language, as GitHub counted them for the repository when the
+   * snapshot was taken. GitHub's languages endpoint takes no ref, so this is
+   * the default branch at that moment, not necessarily `commitSha`.
+   */
   readonly languages: Readonly<Record<string, number>>;
   readonly createdAt: string;
 }
@@ -119,6 +124,13 @@ export interface RepoSnapshotStore {
  * `sandbox_version_source` names a slice run on its own snapshot.
  */
 const unreferenced = sql`not exists (select 1 from ${bountyProposal} where ${bountyProposal.repoSnapshotId} = ${repoSnapshot.id}) and not exists (select 1 from ${analysisRun} where ${analysisRun.snapshotId} = ${repoSnapshot.id})`;
+
+/**
+ * The snapshot's repository is the owner's, as a subquery: for a statement
+ * that does not join `github_repo`, which Drizzle's `delete` cannot.
+ */
+const ownedRepository = (organizationId: string) =>
+  sql`exists (select 1 from ${githubRepo} where ${githubRepo.id} = ${repoSnapshot.repoId} and ${githubRepo.organizationId} = ${organizationId})`;
 
 export function createRepoSnapshotStore(db: Database): RepoSnapshotStore {
   const owned = (organizationId: string) =>
@@ -254,10 +266,14 @@ export function createRepoSnapshotStore(db: Database): RepoSnapshotStore {
             ),
           )
           .for("update", { of: repoSnapshot });
+        // The owner again, though every id came from an owned read: every
+        // owner-scoped write names its owner in its own WHERE rather than
+        // trusting how its ids were reached.
         const removed = (await tx
           .delete(repoSnapshot)
           .where(
             and(
+              ownedRepository(organizationId),
               eq(repoSnapshot.repoId, repoId),
               inArray(
                 repoSnapshot.id,

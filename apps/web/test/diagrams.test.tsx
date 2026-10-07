@@ -6,7 +6,12 @@
 
 import { expect, test } from "vitest";
 
-import { diagramKind, prepareSvg } from "../src/features/sandbox/diagrams";
+import {
+  diagramKind,
+  DOT_SOURCE_MAX,
+  prepareSvg,
+  renderDiagram,
+} from "../src/features/sandbox/diagrams";
 import { wikiLinkedFile } from "../src/features/sandbox/file-tree";
 import { withWikiLinks } from "../src/features/sandbox/MarkdownDocument";
 
@@ -154,4 +159,39 @@ test("wiki links become Markdown links, or their label, and code is left alone",
       "[the first](</graphify/wiki/Community_0.md>) and gone.\n" +
       "`[[Community 0]]`\n```\n[[Community 0]]\n```",
   );
+});
+
+test("an SVG from a repository's build cannot run, embed or fetch anything", () => {
+  const prepared = prepareSvg(
+    `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 10 10">
+      <style>@import url(https://evil.test/a.css); .n { fill: url(https://evil.test/x.png); stroke: url(#grad); } .q { fill: url("#quoted"); stroke: url('https://evil.test/q.png'); }</style>
+      <a href="https://example.test/ok"><text>ok</text></a>
+      <a id="bad" href="#"><set attributeName="href" to="javascript:alert(1)"/><text>bad</text></a>
+      <animate attributeName="href" to="javascript:alert(1)"/>
+      <foreignObject width="10" height="10"><div xmlns="http://www.w3.org/1999/xhtml"><iframe srcdoc="&lt;script&gt;alert(1)&lt;/script&gt;"></iframe><span>label</span></div></foreignObject>
+      <image href="https://evil.test/track.png" width="1" height="1"/>
+      <image href="data:image/png;base64,AAAA" width="1" height="1"/>
+      <use href="https://evil.test/sprite.svg#x"/>
+      <use href="#local"/>
+      <rect style="fill: url(https://evil.test/p.png)" width="1" height="1"/>
+    </svg>`,
+  );
+  const markup = prepared?.markup ?? "";
+  expect(markup).not.toMatch(/evil\.test/);
+  expect(markup).not.toMatch(/javascript:/i);
+  expect(markup).not.toMatch(/<iframe|<set|<animate|srcdoc/i);
+  // What a drawing needs is kept: its labels, a link out, an inline
+  // picture and references within it.
+  expect(markup).toContain("label");
+  expect(markup).toContain('href="https://example.test/ok"');
+  expect(markup).toContain("data:image/png;base64,AAAA");
+  expect(markup).toContain('href="#local"');
+  expect(markup).toContain("url(#grad)");
+  expect(markup).toContain('url("#quoted")');
+});
+
+test("a graph too large to lay out is refused at once, not drawn for minutes", async () => {
+  await expect(
+    renderDiagram("dot", `digraph { ${"a -> b; ".repeat(DOT_SOURCE_MAX)} }`),
+  ).rejects.toThrow(/too large to draw/);
 });

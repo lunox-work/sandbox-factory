@@ -69,6 +69,7 @@ const RUN_FAILURES: Readonly<Record<string, string>> = {
     "The proposal changed before the change could start. Try again.",
   board_unavailable: "The board is no longer connected.",
   worker_lost: "The change was interrupted. Try again.",
+  internal_error: "Something went wrong on our side. Try again.",
 };
 
 /** What a change's outcome says when it did not land, by its code. */
@@ -144,11 +145,13 @@ export function useRespec(
   // followed again.
   const completed = useRef<string | null>(null);
 
-  // Another proposal: what was said about the last one goes with it.
+  // Another proposal: what was said about the last one goes with it. Not
+  // another revision of this one: a change that lands moves the revision,
+  // and its result is what the tab is about to say.
   useEffect(() => {
     setState({ phase: "idle" });
     setFollowing(null);
-  }, [base, proposalId, revision]);
+  }, [base, proposalId]);
   const adopt =
     activeRun?.kind === "respec" && completed.current !== activeRun.id
       ? activeRun.id
@@ -159,7 +162,7 @@ export function useRespec(
     setFollowing(adopt);
   }, [adopt, following]);
 
-  const selection = `${base}:${proposalId}:${revision}`;
+  const selection = `${base}:${proposalId}`;
   const selectionRef = useRef(selection);
   selectionRef.current = selection;
   const observed = useObservation({

@@ -383,9 +383,23 @@ export function screenForPath(pathname: string): Screen {
     }
     // `/o/:slug/jira` and `/o/:slug/jira/:site` included: both now live in
     // the Jira tab of settings, and `canonicalUrl` rewrites the address.
-    return "org-settings";
+    return isWorkspaceSettingsPath(path) ? "org-settings" : "not-found";
   }
-  return "home";
+  return path === "" ? "home" : "not-found";
+}
+
+/**
+ * The paths under `/o/:slug` that open its settings: the workspace itself,
+ * `/settings`, and the Jira site pages that moved into settings. Anything
+ * else under it names no page.
+ */
+function isWorkspaceSettingsPath(path: string): boolean {
+  const rest = path.split("/").slice(3);
+  return (
+    rest.length === 0 ||
+    (rest.length === 1 && rest[0] === "settings") ||
+    legacyJiraSlug(path) !== undefined
+  );
 }
 
 export function pathForScreen(
@@ -431,7 +445,9 @@ export function pathForScreen(
       return slug === undefined || id === undefined
         ? pathForScreen("org-settings", slug, undefined, undefined, "github")
         : `/o/${slug}/repositories/${encodeURIComponent(id)}`;
+    // Nothing links to a page that is not there; home is where it leads.
     case "home":
+    case "not-found":
       return "/";
   }
 }

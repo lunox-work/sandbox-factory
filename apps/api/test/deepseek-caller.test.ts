@@ -462,3 +462,42 @@ test("the default client posts to /chat/completions and classifies HTTP status",
     globalThis.fetch = originalFetch;
   }
 });
+
+test("a server error with no Retry-After waits the default before retrying", async () => {
+  // An absent header is no answer, not "retry now": every 5xx would
+  // otherwise hit the provider again at once.
+  const waits: number[] = [];
+  let calls = 0;
+  const caller = new DeepSeekCaller({
+    model: "requested-deepseek-model",
+    sleep: (milliseconds) => {
+      waits.push(milliseconds);
+      return Promise.resolve();
+    },
+    completions: {
+      create: () => {
+        calls += 1;
+        return calls === 1
+          ? Promise.reject(
+              Object.assign(new Error("upstream"), {
+                status: 503,
+                headers: new Headers(),
+              }),
+            )
+          : Promise.resolve(
+              completion({
+                complexity: "S",
+                confidence: "high",
+                rationale: "Small and contained.",
+              }),
+            );
+      },
+    },
+  });
+
+  assert.equal(
+    (await caller.call(sizeBountyTool, input)).result.complexity,
+    "S",
+  );
+  assert.deepEqual(waits, [500]);
+});

@@ -445,12 +445,19 @@ test("a trailing slash names the same screen", () => {
   expect(screen.getByRole("heading", { name: "Account" })).toBeTruthy();
 });
 
-test("an unknown path falls back to the home screen", async () => {
-  // Rather than a blank screen: the server serves index.html for any path, so
-  // the app has to decide what a stale link means.
+test("an unknown path says it is not found, with a way home", async () => {
+  // Rather than a blank screen, or home passed off as the page asked for: the
+  // server serves index.html for any path, so the app has to say what a stale
+  // link means.
   window.history.replaceState(null, "", "/nope");
   render(<App />);
 
+  expect(
+    await screen.findByRole("heading", { name: "Page not found" }),
+  ).toBeTruthy();
+  expect(document.title).toBe("Page not found · Lunox");
+  fireEvent.click(screen.getByRole("link", { name: "Go home" }));
+  expect(window.location.pathname).toBe("/");
   expect(
     await screen.findByRole("heading", { name: "Connections" }),
   ).toBeTruthy();
@@ -556,6 +563,16 @@ test("/o/:slug/settings opens that organization directly", async () => {
   await waitFor(() => {
     expect(screen.getByText("acme")).toBeTruthy();
   });
+});
+
+test("Bounties in the rail closes a bounty open over the list", async () => {
+  // Same screen, so it used to do nothing while the panel was open.
+  window.history.replaceState(null, "", "/bounties?peek=acme/bty_1");
+  render(<App />);
+  const rail = screen.getByRole("navigation", { name: "Main" });
+  fireEvent.click(await within(rail).findByRole("link", { name: "Bounties" }));
+  expect(window.location.pathname).toBe("/bounties");
+  expect(window.location.search).toBe("");
 });
 
 test("the rail leads to every workspace's bounties, and marks them current", async () => {
@@ -688,12 +705,12 @@ test("only /o/... names an organization, not any two-segment path", async () => 
   // The parser requires the literal `o` in the first segment. Without that
   // check *every* unrecognised two-segment path — `/settings/profile`,
   // `/reports/weekly` — reads as an organization handle, and the stale-link
-  // fallback to the home screen stops working for all of them.
+  // page stops working for all of them.
   window.history.replaceState(null, "", "/settings/profile");
   render(<App />);
 
   expect(
-    await screen.findByRole("heading", { name: "Connections" }),
+    await screen.findByRole("heading", { name: "Page not found" }),
   ).toBeTruthy();
   expect(
     screen.queryByRole("button", { name: "Edit workspace handle" }),

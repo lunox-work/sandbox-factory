@@ -23,7 +23,7 @@ import { bodyLimit } from "hono/body-limit";
 
 import type { Auth } from "../auth.js";
 import type { AuthVariables } from "../http-context.js";
-import { rankAtLeast } from "../access.js";
+import { isAtLeastAdmin } from "../access.js";
 import { MAX_UPLOAD_BYTES, UnsupportedImageError } from "./image.js";
 import { isAvatarRef, type AvatarKind } from "./keys.js";
 import { AVATAR_CONTENT_TYPE, type AvatarService } from "./service.js";
@@ -159,14 +159,17 @@ export function mountUserAvatarRoutes(
     }
     const previous = await profiles.image(userId);
     await setImage(c, saved);
-    await avatars.discard(previous, saved);
+    // Against what is in place now, not what this request wrote: a request
+    // that ran alongside may have put the previous picture back.
+    await avatars.discard(previous, await profiles.image(userId));
     return c.json({ image: saved });
   });
 
   app.delete("/api/v1/me/avatar", async (c) => {
-    const previous = await profiles.image(c.get("user").id);
+    const userId = c.get("user").id;
+    const previous = await profiles.image(userId);
     await setImage(c, null);
-    await avatars.discard(previous, null);
+    await avatars.discard(previous, await profiles.image(userId));
     return c.json({ image: null });
   });
 }
@@ -186,6 +189,11 @@ export function mountOrganizationAvatarRoutes(
     organizations: Pick<OrganizationStore, "get" | "setLogo">;
   },
 ): void {
+  /** The picture in place now, read again after a write; see the user's. */
+  async function logoOf(organizationId: string) {
+    return (await organizations.get(organizationId))?.image ?? null;
+  }
+
   /** The organization, or a response refusing the caller. */
   async function editable(c: Context<AppEnv>) {
     const { organizationId, role } = c.get("member");
@@ -199,7 +207,7 @@ export function mountOrganizationAvatarRoutes(
         403,
       );
     }
-    if (!rankAtLeast(role, "admin")) {
+    if (!isAtLeastAdmin(role)) {
       return c.json({ error: NOT_AN_ADMIN }, 403);
     }
     return found;
@@ -215,7 +223,7 @@ export function mountOrganizationAvatarRoutes(
       return saved;
     }
     await organizations.setLogo(found.id, saved);
-    await avatars.discard(found.image, saved);
+    await avatars.discard(found.image, await logoOf(found.id));
     return c.json({ image: saved });
   });
 
@@ -225,7 +233,7 @@ export function mountOrganizationAvatarRoutes(
       return found;
     }
     await organizations.setLogo(found.id, null);
-    await avatars.discard(found.image, null);
+    await avatars.discard(found.image, await logoOf(found.id));
     return c.json({ image: null });
   });
 }

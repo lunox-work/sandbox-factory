@@ -12,15 +12,18 @@
  * connections list, which is where a site gets connected.
  */
 
-import { ChevronDown, LayoutList } from "lucide-react";
+import { ChevronDown, LayoutList, RefreshCw } from "lucide-react";
 import { useState, type ReactNode } from "react";
 
 import { Combobox } from "@/components/Combobox";
-import { LoadingLine } from "@/components/Message";
+import { ErrorBanner, LoadingLine } from "@/components/Message";
+import { OutcomeNotice } from "@/components/OutcomeNotice";
 import { Button } from "@/components/ui/button";
 
+import { describeGithubOutcome } from "./Github";
 import { BoardIcon, JiraBoard } from "./Jira";
 import { pathForScreen } from "./routes";
+import { useGithubOutcome } from "./useGithub";
 import { useJiraBoards, type JiraBoard as Board } from "./useJira";
 
 export interface RememberedBoard {
@@ -183,7 +186,13 @@ export function HomeBoard({
   /** Shown when the organization has no board to open. */
   fallback: ReactNode;
 }) {
-  const { boards, loading } = useJiraBoards(organizationId);
+  const { boards, loading, error, refresh } = useJiraBoards(organizationId);
+  /*
+    A GitHub flow that could not be tied to a workspace lands on home. The
+    connections page reports it when it is what home shows; over a board it
+    has to be reported here, or the outcome is lost and stays in the URL.
+  */
+  const github = useGithubOutcome();
   // Held in state, not only in storage: choosing a board in the picker has
   // to re-render, and a write to storage does not.
   const [chosenId, setChosenId] = useState<string | undefined>(
@@ -203,8 +212,49 @@ export function HomeBoard({
   const board =
     boards.find((candidate) => candidate.id === chosenId) ?? boards[0];
 
+  const notice = github.outcome !== null && (
+    <OutcomeNotice
+      {...describeGithubOutcome(github.outcome, "home")}
+      onDismiss={github.dismiss}
+      testId="github-outcome"
+    />
+  );
+
   if (board === undefined) {
-    return <>{fallback}</>;
+    // Not known to have none: a list that failed is said to have failed,
+    // rather than passed off as a workspace with no board yet.
+    if (error !== null && boards.length === 0)
+      return (
+        <main className="mx-auto w-full max-w-2xl px-4 py-10 sm:px-6 sm:py-14">
+          <div className="flex flex-col items-start gap-3">
+            {notice}
+            <ErrorBanner className="mt-0">
+              Could not load this workspace&rsquo;s boards.
+            </ErrorBanner>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => void refresh()}
+            >
+              <RefreshCw />
+              Try again
+            </Button>
+          </div>
+        </main>
+      );
+    // The outcome was taken from the URL on mount, so the fallback's own
+    // reading finds nothing: it is shown here, above it.
+    return (
+      <>
+        {notice !== false && (
+          <div className="mx-auto w-full max-w-5xl px-4 pt-10 sm:px-6 sm:pt-14">
+            {notice}
+          </div>
+        )}
+        {fallback}
+      </>
+    );
   }
 
   const who = firstName(name);
@@ -223,6 +273,7 @@ export function HomeBoard({
       role={role}
       header={
         <header>
+          {notice !== false && <div className="mb-6">{notice}</div>}
           <p className="text-muted-foreground text-sm">
             {today.toLocaleDateString(undefined, {
               weekday: "long",

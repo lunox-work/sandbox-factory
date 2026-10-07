@@ -123,6 +123,11 @@ function setup(
     role?: string | undefined;
     organization?: OrganizationSummary;
     avatarsOff?: boolean;
+    /**
+     * A request alongside puts the previous picture back between this one's
+     * write and its clean-up, so the column reads the previous one again.
+     */
+    putBack?: boolean;
   } = {},
 ) {
   const bucket = memoryStore();
@@ -138,7 +143,13 @@ function setup(
     auth,
     organizations: organizations.store,
     profiles: {
-      image: () => Promise.resolve(options.previousImage ?? null),
+      // The column as the writes through Better Auth left it.
+      image: () =>
+        Promise.resolve(
+          options.putBack === true || updates.length === 0
+            ? (options.previousImage ?? null)
+            : (updates.at(-1)?.image as string | null),
+        ),
     } as unknown as Parameters<typeof createApp>[0]["profiles"],
     ...(options.avatarsOff === true
       ? {}
@@ -260,6 +271,27 @@ test("replacing your picture deletes the one it replaced", async () => {
   assert.deepEqual(
     [...again.bucket.objects.keys()],
     [second.image.replace("/api/avatars/", "avatars/")],
+  );
+});
+
+test("a picture put back by a request alongside is not deleted from under it", async () => {
+  const app = setup();
+  const first = (await (
+    await app.request("/api/v1/me/avatar", upload(await png(100, 100)))
+  ).json()) as { image: string };
+
+  const again = setup({ previousImage: first.image, putBack: true });
+  for (const [key, bytes] of app.bucket.objects) {
+    again.bucket.objects.set(key, bytes);
+  }
+  await again.request(
+    "/api/v1/me/avatar",
+    upload(await png(200, 120, "#20a060")),
+  );
+
+  // The column names the first picture again, so its object stays.
+  assert.ok(
+    again.bucket.objects.has(first.image.replace("/api/avatars/", "avatars/")),
   );
 });
 

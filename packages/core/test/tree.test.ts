@@ -192,6 +192,42 @@ test("path lists are capped", () => {
   assert.equal(treeFacts(entries(many)).lockfiles.length, PATH_LIST_MAX);
 });
 
+test("migration directories are not capped, since profiles ask per module", () => {
+  const many = Array.from(
+    { length: PATH_LIST_MAX + 5 },
+    (_, index) => `pkg${String(index).padStart(3, "0")}/migrations/0001.sql`,
+  );
+  const facts = treeFacts(entries(many));
+  assert.equal(facts.migrationDirectories.length, PATH_LIST_MAX + 5);
+  assert.equal(
+    facts.migrationDirectories.at(-1),
+    `pkg${String(PATH_LIST_MAX + 4).padStart(3, "0")}/migrations`,
+  );
+});
+
+test("CI files are listed by path, even inside a listed directory", () => {
+  const facts = treeFacts(
+    entries([
+      ".gitlab-ci.yml",
+      "Jenkinsfile",
+      "infra/Jenkinsfile",
+      "infra/main.tf",
+      "build/azure-pipelines.yml",
+      "bitbucket-pipelines.yml",
+      // Only the exact names count.
+      "docs/jenkinsfile.md",
+    ]),
+  );
+  assert.deepEqual(facts.infraDirectories, [
+    ".gitlab-ci.yml",
+    "Jenkinsfile",
+    "bitbucket-pipelines.yml",
+    "build/azure-pipelines.yml",
+    "infra",
+    "infra/Jenkinsfile",
+  ]);
+});
+
 test("modulesFor maps files and directories to the modules they touch", () => {
   const facts = treeFacts(MONOREPO);
   assert.deepEqual(

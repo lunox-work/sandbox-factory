@@ -81,6 +81,11 @@ const fetchMock = vi.fn((input: RequestInfo | URL) => {
     );
   }
 
+  // No board yet, so home shows the connections.
+  if (/\/jira\/boards(\?|$)/.test(url)) {
+    return Promise.resolve(Response.json({ boards: [] }));
+  }
+
   return Promise.resolve(Response.json({}));
 });
 

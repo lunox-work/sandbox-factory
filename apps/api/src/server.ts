@@ -256,7 +256,8 @@ const bountyExecutor =
         onProposalDrafted: () => bountyProfiler?.kick(),
         profileFor: (organizationId, proposalId) =>
           bountyProfiles.latest(organizationId, proposalId),
-        onBackgroundError: (code, error) => console.error(code, error),
+        onBackgroundError: (code, error) =>
+          console.error(code, describeError(error)),
       });
 const jira =
   jiraOAuth === undefined
@@ -343,7 +344,7 @@ const github =
         apiUrl: env.BETTER_AUTH_URL,
         appUrl: appUrl(env),
         onBackgroundError: (code: string, error: unknown) =>
-          console.error(code, error),
+          console.error(code, describeError(error)),
       };
 const githubReconciler =
   github === undefined
@@ -517,4 +518,15 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
       });
     });
   });
+}
+
+/**
+ * A background fault as the log shows it: its kind and sentence, never the
+ * error itself, which can carry a request or a row. The reconciler and the
+ * snapshotter log theirs the same way.
+ */
+function describeError(error: unknown): string {
+  return error instanceof Error
+    ? `${error.name}: ${error.message}`
+    : "non-Error value thrown";
 }

@@ -311,6 +311,12 @@ test("new cards autofill evenly spaced whole rates and autosave in the selected 
     "https://wise.com/public-resources/assets/flags/rectangle/jpy.png",
   );
   await userEvent.click(yen);
+  // The amounts are not converted, so the change is confirmed first.
+  await userEvent.click(
+    within(await screen.findByRole("alertdialog")).getByRole("button", {
+      name: "Change currency",
+    }),
+  );
   expect(
     screen
       .getByRole("slider", { name: "M rate" })
@@ -511,6 +517,12 @@ test("changing currency autosaves existing whole amounts with the new minor-unit
   );
   await userEvent.click(
     screen.getByRole("option", { name: "JPY — Japanese Yen" }),
+  );
+  // The amounts are not converted, so the change is confirmed first.
+  await userEvent.click(
+    within(await screen.findByRole("alertdialog")).getByRole("button", {
+      name: "Change currency",
+    }),
   );
   await waitFor(() =>
     expect(
@@ -852,6 +864,8 @@ test("a run that has not picked its bounties yet says so", async () => {
 
 function searchingBoard(options: {
   results: unknown[];
+  /** The search itself answers with a failure. */
+  searchFails?: boolean;
   add?: { status: number; body: unknown };
   runs?: unknown[];
   /** The board's runs, as its list reads them. */
@@ -882,7 +896,11 @@ function searchingBoard(options: {
     vi.fn((url: string, init?: RequestInit) => {
       requests.push({ url, body: init?.body as string | undefined });
       if (url.includes("/search?"))
-        return Promise.resolve(bountyJson({ issues: options.results }));
+        return Promise.resolve(
+          options.searchFails === true
+            ? bountyJson({ error: "Jira is busy." }, { status: 503 })
+            : bountyJson({ issues: options.results }),
+        );
       if (url.endsWith("/issues"))
         return (options.addHeld ?? Promise.resolve()).then(() =>
           bountyJson(options.add?.body ?? {}, {
@@ -951,7 +969,7 @@ test("a bounty found by search is sized, then opened when its proposal lands", a
   });
 
   await userEvent.type(
-    await screen.findByRole("searchbox", { name: "Find a ticket to size" }),
+    await screen.findByRole("combobox", { name: "Find a ticket to size" }),
     "login",
   );
   const results = await screen.findByTestId("issue-results");
@@ -999,7 +1017,7 @@ test("picking a ticket says it is being sized before the server answers", async 
     }),
   });
   await userEvent.type(
-    await screen.findByRole("searchbox", { name: "Find a ticket to size" }),
+    await screen.findByRole("combobox", { name: "Find a ticket to size" }),
     "login",
   );
   const results = await screen.findByTestId("issue-results");
@@ -1071,7 +1089,7 @@ test("a bounty proposed by the board's run meanwhile opens that proposal", async
     ],
   });
   await userEvent.type(
-    await screen.findByRole("searchbox", { name: "Find a ticket to size" }),
+    await screen.findByRole("combobox", { name: "Find a ticket to size" }),
     "login",
   );
   await userEvent.click(
@@ -1099,7 +1117,7 @@ test("a run that could not size the bounty says so", async () => {
     ],
   });
   await userEvent.type(
-    await screen.findByRole("searchbox", { name: "Find a ticket to size" }),
+    await screen.findByRole("combobox", { name: "Find a ticket to size" }),
     "login",
   );
   await userEvent.click(
@@ -1121,7 +1139,7 @@ test("a refused add is said, and Enter picks the first result", async () => {
       body: { error: "This Jira connection needs reconnecting." },
     },
   });
-  const box = await screen.findByRole("searchbox", {
+  const box = await screen.findByRole("combobox", {
     name: "Find a ticket to size",
   });
   await userEvent.type(box, "login");
@@ -1133,6 +1151,43 @@ test("a refused add is said, and Enter picks the first result", async () => {
   expect((await screen.findByRole("alert")).textContent).toBe(
     "This Jira connection needs reconnecting.",
   );
+});
+
+test("a search that fails says so where the results would be, not that none match", async () => {
+  searchingBoard({ results: [], searchFails: true });
+  const box = await screen.findByRole("combobox", {
+    name: "Find a ticket to size",
+  });
+  await userEvent.type(box, "login");
+  const results = await screen.findByTestId("issue-results");
+  expect(await within(results).findByRole("alert")).toBeDefined();
+  expect(within(results).queryByText(/No tickets to add match/)).toBeNull();
+});
+
+test("the results close on Escape or a click elsewhere, and arrows choose one", async () => {
+  searchingBoard({
+    results: [addLogin, { ...addLogin, id: "10008", key: "APP-8" }],
+  });
+  const box = await screen.findByRole("combobox", {
+    name: "Find a ticket to size",
+  });
+  await userEvent.type(box, "login");
+  await within(await screen.findByTestId("issue-results")).findByRole(
+    "option",
+    { name: /APP-8/ },
+  );
+  await userEvent.type(box, "{ArrowDown}");
+  expect(
+    screen.getByRole("option", { name: /APP-8/ }).getAttribute("aria-selected"),
+  ).toBe("true");
+  await userEvent.type(box, "{Escape}");
+  expect(screen.queryByTestId("issue-results")).toBeNull();
+  // The query stays; focusing again brings the results back.
+  expect((box as HTMLInputElement).value).toBe("login");
+  await userEvent.click(box);
+  expect(await screen.findByTestId("issue-results")).toBeDefined();
+  await userEvent.click(document.body);
+  expect(screen.queryByTestId("issue-results")).toBeNull();
 });
 
 test("an issue split into sub-tasks is listed but cannot be added, and Enter passes over it", async () => {
@@ -1153,7 +1208,7 @@ test("an issue split into sub-tasks is listed but cannot be added, and Enter pas
       body: { error: "This Jira connection needs reconnecting." },
     },
   });
-  const box = await screen.findByRole("searchbox", {
+  const box = await screen.findByRole("combobox", {
     name: "Find a ticket to size",
   });
   await userEvent.type(box, "login");
@@ -1894,6 +1949,12 @@ test("switching an oversized card to USD requires lowering XL before saving", as
   );
   await userEvent.click(
     screen.getByRole("option", { name: "USD — US Dollar" }),
+  );
+  // The amounts are not converted, so the change is confirmed first.
+  await userEvent.click(
+    within(await screen.findByRole("alertdialog")).getByRole("button", {
+      name: "Change currency",
+    }),
   );
   expect(screen.getByRole("alert").textContent).toContain(
     "XL cannot exceed USD 1,000.",

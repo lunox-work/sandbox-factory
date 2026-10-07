@@ -175,10 +175,16 @@ function Wired({
   onLanded?: () => void;
 }) {
   const [size, setSize] = useState("S");
+  // A landing re-reads the proposal at its next revision, as the peek does:
+  // the result has to survive that.
+  const [revision, setRevision] = useState(4);
   const { read, retry } = useProposalSpec(BASE, "bpr_1", specRevision);
-  const control = useRespec(BASE, "bpr_1", 4, () => {
+  const control = useRespec(BASE, "bpr_1", revision, async () => {
     onLanded?.();
     setSize("S+");
+    setRevision((current) => current + 1);
+    // The read again resolves once the new revision has been rendered.
+    await new Promise((resolve) => setTimeout(resolve, 20));
   });
   return (
     <ProposalSpec
@@ -251,6 +257,10 @@ test("more of a kind is asked for, followed, and said in one line once it lands"
   // line says what the change did to the size.
   const status = await screen.findByText("S → S+", {}, { timeout: 3_000 });
   expect(status.parentElement?.textContent).toBe("S → S+: +4 points");
+  // And it stays: the landing moved the proposal's revision, which is not
+  // another proposal.
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(screen.getByText("S → S+")).toBeDefined();
   expect(onLanded).toHaveBeenCalledOnce();
   expect(requests.some(({ url }) => url === `${BASE}/runs/brn_respec`)).toBe(
     true,

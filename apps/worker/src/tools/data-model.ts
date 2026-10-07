@@ -189,11 +189,28 @@ export function createDataModelAdapter(): ToolAdapter {
         files: string[];
         journal: string[] | null;
       }[] = [];
-      for (const [directory, { journal }] of directories) {
+      /*
+        Each file in one set: the innermost directory that holds it, so a
+        journal nested in a migration directory, or one at the root, does
+        not replay the same files twice. A journal's set is the files
+        Drizzle Kit writes beside it, not the whole tree under it; a plain
+        migration directory keeps its nested ones (Prisma's
+        `migrations/<name>/migration.sql`).
+      */
+      const claimed = new Set<string>();
+      const innermostFirst = [...directories].sort(
+        ([a], [b]) => b.split("/").length - a.split("/").length,
+      );
+      for (const [directory, { journal }] of innermostFirst) {
         const prefix = directory === "." ? "" : `${directory}/`;
         const files = paths.filter(
-          (path) => path.startsWith(prefix) && path.endsWith(".sql"),
+          (path) =>
+            path.startsWith(prefix) &&
+            path.endsWith(".sql") &&
+            !claimed.has(path) &&
+            (journal === null || !path.slice(prefix.length).includes("/")),
         );
+        for (const path of files) claimed.add(path);
         if (files.length === 0) continue;
         let tags: string[] | null = null;
         if (journal !== null) {

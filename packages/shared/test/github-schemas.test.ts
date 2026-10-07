@@ -18,6 +18,7 @@ import {
   githubLanguagesResponseSchema,
   githubTreeResponseSchema,
   linkInstallationRequestSchema,
+  pullSnapshotRequestSchema,
   registerRepoRequestSchema,
   repoSnapshotDetailDtoSchema,
   repoTreeQuerySchema,
@@ -338,4 +339,54 @@ test("a tree page query defaults its limit and refuses one past the cap", () => 
     repoTreeQuerySchema.safeParse({ limit: String(TREE_PAGE_MAX + 1) }).success,
     false,
   );
+});
+
+test("a pulled branch must be a name Git would accept, so it cannot walk the API path", () => {
+  const accepts = (branch: string) =>
+    pullSnapshotRequestSchema.safeParse({ branch }).success;
+
+  for (const branch of [
+    "main",
+    "release/1.0",
+    "feature/x-y_z",
+    "v1.2.3",
+    "user@host",
+    "  padded  ",
+  ]) {
+    assert.equal(accepts(branch), true, branch);
+  }
+  assert.equal(
+    pullSnapshotRequestSchema.parse({ branch: "  padded  " }).branch,
+    "padded",
+  );
+  for (const branch of [
+    "",
+    "../../../user",
+    "a/../b",
+    "a..b",
+    "/main",
+    "main/",
+    "a//b",
+    "-main",
+    "main.lock",
+    "a/b.lock/c",
+    "a/.hidden",
+    ".hidden",
+    "main.",
+    "@",
+    "a@{1}",
+    "a b",
+    "a~1",
+    "a^",
+    "a:b",
+    "a?",
+    "a*",
+    "a[b",
+    "a\\b",
+    "a\u0001b",
+    "a\u007fb",
+    "a\tb",
+  ]) {
+    assert.equal(accepts(branch), false, JSON.stringify(branch));
+  }
 });

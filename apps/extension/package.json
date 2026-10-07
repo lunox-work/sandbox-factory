@@ -69,7 +69,7 @@
     "lint": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
     "test": "rm -rf dist-test && tsc -p tsconfig.test.json && node --experimental-test-coverage --test-coverage-lines=80 --test-coverage-branches=80 --test-coverage-functions=80 --test-coverage-include=\"dist-test/src/**\" --test-coverage-exclude=\"dist-test/src/extension.js\" --test-coverage-exclude=\"dist-test/src/build.js\" --test dist-test/test/*.test.js > dist-test/coverage.txt; status=$?; cat dist-test/coverage.txt; [ $status -eq 0 ] && assert-all-covered dist-test/src dist-test/coverage.txt extension.js build.js host.js",
     "dev": "node esbuild.js --watch",
-    "package": "vsce package --no-dependencies"
+    "package": "npx --yes @vscode/vsce@3.6.0 package --no-dependencies"
   },
   "dependencies": {
     "@sandbox-factory/client": "*",

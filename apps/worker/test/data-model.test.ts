@@ -34,6 +34,7 @@ import {
   orderMigrations,
   renderExpression,
   replaySqlMigrations,
+  upSection,
 } from "../src/tools/data-model/sql.js";
 import { toolContext } from "./helpers.js";
 
@@ -1114,4 +1115,51 @@ test("accessors follow barrels to their depth, and ignore names a file does not 
     { module: "svc/js.js", entities: ["b"], importers: 0 },
     { module: "svc/one.ts", entities: ["a"], importers: 0 },
   ]);
+});
+
+test("a DO block of mostly whitespace is read in time, not backtracked", async () => {
+  // The idiom was one pattern whose lazy body sat between two runs of
+  // whitespace; a few thousand spaces took seconds, twenty thousand far
+  // longer, all on the worker's one thread.
+  const started = Date.now();
+  const source = await replaySqlMigrations(
+    [
+      {
+        path: "1.sql",
+        text: `CREATE TABLE t (id int);\nDO $$BEGIN ${" ".repeat(20_000)}x$$;`,
+      },
+    ],
+    ["migrations:db"],
+  );
+  assert.ok(Date.now() - started < 2_000);
+  assert.deepEqual(
+    source.entities.map((entity) => entity.name),
+    ["t"],
+  );
+});
+
+test("a goose or dbmate rollback in the same file is not replayed", async () => {
+  // Replayed, the down section's DROP undid the CREATE above it, and the
+  // table vanished from the model.
+  const source = await replaySqlMigrations(
+    [
+      {
+        path: "001_people.sql",
+        text: "-- +goose Up\nCREATE TABLE people (id int);\n-- +goose Down\nDROP TABLE people;\n",
+      },
+      {
+        path: "002_pets.sql",
+        text: "-- migrate:up\nCREATE TABLE pets (id int);\n\n-- migrate:down\nDROP TABLE pets;\n",
+      },
+    ],
+    ["migrations:db"],
+  );
+  assert.deepEqual(
+    source.entities.map((entity) => entity.name),
+    ["people", "pets"],
+  );
+  assert.equal(
+    upSection("CREATE TABLE t (id int);"),
+    "CREATE TABLE t (id int);",
+  );
 });

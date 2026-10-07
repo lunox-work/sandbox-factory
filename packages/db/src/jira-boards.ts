@@ -307,8 +307,10 @@ export function createJiraBoardStore(db: Database): JiraBoardStore {
   async function first(
     organizationId: string,
     boardId: string,
+    /** A transaction to read in, locking the row for its write. */
+    tx?: Database,
   ): Promise<JiraBoardRow | undefined> {
-    const rows = (await db
+    const query = (tx ?? db)
       .select()
       .from(jiraBoard)
       .where(
@@ -316,7 +318,10 @@ export function createJiraBoardStore(db: Database): JiraBoardStore {
           eq(jiraBoard.organizationId, organizationId),
           eq(jiraBoard.id, boardId),
         ),
-      )) as JiraBoardRow[];
+      );
+    const rows = (await (tx === undefined
+      ? query
+      : query.for("update"))) as JiraBoardRow[];
     return rows[0];
   }
 
@@ -354,12 +359,17 @@ export function createJiraBoardStore(db: Database): JiraBoardStore {
         updatedAt: new Date(),
       };
 
+      const { organizationId: _owner, ...refreshed } = values;
       const [row] = (await db
         .insert(jiraBoard)
         .values({ id: generateId("jrb"), ...values })
         .onConflictDoUpdate({
           target: [jiraBoard.connectionId, jiraBoard.externalId],
-          set: values,
+          // Never moved between organizations: a board already recorded
+          // under another is not this one's to rewrite, and nothing comes
+          // back for it.
+          set: refreshed,
+          setWhere: eq(jiraBoard.organizationId, organizationId),
         })
         .returning()) as JiraBoardRow[];
 
@@ -395,6 +405,7 @@ export function createJiraBoardStore(db: Database): JiraBoardStore {
         .onConflictDoUpdate({
           target: [jiraBoard.connectionId, jiraBoard.externalId],
           set: jiraFacts,
+          setWhere: eq(jiraBoard.organizationId, organizationId),
         })
         .returning()) as JiraBoardRow[];
 
@@ -405,54 +416,59 @@ export function createJiraBoardStore(db: Database): JiraBoardStore {
     },
 
     async update(organizationId, boardId, input) {
-      const existing = await first(organizationId, boardId);
-      if (existing === undefined) {
-        return null;
-      }
+      // Read, merged and written under the row's lock: two edits at once
+      // would otherwise each merge onto the same old settings, and the
+      // second would undo the first.
+      return db.transaction(async (tx) => {
+        const existing = await first(organizationId, boardId, tx);
+        if (existing === undefined) {
+          return null;
+        }
 
-      // Merged, not replaced: a caller editing `ticketCap` alone would
-      // otherwise reset every other setting to its default.
-      const selection =
-        input.selection === undefined
-          ? (existing.selection as StoredBoardSelection)
-          : mergeSelection(
-              existing.selection as StoredBoardSelection,
-              input.selection,
-            );
+        // Merged, not replaced: a caller editing `ticketCap` alone would
+        // otherwise reset every other setting to its default.
+        const selection =
+          input.selection === undefined
+            ? (existing.selection as StoredBoardSelection)
+            : mergeSelection(
+                existing.selection as StoredBoardSelection,
+                input.selection,
+              );
 
-      const pricing =
-        input.pricing === undefined
-          ? (existing.pricing as StoredBoardPricing)
-          : mergePricing(
-              (existing.pricing ?? {}) as StoredBoardPricing,
-              input.pricing,
-            );
+        const pricing =
+          input.pricing === undefined
+            ? (existing.pricing as StoredBoardPricing)
+            : mergePricing(
+                (existing.pricing ?? {}) as StoredBoardPricing,
+                input.pricing,
+              );
 
-      const linking =
-        typeof input.sourceRepoId === "string" ? input.sourceRepoId : null;
-      const [row] = (await db
-        .update(jiraBoard)
-        .set({
-          selection,
-          pricing,
-          ...(input.sourceRepoId === undefined
-            ? {}
-            : { sourceRepoId: input.sourceRepoId }),
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(jiraBoard.organizationId, organizationId),
-            eq(jiraBoard.id, boardId),
-            // In the same statement, so the check and the write agree.
-            linking === null
-              ? undefined
-              : sql`exists (select 1 from ${githubRepo} where ${githubRepo.id} = ${linking} and ${githubRepo.organizationId} = ${organizationId})`,
-          ),
-        )
-        .returning()) as JiraBoardRow[];
+        const linking =
+          typeof input.sourceRepoId === "string" ? input.sourceRepoId : null;
+        const [row] = (await tx
+          .update(jiraBoard)
+          .set({
+            selection,
+            pricing,
+            ...(input.sourceRepoId === undefined
+              ? {}
+              : { sourceRepoId: input.sourceRepoId }),
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(jiraBoard.organizationId, organizationId),
+              eq(jiraBoard.id, boardId),
+              // In the same statement, so the check and the write agree.
+              linking === null
+                ? undefined
+                : sql`exists (select 1 from ${githubRepo} where ${githubRepo.id} = ${linking} and ${githubRepo.organizationId} = ${organizationId})`,
+            ),
+          )
+          .returning()) as JiraBoardRow[];
 
-      return row === undefined ? null : toSummary(row);
+        return row === undefined ? null : toSummary(row);
+      });
     },
 
     async markMissing(organizationId, connectionId, seenExternalIds) {

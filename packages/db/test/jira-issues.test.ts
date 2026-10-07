@@ -15,10 +15,6 @@ function row(overrides: Partial<JiraIssueRow> = {}): JiraIssueRow {
     externalId: "10001",
     key: "APP-1",
     bountyId: "bty_1",
-    statusCategory: "new",
-    remoteCreatedAt: new Date("2026-01-01T00:00:00Z"),
-    remoteUpdatedAt: new Date("2026-09-22T00:00:00Z"),
-    lastSeenAt: new Date("2026-09-22T00:00:00Z"),
     removedAt: null,
     ...overrides,
   };
@@ -50,9 +46,6 @@ function bountyRow(overrides: Partial<BountyRow> = {}): BountyRow {
 const facts = {
   externalId: "10001",
   key: "APP-1",
-  statusCategory: "new",
-  remoteCreatedAt: "2026-01-01T00:00:00Z",
-  remoteUpdatedAt: "2026-09-22T00:00:00Z",
 };
 
 const content: BountyContent = {

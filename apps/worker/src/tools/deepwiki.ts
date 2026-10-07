@@ -10,6 +10,7 @@
  * logged, and the token appears in no log line or URL.
  */
 
+import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DEEPWIKI_TOOL_VERSION, isDeepwikiParams } from "sandbox-factory";
@@ -123,12 +124,23 @@ export function parseWiki(value: unknown): Wiki {
   };
 }
 
-/** `wiki/<id>.md` paths: one safe, unique file name per page, in page order. */
+/** The longest page file name kept whole; a longer one is cut and hashed. */
+const PAGE_NAME_MAX = 100;
+
+/**
+ * `wiki/<id>.md` paths: one safe, unique file name per page, in page order.
+ * A long id is cut and given a short hash of the whole, so no name passes
+ * the file system's limit and two long ids that share a start stay apart.
+ */
 export function pagePaths(pages: readonly WikiPage[]): Map<string, string> {
   const used = new Set<string>();
   const paths = new Map<string, string>();
   for (const page of pages) {
-    const base = page.id.replace(/[^A-Za-z0-9._-]/g, "-") || "page";
+    const safe = page.id.replace(/[^A-Za-z0-9._-]/g, "-") || "page";
+    const base =
+      safe.length <= PAGE_NAME_MAX
+        ? safe
+        : `${safe.slice(0, PAGE_NAME_MAX)}-${createHash("sha256").update(page.id).digest("hex").slice(0, 12)}`;
     let name = base;
     for (let n = 2; used.has(name); n += 1) name = `${base}-${n}`;
     used.add(name);
@@ -136,6 +148,14 @@ export function pagePaths(pages: readonly WikiPage[]): Map<string, string> {
   }
   return paths;
 }
+
+/** The task states DeepWiki-Open passes through before it ends. */
+const IN_PROGRESS = new Set([
+  "pending",
+  "indexing",
+  "determining_structure",
+  "generating",
+]);
 
 function defaultSleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -183,6 +203,9 @@ export function createDeepwikiAdapter(options: DeepwikiOptions): ToolAdapter {
           return await fetchImpl(`${base}${path}`, {
             method,
             signal,
+            // A redirect would send the body, the repository's token in
+            // it, wherever the service or a proxy pointed.
+            redirect: "error",
             headers: {
               Accept: "application/json",
               ...(body === undefined
@@ -252,7 +275,10 @@ export function createDeepwikiAdapter(options: DeepwikiOptions): ToolAdapter {
         const status = await json(polled);
         const state = isRecord(status) ? status["status"] : undefined;
         if (state === "completed") break;
-        if (state === "failed") throw new AnalysisError("tool_failed");
+        // Anything but a state the service passes through on its way is an
+        // end: polled on, an unknown one would read as a timeout.
+        if (typeof state !== "string" || !IN_PROGRESS.has(state))
+          throw new AnalysisError("tool_failed");
         await sleep(interval, signal);
       }
       const read = await request("GET", `/api/wiki_cache?${cacheQuery}`);
@@ -261,7 +287,12 @@ export function createDeepwikiAdapter(options: DeepwikiOptions): ToolAdapter {
       if (cache === null) throw new AnalysisError("tool_failed");
       const wiki = parseWiki(cache);
       input.log("DeepWiki wiki read.");
-      const pages = wiki.pages.slice(0, WIKI_PAGES_MAX);
+      // One page per id: the service's own model writes the structure, and
+      // two pages under one id would be written to one file.
+      const seenIds = new Set<string>();
+      const pages = wiki.pages
+        .filter((page) => !seenIds.has(page.id) && seenIds.add(page.id))
+        .slice(0, WIKI_PAGES_MAX);
       const paths = pagePaths(pages);
       const summary: DeepwikiSummaryDto = {
         schemaVersion: 1,

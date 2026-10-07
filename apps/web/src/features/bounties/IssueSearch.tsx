@@ -6,10 +6,10 @@ import { useEffect, useRef, useState } from "react";
 import { terminalRun, useObservation } from "../../data/observe";
 import { clients, queryKeys, useUserId } from "../../data/query";
 
-import { ErrorBanner } from "@/components/Message";
+import { RetryableError } from "@/components/Message";
 import { Input } from "@/components/ui/input";
 
-import { plural } from "../../ProposalSpec";
+import { plural } from "../../lib/format";
 
 interface IssueResult {
   id: string;
@@ -62,6 +62,24 @@ export function IssueSearch({
     runId: string | null;
   } | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  // Whether the results show under the field: closed by Escape or a click
+  // elsewhere, opened again by typing or focusing it.
+  const [open, setOpen] = useState(true);
+  // The result the arrow keys are on, and Enter takes.
+  const [active, setActive] = useState(0);
+  const container = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const close = (event: MouseEvent) => {
+      if (
+        container.current !== null &&
+        event.target instanceof Node &&
+        !container.current.contains(event.target)
+      )
+        setOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, []);
 
   /*
     Searched as the person types, a quarter-second after they stop. The
@@ -94,14 +112,15 @@ export function IssueSearch({
   const results = search === "" ? null : (searchQuery.data ?? []);
   const searching =
     query.trim() !== "" && (search !== query.trim() || searchQuery.isFetching);
-  useEffect(() => {
-    if (searchQuery.isError)
-      setMessage(
-        searchQuery.error instanceof ApiError
-          ? searchQuery.error.message
-          : "Could not reach the server.",
-      );
-  }, [searchQuery.error, searchQuery.isError]);
+  // Said in the results, where "no tickets match" would otherwise stand, and
+  // gone with the next search that answers.
+  const searchError = searchQuery.isError
+    ? searchQuery.error instanceof ApiError
+      ? searchQuery.error.message
+      : "Could not reach the server."
+    : null;
+  const addableResults = (results ?? []).filter(addable);
+  const showing = open && query.trim() !== "";
 
   const owner = decodeURIComponent(base.split("/").at(-1) ?? "");
   const following = useObservation({
@@ -193,18 +212,11 @@ export function IssueSearch({
   }
 
   return (
-    <div className="relative flex flex-col gap-2">
+    <div ref={container} className="relative flex flex-col gap-2">
       {following.isError && (
-        <ErrorBanner>
-          Lost track of the sizing run.{" "}
-          <button
-            onClick={() => {
-              void following.refetch();
-            }}
-          >
-            Try again
-          </button>
-        </ErrorBanner>
+        <RetryableError onRetry={() => void following.refetch()}>
+          Lost track of the sizing run.
+        </RetryableError>
       )}
       <div className="relative">
         <Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2" />
@@ -213,26 +225,63 @@ export function IssueSearch({
           aria-label="Find a ticket to size"
           placeholder="Find a ticket to size — key or words from its title"
           className="pl-9"
+          role="combobox"
+          aria-expanded={showing}
+          aria-controls="issue-results"
+          aria-autocomplete="list"
+          aria-activedescendant={
+            showing && addableResults[active] !== undefined
+              ? `issue-result-${addableResults[active].id}`
+              : undefined
+          }
           value={query}
           disabled={pending !== null}
-          onChange={(event) => setQuery(event.target.value)}
+          onFocus={() => setOpen(true)}
+          onClick={() => setOpen(true)}
+          onChange={(event) => {
+            setQuery(event.target.value);
+            setOpen(true);
+            setActive(0);
+            setMessage(null);
+          }}
           onKeyDown={(event) => {
-            if (event.key === "Escape") setQuery("");
-            const first = results?.find(addable);
-            if (event.key === "Enter" && first !== undefined) {
+            if (event.key === "Escape") {
+              if (showing) setOpen(false);
+              else setQuery("");
+              return;
+            }
+            if (event.key === "ArrowDown" || event.key === "ArrowUp") {
               event.preventDefault();
-              void pick(first);
+              const count = addableResults.length;
+              if (count === 0) return;
+              setOpen(true);
+              setActive(
+                (current) =>
+                  (current + (event.key === "ArrowDown" ? 1 : count - 1)) %
+                  count,
+              );
+              return;
+            }
+            const chosen = addableResults[active] ?? addableResults[0];
+            // Only a result in sight: closed, Enter would take one unseen.
+            if (event.key === "Enter" && showing && chosen !== undefined) {
+              event.preventDefault();
+              void pick(chosen);
             }
           }}
         />
       </div>
 
-      {query.trim() !== "" && (
+      {showing && (
         <div
           className="bg-popover absolute top-full right-0 left-0 z-20 mt-1 overflow-hidden rounded-md border shadow-md"
           data-testid="issue-results"
         >
-          {searching && results === null ? (
+          {searchError !== null ? (
+            <p className="text-destructive px-3 py-2.5 text-sm" role="alert">
+              {searchError}
+            </p>
+          ) : searching && results === null ? (
             <p className="text-muted-foreground flex items-center gap-2 px-3 py-2.5 text-sm">
               <Loader2 className="size-4 animate-spin" />
               Searching…
@@ -243,12 +292,19 @@ export function IssueSearch({
               below.
             </p>
           ) : (
-            <ul className="divide-y">
+            <ul className="divide-y" role="listbox" id="issue-results">
               {(results ?? []).map((ticket) => (
-                <li key={ticket.id}>
+                <li
+                  key={ticket.id}
+                  id={`issue-result-${ticket.id}`}
+                  role="option"
+                  aria-selected={addableResults[active]?.id === ticket.id}
+                  aria-disabled={!addable(ticket)}
+                >
                   <button
                     type="button"
-                    className="hover:bg-muted/50 flex w-full items-center gap-3 px-3 py-2 text-left text-sm disabled:pointer-events-none disabled:opacity-60"
+                    tabIndex={-1}
+                    className={`hover:bg-muted/50 flex w-full items-center gap-3 px-3 py-2 text-left text-sm disabled:pointer-events-none disabled:opacity-60 ${addableResults[active]?.id === ticket.id ? "bg-muted/50" : ""}`}
                     disabled={!addable(ticket)}
                     onClick={() => void pick(ticket)}
                   >
@@ -304,5 +360,3 @@ export function IssueSearch({
     </div>
   );
 }
-
-/** How many tickets the executor sizes at once. Mirrors the API's own. */

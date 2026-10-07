@@ -283,12 +283,21 @@ function scripted(turns: AgentTurn[]): AgentModel & {
   };
 }
 
+/**
+ * What the test runner reports for a hidden test that failed as one should:
+ * a test that ran and failed, which is not a file that never ran.
+ */
+const TAP_FAILED = {
+  exitCode: 1,
+  stdout:
+    "TAP version 13\nnot ok 1 - fails\n  failureType: 'testCodeFailure'\n1..1\n# tests 1\n# pass 0\n# fail 1\n",
+};
+
 /** A job whose hidden tests fail and everything else passes, unless told otherwise. */
 function fakeProvider(
   script: (argv: readonly string[]) => Partial<EvaluationExecResult> = (
     argv,
-  ) =>
-    argv.some((arg) => arg.startsWith("tests/private/")) ? { exitCode: 1 } : {},
+  ) => (argv.some((arg) => arg.startsWith("tests/private/")) ? TAP_FAILED : {}),
 ) {
   const commands: string[][] = [];
   let jobs = 0;

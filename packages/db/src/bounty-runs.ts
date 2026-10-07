@@ -23,6 +23,12 @@ import { generateId } from "./mapping.js";
 import { bountyRun, jiraBoard, bounty } from "./schema.js";
 import type { BountyRunRow } from "./schema.js";
 
+/**
+ * A run's creation time at the millisecond a cursor carries: Postgres keeps
+ * microseconds, and a cursor compared against them skips or repeats a row.
+ */
+const runCreatedMs = sql`date_trunc('milliseconds', ${bountyRun.createdAt})`;
+
 export interface CreateBountyRunInput {
   /**
    * The Jira board the run reads: required for a `backlog` or `issue` run,
@@ -86,7 +92,14 @@ export interface BountyRunStore {
   listForBoard(
     organizationId: string,
     boardId: string,
-    options?: { cursor?: string; limit?: number },
+    /**
+     * The page after `cursor`, the last row of the one before: its time and
+     * id, since a time alone skips every run made in the same millisecond.
+     */
+    options?: {
+      cursor?: { readonly createdAt: string; readonly id: string };
+      limit?: number;
+    },
   ): Promise<StoredBountyRun[]>;
   claim(
     organizationId: string,
@@ -482,10 +495,10 @@ export function createBountyRunStore(db: Database): BountyRunStore {
             eq(bountyRun.boardId, boardId),
             options.cursor === undefined
               ? sql`true`
-              : lt(bountyRun.createdAt, new Date(options.cursor)),
+              : sql`(${runCreatedMs}, ${bountyRun.id}) < (${options.cursor.createdAt}::timestamptz, ${options.cursor.id})`,
           ),
         )
-        .orderBy(desc(bountyRun.createdAt))
+        .orderBy(desc(runCreatedMs), desc(bountyRun.id))
         .limit(limit)) as BountyRunRow[];
       return rows.map(toDto);
     },

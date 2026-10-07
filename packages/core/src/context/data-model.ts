@@ -93,14 +93,25 @@ export interface DataEnum {
   readonly line: number;
 }
 
+/** One end of a relation. */
+export interface DataRelationEnd {
+  readonly entity: string;
+  readonly fields: readonly string[];
+  /**
+   * The table of the entity meant, as `mergeSources` resolved it. Names
+   * are only unique within one source: a Prisma `Account` and a Drizzle
+   * `Account` on another table are both kept, and only the table says which
+   * one a relation means. Absent on a recognizer's own relations and on
+   * documents written before it; those are matched by name.
+   */
+  readonly table?: string;
+}
+
 export interface DataRelation {
   readonly name: string | null;
   /** The entity holding the foreign key, and its fields. */
-  readonly from: {
-    readonly entity: string;
-    readonly fields: readonly string[];
-  };
-  readonly to: { readonly entity: string; readonly fields: readonly string[] };
+  readonly from: DataRelationEnd;
+  readonly to: DataRelationEnd;
   readonly cardinality: RelationCardinality;
   /** Lower-case, as SQL spells it: `cascade`, `set null`, `restrict`, `no action`, `set default`. */
   readonly onDelete: string | null;
@@ -174,9 +185,12 @@ export function normalizeSqlType(native: string): FieldType {
     .replace(/\(.*\)/, "")
     .replace(/\s+/g, " ")
     .replace(/^pg_catalog\./, "")
-    .trim();
+    .trim()
+    // MySQL's numeric attributes say how a number is stored or shown, not
+    // what it holds: `int(11) unsigned zerofill` is an integer.
+    .replace(/(?: (?:unsigned|signed|zerofill))+$/, "");
   if (
-    /^(text|varchar|character varying|char|character|bpchar|citext|name|nvarchar|nchar|tinytext|mediumtext|longtext|string|clob)$/.test(
+    /^(text|varchar|varchar2|character varying|char|character|bpchar|citext|name|nvarchar|nvarchar2|nchar|tinytext|mediumtext|longtext|string|clob)$/.test(
       type,
     )
   )
@@ -194,7 +208,7 @@ export function normalizeSqlType(native: string): FieldType {
   if (/^(boolean|bool|bit)$/.test(type)) return "boolean";
   if (type === "date") return "date";
   if (
-    /^(timestamp|timestamptz|datetime|timestamp (with|without) time zone)$/.test(
+    /^(timestamp|timestamptz|datetime|datetime2|smalldatetime|timestamp (with|without) time zone)$/.test(
       type,
     )
   )
@@ -275,30 +289,36 @@ export function mergeSources(recognized: readonly RecognizedSource[]): {
       shadowed,
     });
   }
-  const keptNames = new Set(
-    [...kept].map((entity) => `${entity.source}\n${entity.name}`),
-  );
-  // A relation's target may be a table a more authoritative source named
-  // differently; it points at the entity that was kept for that table.
-  const tableOf = new Map(
-    ordered.flatMap((source) =>
-      source.entities.map(
-        (entity) => [`${source.kind}\n${entity.name}`, entity.table] as const,
-      ),
-    ),
-  );
+  // A relation's names are resolved within the source that recorded it:
+  // two sources of one kind (two Prisma schemas) may each have a `User`.
+  // Each end is then pinned to the kept entity's table, since that is what
+  // tells two kept entities of one name apart. A relation's target may be a
+  // table a more authoritative source named differently; it points at the
+  // entity that was kept for that table.
   const relations = ordered
-    .flatMap((source) => source.relations)
-    .filter((relation) =>
-      keptNames.has(`${relation.source}\n${relation.from.entity}`),
-    )
-    .map((relation) => {
-      const table = tableOf.get(`${relation.source}\n${relation.to.entity}`);
-      const target =
-        table === undefined ? undefined : tables.get(table.toLowerCase());
-      return target === undefined || target.name === relation.to.entity
-        ? relation
-        : { ...relation, to: { ...relation.to, entity: target.name } };
+    .flatMap((source) => {
+      const byName = new Map(
+        source.entities.map((entity) => [entity.name, entity] as const),
+      );
+      return source.relations.flatMap((relation): DataRelation[] => {
+        const from = byName.get(relation.from.entity);
+        if (from === undefined || !kept.has(from)) return [];
+        const declared = byName.get(relation.to.entity);
+        const target =
+          declared === undefined
+            ? undefined
+            : tables.get(declared.table.toLowerCase());
+        return [
+          {
+            ...relation,
+            from: { ...relation.from, table: from.table },
+            to:
+              target === undefined
+                ? relation.to
+                : { ...relation.to, entity: target.name, table: target.table },
+          },
+        ];
+      });
     })
     .sort(compareRelations);
   return {
@@ -322,9 +342,48 @@ export function mergeSources(recognized: readonly RecognizedSource[]): {
 function compareRelations(a: DataRelation, b: DataRelation): number {
   return (
     compare(a.from.entity, b.from.entity) ||
+    compare(a.from.table ?? "", b.from.table ?? "") ||
     compare(a.from.fields.join(","), b.from.fields.join(",")) ||
     compare(a.to.entity, b.to.entity) ||
+    compare(a.to.table ?? "", b.to.table ?? "") ||
     compare(a.name ?? "", b.name ?? "")
+  );
+}
+
+/** What tells two entities apart: names repeat across sources, tables do not. */
+type EntityIdentity = Pick<DataEntity, "name" | "table" | "source">;
+
+/**
+ * Whether a relation end means this entity: by table when the end carries
+ * one, else by name within the relation's own source, the only place a
+ * name is unique.
+ */
+function endMeans(
+  end: DataRelationEnd,
+  source: DataSourceKind,
+  entity: EntityIdentity,
+): boolean {
+  if (end.entity !== entity.name) return false;
+  return end.table === undefined
+    ? entity.source === source
+    : end.table === entity.table;
+}
+
+/**
+ * The entity a relation end means: by table when it carries one, else the
+ * one of that name from the relation's source, else any of that name, for
+ * a target a more authoritative source defined.
+ */
+function entityAt<T extends EntityIdentity>(
+  entities: readonly T[],
+  end: DataRelationEnd,
+  source: DataSourceKind,
+): T | undefined {
+  return (
+    entities.find((entity) => endMeans(end, source, entity)) ??
+    (end.table === undefined
+      ? entities.find((entity) => entity.name === end.entity)
+      : undefined)
   );
 }
 
@@ -346,16 +405,22 @@ export function rankAccessors(
     );
 }
 
-/** The field names of an entity that are foreign keys. */
+/**
+ * The field names of an entity that are foreign keys. Given the entity
+ * rather than its name, only relations from that very entity count, not
+ * from another source's entity of the same name.
+ */
 export function foreignKeyFields(
   model: Pick<DataModel, "relations">,
-  entity: string,
+  entity: string | Pick<DataEntity, "name" | "table" | "source">,
 ): Set<string> {
   return new Set(
     model.relations
       .filter(
         (relation) =>
-          relation.from.entity === entity &&
+          (typeof entity === "string"
+            ? relation.from.entity === entity
+            : endMeans(relation.from, relation.source, entity)) &&
           relation.cardinality !== "many-to-many",
       )
       .flatMap((relation) => relation.from.fields),
@@ -372,20 +437,23 @@ const mermaidText = (text: string) => text.replace(/"/g, "'");
 export function renderErdMermaid(
   model: Pick<DataModel, "entities" | "relations">,
 ): string {
-  // Two names that sanitise alike keep apart with a numeric suffix.
-  const names = new Map<string, string>();
+  // Two names that sanitise alike, or two entities of one name from
+  // different sources, keep apart with a numeric suffix. Keyed by the
+  // entity itself: keyed by name, both would draw under one box and
+  // Mermaid would merge them.
+  const names = new Map<DataEntity, string>();
   const taken = new Set<string>();
   for (const entity of model.entities) {
     const base = mermaidName(entity.name) || "entity";
     let name = base;
     for (let index = 2; taken.has(name); index += 1) name = `${base}_${index}`;
     taken.add(name);
-    names.set(entity.name, name);
+    names.set(entity, name);
   }
   const lines = ["erDiagram"];
   for (const entity of model.entities) {
-    const foreign = foreignKeyFields(model, entity.name);
-    lines.push(`  ${names.get(entity.name) ?? entity.name} {`);
+    const foreign = foreignKeyFields(model, entity);
+    lines.push(`  ${names.get(entity) ?? entity.name} {`);
     for (const field of entity.fields) {
       const keys = [
         ...(field.primaryKey ? ["PK"] : []),
@@ -400,12 +468,14 @@ export function renderErdMermaid(
     lines.push("  }");
   }
   for (const relation of model.relations) {
-    const from = names.get(relation.from.entity);
-    const to = names.get(relation.to.entity);
+    const entity = entityAt(model.entities, relation.from, relation.source);
+    const target = entityAt(model.entities, relation.to, relation.source);
+    if (entity === undefined || target === undefined) continue;
+    const from = names.get(entity);
+    const to = names.get(target);
     if (from === undefined || to === undefined) continue;
-    const entity = model.entities.find((e) => e.name === relation.from.entity);
     const optional = relation.from.fields.some(
-      (name) => entity?.fields.find((field) => field.name === name)?.nullable,
+      (name) => entity.fields.find((field) => field.name === name)?.nullable,
     );
     const arrow =
       relation.cardinality === "many-to-many"
@@ -520,7 +590,7 @@ export function dataModelSummary(model: DataModel): DataModelSummary {
       omissions: model.omissions.length,
     },
     entities: cut(model.entities, limits.entities).map((entity) => {
-      const foreign = foreignKeyFields(model, entity.name);
+      const foreign = foreignKeyFields(model, entity);
       return {
         name: entity.name,
         table: entity.table,

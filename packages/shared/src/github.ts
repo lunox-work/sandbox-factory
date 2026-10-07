@@ -452,7 +452,11 @@ export const repoSnapshotDtoSchema = z.strictObject({
   treeTruncated: z.boolean(),
   fileCount: z.number().int().nonnegative(),
   totalBytes: z.number().int().nonnegative(),
-  /** Bytes per language, as GitHub counts them. */
+  /**
+   * Bytes per language, as GitHub counted them when the snapshot was taken.
+   * GitHub counts only the default branch, so these describe that branch
+   * then, not necessarily `commitSha`.
+   */
   languages: z.record(z.string(), z.number()),
   createdAt: z.string(),
 });
@@ -475,9 +479,48 @@ export const repoBranchListSchema = z.object({
   truncated: z.boolean(),
 });
 
+/** Characters Git refuses anywhere in a ref name, beside the controls. */
+const REF_FORBIDDEN = /[ ~^:?*[\\]/;
+
+/**
+ * Whether `name` is a branch name Git itself would accept, by the rules of
+ * `git check-ref-format --branch`.
+ *
+ * Checked because the name does not stay a name: the API puts it into a
+ * GitHub REST path (`.../git/ref/heads/<branch>`), keeping its slashes, so a
+ * name of `../../..` would walk that path up to some other endpoint and read
+ * it with the repository's token. Every name Git refuses is refused here,
+ * which takes `..` with it; no real branch is lost, because Git could not
+ * have created one.
+ */
+function isBranchName(name: string): boolean {
+  if (
+    name === "@" ||
+    name.startsWith("-") ||
+    name.endsWith(".") ||
+    name.includes("..") ||
+    name.includes("@{") ||
+    REF_FORBIDDEN.test(name)
+  ) {
+    return false;
+  }
+  for (const character of name) {
+    const code = character.charCodeAt(0);
+    if (code < 0x20 || code === 0x7f) return false;
+  }
+  // A leading, trailing or doubled slash is an empty component.
+  return name
+    .split("/")
+    .every(
+      (part) => part !== "" && !part.startsWith(".") && !part.endsWith(".lock"),
+    );
+}
+
 /** `POST .../github/repositories/:id/snapshots`: take a branch's head. */
 export const pullSnapshotRequestSchema = z.strictObject({
-  branch: z.string().trim().min(1).max(255),
+  branch: z.string().trim().min(1).max(255).refine(isBranchName, {
+    message: "Not a branch name Git would accept.",
+  }),
 });
 
 /**

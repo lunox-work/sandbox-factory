@@ -37,7 +37,7 @@ export type Drawing =
   | { state: "failed"; reason: string };
 
 /** A diagram's text, drawn; drawn again when the text changes. */
-export function useDiagram(kind: DiagramKind, source: string): Drawing {
+function useDiagram(kind: DiagramKind, source: string): Drawing {
   const [result, setResult] = useState<{
     kind: DiagramKind;
     source: string;
@@ -104,7 +104,7 @@ const clampScale = (scale: number) =>
  * pointer, as a map is. The keyboard does the same with the arrows, `+`,
  * `-` and `0`.
  */
-export function ZoomCanvas({
+function ZoomCanvas({
   width,
   height,
   label,
@@ -253,7 +253,7 @@ export function ZoomCanvas({
   };
 
   const control =
-    "flex h-6 min-w-6 items-center justify-center rounded-sm px-1 text-(--wb-muted) hover:bg-(--wb-hover) hover:text-(--wb-foreground) focus-visible:outline-1 focus-visible:-outline-offset-1 focus-visible:outline-(--wb-accent)";
+    "flex h-6 min-w-6 items-center justify-center rounded-[4px] px-1 text-(--wb-muted) hover:bg-(--wb-hover) hover:text-(--wb-foreground) focus-visible:outline-1 focus-visible:-outline-offset-1 focus-visible:outline-(--wb-accent)";
   return (
     <div className="relative flex min-h-0 min-w-0 flex-1">
       <div
@@ -298,10 +298,8 @@ export function ZoomCanvas({
         >
           <ZoomOut aria-hidden="true" className="size-3.5" />
         </button>
-        <span
-          aria-live="polite"
-          className="w-11 text-center text-(--wb-muted) tabular-nums"
-        >
+        {/* Not a live region: a wheel's every tick would be announced. */}
+        <span className="w-11 text-center text-(--wb-muted) tabular-nums">
           {Math.round(view.scale * 100)}%
         </span>
         <button
@@ -435,7 +433,7 @@ export function DiagramFigure({
       </div>
     );
   const control =
-    "flex h-6 items-center gap-1 rounded-sm px-1.5 text-xs text-(--wb-muted) hover:bg-(--wb-hover) hover:text-(--wb-foreground) focus-visible:outline-1 focus-visible:-outline-offset-1 focus-visible:outline-(--wb-accent)";
+    "flex h-6 items-center gap-1 rounded-[4px] px-1.5 text-xs text-(--wb-muted) hover:bg-(--wb-hover) hover:text-(--wb-foreground) focus-visible:outline-1 focus-visible:-outline-offset-1 focus-visible:outline-(--wb-accent)";
   return (
     <figure
       aria-label={name}
@@ -475,18 +473,29 @@ export function DiagramFigure({
       ) : showSource ? (
         <div className="[&>pre]:my-0">{written}</div>
       ) : (
-        <button
-          type="button"
+        /*
+          A click anywhere opens it full size, a mouse's shortcut; the
+          toolbar's button is the way for everyone else. Not a button
+          itself: a Graphviz drawing has links in it, and links inside a
+          button are not reachable as links.
+        */
+        <div
           title="Open full size"
-          aria-label={`Open the ${name} full size`}
-          onClick={() => setExpanded(true)}
-          className="block w-full cursor-zoom-in overflow-hidden px-4 py-3 text-left focus-visible:outline-1 focus-visible:-outline-offset-1 focus-visible:outline-(--wb-accent)"
+          onClick={(event) => {
+            if (
+              event.target instanceof Element &&
+              event.target.closest("a") !== null
+            )
+              return;
+            setExpanded(true);
+          }}
+          className="block w-full cursor-zoom-in overflow-hidden px-4 py-3 text-left"
         >
           <Svg
             svg={drawing.svg}
             className="mx-auto [&>svg]:h-auto [&>svg]:max-w-full"
           />
-        </button>
+        </div>
       )}
       {drawing.state === "drawn" && (
         <Dialog open={expanded} onOpenChange={setExpanded}>

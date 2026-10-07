@@ -185,3 +185,55 @@ test("an async refusal keeps the question open and allows a retry", async () => 
   });
   expect(onConfirm).toHaveBeenCalledTimes(2);
 });
+
+// ---- the label while it works ----------------------------------------------
+
+test("the confirm says the caller's pending label while it works", async () => {
+  let finish: () => void = () => undefined;
+  const onConfirm = vi.fn(
+    () => new Promise<void>((resolve) => (finish = resolve)),
+  );
+  renderDialog({
+    confirmLabel: "Remove scenario",
+    pendingLabel: "Removing…",
+    onConfirm,
+  });
+
+  await userEvent.click(screen.getByRole("button", { name: "Delete it" }));
+  const dialog = await screen.findByRole("alertdialog");
+  await userEvent.click(
+    within(dialog).getByRole("button", { name: "Remove scenario" }),
+  );
+
+  // Never the label bent into "-ing" by rule: "Remove scenarioing…".
+  expect(
+    within(dialog).getByRole("button", { name: "Removing…" }),
+  ).toBeDefined();
+  expect(within(dialog).queryByText(/scenarioing/)).toBeNull();
+  finish();
+  await waitFor(() => {
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+  });
+});
+
+test("without a pending label the confirm says a neutral word", async () => {
+  let finish: () => void = () => undefined;
+  const onConfirm = vi.fn(
+    () => new Promise<void>((resolve) => (finish = resolve)),
+  );
+  renderDialog({ confirmLabel: "Link issue", onConfirm });
+
+  await userEvent.click(screen.getByRole("button", { name: "Delete it" }));
+  const dialog = await screen.findByRole("alertdialog");
+  await userEvent.click(
+    within(dialog).getByRole("button", { name: "Link issue" }),
+  );
+
+  expect(
+    within(dialog).getByRole("button", { name: "Working…" }),
+  ).toBeDefined();
+  finish();
+  await waitFor(() => {
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+  });
+});

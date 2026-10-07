@@ -366,7 +366,7 @@ test("gets and lists owner-scoped runs with a bounded page", async () => {
   const store = createBountyRunStore(fake.db);
   assert.equal((await store.get("org_1", "brn_1"))?.id, "brn_1");
   const listed = await store.listForBoard("org_1", "jrb_1", {
-    cursor: "2026-09-23T00:00:00Z",
+    cursor: { createdAt: "2026-09-23T00:00:00.000Z", id: "brn_9" },
     limit: 500,
   });
   assert.equal(listed.length, 1);

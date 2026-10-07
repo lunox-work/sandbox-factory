@@ -1,13 +1,9 @@
+import type { PricedComplexity } from "sandbox-factory";
+
 import type { PricingRouteOptions } from "./options.js";
-export type { PricingRouteOptions } from "./options.js";
-export { sizeIfNeverSized, startRun, startBountyRun } from "./start-run.js";
-export type { StartRunResult, StartBountyRunResult } from "./start-run.js";
-
-import { type PricedComplexity } from "sandbox-factory";
-
 import { freshProposal } from "./review.js";
+import { reviewOptions, siteOf, writebackBusy } from "./review-deps.js";
 
-import { reviewOptions, siteOf } from "./review-deps.js";
 function outcome<T extends object>(
   body: T,
   kind: "success" | "not-found" | "conflict" = "success",
@@ -35,6 +31,28 @@ export async function approveProposal(
         code: "proposal_changed",
         error: "The proposal changed. Reload it before continuing.",
         proposal,
+      },
+      "conflict",
+    );
+  }
+  /*
+    Not over a Jira update still unresolved: a withdrawal of the last
+    approval, queued or sent without an answer. The approval's own comment
+    would race it to the bounty, and a running one holds the proposal's
+    only delivery slot (`bounty_writeback_proposal_running_unique`), so the
+    approval's write could not even be claimed. Unapprove, re-price and
+    remove wait the same way.
+  */
+  if (
+    options.writebacks !== undefined &&
+    writebackBusy(
+      await options.writebacks.listForProposal(organizationId, proposal.id),
+    )
+  ) {
+    return outcome(
+      {
+        code: "writeback_busy",
+        error: "Resolve the Jira update before approving.",
       },
       "conflict",
     );
@@ -128,13 +146,16 @@ export async function approveProposal(
         proposalUrl,
       },
     );
+    if (decision.status === "not-found") {
+      return outcome({ error: "Not found" }, "not-found");
+    }
     if (decision.status !== "created") {
       return outcome(
         {
           code: "proposal_changed",
           error: "The proposal changed. Reload it before continuing.",
         },
-        decision.status === "not-found" ? "not-found" : "conflict",
+        "conflict",
       );
     }
     options.delivery.start(organizationId, decision.operation.id);
@@ -156,6 +177,7 @@ export async function approveProposal(
     return outcome({ error: "Not found" }, "not-found");
   return outcome(
     {
+      code: "proposal_changed",
       error: "The proposal changed. Reload it before continuing.",
       proposal: mutation.current,
     },

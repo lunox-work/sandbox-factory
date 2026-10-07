@@ -20,7 +20,7 @@ export function isFeature(path: string): boolean {
 }
 
 /** A file's folder, `""` at the top. */
-export function folderOf(path: string): string {
+function folderOf(path: string): string {
   return path.slice(0, Math.max(0, path.lastIndexOf("/")));
 }
 

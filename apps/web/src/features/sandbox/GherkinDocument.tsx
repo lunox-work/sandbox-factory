@@ -80,7 +80,7 @@ function Table({ rows }: { rows: string[][] }) {
   const [head, ...body] = rows;
   if (head === undefined) return null;
   return (
-    <div className="overflow-x-auto rounded-md border border-(--wb-border)">
+    <div className="overflow-x-auto rounded-[4px] border border-(--wb-border)">
       <table className="w-full border-collapse font-(family-name:--wb-font-code) text-xs">
         <thead>
           <tr className="bg-white/[0.04] text-(--wb-muted)">
@@ -125,7 +125,7 @@ function StepRow({ step }: { step: Step }) {
         <div className="col-start-2 mt-2 mb-1 flex flex-col gap-2">
           {step.table !== undefined && <Table rows={step.table} />}
           {step.docString !== undefined && (
-            <pre className="overflow-x-auto rounded-md border border-(--wb-border) bg-(--wb-editor) px-3 py-2 font-(family-name:--wb-font-code) text-xs text-(--wb-code)">
+            <pre className="overflow-x-auto rounded-[4px] border border-(--wb-border) bg-(--wb-editor) px-3 py-2 font-(family-name:--wb-font-code) text-xs text-(--wb-code)">
               {step.docString}
             </pre>
           )}
@@ -139,7 +139,7 @@ function Tags({ tags }: { tags: readonly string[] }) {
   return tags.map((tag) => (
     <span
       key={tag}
-      className="rounded-sm border border-(--wb-input-border) px-1.5 text-[11px] leading-[18px] text-[#9cdcfe]"
+      className="rounded-[4px] border border-(--wb-input-border) px-1.5 text-[11px] leading-[18px] text-[#9cdcfe]"
     >
       {tag}
     </span>
@@ -188,7 +188,7 @@ export function ScenarioCard({
             {title}
           </h2>
           {scenario.kind === "outline" && (
-            <span className="rounded-sm border border-[#c586c0]/40 px-1.5 text-[11px] text-[#c586c0]">
+            <span className="rounded-[4px] border border-[#c586c0]/40 px-1.5 text-[11px] text-[#c586c0]">
               Outline
             </span>
           )}
@@ -198,7 +198,7 @@ export function ScenarioCard({
             <button
               type="button"
               onClick={() => onReveal(scenario.line)}
-              className="ml-auto flex items-center gap-0.5 rounded-sm px-1 text-xs text-(--wb-muted) opacity-0 group-hover/card:opacity-100 hover:text-(--wb-strong) focus-visible:opacity-100 coarse:opacity-100"
+              className="ml-auto flex items-center gap-0.5 rounded-[4px] px-1 text-xs text-(--wb-muted) opacity-0 group-hover/card:opacity-100 hover:text-(--wb-strong) focus-visible:opacity-100 coarse:opacity-100"
             >
               Line {scenario.line}
               <ArrowUpRight aria-hidden="true" className="size-3.5" />

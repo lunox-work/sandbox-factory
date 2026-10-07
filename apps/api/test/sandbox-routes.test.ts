@@ -640,13 +640,18 @@ function fixture(
     now: () => new Date(stamp),
   } as unknown as SandboxRouteOptions;
   const app = new Hono<{ Variables: AuthVariables }>();
-  app.use("*", async (c, next) => {
+  // As `requireMembership` does: the owner is the path's, so a request for
+  // another workspace reads that workspace's rows, of which there are none.
+  app.use("/api/v1/orgs/:orgId/*", async (c, next) => {
     c.set("user", {
       id: "user_1",
       email: "u@example.test",
       name: "User",
     } as never);
-    c.set("member", { role, organizationId: "org_1" } as never);
+    c.set("member", {
+      role,
+      organizationId: c.req.param("orgId"),
+    } as never);
     await next();
   });
   mountSandboxRoutes(app, options);
@@ -1654,7 +1659,9 @@ function starterFixture(
     /** Approved unless said: a draft proposal is not generated from. */
     proposalStatus: "proposed" | "approved";
     limit: boolean;
-    created: "ok" | "source_linked" | "not-found";
+    created: "ok" | "source_linked" | "not-found" | "starter_in_progress";
+    /** The newest version's starter run, still under way. */
+    inFlight: boolean;
   }> = {},
 ) {
   const enqueued: { snapshotId: string | null; input: unknown }[] = [];
@@ -1688,6 +1695,8 @@ function starterFixture(
             }
           : { ok: false, reason: result };
       },
+      listVersions: async () =>
+        overrides.inFlight === true ? [stored.version] : [],
       getVersion: async (owner: string, id: string) =>
         owner === "org_1" && id === "sbv_gen" ? stored : null,
       updateDraft: async (_owner: string, _id: string, patch: unknown) => {
@@ -1701,7 +1710,10 @@ function starterFixture(
       }),
     },
     runs: {
-      get: async () => null,
+      get: async (_owner: string, id: string) =>
+        overrides.inFlight === true && id === starterRun.id
+          ? { ...starterRun, status: "running" }
+          : null,
       enqueue: async (
         _owner: string,
         snapshotId: string | null,
@@ -1784,9 +1796,14 @@ function starterFixture(
     now: () => new Date(stamp),
   } as unknown as SandboxRouteOptions;
   const app = new Hono<{ Variables: AuthVariables }>();
-  app.use("*", async (c, next) => {
+  // As `requireMembership` does: the owner is the path's, so a request for
+  // another workspace reads that workspace's rows, of which there are none.
+  app.use("/api/v1/orgs/:orgId/*", async (c, next) => {
     c.set("user", { id: "user_1" } as never);
-    c.set("member", { role, organizationId: "org_1" } as never);
+    c.set("member", {
+      role,
+      organizationId: c.req.param("orgId"),
+    } as never);
     await next();
   });
   mountSandboxRoutes(app, options);
@@ -1954,6 +1971,15 @@ test("generating is refused for members, a linked sandbox, an off-Node stack, an
       "source_linked",
     ],
     [starterFixture("owner", { created: "not-found" }), 404, null],
+    // One version is generated at a time: a second Generate, a double
+    // click, is refused while the first is under way, before or under the
+    // store's lock.
+    [starterFixture("owner", { inFlight: true }), 409, "starter_in_progress"],
+    [
+      starterFixture("owner", { created: "starter_in_progress" }),
+      409,
+      "starter_in_progress",
+    ],
   ];
   for (const [f, status, code] of cases) {
     const response = await f.request("POST", "/sbx_1/starter");
@@ -1963,6 +1989,7 @@ test("generating is refused for members, a linked sandbox, an off-Node stack, an
   }
   // Nothing was queued for a refusal before the run.
   assert.equal(cases[3]?.[0].enqueued.length, 0);
+  assert.equal(cases[11]?.[0].enqueued.length, 0);
 });
 
 test("a generated version changes its listing, but not its transform or build, and has nothing to replay", async () => {

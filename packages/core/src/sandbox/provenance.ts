@@ -42,6 +42,13 @@ export const DEPENDENCY_RESOLUTIONS = [
 ] as const;
 export type DependencyResolution = (typeof DEPENDENCY_RESOLUTIONS)[number];
 
+/**
+ * A version or range the registry answers: semver, a range of them, or a
+ * dist-tag. No protocol (`git+https:`, `file:`, `npm:`) and no path or
+ * `owner/repo` shorthand, which is what a `:` or a `/` would make it.
+ */
+const REGISTRY_RANGE = /^[0-9A-Za-z.\-+^~<>=|* ]+$/;
+
 export interface ResolvedDependency {
   /** A package name, or a repository path for a cut module. */
   readonly name: string;
@@ -156,6 +163,28 @@ export function resolveScope(input: ScopeInput): ScopeRecord {
       blockers.push({
         code: "dependency_unresolved",
         detail: `${item.name} has no pinned version.`,
+      });
+      continue;
+    }
+    // Only what the registry resolves is installed. The version is the
+    // repository's own text, and npm also takes a git URL, a tarball URL,
+    // `file:` or `link:` to a path outside the job, or an alias to another
+    // package, each fetched or linked by the install.
+    if (
+      item.version !== null &&
+      resolution === "approved-package" &&
+      !REGISTRY_RANGE.test(item.version)
+    ) {
+      dependencies.push({
+        name: item.name,
+        kind: "package",
+        version: item.version,
+        resolution: "unresolved",
+        detail: "Not a registry version: a URL, a path or an alias.",
+      });
+      blockers.push({
+        code: "dependency_unresolved",
+        detail: `${item.name} is pinned to ${item.version}, which is not a registry version.`,
       });
       continue;
     }

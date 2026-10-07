@@ -60,9 +60,9 @@ import { installationClient } from "./credential.js";
 import { readStack } from "./stack.js";
 
 /** Unreferenced snapshots kept per repository; older ones are pruned. */
-export const SNAPSHOT_RETAIN = 20;
+const SNAPSHOT_RETAIN = 20;
 /** Snapshots taken at once, across every repository. */
-export const SNAPSHOT_CONCURRENCY = 2;
+const SNAPSHOT_CONCURRENCY = 2;
 
 /** Where a snapshot's file list lives in the private bucket. */
 export function treeKey(
@@ -198,6 +198,12 @@ export class GithubSnapshotter {
       return "exists";
     }
 
+    // The tree is the commit's; the languages are not. GitHub's languages
+    // endpoint takes no ref and answers for the default branch as it is
+    // now, so a snapshot of another branch, or of a head the branch has
+    // since left, records the default branch's totals at the time it was
+    // taken. Counting them from the tree would need linguist's rules; the
+    // field is documented as what it is instead.
     const [tree, languages] = await Promise.all([
       client.tree(repo.fullName, commitSha, { recursive: true }),
       client.languages(repo.fullName),

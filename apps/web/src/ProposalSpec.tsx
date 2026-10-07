@@ -82,7 +82,10 @@ import {
 } from "./SpecChanges";
 
 /** How a scenario that the first draft did not write came to be there. */
-const ORIGIN_LABEL: Record<Exclude<Scenario["origin"], "draft">, string> = {
+export const ORIGIN_LABEL: Record<
+  Exclude<Scenario["origin"], "draft">,
+  string
+> = {
   expansion: "Added",
   reviewer: "Reviewer",
 };
@@ -105,7 +108,7 @@ const WEIGHT_LABEL: Readonly<Record<string, string>> = Object.fromEntries(
 );
 
 /** What one weight counts for, or undefined for a weight the rubric dropped. */
-function pointsFor(
+export function pointsFor(
   weight: ScenarioWeight,
   weightPoints: WeightPoints,
 ): number | undefined {
@@ -360,7 +363,7 @@ export interface SinceSized {
  * them. Some of its scenarios are marked where they stand; the other side's
  * scenarios, which it does not have, follow under their kind.
  */
-interface SpecDiff {
+export interface SpecDiff {
   /** Scenarios on show, drawn as added. */
   readonly added: ReadonlySet<string>;
   /** Scenarios on show, drawn as removed. */
@@ -401,46 +404,44 @@ function nextRevisionDiff(shown: BountySpecDto, next: BountySpecDto): SpecDiff {
   };
 }
 
-export function ProposalSpec({
+/**
+ * The spec on show: the current revision's read, or an earlier one's when
+ * one is chosen, with the changes it is marked with.
+ */
+export interface ShownSpec {
+  readonly read: SpecRead;
+  /** The spec on show, once it is read; null until then or when none. */
+  readonly spec: BountySpecDto | null;
+  /** The revision the proposal points at, which the price goes with. */
+  readonly current: number | null;
+  /** An earlier revision on show; null for the current one. */
+  readonly viewing: number | null;
+  readonly onView: (revision: number | null) => void;
+  /** Every revision, when there is more than one; else empty. */
+  readonly revisions: readonly BountySpecRevisionDto[];
+  readonly diff: SpecDiff | undefined;
+  /** Reads the revision on show again, after it failed. */
+  readonly retry: () => void;
+}
+
+/**
+ * Which revision of the spec is on show, read, and marked: the current one
+ * with what changed since sizing, an earlier one with what the revision
+ * after it changed.
+ */
+export function useShownSpec({
   read,
   onRetry,
-  canAnalyze,
-  weightPoints = WEIGHT_POINTS,
-  sizeReason,
   history,
-  changes,
   sinceSized,
   view,
 }: {
   read: SpecRead;
   onRetry: () => void;
-  /** Whether the reader can have the bounty analyzed again. */
-  canAnalyze: boolean;
-  /**
-   * What each weight counts for: the settings the proposal's step was
-   * computed with, so the totals here are the ones the size counted.
-   */
-  weightPoints?: WeightPoints;
-  /** Why the proposal is its size, shown above the scenarios. */
-  sizeReason?: SizeReason;
-  /** Where to read earlier revisions; without it there is no picker. */
-  history?: SpecHistory;
-  /**
-   * The controls that change the spec. Absent for a reader who may not, and
-   * for a proposal whose spec cannot be changed (approved, or with no step).
-   */
-  changes?: SpecChanges;
-  /**
-   * Marked on the current revision. An earlier one is marked with what the
-   * revision after it changed instead.
-   */
-  sinceSized?: SinceSized;
-  /**
-   * The revision on show, chosen above the spec, as inside a bounty: the
-   * spec follows it and has no picker of its own.
-   */
-  view?: RevisionView;
-}) {
+  history?: SpecHistory | undefined;
+  sinceSized?: SinceSized | undefined;
+  view?: RevisionView | undefined;
+}): ShownSpec {
   const current = history?.specRevision ?? null;
   // The revision on show, when it is not the current one.
   const own = useRevisionView(current);
@@ -485,6 +486,68 @@ export function ProposalSpec({
       : spec === null || nextSpec === null
         ? undefined
         : nextRevisionDiff(spec, nextSpec);
+  return {
+    read: shown,
+    spec,
+    current,
+    viewing,
+    onView: setViewing,
+    revisions,
+    diff,
+    retry: viewing === null ? onRetry : earlier.retry,
+  };
+}
+
+export function ProposalSpec({
+  read,
+  onRetry,
+  canAnalyze,
+  weightPoints = WEIGHT_POINTS,
+  sizeReason,
+  history,
+  changes,
+  sinceSized,
+  view,
+}: {
+  read: SpecRead;
+  onRetry: () => void;
+  /** Whether the reader can have the bounty analyzed again. */
+  canAnalyze: boolean;
+  /**
+   * What each weight counts for: the settings the proposal's step was
+   * computed with, so the totals here are the ones the size counted.
+   */
+  weightPoints?: WeightPoints;
+  /** Why the proposal is its size, shown above the scenarios. */
+  sizeReason?: SizeReason;
+  /** Where to read earlier revisions; without it there is no picker. */
+  history?: SpecHistory;
+  /**
+   * The controls that change the spec. Absent for a reader who may not, and
+   * for a proposal whose spec cannot be changed (approved, or with no step).
+   */
+  changes?: SpecChanges;
+  /**
+   * Marked on the current revision. An earlier one is marked with what the
+   * revision after it changed instead.
+   */
+  sinceSized?: SinceSized;
+  /**
+   * The revision on show, chosen above the spec, as inside a bounty: the
+   * spec follows it and has no picker of its own.
+   */
+  view?: RevisionView;
+}) {
+  const {
+    read: shown,
+    spec,
+    current,
+    viewing,
+    onView: setViewing,
+    revisions,
+    diff,
+    retry,
+  } = useShownSpec({ read, onRetry, history, sinceSized, view });
 
   return (
     <div data-testid="proposal-spec" className="flex flex-col gap-4">
@@ -494,12 +557,7 @@ export function ProposalSpec({
       ) : shown.state === "failed" ? (
         <div className="flex flex-wrap items-center gap-3">
           <p className="text-sm">The scenarios could not be loaded.</p>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={viewing === null ? onRetry : earlier.retry}
-          >
+          <Button type="button" variant="outline" size="sm" onClick={retry}>
             <RefreshCw />
             Try again
           </Button>
@@ -985,7 +1043,7 @@ const GROUP_HEAD =
 const STEPS_INSET = "pr-5 pl-[calc(1.25rem+0.875rem+0.5rem)]";
 
 /** Each kind's mark beside its name: green for the path that works, and on. */
-const KIND_TONE: Readonly<Record<string, string>> = {
+export const KIND_TONE: Readonly<Record<string, string>> = {
   happy: "bg-emerald-500",
   boundary: "bg-amber-500",
   unhappy: "bg-rose-500",
@@ -996,13 +1054,13 @@ const KIND_TONE: Readonly<Record<string, string>> = {
 };
 
 /** A diff line's tint and ink, as a change tracker draws them. */
-const DIFF_TONE = {
+export const DIFF_TONE = {
   added: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
   removed: "bg-red-500/10 text-red-700 dark:text-red-400",
 } as const;
 
 /** A diff line's "+" or "−", in the gutter its line reaches into. */
-function DiffMark({ change }: { change: keyof typeof DIFF_TONE }) {
+export function DiffMark({ change }: { change: keyof typeof DIFF_TONE }) {
   return (
     <span
       aria-hidden="true"
@@ -1053,7 +1111,7 @@ function RemovedRow({
 }
 
 /** Gherkin steps, the keywords in a column so the sentences line up. */
-function Steps({
+export function Steps({
   steps,
 }: {
   steps: readonly { readonly keyword: string; readonly text: string }[];

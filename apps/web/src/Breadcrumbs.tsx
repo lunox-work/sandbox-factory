@@ -118,6 +118,8 @@ export function trailFor(
   switch (screen) {
     case "home":
       return [];
+    case "not-found":
+      return [HOME, { label: "Page not found" }];
     case "account":
       return [HOME, { label: "Account" }];
     case "organizations":
@@ -330,6 +332,8 @@ export function Breadcrumbs({
                 */
                 <span
                   aria-current="page"
+                  // Whole on hover: a long bounty or board name is cut here.
+                  title={crumb.label}
                   className="text-foreground truncate font-medium"
                 >
                   {crumb.label}

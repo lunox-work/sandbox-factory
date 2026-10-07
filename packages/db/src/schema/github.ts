@@ -8,6 +8,7 @@
  * person's user-to-server grant, encrypted as Jira's tokens are.
  */
 
+import { sql } from "drizzle-orm";
 import {
   boolean,
   foreignKey,
@@ -186,6 +187,11 @@ export const githubRepo = pgTable(
       table.externalId,
     ),
     index("github_repo_organization_id_idx").on(table.organizationId),
+    // The sync sweep's question, the never-synced and longest-waiting
+    // first, answered from the index rather than a scan and a sort.
+    index("github_repo_due_for_sync_idx")
+      .on(sql`${table.lastSyncedAt} asc nulls first`)
+      .where(sql`${table.syncStatus} <> 'gone'`),
     foreignKey({
       name: "github_repo_connection_owner_fk",
       columns: [table.connectionId, table.organizationId],

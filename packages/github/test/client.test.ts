@@ -209,7 +209,11 @@ test("branches are listed a page at a time, each with its head", async () => {
       protected: false,
     }));
   const { client, fetch } = clientWith((request) =>
-    json(request.url.endsWith("page=1") ? page(0, 100) : page(100, 2)),
+    request.url.endsWith("page=2")
+      ? json(page(100, 2))
+      : json(page(0, 100), 200, {
+          link: '<https://api.github.com/repos/acme/widgets/branches?per_page=100&page=2>; rel="next"',
+        }),
   );
 
   const listed = await client.branches("acme/widgets");
@@ -223,24 +227,59 @@ test("branches are listed a page at a time, each with its head", async () => {
   assert.deepEqual(
     fetch.calls.map((call) => call.url),
     [
-      "https://api.github.com/repos/acme/widgets/branches?per_page=100&page=1",
+      "https://api.github.com/repos/acme/widgets/branches?per_page=100",
       "https://api.github.com/repos/acme/widgets/branches?per_page=100&page=2",
     ],
   );
 });
 
-test("branches past the last page read are cut, and said to be", async () => {
+/** A full page of branches, with a next link unless it is the `last`. */
+function branchPages(last: number) {
   const full = Array.from({ length: 100 }, (_, index) => ({
     name: `b${index}`,
     commit: { sha: "a".repeat(40) },
   }));
-  const { client, fetch } = clientWith(() => json(full));
+  return (request: Recorded) => {
+    const page = Number(new URL(request.url).searchParams.get("page") ?? "1");
+    return page >= last
+      ? json(full)
+      : json(full, 200, {
+          link: `<https://api.github.com/repos/acme/widgets/branches?per_page=100&page=${page + 1}>; rel="next"`,
+        });
+  };
+}
+
+test("branches past the last page read are cut, and said to be", async () => {
+  const { client, fetch } = clientWith(branchPages(3));
 
   const listed = await client.branches("acme/widgets", 2);
 
   assert.equal(listed.truncated, true);
   assert.equal(listed.branches.length, 200);
   assert.equal(fetch.calls.length, 2);
+});
+
+test("exactly as many branches as are read is not cut, as GitHub links no next page", async () => {
+  const { client, fetch } = clientWith(branchPages(3));
+
+  const listed = await client.branches("acme/widgets");
+
+  assert.equal(listed.truncated, false);
+  assert.equal(listed.branches.length, 300);
+  assert.equal(fetch.calls.length, 3);
+});
+
+test("a dot segment in a branch or a sha is refused before anything is sent", async () => {
+  const { client, fetch } = clientWith(() =>
+    json({ message: "Not Found" }, 404),
+  );
+
+  await assert.rejects(client.branchHead("acme/widgets", "../../../user"));
+  await assert.rejects(client.branchHead("acme/widgets", "a/./b"));
+  await assert.rejects(client.tree("acme/widgets", ".."));
+  await assert.rejects(client.blobText("acme/widgets", "."));
+  await assert.rejects(client.branches("acme/.."));
+  assert.equal(fetch.calls.length, 0);
 });
 
 test("a known ETag is sent, and a 304 means nothing moved", async () => {

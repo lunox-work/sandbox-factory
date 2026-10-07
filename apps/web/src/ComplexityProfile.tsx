@@ -14,7 +14,7 @@ import type { BountyProfileDto } from "@sandbox-factory/shared";
 
 import { LoadingLine } from "@/components/Message";
 
-import { plural } from "./ProposalSpec";
+import { plural } from "./lib/format";
 
 /** How often a profile still in flight is read again. */
 export const PROFILE_POLL_MS = 10_000;
@@ -98,9 +98,15 @@ export function ComplexityProfileBlock({
     return (
       <Section>
         <p className="text-muted-foreground text-sm">
-          The complexity profile could not be loaded.
+          The complexity profile could not be loaded.{" "}
           {read.retry !== undefined && (
-            <button onClick={read.retry}>Try again</button>
+            <button
+              type="button"
+              className="text-primary rounded-sm font-medium hover:underline"
+              onClick={read.retry}
+            >
+              Try again
+            </button>
           )}
         </p>
       </Section>

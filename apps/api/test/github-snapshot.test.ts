@@ -742,11 +742,20 @@ test("without object storage the snapshot routes say so with a 503", async () =>
 });
 
 test("removing a repository removes its snapshots' trees", async () => {
-  const { app, snapshotter, objects, snapshots, target, repoId } =
+  const { app, snapshotter, objects, snapshots, stores, target, repoId } =
     await appWith({
       role: "owner",
     });
   await snapshotter.snapshot(target);
+  // The store reads the keys in the cascade's transaction; the route
+  // deletes what it names, after the rows are gone.
+  const remove = stores.repos.remove;
+  stores.repos.removeWithObjects = async (owner, id) => ({
+    removed: await remove(owner, id),
+    objectKeys: [...snapshots.rows.values()]
+      .filter((row) => row.repoId === id)
+      .map(({ treeKey }) => treeKey),
+  });
 
   const response = await app.request(
     `/api/v1/orgs/org_1/github/repositories/${repoId}`,

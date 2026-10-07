@@ -196,7 +196,12 @@ def extract_python(root, module):
             name_node = statement.named_children[0] if statement.named_child_count else None
             name = module.text(name_node).split("[")[0] if name_node is not None else ""
             if name and exported(name):
-                module.add(name, "type", module.text(statement).strip(), statement, names_of(statement, ("identifier",), source)[1:])
+                # The walk visits the value before the name, so the alias's
+                # own name is taken out by value, not by position.
+                references = names_of(statement, ("identifier",), source)
+                if name in references:
+                    references.remove(name)
+                module.add(name, "type", module.text(statement).strip(), statement, references)
 
 
 # Go: identifiers that start with an upper-case letter. A method is exported
@@ -447,11 +452,17 @@ def run(source, listing):
         except OSError as error:
             omissions.append({"code": "read_failed", "file": path, "detail": str(error) or "unreadable"})
             continue
-        tree = parser.parse(data)
+        # One file that defeats the extractor, nested a thousand classes deep
+        # or otherwise, is that file's omission, not the whole tier's.
+        try:
+            tree = parser.parse(data)
+            module = Module(data)
+            extract(tree.root_node, module)
+        except (RecursionError, ValueError, UnicodeError) as error:
+            omissions.append({"code": "extractor_failed", "file": path, "detail": type(error).__name__})
+            continue
         if tree.root_node.has_error:
             omissions.append({"code": "parse_failed", "file": path, "detail": "The grammar recovered from a syntax error; signatures near it may be missing."})
-        module = Module(data)
-        extract(tree.root_node, module)
         modules.append({"path": path, "language": language, "exports": module.exports})
     return {"version": version(), "modules": modules, "omissions": omissions}
 

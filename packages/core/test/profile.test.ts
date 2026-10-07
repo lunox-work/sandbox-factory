@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  CI_FILE_NAMES,
   COMPLEXITY_PROFILE_VERSION,
+  PATH_LIST_MAX,
   buildComplexityProfile,
   treeFacts,
 } from "../src/index.js";
@@ -147,4 +149,94 @@ test("CircleCI counts as CI wherever it sits, and a scope from before patterns n
     buildComplexityProfile({ ...input, scope: older }).pattern,
     null,
   );
+});
+
+test("CI configured by a file alone counts as CI", () => {
+  for (const path of [
+    ".gitlab-ci.yml",
+    "Jenkinsfile",
+    "azure-pipelines.yml",
+    "bitbucket-pipelines.yml",
+    "services/api/Jenkinsfile",
+  ]) {
+    const profile = buildComplexityProfile({
+      ...input,
+      facts: { ...facts, infraDirectories: [path] },
+    });
+    assert.equal(profile.nonFunctional.ci, true, path);
+  }
+  // From a tree with nothing else to say so, through `treeFacts`.
+  for (const name of CI_FILE_NAMES) {
+    const tree = treeFacts([
+      { path: name, size: 10 },
+      { path: "src/app.ts", size: 10 },
+    ]);
+    assert.equal(
+      buildComplexityProfile({ ...input, facts: tree }).nonFunctional.ci,
+      true,
+      name,
+    );
+  }
+  assert.equal(
+    buildComplexityProfile({
+      ...input,
+      facts: { ...facts, infraDirectories: ["deploy/gitlab-ci.yml.example"] },
+    }).nonFunctional.ci,
+    false,
+  );
+});
+
+test("a touched module's migrations count however many modules have them", () => {
+  // More modules with migrations than any capped path list holds; the
+  // touched one sorts last.
+  const tree = treeFacts(
+    Array.from({ length: PATH_LIST_MAX + 10 }, (_, i) => ({
+      path: `services/svc${String(i).padStart(3, "0")}/migrations/0001.sql`,
+      size: 10,
+    })),
+  );
+  const last = `services/svc${String(PATH_LIST_MAX + 9).padStart(3, "0")}`;
+  const profile = buildComplexityProfile({
+    ...input,
+    facts: tree,
+    scope: {
+      ...input.scope,
+      entryPoints: [{ path: `${last}/migrations/0001.sql`, reason: "schema" }],
+    },
+  });
+  assert.deepEqual(profile.touchedModules, [last]);
+  assert.equal(profile.nonFunctional.migrations, true);
+});
+
+test("entry points given as graph node ids touch their files' modules", () => {
+  const profile = buildComplexityProfile({
+    ...input,
+    scope: {
+      ...input.scope,
+      entryPoints: [
+        { path: "file:src/scheduler/interview.ts", reason: "saves it" },
+        { path: "symbol:src/mailer/invite.ts:sendInvite", reason: "sends it" },
+        { path: "dependency:src/db/client.ts:pg", reason: "names no file" },
+      ],
+    },
+  });
+  assert.deepEqual(profile.touchedModules, ["src/mailer", "src/scheduler"]);
+  assert.equal(profile.tests.files, 1);
+});
+
+test("a scenario of a retired kind is left out of the counts, not NaN", () => {
+  const retired = {
+    ...scenario("s9", "happy"),
+    kind: "retired-kind",
+  } as unknown as Scenario;
+  const profile = buildComplexityProfile({
+    ...input,
+    spec: { ...input.spec, scenarios: [scenario("s1", "happy"), retired] },
+  });
+  assert.equal(profile.spec.kinds.happy, 1);
+  assert.ok(
+    Object.values(profile.spec.kinds).every(Number.isFinite),
+    JSON.stringify(profile.spec.kinds),
+  );
+  assert.equal(Object.hasOwn(profile.spec.kinds, "retired-kind"), false);
 });

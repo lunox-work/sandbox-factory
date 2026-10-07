@@ -464,6 +464,11 @@ export function memoryGithub(): MemoryGithub {
       repoRows.delete(id);
       return Promise.resolve(true);
     },
+    // No object store here: the rows are what the fake holds.
+    removeWithObjects: async (organizationId, id) => ({
+      removed: await repos.remove(organizationId, id),
+      objectKeys: [],
+    }),
   };
 
   return { connections, grants, repos };

@@ -11,6 +11,7 @@ import {
   isDependencyCruiserParams,
   isDeepwikiParams,
   readsGraph,
+  downloadsSource,
   readsSource,
   CONTEXT_BUILDERS,
   scenarioProblems,
@@ -74,6 +75,12 @@ test("a context builder names itself, and slices, scopes and the map-reading bui
     "scope",
   ]);
   assert.deepEqual(ANALYSIS_TOOLS.filter(readsSource).length, 9);
+  // DeepWiki is named its snapshot's commit but clones the repository
+  // itself: its archive is not fetched.
+  assert.equal(readsSource("deepwiki"), true);
+  assert.equal(downloadsSource("deepwiki"), false);
+  assert.equal(downloadsSource("graphify"), true);
+  assert.equal(downloadsSource("sandbox_starter"), false);
   for (const builder of CONTEXT_BUILDERS)
     assert.ok(ANALYSIS_TOOLS.includes(builder));
 });

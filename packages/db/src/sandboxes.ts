@@ -12,7 +12,7 @@
  * generated, never both.
  */
 
-import { and, desc, eq, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, or, sql } from "drizzle-orm";
 import type {
   AcceptanceTest,
   AliasRule,
@@ -202,7 +202,8 @@ export type CreateVersionResult =
         | "no_source"
         | "slice_mismatch"
         | "source_linked"
-        | "starter_mismatch";
+        | "starter_mismatch"
+        | "starter_in_progress";
     };
 export type PublishVersionResult =
   | {
@@ -255,8 +256,10 @@ export interface SandboxStore {
    * A new draft version: from a succeeded slice run on the sandbox's own
    * source repository, or, for a sandbox with none (`source_linked`
    * otherwise), from the owner's starter run queued for this very version
-   * (`starter_mismatch` otherwise). The version number is the next one;
-   * two drafts can carry different provenance without touching each other.
+   * (`starter_mismatch` otherwise), while no other version's starter is
+   * queued or running (`starter_in_progress`). The version number is the
+   * next one; two drafts can carry different provenance without touching
+   * each other.
    */
   createVersion(
     organizationId: string,
@@ -285,9 +288,12 @@ export interface SandboxStore {
   ): Promise<UpdateVersionResult>;
   /**
    * Points the draft at a newly queued build. Refused with `conflict` when
-   * the transform is no longer the one the build was queued with: that run
-   * carries stale hashes and the worker will reject it. Evidence from any
-   * earlier build is cleared, since it described a different run.
+   * the transform is no longer the one the build was queued with, and with
+   * `frozen` once the version is: either way the run would build nothing
+   * that is recorded, so it is cancelled if it is still queued, giving back
+   * its active slot. Evidence from any earlier build is cleared, since it
+   * described a different run; the build the draft already points at is
+   * no change, and keeps what it proved.
    */
   recordBuild(
     organizationId: string,
@@ -648,6 +654,36 @@ export function createSandboxStore(db: Database): SandboxStore {
           )[0];
           if (run === undefined)
             return { ok: false, reason: "starter_mismatch" } as const;
+          // One generated at a time. Each run names a version of its own,
+          // so the queue never matches a second request with the first;
+          // under the sandbox's lock, two at once cannot both get here
+          // clear of the other's run.
+          const busy = (
+            await tx
+              .select({ id: analysisRun.id })
+              .from(sandboxVersionSource)
+              .innerJoin(
+                sandboxVersion,
+                eq(sandboxVersion.id, sandboxVersionSource.sandboxVersionId),
+              )
+              .innerJoin(
+                analysisRun,
+                eq(analysisRun.id, sandboxVersionSource.starterRunId),
+              )
+              .where(
+                and(
+                  eq(sandboxVersion.sandboxId, sandboxId),
+                  eq(analysisRun.organizationId, owner),
+                  or(
+                    eq(analysisRun.status, "queued"),
+                    eq(analysisRun.status, "running"),
+                  ),
+                ),
+              )
+              .limit(1)
+          )[0];
+          if (busy !== undefined)
+            return { ok: false, reason: "starter_in_progress" } as const;
         } else {
           // Slicing is the one thing a sandbox needs a repository for.
           const sourceRepoId = parent.sourceRepoId;
@@ -868,10 +904,39 @@ export function createSandboxStore(db: Database): SandboxStore {
         const current = await lockVersion(tx, owner, versionId);
         if (current === undefined)
           return { ok: false, reason: "not-found" } as const;
-        if (current.version.frozenAt !== null)
-          return { ok: false, reason: "frozen" } as const;
-        if (current.source.transformConfigSha256 !== expected)
-          return { ok: false, reason: "conflict" } as const;
+        const refusal =
+          current.version.frozenAt !== null
+            ? "frozen"
+            : current.source.transformConfigSha256 !== expected
+              ? "conflict"
+              : null;
+        if (refusal !== null) {
+          // Only while queued: a running build is the worker's to settle.
+          await tx
+            .update(analysisRun)
+            .set({
+              status: "failed",
+              errorCode: "cancelled",
+              errorDetail: null,
+              finishedAt: now,
+            })
+            .where(
+              and(
+                eq(analysisRun.organizationId, owner),
+                eq(analysisRun.id, buildRunId),
+                eq(analysisRun.tool, "sandbox_build"),
+                eq(analysisRun.status, "queued"),
+                sql`${analysisRun.params}->>'sandboxVersionId' = ${versionId}`,
+              ),
+            );
+          return { ok: false, reason: refusal } as const;
+        }
+        if (current.source.buildRunId === buildRunId)
+          return {
+            ok: true,
+            version: toVersion(current.version),
+            source: toSource(current.source, current.commitSha),
+          } as const;
         const rows = await tx
           .update(sandboxVersionSource)
           .set({ ...CLEARED_EVIDENCE, buildRunId, updatedAt: now })
@@ -1090,7 +1155,12 @@ export function createSandboxStore(db: Database): SandboxStore {
                   artifacts: sql<number>`(select count(*) from ${artifact} where ${artifact.runId} = ${analysisRun.id})`,
                 })
                 .from(analysisRun)
-                .where(eq(analysisRun.id, sliceRunId))
+                .where(
+                  and(
+                    eq(analysisRun.organizationId, owner),
+                    eq(analysisRun.id, sliceRunId),
+                  ),
+                )
             )[0];
       return {
         source: toSource(row.source, snapshot?.commitSha ?? null),

@@ -99,7 +99,10 @@ function appWith(
  * The same app with every request to `host` failing as undici's does when
  * nothing answers. Rebuilt rather than patched, since `fetch` is an option.
  */
-function appFailingAt(host: string): ReturnType<typeof appWith>["app"] {
+function appFailingAt(
+  host: string,
+  stores: MemoryGithub = memoryGithub(),
+): ReturnType<typeof appWith>["app"] {
   const inner = fakeGithub(world());
   const failing = (async (
     input: string | URL | Request,
@@ -110,7 +113,6 @@ function appFailingAt(host: string): ReturnType<typeof appWith>["app"] {
     }
     return inner(input, init);
   }) as typeof globalThis.fetch;
-  const stores = memoryGithub();
   return createApp({
     corsOrigins: ["https://app.test"],
     auth: fakeAuth(),
@@ -348,6 +350,25 @@ test("reconnecting after deleting the connection links again without the install
 
   assert.equal(target.searchParams.get("github"), "connected");
   assert.equal(stores.connections.rows.size, 1);
+});
+
+test("connecting again re-links an installation already linked here, and clears its flag", async () => {
+  // With nothing else free, the install page would only show GitHub's own
+  // settings for an App already installed: the person was stranded there,
+  // and a connection marked "Needs attention" could not be cleared.
+  const { app, stores } = appWith();
+  await callback(app, { code: "c", state: stateFor() });
+  const [connection] = await stores.connections.list("org_1");
+  assert.ok(connection !== undefined);
+  await stores.connections.update("org_1", connection.id, { healthy: false });
+
+  const target = await callback(app, { code: "c", state: stateFor() });
+
+  assert.equal(target.searchParams.get("github"), "connected");
+  const listed = await stores.connections.list("org_1");
+  assert.equal(listed.length, 1);
+  assert.equal(listed[0]?.id, connection.id);
+  assert.equal(listed[0]?.healthy, true);
 });
 
 test("a person demoted mid-flow is refused before the code is spent", async () => {
@@ -720,6 +741,62 @@ test("a revoked grant is flagged and answered as reconnect", async () => {
     },
   );
   assert.equal(again.status, 409);
+});
+
+test("a token refresh GitHub refuses or never answers is said as such, not as a server fault", async () => {
+  for (const [exchangeError, status, code] of [
+    // A spent grant: connect again.
+    ["bad_refresh_token", 409, "reconnect"],
+    // Refused for this server's own credentials: connecting again would
+    // fail the same way, so it is a server fault, thrown and logged.
+    ["incorrect_client_credentials", 500, null],
+  ] as const) {
+    const stores = memoryGithub();
+    const { app, state } = appWith({
+      stores,
+      world: world({ installations: [] }),
+    });
+    await callback(app, { code: "c", state: stateFor() });
+    // The access token has lapsed, so the picker refreshes it first.
+    const tokens = await stores.grants.tokens("org_1", dana.id);
+    assert.ok(tokens !== null);
+    await stores.grants.saveTokens(
+      "org_1",
+      dana.id,
+      tokens.credentialRevision,
+      {
+        ...tokens,
+        expiresAt: new Date(NOW - 60_000).toISOString(),
+      } as never,
+    );
+    state.exchangeError = exchangeError;
+
+    const response = await app.request(
+      "/api/v1/orgs/org_1/github/connections/available",
+      { headers: signedIn },
+    );
+
+    assert.equal(response.status, status, exchangeError);
+    if (code !== null)
+      assert.equal(((await response.json()) as { code: string }).code, code);
+  }
+  // Nothing answered at all is GitHub's trouble, worth a retry.
+  const stores = memoryGithub();
+  const { app } = appWith({ stores, world: world({ installations: [] }) });
+  await callback(app, { code: "c", state: stateFor() });
+  const tokens = await stores.grants.tokens("org_1", dana.id);
+  assert.ok(tokens !== null);
+  await stores.grants.saveTokens("org_1", dana.id, tokens.credentialRevision, {
+    ...tokens,
+    expiresAt: new Date(NOW - 60_000).toISOString(),
+  } as never);
+  const silent = appFailingAt("github.com", stores);
+  const response = await silent.request(
+    "/api/v1/orgs/org_1/github/connections/available",
+    { headers: signedIn },
+  );
+  assert.equal(response.status, 502);
+  assert.equal(((await response.json()) as { code: string }).code, "github");
 });
 
 test("a rate-limited picker says when to retry", async () => {

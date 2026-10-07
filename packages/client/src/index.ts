@@ -88,10 +88,20 @@ export class GithubAnalysisClient extends ApiClient {
     )) as { snapshot?: unknown };
     return repoSnapshotDetailDtoSchema.parse(response.snapshot);
   }
-  async runs(owner: string, repoId: string, signal?: AbortSignal) {
+  /** A repository's runs, newest first; with `snapshotId`, that snapshot's. */
+  async runs(
+    owner: string,
+    repoId: string,
+    signal?: AbortSignal,
+    snapshotId?: string,
+  ) {
+    const query =
+      snapshotId === undefined
+        ? ""
+        : `?${new URLSearchParams({ snapshotId }).toString()}`;
     return analysisRunListSchema.parse(
       await this.request(
-        `${this.#base(owner)}/repositories/${encodeURIComponent(repoId)}/runs`,
+        `${this.#base(owner)}/repositories/${encodeURIComponent(repoId)}/runs${query}`,
         { signal },
       ),
     ).runs;

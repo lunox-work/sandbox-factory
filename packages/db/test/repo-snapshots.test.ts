@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import type { SQL } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
 import { treeFacts } from "sandbox-factory";
 
 import { createRepoSnapshotStore } from "../src/repo-snapshots.js";
@@ -150,6 +152,37 @@ test("prune reads the surplus through the owner, then deletes those rows", async
   assert.equal(fake.calls[1]?.lock, "update");
   assert.equal(fake.calls[2]?.kind, "delete");
   assert.equal(fake.calls[2]?.filtered, true);
+});
+
+test("prune's delete names the owner in its own WHERE, not only in the read before it", async () => {
+  const fake = createSequencedFakeDb([
+    [{ id: "rsn_old" }],
+    [{ id: "rsn_old" }],
+    [{ treeKey: "trees/ghr_1/old.json.gz" }],
+  ]);
+  // The fake ignores conditions; this one keeps the DELETE's to render it.
+  const conditions: SQL[] = [];
+  const db = fake.db as unknown as {
+    delete: (table: unknown) => { where: (condition: SQL) => unknown };
+  };
+  const remove = db.delete.bind(db);
+  db.delete = (table) => {
+    const chained = remove(table);
+    const where = chained.where.bind(chained);
+    chained.where = (condition) => {
+      conditions.push(condition);
+      return where(condition);
+    };
+    return chained;
+  };
+
+  await createRepoSnapshotStore(fake.db).prune("org_1", "ghr_1", 20);
+
+  const [condition] = conditions;
+  assert.ok(condition !== undefined);
+  const query = new PgDialect().sqlToQuery(condition);
+  assert.match(query.sql, /"github_repo"\."organization_id" = \$\d+/);
+  assert.ok(query.params.includes("org_1"));
 });
 
 test("prune with nothing past the limit deletes nothing", async () => {

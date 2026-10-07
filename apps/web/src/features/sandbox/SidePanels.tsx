@@ -12,7 +12,7 @@ import {
   ListTree,
   Lock,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 
 import { cn } from "@/lib/utils";
 
@@ -30,7 +30,7 @@ import {
 } from "./outline";
 
 /** Opens a file in the editor, at a line when one is given. */
-export type OpenFile = (path: string, line?: number) => void;
+type OpenFile = (path: string, line?: number) => void;
 
 interface PanelProps {
   /** Whether the view is the one showing; a hidden one reads nothing. */
@@ -102,7 +102,7 @@ function FileIcon({ name, url }: { name: string; url: IconUrl }) {
 }
 
 /** The url of a vscode-icons drawing, by its name. */
-export type IconUrl = (name: string) => string | undefined;
+type IconUrl = (name: string) => string | undefined;
 
 function Hint({ children }: { children: React.ReactNode }) {
   return <p className="px-5 py-1 text-xs text-(--wb-muted)">{children}</p>;
@@ -115,7 +115,7 @@ function Hint({ children }: { children: React.ReactNode }) {
  */
 export function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
-    <h3 className="flex h-[22px] shrink-0 items-center truncate px-3 text-[11px] font-bold tracking-wide text-(--wb-muted) uppercase">
+    <h3 className="flex h-[22px] shrink-0 items-center truncate pr-3 pl-5 text-[11px] font-bold tracking-wide text-(--wb-muted) uppercase">
       {children}
     </h3>
   );
@@ -162,22 +162,25 @@ export function SearchPanel({
   if (active && query !== "" && !wanted) setWanted(true);
   const { texts, pending } = useFileTexts(source, paths, wanted);
 
+  // Searched behind the typing: every file is scanned for each query, and
+  // the field should not wait for that.
+  const searched = useDeferredValue(query);
   const results = useMemo(
     () =>
       paths.flatMap((path) => {
         const text = texts.get(path);
         if (text === undefined || text === null) return [];
-        const matches = searchLines(text, query, matchCase);
+        const matches = searchLines(text, searched, matchCase);
         return matches.length === 0 ? [] : [{ path, matches }];
       }),
-    [paths, texts, query, matchCase],
+    [paths, texts, searched, matchCase],
   );
   const total = results.reduce((sum, { matches }) => sum + matches.length, 0);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="px-3 pb-2">
-        <div className="flex h-[26px] items-center rounded-sm border border-(--wb-input-border) bg-(--wb-input) focus-within:border-(--wb-accent)">
+        <div className="flex h-[26px] items-center rounded-[4px] border border-(--wb-input-border) bg-(--wb-input) focus-within:border-(--wb-accent)">
           <input
             ref={input}
             type="search"
@@ -194,7 +197,7 @@ export function SearchPanel({
             title="Match Case"
             onClick={() => setMatchCase((value) => !value)}
             className={cn(
-              "mr-0.5 flex size-5 items-center justify-center rounded-sm text-(--wb-muted) hover:bg-(--wb-hover)",
+              "mr-0.5 flex size-5 items-center justify-center rounded-[4px] text-(--wb-muted) hover:bg-(--wb-hover)",
               matchCase &&
                 "border border-(--wb-accent) bg-(--wb-accent)/25 text-(--wb-strong)",
             )}

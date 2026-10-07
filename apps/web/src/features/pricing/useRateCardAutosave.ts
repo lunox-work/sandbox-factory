@@ -12,7 +12,8 @@ import { editableRateAmount, fractionDigits } from "../../lib/format";
 
 import { parseRateAmount } from "@/lib/rate-amount";
 
-function canManage(role: string) {
+/** Who may change a rate card: owners and admins. */
+export function canManage(role: string) {
   return rankAtLeast(role, "admin");
 }
 type RateDraft = Pick<

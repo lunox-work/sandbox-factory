@@ -59,6 +59,8 @@ export interface AllBounties {
   error: string | null;
   more: boolean;
   loadMore: () => Promise<void>;
+  /** Reads the list again after it failed. */
+  retry: () => void;
 }
 
 /** What can be done with one workspace's bounties. */
@@ -112,11 +114,9 @@ export interface Bounties {
   ) => Promise<string | null>;
   /**
    * Sizes the bounty and makes its proposal, following the run until the
-   * proposal lands. Resolves to the proposal, or to why there is none.
-   */
-  /**
-   * Sizes a bounty and waits for its proposal. With `following`, the run
-   * already sizing it is waited on instead, and nothing new is asked for.
+   * proposal lands. Resolves to the proposal, or to why there is none. With
+   * `following`, the run already sizing it is waited on instead, and nothing
+   * new is asked for.
    */
   propose: (
     bountyId: string,
@@ -167,12 +167,16 @@ export function useAllBounties(): AllBounties {
   const loadMore = useCallback(async () => {
     await query.fetchNextPage();
   }, [query.fetchNextPage]);
+  const retry = useCallback(() => {
+    void query.refetch();
+  }, [query.refetch]);
   return {
     bounties: query.data?.pages.flatMap((page) => page.bounties) ?? [],
     loading: query.isPending,
     error: query.isError ? "Could not load the bounties." : null,
     more: query.hasNextPage,
     loadMore,
+    retry,
   };
 }
 

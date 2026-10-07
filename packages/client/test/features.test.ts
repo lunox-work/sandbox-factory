@@ -292,3 +292,20 @@ test("Jira writes and detail reads validate their envelopes", async () => {
   assert.equal(await sizing.bountySizing("o /", "b /"), null);
   assert.equal(requested[0], "/api/v1/orgs/o%20%2F/bounties/b%20%2F/sizing");
 });
+
+test("a stream refused with a proxy's HTML page is an ApiError, not a SyntaxError", async () => {
+  const client = new PricingClient({
+    baseUrl: "",
+    fetch: (async () =>
+      new Response("<html>502 Bad Gateway</html>", {
+        status: 502,
+      })) as typeof fetch,
+  });
+  await assert.rejects(
+    client.titles("o", "b", [], () => {}, new AbortController().signal),
+    (error: unknown) =>
+      error instanceof ApiError &&
+      error.status === 502 &&
+      /HTTP 502/.test(error.message),
+  );
+});

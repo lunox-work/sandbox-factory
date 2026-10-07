@@ -148,7 +148,7 @@ time — a link to a disabled tab 404s.
 ## Labels
 
 Beyond the defaults: `dependencies`, `github_actions`, `javascript` (from
-Dependabot); `ci`, `tests`, `source` (labeler); and `accessibility`. The two
+Dependabot); `ci`, `tests`, `source`, `documentation` (labeler); and `accessibility`. The two
 `autorelease:` labels are left over from release-please and unused.
 
 The labeler cannot create labels — it holds `pull-requests: write`, not

@@ -73,6 +73,7 @@ export function BuilderRow({
   disabled,
   figures,
   onBuild,
+  onViewLog,
 }: {
   builder: ContextBuilder;
   /** This builder's run on the chosen snapshot, when there is one. */
@@ -85,6 +86,8 @@ export function BuilderRow({
   /** Up to three figures from the build's summary, once they are known. */
   figures?: readonly { label: string; value: number }[] | undefined;
   onBuild: () => void;
+  /** Opens this builder's run log; owners and admins only. */
+  onViewLog?: (() => void) | undefined;
 }) {
   const name = builderNames[builder];
   const { description, icon: Icon } = BUILDER_DETAILS[builder];
@@ -153,8 +156,22 @@ export function BuilderRow({
             {shortDate(run.finishedAt)}
           </time>
         ) : exhausted ? (
-          <span className="text-muted-foreground text-xs">
-            Retry limit reached
+          // The same snapshot and builder would answer with this run again:
+          // a newer snapshot is what can be built.
+          <span className="text-muted-foreground text-right text-xs">
+            Retry limit reached. Pull a newer snapshot to build again.
+            {onViewLog !== undefined && (
+              <>
+                {" "}
+                <button
+                  type="button"
+                  className="text-primary rounded-sm font-medium hover:underline"
+                  onClick={onViewLog}
+                >
+                  View log
+                </button>
+              </>
+            )}
           </span>
         ) : null}
       </div>

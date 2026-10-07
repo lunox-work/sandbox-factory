@@ -635,6 +635,11 @@ test("createPersonal returns the existing organization rather than a second", as
 
   assert.equal(found.id, "org_existing");
   assert.equal(fake.organizations.length, 1);
+  // And its owner's membership, which a first run that failed before it
+  // never wrote: without it the organization stays invisible.
+  assert.equal(fake.members.length, 1);
+  assert.equal(fake.members[0]?.organizationId, "org_existing");
+  assert.equal(fake.members[0]?.role, "owner");
 });
 
 test("createPersonal takes the owner's username as its handle, unsuffixed", async () => {

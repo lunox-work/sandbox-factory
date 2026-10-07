@@ -1,5 +1,5 @@
 {
-  "extends": "../../tooling/tsconfig/node.json",
+  "extends": "@sandbox-factory/tsconfig/node.json",
   "compilerOptions": { "rootDir": "src", "outDir": "dist" },
   "include": ["src"]
 }

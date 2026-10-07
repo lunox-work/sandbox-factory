@@ -30,7 +30,7 @@ import {
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { ErrorBanner, LoadingLine } from "@/components/Message";
+import { ErrorBanner, LoadingLine, RetryableError } from "@/components/Message";
 import { OutcomeNotice } from "@/components/OutcomeNotice";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -423,7 +423,8 @@ function SiteBoardsCard({
   onDisconnect: () => Promise<string | undefined>;
   onOpenBoard: (board: JiraBoard) => void;
 }) {
-  const { boards, loading, error, sync } = useJiraBoards(organizationId);
+  const { boards, loading, error, sync, refresh } =
+    useJiraBoards(organizationId);
   const [syncing, setSyncing] = useState(true);
   // What the last sync found, said once under the header: how many boards
   // are new, since those are the ones now being sized in the background.
@@ -598,7 +599,17 @@ function SiteBoardsCard({
             </p>
           ))}
 
-        {error !== null && <BoardsError error={error} />}
+        {error !== null && (
+          <BoardsError
+            error={error}
+            // A site already flagged has its own Reconnect above; one that
+            // is not finds out here, and needs the way out here too.
+            onReconnect={
+              manageable && connection.healthy ? onReconnect : undefined
+            }
+            onRetry={() => void refresh()}
+          />
+        )}
 
         {found !== null && (
           <p className="text-muted-foreground text-sm" role="status">
@@ -682,7 +693,7 @@ export function JiraBoard({
    */
   header?: ReactNode;
 }) {
-  const { boards, error, issue, linkRepository } =
+  const { boards, error, issue, linkRepository, refresh } =
     useJiraBoards(organizationId);
   const { connections, connect } = useJira(organizationId);
   const { outcome, missingScopes, dismiss } = useJiraOutcome();
@@ -737,6 +748,7 @@ export function JiraBoard({
         <BoardsError
           error={error}
           onReconnect={canManage(role ?? "") ? () => connect() : undefined}
+          onRetry={() => void refresh()}
         />
       )}
 
@@ -787,7 +799,7 @@ export function JiraConnections({
   role: string;
   onOpenBoard: (board: JiraBoard) => void;
 }) {
-  const { connections, loading, error, connect, disconnect } =
+  const { connections, loading, error, connect, disconnect, refresh } =
     useJira(organizationId);
   const { outcome, missingScopes, dismiss } = useJiraOutcome();
   const manageable = canManage(role);
@@ -816,7 +828,7 @@ export function JiraConnections({
       {loading && connections.length === 0 ? (
         <LoadingLine />
       ) : error !== null && connections.length === 0 ? (
-        <ErrorBanner className="mt-0">{error}</ErrorBanner>
+        <RetryableError onRetry={() => void refresh()}>{error}</RetryableError>
       ) : connections.length === 0 ? (
         /*
           Dashed rather than a card: this is where a site will go, not a

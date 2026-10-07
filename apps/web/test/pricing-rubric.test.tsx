@@ -1,4 +1,4 @@
-import type { BountyProposalDto } from "@sandbox-factory/shared";
+import type { BountyProposalDto, BountySpecDto } from "@sandbox-factory/shared";
 import userEvent from "@testing-library/user-event";
 import {
   assessRubric,
@@ -11,6 +11,8 @@ import { expect, test, vi } from "vitest";
 
 import { money } from "../src/lib/format";
 import { PricingRubricBlock } from "../src/PricingRubric";
+import type { ShownSpec } from "../src/ProposalSpec";
+import type { RespecControl } from "../src/SpecChanges";
 import { render, screen, within } from "./render";
 
 /** The worked example: three scenarios, five outcomes. */
@@ -338,4 +340,270 @@ test("over a reviewer's size the rubric's is offered back", async () => {
     "The model set this size; the rubric says M.",
   );
   expect(screen.queryByRole("button")).toBeNull();
+});
+
+/** The spec as a revision of it, read. */
+function revision(draft: SpecDraft, number = 2): BountySpecDto {
+  return {
+    id: `bsp_${number}`,
+    organizationId: "org_1",
+    proposalId: "bpr_1",
+    revision: number,
+    specHash: "a".repeat(64),
+    specHashVersion: 1,
+    draft: draft as BountySpecDto["draft"],
+    origin: "draft",
+    instruction: null,
+    createdBy: null,
+    runId: null,
+    actualModel: null,
+    promptVersion: null,
+    createdAt: "2026-10-01T00:00:00.000Z",
+  };
+}
+
+function shown(overrides: Partial<ShownSpec> = {}): ShownSpec {
+  const current = revision(spec);
+  return {
+    read: { state: "ready", spec: current },
+    spec: current,
+    current: 2,
+    viewing: null,
+    onView: () => {},
+    revisions: [],
+    diff: undefined,
+    retry: () => {},
+    ...overrides,
+  };
+}
+
+function control() {
+  return {
+    state: { phase: "idle" },
+    request: vi.fn<RespecControl["request"]>(),
+  } satisfies RespecControl;
+}
+
+test("a scenario factor unfolds the scenarios it counted, and each opens with what it adds", async () => {
+  const user = userEvent.setup();
+  render(
+    <PricingRubricBlock
+      proposal={proposal()}
+      canUse={false}
+      busy={false}
+      onUse={() => {}}
+      scenarios={{ shown: shown() }}
+    />,
+  );
+  const scenarios = screen.getByTestId("rubric-scenarios");
+  // Still the factor's working, now a control that unfolds it.
+  const moderate = within(scenarios).getByRole("button", {
+    name: /Moderate scenarios2 × 2\+4/,
+  });
+  expect(moderate.getAttribute("aria-expanded")).toBe("false");
+  // Nothing weighs light: nothing to open.
+  expect(
+    within(scenarios).queryByRole("button", { name: /Light scenarios/ }),
+  ).toBeNull();
+
+  await user.click(moderate);
+  expect(moderate.getAttribute("aria-expanded")).toBe("true");
+  const list = within(scenarios).getByTestId("rubric-drill-weight-moderate");
+  expect(
+    within(list)
+      .getAllByRole("button")
+      .map((button) => button.textContent),
+  ).toEqual(["One invitation", "Rescheduled"]);
+
+  // One open at a time.
+  await user.click(
+    within(scenarios).getByRole("button", { name: /Heavy scenarios/ }),
+  );
+  expect(moderate.getAttribute("aria-expanded")).toBe("false");
+  await user.click(moderate);
+
+  await user.click(
+    within(list).getByRole("button", { name: "One invitation" }),
+  );
+  const dialog = await screen.findByRole("dialog");
+  expect(within(dialog).getByRole("heading").textContent).toBe(
+    "One invitation",
+  );
+  expect(dialog.textContent).toContain("the time is in it");
+  // Two points of weight, its test, and its one check past the first.
+  expect(within(dialog).getByTestId("scenario-adds").textContent).toBe(
+    "Moderate scenario+2Its acceptance test+11 check past the first+1Adds to the price4 points",
+  );
+  // A reader who may not change the spec is not offered to.
+  expect(
+    within(dialog).queryByRole("button", { name: "Remove scenario" }),
+  ).toBeNull();
+
+  // The scenarios either side, in the spec's order, round from the end.
+  await user.click(
+    within(dialog).getByRole("button", { name: "Next scenario" }),
+  );
+  expect(within(dialog).getByRole("heading").textContent).toBe("Rescheduled");
+  await user.keyboard("{ArrowRight}");
+  expect(within(dialog).getByRole("heading").textContent).toBe("Retried once");
+  await user.keyboard("{ArrowRight}");
+  expect(within(dialog).getByRole("heading").textContent).toBe(
+    "One invitation",
+  );
+
+  // Back to them all, by kind.
+  await user.click(
+    within(dialog).getByRole("button", { name: "All scenarios" }),
+  );
+  expect(within(dialog).getByRole("heading", { level: 2 }).textContent).toBe(
+    "Interview invitations",
+  );
+  expect(
+    within(dialog)
+      .getAllByRole("region")
+      .map((region) => region.getAttribute("aria-label")),
+  ).toEqual(["Happy path", "Recovery"]);
+});
+
+test("the test factors open onto every test, and the ones checking more than one outcome", async () => {
+  const user = userEvent.setup();
+  render(
+    <PricingRubricBlock
+      proposal={proposal()}
+      canUse={false}
+      busy={false}
+      onUse={() => {}}
+      scenarios={{ shown: shown() }}
+    />,
+  );
+  const tests = screen.getByTestId("rubric-tests");
+  await user.click(within(tests).getByRole("button", { name: /Test cases/ }));
+  expect(within(tests).getByTestId("rubric-drill-test-cases").textContent).toBe(
+    "One invitation2 checksRescheduled2 checksRetried once1 check",
+  );
+  await user.click(
+    within(tests).getByRole("button", { name: /Additional checks/ }),
+  );
+  expect(
+    within(tests).getByTestId("rubric-drill-extra-checks").textContent,
+  ).toBe("One invitation+1Rescheduled+1");
+});
+
+test("the spec is opened whole from the Scenarios dimension, and changed from it", async () => {
+  const user = userEvent.setup();
+  const respec = control();
+  const questions = {
+    ...spec,
+    openQuestions: ["Which time zone?", "Who is copied?"],
+    assumptions: ["Email is already configured."],
+  };
+  const current = revision(questions);
+  render(
+    <PricingRubricBlock
+      proposal={proposal({
+        rubric: assessRubric({
+          spec: questions,
+          code: measured,
+        }) as BountyProposalDto["rubric"],
+      })}
+      canUse
+      busy={false}
+      onUse={() => {}}
+      scenarios={{
+        shown: shown({
+          read: { state: "ready", spec: current },
+          spec: current,
+        }),
+        changes: { control: respec, size: "M" },
+      }}
+    />,
+  );
+  const scenarios = screen.getByTestId("rubric-scenarios");
+  expect(within(scenarios).getByTestId("spec-changes")).toBeDefined();
+
+  // The open questions open as a dialog, where they are answered.
+  await user.click(
+    within(scenarios).getByRole("button", { name: /Open questions/ }),
+  );
+  let dialog = await screen.findByRole("dialog", { name: "Open questions" });
+  expect(dialog.textContent).toContain("Which time zone?");
+  await user.click(within(dialog).getByRole("button", { name: /Answer them/ }));
+  await user.type(within(dialog).getByLabelText("Which time zone?"), "UTC");
+  await user.click(
+    within(dialog).getByRole("button", { name: "Revise for this answer" }),
+  );
+  expect(respec.request).toHaveBeenCalledWith(
+    {
+      mode: "answer",
+      answers: [{ question: "Which time zone?", answer: "UTC" }],
+    },
+    "Revising the spec for your answer…",
+  );
+
+  // What was assumed, unscored, the same way.
+  await user.click(
+    within(scenarios).getByRole("button", {
+      name: "Drafted on 1 assumption, not scored",
+    }),
+  );
+  dialog = await screen.findByRole("dialog", { name: "Assumptions" });
+  expect(dialog.textContent).toContain("Email is already configured.");
+  await user.keyboard("{Escape}");
+
+  // Every scenario, from the feature; one taken out from its own view.
+  await user.click(
+    within(scenarios).getByRole("button", { name: /Interview invitations/ }),
+  );
+  dialog = await screen.findByRole("dialog");
+  await user.click(
+    within(dialog).getByRole("button", { name: /Retried once/ }),
+  );
+  await user.click(
+    within(dialog).getByRole("button", { name: "Remove scenario" }),
+  );
+  const confirm = await screen.findByRole("alertdialog");
+  await user.click(
+    within(confirm).getByRole("button", { name: "Remove scenario" }),
+  );
+  expect(respec.request).toHaveBeenLastCalledWith(
+    { mode: "trim", removeScenarioIds: ["s2"] },
+    "Removing “Retried once”…",
+  );
+});
+
+test("an earlier revision on show is scored as it would be, beside the price in force", async () => {
+  const user = userEvent.setup();
+  const onView = vi.fn();
+  // Revision 1 had only the first scenario.
+  const first = revision({ ...spec, scenarios: spec.scenarios.slice(0, 1) }, 1);
+  render(
+    <PricingRubricBlock
+      proposal={proposal()}
+      canUse
+      busy={false}
+      onUse={() => {}}
+      scenarios={{
+        shown: shown({
+          read: { state: "ready", spec: first },
+          spec: first,
+          viewing: 1,
+          onView,
+        }),
+      }}
+    />,
+  );
+  // Four from its scenario and its test, six from the code.
+  expect(screen.getByTestId("rubric-total").textContent).toBe(
+    "10 points →is S",
+  );
+  expect(screen.getByTestId("rubric-source").textContent).toBe(
+    "As revision 1 would score. The price goes with revision 2.",
+  );
+  // The size in force is still the proposal's.
+  const rungs = within(screen.getByTestId("rubric-ladder")).getAllByRole(
+    "listitem",
+  );
+  expect(rungs[4]?.getAttribute("aria-current")).toBe("true");
+  await user.click(screen.getByRole("button", { name: "Show current" }));
+  expect(onView).toHaveBeenCalledWith(null);
 });

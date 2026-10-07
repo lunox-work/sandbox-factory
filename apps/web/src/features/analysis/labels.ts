@@ -13,10 +13,12 @@ import type {
 } from "sandbox-factory";
 
 /** What a failed request reads as: the API's words, or ours when it had none. */
-export function errorMessage(error: unknown): string {
-  return error instanceof ApiError
-    ? error.message
-    : "Analysis could not be loaded. Try again.";
+export function errorMessage(
+  error: unknown,
+  /** Ours, for what was being done: a pull or a build is not a load. */
+  fallback = "Analysis could not be loaded. Try again.",
+): string {
+  return error instanceof ApiError ? error.message : fallback;
 }
 
 /**
@@ -29,7 +31,7 @@ export const errorLabels: Record<AnalysisErrorCode, string> = {
   source_unavailable:
     "The source commit could not be read. Check the GitHub connection.",
   graph_unavailable:
-    "The structure analysis this run needs did not succeed. Build Graphify again, then retry.",
+    "The structure analysis this run needs did not succeed. Build Graphify on this snapshot first.",
   tool_failed: "The analysis tool could not complete this run.",
   tool_timeout: "Analysis exceeded its time limit.",
   upload_failed: "Artifacts could not be saved.",
@@ -42,7 +44,7 @@ export const errorLabels: Record<AnalysisErrorCode, string> = {
     "The agent stopped without an answer it could check. Try again.",
   builder_unavailable: "This builder is not configured on the worker.",
   context_unavailable:
-    "A context build this run reads is gone or changed. Build it again, then retry.",
+    "A context build this run reads is gone or changed. Build it on this snapshot first.",
 };
 
 /** A run's status, as a word. */
@@ -100,5 +102,9 @@ export function runDuration(run: AnalysisRunDto): string | null {
     0,
     Math.round((Date.parse(run.finishedAt) - Date.parse(run.startedAt)) / 1000),
   );
-  return `${seconds}s`;
+  // Seconds alone stop being read at a glance past a minute: "1834s".
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }

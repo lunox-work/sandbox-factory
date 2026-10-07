@@ -54,6 +54,12 @@ export interface Organizations extends State {
   clear: () => void;
   /** Re-reads the list, after a create, a rename or a leave. */
   refresh: () => Promise<void>;
+  /**
+   * Asks for the list again after it failed to load. `error` is what says it
+   * failed: an empty list beside it is not an answer, and the screens that
+   * read one as "in no workspace" or "that workspace is gone" check it first.
+   */
+  retry: () => void;
 }
 
 export function useOrganizations(
@@ -173,8 +179,11 @@ export function useOrganizations(
         ? entry.id === activeId
         : entry.slug === preferredSlug,
     ) ?? null;
+  // Not while the list failed: nothing is known to be missing from a list
+  // that never arrived.
   const notFound =
     !state.loading &&
+    state.error === null &&
     preferredSlug !== undefined &&
     !state.organizations.some((entry) => entry.slug === preferredSlug);
 
@@ -186,5 +195,17 @@ export function useOrganizations(
       ? state.organizations.length > 0
       : state.organizations.some((entry) => entry.slug === preferredSlug));
 
-  return { ...state, active, notFound, settling, select, clear, refresh };
+  const { refetch } = query;
+  const retry = useCallback(() => void refetch(), [refetch]);
+
+  return {
+    ...state,
+    active,
+    notFound,
+    settling,
+    select,
+    clear,
+    refresh,
+    retry,
+  };
 }

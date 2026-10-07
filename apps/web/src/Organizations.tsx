@@ -18,7 +18,7 @@
  */
 
 import type { MembershipDto } from "@sandbox-factory/shared";
-import { ChevronRight, Plus } from "lucide-react";
+import { ChevronRight, Plus, RefreshCw } from "lucide-react";
 
 import { EntityAvatar } from "@/components/Avatar";
 import { ErrorBanner, LoadingLine } from "@/components/Message";
@@ -51,6 +51,7 @@ export function Organizations({
   viewer,
   loading,
   error,
+  onRetry,
   onOpen,
   onCreate,
 }: {
@@ -63,6 +64,8 @@ export function Organizations({
   viewer: { id: string; image?: string | null };
   loading: boolean;
   error: string | null;
+  /** Reads the list again after it failed. */
+  onRetry?: (() => void) | undefined;
   /** Opens one organization's settings. */
   onOpen: (organization: MembershipDto) => void;
   onCreate: () => void;
@@ -95,12 +98,22 @@ export function Organizations({
         </Button>
       </div>
 
-      {error !== null && <ErrorBanner>{error}</ErrorBanner>}
+      {error !== null && (
+        <div className="flex flex-col items-start gap-3">
+          <ErrorBanner>{error}</ErrorBanner>
+          {onRetry !== undefined && (
+            <Button type="button" variant="outline" size="sm" onClick={onRetry}>
+              <RefreshCw />
+              Try again
+            </Button>
+          )}
+        </div>
+      )}
 
       <div className="mt-8">
         {loading ? (
           <LoadingLine />
-        ) : organizations.length === 0 ? (
+        ) : error !== null ? null : organizations.length === 0 ? (
           // An empty state that says what an organization is for, since
           // someone seeing this has never made one.
           <Card>

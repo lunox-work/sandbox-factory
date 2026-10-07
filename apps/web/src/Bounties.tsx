@@ -18,10 +18,11 @@ import {
  * or GitHub; a bounty from Jira links to its issue, and one about a
  * repository is drafted beside an outline of it and cut from it.
  *
- * The page lists bounties only, a card each, one to a row. A proposal is made from a bounty
- * and lives inside it: an open bounty shows its proposal in full under its
- * text, and proposing a bounty follows its sizing run and then shows the
- * proposal in the same place.
+ * The page lists bounties only, a card each, one to a row. A proposal is
+ * made from a bounty and lives inside it: a bounty's page shows its proposal
+ * in full in its Bounty step, and proposing a bounty follows its sizing run
+ * and then shows the proposal in the same place. The panel over the list is
+ * a read-only glance without it.
  *
  * A bounty opens in a panel over the list, `/bounties?peek=acme/bty_1`, or as
  * a page of its own, `/bounties/acme/bty_1`, which the panel opens and whose
@@ -100,6 +101,7 @@ import {
   bountyProposalPath,
   isPlainLeftClick,
   NEW_BOUNTY_PATH,
+  NEW_ORG_PATH,
   pathForScreen,
   sandboxFilesPath,
   type BountyAddress,
@@ -163,6 +165,21 @@ function selectPageTab(next: string) {
     if (next === "overview") params.delete("tab");
     else params.set("tab", next);
   });
+}
+
+/**
+ * The history state a panel opened from the list is pushed with: the mark
+ * that the entry under it is the list, so closing the panel can go back to
+ * it rather than leave an entry behind that Back would reopen.
+ */
+const PEEK_ENTRY = { bountyPeek: true } as const;
+
+function isPeekEntry(state: unknown): boolean {
+  return (
+    typeof state === "object" &&
+    state !== null &&
+    (state as Record<string, unknown>)["bountyPeek"] === true
+  );
 }
 
 function canManage(role: string): boolean {
@@ -241,16 +258,23 @@ export function Bounties({
   /*
     Opening one from the list is a step Back undoes; moving from one open
     bounty to another replaces it, so Back closes the panel rather than
-    walking through every card looked at.
+    walking through every card looked at. Closing it is that same Back when
+    the panel was opened here, so the entry it was opened on is not left
+    for Back to reopen; one opened from a link or a reload has no list
+    entry under it to go back to, so its address is replaced with the list.
   */
   const open = (address: BountyAddress | null) => {
-    if (address !== null && peek !== null) {
+    if (address === null) {
+      if (peek === null) return;
+      if (isPeekEntry(window.history.state)) window.history.back();
+      else replaceLocation(bountiesUrl(null));
+    } else if (peek !== null) {
       if (address.workspace === peek.workspace && address.id === peek.id) {
         return;
       }
       replaceLocation(bountiesUrl(address));
     } else {
-      pushLocation(bountiesUrl(address));
+      pushLocation(bountiesUrl(address), PEEK_ENTRY);
     }
   };
 
@@ -338,8 +362,9 @@ export function Bounties({
  * A proposal named with no bounty, from when proposals had a list of their
  * own; `canonicalUrl` keeps it in the query with its workspace. It is read
  * for the bounty it belongs to, whose page then opens on its proposal, in
- * the address's place: a panel does not show the proposal. Only once the workspace is known: with none, there is
- * nowhere to read it from, and the address is dropped.
+ * the address's place: a panel does not show the proposal. Only once the
+ * workspace is known: with none, there is nowhere to read it from, and the
+ * address is dropped.
  */
 function useLegacyProposal(
   search: string,
@@ -447,6 +472,29 @@ function NewBountyLink({
       >
         <Plus />
         New bounty
+      </a>
+    </Button>
+  );
+}
+
+/**
+ * The way to the page a workspace is made on, for someone in none. A link,
+ * so it can be opened in another tab; a plain click stays in the app.
+ */
+function NewWorkspaceLink() {
+  return (
+    <Button variant="outline" size="sm" asChild>
+      <a
+        href={NEW_ORG_PATH}
+        onClick={(event) => {
+          if (isPlainLeftClick(event)) {
+            event.preventDefault();
+            pushLocation(NEW_ORG_PATH);
+          }
+        }}
+      >
+        <Plus />
+        New workspace
       </a>
     </Button>
   );
@@ -567,9 +615,13 @@ export function NewBountyPage({
       {organizationsLoading ? (
         <LoadingLine />
       ) : target === null ? (
-        <p className="text-muted-foreground text-sm">
-          You are not in a workspace yet.
-        </p>
+        // A bounty is written to a workspace, so the way on is to make one.
+        <div className="flex flex-col items-start gap-3">
+          <p className="text-muted-foreground text-sm">
+            You are not in a workspace yet. Create one to write bounties in.
+          </p>
+          <NewWorkspaceLink />
+        </div>
       ) : (
         <NewBounty
           organizations={organizations}
@@ -615,7 +667,6 @@ function NewBounty({
   const chosen = organizations.find(({ id }) => id === organizationId);
   return (
     <BountyForm
-      layout="page"
       repos={repos}
       // Shown even with one to choose from, so it says where the bounty goes.
       workspace={{
@@ -842,16 +893,30 @@ function BountyList({
   return (
     <div className="flex flex-col gap-4">
       {bounties.error !== null && (
-        <ErrorBanner className="mt-0">{bounties.error}</ErrorBanner>
+        <div className="flex flex-col items-start gap-3">
+          <ErrorBanner className="mt-0">{bounties.error}</ErrorBanner>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={bounties.retry}
+          >
+            <RefreshCw />
+            Try again
+          </Button>
+        </div>
       )}
       {bounties.bounties.length === 0 ? (
-        <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed px-4 py-10 text-center">
-          <p className="text-muted-foreground text-sm">
-            No bounties yet. Write one, or connect Jira and its boards&rsquo;
-            bounties arrive here as they are sized.
-          </p>
-          <NewBountyLink variant="outline" onCreate={onCreate} />
-        </div>
+        // A list that failed to load is not known to be empty.
+        bounties.error === null && (
+          <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed px-4 py-10 text-center">
+            <p className="text-muted-foreground text-sm">
+              No bounties yet. Write one, or connect Jira and its boards&rsquo;
+              bounties arrive here as they are sized.
+            </p>
+            <NewBountyLink variant="outline" onCreate={onCreate} />
+          </div>
+        )
       ) : (
         <>
           <ul className="flex flex-col gap-2" data-testid="bounty-list">
@@ -915,6 +980,8 @@ function WorkspaceTag({ name }: { name: string }) {
     <Badge
       variant="outline"
       className="text-muted-foreground max-w-40 px-1.5 py-0 font-normal"
+      // Cut short at the badge's width; the whole name on hover.
+      title={name}
     >
       <span className="truncate">{name}</span>
     </Badge>
@@ -972,11 +1039,12 @@ function ProposalBrief({
 
 /**
  * One bounty in the list, as a card the width of the list: its title with
- * where it came from under it, and its proposal at the far end. A click
- * anywhere on it opens the bounty over the list, its proposal with it; it is
- * a link to the bounty's own page, so it can be opened in another tab. While
- * the panel is open, a click on another card shows that one in it instead.
- * A bounty is proposed from inside it, never from its card.
+ * where it came from under it, and its proposal in brief at the far end. A
+ * click anywhere on it opens the bounty in the panel beside the list, a
+ * glance whose proposal is on the bounty's own page; it is a link to that
+ * page, so it can be opened in another tab. While the panel is open, a
+ * click on another card shows that one in it instead. A bounty is proposed
+ * from its page, never from its card.
  */
 function BountyCard({
   bounty,
@@ -996,7 +1064,11 @@ function BountyCard({
 }) {
   const { proposal } = bounty;
   const heading = (
-    <span className="line-clamp-2 text-sm font-medium sm:line-clamp-1">
+    <span
+      className="line-clamp-2 text-sm font-medium sm:line-clamp-1"
+      // Clamped to a line or two; the whole title on hover.
+      title={bounty.title}
+    >
       {bounty.title}
     </span>
   );
@@ -1071,7 +1143,11 @@ function usePropose(
   bounties: Bounties,
   organizationId: string,
   bountyId: string,
-  /** Whether it has no proposal yet, and so may have a sizing to find. */
+  /**
+   * Whether it has no proposal yet, and so may have a sizing to find, where
+   * the proposal's place is shown: a sizing followed where nothing says so
+   * would be polled for nothing.
+   */
   unproposed: boolean,
   onOpenProposal: (proposalId: string) => void,
 ) {
@@ -1168,11 +1244,12 @@ function BountyDetail({
   /** Where a page's links lead to connect a source; a panel offers none. */
   onOpenSettings?: OpenSettings | undefined;
 }) {
+  // A panel has no proposal's place, so a sizing in flight is not followed.
   const propose = usePropose(
     bounties,
     bounty.organizationId,
     bounty.id,
-    proposal === null,
+    layout === "page" && proposal === null,
     onProposed,
   );
   const [sandboxPending, setSandboxPending] = useState(false);
@@ -1639,6 +1716,7 @@ function BountyDetail({
         title="Delete this bounty?"
         description="The bounty is removed from this workspace. A bounty with a proposal or a sandbox, or one being sized, cannot be deleted."
         confirmLabel="Delete bounty"
+        pendingLabel="Deleting…"
         onConfirm={async () => {
           // A failure stays in the dialog, which says it.
           const failure = await bounties.remove(bounty.id);
@@ -1784,13 +1862,18 @@ function BountyDetail({
               />
             </TabsContent>
             <TabsContent value="bounty" className="flex flex-col gap-4">
+              {/*
+                Named as its tab is, the Bounty step, as the sandbox's
+                lineage and the way to generate it name it too: the
+                proposal is what the step holds, not what it is called.
+              */}
               <StepLineage
                 step="bounty"
                 stages={bounty.stages}
                 remedy={
                   bounty.proposal?.status === "approved"
-                    ? "Unapprove the proposal, then re-analyze it to size it from the latest overview."
-                    : "Re-analyze the proposal to size it from the latest overview."
+                    ? "Unapprove the bounty, then re-analyze it to size it from the latest overview."
+                    : "Re-analyze the bounty to size it from the latest overview."
                 }
                 onOpen={selectPageTab}
               />
@@ -1803,7 +1886,7 @@ function BountyDetail({
                 remedy={
                   unlinked
                     ? "Generate a new version to build from the latest bounty."
-                    : "Slice a new version to build from the latest bounty."
+                    : "A new version sliced from its repository would build from the latest bounty; slicing is not available from this page yet."
                 }
                 onOpen={selectPageTab}
               />
@@ -1888,16 +1971,15 @@ const fieldClass =
   "border-input focus-visible:border-ring focus-visible:ring-ring/50 w-full rounded-md border bg-transparent px-3 py-2 text-base shadow-xs outline-none focus-visible:ring-[3px] disabled:cursor-not-allowed disabled:opacity-50 md:text-sm";
 
 /**
- * A bounty's fields, for writing one or changing it. `textLocked` is a
- * bounty following its Jira issue: its text is Jira's, so only its
- * repository is offered.
+ * A new bounty's fields, on the page it is written on: the title and
+ * description in a wide column with the rest of the fields beside them,
+ * below them on a narrow screen. A bounty that exists is changed a field at
+ * a time where it is shown, not here.
  *
- * `layout` is the room it has: one column in a panel, or on a page the
- * title and description in a wide column with the rest of the fields
- * beside them, below them on a narrow screen.
+ * What is typed lives only here until it is saved, so leaving the page by
+ * Cancel or by connecting a repository asks first once there is any.
  */
 function BountyForm({
-  layout = "panel",
   repos,
   workspace,
   newRepository,
@@ -1905,20 +1987,14 @@ function BountyForm({
   onSubmit,
   onCancel,
 }: {
-  layout?: "panel" | "page";
   repos: GithubRepos;
-  /**
-   * The workspace a new bounty goes to. A bounty that exists stays in its
-   * own, so editing one offers none.
-   */
-  workspace?:
-    | {
-        organizations: MembershipDto[];
-        viewer: Viewer;
-        value: string;
-        onChange: (organizationId: string) => void;
-      }
-    | undefined;
+  /** The workspace the bounty goes to, which the form offers to change. */
+  workspace: {
+    organizations: MembershipDto[];
+    viewer: Viewer;
+    value: string;
+    onChange: (organizationId: string) => void;
+  };
   /**
    * Where a repository the list lacks is connected, offered under the
    * repositories: the workspace's GitHub settings.
@@ -1946,9 +2022,18 @@ function BountyForm({
     (name) => !inherited.some((repo) => sameStackName(repo, name)),
   );
 
-  const page = layout === "page";
+  /*
+    Where the person was about to go when they had something unsaved: held
+    while they are asked whether to leave it, and taken if they say so.
+  */
+  const [leaving, setLeaving] = useState<(() => void) | null>(null);
+  const unsaved = title.trim() !== "" || description.trim() !== "";
+  const leave = (go: () => void) => {
+    if (unsaved) setLeaving(() => go);
+    else go();
+  };
 
-  const workspaceField = workspace !== undefined && (
+  const workspaceField = (
     <Labelled label="Workspace">
       {(field) => (
         <Combobox
@@ -2017,10 +2102,11 @@ function BountyForm({
               : [
                   {
                     key: "new-repository",
-                    label: "New repository",
+                    // As a bounty's links name it, once the bounty exists.
+                    label: "Connect a repository",
                     icon: <Plus />,
                     href: newRepository.href,
-                    onSelect: newRepository.onOpen,
+                    onSelect: () => leave(newRepository.onOpen),
                   },
                 ]
           }
@@ -2073,11 +2159,7 @@ function BountyForm({
         <textarea
           id={field.id}
           aria-describedby={field.describedBy}
-          className={cn(
-            fieldClass,
-            "font-mono",
-            page ? "min-h-72 lg:min-h-[28rem]" : "min-h-48",
-          )}
+          className={cn(fieldClass, "font-mono min-h-72 lg:min-h-[28rem]")}
           value={description}
           maxLength={BOUNTY_LIMITS.description}
           onChange={(event) => setDescription(event.target.value)}
@@ -2089,7 +2171,7 @@ function BountyForm({
     <>
       {error !== null && <ErrorBanner className="mt-0">{error}</ErrorBanner>}
       <div className="flex justify-end gap-2">
-        <Button type="button" variant="ghost" onClick={onCancel}>
+        <Button type="button" variant="ghost" onClick={() => leave(onCancel)}>
           Cancel
         </Button>
         <Button type="submit" disabled={saving}>
@@ -2102,11 +2184,7 @@ function BountyForm({
 
   return (
     <form
-      className={
-        page
-          ? "grid gap-x-8 gap-y-6 lg:grid-cols-[minmax(0,1fr)_17rem]"
-          : "flex flex-col gap-4"
-      }
+      className="grid gap-x-8 gap-y-6 lg:grid-cols-[minmax(0,1fr)_17rem]"
       data-testid="bounty-form"
       onSubmit={(event) => {
         event.preventDefault();
@@ -2128,33 +2206,33 @@ function BountyForm({
         });
       }}
     >
-      {page ? (
-        <>
-          <div className="flex min-w-0 flex-col gap-4">
-            {titleField}
-            {descriptionField}
-          </div>
-          {/*
-            Beside the description from `lg`, the full height of the form;
-            under it on a narrower screen, two to a row while there is room.
-          */}
-          <div className="grid content-start gap-4 sm:grid-cols-2 lg:row-span-2 lg:grid-cols-1">
-            {workspaceField}
-            {repoField}
-            {stackField}
-          </div>
-          <div className="flex flex-col gap-4">{footer}</div>
-        </>
-      ) : (
-        <>
-          {workspaceField}
-          {titleField}
-          {repoField}
-          {stackField}
-          {descriptionField}
-          {footer}
-        </>
-      )}
+      <div className="flex min-w-0 flex-col gap-4">
+        {titleField}
+        {descriptionField}
+      </div>
+      {/*
+        Beside the description from `lg`, the full height of the form;
+        under it on a narrower screen, two to a row while there is room.
+      */}
+      <div className="grid content-start gap-4 sm:grid-cols-2 lg:row-span-2 lg:grid-cols-1">
+        {workspaceField}
+        {repoField}
+        {stackField}
+      </div>
+      <div className="flex flex-col gap-4">{footer}</div>
+      <ConfirmDialog
+        open={leaving !== null}
+        onOpenChange={(open) => {
+          if (!open) setLeaving(null);
+        }}
+        title="Discard this bounty?"
+        description="It has not been created yet, so what you have written here is lost if you leave."
+        confirmLabel="Discard"
+        pendingLabel="Leaving…"
+        onConfirm={() => {
+          leaving?.();
+        }}
+      />
     </form>
   );
 }

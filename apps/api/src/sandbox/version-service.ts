@@ -14,7 +14,8 @@ import {
  * parameters carry every hash the output must bind to. A sandbox with no
  * repository has its versions generated: `generate` snapshots the task
  * from the bounty itself and queues the starter agent, which writes the
- * version and builds it. Nothing here is public; publication is phase 5D.
+ * version and builds it. A version is published by the routes, which
+ * check its build; nothing in this module makes anything public.
  */
 
 import type {
@@ -94,11 +95,27 @@ export function approvedTaskHash(snapshot: ApprovedTaskSnapshot): string {
 
 /** The owner is the path's; it is not repeated in the body. */
 
-const failure = <T extends object>(
-  body: T,
-  reason: "invalid" | "not-found" | "conflict" | "unavailable",
-) => ({ ok: false as const, body, reason });
-function unknownChoices(
+type FailureReason = "invalid" | "not-found" | "conflict" | "unavailable";
+/** A refusal, as its body and a reason the routes answer with a status. */
+export interface Failure {
+  readonly ok: false;
+  readonly body: object;
+  readonly reason: FailureReason;
+}
+/** The status each refusal is answered with. */
+export const FAILURE_STATUS = {
+  invalid: 400,
+  "not-found": 404,
+  conflict: 409,
+  unavailable: 502,
+} as const satisfies Record<FailureReason, number>;
+const failure = <T extends object>(body: T, reason: FailureReason) => ({
+  ok: false as const,
+  body,
+  reason,
+});
+/** A dependency choice must name a package the slice requires. */
+export function unknownChoices(
   manifest: SliceManifest,
   choices: Readonly<Record<string, DependencyChoice>>,
 ) {
@@ -122,7 +139,7 @@ export type FixturesFailure =
   | "fixtures_mismatch"
   | "artifacts_unavailable";
 /** Why fixtures could not be copied from a run, as the API reports it. */
-function fixturesRefused(error: FixturesFailure) {
+export function fixturesRefused(error: FixturesFailure) {
   if (error === "not_found")
     return failure({ error: "Not found." }, "not-found");
   if (error === "fixtures_not_ready")
@@ -150,7 +167,7 @@ function fixturesRefused(error: FixturesFailure) {
   );
 }
 /** Fixtures must name values the version's slice mocks. */
-function invalidFixtures(
+export function invalidFixtures(
   fixtures: readonly SandboxFixture[],
   contract: BoundaryContract,
 ) {
@@ -166,6 +183,16 @@ function invalidFixtures(
         "invalid",
       );
 }
+
+const starterInProgress = () =>
+  failure(
+    {
+      error:
+        "A version of this sandbox is already being generated. Wait for it to finish.",
+      code: "starter_in_progress",
+    },
+    "conflict",
+  );
 
 export function versionService(options: SandboxRouteOptions) {
   /** The slice run's manifest and contract, verified against their recorded hashes. */
@@ -412,7 +439,8 @@ export function versionService(options: SandboxRouteOptions) {
    * and description, with its live proposal's spec and price, and the
    * starter agent queued to write and build it. The proposal must be
    * approved: a bounty with none, or a draft one, is refused
-   * `task_not_ready`. The run is
+   * `task_not_ready`, and so is a second one while another version's
+   * starter is queued or running, `starter_in_progress`. The run is
    * queued first, naming the version's id, and the version is then made
    * pointing at it; a version that could not be made leaves a run whose
    * version does not exist, which the worker fails.
@@ -439,6 +467,23 @@ export function versionService(options: SandboxRouteOptions) {
         },
         "conflict",
       );
+    // One version is generated at a time. Each run names a version of its
+    // own, so a second Generate, a double click, never matches the first in
+    // the queue and would make a second version. While the newest version's
+    // starter is still under way, that is refused; the store checks again
+    // under the sandbox's lock, for two requests that pass here together.
+    const newest = (await options.sandboxes.listVersions(owner, sandbox.id))[0];
+    const latest =
+      newest === undefined
+        ? null
+        : await options.sandboxes.getVersion(owner, newest.id);
+    const starterRunId = latest?.source.starterRunId ?? null;
+    const starter =
+      starterRunId === null
+        ? null
+        : await options.runs.get(owner, starterRunId);
+    if (starter?.status === "queued" || starter?.status === "running")
+      return starterInProgress();
     const bounty = await options.bounties.get(owner, sandbox.bountyId);
     if (bounty === null) return failure({ error: "Not found." }, "not-found");
     // The stack it follows: what the bounty's repository was detected to
@@ -573,7 +618,9 @@ export function versionService(options: SandboxRouteOptions) {
             },
             "conflict",
           )
-        : failure({ error: "Not found." }, "not-found");
+        : created.reason === "starter_in_progress"
+          ? starterInProgress()
+          : failure({ error: "Not found." }, "not-found");
     return { ok: true as const, result: created, run: queued.run };
   }
   return { sliceInputs, fixturesFromRun, create, generate };

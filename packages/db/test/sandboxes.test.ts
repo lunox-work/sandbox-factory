@@ -445,6 +445,7 @@ test("a version is generated only without a repository, from the owner's run que
   const fake = createSequencedFakeDb([
     [{ sandbox: sandboxRow(), sourceRepoId: null }],
     [{ id: "arn_starter" }],
+    [],
     [{ version: 1 }],
     [versionRow({ id: "sbv_new", version: 2 })],
     [generatedRow({ sandboxVersionId: "sbv_new" })],
@@ -461,10 +462,13 @@ test("a version is generated only without a repository, from the owner's run que
   assert.equal(result.source.starterRunId, "arn_starter");
   // The run was looked up under the owner, and is the version's build too.
   assert.equal(fake.calls[1]?.filtered, true);
-  assert.equal(fake.calls[3]?.values?.["id"], "sbv_new");
-  assert.equal(fake.calls[4]?.values?.["starterRunId"], "arn_starter");
-  assert.equal(fake.calls[4]?.values?.["buildRunId"], "arn_starter");
-  assert.equal(fake.calls[4]?.values?.["sliceRunId"], undefined);
+  // Another version's starter under way was looked for, under the owner.
+  assert.equal(fake.calls[2]?.filtered, true);
+  assert.equal(fake.calls[2]?.limited, 1);
+  assert.equal(fake.calls[4]?.values?.["id"], "sbv_new");
+  assert.equal(fake.calls[5]?.values?.["starterRunId"], "arn_starter");
+  assert.equal(fake.calls[5]?.values?.["buildRunId"], "arn_starter");
+  assert.equal(fake.calls[5]?.values?.["sliceRunId"], undefined);
   // A sandbox with a repository slices its versions instead.
   assert.deepEqual(
     await createSandboxStore(
@@ -484,6 +488,23 @@ test("a version is generated only without a repository, from the owner's run que
     ).createVersion("owner", "sbx_1", starterVersion),
     { ok: false, reason: "starter_mismatch" },
   );
+  // A second Generate while the first version's starter is still queued
+  // or running makes no second version.
+  const busy = createSequencedFakeDb([
+    [{ sandbox: sandboxRow(), sourceRepoId: null }],
+    [{ id: "arn_starter" }],
+    [{ id: "arn_earlier" }],
+  ]);
+  assert.deepEqual(
+    await createSandboxStore(busy.db).createVersion(
+      "owner",
+      "sbx_1",
+      starterVersion,
+    ),
+    { ok: false, reason: "starter_in_progress" },
+  );
+  assert.equal(busy.calls[0]?.lock, "update");
+  assert.equal(busy.calls.length, 3);
 });
 
 test("a starter run's output settles on its draft only while the draft still points at it", async () => {
@@ -741,7 +762,7 @@ test("fixtures are part of the transform: replacing or dropping them clears evid
   assert.equal(dropped.calls[1]?.values?.["buildRunId"], null);
 });
 
-test("recording a build clears the old build's evidence, and refuses a changed transform", async () => {
+test("recording a build clears the old build's evidence but not its own, and refuses and cancels a changed or frozen one", async () => {
   const current = {
     version: versionRow(),
     source: sourceRow({
@@ -770,25 +791,54 @@ test("recording a build clears the old build's evidence, and refuses a changed t
   assert.deepEqual(fake.calls[2]?.values, { updatedAt: now });
   const store = (rows: readonly (readonly unknown[])[]) =>
     createSandboxStore(createSequencedFakeDb(rows).db);
-  assert.deepEqual(
-    await store([[current]]).recordBuild(
-      "owner",
-      "sbv_1",
-      "arn_new",
-      "x".repeat(64),
-    ),
-    { ok: false, reason: "conflict" },
-  );
-  assert.deepEqual(
-    await store([
+  // A refused build is cancelled while it is still queued, so it gives back
+  // its active slot; the draft is not touched.
+  for (const [rows, expectedHash, reason] of [
+    [[current], "x".repeat(64), "conflict"],
+    [
       [{ ...current, version: versionRow({ frozenAt: now }) }],
-    ]).recordBuild("owner", "sbv_1", "arn_new", "t".repeat(64)),
-    { ok: false, reason: "frozen" },
-  );
+      "t".repeat(64),
+      "frozen",
+    ],
+  ] as const) {
+    const refused = createSequencedFakeDb([rows]);
+    assert.deepEqual(
+      await createSandboxStore(refused.db).recordBuild(
+        "owner",
+        "sbv_1",
+        "arn_new",
+        expectedHash,
+        now,
+      ),
+      { ok: false, reason },
+    );
+    assert.equal(refused.calls.length, 2);
+    assert.equal(refused.calls[1]?.kind, "update");
+    assert.equal(refused.calls[1]?.filtered, true);
+    assert.deepEqual(refused.calls[1]?.values, {
+      status: "failed",
+      errorCode: "cancelled",
+      errorDetail: null,
+      finishedAt: now,
+    });
+  }
   assert.deepEqual(
     await store([[]]).recordBuild("owner", "sbv_x", "arn_new", "t".repeat(64)),
     { ok: false, reason: "not-found" },
   );
+  // The build the draft already points at, asked for again, keeps what it
+  // proved: nothing is written.
+  const same = createSequencedFakeDb([[current]]);
+  const kept = await createSandboxStore(same.db).recordBuild(
+    "owner",
+    "sbv_1",
+    "arn_old",
+    "t".repeat(64),
+    now,
+  );
+  assert.equal(kept.ok && kept.source.harnessSha256, "h".repeat(64));
+  assert.equal(kept.ok && kept.source.toolchainDigest, "d".repeat(64));
+  assert.equal(same.calls.length, 1);
   assert.deepEqual(
     await store([[current], []]).recordBuild(
       "owner",

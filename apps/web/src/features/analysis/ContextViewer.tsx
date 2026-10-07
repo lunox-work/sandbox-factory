@@ -58,8 +58,10 @@ import { Panes, Watermark, WorkbenchDialog } from "./WorkbenchDialog";
 export interface ContextBuild {
   builder: ContextBuilder;
   run: AnalysisRunDto;
-  /** Undefined while they are read. */
+  /** Undefined while they are read, and when the read failed. */
   artifacts: readonly ArtifactDto[] | undefined;
+  /** The read of its artifacts failed. */
+  failed?: boolean;
 }
 
 /** A file in the explorer: `<builder>/<artifact path>`. */
@@ -72,29 +74,41 @@ export function ContextViewer({
   owner,
   commit,
   builds,
+  onRetry,
   open,
   onOpenChange,
   onOpenRaw,
+  notice,
 }: {
   owner: string;
   /** The snapshot's commit, short, for the title. */
   commit: string | undefined;
   /** In the builders' order. */
   builds: readonly ContextBuild[];
+  /** Reads again the builds whose files could not be listed. */
+  onRetry?: (() => void) | undefined;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   /** Opens an artifact's signed URL in a new tab. */
   onOpenRaw: (artifactId: string) => void;
+  /** A failure from inside the dialog; see `WorkbenchDialog`. */
+  notice?: { text: string; onDismiss: () => void } | null | undefined;
 }) {
   return (
     <WorkbenchDialog
+      notice={notice}
       title="Context"
       detail={commit}
       description="The files each context builder wrote on this snapshot."
       open={open}
       onOpenChange={onOpenChange}
     >
-      <Workbench owner={owner} builds={builds} onOpenRaw={onOpenRaw} />
+      <Workbench
+        owner={owner}
+        builds={builds}
+        onRetry={onRetry}
+        onOpenRaw={onOpenRaw}
+      />
     </WorkbenchDialog>
   );
 }
@@ -102,10 +116,12 @@ export function ContextViewer({
 function Workbench({
   owner,
   builds,
+  onRetry,
   onOpenRaw,
 }: {
   owner: string;
   builds: readonly ContextBuild[];
+  onRetry?: (() => void) | undefined;
   onOpenRaw: (artifactId: string) => void;
 }) {
   const entries = useMemo(() => {
@@ -124,7 +140,10 @@ function Workbench({
   const selected =
     chosen ?? keys.find((key) => languageOf(key).id === "markdown") ?? null;
   const entry = selected === null ? undefined : entries.get(selected);
-  const reading = builds.some((build) => build.artifacts === undefined);
+  const reading = builds.some(
+    (build) => build.artifacts === undefined && build.failed !== true,
+  );
+  const failed = builds.filter((build) => build.failed === true);
 
   return (
     <Panes
@@ -136,6 +155,22 @@ function Workbench({
             <div className="px-5 py-2 text-xs text-(--wb-muted)">
               <LoadingLine>Listing files…</LoadingLine>
             </div>
+          )}
+          {failed.length > 0 && (
+            <p className="px-5 py-2 text-xs text-(--wb-muted)">
+              {failed.length === 1
+                ? `${builderNames[failed[0]?.builder ?? "graphify"]}'s files could not be listed.`
+                : "Some builds' files could not be listed."}{" "}
+              {onRetry !== undefined && (
+                <button
+                  type="button"
+                  className="text-(--wb-accent) hover:underline"
+                  onClick={onRetry}
+                >
+                  Try again
+                </button>
+              )}
+            </p>
           )}
         </>
       }
@@ -168,6 +203,12 @@ function Explorer({
   selected: string | null;
   onOpen: (path: string) => void;
 }) {
+  // The builders whose files are not known yet: being read, or not read.
+  const unread = new Set(
+    builds
+      .filter(({ artifacts }) => artifacts === undefined)
+      .map(({ builder }) => builder as string),
+  );
   // A folder for each builder, in the builders' order, with its files in it.
   const tree = useMemo(
     () =>
@@ -249,6 +290,9 @@ function Explorer({
                 <span className="truncate">{node.name}</span>
               </button>
               {isOpen &&
+                // A builder still being read, or whose read failed, is not
+                // known to have no files; the line under the tree says so.
+                !(depth === 0 && unread.has(node.path)) &&
                 (node.children.length === 0 ? (
                   <p
                     className="h-[22px] pr-3 leading-[22px] whitespace-nowrap text-(--wb-muted) italic"

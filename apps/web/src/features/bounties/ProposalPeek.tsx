@@ -48,6 +48,9 @@ import {
   scenarioTotal,
   useProposalSpec,
   useRevisionView,
+  useShownSpec,
+  type SinceSized,
+  type SpecHistory,
 } from "../../ProposalSpec";
 import { PricingRubricBlock } from "../../PricingRubric";
 import { JiraIcon, ModelIcon } from "../../ProviderIcon";
@@ -271,6 +274,33 @@ export function ProposalPeek({
     !reanalyzing &&
     step !== null &&
     (proposal.specRevision ?? null) !== null;
+  // Once approved, what changed since sizing is what was approved.
+  const sinceSized: SinceSized | undefined =
+    step === null || !open
+      ? undefined
+      : { added: step.added.map(({ id }) => id), removed: step.removed ?? [] };
+  const history: SpecHistory = {
+    base,
+    proposalId: proposal.id,
+    specRevision,
+  };
+  /*
+    The spec as the price reads it: inside its bounty, the revision chosen
+    in the header, which the rubric scores; outside it, the current one,
+    the Scenarios tab having its own picker.
+  */
+  const rubricSpec = useShownSpec({
+    read: spec.read,
+    onRetry: spec.retry,
+    history,
+    sinceSized,
+    view: withinBounty
+      ? { viewing, onView: setViewing }
+      : { viewing: null, onView: () => {} },
+  });
+  // Inside its bounty the rubric carries the scenarios; one sized before
+  // the rubric has none to carry them, and shows them as a list instead.
+  const scenariosInRubric = withinBounty && (proposal.rubric ?? null) !== null;
   // The size a resize replaces: the step's base when there is a step, so a
   // reviewer sees which whole size the half size stands on.
   const sizeBase = step?.base ?? proposal.complexity;
@@ -308,24 +338,12 @@ export function ProposalPeek({
                     },
             }
       }
-      history={{
-        base,
-        proposalId: proposal.id,
-        specRevision: proposal.specRevision ?? null,
-      }}
+      history={history}
       {...(withinBounty ? { view: { viewing, onView: setViewing } } : {})}
       {...(canChange
         ? { changes: { control: respec, size: proposal.complexity } }
         : {})}
-      // Once approved, what changed since sizing is what was approved.
-      {...(step === null || !open
-        ? {}
-        : {
-            sinceSized: {
-              added: step.added.map(({ id }) => id),
-              removed: step.removed ?? [],
-            },
-          })}
+      {...(sinceSized === undefined ? {} : { sinceSized })}
     />
   );
 
@@ -695,6 +713,13 @@ export function ProposalPeek({
             proposal={proposal}
             canUse={canDecide && open}
             busy={locked}
+            scenarios={{
+              shown: rubricSpec,
+              changes:
+                withinBounty && canChange
+                  ? { control: respec, size: proposal.complexity }
+                  : undefined,
+            }}
             onUse={() =>
               void mutate(
                 `/proposals/${proposal.id}/rubric`,
@@ -743,10 +768,11 @@ export function ProposalPeek({
       )}
 
       {/*
-        Inside its bounty, the scenarios too, on the same page: the
-        last of the reasoning, before the decision made on it.
+        Inside its bounty, the scenarios too, on the same page: read from
+        the price they make, in "Why this price"; or, for a proposal sized
+        before the rubric, as a list, the last of the reasoning.
       */}
-      {withinBounty && (
+      {withinBounty && !scenariosInRubric && (
         <div>
           <SectionHeading icon={<ListChecks />}>Scenarios</SectionHeading>
           {scenarioView}

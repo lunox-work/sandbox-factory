@@ -912,7 +912,9 @@ test("a repository the workspace lacks is connected in its GitHub settings", asy
   );
   // A link, so it can be opened in another tab; a plain click stays in the
   // app, in the workspace chosen rather than the one in the rail.
-  const link = within(list).getByRole("option", { name: "New repository" });
+  const link = within(list).getByRole("option", {
+    name: "Connect a repository",
+  });
   expect(link.getAttribute("href")).toBe("/o/beta/settings?connection=github");
   await userEvent.click(link);
   expect(onConnectRepository).toHaveBeenCalledWith(
@@ -1929,6 +1931,22 @@ test("an address from when proposals had a tab opens the proposal on its bounty'
   expect(await screen.findByTestId("proposal-detail")).toBeDefined();
 });
 
+test("an address that names no page is not found, not home", () => {
+  expect(screenForPath("/")).toBe("home");
+  expect(screenForPath("")).toBe("home");
+  expect(screenForPath("/nonexistent")).toBe("not-found");
+  expect(screenForPath("/settings/jira")).toBe("not-found");
+  expect(screenForPath("/o/acme/members")).toBe("not-found");
+  // A workspace's own pages, and the Jira ones that moved into settings.
+  expect(screenForPath("/o/acme")).toBe("org-settings");
+  expect(screenForPath("/o/acme/settings/")).toBe("org-settings");
+  expect(screenForPath("/o/acme/jira")).toBe("org-settings");
+  expect(screenForPath("/o/acme/jira/site_1")).toBe("org-settings");
+  expect(screenForPath("/o/acme/jira/site_1/42")).toBe("org-jira-board");
+  expect(screenForPath("/o/acme/repositories/repo_1")).toBe("org-repository");
+  expect(pathForScreen("not-found")).toBe("/");
+});
+
 test("the bounties page has a path and a trail of its own", () => {
   // Every workspace's, so under none of them.
   expect(screenForPath("/bounties")).toBe("bounties");
@@ -1940,7 +1958,7 @@ test("the bounties page has a path and a trail of its own", () => {
   // under its new name, with the workspace the path named.
   expect(screenForPath("/o/acme/bounties")).toBe("bounties");
   expect(screenForPath("/o/acme/tickets")).toBe("bounties");
-  expect(screenForPath("/o/acme/bounties/more")).toBe("org-settings");
+  expect(screenForPath("/o/acme/bounties/more")).toBe("not-found");
   expect(canonicalUrl("/o/acme/bounties", "")).toBe("/bounties");
   expect(canonicalUrl("/o/acme/tickets", "")).toBe("/bounties");
   expect(canonicalUrl("/o/acme/bounties", "?bounty=bty_1")).toBe(
@@ -3471,9 +3489,24 @@ test("a version whose build passed is published for a while from over the slice,
   expect(expiresAt).toBeLessThanOrEqual(Date.now() + weekMs);
   // Published, and until when.
   expect(await within(part).findByText(/Expires/)).toBeDefined();
-  // Unpublishing takes the sandbox back to a draft.
+  // Unpublishing takes the sandbox back to a draft, once confirmed: it
+  // takes the sandbox from contributors.
   await userEvent.click(
     await within(part).findByRole("button", { name: "Unpublish" }),
+  );
+  expect(
+    state.calls.some(({ url }) => url.endsWith("/sandboxes/sbx_1/unpublish")),
+  ).toBe(false);
+  const asked = await screen.findByRole("alertdialog", {
+    name: "Unpublish this version?",
+  });
+  await userEvent.click(
+    within(asked).getByRole("button", { name: "Unpublish" }),
+  );
+  await waitFor(() =>
+    expect(
+      state.calls.some(({ url }) => url.endsWith("/sandboxes/sbx_1/unpublish")),
+    ).toBe(true),
   );
   expect(
     state.calls.some(

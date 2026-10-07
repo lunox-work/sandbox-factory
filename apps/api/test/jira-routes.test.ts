@@ -596,7 +596,7 @@ test("an absolute returnTo cannot redirect off-site", async () => {
       ),
     ) as { returnTo: string };
 
-    assert.equal(payload.returnTo, "/settings/jira", `${evil} leaked through`);
+    assert.equal(payload.returnTo, "/", `${evil} leaked through`);
   }
 });
 

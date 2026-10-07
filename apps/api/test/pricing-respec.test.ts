@@ -349,9 +349,6 @@ function executorHarness(options: {
         boardId: "jrb_1",
         externalId: "100",
         key: "APP-1",
-        statusCategory: "new",
-        remoteCreatedAt: "2026-01-01T00:00:00.000Z",
-        remoteUpdatedAt: "2026-01-02T00:00:00.000Z",
         removedAt: null,
       }),
     markRemoved: (_org: string, id: string) => {

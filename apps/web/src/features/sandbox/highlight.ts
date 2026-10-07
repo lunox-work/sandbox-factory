@@ -18,10 +18,10 @@ import type {
 
 export type { ThemedToken };
 
-export const THEME = "dark-plus";
+const THEME = "dark-plus";
 
 /** Past this, a file is shown uncoloured rather than stalling the tab. */
-export const HIGHLIGHT_LIMIT_CHARS = 200_000;
+const HIGHLIGHT_LIMIT_CHARS = 200_000;
 
 type Grammar = () => Promise<{ default: LanguageRegistration[] }>;
 
@@ -80,6 +80,12 @@ function load(): Promise<HighlighterCore> {
       engine: createJavaScriptRegexEngine(),
     });
   })();
+  // A chunk that failed to load is not remembered, as Mermaid's is not: a
+  // dropped connection would otherwise leave every file uncoloured until a
+  // reload.
+  highlighter.catch(() => {
+    highlighter = undefined;
+  });
   return highlighter;
 }
 

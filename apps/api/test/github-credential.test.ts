@@ -167,7 +167,7 @@ test("only a revoked or spent grant is flagged; a missing permission is not", as
       target,
       new GithubAuthError(403, "no"),
     ),
-    false,
+    "other",
   );
   assert.equal(
     await noteGrantFailure(
@@ -175,7 +175,7 @@ test("only a revoked or spent grant is flagged; a missing permission is not", as
       target,
       new GithubInstallationUnavailable(404, "gone"),
     ),
-    false,
+    "other",
   );
   assert.equal((await stores.grants.get("org_1", "user_1"))?.healthy, true);
   assert.equal(
@@ -184,9 +184,28 @@ test("only a revoked or spent grant is flagged; a missing permission is not", as
       target,
       new GithubOAuthError("bad_refresh_token", "spent"),
     ),
-    true,
+    "flagged",
   );
   assert.equal((await stores.grants.get("org_1", "user_1"))?.healthy, false);
+});
+
+test("a grant replaced while the call was out is not flagged, and says so", async () => {
+  const stores = memoryGithub();
+  await stores.grants.upsert("org_1", "user_1", grant);
+  // The person reconnects: the revision moves on past the one the call held.
+  await stores.grants.upsert("org_1", "user_1", {
+    ...grant,
+    accessToken: "ghu_new",
+  });
+
+  const outcome = await noteGrantFailure(
+    stores.grants,
+    { organizationId: "org_1", userId: "user_1", credentialRevision: 1 },
+    new GithubAuthError(401, "revoked"),
+  );
+
+  assert.equal(outcome, "superseded");
+  assert.equal((await stores.grants.get("org_1", "user_1"))?.healthy, true);
 });
 
 test("an installation client works with the default fetch wiring", () => {

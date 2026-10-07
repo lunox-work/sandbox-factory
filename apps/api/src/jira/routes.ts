@@ -276,12 +276,13 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
       return c.json({ error: "Only an owner or admin may connect Jira." }, 403);
     }
 
-    const returnTo = c.req.query("returnTo") ?? "/settings/jira";
+    // Home when the caller names nowhere: it reports the flow's outcome.
+    const returnTo = c.req.query("returnTo") ?? "/";
     const state = signState(secret, "jira", {
       organizationId,
       userId: c.get("user").id,
       // Only the path survives; see `redirectTarget`.
-      returnTo: safePath(returnTo, "/settings/jira"),
+      returnTo: safePath(returnTo, "/"),
       ...(now === undefined ? {} : { issuedAt: now() }),
     });
 

@@ -10,14 +10,23 @@ import { clients, queryKeys, useUserId } from "../../data/query";
 export function useAnalysisResources(
   owner: string,
   repoId: string,
-  { watchSnapshots = false }: { watchSnapshots?: boolean } = {},
+  {
+    watchSnapshots = false,
+    snapshotId = "",
+  }: {
+    watchSnapshots?: boolean;
+    /** The snapshot whose builds the page shows; none while it is unknown. */
+    snapshotId?: string;
+  } = {},
 ) {
   const userId = useUserId();
   const cache = useQueryClient();
   const snapshots = useQuery({
     queryKey: queryKeys.resource(userId, owner, "snapshots", repoId),
     queryFn: ({ signal }) => clients.analysis.snapshots(owner, repoId, signal),
-    refetchInterval: watchSnapshots ? 2000 : false,
+    // Not after a failure: errors stop tracking until a deliberate retry.
+    refetchInterval: (query) =>
+      watchSnapshots && query.state.error === null ? 2000 : false,
   });
   const history = useObservation({
     owner,
@@ -27,19 +36,40 @@ export function useAnalysisResources(
     terminal: (runs) => runs.every(terminalRun),
     interval: 2000,
   });
-  const refresh = useCallback(() => {
-    void cache.invalidateQueries({
-      queryKey: queryKeys.resource(userId, owner, "analysis-history", repoId),
-    });
-  }, [cache, userId, owner, repoId]);
+  /*
+    The chosen snapshot's runs, read on their own. The history above is the
+    repository's newest, a bounded page across every snapshot and tool, so
+    on a busy repository a builder's run on this snapshot fell off it and
+    read as never built.
+  */
+  const onSnapshot = useObservation({
+    owner,
+    resource: "analysis-snapshot-runs",
+    id: snapshotId === "" ? null : `${repoId}:${snapshotId}`,
+    read: (_id, signal) =>
+      clients.analysis.runs(owner, repoId, signal, snapshotId),
+    terminal: (runs) => runs.every(terminalRun),
+    interval: 2000,
+  });
+  const refresh = useCallback(async () => {
+    await Promise.all(
+      ["analysis-history", "analysis-snapshot-runs"].map((resource) =>
+        cache.invalidateQueries({
+          queryKey: queryKeys.resource(userId, owner, resource),
+        }),
+      ),
+    );
+  }, [cache, userId, owner]);
   const retry = () => {
     void snapshots.refetch();
     void history.refetch();
+    void onSnapshot.refetch();
   };
   return {
     snapshots,
     runs: history.data ?? [],
-    error: snapshots.error ?? history.error,
+    snapshotRuns: onSnapshot.data ?? [],
+    error: snapshots.error ?? history.error ?? onSnapshot.error,
     loading: snapshots.isPending || history.isPending,
     refresh,
     retry,
@@ -62,12 +92,17 @@ export function useRepoBranches(owner: string, repoId: string) {
 /**
  * The artifacts of each of `runIds`, keyed as the selected run's are, so a
  * run read for one is not read again for the other. A run not yet read is
- * missing from the map.
+ * missing from `artifacts`; one whose read failed is in `failed`, read again
+ * by `retry` — it is not left reading forever.
  */
 export function useRunArtifacts(
   owner: string,
   runIds: readonly string[],
-): ReadonlyMap<string, readonly ArtifactDto[]> {
+): {
+  artifacts: ReadonlyMap<string, readonly ArtifactDto[]>;
+  failed: ReadonlySet<string>;
+  retry: () => void;
+} {
   const userId = useUserId();
   return useQueries({
     queries: runIds.map((id) => ({
@@ -75,12 +110,22 @@ export function useRunArtifacts(
       queryFn: ({ signal }: { signal: AbortSignal }) =>
         clients.analysis.artifacts(owner, id, signal),
     })),
-    combine: (results) =>
-      new Map(
+    combine: (results) => ({
+      artifacts: new Map(
         results.flatMap(({ data }, index) => {
           const id = runIds[index];
           return data === undefined || id === undefined ? [] : [[id, data]];
         }),
       ),
+      failed: new Set(
+        results.flatMap(({ isError }, index) => {
+          const id = runIds[index];
+          return isError && id !== undefined ? [id] : [];
+        }),
+      ),
+      retry: () => {
+        for (const result of results) if (result.isError) void result.refetch();
+      },
+    }),
   });
 }

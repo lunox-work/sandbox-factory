@@ -51,12 +51,14 @@ repo. Both `apps/api` and `apps/worker` import it.
 
 [`packages/core`](../packages/core/src/index.ts) owns the shared domain rules:
 
-| Area                                              | Source under `packages/core/src/`     |
-| ------------------------------------------------- | ------------------------------------- |
-| Public handles and bounty text                    | `handle.ts`, `bounty.ts`              |
-| Bounty selection and pricing                      | `selection/`, `pricing/`, `bounty.ts` |
-| Repository facts and slices                       | `repo/`, `analysis.ts`, `slice/`      |
-| Sandbox provenance, generation, and task contract | `sandbox/`                            |
+| Area                                              | Source under `packages/core/src/`            |
+| ------------------------------------------------- | -------------------------------------------- |
+| Public handles and organization roles             | `handle.ts`, `roles.ts`                      |
+| Bounty text and the stages built on it            | `bounty.ts`, `stages.ts`                     |
+| Bounty selection, sizing and pricing              | `selection/`, `sizing.ts`, `pricing/`        |
+| Tech stack catalog                                | `stack.ts`                                   |
+| Repository facts, slices and context documents    | `repo/`, `analysis.ts`, `slice/`, `context/` |
+| Sandbox provenance, generation, and task contract | `sandbox/`                                   |
 
 For handles, `apps/api` calls `normalizeHandle()` before
 storing one and maps the refusal to a 400; `apps/web` calls `isValidHandle()`
@@ -100,7 +102,7 @@ Its controller is in `features/pricing/useRateCardAutosave.ts`; proposal lists,
 categories, peeks, search, titles and sizing progress are in `features/bounties`.
 
 API context and access rules live in `http-context.ts` and `access.ts`.
-`bounty/start-run.ts`, `bounty/approve-proposal.ts` and
+`pricing/start-run.ts`, `pricing/approve-proposal.ts` and
 `sandbox/version-service.ts` take explicit owner/input/dependencies; routes keep
 membership checks, request parsing and HTTP mapping. `analysis/enqueue.ts` shares
 queue/log cleanup while callers retain interactive or profiler capacity policy.
@@ -519,7 +521,10 @@ not approved is refused `bounty_not_approved`, and one that was publishes
 whatever the bounty has done since. A version published before
 keeps its first approval and is only pointed at again. `POST
 .../sandboxes/:id/unpublish` takes the sandbox back to `draft` with no
-current version; its versions stay frozen. No public repository is pushed
+current version and clears its `expires_at`; its versions stay frozen. A
+publication lasts until a date: the body names `expiresAt`, refused
+`expiry_past` unless it is in the future, and an expired publication no
+longer holds the version's approval. No public repository is pushed
 yet, and the round-trip and disclosure gates `freezeReadiness` names are
 not run: publication marks the version contributors are to get. The
 bounty's Sandbox tab shows the chosen version over its Slice card, as the
@@ -584,11 +589,12 @@ to and whose trail leads back; a card links the page, and a plain click
 opens the panel. The workspace is its handle, naming the routes the bounty
 is read through. Its page splits it into its three steps, numbered tabs
 named by `?tab=`, each with its version and a warning when it is behind;
-the panel is one view, with no tabs: its description,
-then its **Proposal**, and beside them on a wide page (below them otherwise)
-its **Sandbox** and **Context**: its Jira issue and repository, each optional.
-A bounty with no proposal offers to make one in the proposal's place; once
-it has one, that place holds the live proposal in the same peek a board uses,
+the panel is a glance, read and not changed, in one column with no tabs: its
+description, its **Sandbox** under its price, its **Context** (its Jira issue
+and repository, each optional) and its workspace. Its proposal, and every
+change, are on its page, which the panel's Open as page leads to. On the page,
+a bounty with no proposal offers to make one in the proposal's place; once it
+has one, that place holds the live proposal in the same peek a board uses,
 where it is reviewed and decided, without the peek's Spec tab or Jira link,
 since the bounty shows both. The old `?bounty=…&workspace=…&proposal=…` query,
 the per-workspace `/o/:slug/bounties` and `/o/:slug/tickets?ticket=…`
@@ -611,7 +617,9 @@ default to 1, 2, and 4 points, with four points per half step; board overrides
 are snapshotted with the run. Trimming can reduce the step, never below its
 base, and XL is the cap. A fresh draft starts at step zero.
 
-Manual resize changes the base while preserving the step and saved card.
+Manual resize sets a new base and restarts the step from zero at the current
+spec revision (`resetStep`), keeping the saved card and step settings: the
+reviewer's size already covers the spec as it stands.
 Respec keeps the base, card, and step settings without another sizing call;
 reprice uses the current card and starts fresh.
 
@@ -686,7 +694,10 @@ personal account's installation must be the person's own account, and an
 organization's must cover no repository the person cannot already read
 (their per-installation repository count equals the installation's). That
 needs no App permission beyond Contents and Metadata; proving the person
-administers the organization would need Members: read.
+administers the organization would need Members: read. The check is made when
+the installation is linked and not again: repositories later added to the
+installation, or its selection widened to all, become registrable by the
+organization without a second check.
 
 **The flow starts at the OAuth authorize URL, not the install page.** The
 install page returns to the callback only for a fresh install, so

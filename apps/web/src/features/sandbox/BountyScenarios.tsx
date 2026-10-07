@@ -9,6 +9,7 @@
  * a `.feature` file is.
  */
 
+import { plural } from "../../lib/format";
 import type { SpecDraftDto } from "@sandbox-factory/shared";
 import {
   ArrowUpRight,
@@ -46,7 +47,7 @@ const ORIGIN_LABEL: Readonly<Record<string, string>> = {
 };
 
 /** The anchor a scenario is scrolled to by: `#scenario-s1`. */
-export function scenarioAnchor(id: string): string {
+function scenarioAnchor(id: string): string {
   return `scenario-${id}`;
 }
 
@@ -54,14 +55,10 @@ export function scenarioAnchor(id: string): string {
 const BACKGROUND_ANCHOR = "background";
 
 /** The anchor of the questions the bounty left open. */
-export const QUESTIONS_ANCHOR = "open-questions";
+const QUESTIONS_ANCHOR = "open-questions";
 
 /** The anchor of what the spec took as given. */
-export const ASSUMPTIONS_ANCHOR = "assumptions";
-
-function plural(count: number, one: string, many = `${one}s`): string {
-  return `${count} ${count === 1 ? one : many}`;
-}
+const ASSUMPTIONS_ANCHOR = "assumptions";
 
 /** A weight as it reads: `Light · 1 pt`. */
 function weightText(weight: string | undefined): string | undefined {
@@ -132,7 +129,7 @@ function featureOf(draft: SpecDraftDto): {
 /** A word beside a title: a weight, where a scenario came from. Square, as
     the editor's own badges are; a pill is a web page's. */
 const chip =
-  "rounded-sm border border-(--wb-input-border) px-1.5 text-[11px] leading-[18px] text-(--wb-muted)";
+  "rounded-[4px] border border-(--wb-input-border) px-1.5 text-[11px] leading-[18px] text-(--wb-muted)";
 
 /**
  * The spec's open questions or its assumptions, laid out as a scenario is:
@@ -343,7 +340,7 @@ export function ScenariosDocument({
                   contents, not a stack of cards. */}
               {link(
                 each.anchor,
-                "-mx-2 grid grid-cols-[3.5rem_minmax(0,1fr)_auto] items-baseline gap-x-3 rounded-sm px-2 py-1.5 hover:bg-(--wb-hover)",
+                "-mx-2 grid grid-cols-[3.5rem_minmax(0,1fr)_auto] items-baseline gap-x-3 rounded-[4px] px-2 py-1.5 hover:bg-(--wb-hover)",
                 <>
                   <span className="text-right font-(family-name:--wb-font-code) text-xs text-(--wb-gutter) tabular-nums">
                     {numbered ? String(number).padStart(2, "0") : ""}

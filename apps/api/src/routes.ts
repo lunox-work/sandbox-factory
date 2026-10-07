@@ -1,7 +1,6 @@
 import { sizeIfNeverSized } from "./pricing/start-run.js";
 import type { AuthVariables } from "./http-context.js";
 export type { AuthVariables } from "./http-context.js";
-export { rankAtLeast } from "./access.js";
 /**
  * HTTP routes, built by a factory that takes its dependencies so tests run
  * against fakes without binding a port or a database.
@@ -406,10 +405,11 @@ export function createApp({
     });
 
     /**
-     * One organization by its public handle, for a signed-out reader.
+     * One organization by its public handle, for any signed-in reader.
      *
-     * Deliberately outside the membership guard and deliberately thin: two
-     * names and nothing else. Mounted before `/:orgId` so the literal segment
+     * Behind the session guard every `/api/v1` route is, but deliberately
+     * outside the membership guard and deliberately thin: two names and
+     * nothing else. Mounted before `/:orgId` so the literal segment
      * wins over the parameter.
      */
     app.get("/api/v1/orgs/by-handle/:slug", async (c) => {

@@ -36,6 +36,7 @@ export function RunLogs({
   openOn,
   onClose,
   onOpenRaw,
+  notice,
 }: {
   owner: string;
   repository: string;
@@ -48,9 +49,12 @@ export function RunLogs({
   onClose: () => void;
   /** Opens a run's log through its signed URL in a new tab. */
   onOpenRaw: (runId: string) => void;
+  /** A failure from inside the dialog; see `WorkbenchDialog`. */
+  notice?: { text: string; onDismiss: () => void } | null | undefined;
 }) {
   return (
     <WorkbenchDialog
+      notice={notice}
       title="Logs"
       detail={repository}
       description="Each analysis run's log, newest run first."
@@ -205,8 +209,9 @@ function Log({
     queryFn: ({ signal }) => clients.analysis.logContent(owner, run.id, signal),
     enabled: finished,
     staleTime: Infinity,
-    retry: (count, error) =>
-      !(error instanceof ApiError && error.isNotFound) && count < 2,
+    // No retry of its own: a failed read says so, and "Try again" is the
+    // deliberate retry, as everywhere else.
+    retry: false,
   });
   const missing = log.error instanceof ApiError && log.error.isNotFound;
 
@@ -266,7 +271,9 @@ function Log({
           Terminal
         </span>
         <span className="min-w-0 flex-1 truncate text-xs text-(--wb-muted)">
-          {runLabel(run)} · attempt {run.attempt + 1} of {run.maxAttempts}
+          {/* `attempt` counts the retries made, `maxAttempts` the retries
+              allowed: the first try is one more than either. */}
+          {runLabel(run)} · attempt {run.attempt + 1} of {run.maxAttempts + 1}
         </span>
         {finished && !missing && (
           <button

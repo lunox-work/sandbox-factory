@@ -117,7 +117,7 @@ interface ReadBounty {
 
 interface OutcomeBase {
   readonly externalIssueId: string;
-  /** Jira's key for a board's ticket; null for a bounty written here. */
+  /** Jira's key for a board's issue; null for a bounty written here. */
   readonly issueKey: string | null;
   readonly bountyId?: string;
 }
@@ -140,6 +140,17 @@ export interface RunJiraClient extends BacklogPageReader {
 export type RunClientResult =
   | { readonly ok: true; readonly client: RunJiraClient }
   | { readonly ok: false; readonly reason: "not-found" | "reconnect" };
+
+/**
+ * A client that could not be had, as a run records it: in snake case, as
+ * every other code is. A connection that is gone leaves the board with
+ * nothing to read through.
+ */
+function clientFailureCode(
+  reason: Extract<RunClientResult, { ok: false }>["reason"],
+): string {
+  return reason === "not-found" ? "board_unavailable" : reason;
+}
 
 export interface BountyExecutorOptions {
   readonly boards: JiraBoardStore;
@@ -177,13 +188,14 @@ export interface BountyExecutorOptions {
     organizationId: string,
     operationId: string,
   ) => void;
+  /** Resolved by server composition independently of the wake-up callback. */
+  readonly profilingEnabled?: () => boolean;
   /**
    * Called for each proposal whose spec was drafted beside a repository
    * snapshot, to measure its complexity profile from that snapshot's code.
-   * Must not throw: the proposal is already written.
+   * The profile row itself is written with the proposal; this only wakes
+   * the profiler. Must not throw: the proposal is already written.
    */
-  /** Resolved by server composition independently of the wake-up callback. */
-  readonly profilingEnabled?: () => boolean;
   readonly onProposalDrafted?: (
     organizationId: string,
     input: NewBountyProfile,
@@ -250,6 +262,19 @@ export class BountyExecutor {
       } else {
         await this.#oneBountyRun(organizationId, run, leaseToken, controller);
       }
+    } catch (error) {
+      // A fault nothing above expected, such as a write the database
+      // refused. The workers still sizing are stopped, rather than spending
+      // model calls until the lease runs out, and the run ends now as failed
+      // instead of reading as running until the watchdog calls it lost. A
+      // run already finished keeps its outcome: the lease guards the write.
+      controller.abort();
+      await runs
+        .finish(organizationId, run.id, leaseToken, "failed", {
+          fatalErrorCode: "internal_error",
+        })
+        .catch(() => undefined);
+      throw error;
     } finally {
       (this.#options.clearInterval ?? clearInterval)(heartbeat);
     }
@@ -280,7 +305,7 @@ export class BountyExecutor {
       registered.connectionId,
     );
     if (!clientResult.ok) {
-      await fail(clientResult.reason);
+      await fail(clientFailureCode(clientResult.reason));
       return;
     }
 
@@ -454,7 +479,7 @@ export class BountyExecutor {
     );
     return ready.ok
       ? { value: { board: registered, client: ready.client } }
-      : { fatalCode: ready.reason };
+      : { fatalCode: clientFailureCode(ready.reason) };
   }
 
   /**
@@ -680,9 +705,6 @@ export class BountyExecutor {
       {
         externalId: issue.id,
         key: issue.key,
-        statusCategory: issue.statusCategory,
-        remoteCreatedAt: issue.created,
-        remoteUpdatedAt: issue.updated,
       },
       content,
     );

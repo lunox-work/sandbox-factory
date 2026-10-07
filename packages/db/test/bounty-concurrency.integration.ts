@@ -117,11 +117,9 @@ describe("bounty database concurrency", () => {
       `;
       await sql`
         insert into jira_issue (
-          id, organization_id, board_id, external_id, key, bounty_id,
-          status_category, remote_created_at, remote_updated_at
+          id, organization_id, board_id, external_id, key, bounty_id
         ) values (
-          ${id}, 'org_bounty', ${boardId}, ${externalId}, ${key}, ${id},
-          'new', now(), now()
+          ${id}, 'org_bounty', ${boardId}, ${externalId}, ${key}, ${id}
         )
       `;
     }
@@ -1437,7 +1435,9 @@ describe("bounty database concurrency", () => {
           id: sandbox.id,
           status: "draft",
           currentVersionId: null,
+          expiresAt: null,
           sourceRepoId: null,
+          build: null,
         },
       );
 

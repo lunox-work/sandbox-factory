@@ -11,6 +11,7 @@
  * relative, absolute or subpath import that could not be is unresolved.
  */
 
+import { Worker } from "node:worker_threads";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { cruise, format } from "dependency-cruiser";
@@ -30,7 +31,19 @@ import type { ArtifactFile, ToolAdapter } from "./adapter.js";
  */
 export const CRUISE_OPTIONS = {
   outputType: "json",
+  /*
+    swc, named rather than found: dependency-cruiser parses TypeScript with
+    the compiler only within the versions it supports, and finds none in a
+    production install (the repository's own is newer, and a dev
+    dependency). Without a parser it reads no `.ts` file at all and the
+    graph is the JavaScript alone. `@swc/core` is the worker's own
+    dependency, so dev and production read the same.
+  */
+  parser: "swc",
   tsPreCompilationDeps: true,
+  // The snapshot only: an import that resolves above it names a file on
+  // the worker, whose path and imports are not the repository's to record.
+  includeOnly: "^(?!\\.\\./)",
   doNotFollow: { path: ["node_modules"] },
   exclude: {
     path: [
@@ -45,6 +58,41 @@ export const CRUISE_OPTIONS = {
   moduleSystems: ["es6", "cjs", "tsd", "amd"],
   combinedDependencies: false,
 } satisfies ICruiseOptions;
+
+/**
+ * The cruise, on a thread of its own. It reads and parses every file
+ * synchronously, so on the worker's own thread a large repository held
+ * the heartbeat and the deadline timer until it finished, and an abort
+ * could not stop it. Aborting terminates the thread.
+ */
+export function cruiseInThread(
+  cruiseOptions: ICruiseOptions,
+  signal: AbortSignal,
+): Promise<string> {
+  if (signal.aborted) return Promise.reject(signal.reason as Error);
+  return new Promise((resolvePromise, reject) => {
+    const thread = new Worker(new URL("./cruise-thread.js", import.meta.url), {
+      workerData: cruiseOptions,
+    });
+    let settled = false;
+    const settle = (finish: () => void) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener("abort", abort);
+      void thread.terminate();
+      finish();
+    };
+    const abort = () => settle(() => reject(signal.reason));
+    signal.addEventListener("abort", abort, { once: true });
+    thread.once("message", (output: string) =>
+      settle(() => resolvePromise(output)),
+    );
+    thread.once("error", (error) => settle(() => reject(error)));
+    thread.once("exit", (code) =>
+      settle(() => reject(new Error(`The cruise thread exited with ${code}.`))),
+    );
+  });
+}
 
 /** Dependency types that name a package or a runtime built-in, not a repository file. */
 const EXTERNAL_TYPES = new Set<string>([
@@ -180,15 +228,24 @@ export function createDependencyCruiserAdapter(
       let result: ICruiseResult;
       let dot: string;
       try {
-        const cruised = await (options.cruise ?? cruise)(["."], {
-          ...CRUISE_OPTIONS,
-          baseDir: input.sourceDir,
-        });
-        json =
-          typeof cruised.output === "string"
-            ? cruised.output
-            : JSON.stringify(cruised.output);
+        const cruiseOptions = { ...CRUISE_OPTIONS, baseDir: input.sourceDir };
+        if (options.cruise === undefined) {
+          json = await cruiseInThread(cruiseOptions, input.signal);
+        } else {
+          const cruised = await options.cruise(["."], cruiseOptions);
+          json =
+            typeof cruised.output === "string"
+              ? cruised.output
+              : JSON.stringify(cruised.output);
+        }
         result = JSON.parse(json) as ICruiseResult;
+        // The options echoed back carry this run's scratch directory, which
+        // changes every run and names the worker's disk, not the snapshot.
+        const used = result.summary.optionsUsed as { baseDir?: unknown };
+        if ("baseDir" in used) {
+          delete used.baseDir;
+          json = JSON.stringify(result);
+        }
         const formatted = await (options.format ?? format)(result, {
           outputType: "dot",
         });

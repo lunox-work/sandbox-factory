@@ -1,7 +1,8 @@
 /**
  * Object storage over the S3 API: the SeaweedFS gateway locally, AWS S3 in
  * production. Only the plain object calls are used, which both answer the same
- * way, so the two differ by configuration alone. Holds uploaded avatars.
+ * way, so the two differ by configuration alone. Holds uploaded avatars,
+ * repository snapshots' file lists, and analysis runs' artifacts and logs.
  *
  * `forcePathStyle` must stay on: the SDK's default virtual-hosted style needs
  * per-bucket DNS that a self-hosted gateway does not have. AWS accepts path

@@ -163,9 +163,10 @@ export interface BaselineReport {
 
 /**
  * The baseline rule: install, build, the dev walkthrough and the public
- * tests must pass on the unfixed source, and every hidden test must do
- * what the owner said it would. A build or harness failure is never accepted as "the test that
- * fails before the fix".
+ * tests must pass on the unfixed source, at least one hidden test must be
+ * one that fails before the fix, and every hidden test must do what the
+ * owner said it would. A build or harness failure is never accepted as "the
+ * test that fails before the fix".
  */
 export function baselineVerdict(input: {
   readonly steps: readonly BaselineStep[];
@@ -179,6 +180,14 @@ export function baselineVerdict(input: {
           ? `${step.name} timed out.`
           : `${step.name} exited with ${step.exitCode ?? "no code"}.`,
       );
+  // A submission is judged by the hidden tests that fail before the fix,
+  // so a sandbox with none could never accept one (`submissionVerdict`).
+  if (!input.privateTests.some((outcome) => outcome.expected === "fail"))
+    reasons.push(
+      input.privateTests.length === 0
+        ? "No hidden test judges a submission."
+        : "No hidden test is expected to fail before the fix.",
+    );
   for (const outcome of input.privateTests)
     if (outcome.observed === "error")
       reasons.push(`${outcome.path} could not run.`);

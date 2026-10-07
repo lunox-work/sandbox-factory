@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { readPrivateKey } from "@sandbox-factory/github";
+import { AGENT_LIMITS_DEFAULT } from "./agent/loop.js";
 const blank = (value: unknown) => (value === "" ? undefined : value);
 /** An unset secret: empty, or the placeholder the deploy's secrets start as. */
 const unsetSecret = (value: unknown) =>
@@ -50,14 +51,27 @@ const schema = z.object({
    */
   ANTHROPIC_API_KEY: z.preprocess(unsetSecret, z.string().min(1).optional()),
   AGENT_MODEL: z.preprocess(blank, z.string().min(1).optional()),
-  /** Every token one agent run may spend, cached or not. */
+  /**
+   * Every token one agent run may spend, cached or not. The defaults are
+   * the loop's own, so a worker without these set runs as tests assume.
+   */
   AGENT_TOKEN_BUDGET: z.preprocess(
     blank,
-    z.coerce.number().int().positive().max(50_000_000).default(4_000_000),
+    z.coerce
+      .number()
+      .int()
+      .positive()
+      .max(50_000_000)
+      .default(AGENT_LIMITS_DEFAULT.maxTokens),
   ),
   AGENT_MAX_TURNS: z.preprocess(
     blank,
-    z.coerce.number().int().positive().max(200).default(40),
+    z.coerce
+      .number()
+      .int()
+      .positive()
+      .max(200)
+      .default(AGENT_LIMITS_DEFAULT.maxTurns),
   ),
   /**
    * The DeepWiki-Open service the deepwiki builder asks for a wiki. Optional:

@@ -264,6 +264,8 @@ function harness(options: {
   onBackgroundError?: BountyExecutorOptions["onBackgroundError"];
   onProposalDrafted?: BountyExecutorOptions["onProposalDrafted"];
   profilingEnabled?: boolean;
+  /** Recording an outcome fails with this, as a database fault would. */
+  outcomeError?: Error;
 }) {
   const current = run(options.runOverrides);
   const plans: unknown[] = [];
@@ -319,6 +321,8 @@ function harness(options: {
       _lease: string,
       outcome: unknown,
     ) => {
+      if (options.outcomeError !== undefined)
+        return Promise.reject(options.outcomeError);
       outcomes.push(outcome);
       return Promise.resolve(true);
     },
@@ -390,9 +394,6 @@ function harness(options: {
         bountyId,
         externalId: input.externalId,
         key: `APP-${input.externalId}`,
-        statusCategory: "new",
-        remoteCreatedAt: "2026-01-01T00:00:00.000Z",
-        remoteUpdatedAt: "2026-01-02T00:00:00.000Z",
         removedAt: null,
       });
     },
@@ -723,6 +724,27 @@ test("an issue run without a bounty, or whose bounty is gone, fails", async () =
   await gone.executor.execute("org_1", "brn_1");
   assert.equal(gone.finishes[0]?.status, "failed");
   assert.equal(gone.caller.calls.length, 0);
+});
+
+test("a fault nothing expected ends the run as failed, and is still thrown", async () => {
+  // Rather than reading as running until the watchdog calls it lost, with
+  // the other workers still spending model calls.
+  const state = harness({ outcomeError: new Error("database down") });
+  await assert.rejects(
+    state.executor.execute("org_1", "brn_1"),
+    /database down/,
+  );
+  assert.deepEqual(state.finishes, [
+    { status: "failed", details: { fatalErrorCode: "internal_error" } },
+  ]);
+});
+
+test("a connection that is gone fails the run as the board's, in snake case", async () => {
+  const state = harness({ clientResult: { ok: false, reason: "not-found" } });
+  await state.executor.execute("org_1", "brn_1");
+  assert.deepEqual(state.finishes, [
+    { status: "failed", details: { fatalErrorCode: "board_unavailable" } },
+  ]);
 });
 
 test("a run persists sized drafts with snapshot pricing and usage", async () => {

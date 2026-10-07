@@ -6,6 +6,7 @@ import {
   type BountyWritebackStore,
   type JiraBoardStore,
   type JiraConnectionStore,
+  type StoredBountyProposal,
   type StoredBountyWriteback,
   type BountyStore,
 } from "@sandbox-factory/db";
@@ -110,6 +111,23 @@ export class BountyDelivery {
         leaseToken,
         "failed",
         context.code,
+      );
+    }
+    /*
+      The comment says what the proposal was when the write was queued. A
+      proposal decided again since — unapproved, re-priced, approved anew —
+      is not what it says any more, so nothing is sent: a failed approval
+      retried after a re-price would post the old price as approved. The
+      retry route refuses the same; this holds for a worker that was
+      already on its way.
+    */
+    if (!describesProposal(operation, context.proposal)) {
+      return this.#options.writebacks.fail(
+        organizationId,
+        id,
+        leaseToken,
+        "failed",
+        "proposal_changed",
       );
     }
 
@@ -322,6 +340,26 @@ export class BountyDelivery {
       clearTimeout(timer);
     }
   }
+}
+
+/**
+ * Whether a write still describes its proposal. An approval names a price,
+ * so it holds only at the revision it was queued with, still approved:
+ * every decision moves the revision, so anything else means the proposal
+ * was decided again after the write was queued. A withdrawal names no price
+ * and stays true however the proposal was resized since, as long as it is
+ * not approved again; dropping it would leave Jira showing an approval
+ * that no longer stands.
+ */
+export function describesProposal(
+  operation: Pick<StoredBountyWriteback, "kind" | "proposalRevision">,
+  proposal: Pick<StoredBountyProposal, "revision" | "status">,
+): boolean {
+  if (operation.kind !== "approved") return proposal.status !== "approved";
+  return (
+    proposal.revision === operation.proposalRevision &&
+    proposal.status === "approved"
+  );
 }
 
 export function commentText(operation: StoredBountyWriteback): string {

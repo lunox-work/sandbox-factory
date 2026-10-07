@@ -42,7 +42,7 @@ import {
 import { useEffect, useRef, useState } from "react";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { ErrorBanner, LoadingLine } from "@/components/Message";
+import { ErrorBanner, LoadingLine, RetryableError } from "@/components/Message";
 import { OutcomeNotice, type OutcomeTone } from "@/components/OutcomeNotice";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -104,7 +104,7 @@ export function describeGithubOutcome(
         tone: "ok",
         title: "GitHub connected",
         detail:
-          "Register the repositories this workspace's bounties are about. We track where each default branch points, never what is in it.",
+          "Register the repositories this workspace's bounties are about. Each is tracked by commit; its code is read only by the builders and sandboxes you run.",
       };
     case "pick":
       return {
@@ -218,8 +218,9 @@ export function GithubConnections({
     <header>
       <h3 className="leading-none font-semibold">GitHub</h3>
       <p className="text-muted-foreground mt-1.5 text-sm">
-        Registered repositories are tracked by commit. Their contents are never
-        stored.
+        Registered repositories are tracked by commit, with each commit&rsquo;s
+        file list and package manifests, which name its stack. Code is read only
+        when you run a context builder or build a sandbox from it.
       </p>
     </header>
   );
@@ -269,7 +270,7 @@ export function GithubConnections({
       {loading && connections.length === 0 ? (
         <LoadingLine />
       ) : error !== null && connections.length === 0 ? (
-        <ErrorBanner className="mt-0">{error}</ErrorBanner>
+        <RetryableError onRetry={() => void refresh()}>{error}</RetryableError>
       ) : connections.length === 0 ? (
         <p className="text-muted-foreground rounded-lg border border-dashed px-4 py-6 text-center text-sm">
           No GitHub accounts connected yet.
@@ -305,7 +306,9 @@ export function GithubConnections({
       )}
 
       {repos.error !== null && (
-        <ErrorBanner className="mt-0">{repos.error}</ErrorBanner>
+        <RetryableError onRetry={() => void repos.refresh()}>
+          {repos.error}
+        </RetryableError>
       )}
 
       {manageable ? (
@@ -671,8 +674,11 @@ function InstallationCard({
             title={`Disconnect ${connection.accountLogin}?`}
             description={
               <>
-                Removes this account and every repository registered from it.
-                The App stays installed on GitHub until you uninstall it from{" "}
+                Removes this account and every repository registered from it,
+                with everything recorded from them here: snapshots, analysis
+                runs and their artifacts. Bounties linked to them lose the link,
+                and none of it can be recovered. The App stays installed on
+                GitHub until you uninstall it from{" "}
                 <a
                   href={connection.settingsUrl}
                   target="_blank"
@@ -944,8 +950,9 @@ function RepositoryDialog({
         <DialogHeader className="pr-8">
           <DialogTitle>Repositories on {connection.accountLogin}</DialogTitle>
           <DialogDescription>
-            Registering records the repository and where its default branch
-            points. Its contents are not read.
+            Registering records the repository, where its default branch points
+            and that commit&rsquo;s file list. Code is read only by the builders
+            and sandboxes you run.
           </DialogDescription>
         </DialogHeader>
 

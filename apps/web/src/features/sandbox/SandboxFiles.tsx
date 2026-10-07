@@ -31,14 +31,14 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   PSEUDONYMS_FILE,
   invertAliasRules,
   rankAtLeast,
 } from "sandbox-factory";
 
-import { ErrorBanner, LoadingLine } from "@/components/Message";
+import { ErrorBanner, LoadingLine, RetryableError } from "@/components/Message";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -73,7 +73,7 @@ import {
 } from "./BountyScenarios";
 
 /** How often a build still running is asked about. */
-export const FILES_POLL_MS = 3_000;
+const FILES_POLL_MS = 3_000;
 
 /** The folder that holds the hidden tests, marked as such in the tree. */
 const PRIVATE_FOLDER = "private";
@@ -85,7 +85,7 @@ const PUBLIC_FOLDER = "project";
  * and `pseudonym.lunox`, or the public one contributors work in. Private
  * unless `?side=public` says otherwise.
  */
-export type SandboxSide = "private" | "public";
+type SandboxSide = "private" | "public";
 const SIDE_PARAM = "side";
 
 function isPublicPath(path: string): boolean {
@@ -111,7 +111,11 @@ export function SandboxFilesPage({
   let body: React.ReactNode;
   if (memberships.isPending) body = <LoadingLine />;
   else if (memberships.isError)
-    body = <ErrorBanner>Could not load your workspaces.</ErrorBanner>;
+    body = (
+      <RetryableError onRetry={() => void memberships.refetch()}>
+        Could not load your workspaces.
+      </RetryableError>
+    );
   else if (organization === undefined)
     body = (
       <Notice title="Workspace unavailable">
@@ -337,6 +341,15 @@ function SandboxFiles({
         This version does not exist in {workspaceLabel(organization)}.
       </Centered>
     );
+  else if (version.isError && !notFound)
+    // Not "approved without a spec": the version could not be read at all.
+    content = (
+      <Centered>
+        <RetryableError onRetry={() => void version.refetch()}>
+          This version could not be read.
+        </RetryableError>
+      </Centered>
+    );
   else if (listing.isError)
     content = (
       <Centered>
@@ -366,7 +379,7 @@ function SandboxFiles({
         {listing.data.run === null
           ? "This version has not been built yet, so it has no files."
           : listing.data.run.status === "failed"
-            ? "Its build failed before it wrote any files."
+            ? "Its build failed before it wrote any files. Its bounty's sandbox says why."
             : listing.data.run.status === "succeeded"
               ? "Its build wrote no files."
               : "Its build is still running; its files appear when it finishes."}
@@ -600,7 +613,7 @@ function TitleBar({
             href="/"
             aria-label="Lunox home"
             title="Home"
-            className="flex rounded-sm text-(--wb-strong) focus-visible:outline-1 focus-visible:outline-(--wb-accent)"
+            className="flex rounded-[4px] text-(--wb-strong) focus-visible:outline-1 focus-visible:outline-(--wb-accent)"
           >
             <LunoxMark />
           </a>
@@ -609,7 +622,7 @@ function TitleBar({
       </div>
       {/* The title centred in the box, the link held at its right edge,
           the same room kept clear either side so the centre is true. */}
-      <div className="relative flex h-[24px] min-w-0 items-center justify-center rounded-md border border-(--wb-input-border) bg-(--wb-input) px-7 text-xs">
+      <div className="relative flex h-[24px] min-w-0 items-center justify-center rounded-[4px] border border-(--wb-input-border) bg-(--wb-input) px-7 text-xs">
         <h1 className="min-w-0 truncate font-normal text-(--wb-foreground)">
           {heading}
         </h1>
@@ -620,7 +633,7 @@ function TitleBar({
             rel="noreferrer"
             aria-label="Open the bounty"
             title="Open the bounty"
-            className="absolute right-2 flex items-center rounded-sm text-(--wb-muted) hover:text-(--wb-strong) focus-visible:outline-1 focus-visible:outline-(--wb-accent)"
+            className="absolute right-2 flex items-center rounded-[4px] text-(--wb-muted) hover:text-(--wb-strong) focus-visible:outline-1 focus-visible:outline-(--wb-accent)"
           >
             <ExternalLink aria-hidden="true" className="size-3.5" />
           </a>
@@ -983,7 +996,7 @@ function Explorer({
             setExpanded(new Set());
             setSectionOpen(true);
           }}
-          className="flex size-5 shrink-0 items-center justify-center rounded-sm text-(--wb-foreground) opacity-0 group-hover/section:opacity-100 hover:bg-(--wb-hover) focus-visible:opacity-100 coarse:opacity-100"
+          className="flex size-5 shrink-0 items-center justify-center rounded-[4px] text-(--wb-foreground) opacity-0 group-hover/section:opacity-100 hover:bg-(--wb-hover) focus-visible:opacity-100 coarse:opacity-100"
         >
           <CopyMinus aria-hidden="true" className="size-4" strokeWidth={1.5} />
         </button>
@@ -1052,22 +1065,28 @@ function SideBar({
   onResize: (width: number) => void;
   children: React.ReactNode;
 }) {
+  const clamp = (next: number) =>
+    Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, next));
+  // The drag in progress, ended by a release, a cancelled pointer or the
+  // sidebar going away mid-drag: its listeners never outlive it.
+  const dragging = useRef<(() => void) | null>(null);
+  useEffect(() => () => dragging.current?.(), []);
   const startResize = (event: React.PointerEvent) => {
     event.preventDefault();
+    dragging.current?.();
     const fromX = event.clientX;
     const move = (moved: PointerEvent) =>
-      onResize(
-        Math.min(
-          SIDEBAR_MAX,
-          Math.max(SIDEBAR_MIN, width + moved.clientX - fromX),
-        ),
-      );
+      onResize(clamp(width + moved.clientX - fromX));
     const stop = () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", stop);
+      window.removeEventListener("pointercancel", stop);
+      dragging.current = null;
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", stop);
+    window.addEventListener("pointercancel", stop);
+    dragging.current = stop;
   };
   return (
     <aside
@@ -1083,11 +1102,27 @@ function SideBar({
         {title}
       </h2>
       {children}
+      {/* A separator a keyboard can move too, as the editor's sash is. */}
       <div
-        aria-hidden="true"
-        className="absolute inset-y-0 -right-[3px] z-20 w-[5px] cursor-col-resize transition-colors delay-150 hover:bg-(--wb-accent) max-sm:hidden"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label={`Resize ${title.toLowerCase()}`}
+        aria-valuemin={SIDEBAR_MIN}
+        aria-valuemax={SIDEBAR_MAX}
+        aria-valuenow={width}
+        tabIndex={0}
+        className="absolute inset-y-0 -right-[3px] z-20 w-[5px] cursor-col-resize transition-colors delay-150 hover:bg-(--wb-accent) focus-visible:bg-(--wb-accent) focus-visible:outline-none max-sm:hidden"
         onPointerDown={startResize}
         onDoubleClick={() => onResize(SIDEBAR_WIDTH)}
+        onKeyDown={(event) => {
+          const step = event.shiftKey ? 50 : 10;
+          if (event.key === "ArrowLeft") onResize(clamp(width - step));
+          else if (event.key === "ArrowRight") onResize(clamp(width + step));
+          else if (event.key === "Home") onResize(SIDEBAR_MIN);
+          else if (event.key === "End") onResize(SIDEBAR_MAX);
+          else return;
+          event.preventDefault();
+        }}
       />
     </aside>
   );
@@ -1205,7 +1240,7 @@ function Editor({
                   title="Close"
                   onClick={() => close(path)}
                   className={cn(
-                    "mx-1 flex size-5 items-center justify-center rounded-sm opacity-0 group-hover/tab:opacity-100 hover:bg-white/10 focus-visible:opacity-100 coarse:opacity-100",
+                    "mx-1 flex size-5 items-center justify-center rounded-[4px] opacity-0 group-hover/tab:opacity-100 hover:bg-white/10 focus-visible:opacity-100 coarse:opacity-100",
                     active && "opacity-100",
                   )}
                 >
@@ -1401,7 +1436,7 @@ function Viewer({
               if (line !== undefined) onOpenAt(file.path);
             }}
             className={cn(
-              "flex h-[18px] shrink-0 items-center gap-1 rounded-sm px-1.5 text-xs text-(--wb-muted) hover:bg-(--wb-hover) hover:text-(--wb-foreground) focus-visible:outline-1 focus-visible:-outline-offset-1 focus-visible:outline-(--wb-accent)",
+              "flex h-[18px] shrink-0 items-center gap-1 rounded-[4px] px-1.5 text-xs text-(--wb-muted) hover:bg-(--wb-hover) hover:text-(--wb-foreground) focus-visible:outline-1 focus-visible:-outline-offset-1 focus-visible:outline-(--wb-accent)",
               showRendered && "bg-(--wb-selected) text-(--wb-foreground)",
             )}
           >

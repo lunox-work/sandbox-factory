@@ -222,6 +222,8 @@ services:
       # it agent runs fail with agent_unavailable and nothing else changes.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       AGENT_MODEL: ${AGENT_MODEL:-claude-opus-5-5}
+      AGENT_TOKEN_BUDGET: ${AGENT_TOKEN_BUDGET:-}
+      AGENT_MAX_TURNS: ${AGENT_MAX_TURNS:-}
       MAX_TARBALL_BYTES: ${MAX_TARBALL_BYTES:-209715200}
       MAX_FILES: ${MAX_FILES:-20000}
       # Context builders. DeepWiki-Open is optional: without a URL deepwiki
@@ -272,7 +274,9 @@ services:
 
   deepwiki:
     profiles: [deepwiki]
-    image: ghcr.io/asyncfuncai/deepwiki-open:latest
+    # Pinned by digest: the LiteLLM patch below replaces one file of this
+    # exact image, and a moved `latest` could break or bypass it silently.
+    image: ghcr.io/asyncfuncai/deepwiki-open:latest@sha256:730b72494f407397c896c586af0a31af9671d509af420e6792d834ff094a9c8f
     container_name: sandbox-factory-deepwiki
     restart: unless-stopped
     environment:
@@ -286,9 +290,11 @@ services:
       LITELLM_BASE_URL: ${DEEPWIKI_LITELLM_BASE_URL:-https://api.deepseek.com}
       LITELLM_API_KEY: ${DEEPSEEK_API_KEY:-}
       DEEPWIKI_AUTH_MODE: "false"
+    # Loopback only: auth is off and its cache holds private repositories'
+    # wikis. The worker reaches it over the compose network, not these.
     ports:
-      - "${DEEPWIKI_PORT:-8001}:8001"
-      - "${DEEPWIKI_UI_PORT:-3000}:3000"
+      - "127.0.0.1:${DEEPWIKI_PORT:-8001}:8001"
+      - "127.0.0.1:${DEEPWIKI_UI_PORT:-3000}:3000"
     volumes:
       - ./apps/worker/deepwiki:/config:ro
       # The image's LiteLLM client cannot construct against its own adalflow;

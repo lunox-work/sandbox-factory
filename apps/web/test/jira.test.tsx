@@ -434,6 +434,18 @@ test("the outcome is stripped from the URL, so a reload does not repeat it", asy
   expect(replaced[0]).not.toContain("jira=");
 });
 
+test("an outcome the callback never sends is cleared, not announced", async () => {
+  // `?jira=foo` rendered an empty notice.
+  withOutcome("?jira=foo");
+
+  renderPage();
+
+  await waitFor(() => expect(replaced).toHaveLength(1));
+  expect(replaced[0]).not.toContain("jira=");
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(screen.queryByRole("status", { name: /jira/i })).toBeNull();
+});
+
 test("a cancelled consent is not presented as an error", async () => {
   // Pressing Cancel is a choice, not a fault.
   withOutcome("?jira=cancelled");

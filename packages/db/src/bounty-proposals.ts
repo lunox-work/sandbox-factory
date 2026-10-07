@@ -1082,6 +1082,10 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
             eq(bountyProposal.id, proposalId),
             eq(bountyProposal.status, "proposed"),
             eq(bountyProposal.revision, expectedRevision),
+            // Not over a Jira update still unresolved, checked in the same
+            // statement: the route refuses one first, but one queued in
+            // between would go with the proposal, its rows cascading away.
+            sql`not exists (select 1 from ${bountyWriteback} where ${bountyWriteback.proposalId} = ${bountyProposal.id} and ${bountyWriteback.status} in ('pending', 'running', 'uncertain'))`,
           ),
         )
         .returning()) as BountyProposalRow[];

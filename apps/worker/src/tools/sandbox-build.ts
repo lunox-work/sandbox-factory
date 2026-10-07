@@ -29,11 +29,14 @@ import {
   SANDBOX_TOOLCHAIN,
   applyAliases,
   baselineVerdict,
+  jsonLeaves,
+  withJsonLeaves,
   buildSummary,
   canonicalJson,
   generateProject,
   isSandboxBuildParams,
   runtimePath,
+  transformConfigOf,
 } from "sandbox-factory";
 import type {
   AcceptanceTest,
@@ -50,10 +53,14 @@ import type {
   ProjectSource,
   ProjectStub,
   SandboxBuildManifest,
-  SandboxFixture,
   SpecDraft,
   StageExecution,
 } from "sandbox-factory";
+import {
+  boundaryContractSchema,
+  sandboxFixtureSchema,
+  specDraftSchema,
+} from "@sandbox-factory/shared";
 import { AnalysisError } from "../errors.js";
 import { snapshotOf } from "./adapter.js";
 import type { ArtifactFile, ToolAdapter, ToolRunInput } from "./adapter.js";
@@ -72,9 +79,11 @@ export interface SandboxBuildOptions {
 
 /**
  * The spec and the contract's symbols travel through aliasing as
- * pseudo-files, so unscoped rules rename them consistently with the source
- * and the stubs. Module paths and importers are left alone: path rules
- * rename files, and the generator maps original paths to aliased ones.
+ * pseudo-files, one per string leaf (`jsonLeaves`), so unscoped rules
+ * rename their text consistently with the source and the stubs while their
+ * keys and shape stay as they are. Module paths and importers are left
+ * alone: path rules rename files, and the generator maps original paths to
+ * aliased ones.
  */
 const SPEC_PSEUDO_PATH = "__approved_spec__.json";
 /**
@@ -84,20 +93,20 @@ const SPEC_PSEUDO_PATH = "__approved_spec__.json";
 const FIXTURES_PSEUDO_PATH = "__fixtures__.json";
 const CONTRACT_PSEUDO_PATH = "__boundary_symbols__.json";
 type ModuleSymbols = BoundaryContract["outbound"][number]["symbols"];
-function symbolsOf(contract: BoundaryContract): string {
-  return JSON.stringify({
+interface ContractSymbols {
+  outbound: ModuleSymbols[];
+  inbound: ModuleSymbols[];
+}
+function symbolsOf(contract: BoundaryContract): ContractSymbols {
+  return {
     outbound: contract.outbound.map((module) => module.symbols),
     inbound: contract.inbound.map((module) => module.symbols),
-  });
+  };
 }
 function withSymbols(
   contract: BoundaryContract,
-  text: string,
+  parsed: ContractSymbols,
 ): BoundaryContract {
-  const parsed = JSON.parse(text) as {
-    outbound: ModuleSymbols[];
-    inbound: ModuleSymbols[];
-  };
   return {
     ...contract,
     outbound: contract.outbound.map((module, index) => ({
@@ -111,6 +120,53 @@ function withSymbols(
   };
 }
 const compare = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+
+const fixtureListSchema = sandboxFixtureSchema.array();
+/**
+ * Whether a value that read as its schema before renaming still does: a
+ * value that never did (none, or stored before the schema tightened) is
+ * not the alias table's to break.
+ */
+function stillReads(
+  schema: { safeParse(value: unknown): { success: boolean } },
+  before: unknown,
+  after: unknown,
+): boolean {
+  return (
+    before === null ||
+    !schema.safeParse(before).success ||
+    schema.safeParse(after).success
+  );
+}
+
+/**
+ * What a hidden test did, from its exit and the runner's TAP report.
+ *
+ * The runner exits 1 both when a test failed and when the file never ran
+ * its tests at all: it threw while loading, or imported something that is
+ * not there. Only the first is the failure a hidden test is expected to
+ * show on the baseline; the second is a broken test, and a build or harness
+ * failure is never accepted as the expected one. The runner reports a file
+ * that failed as a whole as one point with `ERR_TEST_FAILURE` and the
+ * file's exit code, both at the point's own indent; a test that failed is a
+ * point with its own error, whose `code` may be the same but whose values,
+ * an asserted `{ exitCode }` among them, are indented deeper. A report that
+ * says neither, cut short or missing, is an error.
+ */
+export function privateTestOutcome(
+  step: Pick<BaselineStep, "exitCode" | "timedOut">,
+  stdout: string,
+): PrivateTestOutcome["observed"] {
+  if (step.timedOut || step.exitCode === null) return "error";
+  if (step.exitCode === 0) return "pass";
+  if (step.exitCode !== 1) return "error";
+  const wholeFile =
+    /^ {2}code: 'ERR_TEST_FAILURE'$/m.test(stdout) &&
+    /^ {2}exitCode: \d+$/m.test(stdout);
+  if (wholeFile) return "error";
+  const failed = /^# fail (\d+)$/m.exec(stdout);
+  return failed !== null && Number(failed[1]) > 0 ? "fail" : "error";
+}
 
 /** Where a build writes the table its public files were renamed by. */
 export const PSEUDONYMS_PATH = `private/${PSEUDONYMS_FILE}`;
@@ -197,11 +253,11 @@ async function runBaseline(
       };
       steps.push(step);
       input.onStep?.(step, { stdout: result.stdout, stderr: result.stderr });
-      return step;
+      return { step, stdout: result.stdout };
     };
     // Trusted preparation pins the dependency tree; the clean install,
     // build and tests then run against exactly that lockfile.
-    const prepared = await run("prepare", [
+    const { step: prepared } = await run("prepare", [
       "npm",
       "install",
       "--package-lock-only",
@@ -211,7 +267,7 @@ async function runBaseline(
     ]);
     if (prepared.ok) {
       lockfile = await job.read("package-lock.json");
-      const installed = await run("install", [
+      const { step: installed } = await run("install", [
         "npm",
         "ci",
         "--ignore-scripts",
@@ -219,30 +275,24 @@ async function runBaseline(
         "--no-fund",
       ]);
       if (installed.ok) {
-        const built = await run("build", ["npm", "run", "build"]);
+        const { step: built } = await run("build", ["npm", "run", "build"]);
         if (built.ok) {
           // The walkthrough a developer runs first must run on the baseline.
           await run("dev", ["npm", "run", "dev"]);
           await run("public-tests", ["npm", "test"]);
           for (const test of input.acceptanceTests) {
-            const step = await run(
+            const { step, stdout } = await run(
               "private-test",
               [
                 "node",
                 "--env-file=sandbox.env",
                 "--test",
+                "--test-reporter=tap",
                 runtimePath(test.path),
               ],
               test.path,
             );
-            const observed: PrivateTestOutcome["observed"] =
-              step.timedOut || step.exitCode === null
-                ? "error"
-                : step.exitCode === 0
-                  ? "pass"
-                  : step.exitCode === 1
-                    ? "fail"
-                    : "error";
+            const observed = privateTestOutcome(step, stdout);
             const ok = observed === test.expectedBaseline;
             privateTests.push({
               path: test.path,
@@ -482,6 +532,27 @@ export function createSandboxBuildAdapter(
         source.approvedTaskSha256 !== params.approvedTaskSha256
       )
         throw new AnalysisError("tool_failed");
+      // And the content is what those hashes say: the manifest records them
+      // as what it was built from, so a row whose table, tests, fixtures or
+      // task moved away from its hash must not be built under it.
+      const transformSha256 = sha256(
+        canonicalJson(
+          transformConfigOf({
+            aliasRules: source.aliasRules,
+            dependencyChoices: source.dependencyChoices,
+            acceptanceTests: source.acceptanceTests,
+            fixtures: source.fixtures,
+            starterSha256: source.starterSha256,
+          }),
+        ),
+      );
+      if (
+        transformSha256 !== params.transformConfigSha256 ||
+        sha256(canonicalJson(source.approvedTask)) !== params.approvedTaskSha256
+      ) {
+        input.log("The draft's content does not match the hashes it carries.");
+        throw new AnalysisError("tool_failed");
+      }
       const slice = await loadSliceRun(
         input.inputs,
         params.sliceRunId,
@@ -509,15 +580,18 @@ export function createSandboxBuildAdapter(
       const spec: SpecDraft | null = source.approvedTask.spec?.draft ?? null;
       const fixtures = source.fixtures?.fixtures ?? [];
       const scenario = source.fixtures?.scenario ?? null;
+      const symbols = symbolsOf(contract);
+      const symbolLeaves = jsonLeaves(CONTRACT_PSEUDO_PATH, symbols);
+      const specLeaves =
+        spec === null ? [] : jsonLeaves(SPEC_PSEUDO_PATH, spec);
+      const fixtureLeaves = jsonLeaves(FIXTURES_PSEUDO_PATH, fixtures);
       const aliased = applyAliases(
         [
           ...included,
           ...stubTexts.map((stub) => ({ path: stub.module, text: stub.text })),
-          { path: CONTRACT_PSEUDO_PATH, text: symbolsOf(contract) },
-          ...(spec === null
-            ? []
-            : [{ path: SPEC_PSEUDO_PATH, text: JSON.stringify(spec) }]),
-          { path: FIXTURES_PSEUDO_PATH, text: JSON.stringify(fixtures) },
+          ...symbolLeaves,
+          ...specLeaves,
+          ...fixtureLeaves,
           ...(scenario === null ? [] : [{ path: RUN_PATH, text: scenario }]),
         ],
         source.aliasRules,
@@ -550,35 +624,50 @@ export function createSandboxBuildAdapter(
             text: file?.text ?? stub.text,
           };
         });
-        let aliasedSpec: SpecDraft | null = null;
-        let aliasedContract = contract;
-        let aliasedFixtures: SandboxFixture[] = [];
-        const pseudo = included.length + stubTexts.length;
-        const fixturesAt = pseudo + (spec === null ? 1 : 2);
-        const aliasedScenario =
-          scenario === null
+        // The leaves back, in the order they went in.
+        let at = included.length + stubTexts.length;
+        const textsOf = (count: number) => {
+          const texts = aliased.files
+            .slice(at, at + count)
+            .map((file) => file.text);
+          at += count;
+          return texts;
+        };
+        const aliasedContract = withSymbols(
+          contract,
+          withJsonLeaves(symbols, textsOf(symbolLeaves.length)),
+        );
+        const aliasedSpec =
+          spec === null
             ? null
-            : (aliased.files[fixturesAt + 1]?.text ?? scenario);
-        try {
-          aliasedContract = withSymbols(
-            contract,
-            aliased.files[pseudo]?.text ?? "",
-          );
-          if (spec !== null)
-            aliasedSpec = JSON.parse(
-              aliased.files[pseudo + 1]?.text ?? "null",
-            ) as SpecDraft;
-          aliasedFixtures = JSON.parse(
-            aliased.files[fixturesAt]?.text ?? "[]",
-          ) as SandboxFixture[];
-        } catch {
+            : withJsonLeaves(spec, textsOf(specLeaves.length));
+        const aliasedFixtures = withJsonLeaves(
+          fixtures,
+          textsOf(fixtureLeaves.length),
+        );
+        const aliasedScenario =
+          scenario === null ? null : (aliased.files[at]?.text ?? scenario);
+        /*
+          A rule can still rename a value the shape depends on, such as a
+          symbol's kind or a scenario's. What was valid before renaming must
+          be valid after, or nothing is generated: a project built from a
+          broken contract would carry the private names it failed to hide.
+        */
+        const broken = [
+          stillReads(boundaryContractSchema, contract, aliasedContract)
+            ? null
+            : "contract",
+          stillReads(specDraftSchema, spec, aliasedSpec) ? null : "spec",
+          stillReads(fixtureListSchema, fixtures, aliasedFixtures)
+            ? null
+            : "fixtures",
+        ].filter((name) => name !== null);
+        for (const name of broken)
           blockers.push({
             code: "alias_failed",
-            file: SPEC_PSEUDO_PATH,
-            detail:
-              "The alias table broke the serialization of the spec, the contract or the fixtures.",
+            file: null,
+            detail: `The alias table renamed a value the ${name} needs, so it no longer reads as one.`,
           });
-        }
         renames = aliased.renames;
         for (const blocker of source.scope.blockers)
           blockers.push({
@@ -586,34 +675,38 @@ export function createSandboxBuildAdapter(
             file: null,
             detail: `${blocker.code}: ${blocker.detail}`,
           });
-        const project = generateProject({
-          version: {
-            sandboxId: version.sandboxId,
-            versionId: version.id,
-            version: version.version,
-            title: version.title,
-            specSummary: version.specSummary,
-            complexity: version.complexity,
-            tags: version.tags,
-          },
-          manifest,
-          contract: aliasedContract,
-          sources,
-          stubs,
-          spec: aliasedSpec,
-          dependencies: source.scope.dependencies,
-          acceptanceTests: source.acceptanceTests,
-          fixtures: aliasedFixtures,
-          scenario: aliasedScenario,
-          knownSpecifiers: NODE_BUILTINS,
-          ...(compilerOptions === undefined ? {} : { compilerOptions }),
-        });
-        files = [...project.files];
-        importRewrites = project.importRewrites;
-        blockers.push(...project.blockers);
-        input.log(
-          `Generated ${project.files.length} files with ${project.importRewrites.length} import rewrites and ${project.blockers.length} blocker(s).`,
-        );
+        if (broken.length > 0) {
+          input.log("Alias application broke the contract, spec or fixtures.");
+        } else {
+          const project = generateProject({
+            version: {
+              sandboxId: version.sandboxId,
+              versionId: version.id,
+              version: version.version,
+              title: version.title,
+              specSummary: version.specSummary,
+              complexity: version.complexity,
+              tags: version.tags,
+            },
+            manifest,
+            contract: aliasedContract,
+            sources,
+            stubs,
+            spec: aliasedSpec,
+            dependencies: source.scope.dependencies,
+            acceptanceTests: source.acceptanceTests,
+            fixtures: aliasedFixtures,
+            scenario: aliasedScenario,
+            knownSpecifiers: NODE_BUILTINS,
+            ...(compilerOptions === undefined ? {} : { compilerOptions }),
+          });
+          files = [...project.files];
+          importRewrites = project.importRewrites;
+          blockers.push(...project.blockers);
+          input.log(
+            `Generated ${project.files.length} files with ${project.importRewrites.length} import rewrites and ${project.blockers.length} blocker(s).`,
+          );
+        }
       }
       let baseline: BaselineReport | null = null;
       let evaluator: EvaluationEnvironment | null = null;

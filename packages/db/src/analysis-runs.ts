@@ -114,10 +114,16 @@ export interface AnalysisRunStore {
     snapshotId: string,
     tool: AnalysisTool,
   ): Promise<StoredAnalysisRun | null>;
+  /**
+   * A repository's runs, newest first, at most 50. With `snapshotId`, only
+   * the runs on that snapshot: a page reads one snapshot's builds from it,
+   * where the whole repository's newest would push older builds out.
+   */
   list(
     organizationId: string,
     repoId: string,
     limit?: number,
+    snapshotId?: string,
   ): Promise<StoredAnalysisRun[]>;
   /** Privileged worker queue discovery. Ownership is returned with the lease. */
   claimNext(leaseToken: string, now: Date): Promise<ClaimedAnalysisRun | null>;
@@ -398,9 +404,17 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
       )[0];
       return row === undefined ? null : toRun(row.run, row.repoId);
     },
-    async list(owner, repoId, limit = 25) {
+    async list(owner, repoId, limit = 25, snapshotId) {
       const rows = await joined()
-        .where(and(owned(owner), eq(repoSnapshot.repoId, repoId)))
+        .where(
+          and(
+            owned(owner),
+            eq(repoSnapshot.repoId, repoId),
+            snapshotId === undefined
+              ? undefined
+              : eq(analysisRun.snapshotId, snapshotId),
+          ),
+        )
         .orderBy(desc(analysisRun.createdAt), desc(analysisRun.id))
         .limit(Math.min(50, Math.max(1, limit)));
       return rows

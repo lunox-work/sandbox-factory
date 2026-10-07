@@ -192,6 +192,25 @@ test("lease-fenced writeback transitions report misses", async () => {
   assert.equal(await store.adoptComment("org_1", "bwo_1", "10"), null);
 });
 
+test("a claim refused because another write for the proposal is running is a miss", async () => {
+  // `bounty_writeback_proposal_running_unique`: the row stays as it was,
+  // rather than the claim throwing and leaving it pending with no worker.
+  const violation = Object.assign(new Error("unique"), { code: "23505" });
+  const store = createBountyWritebackStore(
+    createSequencedFakeDb([violation]).db,
+  );
+  assert.equal(await store.claim("org_1", "bwo_1", "lease", new Date()), null);
+
+  // Anything else is still the database failing.
+  const broken = createBountyWritebackStore(
+    createSequencedFakeDb([new Error("connection reset")]).db,
+  );
+  await assert.rejects(
+    broken.claim("org_1", "bwo_1", "lease", new Date()),
+    /connection reset/,
+  );
+});
+
 test("writeback lifecycle methods are owner scoped and preserve comment state", async () => {
   const fake = createFakeDb([
     operation({ status: "running", leaseToken: "lease" }),

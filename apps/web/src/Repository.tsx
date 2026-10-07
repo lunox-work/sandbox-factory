@@ -41,11 +41,11 @@ import {
   rankAtLeast,
   type ContextBuilder,
 } from "sandbox-factory";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { Combobox } from "@/components/Combobox";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { ErrorBanner, LoadingLine } from "@/components/Message";
+import { ErrorBanner, LoadingLine, RetryableError } from "@/components/Message";
 import { StackChips } from "@/components/StackPicker";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -79,6 +79,8 @@ function canManage(role: string): boolean {
 
 /** How long a pull's snapshot is watched for before the page stops asking. */
 const PULL_WAIT_MS = 120_000;
+/** How often a repository still syncing is read again. */
+const SYNC_POLL_MS = 5_000;
 /** How long "Up to date" stands in for the pull button's label. */
 const UP_TO_DATE_MS = 2_500;
 
@@ -120,7 +122,9 @@ export function RepositoryPage({
         {repos.loading ? (
           <LoadingLine />
         ) : repos.error !== null ? (
-          <ErrorBanner className="mt-0">{repos.error}</ErrorBanner>
+          <RetryableError onRetry={() => void repos.refresh()}>
+            {repos.error}
+          </RetryableError>
         ) : (
           <div className="flex flex-col items-start gap-3">
             <div>
@@ -190,8 +194,12 @@ function RepositoryView({
     since: number;
   } | null>(null);
   const [pulling, setPulling] = useState(false);
+  /** A pull's commit whose snapshot did not land within the wait. */
+  const [lagging, setLagging] = useState<string | null>(null);
   const [upToDate, setUpToDate] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** A file or log that would not open; said where it was asked for. */
+  const [openError, setOpenError] = useState<string | null>(null);
   /** The builder whose run was just asked for, until the API answers. */
   const [pending, setPending] = useState<ContextBuilder | null>(null);
   const [removing, setRemoving] = useState(false);
@@ -200,9 +208,13 @@ function RepositoryView({
   const [logsOn, setLogsOn] = useState<string | null>(null);
   const resources = useAnalysisResources(organizationId, repo.id, {
     watchSnapshots: awaiting !== null,
+    snapshotId,
   });
   const snapshots = resources.snapshots.data ?? [];
   const runs = resources.runs;
+  // The builds on the chosen snapshot, from its own read rather than the
+  // repository's bounded history.
+  const snapshotRuns = resources.snapshotRuns;
   const loading = resources.loading;
   const branchList = useRepoBranches(organizationId, repo.id);
   const branches = branchList.data?.branches ?? [];
@@ -240,12 +252,44 @@ function RepositoryView({
       setAwaiting(null);
       return;
     }
+    // Past the wait it says so, and the repository is read again: a
+    // snapshot that failed leaves its reason on the repository.
     const timer = setTimeout(
-      () => setAwaiting(null),
+      () => {
+        setAwaiting(null);
+        setLagging(awaiting.commitSha);
+        onHeadMoved();
+      },
       Math.max(0, awaiting.since + PULL_WAIT_MS - Date.now()),
     );
     return () => clearTimeout(timer);
   }, [awaiting, resources.snapshots.data]);
+
+  /*
+    A repository just registered syncs in the background: its stack and its
+    first snapshot arrive a little later. Read again until both have, so the
+    page does not say "Reading…" until a reload; never while a read has
+    failed, which waits for "Try again", nor for a repository whose own sync
+    failed or is gone, which no reading again will change.
+  */
+  const syncing =
+    !loading &&
+    resources.error === null &&
+    repo.syncStatus !== "error" &&
+    repo.syncStatus !== "gone" &&
+    (repo.stack === null || snapshots.length === 0);
+  // Held, not depended on: both are new each render, which would restart
+  // the timer before it ever fired.
+  const readAgain = useRef(() => {});
+  readAgain.current = () => {
+    onHeadMoved();
+    void resources.snapshots.refetch();
+  };
+  useEffect(() => {
+    if (!syncing) return;
+    const timer = setInterval(() => readAgain.current(), SYNC_POLL_MS);
+    return () => clearInterval(timer);
+  }, [syncing]);
 
   useEffect(() => {
     if (!upToDate) return;
@@ -253,8 +297,12 @@ function RepositoryView({
     return () => clearTimeout(timer);
   }, [upToDate]);
 
+  const branchRef = useRef(branch);
+  branchRef.current = branch;
+
   function chooseBranch(name: string) {
     setBranch(name);
+    setLagging(null);
     setAwaiting(null);
     setUpToDate(false);
   }
@@ -264,8 +312,14 @@ function RepositoryView({
     setPulling(true);
     setUpToDate(false);
     setError(null);
+    setLagging(null);
+    const asked = branch;
     try {
-      const pulled = await client.pullSnapshot(organizationId, repo.id, branch);
+      const pulled = await client.pullSnapshot(organizationId, repo.id, asked);
+      // Answered for a branch no longer chosen: its snapshot is not this
+      // one's to select. (The picker is held while pulling; this is the
+      // guard for an answer that arrives anyway.)
+      if (branchRef.current !== asked) return;
       if (branch === repo.defaultBranch) onHeadMoved();
       if (pulled.snapshot === null) {
         void branchList.refetch();
@@ -279,7 +333,7 @@ function RepositoryView({
         setSnapshotId(pulled.snapshot.id);
       }
     } catch (cause) {
-      setError(errorMessage(cause));
+      setError(errorMessage(cause, "Could not pull the branch. Try again."));
     } finally {
       setPulling(false);
     }
@@ -298,10 +352,12 @@ function RepositoryView({
 
   /** This builder's run on the chosen snapshot, when there is one. */
   const builderRun = (builder: ContextBuilder) =>
-    runs.find((run) => run.snapshotId === snapshotId && run.tool === builder);
+    snapshotRuns.find(
+      (run) => run.snapshotId === snapshotId && run.tool === builder,
+    );
   /** Each builder's succeeded run on the chosen snapshot: what "View" opens. */
   const built = CONTEXT_BUILDERS.flatMap((builder) => {
-    const run = runs.find(
+    const run = snapshotRuns.find(
       (each) =>
         each.snapshotId === snapshotId &&
         each.tool === builder &&
@@ -315,7 +371,8 @@ function RepositoryView({
   );
   const builds: ContextBuild[] = built.map((build) => ({
     ...build,
-    artifacts: builtArtifacts.get(build.run.id),
+    artifacts: builtArtifacts.artifacts.get(build.run.id),
+    failed: builtArtifacts.failed.has(build.run.id),
   }));
 
   async function build(builder: ContextBuilder) {
@@ -326,9 +383,11 @@ function RepositoryView({
         tool: builder,
         snapshotId,
       });
-      resources.refresh();
+      // Read again before the button is given back, so the row says the run
+      // is queued rather than "Not built" for a round trip.
+      await resources.refresh();
     } catch (cause) {
-      setError(errorMessage(cause));
+      setError(errorMessage(cause, "Could not start the build. Try again."));
     } finally {
       setPending(null);
     }
@@ -345,18 +404,25 @@ function RepositoryView({
           ? await client.artifactUrl(organizationId, target.artifactId)
           : await client.logUrl(organizationId, target.runId);
       if (tab === null) {
-        setError("Allow pop-ups to open this artifact, then try again.");
+        setOpenError("Allow pop-ups to open this file, then try again.");
         return;
       }
       tab.location.href = url;
     } catch (cause) {
       tab?.close();
-      setError(errorMessage(cause));
+      setOpenError(errorMessage(cause, "Could not open that file. Try again."));
     }
   }
   const open = (artifactId: string) => {
     void openArtifact({ artifactId });
   };
+  // While a dialog is open the page's banner is behind it, so the failure
+  // is said in the dialog.
+  const dialogOpen = viewing || logsOn !== null;
+  const dialogNotice =
+    openError === null || !dialogOpen
+      ? null
+      : { text: openError, onDismiss: () => setOpenError(null) };
 
   /** The figures a builder's card shows, from its build's own artifacts. */
   function figuresFor(builder: ContextBuilder) {
@@ -428,15 +494,35 @@ function RepositoryView({
       {repo.syncError !== null && (
         <ErrorBanner className="mt-0">{repo.syncError}</ErrorBanner>
       )}
-      {(error ?? trackingError) !== null && (
+      {/*
+        Two kinds, each with its own way out: a read that failed is read
+        again; an action that failed (a pull, a build, a file) is dismissed
+        and done again from where it was asked.
+      */}
+      {trackingError !== null && (
         <ErrorBanner className="mt-0 flex flex-wrap items-center gap-3">
-          <span>{error ?? trackingError}</span>
+          <span>{trackingError}</span>
           <button
             type="button"
             className="underline underline-offset-2"
             onClick={resources.retry}
           >
             Try again
+          </button>
+        </ErrorBanner>
+      )}
+      {(error ?? (dialogOpen ? null : openError)) !== null && (
+        <ErrorBanner className="mt-0 flex flex-wrap items-center gap-3">
+          <span>{error ?? openError}</span>
+          <button
+            type="button"
+            className="underline underline-offset-2"
+            onClick={() => {
+              setError(null);
+              setOpenError(null);
+            }}
+          >
+            Dismiss
           </button>
         </ErrorBanner>
       )}
@@ -464,12 +550,14 @@ function RepositoryView({
                 )
               ) : (
                 <>
-                  <span className="text-foreground inline-flex items-center gap-1 font-mono">
+                  <span className="text-foreground inline-flex max-w-full min-w-0 items-center gap-1 font-mono">
                     <GitBranch
                       aria-hidden="true"
                       className="size-3.5 shrink-0"
                     />
-                    <span>
+                    {/* A long branch name wraps rather than running off a
+                        phone's edge. */}
+                    <span className="min-w-0 break-all">
                       {branch}@
                       <span title={current.commitSha}>
                         {shortSha(current.commitSha)}
@@ -497,6 +585,25 @@ function RepositoryView({
                     ? "Up to date"
                     : "Pull latest"}
               </button>
+            )}
+            {lagging !== null && (
+              <span className="text-muted-foreground mt-1 block text-sm">
+                The snapshot of {shortSha(lagging)} has not landed yet. It
+                appears here once it does; pull again if it does not.
+              </span>
+            )}
+            {branchList.isError && (
+              <span className="text-muted-foreground mt-1 block text-sm">
+                Branches could not be read from GitHub, so only the default is
+                offered.{" "}
+                <button
+                  type="button"
+                  className="text-primary rounded-sm font-medium hover:underline"
+                  onClick={() => void branchList.refetch()}
+                >
+                  Try again
+                </button>
+              </span>
             )}
           </>
         }
@@ -539,6 +646,9 @@ function RepositoryView({
                     type="button"
                     role="combobox"
                     aria-label="Branch"
+                    // Held while a pull is out: its snapshot is the chosen
+                    // branch's, and choosing another would label it wrong.
+                    disabled={pulling}
                     title={
                       branchList.data?.truncated === true
                         ? "The branch the snapshots are of. Only the first 300 branches are listed."
@@ -662,6 +772,11 @@ function RepositoryView({
               onBuild={() => {
                 void build(builder);
               }}
+              onViewLog={
+                manageable
+                  ? () => setLogsOn(builderRun(builder)?.id ?? null)
+                  : undefined
+              }
             />
           ))}
           <RunHistory
@@ -678,9 +793,11 @@ function RepositoryView({
         owner={organizationId}
         commit={current === undefined ? undefined : shortSha(current.commitSha)}
         builds={builds}
+        onRetry={builtArtifacts.retry}
         open={viewing}
         onOpenChange={setViewing}
         onOpenRaw={open}
+        notice={dialogNotice}
       />
 
       {manageable && (
@@ -694,6 +811,7 @@ function RepositoryView({
           onOpenRaw={(runId) => {
             void openArtifact({ runId });
           }}
+          notice={dialogNotice}
         />
       )}
 

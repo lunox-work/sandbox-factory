@@ -6,7 +6,10 @@ import {
 } from "./navigation/location";
 import { useEffect, useRef, useState } from "react";
 
-import { LoadingLine } from "@/components/Message";
+import { RefreshCw } from "lucide-react";
+
+import { ErrorBanner, LoadingLine } from "@/components/Message";
+import { Button } from "@/components/ui/button";
 
 import { Account } from "./Account";
 import { signOut, useSession } from "./auth";
@@ -28,6 +31,7 @@ import {
   canonicalUrl,
   connectionForPath,
   isPlainLeftClick,
+  NEW_ORG_PATH,
   ORGANIZATIONS_PATH,
   pathForScreen,
   repositoryForPath,
@@ -190,7 +194,9 @@ function Signed({
                       ? (bountyName ?? "Bounty")
                       : screen === "org-repository"
                         ? (repositoryName ?? "Repository")
-                        : (organizations.active?.name ?? "Workspace");
+                        : screen === "not-found"
+                          ? "Page not found"
+                          : (organizations.active?.name ?? "Workspace");
     document.title = `${page} · Lunox`;
   }, [
     boardName,
@@ -282,12 +288,15 @@ function Signed({
   ) {
     // The id the current screen names, for the comparison below.
     const currentId = screen === "org-repository" ? repositoryId : connectionId;
+    // The same screen, but not the same page while its query holds more:
+    // Bounties in the rail closes a bounty open over the list.
     if (
       next === screen &&
       slug === undefined &&
       id === currentId &&
       board === boardId &&
-      tab === undefined
+      tab === undefined &&
+      location.search === ""
     ) {
       return;
     }
@@ -340,6 +349,19 @@ function Signed({
           "jira",
         );
       }}
+      onConnectGithub={(organization) => {
+        organizations.select(organization.id);
+        navigate(
+          "org-settings",
+          organization.slug,
+          undefined,
+          undefined,
+          "github",
+        );
+      }}
+      onNewBounty={() => navigate("new-bounty")}
+      onOpenBounties={() => navigate("bounties")}
+      onCreateWorkspace={() => navigate("create-org")}
     />
   );
 
@@ -470,7 +492,13 @@ function Signed({
             // The rename also renamed the personal organization, so the
             // switcher would otherwise keep showing the previous name.
             onRenamed={() => void organizations.refresh()}
-            organizationCount={organizations.organizations.length}
+            // Unknown while the list loads, or when it failed: "0
+            // workspaces" would be said of someone who has some.
+            organizationCount={
+              organizations.loading || organizations.error !== null
+                ? undefined
+                : organizations.organizations.length
+            }
             onOpenOrganizations={() => navigate("organizations")}
           />
         ) : screen === "organizations" ? (
@@ -479,6 +507,7 @@ function Signed({
             viewer={{ id: userId, image }}
             loading={organizations.loading}
             error={organizations.error}
+            onRetry={organizations.retry}
             onOpen={(organization) => {
               // Selecting here is what makes `org-settings` show this one:
               // the settings screen reads the active organization.
@@ -508,7 +537,10 @@ function Signed({
             <NoOrganization
               loading={organizations.loading}
               notFound={organizations.notFound}
+              error={organizations.error}
+              onRetry={organizations.retry}
               onOpenOrganizations={() => navigate("organizations")}
+              onCreateWorkspace={() => navigate("create-org")}
             />
           ) : (
             <JiraBoard
@@ -529,7 +561,10 @@ function Signed({
             <NoOrganization
               loading={organizations.loading}
               notFound={organizations.notFound}
+              error={organizations.error}
+              onRetry={organizations.retry}
               onOpenOrganizations={() => navigate("organizations")}
+              onCreateWorkspace={() => navigate("create-org")}
             />
           ) : (
             <RepositoryPage
@@ -610,12 +645,17 @@ function Signed({
               );
             }}
           />
+        ) : screen === "not-found" ? (
+          <NotFound onOpenHome={() => navigate("home")} />
         ) : screen === "org-settings" ? (
           organizations.active === null ? (
             <NoOrganization
               loading={organizations.loading}
               notFound={organizations.notFound}
+              error={organizations.error}
+              onRetry={organizations.retry}
               onOpenOrganizations={() => navigate("organizations")}
+              onCreateWorkspace={() => navigate("create-org")}
             />
           ) : (
             <Organization
@@ -624,11 +664,10 @@ function Signed({
               key={organizations.active.id}
               organization={organizations.active}
               onChanged={(slug) => {
-                const params = window.location.search;
-                window.history.replaceState(
-                  null,
-                  "",
-                  pathForScreen("org-settings", slug) + params,
+                // Through the location store, so the shell re-reads the new
+                // handle now rather than once the membership refetch lands.
+                replaceLocation(
+                  pathForScreen("org-settings", slug) + window.location.search,
                 );
                 void organizations.refresh();
               }}
@@ -662,6 +701,16 @@ function Signed({
             <main className="mx-auto w-full max-w-5xl px-4 py-10 sm:px-6 sm:py-14">
               <LoadingLine />
             </main>
+          ) : organizations.error !== null ? (
+            // A list that failed is not one with no workspace in it.
+            <NoOrganization
+              loading={false}
+              notFound={false}
+              error={organizations.error}
+              onRetry={organizations.retry}
+              onOpenOrganizations={() => navigate("organizations")}
+              onCreateWorkspace={() => navigate("create-org")}
+            />
           ) : (
             homeConnections
           )
@@ -708,16 +757,31 @@ function Signed({
 function NoOrganization({
   loading,
   notFound,
+  error,
+  onRetry,
   onOpenOrganizations,
+  onCreateWorkspace,
 }: {
   loading: boolean;
   notFound: boolean;
+  /** The list failed: nothing is known to be missing from it. */
+  error: string | null;
+  onRetry: () => void;
   onOpenOrganizations: () => void;
+  onCreateWorkspace: () => void;
 }) {
   return (
     <main className="mx-auto w-full max-w-2xl px-4 py-10 sm:px-6 sm:py-14">
       {loading ? (
         <LoadingLine />
+      ) : error !== null ? (
+        <div className="flex flex-col items-start gap-3">
+          <ErrorBanner className="mt-0">{error}</ErrorBanner>
+          <Button type="button" variant="outline" size="sm" onClick={onRetry}>
+            <RefreshCw />
+            Try again
+          </Button>
+        </div>
       ) : notFound ? (
         <div className="flex flex-col items-start gap-3">
           <div>
@@ -740,10 +804,53 @@ function NoOrganization({
           </a>
         </div>
       ) : (
-        <p className="text-muted-foreground text-sm">
-          You are not in a workspace yet.
-        </p>
+        <div className="flex flex-col items-start gap-3">
+          <p className="text-muted-foreground text-sm">
+            You are not in a workspace yet.
+          </p>
+          <a
+            href={NEW_ORG_PATH}
+            className="text-primary rounded-sm text-sm font-medium hover:underline"
+            onClick={(event) => {
+              if (isPlainLeftClick(event)) {
+                event.preventDefault();
+                onCreateWorkspace();
+              }
+            }}
+          >
+            Create a workspace
+          </a>
+        </div>
       )}
+    </main>
+  );
+}
+
+/** What an address that names no page shows, in place of guessing one. */
+function NotFound({ onOpenHome }: { onOpenHome: () => void }) {
+  return (
+    <main className="mx-auto w-full max-w-2xl px-4 py-10 sm:px-6 sm:py-14">
+      <div className="flex flex-col items-start gap-3">
+        <div>
+          <h1 className="text-xl font-semibold">Page not found</h1>
+          <p className="text-muted-foreground mt-1 text-sm">
+            Nothing is at this address. The link may be mistyped, or the page
+            may have moved.
+          </p>
+        </div>
+        <a
+          href="/"
+          className="text-primary rounded-sm text-sm font-medium hover:underline"
+          onClick={(event) => {
+            if (isPlainLeftClick(event)) {
+              event.preventDefault();
+              onOpenHome();
+            }
+          }}
+        >
+          Go home
+        </a>
+      </div>
     </main>
   );
 }

@@ -9,7 +9,7 @@
  */
 
 import { queryOptions, useQueries } from "@tanstack/react-query";
-import { useCallback } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { PRIVATE_TESTS_DIR, renameFile, type AliasRule } from "sandbox-factory";
 
 import { clients, queryKeys, useUserId } from "../../data/query";
@@ -32,7 +32,7 @@ export interface FileSource {
  * `tests/private/`. Undefined for the build's own records, which no table
  * renamed.
  */
-export function repositoryPath(path: string): string | undefined {
+function repositoryPath(path: string): string | undefined {
   if (path.startsWith("project/")) return path.slice("project/".length);
   if (path.startsWith("private/") && /\.test\.tsx?$/.test(path))
     return `${PRIVATE_TESTS_DIR}/${path.slice("private/".length)}`;
@@ -82,16 +82,33 @@ export interface FileTexts {
   pending: number;
 }
 
-/** The text of each of `paths`, read only while `enabled`. */
+/** How many files are read at once for a search. */
+const READ_CONCURRENCY = 6;
+
+/**
+ * The text of each of `paths`, read only while `enabled`, a few at a time:
+ * a version can hold hundreds of files of up to a megabyte each, and asked
+ * for all at once they held the connection and the page.
+ */
 export function useFileTexts(
   source: FileSource,
   paths: readonly string[],
   enabled: boolean,
 ): FileTexts {
   const userId = useUserId();
+  // How far down the list reads may go: a batch further each time the
+  // batch before it has settled.
+  const [reach, setReach] = useState(READ_CONCURRENCY);
   // Stable while the paths are, so the combined result is too.
   const combine = useCallback(
-    (results: { data?: { text: string | null }; isPending: boolean }[]) => ({
+    (
+      results: {
+        data?: { text: string | null };
+        isPending: boolean;
+        isFetched: boolean;
+        isError: boolean;
+      }[],
+    ) => ({
       texts: new Map(
         results.flatMap(({ data }, index) => {
           const path = paths[index];
@@ -103,14 +120,23 @@ export function useFileTexts(
       pending: enabled
         ? results.filter(({ isPending }) => isPending).length
         : 0,
+      settled: results.filter(
+        ({ isFetched, isError, data }) =>
+          isFetched || isError || data !== undefined,
+      ).length,
     }),
     [paths, enabled],
   );
-  return useQueries({
-    queries: paths.map((path) => ({
+  const { texts, pending, settled } = useQueries({
+    queries: paths.map((path, index) => ({
       ...fileContentQuery(userId, source, path),
-      enabled,
+      enabled: enabled && index < reach,
     })),
     combine,
   });
+  useEffect(() => {
+    if (enabled && settled >= reach && reach < paths.length)
+      setReach(reach + READ_CONCURRENCY);
+  }, [enabled, settled, reach, paths.length]);
+  return { texts, pending };
 }

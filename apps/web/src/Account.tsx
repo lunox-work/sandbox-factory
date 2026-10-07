@@ -13,11 +13,12 @@ import {
  * a provider vouched for it, and linking is the only way to add one.
  */
 
-import { Building2, Check, Link2, Unlink } from "lucide-react";
+import { Building2, Check, Link2, RefreshCw, Unlink } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { normalizeHandle } from "sandbox-factory";
 
 import { AvatarField } from "@/components/AvatarField";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { EditableField } from "@/components/EditableField";
 import { ErrorBanner } from "@/components/Message";
 import { Badge } from "@/components/ui/badge";
@@ -140,13 +141,21 @@ export function Account({
     setBusy(true);
     setError(null);
     try {
-      await authClient.linkSocial({
+      const result = await authClient.linkSocial({
         provider,
         // Back to this screen, so the new connection is visible where it was
         // started. Validated against the API's `trustedOrigins` by origin, not
         // by path, so this needs no server-side list to be kept in step.
         callbackURL: `${window.location.origin}/account`,
       });
+      // A refusal arrives as `{ error }`, not a throw, and no navigation
+      // follows it: without this the buttons stayed disabled for good.
+      if (result.error !== null && result.error !== undefined) {
+        setError(
+          result.error.message ?? "Could not start linking. Please try again.",
+        );
+        setBusy(false);
+      }
     } catch {
       setError("Could not start linking. Please try again.");
       setBusy(false);
@@ -199,7 +208,7 @@ export function Account({
   async function answerInvitation(
     invitationId: string,
     action: "accept" | "reject",
-  ) {
+  ): Promise<string | undefined> {
     setBusy(true);
     setError(null);
     try {
@@ -208,8 +217,10 @@ export function Account({
           ? await authClient.organization.acceptInvitation({ invitationId })
           : await authClient.organization.rejectInvitation({ invitationId });
       if (result.error !== null && result.error !== undefined) {
-        setError(result.error.message ?? "Could not answer that invitation.");
-        return;
+        const message =
+          result.error.message ?? "Could not answer that invitation.";
+        setError(message);
+        return message;
       }
       await refresh();
       if (action === "accept") {
@@ -220,14 +231,20 @@ export function Account({
       } else {
         onDeclined?.();
       }
+      return undefined;
     } catch {
       setError("Could not answer that invitation.");
+      return "Could not answer that invitation.";
     } finally {
       setBusy(false);
     }
   }
 
-  const unconnected = PROVIDERS.filter((provider) => !linked.has(provider.id));
+  // Only once the linked accounts are known: before that, or when they failed
+  // to load, every provider would read as one still to connect.
+  const unconnected = linkedQuery.isSuccess
+    ? PROVIDERS.filter((provider) => !linked.has(provider.id))
+    : [];
 
   return (
     <main className="mx-auto w-full max-w-2xl px-4 py-10 sm:px-6 sm:py-14">
@@ -238,8 +255,23 @@ export function Account({
         Your handle, and the accounts you sign in with.
       </p>
 
-      {(error ?? loadError) !== null && (
-        <ErrorBanner>{error ?? loadError}</ErrorBanner>
+      {error !== null ? (
+        <ErrorBanner>{error}</ErrorBanner>
+      ) : (
+        loadError !== null && (
+          <div className="flex flex-col items-start gap-3">
+            <ErrorBanner>{loadError}</ErrorBanner>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => void refresh()}
+            >
+              <RefreshCw />
+              Try again
+            </Button>
+          </div>
+        )
       )}
 
       <div className="mt-8 flex flex-col gap-6">
@@ -305,17 +337,28 @@ export function Account({
                   >
                     Accept
                   </Button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    disabled={busy}
-                    onClick={() =>
-                      void answerInvitation(invitation.id, "reject")
+                  {/*
+                    Declining asks first: it sits one button from Accept, and
+                    the invitation does not come back — only the workspace can
+                    send another.
+                  */}
+                  <ConfirmDialog
+                    trigger={
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        disabled={busy}
+                      >
+                        Decline
+                      </Button>
                     }
-                  >
-                    Decline
-                  </Button>
+                    title={`Decline the invitation to ${invitation.organization.name}?`}
+                    description="The invitation is removed. To join later, someone in the workspace has to invite you again."
+                    confirmLabel="Decline"
+                    busy={busy}
+                    onConfirm={() => answerInvitation(invitation.id, "reject")}
+                  />
                 </div>
               ))}
             </CardContent>

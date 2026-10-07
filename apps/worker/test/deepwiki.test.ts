@@ -42,6 +42,8 @@ function service(
       body: typeof init.body === "string" ? JSON.parse(init.body) : null,
     });
     assert.ok(init.signal instanceof AbortSignal);
+    // The body carries the repository's token: never re-sent on a redirect.
+    assert.equal(init.redirect, "error");
     const route = replies[`${method} ${path}`];
     const reply = route?.length === 1 ? route[0] : route?.shift();
     if (reply === undefined) throw new Error(`unscripted ${method} ${path}`);
@@ -345,6 +347,19 @@ test("pages are capped and their file names made safe and unique", async () => {
     ],
     ["wiki/page.md", "wiki/a-b.md", "wiki/a-b-2.md", "wiki/..-x.md"],
   );
+  // A long id is cut and hashed, so it fits a file name and stays apart
+  // from another that starts the same.
+  const long = (tail: string) => ({
+    id: `${"x".repeat(300)}${tail}`,
+    title: "",
+    content: "",
+    filePaths: [],
+    importance: "low" as const,
+    relatedPages: [],
+  });
+  const longNames = [...pagePaths([long("a"), long("b")]).values()];
+  assert.equal(new Set(longNames).size, 2);
+  for (const name of longNames) assert.ok(name.length < 130, name);
   const out = await scratch();
   try {
     const pages = Array.from({ length: WIKI_PAGES_MAX + 1 }, (_, i) => ({
@@ -369,6 +384,39 @@ test("pages are capped and their file names made safe and unique", async () => {
     assert.ok(parsed.success);
     assert.equal(parsed.data.pages.length, WIKI_PAGES_MAX);
     assert.equal(parsed.data.title, "");
+  } finally {
+    await rm(out, { recursive: true, force: true });
+  }
+});
+
+test("two pages under one id are written once, not to one file twice", async () => {
+  const out = await scratch();
+  try {
+    const { adapter } = adapterWith({
+      [`DELETE /api/wiki_cache?${cacheQuery}&authorization_code=code`]: [
+        json(404, {}),
+      ],
+      "POST /wiki/tasks": [json(200, { task_id: "t4" })],
+      "GET /wiki/tasks/t4": [json(200, { status: "completed" })],
+      [`GET /api/wiki_cache?${cacheQuery}`]: [
+        json(200, {
+          wiki_structure: {
+            pages: [
+              { id: "a", title: "First", content: "" },
+              { id: "a", title: "Second", content: "" },
+              { id: "b", title: "Third", content: "" },
+            ],
+          },
+        }),
+      ],
+    });
+    const files = await adapter.run(inputFor(out));
+    const paths = files.map((file) => file.path);
+    assert.equal(new Set(paths).size, paths.length);
+    assert.deepEqual(
+      paths.filter((path) => path.startsWith("wiki/")),
+      ["wiki/a.md", "wiki/b.md"],
+    );
   } finally {
     await rm(out, { recursive: true, force: true });
   }
@@ -474,6 +522,13 @@ test("every service failure is tool_failed and an abort is the abort", async () 
       [del]: [json(404, {})],
       "POST /wiki/tasks": [task("pending")],
       "GET /wiki/tasks/t": [json(500, {})],
+    });
+    // A state the service never passes through is an end, not a wait
+    // until the deadline.
+    await fails({
+      [del]: [json(404, {})],
+      "POST /wiki/tasks": [task("pending")],
+      "GET /wiki/tasks/t": [json(200, { status: "cancelled" })],
     });
     await fails({
       [del]: [json(404, {})],

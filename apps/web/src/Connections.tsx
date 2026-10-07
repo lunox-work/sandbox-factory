@@ -478,8 +478,22 @@ function Overview({
           {loading
             ? "\u00a0"
             : failed
-              ? "Could not load this workspace\u2019s connections."
-              : `${active} active connection${active === 1 ? "" : "s"} across ${TOOLS.length} tools.`}
+              ? "Could not load this workspace\u2019s connections. "
+              : // Counted over the tools that can be connected: one still
+                // to come has nothing to be active in.
+                `${active} active connection${active === 1 ? "" : "s"} across ${TOOLS.filter((tool) => tool.ready).length} tools.`}
+          {!loading && failed && (
+            <button
+              type="button"
+              className="text-primary rounded-sm font-medium hover:underline"
+              onClick={() => {
+                void refreshJira();
+                void refreshGithub();
+              }}
+            >
+              Try again
+            </button>
+          )}
         </p>
       </header>
 

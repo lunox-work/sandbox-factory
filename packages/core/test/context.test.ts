@@ -427,6 +427,15 @@ test("SQL types normalize from any dialect's spelling", () => {
     ["bytea", "bytes"],
     ["pg_catalog.int8", "bigint"],
     ["tsvector", "unknown"],
+    ["int(11) unsigned", "integer"],
+    ["BIGINT UNSIGNED ZEROFILL", "bigint"],
+    ["decimal(10,2) signed", "decimal"],
+    ["datetime2(7)", "datetime"],
+    ["smalldatetime", "datetime"],
+    ["VARCHAR2(100)", "string"],
+    ["nvarchar2(50)", "string"],
+    // Only a trailing attribute is dropped.
+    ["unsigned", "unknown"],
   ];
   for (const [native, expected] of cases)
     assert.equal(normalizeSqlType(native), expected, native);
@@ -588,6 +597,188 @@ test("sources merge by authority: a table and an enum come from the most authori
     tie.entities.map((e) => e.name),
     ["t2"],
   );
+});
+
+const relation = (
+  from: string,
+  fields: string[],
+  to: string,
+  source: DataEntity["source"],
+): RecognizedSource["relations"][number] => ({
+  name: null,
+  from: { entity: from, fields },
+  to: { entity: to, fields: ["id"] },
+  cardinality: "many-to-one",
+  onDelete: null,
+  onUpdate: null,
+  source,
+});
+
+test("two kept entities of one name stay apart, from the merge to the ERD", () => {
+  const prismaAccount = entity("Account", "accounts", "prisma", [
+    field("id", { primaryKey: true }),
+    field("ownerId"),
+  ]);
+  const drizzleAccount = entity("Account", "account", "drizzle", [
+    field("id", { primaryKey: true }),
+    field("parentId", { nullable: true }),
+  ]);
+  const merged = mergeSources([
+    recognized("drizzle", {
+      entities: [
+        drizzleAccount,
+        entity("Session", "session", "drizzle", [
+          field("id", { primaryKey: true }),
+          field("accountId"),
+        ]),
+      ],
+      relations: [
+        relation("Session", ["accountId"], "Account", "drizzle"),
+        relation("Account", ["parentId"], "Account", "drizzle"),
+      ],
+    }),
+    recognized("prisma", {
+      entities: [prismaAccount, entity("User", "users", "prisma")],
+      relations: [relation("Account", ["ownerId"], "User", "prisma")],
+    }),
+  ]);
+  assert.deepEqual(
+    merged.entities.map((e) => [e.name, e.table]),
+    [
+      ["Account", "account"],
+      ["Account", "accounts"],
+      ["Session", "session"],
+      ["User", "users"],
+    ],
+  );
+  // Each end names its table, so the two Accounts are told apart.
+  assert.deepEqual(
+    merged.relations.map((r) => [
+      `${r.from.entity}@${r.from.table ?? "?"}`,
+      `${r.to.entity}@${r.to.table ?? "?"}`,
+    ]),
+    [
+      ["Account@account", "Account@account"],
+      ["Account@accounts", "User@users"],
+      ["Session@session", "Account@account"],
+    ],
+  );
+  const dataModel = model({
+    entities: merged.entities,
+    relations: merged.relations,
+  });
+  const erd = renderErdMermaid(dataModel);
+  // Two boxes, not one merged by Mermaid.
+  assert.match(
+    erd,
+    /\n {2}Account \{\n {4}string id PK "text"\n {4}string parentId FK "text, nullable"\n {2}\}/,
+  );
+  assert.match(
+    erd,
+    /\n {2}Account_2 \{\n {4}string id PK "text"\n {4}string ownerId FK "text"\n {2}\}/,
+  );
+  assert.match(erd, /Session }o--\|\| Account : "accountId"/);
+  assert.match(erd, /Account }o--o\| Account : "parentId"/);
+  assert.match(erd, /Account_2 }o--\|\| User : "ownerId"/);
+  assert.deepEqual(
+    [...foreignKeyFields(dataModel, prismaAccount)],
+    ["ownerId"],
+  );
+  assert.deepEqual(
+    [...foreignKeyFields(dataModel, drizzleAccount)],
+    ["parentId"],
+  );
+  // By name alone, both entities' foreign keys still come back.
+  assert.deepEqual([...foreignKeyFields(dataModel, "Account")].sort(), [
+    "ownerId",
+    "parentId",
+  ]);
+  const summary = dataModelSummary(dataModel);
+  assert.deepEqual(
+    summary.entities
+      .filter((e) => e.name === "Account")
+      .map((e) => [
+        e.table,
+        e.fields.filter((f) => f.foreignKey).map((f) => f.name),
+      ]),
+    [
+      ["account", ["parentId"]],
+      ["accounts", ["ownerId"]],
+    ],
+  );
+});
+
+test("a relation without tables is matched by name, its own source first", () => {
+  // As a document written before relation ends carried tables reads.
+  const entities = [
+    entity("User", "users", "prisma"),
+    entity("audit", "audit", "sql_migrations", [
+      field("id", { primaryKey: true }),
+      field("actor"),
+    ]),
+  ];
+  const actor = relation("audit", ["actor"], "User", "sql_migrations");
+  const erd = renderErdMermaid(model({ entities, relations: [actor] }));
+  assert.match(erd, /audit }o--\|\| User : "actor"/);
+  assert.match(erd, /string actor FK "text"/);
+  // A table that names no entity is not guessed at by name.
+  const pinned = renderErdMermaid(
+    model({
+      entities,
+      relations: [
+        { ...actor, to: { entity: "User", fields: ["id"], table: "gone" } },
+      ],
+    }),
+  );
+  assert.doesNotMatch(pinned, /audit }o/);
+});
+
+test("two sources of one kind resolve their relations each in its own names", () => {
+  const merged = mergeSources([
+    recognized("drizzle", {
+      files: ["a/schema.ts"],
+      entities: [
+        entity("User", "users_a", "drizzle"),
+        entity("Post", "posts_a", "drizzle", [
+          field("id", { primaryKey: true }),
+          field("authorId"),
+        ]),
+      ],
+      relations: [relation("Post", ["authorId"], "User", "drizzle")],
+    }),
+    recognized("drizzle", {
+      files: ["b/schema.ts"],
+      entities: [
+        entity("User", "users_b", "drizzle"),
+        entity("Note", "notes_b", "drizzle", [
+          field("id", { primaryKey: true }),
+          field("writerId"),
+        ]),
+        // Shadowed by `a`'s table: its relations go.
+        entity("Post", "posts_a", "drizzle"),
+      ],
+      relations: [
+        relation("Note", ["writerId"], "User", "drizzle"),
+        relation("Post", ["x"], "User", "drizzle"),
+      ],
+    }),
+  ]);
+  assert.deepEqual(
+    merged.relations.map((r) => [
+      `${r.from.entity}@${r.from.table ?? "?"}`,
+      r.from.fields.join(","),
+      `${r.to.entity}@${r.to.table ?? "?"}`,
+    ]),
+    [
+      ["Note@notes_b", "writerId", "User@users_b"],
+      ["Post@posts_a", "authorId", "User@users_a"],
+    ],
+  );
+  const erd = renderErdMermaid(
+    model({ entities: merged.entities, relations: merged.relations }),
+  );
+  assert.match(erd, /Note }o--\|\| User_2 : "writerId"/);
+  assert.match(erd, /Post }o--\|\| User : "authorId"/);
 });
 
 test("accessors rank by entities touched, then importers, then path", () => {

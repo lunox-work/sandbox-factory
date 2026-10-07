@@ -192,7 +192,11 @@ function server(options: Server) {
         ],
         truncated: false,
       };
-    else if (url.endsWith("/repositories/ghr_1/runs")) {
+    else if (/\/repositories\/ghr_1\/runs(\?|$)/.test(url)) {
+      // As the API does: one snapshot's runs when the query names it.
+      const onSnapshot = new URL(url, "http://localhost").searchParams.get(
+        "snapshotId",
+      );
       if (method === "POST") {
         const input = JSON.parse(String(init?.body)) as {
           tool: AnalysisRunDto["tool"];
@@ -201,7 +205,14 @@ function server(options: Server) {
         const run = queuedRun(input.tool);
         runs = [run, ...runs];
         body = { run };
-      } else body = { runs };
+      } else
+        body = {
+          // The repository's newest page, capped as the API caps it.
+          runs:
+            onSnapshot === null
+              ? runs.slice(0, 25)
+              : runs.filter((run) => run.snapshotId === onSnapshot),
+        };
     } else if (url.endsWith("/artifacts")) {
       const id = url.split("/runs/")[1]?.split("/")[0] ?? "";
       body = { artifacts: options.artifacts?.[id] ?? [] };
@@ -387,6 +398,13 @@ test("a member opens a build's files but cannot build or read logs", async () =>
       name: "View files",
     }),
   ).toBe(null);
+  // Enabled once the snapshot's own runs have been read.
+  await waitFor(() =>
+    expect(
+      (screen.getByRole("button", { name: "View files" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(false),
+  );
   fireEvent.click(screen.getByRole("button", { name: "View files" }));
   const dialog = await screen.findByRole("dialog");
   fireEvent.click(
@@ -420,6 +438,24 @@ test("View is disabled until a builder has built on the snapshot", async () => {
   ).toBe(true);
 });
 
+test("a build older than the repository's newest page of runs is still shown built", async () => {
+  // Thirty runs on another snapshot since: the build on this one fell off
+  // the repository's page of runs and read as never built.
+  const newer = Array.from({ length: 30 }, (_, index) => ({
+    ...graphRun,
+    id: `arn_other_${index}`,
+    snapshotId: "rsn_other",
+  }));
+  server({ runs: [...newer, graphRun] });
+  renderPage();
+  await waitFor(() =>
+    expect(
+      (screen.getByRole("button", { name: "View files" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(false),
+  );
+});
+
 test("View opens every build in one explorer, a folder per builder, and reads a file", async () => {
   const wiki: AnalysisRunDto = {
     ...queuedRun("deepwiki"),
@@ -447,6 +483,13 @@ test("View opens every build in one explorer, a folder per builder, and reads a 
   const tab = spyOnOpen();
   renderPage();
   await screen.findByText(/10 files/);
+  // Enabled once the snapshot's own runs have been read.
+  await waitFor(() =>
+    expect(
+      (screen.getByRole("button", { name: "View files" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(false),
+  );
   fireEvent.click(screen.getByRole("button", { name: "View files" }));
   const dialog = await screen.findByRole("dialog");
   const files = within(dialog).getByRole("navigation", { name: "Files" });
@@ -539,6 +582,13 @@ test("what can be seen is shown: diagrams drawn, pages run, wiki links followed"
   });
   renderPage();
   await screen.findByText(/10 files/);
+  // Enabled once the snapshot's own runs have been read.
+  await waitFor(() =>
+    expect(
+      (screen.getByRole("button", { name: "View files" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(false),
+  );
   fireEvent.click(screen.getByRole("button", { name: "View files" }));
   const dialog = await screen.findByRole("dialog");
   const files = within(dialog).getByRole("navigation", { name: "Files" });
@@ -626,7 +676,7 @@ test("a failed run shows its error and the retry cap; admins open the log", asyn
   const card = await screen.findByRole("region", { name: "Graphify builder" });
   await within(card).findByText(/source size limit/);
   expect(within(card).getByText("Failed")).toBeTruthy();
-  expect(within(card).getByText("Retry limit reached")).toBeTruthy();
+  expect(within(card).getByText(/Retry limit reached/)).toBeTruthy();
   expect(within(card).queryByRole("button", { name: "Build" })).toBe(null);
   // The footer opens its log, read through the API, printed as a terminal
   // does and ending in how it exited. Failures are not counted there.

@@ -52,6 +52,8 @@ export const rateCardResponseSchema = z.object({
 export const bountyRunResponseSchema = z.object({ run: bountyRunDtoSchema });
 export const bountyRunListResponseSchema = z.object({
   runs: z.array(bountyRunDtoSchema),
+  /** The page after this one, `createdAt|id`; null on the last. */
+  nextCursor: z.string().nullable().default(null),
   sizingAvailable: z.boolean(),
 });
 export const listedProposalSchema = bountyProposalDtoSchema.extend({
@@ -61,9 +63,6 @@ export const listedProposalSchema = bountyProposalDtoSchema.extend({
 export const proposalListResponseSchema = z.object({
   proposals: z.array(listedProposalSchema),
   nextCursor: z.string().nullable(),
-});
-export const proposalResponseSchema = z.object({
-  proposal: bountyProposalDtoSchema,
 });
 export const accountResponseSchema = z.object({
   user: z.object({ id: z.string(), username: z.string().nullable() }),

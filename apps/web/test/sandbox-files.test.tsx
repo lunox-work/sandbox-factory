@@ -1169,3 +1169,13 @@ test("the private sandbox reads the stored, public files back in their private n
     expect(await source()).toBe("export function invite() {\n  return 1;\n}"),
   );
 });
+
+test("a version that cannot be read says so, with a retry, not that it has no spec", async () => {
+  server({ versionStatus: 500 });
+  open();
+  expect(
+    await screen.findByText("This version could not be read."),
+  ).toBeDefined();
+  expect(screen.getByRole("button", { name: "Try again" })).toBeDefined();
+  expect(screen.queryByText(/approved without a spec/)).toBeNull();
+});

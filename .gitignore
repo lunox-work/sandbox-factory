@@ -45,6 +45,8 @@ pnpm-debug.log*
 .eslintcache
 .turbo/
 .vite/
+__pycache__/
+*.pyc
 # Marks the lockfile the dev containers were last recreated for; `make up`
 # compares timestamps against package-lock.json.
 .docker-deps-stamp

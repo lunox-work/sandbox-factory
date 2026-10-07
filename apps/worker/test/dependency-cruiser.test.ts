@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,6 +15,7 @@ import { AnalysisError } from "../src/errors.js";
 import {
   CRUISE_OPTIONS,
   createDependencyCruiserAdapter,
+  cruiseInThread,
   summarize,
 } from "../src/tools/dependency-cruiser.js";
 import type { ToolRunInput } from "../src/tools/adapter.js";
@@ -175,6 +176,15 @@ test("the fixture repository is cruised in-process with fixed options", async ()
       await readFile(join(out, "dependency-cruiser.json"), "utf8"),
     ) as ICruiseResult;
     assert.equal(written.modules.length, 8);
+    // TypeScript is read by a parser the worker ships, not one that a
+    // production install may lack; and the run's scratch directory is not
+    // echoed into the artifact.
+    assert.equal(seen?.parser, "swc");
+    assert.ok(written.modules.some((module) => module.source.endsWith(".ts")));
+    assert.equal(
+      "baseDir" in (written.summary.optionsUsed as Record<string, unknown>),
+      false,
+    );
     assert.deepEqual(
       JSON.parse(await readFile(join(out, "manifest.json"), "utf8")),
       meta,
@@ -188,6 +198,33 @@ test("the fixture repository is cruised in-process with fixed options", async ()
       "Dependency cruise completed.",
     ]);
   } finally {
+    await rm(out, { recursive: true, force: true });
+  }
+});
+
+test("an import that resolves above the snapshot is not followed or recorded", async () => {
+  const root = await scratch();
+  const out = await scratch();
+  try {
+    const snapshot = join(root, "snapshot");
+    await mkdir(join(snapshot, "src"), { recursive: true });
+    await writeFile(join(root, "outside.ts"), "export const secret = 1;\n");
+    await writeFile(
+      join(snapshot, "src", "a.ts"),
+      'import { secret } from "../../outside.js";\nexport const a = secret;\n',
+    );
+    await createDependencyCruiserAdapter().run(
+      inputFor(out, { sourceDir: snapshot }),
+    );
+    const written = JSON.parse(
+      await readFile(join(out, "dependency-cruiser.json"), "utf8"),
+    ) as ICruiseResult;
+    assert.deepEqual(
+      written.modules.map((module) => module.source),
+      ["src/a.ts"],
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
     await rm(out, { recursive: true, force: true });
   }
 });
@@ -320,4 +357,23 @@ test("injected cruises may return objects, and failures map to tool_failed", asy
   } finally {
     await rm(out, { recursive: true, force: true });
   }
+});
+
+test("the cruise runs on a thread an abort can stop", async () => {
+  // On the worker's own thread it held the heartbeat and the deadline until
+  // it finished; now aborting ends it at once.
+  const controller = new AbortController();
+  const running = cruiseInThread(
+    { ...CRUISE_OPTIONS, baseDir: fixture },
+    controller.signal,
+  );
+  controller.abort(new Error("deadline"));
+  await assert.rejects(running, /deadline/);
+  const done = JSON.parse(
+    await cruiseInThread(
+      { ...CRUISE_OPTIONS, baseDir: fixture },
+      new AbortController().signal,
+    ),
+  ) as ICruiseResult;
+  assert.equal(done.modules.length, 8);
 });

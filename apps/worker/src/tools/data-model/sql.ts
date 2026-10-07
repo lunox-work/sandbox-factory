@@ -222,6 +222,19 @@ export function orderMigrations(
   return ordered;
 }
 
+/**
+ * Where a file's rollback starts, for the tools that keep both directions
+ * in one file: goose's `-- +goose Down` and dbmate's `-- migrate:down`.
+ * Replayed, its `DROP TABLE` would undo the `CREATE` above it.
+ */
+const DOWN_MARKER = /^[ \t]*--[ \t]*(?:\+goose[ \t]+down|migrate:down)\b/im;
+
+/** The text up to its rollback section; all of it when it has none. */
+export function upSection(text: string): string {
+  const marker = DOWN_MARKER.exec(text);
+  return marker === null ? text : text.slice(0, marker.index);
+}
+
 /** A rollback is not part of the schema's history. */
 function isUpMigration(path: string): boolean {
   const name = posix.basename(path).toLowerCase();
@@ -282,19 +295,31 @@ const SKIPPED: Readonly<Record<string, string>> = {
   DoStmt: "DO",
 };
 
-/** The DDL inside the idempotent `DO` idiom, or null for any other block. */
+/** What closes the idempotent idiom, from its `EXCEPTION` to the end. */
+const IDEMPOTENT_TAIL =
+  /^EXCEPTION\s+WHEN\s+duplicate_(?:object|table|column)\s+THEN\s+null\s*;\s*END\s*;?\s*$/i;
+
+/**
+ * The DDL inside the idempotent `DO` idiom, or null for any other block.
+ *
+ * Scanned rather than matched whole: one pattern with a lazy body between
+ * two runs of whitespace backtracks about cubically, and a migration of a
+ * few thousand spaces held the worker's thread for seconds, its heartbeat
+ * and deadline with it. Here only the short tail is a pattern.
+ */
 function idempotentBody(body: Node): string | null {
   const code = list(body["args"])
     .map((arg) => record(record(arg)["DefElem"]))
     .find((element) => element["defname"] === "as");
   const source = text(record(record(code?.["arg"])["String"])["sval"]);
-  const match =
-    source === null
-      ? null
-      : /^\s*BEGIN\s+([\s\S]*?)\s*EXCEPTION\s+WHEN\s+duplicate_(?:object|table|column)\s+THEN\s+null\s*;\s*END\s*;?\s*$/i.exec(
-          source,
-        );
-  return match?.[1] ?? null;
+  if (source === null) return null;
+  const block = source.trimStart();
+  if (!/^BEGIN\s/i.test(block)) return null;
+  // The last `EXCEPTION`: the tail runs to the end, so it is the one.
+  let tail = -1;
+  for (const found of block.matchAll(/EXCEPTION/gi)) tail = found.index;
+  if (tail < 0 || !IDEMPOTENT_TAIL.test(block.slice(tail))) return null;
+  return block.slice("BEGIN".length, tail).trim();
 }
 
 export async function replaySqlMigrations(
@@ -305,7 +330,9 @@ export async function replaySqlMigrations(
   const tables = new Map<string, Table>();
   const enums = new Map<string, EnumType>();
   const omissions: DataModelOmission[] = [];
-  for (const file of files) {
+  for (const whole of files) {
+    // The rollback is cut off; it is at the end, so no location moves.
+    const file = { path: whole.path, text: upSection(whole.text) };
     const skipped = new Map<string, number>();
     // Locations are byte offsets into the UTF-8 text.
     const bytes = Buffer.from(file.text);

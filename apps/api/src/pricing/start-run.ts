@@ -18,6 +18,7 @@ import { DEFAULT_RATE_CARD } from "sandbox-factory";
 import type { RunJiraClient } from "./executor.js";
 
 import type { PricingRouteOptions } from "./options.js";
+import { externalBoardId } from "./selection.js";
 /** Why a run did not start, for the route to answer and a caller to skip. */
 export type StartRunResult =
   | { readonly ok: true; readonly run: StoredBountyRun }
@@ -119,11 +120,10 @@ export async function bountyOnBoard(
   issueId: string,
 ): Promise<JiraIssueDto | null> {
   try {
-    const page = await client.boardIssues(Number(boardExternalId), {
-      jql: `issue = ${issueId}`,
-      startAt: 0,
-      maxResults: 1,
-    });
+    const page = await client.boardIssues(
+      externalBoardId({ externalId: boardExternalId }),
+      { jql: `issue = ${issueId}`, startAt: 0, maxResults: 1 },
+    );
     return page.issues[0] ?? null;
   } catch (error) {
     // Jira answers 400 for an issue id that does not exist.

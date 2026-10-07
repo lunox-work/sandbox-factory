@@ -3,7 +3,6 @@ import type {
   BountyProposalDto,
   BountyRunDto,
   BountyWritebackDto,
-  ProposalLiveSpecDto,
 } from "@sandbox-factory/shared";
 export type EnrichedProposal = BountyProposalDto & {
   /**
@@ -43,20 +42,4 @@ export function titleLine(value: unknown): ProposalTitle | null {
   }
   const code = line["code"];
   return typeof code === "string" ? { id, code } : null;
-}
-
-export interface ProposalDetail {
-  proposal: BountyProposalDto;
-  freshness: {
-    freshness: "current" | "stale" | "missing" | "unknown";
-    checkedAt: string;
-    code?: string;
-  };
-  /**
-   * What the bounty says now: Jira's text for a bounty following an issue,
-   * and the bounty as stored otherwise. Null when it could not be read.
-   */
-  liveSpec?: ProposalLiveSpecDto | null;
-  writebackOperations: BountyWritebackDto[];
-  activeRun?: BountyRunDto | null;
 }

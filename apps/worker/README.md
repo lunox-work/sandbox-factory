@@ -24,9 +24,10 @@ configured DeepWiki-Open service, which uses its own.
 
 Configure the GitHub App in `.env.development`, start dependencies, and apply
 local database migrations with `make migrate`. `make up` starts the polling
-worker alongside the API and web app. In GitHub settings, open a registered
-repository's **Analysis** panel and choose **Analyse now**. Any organization
-member can open artifacts; owners and admins can start runs and read logs.
+worker alongside the API and web app. Open a registered repository's page
+and choose **Build** on a context builder. Any organization member can open
+artifacts; owners and admins can start runs and read logs. A sandbox
+build's artifacts, hidden tests among them, are owners' and admins' only.
 
 `make worker-smoke` builds the production image and runs the real pipeline on
 the checked-in fixture without GitHub, database or AWS credentials. It checks
@@ -69,10 +70,12 @@ that read the map, `graphRunId`). Each writes a `manifest.json` whose
 `deepwikiSummarySchema`, `abstractionsSummarySchema` and
 `dataModelSummarySchema` in `packages/shared`).
 
-**dependency_cruiser** runs `dependency-cruiser` 18.5.0 in-process on the
-extracted source: every module system, TypeScript pre-compilation
-dependencies, `node_modules`, `dist`, `build`, `vendor`, `third_party` and
-`.git` excluded, no rule set, and none of the repository's own
+**dependency_cruiser** runs `dependency-cruiser` 18.5.0 on a thread of its
+own (an abort terminates it) over the extracted source: every module system,
+TypeScript parsed by swc (the worker's own `@swc/core`, so production reads
+`.ts` as development does) with pre-compilation dependencies, only modules
+inside the snapshot, `node_modules`, `dist`, `build`, `vendor`,
+`third_party` and `.git` excluded, no rule set, and none of the repository's own
 `tsconfig`, Babel or webpack configuration, so nothing in the snapshot is
 read as configuration or executed; the cruiser only parses. Outputs:
 `dependency-cruiser.json` (the full cruise, kind `dependency_graph`),
@@ -98,7 +101,9 @@ The service clones the repository's **default branch** itself and reads
 it with its own model; it does not read the worker's snapshot, so the wiki
 may describe a newer commit than the run names. The summary records the
 commit the run was asked for as `requestedCommitSha`. Outputs:
-`wiki/<page id>.md` for every page (kind `wiki_page`, at most 500),
+`wiki/<name>.md` for every page (kind `wiki_page`, at most 500, one per
+page id), the name its id made file-safe, a long one cut to 100 characters
+with a short hash, a repeated one suffixed `-2`, `-3`,
 `wiki-structure.json` (kind `wiki_structure`, the raw structure with the
 repository, provider and model) and `manifest.json`; both JSON artifacts
 carry the summary (title, description, provider, model, pages with their
@@ -159,7 +164,7 @@ tiers:
 Outputs: `abstractions.json` (kind `abstraction_index`; modules sorted by
 path, with both extractors' versions and the graph's SHA-256),
 `abstractions.md` (kind `other`; the most imported modules first, at most
-300 modules or 256 KiB) and `manifest.json`, whose summary
+300 modules or 256 Ki characters) and `manifest.json`, whose summary
 (`abstractionsSummarySchema`) holds counts by coverage and language, the 25
 most imported modules with their export counts, the first 25 omissions and
 `truncated`. A module lists at most 500 exports and a signature at most
@@ -251,19 +256,24 @@ never read. The same entry points and budget on the same commit are one run.
 
 A `sandbox_build` run names a sandbox version (`params.sandboxVersionId`),
 its slice run and every hash the output must bind to: the slice manifest
-and contract, the transform (alias rules, dependency choices and hidden
-tests) and the approved task. The API queues it from
+and contract, the transform (alias rules, dependency choices, hidden tests
+and fixtures, with the starter's hash for a generated version) and the
+approved task. The API queues it from
 `POST /api/v1/orgs/:orgId/sandboxes/versions/:id/build`; the worker reads
 the version's private provenance owner-scoped, refuses a run whose hashes no
-longer match the draft (`tool_failed`), a slice that is not a succeeded run
+longer match the draft, or whose draft's content no longer hashes to them
+(`tool_failed`), a slice that is not a succeeded run
 on the same snapshot or whose artifacts fail their hashes
 (`slice_unavailable`), and source bytes that differ from the manifest
 (`source_unavailable`).
 
 The alias table is applied to the included source, the declaration stubs,
-the contract's symbols and the approved spec with the inverse proof from
-`packages/core/src/sandbox/aliases.ts`; a collision or an irreversible rule
-is an `alias_failed` blocker and nothing is generated. The project generator
+the contract's symbols, the approved spec and the fixtures with the inverse
+proof from `packages/core/src/sandbox/aliases.ts`, paths included. The
+contract, spec and fixtures are renamed value by value, never their keys,
+and must still read as their schemas afterwards. A collision, an
+irreversible rule or a broken value is an `alias_failed` blocker and nothing
+is generated. The project generator
 (`packages/core/src/sandbox/project.ts`) then writes: copied source at its
 aliased paths with compiler-alias imports rewritten to relative paths and
 recorded; every cut module as a `.d.ts` stub beside a generated `.js` whose
@@ -280,10 +290,12 @@ contract is `npm ci`, `npm run dev`, `npm run build`, `npm test` on Node
 
 The baseline runs in a fresh job from the evaluation provider: trusted
 preparation pins the lockfile (`npm install --package-lock-only`), then
-`npm ci`, `npm run build`, `npm run dev`, `npm test`, and each hidden test on its own. A
-hidden test must do what its `expectedBaseline` says (a bug's acceptance
-test fails before the fix); a build or harness failure is never accepted as
-that baseline. The job is destroyed on every path and its execution record
+`npm ci`, `npm run build`, `npm run dev`, `npm test`, and each hidden test on its own,
+reported as TAP. At least one hidden test must be expected to fail, and each
+must do what its `expectedBaseline` says (a bug's acceptance test fails
+before the fix); a build or harness failure is never accepted as that
+baseline, and neither is a test file that fails before any test in it ran,
+which is an error. The job is destroyed on every path and its execution record
 (provider, job id, environment, input hash, state, teardown) is kept in the
 report. The worker ships `local-process` (`src/evaluation/local-process.ts`):
 a temporary directory and child processes with a scrubbed environment. It
@@ -309,8 +321,11 @@ public sandbox is `project/`; the private sandbox is the same files read
 back through the inverse of that table, so a build makes both without
 storing the project twice. `ready` is true only with
 no blockers and a passing baseline. Equal inputs and a fixed clock give
-byte-identical manifests, provided the registry resolves the trusted lock
-the same way; the lockfile is recorded so a difference is visible.
+manifests that differ only in the evaluation job's id in the execution
+record, provided the registry resolves the trusted lock the same way; the
+lockfile is recorded so a difference is visible. Only registry versions are
+installed: a dependency pinned to a URL, a path or an alias is
+`dependency_unresolved`.
 
 Runs cache `(snapshot, tool, version, canonical params hash)`. Each attempt owns
 a unique lease and storage prefix, so a late worker cannot overwrite its
@@ -404,28 +419,6 @@ blocks on a fixture for a module the slice does not mock or a walkthrough
 import that resolves to no generated file. Every baseline runs
 `npm run dev` after the build, and a non-zero exit fails it.
 
-## Deployment order
-
-Apply the origin DNS service filter in `infra/lambda/origin_dns.py` and
-`infra/discovery.tf` before running any worker in the cluster. Ship that
-prerequisite separately when preparing PRs. Both scheduled discovery and ECS
-state events must exclude worker and migration tasks. CD verifies the configured
-API service group before registering worker revisions.
-
-Apply the worker ECR repository, egress-only security group, task role, task
-definition and API launcher settings. Then CD builds and pushes the worker,
-registers a revision, runs database migrations and updates the API. There is no
-worker service: the API launches Fargate batches using the latest ACTIVE family
-revision. Terraform ignores the worker's container definition after bootstrap,
-so an unrelated apply cannot replace the latest worker image with bootstrap.
-Container environment or secret-list changes must be applied to the active
-revision through CD when that list changes.
-
-Dependencies added here: the worker uses the existing DB/GitHub/shared/core
-packages, Zod for boot configuration and `typescript-compiler` (an npm alias
-pinned to TypeScript 5.9.3) for its compiler API. The API adds the ECS SDK for
-batch launch. The web app uses the existing typed client package.
-
 ### Starter
 
 A `sandbox_starter` run names a generated version (`params.sandboxVersionId`),
@@ -464,3 +457,26 @@ commits, the starter, its pseudonyms as the version's `aliasRules`, its
 hidden tests renamed as the build ran them, scope and transform, and a ready
 build's harness and toolchain are recorded on the draft while it still
 points at the run.
+
+## Deployment order
+
+Apply the origin DNS service filter in `infra/lambda/origin_dns.py` and
+`infra/discovery.tf` before running any worker in the cluster. Ship that
+prerequisite separately when preparing PRs. Both scheduled discovery and ECS
+state events must exclude worker and migration tasks. CD verifies the configured
+API service group before registering worker revisions.
+
+Apply the worker ECR repository, egress-only security group, task role, task
+definition and API launcher settings. Then CD builds and pushes the worker,
+registers a revision, runs database migrations and updates the API. There is no
+worker service: the API launches Fargate batches using the latest ACTIVE family
+revision. Terraform ignores the worker's container definition after bootstrap,
+so an unrelated apply cannot replace the latest worker image with bootstrap.
+Container environment or secret-list changes must be applied to the active
+revision through CD when that list changes.
+
+Dependencies added here: the worker uses the existing DB/GitHub/shared/core
+packages, Zod for boot configuration, `typescript-compiler` (an npm alias
+pinned to TypeScript 5.9.3) for its compiler API and `@swc/core`, which
+dependency-cruiser parses TypeScript with. The API adds the ECS SDK for
+batch launch. The web app uses the existing typed client package.

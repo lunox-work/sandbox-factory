@@ -471,7 +471,7 @@ test("a repository is registered from what the installation can see", async () =
 
   const dialog = await openRepositories();
   // It says what registering does and does not read.
-  expect(within(dialog).getByText(/Its contents are not read/)).toBeDefined();
+  expect(within(dialog).getByText(/Code is read only by the/)).toBeDefined();
   // Already registered: listed above, not offered again below.
   const registeredHere = within(dialog).getByRole("list", {
     name: "Registered from acme",

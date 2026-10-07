@@ -625,7 +625,7 @@ function HandleForm({
         <CardDescription>
           {personal
             ? "Your username, which your personal pages live under."
-            : "The workspace\u2019s public name."}
+            : "The workspace\u2019s address: its pages live under it."}
         </CardDescription>
       </CardHeader>
 
@@ -789,7 +789,9 @@ function InviteForm({
       setDraft("");
       setMessage(`Invited ${value}. They will see it on their account page.`);
     } catch (error) {
-      onError(
+      // Beside the form that sent it, as a refused input is: the page's
+      // banner sits above the tabs, out of sight of the field.
+      setValidationError(
         error instanceof ApiError
           ? error.message
           : "Could not send that invitation.",
@@ -1009,8 +1011,8 @@ export function CreateOrganization({
             Name
           </CardTitle>
           <CardDescription>
-            What people will read. A public handle is made from it, and both can
-            be changed later.
+            What people will read. A handle is made from it, which can be
+            changed later in the workspace&rsquo;s settings.
           </CardDescription>
         </CardHeader>
 

@@ -1029,7 +1029,7 @@ test("Home counts only healthy Jira connections", async () => {
   showConnections([{ healthy: true }, { healthy: true }, { healthy: false }]);
 
   expect(
-    await screen.findByText("2 active connections across 3 tools."),
+    await screen.findByText("2 active connections across 2 tools."),
   ).toBeDefined();
   expect(screen.getByText("1 needs reconnecting")).toBeDefined();
 });
@@ -1039,7 +1039,7 @@ test("one connection reads in the singular", async () => {
   showConnections([{ healthy: true }]);
 
   expect(
-    await screen.findByText("1 active connection across 3 tools."),
+    await screen.findByText("1 active connection across 2 tools."),
   ).toBeDefined();
   expect(screen.getByText("active site")).toBeDefined();
 });
@@ -1048,7 +1048,7 @@ test("a tile on Home opens that tool's tab", async () => {
   // A count is only useful if it leads to the list it counts.
   showConnections([{ healthy: true }]);
 
-  await screen.findByText("1 active connection across 3 tools.");
+  await screen.findByText("1 active connection across 2 tools.");
   fireEvent.click(screen.getByRole("button", { name: /^Jira/ }));
 
   await waitFor(() => {
@@ -1160,7 +1160,7 @@ test("Home counts again when it is come back to", async () => {
   // leave Home's count as it was before.
   const connections = [{ healthy: true }, { healthy: true }];
   showConnections(connections);
-  await screen.findByText("2 active connections across 3 tools.");
+  await screen.findByText("2 active connections across 2 tools.");
 
   await openConnection("Jira");
   await screen.findByText("Site 2");
@@ -1169,7 +1169,7 @@ test("Home counts again when it is come back to", async () => {
   await openConnection("Home");
 
   expect(
-    await screen.findByText("1 active connection across 3 tools."),
+    await screen.findByText("1 active connection across 2 tools."),
   ).toBeDefined();
 });
 
@@ -1558,7 +1558,7 @@ test("a server without the GitHub App shows it as not set up, not as a failed lo
   showConnections([{ healthy: true }], "/o/acme/settings", "unconfigured");
 
   expect(
-    await screen.findByText("1 active connection across 3 tools."),
+    await screen.findByText("1 active connection across 2 tools."),
   ).toBeDefined();
   expect(screen.getByText("Not set up on this server")).toBeDefined();
 

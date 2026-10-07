@@ -21,6 +21,7 @@ export function WorkbenchDialog({
   description,
   open,
   onOpenChange,
+  notice,
   children,
 }: {
   title: string;
@@ -30,6 +31,11 @@ export function WorkbenchDialog({
   description: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /**
+   * Something that failed from inside it, such as a file that would not
+   * open: said here, since the page's own banner is behind the dialog.
+   */
+  notice?: { text: string; onDismiss: () => void } | null | undefined;
   /** Its panes; mounted only while it is open, so each opening starts afresh. */
   children: React.ReactNode;
 }) {
@@ -56,11 +62,26 @@ export function WorkbenchDialog({
           <DialogClose
             aria-label="Close"
             title="Close"
-            className="flex size-7 items-center justify-center rounded-sm text-(--wb-muted) hover:bg-(--wb-hover) hover:text-(--wb-strong) focus-visible:outline-1 focus-visible:outline-(--wb-accent)"
+            className="flex size-7 items-center justify-center rounded-[4px] text-(--wb-muted) hover:bg-(--wb-hover) hover:text-(--wb-strong) focus-visible:outline-1 focus-visible:outline-(--wb-accent)"
           >
             <X aria-hidden="true" className="size-4" />
           </DialogClose>
         </header>
+        {notice != null && (
+          <p
+            role="alert"
+            className="flex shrink-0 items-center gap-3 border-b border-(--wb-border) bg-red-950/40 px-3 py-1.5 text-xs text-red-200"
+          >
+            <span className="min-w-0 flex-1">{notice.text}</span>
+            <button
+              type="button"
+              className="hover:text-(--wb-strong) hover:underline"
+              onClick={notice.onDismiss}
+            >
+              Dismiss
+            </button>
+          </p>
+        )}
         {open && children}
       </DialogContent>
     </Dialog>

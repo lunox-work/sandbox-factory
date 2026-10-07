@@ -485,6 +485,7 @@ function JiraLink({
         title={`Link ${asking?.key ?? "the issue"}?`}
         description={`The bounty follows the issue once it is linked: ${asking?.key ?? "its"} title and description replace the ones written here. Removing the link later keeps whatever text it has then.`}
         confirmLabel="Link issue"
+        pendingLabel="Linking…"
         onConfirm={async () => {
           if (asking === null) return;
           const failure = await save(() =>

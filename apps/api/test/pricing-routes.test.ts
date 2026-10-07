@@ -27,10 +27,10 @@ import type {
   RunClientResult,
 } from "../src/pricing/executor.js";
 import {
-  sizeIfNeverSized,
   issueSearchJql,
   type PricingRouteOptions,
 } from "../src/pricing/routes.js";
+import { sizeIfNeverSized } from "../src/pricing/start-run.js";
 import { createApp } from "../src/routes.js";
 
 const requestId = "28bb313f-252a-4a1d-b656-558a215b604b";
@@ -472,6 +472,7 @@ function reviewHarness(
   hash = "a".repeat(64),
   overrides: Partial<StoredBountyProposal> = {},
   bounty: StoredBounty = jiraBounty(),
+  extra: Partial<PricingRouteOptions> = {},
 ) {
   let current = reviewProposal(overrides);
   let specReads = 0;
@@ -572,6 +573,7 @@ function reviewHarness(
             },
           } as never,
         }),
+      ...extra,
     },
   });
   return {
@@ -1152,6 +1154,52 @@ test("approval rechecks Jira; resize, unapprove and remove do not", async () => 
     { method: "POST", headers, body: JSON.stringify({ expectedRevision: 1 }) },
   );
   assert.equal(rejected.status, 404);
+});
+
+test("approval waits for a Jira update still unresolved", async () => {
+  // A withdrawal still on its way would race the approval's comment to the
+  // issue, and hold the proposal's one delivery slot besides.
+  const state = reviewHarness("a".repeat(64), {}, jiraBounty(), {
+    writebacks: {
+      listForProposal: () => Promise.resolve([{ status: "running" }]),
+    } as never,
+  });
+  const response = await state.app.request(
+    "/api/v1/orgs/org_1/proposals/bpr_1/approve",
+    { method: "POST", headers, body: JSON.stringify({ expectedRevision: 1 }) },
+  );
+  assert.equal(response.status, 409);
+  assert.equal(
+    ((await response.json()) as { code: string }).code,
+    "writeback_busy",
+  );
+  assert.equal(state.current().status, "proposed");
+});
+
+test("a change refused for the proposal's state says so, not that it changed", async () => {
+  // At the revision the reviewer saw: reloading would show the same thing.
+  for (const [status, code] of [
+    ["approved", "proposal_approved"],
+    ["proposed", "proposal_not_approved"],
+  ] as const) {
+    const state = reviewHarness();
+    state.proposals.resize = () =>
+      Promise.resolve({
+        ok: false,
+        reason: "invalid-state",
+        current: { ...state.current(), status },
+      }) as never;
+    const response = await state.app.request(
+      "/api/v1/orgs/org_1/proposals/bpr_1/resize",
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ expectedRevision: 1, complexity: "L" }),
+      },
+    );
+    assert.equal(response.status, 409);
+    assert.equal(((await response.json()) as { code: string }).code, code);
+  }
 });
 
 test("a Jira spec change blocks approval with a stable stale code", async () => {

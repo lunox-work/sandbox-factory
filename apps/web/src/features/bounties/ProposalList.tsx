@@ -6,7 +6,11 @@ import { rankAtLeast } from "sandbox-factory";
 import { terminalRun, useObservation } from "../../data/observe";
 import { clients, queryKeys, useUserId } from "../../data/query";
 import { money } from "../../lib/format";
-import { pushLocation, subscribeLocation } from "../../navigation/location";
+import {
+  pushLocation,
+  replaceLocation,
+  subscribeLocation,
+} from "../../navigation/location";
 import { categoryFromUrl, CategoryLine, CategoryNav } from "./Categories";
 import { useProposalMutations } from "./mutations";
 import { capitalize, unweighed } from "./presentation";
@@ -16,10 +20,8 @@ import { SizingStream } from "./SizingProgress";
 import { IssueSearch } from "./IssueSearch";
 import { type EnrichedProposal } from "./types";
 import { useProposalTitles } from "./useProposalTitles";
-export { RateCardEditor } from "../../features/pricing/RateCardEditor";
-export { modelLabel, money } from "../../lib/format";
 
-import { ErrorBanner, LoadingLine } from "@/components/Message";
+import { ErrorBanner, LoadingLine, RetryableError } from "@/components/Message";
 import { PeekPanel } from "@/components/PeekPanel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -28,6 +30,17 @@ import type { JiraIssueDetail } from "../../useJira";
 
 function canManage(role: string): boolean {
   return rankAtLeast(role, "admin");
+}
+
+/** The history entry a proposal opened over the list is pushed with. */
+const PROPOSAL_ENTRY = { proposalPeek: true } as const;
+
+function isProposalEntry(state: unknown): boolean {
+  return (
+    typeof state === "object" &&
+    state !== null &&
+    (state as Record<string, unknown>)["proposalPeek"] === true
+  );
 }
 
 /**
@@ -47,7 +60,6 @@ export function ProposalList({
   role,
   writeGranted = true,
   readIssue,
-  emptyText,
 }: {
   organizationId: string;
   /** The board whose proposals these are; absent, the organization's. */
@@ -68,7 +80,6 @@ export function ProposalList({
   readIssue?:
     ((issueKey: string) => Promise<JiraIssueDetail | null>) | undefined;
   /** What an empty list says, in place of the board's wording. */
-  emptyText?: string | undefined;
 }) {
   const [category, setCategory] = useState<string | null>(categoryFromUrl);
   const [selectedId, setSelectedId] = useState<string | null>(() =>
@@ -230,6 +241,7 @@ export function ProposalList({
       params.set("proposal", proposalId);
       pushLocation(
         `${window.location.pathname}?${params.toString()}${window.location.hash}`,
+        PROPOSAL_ENTRY,
       );
     }
     setSelectedId(proposalId);
@@ -250,9 +262,19 @@ export function ProposalList({
     if (updateUrl) {
       const params = new URLSearchParams(window.location.search);
       if (params.has("proposal")) {
+        /*
+          Back, when the panel was opened here: a new entry for the list
+          would leave the panel's under it, for Back to reopen. One opened
+          from a link has no list entry under it, so its address is
+          replaced with the list.
+        */
+        if (isProposalEntry(window.history.state)) {
+          window.history.back();
+          return;
+        }
         params.delete("proposal");
         const query = params.toString();
-        pushLocation(
+        replaceLocation(
           window.location.pathname +
             (query === "" ? "" : `?${query}`) +
             (window.location.hash ?? ""),
@@ -401,16 +423,9 @@ export function ProposalList({
         <ErrorBanner className="mt-0">{error ?? resourceError}</ErrorBanner>
       )}
       {tracking.isError && (
-        <ErrorBanner>
-          Run tracking failed.{" "}
-          <button
-            onClick={() => {
-              void tracking.refetch();
-            }}
-          >
-            Try again
-          </button>
-        </ErrorBanner>
+        <RetryableError onRetry={() => void tracking.refetch()}>
+          Run tracking failed.
+        </RetryableError>
       )}
 
       {canManage(role) && sizingAvailable && boardId !== undefined && (
@@ -447,7 +462,8 @@ export function ProposalList({
               data-testid="jira-writeback"
             >
               Approvals stay here: this site was connected without write access.
-              Connect it again from the Jira page to grant it.
+              Connect it again from the Jira tab of this workspace&rsquo;s
+              settings to grant it.
             </p>
           )}
         </div>
@@ -495,7 +511,7 @@ export function ProposalList({
             {category !== null
               ? "No proposals in this category."
               : active === undefined
-                ? (emptyText ?? "No proposals yet.")
+                ? "No proposals yet."
                 : "Proposals appear here as bounties are sized."}
           </p>
         ) : (

@@ -8,6 +8,12 @@ import { bounty, jiraBoard, jiraIssue } from "./schema.js";
 import type { JiraIssueRow, BountyRow } from "./schema.js";
 import { insertBounty, refreshBounty } from "./bounties.js";
 
+/** A link refused after its writes began: thrown to roll them back. */
+class LinkRefused extends Error {
+  constructor(readonly result: JiraIssueLinkResult) {
+    super("The link was refused.");
+  }
+}
 export interface JiraIssuePointer {
   readonly id: string;
   readonly boardId: string;
@@ -15,18 +21,12 @@ export interface JiraIssuePointer {
   readonly bountyId: string;
   readonly externalId: string;
   readonly key: string;
-  readonly statusCategory: string;
-  readonly remoteCreatedAt: string;
-  readonly remoteUpdatedAt: string;
   readonly removedAt: string | null;
 }
 
 export interface JiraIssueInput {
   readonly externalId: string;
   readonly key: string;
-  readonly statusCategory: string;
-  readonly remoteCreatedAt: string;
-  readonly remoteUpdatedAt: string;
 }
 
 export type JiraIssueLinkResult =
@@ -107,9 +107,6 @@ function toPointer(row: JiraIssueRow): JiraIssuePointer {
     bountyId: row.bountyId,
     externalId: row.externalId,
     key: row.key,
-    statusCategory: row.statusCategory,
-    remoteCreatedAt: row.remoteCreatedAt.toISOString(),
-    remoteUpdatedAt: row.remoteUpdatedAt.toISOString(),
     removedAt: row.removedAt?.toISOString() ?? null,
   };
 }
@@ -199,96 +196,107 @@ export function createJiraIssueStore(db: Database): JiraIssueStore {
     },
 
     async link(organizationId, boardId, bountyId, input, content) {
-      return db.transaction(async (tx): Promise<JiraIssueLinkResult> => {
-        const owned = await tx
-          .select({ id: jiraBoard.id })
-          .from(jiraBoard)
-          .where(
-            and(
-              eq(jiraBoard.organizationId, organizationId),
-              eq(jiraBoard.id, boardId),
-            ),
-          );
-        if (owned[0] === undefined) return { ok: false, reason: "not-found" };
-        // Locked, so the text written below is over the revision read here.
-        const bounties = (await tx
-          .select()
-          .from(bounty)
-          .where(
-            and(
-              eq(bounty.organizationId, organizationId),
-              eq(bounty.id, bountyId),
-            ),
-          )
-          .for("update")) as BountyRow[];
-        const current = bounties[0];
-        if (current === undefined) return { ok: false, reason: "not-found" };
-
-        const facts = factsOf(input);
-        const where = issueWhere(organizationId, boardId, input.externalId);
-        const known = (await tx
-          .select({ bountyId: jiraIssue.bountyId })
-          .from(jiraIssue)
-          .where(where)) as { bountyId: string }[];
-        const owner = known[0]?.bountyId;
-        if (owner !== undefined && owner !== bountyId) {
-          return { ok: false, reason: "issue-linked", bountyId: owner };
-        }
-
-        let linked: JiraIssueRow | undefined;
-        if (owner === bountyId) {
-          // Already this bounty's: picked again, it is read again.
-          linked = (
-            (await tx
-              .update(jiraIssue)
-              .set(facts)
-              .where(where)
-              .returning()) as JiraIssueRow[]
-          )[0];
-        } else {
-          // The issue it followed before, if any, is let go first: a bounty
-          // has one issue.
-          await tx
-            .delete(jiraIssue)
+      const within = () =>
+        db.transaction(async (tx): Promise<JiraIssueLinkResult> => {
+          const owned = await tx
+            .select({ id: jiraBoard.id })
+            .from(jiraBoard)
             .where(
               and(
-                eq(jiraIssue.organizationId, organizationId),
-                eq(jiraIssue.bountyId, bountyId),
+                eq(jiraBoard.organizationId, organizationId),
+                eq(jiraBoard.id, boardId),
               ),
             );
-          linked = (
-            (await tx
-              .insert(jiraIssue)
-              .values({
-                id: generateId("jri"),
-                organizationId,
-                boardId,
-                externalId: input.externalId,
-                bountyId,
-                ...facts,
-              })
-              .onConflictDoNothing()
-              .returning()) as JiraIssueRow[]
-          )[0];
-          if (linked === undefined) {
-            // A run imported it in between, as a bounty of its own.
-            const raced = (await tx
-              .select({ bountyId: jiraIssue.bountyId })
-              .from(jiraIssue)
-              .where(where)) as { bountyId: string }[];
-            return raced[0] === undefined
-              ? { ok: false, reason: "not-found" }
-              : {
-                  ok: false,
-                  reason: "issue-linked",
-                  bountyId: raced[0].bountyId,
-                };
+          if (owned[0] === undefined) return { ok: false, reason: "not-found" };
+          // Locked, so the text written below is over the revision read here.
+          const bounties = (await tx
+            .select()
+            .from(bounty)
+            .where(
+              and(
+                eq(bounty.organizationId, organizationId),
+                eq(bounty.id, bountyId),
+              ),
+            )
+            .for("update")) as BountyRow[];
+          const current = bounties[0];
+          if (current === undefined) return { ok: false, reason: "not-found" };
+
+          const facts = factsOf(input);
+          const where = issueWhere(organizationId, boardId, input.externalId);
+          const known = (await tx
+            .select({ bountyId: jiraIssue.bountyId })
+            .from(jiraIssue)
+            .where(where)) as { bountyId: string }[];
+          const owner = known[0]?.bountyId;
+          if (owner !== undefined && owner !== bountyId) {
+            return { ok: false, reason: "issue-linked", bountyId: owner };
           }
-        }
-        if (linked === undefined) return { ok: false, reason: "not-found" };
-        await refreshBounty(tx, organizationId, current, content);
-        return { ok: true, pointer: toPointer(linked) };
-      });
+
+          let linked: JiraIssueRow | undefined;
+          if (owner === bountyId) {
+            // Already this bounty's: picked again, it is read again.
+            linked = (
+              (await tx
+                .update(jiraIssue)
+                .set(facts)
+                .where(where)
+                .returning()) as JiraIssueRow[]
+            )[0];
+          } else {
+            // The issue it followed before, if any, is let go first: a bounty
+            // has one issue.
+            await tx
+              .delete(jiraIssue)
+              .where(
+                and(
+                  eq(jiraIssue.organizationId, organizationId),
+                  eq(jiraIssue.bountyId, bountyId),
+                ),
+              );
+            linked = (
+              (await tx
+                .insert(jiraIssue)
+                .values({
+                  id: generateId("jri"),
+                  organizationId,
+                  boardId,
+                  externalId: input.externalId,
+                  bountyId,
+                  ...facts,
+                })
+                .onConflictDoNothing()
+                .returning()) as JiraIssueRow[]
+            )[0];
+            if (linked === undefined) {
+              // A run imported it in between, as a bounty of its own. Thrown,
+              // not returned: the issue this bounty followed was let go above,
+              // and only a rollback gives it back.
+              const raced = (await tx
+                .select({ bountyId: jiraIssue.bountyId })
+                .from(jiraIssue)
+                .where(where)) as { bountyId: string }[];
+              throw new LinkRefused(
+                raced[0] === undefined
+                  ? { ok: false, reason: "not-found" }
+                  : {
+                      ok: false,
+                      reason: "issue-linked",
+                      bountyId: raced[0].bountyId,
+                    },
+              );
+            }
+          }
+          if (linked === undefined) return { ok: false, reason: "not-found" };
+          await refreshBounty(tx, organizationId, current, content);
+          return { ok: true, pointer: toPointer(linked) };
+        });
+      try {
+        return await within();
+      } catch (error) {
+        if (error instanceof LinkRefused) return error.result;
+        throw error;
+      }
     },
 
     async unlink(organizationId, bountyId) {
@@ -362,10 +370,6 @@ export function createJiraIssueStore(db: Database): JiraIssueStore {
 function factsOf(input: JiraIssueInput) {
   return {
     key: input.key,
-    statusCategory: input.statusCategory,
-    remoteCreatedAt: new Date(input.remoteCreatedAt),
-    remoteUpdatedAt: new Date(input.remoteUpdatedAt),
-    lastSeenAt: new Date(),
     removedAt: null,
   };
 }

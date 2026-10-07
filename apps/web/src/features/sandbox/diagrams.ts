@@ -107,12 +107,47 @@ function dotWorker(): Worker {
   return started;
 }
 
+/**
+ * The largest DOT source drawn here. A whole repository's dependency graph
+ * can be megabytes, and its layout runs for minutes; past this it is read as
+ * text instead.
+ */
+export const DOT_SOURCE_MAX = 512 * 1024;
+/** How long one layout may take before the worker is stopped. */
+export const DOT_TIMEOUT_MS = 30_000;
+
 function renderDot(source: string): Promise<string> {
+  if (source.length > DOT_SOURCE_MAX)
+    return Promise.reject(
+      new Error("This graph is too large to draw here. Read it as source."),
+    );
   const target = dotWorker();
   asked += 1;
   const id = asked;
   return new Promise((resolve, reject) => {
-    waiting.set(id, { resolve, reject });
+    // A layout that does not finish holds the one worker, and every
+    // drawing queued behind it. Stopped, it fails with them, and the next
+    // drawing starts a fresh worker.
+    const timer = setTimeout(() => {
+      if (!waiting.has(id)) return;
+      for (const pending of waiting.values())
+        pending.reject(
+          new Error("The graph took too long to draw. Read it as source."),
+        );
+      waiting.clear();
+      target.terminate();
+      if (worker === target) worker = undefined;
+    }, DOT_TIMEOUT_MS);
+    waiting.set(id, {
+      resolve: (svg) => {
+        clearTimeout(timer);
+        resolve(svg);
+      },
+      reject: (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    });
     target.postMessage({ id, source });
   });
 }
@@ -236,6 +271,62 @@ function darkenGraphviz(svg: SVGSVGElement) {
   svg.setAttribute("fill", darkened([0, 0, 0]));
 }
 
+/** Elements a drawing never needs and that could run or reach out. */
+const UNSAFE_ELEMENTS = new Set([
+  "script",
+  "iframe",
+  "frame",
+  "frameset",
+  "object",
+  "embed",
+  "applet",
+  "base",
+  "link",
+  "meta",
+  "form",
+  "input",
+  "button",
+  "textarea",
+  "select",
+  "audio",
+  "video",
+  "source",
+  "track",
+  "portal",
+  "set",
+  "animate",
+  "animatemotion",
+  "animatetransform",
+  "discard",
+  "handler",
+  "listener",
+]);
+/** Attributes whose value is fetched, followed or run. */
+const URL_ATTRIBUTES = new Set([
+  "href",
+  "src",
+  "action",
+  "formaction",
+  "data",
+  "poster",
+  "background",
+  "ping",
+  "lowsrc",
+  "dynsrc",
+  "codebase",
+]);
+/**
+ * CSS with nothing fetched: `@import` and any `url()` that is not a
+ * reference within the drawing (a marker or gradient by `#id`) are taken
+ * out, as is the `expression()` old engines ran.
+ */
+function safeCss(css: string): string {
+  return css
+    .replace(/@import[^;]*;?/gi, "")
+    .replace(/url\(\s*(?!['"]?#)[^)]*\)/gi, "none")
+    .replace(/expression\s*\(/gi, "(");
+}
+
 /**
  * The SVG with nothing in it that runs, and with links only to the web,
  * opening in a new tab: Graphviz writes a node's `URL` as a link, and a
@@ -255,35 +346,56 @@ export function prepareSvg(
     (child) => child.namespaceURI === SVG_NS && child.localName === "svg",
   );
   if (!(svg instanceof SVGSVGElement)) return undefined;
-  for (const script of [...svg.getElementsByTagName("script")]) script.remove();
+  // What runs, embeds another document, submits or rewrites an attribute
+  // goes, wherever it is, Mermaid's HTML labels in `<foreignObject>` too:
+  // an `<iframe srcdoc>` there, or a `<set>` that turns a link's `href` to
+  // `javascript:`, would run in this page. Neither Graphviz nor Mermaid
+  // draws any of them.
+  for (const element of [...svg.querySelectorAll("*")])
+    if (UNSAFE_ELEMENTS.has(element.localName.toLowerCase())) element.remove();
   for (const element of [svg, ...svg.querySelectorAll("*")]) {
+    const tag = element.localName.toLowerCase();
     for (const attribute of [...element.attributes]) {
       const name = attribute.localName.toLowerCase();
       // An HTML label's `xmlns` is read as a plain attribute; the
       // serializer writes the namespace itself, and twice is not XML.
       const declaration =
         attribute.namespaceURI === null && /^xmlns(:|$)/.test(name);
-      if (name.startsWith("on") || declaration)
+      if (name.startsWith("on") || declaration || name === "srcdoc") {
         element.removeAttributeNode(attribute);
+        continue;
+      }
+      if (URL_ATTRIBUTES.has(name)) {
+        const value = attribute.value.trim();
+        // Only what a drawing needs, each where it needs it: a link out
+        // to the web, a reference within the drawing, a picture inline.
+        const allowed =
+          (tag === "a" &&
+            name.endsWith("href") &&
+            /^https?:\/\//i.test(value)) ||
+          (name.endsWith("href") && tag !== "a" && value.startsWith("#")) ||
+          (tag === "image" && /^data:image\/(png|gif|jpeg|webp);/i.test(value));
+        if (!allowed) element.removeAttributeNode(attribute);
+        continue;
+      }
+      if (name === "style") attribute.value = safeCss(attribute.value);
     }
-    if (element.localName === "a") {
-      const href =
-        element.getAttribute("href") ??
-        element.getAttributeNS(XLINK_NS, "href") ??
-        "";
-      element.removeAttribute("href");
+    if (tag === "style")
+      element.textContent = safeCss(element.textContent ?? "");
+    if (tag === "a" && element.hasAttribute("href")) {
+      // Re-set without the namespace, so it serializes as plain `href`.
+      const href = element.getAttribute("href") ?? "";
+      element.setAttribute("href", href);
+      element.setAttribute("target", "_blank");
+      element.setAttribute("rel", "noreferrer noopener");
+    } else if (tag === "a") {
+      const href = element.getAttributeNS(XLINK_NS, "href");
       element.removeAttributeNS(XLINK_NS, "href");
-      if (/^https?:\/\//i.test(href)) {
-        element.setAttribute("href", href);
+      if (href !== null && /^https?:\/\//i.test(href.trim())) {
+        element.setAttribute("href", href.trim());
         element.setAttribute("target", "_blank");
         element.setAttribute("rel", "noreferrer noopener");
       }
-    } else if (element.localName !== "image") {
-      // `<use>` and the animations may point anywhere; a picture points
-      // nowhere it does not draw.
-      for (const name of ["href", "xlink:href"])
-        if (/^\s*javascript:/i.test(element.getAttribute(name) ?? ""))
-          element.removeAttribute(name);
     }
   }
   const box = (svg.getAttribute("viewBox") ?? "").split(/[\s,]+/).map(Number);

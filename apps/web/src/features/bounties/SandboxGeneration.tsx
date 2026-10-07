@@ -23,6 +23,9 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { isPublicationLive } from "sandbox-factory";
 
+import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { DisabledReason } from "@/components/DisabledReason";
+import { RetryableError } from "@/components/Message";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -158,6 +161,8 @@ export function SandboxGeneration({
   const queryClient = useQueryClient();
   const [pending, setPending] = useState(false);
   const [publishing, setPublishing] = useState(false);
+  // Asking whether to take the sandbox from contributors.
+  const [unpublishing, setUnpublishing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // The version being looked at; the latest until another is chosen.
   const [chosenId, setChosenId] = useState<string | null>(null);
@@ -218,6 +223,11 @@ export function SandboxGeneration({
   // Seen running here, so its end is news to the bounty too.
   const watched = useRef(false);
   if (run.data !== undefined && !runEnded) watched.current = true;
+  // Held, not depended on: the parent passes a new function every render,
+  // and as a dependency it re-read the version on each one after the run
+  // had ended.
+  const changed = useRef(onChanged);
+  changed.current = onChanged;
   useEffect(() => {
     if (!runEnded) return;
     void queryClient.invalidateQueries({
@@ -230,9 +240,9 @@ export function SandboxGeneration({
     });
     if (watched.current) {
       watched.current = false;
-      onChanged?.();
+      changed.current?.();
     }
-  }, [runEnded, queryClient, userId, organizationId, selectedId, onChanged]);
+  }, [runEnded, queryClient, userId, organizationId, selectedId]);
 
   async function generate() {
     setPending(true);
@@ -335,20 +345,23 @@ export function SandboxGeneration({
   // The first generation is the card's one action, so it leads; after that,
   // opening what was generated does, and generating again sits beside it.
   const generateButton = generates && (
-    <Button
-      type="button"
-      variant={latest === null ? "default" : "outline"}
-      disabled={generating || generationBlocked !== null}
-      title={generationBlocked ?? undefined}
-      onClick={() => void generate()}
-    >
-      {latest === null ? <Sparkles /> : <RefreshCw />}
-      {generating
-        ? "Generating…"
-        : latest === null
-          ? "Generate"
-          : "Generate again"}
-    </Button>
+    // Said on hover and focus, as Publish says why it is held: a disabled
+    // button's own title is shown by few browsers and read by no keyboard.
+    <DisabledReason reason={generating ? null : generationBlocked}>
+      <Button
+        type="button"
+        variant={latest === null ? "default" : "outline"}
+        disabled={generating || generationBlocked !== null}
+        onClick={() => void generate()}
+      >
+        {latest === null ? <Sparkles /> : <RefreshCw />}
+        {generating
+          ? "Generating…"
+          : latest === null
+            ? "Generate"
+            : "Generate again"}
+      </Button>
+    </DisabledReason>
   );
 
   let standing: Standing | null = null;
@@ -395,9 +408,9 @@ export function SandboxGeneration({
     );
   else if (versions.isError)
     body = (
-      <p className="text-muted-foreground text-sm">
+      <RetryableError onRetry={() => void versions.refetch()}>
         Its versions could not be read.
-      </p>
+      </RetryableError>
     );
   else if (selected === null)
     body = (
@@ -412,6 +425,14 @@ export function SandboxGeneration({
           (canManage
             ? " Generate one: an agent writes a starter from the bounty's title, description and tech stack, then it is built and checked."
             : " An owner or admin can generate one from the bounty.")}
+        {/*
+          Said, rather than left without an action: a linked sandbox's
+          versions are sliced from its repository, which this page does
+          not do.
+        */}
+        {!readOnly &&
+          !canGenerate &&
+          " Its versions are sliced from its repository; slicing is not available from this page yet."}
       </p>
     );
   else {
@@ -554,13 +575,25 @@ export function SandboxGeneration({
       </span>
       {publishes &&
         (published ? (
-          <Button
-            variant="outline"
-            disabled={publishing}
-            onClick={() => void publish(null)}
-          >
-            Unpublish
-          </Button>
+          <>
+            <Button
+              variant="outline"
+              disabled={publishing}
+              onClick={() => setUnpublishing(true)}
+            >
+              Unpublish
+            </Button>
+            <ConfirmDialog
+              open={unpublishing}
+              onOpenChange={setUnpublishing}
+              title="Unpublish this version?"
+              description="Contributors lose access to the sandbox until a version is published again. The version itself is kept."
+              confirmLabel="Unpublish"
+              pendingLabel="Unpublishing…"
+              busy={publishing}
+              onConfirm={() => publish(null)}
+            />
+          </>
         ) : (
           <PublishMenu
             disabledReason={
@@ -599,7 +632,11 @@ export function SandboxGeneration({
         // The mark in the foreground's ink: white on the dark theme.
         iconClassName="text-foreground"
         title="Slice"
-        description="A slice of your repository, cut down to the task. Only your workspace can see it; each generation is kept as a version."
+        description={
+          canGenerate
+            ? "The task as a runnable project, written from the bounty. Only your workspace can see it; each generation is kept as a version."
+            : "A slice of your repository, cut down to the task. Only your workspace can see it; each generation is kept as a version."
+        }
       >
         <div className="flex flex-col gap-4" data-testid="sandbox-generation">
           {body}

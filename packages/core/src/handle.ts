@@ -19,6 +19,7 @@ export const HANDLE_MIN_LENGTH = 3;
 export const HANDLE_MAX_LENGTH = 30;
 
 const HANDLE_PATTERN = /^[a-z0-9_-]+$/;
+const PRINTABLE_ASCII = /^[\x20-\x7e]*$/;
 
 /**
  * Why a handle was refused, or `null` when it is fine. A reason string rather
@@ -34,6 +35,12 @@ export interface HandleRejected {
 }
 
 export type HandleCheck = { readonly status: "ok" } | HandleRejected;
+
+const CHARSET_REJECTED: HandleRejected = {
+  status: "invalid",
+  problem: "charset",
+  reason: "Can use letters, numbers, hyphens and underscores only.",
+};
 
 /**
  * The stored form of a handle: trimmed and lowercased. Says nothing about
@@ -57,11 +64,7 @@ export function checkHandle(handle: string): HandleCheck {
     };
   }
   if (!HANDLE_PATTERN.test(handle)) {
-    return {
-      status: "invalid",
-      problem: "charset",
-      reason: "Can use letters, numbers, hyphens and underscores only.",
-    };
+    return CHARSET_REJECTED;
   }
   return { status: "ok" };
 }
@@ -83,6 +86,13 @@ export function normalizeHandle(raw: string): NormalizedHandle {
   const checked = checkHandle(handle);
   if (checked.status === "invalid") {
     return checked;
+  }
+  // Lowercasing can turn a non-ASCII letter into an ASCII one: the Kelvin
+  // sign (U+212A) becomes `k`. The handle would pass while `display` showed
+  // a lookalike of someone else's name, so the typed text must already be
+  // within the charset, apart from case.
+  if (!PRINTABLE_ASCII.test(display)) {
+    return CHARSET_REJECTED;
   }
   return { status: "ok", handle, display };
 }
@@ -109,29 +119,42 @@ function trimHyphens(value: string): string {
   return value.slice(start, end);
 }
 
+/** What a stem falls back to, or is padded with, when the text gives too little. */
+const STEM_FALLBACK = "user";
+
 /**
  * A handle stem derived from arbitrary text: an email address, an
- * organization name. Disallowed characters become hyphens, and the result is
- * trimmed to the maximum length.
+ * organization name. Disallowed characters become hyphens, the result is
+ * cut to the maximum length, and it neither starts nor ends with a hyphen.
  *
  * The result always passes {@link checkHandle}, including for text that
- * reduces to nothing (`"---"`, `"!!!"`, `""`), which the `-user` padding
- * carries over the minimum length. That matters because `suggest` hands a
- * stem straight to a rename path that would otherwise refuse it. It is still
- * only a *proposal*: it says nothing about whether the name is free.
+ * reduces to nothing (`"---"`, `"!!!"`, `""`), which becomes `user`. That
+ * matters because `suggest` hands a stem straight to a rename path that
+ * would otherwise refuse it. It is still only a *proposal*: it says nothing
+ * about whether the name is free.
  */
 export function toHandleStem(text: string): string {
+  // Trimmed after the cut as well as before it: the cut can land just after
+  // a hyphen and leave it at the end.
   const cleaned = trimHyphens(
-    text.toLowerCase().replace(/[^a-z0-9_-]+/g, "-"),
-  ).slice(0, HANDLE_MAX_LENGTH);
+    trimHyphens(text.toLowerCase().replace(/[^a-z0-9_-]+/g, "-")).slice(
+      0,
+      HANDLE_MAX_LENGTH,
+    ),
+  );
+  if (cleaned === "") return STEM_FALLBACK;
   // Pad a too-short stem: "jo@example.com" must still produce a usable name.
-  return cleaned.length >= HANDLE_MIN_LENGTH ? cleaned : `${cleaned}-user`;
+  return cleaned.length >= HANDLE_MIN_LENGTH
+    ? cleaned
+    : `${cleaned}-${STEM_FALLBACK}`;
 }
 
 /**
  * A handle stem from an email address. Uses the local part only: the domain
- * says where someone works, not who they are.
+ * says where someone works, not who they are. Text with no `@` is all local
+ * part.
  */
 export function handleStemFromEmail(email: string): string {
-  return toHandleStem(email.split("@")[0] ?? "user");
+  const at = email.indexOf("@");
+  return toHandleStem(at === -1 ? email : email.slice(0, at));
 }

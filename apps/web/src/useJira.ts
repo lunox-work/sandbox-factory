@@ -41,15 +41,32 @@ export interface JiraConnection {
  * ends here rather than as an error page: `cancelled` and `no-sites` are not
  * faults at all, and the other two have different remedies.
  */
-export type JiraOutcome =
-  | "connected"
-  | "cancelled"
-  | "denied"
-  | "no-sites"
-  | "partial-scopes"
-  | "state"
-  | "forbidden"
-  | "error";
+/**
+ * A Jira list read as empty where the API has no Jira: a server without its
+ * Atlassian app mounts no Jira routes, so the list is a 404. That is a
+ * deployment without Jira, which the product works without, not a failure
+ * to show on every page that lists sites or boards.
+ */
+export async function withoutJira<T>(read: Promise<T[]>): Promise<T[]> {
+  try {
+    return await read;
+  } catch (error) {
+    if (error instanceof ApiError && error.isNotFound) return [];
+    throw error;
+  }
+}
+
+export const JIRA_OUTCOMES = [
+  "connected",
+  "cancelled",
+  "denied",
+  "no-sites",
+  "partial-scopes",
+  "state",
+  "forbidden",
+  "error",
+] as const;
+export type JiraOutcome = (typeof JIRA_OUTCOMES)[number];
 
 export interface JiraState {
   connections: JiraConnection[];
@@ -72,7 +89,7 @@ export function useJira(organizationId: string | undefined): Jira {
   const query = useOwnerQuery(
     organizationId,
     "jira-connections",
-    (owner, signal) => clients.jira.connections(owner, signal),
+    (owner, signal) => withoutJira(clients.jira.connections(owner, signal)),
   );
   const [writeError, setWriteError] = useState<string | null>(null);
   const refresh = useCallback(async () => {
@@ -154,10 +171,15 @@ export function useJiraOutcome(): {
     if (value === null) {
       return;
     }
-    setOutcome(value as JiraOutcome);
+    // Anything else in the query is not an outcome the callback sends, and
+    // would render as an empty notice; it is only cleared.
+    const known = JIRA_OUTCOMES.find((outcome) => outcome === value);
+    if (known !== undefined) setOutcome(known);
     const missing = params.get("missing");
     setMissingScopes(
-      missing === null || missing === "" ? [] : missing.split(","),
+      known === undefined || missing === null || missing === ""
+        ? []
+        : missing.split(","),
     );
 
     // Strip both, so a reload does not repeat the message.
@@ -181,7 +203,7 @@ export function useJiraOutcome(): {
 }
 
 /* -------------------------------------------------------------------------- */
-/* Boards and the backlog preview                                             */
+/* Boards                                                                     */
 /* -------------------------------------------------------------------------- */
 
 /** A board this organization has registered, with its settings. */
@@ -208,7 +230,7 @@ export interface JiraCategoryMatch {
   reason: string;
 }
 
-/** A ticket in the preview. The same DTO a run will price. */
+/** A ticket as a board lists it. The same DTO a run will price. */
 export interface JiraPreviewIssue {
   id: string;
   key: string;
@@ -220,7 +242,7 @@ export interface JiraPreviewIssue {
   created: string | null;
   updated: string | null;
   url: string | null;
-  /** Every category the ticket fits. Present, and non-empty, in a preview. */
+  /** Every category the ticket fits, when the read classified it. */
   categories?: JiraCategoryMatch[];
 }
 
@@ -243,45 +265,6 @@ export interface JiraIssueDetail extends JiraPreviewIssue {
   votes: number | null;
   watchers: number | null;
   environment: string | null;
-}
-
-/**
- * What a run would size on a board, read live and priced by nobody: every
- * open ticket that fits a category, with why.
- */
-export interface BacklogPreview {
-  boardId: string;
-  jql: string;
-  /** The resolved rules used for this read, including server defaults. */
-  selection?: {
-    ticketCap?: number;
-    unassignedOnly: boolean;
-    issueTypes: string[];
-    minAgeDays: number;
-    maxAgeDays?: number;
-    minSpecChars: number;
-  };
-  /** Every category as this board runs it: on or off, thresholds resolved. */
-  categories: {
-    id: string;
-    label: string;
-    why: string;
-    enabled: boolean;
-    thresholds: Record<string, number>;
-  }[];
-  issues: JiraPreviewIssue[];
-  /** How many scanned tickets fit each category, by id. */
-  matched: Record<string, number>;
-  /** Scanned tickets that fit no category. */
-  unmatched: number;
-  candidatesScanned: number;
-  /** Fitting tickets left out because they already have a proposal. */
-  skippedLive: number;
-  /** The scan stopped at its ceiling with the board not fully read. */
-  scanLimitReached: boolean;
-  /** The board's `ticketCap` stopped the selection early. */
-  ticketCapReached: boolean;
-  total?: number;
 }
 
 /**
@@ -335,18 +318,15 @@ export interface JiraBoards {
   error: JiraFetchError | null;
   /**
    * Re-reads a site's boards from Jira and records any that are new.
+   * Resolves to the ids of boards seen for the first time — which the API
+   * has started sizing — or null on failure.
    *
    * There is no "add a board": every board on a connected site is registered
    * when the site is connected, and this is how boards created since get
    * picked up — called when a site's page opens, where somebody is actually
    * looking at the list.
    */
-  /**
-   * Re-reads a site's boards. Resolves to the ids of boards seen for the
-   * first time — which the API has started sizing — or null on failure.
-   */
   sync: (connectionId: string) => Promise<string[] | null>;
-  preview: (boardId: string) => Promise<BacklogPreview | null>;
   /** One ticket in full. Read live, stored nowhere. */
   issue: (boardId: string, issueKey: string) => Promise<JiraIssueDetail | null>;
   /**
@@ -360,21 +340,14 @@ export interface JiraBoards {
   refresh: () => Promise<void>;
 }
 
-/**
- * Registered boards, and the two live reads that go through them.
- *
- * `preview` returns rather than storing into state: it reaches Jira, it is
- * slow enough to need its own spinner, and only one board is ever being
- * looked at. Holding every board's preview in one hook would make the page
- * re-render on a read the user is no longer waiting for.
- */
+/** Registered boards, and the live read of one ticket through them. */
 export function useJiraBoards(organizationId: string | undefined): JiraBoards {
   const cache = useQueryClient();
   const userId = useUserId();
   const query = useOwnerQuery<JiraBoard[]>(
     organizationId,
     "jira-boards",
-    (owner, signal) => clients.jira.boards(owner, signal),
+    (owner, signal) => withoutJira(clients.jira.boards(owner, signal)),
   );
   const boards = query.data ?? [];
   const loading = organizationId !== undefined && query.isPending;
@@ -402,30 +375,6 @@ export function useJiraBoards(organizationId: string | undefined): JiraBoards {
       }
     },
     [organizationId, refresh],
-  );
-  const preview = useCallback(
-    async (boardId: string) => {
-      if (organizationId === undefined) return null;
-      try {
-        const result = await cache.fetchQuery({
-          queryKey: queryKeys.resource(
-            userId,
-            organizationId,
-            "jira-preview",
-            boardId,
-          ),
-          queryFn: ({ signal }) =>
-            clients.jira.preview(organizationId, boardId, signal),
-          staleTime: 0,
-        });
-        setError(null);
-        return result;
-      } catch (error) {
-        setError(toFetchError(error));
-        return null;
-      }
-    },
-    [organizationId, cache, userId],
   );
   const issue = useCallback(
     async (boardId: string, issueKey: string) => {
@@ -484,7 +433,6 @@ export function useJiraBoards(organizationId: string | undefined): JiraBoards {
     loading,
     error,
     sync,
-    preview,
     issue,
     linkRepository,
     refresh,

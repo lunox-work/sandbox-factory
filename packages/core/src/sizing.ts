@@ -77,7 +77,10 @@ export const DEFAULT_RATE_CARD: RateCardValues = {
  * never read.
  */
 export interface BountySelection {
-  /** A ceiling on bounties per run. Absent means every matching bounty. */
+  /**
+   * A ceiling on the Jira issues one run selects; the name predates
+   * bounties. Absent means every matching issue.
+   */
   readonly ticketCap?: number | undefined;
   readonly unassignedOnly: boolean;
   readonly issueTypes: readonly string[];

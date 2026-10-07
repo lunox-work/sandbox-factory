@@ -191,7 +191,7 @@ ext-watch: ext-deps ## Rebuild the extension on save; F5 in VS Code runs and rel
 
 ext-package: ext-deps ## Build a .vsix into apps/extension/
 	npm run build --workspace sandbox-factory-vscode
-	cd apps/extension && npx --yes @vscode/vsce package --no-dependencies
+	cd apps/extension && npm run package
 	@echo "packaged:"; ls -1 apps/extension/*.vsix
 
 ## ---- infrastructure (aws) -----------------------------------------------

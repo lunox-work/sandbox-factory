@@ -69,6 +69,30 @@ class AbstractionsTest(unittest.TestCase):
         self.assertEqual([(o["code"], o["file"]) for o in result["omissions"]], [("read_failed", "../outside.py"), ("read_failed", "py/missing.py")])
         self.assertNotIn("README.md", [module["path"] for module in result["modules"]])
 
+    def test_a_type_alias_keeps_the_type_it_names(self):
+        # The walk visits the value first: dropping the first name dropped
+        # the referenced type and kept the alias's own.
+        with tempfile.TemporaryDirectory() as directory:
+            (Path(directory) / "types.py").write_text("class User:\n    pass\n\ntype UserId = User\n")
+            _, result = self.extract(Path(directory), [{"path": "types.py", "language": "python"}])
+        alias = self.exports(result, "types.py")["UserId"]
+        self.assertIn("User", alias["references"])
+        self.assertNotIn("UserId", alias["references"])
+
+    def test_a_file_that_defeats_the_extractor_is_its_own_omission(self):
+        # A thousand nested classes exhaust the recursion; the other files
+        # are still read.
+        with tempfile.TemporaryDirectory() as directory:
+            nested = "".join(f"public class C{n} {{ " for n in range(1500)) + "}" * 1500
+            (Path(directory) / "Deep.java").write_text(nested)
+            (Path(directory) / "ok.py").write_text("def ok():\n    pass\n")
+            _, result = self.extract(Path(directory), [
+                {"path": "Deep.java", "language": "java"},
+                {"path": "ok.py", "language": "python"},
+            ])
+        self.assertIn("ok", self.exports(result, "ok.py"))
+        self.assertTrue(any(omission["code"] == "extractor_failed" and omission["file"] == "Deep.java" for omission in result["omissions"]))
+
     def test_syntax_errors_are_recorded_and_output_is_deterministic(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

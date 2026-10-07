@@ -6,10 +6,12 @@
  * hangs on a span around it instead: the span is what is hovered, and it
  * takes focus in the button's place so a keyboard reaches the reason too.
  * The span stays when the reason goes, so the control is not remounted as
- * it is enabled and disabled.
+ * it is enabled and disabled. The tooltip is held open or shut by this
+ * component throughout, so a reason that comes and goes never switches it
+ * between controlled and uncontrolled.
  */
 
-import type { ReactElement } from "react";
+import { useState, type ReactElement } from "react";
 
 import {
   Tooltip,
@@ -26,8 +28,14 @@ export function DisabledReason({
   children: ReactElement;
 }) {
   const held = reason !== null;
+  const [open, setOpen] = useState(false);
   return (
-    <Tooltip {...(held ? {} : { open: false })}>
+    <Tooltip
+      open={held && open}
+      // Only while held: a hover with nothing to say would leave `open` set,
+      // and the tooltip would pop up later with no pointer on it.
+      onOpenChange={(next) => setOpen(held && next)}
+    >
       <TooltipTrigger asChild>
         <span
           tabIndex={held ? 0 : undefined}

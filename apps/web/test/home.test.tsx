@@ -180,10 +180,9 @@ test("belonging to no organization says so rather than showing nothing", async (
     />,
   );
 
-  await waitFor(() => {
-    expect(screen.getByText("No sites connected yet")).toBeTruthy();
-  });
-  expect(screen.getByText(/not in a workspace yet/)).toBeTruthy();
+  expect(
+    await screen.findByText("You are not in a workspace yet"),
+  ).toBeTruthy();
 });
 
 test("Manage opens that organization", async () => {
@@ -416,21 +415,60 @@ test("an organization holding only broken connections is still shown", async () 
   expect(screen.queryByText("Personal")).toBeNull();
 });
 
-test("with nothing connected, the page is onboarding", async () => {
+test("with nothing connected, home starts with a bounty, the tools optional", async () => {
+  // A bounty needs no Jira: home used to offer only "Connect Jira", a dead
+  // end for a team that does not use it.
   byOrganization = { org_personal: [], org_acme: [] };
+  const onNewBounty = vi.fn();
+  const onOpenBounties = vi.fn();
+  const onConnectGithub = vi.fn();
 
   render(
     <Home
       organizations={[personal, acme]}
       organizationsLoading={false}
-      activeOrganization={null}
+      activeOrganization={acme}
       onOpen={vi.fn()}
+      onNewBounty={onNewBounty}
+      onOpenBounties={onOpenBounties}
+      onConnectGithub={onConnectGithub}
     />,
   );
 
   expect(
-    await screen.findByRole("heading", { level: 1, name: "Onboarding" }),
+    await screen.findByRole("heading", { level: 1, name: "Get started" }),
   ).toBeTruthy();
+  await userEvent.click(screen.getByRole("button", { name: "New bounty" }));
+  expect(onNewBounty).toHaveBeenCalled();
+  await userEvent.click(screen.getByRole("button", { name: "View bounties" }));
+  expect(onOpenBounties).toHaveBeenCalled();
+  expect(screen.getByText(/^Optional\./)).toBeTruthy();
+  await userEvent.click(screen.getByRole("button", { name: "Connect GitHub" }));
+  expect(onConnectGithub).toHaveBeenCalledWith(acme);
+});
+
+test("connections that cannot be read leave the bounty actions, and a retry", async () => {
+  // Every organization failing: the page was one error and nothing else.
+  byOrganization = {};
+  const onNewBounty = vi.fn();
+
+  render(
+    <Home
+      organizations={[acme]}
+      organizationsLoading={false}
+      activeOrganization={acme}
+      onOpen={vi.fn()}
+      onNewBounty={onNewBounty}
+    />,
+  );
+
+  expect(
+    await screen.findByText("Could not load your connections."),
+  ).toBeTruthy();
+  expect(screen.getByRole("button", { name: "New bounty" })).toBeTruthy();
+  byOrganization = { org_acme: [connection({ id: "jrc_1", siteName: "C" })] };
+  await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+  expect(await screen.findByText("C")).toBeTruthy();
 });
 
 test("with something connected, the page is still Connections", async () => {
@@ -551,4 +589,28 @@ test("a GitHub flow that could not be tied to a workspace still says so here", a
   // Home has no Connect button, so the words point to where there is one.
   expect(within(banner).getByText(/choose GitHub/)).toBeDefined();
   expect(window.location.search).toBe("");
+});
+
+test("a server without Jira is a workspace without sites, not a failed read", async () => {
+  // It mounts no Jira routes, so the list is a 404: home starts with a
+  // bounty rather than with an error.
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(() =>
+      Promise.resolve(Response.json({ error: "Not found" }, { status: 404 })),
+    ),
+  );
+  render(
+    <Home
+      organizations={[acme]}
+      organizationsLoading={false}
+      activeOrganization={acme}
+      onOpen={vi.fn()}
+      onNewBounty={vi.fn()}
+    />,
+  );
+  expect(
+    await screen.findByRole("heading", { level: 1, name: "Get started" }),
+  ).toBeTruthy();
+  expect(screen.queryByText("Could not load your connections.")).toBeNull();
 });

@@ -1,6 +1,6 @@
 import { approveProposal } from "./approve-proposal.js";
 import type { PricingRouteOptions } from "./options.js";
-import { reviewOptions, siteOf } from "./review-deps.js";
+import { reviewOptions, siteOf, writebackBusy } from "./review-deps.js";
 import {
   boardOf,
   startRun,
@@ -8,8 +8,6 @@ import {
   type StartRunResult,
 } from "./start-run.js";
 export type { PricingRouteOptions } from "./options.js";
-export { sizeIfNeverSized, startRun, startBountyRun } from "./start-run.js";
-export type { StartRunResult, StartBountyRunResult } from "./start-run.js";
 
 import { type BountyProposalStore } from "@sandbox-factory/db";
 import { JiraApiError, JiraAuthError } from "@sandbox-factory/jira";
@@ -46,9 +44,11 @@ import {
 import { isAtLeastAdmin } from "../access.js";
 import { boundedLimit, rowCursor } from "../paging.js";
 import { REVISE_SPEC_PROMPT_VERSION } from "../sizing/tools/revise-spec.js";
+import { describesProposal } from "./delivery.js";
 import type { RunClientResult } from "./executor.js";
 import { freshProposal, mapConcurrent, proposalTitle } from "./review.js";
 import { rubricPrice } from "./rubric.js";
+import { externalBoardId, InvalidBoardIdError } from "./selection.js";
 
 export interface PricingAppEnv {
   Variables: {
@@ -248,13 +248,17 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
     let issues: JiraIssueDto[];
     try {
       issues = (
-        await ready.client.boardIssues(Number(board.board.externalId), {
+        await ready.client.boardIssues(externalBoardId(board.board), {
           jql,
           startAt: 0,
           maxResults: SEARCH_CANDIDATES,
         })
       ).issues;
     } catch (error) {
+      // As the selection preview answers a board it cannot address.
+      if (error instanceof InvalidBoardIdError) {
+        return c.json({ error: error.message }, 422);
+      }
       // A key that does not exist is a 400 from Jira, not an error to show.
       if (error instanceof JiraApiError && error.status === 400) {
         return c.json({ issues: [] });
@@ -325,6 +329,9 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
         issueId: parsed.data.issueId,
       });
     } catch (error) {
+      if (error instanceof InvalidBoardIdError) {
+        return c.json({ error: error.message }, 422);
+      }
       // Only Jira's own failures are Jira's. Anything else — a database
       // refusing the row — is a server fault, left to the error handler so
       // it is logged rather than reported as a Jira problem.
@@ -474,16 +481,21 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
       return c.json({ error: "Not found" }, 404);
     }
     const limit = boundedLimit(c.req.query("limit"));
-    const cursor = pageCursor(c.req.query("cursor"));
+    // `createdAt|id`, as the proposal list pages: a time alone skips every
+    // run made in the same millisecond as a page's last one.
+    const cursor = rowCursor(c.req.query("cursor"));
     if (cursor === null) return c.json({ error: "Invalid cursor." }, 400);
     const runs = await options.runs.listForBoard(organizationId, boardId, {
       limit,
       ...(cursor === undefined ? {} : { cursor }),
     });
+    const last = runs.at(-1);
     return c.json({
       runs,
       nextCursor:
-        runs.length === limit ? (runs.at(-1)?.createdAt ?? null) : null,
+        runs.length === limit && last !== undefined
+          ? `${last.createdAt}|${last.id}`
+          : null,
       sizingAvailable:
         options.executor !== undefined && options.clientFor !== undefined,
     });
@@ -954,13 +966,16 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
           c.get("user").id,
           announced.payload,
         );
+        if (result.status === "not-found") {
+          return c.json({ error: "Not found" }, 404);
+        }
         if (result.status !== "created") {
           return c.json(
             {
               code: "proposal_changed",
               error: "The proposal changed. Reload it before continuing.",
             },
-            result.status === "not-found" ? 404 : 409,
+            409,
           );
         }
         options.delivery.start(organizationId, result.operation.id);
@@ -1296,6 +1311,45 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
         409,
       );
     }
+    /*
+      Only a write that failed, or one queued that no worker took, is
+      sent again. One running is already being sent, and one done or
+      cancelled has nothing left to send: a 202 would say a retry started
+      when none did.
+    */
+    if (operation.status !== "failed" && operation.status !== "pending") {
+      return c.json(
+        {
+          code: "writeback_not_retryable",
+          error: "That Jira update is not waiting to be retried.",
+          operation,
+        },
+        409,
+      );
+    }
+    /*
+      And only while it still says what the proposal is. A failed approval
+      retried after the proposal was unapproved and re-priced would post the
+      old price as approved; it is cancelled instead, and the proposal's
+      current decision is what reaches Jira. The worker checks the same
+      when it runs.
+    */
+    const proposal = await options.proposals.get(
+      organizationId,
+      operation.proposalId,
+    );
+    if (proposal === null) return c.json({ error: "Not found" }, 404);
+    if (!describesProposal(operation, proposal)) {
+      return c.json(
+        {
+          code: "writeback_outdated",
+          error:
+            "The proposal changed after this Jira update was queued. Cancel it instead.",
+          operation,
+        },
+        409,
+      );
+    }
     options.delivery.start(organizationId, operation.id);
     return c.json({ operation }, 202);
   });
@@ -1311,7 +1365,16 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
       c.req.param("id"),
     );
     if (result.operation === null) return c.json({ error: "Not found" }, 404);
-    return c.json(result, result.status === "adopted" ? 200 : 409);
+    if (result.status === "adopted") return c.json(result);
+    // Said as every other refusal is, with a code and a sentence, so the
+    // page shows why rather than the bare status.
+    return c.json(
+      {
+        ...result,
+        ...RECONCILE_REFUSALS[result.status],
+      },
+      409,
+    );
   });
 
   app.post("/api/v1/orgs/:orgId/writebacks/:id/cancel", async (c) => {
@@ -1320,10 +1383,13 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
     if (denied !== null) return c.json(denied, 403);
     if (options.writebacks === undefined)
       return c.json({ error: "Not found" }, 404);
-    const operation = await options.writebacks.cancel(
-      organizationId,
-      c.req.param("id"),
-    );
+    // Read first, so another organization's write, or none, is a 404 and
+    // only a write in a state that cannot be cancelled is a 409.
+    const id = c.req.param("id");
+    if ((await options.writebacks.get(organizationId, id)) === null) {
+      return c.json({ error: "Not found" }, 404);
+    }
+    const operation = await options.writebacks.cancel(organizationId, id);
     return operation === null
       ? c.json(
           {
@@ -1335,6 +1401,24 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
       : c.json({ operation });
   });
 }
+
+/** Why a Jira comment could not be adopted, as the page shows it. */
+const RECONCILE_REFUSALS = {
+  none: {
+    code: "reconcile_none",
+    error:
+      "No matching comment was found in Jira. Retry the update to post it.",
+  },
+  multiple: {
+    code: "reconcile_multiple",
+    error:
+      "More than one matching comment is in Jira. Remove the extra one, then check again.",
+  },
+  "not-uncertain": {
+    code: "reconcile_not_uncertain",
+    error: "This Jira update is not waiting to be checked.",
+  },
+} as const;
 
 /**
  * Proposals by category, for the view above a list. The categories, their
@@ -1376,11 +1460,36 @@ function proposalMutationResponse<Env extends PricingAppEnv>(
 ) {
   if (result.ok) return c.json({ proposal: result.proposal });
   if (result.reason === "not-found") return c.json({ error: "Not found" }, 404);
+  const current =
+    result.current === undefined ? {} : { proposal: result.current };
+  /*
+    At the revision the reviewer saw, so nothing changed under them: the
+    proposal is simply not in the state this asks for. An approved one is
+    unapproved before it is resized, re-sized by the rubric or removed; a
+    proposed one has no approval to take back. Telling them to reload
+    would show them the same proposal again.
+  */
+  if (result.reason === "invalid-state") {
+    return c.json(
+      result.current?.status === "approved"
+        ? {
+            code: "proposal_approved",
+            error: "Unapprove the proposal before changing it.",
+            ...current,
+          }
+        : {
+            code: "proposal_not_approved",
+            error: "The proposal is not approved.",
+            ...current,
+          },
+      409,
+    );
+  }
   return c.json(
     {
       code: "proposal_changed",
       error: "The proposal changed. Reload it before continuing.",
-      ...(result.current === undefined ? {} : { proposal: result.current }),
+      ...current,
     },
     409,
   );
@@ -1423,19 +1532,4 @@ function proposalCategory(
 function specRevision(value: string | undefined): number | undefined | null {
   if (value === undefined || value === "") return undefined;
   return /^[1-9]\d{0,8}$/.test(value) ? Number(value) : null;
-}
-
-/** Whether a Jira update for the proposal is still unresolved. */
-function writebackBusy(
-  operations: readonly { readonly status: string }[],
-): boolean {
-  return operations.some(
-    ({ status }) =>
-      status === "pending" || status === "running" || status === "uncertain",
-  );
-}
-
-function pageCursor(value: string | undefined): string | undefined | null {
-  if (value === undefined || value === "") return undefined;
-  return Number.isFinite(Date.parse(value)) ? value : null;
 }

@@ -1,9 +1,6 @@
-import type { PricingRouteOptions } from "./options.js";
-export type { PricingRouteOptions } from "./options.js";
-export { sizeIfNeverSized, startRun, startBountyRun } from "./start-run.js";
-export type { StartRunResult, StartBountyRunResult } from "./start-run.js";
-
 import { followsJira } from "@sandbox-factory/db";
+
+import type { PricingRouteOptions } from "./options.js";
 
 /**
  * The Jira site a bounty's approval is posted to: its issue's board and
@@ -41,4 +38,18 @@ export function reviewOptions(options: PricingRouteOptions) {
       ? {}
       : { clientFor: options.clientFor }),
   };
+}
+
+/**
+ * Whether a Jira update for the proposal is still unresolved: queued,
+ * being sent, or sent without knowing whether it arrived. A decision made
+ * over one would race it to the bounty, or contradict it there.
+ */
+export function writebackBusy(
+  operations: readonly { readonly status: string }[],
+): boolean {
+  return operations.some(
+    ({ status }) =>
+      status === "pending" || status === "running" || status === "uncertain",
+  );
 }

@@ -46,7 +46,7 @@ because the type checker enforces the dependency rules.
 2. Make the change, with a test that fails before it and passes after.
 3. Run `npm run verify`. CI runs the same thing, and a `pre-push` hook runs it
    before any push succeeds. It enforces per-workspace coverage thresholds (90%
-   for packages, 80% for the API), so new code needs tests in the same change.
+   for packages, 80% for the apps), so new code needs tests in the same change.
    While iterating, scope to one workspace with
    `npx turbo run lint test --filter=<name>`.
 4. Push and open a pull request.
@@ -56,7 +56,7 @@ because the type checker enforces the dependency rules.
 - **Title the PR as a [Conventional Commit](https://www.conventionalcommits.org/)**
   — `fix: handle empty input`, `feat: add retry option`, `docs: clarify setup`.
   PRs are squash-merged, so the title becomes the commit and decides the
-  release: `fix:` is a patch, `feat:` a minor, `docs:`/`chore:` none.
+  release: `feat:` is a minor, every other conventional type a patch.
 - **Ready same-repository PRs auto-merge once required checks pass**, except
   Dependabot majors. No approving review is required; CodeRabbit findings and
   unresolved review threads are advisory. Open a **draft** to hold a change
