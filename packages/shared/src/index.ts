@@ -169,6 +169,9 @@ export * from "./sandbox.js";
 /** Default avatars, computed from an account id rather than stored. */
 export * from "./identicon.js";
 
+/** The colors and faces every diagram is written and drawn in. */
+export * from "./diagram-skin.js";
+
 export * from "./web-api.js";
 
 export * from "./slice-artifacts.js";

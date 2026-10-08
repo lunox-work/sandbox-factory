@@ -47,7 +47,7 @@ function useDiagram(kind: DiagramKind, source: string): Drawing {
     let live = true;
     renderDiagram(kind, source).then(
       (svg) => {
-        const prepared = prepareSvg(svg, { darken: kind === "dot" });
+        const prepared = prepareSvg(svg, { skin: kind === "dot" });
         if (live)
           setResult({
             kind,

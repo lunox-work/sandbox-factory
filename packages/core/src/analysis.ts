@@ -95,7 +95,7 @@ export type AnalysisTool = (typeof ANALYSIS_TOOLS)[number];
 export const GRAPHIFY_TOOL_VERSION = "graphifyy@0.4.18+driver-1";
 /** Bumped when the cruise options, summary or artifact shapes change meaning. */
 export const DEPENDENCY_CRUISER_TOOL_VERSION =
-  "dependency-cruiser@18.5.0+driver-2";
+  "dependency-cruiser@18.5.0+driver-3";
 /** Bumped when the DeepWiki-Open request or the artifacts written from its wiki change meaning. */
 export const DEEPWIKI_TOOL_VERSION = "deepwiki-open@driver-1";
 /** Bumped when an extractor, a visibility rule or the index's shape changes meaning. */

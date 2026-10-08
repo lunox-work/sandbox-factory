@@ -189,10 +189,17 @@ test("the fixture repository is cruised in-process with fixed options", async ()
       JSON.parse(await readFile(join(out, "manifest.json"), "utf8")),
       meta,
     );
+    const dot = await readFile(join(out, "dependency-cruiser.dot"), "utf8");
+    assert.match(dot, /^strict digraph/);
+    // Drawn in the diagram skin's light roles, not the cruiser's per-language
+    // pastels, in the fonts Graphviz can measure.
+    assert.match(dot, /bgcolor="#f5f5f5"/);
     assert.match(
-      await readFile(join(out, "dependency-cruiser.dot"), "utf8"),
-      /^strict digraph/,
+      dot,
+      /node \[[^\]]*fillcolor="#ffffff"[^\]]*fontname="Helvetica"/,
     );
+    assert.match(dot, /edge \[[^\]]*color="#4f5d75"/);
+    assert.doesNotMatch(dot, /#ddfeff|#ffffcc/);
     assert.deepEqual(input.messages, [
       "Dependency cruise started.",
       "Dependency cruise completed.",

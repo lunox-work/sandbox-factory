@@ -72,39 +72,62 @@ test("Mermaid's HTML labels, which are not XML, are read as a page reads them", 
   expect(reread.documentElement.textContent).toBe("firstsecond");
 });
 
-test("a Graphviz drawing on white paper is turned for the dark canvas", () => {
+test("a Graphviz drawing is put in the diagram skin on the dark canvas", () => {
   const drawing = (paper: string) =>
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 40"><g id="graph0" class="graph"><polygon fill="${paper}" stroke="none" points="0,0 100,0 100,40 0,40"/><g class="cluster"><path fill="#ffffff" stroke="#000000" d="M0,0"/></g><g class="node"><path fill="#ddfeff" stroke="#000000" d="M0,0"/><text>app.ts</text></g><g class="edge"><path fill="none" stroke="#000000" stroke-opacity="0.2" d="M0,0"/></g></g></svg>`;
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 40"><g id="graph0" class="graph"><polygon fill="${paper}" stroke="none" points="0,0 100,0 100,40 0,40"/><g class="cluster"><path fill="none" stroke="#bfc0c0" d="M0,0"/><text font-family="Courier,monospace">src</text></g><g class="node"><path fill="#ffffff" stroke="#2d3142" fill-opacity="0.5" d="M0,0"/><text font-family="Helvetica,sans-Serif" font-size="13.00">app.ts</text></g><g class="node"><path fill="#ddfeff" stroke="#000000" d="M0,0"/></g><g class="edge"><path fill="none" stroke="#EB6C36" stroke-opacity="0.2" stroke-dasharray="5,2" d="M0,0"/><text font-family="Times,serif">uses</text></g></g></svg>`;
   const read = (markup: string | undefined) =>
     new DOMParser().parseFromString(markup ?? "", "image/svg+xml")
       .documentElement;
+  const texts = (svg: Element) => [...svg.getElementsByTagName("text")];
 
-  const svg = read(prepareSvg(drawing("#ffffff"), { darken: true })?.markup);
+  const svg = read(prepareSvg(drawing("#ffffff"), { skin: true })?.markup);
   const paths = [...svg.getElementsByTagName("path")];
   // The page is gone, so the editor shows through, as behind Mermaid's.
   expect(svg.getElementsByTagName("polygon")[0]?.getAttribute("fill")).toBe(
     "none",
   );
-  // White is the editor's grey, black its text: light as the other was dark.
-  expect(paths[0]?.getAttribute("fill")).toBe("#292929");
-  expect(paths[0]?.getAttribute("stroke")).toBe("#d9d9d9");
-  // A pale fill keeps its hue, dark and muted rather than vivid.
-  expect(paths[1]?.getAttribute("fill")).toBe("#244546");
-  // What draws nothing, and what only fades, are left as they are.
-  expect(paths[2]?.getAttribute("fill")).toBe("none");
-  expect(paths[2]?.getAttribute("stroke-opacity")).toBe("0.2");
-  // Text with no color of its own inherits the editor's.
-  expect(svg.getAttribute("fill")).toBe("#d9d9d9");
+  // The skin's light roles become its dark ones exactly, at the opacity
+  // they were drawn at: a container's rule, a node's fill and its ink.
+  expect(paths[0]?.getAttribute("stroke")).toBe("#474848");
+  expect(paths[1]?.getAttribute("fill")).toBe("#282828");
+  expect(paths[1]?.getAttribute("fill-opacity")).toBe("0.5");
+  expect(paths[1]?.getAttribute("stroke")).toBe("#f5f5f5");
+  // The accent, however it was spelled, and its dash made the skin's.
+  expect(paths[3]?.getAttribute("stroke")).toBe("#f08a59");
+  expect(paths[3]?.getAttribute("stroke-opacity")).toBe("0.2");
+  expect(paths[3]?.getAttribute("stroke-dasharray")).toBe("5,4");
+  // Any other color is turned by lightness: a pale fill keeps its hue, dark
+  // and muted rather than vivid, and black becomes light.
+  expect(paths[2]?.getAttribute("fill")).toBe("#244546");
+  expect(paths[2]?.getAttribute("stroke")).toBe("#d9d9d9");
+  // What draws nothing is left as it is.
+  expect(paths[0]?.getAttribute("fill")).toBe("none");
+  // Text with no color of its own inherits ink.
+  expect(svg.getAttribute("fill")).toBe("#f5f5f5");
+  // The faces Graphviz measured are drawn as the skin's: Courier as Geist
+  // Mono, Helvetica as Geist, a node's name at a name's weight. A face it
+  // was asked for by name is kept.
+  const [folder, name, label] = texts(svg);
+  expect(folder?.getAttribute("font-family")).toMatch(/^"Geist Mono Variable"/);
+  expect(name?.getAttribute("font-family")).toMatch(/^"Geist Variable"/);
+  expect(name?.getAttribute("font-weight")).toBe("600");
+  // Drawn a tenth smaller: Geist at that weight runs a tenth wider.
+  expect(name?.getAttribute("font-size")).toBe("11.70");
+  expect(label?.getAttribute("font-family")).toBe("Times,serif");
 
-  // A graph that chose a dark page keeps its colors, and Mermaid's are
-  // never turned.
-  const dark = read(prepareSvg(drawing("#101010"), { darken: true })?.markup);
-  expect(dark.getElementsByTagName("path")[1]?.getAttribute("fill")).toBe(
+  // A graph that chose a dark page keeps its colors, though not its faces.
+  const dark = read(prepareSvg(drawing("#101010"), { skin: true })?.markup);
+  expect(dark.getElementsByTagName("path")[2]?.getAttribute("fill")).toBe(
     "#ddfeff",
   );
+  expect(texts(dark)[1]?.getAttribute("font-family")).toMatch(/^"Geist/);
+  // Mermaid's drawings are never turned.
   const untouched = read(prepareSvg(drawing("#ffffff"))?.markup);
-  expect(untouched.getElementsByTagName("path")[1]?.getAttribute("fill")).toBe(
+  expect(untouched.getElementsByTagName("path")[2]?.getAttribute("fill")).toBe(
     "#ddfeff",
+  );
+  expect(texts(untouched)[1]?.getAttribute("font-family")).toBe(
+    "Helvetica,sans-Serif",
   );
 });
 
