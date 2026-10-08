@@ -58,7 +58,7 @@ export interface RateCardSnapshot extends RateCardValues {
  * The card an organization prices with until someone edits it: USD, evenly
  * spaced from 10 to 200 in whole dollars. The rate card editor shows it as
  * the starting values, and the first run on an organization with no card
- * saves it, so a new Jira site is sized without a stop at settings first.
+ * saves it, so a first bounty is sized without a stop at settings first.
  */
 export const DEFAULT_RATE_CARD: RateCardValues = {
   currency: "USD",

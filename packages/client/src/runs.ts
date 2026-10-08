@@ -20,4 +20,16 @@ export class BountyRunClient extends ApiClient {
       ),
     );
   }
+  /**
+   * Sizes every ticket a board's scan selects: one model call each. Only
+   * ever on a person's say-so; connecting a site sizes nothing.
+   */
+  async start(owner: string, boardId: string, requestId: string) {
+    return bountyRunResponseSchema.parse(
+      await this.request(
+        `${ownerPath(owner)}/jira/boards/${encodeURIComponent(boardId)}/runs`,
+        { method: "POST", body: JSON.stringify({ requestId }) },
+      ),
+    ).run;
+  }
 }

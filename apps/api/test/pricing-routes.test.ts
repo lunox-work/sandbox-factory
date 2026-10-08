@@ -30,7 +30,6 @@ import {
   issueSearchJql,
   type PricingRouteOptions,
 } from "../src/pricing/routes.js";
-import { sizeIfNeverSized } from "../src/pricing/start-run.js";
 import { createApp } from "../src/routes.js";
 
 const requestId = "28bb313f-252a-4a1d-b656-558a215b604b";
@@ -340,30 +339,6 @@ test("a default save that loses the race prices with the winner's card", async (
     { method: "POST", headers, body: JSON.stringify({ requestId }) },
   );
   assert.equal(response.status, 202);
-});
-
-test("a board is sized automatically once, and never again", async () => {
-  const fresh = harness({ previousRuns: [] });
-  const started = await sizeIfNeverSized(fresh.pricing, {
-    organizationId: "org_1",
-    boardId: "jrb_1",
-    startedBy: "user_1",
-  });
-  assert.equal(started?.ok, true);
-  assert.deepEqual(fresh.starts, ["brn_1"]);
-
-  // Any earlier run counts, whatever it ended as: after the first, sizing
-  // is something a person asks for.
-  const sized = harness({ previousRuns: [{ ...run, status: "failed" }] });
-  assert.equal(
-    await sizeIfNeverSized(sized.pricing, {
-      organizationId: "org_1",
-      boardId: "jrb_1",
-      startedBy: "user_1",
-    }),
-    null,
-  );
-  assert.deepEqual(sized.starts, []);
 });
 
 test("run reads are owner-scoped and report sizing capability", async () => {

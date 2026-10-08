@@ -72,6 +72,11 @@ export interface JiraState {
   connections: JiraConnection[];
   loading: boolean;
   error: string | null;
+  /**
+   * The server has no Atlassian app, so it mounts no Jira routes. Not an
+   * error, as for GitHub: Jira is simply not offered here.
+   */
+  unconfigured: boolean;
 }
 
 export interface Jira extends JiraState {
@@ -86,10 +91,27 @@ export interface Jira extends JiraState {
 export function useJira(organizationId: string | undefined): Jira {
   const cache = useQueryClient();
   const userId = useUserId();
+  /*
+    Read as the list and whether there is one, rather than through
+    `withoutJira`: an empty list is a workspace that has not connected a
+    site, and a missing route is a server where it cannot, and home offers
+    the first and not the second.
+  */
   const query = useOwnerQuery(
     organizationId,
     "jira-connections",
-    (owner, signal) => withoutJira(clients.jira.connections(owner, signal)),
+    async (owner, signal) => {
+      try {
+        return {
+          connections: await clients.jira.connections(owner, signal),
+          unconfigured: false,
+        };
+      } catch (error) {
+        if (error instanceof ApiError && error.isNotFound)
+          return { connections: [], unconfigured: true };
+        throw error;
+      }
+    },
   );
   const [writeError, setWriteError] = useState<string | null>(null);
   const refresh = useCallback(async () => {
@@ -97,11 +119,12 @@ export function useJira(organizationId: string | undefined): Jira {
     setWriteError(null);
   }, [query.refresh]);
   const state: JiraState = {
-    connections: query.data ?? [],
+    connections: query.data?.connections ?? [],
     loading: organizationId !== undefined && query.isPending,
     error:
       writeError ??
       (query.isError ? "Could not load your Jira connections." : null),
+    unconfigured: query.data?.unconfigured ?? false,
   };
 
   /**

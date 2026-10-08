@@ -1,5 +1,4 @@
 import { mountBountyContextRoutes } from "./bounties/context.js";
-import { sizeIfNeverSized } from "./pricing/start-run.js";
 import type { AuthVariables } from "./http-context.js";
 export type { AuthVariables } from "./http-context.js";
 /**
@@ -534,17 +533,6 @@ export function createApp({
         // question for the guard above.
         roleOf: (userId, organizationId) =>
           organizations.roleOf(userId, organizationId),
-        // Every board a sync sees is sized once, through the same checks
-        // the board's own run endpoint applies.
-        ...(pricing === undefined || jira.startSizing !== undefined
-          ? {}
-          : {
-              startSizing: (input: {
-                organizationId: string;
-                boardId: string;
-                startedBy: string;
-              }) => sizeIfNeverSized(pricing, input),
-            }),
       });
     }
     /**

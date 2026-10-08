@@ -135,6 +135,11 @@ import {
 } from "./features/bounties/BountySteps";
 import { SandboxCard } from "./features/bounties/SandboxCard";
 import { SandboxGeneration } from "./features/bounties/SandboxGeneration";
+import {
+  areaDescription,
+  prefillFromSearch,
+  type BountyPrefill,
+} from "./features/onboarding/prefill";
 import { useGithubRepos, type GithubRepos } from "./useGithub";
 import {
   useAllBounties,
@@ -609,6 +614,9 @@ export function NewBountyPage({
 }) {
   // The workspace in the rail, or the first there is.
   const target = active ?? organizations[0] ?? null;
+  // Started from home's repository x-ray: about this repository, and
+  // perhaps one module of it. Read once, as the page opens.
+  const [prefill] = useState(() => prefillFromSearch(window.location.search));
   return (
     <main className="mx-auto flex w-full max-w-5xl flex-col gap-8 px-4 py-10 sm:px-6 sm:py-14">
       <header>
@@ -633,6 +641,7 @@ export function NewBountyPage({
           organizations={organizations}
           viewer={viewer}
           initial={target.id}
+          prefill={prefill}
           onCancel={onCancel}
           onConnectRepository={onConnectRepository}
           onCreated={(bounty) => {
@@ -655,6 +664,7 @@ function NewBounty({
   organizations,
   viewer,
   initial,
+  prefill,
   onCancel,
   onConnectRepository,
   onCreated,
@@ -663,6 +673,8 @@ function NewBounty({
   viewer: Viewer;
   /** The workspace chosen until another is. */
   initial: string;
+  /** A repository, and perhaps a module, the bounty starts about. */
+  prefill?: BountyPrefill | null | undefined;
   onCancel: () => void;
   onConnectRepository: (organization: MembershipDto) => void;
   onCreated: (bounty: BountyDto) => void;
@@ -693,6 +705,14 @@ function NewBounty({
                 "github",
               ),
               onOpen: () => onConnectRepository(chosen),
+            }
+      }
+      initialDraft={
+        prefill === null || prefill === undefined
+          ? undefined
+          : {
+              repoId: prefill.repoId,
+              description: areaDescription(prefill.area),
             }
       }
       submitLabel="Create bounty"
@@ -2048,6 +2068,7 @@ function BountyForm({
   repos,
   workspace,
   newRepository,
+  initialDraft,
   submitLabel,
   onSubmit,
   onCancel,
@@ -2065,14 +2086,18 @@ function BountyForm({
    * repositories: the workspace's GitHub settings.
    */
   newRepository?: { href: string; onOpen: () => void } | undefined;
+  /** What the form starts with, when it was opened about something. */
+  initialDraft?: { repoId: string; description: string } | undefined;
   submitLabel: string;
   /** Resolves to null when saved, or to what to say. */
   onSubmit: (draft: BountyDraft) => Promise<string | null>;
   onCancel: () => void;
 }) {
   const [title, setTitle] = useState("");
-  const [description, setDescription] = useState("");
-  const [repoId, setRepoId] = useState("");
+  const [description, setDescription] = useState(
+    initialDraft?.description ?? "",
+  );
+  const [repoId, setRepoId] = useState(initialDraft?.repoId ?? "");
   /*
     Everything the person has added, kept across a change of repository: a
     name the repository chosen also has shows as the repository's while it
@@ -2082,6 +2107,29 @@ function BountyForm({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const chosenRepo = repos.repos.find(({ id }) => id === repoId);
+  /*
+    A repository the form was opened about comes from the address, so it may
+    be stale or belong to no workspace of this person's. Once the list has
+    answered, one this workspace cannot cut a sandbox from is dropped rather
+    than submitted; a list that failed to load leaves it for the server.
+  */
+  const prefilledRepo = initialDraft?.repoId;
+  useEffect(() => {
+    if (
+      prefilledRepo === undefined ||
+      repoId !== prefilledRepo ||
+      repos.loading ||
+      repos.error !== null
+    )
+      return;
+    const usable = repos.repos.some(
+      (repo) =>
+        repo.id === prefilledRepo &&
+        repo.role === "source" &&
+        repo.syncStatus !== "gone",
+    );
+    if (!usable) setRepoId("");
+  }, [prefilledRepo, repoId, repos.loading, repos.error, repos.repos]);
   const inherited = chosenRepo?.stack ?? [];
   const added = stack.filter(
     (name) => !inherited.some((repo) => sameStackName(repo, name)),
@@ -2092,7 +2140,11 @@ function BountyForm({
     while they are asked whether to leave it, and taken if they say so.
   */
   const [leaving, setLeaving] = useState<(() => void) | null>(null);
-  const unsaved = title.trim() !== "" || description.trim() !== "";
+  // Measured against what the form opened with: a description it was
+  // started with is not the person's unsaved work.
+  const unsaved =
+    title.trim() !== "" ||
+    description.trim() !== (initialDraft?.description ?? "").trim();
   const leave = (go: () => void) => {
     if (unsaved) setLeaving(() => go);
     else go();

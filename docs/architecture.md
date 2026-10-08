@@ -101,6 +101,16 @@ writes and retains the latest queued draft, revision conflicts and failed edits.
 Its controller is in `features/pricing/useRateCardAutosave.ts`; proposal lists,
 categories, peeks, search, titles and sizing progress are in `features/bounties`.
 
+Home is `apps/web/src/Home.tsx`, one page that changes with what a workspace
+has connected. `features/onboarding/setup.ts` decides the stage (nothing,
+Jira, GitHub, both) and the getting-started checklist from facts that
+`useWorkspaceSetup.ts` reads through the same cache keys as the pages they
+summarise. Each stage shows something no model call paid for: the six
+categories as a showcase, a board's backlog scan (`BacklogScan.tsx`, also on
+the board's own page until it has proposals), or a repository's x-ray from its
+snapshot (`RepoXray.tsx`). The arithmetic behind the last two is
+`features/onboarding/insights.ts`.
+
 API context and access rules live in `http-context.ts` and `access.ts`.
 `pricing/start-run.ts`, `pricing/approve-proposal.ts` and
 `sandbox/version-service.ts` take explicit owner/input/dependencies; routes keep
@@ -330,9 +340,9 @@ work to a team organization.
 
 **Nothing below the API boundary branches on `kind`.** The stores take an
 organization id and the guard checks membership, whichever kind it is. Only
-surfaces distinguish them: the home screen groups connections by owner with
-the personal one first, the organizations list labels and sorts it first, and
-its settings page hides members, invitations and leaving.
+surfaces distinguish them: the workspace switcher and the organizations list
+label and sort it first, and its settings page hides members, invitations and
+leaving.
 
 ### Open questions
 
@@ -443,6 +453,15 @@ they reach. A bounty following its issue cannot be read while its site
 needs reconnecting, and its run fails `reconnect` rather than sizing
 stale text. Approval posts back to Jira only for a bounty still following
 an issue on a site that holds the write grant.
+
+**Nothing is sized unasked.** Connecting a site, or syncing one, registers
+its boards and starts no run. A board's first view is its backlog scan,
+`GET .../jira/boards/:id/backlog-preview`: the selection a `backlog` run
+would make, classified against the categories in
+`packages/core/src/selection/categories.ts` from ticket metadata alone,
+with no model call and nothing stored. From it a person sizes one ticket
+(an `issue` run) or, having been told the cost, the whole board (a
+`backlog` run, `POST .../jira/boards/:id/runs`, owners and admins).
 
 **A proposal's revision and version.** `bounty_proposal.revision` moves on
 every write and is what each change is checked against (`expectedRevision`),

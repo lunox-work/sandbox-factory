@@ -6,13 +6,19 @@
  * registered source repositories; everyone else sees which one is linked,
  * and nothing at all when none is — a board that never used GitHub should
  * not grow a control for it.
+ *
+ * A workspace with exactly one repository and a board linked to none is
+ * almost always a board about that repository, so it is offered as one
+ * click, said as what it buys, rather than as a picker with one entry.
  */
 
-import { FolderGit2 } from "lucide-react";
+import { FolderGit2, Link2, Loader2 } from "lucide-react";
 import { useState } from "react";
 
 import { Combobox } from "@/components/Combobox";
+import { Button } from "@/components/ui/button";
 
+import { SECTION } from "./lib/reveal";
 import { useGithubRepos } from "./useGithub";
 
 export function BoardRepository({
@@ -63,9 +69,48 @@ export function BoardRepository({
     setError(failure);
   }
 
+  const only = choices.length === 1 ? choices[0] : undefined;
+  if (canManage && sourceRepoId === null && only !== undefined) {
+    return (
+      <section
+        aria-label="Repository"
+        id={SECTION.boardRepository}
+        data-testid="board-repository"
+        className="bg-muted/30 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border px-3 py-2.5"
+      >
+        <FolderGit2 className="text-muted-foreground size-4 shrink-0" />
+        <p className="min-w-0 flex-1 text-sm">
+          Size this board beside{" "}
+          <span className="font-medium">{only.fullName}</span>
+          <span className="text-muted-foreground">
+            {" "}
+            — specs are drafted with its modules in view, and sandboxes cut from
+            its code.
+          </span>
+        </p>
+        <Button
+          size="sm"
+          variant="outline"
+          className="shrink-0 gap-1.5"
+          disabled={saving}
+          onClick={() => void link(only.id)}
+        >
+          {saving ? <Loader2 className="animate-spin" /> : <Link2 />}
+          Link repository
+        </Button>
+        {error !== null && (
+          <p className="text-destructive w-full text-xs" role="alert">
+            {error}
+          </p>
+        )}
+      </section>
+    );
+  }
+
   return (
     <section
       aria-label="Repository"
+      id={SECTION.boardRepository}
       data-testid="board-repository"
       className="flex flex-col gap-1"
     >

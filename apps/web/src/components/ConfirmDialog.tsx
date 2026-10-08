@@ -60,9 +60,11 @@ export function ConfirmDialog({
   pendingLabel?: string | undefined;
   /**
    * `danger` is the brand red kept for deleting an organization; see the token
-   * note in `index.css`. Everything else is the ordinary destructive red.
+   * note in `index.css`. `default` is for a question that is about cost
+   * rather than loss — starting paid work — where red would cry wolf.
+   * Everything else is the ordinary destructive red.
    */
-  tone?: "destructive" | "danger";
+  tone?: "destructive" | "danger" | "default";
   /**
    * When set, the confirm stays disabled until this exact string is typed.
    * For deleting an organization, which takes every member's access with it.
@@ -199,7 +201,7 @@ export function ConfirmDialog({
             <AlertDialogPrimitive.Action asChild>
               <Button
                 type="button"
-                variant="destructive"
+                variant={tone === "default" ? "default" : "destructive"}
                 /*
               `variant="destructive"` for the shape and the focus ring,
               repainted in the brand red for the one action that uses it. The

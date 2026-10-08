@@ -60,6 +60,7 @@ export function ProposalList({
   role,
   writeGranted = true,
   readIssue,
+  quietWhenEmpty = false,
 }: {
   organizationId: string;
   /** The board whose proposals these are; absent, the organization's. */
@@ -79,7 +80,12 @@ export function ProposalList({
    */
   readIssue?:
     ((issueKey: string) => Promise<JiraIssueDetail | null>) | undefined;
-  /** What an empty list says, in place of the board's wording. */
+  /**
+   * Draw nothing for the list while it has nothing in it, nothing is being
+   * sized and no category narrows it: the board's scan above already says
+   * what there is to size, and an empty box under it says it twice.
+   */
+  quietWhenEmpty?: boolean | undefined;
 }) {
   const [category, setCategory] = useState<string | null>(categoryFromUrl);
   const [selectedId, setSelectedId] = useState<string | null>(() =>
@@ -438,9 +444,8 @@ export function ProposalList({
       )}
 
       {/*
-        Connecting a site sizes its boards on its own, so the first visit
-        usually lands mid-run. Said here, above a list that fills as the
-        poll brings proposals in.
+        A board being sized, by someone's "Size all": said here, above a
+        list that fills as the poll brings proposals in.
       */}
       {active !== undefined && (
         <SizingStream
@@ -502,139 +507,144 @@ export function ProposalList({
         what a scan needs — which bounty, at what size, for how much — and
         everything a decision needs is in the peek.
       */}
-      <div
-        aria-busy={switching}
-        className={`overflow-hidden rounded-lg border transition-opacity ${switching ? "opacity-60" : ""}`}
-      >
-        {visibleProposals.length === 0 ? (
-          <p className="text-muted-foreground px-4 py-10 text-center text-sm">
-            {category !== null
-              ? "No proposals in this category."
-              : active === undefined
-                ? "No proposals yet."
-                : "Proposals appear here as bounties are sized."}
-          </p>
-        ) : (
-          <>
-            <div
-              aria-hidden="true"
-              className="text-muted-foreground bg-muted/40 hidden items-center gap-3 border-b px-3 py-2 text-xs font-medium sm:flex"
-            >
-              <span className="w-20 shrink-0">Bounty</span>
-              <span className="flex-1" />
-              <span className="w-24 shrink-0">Status</span>
-              <span className="w-12 shrink-0">Size</span>
-              <span className="w-24 shrink-0 text-right">Amount</span>
-              <span className="size-4 shrink-0" />
-            </div>
-            <ul className="divide-y" data-testid="proposal-list">
-              {visibleProposals.map((proposal) => {
-                const name = nameOf(proposal);
-                return (
-                  <li key={proposal.id}>
-                    <button
-                      type="button"
-                      aria-current={
-                        selectedId === proposal.id ? "true" : undefined
-                      }
-                      className={`hover:bg-muted/50 grid w-full grid-cols-[1fr_auto_1rem] items-center gap-x-3 gap-y-1 px-3 py-3 text-left transition-colors sm:flex sm:py-2.5 ${
-                        selectedId === proposal.id ? "bg-muted" : ""
-                      }`}
-                      onClick={() => openProposal(proposal.id)}
-                    >
-                      <span className="flex min-w-0 flex-col sm:contents">
-                        <span className="text-muted-foreground shrink-0 font-mono text-xs sm:w-20">
-                          {name.key}
-                        </span>
-                        {/*
+      {quietWhenEmpty &&
+      visibleProposals.length === 0 &&
+      category === null &&
+      active === undefined ? null : (
+        <div
+          aria-busy={switching}
+          className={`overflow-hidden rounded-lg border transition-opacity ${switching ? "opacity-60" : ""}`}
+        >
+          {visibleProposals.length === 0 ? (
+            <p className="text-muted-foreground px-4 py-10 text-center text-sm">
+              {category !== null
+                ? "No proposals in this category."
+                : active === undefined
+                  ? "No proposals yet."
+                  : "Proposals appear here as bounties are sized."}
+            </p>
+          ) : (
+            <>
+              <div
+                aria-hidden="true"
+                className="text-muted-foreground bg-muted/40 hidden items-center gap-3 border-b px-3 py-2 text-xs font-medium sm:flex"
+              >
+                <span className="w-20 shrink-0">Bounty</span>
+                <span className="flex-1" />
+                <span className="w-24 shrink-0">Status</span>
+                <span className="w-12 shrink-0">Size</span>
+                <span className="w-24 shrink-0 text-right">Amount</span>
+                <span className="size-4 shrink-0" />
+              </div>
+              <ul className="divide-y" data-testid="proposal-list">
+                {visibleProposals.map((proposal) => {
+                  const name = nameOf(proposal);
+                  return (
+                    <li key={proposal.id}>
+                      <button
+                        type="button"
+                        aria-current={
+                          selectedId === proposal.id ? "true" : undefined
+                        }
+                        className={`hover:bg-muted/50 grid w-full grid-cols-[1fr_auto_1rem] items-center gap-x-3 gap-y-1 px-3 py-3 text-left transition-colors sm:flex sm:py-2.5 ${
+                          selectedId === proposal.id ? "bg-muted" : ""
+                        }`}
+                        onClick={() => openProposal(proposal.id)}
+                      >
+                        <span className="flex min-w-0 flex-col sm:contents">
+                          <span className="text-muted-foreground shrink-0 font-mono text-xs sm:w-20">
+                            {name.key}
+                          </span>
+                          {/*
                           The title, and under it why the run picked the
                           bounty: that is what makes a row more than an old
                           bounty with a price, so it is on the row rather
                           than only in the peek.
                         */}
-                        <span className="flex min-w-0 flex-col sm:flex-1">
-                          <span className="min-w-0 text-sm sm:truncate">
-                            {name.title ??
-                              (name.pending ? (
-                                // Held open at a title's width, so the row
-                                // does not reflow when its line arrives.
-                                <span
-                                  aria-hidden="true"
-                                  data-testid="title-pending"
-                                  className="skeleton inline-block h-3 w-40 max-w-full rounded align-middle"
-                                />
-                              ) : (
-                                "Bounty"
-                              ))}
+                          <span className="flex min-w-0 flex-col sm:flex-1">
+                            <span className="min-w-0 text-sm sm:truncate">
+                              {name.title ??
+                                (name.pending ? (
+                                  // Held open at a title's width, so the row
+                                  // does not reflow when its line arrives.
+                                  <span
+                                    aria-hidden="true"
+                                    data-testid="title-pending"
+                                    className="skeleton inline-block h-3 w-40 max-w-full rounded align-middle"
+                                  />
+                                ) : (
+                                  "Bounty"
+                                ))}
+                            </span>
+                            <CategoryLine
+                              categories={proposal.categories}
+                              lead={category}
+                              wrapOnPhone
+                            />
                           </span>
-                          <CategoryLine
-                            categories={proposal.categories}
-                            lead={category}
-                            wrapOnPhone
-                          />
                         </span>
-                      </span>
-                      <span className="flex shrink-0 items-center gap-3 sm:contents">
-                        <span className="sm:w-24 sm:shrink-0">
-                          <Badge
-                            variant={
-                              proposal.status === "approved"
-                                ? "default"
-                                : "secondary"
-                            }
-                          >
-                            {capitalize(proposal.status)}
-                          </Badge>
-                        </span>
-                        <span className="sm:w-12 sm:shrink-0">
-                          {/*
+                        <span className="flex shrink-0 items-center gap-3 sm:contents">
+                          <span className="sm:w-24 sm:shrink-0">
+                            <Badge
+                              variant={
+                                proposal.status === "approved"
+                                  ? "default"
+                                  : "secondary"
+                              }
+                            >
+                              {capitalize(proposal.status)}
+                            </Badge>
+                          </span>
+                          <span className="sm:w-12 sm:shrink-0">
+                            {/*
                             A dashed size is one with no weighed spec
                             behind it: sized before weights, or with no
                             draft at all. Re-analyzing weighs it, which a
                             reviewer finds these rows to do.
                           */}
-                          {unweighed(proposal) ? (
-                            <Badge
-                              variant="outline"
-                              className="border-dashed font-mono"
-                              title="No weighed scenarios: re-analyze to weigh them"
-                              data-unweighed=""
-                            >
-                              {proposal.complexity}
-                            </Badge>
-                          ) : (
-                            <Badge variant="outline" className="font-mono">
-                              {proposal.complexity}
-                            </Badge>
-                          )}
+                            {unweighed(proposal) ? (
+                              <Badge
+                                variant="outline"
+                                className="border-dashed font-mono"
+                                title="No weighed scenarios: re-analyze to weigh them"
+                                data-unweighed=""
+                              >
+                                {proposal.complexity}
+                              </Badge>
+                            ) : (
+                              <Badge variant="outline" className="font-mono">
+                                {proposal.complexity}
+                              </Badge>
+                            )}
+                          </span>
+                          <span className="text-sm tabular-nums sm:w-24 sm:shrink-0 sm:text-right">
+                            {money(proposal.amountMinor, proposal.currency)}
+                          </span>
                         </span>
-                        <span className="text-sm tabular-nums sm:w-24 sm:shrink-0 sm:text-right">
-                          {money(proposal.amountMinor, proposal.currency)}
-                        </span>
-                      </span>
-                      <ChevronRight className="text-muted-foreground size-4 shrink-0" />
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-            {moreProposals && (
-              <div className="flex justify-center border-t px-3 py-2">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  disabled={loadingMore}
-                  onClick={() => void showMore()}
-                >
-                  {loadingMore && <Loader2 className="animate-spin" />}
-                  Show more
-                </Button>
-              </div>
-            )}
-          </>
-        )}
-      </div>
+                        <ChevronRight className="text-muted-foreground size-4 shrink-0" />
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+              {moreProposals && (
+                <div className="flex justify-center border-t px-3 py-2">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    disabled={loadingMore}
+                    onClick={() => void showMore()}
+                  >
+                    {loadingMore && <Loader2 className="animate-spin" />}
+                    Show more
+                  </Button>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
 
       {/*
         Mounted whether or not a proposal is open, so Radix can animate it

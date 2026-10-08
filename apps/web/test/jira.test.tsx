@@ -18,6 +18,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "./render";
 
 import { fromToday } from "../src/IssueSpec";
+import { resolveCategories } from "sandbox-factory";
 import { JiraBoard, JiraConnections } from "../src/Jira";
 
 const connection = {
@@ -553,6 +554,72 @@ function proposal(n: number) {
 }
 
 /**
+ * A board's backlog scan: three tickets, two of them left behind and one
+ * paper cut, none sized yet.
+ */
+function scanPreview() {
+  const resolved = resolveCategories();
+  return {
+    boardId: "jrb_1",
+    jql: "project = ACME",
+    categories: resolved,
+    issues: [
+      {
+        ...issue(7, "2025-01-01T00:00:00.000Z"),
+        priority: null,
+        labels: [],
+        projectKey: "ACME",
+        parentKey: null,
+        dueDate: null,
+        categories: [
+          {
+            id: "left-behind",
+            label: "Left behind",
+            reason: "Open 600 days, never in a sprint, unassigned",
+          },
+        ],
+      },
+      {
+        ...issue(8, "2025-03-01T00:00:00.000Z"),
+        priority: null,
+        labels: [],
+        projectKey: "ACME",
+        parentKey: null,
+        dueDate: null,
+        categories: [
+          {
+            id: "left-behind",
+            label: "Left behind",
+            reason: "Open 550 days, never in a sprint, unassigned",
+          },
+        ],
+      },
+      {
+        ...issue(9, "2025-06-01T00:00:00.000Z"),
+        priority: "Low",
+        labels: [],
+        projectKey: "ACME",
+        parentKey: null,
+        dueDate: null,
+        categories: [
+          {
+            id: "paper-cuts",
+            label: "Paper cuts",
+            reason: "Low-priority bug, open 400 days",
+          },
+        ],
+      },
+    ],
+    matched: { "left-behind": 2, "paper-cuts": 1 },
+    unmatched: 40,
+    candidatesScanned: 43,
+    skippedLive: 0,
+    scanLimitReached: false,
+    ticketCapReached: false,
+  };
+}
+
+/**
  * The server, faked per route rather than as one blanket response.
  *
  * The page makes several different calls, and answering them all with the
@@ -565,6 +632,7 @@ function routedFetch(
     connections?: { status?: number; body?: unknown };
     detail?: { status?: number; body?: unknown };
     proposals?: { status?: number; body?: unknown };
+    preview?: { status?: number; body?: unknown };
   } = {},
 ) {
   return vi.fn((input: string, init?: RequestInit) => {
@@ -596,6 +664,25 @@ function routedFetch(
           { headers: { "content-type": "application/x-ndjson" } },
         ),
       );
+    }
+
+    if (url.includes("/proposal-categories")) {
+      // The board's counts: as many as the list holds.
+      const listed = (
+        overrides.proposals?.body as { proposals?: unknown[] } | undefined
+      )?.proposals;
+      return json({
+        total: listed?.length ?? 2,
+        uncategorized: listed?.length ?? 2,
+        categories: [],
+      });
+    }
+    if (url.includes("/backlog-preview")) {
+      const spec = overrides.preview;
+      return json(spec?.body ?? scanPreview(), spec?.status ?? 200);
+    }
+    if (url.endsWith("/rate-card")) {
+      return json({ rateCard: null });
     }
 
     if (url.endsWith("/resize")) {
@@ -724,8 +811,7 @@ test("a registered board is listed without type or project pills", async () => {
 
 test("Re-sync re-reads the site and says what it found", async () => {
   // Opening the page syncs already; the button is for a board made in Jira
-  // a moment ago. A new board is sized in the background, and the card
-  // says so.
+  // a moment ago, and the card says what it found.
   const fetchMock = routedFetch({
     sync: { body: { boards: [board], added: [] } },
   });
@@ -749,8 +835,9 @@ test("Re-sync re-reads the site and says what it found", async () => {
   );
 
   await waitFor(() => expect(syncs()).toBe(2));
+  // Found, not sized: connecting or syncing a site sizes nothing.
   expect((await screen.findByRole("status")).textContent).toBe(
-    "Found 2 new boards — sizing started.",
+    "Found 2 new boards.",
   );
 });
 
@@ -1079,14 +1166,40 @@ test("a field Jira did not send renders no row", async () => {
   expect(within(panel).getByText(/no description/i)).toBeDefined();
 });
 
-test("an empty proposal list is explained rather than shown as a blank table", async () => {
+test("a board with no proposals opens on its backlog scan, not an empty table", async () => {
+  // Connecting sizes nothing, so a new board's first view is what on it is
+  // worth outsourcing — and the empty list under it would only repeat that
+  // nothing has been sized.
   vi.stubGlobal(
     "fetch",
     routedFetch({ proposals: { body: { proposals: [] } } }),
   );
-  renderBoard();
+  renderBoard("jrb_1", "owner");
 
-  expect(await screen.findByText(/no proposals yet/i)).toBeDefined();
+  const scan = await screen.findByTestId("backlog-scan");
+  expect(
+    await within(scan).findByRole("heading", {
+      name: /3 tickets worth outsourcing/,
+    }),
+  ).toBeDefined();
+  expect(screen.queryByText(/no proposals yet/i)).toBeNull();
+  expect(screen.queryByTestId("proposal-list")).toBeNull();
+});
+
+test("a board with proposals folds its scan to one line above them", async () => {
+  vi.stubGlobal("fetch", routedFetch());
+  renderBoard("jrb_1", "owner");
+
+  await screen.findByTestId("proposal-list");
+  const scan = await screen.findByTestId("backlog-scan");
+  expect(scan.tagName).toBe("BUTTON");
+  await waitFor(() =>
+    expect(scan.textContent).toMatch(/3 more tickets worth outsourcing/),
+  );
+  await userEvent.click(scan);
+  expect(
+    within(screen.getByTestId("backlog-scan")).getByTestId("scan-categories"),
+  ).toBeDefined();
 });
 
 test("a failed ticket read stays in the Spec tab with a retry", async () => {
@@ -1978,10 +2091,13 @@ test("an owner links the repository a board's tickets are about", async () => {
   vi.stubGlobal("fetch", fetchMock);
   renderBoard("jrb_1", "owner");
 
+  // The workspace's one repository is offered as one click, said as what
+  // linking it buys.
   const section = await screen.findByTestId("board-repository");
-  const picker = within(section).getByRole("combobox", { name: "Repository" });
-  expect(picker.textContent).toBe("No repository");
-  await chooseOption(picker, "acme/widgets");
+  expect(section.textContent).toMatch(/size this board beside acme\/widgets/i);
+  await userEvent.click(
+    within(section).getByRole("button", { name: "Link repository" }),
+  );
 
   await waitFor(() =>
     expect(

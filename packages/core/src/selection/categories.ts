@@ -22,6 +22,11 @@
  * A category's `id` is stored on runs and in board settings, so renaming one
  * orphans those settings (they are ignored, not an error). `label` is free
  * to change: it is copied onto each match when the match is made.
+ *
+ * `looksFor` and `example` are for people who have not connected a board
+ * yet, or are reading a scan of one: what the rule checks, in plain words
+ * with the thresholds in force, and the kind of ticket it tends to find.
+ * Keep `looksFor` in step with `rule` when either changes.
  */
 
 import type { IssueFacts } from "./facts.js";
@@ -57,6 +62,10 @@ export interface Category {
   readonly defaults: Thresholds;
   /** The criteria, built from the thresholds in force. */
   readonly rule: (thresholds: Thresholds) => Rule;
+  /** What the rule checks, in plain words, for the thresholds in force. */
+  readonly looksFor: (thresholds: Thresholds) => string;
+  /** A made-up ticket title of the kind the category finds. */
+  readonly example: string;
 }
 
 /**
@@ -69,6 +78,8 @@ function defineCategory<T extends Thresholds>(definition: {
   readonly why: string;
   readonly defaults: T;
   readonly rule: (thresholds: T) => Rule;
+  readonly looksFor: (thresholds: T) => string;
+  readonly example: string;
 }): Category {
   // Sound because `thresholdsFor` always starts from `defaults`: a rule is
   // never handed an object missing one of the keys it was typed against.
@@ -88,6 +99,9 @@ export const CATEGORIES: readonly Category[] = [
         unassigned,
         silent(quietAtLeast(t.minQuietDays)),
       ),
+    looksFor: (t) =>
+      `Open ${t.minAgeDays}+ days, never in a sprint, unassigned and quiet for ${t.minQuietDays}+ days`,
+    example: "Export to CSV drops the time zone from timestamps",
   }),
   defineCategory({
     id: "always-next-sprint",
@@ -95,6 +109,8 @@ export const CATEGORIES: readonly Category[] = [
     why: "Already planned and wanted; the only blocker is capacity.",
     defaults: { minSprints: 2 },
     rule: (t) => carriedAtLeast(t.minSprints),
+    looksFor: (t) => `Carried over ${t.minSprints}+ sprints without being done`,
+    example: "Let admins resend an expired invitation",
   }),
   defineCategory({
     id: "quietly-wanted",
@@ -111,6 +127,9 @@ export const CATEGORIES: readonly Category[] = [
         ),
         priorityAtMost("low"),
       ),
+    looksFor: (t) =>
+      `Low priority, yet ${t.minVotes}+ votes, ${t.minWatchers}+ watchers, ${t.minComments}+ comments or a duplicate`,
+    example: "Remember the last-used filter on the orders list",
   }),
   defineCategory({
     id: "holding-others-up",
@@ -118,6 +137,9 @@ export const CATEGORIES: readonly Category[] = [
     why: "One bounty unblocks several tickets the team will do in-house.",
     defaults: { minBlocked: 1 },
     rule: (t) => all(blocksAtLeast(t.minBlocked), unassigned),
+    looksFor: (t) =>
+      `Unassigned, and blocking ${t.minBlocked === 1 ? "another ticket" : `${t.minBlocked}+ other tickets`}`,
+    example: "Add a webhook when a refund settles",
   }),
   defineCategory({
     id: "paper-cuts",
@@ -126,6 +148,9 @@ export const CATEGORIES: readonly Category[] = [
     defaults: { minAgeDays: 90 },
     rule: (t) =>
       all(bug, silent(priorityAtMost("medium")), openAtLeast(t.minAgeDays)),
+    looksFor: (t) =>
+      `Bugs of medium priority or lower, open ${t.minAgeDays}+ days`,
+    example: "Date picker skips a day at daylight-saving change",
   }),
   defineCategory({
     id: "deadline-exposed",
@@ -134,6 +159,9 @@ export const CATEGORIES: readonly Category[] = [
     defaults: { withinDays: 30 },
     rule: (t) =>
       all(deadlineWithin(t.withinDays), silent(unassigned), notInSprint),
+    looksFor: (t) =>
+      `Due within ${t.withinDays} days, unassigned and in no sprint`,
+    example: "Accessibility fixes before the public-sector audit",
   }),
 ];
 
@@ -164,6 +192,9 @@ export interface ResolvedCategory {
   readonly id: string;
   readonly label: string;
   readonly why: string;
+  /** The category's `looksFor`, with this board's thresholds. */
+  readonly looksFor: string;
+  readonly example: string;
   readonly enabled: boolean;
   readonly thresholds: Thresholds;
 }
@@ -210,12 +241,15 @@ export function resolveCategories(
     const settings = Object.hasOwn(config, category.id)
       ? config[category.id]
       : undefined;
+    const thresholds = thresholdsFor(category, settings);
     return {
       id: category.id,
       label: category.label,
       why: category.why,
+      looksFor: category.looksFor(thresholds),
+      example: category.example,
       enabled: settings?.enabled ?? true,
-      thresholds: thresholdsFor(category, settings),
+      thresholds,
     };
   });
 }

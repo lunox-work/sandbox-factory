@@ -175,6 +175,9 @@ export const jiraBacklogPreviewSchema = z.object({
       id: z.string(),
       label: z.string(),
       why: z.string(),
+      /** What the rule checks, in plain words. Absent from an older API. */
+      looksFor: z.string().optional(),
+      example: z.string().optional(),
       enabled: z.boolean(),
       thresholds: z.record(z.string(), z.number()),
     }),
@@ -190,7 +193,13 @@ export const jiraBacklogPreviewSchema = z.object({
   skippedLive: z.number(),
   scanLimitReached: z.boolean(),
   ticketCapReached: z.boolean(),
+  /**
+   * Nothing fit a category, so `issues` are the oldest open tickets that fit
+   * none. Absent from an older API, which reads as false.
+   */
+  fallback: z.boolean().optional(),
 });
+export type JiraBacklogPreviewDto = z.infer<typeof jiraBacklogPreviewSchema>;
 
 export const accountNameResponseSchema = z.object({ name: z.string() });
 export const accountUsernameResponseSchema = z.object({ username: z.string() });

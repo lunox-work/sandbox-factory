@@ -1,15 +1,16 @@
 /**
- * What home shows: a board, not a list of the places boards come from.
+ * Home for a workspace with Jira: a board, not a list of the places boards
+ * come from.
  *
- * Sizing proposals are the work, and the connections list sat one site and
- * one board away from them. Home now opens straight on a board of the active
- * organization — the one last opened there, or failing that its first — so a
- * reload lands where the person left off.
+ * Home opens straight on a board of the active organization — the one last
+ * opened there, or failing that its first — so a reload lands where the
+ * person left off. The board opens on its backlog scan until it has
+ * proposals (see `JiraBoard`), under home's own greeting and checklist,
+ * which `Home` hands in as `intro`.
  *
  * Remembered per person and per organization, so switching organization in
  * the rail moves home to that organization's board rather than keeping one
- * that is not its. An organization with no board yet falls back to the
- * connections list, which is where a site gets connected.
+ * that is not its. An organization with no board yet shows `fallback`.
  */
 
 import { ChevronDown, LayoutList, RefreshCw } from "lucide-react";
@@ -17,13 +18,11 @@ import { useState, type ReactNode } from "react";
 
 import { Combobox } from "@/components/Combobox";
 import { ErrorBanner, LoadingLine } from "@/components/Message";
-import { OutcomeNotice } from "@/components/OutcomeNotice";
 import { Button } from "@/components/ui/button";
 
-import { describeGithubOutcome } from "./Github";
+import type { RepositoryAction } from "./features/onboarding/BacklogScan";
 import { BoardIcon, JiraBoard } from "./Jira";
 import { pathForScreen } from "./routes";
-import { useGithubOutcome } from "./useGithub";
 import { useJiraBoards, type JiraBoard as Board } from "./useJira";
 
 export interface RememberedBoard {
@@ -72,25 +71,6 @@ export function writeHomeBoard(
   } catch {
     // Not remembered; home falls back to the organization's first board.
   }
-}
-
-/** Said by the clock on the person's own machine, which is their day. */
-function greeting(now: Date): string {
-  const hour = now.getHours();
-  return hour < 12
-    ? "Good morning"
-    : hour < 18
-      ? "Good afternoon"
-      : "Good evening";
-}
-
-/**
- * The first word of the name, for a greeting rather than a form of address.
- * An empty name greets no one rather than greeting a blank.
- */
-function firstName(name: string): string | undefined {
-  const first = name.trim().split(/\s+/)[0];
-  return first === undefined || first === "" ? undefined : first;
 }
 
 /**
@@ -166,20 +146,23 @@ function BoardPicker({
 
 export function HomeBoard({
   userId,
-  name,
   organizationId,
   organizationSlug,
   role,
+  intro,
+  repositoryAction,
   onBoardName,
   onOpenBoard,
   fallback,
 }: {
   userId: string;
-  /** The signed-in person's name, for the greeting. */
-  name: string;
   organizationId: string;
   organizationSlug: string;
   role: string;
+  /** Home's greeting and checklist, above the board. */
+  intro: ReactNode;
+  /** How a workspace with no repository gets one; see `JiraBoard`. */
+  repositoryAction?: RepositoryAction | undefined;
   onBoardName: (name: string | undefined) => void;
   /** Leaves home for the board's own page, with its trail. */
   onOpenBoard: (board: Board) => void;
@@ -187,12 +170,6 @@ export function HomeBoard({
   fallback: ReactNode;
 }) {
   const { boards, loading, error, refresh } = useJiraBoards(organizationId);
-  /*
-    A GitHub flow that could not be tied to a workspace lands on home. The
-    connections page reports it when it is what home shows; over a board it
-    has to be reported here, or the outcome is lost and stays in the URL.
-  */
-  const github = useGithubOutcome();
   // Held in state, not only in storage: choosing a board in the picker has
   // to re-render, and a write to storage does not.
   const [chosenId, setChosenId] = useState<string | undefined>(
@@ -212,22 +189,14 @@ export function HomeBoard({
   const board =
     boards.find((candidate) => candidate.id === chosenId) ?? boards[0];
 
-  const notice = github.outcome !== null && (
-    <OutcomeNotice
-      {...describeGithubOutcome(github.outcome, "home")}
-      onDismiss={github.dismiss}
-      testId="github-outcome"
-    />
-  );
-
   if (board === undefined) {
     // Not known to have none: a list that failed is said to have failed,
     // rather than passed off as a workspace with no board yet.
     if (error !== null && boards.length === 0)
       return (
-        <main className="mx-auto w-full max-w-2xl px-4 py-10 sm:px-6 sm:py-14">
+        <main className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-4 py-10 sm:px-6 sm:py-14">
+          {intro}
           <div className="flex flex-col items-start gap-3">
-            {notice}
             <ErrorBanner className="mt-0">
               Could not load this workspace&rsquo;s boards.
             </ErrorBanner>
@@ -243,22 +212,8 @@ export function HomeBoard({
           </div>
         </main>
       );
-    // The outcome was taken from the URL on mount, so the fallback's own
-    // reading finds nothing: it is shown here, above it.
-    return (
-      <>
-        {notice !== false && (
-          <div className="mx-auto w-full max-w-5xl px-4 pt-10 sm:px-6 sm:pt-14">
-            {notice}
-          </div>
-        )}
-        {fallback}
-      </>
-    );
+    return <>{fallback}</>;
   }
-
-  const who = firstName(name);
-  const today = new Date();
 
   return (
     <JiraBoard
@@ -271,22 +226,12 @@ export function HomeBoard({
       boardName={board.name}
       onBoardName={onBoardName}
       role={role}
+      repositoryAction={repositoryAction}
       header={
-        <header>
-          {notice !== false && <div className="mb-6">{notice}</div>}
-          <p className="text-muted-foreground text-sm">
-            {today.toLocaleDateString(undefined, {
-              weekday: "long",
-              month: "long",
-              day: "numeric",
-            })}
-          </p>
-          <h1 className="mt-1 text-2xl font-semibold tracking-tight">
-            {greeting(today)}
-            {who === undefined ? "" : `, ${who}`}
-          </h1>
-          <div className="text-muted-foreground mt-2 flex min-w-0 items-center gap-1 text-sm">
-            <span className="shrink-0">Sizing proposals from</span>
+        <header className="flex flex-col gap-6">
+          {intro}
+          <div className="text-muted-foreground -mb-2 flex min-w-0 items-center gap-1 text-sm">
+            <span className="shrink-0">Board</span>
             <BoardPicker
               boards={boards}
               current={board}

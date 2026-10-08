@@ -27,6 +27,7 @@ import {
   Trash2,
   TriangleAlert,
 } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
@@ -54,7 +55,14 @@ import { cn } from "@/lib/utils";
 import { JiraIcon } from "./ProviderIcon";
 import { isPlainLeftClick, pathForScreen } from "./routes";
 import { BoardRepository } from "./BoardRepository";
+import { clients, queryKeys, useUserId } from "./data/query";
+import {
+  BacklogScan,
+  type RepositoryAction,
+} from "./features/onboarding/BacklogScan";
+import { SECTION, reveal } from "./lib/reveal";
 import { ProposalList } from "./Proposals";
+import { useGithubRepos } from "./useGithub";
 
 import {
   useJira,
@@ -615,7 +623,7 @@ function SiteBoardsCard({
           <p className="text-muted-foreground text-sm" role="status">
             {found === 0
               ? "No new boards."
-              : `Found ${found} new board${found === 1 ? "" : "s"} — sizing started.`}
+              : `Found ${found} new board${found === 1 ? "" : "s"}.`}
           </p>
         )}
 
@@ -662,6 +670,11 @@ function SiteBoardsCard({
  * Below `md` the panel covers the list instead of sitting beside it, with a
  * control back. Two columns on a phone would each be too narrow to hold a
  * ticket summary, let alone a spec.
+ *
+ * Above the list, the board's backlog scan: what on it is worth outsourcing,
+ * read for free. Connecting a site sizes nothing, so a new board opens on
+ * the scan and an empty list; once it has proposals the scan folds to a line
+ * over them.
  */
 export function JiraBoard({
   organizationId,
@@ -671,6 +684,7 @@ export function JiraBoard({
   onBoardName,
   role,
   header,
+  repositoryAction,
 }: {
   organizationId: string;
   /** The site this board is on, for its write grant. */
@@ -692,10 +706,34 @@ export function JiraBoard({
    * place they navigated to.
    */
   header?: ReactNode;
+  /**
+   * How a workspace with no repository to link gets one: connecting GitHub,
+   * or picking one from an account already connected. A workspace that has
+   * one links it here, above the scan, which this works out for itself.
+   */
+  repositoryAction?: RepositoryAction | undefined;
 }) {
+  const userId = useUserId();
   const { boards, error, issue, linkRepository, refresh } =
     useJiraBoards(organizationId);
   const { connections, connect } = useJira(organizationId);
+  const { repos } = useGithubRepos(organizationId);
+  const linkable = repos.some(
+    (repo) => repo.role === "source" && repo.syncStatus !== "gone",
+  );
+  // The board's own counts, as its proposal list reads them: whether it has
+  // any decides whether the scan is the page or a line above it.
+  const counts = useQuery({
+    queryKey: queryKeys.resource(
+      userId,
+      organizationId,
+      "proposal-categories",
+      boardId,
+    ),
+    queryFn: ({ signal }) =>
+      clients.pricing.categories(organizationId, boardId, signal),
+  });
+  const proposed = (counts.data?.total ?? 0) > 0;
   const { outcome, missingScopes, dismiss } = useJiraOutcome();
 
   const board = boards.find((candidate) => candidate.id === boardId) ?? null;
@@ -761,9 +799,38 @@ export function JiraBoard({
         />
       )}
 
+      {/*
+        Once the counts have answered, so a board with proposals does not
+        open on the whole scan and fold it a moment later. Counts that could
+        not be read leave the scan open: it is the one view that still works.
+      */}
+      {!counts.isPending && (
+        <BacklogScan
+          // Folded or not is decided once per board: a first proposal
+          // landing must not fold the scan out from under the person.
+          key={boardId}
+          organizationId={organizationId}
+          boardId={boardId}
+          canManage={canManage(role ?? "")}
+          repository={
+            repos.find(({ id }) => id === board?.sourceRepoId) ?? null
+          }
+          repositoryAction={
+            linkable && canManage(role ?? "")
+              ? {
+                  label: "link a repository",
+                  onSelect: () => reveal(SECTION.boardRepository, "center"),
+                }
+              : repositoryAction
+          }
+          foldable={proposed}
+        />
+      )}
+
       <ProposalList
         organizationId={organizationId}
         boardId={boardId}
+        quietWhenEmpty
         role={role ?? "member"}
         writeGranted={
           connections.find((candidate) => candidate.id === connectionId)
