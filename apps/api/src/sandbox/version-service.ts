@@ -21,6 +21,7 @@ import {
 import type {
   StoredAnalysisRun,
   StoredArtifact,
+  StoredBounty,
   StoredSandbox,
   StoredVersionWithSource,
 } from "@sandbox-factory/db";
@@ -33,6 +34,7 @@ import { createHash } from "node:crypto";
 import type {
   AcceptanceTest,
   AliasRule,
+  ApprovedTaskContext,
   ApprovedTaskSnapshot,
   BoundaryContract,
   DependencyChoice,
@@ -195,6 +197,34 @@ const starterInProgress = () =>
   );
 
 export function versionService(options: SandboxRouteOptions) {
+  /**
+   * The context the bounty holds now, as a version's task freezes it: each
+   * source's latest synced version, with what it said.
+   */
+  async function taskContext(
+    owner: string,
+    bounty: StoredBounty | string,
+  ): Promise<ApprovedTaskContext> {
+    const read = options.contextFor;
+    if (read === undefined) return { jira: null, github: null };
+    const found =
+      typeof bounty === "string"
+        ? await options.bounties.get(owner, bounty)
+        : bounty;
+    if (found === null) return { jira: null, github: null };
+    const held = await read(owner, found);
+    return {
+      jira:
+        held.jira === null
+          ? null
+          : { version: held.jira.version, content: held.jira.content },
+      github:
+        held.github === null
+          ? null
+          : { version: held.github.version, content: held.github.content },
+    };
+  }
+
   /** The slice run's manifest and contract, verified against their recorded hashes. */
   async function sliceInputs(owner: string, sliceRunId: string) {
     const run = await options.runs.get(owner, sliceRunId);
@@ -386,6 +416,7 @@ export function versionService(options: SandboxRouteOptions) {
       selectedBy: actor,
       selectedAt: now.toISOString(),
       bountyId: sandbox.bountyId,
+      context: await taskContext(owner, sandbox.bountyId),
     };
     const scope = resolveScope({
       manifest: inputs.manifest,
@@ -540,6 +571,8 @@ export function versionService(options: SandboxRouteOptions) {
       selectedBy: actor,
       selectedAt: now.toISOString(),
       bountyId: bounty.id,
+      // What its sources add, which the starter agent is shown too.
+      context: await taskContext(owner, bounty),
     };
     const task = starterTaskReadiness(approvedTask);
     if (!task.ready)

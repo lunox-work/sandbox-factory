@@ -12,10 +12,19 @@
  * when a step is behind, so every surface says so alike.
  */
 
+import type { ContextVersions } from "./sources.js";
+
 /** Where each step stands, and what each was built on. */
 export interface BountyStages {
-  /** The overview's version: one for each change to its title or text. */
-  readonly overview: { readonly version: number };
+  /**
+   * The overview's version: one for each change to its title or text. Its
+   * `context` is the latest context synced from each source, which the
+   * steps after it are made with (`contextDrift`).
+   */
+  readonly overview: {
+    readonly version: number;
+    readonly context?: ContextVersions;
+  };
   /**
    * The live proposal: its version, 0 until it is first approved, and the
    * overview version it was sized from. That is null when it was sized from
@@ -24,6 +33,8 @@ export interface BountyStages {
   readonly bounty: {
     readonly version: number;
     readonly overviewVersion: number | null;
+    /** The context versions it was sized with. */
+    readonly context?: ContextVersions;
   } | null;
   /**
    * The sandbox version contributors get, or the latest while none is
@@ -33,6 +44,8 @@ export interface BountyStages {
   readonly sandbox: {
     readonly version: number;
     readonly bountyVersion: number | null;
+    /** The context versions it was generated with. */
+    readonly context?: ContextVersions;
   } | null;
 }
 

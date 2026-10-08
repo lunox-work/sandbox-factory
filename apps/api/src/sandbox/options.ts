@@ -20,8 +20,10 @@ import type {
   BountySpecStore,
   BountyStore,
   GithubRepoStore,
+  LatestBountyContext,
   ObjectStore,
   SandboxStore,
+  StoredBounty,
 } from "@sandbox-factory/db";
 
 export interface SandboxRouteOptions {
@@ -35,6 +37,14 @@ export interface SandboxRouteOptions {
   readonly bounties: Pick<BountyStore, "get">;
   /** The repository a bounty names, for the stack detected in it. */
   readonly repos: Pick<GithubRepoStore, "get">;
+  /**
+   * The context a bounty holds from its sources (`heldContext`), frozen
+   * into each version's task. Absent, a version is taken with none.
+   */
+  readonly contextFor?: (
+    organizationId: string,
+    bounty: StoredBounty,
+  ) => Promise<LatestBountyContext>;
   readonly ensureWorker: () => Promise<void>;
   readonly maxActive?: number;
   readonly onLaunchError?: () => void;

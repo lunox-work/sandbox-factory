@@ -55,6 +55,13 @@ export {
   toSprintDto,
 } from "./mapping.js";
 export type { IssueMappingOptions } from "./mapping.js";
+export {
+  CONTEXT_FIELDS,
+  storyPointFields,
+  toFieldDefinitions,
+  toJiraContext,
+} from "./context.js";
+export type { JiraFieldDefinition } from "./context.js";
 export { adfToText, adfToTextResult } from "./adf.js";
 export type { AdfTextResult } from "./adf.js";
 export { selectionJql, SKIP_LABEL } from "./selection-jql.js";

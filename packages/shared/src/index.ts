@@ -148,6 +148,7 @@ export * from "./pricing.js";
 
 /** Bounties: the organization's own work items, which proposals price. */
 export * from "./bounty.js";
+export * from "./context.js";
 export * from "./stack.js";
 
 /** A proposal's spec: the bounty's behaviour as Gherkin scenarios. */

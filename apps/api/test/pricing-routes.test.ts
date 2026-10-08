@@ -430,6 +430,7 @@ function reviewProposal(
     decidedBy: null,
     decisionDeliveryPolicy: null,
     repoSnapshotId: null,
+    contextVersions: { jira: null, github: null },
     createdAt: run.createdAt,
     updatedAt: run.createdAt,
     ...overrides,

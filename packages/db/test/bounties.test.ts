@@ -730,7 +730,7 @@ test("an overview's versions are listed newest first, through its owner", async 
   );
 });
 
-test("a sandbox reads with the version it is built as, and the bounty version under it", async () => {
+test("a sandbox reads with the version it is built as, and the bounty and context versions under it", async () => {
   const read = await createBountyStore(
     createFakeDb([
       {
@@ -744,6 +744,8 @@ test("a sandbox reads with the version it is built as, and the bounty version un
         buildVersionId: "sbv_2",
         buildVersion: 2,
         buildBountyVersion: 4,
+        buildJiraContextVersion: 2,
+        buildGithubContextVersion: null,
       },
     ]).db,
   ).get("org_1", "bty_1");
@@ -751,6 +753,8 @@ test("a sandbox reads with the version it is built as, and the bounty version un
     versionId: "sbv_2",
     version: 2,
     bountyVersion: 4,
+    // And the context it was generated with.
+    context: { jira: 2, github: null },
   });
 });
 

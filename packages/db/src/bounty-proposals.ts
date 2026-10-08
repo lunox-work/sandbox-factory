@@ -5,6 +5,7 @@ import type {
   BountyComplexity,
   BountySizingResult,
   CategoryMatch,
+  ContextVersions,
   ModelComplexity,
   RateCardSnapshot,
   PricedComplexity,
@@ -72,6 +73,11 @@ export interface CreateBountyProposalInput {
    * caller read it through.
    */
   readonly repoSnapshotId?: string | null;
+  /**
+   * The bounty's synced context versions it was sized with
+   * (`bounty_context`); a source absent or null had none.
+   */
+  readonly contextVersions?: ContextVersions;
 }
 
 /**
@@ -395,6 +401,8 @@ export interface StoredBountyProposal {
   readonly rubric: RubricAssessment | null;
   /** The repository snapshot the spec was drafted beside, if any. */
   readonly repoSnapshotId: string | null;
+  /** The bounty's synced context versions it was sized with. */
+  readonly contextVersions: ContextVersions;
   readonly decidedAt: string | null;
   readonly decidedBy: string | null;
   readonly decisionDeliveryPolicy: "off" | "requested" | null;
@@ -460,6 +468,10 @@ function toDto(row: BountyProposalRow, name: BountyName): StoredBountyProposal {
     step: row.step ?? null,
     rubric: row.rubric ?? null,
     repoSnapshotId: row.repoSnapshotId ?? null,
+    contextVersions: {
+      jira: row.jiraContextVersion ?? null,
+      github: row.githubContextVersion ?? null,
+    },
     decidedAt: row.decidedAt?.toISOString() ?? null,
     decidedBy: row.decidedBy,
     decisionDeliveryPolicy:
@@ -566,6 +578,8 @@ function insertValues(
     stepVersion: input.step?.stepVersion ?? null,
     rubric: input.rubric ?? null,
     repoSnapshotId: input.repoSnapshotId ?? null,
+    jiraContextVersion: input.contextVersions?.jira ?? null,
+    githubContextVersion: input.contextVersions?.github ?? null,
     amountMinor: input.amountMinor,
     currency: input.currency,
   };
@@ -1219,6 +1233,9 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
             rubric: values.rubric,
             // The draft is new, and so is what it was drafted beside.
             repoSnapshotId: values.repoSnapshotId,
+            // And the context it was sized with.
+            jiraContextVersion: values.jiraContextVersion,
+            githubContextVersion: values.githubContextVersion,
             sizedBy: "model",
             resizedBy: null,
             resizedAt: null,

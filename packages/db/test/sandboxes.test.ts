@@ -81,6 +81,8 @@ const sourceRow = (
   approvedTaskSha256: "a".repeat(64),
   approvedTask,
   proposalVersion: 1,
+  jiraContextVersion: null,
+  githubContextVersion: null,
   aliasRules: [],
   dependencyChoices: {},
   acceptanceTests: [],

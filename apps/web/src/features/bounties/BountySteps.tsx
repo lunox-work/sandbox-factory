@@ -11,6 +11,7 @@
 import type {
   BountyStagesDto,
   BountyVersionDto,
+  ContextSourceDto,
 } from "@sandbox-factory/shared";
 import { ChevronDown, ChevronRight, TriangleAlert } from "lucide-react";
 import { Fragment, type ReactNode } from "react";
@@ -31,6 +32,7 @@ import {
 import { cn } from "@/lib/utils";
 
 import { dateTime } from "../../lib/format";
+import { contextBehind } from "./BountyContext";
 
 /** The steps, in the order each is built on the one before. */
 export const STEPS = [
@@ -66,24 +68,55 @@ function driftText(step: "bounty" | "sandbox", drift: StageDrift): string {
   return `${built} ${from}; the ${before} is now at ${short(drift.current)}.`;
 }
 
+/** What a source ahead of its sync means for the overview, in a sentence. */
+function aheadText(sources: readonly ContextSourceDto[]): string {
+  const names = sources.map((source) =>
+    source === "jira" ? "Jira" : "GitHub",
+  );
+  return `${names.join(" and ")} ${names.length === 1 ? "has" : "have"} moved past ${names.length === 1 ? "its" : "their"} last sync.`;
+}
+
+/** What a step made with older context than the overview holds is, in a sentence. */
+function contextText(step: "bounty" | "sandbox"): string {
+  return `${step === "bounty" ? "Sized" : "Generated"} with older context than the overview holds.`;
+}
+
 /**
  * The step tabs, numbered and in order, each with the version it is at. An
  * approved version wears Lunox's gradient: an overview or a bounty
- * approved, a sandbox version published. A step behind the one before it wears a warning
- * instead, and its tooltip says which version it was built on.
+ * approved, a sandbox version published. A step behind the one before it,
+ * or behind the overview's context, wears a warning instead, and its
+ * tooltip says what it was made with. The overview wears one while a
+ * source it syncs from has moved past its last sync.
  */
 export function StepTriggers({
   stages,
   approved,
+  ahead = [],
 }: {
   stages: BountyStagesDto;
   /** Which steps stand at an approved version. */
   approved: Readonly<Record<Step, boolean>>;
+  /** The sources that have moved past their last sync. */
+  ahead?: readonly ContextSourceDto[];
 }) {
   const drift = stageDrift(stages);
+  const held = stages.overview.context;
   return STEPS.map(({ value, label }, index) => {
     const version = stepVersion(stages, value);
-    const behind = value === "overview" ? null : drift[value];
+    const versionBehind = value === "overview" ? null : drift[value];
+    const contextStale =
+      value === "overview"
+        ? false
+        : contextBehind(held, stages[value]?.context);
+    const warnings = [
+      versionBehind === null
+        ? null
+        : driftText(value as "bounty" | "sandbox", versionBehind),
+      contextStale ? contextText(value as "bounty" | "sandbox") : null,
+      value === "overview" && ahead.length > 0 ? aheadText(ahead) : null,
+    ].filter((text): text is string => text !== null);
+    const behind = warnings.length === 0 ? null : warnings.join(" ");
     const signed = approved[value];
     const content = (
       <span className="flex h-full items-center gap-2">
@@ -130,7 +163,15 @@ export function StepTriggers({
           className="group/step"
           // Named for the step and its version: the number is drawn, and the
           // warning's words are its tooltip's.
-          aria-label={[label, version, behind === null ? null : "(behind)"]
+          aria-label={[
+            label,
+            version,
+            behind === null
+              ? null
+              : value === "overview"
+                ? "(source ahead)"
+                : "(behind)",
+          ]
             .filter((part) => part !== null)
             .join(" ")}
           data-behind={behind === null ? undefined : true}
@@ -145,9 +186,7 @@ export function StepTriggers({
           ) : (
             <Tooltip>
               <TooltipTrigger asChild>{content}</TooltipTrigger>
-              <TooltipContent>
-                {driftText(value as "bounty" | "sandbox", behind)}
-              </TooltipContent>
+              <TooltipContent>{behind}</TooltipContent>
             </Tooltip>
           )}
         </TabsTrigger>

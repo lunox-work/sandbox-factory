@@ -8,6 +8,7 @@ import {
   type JiraBoardStore,
   type JiraBoardSummary,
   type JiraIssueStore,
+  type LatestBountyContext,
   type NewBountyProfile,
   type NewBountySpec,
   type StoredBountyProfile,
@@ -24,6 +25,7 @@ import {
 import {
   boardPricingSchema,
   specDraftSchema,
+  type JiraContextDto,
   type JiraIssueDto,
   type JiraIssuePageDto,
 } from "@sandbox-factory/shared";
@@ -35,6 +37,7 @@ import {
   expandSpec,
   pointsDelta,
   priceFor,
+  renderSourceContext,
   resolveStepSettings,
   sameSpec,
   stepUp,
@@ -135,6 +138,8 @@ export interface RunJiraClient extends BacklogPageReader {
   issueSpec(issueId: string): Promise<JiraIssueSpec>;
   /** One bounty's list fields, for an `issue` run's single bounty. */
   issue(issueId: string): Promise<JiraIssueDto>;
+  /** One issue's context, for a person's sync of it into its bounty. */
+  issueContext(issueId: string): Promise<JiraContextDto>;
 }
 
 export type RunClientResult =
@@ -172,6 +177,15 @@ export interface BountyExecutorOptions {
     organizationId: string,
     connectionId: string,
   ) => Promise<RunClientResult>;
+  /**
+   * The context a bounty holds from its sources (`heldContext`): what a
+   * person last synced from its Jira issue and its repository. Absent, no
+   * draft or size is shown any.
+   */
+  readonly contextFor?: (
+    organizationId: string,
+    bounty: StoredBounty,
+  ) => Promise<LatestBountyContext>;
   /**
    * The outline of a repository, from its current snapshot, or null when
    * it has none yet. Absent, no draft is shown one.
@@ -617,6 +631,24 @@ export class BountyExecutor {
     });
   }
 
+  /**
+   * The context a bounty holds, or none when it cannot be read: like the
+   * outline, it informs a size and is not what one stands on.
+   */
+  async #context(
+    organizationId: string,
+    bounty: StoredBounty,
+  ): Promise<LatestBountyContext> {
+    const read = this.#options.contextFor;
+    if (read === undefined) return { jira: null, github: null };
+    try {
+      return await read(organizationId, bounty);
+    } catch (error) {
+      this.#options.onBackgroundError?.("bounty_context_unavailable", error);
+      return { jira: null, github: null };
+    }
+  }
+
   /** A repository's outline, or null when there is none to read. */
   async #outline(
     organizationId: string,
@@ -1060,6 +1092,13 @@ export class BountyExecutor {
     }
     const { bounty, content, specHash, base } = read.value;
     const outline = await outlineOf(bounty);
+    // What its sources add, as synced: the draft and the size see it, and
+    // the proposal records which versions they saw.
+    const held = await this.#context(organizationId, bounty);
+    const sourceContext = renderSourceContext({
+      jira: held.jira?.content ?? null,
+      github: held.github?.content ?? null,
+    });
 
     let sizing: BountySizingResult;
     let actualModel = run.requestedModel;
@@ -1104,6 +1143,7 @@ export class BountyExecutor {
             descriptionText: content.description,
             components: content.components,
             ...(outline === null ? {} : { repositoryOutline: outline.text }),
+            ...(sourceContext === "" ? {} : { sourceContext }),
           },
           request,
         );
@@ -1128,6 +1168,7 @@ export class BountyExecutor {
           {
             summary: content.title,
             descriptionText: content.description,
+            ...(sourceContext === "" ? {} : { sourceContext }),
           },
           request,
         );
@@ -1206,6 +1247,10 @@ export class BountyExecutor {
       // What the spec was drafted beside; nothing when there is no spec.
       repoSnapshotId:
         drafted === undefined || outline === null ? null : outline.snapshotId,
+      contextVersions: {
+        jira: held.jira?.version ?? null,
+        github: held.github?.version ?? null,
+      },
       ...(drafted === undefined ? {} : { spec: drafted }),
       ...(this.#options.profilingEnabled?.() === true
         ? { profileIntent: true }

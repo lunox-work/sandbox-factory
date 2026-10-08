@@ -166,6 +166,14 @@ export const sandboxVersionSource = pgTable(
      * built on an earlier version.
      */
     proposalVersion: integer("proposal_version"),
+    /**
+     * The bounty's synced context versions (`bounty_context`) the task was
+     * taken with, one per source; null for a source that had none, and for
+     * a version taken before they were kept. The approved task holds what
+     * they said.
+     */
+    jiraContextVersion: integer("jira_context_version"),
+    githubContextVersion: integer("github_context_version"),
     /** The approved task copied at selection; survives the live proposal. */
     approvedTask: jsonb("approved_task")
       .$type<StoredApprovedTaskSnapshot>()

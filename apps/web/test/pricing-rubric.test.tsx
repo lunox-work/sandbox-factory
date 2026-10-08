@@ -13,7 +13,7 @@ import { money } from "../src/lib/format";
 import { PricingRubricBlock } from "../src/PricingRubric";
 import type { ShownSpec } from "../src/ProposalSpec";
 import type { RespecControl } from "../src/SpecChanges";
-import { render, screen, within } from "./render";
+import { render, screen, waitFor, within } from "./render";
 
 /** The worked example: three scenarios, five outcomes. */
 const spec: SpecDraft = {
@@ -548,7 +548,10 @@ test("the spec is opened whole from the Scenarios dimension, and changed from it
   );
   dialog = await screen.findByRole("dialog", { name: "Assumptions" });
   expect(dialog.textContent).toContain("Email is already configured.");
-  await user.keyboard("{Escape}");
+  // Closed by its own button rather than Escape, which Radix routes to the
+  // topmost layer and which CI on Node 24 was seen to drop.
+  await user.click(within(dialog).getByRole("button", { name: "Close" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 
   // Every scenario, from the feature; one taken out from its own view.
   await user.click(

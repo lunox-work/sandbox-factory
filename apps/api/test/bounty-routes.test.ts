@@ -25,6 +25,7 @@ import {
 } from "../src/bounties/routes.js";
 
 const stamp = "2026-10-03T00:00:00.000Z";
+const NONE = { jira: null, github: null };
 const requestId = "8f0b4a1e-9a77-4c35-9a52-3f0f5b2d3c11";
 
 function written(overrides: Partial<StoredBounty> = {}): StoredBounty {
@@ -110,6 +111,7 @@ function proposalOf(
     step: null,
     rubric: null,
     repoSnapshotId: null,
+    contextVersions: { jira: null, github: null },
     decidedAt: null,
     decidedBy: null,
     decisionDeliveryPolicy: null,
@@ -564,7 +566,12 @@ test("a bounty reads with each step's version, and the one before it each was bu
       currentVersionId: "sbv_2",
       expiresAt: null,
       sourceRepoId: null,
-      build: { versionId: "sbv_2", version: 2, bountyVersion: 1 },
+      build: {
+        versionId: "sbv_2",
+        version: 2,
+        bountyVersion: 1,
+        context: { jira: null, github: null },
+      },
     },
   });
   const version = (
@@ -593,10 +600,11 @@ test("a bounty reads with each step's version, and the one before it each was bu
   const response = await state.request("GET", "bounties/bty_7");
   assert.equal(response.status, 200);
   const body = (await response.json()) as { bounty: { stages: unknown } };
+  // With no context store, the overview holds none and nothing is behind.
   assert.deepEqual(body.bounty.stages, {
-    overview: { version: 3 },
-    bounty: { version: 2, overviewVersion: 2 },
-    sandbox: { version: 2, bountyVersion: 1 },
+    overview: { version: 3, context: NONE },
+    bounty: { version: 2, overviewVersion: 2, context: NONE },
+    sandbox: { version: 2, bountyVersion: 1, context: NONE },
   });
 
   // A proposal hashed by an older function matches no version; a bounty
@@ -611,8 +619,8 @@ test("a bounty reads with each step's version, and the one before it each was bu
     await legacy.request("GET", "bounties/bty_7")
   ).json()) as { bounty: { stages: unknown } };
   assert.deepEqual(read.bounty.stages, {
-    overview: { version: 1 },
-    bounty: { version: 0, overviewVersion: null },
+    overview: { version: 1, context: NONE },
+    bounty: { version: 0, overviewVersion: null, context: NONE },
     sandbox: null,
   });
   const bare = harness({ bounties: [written()] });
@@ -620,7 +628,7 @@ test("a bounty reads with each step's version, and the one before it each was bu
     bounty: { stages: unknown };
   };
   assert.deepEqual(none.bounty.stages, {
-    overview: { version: 1 },
+    overview: { version: 1, context: NONE },
     bounty: null,
     sandbox: null,
   });
@@ -900,7 +908,12 @@ test("an approval a published sandbox stands on is re-priced, the sandbox left a
       currentVersionId: "sbv_1",
       expiresAt: null,
       sourceRepoId: null,
-      build: { versionId: "sbv_1", version: 1, bountyVersion: 1 },
+      build: {
+        versionId: "sbv_1",
+        version: 1,
+        bountyVersion: 1,
+        context: { jira: null, github: null },
+      },
     },
   });
   const state = harness({

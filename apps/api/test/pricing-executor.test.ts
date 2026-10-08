@@ -261,6 +261,8 @@ function harness(options: {
   importFails?: boolean;
   /** What the outline read answers; absent, the executor has no reader. */
   outlineFor?: BountyExecutorOptions["outlineFor"];
+  /** What the context read answers; absent, the executor has no reader. */
+  contextFor?: BountyExecutorOptions["contextFor"];
   onBackgroundError?: BountyExecutorOptions["onBackgroundError"];
   onProposalDrafted?: BountyExecutorOptions["onProposalDrafted"];
   profilingEnabled?: boolean;
@@ -485,6 +487,8 @@ function harness(options: {
         ? Promise.reject(answer)
         : Promise.resolve(answer);
     },
+    // A run reads no context: a person syncs it.
+    issueContext: () => Promise.reject(new Error("not read by a run")),
   };
   const caller =
     options.caller ??
@@ -513,6 +517,9 @@ function harness(options: {
     ...(options.outlineFor === undefined
       ? {}
       : { outlineFor: options.outlineFor }),
+    ...(options.contextFor === undefined
+      ? {}
+      : { contextFor: options.contextFor }),
     ...(options.onBackgroundError === undefined
       ? {}
       : { onBackgroundError: options.onBackgroundError }),
@@ -817,7 +824,7 @@ test("a run drafts the spec first and stores it with the proposal", async () => 
     draft,
     origin: "draft",
     actualModel: "drafting-model",
-    promptVersion: "draft-v4",
+    promptVersion: "draft-v5",
   });
 });
 
@@ -854,6 +861,89 @@ test("a board with a source repository drafts beside its outline and records the
       "rsn_1",
     );
   }
+});
+
+test("a bounty's synced context is shown to the draft and the size, and its versions recorded", async () => {
+  const held = {
+    jira: {
+      source: "jira",
+      version: 3,
+      ref: "APP-1",
+      refId: "1",
+      revision: "r",
+      contentHash: "h",
+      syncedBy: null,
+      createdAt: "2026-10-07T00:00:00.000Z",
+      checkedAt: "2026-10-07T00:00:00.000Z",
+      content: {
+        key: "APP-1",
+        issueType: "Story",
+        status: null,
+        statusCategory: null,
+        priority: "High",
+        labels: [],
+        components: [],
+        fixVersions: [],
+        parentKey: null,
+        dueDate: null,
+        storyPoints: 8,
+        originalEstimateSeconds: null,
+        remainingEstimateSeconds: null,
+        votes: null,
+        watchers: null,
+        subtaskCount: 0,
+        links: [],
+        updated: null,
+      },
+    },
+    github: null,
+  } as const;
+  const asked: string[] = [];
+  const state = harness({
+    contextFor: (_organizationId, bounty) => {
+      asked.push(bounty.id);
+      return Promise.resolve(held as never);
+    },
+  });
+  await state.executor.execute("org_1", "brn_1");
+
+  assert.ok(asked.length > 0);
+  for (const tool of ["draft_spec", "size_bounty"]) {
+    const call = state.caller.calls.find((called) => called.tool === tool) as
+      { input: { sourceContext?: string } } | undefined;
+    assert.equal(
+      call?.input.sourceContext,
+      'Jira fields:\n{"issueType":"Story","priority":"High","storyPoints":8}',
+      tool,
+    );
+  }
+  assert.deepEqual(
+    (state.proposalInputs[0] as { contextVersions: unknown }).contextVersions,
+    { jira: 3, github: null },
+  );
+});
+
+test("a bounty with no context, or one that cannot be read, is sized without", async () => {
+  const reported: string[] = [];
+  for (const contextFor of [
+    () => Promise.resolve({ jira: null, github: null }),
+    () => Promise.reject(new Error("database down")),
+  ]) {
+    const state = harness({
+      contextFor,
+      onBackgroundError: (code) => void reported.push(code),
+    });
+    await state.executor.execute("org_1", "brn_1");
+    for (const call of state.caller.calls) {
+      assert.equal("sourceContext" in (call.input as object), false);
+    }
+    assert.deepEqual(
+      (state.proposalInputs[0] as { contextVersions: unknown }).contextVersions,
+      { jira: null, github: null },
+    );
+    assert.equal(state.finishes[0]?.status, "succeeded");
+  }
+  assert.deepEqual(reported, ["bounty_context_unavailable"]);
 });
 
 test("no repository, no snapshot yet, or no reader: drafts as before", async () => {

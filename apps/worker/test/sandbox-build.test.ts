@@ -151,6 +151,7 @@ async function versionFor(
       transformConfigSha256: "",
       approvedTaskSha256: "",
       proposalVersion: 1,
+      contextVersions: { jira: null, github: null },
       approvedTask: {
         schemaVersion: 1,
         title: "Fix the widget",

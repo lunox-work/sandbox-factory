@@ -17,6 +17,10 @@ import {
   bountyComplexitySchema,
   bountyProposalStatusSchema,
 } from "./pricing.js";
+import {
+  bountyContextResponseSchema,
+  contextVersionsDefault,
+} from "./context.js";
 import { stackDtoSchema, stackInputSchema } from "./stack.js";
 
 /**
@@ -72,6 +76,8 @@ export const bountySandboxSummarySchema = z.object({
       versionId: z.string().min(1),
       version: z.number().int().positive(),
       bountyVersion: z.number().int().positive().nullable(),
+      /** The bounty's synced context versions it was generated with. */
+      context: contextVersionsDefault,
     })
     .nullable(),
 });
@@ -123,7 +129,14 @@ export const bountySummaryDtoSchema = z.object({
  * (`stageDrift`); nothing locks one step to another.
  */
 export const bountyStagesSchema = z.object({
-  overview: z.object({ version: z.number().int().positive() }),
+  /**
+   * The overview's version, and the latest context synced from each
+   * source, which the steps after it are made with (`contextDrift`).
+   */
+  overview: z.object({
+    version: z.number().int().positive(),
+    context: contextVersionsDefault,
+  }),
   /**
    * The live proposal's version, 0 until first approved, and the overview
    * version it was sized from: null when no version says what it was
@@ -133,6 +146,8 @@ export const bountyStagesSchema = z.object({
     .object({
       version: z.number().int().nonnegative(),
       overviewVersion: z.number().int().positive().nullable(),
+      /** The context versions it was sized with. */
+      context: contextVersionsDefault,
     })
     .nullable(),
   /** The sandbox's `build`, and the bounty version it was built on. */
@@ -140,6 +155,8 @@ export const bountyStagesSchema = z.object({
     .object({
       version: z.number().int().positive(),
       bountyVersion: z.number().int().positive().nullable(),
+      /** The context versions it was generated with. */
+      context: contextVersionsDefault,
     })
     .nullable(),
 });
@@ -173,6 +190,17 @@ export const bountyListResponseSchema = z.object({
 });
 
 export const bountyResponseSchema = z.object({ bounty: bountyDtoSchema });
+
+/**
+ * A sync's answer: the bounty as it now is (a Jira sync takes the issue's
+ * text too), where each source stands, and whether the sync made a new
+ * version of the source's context.
+ */
+export const syncBountyContextResponseSchema = z.object({
+  bounty: bountyDtoSchema,
+  context: bountyContextResponseSchema,
+  changed: z.boolean(),
+});
 
 const titleSchema = z.string().trim().min(1).max(BOUNTY_LIMITS.title);
 const descriptionSchema = z.string().max(BOUNTY_LIMITS.description);
@@ -237,6 +265,9 @@ export type BountyStagesDto = z.infer<typeof bountyStagesSchema>;
 export type BountyVersionDto = z.infer<typeof bountyVersionDtoSchema>;
 export type BountyVersionList = z.infer<typeof bountyVersionListSchema>;
 export type BountyListResponse = z.infer<typeof bountyListResponseSchema>;
+export type SyncBountyContextResponse = z.infer<
+  typeof syncBountyContextResponseSchema
+>;
 export type CreateBountyInput = z.infer<typeof createBountySchema>;
 export type UpdateBountyInput = z.infer<typeof updateBountySchema>;
 export type LinkBountyJiraInput = z.infer<typeof linkBountyJiraSchema>;
