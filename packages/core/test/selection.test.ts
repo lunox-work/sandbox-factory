@@ -571,6 +571,26 @@ test("resolving with no settings returns every default", () => {
   }
 });
 
+test("a category says what it looks for with the thresholds in force", () => {
+  const [leftBehind] = resolveCategories({
+    "left-behind": { thresholds: { minAgeDays: 30 } },
+  });
+  // The board's number, not the default: the scan explains this board.
+  assert.equal(
+    leftBehind?.looksFor,
+    "Open 30+ days, never in a sprint, unassigned and quiet for 90+ days",
+  );
+  for (const resolved of resolveCategories()) {
+    // Every threshold the rule reads is named, so the sentence cannot fall
+    // out of step with a changed default unnoticed.
+    const category = CATEGORIES.find(({ id }) => id === resolved.id);
+    for (const value of Object.values(category?.defaults ?? {}))
+      if (value !== 1)
+        assert.match(resolved.looksFor, new RegExp(`\\b${value}\\b`));
+    assert.notEqual(resolved.example, "");
+  }
+});
+
 test("every category has a unique kebab-case id and integer defaults", () => {
   const seen = new Set<string>();
   for (const category of CATEGORIES) {
@@ -601,6 +621,8 @@ test("a category added to the list is classified with no other change", () => {
           () => "quiet",
         ),
       ),
+    looksFor: (t) => `Quiet for ${t["minQuietDays"]}+ days`,
+    example: "An example ticket",
   };
   const classifier = createClassifier(
     { "gone-quiet": { thresholds: { minQuietDays: 5 } } },

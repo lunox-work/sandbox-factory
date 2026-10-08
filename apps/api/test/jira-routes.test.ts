@@ -1703,6 +1703,10 @@ test("the preview returns every ticket that fits a category, with why", async ()
       id: "left-behind",
       label: "Left behind",
       why: "The team has shown it won't reach this, so outsourcing takes nothing off the roadmap.",
+      // Said in plain words with this board's numbers, for the scan.
+      looksFor:
+        "Open 180+ days, never in a sprint, unassigned and quiet for 90+ days",
+      example: "Export to CSV drops the time zone from timestamps",
       enabled: true,
       thresholds: { minAgeDays: 180, minQuietDays: 90 },
     },
