@@ -13,7 +13,7 @@ import { money } from "../src/lib/format";
 import { PricingRubricBlock } from "../src/PricingRubric";
 import type { ShownSpec } from "../src/ProposalSpec";
 import type { RespecControl } from "../src/SpecChanges";
-import { render, screen, within } from "./render";
+import { render, screen, waitFor, within } from "./render";
 
 /** The worked example: three scenarios, five outcomes. */
 const spec: SpecDraft = {
@@ -549,6 +549,9 @@ test("the spec is opened whole from the Scenarios dimension, and changed from it
   dialog = await screen.findByRole("dialog", { name: "Assumptions" });
   expect(dialog.textContent).toContain("Email is already configured.");
   await user.keyboard("{Escape}");
+  // The page stays hidden from the accessibility tree until the dialog has
+  // gone, and on a loaded runner that is after the keypress resolves.
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 
   // Every scenario, from the feature; one taken out from its own view.
   await user.click(
