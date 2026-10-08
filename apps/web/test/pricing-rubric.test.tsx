@@ -548,9 +548,9 @@ test("the spec is opened whole from the Scenarios dimension, and changed from it
   );
   dialog = await screen.findByRole("dialog", { name: "Assumptions" });
   expect(dialog.textContent).toContain("Email is already configured.");
-  await user.keyboard("{Escape}");
-  // The page stays hidden from the accessibility tree until the dialog has
-  // gone, and on a loaded runner that is after the keypress resolves.
+  // Closed by its own button rather than Escape, which Radix routes to the
+  // topmost layer and which CI on Node 24 was seen to drop.
+  await user.click(within(dialog).getByRole("button", { name: "Close" }));
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 
   // Every scenario, from the feature; one taken out from its own view.
