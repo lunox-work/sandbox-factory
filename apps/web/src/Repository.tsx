@@ -6,7 +6,7 @@
  * builders and where each stands on that snapshot, with every run there
  * has been folded into their footer. The builders are the page's reason to exist: each reads a
  * snapshot on its own and describes it for people and agents. They are
- * started here; what they wrote is read in the context viewer, and a
+ * started here, all at once; what they wrote is read in the context viewer, and a
  * run's log in the logs dialog, so the page itself stays a summary.
  *
  * Roles come from the API, which checks them again on every write; hiding
@@ -33,12 +33,14 @@ import {
   GitBranch,
   GitCommitHorizontal,
   FolderOpen,
+  Hammer,
   Lock,
   Trash2,
 } from "lucide-react";
 import {
   CONTEXT_BUILDERS,
   rankAtLeast,
+  readsGraph,
   type ContextBuilder,
 } from "sandbox-factory";
 import { useEffect, useRef, useState } from "react";
@@ -53,7 +55,7 @@ import { cn } from "@/lib/utils";
 
 import { clients } from "./data/query";
 import { BLOCK_ACTION, Block, FLUSH_LIST } from "./features/analysis/Blocks";
-import { BuilderRow } from "./features/analysis/BuilderRow";
+import { BuilderRow, needsBuild } from "./features/analysis/BuilderRow";
 import {
   ContextViewer,
   type ContextBuild,
@@ -200,8 +202,8 @@ function RepositoryView({
   const [error, setError] = useState<string | null>(null);
   /** A file or log that would not open; said where it was asked for. */
   const [openError, setOpenError] = useState<string | null>(null);
-  /** The builder whose run was just asked for, until the API answers. */
-  const [pending, setPending] = useState<ContextBuilder | null>(null);
+  /** "Build all" was asked for, until the API answers. */
+  const [building, setBuilding] = useState(false);
   const [removing, setRemoving] = useState(false);
   const [viewing, setViewing] = useState(false);
   /** The run the logs dialog is open on; null while it is closed. */
@@ -375,21 +377,37 @@ function RepositoryView({
     failed: builtArtifacts.failed.has(build.run.id),
   }));
 
-  async function build(builder: ContextBuilder) {
-    setPending(builder);
+  /*
+    What "Build all" would start. The builders that read graphify's map
+    have nothing to read while its run is out of retries, so the API skips
+    them; they are not counted here either.
+  */
+  const graphRun = builderRun("graphify");
+  const graphStuck =
+    graphRun?.status === "failed" && !needsBuild("graphify", graphRun);
+  const toBuild = CONTEXT_BUILDERS.filter(
+    (builder) =>
+      needsBuild(builder, builderRun(builder)) &&
+      !(readsGraph(builder) && graphStuck),
+  );
+
+  /**
+   * Every builder on the chosen snapshot, as one request: the API admits
+   * the set against the organization's active-run cap once, where one
+   * request a builder would be refused partway.
+   */
+  async function buildAll() {
+    setBuilding(true);
     setError(null);
     try {
-      await client.enqueue(organizationId, repo.id, {
-        tool: builder,
-        snapshotId,
-      });
-      // Read again before the button is given back, so the row says the run
-      // is queued rather than "Not built" for a round trip.
+      await client.buildAll(organizationId, repo.id, { snapshotId });
+      // Read again before the button is given back, so the rows say their
+      // runs are queued rather than "Not built" for a round trip.
       await resources.refresh();
     } catch (cause) {
-      setError(errorMessage(cause, "Could not start the build. Try again."));
+      setError(errorMessage(cause, "Could not start the builds. Try again."));
     } finally {
-      setPending(null);
+      setBuilding(false);
     }
   }
 
@@ -742,21 +760,37 @@ function RepositoryView({
         title="Context builders"
         description="Each reads the chosen snapshot and describes it for people and agents."
         aside={
-          <Button
-            variant="secondary"
-            size="sm"
-            className={BLOCK_ACTION}
-            disabled={builds.length === 0}
-            title={
-              builds.length === 0
-                ? "Nothing is built on this snapshot yet."
-                : undefined
-            }
-            onClick={() => setViewing(true)}
-          >
-            <FolderOpen />
-            View files
-          </Button>
+          // One action at a time: "Build all" while a builder is left to
+          // start, then "View files". A member, who starts nothing, views.
+          manageable && toBuild.length > 0 ? (
+            <Button
+              size="sm"
+              className="h-7 gap-1.5 rounded-[6px] px-2.5 text-xs has-[>svg]:px-2.5 [&_svg]:size-3.5"
+              disabled={building || snapshotId === ""}
+              onClick={() => {
+                void buildAll();
+              }}
+            >
+              <Hammer />
+              Build all
+            </Button>
+          ) : (
+            <Button
+              variant="secondary"
+              size="sm"
+              className={BLOCK_ACTION}
+              disabled={builds.length === 0}
+              title={
+                builds.length === 0
+                  ? "Nothing is built on this snapshot yet."
+                  : undefined
+              }
+              onClick={() => setViewing(true)}
+            >
+              <FolderOpen />
+              View files
+            </Button>
+          )
         }
       >
         <div className={FLUSH_LIST}>
@@ -765,13 +799,8 @@ function RepositoryView({
               key={builder}
               builder={builder}
               run={builderRun(builder)}
-              manageable={manageable}
-              pending={pending === builder}
-              disabled={pending !== null || snapshotId === ""}
+              pending={building}
               figures={figuresFor(builder)}
-              onBuild={() => {
-                void build(builder);
-              }}
               onViewLog={
                 manageable
                   ? () => setLogsOn(builderRun(builder)?.id ?? null)

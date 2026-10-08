@@ -6,11 +6,11 @@
  * Every row lays out on the same three columns, so names, figures and
  * statuses line up down the list whatever each one holds. The status is
  * read off the run the page found; the row decides nothing about runs.
- * "Build" shows until a run exists and again after a failure with retries
- * left; "Rebuild" shows beside a finished run an older version of the
- * builder made, whose files the current one would write differently.
- * What a build wrote opens with the rest from the block's "View".
- * A member who cannot start runs gets the status alone.
+ * Runs are started for every builder at once, from the block's "Build
+ * all"; a row says when its run is one an older version of the builder
+ * made, whose files the current one would write differently, and so one
+ * "Build all" would build again. What a build wrote opens with the rest
+ * from the block's "View".
  */
 
 import {
@@ -22,7 +22,6 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
-import { Button } from "@/components/ui/button";
 import type { AnalysisRunDto } from "@sandbox-factory/shared";
 import { toolVersionOf, type ContextBuilder } from "sandbox-factory";
 
@@ -65,43 +64,57 @@ export const BUILDER_DETAILS: Record<
 const BUILDER_COLUMNS =
   "sm:grid sm:grid-cols-[minmax(0,1fr)_18rem_7.5rem] sm:items-center sm:gap-x-6";
 
+/** A finished run an older version of its builder made. */
+function isOutdated(builder: ContextBuilder, run: AnalysisRunDto | undefined) {
+  return (
+    run !== undefined &&
+    (run.status === "succeeded" || isExhausted(run)) &&
+    run.toolVersion !== toolVersionOf(builder)
+  );
+}
+
+function isExhausted(run: AnalysisRunDto | undefined) {
+  return run?.status === "failed" && run.attempt >= run.maxAttempts;
+}
+
+/**
+ * Whether "Build all" would start this builder: it has no run, a failed one
+ * with retries left, or one an older version of it made. Runs are kept per
+ * builder version, so a build asked for then is a new run; the old one's
+ * files stay on view until it succeeds.
+ */
+export function needsBuild(
+  builder: ContextBuilder,
+  run: AnalysisRunDto | undefined,
+) {
+  return (
+    run === undefined ||
+    (run.status === "failed" && !isExhausted(run)) ||
+    isOutdated(builder, run)
+  );
+}
+
 export function BuilderRow({
   builder,
   run,
-  manageable,
   pending,
-  disabled,
   figures,
-  onBuild,
   onViewLog,
 }: {
   builder: ContextBuilder;
   /** This builder's run on the chosen snapshot, when there is one. */
   run: AnalysisRunDto | undefined;
-  manageable: boolean;
-  /** A build was just asked for and the API has not answered yet. */
+  /** "Build all" was just asked for and the API has not answered yet. */
   pending: boolean;
-  /** No snapshot to build on. */
-  disabled: boolean;
   /** Up to three figures from the build's summary, once they are known. */
   figures?: readonly { label: string; value: number }[] | undefined;
-  onBuild: () => void;
   /** Opens this builder's run log; owners and admins only. */
   onViewLog?: (() => void) | undefined;
 }) {
   const name = builderNames[builder];
   const { description, icon: Icon } = BUILDER_DETAILS[builder];
   const failed = run?.status === "failed";
-  const exhausted = failed && run.attempt >= run.maxAttempts;
-  const canBuild =
-    manageable && !pending && (run === undefined || (failed && !exhausted));
-  // Runs are kept per builder version, so a build asked for now is a new
-  // run; the old one's files stay on view until it succeeds.
-  const outdated =
-    run !== undefined &&
-    (run.status === "succeeded" || exhausted) &&
-    run.toolVersion !== toolVersionOf(builder);
-  const canRebuild = manageable && !pending && outdated;
+  const exhausted = isExhausted(run);
   return (
     <section
       aria-label={`${name} builder`}
@@ -133,20 +146,13 @@ export function BuilderRow({
       </dl>
       <div className="flex items-center justify-between gap-2 max-sm:pl-[1.625rem] sm:flex-col sm:items-end sm:justify-center sm:gap-1">
         <Status run={run} pending={pending} />
-        {canBuild ? (
-          <Button size="sm" disabled={disabled} onClick={onBuild}>
-            Build
-          </Button>
-        ) : canRebuild ? (
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={disabled}
+        {run !== undefined && isOutdated(builder, run) ? (
+          <span
+            className="text-muted-foreground text-xs"
             title={`Built by ${run.toolVersion}; the builder is now ${toolVersionOf(builder)}.`}
-            onClick={onBuild}
           >
-            Rebuild
-          </Button>
+            Outdated
+          </span>
         ) : run?.status === "succeeded" && run.finishedAt !== null ? (
           <time
             dateTime={run.finishedAt}
