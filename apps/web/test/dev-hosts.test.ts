@@ -91,7 +91,14 @@ test("the optional dev origin preserves deep links and does not redirect its own
       "/",
       "<html><head></head></html>",
     );
-    const script = /<script>([\s\S]*?)<\/script>/.exec(html)?.[1];
+    // The one inline script the plugin injects, read by position rather
+    // than a regular expression: this extracts, it does not filter.
+    const open = html.indexOf("<script>");
+    const close = html.indexOf("</script>", open);
+    const script =
+      open === -1 || close === -1
+        ? undefined
+        : html.slice(open + "<script>".length, close);
     expect(script).toBeDefined();
     const replace = vi.fn();
     const location = {
