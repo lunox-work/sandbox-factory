@@ -98,6 +98,22 @@ test("bounty transport retains conflicts and cancels without dispatch", async ()
   const malformed = new BountyRunClient(options);
   await assert.rejects(malformed.run("owner", "1"));
   await assert.rejects(malformed.runs("owner", "1"));
+  // A board run is started by name, and an answer with no run is refused.
+  const started: { url: string; init: RequestInit | undefined }[] = [];
+  const starter = new BountyRunClient({
+    baseUrl: "",
+    fetch: (async (input, init) => {
+      started.push({ url: String(input), init });
+      return Response.json({});
+    }) as typeof fetch,
+  });
+  await assert.rejects(starter.start("owner /", "board /", "req_1"));
+  assert.equal(
+    started[0]?.url,
+    "/api/v1/orgs/owner%20%2F/jira/boards/board%20%2F/runs",
+  );
+  assert.equal(started[0]?.init?.method, "POST");
+  assert.equal(started[0]?.init?.body, JSON.stringify({ requestId: "req_1" }));
   const conflicts = new BountyClient({
     baseUrl: "",
     fetch: (async () =>
