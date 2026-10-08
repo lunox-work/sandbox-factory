@@ -39,6 +39,7 @@ function written(overrides: Partial<StoredBounty> = {}): StoredBounty {
     origin: "manual",
     repoId: null,
     stack: [],
+    categories: [],
     createdBy: "user_1",
     revision: 1,
     version: 1,
@@ -422,6 +423,8 @@ test("the caller's bounties list across their own organizations only", async () 
           listedOf(written()),
         ]);
       },
+      categoryCounts: () =>
+        Promise.resolve({ total: 0, uncategorized: 0, categories: {} }),
     },
   });
 
@@ -454,6 +457,83 @@ test("the caller's bounties list across their own organizations only", async () 
     (await app.request("/api/v1/me/bounties?cursor=nope")).status,
     400,
   );
+});
+
+test("the caller's bounties narrow to a category, to none, and to a board", async () => {
+  const pages: unknown[] = [];
+  const counted: unknown[] = [];
+  const app = new Hono<{ Variables: AuthVariables }>();
+  app.use("*", async (c, next) => {
+    c.set("user", { id: "user_1" } as never);
+    await next();
+  });
+  mountCallerBountyRoutes(app, {
+    organizationsOf: () => Promise.resolve(["org_1"]),
+    bounties: {
+      listAcross: (_organizationIds, page) => {
+        pages.push(page);
+        return Promise.resolve([
+          listedOf(
+            imported({
+              categories: [
+                {
+                  id: "left-behind",
+                  label: "Left behind",
+                  reason: "Open 412 days",
+                },
+              ],
+            }),
+          ),
+        ]);
+      },
+      categoryCounts: (organizationIds, filter) => {
+        counted.push({ organizationIds, ...filter });
+        return Promise.resolve({
+          total: 3,
+          uncategorized: 1,
+          categories: { "left-behind": 2 },
+        });
+      },
+    },
+  });
+
+  const listed = (await (
+    await app.request("/api/v1/me/bounties?category=left-behind&board=jrb_1")
+  ).json()) as { bounties: { categories: { id: string }[] }[] };
+  assert.deepEqual(pages.at(-1), {
+    limit: 25,
+    category: "left-behind",
+    boardId: "jrb_1",
+  });
+  assert.deepEqual(
+    listed.bounties[0]?.categories.map(({ id }) => id),
+    ["left-behind"],
+  );
+
+  await app.request("/api/v1/me/bounties?category=uncategorized");
+  assert.deepEqual(pages.at(-1), { limit: 25, uncategorized: true });
+  assert.equal(
+    (await app.request("/api/v1/me/bounties?category=Not%20One")).status,
+    400,
+  );
+
+  const counts = (await (
+    await app.request("/api/v1/me/bounty-categories?board=jrb_1")
+  ).json()) as {
+    total: number;
+    uncategorized: number;
+    categories: { id: string; count: number }[];
+  };
+  assert.deepEqual(counted, [{ organizationIds: ["org_1"], boardId: "jrb_1" }]);
+  assert.equal(counts.total, 3);
+  assert.equal(counts.uncategorized, 1);
+  // Every category, in the registry's order, with a zero for the empty.
+  assert.equal(counts.categories.length, 6);
+  assert.deepEqual(counts.categories.map(({ id, count }) => [id, count])[0], [
+    "left-behind",
+    2,
+  ]);
+  assert.ok(counts.categories.slice(1).every(({ count }) => count === 0));
 });
 
 test("a listed Jira bounty links to its issue", async () => {

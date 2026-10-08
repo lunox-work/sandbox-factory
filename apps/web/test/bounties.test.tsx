@@ -217,13 +217,7 @@ function Shell(props: Omit<ComponentProps<typeof Bounties>, "onCreate">) {
       onOpenBounties={() => pushLocation(BOUNTIES_PATH)}
       onOpenSettings={(organization, tab) =>
         pushLocation(
-          pathForScreen(
-            "org-settings",
-            organization.slug,
-            undefined,
-            undefined,
-            tab,
-          ),
+          pathForScreen("org-settings", organization.slug, undefined, tab),
         )
       }
     />
@@ -330,6 +324,230 @@ test("the workspace's bounties list from any source, with their proposals", asyn
   expect(within(rows[1]!).getByText("From Jira")).toBeDefined();
   expect(within(rows[1]!).getByText("Approved")).toBeDefined();
   expect(within(rows[1]!).getByText(/105\.00/)).toBeDefined();
+});
+
+const leftBehind = {
+  id: "left-behind",
+  label: "Left behind",
+  reason: "Open 412 days, never in a sprint, unassigned",
+};
+
+/** How many bounties each category holds, as the API answers. */
+function categoryCounts(counts: Record<string, number> = {}) {
+  const six = [
+    ["left-behind", "Left behind"],
+    ["always-next-sprint", "Always next sprint"],
+    ["quietly-wanted", "Quietly wanted"],
+    ["holding-others-up", "Holding others up"],
+    ["paper-cuts", "Paper cuts"],
+    ["deadline-exposed", "Deadline exposed"],
+  ];
+  return {
+    total: 3,
+    uncategorized: 1,
+    categories: six.map(([id, label]) => ({
+      id,
+      label,
+      why: `Why ${label}.`,
+      count: counts[id!] ?? 0,
+    })),
+  };
+}
+
+test("the list filters by category, with how many each holds, and says why", async () => {
+  const { fetchMock, calls } = server(
+    [
+      [
+        "GET",
+        "/me/bounty-categories",
+        () => json(categoryCounts({ "left-behind": 2 })),
+      ],
+    ],
+    [summary({ categories: [leftBehind] })],
+  );
+  vi.stubGlobal("fetch", fetchMock);
+  window.history.replaceState(null, "", BOUNTIES_PATH);
+  render(<Bounties {...inAcme("member")} />);
+
+  const list = await screen.findByTestId("bounty-list");
+  // The card leads with why its board's scan put it there.
+  expect(within(list).getByTestId("category-line").textContent).toMatch(
+    /Left behind · Open 412 days/,
+  );
+  const filter = screen.getByRole("navigation", {
+    name: "Bounties by category",
+  });
+  const all = await within(filter).findByRole("button", { name: /All\s*3/ });
+  expect(all.getAttribute("aria-pressed")).toBe("true");
+  // A category with none is there, but not somewhere to go.
+  expect(
+    (
+      within(filter).getByRole("button", {
+        name: /Paper cuts/,
+      }) as HTMLButtonElement
+    ).disabled,
+  ).toBe(true);
+  expect(
+    within(filter).getByRole("button", { name: /Unassigned\s*1/ }),
+  ).toBeDefined();
+
+  await userEvent.click(
+    within(filter).getByRole("button", { name: /Left behind\s*2/ }),
+  );
+  expect(window.location.search).toBe("?category=left-behind");
+  await waitFor(() =>
+    expect(
+      calls.some(({ url }) =>
+        url.includes("/me/bounties?limit=50&category=left-behind"),
+      ),
+    ).toBe(true),
+  );
+  expect(screen.getByTestId("category-why").textContent).toBe(
+    "Left behind. Why Left behind.",
+  );
+
+  // Unassigned is the bounties in no category.
+  await userEvent.click(
+    within(filter).getByRole("button", { name: /Unassigned/ }),
+  );
+  expect(window.location.search).toBe("?category=uncategorized");
+  // Pressed again, the filter is let go.
+  await userEvent.click(
+    within(filter).getByRole("button", { name: /Unassigned/ }),
+  );
+  expect(window.location.search).toBe("");
+});
+
+test("a board's bounties: named, rescanned, and an issue found on it added", async () => {
+  const imports: unknown[] = [];
+  const { fetchMock, calls } = server(
+    [
+      [
+        "GET",
+        "/me/bounty-categories",
+        () => json(categoryCounts({ "left-behind": 1 })),
+      ],
+      [
+        "GET",
+        "/jira/boards/jrb_1/search",
+        () =>
+          json({
+            issues: [
+              {
+                id: "10007",
+                key: "APP-7",
+                summary: "Add login",
+                status: "To Do",
+                issueType: "Story",
+                subtaskCount: 0,
+                bountyId: null,
+              },
+              {
+                id: "10001",
+                key: "APP-1",
+                summary: "Export to CSV",
+                status: "To Do",
+                issueType: "Story",
+                subtaskCount: 0,
+                bountyId: "bty_1",
+              },
+            ],
+          }),
+      ],
+      [
+        "POST",
+        "/jira/boards/jrb_1/import",
+        (body) => {
+          imports.push(body);
+          return json(
+            body !== undefined &&
+              (body as { issueId?: string }).issueId !== undefined
+              ? { created: 1, refreshed: 0, failed: 0, bountyId: "bty_7" }
+              : { created: 2, refreshed: 1, failed: 0 },
+          );
+        },
+      ],
+      [
+        "GET",
+        "/jira/boards",
+        () =>
+          json({
+            boards: [
+              {
+                id: "jrb_1",
+                connectionId: "jrc_1",
+                externalId: "42",
+                name: "Delivery",
+                boardType: "scrum",
+                projectKey: "APP",
+                selection: {},
+                createdAt: stamp,
+              },
+            ],
+          }),
+      ],
+    ],
+    [fromJira],
+  );
+  vi.stubGlobal("fetch", fetchMock);
+  // Where an old link to the board's own page now leads.
+  window.history.replaceState(
+    null,
+    "",
+    bountiesUrl(null, { board: { workspace: "acme", boardId: "jrb_1" } }),
+  );
+  render(<Bounties {...inAcme("member")} />);
+
+  const scope = await screen.findByTestId("board-scope");
+  expect(await within(scope).findByText("Delivery")).toBeDefined();
+  await waitFor(() =>
+    expect(
+      calls.some(({ url }) =>
+        url.includes("/me/bounties?limit=50&board=jrb_1"),
+      ),
+    ).toBe(true),
+  );
+  expect(
+    calls.some(({ url }) => url.includes("/me/bounty-categories?board=jrb_1")),
+  ).toBe(true);
+
+  // Any member may import the scan again: it sizes nothing.
+  await userEvent.click(within(scope).getByRole("button", { name: /Rescan/ }));
+  expect(
+    await within(scope).findByText("2 bounties added, 1 bounty refreshed."),
+  ).toBeDefined();
+  expect(imports[0]).toEqual({});
+
+  // An issue already a bounty opens it; one that is not is added, then opened.
+  await userEvent.type(
+    within(scope).getByRole("combobox", {
+      name: "Find an issue on this board to add",
+    }),
+    "login",
+  );
+  const results = await screen.findByTestId("board-issue-results");
+  expect(await within(results).findByText("Open")).toBeDefined();
+  await userEvent.click(within(results).getByText("Add login"));
+  await waitFor(() => expect(imports[1]).toEqual({ issueId: "10007" }));
+  await waitFor(() =>
+    expect(window.location.search).toBe("?board=acme/jrb_1&peek=acme/bty_7"),
+  );
+
+  // Cleared, the list is every board's again; the open bounty stays open.
+  await userEvent.click(
+    within(scope).getByRole("button", { name: "Show every board's bounties" }),
+  );
+  expect(window.location.search).toBe("?peek=acme/bty_7");
+  expect(screen.queryByTestId("board-scope")).toBeNull();
+});
+
+test("a narrowed list with nothing in it says so, not that there are no bounties", async () => {
+  vi.stubGlobal("fetch", server([], []).fetchMock);
+  window.history.replaceState(null, "", `${BOUNTIES_PATH}?category=paper-cuts`);
+  render(<Bounties {...inAcme("member")} />);
+  expect(
+    await screen.findByText(/No bounties here\. Choose another category/),
+  ).toBeDefined();
 });
 
 test("each bounty is a card linking its own page, and a click opens it over the list", async () => {
@@ -1313,9 +1531,8 @@ test("an admin proposes a bounty from inside it, follows its sizing, and lands o
   const urls = state.calls.map(({ url }) => url);
   expect(urls.some((url) => url.endsWith("/proposals/bpr_9"))).toBe(true);
   expect(urls.some((url) => url.includes("/proposals?"))).toBe(false);
-  // No board: no board runs, and no live titles from Jira.
+  // No board: no board runs.
   expect(urls.some((url) => url.includes("/jira/boards/"))).toBe(false);
-  expect(urls.some((url) => url.includes("/proposal-titles"))).toBe(false);
 
   // The bounty's text is a tab of its page already, so the proposal has no
   // Spec tab to say it again; and there is no Jira to link. Its price and
@@ -2023,7 +2240,11 @@ test("an address that names no page is not found, not home", () => {
   expect(screenForPath("/o/acme/settings/")).toBe("org-settings");
   expect(screenForPath("/o/acme/jira")).toBe("org-settings");
   expect(screenForPath("/o/acme/jira/site_1")).toBe("org-settings");
-  expect(screenForPath("/o/acme/jira/site_1/42")).toBe("org-jira-board");
+  // A board's old page shows the bounties while its address is rewritten.
+  expect(screenForPath("/o/acme/jira/site_1/42")).toBe("bounties");
+  expect(canonicalUrl("/o/acme/jira/site_1/jrb_42", "")).toBe(
+    "/bounties?board=acme/jrb_42",
+  );
   expect(screenForPath("/o/acme/repositories/repo_1")).toBe("org-repository");
   expect(pathForScreen("not-found")).toBe("/");
 });
@@ -2128,7 +2349,7 @@ test("a bounty is addressed the same in the panel and on its own page", () => {
   expect(pathForScreen("bounty")).toBe("/bounties");
   expect(canonicalUrl("/bounties/acme/bty_1", "")).toBeUndefined();
 
-  const trail = trailFor("bounty", undefined, undefined, "Export to CSV");
+  const trail = trailFor("bounty", undefined, "Export to CSV");
   expect(trail.map(({ label }) => label)).toEqual([
     "Home",
     "Bounties",
@@ -2136,16 +2357,10 @@ test("a bounty is addressed the same in the panel and on its own page", () => {
   ]);
   expect(trail[1]?.screen).toBe("bounties");
   // Then the workspace it is in, once known, leading to its page.
-  const inWorkspace = trailFor(
-    "bounty",
-    undefined,
-    undefined,
-    "Export to CSV",
-    {
-      name: "Personal",
-      slug: "lovelace-ada",
-    },
-  );
+  const inWorkspace = trailFor("bounty", undefined, "Export to CSV", {
+    name: "Personal",
+    slug: "lovelace-ada",
+  });
   expect(inWorkspace.map(({ label }) => label)).toEqual([
     "Home",
     "Bounties",

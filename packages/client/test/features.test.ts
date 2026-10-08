@@ -183,77 +183,6 @@ test("pricing detail and revision envelopes fail explicitly when malformed", asy
   );
 });
 
-test("title streams deliver lines incrementally and release on abort", async () => {
-  const controller = new AbortController();
-  const lines: unknown[] = [];
-  const encoder = new TextEncoder();
-  const client = new PricingClient({
-    baseUrl: "",
-    fetch: (async () =>
-      new Response(
-        new ReadableStream({
-          start(stream) {
-            stream.enqueue(
-              encoder.encode('{"id":"one"}\ninvalid\n \n{"id":"two"}'),
-            );
-            stream.close();
-          },
-        }),
-      )) as typeof fetch,
-  });
-  await client.titles(
-    "owner /",
-    "board /",
-    ["one /"],
-    (value) => lines.push(value),
-    controller.signal,
-  );
-  assert.deepEqual(lines, [{ id: "one" }, { id: "two" }]);
-  const failed = new PricingClient({
-    baseUrl: "",
-    fetch: (async () =>
-      Response.json(
-        { error: "Expired", code: "auth" },
-        { status: 401 },
-      )) as typeof fetch,
-  });
-  await assert.rejects(
-    failed.titles("o", "b", [], () => {}, controller.signal),
-    (error: unknown) => error instanceof ApiError && error.isUnauthorized,
-  );
-  const empty = new PricingClient({
-    baseUrl: "",
-    fetch: (async () => new Response(null)) as typeof fetch,
-  });
-  await empty.titles("o", "b", [], () => {}, controller.signal);
-  let cancelled = false;
-  const pending = new PricingClient({
-    baseUrl: "",
-    fetch: (async () =>
-      new Response(
-        new ReadableStream({
-          start(stream) {
-            stream.enqueue(encoder.encode('{"id":"one"}\n'));
-          },
-          cancel() {
-            cancelled = true;
-          },
-        }),
-      )) as typeof fetch,
-  });
-  await assert.rejects(
-    pending.titles(
-      "o",
-      "b",
-      [],
-      () => controller.abort(new Error("stopped")),
-      controller.signal,
-    ),
-    /stopped/,
-  );
-  assert.equal(cancelled, true);
-});
-
 test("GitHub management validates installation and write envelopes", async () => {
   const client = new GithubManagementClient(options);
   await assert.rejects(client.available("owner"));
@@ -312,21 +241,4 @@ test("Jira writes and detail reads validate their envelopes", async () => {
   });
   assert.equal(await sizing.bountySizing("o /", "b /"), null);
   assert.equal(requested[0], "/api/v1/orgs/o%20%2F/bounties/b%20%2F/sizing");
-});
-
-test("a stream refused with a proxy's HTML page is an ApiError, not a SyntaxError", async () => {
-  const client = new PricingClient({
-    baseUrl: "",
-    fetch: (async () =>
-      new Response("<html>502 Bad Gateway</html>", {
-        status: 502,
-      })) as typeof fetch,
-  });
-  await assert.rejects(
-    client.titles("o", "b", [], () => {}, new AbortController().signal),
-    (error: unknown) =>
-      error instanceof ApiError &&
-      error.status === 502 &&
-      /HTTP 502/.test(error.message),
-  );
 });

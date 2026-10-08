@@ -7,6 +7,7 @@
 import type {
   BountyComplexity,
   BountyContent,
+  CategoryMatch,
   ContextVersions,
   BountyOrigin,
   SandboxStatus,
@@ -58,6 +59,11 @@ export interface StoredBounty extends BountyContent {
   readonly repoId: string | null;
   /** What the bounty adds to its repository's detected stack. */
   readonly stack: readonly string[];
+  /**
+   * The categories a board's backlog scan found it in; empty for one no
+   * scan has categorized.
+   */
+  readonly categories: readonly CategoryMatch[];
   readonly createdBy: string | null;
   readonly revision: number;
   /** The overview's version: moved by each change to its title or text. */
@@ -175,13 +181,10 @@ export interface BountyStore {
     | { readonly ok: false; readonly reason: "repo-not-found" }
   >;
   get(organizationId: string, bountyId: string): Promise<StoredBounty | null>;
-  /** Newest first, a page at a time. */
+  /** Newest first, a page at a time, narrowed by `options`' filters. */
   list(
     organizationId: string,
-    options?: {
-      cursor?: { readonly createdAt: string; readonly id: string };
-      limit?: number;
-    },
+    options?: BountyListOptions,
   ): Promise<ListedBounty[]>;
   /**
    * The same list across several organizations at once, interleaved by age:
@@ -190,8 +193,28 @@ export interface BountyStore {
    */
   listAcross(
     organizationIds: readonly string[],
-    options?: Parameters<BountyStore["list"]>[1],
+    options?: BountyListOptions,
   ): Promise<ListedBounty[]>;
+  /**
+   * How many bounties each category holds across the organizations named,
+   * narrowed to one board's when `boardId` is given: the counts the list's
+   * filter shows. A bounty in two categories counts in both, so they can
+   * sum past `total`; `uncategorized` is the bounties in none.
+   */
+  categoryCounts(
+    organizationIds: readonly string[],
+    filter?: Pick<BountyListOptions, "boardId">,
+  ): Promise<BountyCategoryCounts>;
+  /**
+   * Records the categories a scan found the bounty in, in place of those it
+   * had. Not a change to the overview, so neither its version nor its
+   * revision moves. False when the bounty is not the organization's.
+   */
+  categorize(
+    organizationId: string,
+    bountyId: string,
+    categories: readonly CategoryMatch[],
+  ): Promise<boolean>;
   /**
    * A change, against the revision the editor saw. A change to the title
    * or the description is a new version of the overview, by `editedBy`.
@@ -244,6 +267,25 @@ export interface BountyStore {
     bountyId: string,
     content: BountyContent,
   ): Promise<boolean>;
+}
+
+/** What a bounty list may be narrowed to, and which page of it. */
+export interface BountyListOptions {
+  readonly cursor?: { readonly createdAt: string; readonly id: string };
+  readonly limit?: number;
+  /** Only bounties a scan put in this category. */
+  readonly category?: string;
+  /** Only bounties in no category at all. */
+  readonly uncategorized?: boolean;
+  /** Only bounties imported from, or linked to, an issue on this board. */
+  readonly boardId?: string;
+}
+
+export interface BountyCategoryCounts {
+  readonly total: number;
+  readonly uncategorized: number;
+  /** By category id; a category with none is absent. */
+  readonly categories: Readonly<Record<string, number>>;
 }
 
 /** The link's columns, flat: a left join that misses leaves them all null. */
@@ -398,6 +440,7 @@ function toBounty(
     origin: row.origin,
     repoId: row.repoId,
     stack: row.stack,
+    categories: row.categories,
     createdBy: row.createdBy,
     revision: row.revision,
     version: row.version,
@@ -586,7 +629,7 @@ async function readBounty(
 async function listBounties(
   db: Database,
   owner: SQL,
-  options: Parameters<BountyStore["list"]>[1] = {},
+  options: BountyListOptions = {},
 ): Promise<ListedBounty[]> {
   const limit = Math.min(Math.max(options.limit ?? 25, 1), 50);
   const rows = (await db
@@ -597,6 +640,7 @@ async function listBounties(
       origin: bounty.origin,
       repoId: bounty.repoId,
       stack: bounty.stack,
+      categories: bounty.categories,
       revision: bounty.revision,
       version: bounty.version,
       approvedVersion: bounty.approvedVersion,
@@ -637,6 +681,7 @@ async function listBounties(
     .where(
       and(
         owner,
+        ...listFilters(options),
         options.cursor === undefined
           ? undefined
           : sql`(${createdMs}, ${bounty.id}) < (${options.cursor.createdAt}::timestamptz, ${options.cursor.id})`,
@@ -645,6 +690,27 @@ async function listBounties(
     .orderBy(desc(createdMs), desc(bounty.id))
     .limit(limit)) as ListedRow[];
   return rows.map(toListed);
+}
+
+/**
+ * The conditions a list's filters add. The board's is on the joined Jira
+ * link; a category's is jsonb containment, which matches an element with
+ * that id whatever else it says.
+ */
+export function listFilters(options: BountyListOptions): SQL[] {
+  const filters: SQL[] = [];
+  if (options.boardId !== undefined) {
+    filters.push(eq(jiraIssue.boardId, options.boardId));
+  }
+  if (options.category !== undefined) {
+    filters.push(
+      sql`${bounty.categories} @> ${JSON.stringify([{ id: options.category }])}::jsonb`,
+    );
+  }
+  if (options.uncategorized === true) {
+    filters.push(sql`${bounty.categories} = '[]'::jsonb`);
+  }
+  return filters;
 }
 
 /**
@@ -747,6 +813,58 @@ export function createBountyStore(db: Database): BountyStore {
             inArray(bounty.organizationId, [...organizationIds]),
             options,
           ),
+
+    async categoryCounts(organizationIds, filter = {}) {
+      if (organizationIds.length === 0) {
+        return { total: 0, uncategorized: 0, categories: {} };
+      }
+      const where = and(
+        inArray(bounty.organizationId, [...organizationIds]),
+        ...listFilters(filter),
+      );
+      const [totals] = (await db
+        .select({
+          total: sql<number>`count(*)::int`,
+          uncategorized: sql<number>`count(*) filter (where ${bounty.categories} = '[]'::jsonb)::int`,
+        })
+        .from(bounty)
+        .leftJoin(jiraIssue, eq(jiraIssue.bountyId, bounty.id))
+        .where(where)) as { total: number; uncategorized: number }[];
+      // One row per category a bounty is in, so one in two counts in both.
+      const matched = sql`jsonb_array_elements(${bounty.categories}) ->> 'id'`;
+      const rows = (await db
+        .select({
+          id: sql<string>`${matched}`,
+          count: sql<number>`count(*)::int`,
+        })
+        .from(bounty)
+        .leftJoin(jiraIssue, eq(jiraIssue.bountyId, bounty.id))
+        .where(where)
+        .groupBy(matched)) as { id: string | null; count: number }[];
+      const categories: Record<string, number> = {};
+      for (const row of rows) {
+        if (row.id !== null) categories[row.id] = row.count;
+      }
+      return {
+        total: totals?.total ?? 0,
+        uncategorized: totals?.uncategorized ?? 0,
+        categories,
+      };
+    },
+
+    async categorize(organizationId, bountyId, categories) {
+      const rows = await db
+        .update(bounty)
+        .set({ categories: categories.map((match) => ({ ...match })) })
+        .where(
+          and(
+            eq(bounty.organizationId, organizationId),
+            eq(bounty.id, bountyId),
+          ),
+        )
+        .returning({ id: bounty.id });
+      return rows.length > 0;
+    },
 
     async update(
       organizationId,
@@ -945,6 +1063,7 @@ type ListedRow = Pick<
   | "origin"
   | "repoId"
   | "stack"
+  | "categories"
   | "revision"
   | "version"
   | "approvedVersion"
@@ -971,6 +1090,7 @@ function toListed(row: ListedRow): ListedBounty {
     origin: row.origin,
     repoId: row.repoId,
     stack: row.stack,
+    categories: row.categories,
     revision: row.revision,
     version: row.version,
     approval: toApproval(row),

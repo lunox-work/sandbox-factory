@@ -235,18 +235,6 @@ export interface BountyProposalStore {
     organizationId: string,
     bountyId: string,
   ): Promise<string | null>;
-  /**
-   * The Jira issue behind each of these proposals' bounties, for reading its
-   * live title. Only proposals of the owner whose bounty came from this
-   * board are in the map; any other id is simply absent.
-   */
-  issuesForProposals(
-    organizationId: string,
-    boardId: string,
-    proposalIds: readonly string[],
-  ): Promise<
-    Map<string, { readonly jiraIssueId: string; readonly externalId: string }>
-  >;
   approve(
     organizationId: string,
     proposalId: string,
@@ -900,31 +888,6 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
           ),
         );
       return rows[0]?.id ?? null;
-    },
-
-    async issuesForProposals(organizationId, boardId, proposalIds) {
-      if (proposalIds.length === 0) return new Map();
-      const rows = await db
-        .select({
-          proposalId: bountyProposal.id,
-          jiraIssueId: jiraIssue.id,
-          externalId: jiraIssue.externalId,
-        })
-        .from(bountyProposal)
-        .innerJoin(jiraIssue, eq(jiraIssue.bountyId, bountyProposal.bountyId))
-        .where(
-          and(
-            eq(bountyProposal.organizationId, organizationId),
-            eq(jiraIssue.boardId, boardId),
-            inArray(bountyProposal.id, [...proposalIds]),
-          ),
-        );
-      return new Map(
-        rows.map(({ proposalId, jiraIssueId, externalId }) => [
-          proposalId,
-          { jiraIssueId, externalId },
-        ]),
-      );
     },
 
     async approve(

@@ -1,0 +1,1 @@
+ALTER TABLE "bounty" ADD COLUMN "categories" jsonb DEFAULT '[]'::jsonb NOT NULL;

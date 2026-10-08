@@ -57,6 +57,7 @@ function fixtureApp(token) {
       description: input.description,
       repoId: input.repoId,
       stack: input.stack ?? [],
+      categories: [],
       components: [],
       inputTruncated: false,
       origin: "manual",
@@ -130,6 +131,13 @@ function fixtureApp(token) {
             .filter((bounty) => organizationIds.includes(bounty.organizationId))
             .reverse()
             .map((bounty) => ({ ...bounty, proposal: null })),
+        // Written here, so in no category.
+        categoryCounts: async (organizationIds) => {
+          const total = [...rows.values()].filter((bounty) =>
+            organizationIds.includes(bounty.organizationId),
+          ).length;
+          return { total, uncategorized: total, categories: {} };
+        },
         get: async (organizationId, bountyId) => {
           const bounty = rows.get(bountyId);
           return bounty?.organizationId === organizationId ? bounty : null;

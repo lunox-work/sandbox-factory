@@ -26,6 +26,7 @@ import type {
   GithubRepoSummary,
   JiraBoardStore,
   LatestBountyContext,
+  NewBountyContext,
   RepoSnapshotStore,
   StoredBounty,
   StoredBountyContext,
@@ -294,6 +295,25 @@ const refused = (
   error: string,
 ): SyncResult => ({ ok: false, status, code, error });
 
+/**
+ * The context version an issue's read makes: its fields, at the revision
+ * Jira's `updated` says. What a person's sync keeps, and an import's.
+ */
+export function jiraContextVersion(
+  link: { readonly key: string; readonly externalId: string },
+  context: JiraContext,
+  spec: { readonly updated?: string | null | undefined },
+): NewBountyContext {
+  return {
+    source: "jira",
+    ref: link.key,
+    refId: link.externalId,
+    revision: context.updated ?? spec.updated ?? new Date().toISOString(),
+    content: context,
+    contentHash: contextHash({ source: "jira", content: context }),
+  };
+}
+
 /** Reads the issue's context and text, and keeps both. */
 async function syncJira(
   options: BountyContextOptions,
@@ -346,14 +366,7 @@ async function syncJira(
   const recorded = await options.contexts.record(
     organizationId,
     bounty.id,
-    {
-      source: "jira",
-      ref: link.key,
-      refId: link.externalId,
-      revision: context.updated ?? spec.updated ?? new Date().toISOString(),
-      content: context,
-      contentHash: contextHash({ source: "jira", content: context }),
-    },
+    jiraContextVersion(link, context, spec),
     userId,
   );
   if (!recorded.ok) return refused(404, "not_found", "Not found");

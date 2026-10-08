@@ -100,11 +100,13 @@ import {
   bountyPagePath,
   bountyProposalPath,
   isPlainLeftClick,
+  listScopeForSearch,
   NEW_BOUNTY_PATH,
   NEW_ORG_PATH,
   pathForScreen,
   sandboxFilesPath,
   type BountyAddress,
+  type BountyListScope,
 } from "./routes";
 import { clients, queryKeys, useUserId } from "./data/query";
 import {
@@ -126,6 +128,8 @@ import {
   useBountyContext,
 } from "./features/bounties/BountyContext";
 import { BountyProposal } from "./features/bounties/BountyProposal";
+import { BoardScope } from "./features/bounties/BoardScope";
+import { CategoryFilter, CategoryLine } from "./features/bounties/Categories";
 import {
   OverviewVersion,
   StepLineage,
@@ -144,6 +148,7 @@ import { useGithubRepos, type GithubRepos } from "./useGithub";
 import {
   useAllBounties,
   useBounties,
+  useBountyCategories,
   type AllBounties,
   type BountyDraft,
   type Bounties,
@@ -244,13 +249,26 @@ export function Bounties({
   /** Opens a bounty's own page, with the list behind it in history. */
   onOpenPage: (path: string) => void;
 }) {
-  const bounties = useAllBounties();
   /*
-    The bounty open over the list. In the query, so a reload or a link lands
-    on it and Back steps out of it.
+    The bounty open over the list, and what the list is narrowed to: a
+    category and a board. In the query, so a reload or a link lands on them
+    and Back steps out of the bounty.
   */
   const { search } = useLocation();
   const peek = bountyForSearch(search) ?? null;
+  const scope = listScopeForSearch(search);
+  const boardOwner =
+    scope.board === undefined
+      ? undefined
+      : workspaceNamed(organizations, scope.board.workspace);
+  const bounties = useAllBounties({
+    category: scope.category,
+    board: scope.board?.boardId,
+  });
+  const counts = useBountyCategories(scope.board?.boardId);
+  /** The list narrowed otherwise; a bounty open over it stays open. */
+  const narrow = (next: BountyListScope) =>
+    replaceLocation(bountiesUrl(peek, next));
   /*
     The bounty the open peek last read. It names the panel when the bounty
     is not among the rows loaded, as for a link to an older one.
@@ -278,14 +296,14 @@ export function Bounties({
     if (address === null) {
       if (peek === null) return;
       if (isPeekEntry(window.history.state)) window.history.back();
-      else replaceLocation(bountiesUrl(null));
+      else replaceLocation(bountiesUrl(null, scope));
     } else if (peek !== null) {
       if (address.workspace === peek.workspace && address.id === peek.id) {
         return;
       }
-      replaceLocation(bountiesUrl(address));
+      replaceLocation(bountiesUrl(address, scope));
     } else {
-      pushLocation(bountiesUrl(address), PEEK_ENTRY);
+      pushLocation(bountiesUrl(address, scope), PEEK_ENTRY);
     }
   };
 
@@ -307,18 +325,48 @@ export function Bounties({
             <h1 className="text-2xl font-semibold tracking-tight">Bounties</h1>
             <p className="text-muted-foreground mt-1.5 max-w-prose text-sm">
               The work your workspaces want done, created in Lunox or imported
-              from Jira. Each bounty is a proposal, which sizes and prices it,
-              and a sandbox that contributors work in.
+              from a Jira board&rsquo;s backlog scan. Each bounty is a proposal,
+              which sizes and prices it, and a sandbox that contributors work
+              in.
             </p>
           </div>
           <NewBountyLink disabled={target === null} onCreate={onCreate} />
         </header>
+
+        {/*
+          Controls on the list beside the panel, as a card is: using them
+          narrows the list and leaves the open bounty open.
+        */}
+        <div {...{ [PEEK_ROW_ATTRIBUTE]: "" }} className="flex flex-col gap-3">
+          <CategoryFilter
+            counts={counts.data}
+            selected={scope.category ?? null}
+            onSelect={(category) =>
+              narrow({ ...scope, category: category ?? undefined })
+            }
+          />
+          {scope.board !== undefined && (
+            <BoardScope
+              // Keyed by the board: another board's search and note are not
+              // this one's.
+              key={`${scope.board.workspace}/${scope.board.boardId}`}
+              organizationId={boardOwner?.id}
+              boardId={scope.board.boardId}
+              onClear={() => narrow({ ...scope, board: undefined })}
+              onOpenBounty={(id) => {
+                const workspace = scope.board?.workspace;
+                if (workspace !== undefined) open({ workspace, id });
+              }}
+            />
+          )}
+        </div>
 
         <BountyList
           bounties={bounties}
           organizations={organizations}
           organizationsLoading={organizationsLoading}
           peek={peek}
+          narrowed={scope.category !== undefined || scope.board !== undefined}
           onOpen={open}
           onCreate={onCreate}
         />
@@ -701,7 +749,6 @@ function NewBounty({
                 "org-settings",
                 chosen.slug,
                 undefined,
-                undefined,
                 "github",
               ),
               onOpen: () => onConnectRepository(chosen),
@@ -900,6 +947,7 @@ function BountyList({
   organizations,
   organizationsLoading,
   peek,
+  narrowed,
   onOpen,
   onCreate,
 }: {
@@ -908,6 +956,8 @@ function BountyList({
   organizationsLoading: boolean;
   /** The bounty open in the panel, whose card is marked; null for none. */
   peek: BountyAddress | null;
+  /** A category or a board narrows the list, so empty says less. */
+  narrowed: boolean;
   onOpen: (address: BountyAddress) => void;
   onCreate: () => void;
 }) {
@@ -934,15 +984,23 @@ function BountyList({
       )}
       {bounties.bounties.length === 0 ? (
         // A list that failed to load is not known to be empty.
-        bounties.error === null && (
+        bounties.error === null &&
+        (narrowed ? (
+          <div className="rounded-lg border border-dashed px-4 py-10 text-center">
+            <p className="text-muted-foreground text-sm">
+              No bounties here. Choose another category, or add one of the
+              board&rsquo;s issues above.
+            </p>
+          </div>
+        ) : (
           <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed px-4 py-10 text-center">
             <p className="text-muted-foreground text-sm">
-              No bounties yet. Write one, or connect Jira and its boards&rsquo;
-              bounties arrive here as they are sized.
+              No bounties yet. Write one, or connect Jira and the tickets its
+              boards&rsquo; scans put in a category arrive here.
             </p>
             <NewBountyLink variant="outline" onCreate={onCreate} />
           </div>
-        )
+        ))
       ) : (
         <>
           <ul className="flex flex-col gap-2" data-testid="bounty-list">
@@ -1133,6 +1191,7 @@ function BountyCard({
           {workspace !== undefined && <WorkspaceTag name={workspace} />}
           <Source bounty={bounty} />
         </div>
+        <CategoryLine categories={bounty.categories} wrapOnPhone />
       </div>
       <div className="shrink-0 border-t pt-3 sm:w-56 sm:border-t-0 sm:pt-0">
         {proposal === null ? (

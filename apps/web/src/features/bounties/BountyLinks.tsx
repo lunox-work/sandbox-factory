@@ -175,13 +175,7 @@ function LinkRow({
 }
 
 function settingsHref(organization: MembershipDto, tab: ConnectionTab) {
-  return pathForScreen(
-    "org-settings",
-    organization.slug,
-    undefined,
-    undefined,
-    tab,
-  );
+  return pathForScreen("org-settings", organization.slug, undefined, tab);
 }
 
 /**

@@ -13,6 +13,10 @@ product proposals and historical explainers are optional design context.
 - Home adapts to what a workspace has connected. Jira gives a free backlog
   scan for the six kinds of outsourceable work; GitHub a repository x-ray.
   Nothing is sized until someone sizes a ticket, or asks for a whole board.
+- A connected board's scan is imported as bounties with their overview and
+  Jira context filled, and nothing sized. The bounty list filters by
+  category and by board; a board's view is that list, where its issues are
+  searched and added.
 - GitHub supplies private repository snapshots. Five context builders describe a
   snapshot from a repository's own page: Graphify, dependency-cruiser,
   DeepWiki-Open, abstractions (every module's surface) and data model (the

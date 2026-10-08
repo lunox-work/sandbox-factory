@@ -78,9 +78,7 @@ export interface HomeProps {
   name: string;
   /** The workspace in the rail: the one home is about. */
   organization: MembershipDto;
-  /** Reports the board on screen up to the shell, for the trail and title. */
-  onBoardName: (name: string | undefined) => void;
-  /** Leaves home for a board's own page. */
+  /** Leaves home for a board's bounties. */
   onOpenBoard: (board: JiraBoard) => void;
   /** Opens the workspace's settings on one tab. */
   onOpenSettings: (organization: MembershipDto, tab: ConnectionTab) => void;
@@ -101,7 +99,6 @@ function WorkspaceHome({
   userId,
   name,
   organization,
-  onBoardName,
   onOpenBoard,
   onOpenSettings,
   onOpenRepository,
@@ -128,7 +125,7 @@ function WorkspaceHome({
   useEffect(() => {
     if (picking)
       replaceLocation(
-        `${pathForScreen("org-settings", organization.slug, undefined, undefined, "github")}&github=pick`,
+        `${pathForScreen("org-settings", organization.slug, undefined, "github")}&github=pick`,
       );
   }, [picking, organization.slug]);
 
@@ -271,7 +268,6 @@ function WorkspaceHome({
         organizationSlug={organization.slug}
         role={organization.role}
         intro={intro}
-        onBoardName={onBoardName}
         onOpenBoard={onOpenBoard}
         repositoryAction={
           needsRepository

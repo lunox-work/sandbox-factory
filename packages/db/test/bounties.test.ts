@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { getTableConfig } from "drizzle-orm/pg-core";
+import { and } from "drizzle-orm";
+import { getTableConfig, PgDialect } from "drizzle-orm/pg-core";
 import type { BountyContent } from "sandbox-factory";
 
 import {
@@ -12,6 +13,7 @@ import {
 } from "../src/schema.js";
 import {
   createBountyStore,
+  listFilters,
   followsJira,
   insertBounty,
   jiraContentChange,
@@ -29,6 +31,7 @@ function bountyRow(overrides: Partial<BountyRow> = {}): BountyRow {
     origin: "manual",
     repoId: null,
     stack: [],
+    categories: [],
     createdBy: "user_1",
     revision: 1,
     version: 1,
@@ -340,6 +343,83 @@ test("lists across the organizations it is given, and asks nothing of none", asy
   const none = createFakeDb([]);
   assert.deepEqual(await createBountyStore(none.db).listAcross([]), []);
   assert.equal(none.calls.length, 0);
+});
+
+test("a list narrows to a board, a category, or the bounties in none", () => {
+  const render = (options: Parameters<typeof listFilters>[0]) => {
+    const where = and(...listFilters(options));
+    return where === undefined ? null : new PgDialect().sqlToQuery(where);
+  };
+  assert.equal(render({}), null);
+  const narrowed = render({ boardId: "jrb_1", category: "left-behind" });
+  assert.match(narrowed?.sql ?? "", /"jira_issue"\."board_id" = \$1/);
+  // Containment: an element with that id, whatever its label and reason.
+  assert.match(narrowed?.sql ?? "", /"bounty"\."categories" @> \$2::jsonb/);
+  assert.deepEqual(narrowed?.params, [
+    "jrb_1",
+    JSON.stringify([{ id: "left-behind" }]),
+  ]);
+  assert.match(
+    render({ uncategorized: true })?.sql ?? "",
+    /"bounty"\."categories" = '\[\]'::jsonb/,
+  );
+});
+
+test("counts each category across the organizations given, and none of none", async () => {
+  const fake = createSequencedFakeDb([
+    [{ total: 4, uncategorized: 1 }],
+    [
+      { id: "left-behind", count: 2 },
+      { id: "quietly-wanted", count: 2 },
+      // A bounty in no category yields no element, and no id.
+      { id: null, count: 1 },
+    ],
+  ]);
+  assert.deepEqual(
+    await createBountyStore(fake.db).categoryCounts(["org_1"], {
+      boardId: "jrb_1",
+    }),
+    {
+      total: 4,
+      uncategorized: 1,
+      categories: { "left-behind": 2, "quietly-wanted": 2 },
+    },
+  );
+  assert.equal(fake.calls.length, 2);
+  assert.ok(fake.calls.every(({ filtered }) => filtered === true));
+
+  const none = createFakeDb([]);
+  assert.deepEqual(await createBountyStore(none.db).categoryCounts([]), {
+    total: 0,
+    uncategorized: 0,
+    categories: {},
+  });
+  assert.equal(none.calls.length, 0);
+  // An answer with no totals row reads as nothing counted.
+  assert.deepEqual(
+    await createBountyStore(createFakeDb([]).db).categoryCounts(["org_1"]),
+    { total: 0, uncategorized: 0, categories: {} },
+  );
+});
+
+test("a scan's categories replace the bounty's, through its owner", async () => {
+  const match = { id: "left-behind", label: "Left behind", reason: "Old" };
+  const fake = createFakeDb([{ id: "bty_1" }]);
+  assert.equal(
+    await createBountyStore(fake.db).categorize("org_1", "bty_1", [match]),
+    true,
+  );
+  assert.equal(fake.calls[0]?.kind, "update");
+  assert.deepEqual(fake.calls[0]?.values, { categories: [match] });
+  assert.equal(fake.calls[0]?.filtered, true);
+  assert.equal(
+    await createBountyStore(createFakeDb([]).db).categorize(
+      "org_1",
+      "bty_9",
+      [],
+    ),
+    false,
+  );
 });
 
 test("a change is made against the revision the editor saw", async () => {

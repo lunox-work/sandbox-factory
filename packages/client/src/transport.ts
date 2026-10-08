@@ -139,69 +139,6 @@ export class ApiClient {
 
     return payload;
   }
-  /** NDJSON is delivered incrementally and never buffered as one JSON response. */
-  protected async stream(
-    path: string,
-    onLine: (value: unknown) => void,
-    signal: AbortSignal,
-  ): Promise<void> {
-    const response = await this.#send(path, {
-      signal,
-      headers: { Accept: "application/x-ndjson" },
-    });
-    if (!response.ok) {
-      // Guarded as `request` is: a proxy's HTML error page is not JSON, and
-      // a SyntaxError would escape as something other than an ApiError.
-      const text = await abortable(response.text(), signal);
-      let payload: unknown = undefined;
-      try {
-        payload = text === "" ? undefined : JSON.parse(text);
-      } catch {
-        payload = undefined;
-      }
-      const error = errorSchema.safeParse(payload);
-      throw new ApiError(
-        response.status,
-        error.success
-          ? error.data.error
-          : `HTTP ${response.status} from ${path}`,
-        error.success ? (error.data.code ?? null) : null,
-        payload,
-      );
-    }
-    if (response.body === null) return;
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    const emit = (line: string) => {
-      if (line.trim() === "") return;
-      let value: unknown;
-      try {
-        value = JSON.parse(line);
-      } catch {
-        return;
-      }
-      signal.throwIfAborted();
-      onLine(value);
-    };
-    try {
-      for (;;) {
-        const { done, value } = await abortable(reader.read(), signal);
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        let newline = buffer.indexOf("\n");
-        while (newline !== -1) {
-          emit(buffer.slice(0, newline));
-          buffer = buffer.slice(newline + 1);
-          newline = buffer.indexOf("\n");
-        }
-      }
-      emit(buffer + decoder.decode());
-    } finally {
-      await reader.cancel().catch(() => {});
-      reader.releaseLock();
-    }
-  }
 }
 
 /** Bound cancellation even for injected transports that ignore fetch's signal. */

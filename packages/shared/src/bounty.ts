@@ -14,6 +14,7 @@ import {
 import { z } from "zod";
 
 import {
+  bountyCategoryMatchSchema,
   bountyComplexitySchema,
   bountyProposalStatusSchema,
 } from "./pricing.js";
@@ -115,6 +116,12 @@ export const bountySummaryDtoSchema = z.object({
     })
     .nullable(),
   jira: bountyJiraLinkSchema.nullable(),
+  /**
+   * The categories its board's backlog scan found it in, each with the
+   * reason it fit; empty for one in none. Defaulted so an older API still
+   * parses.
+   */
+  categories: z.array(bountyCategoryMatchSchema).default([]),
   proposal: bountyProposalSummarySchema.nullable(),
   sandbox: bountySandboxSummarySchema.nullable(),
   createdAt: z.iso.datetime(),
@@ -192,6 +199,58 @@ export const bountyListResponseSchema = z.object({
 export const bountyResponseSchema = z.object({ bounty: bountyDtoSchema });
 
 /**
+ * What a bounty list may be narrowed to, as its query says it: one
+ * category, `uncategorized` for the bounties in none, and one board's.
+ */
+export const bountyListFilterSchema = z.object({
+  category: z
+    .string()
+    .regex(/^[a-z0-9]+(-[a-z0-9]+)*$/)
+    .optional(),
+  board: z.string().min(1).optional(),
+});
+
+/**
+ * How many bounties each category holds, for the list's filter: every
+ * category in the registry, in its order, with a zero when none fit it. A
+ * bounty in two counts in both, so the counts can sum past `total`.
+ */
+export const bountyCategoryCountsSchema = z.object({
+  total: z.number().int().nonnegative(),
+  uncategorized: z.number().int().nonnegative(),
+  categories: z.array(
+    z.object({
+      id: z.string().min(1),
+      label: z.string().min(1),
+      why: z.string(),
+      count: z.number().int().nonnegative(),
+    }),
+  ),
+});
+
+/**
+ * What importing a board's scan came to: the bounties made for issues new
+ * to the platform, those refreshed, and the issues that could not be read.
+ * One issue imported alone answers with its bounty's id.
+ */
+export const jiraImportResponseSchema = z.object({
+  created: z.number().int().nonnegative(),
+  refreshed: z.number().int().nonnegative(),
+  failed: z.number().int().nonnegative(),
+  bountyId: z.string().min(1).optional(),
+});
+
+/** Imports a board's scan, or one issue on it when `issueId` names one. */
+export const jiraImportRequestSchema = z
+  .strictObject({
+    issueId: z
+      .string()
+      .regex(/^\d{1,18}$/)
+      .optional(),
+  })
+  .default({});
+
+/**
  * A sync's answer: the bounty as it now is (a Jira sync takes the issue's
  * text too), where each source stands, and whether the sync made a new
  * version of the source's context.
@@ -265,6 +324,11 @@ export type BountyStagesDto = z.infer<typeof bountyStagesSchema>;
 export type BountyVersionDto = z.infer<typeof bountyVersionDtoSchema>;
 export type BountyVersionList = z.infer<typeof bountyVersionListSchema>;
 export type BountyListResponse = z.infer<typeof bountyListResponseSchema>;
+export type BountyListFilter = z.infer<typeof bountyListFilterSchema>;
+export type BountyCategoryCountsDto = z.infer<
+  typeof bountyCategoryCountsSchema
+>;
+export type JiraImportResponse = z.infer<typeof jiraImportResponseSchema>;
 export type SyncBountyContextResponse = z.infer<
   typeof syncBountyContextResponseSchema
 >;

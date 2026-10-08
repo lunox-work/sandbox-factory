@@ -22,10 +22,7 @@ import {
 } from "sandbox-factory";
 
 import type { Auth } from "../src/auth.js";
-import type {
-  BountyExecutor,
-  RunClientResult,
-} from "../src/pricing/executor.js";
+import type { BountyExecutor } from "../src/pricing/executor.js";
 import {
   issueSearchJql,
   type PricingRouteOptions,
@@ -103,6 +100,8 @@ function harness(
     /** What the board's issue read answers, or throws. */
     boardIssues?: JiraIssueDto[] | Error;
     live?: Record<string, string>;
+    /** The bounty each of the board's issues already is, by Jira's id. */
+    imported?: Record<string, string>;
     clientReady?: boolean;
     sizing?: boolean;
     /** The organization's bounties, by id. */
@@ -190,7 +189,18 @@ function harness(
         Promise.resolve(options.liveBounties?.[bountyId] ?? null),
     } as never,
     specs: {} as never,
-    issues: { get: () => Promise.resolve(null) } as never,
+    issues: {
+      get: () => Promise.resolve(null),
+      bountiesFor: (_org: string, _board: string, ids: readonly string[]) =>
+        Promise.resolve(
+          new Map(
+            ids.flatMap((id) => {
+              const bountyId = options.imported?.[id];
+              return bountyId === undefined ? [] : [[id, bountyId]];
+            }),
+          ),
+        ),
+    } as never,
     bounties: {
       get: (_org: string, id: string) =>
         Promise.resolve(options.bounties?.[id] ?? null),
@@ -424,6 +434,7 @@ function jiraBounty(overrides: Partial<StoredBounty> = {}): StoredBounty {
     origin: "jira",
     repoId: null,
     stack: [],
+    categories: [],
     createdBy: null,
     revision: 1,
     version: 1,
@@ -1310,33 +1321,35 @@ test("bounty search looks a key up as a key and anything else as text", () => {
   assert.equal(issueSearchJql("*?"), null);
 });
 
-test("searching a board leaves out bounties already on the platform", async () => {
+test("searching a board names the bounty each issue already is", async () => {
+  // Nothing is left out: one already a bounty is opened rather than added.
   const state = harness({
     role: "member",
     boardIssues: [bounty("7"), bounty("8"), bounty("9")],
-    live: { "8": "bpr_8" },
+    imported: { "8": "bty_8" },
   });
   const response = await state.app.request(
     "/api/v1/orgs/org_1/jira/boards/jrb_1/search?q=login",
     { headers },
   );
   assert.equal(response.status, 200);
-  const body = (await response.json()) as { issues: { key: string }[] };
+  const body = (await response.json()) as {
+    issues: { key: string; bountyId: string | null }[];
+  };
   assert.deepEqual(
-    body.issues.map(({ key }) => key),
-    ["APP-7", "APP-9"],
+    body.issues.map(({ key, bountyId }) => [key, bountyId]),
+    [
+      ["APP-7", null],
+      ["APP-8", "bty_8"],
+      ["APP-9", null],
+    ],
   );
   assert.deepEqual(state.jql, ['text ~ "login*"']);
 });
 
-test("a search still fills its list when many candidates are proposed", async () => {
-  // Jira is asked for more than are shown, so the ones dropped for being
-  // proposed are replaced rather than leaving the list short.
+test("a search shows at most ten issues", async () => {
   const candidates = Array.from({ length: 30 }, (_, n) => bounty(String(n)));
-  const live = Object.fromEntries(
-    candidates.slice(0, 15).map(({ id }) => [id, `bpr_${id}`]),
-  );
-  const state = harness({ boardIssues: candidates, live });
+  const state = harness({ boardIssues: candidates });
   const body = (await (
     await state.app.request(
       "/api/v1/orgs/org_1/jira/boards/jrb_1/search?q=login",
@@ -1344,7 +1357,7 @@ test("a search still fills its list when many candidates are proposed", async ()
     )
   ).json()) as { issues: { id: string }[] };
   assert.equal(body.issues.length, 10);
-  assert.equal(body.issues[0]?.id, "15");
+  assert.equal(body.issues[0]?.id, "0");
 });
 
 test("an empty search asks Jira nothing", async () => {
@@ -1512,247 +1525,6 @@ test("adding a bounty is refused when it cannot be sized", async () => {
     ).status,
     409,
   );
-});
-
-/*
-  The titles stream. Eight proposals on the board, bpr_1..bpr_8, each on a
-  bounty whose external id is its number times a hundred.
-*/
-const titlesPath = "/api/v1/orgs/org_1/jira/boards/jrb_1/proposal-titles";
-
-function titlesHarness(
-  options: {
-    issue?: (externalId: string) => Promise<JiraIssueDto>;
-    ready?: RunClientResult;
-    jira?: false;
-  } = {},
-) {
-  const reads: string[] = [];
-  const removed: string[] = [];
-  let clients = 0;
-  const targets = new Map(
-    [1, 2, 3, 4, 5, 6, 7, 8].map((n) => [
-      `bpr_${n}`,
-      { jiraIssueId: `jri_${n}`, externalId: `${n}00` },
-    ]),
-  );
-  const issue =
-    options.issue ??
-    ((externalId: string) =>
-      Promise.resolve(bounty(externalId, `Title ${externalId}`)));
-  const board = { id: "jrb_1", connectionId: "jrc_1" };
-  const app = createApp({
-    corsOrigins: ["https://app.test"],
-    auth: fakeAuth(),
-    organizations: { roleOf: () => Promise.resolve("member") } as never,
-    pricing: {
-      rateCards: {} as never,
-      runs: {} as never,
-      specs: {} as never,
-      proposals: {
-        issuesForProposals: (
-          _organizationId: string,
-          _boardId: string,
-          ids: readonly string[],
-        ) =>
-          Promise.resolve(
-            new Map([...targets].filter(([id]) => ids.includes(id))),
-          ),
-      } as never,
-      bounties: {} as never,
-      issues: {
-        markRemoved: (_organizationId: string, issueId: string) => {
-          removed.push(issueId);
-          return Promise.resolve(true);
-        },
-      } as never,
-      boards: {
-        get: (_organizationId: string, boardId: string) =>
-          Promise.resolve(boardId === "jrb_1" ? board : null),
-      } as never,
-      ...(options.jira === false
-        ? {}
-        : {
-            clientFor: () => {
-              clients += 1;
-              return Promise.resolve(
-                options.ready ?? {
-                  ok: true as const,
-                  client: {
-                    issue: (externalId: string) => {
-                      reads.push(externalId);
-                      return issue(externalId);
-                    },
-                  } as never,
-                },
-              );
-            },
-          }),
-    },
-  });
-  return { app, reads, removed, clients: () => clients };
-}
-
-async function titleLines(response: Response) {
-  return (await response.text())
-    .split("\n")
-    .filter((line) => line !== "")
-    .map((line) => JSON.parse(line) as Record<string, unknown>);
-}
-
-test("titles stream a line per proposal, in the order Jira answers", async () => {
-  // The first bounty is held until the second has answered, so a response
-  // that waited for every read would list them in the order asked.
-  let releaseFirst = () => {};
-  const firstHeld = new Promise<void>((resolve) => {
-    releaseFirst = resolve;
-  });
-  const state = titlesHarness({
-    issue: async (externalId) => {
-      if (externalId === "100") await firstHeld;
-      else releaseFirst();
-      return bounty(externalId, `Title ${externalId}`);
-    },
-  });
-  const response = await state.app.request(`${titlesPath}?ids=bpr_1,bpr_2`, {
-    headers,
-  });
-  assert.equal(response.status, 200);
-  assert.match(
-    response.headers.get("content-type") ?? "",
-    /^application\/x-ndjson/,
-  );
-  assert.equal(response.headers.get("cache-control"), "no-store");
-  assert.deepEqual(await titleLines(response), [
-    { id: "bpr_2", key: "APP-200", title: "Title 200" },
-    { id: "bpr_1", key: "APP-100", title: "Title 100" },
-  ]);
-  // One client for the board, not one per row.
-  assert.equal(state.clients(), 1);
-});
-
-test("titles answer not_found for proposals not on the board, unread", async () => {
-  const state = titlesHarness();
-  const mixed = await state.app.request(`${titlesPath}?ids=bpr_1,bpr_x,bpr_1`, {
-    headers,
-  });
-  // Asked twice, answered once.
-  assert.deepEqual(
-    (await titleLines(mixed)).sort((a, b) =>
-      String(a.id).localeCompare(String(b.id)),
-    ),
-    [
-      { id: "bpr_1", key: "APP-100", title: "Title 100" },
-      { id: "bpr_x", code: "not_found" },
-    ],
-  );
-  assert.deepEqual(state.reads, ["100"]);
-
-  // Nothing on the board at all: no client is even built.
-  const none = await state.app.request(`${titlesPath}?ids=bpr_x`, {
-    headers,
-  });
-  assert.deepEqual(await titleLines(none), [
-    { id: "bpr_x", code: "not_found" },
-  ]);
-  assert.equal(state.clients(), 1);
-});
-
-test("a title Jira cannot give says why, and a deleted bounty is marked", async () => {
-  const failures: Record<string, Error> = {
-    "100": new JiraApiError(404, "gone"),
-    "200": new JiraApiError(403, "forbidden"),
-    "300": new JiraApiError(401, "unauthorized"),
-    "400": new Error("socket hang up"),
-  };
-  const state = titlesHarness({
-    issue: (externalId) =>
-      Promise.reject(failures[externalId] ?? new Error("unexpected")),
-  });
-  const response = await state.app.request(
-    `${titlesPath}?ids=bpr_1,bpr_2,bpr_3,bpr_4`,
-    { headers },
-  );
-  const byId = Object.fromEntries(
-    (await titleLines(response)).map((line) => [line.id, line.code]),
-  );
-  assert.deepEqual(byId, {
-    bpr_1: "missing",
-    bpr_2: "scope",
-    bpr_3: "reconnect",
-    bpr_4: "unavailable",
-  });
-  assert.deepEqual(state.removed, ["jri_1"]);
-});
-
-test("an unusable connection answers every row without reading Jira", async () => {
-  for (const [options, code] of [
-    [{ ready: { ok: false, reason: "reconnect" } }, "reconnect"],
-    [{ ready: { ok: false, reason: "not-found" } }, "unavailable"],
-    [{ jira: false }, "reconnect"],
-  ] as const) {
-    const state = titlesHarness(options);
-    const response = await state.app.request(`${titlesPath}?ids=bpr_1,bpr_2`, {
-      headers,
-    });
-    assert.deepEqual(
-      (await titleLines(response)).map((line) => line.code),
-      [code, code],
-    );
-    assert.deepEqual(state.reads, []);
-  }
-});
-
-test("titles refuse no ids, too many ids and another board", async () => {
-  const state = titlesHarness();
-  for (const query of ["", "?ids=", "?ids=,,"]) {
-    assert.equal(
-      (await state.app.request(`${titlesPath}${query}`, { headers })).status,
-      400,
-    );
-  }
-  const tooMany = Array.from({ length: 51 }, (_, n) => `bpr_${n}`).join(",");
-  assert.equal(
-    (await state.app.request(`${titlesPath}?ids=${tooMany}`, { headers }))
-      .status,
-    400,
-  );
-  assert.equal(
-    (
-      await state.app.request(
-        "/api/v1/orgs/org_1/jira/boards/jrb_other/proposal-titles?ids=bpr_1",
-        { headers },
-      )
-    ).status,
-    404,
-  );
-  assert.equal(state.clients(), 0);
-});
-
-test("a cancelled titles stream starts no further Jira reads", async () => {
-  const held: Array<() => void> = [];
-  const state = titlesHarness({
-    issue: (externalId) =>
-      new Promise((resolve) => {
-        held.push(() => resolve(bounty(externalId)));
-      }),
-  });
-  const response = await state.app.request(
-    `${titlesPath}?ids=bpr_1,bpr_2,bpr_3,bpr_4,bpr_5,bpr_6,bpr_7,bpr_8`,
-    { headers },
-  );
-  const settle = () => new Promise((resolve) => setImmediate(resolve));
-  // Five reads start at once; the other three wait for a free slot.
-  for (let tries = 0; state.reads.length < 5 && tries < 50; tries += 1) {
-    await settle();
-  }
-  assert.equal(state.reads.length, 5);
-
-  // The browser goes away while all five are still out.
-  await response.body?.cancel();
-  for (const release of held) release();
-  for (let tries = 0; tries < 10; tries += 1) await settle();
-  assert.equal(state.reads.length, 5);
 });
 
 /** A spec and code the rubric scores at 13 points: S. */

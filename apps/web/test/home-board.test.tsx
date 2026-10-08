@@ -38,7 +38,6 @@ function show() {
       intro={<p>Home intro</p>}
       organizationSlug="acme"
       role="owner"
-      onBoardName={vi.fn()}
       onOpenBoard={vi.fn()}
       fallback={<p>No board yet</p>}
     />,

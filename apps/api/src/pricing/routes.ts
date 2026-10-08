@@ -29,7 +29,6 @@ import {
   respecProposalSchema,
 } from "@sandbox-factory/shared";
 import type { Context, Hono } from "hono";
-import { stream } from "hono/streaming";
 import {
   CATEGORIES,
   checkRespec,
@@ -45,8 +44,7 @@ import { isAtLeastAdmin } from "../access.js";
 import { boundedLimit, rowCursor } from "../paging.js";
 import { REVISE_SPEC_PROMPT_VERSION } from "../sizing/tools/revise-spec.js";
 import { describesProposal } from "./delivery.js";
-import type { RunClientResult } from "./executor.js";
-import { freshProposal, mapConcurrent, proposalTitle } from "./review.js";
+import { freshProposal } from "./review.js";
 import { rubricPrice } from "./rubric.js";
 import { externalBoardId, InvalidBoardIdError } from "./selection.js";
 
@@ -57,9 +55,8 @@ export interface PricingAppEnv {
   };
 }
 
-/** How many bounties the search shows, and how many it asks Jira for. */
+/** How many issues the search shows. */
 const SEARCH_RESULTS = 10;
-const SEARCH_CANDIDATES = 50;
 
 /**
  * JQL for what a person typed into the board's issue search.
@@ -205,14 +202,12 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
   });
 
   /**
-   * Search the board's issues, for picking one to size.
+   * Search the board's issues, for picking one to add as a bounty.
    *
    * Read live through the board, so it finds what the board shows and
-   * nothing else. A bounty already on the platform — one with a live
-   * proposal, proposed or approved — is left out: the list is for adding,
-   * and that bounty is already in the proposals below. Jira is asked for a
-   * page of candidates so that dropping those still leaves a full list.
-   * Any member may search; only an owner or admin may add.
+   * nothing else. Each issue says the bounty it already is on this board,
+   * if it is one, so a person opens that rather than adding it twice. Any
+   * member may search, and add.
    */
   app.get("/api/v1/orgs/:orgId/jira/boards/:id/search", async (c) => {
     const { organizationId } = c.get("member");
@@ -251,7 +246,7 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
         await ready.client.boardIssues(externalBoardId(board.board), {
           jql,
           startAt: 0,
-          maxResults: SEARCH_CANDIDATES,
+          maxResults: SEARCH_RESULTS,
         })
       ).issues;
     } catch (error) {
@@ -278,25 +273,24 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
       return c.json({ error: "Jira could not be searched." }, 502);
     }
 
-    const live = await options.proposals.liveProposalIds(
+    const shown = issues.slice(0, SEARCH_RESULTS);
+    const bounties = await options.issues.bountiesFor(
       organizationId,
       board.board.id,
-      issues.map(({ id }) => id),
+      shown.map(({ id }) => id),
     );
     return c.json({
-      issues: issues
-        .filter(({ id }) => !live.has(id))
-        .slice(0, SEARCH_RESULTS)
-        .map((issue) => ({
-          id: issue.id,
-          key: issue.key,
-          summary: issue.summary,
-          status: issue.status,
-          issueType: issue.issueType,
-          // Listed so a person finds it, but it cannot be added: see
-          // `startRun`.
-          subtaskCount: issue.subtaskCount ?? 0,
-        })),
+      issues: shown.map((issue) => ({
+        id: issue.id,
+        key: issue.key,
+        summary: issue.summary,
+        status: issue.status,
+        issueType: issue.issueType,
+        // Listed so a person finds it, but it cannot be added: its
+        // sub-tasks are the bounties.
+        subtaskCount: issue.subtaskCount ?? 0,
+        bountyId: bounties.get(issue.id) ?? null,
+      })),
     });
   });
 
@@ -501,59 +495,6 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
     });
   });
 
-  /*
-    The live title of each listed proposal, a line of NDJSON per proposal,
-    written as Jira answers for it rather than when the last one does, so
-    the rows fill in one by one. Titles are relayed, never stored.
-
-    Under the board rather than beside `/proposals/:id`, which would match
-    it. One client serves the whole board, as every row shares its
-    connection; five reads at a time, not the three sizing uses, because
-    these skip the description and a person is waiting on them.
-  */
-  app.get("/api/v1/orgs/:orgId/jira/boards/:id/proposal-titles", async (c) => {
-    const { organizationId } = c.get("member");
-    const boardId = c.req.param("id");
-    const ids = [
-      ...new Set(
-        (c.req.query("ids") ?? "").split(",").filter((id) => id !== ""),
-      ),
-    ];
-    // The list's largest page.
-    if (ids.length === 0 || ids.length > 50) {
-      return c.json({ error: "Ask for 1 to 50 proposals." }, 400);
-    }
-    const board = await options.boards.get(organizationId, boardId);
-    if (board === null) return c.json({ error: "Not found" }, 404);
-    const targets = await options.proposals.issuesForProposals(
-      organizationId,
-      boardId,
-      ids,
-    );
-    const ready: RunClientResult =
-      options.clientFor === undefined
-        ? { ok: false, reason: "reconnect" }
-        : targets.size === 0
-          ? { ok: false, reason: "not-found" }
-          : await options.clientFor(organizationId, board.connectionId);
-    c.header("content-type", "application/x-ndjson; charset=utf-8");
-    c.header("cache-control", "no-store");
-    return stream(c, async (out) => {
-      await mapConcurrent(ids, 5, async (id) => {
-        // The browser left: nothing is waiting for the rest.
-        if (out.aborted) return;
-        const line = await proposalTitle(
-          options.issues,
-          organizationId,
-          id,
-          targets.get(id),
-          ready,
-        );
-        await out.write(`${JSON.stringify(line)}\n`);
-      });
-    });
-  });
-
   app.get("/api/v1/orgs/:orgId/runs/:id", async (c) => {
     const { organizationId } = c.get("member");
     const run = await options.runs.get(organizationId, c.req.param("id"));
@@ -618,9 +559,8 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
     const cursor = rowCursor(c.req.query("cursor"));
     if (cursor === null) return c.json({ error: "Invalid cursor." }, 400);
     /*
-      Stored rows only, so the list answers at once. What a row cannot show
-      without Jira — its live title — streams in from `proposal-titles`, and
-      the open proposal's freshness and delivery come from its detail read.
+      Stored rows only, so the list answers at once. The open proposal's
+      freshness and delivery come from its detail read.
       Checking every row against Jira here held the whole list back for
       the slowest bounty on the page.
     */

@@ -15,6 +15,7 @@ import { terminalRun, useObservation } from "../../data/observe";
 import { clients } from "../../data/query";
 import { wholeMoney } from "../../lib/format";
 import { pushLocation } from "../../navigation/location";
+import { BOUNTIES_PATH } from "../../routes";
 
 type PreviewIssue = JiraBacklogPreviewDto["issues"][number];
 
@@ -33,9 +34,6 @@ export interface RepositoryAction {
   onSelect: () => void;
 }
 
-/** The history entry a proposal opened over the list is pushed with. */
-const PROPOSAL_ENTRY = { proposalPeek: true } as const;
-
 /**
  * The ticket in focus, as the bounty it would become.
  *
@@ -46,6 +44,7 @@ const PROPOSAL_ENTRY = { proposalPeek: true } as const;
  */
 export function TeaserBounty({
   organizationId,
+  organizationSlug,
   boardId,
   issue,
   canManage,
@@ -59,6 +58,8 @@ export function TeaserBounty({
   ref,
 }: {
   organizationId: string;
+  /** The workspace's handle, which the sized bounty's page is addressed by. */
+  organizationSlug: string;
   boardId: string;
   issue: PreviewIssue;
   canManage: boolean;
@@ -97,9 +98,10 @@ export function TeaserBounty({
     if (proposalId === undefined && !terminalRun(run)) return;
     finished.current = run.id;
     setRunId(null);
-    if (proposalId !== undefined) void openProposal(proposalId, onSized);
+    if (proposalId !== undefined)
+      void openProposal(organizationSlug, proposalId, onSized);
     else setMessage(`Could not size ${issue.key}. Try again in a moment.`);
-  }, [following.data, runId, issue.key, onSized]);
+  }, [following.data, runId, issue.key, onSized, organizationSlug]);
 
   async function size() {
     setMessage(null);
@@ -112,7 +114,7 @@ export function TeaserBounty({
         crypto.randomUUID(),
       );
       if (body.proposalId !== undefined)
-        await openProposal(body.proposalId, onSized);
+        await openProposal(organizationSlug, body.proposalId, onSized);
       else if (body.run !== undefined) setRunId(body.run.id);
     } catch (error) {
       setMessage(
@@ -282,19 +284,17 @@ export function TeaserBounty({
 }
 
 /**
- * Opens a proposal over the list below, as a row's click would: the lists
- * are read again so it has its row, then `?proposal=` names it, which the
- * list follows.
+ * Opens the bounty a proposal was made for, on the tab its proposal is in:
+ * what is cached is read again first, then the bounties page is named the
+ * workspace and the proposal, which it opens as its bounty's page.
  */
 async function openProposal(
+  workspace: string,
   proposalId: string,
   refresh: () => Promise<void>,
 ): Promise<void> {
   await refresh();
-  const params = new URLSearchParams(window.location.search);
-  params.set("proposal", proposalId);
   pushLocation(
-    `${window.location.pathname}?${params.toString()}${window.location.hash}`,
-    PROPOSAL_ENTRY,
+    `${BOUNTIES_PATH}?${new URLSearchParams({ workspace, proposal: proposalId }).toString()}`,
   );
 }

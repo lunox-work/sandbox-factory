@@ -51,6 +51,8 @@ export type {
   StoredBounty,
   StoredBountyVersion,
   BountyApproval,
+  BountyCategoryCounts,
+  BountyListOptions,
   BountyChange,
   BountyJiraLink,
   BountyMutationResult,

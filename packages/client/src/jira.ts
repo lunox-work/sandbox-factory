@@ -9,6 +9,7 @@ import {
   jiraWorkspaceIssueSearchSchema,
   proposalActionResponseSchema,
   jiraBoardListSchema,
+  jiraImportResponseSchema,
 } from "@sandbox-factory/shared";
 import { ApiClient } from "./transport.js";
 import { ownerPath } from "./bounties.js";
@@ -71,6 +72,21 @@ export class JiraManagementClient extends ApiClient {
         { signal },
       ),
     ).issues;
+  }
+  /**
+   * Imports the board's backlog scan as bounties, or one issue on it when
+   * `issueId` names one: overviews filled from Jira, nothing sized.
+   */
+  async importBoard(owner: string, boardId: string, issueId?: string) {
+    return jiraImportResponseSchema.parse(
+      await this.request(
+        `${ownerPath(owner)}/jira/boards/${encodeURIComponent(boardId)}/import`,
+        {
+          method: "POST",
+          body: JSON.stringify(issueId === undefined ? {} : { issueId }),
+        },
+      ),
+    );
   }
   async proposeIssue(
     owner: string,

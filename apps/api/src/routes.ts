@@ -44,6 +44,7 @@ import {
 } from "./github/webhook.js";
 import { mountJiraRoutes, type JiraRouteOptions } from "./jira/routes.js";
 import { mountBountyJiraRoutes } from "./bounties/jira.js";
+import { importBoards, mountBountyImportRoutes } from "./bounties/import.js";
 import {
   mountBountyRoutes,
   mountCallerBountyRoutes,
@@ -525,9 +526,28 @@ export function createApp({
      * an API with no second Atlassian app configured serves everything else
      * rather than refusing to start.
      */
+    /*
+      Where a board's scan is imported as bounties: the bounty side's, so
+      only where bounties and their context are kept and Jira can be read.
+    */
+    const importOptions =
+      pricing?.contexts !== undefined && pricing.clientFor !== undefined
+        ? {
+            ...pricing,
+            contexts: pricing.contexts,
+            clientFor: pricing.clientFor,
+          }
+        : undefined;
     if (jira !== undefined) {
       mountJiraRoutes(app, {
         ...jira,
+        ...(importOptions === undefined
+          ? {}
+          : {
+              onBoardsSynced: (organizationId: string, boardIds: string[]) => {
+                void importBoards(importOptions, organizationId, boardIds);
+              },
+            }),
         // Supplied here rather than by the caller: the callback re-reads
         // membership, and this is the store that already answers that
         // question for the guard above.
@@ -579,6 +599,9 @@ export function createApp({
       mountBountyRoutes(app, pricing);
       // Its Jira issue, picked for it from any of the workspace's boards.
       mountBountyJiraRoutes(app, pricing);
+      // A board's backlog scan, imported as bounties on request.
+      if (importOptions !== undefined)
+        mountBountyImportRoutes(app, importOptions);
       // What its Jira issue and repository add to it, synced on request.
       if (pricing.contexts !== undefined)
         mountBountyContextRoutes(app, {

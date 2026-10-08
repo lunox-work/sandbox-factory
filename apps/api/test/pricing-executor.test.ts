@@ -182,6 +182,7 @@ function bounty(overrides: Partial<StoredBounty> = {}): StoredBounty {
     origin: "jira",
     repoId: null,
     stack: [],
+    categories: [],
     createdBy: null,
     revision: 1,
     version: 1,
@@ -271,6 +272,7 @@ function harness(options: {
 }) {
   const current = run(options.runOverrides);
   const plans: unknown[] = [];
+  const categorized: { bountyId: string; categories: string[] }[] = [];
   const outcomes: unknown[] = [];
   const finishes: { status: string; details: unknown }[] = [];
   const proposalInputs: unknown[] = [];
@@ -421,6 +423,17 @@ function harness(options: {
       refreshed.push({ bountyId, content });
       return Promise.resolve(true);
     },
+    categorize: (
+      _org: string,
+      bountyId: string,
+      categories: readonly { id: string }[],
+    ) => {
+      categorized.push({
+        bountyId,
+        categories: categories.map(({ id }) => id),
+      });
+      return Promise.resolve(true);
+    },
   } as unknown as BountyStore;
   const proposals = {
     get: () =>
@@ -538,6 +551,7 @@ function harness(options: {
   return {
     executor,
     plans,
+    categorized,
     outcomes,
     finishes,
     proposalInputs,
@@ -595,6 +609,11 @@ test("a backlog run plans each bounty with the reason it was picked", async () =
     ],
   ]);
   assert.equal(state.caller.inputsFor("size_bounty").length, 1);
+  // The bounty keeps the categories it was picked for, as an import's does.
+  assert.deepEqual(
+    state.categorized.map(({ categories }) => categories),
+    [["left-behind"]],
+  );
   assert.deepEqual(state.finishes[0]?.details, {
     candidatesScanned: 2,
     skippedLive: 0,

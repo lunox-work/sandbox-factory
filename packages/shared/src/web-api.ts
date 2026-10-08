@@ -110,6 +110,11 @@ export const jiraIssueSearchSchema = z.object({
       status: z.string(),
       issueType: z.string(),
       subtaskCount: z.number().int().nonnegative().optional(),
+      /**
+       * The bounty the issue already is on this board, or null while it is
+       * none. Optional so an older API still parses.
+       */
+      bountyId: z.string().nullable().optional(),
     }),
   ),
 });

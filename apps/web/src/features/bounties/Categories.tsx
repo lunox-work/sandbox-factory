@@ -1,10 +1,10 @@
 import type {
+  BountyCategoryCountsDto,
   BountyCategoryMatch,
-  ProposalCategoriesDto,
 } from "@sandbox-factory/shared";
-import { CircleDashed, Layers } from "lucide-react";
-import { type ReactElement } from "react";
-import { UNCATEGORIZED } from "sandbox-factory";
+import { CATEGORIES, UNCATEGORIZED } from "sandbox-factory";
+
+import { cn } from "@/lib/utils";
 
 import { CategoryIcon } from "../../CategoryIcon";
 
@@ -49,154 +49,94 @@ export function CategoryLine({
   );
 }
 
-/** `?category=` as the page will use it: a category id, or none. */
-export function categoryFromUrl(): string | null {
-  const value = new URLSearchParams(window.location.search).get("category");
-  // The same shape the API accepts. Anything else is not a category, and
-  // sending it on would turn a mistyped link into a failed list.
-  return value !== null && /^[a-z0-9]+(-[a-z0-9]+)*$/.test(value)
-    ? value
-    : null;
-}
-
 /**
- * A board's category summary, or null for a body that is not one: the view
- * is drawn only from a response it can read in full.
+ * The bounties by the category their board's scan found them in, as one
+ * row of plain chips above the list: All, the six in registry order, and
+ * the bounties in none, called "Unassigned". No icons: each card's category
+ * line carries its category's, and without them the row fits on one line. Each says how many it holds, and
+ * pressed narrows the list to them. A chip with none is still there, dimmed,
+ * so no chip moves when a count reaches zero; it is pressable only while it
+ * is the one shown, to be left.
+ *
+ * A bounty in two categories counts in both, which is why the chips can sum
+ * past "All". Until the counts arrive the chips are drawn without them.
  */
-function CategoryTile({
-  label,
-  count,
-  icon,
-  pressed,
-  disabled = false,
-  hint,
-  onPress,
-}: {
-  label: string;
-  count: number;
-  /** Decoration: the label names the tile, so the icon is not read aloud. */
-  icon: ReactElement;
-  pressed: boolean;
-  disabled?: boolean;
-  hint?: string;
-  onPress: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      aria-pressed={pressed}
-      // Said in reading order. The tile shows the number first because that
-      // is what the eye is scanning for, which reads aloud as "7 Left behind".
-      aria-label={`${label}, ${count} ${count === 1 ? "proposal" : "proposals"}`}
-      disabled={disabled}
-      title={hint}
-      onClick={onPress}
-      className={`focus-visible:ring-ring/50 flex h-full w-full flex-col items-start gap-1 rounded-lg border px-3 py-2.5 text-left transition-colors focus-visible:ring-[3px] focus-visible:outline-none disabled:pointer-events-none disabled:opacity-45 ${
-        pressed ? "bg-muted border-foreground/30" : "hover:bg-muted/50"
-      }`}
-    >
-      {/*
-        The count where the eye lands, and the icon across from it: what
-        tells one tile from the next before either label is read.
-      */}
-      <span className="flex w-full items-start justify-between gap-2">
-        <span className="text-lg leading-none font-semibold tabular-nums">
-          {count}
-        </span>
-        <span
-          className={`shrink-0 [&>svg]:size-4 ${pressed ? "text-foreground" : "text-muted-foreground"}`}
-        >
-          {icon}
-        </span>
-      </span>
-      <span
-        className={`text-xs leading-tight ${pressed ? "text-foreground font-medium" : "text-muted-foreground"}`}
-      >
-        {label}
-      </span>
-    </button>
-  );
-}
-
-/**
- * The board's proposals by the reason each bounty was picked, above the
- * list they narrow.
- *
- * A run takes a bounty because it fits a category, so the categories are
- * the natural way to walk what a run produced: all the blockers, then all
- * the paper cuts. Each tile says how many the board has and, pressed, makes
- * the list below show those. The six are always the same six in the same
- * order, a category with nothing in it shown but not pressable, so a tile
- * does not move when a count reaches zero.
- *
- * After them, the bounties no run picked for a reason, which would
- * otherwise be reachable only by reading the whole list for the rows with
- * nothing under their title. It is the one tile the page names itself: it
- * is not in the registry the other six come from.
- *
- * A bounty picked for two categories is counted in both, which is why the
- * tiles can sum past "All".
- */
-export function CategoryNav({
-  summary,
+export function CategoryFilter({
+  counts,
   selected,
   onSelect,
 }: {
-  summary: ProposalCategoriesDto;
+  counts: BountyCategoryCountsDto | undefined;
+  /** A category's id, `UNCATEGORIZED`, or null for all of them. */
   selected: string | null;
   onSelect: (category: string | null) => void;
 }) {
-  const tiles = [
-    ...summary.categories,
+  const chips: {
+    id: string | null;
+    label: string;
+    why: string;
+    count: number | undefined;
+  }[] = [
+    { id: null, label: "All", why: "", count: counts?.total },
+    ...(counts?.categories ??
+      CATEGORIES.map(({ id, label, why }) => ({
+        id,
+        label,
+        why,
+        count: undefined,
+      }))),
     {
       id: UNCATEGORIZED,
-      label: "Uncategorized",
-      why: "Picked by hand, or sized before there were categories.",
-      count: summary.uncategorized,
+      label: "Unassigned",
+      why: "In no category: written here, picked by hand, or not in one on its board's last scan.",
+      count: counts?.uncategorized,
     },
   ];
-  const active = tiles.find(({ id }) => id === selected);
+  const active = chips.find(({ id }) => id === selected);
   return (
     <nav
-      aria-label="Proposals by category"
+      aria-label="Bounties by category"
       className="flex flex-col gap-2"
-      data-testid="category-nav"
+      data-testid="category-filter"
     >
-      <ul className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-8">
-        <li>
-          <CategoryTile
-            label="All"
-            count={summary.total}
-            // Not a category, so not one of their icons: the whole pile.
-            icon={<Layers aria-hidden="true" focusable="false" />}
-            pressed={selected === null}
-            onPress={() => onSelect(null)}
-          />
-        </li>
-        {tiles.map((category) => (
-          <li key={category.id}>
-            <CategoryTile
-              label={category.label}
-              count={category.count}
-              icon={
-                category.id === UNCATEGORIZED ? (
-                  // No category, so no category's icon: an empty outline.
-                  <CircleDashed aria-hidden="true" focusable="false" />
-                ) : (
-                  <CategoryIcon category={category.id} />
-                )
-              }
-              pressed={selected === category.id}
-              // An empty category is nowhere to go — unless it is the one
-              // being shown, which must stay pressable to be left.
-              disabled={category.count === 0 && selected !== category.id}
-              hint={category.why}
-              onPress={() =>
-                onSelect(selected === category.id ? null : category.id)
-              }
-            />
-          </li>
-        ))}
+      <ul className="-mx-4 flex gap-1.5 overflow-x-auto px-4 pb-1 sm:mx-0 sm:flex-wrap sm:overflow-visible sm:px-0 sm:pb-0">
+        {chips.map((chip) => {
+          const pressed = chip.id === selected;
+          const empty = chip.count === 0;
+          return (
+            <li key={chip.id ?? "all"} className="shrink-0">
+              <button
+                type="button"
+                aria-pressed={pressed}
+                disabled={empty && !pressed}
+                title={chip.why === "" ? undefined : chip.why}
+                onClick={() => onSelect(pressed ? null : chip.id)}
+                className={cn(
+                  "focus-visible:ring-ring/50 inline-flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-xs transition-colors focus-visible:ring-[3px] focus-visible:outline-none disabled:pointer-events-none disabled:opacity-45",
+                  pressed
+                    ? "bg-foreground text-background border-foreground"
+                    : "text-muted-foreground hover:bg-muted hover:text-foreground",
+                )}
+              >
+                <span className={pressed ? "font-medium" : undefined}>
+                  {chip.label}
+                </span>
+                {chip.count !== undefined && (
+                  <span
+                    className={cn(
+                      "tabular-nums",
+                      pressed
+                        ? "text-background/70"
+                        : "text-muted-foreground/70",
+                    )}
+                  >
+                    {chip.count}
+                  </span>
+                )}
+              </button>
+            </li>
+          );
+        })}
       </ul>
       {/* What the chosen category is for, where a tooltip would hide it. */}
       {active !== undefined && active.why !== "" && (

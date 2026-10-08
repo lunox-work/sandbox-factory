@@ -140,7 +140,6 @@ export function RepositoryPage({
                 "org-settings",
                 organizationSlug,
                 undefined,
-                undefined,
                 "github",
               )}
               className="text-primary rounded-sm text-sm font-medium hover:underline"

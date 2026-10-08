@@ -27,6 +27,7 @@ import {
 } from "drizzle-orm/pg-core";
 import type {
   BountyOrigin,
+  CategoryMatch,
   ContextSource,
   GithubContext,
   JiraContext,
@@ -66,6 +67,17 @@ export const bounty = pgTable(
      * name. The repository's own are not copied here: they follow it.
      */
     stack: jsonb("stack").$type<string[]>().notNull().default([]),
+    /**
+     * The categories a board's backlog scan found the bounty in, each with
+     * the reason it fit, as the latest scan to reach it said. Empty for a
+     * bounty written here, or one no scan has put in a category: what the
+     * list's "unassigned" filter shows. Not part of the overview's text, so
+     * a change here is no new version.
+     */
+    categories: jsonb("categories")
+      .$type<CategoryMatch[]>()
+      .notNull()
+      .default([]),
     createdBy: text("created_by").references(() => user.id, {
       onDelete: "set null",
     }),

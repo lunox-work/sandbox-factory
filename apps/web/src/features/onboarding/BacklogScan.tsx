@@ -15,8 +15,9 @@
  * slow, paid step, so it is the person's choice and it is one call; the
  * whole board can still be sized on request, with the cost said first.
  *
- * Once a board has proposals the scan is not the page any more, so it
- * folds to one line above them, opened again on demand.
+ * A sized ticket opens as its bounty, on the Bounty tab of its page, where
+ * its proposal is. A page that shows the scan over a list of its own may
+ * fold it to one line (`foldable`), opened again on demand.
  */
 
 import { ApiError } from "@sandbox-factory/client";
@@ -70,6 +71,7 @@ export type { RepositoryAction, ScanRepository } from "./TeaserBounty";
 
 export function BacklogScan({
   organizationId,
+  organizationSlug,
   boardId,
   canManage,
   repository,
@@ -77,6 +79,8 @@ export function BacklogScan({
   foldable = false,
 }: {
   organizationId: string;
+  /** The workspace's handle: a sized ticket opens as its bounty there. */
+  organizationSlug: string;
   boardId: string;
   /** Owner or admin: may size a ticket or the board. */
   canManage: boolean;
@@ -324,6 +328,7 @@ export function BacklogScan({
                   key={focus.id}
                   ref={teaser}
                   organizationId={organizationId}
+                  organizationSlug={organizationSlug}
                   boardId={boardId}
                   issue={focus}
                   canManage={canManage}

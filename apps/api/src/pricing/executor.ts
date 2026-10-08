@@ -740,6 +740,17 @@ export class BountyExecutor {
       },
       content,
     );
+    // The categories the run picked it for are the bounty's, as an
+    // import's are. One picked by hand says nothing about them, so leaves
+    // whatever the board's scan last said.
+    const picked = issue.categories ?? [];
+    if (pointer !== null && picked.length > 0) {
+      await this.#options.bounties.categorize(
+        organizationId,
+        pointer.bountyId,
+        picked,
+      );
+    }
     const bounty =
       pointer === null
         ? null

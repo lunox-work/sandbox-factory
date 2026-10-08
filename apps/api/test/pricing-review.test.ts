@@ -71,6 +71,7 @@ function bounty(overrides: Partial<StoredBounty> = {}): StoredBounty {
     origin: "jira",
     repoId: null,
     stack: [],
+    categories: [],
     createdBy: null,
     revision: 1,
     version: 1,

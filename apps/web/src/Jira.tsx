@@ -27,8 +27,7 @@ import {
   Trash2,
   TriangleAlert,
 } from "lucide-react";
-import { useQuery } from "@tanstack/react-query";
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { ErrorBanner, LoadingLine, RetryableError } from "@/components/Message";
@@ -53,15 +52,14 @@ import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
 
 import { JiraIcon } from "./ProviderIcon";
-import { isPlainLeftClick, pathForScreen } from "./routes";
+import { bountiesUrl, isPlainLeftClick } from "./routes";
 import { BoardRepository } from "./BoardRepository";
-import { clients, queryKeys, useUserId } from "./data/query";
 import {
   BacklogScan,
   type RepositoryAction,
 } from "./features/onboarding/BacklogScan";
 import { SECTION, reveal } from "./lib/reveal";
-import { ProposalList } from "./Proposals";
+import { pushLocation } from "./navigation/location";
 import { useGithubRepos } from "./useGithub";
 
 import {
@@ -397,8 +395,9 @@ function BoardRow({
  * decision, and a board row is a pointer that reads nothing until somebody
  * opens it. So this card never offers to add one. What it does instead is
  * re-read the site when it mounts, and again on Re-sync, which is what picks
- * up a board created in Jira since the site was connected — and starts
- * sizing it in the background.
+ * up a board created in Jira since the site was connected — and imports
+ * its backlog scan as bounties in the background. A board opens as the
+ * bounties narrowed to it.
  *
  * Re-sync and Disconnect sit behind one menu in the corner rather than as
  * buttons in the header. Neither is what the card is for — the boards are —
@@ -642,12 +641,9 @@ function SiteBoardsCard({
               <BoardRow
                 key={board.id}
                 board={board}
-                href={pathForScreen(
-                  "org-jira-board",
-                  organizationSlug,
-                  connection.id,
-                  board.id,
-                )}
+                href={bountiesUrl(null, {
+                  board: { workspace: organizationSlug, boardId: board.id },
+                })}
                 onOpen={onOpenBoard}
               />
             ))}
@@ -659,53 +655,28 @@ function SiteBoardsCard({
 }
 
 /**
- * One board: its tickets on the left, the one you picked on the right.
+ * One board on home: its backlog scan, under home's own greeting.
  *
- * A split rather than a dialog with two views. The dialog made reading a
- * ticket cost the list — going back was the only way to reach the next one,
- * and comparing two meant opening each in turn from memory. Here the list
- * stays put and the panel changes under it, which is what a person scanning
- * a backlog is actually doing.
- *
- * Below `md` the panel covers the list instead of sitting beside it, with a
- * control back. Two columns on a phone would each be too narrow to hold a
- * ticket summary, let alone a spec.
- *
- * Above the list, the board's backlog scan: what on it is worth outsourcing,
- * read for free. Connecting a site sizes nothing, so a new board opens on
- * the scan and an empty list; once it has proposals the scan folds to a line
- * over them.
+ * The scan is what on the board is worth outsourcing, read for free. Its
+ * tickets in a category are imported as bounties when the site is connected
+ * or synced, so the board's own list is the bounties page narrowed to it,
+ * which the link below the scan opens; there is no board page of its own.
  */
 export function JiraBoard({
   organizationId,
-  connectionId,
+  organizationSlug,
   boardId,
-  boardName,
-  onBoardName,
   role,
   header,
   repositoryAction,
 }: {
   organizationId: string;
-  /** The site this board is on, for its write grant. */
-  connectionId: string;
+  /** The workspace's handle, which the board's bounties are addressed by. */
+  organizationSlug: string;
   boardId: string;
-  /** Known already when arriving from the Jira list; absent on a reload. */
-  boardName?: string | undefined;
-  /**
-   * Reports the board's name up to the shell, which renders the trail above
-   * this page and has no other way to learn it. Called with undefined while
-   * the list is still arriving, so the crumb falls back rather than keeping
-   * the previous board's name.
-   */
-  onBoardName: (name: string | undefined) => void;
   role?: string | undefined;
-  /**
-   * Replaces the board's own heading. Home shows this page under a greeting
-   * rather than a board title: there it is where the person starts, not a
-   * place they navigated to.
-   */
-  header?: ReactNode;
+  /** Home's greeting and the board picker, above the scan. */
+  header: ReactNode;
   /**
    * How a workspace with no repository to link gets one: connecting GitHub,
    * or picking one from an account already connected. A workspace that has
@@ -713,66 +684,22 @@ export function JiraBoard({
    */
   repositoryAction?: RepositoryAction | undefined;
 }) {
-  const userId = useUserId();
-  const { boards, error, issue, linkRepository, refresh } =
+  const { boards, error, linkRepository, refresh } =
     useJiraBoards(organizationId);
-  const { connections, connect } = useJira(organizationId);
+  const { connect } = useJira(organizationId);
   const { repos } = useGithubRepos(organizationId);
   const linkable = repos.some(
     (repo) => repo.role === "source" && repo.syncStatus !== "gone",
   );
-  // The board's own counts, as its proposal list reads them: whether it has
-  // any decides whether the scan is the page or a line above it.
-  const counts = useQuery({
-    queryKey: queryKeys.resource(
-      userId,
-      organizationId,
-      "proposal-categories",
-      boardId,
-    ),
-    queryFn: ({ signal }) =>
-      clients.pricing.categories(organizationId, boardId, signal),
-  });
-  const proposed = (counts.data?.total ?? 0) > 0;
   const { outcome, missingScopes, dismiss } = useJiraOutcome();
-
   const board = boards.find((candidate) => candidate.id === boardId) ?? null;
-  // The name passed in wins while the list is still arriving, so arriving
-  // from the Jira list does not flash a heading that says nothing.
-  const name = board?.name ?? boardName;
-
-  useEffect(() => {
-    onBoardName(name);
-  }, [name, onBoardName]);
-
-  /*
-    The ticket read the peek's Spec tab uses, bound to this board. Memoised
-    because the proposals component keys a fetch effect on it: a fresh
-    closure each render would read the ticket on every render.
-  */
-  const readIssue = useCallback(
-    (issueKey: string) => issue(boardId, issueKey),
-    [boardId, issue],
-  );
+  const bountiesHref = bountiesUrl(null, {
+    board: { workspace: organizationSlug, boardId },
+  });
 
   return (
     <main className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-4 py-10 sm:px-6 sm:py-14">
-      {header ?? (
-        <header>
-          <div className="flex items-center gap-3">
-            <span className="text-muted-foreground shrink-0">
-              <BoardIcon boardType={board?.boardType ?? ""} />
-            </span>
-            <h1 className="min-w-0 truncate text-2xl font-semibold tracking-tight">
-              {name ?? "Board"}
-            </h1>
-          </div>
-          <p className="text-muted-foreground mt-1.5 text-sm">
-            Sizing proposals for this board. Open one to review it against the
-            live ticket.
-          </p>
-        </header>
-      )}
+      {header}
 
       {outcome !== null && (
         <OutcomeBanner
@@ -799,45 +726,40 @@ export function JiraBoard({
         />
       )}
 
-      {/*
-        Once the counts have answered, so a board with proposals does not
-        open on the whole scan and fold it a moment later. Counts that could
-        not be read leave the scan open: it is the one view that still works.
-      */}
-      {!counts.isPending && (
-        <BacklogScan
-          // Folded or not is decided once per board: a first proposal
-          // landing must not fold the scan out from under the person.
-          key={boardId}
-          organizationId={organizationId}
-          boardId={boardId}
-          canManage={canManage(role ?? "")}
-          repository={
-            repos.find(({ id }) => id === board?.sourceRepoId) ?? null
-          }
-          repositoryAction={
-            linkable && canManage(role ?? "")
-              ? {
-                  label: "link a repository",
-                  onSelect: () => reveal(SECTION.boardRepository, "center"),
-                }
-              : repositoryAction
-          }
-          foldable={proposed}
-        />
-      )}
-
-      <ProposalList
+      <BacklogScan
+        // Folded or not is decided once per board.
+        key={boardId}
         organizationId={organizationId}
+        organizationSlug={organizationSlug}
         boardId={boardId}
-        quietWhenEmpty
-        role={role ?? "member"}
-        writeGranted={
-          connections.find((candidate) => candidate.id === connectionId)
-            ?.writeGranted ?? false
+        canManage={canManage(role ?? "")}
+        repository={repos.find(({ id }) => id === board?.sourceRepoId) ?? null}
+        repositoryAction={
+          linkable && canManage(role ?? "")
+            ? {
+                label: "link a repository",
+                onSelect: () => reveal(SECTION.boardRepository, "center"),
+              }
+            : repositoryAction
         }
-        readIssue={readIssue}
       />
+
+      <p className="text-muted-foreground text-sm">
+        Its tickets in a category are bounties already, with their overview from
+        Jira.{" "}
+        <a
+          href={bountiesHref}
+          className="text-foreground font-medium underline-offset-4 hover:underline"
+          onClick={(event) => {
+            if (isPlainLeftClick(event)) {
+              event.preventDefault();
+              pushLocation(bountiesHref);
+            }
+          }}
+        >
+          See this board&rsquo;s bounties
+        </a>
+      </p>
     </main>
   );
 }

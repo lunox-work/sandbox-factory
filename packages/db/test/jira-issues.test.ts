@@ -31,6 +31,7 @@ function bountyRow(overrides: Partial<BountyRow> = {}): BountyRow {
     origin: "jira",
     repoId: null,
     stack: [],
+    categories: [],
     createdBy: null,
     revision: 1,
     version: 1,

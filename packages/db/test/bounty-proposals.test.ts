@@ -703,22 +703,6 @@ test("finds each live bounty's proposal id, for search results", async () => {
   assert.deepEqual([...ids], [["10001", "bpr_1"]]);
 });
 
-test("finds each proposal's Jira issue, for reading live titles", async () => {
-  const fake = createFakeDb([
-    { proposalId: "bpr_1", jiraIssueId: "jri_1", externalId: "10001" },
-  ]);
-  const store = createBountyProposalStore(fake.db);
-  const issues = await store.issuesForProposals("org_1", "jrb_1", [
-    "bpr_1",
-    "bpr_2",
-  ]);
-  assert.deepEqual(
-    [...issues],
-    [["bpr_1", { jiraIssueId: "jri_1", externalId: "10001" }]],
-  );
-  assert.equal((await store.issuesForProposals("org_1", "jrb_1", [])).size, 0);
-});
-
 test("approves once and treats the exact replay as idempotent", async () => {
   const approved = row({
     status: "approved",

@@ -455,13 +455,42 @@ stale text. Approval posts back to Jira only for a bounty still following
 an issue on a site that holds the write grant.
 
 **Nothing is sized unasked.** Connecting a site, or syncing one, registers
-its boards and starts no run. A board's first view is its backlog scan,
-`GET .../jira/boards/:id/backlog-preview`: the selection a `backlog` run
-would make, classified against the categories in
+its boards and starts no run. A board's backlog scan,
+`GET .../jira/boards/:id/backlog-preview`, is the selection a `backlog`
+run would make, classified against the categories in
 `packages/core/src/selection/categories.ts` from ticket metadata alone,
 with no model call and nothing stored. From it a person sizes one ticket
 (an `issue` run) or, having been told the cost, the whole board (a
 `backlog` run, `POST .../jira/boards/:id/runs`, owners and admins).
+
+**A board's scan is imported as bounties.** Every sync, and a board's
+registration, hands the boards it recorded to `importBoards`
+(`apps/api/src/bounties/import.ts`) in the background; `POST
+.../jira/boards/:id/import` does the same for one board on request. Each
+ticket the scan puts in a category, up to `IMPORT_LIMIT` per import,
+becomes a bounty as a run's read would make it (`JiraIssueStore.upsert`):
+its overview is the issue's text, its Jira fields are recorded as the
+overview's next Jira context version with no one as `synced_by`, and its
+categories are written to `bounty.categories` (migration 0057). No
+proposal and no sandbox are made, and no model is called. The scan's
+fallback, the oldest tickets when none fit a category, is not imported.
+An issue already imported is read again: new words are a new overview
+version, new fields a new context version, and the categories are what
+this scan says. The same route with `issueId` imports one issue a person
+found through the board's search (`GET .../jira/boards/:id/search`, which
+names the bounty each issue already is), classified as the scan would
+classify it. A `backlog` run writes the categories it picked a bounty for
+in the same way. Any member may import: it costs Jira reads only.
+
+**A board has no page of its own.** Its view is the bounty list narrowed
+to it, `/bounties?board=acme/jrb_1`, where the board can be rescanned and
+its issues searched and added; the old `/o/:slug/jira/:site/:board`
+address is rewritten to it. The list's filter narrows by category
+(`?category=`, or `uncategorized` for the bounties in none, shown as
+"Unassigned"): `GET /api/v1/me/bounties` and `.../bounties` take
+`category` and `board`, and `GET /api/v1/me/bounty-categories` counts each
+category across the caller's workspaces, narrowed to a board's with
+`board`.
 
 **A proposal's revision and version.** `bounty_proposal.revision` moves on
 every write and is what each change is checked against (`expectedRevision`),
@@ -649,8 +678,8 @@ description, its **Sandbox** under its price, its **Context** (its Jira issue
 and repository, each optional) and its workspace. Its proposal, and every
 change, are on its page, which the panel's Open as page leads to. On the page,
 a bounty with no proposal offers to make one in the proposal's place; once it
-has one, that place holds the live proposal in the same peek a board uses,
-where it is reviewed and decided, without the peek's Spec tab or Jira link,
+has one, that place holds the live proposal in its peek, where it is
+reviewed and decided, without the peek's Spec tab or Jira link,
 since the bounty shows both. Each link on the overview has its sync under
 it: its state, what its latest version adds, a Sync button and, while its
 source is ahead, a warning. Each step names the context versions it holds
@@ -659,7 +688,8 @@ page when the overview holds newer context. The old `?bounty=…&workspace=…&p
 the per-workspace `/o/:slug/bounties` and `/o/:slug/tickets?ticket=…`
 addresses, the old `?tab=proposals&proposal=…` and `/proposal` after either
 address, from when the proposal was a tab, all still land on the right
-bounty. A Jira board's page keeps its own list of the proposals its runs made.
+bounty. A Jira board's old page lands on the bounty list narrowed to the
+board; there is no list of a board's proposals apart from its bounties.
 
 ## Pricing
 

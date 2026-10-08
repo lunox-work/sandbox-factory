@@ -12,6 +12,7 @@
 
 import type {
   BountyContextStore,
+  BountyListOptions,
   BountyProposalStore,
   JiraBoardStore,
   ListedBounty,
@@ -21,7 +22,9 @@ import type {
 } from "@sandbox-factory/db";
 import {
   createBountySchema,
+  bountyCategoryCountsSchema,
   bountyDtoSchema,
+  bountyListFilterSchema,
   bountyListResponseSchema,
   bountySpecHash,
   bountyVersionListSchema,
@@ -36,8 +39,10 @@ import {
 import type { Context, Hono } from "hono";
 import {
   BOUNTY_SPEC_HASH_VERSION,
+  CATEGORIES,
   NO_CONTEXT,
   overviewVersionOf,
+  UNCATEGORIZED,
 } from "sandbox-factory";
 
 import { isAtLeastAdmin } from "../access.js";
@@ -280,7 +285,7 @@ export const OVERVIEW_APPROVED = {
 export function mountCallerBountyRoutes<Env extends BountyAppEnv>(
   app: Hono<Env>,
   options: {
-    readonly bounties: Pick<BountyStore, "listAcross">;
+    readonly bounties: Pick<BountyStore, "listAcross" | "categoryCounts">;
     /** The ids of the organizations the user is a member of. */
     readonly organizationsOf: (userId: string) => Promise<readonly string[]>;
   },
@@ -291,24 +296,75 @@ export function mountCallerBountyRoutes<Env extends BountyAppEnv>(
       options.bounties.listAcross(organizationIds, page),
     );
   });
+
+  /**
+   * How many of the caller's bounties each category holds, for the list's
+   * filter: every category in the registry, in order, zero when none fit
+   * it. `?board=` narrows the counts to that board's, as it does the list.
+   */
+  app.get("/api/v1/me/bounty-categories", async (c) => {
+    const filter = listFilter(c);
+    if (filter === null) return c.json({ error: "Invalid filter." }, 400);
+    const organizationIds = await options.organizationsOf(c.get("user").id);
+    const counts = await options.bounties.categoryCounts(
+      organizationIds,
+      filter.boardId === undefined ? {} : { boardId: filter.boardId },
+    );
+    return c.json(
+      bountyCategoryCountsSchema.parse({
+        total: counts.total,
+        uncategorized: counts.uncategorized,
+        categories: CATEGORIES.map(({ id, label, why }) => ({
+          id,
+          label,
+          why,
+          count: counts.categories[id] ?? 0,
+        })),
+      }),
+    );
+  });
+}
+
+/**
+ * What the query narrows a list to: `?category=` a category's id, or
+ * `uncategorized` for the bounties in none, and `?board=` one board's.
+ * Null for a query that names neither as it should.
+ */
+function listFilter(
+  c: Context,
+): Pick<BountyListOptions, "category" | "uncategorized" | "boardId"> | null {
+  const parsed = bountyListFilterSchema.safeParse({
+    category: c.req.query("category"),
+    board: c.req.query("board"),
+  });
+  if (!parsed.success) return null;
+  const { category, board } = parsed.data;
+  return {
+    ...(category === undefined
+      ? {}
+      : category === UNCATEGORIZED
+        ? { uncategorized: true }
+        : { category }),
+    ...(board === undefined ? {} : { boardId: board }),
+  };
 }
 
 /**
  * One page of a newest-first bounty list, read by `read` from the query's
- * `limit` and `cursor`, and the cursor for the page after it.
+ * `limit`, `cursor` and filters, and the cursor for the page after it.
  */
 async function listPage(
   c: Context,
-  read: (page: {
-    limit: number;
-    cursor?: { createdAt: string; id: string };
-  }) => Promise<ListedBounty[]>,
+  read: (page: BountyListOptions) => Promise<ListedBounty[]>,
 ): Promise<Response> {
   const limit = boundedLimit(c.req.query("limit"));
   const cursor = rowCursor(c.req.query("cursor"));
   if (cursor === null) return c.json({ error: "Invalid cursor." }, 400);
+  const filter = listFilter(c);
+  if (filter === null) return c.json({ error: "Invalid filter." }, 400);
   const bounties = await read({
     limit,
+    ...filter,
     ...(cursor === undefined ? {} : { cursor }),
   });
   const last = bounties.at(-1);
@@ -434,6 +490,7 @@ function summaryDto(bounty: ListedBounty): BountySummaryDto {
     version: bounty.version,
     approval: bounty.approval,
     jira: linkDto(bounty),
+    categories: bounty.categories.map((match) => ({ ...match })),
     proposal: bounty.proposal,
     sandbox: bounty.sandbox,
     createdAt: bounty.createdAt,

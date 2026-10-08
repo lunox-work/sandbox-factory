@@ -160,59 +160,6 @@ function compared(
   };
 }
 
-/**
- * One line of the titles stream: a proposal's live title, or why there is
- * none. `not_found` is a proposal that is not on the board asked about;
- * `missing` is a bounty Jira no longer has.
- */
-export type ProposalTitleLine =
-  | { readonly id: string; readonly key: string; readonly title: string }
-  | {
-      readonly id: string;
-      readonly code:
-        "not_found" | "missing" | "reconnect" | "scope" | "unavailable";
-    };
-
-/**
- * A proposal's live title, read without the bounty's description.
- *
- * Never throws: whatever goes wrong becomes this row's code, so one bounty
- * cannot end the stream for the rest. The client is resolved once per board
- * by the caller, since every row on a board shares its connection.
- */
-export async function proposalTitle(
-  issues: Pick<JiraIssueStore, "markRemoved">,
-  organizationId: string,
-  proposalId: string,
-  target:
-    { readonly jiraIssueId: string; readonly externalId: string } | undefined,
-  ready: RunClientResult,
-): Promise<ProposalTitleLine> {
-  const id = proposalId;
-  if (target === undefined) return { id, code: "not_found" };
-  if (!ready.ok) {
-    return {
-      id,
-      code: ready.reason === "reconnect" ? "reconnect" : "unavailable",
-    };
-  }
-  try {
-    const issue = await ready.client.issue(target.externalId);
-    return { id, key: issue.key, title: issue.summary };
-  } catch (error) {
-    if (error instanceof JiraApiError && error.isNotFound) {
-      // As the freshness check does, so a deleted bounty stops being
-      // offered for sizing. The row still says why it has no title.
-      await issues
-        .markRemoved(organizationId, target.jiraIssueId)
-        .catch(() => false);
-      return { id, code: "missing" };
-    }
-    const code = reviewFailureCode(error);
-    return { id, code: code === "spec_unavailable" ? "unavailable" : code };
-  }
-}
-
 function reviewFailureCode(
   error: unknown,
 ): "reconnect" | "scope" | "spec_unavailable" {

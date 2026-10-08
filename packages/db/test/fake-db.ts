@@ -87,6 +87,7 @@ function chain(
       return result;
     },
     offset: () => result,
+    groupBy: () => result,
     for: (mode: string) => {
       onLock?.(mode);
       return result;

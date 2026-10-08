@@ -399,6 +399,8 @@ function appWith(
     fetch?: typeof globalThis.fetch;
     connections?: ReturnType<typeof fakeConnections>;
     boards?: ReturnType<typeof fakeBoards>;
+    /** Told the boards a sync recorded, as the bounty import is. */
+    onBoardsSynced?: (organizationId: string, boardIds: string[]) => void;
   } = {},
 ) {
   const connections = options.connections ?? fakeConnections();
@@ -437,6 +439,9 @@ function appWith(
       apiUrl: API_URL,
       appUrl: APP_URL,
       ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+      ...(options.onBoardsSynced === undefined
+        ? {}
+        : { onBoardsSynced: options.onBoardsSynced }),
     },
   });
   return { app, connections, boards };
@@ -1285,6 +1290,40 @@ test("a re-sync reports the boards it found for the first time", async () => {
   assert.equal(response.status, 200);
   assert.deepEqual(((await response.json()) as { added: string[] }).added, [
     "jrb_43",
+  ]);
+});
+
+test("a sync and a registration hand their boards on to be imported as bounties", async () => {
+  const handed: [string, string[]][] = [];
+  const { app } = appWith({
+    fetch: fakeJiraApi({
+      boards: [
+        {
+          id: 42,
+          name: "Acme Board",
+          type: "scrum",
+          location: { projectKey: "ACME" },
+        },
+      ],
+    }),
+    onBoardsSynced: (organizationId, boardIds) =>
+      handed.push([organizationId, boardIds]),
+  });
+
+  const synced = await app.request(
+    "/api/v1/orgs/org_1/jira/connections/jrc_1/sync",
+    { method: "POST", headers: signedIn },
+  );
+  assert.equal(synced.status, 200);
+  const registered = await app.request("/api/v1/orgs/org_1/jira/boards", {
+    method: "POST",
+    headers: { ...signedIn, "content-type": "application/json" },
+    body: JSON.stringify({ connectionId: "jrc_1", externalId: "42" }),
+  });
+  assert.equal(registered.status, 201);
+  assert.deepEqual(handed, [
+    ["org_1", ["jrb_1"]],
+    ["org_1", ["jrb_1"]],
   ]);
 });
 
