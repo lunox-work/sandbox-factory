@@ -7,7 +7,34 @@
  * megabyte or more.
  */
 
+import { DIAGRAM_LAYOUT_FONTS, DIAGRAM_SKIN } from "@sandbox-factory/shared";
+
 export type DiagramKind = "mermaid" | "dot";
+
+/**
+ * The skin's faces, which `index.css` declares: Geist for names, Geist
+ * Mono for anything technical, each falling back to the system's.
+ */
+const SANS = `"Geist Variable", Geist, ui-sans-serif, system-ui, sans-serif`;
+const MONO = `"Geist Mono Variable", "Geist Mono", ui-monospace, Menlo, monospace`;
+
+const skin = DIAGRAM_SKIN.dark;
+
+/**
+ * The faces, loaded before Mermaid measures its labels: measured in the
+ * fallback, a label overflows its box once Geist arrives. A font that
+ * cannot load leaves the fallback, which the boxes are then measured in.
+ */
+async function skinFontsLoaded(): Promise<void> {
+  if (typeof document === "undefined" || !("fonts" in document)) return;
+  await Promise.all(
+    [
+      `400 12px "Geist Variable"`,
+      `600 12px "Geist Variable"`,
+      `400 12px "Geist Mono Variable"`,
+    ].map((font) => document.fonts.load(font).catch(() => [])),
+  );
+}
 
 /** The kind a fence's language or a file's extension names, if any. */
 export function diagramKind(name: string): DiagramKind | undefined {
@@ -28,21 +55,74 @@ function loadMermaid(): Promise<Mermaid> {
         startOnLoad: false,
         // Labels are the repository's text: never HTML, never a script.
         securityLevel: "strict",
-        theme: "dark",
+        // The diagram skin's dark roles, not Mermaid's palette: boxes a step
+        // above the editor's grey with an ink hairline, muted connectors,
+        // containers below the page, no gradient and no shadow.
+        theme: "base",
+        look: "classic",
         darkMode: true,
-        // The workbench's colors, not Mermaid's: its dark boxes are the
-        // editor's own grey, and a table reads as a hole in the page.
+        fontFamily: SANS,
         themeVariables: {
-          background: "#1f1f1f",
-          mainBkg: "#37373d",
-          rowOdd: "#2a2d2e",
-          rowEven: "#252728",
-          nodeBorder: "#6e7681",
-          primaryBorderColor: "#6e7681",
-          primaryTextColor: "#cccccc",
-          // Borders are a flat line, not a gradient from white.
+          darkMode: true,
+          fontFamily: SANS,
+          fontSize: "12px",
+          background: skin.paper,
+          primaryColor: skin.node,
+          primaryBorderColor: skin.ink,
+          primaryTextColor: skin.ink,
+          secondaryColor: skin.paper2,
+          secondaryBorderColor: skin.rule,
+          secondaryTextColor: skin.ink,
+          tertiaryColor: skin.paper2,
+          tertiaryBorderColor: skin.rule,
+          tertiaryTextColor: skin.ink,
+          mainBkg: skin.node,
+          nodeBorder: skin.ink,
+          nodeTextColor: skin.ink,
+          textColor: skin.ink,
+          titleColor: skin.ink,
+          lineColor: skin.muted,
+          // An edge label's mask: the page, so the line stops short of it.
+          edgeLabelBackground: skin.paper,
+          clusterBkg: skin.paper2,
+          clusterBorder: skin.rule,
+          noteBkgColor: skin.paper2,
+          noteBorderColor: skin.rule,
+          noteTextColor: skin.muted,
+          // An entity's rows.
+          rowOdd: skin.node,
+          rowEven: skin.paper,
+          attributeBackgroundColorOdd: skin.node,
+          attributeBackgroundColorEven: skin.paper,
+          // A sequence's actors and messages.
+          actorBkg: skin.node,
+          actorBorder: skin.ink,
+          actorTextColor: skin.ink,
+          actorLineColor: skin.rule,
+          signalColor: skin.muted,
+          signalTextColor: skin.ink,
+          labelBoxBkgColor: skin.node,
+          labelBoxBorderColor: skin.rule,
+          labelTextColor: skin.ink,
+          loopTextColor: skin.muted,
+          activationBkgColor: skin.paper2,
+          activationBorderColor: skin.rule,
+          // A state machine's start and end.
+          specialStateColor: skin.muted,
           useGradient: false,
+          dropShadow: "none",
         },
+        // What no variable reaches: a box's corners, at the skin's radius,
+        // and the hollow circle of an entity relation's "zero", which
+        // Mermaid fills white whatever the theme.
+        themeCSS: `
+          .node rect.label-container { rx: 6px; ry: 6px; }
+          .marker.er circle { fill: ${skin.paper}; }
+        `,
+        // Right-angled connectors with rounded elbows, as the skin draws
+        // them. The flowchart's curve is the default for every diagram
+        // Mermaid lays out the same way, entity relations among them.
+        flowchart: { curve: "rounded" },
         // A diagram that fails throws, rather than drawing Mermaid's own
         // error picture into the page.
         suppressErrorRendering: true,
@@ -61,7 +141,7 @@ function loadMermaid(): Promise<Mermaid> {
 let drawn = 0;
 
 async function renderMermaid(source: string): Promise<string> {
-  const loaded = await loadMermaid();
+  const [loaded] = await Promise.all([loadMermaid(), skinFontsLoaded()]);
   drawn += 1;
   // Unique in the page: Mermaid scopes each diagram's styles to its id.
   const { svg } = await loaded.render(`mermaid-diagram-${drawn}`, source);
@@ -73,9 +153,62 @@ interface Pending {
   reject: (error: Error) => void;
 }
 
+type DotAttributes = Record<string, string | number>;
+
+/**
+ * What the worker is asked: a graph, and the attributes it starts from,
+ * which anything the graph sets for itself overrides.
+ */
+export interface DotRequest {
+  id: number;
+  source: string;
+  defaults: {
+    graph: DotAttributes;
+    node: DotAttributes;
+    edge: DotAttributes;
+  };
+}
+
 /** What the worker answers: the drawing, or why there is none. */
 export type DotReply =
   { id: number; svg: string } | { id: number; error: string };
+
+/**
+ * A graph that says nothing of its looks is drawn in the skin: rounded
+ * boxes with an ink hairline on a node fill, muted connectors with a small
+ * head, in the fonts Graphviz can measure that the page then draws as
+ * Geist. In the light roles, as a `.dot` file written in the skin carries
+ * them, and turned for the editor with the rest.
+ */
+const light = DIAGRAM_SKIN.light;
+export const DOT_DEFAULTS: DotRequest["defaults"] = {
+  graph: {
+    fontname: DIAGRAM_LAYOUT_FONTS.sans,
+    fontcolor: light.ink,
+    color: light.rule,
+    style: "rounded",
+  },
+  node: {
+    shape: "box",
+    style: "rounded,filled",
+    color: light.ink,
+    fillcolor: light.node,
+    fontcolor: light.ink,
+    fontname: DIAGRAM_LAYOUT_FONTS.sans,
+    // Drawn a tenth smaller, at the skin's 12px, once it is Geist.
+    fontsize: 13,
+    margin: "0.16,0.08",
+    penwidth: 1,
+  },
+  edge: {
+    color: light.muted,
+    fontcolor: light.muted,
+    fontname: DIAGRAM_LAYOUT_FONTS.mono,
+    fontsize: 9,
+    arrowsize: 0.6,
+    penwidth: 1,
+  },
+};
 
 let worker: Worker | undefined;
 const waiting = new Map<number, Pending>();
@@ -148,7 +281,11 @@ function renderDot(source: string): Promise<string> {
         reject(error);
       },
     });
-    target.postMessage({ id, source });
+    target.postMessage({
+      id,
+      source,
+      defaults: DOT_DEFAULTS,
+    } satisfies DotRequest);
   });
 }
 
@@ -242,12 +379,61 @@ function darkened([r, g, b]: [number, number, number]): string {
 }
 
 /**
- * Graphviz's drawing, made for white paper, put on the editor's dark
- * canvas: its page is taken away and every color turned, so it reads as
- * Mermaid's dark diagrams do. A graph that chose a dark page is left as
- * it is.
+ * Each light role's dark counterpart. Graphviz writes a color's opacity as
+ * an attribute of its own, so a role at an opacity keeps it: ink at a
+ * tenth on white paper is ink at a tenth on the editor.
  */
-function darkenGraphviz(svg: SVGSVGElement) {
+const SKIN_TURNED = new Map<string, string>(
+  Object.entries(DIAGRAM_SKIN.light).map(([role, color]) => [
+    color,
+    DIAGRAM_SKIN.dark[role as keyof typeof DIAGRAM_SKIN.dark],
+  ]),
+);
+
+/** The faces Graphviz measured with, and the skin's that draw in their place. */
+const SANS_LAYOUT = /^\s*["']?(helvetica|arial)\b/i;
+const MONO_LAYOUT = /^\s*["']?courier\b/i;
+/**
+ * Geist runs wider than the Helvetica a label was measured in, about a
+ * twentieth at its regular weight and a tenth at a name's, so it is drawn
+ * that much smaller to stay in its box. Geist Mono and Courier match.
+ */
+const SANS_FIT = 0.95;
+const NAME_FIT = 0.9;
+
+/**
+ * Graphviz's drawing in the diagram skin, on the editor's dark canvas.
+ *
+ * Text it measured as Helvetica or Arial is drawn in Geist, a node's name
+ * at the weight a name takes, and Courier in Geist Mono; the widths are
+ * close enough that a label still fits its box. A dash is the skin's, long
+ * enough to read as one.
+ *
+ * Made for white paper, as Graphviz draws by default, its page is taken
+ * away and every color turned: the skin's own roles to their dark
+ * counterparts, anything else by lightness, keeping its hue. A graph that
+ * chose a dark page keeps its colors.
+ */
+function skinGraphviz(svg: SVGSVGElement) {
+  for (const text of svg.querySelectorAll("text[font-family]")) {
+    const family = text.getAttribute("font-family") ?? "";
+    if (MONO_LAYOUT.test(family)) text.setAttribute("font-family", MONO);
+    else if (SANS_LAYOUT.test(family)) {
+      text.setAttribute("font-family", SANS);
+      const name =
+        text.closest("g.node") !== null && !text.hasAttribute("font-weight");
+      if (name) text.setAttribute("font-weight", "600");
+      const size = parseFloat(text.getAttribute("font-size") ?? "");
+      if (size > 0)
+        text.setAttribute(
+          "font-size",
+          (size * (name ? NAME_FIT : SANS_FIT)).toFixed(2),
+        );
+    }
+  }
+  for (const element of svg.querySelectorAll('[stroke-dasharray="5,2"]'))
+    element.setAttribute("stroke-dasharray", "5,4");
+
   const page = svg.querySelector(":scope > g.graph > polygon");
   const paper = readColor(page?.getAttribute("fill") ?? "white");
   if (paper !== undefined && Math.max(...paper) + Math.min(...paper) < 1)
@@ -260,15 +446,16 @@ function darkenGraphviz(svg: SVGSVGElement) {
       const value = element.getAttribute(name);
       if (value === null) continue;
       if (!turned.has(value)) {
-        const color = readColor(value);
-        turned.set(value, color && darkened(color));
+        const role = SKIN_TURNED.get(value.toLowerCase());
+        const color = role === undefined ? readColor(value) : undefined;
+        turned.set(value, role ?? (color && darkened(color)));
       }
       const color = turned.get(value);
       if (color !== undefined) element.setAttribute(name, color);
     }
   }
-  // Text without a color of its own is black, and inherits this instead.
-  svg.setAttribute("fill", darkened([0, 0, 0]));
+  // Text without a color of its own is black, and inherits ink instead.
+  svg.setAttribute("fill", skin.ink);
 }
 
 /** Elements a drawing never needs and that could run or reach out. */
@@ -332,11 +519,11 @@ function safeCss(css: string): string {
  * opening in a new tab: Graphviz writes a node's `URL` as a link, and a
  * repository's analysis may give it any. Sized in pixels from its view
  * box, so it can be scaled; undefined when it is not an SVG. A Graphviz
- * drawing, with `darken`, is turned for the dark canvas.
+ * drawing, with `skin`, is drawn in the diagram skin on the dark canvas.
  */
 export function prepareSvg(
   text: string,
-  { darken = false }: { darken?: boolean } = {},
+  { skin: skinned = false }: { skin?: boolean } = {},
 ): PreparedSvg | undefined {
   // Read as a web page reads SVG inline, not as XML: Mermaid's labels are
   // HTML, with a `<br>` that no XML parser accepts. A parsed document runs
@@ -415,7 +602,7 @@ export function prepareSvg(
   svg.setAttribute("height", String(height));
   // Mermaid caps its width in a style; the canvas decides the size here.
   svg.style.removeProperty("max-width");
-  if (darken) darkenGraphviz(svg);
+  if (skinned) skinGraphviz(svg);
   return {
     markup: new XMLSerializer().serializeToString(svg),
     width,

@@ -90,3 +90,4 @@ test-results/
 
 # Installed by scripts/install-agent-tools.sh at a pinned upstream release.
 .agents/skills/archify/
+.agents/skills/diagram-design/

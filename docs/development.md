@@ -61,10 +61,11 @@ a reset endpoint or auth bypass to the product for the suite.
 
 ## Maintenance tools for agents
 
-Two optional agent skills live in `.agents/skills/`; `.claude/skills` is a
+Three optional agent skills live in `.agents/skills/`; `.claude/skills` is a
 symlink to it so Codex and Claude Code find the same ones. The tools themselves
 are not committed. Run `scripts/install-agent-tools.sh` once per clone to
-install both (or pass `archify` or `graphify`), and again after a pin changes.
+install all three (or pass `archify`, `diagram-design` or `graphify`), and again
+after a pin changes.
 Their output is supplemental: reviewed rules and explanations stay in
 `AGENTS.md` and `docs/`.
 
@@ -78,6 +79,13 @@ Their output is supplemental: reviewed rules and explanations stay in
   `.agents/skills/archify`; needs Node 18+ and `curl`. Check it with `node .agents/skills/archify/bin/archify.mjs doctor`. Write
   diagrams outside the checkout unless one is being committed on purpose. A
   validated diagram is not evidence the system behaves that way.
+- **Diagram Design** (skill `diagram-design`): editorial HTML/SVG diagrams. The
+  install script unpacks the skill directory of `cathrynlavery/diagram-design`
+  2.6.68 at a pinned commit into the gitignored `.agents/skills/diagram-design`;
+  needs `curl`. Its style guide is also the product's diagram skin:
+  `packages/shared/src/diagram-skin.ts` holds its semantic roles, which the
+  worker writes `dependency-cruiser.dot` in and the workbench draws every
+  Graphviz and Mermaid diagram with. Change the roles there, not in either app.
 
 ## Build and development servers
 

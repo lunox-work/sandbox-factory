@@ -21,8 +21,8 @@ Workspace names and entry points are in the [index](./docs/README.md#workspaces)
 
 Run `npm run test:e2e` after changing sign-in gating, workspace switching or
 bounty creation in `apps/web` or their API routes; CI requires it. The
-`graphify` and `archify` skills are optional navigation and diagram aids,
-installed per clone with `scripts/install-agent-tools.sh`; see
+`graphify`, `archify` and `diagram-design` skills are optional navigation and
+diagram aids, installed per clone with `scripts/install-agent-tools.sh`; see
 [development.md](./docs/development.md#maintenance-tools-for-agents).
 
 Read [development.md](./docs/development.md) before changing tests, Makefile,

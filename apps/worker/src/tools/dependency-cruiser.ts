@@ -20,7 +20,11 @@ import {
   DEPENDENCY_CRUISER_TOOL_VERSION,
   isDependencyCruiserParams,
 } from "sandbox-factory";
-import { DEPENDENCY_SUMMARY_LIMITS } from "@sandbox-factory/shared";
+import {
+  DEPENDENCY_SUMMARY_LIMITS,
+  DIAGRAM_LAYOUT_FONTS,
+  DIAGRAM_SKIN,
+} from "@sandbox-factory/shared";
 import type { DependencyCruiserSummaryDto } from "@sandbox-factory/shared";
 import { AnalysisError } from "../errors.js";
 import type { ArtifactFile, ToolAdapter } from "./adapter.js";
@@ -58,6 +62,162 @@ export const CRUISE_OPTIONS = {
   moduleSystems: ["es6", "cjs", "tsd", "amd"],
   combinedDependencies: false,
 } satisfies ICruiseOptions;
+
+const skin = DIAGRAM_SKIN.light;
+/** A skin color at an opacity, as Graphviz reads `#rrggbbaa`. */
+const faded = (color: string, opacity: number) =>
+  `${color}${Math.round(opacity * 255)
+    .toString(16)
+    .padStart(2, "0")}`;
+
+/**
+ * How `dependency-cruiser.dot` draws: in the diagram skin's light roles,
+ * replacing the cruiser's own theme, which fills each file type with its
+ * own pastel. Here color says what a module is to the graph, never what
+ * language it is written in, and the accent is kept for what is wrong: a
+ * rule's error and a cycle. Folders are hairline containers.
+ *
+ * Edges stay curved: the skin draws right-angled connectors, but Graphviz's
+ * orthogonal router fails outright on a repository-sized graph.
+ *
+ * Bump the tool version when this changes: it is what the file draws.
+ */
+export const DOT_THEME = {
+  replace: true,
+  graph: {
+    rankdir: "LR",
+    splines: "true",
+    overlap: "false",
+    nodesep: "0.16",
+    ranksep: "0.32",
+    bgcolor: skin.paper,
+    style: "rounded",
+    color: skin.rule,
+    penwidth: "1",
+    fontname: DIAGRAM_LAYOUT_FONTS.mono,
+    fontsize: "9",
+    fontcolor: skin.soft,
+    compound: "true",
+  },
+  node: {
+    shape: "box",
+    style: "rounded,filled",
+    height: "0.3",
+    margin: "0.12,0.06",
+    penwidth: "1",
+    color: skin.ink,
+    fillcolor: skin.node,
+    fontcolor: skin.ink,
+    fontname: DIAGRAM_LAYOUT_FONTS.sans,
+    // Geist at a name's weight runs a tenth wider than Helvetica: the
+    // workbench draws it a tenth smaller, at the skin's 12px.
+    fontsize: "13",
+  },
+  edge: {
+    arrowhead: "normal",
+    arrowsize: "0.6",
+    penwidth: "1",
+    color: skin.muted,
+    fontname: DIAGRAM_LAYOUT_FONTS.mono,
+    fontsize: "8",
+    fontcolor: skin.muted,
+  },
+  // The first entry a module matches wins each attribute.
+  modules: [
+    {
+      criteria: { "rules[0].severity": "error" },
+      attributes: {
+        color: skin.accent,
+        fillcolor: faded(skin.accent, 0.08),
+        fontcolor: skin.ink,
+      },
+    },
+    {
+      criteria: { matchesHighlight: true },
+      attributes: { color: skin.accent, fillcolor: faded(skin.accent, 0.08) },
+    },
+    {
+      criteria: { "rules[0].severity": "warn" },
+      attributes: {
+        color: faded(skin.accent, 0.5),
+        fillcolor: faded(skin.accent, 0.05),
+        style: "rounded,filled,dashed",
+      },
+    },
+    { criteria: { consolidated: true }, attributes: { shape: "box3d" } },
+    { criteria: { matchesDoNotFollow: true }, attributes: { shape: "folder" } },
+    // Outside the repository: a package or the runtime's own module.
+    {
+      criteria: { coreModule: true },
+      attributes: {
+        color: faded(skin.ink, 0.3),
+        fillcolor: faded(skin.ink, 0.03),
+        fontcolor: skin.muted,
+      },
+    },
+    {
+      criteria: { source: "node_modules" },
+      attributes: {
+        color: faded(skin.ink, 0.3),
+        fillcolor: faded(skin.ink, 0.03),
+        fontcolor: skin.muted,
+      },
+    },
+    // Nothing imports it and it imports nothing.
+    {
+      criteria: { orphan: true },
+      attributes: {
+        color: faded(skin.ink, 0.2),
+        fillcolor: faded(skin.ink, 0.02),
+        style: "rounded,filled,dashed",
+      },
+    },
+    {
+      criteria: { "rules[0].severity": "info" },
+      attributes: { color: skin.soft },
+    },
+  ],
+  dependencies: [
+    {
+      criteria: { "rules[0].severity": "error" },
+      attributes: { color: skin.accent, fontcolor: skin.accent },
+    },
+    {
+      criteria: { circular: true },
+      attributes: { color: skin.accent, style: "dashed" },
+    },
+    {
+      criteria: { "rules[0].severity": "warn" },
+      attributes: { color: faded(skin.accent, 0.5), style: "dashed" },
+    },
+    {
+      criteria: { "rules[0].severity": "info" },
+      attributes: { color: skin.soft },
+    },
+    // Optional or passive: loaded later, or gone once compiled.
+    { criteria: { dynamic: true }, attributes: { style: "dashed" } },
+    {
+      criteria: {
+        dependencyTypes: [
+          "pre-compilation-only",
+          "triple-slash-type-reference",
+          "type-import",
+          "type-only",
+        ],
+      },
+      attributes: { arrowhead: "onormal", style: "dashed", color: skin.soft },
+    },
+    {
+      criteria: { dependencyTypes: ["export"] },
+      attributes: { arrowhead: "inv" },
+    },
+    {
+      criteria: { dependencyTypes: "core" },
+      attributes: { style: "dashed", color: skin.soft },
+    },
+    { criteria: { dependencyTypes: "npm" }, attributes: { color: skin.soft } },
+  ],
+};
 
 /**
  * The cruise, on a thread of its own. It reads and parses every file
@@ -246,9 +406,13 @@ export function createDependencyCruiserAdapter(
           delete used.baseDir;
           json = JSON.stringify(result);
         }
-        const formatted = await (options.format ?? format)(result, {
+        // Not in the format options' type, but read from them: the result's
+        // own options are re-summarised with these over them.
+        const dotOptions = {
           outputType: "dot",
-        });
+          reporterOptions: { dot: { theme: DOT_THEME } },
+        } as const;
+        const formatted = await (options.format ?? format)(result, dotOptions);
         dot =
           typeof formatted.output === "string"
             ? formatted.output

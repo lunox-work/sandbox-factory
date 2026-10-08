@@ -1,5 +1,9 @@
 @import "tailwindcss";
 @import "tw-animate-css";
+/* The diagram skin's faces, self-hosted. Declared for every page but
+   fetched only by one that draws a diagram. */
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
 
 /*
  * Design tokens, in shadcn's vocabulary so its generated components work
