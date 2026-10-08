@@ -15,7 +15,6 @@ import type {
 import { READ_SCOPES, WRITE_SCOPES } from "@sandbox-factory/jira";
 
 import type { Auth } from "../src/auth.js";
-import type { JiraRouteOptions } from "../src/jira/routes.js";
 import { signState } from "../src/connect-state.js";
 import { createApp } from "../src/routes.js";
 
@@ -400,7 +399,6 @@ function appWith(
     fetch?: typeof globalThis.fetch;
     connections?: ReturnType<typeof fakeConnections>;
     boards?: ReturnType<typeof fakeBoards>;
-    startSizing?: JiraRouteOptions["startSizing"];
   } = {},
 ) {
   const connections = options.connections ?? fakeConnections();
@@ -439,9 +437,6 @@ function appWith(
       apiUrl: API_URL,
       appUrl: APP_URL,
       ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
-      ...(options.startSizing === undefined
-        ? {}
-        : { startSizing: options.startSizing }),
     },
   });
   return { app, connections, boards };
@@ -673,67 +668,12 @@ function boardsAlreadyHolding(externalIds: string[]) {
   });
 }
 
-test("connecting a site sizes its boards", async () => {
-  // A new site's boards open on proposals, not on a button to press.
-  const started: unknown[] = [];
-  const { app } = appWith({
-    fetch: fakeAtlassian({ boards: {} }),
-    boards: boardsAlreadyHolding([]),
-    startSizing: (input) => {
-      started.push(input);
-      return Promise.resolve();
-    },
-  });
-  const state = signState(SECRET, "jira", {
-    organizationId: "org_1",
-    userId: dana.id,
-    returnTo: "/settings/jira",
-  });
-
-  await app.request(
-    `/api/v1/jira/callback?code=c&state=${encodeURIComponent(state)}`,
-    { headers: signedIn },
-  );
-
-  assert.deepEqual(started, [
-    { organizationId: "org_1", boardId: "jrb_42", startedBy: dana.id },
-    { organizationId: "org_1", boardId: "jrb_43", startedBy: dana.id },
-  ]);
-});
-
-test("every sync offers every board it saw, leaving once-only to the sizer", async () => {
-  // Whether a board has been sized before is the bounty side's question
-  // (see sizeIfNeverSized); the callback offers every board it registered,
-  // so a board whose first attempt could not start is tried again.
-  const started: string[] = [];
-  const { app } = appWith({
-    fetch: fakeAtlassian({ boards: {} }),
-    boards: boardsAlreadyHolding(["42"]),
-    startSizing: ({ boardId }) => {
-      started.push(boardId);
-      return Promise.resolve();
-    },
-  });
-  const state = signState(SECRET, "jira", {
-    organizationId: "org_1",
-    userId: dana.id,
-    returnTo: "/settings/jira",
-  });
-
-  await app.request(
-    `/api/v1/jira/callback?code=c&state=${encodeURIComponent(state)}`,
-    { headers: signedIn },
-  );
-
-  assert.deepEqual(started, ["jrb_42", "jrb_43"]);
-});
-
-test("a board that cannot be sized does not fail the connection", async () => {
-  const { app } = appWith({
-    fetch: fakeAtlassian({ boards: {} }),
-    boards: boardsAlreadyHolding([]),
-    startSizing: () => Promise.reject(new Error("sizer down")),
-  });
+test("connecting a site registers its boards and sizes none of them", async () => {
+  // A new site's boards open on their backlog scan, which costs no model
+  // call; a ticket is sized when someone picks it. The routes take no sizer
+  // at all, so there is nothing a connection could start.
+  const boards = boardsAlreadyHolding([]);
+  const { app } = appWith({ fetch: fakeAtlassian({ boards: {} }), boards });
   const state = signState(SECRET, "jira", {
     organizationId: "org_1",
     userId: dana.id,
@@ -748,6 +688,10 @@ test("a board that cannot be sized does not fail the connection", async () => {
   assert.equal(
     new URL(response.headers.get("location") ?? "").searchParams.get("jira"),
     "connected",
+  );
+  assert.deepEqual(
+    boards.synced.map((input) => input.externalId),
+    ["42", "43"],
   );
 });
 
@@ -1310,10 +1254,9 @@ test("syncing a site records every board on it, settings untouched", async () =>
   assert.equal(boards.registered.length, 0);
 });
 
-test("a re-sync reports new boards and offers every board for sizing", async () => {
-  // A board made in Jira since the site was connected is sized in the
-  // background, the same as one that came with the connection.
-  const started: string[] = [];
+test("a re-sync reports the boards it found for the first time", async () => {
+  // A board made in Jira since the site was connected is registered like
+  // one that came with the connection, and sized only when someone asks.
   const { app } = appWith({
     fetch: fakeJiraApi({
       boards: [
@@ -1332,10 +1275,6 @@ test("a re-sync reports new boards and offers every board for sizing", async () 
       ],
     }),
     boards: boardsAlreadyHolding(["42"]),
-    startSizing: ({ boardId }) => {
-      started.push(boardId);
-      return Promise.resolve();
-    },
   });
 
   const response = await app.request(
@@ -1347,7 +1286,6 @@ test("a re-sync reports new boards and offers every board for sizing", async () 
   assert.deepEqual(((await response.json()) as { added: string[] }).added, [
     "jrb_43",
   ]);
-  assert.deepEqual(started, ["jrb_42", "jrb_43"]);
 });
 
 test("a re-sync hides the boards Jira no longer lists", async () => {

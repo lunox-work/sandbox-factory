@@ -1,5 +1,3 @@
-import { randomUUID } from "node:crypto";
-
 import {
   followsJira,
   type RateCardStore,
@@ -42,44 +40,6 @@ export type StartRunResult =
         | "rate-card-required"
         | "request-conflict";
     };
-
-/**
- * Start sizing one board: the run row, then the executor in the background.
- *
- * Shared by the board's run endpoint and the Jira callback, which sizes the
- * boards a newly connected site brings. The checks are the same either way —
- * a run needs a sizer, a usable connection and a rate card to price with —
- * and so is the idempotency: `requestId` names the run, and a board with a
- * run already in flight gets no second one.
- *
- * Does not check the caller's role. The route does, and the callback has
- * already re-read it.
- */
-/**
- * Start sizing a board unless it has been sized before.
- *
- * What a Jira sync calls for every board it sees. "Before" means any run,
- * whatever it ended as: a board is sized automatically once, and after that
- * only when someone asks. A board whose first attempt could not start — no
- * sizer yet, a connection needing a reconnect — has no run, so the next sync
- * tries again.
- */
-export async function sizeIfNeverSized(
-  options: PricingRouteOptions,
-  input: {
-    readonly organizationId: string;
-    readonly boardId: string;
-    readonly startedBy: string;
-  },
-): Promise<StartRunResult | null> {
-  const previous = await options.runs.listForBoard(
-    input.organizationId,
-    input.boardId,
-    { limit: 1 },
-  );
-  if (previous.length > 0) return null;
-  return startRun(options, { ...input, requestId: randomUUID() });
-}
 
 /**
  * The organization's rate card, saving the default the first time a run
@@ -132,6 +92,17 @@ export async function bountyOnBoard(
   }
 }
 
+/**
+ * Start sizing one board: the run row, then the executor in the background.
+ *
+ * What the board's run endpoint calls once someone asks for the whole
+ * board. A run needs a sizer, a usable connection and a rate card to price
+ * with; `requestId` names the run, and a board with a run already in flight
+ * gets no second one. Nothing starts one unasked: connecting a site sizes
+ * nothing.
+ *
+ * Does not check the caller's role. The route does.
+ */
 export async function startRun(
   options: PricingRouteOptions,
   input: {
