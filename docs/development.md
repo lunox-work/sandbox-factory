@@ -106,6 +106,22 @@ Build provenance rules live in [versioning.md](./versioning.md#how-it-is-wired).
 Keep build arguments declared in every Docker stage that uses them; arguments
 do not cross stages. Empty values count as absent to the resolver.
 
+For access from another device, extend `CORS_ORIGINS` with the web origins
+(scheme, hostname and port) and set `VITE_DEV_ALLOWED_HOSTS` to comma-separated
+hostnames in the gitignored `.env.development` used by `make up`. Better Auth
+already trusts `CORS_ORIGINS` as well as its own `BETTER_AUTH_URL`; the web
+client sends relative `/api` requests through Vite's proxy. For host-run Vite,
+use `apps/web/.env.local`. A leading dot in an allowed hostname matches its
+subdomains; prefer exact hostnames when only one device serves the app.
+Defaults remain localhost-only. Allowing an origin does not change the OAuth
+provider callback: `BETTER_AUTH_URL` must also be browser-reachable and match
+the redirect URI registered with each provider. When using an HTTPS dev proxy,
+set `BETTER_AUTH_URL`, `APP_URL` and `VITE_DEV_CANONICAL_ORIGIN` to its origin
+locally. The optional Vite setting moves browser pages to that origin before
+sign-in, preserving the path, query and fragment so OAuth state and session
+cookies stay on one hostname. It applies only to the dev server; unset, it
+adds no redirect. HEAD requests and API calls are unaffected.
+
 ## Container dependencies
 
 `api-dev`, `web-dev` and `worker` each run `npm ci` for the entire workspace.
