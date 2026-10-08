@@ -110,25 +110,26 @@ vi.stubGlobal(
       );
     }
     if (url.includes("/jira/connections")) {
-      // One site, on the first organization only, so the home screen has a
-      // row that leads somewhere and the test can tell which owner it
-      // carried.
+      // One site, on the first organization and on any other a test gave
+      // boards, so home has a board to open where there is one.
+      const owner = /\/orgs\/([^/]+)\/jira/.exec(url)?.[1] ?? "";
       return Promise.resolve(
         Response.json({
-          connections: url.includes("org_1")
-            ? [
-                {
-                  id: "jrc_1",
-                  cloudId: "cloud-1",
-                  siteUrl: "https://acme.atlassian.net",
-                  siteName: "lunox-work",
-                  email: null,
-                  healthy: true,
-                  scopes: [],
-                  createdAt: "2026-09-21T00:00:00.000Z",
-                },
-              ]
-            : [],
+          connections:
+            owner === "org_1" || boardsByOrganization[owner] !== undefined
+              ? [
+                  {
+                    id: "jrc_1",
+                    cloudId: "cloud-1",
+                    siteUrl: "https://acme.atlassian.net",
+                    siteName: "lunox-work",
+                    email: null,
+                    healthy: true,
+                    scopes: [],
+                    createdAt: "2026-09-21T00:00:00.000Z",
+                  },
+                ]
+              : [],
         }),
       );
     }
@@ -174,6 +175,13 @@ vi.stubGlobal(
     return Promise.resolve(Response.json({}));
   }),
 );
+
+/** Home's heading: a greeting, by the clock, rather than a page name. */
+const GREETING = /^Good (morning|afternoon|evening)/;
+
+function homeHeading() {
+  return screen.findByRole("heading", { name: GREETING });
+}
 
 /*
  * Radix's avatar decides whether to show the picture or the fallback by
@@ -349,9 +357,7 @@ test("the home header carries no name or sign out", async () => {
 
   // Both moved into the avatar menu; neither is part of the work the page is
   // for. This is the header the screenshot asked for.
-  expect(
-    await screen.findByRole("heading", { name: "Connections" }),
-  ).toBeTruthy();
+  expect(await homeHeading()).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Sign out" })).toBeNull();
 });
 
@@ -367,9 +373,7 @@ test("the version readout is in the menu, not on the page", async () => {
 
 test("the menu opens the account screen, and home comes back", async () => {
   render(<App />);
-  expect(
-    await screen.findByRole("heading", { name: "Connections" }),
-  ).toBeTruthy();
+  expect(await homeHeading()).toBeTruthy();
 
   await openMenu();
   fireEvent.click(screen.getByRole("menuitem", { name: /Account settings/ }));
@@ -382,7 +386,7 @@ test("the menu opens the account screen, and home comes back", async () => {
   // only way out. If it stops working, the screen is a dead end.
   fireEvent.click(railHome());
   await waitFor(() => {
-    expect(screen.getByRole("heading", { name: "Connections" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: GREETING })).toBeTruthy();
   });
 });
 
@@ -458,9 +462,7 @@ test("an unknown path says it is not found, with a way home", async () => {
   expect(document.title).toBe("Page not found · Lunox");
   fireEvent.click(screen.getByRole("link", { name: "Go home" }));
   expect(window.location.pathname).toBe("/");
-  expect(
-    await screen.findByRole("heading", { name: "Connections" }),
-  ).toBeTruthy();
+  expect(await homeHeading()).toBeTruthy();
 });
 
 test("navigating writes the path, so a reload stays put", async () => {
@@ -495,7 +497,7 @@ test("the Back button returns to the previous screen", async () => {
   window.dispatchEvent(new PopStateEvent("popstate"));
 
   await waitFor(() => {
-    expect(screen.getByRole("heading", { name: "Connections" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: GREETING })).toBeTruthy();
   });
 });
 
@@ -837,16 +839,14 @@ test("the switcher answers the cursor too", async () => {
   expect(switcher.className).toContain("hover:bg-accent");
 });
 
-test("a site on the home screen opens its organization's Jira tab", async () => {
-  // End to end through the shell: a site has no page of its own, so the row
-  // leads to where its boards are listed.
+test("a site whose account sees no boards sends home's reader to its Jira settings", async () => {
+  // End to end through the shell: the boards a site shows are managed in
+  // the workspace's Jira tab, which is where a new board is picked up.
   window.history.replaceState(null, "", "/");
   render(<App />);
 
-  await waitFor(() => {
-    expect(screen.getByText("lunox-work")).toBeTruthy();
-  });
-  fireEvent.click(screen.getByText("lunox-work"));
+  const settings = await screen.findByRole("button", { name: "Jira settings" });
+  fireEvent.click(settings);
 
   await waitFor(() => {
     expect(window.location.pathname).toBe("/o/acme/settings");

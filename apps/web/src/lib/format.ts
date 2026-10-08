@@ -74,3 +74,18 @@ export function dateTime(iso: string): string {
     timeStyle: "short",
   });
 }
+
+/**
+ * An amount in whole units of its currency, for a range rather than a
+ * price: "$58", not "$58.00". Rounded, so it never claims a precision the
+ * range does not have.
+ */
+export function wholeMoney(amountMinor: number, currency: string): string {
+  const digits = fractionDigits(currency);
+  return new Intl.NumberFormat(undefined, {
+    style: "currency",
+    currency,
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
+  }).format(Math.round(amountMinor / 10 ** digits));
+}

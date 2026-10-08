@@ -1,616 +1,757 @@
 /**
- * The home screen: every connection the person can reach, grouped by owner.
+ * Home: one page that changes with what a workspace has connected.
  *
- * Three properties. That connections are attributed to the organization that
- * owns them — the whole point of grouping, and getting it wrong would show a
- * client's site under the wrong account. That a personal organization is
- * presented as the person's own and sorted first. And that one organization
- * failing to load does not empty the others.
+ * The properties that matter. Each stage shows something of value with no
+ * model call — the six kinds of work, a board's backlog scan, a repository's
+ * x-ray — and offers the next step as one action. Nothing is sized until
+ * someone presses Size, and then only the ticket pressed. A tool the server
+ * does not offer, or a person who may not use it, is never offered a button
+ * that would be refused.
  *
- * The server is faked at the `fetch` boundary, as elsewhere in this suite.
+ * The server is faked at the `fetch` boundary, per route, as elsewhere.
  */
 
-import { render, screen, waitFor, within } from "./render";
+import { resolveCategories } from "sandbox-factory";
 import { userEvent } from "@testing-library/user-event";
-import { beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
-import { Home } from "../src/Home";
+import { completeBountyFixture } from "./api-fixtures";
+import { render, screen, waitFor, within } from "./render";
 
-const personal = {
-  id: "org_personal",
-  name: "Dana",
-  slug: "dana",
-  kind: "personal" as const,
-  role: "owner" as const,
-};
+import { Home, firstName, greeting } from "../src/Home";
 
-const acme = {
-  id: "org_acme",
+const owner = {
+  id: "org_1",
   name: "Acme",
   slug: "acme",
   kind: "team" as const,
-  role: "member" as const,
+  role: "owner" as const,
 };
 
-function connection(overrides: {
-  id: string;
-  siteName: string;
-  healthy?: boolean;
-}) {
+const stamp = "2026-10-01T00:00:00.000Z";
+
+const jiraSite = {
+  id: "jrc_1",
+  cloudId: "cloud-1",
+  siteUrl: "https://acme.atlassian.net",
+  siteName: "Acme",
+  email: null,
+  healthy: true,
+  scopes: [],
+  resourceScopes: [],
+  writeGranted: true,
+  createdAt: stamp,
+};
+
+const board = {
+  id: "jrb_1",
+  connectionId: "jrc_1",
+  externalId: "42",
+  name: "Mobile",
+  boardType: "scrum",
+  projectKey: "ACME",
+  selection: { unassignedOnly: false, categories: {} },
+  sourceRepoId: null as string | null,
+  createdAt: stamp,
+};
+
+const githubAccount = {
+  id: "ghc_1",
+  installationId: "9",
+  accountLogin: "acme",
+  accountType: "Organization",
+  repositorySelection: "all",
+  healthy: true,
+  suspendedAt: null,
+  uninstalledAt: null,
+  settingsUrl: "https://github.com/organizations/acme/settings/installations/9",
+  createdAt: stamp,
+};
+
+const widgets = {
+  id: "ghr_1",
+  connectionId: "ghc_1",
+  role: "source",
+  externalId: "1296269",
+  fullName: "acme/widgets",
+  defaultBranch: "main",
+  isPrivate: true,
+  sizeKb: 120,
+  headSha: "a".repeat(40),
+  pushedAt: null,
+  lastSyncedAt: null,
+  syncStatus: "ok",
+  syncError: null,
+  stack: ["TypeScript", "React"],
+  createdAt: stamp,
+};
+
+const snapshot = {
+  id: "rsn_1",
+  repoId: "ghr_1",
+  commitSha: "a".repeat(40),
+  ref: "refs/heads/main",
+  treeSha: "b".repeat(40),
+  treeTruncated: false,
+  fileCount: 240,
+  totalBytes: 900_000,
+  languages: { TypeScript: 800_000 },
+  createdAt: stamp,
+};
+
+const facts = {
+  version: 1,
+  fileCount: 240,
+  totalBytes: 900_000,
+  truncated: false,
+  testFiles: 48,
+  modules: [
+    { path: ".", files: 6, bytes: 1_000, testFiles: 0, extensions: {} },
+    { path: "docs", files: 30, bytes: 1_000, testFiles: 0, extensions: {} },
+    {
+      path: "packages/billing",
+      files: 40,
+      bytes: 1_000,
+      testFiles: 12,
+      extensions: {},
+    },
+    {
+      path: "apps/web",
+      files: 160,
+      bytes: 1_000,
+      testFiles: 36,
+      extensions: {},
+    },
+  ],
+  extensions: { ".ts": 200 },
+  lockfiles: ["package-lock.json"],
+  migrationDirectories: ["packages/db/drizzle"],
+  infraDirectories: [".github/workflows"],
+};
+
+function ticket(n: number, category: { id: string; label: string }) {
   return {
-    cloudId: `cloud-${overrides.id}`,
-    siteUrl: `https://${overrides.siteName.toLowerCase()}.atlassian.net`,
-    email: null,
-    healthy: true,
-    scopes: ["read:jira-work"],
-    createdAt: "2026-09-21T00:00:00.000Z",
-    ...overrides,
+    id: String(1000 + n),
+    key: `ACME-${n}`,
+    summary: `Ticket ${n}`,
+    status: "To Do",
+    statusCategory: "new",
+    assignee: null,
+    priority: null,
+    issueType: "Task",
+    labels: [],
+    projectKey: "ACME",
+    parentKey: null,
+    created: "2025-01-01T00:00:00.000Z",
+    updated: "2025-01-01T00:00:00.000Z",
+    dueDate: null,
+    url: `https://acme.atlassian.net/browse/ACME-${n}`,
+    categories: [{ ...category, reason: `Reason for ${n}` }],
   };
 }
 
-/** Connections per organization id; a missing key answers 500. */
-let byOrganization: Record<string, ReturnType<typeof connection>[]> = {};
+const leftBehind = { id: "left-behind", label: "Left behind" };
+const paperCuts = { id: "paper-cuts", label: "Paper cuts" };
+
+function preview() {
+  return {
+    boardId: "jrb_1",
+    jql: "project = ACME",
+    categories: resolveCategories(),
+    issues: [
+      ticket(7, leftBehind),
+      ticket(8, leftBehind),
+      ticket(9, paperCuts),
+    ],
+    matched: { "left-behind": 2, "paper-cuts": 1 },
+    unmatched: 40,
+    candidatesScanned: 43,
+    skippedLive: 0,
+    scanLimitReached: false,
+    ticketCapReached: false,
+  };
+}
+
+interface World {
+  /** Null: the server has no Jira at all. */
+  jira: (typeof jiraSite)[] | null;
+  boards: (typeof board)[];
+  /** Null: the server has no GitHub App. */
+  github: (typeof githubAccount)[] | null;
+  repositories: (typeof widgets)[];
+  installationRepositories: {
+    externalId: string;
+    fullName: string;
+    defaultBranch: string;
+    isPrivate: boolean;
+    registeredId: string | null;
+  }[];
+  proposals: number;
+  /** Bounties written, sized or not. */
+  bounties: number;
+  /** The board's backlog scan, when not the usual three candidates. */
+  scan?: ReturnType<typeof preview> & { fallback?: boolean };
+}
+
+let world: World;
+let requests: { method: string; url: string; body: unknown }[];
+
+function emptyWorld(): World {
+  return {
+    jira: [],
+    boards: [],
+    github: [],
+    repositories: [],
+    installationRepositories: [],
+    proposals: 0,
+    bounties: 0,
+  };
+}
+
+function json(body: unknown, status = 200) {
+  return Promise.resolve(
+    new Response(JSON.stringify(completeBountyFixture(body)), {
+      status,
+      headers: { "content-type": "application/json" },
+    }),
+  );
+}
 
 beforeEach(() => {
-  byOrganization = {};
+  world = emptyWorld();
+  requests = [];
+  window.localStorage.clear();
+  window.history.replaceState(null, "", "/");
   vi.stubGlobal(
     "fetch",
-    vi.fn((input: RequestInfo | URL) => {
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      const match = /\/orgs\/([^/]+)\/jira\/connections/.exec(url);
-      if (match === null) {
-        return Promise.resolve(Response.json({}));
+      const method = init?.method ?? "GET";
+      requests.push({
+        method,
+        url,
+        body:
+          init?.body === undefined ? undefined : JSON.parse(String(init.body)),
+      });
+      const base = "/api/v1/orgs/org_1";
+      const path = url.startsWith(base) ? url.slice(base.length) : url;
+
+      if (path.startsWith("/jira/") && world.jira === null)
+        return json({ error: "Not found" }, 404);
+      if (path.startsWith("/github/") && world.github === null)
+        return json(
+          { error: "GitHub is not set up.", code: "unconfigured" },
+          503,
+        );
+
+      if (path === "/jira/connections")
+        return json({ connections: world.jira });
+      if (path === "/jira/boards") return json({ boards: world.boards });
+      if (path === "/jira/boards/jrb_1/backlog-preview")
+        return json(world.scan ?? preview());
+      if (path === "/jira/boards/jrb_1/runs")
+        return json({ runs: [], sizingAvailable: true });
+      if (method === "POST" && path === "/jira/boards/jrb_1/issues")
+        return json({ run: { id: "brn_9", kind: "issue" } }, 202);
+      if (path === "/runs/brn_9")
+        return json({
+          run: {
+            id: "brn_9",
+            kind: "issue",
+            status: "succeeded",
+            outcomes: [
+              {
+                externalIssueId: "1007",
+                issueKey: "ACME-7",
+                status: "proposed",
+                proposalId: "bpr_1",
+              },
+            ],
+          },
+        });
+      if (method === "PATCH" && path === "/jira/boards/jrb_1") {
+        const { sourceRepoId } = JSON.parse(String(init?.body)) as {
+          sourceRepoId: string | null;
+        };
+        world.boards = world.boards.map((row) => ({ ...row, sourceRepoId }));
+        return json({ board: world.boards[0] });
       }
-      const rows = byOrganization[decodeURIComponent(match[1] ?? "")];
-      return Promise.resolve(
-        rows === undefined
-          ? Response.json({ error: "boom" }, { status: 500 })
-          : Response.json({ connections: rows }),
-      );
+      if (path === "/github/connections")
+        return json({ connections: world.github });
+      if (path === "/github/repositories")
+        return json({ repositories: world.repositories });
+      if (path === "/github/connections/ghc_1/repositories") {
+        if (method === "POST") {
+          world.repositories = [widgets];
+          return json({ repository: widgets }, 201);
+        }
+        return json({ repositories: world.installationRepositories });
+      }
+      if (path === "/github/repositories/ghr_1/snapshots")
+        return json({ snapshots: [snapshot] });
+      if (path === "/github/snapshots/rsn_1")
+        return json({
+          snapshot: { ...snapshot, repoFullName: "acme/widgets", facts },
+        });
+      if (
+        path.startsWith("/proposal-categories") ||
+        path.endsWith("/proposal-categories")
+      )
+        return json({
+          total: world.proposals,
+          uncategorized: world.proposals,
+          categories: [],
+        });
+      if (path.startsWith("/bounties?"))
+        return json({
+          bounties: Array.from({ length: world.bounties }, (_, index) => ({
+            id: `bty_${index}`,
+            organizationId: "org_1",
+            title: "Written by hand",
+            origin: "manual",
+            repoId: null,
+            stack: [],
+            revision: 1,
+            version: 1,
+            approval: null,
+            jira: null,
+            proposal: null,
+            sandbox: null,
+            createdAt: stamp,
+            updatedAt: stamp,
+          })),
+          nextCursor: null,
+        });
+      if (path.startsWith("/proposals?"))
+        return json({ proposals: [], nextCursor: null });
+      if (path === "/rate-card") return json({ rateCard: null });
+      return json({ error: "Not found" }, 404);
     }),
   );
 });
 
-test("each connection is listed under the organization that owns it", async () => {
-  // The property grouping exists for: a site belongs to one owner, and showing
-  // it under another would misattribute a client's data.
-  byOrganization = {
-    org_personal: [connection({ id: "jrc_1", siteName: "Mine" })],
-    org_acme: [connection({ id: "jrc_2", siteName: "Client" })],
-  };
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
-  render(
+function show(role: "owner" | "member" = "owner") {
+  const handlers = {
+    onBoardName: vi.fn(),
+    onOpenBoard: vi.fn(),
+    onOpenSettings: vi.fn(),
+    onOpenRepository: vi.fn(),
+    onWriteBounty: vi.fn(),
+    onOpenBounties: vi.fn(),
+  };
+  const view = render(
     <Home
-      organizations={[personal, acme]}
-      organizationsLoading={false}
-      activeOrganization={null}
-      onOpen={vi.fn()}
+      userId="user_1"
+      name="Ada Example"
+      organization={{ ...owner, role }}
+      {...handlers}
     />,
   );
+  return { ...view, ...handlers };
+}
 
-  const mine = await screen.findByText("Mine");
-  const client = await screen.findByText("Client");
+/* -------------------------------------------------------------------------- */
+/* Nothing connected                                                          */
+/* -------------------------------------------------------------------------- */
 
-  // Scoped to the card, not the page: `getByText` alone would pass however
-  // the two groups were arranged.
-  const personalCard = mine.closest("[data-slot='card']");
-  const teamCard = client.closest("[data-slot='card']");
-  expect(personalCard).not.toBe(teamCard);
+test("with nothing connected, home offers three ways in, Jira first, over the six kinds of work", async () => {
+  show();
+
+  const paths = await screen.findByTestId("path-cards");
   expect(
-    within(personalCard as HTMLElement).getByText("Personal"),
-  ).toBeTruthy();
-  expect(within(teamCard as HTMLElement).getByText("Acme")).toBeTruthy();
-});
-
-test("the personal organization is shown as the person's own account", async () => {
-  byOrganization = {
-    org_personal: [connection({ id: "jrc_1", siteName: "Mine" })],
-  };
-
-  render(
-    <Home
-      organizations={[personal]}
-      organizationsLoading={false}
-      activeOrganization={null}
-      onOpen={vi.fn()}
-    />,
-  );
-
-  await waitFor(() => {
-    expect(screen.getByText("Personal")).toBeTruthy();
-  });
-  // Labelled rather than left to read as a team called "Dana".
-  expect(screen.getByText("Your account")).toBeTruthy();
-});
-
-test("the personal organization sorts first", async () => {
-  // It is the one organization everyone has, so it anchors the list; teams
-  // come and go beneath it.
-  byOrganization = {
-    org_personal: [connection({ id: "jrc_1", siteName: "Mine" })],
-    org_acme: [connection({ id: "jrc_2", siteName: "Client" })],
-  };
-
-  render(
-    <Home
-      organizations={[acme, personal]}
-      organizationsLoading={false}
-      activeOrganization={null}
-      onOpen={vi.fn()}
-    />,
-  );
-
-  await waitFor(() => {
-    expect(screen.getByText("Personal")).toBeTruthy();
-  });
-
-  const titles = screen
-    .getAllByText(/^(Personal|Acme)$/)
-    .map((node) => node.textContent);
-  expect(titles[0]).toBe("Personal");
-});
-
-test("one organization failing does not empty the others", async () => {
-  // Independent reads: a 500 on one must not cost the person sight of the
-  // rest, which a single try/catch around the whole fan-out would.
-  byOrganization = {
-    org_acme: [connection({ id: "jrc_2", siteName: "Client" })],
-  };
-
-  render(
-    <Home
-      organizations={[personal, acme]}
-      organizationsLoading={false}
-      activeOrganization={null}
-      onOpen={vi.fn()}
-    />,
-  );
-
-  expect(await screen.findByText("Client")).toBeTruthy();
-  expect(screen.getByText("Could not load these connections.")).toBeTruthy();
-});
-
-test("belonging to no organization says so rather than showing nothing", async () => {
-  render(
-    <Home
-      organizations={[]}
-      organizationsLoading={false}
-      activeOrganization={null}
-      onOpen={vi.fn()}
-    />,
-  );
-
+    within(paths)
+      .getAllByRole("listitem")
+      .map((item) => item.getAttribute("data-path")),
+  ).toEqual(["jira", "github", "write"]);
   expect(
-    await screen.findByText("You are not in a workspace yet"),
+    within(paths).getByRole("button", { name: /connect jira/i }),
   ).toBeTruthy();
+  // Trying it is said to cost nothing, before anyone is asked to connect.
+  expect(within(paths).getByText(/runs no AI/)).toBeTruthy();
+
+  const showcase = screen.getByTestId("category-showcase");
+  expect(within(showcase).getAllByRole("listitem")).toHaveLength(6);
+  expect(within(showcase).getByText("Left behind")).toBeTruthy();
+
+  // The cards are the steps here; a checklist over them would repeat them.
+  expect(screen.queryByTestId("setup-checklist")).toBeNull();
 });
 
-test("Manage opens that organization", async () => {
-  // Connecting happens in the organization's own settings, because the OAuth flow
-  // has to name one owner.
-  byOrganization = {
-    org_acme: [connection({ id: "jrc_1", siteName: "Client" })],
-  };
-  const onOpen = vi.fn();
-
-  render(
-    <Home
-      organizations={[acme]}
-      organizationsLoading={false}
-      activeOrganization={null}
-      onOpen={onOpen}
-    />,
-  );
-
-  await waitFor(() => {
-    expect(screen.getByRole("link", { name: /Manage/ })).toBeTruthy();
-  });
-  await userEvent.click(screen.getByRole("link", { name: /Manage/ }));
-
-  expect(onOpen).toHaveBeenCalledWith(acme);
-});
-
-// ---- only working connections are listed ----------------------------------
-//
-// A connection goes unhealthy when Atlassian refuses the credential, and it
-// cannot read a board until someone reconnects it. It is not listed — but it
-// is counted, because one that vanished silently would look like one nobody
-// had made.
-
-test("an unhealthy connection is not listed", async () => {
-  byOrganization = {
-    org_acme: [
-      connection({ id: "jrc_1", siteName: "Working" }),
-      connection({ id: "jrc_2", siteName: "Revoked", healthy: false }),
-    ],
-  };
-
-  render(
-    <Home
-      organizations={[acme]}
-      organizationsLoading={false}
-      activeOrganization={null}
-      onOpen={vi.fn()}
-    />,
-  );
-
-  expect(await screen.findByText("Working")).toBeTruthy();
-  expect(screen.queryByText("Revoked")).toBeNull();
-});
-
-test("unhealthy connections are reported as a count", async () => {
-  // Hidden, not silent: the remedy is a click away on the organization's page.
-  byOrganization = {
-    org_acme: [
-      connection({ id: "jrc_1", siteName: "Working" }),
-      connection({ id: "jrc_2", siteName: "Revoked", healthy: false }),
-      connection({ id: "jrc_3", siteName: "AlsoGone", healthy: false }),
-    ],
-  };
-
-  render(
-    <Home
-      organizations={[acme]}
-      organizationsLoading={false}
-      activeOrganization={null}
-      onOpen={vi.fn()}
-    />,
-  );
-
-  expect(await screen.findByText("2 sites need reconnecting")).toBeTruthy();
-});
-
-test("the reconnect count is singular for one", async () => {
-  byOrganization = {
-    org_acme: [
-      connection({ id: "jrc_2", siteName: "Revoked", healthy: false }),
-    ],
-  };
-
-  render(
-    <Home
-      organizations={[acme]}
-      organizationsLoading={false}
-      activeOrganization={null}
-      onOpen={vi.fn()}
-    />,
-  );
-
-  expect(await screen.findByText("1 site needs reconnecting")).toBeTruthy();
-});
-
-test("a group of only unhealthy connections does not read as empty", async () => {
-  // "No sites connected yet" would be wrong: one is connected, it is broken.
-  byOrganization = {
-    org_acme: [
-      connection({ id: "jrc_2", siteName: "Revoked", healthy: false }),
-    ],
-  };
-
-  render(
-    <Home
-      organizations={[acme]}
-      organizationsLoading={false}
-      activeOrganization={null}
-      onOpen={vi.fn()}
-    />,
-  );
-
-  await waitFor(() => {
-    expect(screen.getByText("1 site needs reconnecting")).toBeTruthy();
-  });
-  expect(screen.queryByText("No sites connected yet.")).toBeNull();
-});
-
-test("the reconnect count opens that organization", async () => {
-  byOrganization = {
-    org_acme: [
-      connection({ id: "jrc_2", siteName: "Revoked", healthy: false }),
-    ],
-  };
-  const onOpen = vi.fn();
-
-  render(
-    <Home
-      organizations={[acme]}
-      organizationsLoading={false}
-      activeOrganization={null}
-      onOpen={onOpen}
-    />,
-  );
-
-  await userEvent.click(await screen.findByText("1 site needs reconnecting"));
-
-  expect(onOpen).toHaveBeenCalledWith(acme);
-});
-
-test("only unhealthy connections says nothing is readable", async () => {
-  // The page-level line is about working connections: there are none, but the
-  // group is still shown, because a broken connection is something to act on.
-  byOrganization = {
-    org_acme: [
-      connection({ id: "jrc_2", siteName: "Revoked", healthy: false }),
-    ],
-  };
-
-  render(
-    <Home
-      organizations={[acme]}
-      organizationsLoading={false}
-      activeOrganization={null}
-      onOpen={vi.fn()}
-    />,
-  );
-
-  await waitFor(() => {
-    expect(screen.getByText(/Nothing readable yet/)).toBeTruthy();
-  });
-  expect(screen.getByText("1 site needs reconnecting")).toBeTruthy();
-});
-
-// ---- organizations with nothing to show are left out -----------------------
-//
-// This is a list of connections, not of organizations. A card reading "no
-// sites connected yet" is a row about an absence, and several of them bury the
-// sites that do exist.
-
-test("an organization with no connections is not shown", async () => {
-  byOrganization = {
-    org_personal: [],
-    org_acme: [connection({ id: "jrc_1", siteName: "Client" })],
-  };
-
-  render(
-    <Home
-      organizations={[personal, acme]}
-      organizationsLoading={false}
-      activeOrganization={null}
-      onOpen={vi.fn()}
-    />,
-  );
-
-  expect(await screen.findByText("Client")).toBeTruthy();
-  expect(screen.queryByText("Personal")).toBeNull();
-  expect(screen.queryByText("No sites connected yet.")).toBeNull();
-});
-
-test("an organization that failed to load is still shown", async () => {
-  // A failure is something to act on, unlike an absence — and hiding it would
-  // claim there is nothing there when nobody knows.
-  byOrganization = {
-    org_acme: [connection({ id: "jrc_1", siteName: "Client" })],
-  };
-
-  render(
-    <Home
-      organizations={[personal, acme]}
-      organizationsLoading={false}
-      activeOrganization={null}
-      onOpen={vi.fn()}
-    />,
-  );
-
-  expect(await screen.findByText("Client")).toBeTruthy();
-  expect(screen.getByText("Personal")).toBeTruthy();
-});
-
-test("an organization holding only broken connections is still shown", async () => {
-  byOrganization = {
-    org_personal: [],
-    org_acme: [
-      connection({ id: "jrc_2", siteName: "Revoked", healthy: false }),
-    ],
-  };
-
-  render(
-    <Home
-      organizations={[personal, acme]}
-      organizationsLoading={false}
-      activeOrganization={null}
-      onOpen={vi.fn()}
-    />,
-  );
-
-  expect(await screen.findByText("1 site needs reconnecting")).toBeTruthy();
-  expect(screen.queryByText("Personal")).toBeNull();
-});
-
-test("with nothing connected, home starts with a bounty, the tools optional", async () => {
-  // A bounty needs no Jira: home used to offer only "Connect Jira", a dead
-  // end for a team that does not use it.
-  byOrganization = { org_personal: [], org_acme: [] };
-  const onNewBounty = vi.fn();
-  const onOpenBounties = vi.fn();
-  const onConnectGithub = vi.fn();
-
-  render(
-    <Home
-      organizations={[personal, acme]}
-      organizationsLoading={false}
-      activeOrganization={acme}
-      onOpen={vi.fn()}
-      onNewBounty={onNewBounty}
-      onOpenBounties={onOpenBounties}
-      onConnectGithub={onConnectGithub}
-    />,
-  );
-
-  expect(
-    await screen.findByRole("heading", { level: 1, name: "Get started" }),
-  ).toBeTruthy();
-  await userEvent.click(screen.getByRole("button", { name: "New bounty" }));
-  expect(onNewBounty).toHaveBeenCalled();
-  await userEvent.click(screen.getByRole("button", { name: "View bounties" }));
-  expect(onOpenBounties).toHaveBeenCalled();
-  expect(screen.getByText(/^Optional\./)).toBeTruthy();
-  await userEvent.click(screen.getByRole("button", { name: "Connect GitHub" }));
-  expect(onConnectGithub).toHaveBeenCalledWith(acme);
-});
-
-test("connections that cannot be read leave the bounty actions, and a retry", async () => {
-  // Every organization failing: the page was one error and nothing else.
-  byOrganization = {};
-  const onNewBounty = vi.fn();
-
-  render(
-    <Home
-      organizations={[acme]}
-      organizationsLoading={false}
-      activeOrganization={acme}
-      onOpen={vi.fn()}
-      onNewBounty={onNewBounty}
-    />,
-  );
-
-  expect(
-    await screen.findByText("Could not load your connections."),
-  ).toBeTruthy();
-  expect(screen.getByRole("button", { name: "New bounty" })).toBeTruthy();
-  byOrganization = { org_acme: [connection({ id: "jrc_1", siteName: "C" })] };
-  await userEvent.click(screen.getByRole("button", { name: "Try again" }));
-  expect(await screen.findByText("C")).toBeTruthy();
-});
-
-test("with something connected, the page is still Connections", async () => {
-  byOrganization = { org_acme: [connection({ id: "jrc_1", siteName: "C" })] };
-
-  render(
-    <Home
-      organizations={[acme]}
-      organizationsLoading={false}
-      activeOrganization={null}
-      onOpen={vi.fn()}
-    />,
-  );
-
-  expect(await screen.findByText("C")).toBeTruthy();
-  expect(
-    screen.getByRole("heading", { level: 1, name: "Connections" }),
-  ).toBeTruthy();
-});
-
-test("Connect Jira opens the workspace chosen in the switcher", async () => {
-  // Connecting happens on an organization's own page, because a site belongs
-  // to one owner. The switcher at the head of the rail names that owner, so
-  // the button follows it rather than guessing, and rather than asking again.
-  byOrganization = { org_personal: [], org_acme: [] };
-  const onOpen = vi.fn();
-
-  render(
-    <Home
-      organizations={[personal, acme]}
-      organizationsLoading={false}
-      activeOrganization={acme}
-      onOpen={onOpen}
-    />,
-  );
-
+test("writing a bounty needs nothing connected", async () => {
+  const { onWriteBounty } = show();
+  const paths = await screen.findByTestId("path-cards");
   await userEvent.click(
-    await screen.findByRole("button", { name: "Connect Jira" }),
+    within(paths).getByRole("button", { name: /write a bounty/i }),
   );
-  expect(onOpen).toHaveBeenCalledWith(acme);
-  expect(screen.queryByRole("menu")).toBeNull();
-  expect(screen.queryByRole("button", { name: /Personal/ })).toBeNull();
+  expect(onWriteBounty).toHaveBeenCalledWith(undefined);
 });
 
-// ---- the page opens like every other one ----------------------------------
-
-test("home has the same top padding as the other pages", async () => {
-  // It used `p-6`, which put its heading 48px higher than every other page's
-  // — a jump on each navigation. The trail above also pulls its bottom margin
-  // back by `-mb-6 sm:-mb-8`, which needs the page's own padding to exceed it.
-  byOrganization = { org_acme: [connection({ id: "jrc_1", siteName: "C" })] };
-
-  const { container } = render(
-    <Home
-      organizations={[acme]}
-      organizationsLoading={false}
-      activeOrganization={null}
-      onOpen={vi.fn()}
-    />,
+test("bounties written and none sized point at sizing them, not at writing more", async () => {
+  world.bounties = 1;
+  const { onOpenBounties } = show();
+  const paths = await screen.findByTestId("path-cards");
+  await userEvent.click(
+    within(paths).getByRole("button", { name: /open bounties/i }),
   );
-
-  await waitFor(() => {
-    expect(screen.getByText("Connections")).toBeTruthy();
-  });
-
-  const main = container.querySelector("main");
-  expect(main?.className).toContain("py-10");
-  expect(main?.className).toContain("sm:py-14");
-});
-
-// ---- a listed site is a way to its boards ---------------------------------
-//
-// The sites on this page were inert text. A site has no page of its own, so
-// its row leads where its boards are: the Jira tab of the organization that
-// owns it.
-
-test("a listed site opens its organization's Jira tab", async () => {
-  byOrganization = {
-    org_acme: [connection({ id: "jrc_1", siteName: "Client" })],
-  };
-  const onOpen = vi.fn();
-
-  render(
-    <Home
-      organizations={[acme]}
-      organizationsLoading={false}
-      activeOrganization={null}
-      onOpen={onOpen}
-    />,
-  );
-
-  const row = await screen.findByRole("link", { name: /Client/ });
-  expect(row.getAttribute("href")).toBe("/o/acme/settings?connection=jira");
-  await userEvent.click(row);
-
-  // The organization, which is what the URL needs and the connection does
-  // not carry.
-  expect(onOpen).toHaveBeenCalledWith(acme);
-});
-
-test("a GitHub flow that could not be tied to a workspace still says so here", async () => {
-  // The callback sends a failed state, or an install begun on GitHub's own
-  // App page, to the root: there is no workspace to send it back to.
-  window.history.replaceState(null, "", "/?github=state");
-  render(
-    <Home
-      organizations={[personal]}
-      organizationsLoading={false}
-      activeOrganization={null}
-      onOpen={vi.fn()}
-    />,
-  );
-
-  const banner = await screen.findByTestId("github-outcome");
+  expect(onOpenBounties).toHaveBeenCalled();
   expect(
-    within(banner).getByText("That connection could not be verified"),
-  ).toBeDefined();
-  // Home has no Connect button, so the words point to where there is one.
-  expect(within(banner).getByText(/choose GitHub/)).toBeDefined();
+    within(paths).queryByRole("button", { name: /write a bounty/i }),
+  ).toBeNull();
+});
+
+test("a member is told who can connect, not shown buttons that would be refused", async () => {
+  show("member");
+  const paths = await screen.findByTestId("path-cards");
+  expect(within(paths).queryByRole("button", { name: /connect/i })).toBeNull();
+  expect(within(paths).getAllByText(/owner or admin/i)).toHaveLength(2);
+  // Writing a bounty is still theirs to do.
+  expect(
+    within(paths).getByRole("button", { name: /write a bounty/i }),
+  ).toBeTruthy();
+});
+
+test("a server without Jira leaves Jira out of home, not as a failure", async () => {
+  world.jira = null;
+  show();
+  const paths = await screen.findByTestId("path-cards");
+  expect(
+    within(paths)
+      .getAllByRole("listitem")
+      .map((item) => item.getAttribute("data-path")),
+  ).toEqual(["github", "write"]);
+  expect(screen.queryByText(/could not be read/i)).toBeNull();
+});
+
+test("a cancelled Jira consent is reported where it started", async () => {
+  window.history.replaceState(null, "", "/?jira=cancelled");
+  show();
+  expect((await screen.findByTestId("jira-outcome")).textContent).toMatch(
+    /cancelled/i,
+  );
+  // Read once: a reload must not announce it again.
   expect(window.location.search).toBe("");
 });
 
-test("a server without Jira is a workspace without sites, not a failed read", async () => {
-  // It mounts no Jira routes, so the list is a 404: home starts with a
-  // bounty rather than with an error.
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(() =>
-      Promise.resolve(Response.json({ error: "Not found" }, { status: 404 })),
+test("a GitHub flow that could not be tied to a workspace still says so here", async () => {
+  window.history.replaceState(null, "", "/?github=state");
+  show();
+  expect(await screen.findByTestId("github-outcome")).toBeTruthy();
+});
+
+test("a GitHub flow that needs an account picked carries on where the picker is", async () => {
+  window.history.replaceState(null, "", "/?github=pick");
+  show();
+  await waitFor(() =>
+    expect(window.location.pathname + window.location.search).toBe(
+      "/o/acme/settings?connection=github&github=pick",
     ),
   );
-  render(
-    <Home
-      organizations={[acme]}
-      organizationsLoading={false}
-      activeOrganization={acme}
-      onOpen={vi.fn()}
-      onNewBounty={vi.fn()}
-    />,
+  window.history.replaceState(null, "", "/");
+});
+
+/* -------------------------------------------------------------------------- */
+/* Jira                                                                       */
+/* -------------------------------------------------------------------------- */
+
+test("with Jira connected, home opens on the board's backlog scan, sizing nothing", async () => {
+  world.jira = [jiraSite];
+  world.boards = [board];
+  show();
+
+  const scan = await screen.findByTestId("backlog-scan");
+  expect(
+    await within(scan).findByRole("heading", {
+      name: /3 tickets worth outsourcing/,
+    }),
+  ).toBeTruthy();
+  expect(within(scan).getByText(/no AI, nothing stored/)).toBeTruthy();
+  // The six, always: an empty one is shown, not pressable.
+  const tiles = within(scan).getByTestId("scan-categories");
+  expect(within(tiles).getAllByRole("button")).toHaveLength(6);
+  expect(
+    within(tiles).getByRole("button", { name: "Holding others up, 0 tickets" }),
+  ).toHaveProperty("disabled", true);
+
+  // The ticket in focus, as the bounty it would become: the range from the
+  // rate card in force, the size and spec left for sizing to fill.
+  const teaser = await within(scan).findByTestId("teaser-bounty");
+  expect(teaser.textContent).toMatch(/ACME-7/);
+  expect(await within(teaser).findByText(/\$58.\$153/)).toBeTruthy();
+  expect(
+    within(teaser).getByRole("button", { name: "Size ACME-7" }),
+  ).toBeTruthy();
+
+  // The checklist has moved on to GitHub.
+  const checklist = screen.getByTestId("setup-checklist");
+  expect(
+    checklist.querySelector("[aria-current='step']")?.getAttribute("data-step"),
+  ).toBe("github");
+
+  // Looking is free: nothing asked for sizing.
+  expect(requests.filter(({ method }) => method === "POST")).toEqual([]);
+});
+
+test("a category shows its own tickets, and the teaser follows the one chosen", async () => {
+  world.jira = [jiraSite];
+  world.boards = [board];
+  show();
+
+  const scan = await screen.findByTestId("backlog-scan");
+  await userEvent.click(
+    await within(scan).findByRole("button", { name: "Paper cuts, 1 ticket" }),
+  );
+  const list = within(scan).getByTestId("scan-candidates");
+  expect(within(list).getAllByRole("button")).toHaveLength(1);
+  expect(within(list).getByText("Ticket 9")).toBeTruthy();
+  expect(within(scan).getByTestId("scan-why").textContent).toMatch(
+    /Paper cuts\./,
+  );
+  expect(within(scan).getByTestId("teaser-bounty").textContent).toMatch(
+    /ACME-9/,
+  );
+});
+
+test("sizing from the scan is one call for that ticket, and opens its proposal", async () => {
+  world.jira = [jiraSite];
+  world.boards = [board];
+  show();
+
+  const teaser = await screen.findByTestId("teaser-bounty");
+  await userEvent.click(
+    await within(teaser).findByRole("button", { name: "Size ACME-7" }),
+  );
+
+  const posts = requests.filter(({ method }) => method === "POST");
+  expect(posts).toHaveLength(1);
+  expect(posts[0]?.url).toBe("/api/v1/orgs/org_1/jira/boards/jrb_1/issues");
+  expect(posts[0]?.body).toMatchObject({ issueId: "1007" });
+
+  // Followed until the proposal lands, then opened over the list.
+  await waitFor(
+    () =>
+      expect(new URLSearchParams(window.location.search).get("proposal")).toBe(
+        "bpr_1",
+      ),
+    { timeout: 4_000 },
+  );
+});
+
+test("while a ticket is being sized, the list holds it in focus", async () => {
+  // Its teaser follows the run and opens the proposal when it lands; a row
+  // tapped meanwhile would take it off screen and lose that.
+  world.jira = [jiraSite];
+  world.boards = [board];
+  show();
+
+  const scan = await screen.findByTestId("backlog-scan");
+  await userEvent.click(
+    await within(scan).findByRole("button", { name: "Size ACME-7" }),
+  );
+  const other = within(within(scan).getByTestId("scan-candidates"))
+    .getByText("Ticket 8")
+    .closest("button");
+  await waitFor(() => expect(other?.disabled).toBe(true));
+  expect(within(scan).getByTestId("teaser-bounty").textContent).toMatch(
+    /ACME-7/,
+  );
+});
+
+test("a board whose fitting tickets are all sized says so, not that nothing fits", async () => {
+  world.jira = [jiraSite];
+  world.boards = [board];
+  // Every ticket that fit is proposed, so the scan fell back to the oldest
+  // that fit nothing.
+  world.scan = {
+    ...preview(),
+    issues: [{ ...ticket(20, leftBehind), categories: [] }],
+    skippedLive: 3,
+    fallback: true,
+  };
+  show();
+
+  const scan = await screen.findByTestId("backlog-scan");
+  expect(
+    await within(scan).findByRole("heading", {
+      name: /every ticket that fits is sized/i,
+    }),
+  ).toBeDefined();
+  expect(scan.textContent).toMatch(
+    /3 of 43 open tickets fit a pattern teams outsource, and all of them are sized\. The oldest of the rest are below/,
+  );
+  expect(scan.textContent).not.toMatch(/matched the six patterns/);
+  expect(within(scan).queryByTestId("scan-categories")).toBeNull();
+});
+
+test("a server without GitHub still opens on the board, and says nothing about GitHub", async () => {
+  // Its repository list answers 503. A failed read is read again whenever a
+  // component asking for it mounts, which used to put home back to loading,
+  // unmount the board, and mount it again, for as long as it kept failing.
+  world.jira = [jiraSite];
+  world.boards = [board];
+  world.github = null;
+  show();
+
+  const teaser = await screen.findByTestId("teaser-bounty");
+  expect(teaser.textContent).toMatch(/Generated from the ticket/);
+  expect(teaser.textContent).not.toMatch(/GitHub/);
+  expect(screen.getByTestId("setup-checklist").textContent).toMatch(/1 of 2/);
+  expect(screen.queryByText(/could not be read/i)).toBeNull();
+  const reads = requests.filter(({ url }) =>
+    url.endsWith("/github/repositories"),
+  ).length;
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  expect(
+    requests.filter(({ url }) => url.endsWith("/github/repositories")).length,
+  ).toBeLessThanOrEqual(reads + 1);
+});
+
+test("a member reads the scan but is not offered sizing", async () => {
+  world.jira = [jiraSite];
+  world.boards = [board];
+  show("member");
+  const teaser = await screen.findByTestId("teaser-bounty");
+  expect(within(teaser).queryByRole("button", { name: /size/i })).toBeNull();
+  expect(teaser.textContent).toMatch(/owner or admin/i);
+});
+
+/* -------------------------------------------------------------------------- */
+/* GitHub                                                                     */
+/* -------------------------------------------------------------------------- */
+
+test("a linked GitHub account offers its repositories in place, and one click maps it", async () => {
+  world.github = [githubAccount];
+  world.installationRepositories = [
+    {
+      externalId: "1296269",
+      fullName: "acme/widgets",
+      defaultBranch: "main",
+      isPrivate: true,
+      registeredId: null,
+    },
+  ];
+  show();
+
+  const picker = await screen.findByTestId("repo-picker");
+  await userEvent.click(
+    await within(picker).findByRole("button", { name: "Use acme/widgets" }),
   );
   expect(
-    await screen.findByRole("heading", { level: 1, name: "Get started" }),
-  ).toBeTruthy();
-  expect(screen.queryByText("Could not load your connections.")).toBeNull();
+    requests.find(
+      ({ method, url }) =>
+        method === "POST" &&
+        url.endsWith("/github/connections/ghc_1/repositories"),
+    )?.body,
+  ).toEqual({ externalId: "1296269", role: "source" });
+
+  const xray = await screen.findByTestId("repo-xray");
+  expect(within(xray).getByText("acme/widgets")).toBeTruthy();
+  expect(screen.queryByTestId("repo-picker")).toBeNull();
+});
+
+test("the x-ray says where a first bounty fits, and writing one starts there", async () => {
+  world.github = [githubAccount];
+  world.repositories = [widgets];
+  const { onWriteBounty } = show();
+
+  const xray = await screen.findByTestId("repo-xray");
+  const facts = await within(xray).findByTestId("repo-facts");
+  expect(facts.textContent).toMatch(/240/);
+  expect(facts.textContent).toMatch(/20%/);
+  expect(facts.textContent).toMatch(/Migrations · CI/);
+
+  const fits = within(xray).getByTestId("fit-modules");
+  // Tested and contained first; the root and the docs are never offered.
+  expect(
+    within(fits)
+      .getAllByRole("listitem")
+      .map((item) => item.querySelector(".font-mono")?.textContent),
+  ).toEqual(["packages/billing", "apps/web"]);
+  await userEvent.click(
+    within(fits).getByRole("button", {
+      name: "Write a bounty in packages/billing",
+    }),
+  );
+  expect(onWriteBounty).toHaveBeenCalledWith({
+    repoId: "ghr_1",
+    area: "packages/billing",
+  });
+
+  // Writing comes first here, Jira after it, with what it would find.
+  const paths = screen.getByTestId("path-cards");
+  expect(
+    within(paths)
+      .getAllByRole("listitem")
+      .map((item) => item.getAttribute("data-path")),
+  ).toEqual(["write", "jira"]);
+  expect(screen.getByTestId("category-showcase")).toBeTruthy();
+});
+
+/* -------------------------------------------------------------------------- */
+/* Both                                                                       */
+/* -------------------------------------------------------------------------- */
+
+test("with both, the board offers its one repository as a click, and the sandbox comes from it", async () => {
+  world.jira = [jiraSite];
+  world.boards = [board];
+  world.github = [githubAccount];
+  world.repositories = [widgets];
+  show();
+
+  const link = await screen.findByTestId("board-repository");
+  const teaser = await screen.findByTestId("teaser-bounty");
+  expect(teaser.textContent).toMatch(/link a repository/);
+
+  await userEvent.click(
+    within(link).getByRole("button", { name: "Link repository" }),
+  );
+  await waitFor(() =>
+    expect(screen.getByTestId("teaser-bounty").textContent).toMatch(
+      /Cut from acme\/widgets/,
+    ),
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* The checklist                                                              */
+/* -------------------------------------------------------------------------- */
+
+test("the checklist can be hidden, and stays hidden for this workspace", async () => {
+  world.github = [githubAccount];
+  world.repositories = [widgets];
+  const first = show();
+  const checklist = await screen.findByTestId("setup-checklist");
+  await userEvent.click(
+    within(checklist).getByRole("button", { name: "Hide" }),
+  );
+  expect(screen.queryByTestId("setup-checklist")).toBeNull();
+  first.unmount();
+
+  show();
+  await screen.findByTestId("repo-xray");
+  expect(screen.queryByTestId("setup-checklist")).toBeNull();
+});
+
+test("a workspace with every step done has no checklist", async () => {
+  world.jira = [jiraSite];
+  world.boards = [{ ...board, sourceRepoId: "ghr_1" }];
+  world.github = [githubAccount];
+  world.repositories = [widgets];
+  world.proposals = 2;
+  show();
+  await screen.findByTestId("backlog-scan");
+  expect(screen.queryByTestId("setup-checklist")).toBeNull();
+});
+
+/* -------------------------------------------------------------------------- */
+
+test("the greeting goes by the clock and the first name", () => {
+  expect(greeting(new Date(2026, 0, 1, 9))).toBe("Good morning");
+  expect(greeting(new Date(2026, 0, 1, 13))).toBe("Good afternoon");
+  expect(greeting(new Date(2026, 0, 1, 20))).toBe("Good evening");
+  expect(firstName("  Ada Example ")).toBe("Ada");
+  expect(firstName("   ")).toBeUndefined();
 });

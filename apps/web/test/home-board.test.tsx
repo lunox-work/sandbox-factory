@@ -1,6 +1,6 @@
 /**
  * Home over a workspace's board: what it shows when the boards cannot be
- * read, and that a GitHub flow landing here is still reported.
+ * read, and that home's own intro stays above whichever it shows.
  */
 
 import { render, screen } from "./render";
@@ -34,8 +34,8 @@ function show() {
   return render(
     <HomeBoard
       userId="user_1"
-      name="Ada Example"
       organizationId="org_1"
+      intro={<p>Home intro</p>}
       organizationSlug="acme"
       role="owner"
       onBoardName={vi.fn()}
@@ -56,8 +56,7 @@ test("boards that cannot be read say so, with a retry, not that there are none",
   expect(await screen.findByText("No board yet")).toBeTruthy();
 });
 
-test("a GitHub flow that lands on home is reported over the board", async () => {
-  window.history.replaceState(null, "", "/?github=state");
+test("the intro sits over the board, with the board it is showing", async () => {
   boards = [
     {
       id: "jrb_1",
@@ -72,13 +71,16 @@ test("a GitHub flow that lands on home is reported over the board", async () => 
     },
   ];
   show();
-  expect(await screen.findByTestId("github-outcome")).toBeTruthy();
+  expect(await screen.findByText("Home intro")).toBeTruthy();
+  expect(
+    await screen.findByRole("button", { name: "Switch board — Backlog" }),
+  ).toBeTruthy();
 });
 
-test("a GitHub flow that lands on a home with no board is reported over the fallback", async () => {
-  window.history.replaceState(null, "", "/?github=state");
-  boards = [];
+test("a failed board list keeps the intro above the error", async () => {
   show();
-  expect(await screen.findByText("No board yet")).toBeTruthy();
-  expect(screen.getByTestId("github-outcome")).toBeTruthy();
+  expect(
+    await screen.findByText("Could not load this workspace’s boards."),
+  ).toBeTruthy();
+  expect(screen.getByText("Home intro")).toBeTruthy();
 });

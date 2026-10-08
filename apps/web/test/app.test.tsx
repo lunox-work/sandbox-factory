@@ -28,8 +28,9 @@ vi.mock("../src/auth", () => ({
 }));
 
 /**
- * Site names the API will return for the next connections request, per call.
- * Each entry is one call, so a remount reads the next one.
+ * Board names the API will return for the next boards request, per call.
+ * Each entry is one call, so a remount reads the next one. Home names the
+ * board it opens on, which is what these tests look for.
  */
 let sitesByCall: string[][] = [];
 let callCount = 0;
@@ -57,33 +58,49 @@ const fetchMock = vi.fn((input: RequestInfo | URL) => {
     );
   }
 
+  if (unauthorized) {
+    return Promise.resolve(
+      Response.json({ error: "Authentication required." }, { status: 401 }),
+    );
+  }
+
   if (url.includes("/jira/connections")) {
-    if (unauthorized) {
-      return Promise.resolve(
-        Response.json({ error: "Authentication required." }, { status: 401 }),
-      );
-    }
-    const names = sitesByCall[callCount] ?? [];
-    callCount += 1;
     return Promise.resolve(
       Response.json({
-        connections: names.map((siteName, index) => ({
-          id: `jrc_${index}`,
-          cloudId: `cloud_${index}`,
-          siteName,
-          siteUrl: `https://${siteName}.atlassian.net`,
-          email: null,
-          healthy: true,
-          scopes: [],
-          createdAt: "2026-09-16T00:00:00.000Z",
-        })),
+        connections: [
+          {
+            id: "jrc_1",
+            cloudId: "cloud_1",
+            siteName: "Acme",
+            siteUrl: "https://acme.atlassian.net",
+            email: null,
+            healthy: true,
+            scopes: [],
+            createdAt: "2026-09-16T00:00:00.000Z",
+          },
+        ],
       }),
     );
   }
 
-  // No board yet, so home shows the connections.
   if (/\/jira\/boards(\?|$)/.test(url)) {
-    return Promise.resolve(Response.json({ boards: [] }));
+    const names = sitesByCall[callCount] ?? [];
+    callCount += 1;
+    return Promise.resolve(
+      Response.json({
+        boards: names.map((name, index) => ({
+          id: `jrb_${index}`,
+          connectionId: "jrc_1",
+          externalId: String(index),
+          name,
+          boardType: "scrum",
+          projectKey: "ACME",
+          selection: {},
+          sourceRepoId: null,
+          createdAt: "2026-09-16T00:00:00.000Z",
+        })),
+      }),
+    );
   }
 
   return Promise.resolve(Response.json({}));
@@ -109,10 +126,14 @@ test("a signed-out visitor sees the sign-in screen, not a list", () => {
   render(<App />);
 
   expect(screen.getByText("Continue with Google")).toBeTruthy();
-  expect(screen.queryByRole("heading", { name: "Connections" })).toBeNull();
+  expect(
+    screen.queryByRole("heading", {
+      name: /good (morning|afternoon|evening)/i,
+    }),
+  ).toBeNull();
 });
 
-test("a signed-in user sees the connections they can reach", async () => {
+test("a signed-in user's home opens on their own board", async () => {
   sitesByCall = [["alice-site"]];
   session({ id: "user_1", name: "Alice" });
   render(<App />);
@@ -122,7 +143,7 @@ test("a signed-in user sees the connections they can reach", async () => {
   });
 });
 
-test("switching account does not leave the previous user's connections on screen", async () => {
+test("switching account does not leave the previous user's board on screen", async () => {
   // The regression: without the user-id key React reuses the mounted tree, so
   // the first user's rows stay visible until a refetch replaces them.
   sitesByCall = [["alice-site"], ["bob-site"]];

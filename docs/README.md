@@ -10,6 +10,9 @@ product proposals and historical explainers are optional design context.
 - A bounty's Jira issue and repository are synced into it on request as
   versioned context: the issue's fields and the repository's documents. Sizing
   and sandbox generation are given it, and each step says which versions it used.
+- Home adapts to what a workspace has connected. Jira gives a free backlog
+  scan for the six kinds of outsourceable work; GitHub a repository x-ray.
+  Nothing is sized until someone sizes a ticket, or asks for a whole board.
 - GitHub supplies private repository snapshots. Five context builders describe a
   snapshot from a repository's own page: Graphify, dependency-cruiser,
   DeepWiki-Open, abstractions (every module's surface) and data model (the

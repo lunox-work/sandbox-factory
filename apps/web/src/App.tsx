@@ -7,6 +7,7 @@ import {
 import { useEffect, useRef, useState } from "react";
 
 import { RefreshCw } from "lucide-react";
+import { rankAtLeast } from "sandbox-factory";
 
 import { ErrorBanner, LoadingLine } from "@/components/Message";
 import { Button } from "@/components/ui/button";
@@ -15,7 +16,7 @@ import { Account } from "./Account";
 import { signOut, useSession } from "./auth";
 import { Breadcrumbs } from "./Breadcrumbs";
 import { Home } from "./Home";
-import { HomeBoard, writeHomeBoard } from "./HomeBoard";
+import { writeHomeBoard } from "./HomeBoard";
 import { CreateOrganization, Organization } from "./Organization";
 import { workspaceLabel } from "./OrganizationSwitcher";
 import { Organizations } from "./Organizations";
@@ -25,6 +26,7 @@ import { SideNav, type Screen } from "./SideNav";
 import { SignIn } from "./SignIn";
 import { Bounties, BountyPage, NewBountyPage } from "./Bounties";
 import { SandboxFilesPage } from "./features/sandbox/SandboxFiles";
+import { newBountyUrl } from "./features/onboarding/prefill";
 import {
   boardForPath,
   bountyForPath,
@@ -327,44 +329,6 @@ function Signed({
     pushLocation(url);
   }
 
-  /*
-    The connections list, which home used to be. Still what home shows when
-    the organization has no board yet: connecting a site is the only way on.
-  */
-  const homeConnections = (
-    <Home
-      organizations={organizations.organizations}
-      organizationsLoading={organizations.loading}
-      activeOrganization={organizations.active}
-      onOpen={(organization) => {
-        // Selecting is what makes the settings screen show this one, as on
-        // the organizations page. Opened on the Jira tab, which is where
-        // its sites are managed.
-        organizations.select(organization.id);
-        navigate(
-          "org-settings",
-          organization.slug,
-          undefined,
-          undefined,
-          "jira",
-        );
-      }}
-      onConnectGithub={(organization) => {
-        organizations.select(organization.id);
-        navigate(
-          "org-settings",
-          organization.slug,
-          undefined,
-          undefined,
-          "github",
-        );
-      }}
-      onNewBounty={() => navigate("new-bounty")}
-      onOpenBounties={() => navigate("bounties")}
-      onCreateWorkspace={() => navigate("create-org")}
-    />
-  );
-
   return (
     /*
       A flex row, as in the reference: the rail is a static sibling of the
@@ -554,6 +518,23 @@ function Signed({
               boardName={boardName}
               onBoardName={setBoardName}
               role={organizations.active.role}
+              // A workspace with no repository gets one in its GitHub
+              // settings; one with a repository links it on the board.
+              repositoryAction={
+                rankAtLeast(organizations.active.role, "admin")
+                  ? {
+                      label: "add a repository",
+                      onSelect: () =>
+                        navigate(
+                          "org-settings",
+                          organizations.active?.slug,
+                          undefined,
+                          undefined,
+                          "github",
+                        ),
+                    }
+                  : undefined
+              }
             />
           )
         ) : screen === "org-repository" ? (
@@ -701,8 +682,9 @@ function Signed({
             <main className="mx-auto w-full max-w-5xl px-4 py-10 sm:px-6 sm:py-14">
               <LoadingLine />
             </main>
-          ) : organizations.error !== null ? (
-            // A list that failed is not one with no workspace in it.
+          ) : (
+            // A list that failed is not one with no workspace in it; both
+            // say so, and the second offers to make one.
             <NoOrganization
               loading={false}
               notFound={false}
@@ -711,19 +693,12 @@ function Signed({
               onOpenOrganizations={() => navigate("organizations")}
               onCreateWorkspace={() => navigate("create-org")}
             />
-          ) : (
-            homeConnections
           )
         ) : (
-          <HomeBoard
-            // Keyed by the organization: switching one in the rail is a
-            // different home, and the previous board must not linger.
-            key={organizations.active.id}
+          <Home
             userId={userId}
             name={name}
-            organizationId={organizations.active.id}
-            organizationSlug={organizations.active.slug}
-            role={organizations.active.role}
+            organization={organizations.active}
             onBoardName={setBoardName}
             onOpenBoard={(board) => {
               setBoardName(board.name);
@@ -734,7 +709,22 @@ function Signed({
                 board.id,
               );
             }}
-            fallback={homeConnections}
+            onOpenSettings={(organization, tab) => {
+              organizations.select(organization.id);
+              navigate(
+                "org-settings",
+                organization.slug,
+                undefined,
+                undefined,
+                tab,
+              );
+            }}
+            onOpenRepository={(repo) => {
+              setRepositoryName(repo.fullName);
+              navigate("org-repository", organizations.active?.slug, repo.id);
+            }}
+            onWriteBounty={(prefill) => visit(newBountyUrl(prefill))}
+            onOpenBounties={() => navigate("bounties")}
           />
         )}
       </div>

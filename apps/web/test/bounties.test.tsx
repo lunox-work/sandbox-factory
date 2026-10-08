@@ -771,6 +771,87 @@ test("the new bounty page waits for the workspace in the rail", async () => {
   expect(await screen.findByTestId("bounty-form")).toBeDefined();
 });
 
+test("a bounty started from home's x-ray opens on its repository and module", async () => {
+  window.history.replaceState(
+    null,
+    "",
+    "/bounties/new?repo=ghr_1&area=packages%2Fbilling",
+  );
+  const { fetchMock, calls } = server([
+    ["POST", "/orgs/org_1/bounties", () => json({ bounty: detail() }, 201)],
+  ]);
+  vi.stubGlobal("fetch", fetchMock);
+  render(
+    <NewBountyPage
+      {...inAcme("member")}
+      onCancel={() => {}}
+      onConnectRepository={() => {}}
+    />,
+  );
+  const form = await screen.findByTestId("bounty-form");
+  await waitFor(() =>
+    expect(
+      within(form).getByRole("combobox", { name: "Repository" }).textContent,
+    ).toBe("acme/app"),
+  );
+  const description = within(form).getByLabelText("Description", {
+    exact: true,
+  }) as HTMLTextAreaElement;
+  expect(description.value).toBe("In `packages/billing`, ");
+
+  await userEvent.type(
+    within(form).getByLabelText("Title", { exact: true }),
+    "Refunds round twice",
+  );
+  await userEvent.click(
+    within(form).getByRole("button", { name: "Create bounty" }),
+  );
+  await waitFor(() =>
+    expect(calls.find(({ method }) => method === "POST")?.body).toMatchObject({
+      title: "Refunds round twice",
+      repoId: "ghr_1",
+    }),
+  );
+  window.history.replaceState(null, "", "/");
+});
+
+test("a link naming a repository the workspace lacks starts with none", async () => {
+  // The address is anyone's to edit, or out of date: the form never submits
+  // a repository it cannot find in the workspace's own list.
+  window.history.replaceState(null, "", "/bounties/new?repo=ghr_gone");
+  const { fetchMock, calls } = server([
+    ["POST", "/orgs/org_1/bounties", () => json({ bounty: detail() }, 201)],
+  ]);
+  vi.stubGlobal("fetch", fetchMock);
+  render(
+    <NewBountyPage
+      {...inAcme("member")}
+      onCancel={() => {}}
+      onConnectRepository={() => {}}
+    />,
+  );
+  const form = await screen.findByTestId("bounty-form");
+  await waitFor(() =>
+    expect(
+      within(form).getByRole("combobox", { name: "Repository" }).textContent,
+    ).toBe("None"),
+  );
+
+  await userEvent.type(
+    within(form).getByLabelText("Title", { exact: true }),
+    "Refunds round twice",
+  );
+  await userEvent.click(
+    within(form).getByRole("button", { name: "Create bounty" }),
+  );
+  await waitFor(() =>
+    expect(calls.find(({ method }) => method === "POST")?.body).toMatchObject({
+      repoId: null,
+    }),
+  );
+  window.history.replaceState(null, "", "/");
+});
+
 test("one workspace alone is still shown, so the form says where it goes", async () => {
   vi.stubGlobal("fetch", server().fetchMock);
   render(

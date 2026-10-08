@@ -12,7 +12,7 @@ const SIZING_CONCURRENCY = 3;
 /**
  * A run in flight, bounty by bounty.
  *
- * Connecting a site sizes its boards in the background, so a board is often
+ * A board sized as a whole runs in the background, so its page is often
  * opened mid-run. This is what the run is doing: the bounties it picked, the
  * ones it has finished — with the size and amount as they land — the ones
  * being sized now, and the ones still waiting. The page polls every second
