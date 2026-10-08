@@ -86,7 +86,7 @@ services:
       && npm run dev --workspace @sandbox-factory/api"
     environment:
       PORT: 4000
-      CORS_ORIGINS: http://localhost:5173
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
       # Required. Host and port are the compose service, not localhost.
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/sandbox_factory
       S3_ENDPOINT: http://seaweedfs:8333
@@ -100,9 +100,9 @@ services:
       # for the whole file and would break `make db-up`. An unset value fails
       # in the API's env parsing, with a readable message.
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:-}
-      # The OAuth callback is followed by the browser, so it must be the
-      # published localhost port, not the service name.
-      BETTER_AUTH_URL: http://localhost:${API_PORT:-4000}
+      # Browser-facing origin; override locally when using a dev HTTPS proxy.
+      BETTER_AUTH_URL: ${BETTER_AUTH_URL:-http://localhost:${API_PORT:-4000}}
+      APP_URL: ${APP_URL:-http://localhost:${WEB_PORT:-5173}}
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
       GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
@@ -167,6 +167,8 @@ services:
     environment:
       # The dev server proxies /api here, by service name.
       VITE_API_URL: http://api-dev:4000
+      VITE_DEV_ALLOWED_HOSTS: ${VITE_DEV_ALLOWED_HOSTS:-}
+      VITE_DEV_CANONICAL_ORIGIN: ${VITE_DEV_CANONICAL_ORIGIN:-}
       # Build provenance, resolved on the host: `node:22-alpine` has no git
       # binary, so the resolver inside would report "unknown". `make up`
       # exports these; a bare `docker compose up` leaves them empty, which the
