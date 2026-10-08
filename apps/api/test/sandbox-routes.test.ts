@@ -1940,7 +1940,7 @@ test("a generated version keeps its listing within bounds", async () => {
   assert.equal(made.source.approvedTask.summary.length, 5_000);
 });
 
-test("generating is refused for members, a linked sandbox, an off-Node stack, an empty bounty and one not approved", async () => {
+test("generating is refused for members, a linked sandbox, an off-Node or empty stack, an empty bounty and one not approved", async () => {
   const cases: [ReturnType<typeof starterFixture>, number, string | null][] = [
     [starterFixture("member"), 403, null],
     [starterFixture("owner", { sandbox: null }), 404, null],
@@ -1957,6 +1957,11 @@ test("generating is refused for members, a linked sandbox, an off-Node stack, an
       }),
       409,
       "stack_unsupported",
+    ],
+    [
+      starterFixture("owner", { repoStack: [], bounty: { stack: [] } }),
+      409,
+      "stack_empty",
     ],
     [
       starterFixture("owner", { bounty: { description: "  " } }),
@@ -1995,7 +2000,7 @@ test("generating is refused for members, a linked sandbox, an off-Node stack, an
   }
   // Nothing was queued for a refusal before the run.
   assert.equal(cases[3]?.[0].enqueued.length, 0);
-  assert.equal(cases[11]?.[0].enqueued.length, 0);
+  assert.equal(cases[12]?.[0].enqueued.length, 0);
 });
 
 test("a generated version changes its listing, but not its transform or build, and has nothing to replay", async () => {

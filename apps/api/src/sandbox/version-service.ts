@@ -524,6 +524,14 @@ export function versionService(options: SandboxRouteOptions) {
         ? null
         : await options.repos.get(owner, bounty.repoId);
     const stack = normalizeStack([...(repo?.stack ?? []), ...bounty.stack]);
+    if (stack.length === 0)
+      return failure(
+        {
+          error: "A starter is written in the bounty's tech stack; add one.",
+          code: "stack_empty",
+        },
+        "conflict",
+      );
     const unsupported = starterStackProblem(stack);
     if (unsupported !== null)
       return failure(

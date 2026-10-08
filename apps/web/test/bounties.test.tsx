@@ -928,6 +928,13 @@ test("a new bounty goes to the workspace in the rail unless another is chosen", 
   );
 
   await userEvent.type(within(form).getByLabelText("Title"), "Export");
+  await userEvent.type(
+    within(form).getByRole("combobox", { name: "Tech stack" }),
+    "postgres",
+  );
+  await userEvent.click(
+    within(form).getByRole("option", { name: "PostgreSQL" }),
+  );
   await userEvent.click(
     within(form).getByRole("button", { name: "Create bounty" }),
   );
@@ -1058,6 +1065,13 @@ test("a link naming a repository the workspace lacks starts with none", async ()
   await userEvent.type(
     within(form).getByLabelText("Title", { exact: true }),
     "Refunds round twice",
+  );
+  await userEvent.type(
+    within(form).getByRole("combobox", { name: "Tech stack" }),
+    "postgres",
+  );
+  await userEvent.click(
+    within(form).getByRole("option", { name: "PostgreSQL" }),
   );
   await userEvent.click(
     within(form).getByRole("button", { name: "Create bounty" }),
@@ -1429,6 +1443,82 @@ test("a bounty with no title is not sent", async () => {
     await within(form).findByText("A bounty needs a title."),
   ).toBeDefined();
   expect(state.calls.some(({ method }) => method === "POST")).toBe(false);
+});
+
+test("a bounty with no tech stack is not sent", async () => {
+  const state = server();
+  vi.stubGlobal("fetch", state.fetchMock);
+  render(
+    <NewBountyPage
+      {...inAcme("member")}
+      onCancel={() => {}}
+      onConnectRepository={() => {}}
+    />,
+  );
+  const form = await screen.findByTestId("bounty-form");
+  await userEvent.type(within(form).getByLabelText("Title"), "Export");
+  await userEvent.click(
+    within(form).getByRole("button", { name: "Create bounty" }),
+  );
+  expect(
+    await within(form).findByText("A bounty needs a tech stack."),
+  ).toBeDefined();
+  expect(state.calls.some(({ method }) => method === "POST")).toBe(false);
+});
+
+test("a repository whose stack is still being read is stack enough", async () => {
+  const { fetchMock, calls } = server([
+    [
+      "GET",
+      "/github/repositories",
+      () =>
+        json({
+          repositories: [
+            {
+              id: "ghr_1",
+              connectionId: "ghc_1",
+              externalId: "1",
+              defaultBranch: "main",
+              isPrivate: true,
+              sizeKb: null,
+              headSha: null,
+              pushedAt: null,
+              lastSyncedAt: null,
+              syncError: null,
+              stack: null,
+              createdAt: "2026-09-30T00:00:00.000Z",
+              fullName: "acme/app",
+              role: "source",
+              syncStatus: "ok",
+            },
+          ],
+        }),
+    ],
+    ["POST", "/orgs/org_1/bounties", () => json({ bounty: detail() }, 201)],
+  ]);
+  vi.stubGlobal("fetch", fetchMock);
+  render(
+    <NewBountyPage
+      {...inAcme("member")}
+      onCancel={() => {}}
+      onConnectRepository={() => {}}
+    />,
+  );
+  const form = await screen.findByTestId("bounty-form");
+  await userEvent.type(within(form).getByLabelText("Title"), "Export");
+  await chooseOption(
+    within(form).getByRole("combobox", { name: "Repository" }),
+    "acme/app",
+  );
+  await userEvent.click(
+    within(form).getByRole("button", { name: "Create bounty" }),
+  );
+  await waitFor(() =>
+    expect(calls.find(({ method }) => method === "POST")?.body).toMatchObject({
+      repoId: "ghr_1",
+      stack: [],
+    }),
+  );
 });
 
 test("a bounty opened mid-sizing says so, and lands on its proposal without a second Propose", async () => {

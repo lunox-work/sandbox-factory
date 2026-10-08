@@ -2368,6 +2368,15 @@ function BountyForm({
           setError("A bounty needs a title.");
           return;
         }
+        // Its sandbox is written in it, so there must be something: the
+        // repository's, still being read or detected, or the person's.
+        if (
+          added.length === 0 &&
+          (chosenRepo === undefined || chosenRepo.stack?.length === 0)
+        ) {
+          setError("A bounty needs a tech stack.");
+          return;
+        }
         setSaving(true);
         setError(null);
         void onSubmit({
