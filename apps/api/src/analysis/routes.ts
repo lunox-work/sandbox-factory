@@ -291,6 +291,8 @@ export function mountAnalysisRoutes(
    * the set creates is held to the active cap; the rest follow it in, so a
    * set the cap admits is queued whole rather than refused halfway. A
    * builder already built, queued or out of retries is answered as is.
+   * The snapshot becomes the repository's context, the one commit its
+   * builders are read at.
    */
   app.post(`${base}/repositories/:id/builds`, async (c) => {
     if (!isAtLeastAdmin(c.get("member").role))
@@ -350,6 +352,10 @@ export function mountAnalysisRoutes(
       if (tool === "graphify") graph = result.run;
       runs.push(result.run);
     }
+    // The repository's context is one commit for every builder: a set that
+    // stands on this snapshot at all makes it the one the page reads.
+    if (runs.length > 0)
+      await options.repos.setContextSnapshot(owner, repoId, snapshot.id);
     if (runs.some((run) => run.status === "queued"))
       await options.ensureWorker().catch(() => options.onLaunchError?.());
     return (

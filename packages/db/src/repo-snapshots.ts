@@ -119,11 +119,12 @@ export interface RepoSnapshotStore {
 }
 
 /**
- * No proposal or run points at the snapshot. Raw so it costs the fake no
- * query. Sandbox provenance is covered through its runs: every
- * `sandbox_version_source` names a slice run on its own snapshot.
+ * No proposal or run points at the snapshot, and it is not its repository's
+ * context. Raw so it costs the fake no query. Sandbox provenance is covered
+ * through its runs: every `sandbox_version_source` names a slice run on its
+ * own snapshot.
  */
-const unreferenced = sql`not exists (select 1 from ${bountyProposal} where ${bountyProposal.repoSnapshotId} = ${repoSnapshot.id}) and not exists (select 1 from ${analysisRun} where ${analysisRun.snapshotId} = ${repoSnapshot.id})`;
+const unreferenced = sql`not exists (select 1 from ${bountyProposal} where ${bountyProposal.repoSnapshotId} = ${repoSnapshot.id}) and not exists (select 1 from ${analysisRun} where ${analysisRun.snapshotId} = ${repoSnapshot.id}) and not exists (select 1 from ${githubRepo} where ${githubRepo.contextSnapshotId} = ${repoSnapshot.id})`;
 
 /**
  * The snapshot's repository is the owner's, as a subquery: for a statement

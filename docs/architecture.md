@@ -901,7 +901,14 @@ asked for); an `abstractions` run lists every module's exported surface
 with its signatures, typed, syntactic or names only; and a `data_model` run
 reads the entities, enums and relations the repository's Prisma schema,
 Drizzle tables or SQL migrations declare, with the modules that touch them.
-The last two read graphify's map and are what the agents read. A `slice` run reads the graphify map and the same source to cut
+The last two read graphify's map and are what the agents read. A repository
+has one context: every builder at one commit, the snapshot
+`github_repo.context_snapshot_id` names. "Build all"
+(`POST .../repositories/:id/builds`) on another snapshot moves it there; the
+page's rows and "View all" read that snapshot whichever one is chosen, and
+say when the chosen one differs. Runs on other snapshots stay cached, so
+moving back costs nothing. The snapshot list always carries the context's
+snapshot, however many are newer. A `slice` run reads the graphify map and the same source to cut
 the files one task needs and describe their boundary (the stubs it imports
 from outside, the public surface outside code imports from it, the
 externals to mock). All are `analysis_run` rows keyed by `(snapshot, tool,

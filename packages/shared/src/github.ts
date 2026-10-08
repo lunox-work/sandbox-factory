@@ -381,6 +381,12 @@ export const githubRepoDtoSchema = z.strictObject({
    * repository. Null until it has been read once.
    */
   stack: stackDtoSchema.nullable(),
+  /**
+   * The snapshot the repository's context is built from: every context
+   * builder at one commit, moved by "Build all" on another. Null until the
+   * first.
+   */
+  contextSnapshotId: z.string().nullable(),
   createdAt: z.string(),
 });
 

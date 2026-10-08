@@ -189,6 +189,7 @@ test("the DTOs are strict, so no stray field reaches the browser", () => {
     syncStatus: "pending",
     syncError: null,
     stack: null,
+    contextSnapshotId: null,
     createdAt: "2026-10-01T00:00:00.000Z",
   };
   assert.equal(githubRepoDtoSchema.safeParse(repo).success, true);

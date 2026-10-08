@@ -730,6 +730,8 @@ export function mountGithubRoutes<Env extends GithubAppEnv>(
   /**
    * A repository's snapshots, newest first. Any member may read them, as
    * they may read the repository list: paths and counts, never contents.
+   * The one its context is built from is listed however old, last, so the
+   * page can always name the commit its builders read.
    */
   app.get(
     "/api/v1/orgs/:orgId/github/repositories/:id/snapshots",
@@ -737,7 +739,8 @@ export function mountGithubRoutes<Env extends GithubAppEnv>(
       if (snapshots === undefined) return snapshotsUnconfigured(c);
       const { organizationId } = c.get("member");
       const repoId = c.req.param("id");
-      if ((await repos.get(organizationId, repoId)) === null) {
+      const repo = await repos.get(organizationId, repoId);
+      if (repo === null) {
         return c.json({ error: "Not found" }, 404);
       }
       const listed = await snapshots.store.list(
@@ -745,7 +748,17 @@ export function mountGithubRoutes<Env extends GithubAppEnv>(
         repoId,
         SNAPSHOT_LIST_MAX,
       );
-      return c.json({ snapshots: listed.map(toSnapshotDto) });
+      const contextId = repo.contextSnapshotId;
+      const context =
+        contextId === null || listed.some((s) => s.id === contextId)
+          ? null
+          : await snapshots.store.get(organizationId, contextId);
+      return c.json({
+        snapshots: [
+          ...listed,
+          ...(context === null || context.repoId !== repoId ? [] : [context]),
+        ].map(toSnapshotDto),
+      });
     },
   );
 

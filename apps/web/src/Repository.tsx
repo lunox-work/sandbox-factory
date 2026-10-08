@@ -1,13 +1,14 @@
 /**
  * One registered repository, as a page of its own: `/o/:slug/repositories/:id`.
  *
- * Stacked blocks, top to bottom: what the repository is, the snapshot the
- * rest of the page is about, the stack detected in it, the context
- * builders and where each stands on that snapshot, with every run there
- * has been folded into their footer. The builders are the page's reason to exist: each reads a
- * snapshot on its own and describes it for people and agents. They are
- * started here, all at once; what they wrote is read in the context viewer, and a
- * run's log in the logs dialog, so the page itself stays a summary.
+ * Stacked blocks, top to bottom: what the repository is, the snapshot
+ * chosen to build at, the stack detected in it, the context builders and
+ * where each stands, with every run there has been folded into their
+ * footer. The builders are the page's reason to exist: each describes a
+ * snapshot for people and agents. The repository has one context, every
+ * builder at one commit (`contextSnapshotId`); "Build all" on another
+ * snapshot moves all of them to it. What they wrote is read in the context
+ * viewer, and a run's log in the logs dialog, so the page stays a summary.
  *
  * Roles come from the API, which checks them again on every write; hiding
  * a control the API would refuse is courtesy, not security. Only an owner
@@ -166,6 +167,7 @@ export function RepositoryPage({
       onRemove={() => repos.remove(repo.id)}
       onRemoved={onRemoved}
       onHeadMoved={() => void repos.refresh()}
+      onContextMoved={repos.refresh}
     />
   );
 }
@@ -177,6 +179,7 @@ function RepositoryView({
   onRemove,
   onRemoved,
   onHeadMoved,
+  onContextMoved,
 }: {
   organizationId: string;
   repo: GithubRepoDto;
@@ -185,6 +188,8 @@ function RepositoryView({
   onRemoved: () => void;
   /** A pull of the default branch may have moved the repository's head. */
   onHeadMoved: () => void;
+  /** "Build all" moved the repository's context; reads the repository again. */
+  onContextMoved: () => Promise<void>;
 }) {
   const client = clients.analysis;
   const [snapshotId, setSnapshotId] = useState("");
@@ -207,15 +212,17 @@ function RepositoryView({
   const [viewing, setViewing] = useState(false);
   /** The run the logs dialog is open on; null while it is closed. */
   const [logsOn, setLogsOn] = useState<string | null>(null);
+  /** The snapshot every builder is read at; "" until one is built. */
+  const contextId = repo.contextSnapshotId ?? "";
   const resources = useAnalysisResources(organizationId, repo.id, {
     watchSnapshots: awaiting !== null,
-    snapshotId,
+    snapshotId: contextId,
   });
   const snapshots = resources.snapshots.data ?? [];
   const runs = resources.runs;
-  // The builds on the chosen snapshot, from its own read rather than the
-  // repository's bounded history.
-  const snapshotRuns = resources.snapshotRuns;
+  // The builds on the context's snapshot, from its own read rather than
+  // the repository's bounded history.
+  const contextRuns = resources.snapshotRuns;
   const loading = resources.loading;
   const branchList = useRepoBranches(organizationId, repo.id);
   const branches = branchList.data?.branches ?? [];
@@ -343,6 +350,15 @@ function RepositoryView({
   const trackingError =
     resources.error === null ? null : errorMessage(resources.error);
   const current = snapshots.find((s) => s.id === snapshotId);
+  const context = snapshots.find((s) => s.id === contextId);
+  /** The context's commit, short; the list always carries its snapshot. */
+  const contextCommit =
+    context === undefined ? undefined : shortSha(context.commitSha);
+  /**
+   * The chosen snapshot is not the context's: "Build all" would move every
+   * builder to it, the first build included.
+   */
+  const moving = snapshotId !== "" && snapshotId !== contextId;
 
   /** The commit a run read, short, or a stand-in while the list arrives. */
   function commitOf(run: AnalysisRunDto): string {
@@ -351,16 +367,16 @@ function RepositoryView({
     return commit === undefined ? "Snapshot" : shortSha(commit);
   }
 
-  /** This builder's run on the chosen snapshot, when there is one. */
+  /** This builder's run on the context's snapshot, when there is one. */
   const builderRun = (builder: ContextBuilder) =>
-    snapshotRuns.find(
-      (run) => run.snapshotId === snapshotId && run.tool === builder,
+    contextRuns.find(
+      (run) => run.snapshotId === contextId && run.tool === builder,
     );
-  /** Each builder's succeeded run on the chosen snapshot: what "View" opens. */
+  /** Each builder's succeeded run in the context: what "View all" opens. */
   const built = CONTEXT_BUILDERS.flatMap((builder) => {
-    const run = snapshotRuns.find(
+    const run = contextRuns.find(
       (each) =>
-        each.snapshotId === snapshotId &&
+        each.snapshotId === contextId &&
         each.tool === builder &&
         each.status === "succeeded",
     );
@@ -377,9 +393,10 @@ function RepositoryView({
   }));
 
   /*
-    What "Build all" would start. The builders that read graphify's map
-    have nothing to read while its run is out of retries, so the API skips
-    them; they are not counted here either.
+    What "Build all" would start on the context's own snapshot. The
+    builders that read graphify's map have nothing to read while its run is
+    out of retries, so the API skips them; they are not counted here either.
+    On another snapshot, every builder is built there.
   */
   const graphRun = builderRun("graphify");
   const graphStuck =
@@ -389,11 +406,13 @@ function RepositoryView({
       needsBuild(builder, builderRun(builder)) &&
       !(readsGraph(builder) && graphStuck),
   );
+  const canBuild = moving || (snapshotId !== "" && toBuild.length > 0);
 
   /**
    * Every builder on the chosen snapshot, as one request: the API admits
    * the set against the organization's active-run cap once, where one
-   * request a builder would be refused partway.
+   * request a builder would be refused partway. The snapshot becomes the
+   * repository's context.
    */
   async function buildAll() {
     setBuilding(true);
@@ -401,7 +420,9 @@ function RepositoryView({
     try {
       await client.buildAll(organizationId, repo.id, { snapshotId });
       // Read again before the button is given back, so the rows say their
-      // runs are queued rather than "Not built" for a round trip.
+      // runs are queued, at the new commit, rather than "Not built" for a
+      // round trip.
+      await onContextMoved();
       await resources.refresh();
     } catch (cause) {
       setError(errorMessage(cause, "Could not start the builds. Try again."));
@@ -695,10 +716,11 @@ function RepositoryView({
                     value: s.id,
                     label: shortSha(s.commitSha),
                     keywords: [s.commitSha],
-                    detail:
-                      s.commitSha === branchHead
-                        ? `${shortDate(s.createdAt)} · latest`
-                        : shortDate(s.createdAt),
+                    detail: [
+                      shortDate(s.createdAt),
+                      ...(s.commitSha === branchHead ? ["latest"] : []),
+                      ...(s.id === contextId ? ["built"] : []),
+                    ].join(" · "),
                   }))}
                   value={snapshotId}
                   onValueChange={setSnapshotId}
@@ -707,7 +729,7 @@ function RepositoryView({
                       type="button"
                       role="combobox"
                       aria-label="Source snapshot"
-                      title="The commit the builders read. The default branch is snapshotted as it moves; pull another branch to snapshot it."
+                      title="The commit to build the context at. The default branch is snapshotted as it moves; pull another branch to snapshot it."
                       className={cn(
                         buttonVariants({ variant: "secondary", size: "sm" }),
                         BLOCK_ACTION,
@@ -757,39 +779,80 @@ function RepositoryView({
 
       <Block
         title="Context builders"
-        description="Each reads the chosen snapshot and describes it for people and agents."
-        aside={
-          // One action at a time: "Build all" while a builder is left to
-          // start, then "View files". A member, who starts nothing, views.
-          manageable && toBuild.length > 0 ? (
-            <Button
-              size="sm"
-              className="h-7 gap-1.5 rounded-[6px] px-2.5 text-xs has-[>svg]:px-2.5 [&_svg]:size-3.5"
-              disabled={building || snapshotId === ""}
-              onClick={() => {
-                void buildAll();
-              }}
-            >
-              <Hammer />
-              Build all
-            </Button>
+        data-testid="context-builders"
+        description={
+          contextId === "" ? (
+            "Each describes one commit for people and agents. Nothing is built yet."
           ) : (
+            <>
+              <span className="block">
+                Every builder reads one commit:{" "}
+                {contextCommit === undefined ? (
+                  "an older snapshot"
+                ) : (
+                  <span
+                    className="text-foreground font-mono"
+                    title={context?.commitSha}
+                  >
+                    {contextCommit}
+                  </span>
+                )}
+                .
+              </span>
+              {moving && current !== undefined && (
+                <span className="mt-1 block">
+                  The chosen snapshot is{" "}
+                  <span
+                    className="text-foreground font-mono"
+                    title={current.commitSha}
+                  >
+                    {shortSha(current.commitSha)}
+                  </span>
+                  .{" "}
+                  {manageable
+                    ? "Build all updates every builder to it."
+                    : "An owner or admin can update the builders to it."}
+                </span>
+              )}
+            </>
+          )
+        }
+        aside={
+          <div className="flex items-center gap-2">
+            {manageable && (
+              <Button
+                size="sm"
+                className="h-7 gap-1.5 rounded-[6px] px-2.5 text-xs has-[>svg]:px-2.5 [&_svg]:size-3.5"
+                disabled={building || !canBuild}
+                title={
+                  canBuild
+                    ? current === undefined
+                      ? undefined
+                      : `Build every builder at ${shortSha(current.commitSha)}.`
+                    : snapshotId === ""
+                      ? "There is no snapshot to build at yet."
+                      : "Every builder is built at this commit."
+                }
+                onClick={() => {
+                  void buildAll();
+                }}
+              >
+                <Hammer />
+                Build all
+              </Button>
+            )}
             <Button
               variant="secondary"
               size="sm"
               className={BLOCK_ACTION}
               disabled={builds.length === 0}
-              title={
-                builds.length === 0
-                  ? "Nothing is built on this snapshot yet."
-                  : undefined
-              }
+              title={builds.length === 0 ? "Nothing is built yet." : undefined}
               onClick={() => setViewing(true)}
             >
               <FolderOpen />
-              View files
+              View all
             </Button>
-          )
+          </div>
         }
       >
         <div className={FLUSH_LIST}>
@@ -798,6 +861,7 @@ function RepositoryView({
               key={builder}
               builder={builder}
               run={builderRun(builder)}
+              commit={contextCommit}
               pending={building}
               figures={figuresFor(builder)}
               onViewLog={
@@ -819,7 +883,7 @@ function RepositoryView({
 
       <ContextViewer
         owner={organizationId}
-        commit={current === undefined ? undefined : shortSha(current.commitSha)}
+        commit={contextCommit}
         builds={builds}
         onRetry={builtArtifacts.retry}
         open={viewing}

@@ -83,6 +83,7 @@ const widgets = {
   syncStatus: "ok",
   syncError: null,
   stack: ["TypeScript", "React"],
+  contextSnapshotId: null,
   createdAt: stamp,
 };
 

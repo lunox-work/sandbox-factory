@@ -1049,6 +1049,7 @@ const widgets = {
   syncStatus: "ok",
   syncError: null,
   stack: null,
+  contextSnapshotId: null,
   createdAt: "2026-10-01T00:00:00.000Z",
 };
 

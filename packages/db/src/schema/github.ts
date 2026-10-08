@@ -177,6 +177,14 @@ export const githubRepo = pgTable(
     stack: jsonb("stack").$type<string[]>(),
     stackCommitSha: text("stack_commit_sha"),
     stackVersion: integer("stack_version"),
+    /**
+     * The snapshot the repository's context is built from: one commit for
+     * every context builder, moved by "Build all" on another. Null until the
+     * first one. Not a foreign key, since `repo_snapshot` already hangs from
+     * this table: the store writes only one of the repository's own
+     * snapshots, and pruning keeps the one named here.
+     */
+    contextSnapshotId: text("context_snapshot_id"),
     createdAt: ts("created_at").notNull().defaultNow(),
     updatedAt: ts("updated_at").notNull().defaultNow(),
   },

@@ -107,6 +107,7 @@ const repo: GithubRepoSummary = {
   stack: null,
   stackCommitSha: null,
   stackVersion: null,
+  contextSnapshotId: null,
   createdAt: stamp,
 };
 

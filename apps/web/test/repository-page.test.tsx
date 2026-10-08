@@ -1,8 +1,10 @@
 /**
  * A repository's own page: the context builders and what they built.
  *
- * What it must get right: an owner starts every builder on the chosen
- * snapshot at once and sees each card follow its run; a member can read and open
+ * What it must get right: the repository has one context, every builder at
+ * one commit; an owner starts every builder on the chosen snapshot at once,
+ * which moves the context there, and sees each card follow its run; a
+ * member can read and open
  * artifacts but start nothing; each builder's result is drawn from the
  * summary its artifacts carry; the runs a bounty made are still readable
  * here, with nothing left that would make one; and a failed read is said
@@ -59,6 +61,7 @@ const repo: GithubRepoDto = {
   syncStatus: "ok",
   syncError: null,
   stack: null,
+  contextSnapshotId: null,
   createdAt: stamp,
 };
 const snapshot = {
@@ -152,6 +155,13 @@ interface Server {
     string,
     { taken: typeof snapshot } | { lands: typeof snapshot }
   >;
+  /** Snapshots listed besides the head's. */
+  snapshots?: (typeof snapshot)[];
+  /**
+   * The repository's context snapshot; the head's when there are runs and
+   * none when there are not, unless said.
+   */
+  context?: string | null;
 }
 
 /** A fake API, routed by method and the end of the path. */
@@ -159,8 +169,18 @@ function server(options: Server) {
   const calls: string[] = [];
   const posts: unknown[] = [];
   let runs = options.runs;
-  let snapshots = [snapshot];
-  const repositories = options.repositories ?? [repo];
+  let snapshots = [snapshot, ...(options.snapshots ?? [])];
+  // As the API does: a build moves the repository's context.
+  let context =
+    options.context !== undefined
+      ? options.context
+      : options.runs.length > 0
+        ? snapshot.id
+        : null;
+  const repositoriesOf = () =>
+    (options.repositories ?? [repo]).map((each) =>
+      each.id === repo.id ? { ...each, contextSnapshotId: context } : each,
+    );
   const fetch = vi.fn(async (url: string, init?: RequestInit) => {
     const method = init?.method ?? "GET";
     calls.push(`${method} ${url}`);
@@ -168,7 +188,8 @@ function server(options: Server) {
     if (method === "DELETE" && url.endsWith("/github/repositories/ghr_1")) {
       return new Response(null, { status: 204 });
     }
-    if (url.endsWith("/github/repositories")) body = { repositories };
+    if (url.endsWith("/github/repositories"))
+      body = { repositories: repositoriesOf() };
     else if (url.endsWith("/snapshots") && method === "POST") {
       const { branch } = JSON.parse(String(init?.body)) as { branch: string };
       posts.push({ branch });
@@ -193,19 +214,27 @@ function server(options: Server) {
         truncated: false,
       };
     else if (url.endsWith("/repositories/ghr_1/builds") && method === "POST") {
-      posts.push(JSON.parse(String(init?.body)));
+      const asked = JSON.parse(String(init?.body)) as { snapshotId: string };
+      posts.push(asked);
       // As the API does: a builder already built at its version, or queued,
-      // is answered as is; the rest are queued.
+      // on the snapshot is answered as is; the rest are queued there, and
+      // the snapshot becomes the repository's context.
       const queued = CONTEXT_BUILDERS.filter(
         (tool) =>
           !runs.some(
             (run) =>
+              run.snapshotId === asked.snapshotId &&
               run.tool === tool &&
               run.status !== "failed" &&
               run.toolVersion === toolVersionOf(tool),
           ),
-      ).map(queuedRun);
+      ).map((tool) => ({
+        ...queuedRun(tool),
+        id: `arn_${tool}_${asked.snapshotId}`,
+        snapshotId: asked.snapshotId,
+      }));
       runs = [...queued, ...runs];
+      context = asked.snapshotId;
       return new Response(JSON.stringify({ runs: queued }), { status: 202 });
     } else if (/\/repositories\/ghr_1\/runs(\?|$)/.test(url)) {
       // As the API does: one snapshot's runs when the query names it.
@@ -288,9 +317,9 @@ async function history(count: RegExp) {
   return footer;
 }
 
-function viewFiles() {
+function viewAll() {
   return screen.getByRole("button", {
-    name: "View files",
+    name: "View all",
   }) as HTMLButtonElement;
 }
 
@@ -354,8 +383,13 @@ test("the page names the repository, and owners see a card per builder", async (
     expect(within(builderCard(name)).queryByRole("button")).toBe(null);
   }
   expect(buildAll().disabled).toBe(false);
-  // One action at a time: there is nothing built yet to view.
-  expect(screen.queryByRole("button", { name: "View files" })).toBe(null);
+  // Nothing is built yet to view.
+  expect(viewAll().disabled).toBe(true);
+  expect(
+    screen.getByText(
+      "Each describes one commit for people and agents. Nothing is built yet.",
+    ),
+  ).toBeTruthy();
   expect(
     within(screen.getByRole("region", { name: "Run history" })).getByText(
       /No runs yet/,
@@ -378,16 +412,14 @@ test("Build all posts the snapshot once, and every card follows its run", async 
     await within(builderCard(name)).findByText("Queued");
   expect(f.posts).toEqual([{ snapshotId: "rsn_1" }]);
   expect(f.calls.filter((c) => c.startsWith("POST"))).toHaveLength(1);
-  // Nothing is left to start while they are queued.
-  // Nothing is left to start while they are queued: the block offers
-  // their files instead, held until one is built.
-  await waitFor(() =>
-    expect(screen.queryByRole("button", { name: "Build all" })).toBe(null),
-  );
-  expect(viewFiles().disabled).toBe(true);
+  // The snapshot is now the context; nothing is left to start there while
+  // they are queued, and nothing is built yet to view.
+  await screen.findByText(/Every builder reads one commit/);
+  await waitFor(() => expect(buildAll().disabled).toBe(true));
+  expect(viewAll().disabled).toBe(true);
 });
 
-test("View files takes Build all's place once every builder has built", async () => {
+test("once every builder has built, there is nothing to build and all to view", async () => {
   server({
     runs: CONTEXT_BUILDERS.map(
       (tool) => ({ ...queuedRun(tool), status: "succeeded" }) as AnalysisRunDto,
@@ -397,7 +429,81 @@ test("View files takes Build all's place once every builder has built", async ()
   await within(
     await screen.findByRole("region", { name: "Data model builder" }),
   ).findByText("Built");
-  await waitFor(() => expect(viewFiles().disabled).toBe(false));
+  await waitFor(() => expect(viewAll().disabled).toBe(false));
+  expect(buildAll().disabled).toBe(true);
+  // Each row names the one commit it was built at.
+  expect(
+    within(builderCard("Data model")).getByTitle("Built at aaaaaaa"),
+  ).toBeTruthy();
+});
+
+test("the context stays at its commit until Build all moves it to the chosen one", async () => {
+  const older = {
+    ...snapshot,
+    id: "rsn_0",
+    commitSha: "e".repeat(40),
+    createdAt: "2026-09-30T00:00:00.000Z",
+  };
+  const f = server({
+    runs: CONTEXT_BUILDERS.map(
+      (tool) => ({ ...queuedRun(tool), status: "succeeded" }) as AnalysisRunDto,
+    ),
+    snapshots: [older],
+  });
+  renderPage();
+  const block = await screen.findByTestId("context-builders");
+  await within(builderCard("Graphify")).findByText("Built");
+  expect(block.textContent).toContain(
+    "Every builder reads one commit: aaaaaaa.",
+  );
+  await waitFor(() => expect(buildAll().disabled).toBe(true));
+
+  // Another commit chosen: every row still shows the context's build.
+  await chooseOption(
+    screen.getByRole("combobox", { name: "Source snapshot" }),
+    /eeeeeee/,
+  );
+  await within(block).findByText(/Build all updates every builder to it/);
+  expect(block.textContent).toContain("The chosen snapshot is eeeeeee.");
+  for (const name of ["Graphify", "Data model"]) {
+    expect(within(builderCard(name)).getByText("Built")).toBeTruthy();
+    expect(
+      within(builderCard(name)).getByTitle("Built at aaaaaaa"),
+    ).toBeTruthy();
+  }
+  expect(viewAll().disabled).toBe(false);
+  expect(buildAll().disabled).toBe(false);
+
+  // Build all moves every builder to it, at once.
+  fireEvent.click(buildAll());
+  await within(builderCard("Data model")).findByText("Queued");
+  expect(f.posts).toEqual([{ snapshotId: "rsn_0" }]);
+  await within(block).findByText(/^eeeeeee$/);
+  expect(block.textContent).toContain(
+    "Every builder reads one commit: eeeeeee.",
+  );
+  expect(block.textContent).not.toContain("The chosen snapshot is");
+  for (const name of ["Graphify", "Dependency Cruiser", "Abstractions"])
+    expect(within(builderCard(name)).getByText("Queued")).toBeTruthy();
+});
+
+test("a member is told the chosen commit is not the one built", async () => {
+  const older = {
+    ...snapshot,
+    id: "rsn_0",
+    commitSha: "e".repeat(40),
+    createdAt: "2026-09-30T00:00:00.000Z",
+  };
+  server({ runs: [graphRun], snapshots: [older] });
+  renderPage("member");
+  await within(
+    await screen.findByRole("region", { name: "Graphify builder" }),
+  ).findByText("Built");
+  await chooseOption(
+    screen.getByRole("combobox", { name: "Source snapshot" }),
+    /eeeeeee/,
+  );
+  await screen.findByText(/An owner or admin can update the builders to it/);
   expect(screen.queryByRole("button", { name: "Build all" })).toBe(null);
 });
 
@@ -415,17 +521,17 @@ test("a member opens a build's files but cannot build or read logs", async () =>
   // The one "View" is the block's, not the row's.
   expect(
     within(builderCard("Graphify")).queryByRole("button", {
-      name: "View files",
+      name: "View all",
     }),
   ).toBe(null);
   // Enabled once the snapshot's own runs have been read.
   await waitFor(() =>
     expect(
-      (screen.getByRole("button", { name: "View files" }) as HTMLButtonElement)
+      (screen.getByRole("button", { name: "View all" }) as HTMLButtonElement)
         .disabled,
     ).toBe(false),
   );
-  fireEvent.click(screen.getByRole("button", { name: "View files" }));
+  fireEvent.click(screen.getByRole("button", { name: "View all" }));
   const dialog = await screen.findByRole("dialog");
   fireEvent.click(
     await within(dialog).findByRole("button", { name: "graph.html" }),
@@ -450,11 +556,10 @@ test("a member opens a build's files but cannot build or read logs", async () =>
 
 test("View is disabled until a builder has built on the snapshot", async () => {
   server({ runs: [] });
-  // A member: an owner is offered Build all instead.
   renderPage("member");
   await screen.findByText(/10 files/);
   expect(
-    (screen.getByRole("button", { name: "View files" }) as HTMLButtonElement)
+    (screen.getByRole("button", { name: "View all" }) as HTMLButtonElement)
       .disabled,
   ).toBe(true);
 });
@@ -468,11 +573,10 @@ test("a build older than the repository's newest page of runs is still shown bui
     snapshotId: "rsn_other",
   }));
   server({ runs: [...newer, graphRun] });
-  // A member: an owner with builders left to start is offered Build all.
   renderPage("member");
   await waitFor(() =>
     expect(
-      (screen.getByRole("button", { name: "View files" }) as HTMLButtonElement)
+      (screen.getByRole("button", { name: "View all" }) as HTMLButtonElement)
         .disabled,
     ).toBe(false),
   );
@@ -503,17 +607,16 @@ test("View opens every build in one explorer, a folder per builder, and reads a 
     },
   });
   const tab = spyOnOpen();
-  // A member: an owner with builders left to start is offered Build all.
   renderPage("member");
   await screen.findByText(/10 files/);
   // Enabled once the snapshot's own runs have been read.
   await waitFor(() =>
     expect(
-      (screen.getByRole("button", { name: "View files" }) as HTMLButtonElement)
+      (screen.getByRole("button", { name: "View all" }) as HTMLButtonElement)
         .disabled,
     ).toBe(false),
   );
-  fireEvent.click(screen.getByRole("button", { name: "View files" }));
+  fireEvent.click(screen.getByRole("button", { name: "View all" }));
   const dialog = await screen.findByRole("dialog");
   const files = within(dialog).getByRole("navigation", { name: "Files" });
   // A folder per build, in the builders' order, open from the start.
@@ -603,17 +706,16 @@ test("what can be seen is shown: diagrams drawn, pages run, wiki links followed"
       art_deps_dot: 'digraph { "a" -> "b" }',
     },
   });
-  // A member: an owner with builders left to start is offered Build all.
   renderPage("member");
   await screen.findByText(/10 files/);
   // Enabled once the snapshot's own runs have been read.
   await waitFor(() =>
     expect(
-      (screen.getByRole("button", { name: "View files" }) as HTMLButtonElement)
+      (screen.getByRole("button", { name: "View all" }) as HTMLButtonElement)
         .disabled,
     ).toBe(false),
   );
-  fireEvent.click(screen.getByRole("button", { name: "View files" }));
+  fireEvent.click(screen.getByRole("button", { name: "View all" }));
   const dialog = await screen.findByRole("dialog");
   const files = within(dialog).getByRole("navigation", { name: "Files" });
 
@@ -806,8 +908,8 @@ test("a graph out of retries leaves nothing for its readers to build", async () 
     name: "DeepWiki Open builder",
   });
   await within(card).findByText("Built");
-  await waitFor(() => expect(viewFiles().disabled).toBe(false));
-  expect(screen.queryByRole("button", { name: "Build all" })).toBe(null);
+  await waitFor(() => expect(viewAll().disabled).toBe(false));
+  expect(buildAll().disabled).toBe(true);
 });
 
 test("the API's refusal of a build is shown on the page", async () => {

@@ -489,6 +489,53 @@ describe("GitHub pointers in Postgres", { skip }, () => {
     }
   });
 
+  test("a repository's context is one of its own snapshots, and is never pruned", async () => {
+    const { repo, connection: linked } = await repoUnder("o_a", "912");
+    const { repo: other } = await repoUnder("o_b", "913");
+    const mine = await snapshots.create("o_a", snapshotOf(repo.id, "ctx"));
+    const theirs = await snapshots.create("o_b", snapshotOf(other.id, "ctx"));
+    if (mine.status !== "created" || theirs.status !== "created")
+      throw new Error("unreachable");
+    assert.equal((await repos.get("o_a", repo.id))?.contextSnapshotId, null);
+    assert.equal(
+      await repos.setContextSnapshot("o_a", repo.id, mine.snapshot.id),
+      true,
+    );
+    assert.equal(
+      (await repos.get("o_a", repo.id))?.contextSnapshotId,
+      mine.snapshot.id,
+    );
+    // Another repository's snapshot, or another organization's repository,
+    // is not written.
+    assert.equal(
+      await repos.setContextSnapshot("o_a", repo.id, theirs.snapshot.id),
+      false,
+    );
+    assert.equal(
+      await repos.setContextSnapshot("o_b", repo.id, mine.snapshot.id),
+      false,
+    );
+    assert.equal(
+      (await repos.get("o_a", repo.id))?.contextSnapshotId,
+      mine.snapshot.id,
+    );
+    // Pruning keeps the context's snapshot, however old, and nothing else
+    // that nothing names.
+    await snapshots.create("o_a", snapshotOf(repo.id, "newer"));
+    assert.deepEqual(await snapshots.prune("o_a", repo.id, 0), [
+      `trees/${repo.id}/newer.json.gz`,
+    ]);
+    assert.deepEqual(
+      (await snapshots.list("o_a", repo.id, 10)).map((s) => s.commitSha),
+      ["ctx"],
+    );
+    assert.equal(
+      (await connections.removeWithTrees("o_a", linked.id)).removed,
+      true,
+    );
+    assert.equal(await repos.get("o_a", repo.id), null);
+  });
+
   test("disconnect returns all snapshot tree keys before the cascade", async () => {
     const { repo, connection: linked } = await repoUnder("o_a", "914");
     await snapshots.create("o_a", snapshotOf(repo.id, "one"));

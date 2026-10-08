@@ -30,7 +30,7 @@ import { collectRepositoryObjects } from "./artifacts.js";
 import { guardRepositoryDelete } from "./errors.js";
 import type { Database } from "./errors.js";
 import { generateId } from "./mapping.js";
-import { githubConnection, githubRepo } from "./schema.js";
+import { githubConnection, githubRepo, repoSnapshot } from "./schema.js";
 import type { GithubRepoRow } from "./schema.js";
 
 /** A registered repository, as the UI lists it. */
@@ -56,6 +56,8 @@ export interface GithubRepoSummary {
   /** The commit, and the detection version, `stack` was found at. */
   readonly stackCommitSha: string | null;
   readonly stackVersion: number | null;
+  /** The snapshot every context builder reads; null until one is built. */
+  readonly contextSnapshotId: string | null;
   readonly createdAt: string;
 }
 
@@ -180,6 +182,16 @@ export interface GithubRepoStore {
     organizationId: string,
     repoId: string,
     detected: DetectedStack,
+  ): Promise<boolean>;
+  /**
+   * Moves the repository's context to one of its own snapshots, so every
+   * context builder is read at that commit. False when the repository is
+   * absent, or the snapshot is not one of its own.
+   */
+  setContextSnapshot(
+    organizationId: string,
+    repoId: string,
+    snapshotId: string,
   ): Promise<boolean>;
   /**
    * Repositories not read since `staleBefore`, on healthy connections,
@@ -429,6 +441,20 @@ export function createGithubRepoStore(db: Database): GithubRepoStore {
       return rows.length > 0;
     },
 
+    async setContextSnapshot(organizationId, repoId, snapshotId) {
+      const rows = await db
+        .update(githubRepo)
+        .set({ contextSnapshotId: snapshotId, updatedAt: new Date() })
+        .where(
+          and(
+            owned(organizationId, repoId),
+            sql`exists (select 1 from ${repoSnapshot} where ${repoSnapshot.id} = ${snapshotId} and ${repoSnapshot.repoId} = ${githubRepo.id})`,
+          ),
+        )
+        .returning();
+      return rows.length > 0;
+    },
+
     async dueForSync(staleBefore, limit) {
       return (
         db
@@ -532,6 +558,7 @@ function toSummary(row: GithubRepoRow): GithubRepoSummary {
     stack: row.stack,
     stackCommitSha: row.stackCommitSha,
     stackVersion: row.stackVersion,
+    contextSnapshotId: row.contextSnapshotId,
     createdAt: row.createdAt.toISOString(),
   };
 }

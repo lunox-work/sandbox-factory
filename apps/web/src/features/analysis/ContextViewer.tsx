@@ -1,5 +1,5 @@
 /**
- * What the context builders wrote on one snapshot, in a dialog drawn as
+ * What the context builders wrote at the repository's one context commit, in a dialog drawn as
  * the sandbox page's workbench is: an explorer with a folder for each
  * builder that has built, marked with the builder's icon, and the open
  * file beside it.
@@ -81,7 +81,7 @@ export function ContextViewer({
   notice,
 }: {
   owner: string;
-  /** The snapshot's commit, short, for the title. */
+  /** The context's commit, short, for the title. */
   commit: string | undefined;
   /** In the builders' order. */
   builds: readonly ContextBuild[];
@@ -99,7 +99,7 @@ export function ContextViewer({
       notice={notice}
       title="Context"
       detail={commit}
-      description="The files each context builder wrote on this snapshot."
+      description="The files each context builder wrote at this commit."
       open={open}
       onOpenChange={onOpenChange}
     >
