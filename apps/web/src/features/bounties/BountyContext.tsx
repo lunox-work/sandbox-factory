@@ -24,7 +24,11 @@ import type {
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronDown, Loader2, RefreshCw, TriangleAlert } from "lucide-react";
 import { useState, type ReactNode } from "react";
-import { contextDrift, type StageDrift } from "sandbox-factory";
+import {
+  contextDrift,
+  githubRepositories,
+  type StageDrift,
+} from "sandbox-factory";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -52,14 +56,16 @@ function SourceIcon({ source }: { source: ContextSourceDto }) {
 const short = (version: number) => `v${version}`;
 const shortSha = (sha: string) => sha.slice(0, 7);
 
-/** The query a bounty's context is read under, by what it is linked to. */
+/**
+ * The query a bounty's context is read under, by what it is linked to: its
+ * Jira issue. Its repositories are the workspace's, whichever it is about.
+ */
 function contextKey(userId: string, bounty: BountyDto) {
   return queryKeys.resource(
     userId,
     bounty.organizationId,
     "bounty-context",
     bounty.id,
-    bounty.repoId,
     bounty.jira?.issueId ?? null,
     bounty.jira?.removedAt ?? null,
   );
@@ -193,8 +199,15 @@ function holds(status: BountyContextSourceStatusDto): string | null {
     ].filter((part): part is string => part !== null);
     return parts.length === 0 ? "No fields set" : parts.join(" · ");
   }
-  const { content } = latest;
-  return `${plural(content.documents.length, "document")} at ${shortSha(latest.revision)}`;
+  const repositories = githubRepositories(latest.content);
+  const documents = repositories.reduce(
+    (sum, { documents }) => sum + documents.length,
+    0,
+  );
+  const [only] = repositories;
+  return repositories.length === 1 && only !== undefined
+    ? `${plural(documents, "document")} at ${shortSha(only.commitSha)}`
+    : `${plural(documents, "document")} from ${repositories.length} repositories`;
 }
 
 /** Why a source is ahead, or why it cannot be synced, in a sentence. */
@@ -208,11 +221,35 @@ function aheadText(
   if (source === "jira") {
     return `${name} has changed in Jira since ${short(latest.version)} was synced. Sync to bring the change into the overview.`;
   }
-  const to =
-    status.liveRevision === null
-      ? ""
-      : ` (${shortSha(latest.revision)} → ${shortSha(status.liveRevision)})`;
-  return `${name} has new commits since ${short(latest.version)} was synced${to}. Sync to read its documents again.`;
+  const since = `since ${short(latest.version)} was synced`;
+  const was = commitsOf(latest.revision);
+  const now = commitsOf(status.liveRevision ?? "");
+  const sameSet =
+    status.liveRevision !== null &&
+    was.size === now.size &&
+    [...now.keys()].every((fullName) => was.has(fullName));
+  if (!sameSet)
+    return `The workspace's repositories have changed ${since}. Sync to read their documents again.`;
+  const moved = [...now].filter(([fullName, sha]) => was.get(fullName) !== sha);
+  const [one] = moved;
+  if (moved.length === 1 && one !== undefined) {
+    const [fullName, sha] = one;
+    return `${fullName} has new commits ${since} (${shortSha(was.get(fullName) ?? "")} → ${shortSha(sha)}). Sync to read its documents again.`;
+  }
+  return `${moved.length} repositories have new commits ${since}. Sync to read their documents again.`;
+}
+
+/**
+ * Each repository's commit in a GitHub version's revision, which is one
+ * `owner/name@sha` line per repository its sync found.
+ */
+function commitsOf(revision: string): Map<string, string> {
+  return new Map(
+    revision.split("\n").flatMap((line): [string, string][] => {
+      const at = line.lastIndexOf("@");
+      return at <= 0 ? [] : [[line.slice(0, at), line.slice(at + 1)]];
+    }),
+  );
 }
 
 /**
@@ -250,7 +287,7 @@ export function ContextSync({
         : status.state === "unlinked"
           ? source === "jira"
             ? "Link an issue to sync its fields into the bounty."
-            : "Name a repository to sync its documents into the bounty."
+            : "Connect a repository to the workspace to sync its documents into the bounty."
           : (unsyncedNote ?? holds(status));
   const warning = status === null ? null : aheadText(source, status);
   return (
@@ -344,18 +381,29 @@ function ContextDetails({ status }: { status: BountyContextSourceStatusDto }) {
   const latest = status.latest;
   if (latest === null) return null;
   if (latest.source === "github") {
-    const { content } = latest;
+    const repositories = githubRepositories(latest.content);
+    const unread = "unread" in latest.content ? latest.content.unread : [];
+    const several = repositories.length > 1;
+    const omitted = repositories.reduce((sum, { omitted }) => sum + omitted, 0);
+    const documents = repositories.flatMap(({ fullName, documents }) =>
+      documents.map((document) => ({ fullName, document })),
+    );
     return (
       <div className="bg-muted/40 flex flex-col gap-1 rounded-md px-3 py-2 text-xs">
-        {content.documents.length === 0 ? (
+        {documents.length === 0 ? (
           <span className="text-muted-foreground">
             No documents were found to read.
           </span>
         ) : (
           <ul className="flex flex-col gap-0.5">
-            {content.documents.map((document) => (
-              <li key={document.path} className="flex justify-between gap-3">
-                <span className="truncate font-mono">{document.path}</span>
+            {documents.map(({ fullName, document }) => (
+              <li
+                key={`${fullName}:${document.path}`}
+                className="flex justify-between gap-3"
+              >
+                <span className="truncate font-mono">
+                  {several ? `${fullName}: ${document.path}` : document.path}
+                </span>
                 <span className="text-muted-foreground whitespace-nowrap">
                   {document.truncated
                     ? "cut short"
@@ -365,9 +413,14 @@ function ContextDetails({ status }: { status: BountyContextSourceStatusDto }) {
             ))}
           </ul>
         )}
-        {content.omitted > 0 && (
+        {omitted > 0 && (
           <span className="text-muted-foreground">
-            {plural(content.omitted, "more document")} left out for length.
+            {plural(omitted, "more document")} left out for length.
+          </span>
+        )}
+        {unread.length > 0 && (
+          <span className="text-muted-foreground">
+            Not read yet: {unread.join(", ")}.
           </span>
         )}
       </div>

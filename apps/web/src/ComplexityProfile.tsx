@@ -2,12 +2,13 @@ import { useObservation } from "./data/observe";
 import { clients } from "./data/query";
 /**
  * A proposal's complexity profile, in the Price tab under the size: the
- * measured evidence its price will point back to, one row per feature.
+ * measured evidence its price will point back to, one row per feature, for
+ * each repository its sizing said the work touches.
  *
- * The profile is measured in the background after sizing (a scope agent,
- * then a slice, on the analysis worker), so the hook keeps reading while it
- * is in flight. A proposal that was never profiled shows nothing: neither
- * its bounty nor its board named a repository when it was sized.
+ * Each profile is measured in the background after sizing (a scope agent,
+ * then a slice, on the analysis worker), so the hook keeps reading while
+ * one is in flight. A proposal that was never profiled shows nothing: its
+ * work touched no repository with a snapshot when it was sized.
  */
 
 import type { BountyProfileDto } from "@sandbox-factory/shared";
@@ -24,7 +25,11 @@ const IN_FLIGHT = new Set(["queued", "scoping", "slicing"]);
 export type ProfileRead =
   | { readonly state: "loading" }
   | { readonly state: "failed"; readonly retry?: () => void }
-  | { readonly state: "ready"; readonly profile: BountyProfileDto | null };
+  | {
+      readonly state: "ready";
+      /** One per repository touched, in name order; none when unprofiled. */
+      readonly profiles: readonly BountyProfileDto[];
+    };
 
 export function useProposalProfile(
   base: string,
@@ -44,11 +49,12 @@ export function useProposalProfile(
     owner,
     resource: "profile",
     id: drafted ? `${proposalId}:${specRevision ?? ""}` : null,
-    read: (_id, signal) => clients.pricing.profile(owner, proposalId, signal),
-    terminal: (profile) => profile === null || !IN_FLIGHT.has(profile.status),
+    read: (_id, signal) => clients.pricing.profiles(owner, proposalId, signal),
+    terminal: (profiles) =>
+      profiles.every((profile) => !IN_FLIGHT.has(profile.status)),
     interval: PROFILE_POLL_MS,
   });
-  if (!drafted) return { state: "ready", profile: null };
+  if (!drafted) return { state: "ready", profiles: [] };
   if (query.isError)
     return {
       state: "failed",
@@ -57,7 +63,7 @@ export function useProposalProfile(
       },
     };
   if (query.data === undefined) return { state: "loading" };
-  return { state: "ready", profile: query.data };
+  return { state: "ready", profiles: query.data };
 }
 
 const STAGE: Record<string, string> = {
@@ -111,19 +117,40 @@ export function ComplexityProfileBlock({
         </p>
       </Section>
     );
-  const stored = read.profile;
-  if (stored === null) return null;
+  const [first] = read.profiles;
+  if (first === undefined) return null;
+  const several = read.profiles.length > 1;
+  return (
+    <Section>
+      {read.profiles.map((stored) =>
+        several ? (
+          <div key={stored.id} className="mt-2 first:mt-0">
+            <p className="mb-1 font-mono text-xs">
+              {stored.repository ?? "A removed repository"}
+            </p>
+            <RepositoryProfile stored={stored} />
+          </div>
+        ) : (
+          <RepositoryProfile key={stored.id} stored={stored} />
+        ),
+      )}
+      {specRevision != null && specRevision !== first.specRevision && (
+        <p className="text-muted-foreground mt-2 text-xs">
+          Measured for spec revision {first.specRevision}; the spec has changed
+          since.
+        </p>
+      )}
+    </Section>
+  );
+}
 
+/** One repository's profile: where it stands, or what it measured. */
+function RepositoryProfile({ stored }: { stored: BountyProfileDto }) {
   const stage = STAGE[stored.status];
-  if (stage !== undefined)
-    return (
-      <Section>
-        <LoadingLine>{stage}</LoadingLine>
-      </Section>
-    );
+  if (stage !== undefined) return <LoadingLine>{stage}</LoadingLine>;
   if (stored.status === "failed" || stored.profile === null)
     return (
-      <Section>
+      <>
         <p className="text-muted-foreground text-sm" role="status">
           {FAILURE[stored.errorCode ?? ""] ??
             "The complexity profile could not be measured."}
@@ -131,7 +158,7 @@ export function ComplexityProfileBlock({
             <span className="font-mono"> ({stored.runErrorCode})</span>
           )}
         </p>
-      </Section>
+      </>
     );
 
   const profile = stored.profile;
@@ -199,7 +226,7 @@ export function ComplexityProfileBlock({
   ];
 
   return (
-    <Section>
+    <>
       <dl
         className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1.5 text-sm"
         data-testid="profile-rows"
@@ -218,13 +245,7 @@ export function ComplexityProfileBlock({
           ))}
         </ul>
       )}
-      {specRevision != null && specRevision !== stored.specRevision && (
-        <p className="text-muted-foreground mt-2 text-xs">
-          Measured for spec revision {stored.specRevision}; the spec has changed
-          since.
-        </p>
-      )}
-    </Section>
+    </>
   );
 }
 

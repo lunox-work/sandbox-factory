@@ -124,7 +124,7 @@ export interface RepoSnapshotStore {
  * through its runs: every `sandbox_version_source` names a slice run on its
  * own snapshot.
  */
-const unreferenced = sql`not exists (select 1 from ${bountyProposal} where ${bountyProposal.repoSnapshotId} = ${repoSnapshot.id}) and not exists (select 1 from ${analysisRun} where ${analysisRun.snapshotId} = ${repoSnapshot.id}) and not exists (select 1 from ${githubRepo} where ${githubRepo.contextSnapshotId} = ${repoSnapshot.id})`;
+const unreferenced = sql`not exists (select 1 from ${bountyProposal} where ${bountyProposal.repositories} @> jsonb_build_array(jsonb_build_object('snapshotId', ${repoSnapshot.id}))) and not exists (select 1 from ${analysisRun} where ${analysisRun.snapshotId} = ${repoSnapshot.id}) and not exists (select 1 from ${githubRepo} where ${githubRepo.contextSnapshotId} = ${repoSnapshot.id})`;
 
 /**
  * The snapshot's repository is the owner's, as a subquery: for a statement

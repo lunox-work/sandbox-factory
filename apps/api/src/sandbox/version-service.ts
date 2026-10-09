@@ -29,6 +29,7 @@ import { generateId } from "@sandbox-factory/db";
 import {
   createSandboxVersionSchema,
   fixtureSetSchema,
+  workRepositories,
 } from "@sandbox-factory/shared";
 import { createHash } from "node:crypto";
 import type {
@@ -517,13 +518,22 @@ export function versionService(options: SandboxRouteOptions) {
       return starterInProgress();
     const bounty = await options.bounties.get(owner, sandbox.bountyId);
     if (bounty === null) return failure({ error: "Not found." }, "not-found");
-    // The stack it follows: what the bounty's repository was detected to
-    // use, if it names one, and what the bounty adds.
-    const repo =
-      bounty.repoId === null
+    const proposalId = await options.proposals.liveForBounty(owner, bounty.id);
+    const proposal =
+      proposalId === null
         ? null
-        : await options.repos.get(owner, bounty.repoId);
-    const stack = normalizeStack([...(repo?.stack ?? []), ...bounty.stack]);
+        : await options.proposals.get(owner, proposalId);
+    // The stack it follows: what the repositories its work is done in were
+    // detected to use, the ones its sizing said it touches or else any of
+    // the workspace's, and what it adds.
+    const repos = workRepositories(
+      await options.repos.list(owner),
+      proposal?.repositories,
+    );
+    const stack = normalizeStack([
+      ...repos.flatMap((repo) => repo.stack ?? []),
+      ...bounty.stack,
+    ]);
     if (stack.length === 0)
       return failure(
         {
@@ -542,11 +552,6 @@ export function versionService(options: SandboxRouteOptions) {
     let pricing: ApprovedTaskSnapshot["pricing"] = null;
     // The bounty version the task is taken from, while it is approved.
     let proposalVersion: number | null = null;
-    const proposalId = await options.proposals.liveForBounty(owner, bounty.id);
-    const proposal =
-      proposalId === null
-        ? null
-        : await options.proposals.get(owner, proposalId);
     if (proposal !== null) {
       const stored =
         proposal.specRevision === null

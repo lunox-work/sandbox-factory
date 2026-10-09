@@ -74,7 +74,7 @@ export function BacklogScan({
   organizationSlug,
   boardId,
   canManage,
-  repository,
+  repositories,
   repositoryAction,
   foldable = false,
 }: {
@@ -84,9 +84,9 @@ export function BacklogScan({
   boardId: string;
   /** Owner or admin: may size a ticket or the board. */
   canManage: boolean;
-  /** The board's linked repository, or null. */
-  repository: ScanRepository | null;
-  /** How a board with no repository gets one. */
+  /** The workspace's repositories, any of which its tickets may touch. */
+  repositories: readonly ScanRepository[];
+  /** How a workspace with no repository gets one. */
   repositoryAction?: RepositoryAction | undefined;
   /** The board has proposals: the scan starts as one line above them. */
   foldable?: boolean;
@@ -334,7 +334,7 @@ export function BacklogScan({
                   canManage={canManage}
                   sizingAvailable={sizingAvailable}
                   boardBusy={boardRun !== undefined}
-                  repository={repository}
+                  repositories={repositories}
                   repositoryAction={repositoryAction}
                   range={
                     rateCard.data === undefined

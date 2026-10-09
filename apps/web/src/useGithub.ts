@@ -1,5 +1,5 @@
 import { ApiError } from "@sandbox-factory/client";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueries, useQueryClient } from "@tanstack/react-query";
 import { clients, queryKeys, useOwnerQuery, useUserId } from "./data/query";
 import { replaceLocation } from "./navigation/location";
 /**
@@ -268,23 +268,25 @@ export function useGithubRepos(
 }
 
 /**
- * One repository snapshot, for a line that names the commit something was
- * read at. Null while it loads, and when it cannot be read — gone, pruned,
- * or GitHub not set up here — since every caller has something to show
- * without it.
+ * Repository snapshots, for a line that names the commit each was read at,
+ * in the order named: each once it has answered, and null for one that
+ * cannot be read — gone, pruned, or GitHub not set up here — so a caller
+ * can say one is missing rather than name fewer than there are.
  */
-export function useRepoSnapshot(
+export function useRepoSnapshots(
   /** The organization's API root, `/api/v1/orgs/<id>`. */
   organizationBase: string,
-  snapshotId: string | null,
-): RepoSnapshotDetailDto | null {
+  snapshotIds: readonly string[],
+): (RepoSnapshotDetailDto | null)[] {
   const owner = decodeURIComponent(organizationBase.split("/").at(-1) ?? "");
   const userId = useUserId();
-  const query = useQuery({
-    queryKey: queryKeys.resource(userId, owner, "snapshot", snapshotId),
-    enabled: snapshotId !== null,
-    queryFn: ({ signal }) =>
-      clients.analysis.snapshot(owner, snapshotId ?? "", signal),
-  });
-  return query.data ?? null;
+  return useQueries({
+    queries: snapshotIds.map((snapshotId) => ({
+      queryKey: queryKeys.resource(userId, owner, "snapshot", snapshotId),
+      queryFn: ({ signal }: { signal: AbortSignal }) =>
+        clients.analysis.snapshot(owner, snapshotId, signal),
+    })),
+  }).flatMap(({ data, isError }) =>
+    data !== undefined ? [data] : isError ? [null] : [],
+  );
 }

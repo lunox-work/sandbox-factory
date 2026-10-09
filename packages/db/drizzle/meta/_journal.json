@@ -414,6 +414,13 @@
       "when": 1791466472605,
       "tag": "0058_repository_context",
       "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1791468063444,
+      "tag": "0059_bounty_all_repositories",
+      "breakpoints": true
     }
   ]
 }

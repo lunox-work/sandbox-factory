@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { test } from "node:test";
 import { Hono } from "hono";
 import type {
+  GithubRepoSummary,
   StoredAnalysisRun,
   StoredArtifact,
   StoredSandbox,
@@ -322,6 +323,62 @@ const builtFiles = [
   { path: "project/huge.json", body: "x".repeat(1_000_001) },
 ];
 
+/** A workspace's repositories, as the sandbox routes list them. */
+const workspaceRepo = (
+  id: string,
+  overrides: Partial<GithubRepoSummary> = {},
+): GithubRepoSummary => ({
+  id,
+  connectionId: "ghc_1",
+  role: "source",
+  externalId: id,
+  fullName: `acme/${id}`,
+  defaultBranch: "main",
+  isPrivate: true,
+  sizeKb: null,
+  headSha: null,
+  pushedAt: null,
+  lastSyncedAt: null,
+  syncStatus: "ok",
+  syncError: null,
+  stack: null,
+  stackCommitSha: null,
+  stackVersion: null,
+  contextSnapshotId: null,
+  createdAt: stamp,
+  ...overrides,
+});
+const workspaceRepos: GithubRepoSummary[] = [
+  workspaceRepo("ghr_1"),
+  workspaceRepo("ghr_2"),
+  workspaceRepo("ghr_x"),
+  workspaceRepo("ghr_gone", { syncStatus: "gone" }),
+  workspaceRepo("ghr_pub", { role: "sandbox" }),
+];
+/**
+ * The repositories each bounty's live proposal says its work touches;
+ * `bty_1`'s is `ghr_1`, and a bounty not here has no live proposal.
+ */
+const touchedBy: Record<string, string[]> = {
+  bty_web: ["ghr_2"],
+  bty_both: ["ghr_1", "ghr_2"],
+  // One gone from GitHub, and one removed from the workspace: neither is
+  // a repository it can be cut from now.
+  bty_gone: ["ghr_gone", "ghr_old", "ghr_2"],
+  bty_removed: ["ghr_old", "ghr_pub"],
+  bty_none: [],
+  // Disconnected between the read and the write.
+  bty_raced: ["ghr_x"],
+};
+/** Sandboxes made without a repository, by the bounty each is for. */
+const sandboxBounties: Record<string, string> = {
+  sbx_linked: "bty_web",
+  sbx_both: "bty_both",
+  sbx_none: "bty_none",
+  sbx_unsized: "bty_unsized",
+  sbx_raced: "bty_raced",
+};
+
 function fixture(
   role = "owner",
   overrides: Partial<{
@@ -353,6 +410,7 @@ function fixture(
   const builds: unknown[] = [];
   const enqueued: unknown[] = [];
   const removed: string[] = [];
+  const linked: { id: string; sourceRepoId: string }[] = [];
   let launches = 0;
   const stored = {
     version: { ...version, frozenAt: overrides.frozen === true ? stamp : null },
@@ -421,30 +479,28 @@ function fixture(
           ? { ok: false, reason: "bounty_not_found" }
           : input.bountyId === "bty_taken"
             ? { ok: false, reason: "bounty_has_sandbox" }
-            : input.sourceRepoId === "ghr_pub"
-              ? { ok: false, reason: "repo_role" }
-              : input.sourceRepoId === "ghr_x"
-                ? { ok: false, reason: "repo_not_found" }
-                : {
-                    ok: true,
-                    sandbox: {
-                      ...sandbox,
-                      organizationId: owner,
-                      bountyId: input.bountyId,
-                      sourceRepoId: input.sourceRepoId,
-                    },
+            : input.sourceRepoId === "ghr_x"
+              ? { ok: false, reason: "repo_not_found" }
+              : {
+                  ok: true,
+                  sandbox: {
+                    ...sandbox,
+                    organizationId: owner,
+                    bountyId: input.bountyId,
+                    sourceRepoId: input.sourceRepoId,
                   },
+                },
       list: async () => [sandbox],
-      linkSource: async (owner: string, id: string, sourceRepoId: string) =>
-        owner !== "org_1" || id === "sbx_9"
+      linkSource: async (owner: string, id: string, sourceRepoId: string) => {
+        linked.push({ id, sourceRepoId });
+        return owner !== "org_1"
           ? { ok: false, reason: "not-found" }
-          : id === "sbx_1" && sourceRepoId !== sandbox.sourceRepoId
+          : id === "sbx_linked"
             ? { ok: false, reason: "source_linked" }
-            : sourceRepoId === "ghr_pub"
-              ? { ok: false, reason: "repo_role" }
-              : sourceRepoId === "ghr_x"
-                ? { ok: false, reason: "repo_not_found" }
-                : { ok: true, sandbox: { ...sandbox, id, sourceRepoId } },
+            : sourceRepoId === "ghr_x"
+              ? { ok: false, reason: "repo_not_found" }
+              : { ok: true, sandbox: { ...sandbox, id, sourceRepoId } };
+      },
       get: async (owner: string, id: string) =>
         owner !== "org_1"
           ? null
@@ -454,7 +510,14 @@ function fixture(
               ? { ...sandbox, id: "sbx_bare", sourceRepoId: null }
               : id === "sbx_unlinked"
                 ? { ...sandbox, id: "sbx_unlinked" }
-                : null,
+                : id in sandboxBounties
+                  ? {
+                      ...sandbox,
+                      id,
+                      bountyId: sandboxBounties[id],
+                      sourceRepoId: null,
+                    }
+                  : null,
       createVersion: async (
         _owner: string,
         sandboxId: string,
@@ -597,7 +660,16 @@ function fixture(
         removed.push(key);
       },
     },
+    repos: { list: async () => workspaceRepos },
     proposals: {
+      liveForBounty: async (owner: string, bountyId: string) =>
+        owner !== "org_1"
+          ? null
+          : bountyId === "bty_1"
+            ? "bpr_1"
+            : bountyId in touchedBy
+              ? `bpr_${bountyId}`
+              : null,
       get: async (owner: string, id: string) =>
         owner === "org_1" && (id === "bpr_1" || id === "bpr_other")
           ? {
@@ -610,6 +682,7 @@ function fixture(
               status: "approved",
               decidedAt: stamp,
               specRevision: 2,
+              repositories: [{ repoId: "ghr_1", snapshotId: "rsn_1" }],
             }
           : owner === "org_1" && id === "bpr_nospec"
             ? {
@@ -622,8 +695,26 @@ function fixture(
                 status: "approved",
                 decidedAt: null,
                 specRevision: null,
+                repositories: [],
               }
-            : null,
+            : owner === "org_1" && id.startsWith("bpr_bty_")
+              ? {
+                  id,
+                  bountyId: id.slice("bpr_".length),
+                  revision: 1,
+                  complexity: "M",
+                  amountMinor: 10500,
+                  currency: "USD",
+                  status: "proposed",
+                  decidedAt: null,
+                  specRevision: 1,
+                  repositories:
+                    touchedBy[id.slice("bpr_".length)]?.map((repoId) => ({
+                      repoId,
+                      snapshotId: `rsn_${repoId}`,
+                    })) ?? [],
+                }
+              : null,
     },
     specs: {
       get: async (_owner: string, proposalId: string, revision: number) =>
@@ -679,6 +770,7 @@ function fixture(
     enqueued,
     removed,
     published,
+    linked,
     launches: () => launches,
   };
 }
@@ -754,25 +846,29 @@ test("an admin publishes a version whose build passed, and unpublishes the sandb
   assert.equal((await f.request("POST", "/sbx_9/unpublish")).status, 404);
 });
 
-test("a bounty's sandbox is created by admins, with or without a repository, and listed for members", async () => {
+test("a bounty's sandbox is created by admins, cut from the repository its sizing touches, and listed for members", async () => {
   const f = fixture();
-  const created = await f.request("POST", "", {
-    bountyId: "bty_1",
-    sourceRepoId: "ghr_1",
-  });
+  const sourceOf = async (bountyId: string) => {
+    const response = await f.request("POST", "", { bountyId });
+    assert.equal(response.status, 201, bountyId);
+    return ((await response.json()) as { sandbox: StoredSandbox }).sandbox
+      .sourceRepoId;
+  };
+  const created = await f.request("POST", "", { bountyId: "bty_1" });
   assert.equal(created.status, 201);
   const made = ((await created.json()) as { sandbox: StoredSandbox }).sandbox;
   assert.deepEqual(
     [made.id, made.bountyId, made.sourceRepoId],
     ["sbx_1", "bty_1", "ghr_1"],
   );
-  // A repository is enrichment: a sandbox is made without one.
-  const bare = await f.request("POST", "", { bountyId: "bty_2" });
-  assert.equal(bare.status, 201);
-  assert.equal(
-    ((await bare.json()) as { sandbox: StoredSandbox }).sandbox.sourceRepoId,
-    null,
-  );
+  assert.equal(await sourceOf("bty_web"), "ghr_2");
+  // One the workspace still has, among some it no longer does.
+  assert.equal(await sourceOf("bty_gone"), "ghr_2");
+  // A repository is enrichment: a sandbox is made without one when the
+  // bounty is unsized, touches none, touches several, or touches only
+  // repositories gone, removed or not a source.
+  for (const bountyId of ["bty_2", "bty_none", "bty_both", "bty_removed"])
+    assert.equal(await sourceOf(bountyId), null, bountyId);
   const taken = await f.request("POST", "", { bountyId: "bty_taken" });
   assert.equal(taken.status, 409);
   assert.equal(
@@ -785,32 +881,22 @@ test("a bounty's sandbox is created by admins, with or without a repository, and
     ((await noBounty.json()) as { code: string }).code,
     "bounty_not_found",
   );
-  assert.equal(
-    (
-      await f.request("POST", "", {
-        bountyId: "bty_1",
-        sourceRepoId: "ghr_pub",
-      })
-    ).status,
-    409,
-  );
-  // A repository disconnected since the bounty named it is told apart from
+  // A repository disconnected since the sizing named it is told apart from
   // a missing bounty, so the person asking can see what to change.
-  const noRepo = await f.request("POST", "", {
-    bountyId: "bty_1",
-    sourceRepoId: "ghr_x",
-  });
+  const noRepo = await f.request("POST", "", { bountyId: "bty_raced" });
   assert.equal(noRepo.status, 404);
   assert.deepEqual(await noRepo.json(), {
     error: "The repository is not connected to this workspace any more.",
     code: "repo_not_found",
   });
-  // No sandbox without its bounty.
-  assert.equal(
-    (await f.request("POST", "", { sourceRepoId: "ghr_1" })).status,
-    400,
-  );
-  assert.equal((await f.request("POST", "", { nope: true })).status, 400);
+  // No sandbox without its bounty, and no repository named for it: its
+  // sizing names that.
+  for (const body of [
+    { sourceRepoId: "ghr_1" },
+    { bountyId: "bty_1", sourceRepoId: "ghr_1" },
+    { nope: true },
+  ])
+    assert.equal((await f.request("POST", "", body)).status, 400);
   assert.equal(
     (await fixture("member").request("POST", "", { bountyId: "bty_1" })).status,
     403,
@@ -832,71 +918,49 @@ test("a bounty's sandbox is created by admins, with or without a repository, and
   assert.equal((await f.request("GET", "/sbx_9/versions")).status, 404);
 });
 
-test("a sandbox made without a repository has one linked once, by an admin", async () => {
+test("a sandbox made without a repository has the one its sizing touches linked once, by an admin", async () => {
   const f = fixture();
+  // What is sent is not read: the sizing says which repository it is.
   const linked = await f.request("PUT", "/sbx_bare/source", {
-    sourceRepoId: "ghr_1",
+    sourceRepoId: "ghr_2",
   });
   assert.equal(linked.status, 200);
   const made = ((await linked.json()) as { sandbox: StoredSandbox }).sandbox;
   assert.deepEqual([made.id, made.sourceRepoId], ["sbx_bare", "ghr_1"]);
+  assert.deepEqual(f.linked, [{ id: "sbx_bare", sourceRepoId: "ghr_1" }]);
   const code = async (response: Response) => [
     response.status,
     ((await response.json()) as { code?: string }).code,
   ];
   // Its versions are bound to the repository it has.
-  assert.deepEqual(
-    await code(
-      await f.request("PUT", "/sbx_1/source", { sourceRepoId: "ghr_2" }),
-    ),
-    [409, "source_linked"],
-  );
-  assert.deepEqual(
-    await code(
-      await f.request("PUT", "/sbx_bare/source", { sourceRepoId: "ghr_pub" }),
-    ),
-    [409, "repo_role"],
-  );
-  assert.deepEqual(
-    await code(
-      await f.request("PUT", "/sbx_bare/source", { sourceRepoId: "ghr_x" }),
-    ),
-    [404, "repo_not_found"],
-  );
-  assert.deepEqual(
-    await code(
-      await f.request("PUT", "/sbx_9/source", { sourceRepoId: "ghr_1" }),
-    ),
-    [404, undefined],
-  );
+  assert.deepEqual(await code(await f.request("PUT", "/sbx_linked/source")), [
+    409,
+    "source_linked",
+  ]);
+  assert.deepEqual(await code(await f.request("PUT", "/sbx_raced/source")), [
+    404,
+    "repo_not_found",
+  ]);
+  // Several, none, or no sizing yet: there is no one repository to cut.
+  for (const id of ["sbx_both", "sbx_none", "sbx_unsized"])
+    assert.deepEqual(
+      await code(await f.request("PUT", `/${id}/source`)),
+      [409, "no_touched_repository"],
+      id,
+    );
+  assert.deepEqual(await code(await f.request("PUT", "/sbx_9/source")), [
+    404,
+    undefined,
+  ]);
   assert.equal(
-    (
-      await f.request(
-        "PUT",
-        "/sbx_bare/source",
-        { sourceRepoId: "ghr_1" },
-        "org_2",
-      )
-    ).status,
+    (await f.request("PUT", "/sbx_bare/source", undefined, "org_2")).status,
     404,
   );
-  for (const body of [
-    {},
-    { sourceRepoId: "" },
-    { sourceRepoId: "ghr_1", x: 1 },
-  ])
-    assert.equal(
-      (await f.request("PUT", "/sbx_bare/source", body)).status,
-      400,
-    );
   assert.equal(
-    (
-      await fixture("member").request("PUT", "/sbx_bare/source", {
-        sourceRepoId: "ghr_1",
-      })
-    ).status,
+    (await fixture("member").request("PUT", "/sbx_bare/source")).status,
     403,
   );
+  assert.deepEqual(f.linked.length, 3);
 });
 
 test("a version pins the slice artifacts by hash, snapshots the approved task and writes the scope", async () => {
@@ -1655,8 +1719,11 @@ function starterFixture(
   overrides: Partial<{
     sandbox: Partial<StoredSandbox> | null;
     bounty: Record<string, unknown> | null;
-    repoStack: string[] | null;
+    /** The workspace's repositories; one TypeScript source by default. */
+    repos: GithubRepoSummary[];
     proposal: boolean;
+    /** The repositories its proposal says the work touches; none unless said. */
+    touched: string[];
     /** Approved unless said: a draft proposal is not generated from. */
     proposalStatus: "proposed" | "approved";
     limit: boolean;
@@ -1750,17 +1817,18 @@ function starterFixture(
               id: "bty_1",
               title: "Sum a cart",
               description: "The cart adds up its prices.",
-              repoId: "ghr_1",
               stack: ["Zod"],
               ...overrides.bounty,
             }
           : null,
     },
     repos: {
-      get: async (owner: string, id: string) =>
-        owner === "org_1" && id === "ghr_1" && overrides.repoStack !== null
-          ? { id, stack: overrides.repoStack ?? ["TypeScript"] }
-          : null,
+      list: async (owner: string) =>
+        owner !== "org_1"
+          ? []
+          : (overrides.repos ?? [
+              workspaceRepo("ghr_1", { stack: ["TypeScript"] }),
+            ]),
     },
     proposals: {
       liveForBounty: async () =>
@@ -1780,6 +1848,10 @@ function starterFixture(
                   ? null
                   : "2026-10-02T00:00:00.000Z",
               specRevision: 2,
+              repositories: (overrides.touched ?? []).map((repoId) => ({
+                repoId,
+                snapshotId: `rsn_${repoId}`,
+              })),
             }
           : null,
     },
@@ -1859,7 +1931,7 @@ test("a sandbox with no repository has a version generated from its bounty, by a
   };
   assert.equal(params.tool, "sandbox_starter");
   assert.equal(params.params.agent, "starter");
-  // The repository's detected stack, then what the bounty adds.
+  // The repositories' detected stack, then what the bounty adds.
   assert.deepEqual(params.params.stack, ["TypeScript", "Zod"]);
   const made = f.created[0]?.input as {
     id: string;
@@ -1913,13 +1985,73 @@ test("a sandbox with no repository has a version generated from its bounty, by a
   assert.equal(f.launches(), 1);
 });
 
+test("a generated version follows the stack of the repositories its work touches, else of any", async () => {
+  const repos = [
+    workspaceRepo("ghr_1", { stack: ["TypeScript", "React"] }),
+    workspaceRepo("ghr_2", { stack: ["typescript", "Postgres"] }),
+    workspaceRepo("ghr_gone", { stack: ["Go"], syncStatus: "gone" }),
+  ];
+  const stackOf = async (touched: string[]) => {
+    const f = starterFixture("admin", {
+      repos,
+      touched,
+      bounty: { stack: ["Zod"] },
+    });
+    assert.equal((await f.request("POST", "/sbx_1/starter")).status, 202);
+    return (f.enqueued[0]?.input as { params: { stack: string[] } }).params
+      .stack;
+  };
+  // A frontend-free bounty is not written in the frontend's stack.
+  assert.deepEqual(await stackOf(["ghr_2"]), [
+    "TypeScript",
+    "PostgreSQL",
+    "Zod",
+  ]);
+  // One it touches that is no longer connected is not one it is done in;
+  // with none of them left, it is any of the workspace's.
+  assert.deepEqual(await stackOf(["ghr_2", "ghr_gone"]), [
+    "TypeScript",
+    "PostgreSQL",
+    "Zod",
+  ]);
+  assert.deepEqual(await stackOf(["ghr_gone", "ghr_old"]), [
+    "TypeScript",
+    "React",
+    "PostgreSQL",
+    "Zod",
+  ]);
+});
+
+test("a generated version follows the stack of every repository the workspace has connected", async () => {
+  const f = starterFixture("admin", {
+    repos: [
+      workspaceRepo("ghr_1", { stack: ["TypeScript", "React"] }),
+      workspaceRepo("ghr_2", { stack: ["typescript", "Postgres"] }),
+      workspaceRepo("ghr_3", { stack: null }),
+      // Neither is one a bounty's work may touch.
+      workspaceRepo("ghr_gone", { stack: ["Go"], syncStatus: "gone" }),
+      workspaceRepo("ghr_pub", { stack: ["Rust"], role: "sandbox" }),
+    ],
+    bounty: { stack: ["Zod", "React"] },
+  });
+  const response = await f.request("POST", "/sbx_1/starter");
+  assert.equal(response.status, 202);
+  const params = f.enqueued[0]?.input as { params: { stack: string[] } };
+  // Each once, under the catalog's names, the bounty's own after.
+  assert.deepEqual(params.params.stack, [
+    "TypeScript",
+    "React",
+    "PostgreSQL",
+    "Zod",
+  ]);
+});
+
 test("a generated version keeps its listing within bounds", async () => {
   const f = starterFixture("admin", {
-    repoStack: null,
+    repos: [],
     bounty: {
       title: `  ${"t".repeat(130)}  `,
       description: "d".repeat(5_000),
-      repoId: null,
       stack: ["TypeScript", "A name far too long to be a listing tag"],
     },
   });
@@ -1952,14 +2084,14 @@ test("generating is refused for members, a linked sandbox, an off-Node or empty 
     ],
     [
       starterFixture("owner", {
-        repoStack: ["Python"],
+        repos: [workspaceRepo("ghr_1", { stack: ["Python"] })],
         bounty: { stack: ["Django"] },
       }),
       409,
       "stack_unsupported",
     ],
     [
-      starterFixture("owner", { repoStack: [], bounty: { stack: [] } }),
+      starterFixture("owner", { repos: [], bounty: { stack: [] } }),
       409,
       "stack_empty",
     ],

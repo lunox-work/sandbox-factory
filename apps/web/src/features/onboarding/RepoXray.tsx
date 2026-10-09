@@ -230,7 +230,10 @@ export function RepoXray({
                         className="shrink-0 gap-1.5"
                         aria-label={`Write a bounty in ${module.path}`}
                         onClick={() =>
-                          onWriteBounty({ repoId: repo.id, area: module.path })
+                          onWriteBounty({
+                            area: module.path,
+                            repository: repo.fullName,
+                          })
                         }
                       >
                         <PenLine className="size-3.5" />

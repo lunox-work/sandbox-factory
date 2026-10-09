@@ -24,7 +24,11 @@
  * screen beside the button, so there is no doubt whose it will be.
  */
 
-import type { GithubRepoDto, MembershipDto } from "@sandbox-factory/shared";
+import {
+  isWorkspaceSource,
+  type GithubRepoDto,
+  type MembershipDto,
+} from "@sandbox-factory/shared";
 import { PenLine, RefreshCw } from "lucide-react";
 import { useEffect, type ReactNode } from "react";
 
@@ -144,13 +148,9 @@ function WorkspaceHome({
     canManage && facts.github.available ? setup.github.connect : undefined;
   const needsRepository =
     facts.github.connected > 0 && facts.github.repositories === 0;
-  const firstRepo = setup.repos.repos.find(
-    (repo) => repo.role === "source" && repo.syncStatus !== "gone",
-  );
-  const writeBounty = () =>
-    onWriteBounty(
-      firstRepo === undefined ? undefined : { repoId: firstRepo.id },
-    );
+  const firstRepo = setup.repos.repos.find(isWorkspaceSource);
+  // A bounty names no repository: its work may touch any of them.
+  const writeBounty = () => onWriteBounty();
 
   const actions: SetupActions = {
     connectJira,

@@ -83,6 +83,7 @@ function fixture(role = "owner") {
   const enqueued: { tool: string; snapshot: string; params: unknown }[] = [];
   const removed: string[] = [];
   let launches = 0;
+  const listedWith: object[] = [];
   let refuse:
     "run_limit" | "graph_mismatch" | "slice_mismatch" | "not-found" | null =
     null;
@@ -160,16 +161,18 @@ function fixture(role = "owner") {
             : id === "bpr_unspecced"
               ? { id, specRevision: null }
               : null,
-      // Newest first, as the store pages them, for the repository asked.
-      list: async (_owner: string, options: { repoId?: string }) =>
-        options.repoId === "ghr_1"
-          ? [
-              listed("bpr_4", "2026-10-04T00:00:00.000Z", 1, null),
-              listed("bpr_3", "2026-10-03T00:00:00.000Z", 1, "jbd_2"),
-              listed("bpr_2", "2026-10-02T00:00:00.000Z", null, "jbd_1"),
-              listed("bpr_1", "2026-10-01T00:00:00.000Z", 2, "jbd_1"),
-            ]
-          : [listed("bpr_9", "2026-10-05T00:00:00.000Z", 1, "jbd_3")],
+      // Newest first, as the store pages them: the workspace's, whichever
+      // repository is asked for.
+      list: async (_owner: string, options: object) => {
+        listedWith.push(options);
+        return [
+          listed("bpr_9", "2026-10-05T00:00:00.000Z", 1, "jbd_3"),
+          listed("bpr_4", "2026-10-04T00:00:00.000Z", 1, null),
+          listed("bpr_3", "2026-10-03T00:00:00.000Z", 1, "jbd_2"),
+          listed("bpr_2", "2026-10-02T00:00:00.000Z", null, "jbd_1"),
+          listed("bpr_1", "2026-10-01T00:00:00.000Z", 2, "jbd_1"),
+        ];
+      },
     },
     specs: {
       get: async (_owner: string, proposalId: string, revision: number) =>
@@ -179,9 +182,9 @@ function fixture(role = "owner") {
     },
     boards: {
       list: async () => [
-        { id: "jbd_1", name: "Shop", sourceRepoId: "ghr_1" },
-        { id: "jbd_2", name: "Ops", sourceRepoId: "ghr_1" },
-        { id: "jbd_3", name: "Other", sourceRepoId: "ghr_2" },
+        { id: "jbd_1", name: "Shop" },
+        { id: "jbd_2", name: "Ops" },
+        { id: "jbd_3", name: "Other" },
       ],
     },
   } as unknown as AnalysisRouteOptions;
@@ -208,6 +211,7 @@ function fixture(role = "owner") {
     enqueued,
     removed,
     launches: () => launches,
+    listedWith,
     refuse: (reason: typeof refuse) => {
       refuse = reason;
     },
@@ -383,7 +387,7 @@ test("a fixtures run is written for a succeeded slice, on its snapshot", async (
   }
 });
 
-test("a repository's proposals are the specced ones whose bounties are about it, newest first", async () => {
+test("a repository's proposals are the workspace's specced ones, newest first", async () => {
   const f = fixture("member");
   const response = await f.request("repositories/ghr_1/proposals");
   assert.equal(response.status, 200);
@@ -394,16 +398,22 @@ test("a repository's proposals are the specced ones whose bounties are about it,
       title: string | null;
     }[];
   };
-  // A bounty written here has no board; one from Jira names its own.
+  // A bounty names no repository: its work may be cut from any of the
+  // workspace's. One written here has no board; one from Jira names its own.
   assert.deepEqual(
     body.proposals.map((proposal) => [proposal.id, proposal.boardName]),
     [
+      ["bpr_9", "Other"],
       ["bpr_4", null],
       ["bpr_3", "Ops"],
       ["bpr_1", "Shop"],
     ],
   );
-  assert.equal(body.proposals[2]?.title, "Title bpr_1");
+  assert.equal(body.proposals[3]?.title, "Title bpr_1");
+  assert.equal(
+    f.listedWith.some((options) => "repoId" in options),
+    false,
+  );
   assert.equal((await f.request("repositories/ghr_9/proposals")).status, 404);
   assert.equal(REPOSITORY_PROPOSALS_MAX, 100);
 });

@@ -55,7 +55,6 @@ function fixtureApp(token) {
       organizationId,
       title: input.title,
       description: input.description,
-      repoId: input.repoId,
       stack: input.stack ?? [],
       categories: [],
       components: [],
@@ -82,7 +81,6 @@ function fixtureApp(token) {
     addBounty(organization.id, user.id, {
       title: `${organization.name} private bounty`,
       description: `Work owned by ${organization.name}.`,
-      repoId: null,
     });
   }
 
@@ -117,10 +115,8 @@ function fixtureApp(token) {
     },
     pricing: {
       bounties: {
-        create: async (organizationId, createdBy, input) => ({
-          ok: true,
-          bounty: addBounty(organizationId, createdBy, input),
-        }),
+        create: async (organizationId, createdBy, input) =>
+          addBounty(organizationId, createdBy, input),
         list: async (organizationId) =>
           [...rows.values()]
             .filter((bounty) => bounty.organizationId === organizationId)

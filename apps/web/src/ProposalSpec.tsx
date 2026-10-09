@@ -203,6 +203,15 @@ export function useProposalSpec(
   };
 }
 
+/**
+ * A repository the work touches, at the commit its outline was read at;
+ * null for one whose snapshot is no longer kept.
+ */
+export type OutlineRead = {
+  readonly repoFullName: string;
+  readonly commitSha: string;
+} | null;
+
 /** Why the proposal is the size it is, for the head of the tab. */
 export interface SizeReason {
   /** The sizing model's answer: a whole size, or "unsized". */
@@ -212,13 +221,11 @@ export interface SizeReason {
   /** The size a reviewer set over the model's, or null when none did. */
   readonly reviewerSize: string | null;
   /**
-   * The repository snapshot the spec was drafted beside, when it was.
-   * Null for a draft that was shown no outline, or one not loaded yet.
+   * The repositories the sizing said the work touches, each at the
+   * snapshot whose outline the spec was drafted beside. Empty for a draft
+   * that touches none, or whose snapshots are not loaded yet.
    */
-  readonly outline?: {
-    readonly repoFullName: string;
-    readonly commitSha: string;
-  } | null;
+  readonly outlines?: readonly OutlineRead[];
 }
 
 /** A size as it reads inside a sentence. */
@@ -281,19 +288,19 @@ function SizeReasonBlock({ reason }: { reason: SizeReason }) {
         </div>
       </div>
       <p className="mt-3 text-[15px] leading-relaxed">{reason.rationale}</p>
-      {reason.outline != null && (
-        <OutlineSource outline={reason.outline} className="mt-3" />
+      {reason.outlines !== undefined && reason.outlines.length > 0 && (
+        <OutlineSource outlines={reason.outlines} className="mt-3" />
       )}
     </ModelCard>
   );
 }
 
-/** The repository snapshot a spec was drafted beside, said in a line. */
+/** The repository snapshots a spec was drafted beside, said in a line. */
 export function OutlineSource({
-  outline,
+  outlines,
   className,
 }: {
-  outline: NonNullable<SizeReason["outline"]>;
+  outlines: readonly OutlineRead[];
   className?: string;
 }) {
   return (
@@ -301,11 +308,23 @@ export function OutlineSource({
       className={cn("text-muted-foreground text-xs", className)}
       data-testid="spec-outline-source"
     >
-      Drafted with the repository outline from{" "}
-      <span title={outline.repoFullName}>{outline.repoFullName}</span> at{" "}
-      <code className="font-mono" title={outline.commitSha}>
-        {outline.commitSha.slice(0, 7)}
-      </code>
+      Its sizing says the work touches{" "}
+      {outlines.map((outline, index) => (
+        <span key={outline?.repoFullName ?? `unkept-${index}`}>
+          {index === 0 ? "" : index === outlines.length - 1 ? " and " : ", "}
+          {outline === null ? (
+            "a repository whose snapshot is no longer kept"
+          ) : (
+            <>
+              <span title={outline.repoFullName}>{outline.repoFullName}</span>{" "}
+              at{" "}
+              <code className="font-mono" title={outline.commitSha}>
+                {outline.commitSha.slice(0, 7)}
+              </code>
+            </>
+          )}
+        </span>
+      ))}
     </p>
   );
 }

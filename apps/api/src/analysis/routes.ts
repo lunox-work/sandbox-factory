@@ -615,9 +615,9 @@ export function mountAnalysisRoutes(
     return c.json(analysisRunResponseSchema.parse({ run: result.run }), 202);
   });
   /**
-   * Proposals with a spec whose bounty is about this repository: one that
-   * names it, or one from a board linked to it. Written here or imported,
-   * the same list.
+   * Proposals with a spec that this repository's work may be cut for. A
+   * bounty names no repository, so any of the workspace's may: written
+   * here or imported, the same list.
    */
   app.get(`${base}/repositories/:id/proposals`, async (c) => {
     const owner = c.get("member").organizationId;
@@ -632,7 +632,6 @@ export function mountAnalysisRoutes(
     let cursor: { createdAt: string; id: string } | undefined;
     for (;;) {
       const page = await options.proposals.list(owner, {
-        repoId,
         limit: REPOSITORY_PROPOSALS_PAGE,
         ...(cursor === undefined ? {} : { cursor }),
       });

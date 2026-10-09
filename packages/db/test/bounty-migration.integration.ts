@@ -6,7 +6,8 @@
  * the columns do. 0046: a bounty's issue type, priority and labels go, and
  * each proposal and spec revision still current moves to the spec hash that
  * no longer reads the type. 0050: an approved proposal is its first version,
- * approved when it was decided.
+ * approved when it was decided. 0059: a proposal's one snapshot becomes the
+ * one repository it touches, and a bounty and a board name none.
  *
  * Hand-written SQL is what drizzle-kit cannot check, so it is checked here:
  * a database is migrated to just before the migration, seeded the way the
@@ -34,6 +35,8 @@ const ADMIN_URL =
 const SCRATCH_DB = "sandbox_factory_bounty_migration_test";
 const TEXT_SCRATCH_DB = "sandbox_factory_bounty_text_migration_test";
 const VERSION_SCRATCH_DB = "sandbox_factory_proposal_version_migration_test";
+const REPOSITORIES_SCRATCH_DB =
+  "sandbox_factory_proposal_repositories_migration_test";
 /** The migration under test; everything before it is the starting point. */
 const UNDER_TEST = 45;
 
@@ -610,6 +613,120 @@ describe("migration 0050: a proposal's version", () => {
     // And an approved proposal is held to being a version.
     await assert.rejects(
       sql`update bounty_proposal set status = 'approved' where id = 'bpr_2'`,
+    );
+  });
+});
+
+describe("migration 0059: a proposal's repositories", () => {
+  let sql: postgres.Sql;
+  let folder: string | undefined;
+
+  before(async () => {
+    await recreate(REPOSITORIES_SCRATCH_DB);
+    folder = await migrationsBefore(59);
+    await runMigrations({
+      url: scratchUrl(REPOSITORIES_SCRATCH_DB),
+      migrationsFolder: folder,
+    });
+    sql = postgres(scratchUrl(REPOSITORIES_SCRATCH_DB), {
+      max: 1,
+      onnotice: () => {},
+    });
+    await sql`insert into organization (id, name, slug) values ('org_a', 'A', 'org-a')`;
+    await sql`insert into github_connection (id, organization_id, installation_id, account_login, account_type, repository_selection, permissions) values ('ghc_a', 'org_a', '1', 'example', 'Organization', 'all', '{}')`;
+    await sql`insert into github_repo (id, organization_id, connection_id, role, external_id, full_name, default_branch) values ('ghr_a', 'org_a', 'ghc_a', 'source', '11', 'example/api', 'main')`;
+    await sql`insert into repo_snapshot (id, repo_id, commit_sha, ref, tree_sha, tree_key, file_count, total_bytes, languages, facts) values ('rsn_a', 'ghr_a', 'abc', 'refs/heads/main', 'tree', 'tree-key', 1, 1, '{}', '{}')`;
+    await sql`insert into jira_connection (id, organization_id, cloud_id, site_url, site_name) values ('jrc_a', 'org_a', 'cloud', 'https://acme.example', 'Acme')`;
+    await sql`insert into jira_board (id, organization_id, connection_id, external_id, name, board_type, source_repo_id) values ('jrb_a', 'org_a', 'jrc_a', '1', 'Board', 'scrum', 'ghr_a')`;
+    const rateCard = sql.json({
+      currency: "USD",
+      xsMinor: 100,
+      sMinor: 100,
+      mMinor: 200,
+      lMinor: 300,
+      xlMinor: 400,
+      revision: 1,
+    });
+    // One drafted beside a snapshot, one beside none.
+    for (const [n, snapshotId] of [
+      [1, "rsn_a"],
+      [2, null],
+    ] as const) {
+      await sql`insert into bounty (id, organization_id, title, repo_id) values (${`bty_${n}`}, 'org_a', 'Fix login', 'ghr_a')`;
+      await sql`
+        insert into bounty_run (
+          id, organization_id, request_id, selection, rate_card,
+          requested_model, prompt_version, kind, bounty_id, status
+        ) values (
+          ${`run_${n}`}, 'org_a', ${`request-${n}`}, '{}', ${rateCard},
+          'model', 'v1', 'bounty', ${`bty_${n}`}, 'succeeded'
+        )
+      `;
+      await sql`
+        insert into bounty_proposal (
+          id, organization_id, run_id, bounty_id, spec_hash, rate_card,
+          model_complexity, model_confidence, model_rationale, actual_model,
+          prompt_version, complexity, amount_minor, currency, repo_snapshot_id
+        ) values (
+          ${`bpr_${n}`}, 'org_a', ${`run_${n}`}, ${`bty_${n}`}, ${"a".repeat(64)},
+          ${rateCard}, 'M', 'high', 'A few files.', 'model', 'v1', 'M', 200,
+          'USD', ${snapshotId}
+        )
+      `;
+    }
+    await sql`insert into bounty_profile (id, organization_id, proposal_id, spec_revision, spec_hash, snapshot_id) values ('bpf_1', 'org_a', 'bpr_1', 1, ${"a".repeat(64)}, 'rsn_a')`;
+    await sql.end();
+
+    await runMigrations({
+      url: scratchUrl(REPOSITORIES_SCRATCH_DB),
+      migrationsFolder: "drizzle",
+    });
+    sql = postgres(scratchUrl(REPOSITORIES_SCRATCH_DB), {
+      max: 1,
+      onnotice: () => {},
+    });
+  });
+
+  after(async () => {
+    await sql?.end();
+    if (folder !== undefined)
+      await rm(folder, { recursive: true, force: true });
+    await drop(REPOSITORIES_SCRATCH_DB);
+  });
+
+  test("the snapshot a proposal was drafted beside is the one repository it touches", async () => {
+    const rows = await sql`
+      select id, repositories from bounty_proposal order by id
+    `;
+    assert.deepEqual(
+      rows.map((row) => [row["id"], row["repositories"]]),
+      [
+        ["bpr_1", [{ repoId: "ghr_a", snapshotId: "rsn_a" }]],
+        ["bpr_2", []],
+      ],
+    );
+  });
+
+  test("the columns are gone, and a revision is profiled once per snapshot", async () => {
+    const columns = await sql`
+      select table_name, column_name from information_schema.columns
+      where (table_name, column_name) in (
+        ('bounty', 'repo_id'),
+        ('bounty_proposal', 'repo_snapshot_id'),
+        ('jira_board', 'source_repo_id')
+      )
+    `;
+    assert.deepEqual([...columns], []);
+    // The profile made before is kept.
+    const [kept] =
+      await sql`select snapshot_id from bounty_profile where id = 'bpf_1'`;
+    assert.equal(kept?.["snapshot_id"], "rsn_a");
+    // A second snapshot of the same revision is a profile of its own...
+    await sql`insert into repo_snapshot (id, repo_id, commit_sha, ref, tree_sha, tree_key, file_count, total_bytes, languages, facts) values ('rsn_b', 'ghr_a', 'def', 'refs/heads/main', 'tree', 'tree-key-b', 1, 1, '{}', '{}')`;
+    await sql`insert into bounty_profile (id, organization_id, proposal_id, spec_revision, spec_hash, snapshot_id) values ('bpf_2', 'org_a', 'bpr_1', 1, ${"a".repeat(64)}, 'rsn_b')`;
+    // ...and the same snapshot twice is not.
+    await assert.rejects(
+      sql`insert into bounty_profile (id, organization_id, proposal_id, spec_revision, spec_hash, snapshot_id) values ('bpf_3', 'org_a', 'bpr_1', 1, ${"a".repeat(64)}, 'rsn_a')`,
     );
   });
 });

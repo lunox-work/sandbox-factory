@@ -183,6 +183,13 @@ test("prune's delete names the owner in its own WHERE, not only in the read befo
   const query = new PgDialect().sqlToQuery(condition);
   assert.match(query.sql, /"github_repo"\."organization_id" = \$\d+/);
   assert.ok(query.params.includes("org_1"));
+  // A snapshot any proposal's repositories name is kept: the check is a
+  // containment the column's GIN index answers.
+  assert.ok(
+    query.sql.includes(
+      `"bounty_proposal"."repositories" @> jsonb_build_array(jsonb_build_object('snapshotId', "repo_snapshot"."id"))`,
+    ),
+  );
 });
 
 test("prune with nothing past the limit deletes nothing", async () => {

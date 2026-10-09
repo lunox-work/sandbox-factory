@@ -170,6 +170,30 @@ test("a proposal's step is optional, and its version goes with it", () => {
   );
 });
 
+test("a proposal records the repositories it touches, not one snapshot", () => {
+  const config = getTableConfig(bountyProposal);
+  const column = config.columns.find(({ name }) => name === "repositories");
+  assert.equal(column?.notNull, true);
+  assert.deepEqual(column?.default, []);
+  assert.equal(
+    config.columns.some(({ name }) => name === "repo_snapshot_id"),
+    false,
+  );
+  // Not keys: a snapshot pruned or a repository removed leaves the entry.
+  assert.equal(
+    config.foreignKeys.some(
+      (key) => key.reference().columns[0]?.name === "repositories",
+    ),
+    false,
+  );
+  // Pruning asks whether any proposal names a snapshot.
+  const index = config.indexes.find(
+    ({ config: indexConfig }) =>
+      indexConfig.name === "bounty_proposal_repositories_idx",
+  );
+  assert.equal(index?.config.method, "gin");
+});
+
 test("a respec run carries its request, and a proposal has one change in flight", () => {
   assert.deepEqual(checkValues(bountyRun, "bounty_run_kind_check"), [
     ...BOUNTY_RUN_KINDS,
@@ -194,14 +218,20 @@ test("a respec run carries its request, and a proposal has one change in flight"
   assert.notEqual(index?.config.where, undefined);
 });
 
-test("a profile has one row per spec revision, and outlives the runs it was measured from", () => {
+test("a profile has one row per spec revision and snapshot, and outlives the runs it was measured from", () => {
   const config = getTableConfig(bountyProfile);
-  const unique = config.uniqueConstraints.find(
-    ({ name }) => name === "bounty_profile_proposal_revision_unique",
-  );
+  // One per repository the revision's work touches.
   assert.deepEqual(
-    unique?.columns.map(({ name }) => name),
-    ["proposal_id", "spec_revision"],
+    config.uniqueConstraints.map(({ name, columns }) => [
+      name,
+      columns.map((column) => column.name),
+    ]),
+    [
+      [
+        "bounty_profile_proposal_revision_snapshot_unique",
+        ["proposal_id", "spec_revision", "snapshot_id"],
+      ],
+    ],
   );
   // It goes with its proposal and organization; a pruned snapshot or run
   // leaves the measured profile standing.

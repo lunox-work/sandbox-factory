@@ -128,7 +128,7 @@ function proposal(
     decidedAt: null,
     decidedBy: null,
     decisionDeliveryPolicy: null,
-    repoSnapshotId: null,
+    repositories: [],
     contextVersions: { jira: null, github: null },
     createdAt: "2026-10-01T00:00:00.000Z",
     updatedAt: "2026-10-01T00:00:00.000Z",
@@ -220,7 +220,6 @@ const storedBounty = {
   components: ["Reports"],
   inputTruncated: false,
   origin: "jira",
-  repoId: null,
   stack: [],
   createdBy: null,
   revision: 1,
@@ -258,7 +257,8 @@ function executorHarness(options: {
   planHeld?: boolean;
   recorded?: boolean;
   /** The proposal's newest profile; absent, the executor reads none. */
-  profile?: StoredBountyProfile | null;
+  /** The proposal's newest profiles, one per repository; absent, none read. */
+  profiles?: StoredBountyProfile[];
 }) {
   const queued = respecRun(options.request);
   const plans: unknown[] = [];
@@ -390,9 +390,9 @@ function executorHarness(options: {
           },
         } as never,
       }),
-    ...(options.profile === undefined
+    ...(options.profiles === undefined
       ? {}
-      : { profileFor: () => Promise.resolve(options.profile ?? null) }),
+      : { profileFor: () => Promise.resolve(options.profiles ?? []) }),
     now: () => new Date("2026-10-01T00:00:00.000Z"),
     leaseToken: () => "lease_1",
     setInterval: (() => 0) as never,
@@ -504,6 +504,7 @@ const measuredProfile: StoredBountyProfile = {
   specRevision: 3,
   specHash: hash,
   snapshotId: "rsn_1",
+  repository: "acme/app",
   status: "ready",
   errorCode: null,
   runErrorCode: null,
@@ -549,7 +550,7 @@ test("a proposal the rubric sized is priced by the rubric's score of the changed
     spec: currentDraft,
     code: {
       status: "measured",
-      profile: measuredProfile.profile!,
+      profiles: [{ repository: "acme/app", profile: measuredProfile.profile! }],
       specRevision: 3,
     },
   });
@@ -560,7 +561,7 @@ test("a proposal the rubric sized is priced by the rubric's score of the changed
       rubric: before,
       complexity: before.size ?? "M",
     }),
-    profile: measuredProfile,
+    profiles: [measuredProfile],
   });
   await state.run();
   const input = state.written[0] as {
@@ -584,7 +585,7 @@ test("a proposal the model or a reviewer sized keeps the step's price, with the 
     const state = executorHarness({
       request: { mode: "trim", removeScenarioIds: ["s3"] },
       proposal: proposal({ sizedBy }),
-      profile: measuredProfile,
+      profiles: [measuredProfile],
     });
     await state.run();
     const input = state.written[0] as {
@@ -603,7 +604,7 @@ test("a proposal the model or a reviewer sized keeps the step's price, with the 
     proposal: proposal({
       rubric: assessRubric({ spec: currentDraft, code: { status: "pending" } }),
     }),
-    profile: null,
+    profiles: [],
   });
   await pending.run();
   assert.equal(

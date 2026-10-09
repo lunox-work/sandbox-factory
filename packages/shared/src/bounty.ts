@@ -54,6 +54,14 @@ export const bountyProposalSummarySchema = z.object({
   id: z.string().min(1),
   status: bountyProposalStatusSchema,
   complexity: bountyComplexitySchema,
+  /**
+   * The workspace's repositories its sizing said the work touches, each at
+   * the snapshot it was sized beside: what its sandbox is cut from.
+   * Defaulted, so an older API still parses.
+   */
+  repositories: z
+    .array(z.object({ repoId: z.string(), snapshotId: z.string() }))
+    .default([]),
   amountMinor: z.number().int().positive().nullable(),
   currency: z.string().length(3).nullable(),
 });
@@ -90,14 +98,9 @@ export const bountySummaryDtoSchema = z.object({
   title: z.string().min(1),
   origin: bountyOriginSchema,
   /**
-   * The repository the bounty is about, when one was named for it. A Jira
-   * bounty with none is drafted beside its board's repository instead.
-   */
-  repoId: z.string().nullable(),
-  /**
-   * What the bounty adds to its repository's detected stack. The
-   * repository's own is not repeated here: it is the repository's, follows
-   * it, and is shown beside these.
+   * What the bounty adds to the stack detected in the workspace's
+   * repositories, any of which its work may touch. Theirs is not repeated
+   * here: it is the repositories', follows them, and is shown beside these.
    */
   stack: stackDtoSchema,
   revision: z.number().int().positive(),
@@ -263,27 +266,24 @@ export const syncBountyContextResponseSchema = z.object({
 
 const titleSchema = z.string().trim().min(1).max(BOUNTY_LIMITS.title);
 const descriptionSchema = z.string().max(BOUNTY_LIMITS.description);
-const repoIdSchema = z.string().min(1).nullable();
 
 /** A bounty written here. Only the title is required. */
 export const createBountySchema = z.strictObject({
   title: titleSchema,
   description: descriptionSchema.default(""),
-  repoId: repoIdSchema.default(null),
   stack: stackInputSchema.default([]),
 });
 
 /**
  * A change to a bounty, against the revision the editor saw. A Jira
- * bounty's text is Jira's to change, so only its repository and stack may
- * be set here; the route refuses the rest.
+ * bounty's text is Jira's to change, so only its stack may be set here;
+ * the route refuses the rest.
  */
 export const updateBountySchema = z
   .strictObject({
     expectedRevision: z.number().int().positive(),
     title: titleSchema.optional(),
     description: descriptionSchema.optional(),
-    repoId: repoIdSchema.optional(),
     stack: stackInputSchema.optional(),
   })
   .refine(

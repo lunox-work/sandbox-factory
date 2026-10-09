@@ -238,11 +238,6 @@ export interface JiraBoard {
   boardType: string;
   projectKey: string | null;
   selection: Partial<import("@sandbox-factory/shared").BoardSelection>;
-  /**
-   * The registered GitHub repository the board's tickets are about. Absent
-   * from a server older than repository links, which reads as unlinked.
-   */
-  sourceRepoId?: string | null;
   createdAt: string;
 }
 
@@ -352,14 +347,6 @@ export interface JiraBoards {
   sync: (connectionId: string) => Promise<string[] | null>;
   /** One ticket in full. Read live, stored nowhere. */
   issue: (boardId: string, issueKey: string) => Promise<JiraIssueDetail | null>;
-  /**
-   * Links the repository a board's tickets are about, or unlinks it with
-   * null. Resolves to null once saved, or to what to say when it was not.
-   */
-  linkRepository: (
-    boardId: string,
-    repoId: string | null,
-  ) => Promise<string | null>;
   refresh: () => Promise<void>;
 }
 
@@ -424,32 +411,6 @@ export function useJiraBoards(organizationId: string | undefined): JiraBoards {
     },
     [organizationId, cache, userId],
   );
-  const linkRepository = useCallback(
-    async (boardId: string, repoId: string | null) => {
-      if (organizationId === undefined)
-        return "Could not link that repository.";
-      try {
-        const saved = await clients.jira.updateBoard(organizationId, boardId, {
-          sourceRepoId: repoId,
-        });
-        query.setData((current) =>
-          (current ?? []).map((board) =>
-            board.id === saved.id ? saved : board,
-          ),
-        );
-        return null;
-      } catch (error) {
-        return error instanceof ApiError
-          ? error.status === 404
-            ? "That repository is no longer registered here."
-            : error.status === 403
-              ? "Only an owner or admin may change the repository."
-              : "Could not link that repository."
-          : "Could not reach the server.";
-      }
-    },
-    [organizationId, query.setData],
-  );
 
   return {
     boards,
@@ -457,7 +418,6 @@ export function useJiraBoards(organizationId: string | undefined): JiraBoards {
     error,
     sync,
     issue,
-    linkRepository,
     refresh,
   };
 }

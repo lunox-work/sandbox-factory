@@ -27,7 +27,7 @@ const options = {
       total: 0,
       uncategorized: 0,
       categories: [],
-      profile: null,
+      profiles: [],
       spec: null,
     })) as typeof fetch,
 };
@@ -49,7 +49,7 @@ test("feature reads validate their success envelopes", async () => {
   await github.disconnect("owner", "1");
   const pricing = new PricingClient(options);
   assert.equal(await pricing.rateCard("owner"), null);
-  assert.equal(await pricing.profile("owner", "1"), null);
+  assert.deepEqual(await pricing.profiles("owner", "1"), []);
   assert.deepEqual(await pricing.proposals("owner"), {
     proposals: [],
     nextCursor: null,
@@ -60,6 +60,41 @@ test("feature reads validate their success envelopes", async () => {
     categories: [],
   });
   assert.deepEqual(await pricing.spec("owner", "1"), { spec: null });
+});
+
+test("a proposal's profiles are read one per repository its work touches", async () => {
+  const urls: string[] = [];
+  const stored = {
+    id: "bpf_1",
+    proposalId: "bpr 1",
+    specRevision: 2,
+    repository: "acme/app",
+    status: "scoping",
+    errorCode: null,
+    runErrorCode: null,
+    snapshotId: "rsn_1",
+    scopeRunId: null,
+    sliceRunId: null,
+    profile: null,
+    createdAt: "2026-10-03T00:00:00.000Z",
+    updatedAt: "2026-10-03T00:00:00.000Z",
+  };
+  const pricing = new PricingClient({
+    baseUrl: "",
+    fetch: (async (input) => {
+      urls.push(String(input));
+      return Response.json({
+        profiles: [stored, { ...stored, id: "bpf_2", repository: null }],
+      });
+    }) as typeof fetch,
+  });
+  assert.deepEqual(
+    (await pricing.profiles("owner", "bpr 1")).map(
+      ({ repository }) => repository,
+    ),
+    ["acme/app", null],
+  );
+  assert.deepEqual(urls, ["/api/v1/orgs/owner/proposals/bpr%201/profile"]);
 });
 
 test("bounty transport retains conflicts and cancels without dispatch", async () => {
@@ -127,7 +162,6 @@ test("bounty transport retains conflicts and cancels without dispatch", async ()
       conflicts.createBounty("owner", {
         title: "Task",
         description: "",
-        repoId: null,
         stack: [],
       }),
     () =>

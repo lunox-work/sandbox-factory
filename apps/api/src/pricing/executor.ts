@@ -11,6 +11,7 @@ import {
   type LatestBountyContext,
   type NewBountyProfile,
   type NewBountySpec,
+  type ProposalRepository,
   type StoredBountyProfile,
   type StoredBountyProposal,
   type StoredBountyRun,
@@ -38,6 +39,7 @@ import {
   pointsDelta,
   priceFor,
   renderSourceContext,
+  repositoryLabel,
   resolveStepSettings,
   sameSpec,
   stepUp,
@@ -187,13 +189,13 @@ export interface BountyExecutorOptions {
     bounty: StoredBounty,
   ) => Promise<LatestBountyContext>;
   /**
-   * The outline of a repository, from its current snapshot, or null when
-   * it has none yet. Absent, no draft is shown one.
+   * The outline of each of the workspace's repositories a bounty's work
+   * could touch, from its current snapshot, in name order; a repository
+   * with no snapshot yet has none. Absent, no draft is shown any.
    */
-  readonly outlineFor?: (
+  readonly outlinesFor?: (
     organizationId: string,
-    repoId: string,
-  ) => Promise<RepositoryOutlineRead | null>;
+  ) => Promise<readonly RepositoryOutlineRead[]>;
   readonly now?: () => Date;
   readonly leaseToken?: () => string;
   readonly setInterval?: typeof globalThis.setInterval;
@@ -215,13 +217,14 @@ export interface BountyExecutorOptions {
     input: NewBountyProfile,
   ) => void;
   /**
-   * A proposal's newest complexity profile, for the pricing rubric to score
-   * a changed spec's code with. Absent, a spec change scores none.
+   * A proposal's newest complexity profiles, one per repository its work
+   * touches, for the pricing rubric to score a changed spec's code with.
+   * Absent, a spec change scores none.
    */
   readonly profileFor?: (
     organizationId: string,
     proposalId: string,
-  ) => Promise<StoredBountyProfile | null>;
+  ) => Promise<readonly StoredBountyProfile[]>;
   /**
    * Called when `execute` itself throws. `code` is fixed; `error` is the
    * thrown value, for the operator's log — it is never sent to a client.
@@ -229,8 +232,13 @@ export interface BountyExecutorOptions {
   readonly onBackgroundError?: (code: string, error?: unknown) => void;
 }
 
-/** An outline to draft beside, and the snapshot it was drawn from. */
+/**
+ * One repository's outline to draft beside, and the snapshot it was drawn
+ * from.
+ */
 export interface RepositoryOutlineRead {
+  readonly repoId: string;
+  readonly fullName: string;
   readonly snapshotId: string;
   readonly text: string;
 }
@@ -545,21 +553,12 @@ export class BountyExecutor {
       pricing.success ? pricing.data.step : {},
     );
     /*
-      The repository each bounty is about: its own, or its board's. Read
-      once per repository for the run, like the settings above, so a
-      backlog's bounties are drafted beside the same snapshot.
+      The repositories any bounty's work could touch: every one the
+      workspace has connected. Read once for the run, like the settings
+      above, so a backlog's bounties are drafted beside the same snapshots.
     */
-    const outlines = new Map<string, Promise<RepositoryOutlineRead | null>>();
-    const outline = (bounty: StoredBounty) => {
-      const repoId = bounty.repoId ?? scope.board?.board.sourceRepoId ?? null;
-      if (repoId === null) return Promise.resolve(null);
-      let read = outlines.get(repoId);
-      if (read === undefined) {
-        read = this.#outline(organizationId, repoId);
-        outlines.set(repoId, read);
-      }
-      return read;
-    };
+    let outlines: Promise<readonly RepositoryOutlineRead[]> | undefined;
+    const outline = () => (outlines ??= this.#outlines(organizationId));
 
     const outcomes: BountyRunOutcome[] = [];
     let nextIndex = 0;
@@ -649,20 +648,19 @@ export class BountyExecutor {
     }
   }
 
-  /** A repository's outline, or null when there is none to read. */
-  async #outline(
+  /** The workspace's repositories' outlines, or none when they cannot be read. */
+  async #outlines(
     organizationId: string,
-    repoId: string,
-  ): Promise<RepositoryOutlineRead | null> {
-    const read = this.#options.outlineFor;
-    if (read === undefined) return null;
+  ): Promise<readonly RepositoryOutlineRead[]> {
+    const read = this.#options.outlinesFor;
+    if (read === undefined) return [];
     try {
-      return await read(organizationId, repoId);
+      return await read(organizationId);
     } catch (error) {
-      // The outline helps a weight; it is not what a size stands on, so a
-      // repository that cannot be read leaves the draft without it.
+      // The outlines help a weight; they are not what a size stands on, so
+      // repositories that cannot be read leave the draft without them.
       this.#options.onBackgroundError?.("bounty_outline_unavailable", error);
-      return null;
+      return [];
     }
   }
 
@@ -1023,12 +1021,12 @@ export class BountyExecutor {
       counted, so the step only says what changed. Otherwise the step
       prices the change, as it did before the rubric.
     */
-    const profile =
-      (await this.#options.profileFor?.(organizationId, source.id)) ?? null;
+    const profiles =
+      (await this.#options.profileFor?.(organizationId, source.id)) ?? [];
     const rubric = assessRubric({
       spec: next,
       code: rubricCode(
-        profile,
+        profiles,
         source.rubric?.code.status === "pending" ? "pending" : "unavailable",
       ),
       weightPoints: source.step.settings.weightPoints,
@@ -1094,7 +1092,7 @@ export class BountyExecutor {
     scope: RunScope,
     signal: AbortSignal,
     stepSettings: StepSettings,
-    outlineOf: (bounty: StoredBounty) => Promise<RepositoryOutlineRead | null>,
+    outlinesOf: () => Promise<readonly RepositoryOutlineRead[]>,
   ): Promise<{ value?: BountyRunOutcome; fatalCode?: string }> {
     const read = await this.#readCandidate(organizationId, candidate, scope);
     if (read.value === undefined) return { fatalCode: read.fatalCode };
@@ -1102,18 +1100,31 @@ export class BountyExecutor {
       return { value: { ...read.value.failed, status: "failed" } };
     }
     const { bounty, content, specHash, base } = read.value;
-    const outline = await outlineOf(bounty);
+    // Each repository under a label of its own, the same in its outline
+    // and its documents, which the draft names the ones it touches by.
+    const outlines = await outlinesOf();
+    const labels = new Map(
+      outlines.map(({ fullName }, index) => [fullName, repositoryLabel(index)]),
+    );
+    const repositoryOutline = outlines
+      .map(({ text }, index) => `=== ${repositoryLabel(index)} ===\n${text}`)
+      .join("\n\n");
     // What its sources add, as synced: the draft and the size see it, and
     // the proposal records which versions they saw.
     const held = await this.#context(organizationId, bounty);
-    const sourceContext = renderSourceContext({
-      jira: held.jira?.content ?? null,
-      github: held.github?.content ?? null,
-    });
+    const sourceContext = renderSourceContext(
+      {
+        jira: held.jira?.content ?? null,
+        github: held.github?.content ?? null,
+      },
+      labels,
+    );
 
     let sizing: BountySizingResult;
     let actualModel = run.requestedModel;
     let drafted: NewBountySpec | undefined;
+    // The outlined repositories the draft said the work changes.
+    let touched: ProposalRepository[] = [];
     // What each model call spent, for the calls that were made.
     const spent: SizingUsage[] = [];
     let technicalFailure = false;
@@ -1153,16 +1164,21 @@ export class BountyExecutor {
             summary: content.title,
             descriptionText: content.description,
             components: content.components,
-            ...(outline === null ? {} : { repositoryOutline: outline.text }),
+            ...(repositoryOutline === "" ? {} : { repositoryOutline }),
             ...(sourceContext === "" ? {} : { sourceContext }),
           },
           request,
         );
         spent.push(draft.usage);
+        touched = outlines.flatMap(({ repoId, snapshotId }, index) =>
+          draft.result.repositories.includes(repositoryLabel(index))
+            ? [{ repoId, snapshotId }]
+            : [],
+        );
         drafted = {
           specHash,
           specHashVersion: BOUNTY_SPEC_HASH_VERSION,
-          draft: draft.result,
+          draft: draft.result.spec,
           origin: "draft",
           actualModel: draft.actualModel,
           promptVersion: draftSpecTool.promptVersion,
@@ -1232,7 +1248,7 @@ export class BountyExecutor {
       takes the size over from the model only then (`./rubric.ts`).
     */
     const profiling =
-      outline !== null && this.#options.profilingEnabled?.() === true;
+      touched.length > 0 && this.#options.profilingEnabled?.() === true;
     const rubric =
       drafted === undefined
         ? null
@@ -1255,9 +1271,8 @@ export class BountyExecutor {
       currency: amountMinor === null ? null : run.rateCard.currency,
       step,
       rubric,
-      // What the spec was drafted beside; nothing when there is no spec.
-      repoSnapshotId:
-        drafted === undefined || outline === null ? null : outline.snapshotId,
+      // What the spec's work touches; nothing when there is no spec.
+      repositories: drafted === undefined ? [] : touched,
       contextVersions: {
         jira: held.jira?.version ?? null,
         github: held.github?.version ?? null,
@@ -1307,19 +1322,18 @@ export class BountyExecutor {
     if (typeof writebackOperationId === "string") {
       this.#options.onWritebackCreated?.(organizationId, writebackOperationId);
     }
-    // A spec drafted beside a snapshot is profiled against that snapshot.
-    if (
-      drafted !== undefined &&
-      outline !== null &&
-      created.proposal.specRevision !== null
-    ) {
+    // A spec is profiled in each repository its work touches, against the
+    // snapshot it was drafted beside.
+    const specRevision = created.proposal.specRevision;
+    if (drafted !== undefined && specRevision !== null) {
       try {
-        this.#options.onProposalDrafted?.(organizationId, {
-          proposalId: created.proposal.id,
-          specRevision: created.proposal.specRevision,
-          specHash: drafted.specHash,
-          snapshotId: outline.snapshotId,
-        });
+        for (const { snapshotId } of created.proposal.repositories)
+          this.#options.onProposalDrafted?.(organizationId, {
+            proposalId: created.proposal.id,
+            specRevision,
+            specHash: drafted.specHash,
+            snapshotId,
+          });
       } catch (error) {
         this.#options.onBackgroundError?.(
           "bounty_profile_wakeup_failed",

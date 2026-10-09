@@ -23,7 +23,6 @@ import {
   unique,
 } from "drizzle-orm/pg-core";
 
-import { githubRepo } from "./github.js";
 import { organization } from "./organizations.js";
 import { bounty } from "./bounty.js";
 
@@ -165,19 +164,6 @@ export const jiraBoard = pgTable(
      * back, with its history, when a sync finds it again.
      */
     missingSince: timestamp("missing_since", { withTimezone: true }),
-    /**
-     * The registered GitHub repository the board's tickets are about, whose
-     * newest snapshot the sizing draft reads an outline of. Null when none
-     * is linked; removing the repository unlinks it.
-     *
-     * Not a composite key with `organization_id`, as `github_repo`'s is with
-     * its connection: `set null` on a composite key would null the owner
-     * column too. `JiraBoardStore.update` checks both rows share the
-     * organization instead.
-     */
-    sourceRepoId: text("source_repo_id").references(() => githubRepo.id, {
-      onDelete: "set null",
-    }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -193,8 +179,6 @@ export const jiraBoard = pgTable(
       table.externalId,
     ),
     index("jira_board_organization_id_idx").on(table.organizationId),
-    // Removing a repository nulls this column; without it that is a scan.
-    index("jira_board_source_repo_id_idx").on(table.sourceRepoId),
   ],
 );
 

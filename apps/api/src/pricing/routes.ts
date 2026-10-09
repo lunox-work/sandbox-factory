@@ -661,10 +661,11 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
   });
 
   /*
-    The complexity profile of the proposal's newest profiled spec revision,
-    with where it stands while its runs are in flight. Null when it was
-    never profiled: neither its bounty nor its board named a repository
-    when it was sized, or this deployment has no repository analysis.
+    The complexity profiles of the proposal's newest profiled spec
+    revision, one per repository its work touches, with where each stands
+    while its runs are in flight. None when it was never profiled: its
+    work touched no repository with a snapshot, or this deployment has no
+    repository analysis.
   */
   app.get("/api/v1/orgs/:orgId/proposals/:id/profile", async (c) => {
     const { organizationId } = c.get("member");
@@ -675,27 +676,25 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
     if (proposal === null) return c.json({ error: "Not found" }, 404);
     const stored =
       options.profiles === undefined
-        ? null
+        ? []
         : await options.profiles.latest(organizationId, proposal.id);
     return c.json(
       proposalProfileResponseSchema.parse({
-        profile:
-          stored === null
-            ? null
-            : {
-                id: stored.id,
-                proposalId: stored.proposalId,
-                specRevision: stored.specRevision,
-                status: stored.status,
-                errorCode: stored.errorCode,
-                runErrorCode: stored.runErrorCode,
-                snapshotId: stored.snapshotId,
-                scopeRunId: stored.scopeRunId,
-                sliceRunId: stored.sliceRunId,
-                profile: stored.profile,
-                createdAt: stored.createdAt,
-                updatedAt: stored.updatedAt,
-              },
+        profiles: stored.map((profile) => ({
+          id: profile.id,
+          proposalId: profile.proposalId,
+          specRevision: profile.specRevision,
+          repository: profile.repository,
+          status: profile.status,
+          errorCode: profile.errorCode,
+          runErrorCode: profile.runErrorCode,
+          snapshotId: profile.snapshotId,
+          scopeRunId: profile.scopeRunId,
+          sliceRunId: profile.sliceRunId,
+          profile: profile.profile,
+          createdAt: profile.createdAt,
+          updatedAt: profile.updatedAt,
+        })),
       }),
     );
   });

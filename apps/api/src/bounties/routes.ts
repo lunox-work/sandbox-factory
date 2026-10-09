@@ -14,7 +14,6 @@ import type {
   BountyContextStore,
   BountyListOptions,
   BountyProposalStore,
-  JiraBoardStore,
   ListedBounty,
   StoredBounty,
   BountyMutationResult,
@@ -53,12 +52,10 @@ export interface BountyRouteOptions {
   readonly bounties: BountyStore;
   readonly proposals: Pick<BountyProposalStore, "get" | "liveForBounty">;
   /**
-   * The bounty's synced context, and the boards a Jira bounty's repository
-   * may come from. Absent, the overview holds no context, and nothing is
-   * behind on any.
+   * The bounty's synced context. Absent, the overview holds no context,
+   * and nothing is behind on any.
    */
   readonly contexts?: Pick<BountyContextStore, "latest">;
-  readonly boards?: Pick<JiraBoardStore, "forRun">;
 }
 
 interface BountyAppEnv {
@@ -99,8 +96,7 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
       c.get("user").id,
       parsed.data,
     );
-    if (!created.ok) return repoNotFound(c);
-    return c.json({ bounty: await detail(options, created.bounty) }, 201);
+    return c.json({ bounty: await detail(options, created) }, 201);
   });
 
   app.get(`${base}/:id`, async (c) => {
@@ -126,8 +122,8 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
 
   /**
    * A change, against the revision the editor saw. A bounty still following
-   * its Jira issue takes its text from Jira, so only its repository and
-   * stack can be set here; its title and description are changed in Jira.
+   * its Jira issue takes its text from Jira, so only its stack can be set
+   * here; its title and description are changed in Jira.
    */
   app.patch(`${base}/:id`, async (c) => {
     const { organizationId } = c.get("member");
@@ -240,8 +236,6 @@ async function mutated(
   switch (result.reason) {
     case "not-found":
       return c.json({ error: "Not found" }, 404);
-    case "repo-not-found":
-      return repoNotFound(c);
     case "jira-owned":
       return c.json(
         {
@@ -418,11 +412,11 @@ export async function detail(
   const build = bounty.sandbox?.build ?? null;
   // The context the overview holds, from the sources linked now.
   const held =
-    options.contexts === undefined || options.boards === undefined
+    options.contexts === undefined
       ? NO_CONTEXT
       : contextVersionsOf(
           await heldContext(
-            { contexts: options.contexts, boards: options.boards },
+            { contexts: options.contexts },
             bounty.organizationId,
             bounty,
           ),
@@ -456,6 +450,9 @@ export async function detail(
             // Narrowed above: only a live proposal is kept.
             status: live.status === "approved" ? "approved" : "proposed",
             complexity: live.complexity,
+            repositories: live.repositories.map((repository) => ({
+              ...repository,
+            })),
             amountMinor: live.amountMinor,
             currency: live.currency,
           },
@@ -484,14 +481,21 @@ function summaryDto(bounty: ListedBounty): BountySummaryDto {
     organizationId: bounty.organizationId,
     title: bounty.title,
     origin: bounty.origin,
-    repoId: bounty.repoId,
     stack: [...bounty.stack],
     revision: bounty.revision,
     version: bounty.version,
     approval: bounty.approval,
     jira: linkDto(bounty),
     categories: bounty.categories.map((match) => ({ ...match })),
-    proposal: bounty.proposal,
+    proposal:
+      bounty.proposal === null
+        ? null
+        : {
+            ...bounty.proposal,
+            repositories: bounty.proposal.repositories.map((repository) => ({
+              ...repository,
+            })),
+          },
     sandbox: bounty.sandbox,
     createdAt: bounty.createdAt,
     updatedAt: bounty.updatedAt,
@@ -511,14 +515,4 @@ function bountyDto(
     createdBy: bounty.createdBy,
     stages,
   };
-}
-
-function repoNotFound(c: { json: (body: unknown, status: 404) => Response }) {
-  return c.json(
-    {
-      code: "repo_not_found",
-      error: "That repository is not connected to this workspace.",
-    },
-    404,
-  );
 }

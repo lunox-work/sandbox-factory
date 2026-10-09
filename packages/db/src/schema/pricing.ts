@@ -192,6 +192,12 @@ export const bountyRun = pgTable(
   ],
 );
 
+/** A repository a proposal's work touches, at the snapshot it was sized beside. */
+export interface ProposalRepository {
+  readonly repoId: string;
+  readonly snapshotId: string;
+}
+
 export const bountyProposal = pgTable(
   "bounty_proposal",
   {
@@ -254,12 +260,17 @@ export const bountyProposal = pgTable(
     // computed, like the step. Null without a spec, or from before the
     // rubric.
     rubric: jsonb("rubric").$type<RubricAssessment>(),
-    // The repository snapshot whose outline the spec was drafted beside.
-    // Null when the bounty had no repository or it had no snapshot yet;
-    // a pruned snapshot clears it rather than taking the proposal with it.
-    repoSnapshotId: text("repo_snapshot_id").references(() => repoSnapshot.id, {
-      onDelete: "set null",
-    }),
+    // The workspace's repositories the drafting model said the work
+    // touches, each with the snapshot whose outline the spec was drafted
+    // beside: what the code is profiled in and the sandbox is cut from.
+    // Empty when it touches none, or no repository had a snapshot. A
+    // bounty names no repository, so this is the sizing's to say; a
+    // re-price says it again, and a spec change keeps it. Not keys: a
+    // repository removed since is left for its readers to pass over.
+    repositories: jsonb("repositories")
+      .$type<ProposalRepository[]>()
+      .notNull()
+      .default([]),
     // The bounty's synced context versions (`bounty_context`) it was sized
     // with, one per source; null for a source that had none.
     jiraContextVersion: integer("jira_context_version"),
@@ -280,7 +291,7 @@ export const bountyProposal = pgTable(
     index("bounty_proposal_bounty_id_idx").on(table.bountyId),
     index("bounty_proposal_run_id_idx").on(table.runId),
     // Pruning asks whether a snapshot is still referenced.
-    index("bounty_proposal_repo_snapshot_id_idx").on(table.repoSnapshotId),
+    index("bounty_proposal_repositories_idx").using("gin", table.repositories),
     check(
       "bounty_proposal_model_complexity_check",
       sql`${table.modelComplexity} in ('XS', 'S', 'M', 'L', 'XL', 'unsized')`,
@@ -416,10 +427,11 @@ export const bountySpec = pgTable(
 );
 
 /**
- * A proposal's complexity profile, one row per spec revision: the evidence
- * its price will point back to, measured from the bounty's repository.
+ * A proposal's complexity profile, one row per spec revision and snapshot:
+ * the evidence its price will point back to, measured in each repository
+ * its work touches.
  *
- * A row is asked for when a bounty is sized beside a snapshot, and a sweep
+ * A row is asked for each snapshot a bounty is sized beside, and a sweep
  * walks it through the scope agent and the slice the agent chose
  * (`apps/api/src/bounty/profiler.ts`). The runs are named here so what a
  * profile was measured from stays readable; a run or snapshot that is
@@ -455,9 +467,12 @@ export const bountyProfile = pgTable(
     updatedAt: ts("updated_at").notNull().defaultNow(),
   },
   (table) => [
-    unique("bounty_profile_proposal_revision_unique").on(
+    // One per repository the spec revision's work touches, by the snapshot
+    // it was drafted beside.
+    unique("bounty_profile_proposal_revision_snapshot_unique").on(
       table.proposalId,
       table.specRevision,
+      table.snapshotId,
     ),
     index("bounty_profile_organization_id_idx").on(table.organizationId),
     // The sweep's discovery: rows still in flight, oldest first.

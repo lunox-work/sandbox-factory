@@ -77,13 +77,14 @@ export class PricingClient extends ApiClient {
       ),
     ).revisions;
   }
-  async profile(owner: string, id: string, signal?: AbortSignal) {
+  /** The newest profiled revision's profiles, one per repository touched. */
+  async profiles(owner: string, id: string, signal?: AbortSignal) {
     return proposalProfileResponseSchema.parse(
       await this.request(
         `${ownerPath(owner)}/proposals/${encodeURIComponent(id)}/profile`,
         { signal },
       ),
-    ).profile;
+    ).profiles;
   }
   async spec(
     owner: string,

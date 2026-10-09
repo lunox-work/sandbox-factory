@@ -15,6 +15,7 @@ import {
   githubRepositoryResponseSchema,
   githubTimestamp,
   githubWebhookEnvelopeSchema,
+  isWorkspaceSource,
   githubLanguagesResponseSchema,
   githubTreeResponseSchema,
   linkInstallationRequestSchema,
@@ -25,6 +26,7 @@ import {
   storedTreeSchema,
   TREE_PAGE_MAX,
   treeFactsDtoSchema,
+  workRepositories,
 } from "../src/index.js";
 import { treeFacts } from "sandbox-factory";
 
@@ -390,4 +392,39 @@ test("a pulled branch must be a name Git would accept, so it cannot walk the API
   ]) {
     assert.equal(accepts(branch), false, JSON.stringify(branch));
   }
+});
+
+test("a workspace source is a connected source GitHub still answers for", () => {
+  assert.equal(
+    isWorkspaceSource({ id: "a", role: "source", syncStatus: "ok" }),
+    true,
+  );
+  assert.equal(
+    isWorkspaceSource({ id: "a", role: "source", syncStatus: "error" }),
+    true,
+  );
+  assert.equal(
+    isWorkspaceSource({ id: "a", role: "source", syncStatus: "gone" }),
+    false,
+  );
+  assert.equal(
+    isWorkspaceSource({ id: "a", role: "sandbox", syncStatus: "ok" }),
+    false,
+  );
+});
+
+test("a bounty's work is in the repositories it touches, else any of the workspace's", () => {
+  const repos = [
+    { id: "api", role: "source", syncStatus: "ok" },
+    { id: "web", role: "source", syncStatus: "pending" },
+    { id: "old", role: "source", syncStatus: "gone" },
+    { id: "out", role: "sandbox", syncStatus: "ok" },
+  ] as const;
+  const ids = (touched?: { repoId: string }[]) =>
+    workRepositories(repos, touched).map(({ id }) => id);
+  assert.deepEqual(ids(), ["api", "web"]);
+  assert.deepEqual(ids([{ repoId: "web" }]), ["web"]);
+  // One no longer connected is not the work's; with none left, any is.
+  assert.deepEqual(ids([{ repoId: "web" }, { repoId: "old" }]), ["web"]);
+  assert.deepEqual(ids([{ repoId: "old" }, { repoId: "out" }]), ["api", "web"]);
 });

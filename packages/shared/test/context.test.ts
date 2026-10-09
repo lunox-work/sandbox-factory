@@ -15,7 +15,6 @@ const detail = {
   organizationId: "org_1",
   title: "Invitations are not sent",
   origin: "manual",
-  repoId: null,
   stack: [],
   revision: 1,
   version: 1,
@@ -138,6 +137,60 @@ test("a source's status names its state and the version it holds", () => {
     bountyContextResponseSchema.safeParse({
       jira: { ...unlinked, latest: { ...jiraVersion, source: "github" } },
       github: unlinked,
+    }).success,
+    false,
+  );
+});
+
+test("a GitHub version reads the workspace's repositories, or the one an older sync read", () => {
+  const repository = {
+    fullName: "acme/app",
+    branch: "main",
+    commitSha: "abc",
+    documents: [
+      { path: "README.md", bytes: 5, text: "Hello", truncated: false },
+    ],
+    omitted: 0,
+  };
+  const githubVersion = {
+    ...jiraVersion,
+    source: "github",
+    ref: "2 repositories",
+    revision: "acme/app@abc\nacme/web@def",
+    content: {
+      repositories: [repository, { ...repository, fullName: "acme/web" }],
+      unread: ["acme/new"],
+    },
+  };
+  const status = {
+    state: "current",
+    reason: null,
+    // Several repositories have no one place to be found.
+    linked: { ref: "2 repositories", url: null },
+    liveRevision: githubVersion.revision,
+    latest: githubVersion,
+  };
+  const parsed = bountyContextResponseSchema.parse({
+    jira: unlinked,
+    github: status,
+  });
+  assert.deepEqual(parsed.github.latest?.content, githubVersion.content);
+  // Kept in the shape it was synced in.
+  const legacy = bountyContextResponseSchema.parse({
+    jira: unlinked,
+    github: { ...status, latest: { ...githubVersion, content: repository } },
+  });
+  assert.deepEqual(legacy.github.latest?.content, repository);
+  assert.equal(
+    bountyContextResponseSchema.safeParse({
+      jira: unlinked,
+      github: {
+        ...status,
+        latest: {
+          ...githubVersion,
+          content: { repositories: [repository] },
+        },
+      },
     }).success,
     false,
   );

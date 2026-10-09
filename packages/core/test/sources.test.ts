@@ -6,13 +6,18 @@ import {
   CONTEXT_DOCUMENTS_MAX,
   CONTEXT_TOTAL_CHARS,
   contextDocuments,
+  contextDocumentsAcross,
   contextDrift,
   contextKeywords,
+  githubRepositories,
   jiraContextFields,
   keptDocuments,
+  keptDocumentsAligned,
   NO_CONTEXT,
   renderSourceContext,
+  repositoryLabel,
   type GithubContext,
+  type GithubRepositoryContext,
   type JiraContext,
 } from "../src/sources.js";
 
@@ -97,6 +102,49 @@ test("documents past the cap are counted, not kept", () => {
   assert.equal(omitted, 3);
 });
 
+test("documents across repositories are ranked together: every README before any guide", () => {
+  const { chosen, omitted } = contextDocumentsAcross([
+    { files: [file("docs/setup.md"), file("README.md")] },
+    { files: [file("CONTRIBUTING.md"), file("README.md")] },
+  ]);
+  assert.deepEqual(chosen, [
+    { repository: 0, path: "README.md" },
+    { repository: 1, path: "README.md" },
+    { repository: 1, path: "CONTRIBUTING.md" },
+    { repository: 0, path: "docs/setup.md" },
+  ]);
+  assert.deepEqual(omitted, [0, 0]);
+  assert.deepEqual(contextDocumentsAcross([]), { chosen: [], omitted: [] });
+});
+
+test("a document naming a word of the title is read ahead, whichever repository holds it", () => {
+  const { chosen } = contextDocumentsAcross(
+    [
+      { files: [file("docs/setup.md")] },
+      { files: [file("packages/billing/README.md")] },
+    ],
+    contextKeywords("Retry failed billing webhooks"),
+  );
+  assert.deepEqual(chosen, [
+    { repository: 1, path: "packages/billing/README.md" },
+    { repository: 0, path: "docs/setup.md" },
+  ]);
+});
+
+test("documents across repositories share one cap, and each counts what it left out", () => {
+  const docs = Array.from({ length: CONTEXT_DOCUMENTS_MAX }, (_, index) =>
+    file(`docs/${String(index).padStart(2, "0")}.md`),
+  );
+  const { chosen, omitted } = contextDocumentsAcross([
+    { files: docs },
+    { files: [file("README.md"), file("docs/zz.md")] },
+  ]);
+  assert.equal(chosen.length, CONTEXT_DOCUMENTS_MAX);
+  // The second's README outranks the first's docs; its docs come after.
+  assert.deepEqual(chosen[0], { repository: 1, path: "README.md" });
+  assert.deepEqual(omitted, [1, 1]);
+});
+
 test("kept documents are cut to their own cap and to the total", () => {
   const long = "x".repeat(CONTEXT_DOCUMENT_CHARS + 10);
   const count = Math.ceil(CONTEXT_TOTAL_CHARS / CONTEXT_DOCUMENT_CHARS) + 1;
@@ -125,6 +173,58 @@ test("line endings are normalized and a short document is kept whole", () => {
   assert.deepEqual(documents, [
     { path: "README.md", bytes: 9, text: "# A\nb", truncated: false },
   ]);
+});
+
+test("aligned, kept documents answer in the order given, null for those dropped", () => {
+  const long = "x".repeat(CONTEXT_DOCUMENT_CHARS);
+  const count = Math.ceil(CONTEXT_TOTAL_CHARS / CONTEXT_DOCUMENT_CHARS);
+  const kept = keptDocumentsAligned([
+    { path: "README.md", bytes: 3, text: "Hi\r\n" },
+    { path: "blank.md", bytes: 3, text: " \n" },
+    ...Array.from({ length: count }, (_, index) => ({
+      path: `${index}.md`,
+      bytes: long.length,
+      text: long,
+    })),
+  ]);
+  assert.equal(kept.length, count + 2);
+  assert.deepEqual(kept[0], {
+    path: "README.md",
+    bytes: 3,
+    text: "Hi",
+    truncated: false,
+  });
+  assert.equal(kept[1], null);
+  // The short README took a little of the total, so the last is cut, and
+  // nothing after it would have room.
+  assert.equal(kept.at(-1)?.truncated, true);
+  assert.equal(
+    kept.reduce((sum, document) => sum + (document?.text.length ?? 0), 0),
+    CONTEXT_TOTAL_CHARS,
+  );
+  assert.deepEqual(keptDocumentsAligned([]), []);
+});
+
+test("a context's repositories are its own, or the one a legacy version read", () => {
+  const one: GithubRepositoryContext = {
+    fullName: "acme/app",
+    branch: "main",
+    commitSha: "abc",
+    documents: [],
+    omitted: 0,
+  };
+  assert.deepEqual(githubRepositories(one), [one]);
+  const other = { ...one, fullName: "acme/web" };
+  assert.deepEqual(
+    githubRepositories({ repositories: [one, other], unread: ["acme/new"] }),
+    [one, other],
+  );
+  assert.deepEqual(githubRepositories({ repositories: [], unread: [] }), []);
+});
+
+test("a repository is labelled by its place in the list, counting from one", () => {
+  assert.equal(repositoryLabel(0), "Repository 1");
+  assert.equal(repositoryLabel(4), "Repository 5");
 });
 
 test("Jira's fields leave out what is unset and every key and name", () => {
@@ -164,6 +264,100 @@ test("context renders under its own headings, and as nothing when there is none"
   assert.match(rendered, /--- README\.md ---\nHello/);
   assert.match(rendered, /--- docs\/a\.md \(cut short\) ---\nCut/);
   assert.doesNotMatch(rendered, /ACME-12|acme\/app/);
+});
+
+test("several repositories render under their labels, never their names", () => {
+  const repository = (
+    fullName: string,
+    text: string,
+  ): GithubRepositoryContext => ({
+    fullName,
+    branch: "main",
+    commitSha: "abc",
+    documents:
+      text === ""
+        ? []
+        : [{ path: "README.md", bytes: 5, text, truncated: false }],
+    omitted: 0,
+  });
+  const github: GithubContext = {
+    repositories: [
+      repository("acme/app", "App docs"),
+      repository("acme/empty", ""),
+      repository("acme/web", "Web docs"),
+    ],
+    unread: ["acme/new"],
+  };
+  const labelled = renderSourceContext(
+    { jira: null, github },
+    new Map([
+      ["acme/app", "Repository 1"],
+      ["acme/web", "Repository 3"],
+    ]),
+  );
+  assert.equal(
+    labelled,
+    [
+      "Repository documents:",
+      "=== Repository 1 ===",
+      "--- README.md ---\nApp docs",
+      "=== Repository 3 ===",
+      "--- README.md ---\nWeb docs",
+    ].join("\n\n"),
+  );
+  assert.doesNotMatch(labelled, /acme/);
+  // One no outline holds (renamed, or disconnected since) never takes an
+  // outline's label, which would credit its documents to that repository.
+  const stale = renderSourceContext(
+    { jira: null, github },
+    new Map([["acme/web", "Repository 1"]]),
+  );
+  assert.equal(
+    stale,
+    [
+      "Repository documents:",
+      "=== Other repository 1 ===",
+      "--- README.md ---\nApp docs",
+      "=== Repository 1 ===",
+      "--- README.md ---\nWeb docs",
+    ].join("\n\n"),
+  );
+  // One with documents among several outlined is headed by its label too.
+  assert.equal(
+    renderSourceContext(
+      {
+        jira: null,
+        github: { repositories: [repository("acme/web", "Web")], unread: [] },
+      },
+      new Map([
+        ["acme/app", "Repository 1"],
+        ["acme/web", "Repository 2"],
+      ]),
+    ),
+    "Repository documents:\n\n=== Repository 2 ===\n\n--- README.md ---\nWeb",
+  );
+  // Without labels, by place among those with documents.
+  const placed = renderSourceContext({ jira, github });
+  assert.match(placed, /^Jira fields:/);
+  assert.match(placed, /=== Repository 1 ===\n\n--- README\.md ---\nApp docs/);
+  assert.match(placed, /=== Repository 2 ===\n\n--- README\.md ---\nWeb docs/);
+  assert.doesNotMatch(placed, /acme|Repository 3/);
+  // One with documents renders as a single repository's always has.
+  const single = renderSourceContext({
+    jira: null,
+    github: {
+      repositories: [repository("acme/app", "App docs"), repository("b/c", "")],
+      unread: [],
+    },
+  });
+  assert.equal(single, "Repository documents:\n\n--- README.md ---\nApp docs");
+  assert.equal(
+    renderSourceContext({
+      jira: null,
+      github: { repositories: [repository("acme/app", "")], unread: [] },
+    }),
+    "",
+  );
 });
 
 test("a step is behind on a source the overview holds newer context from", () => {

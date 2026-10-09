@@ -9,7 +9,10 @@
  * prompt still forbids naming files, modules or functions in a scenario.
  *
  * Capped in lines, largest modules first, so a monorepo of hundreds of
- * packages costs the call no more than a small one.
+ * packages costs the call no more than a small one. A bounty may touch any
+ * of the workspace's repositories, so the draft is shown each one's; they
+ * share one cap (`outlineLinesEach`), so a workspace of many costs no more
+ * than a few.
  */
 
 import {
@@ -20,6 +23,21 @@ import {
 
 /** The most lines an outline runs to, headers included. */
 export const OUTLINE_MAX_LINES = 60;
+/** The most lines every repository's outline runs to together. */
+export const WORKSPACE_OUTLINE_MAX_LINES = 180;
+/** The fewest lines one repository's outline is cut to among many. */
+const OUTLINE_MIN_LINES = 12;
+
+/** How many lines each of a workspace's repositories' outlines runs to. */
+export function outlineLinesEach(repositories: number): number {
+  return Math.min(
+    OUTLINE_MAX_LINES,
+    Math.max(
+      OUTLINE_MIN_LINES,
+      Math.floor(WORKSPACE_OUTLINE_MAX_LINES / Math.max(1, repositories)),
+    ),
+  );
+}
 
 /** The longest a name from the repository is shown. */
 const NAME_MAX_CHARS = 80;

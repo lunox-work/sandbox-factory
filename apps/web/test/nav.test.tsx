@@ -52,7 +52,6 @@ const BOUNTY = {
   organizationId: "org_1",
   title: "Export to CSV",
   origin: "manual",
-  repoId: null,
   stack: [],
   revision: 1,
   version: 1,

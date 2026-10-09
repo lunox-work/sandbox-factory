@@ -1,6 +1,6 @@
-import { snapshotForWrite } from "./snapshot-write.js";
+import { repositoriesForWrite } from "./snapshot-write.js";
 export { snapshotForWrite } from "./snapshot-write.js";
-import { insertProfileIntent } from "./profile-intent.js";
+import { insertProfileIntents } from "./profile-intent.js";
 import type {
   BountyComplexity,
   BountySizingResult,
@@ -24,6 +24,7 @@ import {
   isUniqueViolation,
   type Database,
   type QueryExecutor,
+  type Transaction,
 } from "./errors.js";
 import { jiraWriteGranted, splitScopes } from "./jira-connections.js";
 import { generateId } from "./mapping.js";
@@ -41,6 +42,7 @@ import type {
   BountyProposalRow,
   BountyRunRow,
   BountyWritebackRow,
+  ProposalRepository,
 } from "./schema.js";
 
 export interface CreateBountyProposalInput {
@@ -68,11 +70,12 @@ export interface CreateBountyProposalInput {
    */
   readonly rubric?: RubricAssessment | null;
   /**
-   * The repository snapshot the spec was drafted beside, when the bounty
-   * had a repository with one. Its organization is the bounty's, which the
-   * caller read it through.
+   * The workspace's repositories the drafting model said the work touches,
+   * each at the snapshot the spec was drafted beside. A snapshot gone, or
+   * not the organization's, is left out, and then none is profiled: the
+   * code is measured in all of them or not at all.
    */
-  readonly repoSnapshotId?: string | null;
+  readonly repositories?: readonly ProposalRepository[];
   /**
    * The bounty's synced context versions it was sized with
    * (`bounty_context`); a source absent or null had none.
@@ -88,8 +91,8 @@ export interface CreateBountyProposalInput {
 export interface LeasedBountyProposalInput extends CreateBountyProposalInput {
   readonly spec?: NewBountySpec;
   /**
-   * Queue a complexity profile of the spec beside its snapshot. Set only
-   * when profiling is configured.
+   * Queue a complexity profile of the spec in each repository it touches.
+   * Set only when profiling is configured.
    */
   readonly profileIntent?: boolean;
 }
@@ -182,11 +185,6 @@ export interface BountyProposalStore {
     organizationId: string,
     options?: {
       boardId?: string;
-      /**
-       * Only proposals of bounties about this repository: one the bounty
-       * names, or, when it names none, its Jira board's.
-       */
-      repoId?: string;
       status?: "proposed" | "approved";
       cursor?: { readonly createdAt: string; readonly id: string };
       limit?: number;
@@ -387,8 +385,11 @@ export interface StoredBountyProposal {
   readonly step: StepResult | null;
   /** The pricing rubric's assessment, or null without a spec. */
   readonly rubric: RubricAssessment | null;
-  /** The repository snapshot the spec was drafted beside, if any. */
-  readonly repoSnapshotId: string | null;
+  /**
+   * The repositories the work touches, each at the snapshot the spec was
+   * drafted beside; empty when it touches none.
+   */
+  readonly repositories: readonly ProposalRepository[];
   /** The bounty's synced context versions it was sized with. */
   readonly contextVersions: ContextVersions;
   readonly decidedAt: string | null;
@@ -455,7 +456,7 @@ function toDto(row: BountyProposalRow, name: BountyName): StoredBountyProposal {
     specRevision: row.specRevision,
     step: row.step ?? null,
     rubric: row.rubric ?? null,
-    repoSnapshotId: row.repoSnapshotId ?? null,
+    repositories: row.repositories ?? [],
     contextVersions: {
       jira: row.jiraContextVersion ?? null,
       github: row.githubContextVersion ?? null,
@@ -565,11 +566,44 @@ function insertValues(
     step: input.step ?? null,
     stepVersion: input.step?.stepVersion ?? null,
     rubric: input.rubric ?? null,
-    repoSnapshotId: input.repoSnapshotId ?? null,
+    repositories: [...(input.repositories ?? [])],
     jiraContextVersion: input.contextVersions?.jira ?? null,
     githubContextVersion: input.contextVersions?.github ?? null,
     amountMinor: input.amountMinor,
     currency: input.currency,
+  };
+}
+
+/**
+ * What a write keeps of the repositories a draft touches: those whose
+ * snapshot survives, kept still until it commits. The code is all of them
+ * or none, so when one went during the model call none is profiled and the
+ * rubric's code is unavailable: the model's size stands, rather than a size
+ * the rubric scored from part of the work.
+ */
+async function touchedForWrite(
+  tx: Transaction,
+  organizationId: string,
+  input: LeasedBountyProposalInput,
+): Promise<{
+  repositories: ProposalRepository[];
+  rubric: RubricAssessment | null;
+  profile: boolean;
+}> {
+  const repositories = await repositoriesForWrite(
+    tx,
+    organizationId,
+    input.repositories,
+  );
+  const whole = repositories.length === (input.repositories?.length ?? 0);
+  const rubric = input.rubric ?? null;
+  return {
+    repositories,
+    rubric:
+      whole || rubric === null || rubric.code.status !== "pending"
+        ? rubric
+        : { ...rubric, code: { status: "unavailable", specRevision: null } },
+    profile: whole && input.profileIntent === true,
   };
 }
 
@@ -636,15 +670,17 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
         );
         if (name === null) return null;
 
-        const repoSnapshotId = await snapshotForWrite(
+        const { repositories, rubric } = await touchedForWrite(
           tx,
           organizationId,
-          input.repoSnapshotId,
+          input,
         );
         try {
           const rows = (await tx
             .insert(bountyProposal)
-            .values(insertValues(organizationId, { ...input, repoSnapshotId }))
+            .values(
+              insertValues(organizationId, { ...input, repositories, rubric }),
+            )
             .returning()) as BountyProposalRow[];
           return rows[0] === undefined ? null : toDto(rows[0], name);
         } catch (error) {
@@ -658,10 +694,10 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
     async createForLease(organizationId, leaseToken, input) {
       return db.transaction(async (transaction) => {
         const tx = transaction;
-        const repoSnapshotId = await snapshotForWrite(
+        const { repositories, rubric, profile } = await touchedForWrite(
           tx,
           organizationId,
-          input.repoSnapshotId,
+          input,
         );
         const now = new Date();
         // This UPDATE is the row lock. A watchdog cannot fail the run between
@@ -696,7 +732,7 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
           .values(
             insertValues(
               organizationId,
-              { ...input, repoSnapshotId },
+              { ...input, repositories, rubric },
               input.spec === undefined ? null : 1,
             ),
           )
@@ -713,12 +749,12 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
             { proposalId: created.id, runId: input.runId, revision: 1 },
             input.spec,
           );
-          if (input.profileIntent === true && repoSnapshotId !== null) {
-            await insertProfileIntent(tx, organizationId, {
+          if (profile) {
+            await insertProfileIntents(tx, organizationId, {
               proposalId: created.id,
               specRevision: 1,
               specHash: input.spec.specHash,
-              snapshotId: repoSnapshotId,
+              snapshotIds: repositories.map(({ snapshotId }) => snapshotId),
             });
           }
         }
@@ -754,12 +790,6 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
             options.boardId === undefined
               ? undefined
               : eq(bountyRun.boardId, options.boardId),
-            options.repoId === undefined
-              ? undefined
-              : sql`coalesce(
-                  ${bounty.repoId},
-                  (select ${jiraBoard.sourceRepoId} from ${jiraBoard} where ${jiraBoard.id} = ${jiraIssue.boardId})
-                ) = ${options.repoId}`,
             options.status === undefined
               ? undefined
               : eq(bountyProposal.status, options.status),
@@ -1081,12 +1111,13 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
     ) {
       return db.transaction(async (transaction) => {
         const tx = transaction;
-        // Snapshot before proposal locks: cascading snapshot deletion also
-        // locks proposals, so both paths acquire these locks in that order.
-        const repoSnapshotId = await snapshotForWrite(
+        // Snapshots before proposal locks, as every write that names both
+        // takes them: a snapshot's deletion cascades into the profiles of
+        // the proposal, so the two orders could deadlock.
+        const { repositories, rubric, profile } = await touchedForWrite(
           tx,
           organizationId,
-          input.repoSnapshotId,
+          input,
         );
         const now = new Date();
         const claimed = (await tx
@@ -1174,7 +1205,8 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
         // point at, and a decision made earlier does not carry over.
         const values = insertValues(organizationId, {
           ...input,
-          repoSnapshotId,
+          repositories,
+          rubric,
         });
         const repriced = (await tx
           .update(bountyProposal)
@@ -1194,8 +1226,8 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
             step: values.step,
             stepVersion: values.stepVersion,
             rubric: values.rubric,
-            // The draft is new, and so is what it was drafted beside.
-            repoSnapshotId: values.repoSnapshotId,
+            // The draft is new, and so is what it touches.
+            repositories: values.repositories,
             // And the context it was sized with.
             jiraContextVersion: values.jiraContextVersion,
             githubContextVersion: values.githubContextVersion,
@@ -1234,12 +1266,12 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
             },
             input.spec,
           );
-          if (input.profileIntent === true && repoSnapshotId !== null) {
-            await insertProfileIntent(tx, organizationId, {
+          if (profile) {
+            await insertProfileIntents(tx, organizationId, {
               proposalId: sourceProposalId,
               specRevision,
               specHash: input.spec.specHash,
-              snapshotId: repoSnapshotId,
+              snapshotIds: repositories.map(({ snapshotId }) => snapshotId),
             });
           }
         }

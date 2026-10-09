@@ -1,3 +1,4 @@
+import { isWorkspaceSource } from "@sandbox-factory/shared";
 import { rankAtLeast } from "sandbox-factory";
 /**
  * Connected Jira sites, for one organization.
@@ -53,12 +54,10 @@ import { cn } from "@/lib/utils";
 
 import { JiraIcon } from "./ProviderIcon";
 import { bountiesUrl, isPlainLeftClick } from "./routes";
-import { BoardRepository } from "./BoardRepository";
 import {
   BacklogScan,
   type RepositoryAction,
 } from "./features/onboarding/BacklogScan";
-import { SECTION, reveal } from "./lib/reveal";
 import { pushLocation } from "./navigation/location";
 import { useGithubRepos } from "./useGithub";
 
@@ -684,15 +683,12 @@ export function JiraBoard({
    */
   repositoryAction?: RepositoryAction | undefined;
 }) {
-  const { boards, error, linkRepository, refresh } =
-    useJiraBoards(organizationId);
+  const { error, refresh } = useJiraBoards(organizationId);
   const { connect } = useJira(organizationId);
   const { repos } = useGithubRepos(organizationId);
-  const linkable = repos.some(
-    (repo) => repo.role === "source" && repo.syncStatus !== "gone",
-  );
+  // Any of them may be what a ticket's work touches: the board names none.
+  const sources = repos.filter(isWorkspaceSource);
   const { outcome, missingScopes, dismiss } = useJiraOutcome();
-  const board = boards.find((candidate) => candidate.id === boardId) ?? null;
   const bountiesHref = bountiesUrl(null, {
     board: { workspace: organizationSlug, boardId },
   });
@@ -717,15 +713,6 @@ export function JiraBoard({
         />
       )}
 
-      {board !== null && (
-        <BoardRepository
-          organizationId={organizationId}
-          sourceRepoId={board.sourceRepoId ?? null}
-          canManage={canManage(role ?? "")}
-          onLink={(repoId) => linkRepository(board.id, repoId)}
-        />
-      )}
-
       <BacklogScan
         // Folded or not is decided once per board.
         key={boardId}
@@ -733,15 +720,8 @@ export function JiraBoard({
         organizationSlug={organizationSlug}
         boardId={boardId}
         canManage={canManage(role ?? "")}
-        repository={repos.find(({ id }) => id === board?.sourceRepoId) ?? null}
-        repositoryAction={
-          linkable && canManage(role ?? "")
-            ? {
-                label: "link a repository",
-                onSelect: () => reveal(SECTION.boardRepository, "center"),
-              }
-            : repositoryAction
-        }
+        repositories={sources}
+        repositoryAction={repositoryAction}
       />
 
       <p className="text-muted-foreground text-sm">

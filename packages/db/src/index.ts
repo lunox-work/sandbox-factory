@@ -90,6 +90,7 @@ export type {
   ProposalMutationResult,
   StoredBountyProposal,
 } from "./bounty-proposals.js";
+export type { ProposalRepository } from "./schema.js";
 export {
   createBountyProfileStore,
   PENDING_PROFILE_STATUSES,

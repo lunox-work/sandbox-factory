@@ -230,7 +230,6 @@ function fakeBoards(
       categories: {},
     },
     pricing: {},
-    sourceRepoId: null,
     createdAt: "2026-09-21T00:00:00.000Z",
     ...overrides,
   };
@@ -259,11 +258,7 @@ function fakeBoards(
       return Promise.resolve([]);
     },
     update: (_organizationId, id, input) => {
-      // The store's own answer for a repository another organization
-      // registered; the SQL behind it is tested in `packages/db`.
-      if (id !== board.id || input.sourceRepoId === "ghr_other_org") {
-        return Promise.resolve(null);
-      }
+      if (id !== board.id) return Promise.resolve(null);
       updates.push(input);
       return Promise.resolve(board);
     },
@@ -1515,45 +1510,35 @@ test("clearing maxAgeDays survives as a null rather than being dropped", async (
   assert.deepEqual(boards.updates, [{ selection: { maxAgeDays: null } }]);
 });
 
-test("a board's source repository can be linked and unlinked alone", async () => {
+test("a board names no repository: one sent alone is refused, as an empty body is", async () => {
   const { app, boards } = appWith();
-
-  for (const sourceRepoId of ["ghr_1", null]) {
-    const response = await app.request("/api/v1/orgs/org_1/jira/boards/jrb_1", {
-      method: "PATCH",
-      headers: { ...signedIn, "content-type": "application/json" },
-      body: JSON.stringify({ sourceRepoId }),
-    });
-    assert.equal(response.status, 200);
-  }
-  assert.deepEqual(boards.updates, [
-    { sourceRepoId: "ghr_1" },
-    { sourceRepoId: null },
-  ]);
-});
-
-test("linking a repository another organization registered is a 404", async () => {
-  const { app } = appWith();
-
-  const response = await app.request("/api/v1/orgs/org_1/jira/boards/jrb_1", {
-    method: "PATCH",
-    headers: { ...signedIn, "content-type": "application/json" },
-    body: JSON.stringify({ sourceRepoId: "ghr_other_org" }),
-  });
-
-  assert.equal(response.status, 404);
-});
-
-test("an empty body or an empty repository id is refused", async () => {
-  const { app, boards } = appWith();
-  for (const body of [{}, { sourceRepoId: "" }]) {
+  for (const body of [{}, { sourceRepoId: "ghr_1" }, { sourceRepoId: null }]) {
     const response = await app.request("/api/v1/orgs/org_1/jira/boards/jrb_1", {
       method: "PATCH",
       headers: { ...signedIn, "content-type": "application/json" },
       body: JSON.stringify(body),
     });
     assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), {
+      error: "Provide selection or pricing settings.",
+    });
   }
+  assert.deepEqual(boards.updates, []);
+});
+
+test("editing a board this organization does not have is a 404", async () => {
+  const { app, boards } = appWith();
+
+  const response = await app.request(
+    "/api/v1/orgs/org_1/jira/boards/jrb_other",
+    {
+      method: "PATCH",
+      headers: { ...signedIn, "content-type": "application/json" },
+      body: JSON.stringify({ selection: { maxAgeDays: 30 } }),
+    },
+  );
+
+  assert.equal(response.status, 404);
   assert.deepEqual(boards.updates, []);
 });
 

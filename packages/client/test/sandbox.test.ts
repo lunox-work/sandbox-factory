@@ -190,12 +190,9 @@ test("the sandbox client parses every response and scopes every path to the owne
   assert.equal((await client.sandbox("org 1", "sbx 1")).id, "sbx_1");
   const bare = await client.createSandbox("org 1", { bountyId: "bty_1" });
   assert.deepEqual([bare.id, bare.sourceRepoId], ["sbx_1", null]);
+  // Linked to the one repository the bounty's sizing says it touches.
   assert.equal(
-    (
-      await client.linkSandboxSource("org 1", "sbx 1", {
-        sourceRepoId: "ghr_1",
-      })
-    ).sourceRepoId,
+    (await client.linkSandboxSource("org 1", "sbx 1")).sourceRepoId,
     "ghr_1",
   );
   assert.deepEqual(await client.sandboxVersions("org 1", "sbx_1"), [version]);
@@ -289,5 +286,6 @@ test("the sandbox client parses every response and scopes every path to the owne
     "Bearer token",
   );
   assert.equal(calls[2]?.init?.body, JSON.stringify({ bountyId: "bty_1" }));
-  assert.equal(calls[3]?.init?.body, JSON.stringify({ sourceRepoId: "ghr_1" }));
+  // Nobody picks the repository: the link names none.
+  assert.equal(calls[3]?.init?.body, undefined);
 });

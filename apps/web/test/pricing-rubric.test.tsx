@@ -100,7 +100,7 @@ const card = {
 
 const measured: RubricCode = {
   status: "measured",
-  profile,
+  profiles: [{ repository: "acme/app", profile }],
   specRevision: 2,
 };
 

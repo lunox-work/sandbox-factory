@@ -28,7 +28,6 @@ function bountyOf(overrides: Partial<StoredBounty> = {}): StoredBounty {
     components: [],
     inputTruncated: false,
     origin: "manual",
-    repoId: null,
     stack: [],
     categories: [],
     createdBy: "user_1",

@@ -1,6 +1,8 @@
 /**
  * The context a bounty's sources add to it: what its Jira issue says beyond
- * its title and description, and what its repository's own documents say.
+ * its title and description, and what the documents of the workspace's
+ * repositories say. A bounty names no repository: the work may touch any
+ * the workspace has connected, so their documents are read together.
  *
  * A source is synced into the bounty when a person asks for it, and each
  * sync that finds something new is a version of that source's context,
@@ -73,10 +75,10 @@ export interface GithubContextDocument {
 }
 
 /**
- * What a repository's own documents say: its README, its docs and the
+ * What one repository's own documents say: its README, its docs and the
  * guides it keeps for contributors, read at one commit. Never its code.
  */
-export interface GithubContext {
+export interface GithubRepositoryContext {
   readonly fullName: string;
   /** The branch the commit was read from. */
   readonly branch: string;
@@ -84,6 +86,30 @@ export interface GithubContext {
   readonly documents: readonly GithubContextDocument[];
   /** Documents found but left out for the caps. */
   readonly omitted: number;
+}
+
+/**
+ * What the workspace's repositories' documents say, read together under
+ * one set of caps: one entry per repository read, by full name.
+ */
+export interface GithubWorkspaceContext {
+  readonly repositories: readonly GithubRepositoryContext[];
+  /** Connected repositories left unread: no snapshot yet, or unreachable. */
+  readonly unread: readonly string[];
+}
+
+/**
+ * A GitHub context version's content: the workspace's repositories, or,
+ * for a version synced while a bounty named one repository, that one's.
+ * Stored versions and frozen tasks keep the shape they were written in.
+ */
+export type GithubContext = GithubWorkspaceContext | GithubRepositoryContext;
+
+/** The repositories a GitHub context read, whichever shape it was kept in. */
+export function githubRepositories(
+  content: GithubContext,
+): readonly GithubRepositoryContext[] {
+  return "repositories" in content ? content.repositories : [content];
 }
 
 /** The context version each source stands at; null for none. */
@@ -183,17 +209,23 @@ export function contextKeywords(title: string): string[] {
   ];
 }
 
+/** A file a document may be read from. */
+interface DocumentFile {
+  readonly path: string;
+  readonly size: number;
+}
+
 /**
- * The documents worth reading in a file list, in the order they are read:
- * by tier, a document whose path names a word of the bounty's title ahead
- * of the tier above its own, then shallowest first. Vendored code, fixtures, examples,
- * `.github` and boilerplate are passed over, and so is a file too large to
- * be a document. At most `CONTEXT_DOCUMENTS_MAX`; `omitted` counts the rest.
+ * The documents worth reading in a file list, each with the rank it is
+ * read in (lower first) and its depth: by tier, a document whose path names a
+ * word of the bounty's title ahead of the tier above its own. Vendored
+ * code, fixtures, examples, `.github` and boilerplate are passed over, and
+ * so is a file too large to be a document.
  */
-export function contextDocuments(
-  files: readonly { readonly path: string; readonly size: number }[],
-  keywords: readonly string[] = [],
-): { readonly paths: string[]; readonly omitted: number } {
+function rankedDocuments(
+  files: readonly DocumentFile[],
+  keywords: readonly string[],
+): { readonly path: string; readonly rank: number; readonly depth: number }[] {
   const candidates = files.filter(
     ({ path, size }) =>
       MARKDOWN.test(path) &&
@@ -212,17 +244,27 @@ export function contextDocuments(
       ? Math.max(1, base - 3)
       : base;
   };
-  const ordered = candidates
-    .map(({ path }) => ({
-      path,
-      rank: rank(path),
-      depth: path.split("/").length,
-    }))
+  return candidates.map(({ path }) => ({
+    path,
+    rank: rank(path),
+    depth: path.split("/").length,
+  }));
+}
+
+const byPath = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+
+/**
+ * The documents worth reading in a file list, in the order they are read:
+ * by rank (`rankedDocuments`), then shallowest first. At most
+ * `CONTEXT_DOCUMENTS_MAX`; `omitted` counts the rest.
+ */
+export function contextDocuments(
+  files: readonly DocumentFile[],
+  keywords: readonly string[] = [],
+): { readonly paths: string[]; readonly omitted: number } {
+  const ordered = rankedDocuments(files, keywords)
     .sort(
-      (a, b) =>
-        a.rank - b.rank ||
-        a.depth - b.depth ||
-        (a.path < b.path ? -1 : a.path > b.path ? 1 : 0),
+      (a, b) => a.rank - b.rank || a.depth - b.depth || byPath(a.path, b.path),
     )
     .map(({ path }) => path);
   const paths = ordered.slice(0, CONTEXT_DOCUMENTS_MAX);
@@ -230,9 +272,72 @@ export function contextDocuments(
 }
 
 /**
+ * The documents worth reading across several repositories' file lists,
+ * under one cap: ranked as `contextDocuments` ranks one repository's, so
+ * every repository's README comes before any repository's guides, and a
+ * rank's documents taken shallowest first, then in the repositories' order.
+ * `omitted` counts, per repository, what the cap left out.
+ */
+export function contextDocumentsAcross(
+  repositories: readonly { readonly files: readonly DocumentFile[] }[],
+  keywords: readonly string[] = [],
+): {
+  readonly chosen: { readonly repository: number; readonly path: string }[];
+  readonly omitted: number[];
+} {
+  const ordered = repositories
+    .flatMap(({ files }, repository) =>
+      rankedDocuments(files, keywords).map((ranked) => ({
+        ...ranked,
+        repository,
+      })),
+    )
+    .sort(
+      (a, b) =>
+        a.rank - b.rank ||
+        a.depth - b.depth ||
+        a.repository - b.repository ||
+        byPath(a.path, b.path),
+    );
+  const omitted = repositories.map(() => 0);
+  for (const { repository } of ordered.slice(CONTEXT_DOCUMENTS_MAX)) {
+    omitted[repository] = (omitted[repository] ?? 0) + 1;
+  }
+  return {
+    chosen: ordered
+      .slice(0, CONTEXT_DOCUMENTS_MAX)
+      .map(({ repository, path }) => ({ repository, path })),
+    omitted,
+  };
+}
+
+/**
  * Documents as a sync keeps them: each cut to its own cap, and every one
- * together to the total, in the order given. A document left with no room
- * is dropped and counted as omitted.
+ * together to the total, in the order given. Answered in the order given,
+ * with null for a document left with no room, or with no text.
+ */
+export function keptDocumentsAligned(
+  documents: readonly {
+    readonly path: string;
+    readonly bytes: number;
+    readonly text: string;
+  }[],
+): (GithubContextDocument | null)[] {
+  let room = CONTEXT_TOTAL_CHARS;
+  return documents.map(({ path, bytes, text }) => {
+    const body = text.replace(/\r\n?/g, "\n").trim();
+    const cap = Math.min(CONTEXT_DOCUMENT_CHARS, room);
+    if (body === "" || cap <= 0) return null;
+    const truncated = body.length > cap;
+    const excerpt = truncated ? body.slice(0, cap) : body;
+    room -= excerpt.length;
+    return { path, bytes, text: excerpt, truncated };
+  });
+}
+
+/**
+ * Documents as a sync keeps them (`keptDocumentsAligned`), with those
+ * dropped counted as omitted.
  */
 export function keptDocuments(
   documents: readonly {
@@ -241,22 +346,11 @@ export function keptDocuments(
     readonly text: string;
   }[],
 ): { readonly documents: GithubContextDocument[]; readonly omitted: number } {
-  const kept: GithubContextDocument[] = [];
-  let room = CONTEXT_TOTAL_CHARS;
-  let omitted = 0;
-  for (const { path, bytes, text } of documents) {
-    const body = text.replace(/\r\n?/g, "\n").trim();
-    const cap = Math.min(CONTEXT_DOCUMENT_CHARS, room);
-    if (body === "" || cap <= 0) {
-      omitted += 1;
-      continue;
-    }
-    const truncated = body.length > cap;
-    const excerpt = truncated ? body.slice(0, cap) : body;
-    kept.push({ path, bytes, text: excerpt, truncated });
-    room -= excerpt.length;
-  }
-  return { documents: kept, omitted };
+  const aligned = keptDocumentsAligned(documents);
+  const kept = aligned.filter(
+    (document): document is GithubContextDocument => document !== null,
+  );
+  return { documents: kept, omitted: aligned.length - kept.length };
 }
 
 /**
@@ -311,30 +405,67 @@ export function jiraContextFields(
  * A bounty's synced context as a model is shown it, under headings of its
  * own after the bounty's text; empty when it has none. Issue keys and
  * repository names are left out, as the bounty's prompts ask the model not
- * to carry names over.
+ * to carry names over. `labels` are the outlined repositories', by full
+ * name: a repository's documents are headed by its label, so the model
+ * reads them as that outline's. One with no label (its repository since
+ * renamed or disconnected) is headed as another repository, never by a
+ * label an outline holds. With no labels, several are headed by their
+ * place in the context, and one is not headed.
  */
-export function renderSourceContext(context: {
-  readonly jira: JiraContext | null;
-  readonly github: GithubContext | null;
-}): string {
+export function renderSourceContext(
+  context: {
+    readonly jira: JiraContext | null;
+    readonly github: GithubContext | null;
+  },
+  labels: ReadonlyMap<string, string> = new Map(),
+): string {
   const sections: string[] = [];
   if (context.jira !== null) {
     sections.push(
       `Jira fields:\n${JSON.stringify(jiraContextFields(context.jira))}`,
     );
   }
-  if (context.github !== null && context.github.documents.length > 0) {
+  const repositories =
+    context.github === null
+      ? []
+      : githubRepositories(context.github).filter(
+          ({ documents }) => documents.length > 0,
+        );
+  const documents = (repository: GithubRepositoryContext) =>
+    repository.documents.map(
+      ({ path, text, truncated }) =>
+        `--- ${path}${truncated ? " (cut short)" : ""} ---\n${text}`,
+    );
+  const [only] = repositories;
+  if (repositories.length === 1 && only !== undefined && labels.size === 0) {
+    sections.push(["Repository documents:", ...documents(only)].join("\n\n"));
+  } else if (repositories.length > 0) {
+    let unlabeled = 0;
+    const heading = (repository: GithubRepositoryContext, index: number) =>
+      labels.get(repository.fullName) ??
+      (labels.size === 0
+        ? repositoryLabel(index)
+        : `Other repository ${(unlabeled += 1)}`);
     sections.push(
       [
         "Repository documents:",
-        ...context.github.documents.map(
-          ({ path, text, truncated }) =>
-            `--- ${path}${truncated ? " (cut short)" : ""} ---\n${text}`,
-        ),
+        ...repositories.flatMap((repository, index) => [
+          `=== ${heading(repository, index)} ===`,
+          ...documents(repository),
+        ]),
       ].join("\n\n"),
     );
   }
   return sections.join("\n\n");
+}
+
+/**
+ * The name a model is shown a repository by, in place of its own: its
+ * place in the list it is shown in, so a model can say which it means
+ * without a repository's name reaching what it writes.
+ */
+export function repositoryLabel(index: number): string {
+  return `Repository ${index + 1}`;
 }
 
 /**

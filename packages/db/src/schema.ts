@@ -122,6 +122,7 @@ export type {
   NewBountySpecRow,
   NewBountyWritebackRow,
   NewRateCardRow,
+  ProposalRepository,
   RateCardRow,
 } from "./schema/pricing.js";
 

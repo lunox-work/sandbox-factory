@@ -19,15 +19,18 @@ import { BOUNTIES_PATH } from "../../routes";
 
 type PreviewIssue = JiraBacklogPreviewDto["issues"][number];
 
-/** The repository a bounty on this board would be sized beside and cut from. */
+/**
+ * One of the workspace's repositories, any of which a bounty on this board
+ * may touch: sized beside, and cut from those its sizing says it does.
+ */
 export interface ScanRepository {
   fullName: string;
 }
 
 /**
- * How a board with no repository gets one, said inside a sentence: "connect
- * GitHub", "pick a repository", "link a repository". Absent where there is
- * no way, or the person may not take it.
+ * How a workspace with no repository gets one, said inside a sentence:
+ * "connect GitHub", "pick a repository". Absent where there is no way, or
+ * the person may not take it.
  */
 export interface RepositoryAction {
   label: string;
@@ -50,7 +53,7 @@ export function TeaserBounty({
   canManage,
   sizingAvailable,
   boardBusy,
-  repository,
+  repositories,
   repositoryAction,
   range,
   onSized,
@@ -66,7 +69,8 @@ export function TeaserBounty({
   sizingAvailable: boolean;
   /** The whole board is being sized: a single ticket would be refused. */
   boardBusy: boolean;
-  repository: ScanRepository | null;
+  /** The workspace's repositories; none when it has connected none. */
+  repositories: readonly ScanRepository[];
   repositoryAction?: RepositoryAction | undefined;
   /** The rate card to quote a range from; undefined while it loads. */
   range: { currency: string; sMinor: number; lMinor: number } | undefined;
@@ -75,6 +79,14 @@ export function TeaserBounty({
   onSizing?: ((issueId: string | null) => void) | undefined;
   ref?: Ref<HTMLElement> | undefined;
 }) {
+  // The one repository there is, named; several are counted.
+  const only = repositories.length === 1 ? repositories[0] : undefined;
+  const reading =
+    only !== undefined
+      ? `, reading ${only.fullName}`
+      : repositories.length > 1
+        ? `, reading ${repositories.length} repositories`
+        : "";
   const [runId, setRunId] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -219,12 +231,20 @@ export function TeaserBounty({
         </dd>
         <dt className="text-muted-foreground">Sandbox</dt>
         <dd>
-          {repository !== null ? (
+          {only !== undefined ? (
             <span className="flex min-w-0 items-center gap-1">
               <FolderGit2 className="text-muted-foreground size-3 shrink-0" />
               <span className="truncate">
-                Cut from{" "}
-                <span className="font-medium">{repository.fullName}</span>
+                Cut from <span className="font-medium">{only.fullName}</span>,
+                if its work touches it
+              </span>
+            </span>
+          ) : repositories.length > 1 ? (
+            <span className="flex min-w-0 items-center gap-1">
+              <FolderGit2 className="text-muted-foreground size-3 shrink-0" />
+              <span className="truncate">
+                Cut from the repositories its work touches, of{" "}
+                {repositories.length}
               </span>
             </span>
           ) : repositoryAction !== undefined ? (
@@ -269,7 +289,7 @@ export function TeaserBounty({
                   ? "The whole board is being sized now."
                   : busy
                     ? "About a minute. It opens here when it is ready."
-                    : `About a minute · one model call${repository === null ? "" : `, reading ${repository.fullName}`}`}
+                    : `About a minute · one model call${reading}`}
             </p>
           </>
         )}

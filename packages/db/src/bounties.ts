@@ -15,18 +15,14 @@ import type {
 import { clampBountyTitle, overviewApproved } from "sandbox-factory";
 import { and, desc, eq, inArray, or, sql, type SQL } from "drizzle-orm";
 
-import {
-  isForeignKeyViolation,
-  type Database,
-  type QueryExecutor,
-} from "./errors.js";
+import type { Database, QueryExecutor } from "./errors.js";
+import type { ProposalRepository } from "./schema.js";
 import { generateId } from "./mapping.js";
 import {
   bounty,
   bountyProposal,
   bountyRun,
   bountyVersion,
-  githubRepo,
   jiraBoard,
   jiraConnection,
   jiraIssue,
@@ -56,8 +52,10 @@ export interface StoredBounty extends BountyContent {
   readonly id: string;
   readonly organizationId: string;
   readonly origin: BountyOrigin;
-  readonly repoId: string | null;
-  /** What the bounty adds to its repository's detected stack. */
+  /**
+   * What the bounty adds to the stack detected in the workspace's
+   * repositories, any of which its work may touch.
+   */
   readonly stack: readonly string[];
   /**
    * The categories a board's backlog scan found it in; empty for one no
@@ -125,6 +123,8 @@ export interface BountyProposalSummary {
   readonly id: string;
   readonly status: "proposed" | "approved";
   readonly complexity: BountyComplexity;
+  /** The repositories its sizing said the work touches. */
+  readonly repositories: readonly ProposalRepository[];
   readonly amountMinor: number | null;
   readonly currency: string | null;
 }
@@ -139,7 +139,6 @@ export type ListedBounty = Omit<
 export interface NewBounty {
   readonly title: string;
   readonly description: string;
-  readonly repoId: string | null;
   readonly stack: readonly string[];
 }
 
@@ -147,7 +146,6 @@ export interface NewBounty {
 export interface BountyChange {
   readonly title?: string | undefined;
   readonly description?: string | undefined;
-  readonly repoId?: string | null | undefined;
   readonly stack?: readonly string[] | undefined;
 }
 
@@ -157,17 +155,12 @@ export type BountyMutationResult =
       readonly ok: false;
       /**
        * `jira-owned`: a change to the text of a bounty whose Jira issue is
-       * still there, which is Jira's to change. `repo-not-found`: a
-       * repository the organization does not have. `overview-approved`: a
+       * still there, which is Jira's to change. `overview-approved`: a
        * change to an overview that stands approved, which is unapproved
        * first.
        */
       readonly reason:
-        | "not-found"
-        | "changed"
-        | "jira-owned"
-        | "repo-not-found"
-        | "overview-approved";
+        "not-found" | "changed" | "jira-owned" | "overview-approved";
       readonly current?: StoredBounty;
     };
 
@@ -176,10 +169,7 @@ export interface BountyStore {
     organizationId: string,
     createdBy: string,
     input: NewBounty,
-  ): Promise<
-    | { readonly ok: true; readonly bounty: StoredBounty }
-    | { readonly ok: false; readonly reason: "repo-not-found" }
-  >;
+  ): Promise<StoredBounty>;
   get(organizationId: string, bountyId: string): Promise<StoredBounty | null>;
   /** Newest first, a page at a time, narrowed by `options`' filters. */
   list(
@@ -438,7 +428,6 @@ function toBounty(
     components: row.components,
     inputTruncated: row.inputTruncated,
     origin: row.origin,
-    repoId: row.repoId,
     stack: row.stack,
     categories: row.categories,
     createdBy: row.createdBy,
@@ -579,23 +568,6 @@ export async function refreshBounty(
   return true;
 }
 
-async function ownsRepo(
-  db: Database,
-  organizationId: string,
-  repoId: string,
-): Promise<boolean> {
-  const rows = await db
-    .select({ id: githubRepo.id })
-    .from(githubRepo)
-    .where(
-      and(
-        eq(githubRepo.organizationId, organizationId),
-        eq(githubRepo.id, repoId),
-      ),
-    );
-  return rows[0] !== undefined;
-}
-
 async function readBounty(
   db: Database,
   organizationId: string,
@@ -638,7 +610,6 @@ async function listBounties(
       organizationId: bounty.organizationId,
       title: bounty.title,
       origin: bounty.origin,
-      repoId: bounty.repoId,
       stack: bounty.stack,
       categories: bounty.categories,
       revision: bounty.revision,
@@ -653,6 +624,7 @@ async function listBounties(
       proposalId: bountyProposal.id,
       proposalStatus: bountyProposal.status,
       proposalComplexity: bountyProposal.complexity,
+      proposalRepositories: bountyProposal.repositories,
       proposalAmountMinor: bountyProposal.amountMinor,
       proposalCurrency: bountyProposal.currency,
     })
@@ -771,32 +743,16 @@ async function decide(
 export function createBountyStore(db: Database): BountyStore {
   return {
     async create(organizationId, createdBy, input) {
-      if (
-        input.repoId !== null &&
-        !(await ownsRepo(db, organizationId, input.repoId))
-      ) {
-        return { ok: false, reason: "repo-not-found" };
-      }
-      let row: BountyRow;
-      try {
-        row = await db.transaction((tx) =>
-          insertBounty(tx, organizationId, {
-            title: input.title,
-            description: input.description,
-            origin: "manual",
-            repoId: input.repoId,
-            stack: [...input.stack],
-            createdBy,
-          }),
-        );
-      } catch (error) {
-        // The repository was removed between the check and the insert.
-        if (input.repoId !== null && isForeignKeyViolation(error)) {
-          return { ok: false, reason: "repo-not-found" };
-        }
-        throw error;
-      }
-      return { ok: true, bounty: toBounty(row, NO_LINK) };
+      const row = await db.transaction((tx) =>
+        insertBounty(tx, organizationId, {
+          title: input.title,
+          description: input.description,
+          origin: "manual",
+          stack: [...input.stack],
+          createdBy,
+        }),
+      );
+      return toBounty(row, NO_LINK);
     },
 
     get: (organizationId, bountyId) => readBounty(db, organizationId, bountyId),
@@ -878,9 +834,9 @@ export function createBountyStore(db: Database): BountyStore {
       if (current.revision !== expectedRevision) {
         return { ok: false, reason: "changed", current };
       }
-      // The repository and the stack are the workspace's to set, even on
-      // a bounty whose text is Jira's.
-      const { repoId, stack, ...text } = change;
+      // The stack is the workspace's to set, even on a bounty whose text
+      // is Jira's.
+      const { stack, ...text } = change;
       if (
         Object.values(text).some((value) => value !== undefined) &&
         followsJira(current)
@@ -892,7 +848,6 @@ export function createBountyStore(db: Database): BountyStore {
         (change.title === undefined || change.title === current.title) &&
         (change.description === undefined ||
           change.description === current.description) &&
-        (repoId === undefined || repoId === current.repoId) &&
         (stack === undefined ||
           JSON.stringify(stack) === JSON.stringify(current.stack));
       if (same) return { ok: true, bounty: current };
@@ -900,53 +855,35 @@ export function createBountyStore(db: Database): BountyStore {
       if (overviewApproved(current)) {
         return { ok: false, reason: "overview-approved", current };
       }
-      if (
-        repoId !== undefined &&
-        repoId !== null &&
-        repoId !== current.repoId &&
-        !(await ownsRepo(db, organizationId, repoId))
-      ) {
-        return { ok: false, reason: "repo-not-found" };
-      }
-      // New words are the overview's next version; a repository or a
-      // stack is not what a proposal is sized from, so moves none.
+      // New words are the overview's next version; a stack is not what a
+      // proposal is sized from, so moves none.
       const versioned = changesText(current, change);
-      let rows: BountyRow[];
-      try {
-        rows = await db.transaction(async (tx) => {
-          const written = (await tx
-            .update(bounty)
-            .set({
-              ...(change.title === undefined ? {} : { title: change.title }),
-              ...(change.description === undefined
-                ? {}
-                : { description: change.description }),
-              ...(repoId === undefined ? {} : { repoId }),
-              ...(stack === undefined ? {} : { stack: [...stack] }),
-              revision: expectedRevision + 1,
-              ...(versioned ? { version: current.version + 1 } : {}),
-              updatedAt: new Date(),
-            })
-            .where(
-              and(
-                eq(bounty.organizationId, organizationId),
-                eq(bounty.id, bountyId),
-                eq(bounty.revision, expectedRevision),
-              ),
-            )
-            .returning()) as BountyRow[];
-          const updated = written[0];
-          if (updated !== undefined && versioned)
-            await keepVersion(tx, updated, editedBy);
-          return written;
-        });
-      } catch (error) {
-        // The repository was removed between the check and the write.
-        if (repoId != null && isForeignKeyViolation(error)) {
-          return { ok: false, reason: "repo-not-found" };
-        }
-        throw error;
-      }
+      const rows = await db.transaction(async (tx) => {
+        const written = (await tx
+          .update(bounty)
+          .set({
+            ...(change.title === undefined ? {} : { title: change.title }),
+            ...(change.description === undefined
+              ? {}
+              : { description: change.description }),
+            ...(stack === undefined ? {} : { stack: [...stack] }),
+            revision: expectedRevision + 1,
+            ...(versioned ? { version: current.version + 1 } : {}),
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(bounty.organizationId, organizationId),
+              eq(bounty.id, bountyId),
+              eq(bounty.revision, expectedRevision),
+            ),
+          )
+          .returning()) as BountyRow[];
+        const updated = written[0];
+        if (updated !== undefined && versioned)
+          await keepVersion(tx, updated, editedBy);
+        return written;
+      });
       const updated = rows[0];
       if (updated === undefined) {
         const latest = await readBounty(db, organizationId, bountyId);
@@ -1061,7 +998,6 @@ type ListedRow = Pick<
   | "organizationId"
   | "title"
   | "origin"
-  | "repoId"
   | "stack"
   | "categories"
   | "revision"
@@ -1077,6 +1013,7 @@ type ListedRow = Pick<
     readonly proposalId: string | null;
     readonly proposalStatus: string | null;
     readonly proposalComplexity: string | null;
+    readonly proposalRepositories: ProposalRepository[] | null;
     readonly proposalAmountMinor: number | null;
     readonly proposalCurrency: string | null;
   };
@@ -1088,7 +1025,6 @@ function toListed(row: ListedRow): ListedBounty {
     organizationId: row.organizationId,
     title: row.title,
     origin: row.origin,
-    repoId: row.repoId,
     stack: row.stack,
     categories: row.categories,
     revision: row.revision,
@@ -1105,6 +1041,7 @@ function toListed(row: ListedRow): ListedBounty {
             id: row.proposalId,
             status: row.proposalStatus as BountyProposalSummary["status"],
             complexity: row.proposalComplexity as BountyComplexity,
+            repositories: row.proposalRepositories ?? [],
             amountMinor: row.proposalAmountMinor,
             currency: row.proposalCurrency,
           },

@@ -64,6 +64,7 @@ function stored(overrides: Partial<BountyProfileDto> = {}): BountyProfileDto {
     id: "bpf_1",
     proposalId: "bpr_1",
     specRevision: 2,
+    repository: "acme/app",
     status: "ready",
     errorCode: null,
     runErrorCode: null,
@@ -90,7 +91,7 @@ function answer(...bodies: unknown[]) {
 }
 
 test("a ready profile lists the evidence, one row per feature", async () => {
-  const fetch = answer({ profile: stored() });
+  const fetch = answer({ profiles: [stored()] });
   render(<Wired />);
 
   const rows = await screen.findByTestId("profile-rows");
@@ -124,18 +125,20 @@ test("a ready profile lists the evidence, one row per feature", async () => {
 
 test("a sparse profile says so plainly, and names an older spec revision", async () => {
   answer({
-    profile: stored({
-      specRevision: 1,
-      profile: {
-        ...profile,
-        slice: { ...profile.slice, bytes: 900, blockers: 2 },
-        externals: { services: [], environment: 0, seams: 0 },
-        tests: { files: 0, untestedModules: ["src/mailer"] },
-        pattern: null,
-        nonFunctional: { scenarios: 0, migrations: true, ci: false },
-        risks: [],
-      } as unknown as BountyProfileDto["profile"],
-    }),
+    profiles: [
+      stored({
+        specRevision: 1,
+        profile: {
+          ...profile,
+          slice: { ...profile.slice, bytes: 900, blockers: 2 },
+          externals: { services: [], environment: 0, seams: 0 },
+          tests: { files: 0, untestedModules: ["src/mailer"] },
+          pattern: null,
+          nonFunctional: { scenarios: 0, migrations: true, ci: false },
+          risks: [],
+        } as unknown as BountyProfileDto["profile"],
+      }),
+    ],
   });
   render(<Wired />);
 
@@ -155,9 +158,9 @@ test("a sparse profile says so plainly, and names an older spec revision", async
 test("a profile in flight says where it stands and is read again until it lands", async () => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
   const fetch = answer(
-    { profile: stored({ status: "queued", profile: null }) },
-    { profile: stored({ status: "slicing", profile: null }) },
-    { profile: stored() },
+    { profiles: [stored({ status: "queued", profile: null })] },
+    { profiles: [stored({ status: "slicing", profile: null })] },
+    { profiles: [stored()] },
   );
   render(<Wired />);
 
@@ -175,12 +178,14 @@ test("a profile in flight says where it stands and is read again until it lands"
 
 test("a failed profile gives its reason and the run's own code", async () => {
   answer({
-    profile: stored({
-      status: "failed",
-      errorCode: "scope_failed",
-      runErrorCode: "agent_unavailable",
-      profile: null,
-    }),
+    profiles: [
+      stored({
+        status: "failed",
+        errorCode: "scope_failed",
+        runErrorCode: "agent_unavailable",
+        profile: null,
+      }),
+    ],
   });
   render(<Wired />);
   const status = await screen.findByText(/could not choose a slice/);
@@ -188,7 +193,7 @@ test("a failed profile gives its reason and the run's own code", async () => {
 });
 
 test("never profiled shows nothing; a read that fails says so", async () => {
-  answer({ profile: null });
+  answer({ profiles: [] });
   const { container, unmount } = render(<Wired />);
   await waitFor(() =>
     expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledTimes(1),
@@ -205,7 +210,7 @@ test("never profiled shows nothing; a read that fails says so", async () => {
 });
 
 test("a proposal without a spec is never asked about", async () => {
-  const fetch = answer({ profile: stored() });
+  const fetch = answer({ profiles: [stored()] });
   const { container } = render(<Wired drafted={false} />);
   await act(async () => {});
   expect(fetch).not.toHaveBeenCalled();
@@ -213,9 +218,29 @@ test("a proposal without a spec is never asked about", async () => {
 });
 
 test("an answer in a shape the page does not know counts as a failed read", async () => {
-  answer({ profile: { status: "measuring" } });
+  answer({ profiles: [{ status: "measuring" }] });
   render(<Wired />);
   expect(
     await screen.findByText("The complexity profile could not be loaded."),
   ).toBeTruthy();
+});
+
+test("a bounty touching several repositories lists each one's profile under its name", async () => {
+  answer({
+    profiles: [
+      stored(),
+      stored({
+        id: "bpf_2",
+        repository: "acme/web",
+        status: "slicing",
+        profile: null,
+      }),
+    ],
+  });
+  render(<Wired />);
+
+  expect(await screen.findByText("acme/app")).toBeTruthy();
+  expect(screen.getByText("acme/web")).toBeTruthy();
+  expect(screen.getAllByTestId("profile-rows")).toHaveLength(1);
+  expect(screen.getByText(/Cutting the slice/)).toBeTruthy();
 });

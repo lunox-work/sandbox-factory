@@ -52,11 +52,16 @@ export const complexityProfileSchema = z.object({
 
 export const profileStatusSchema = z.enum(PROFILE_STATUSES);
 
-/** One spec revision's profile, and the runs it was measured from. */
+/**
+ * One spec revision's profile in one repository its work touches, and the
+ * runs it was measured from.
+ */
 export const bountyProfileDtoSchema = z.object({
   id: z.string(),
   proposalId: z.string(),
   specRevision: z.number().int().positive(),
+  /** The repository's full name; null once its snapshot is gone. */
+  repository: z.string().nullable().default(null),
   status: profileStatusSchema,
   errorCode: z.enum(PROFILE_ERROR_CODES).nullable(),
   /** The failed run's own code, when a run is what failed. */
@@ -69,9 +74,14 @@ export const bountyProfileDtoSchema = z.object({
   updatedAt: z.string(),
 });
 
-/** Null when the proposal was never profiled: no linked repository. */
+/**
+ * The newest profiled spec revision's profiles, one per repository its
+ * work touches, in name order. Empty when the proposal was never
+ * profiled: its work touched no repository with a snapshot.
+ */
 export const proposalProfileResponseSchema = z.object({
-  profile: bountyProfileDtoSchema.nullable(),
+  // Defaulted, so an API from before several profiles still parses.
+  profiles: z.array(bountyProfileDtoSchema).default([]),
 });
 
 export type ComplexityProfileDto = z.infer<typeof complexityProfileSchema>;

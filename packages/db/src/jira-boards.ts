@@ -10,10 +10,10 @@
  * tickets are read from Jira when a run needs them.
  */
 
-import { and, desc, eq, isNull, notInArray, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, notInArray } from "drizzle-orm";
 
 import { generateId } from "./mapping.js";
-import { githubRepo, jiraBoard, jiraConnection } from "./schema.js";
+import { jiraBoard, jiraConnection } from "./schema.js";
 import type { JiraBoardRow } from "./schema.js";
 import type { Database } from "./errors.js";
 
@@ -171,8 +171,6 @@ export interface JiraBoardSummary {
   readonly projectKey: string | null;
   readonly selection: StoredBoardSelection;
   readonly pricing: StoredBoardPricing;
-  /** The registered GitHub repository the tickets are about, if linked. */
-  readonly sourceRepoId: string | null;
   readonly createdAt: string;
 }
 
@@ -198,8 +196,6 @@ export type SyncBoardInput = Omit<RegisterBoardInput, "selection">;
 export interface UpdateBoardInput {
   readonly selection?: StoredBoardSelection;
   readonly pricing?: StoredBoardPricing;
-  /** A repository id to link, null to unlink; absent leaves it as it is. */
-  readonly sourceRepoId?: string | null;
 }
 
 export interface JiraBoardStore {
@@ -299,7 +295,6 @@ export function createJiraBoardStore(db: Database): JiraBoardStore {
       projectKey: row.projectKey,
       selection: (row.selection ?? {}) as StoredBoardSelection,
       pricing: (row.pricing ?? {}) as StoredBoardPricing,
-      sourceRepoId: row.sourceRepoId ?? null,
       createdAt: row.createdAt.toISOString(),
     };
   }
@@ -443,26 +438,17 @@ export function createJiraBoardStore(db: Database): JiraBoardStore {
                 input.pricing,
               );
 
-        const linking =
-          typeof input.sourceRepoId === "string" ? input.sourceRepoId : null;
         const [row] = (await tx
           .update(jiraBoard)
           .set({
             selection,
             pricing,
-            ...(input.sourceRepoId === undefined
-              ? {}
-              : { sourceRepoId: input.sourceRepoId }),
             updatedAt: new Date(),
           })
           .where(
             and(
               eq(jiraBoard.organizationId, organizationId),
               eq(jiraBoard.id, boardId),
-              // In the same statement, so the check and the write agree.
-              linking === null
-                ? undefined
-                : sql`exists (select 1 from ${githubRepo} where ${githubRepo.id} = ${linking} and ${githubRepo.organizationId} = ${organizationId})`,
             ),
           )
           .returning()) as JiraBoardRow[];

@@ -19,8 +19,10 @@ export interface SizingInput {
  * `jira-size-v3` sizes from the summary and description, without a type.
  * `jira-size-v4` may also be shown the context a person synced into the
  * bounty: its Jira issue's fields and its repository's documents.
+ * `jira-size-v5` is told the documents are those of every repository the
+ * work could touch, as a bounty names none.
  */
-export const JIRA_SIZE_PROMPT_VERSION = "jira-size-v4";
+export const JIRA_SIZE_PROMPT_VERSION = "jira-size-v5";
 
 export const JIRA_SIZE_SYSTEM_PROMPT = `You size software work using only the Jira ticket supplied by the application.
 

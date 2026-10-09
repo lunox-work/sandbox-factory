@@ -43,6 +43,7 @@ const stored = {
   id: "bpf_1",
   proposalId: "bpr_1",
   specRevision: 2,
+  repository: "acme/app",
   status: "ready",
   errorCode: null,
   runErrorCode: null,
@@ -96,9 +97,29 @@ test("a stored profile carries its status, and a failure its codes", () => {
       .success,
     false,
   );
-  assert.deepEqual(proposalProfileResponseSchema.parse({ profile: null }), {
-    profile: null,
+});
+
+test("a proposal's profiles are one per repository its work touches", () => {
+  const web = { ...stored, id: "bpf_2", repository: "acme/web" };
+  assert.deepEqual(
+    proposalProfileResponseSchema.parse({ profiles: [stored, web] }).profiles,
+    [stored, web],
+  );
+  // Never profiled: its work touched no repository with a snapshot.
+  assert.deepEqual(proposalProfileResponseSchema.parse({ profiles: [] }), {
+    profiles: [],
   });
+  // An API from before several profiles answers with none of them.
+  assert.deepEqual(proposalProfileResponseSchema.parse({ profile: null }), {
+    profiles: [],
+  });
+  // One whose snapshot is gone, or written before repositories were named.
+  assert.equal(
+    bountyProfileDtoSchema.parse({ ...stored, repository: null }).repository,
+    null,
+  );
+  const { repository: _unsaid, ...older } = stored;
+  assert.equal(bountyProfileDtoSchema.parse(older).repository, null);
 });
 
 test("a scope submission may name a pattern to follow, or none", () => {

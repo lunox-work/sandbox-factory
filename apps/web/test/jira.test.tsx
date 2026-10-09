@@ -1,5 +1,4 @@
 import { completeBountyFixture } from "./api-fixtures";
-import { chooseOption } from "./combobox";
 /**
  * The Jira connections list, which is the Jira tab of an organization's
  * settings, and the board page under it. A site has no page of its own.
@@ -1054,142 +1053,35 @@ const widgets = {
 };
 
 /**
- * `routedFetch`, with the organization's registered repositories, the
- * board's own PATCH, and one snapshot. Everything else falls through.
+ * `routedFetch`, with the organization's registered repositories.
+ * Everything else falls through.
  */
-function withRepositories(
-  options: {
-    linked?: string | null;
-    repositories?: unknown[];
-    repositoryStatus?: number;
-    patchStatus?: number;
-    snapshot?: unknown;
-  } = {},
-) {
-  const inner = routedFetch({
-    boards: {
-      body: { boards: [{ ...board, sourceRepoId: options.linked ?? null }] },
-    },
-    proposals: {
-      body: {
-        proposals: [{ ...proposal(1), repoSnapshotId: "rsn_1" }, proposal(2)],
-      },
-    },
-  });
+function withRepositories(repositories: unknown[] = [widgets]) {
+  const inner = routedFetch({ boards: { body: { boards: [board] } } });
   return vi.fn((input: string, init?: RequestInit) => {
-    const url = String(input);
-    const json = (body: unknown, status = 200) =>
-      Promise.resolve(
-        new Response(JSON.stringify(completeBountyFixture(body)), {
-          status,
+    if (String(input).endsWith("/github/repositories")) {
+      return Promise.resolve(
+        new Response(JSON.stringify({ repositories }), {
+          status: 200,
           headers: { "content-type": "application/json" },
         }),
       );
-    if (url.endsWith("/github/repositories")) {
-      return json(
-        { repositories: options.repositories ?? [widgets] },
-        options.repositoryStatus ?? 200,
-      );
-    }
-    if (url.includes("/github/snapshots/")) {
-      return options.snapshot === undefined
-        ? json({ error: "Not found" }, 404)
-        : json({ snapshot: options.snapshot });
-    }
-    if (init?.method === "PATCH" && url.endsWith("/jira/boards/jrb_1")) {
-      const { sourceRepoId } = JSON.parse(String(init.body)) as {
-        sourceRepoId: string | null;
-      };
-      return options.patchStatus !== undefined
-        ? json({ error: "Not found" }, options.patchStatus)
-        : json({ board: { ...board, sourceRepoId } });
     }
     return inner(input, init);
   });
 }
 
-test("an owner links the repository a board's tickets are about", async () => {
+test("a board names no repository: its tickets may touch any of the workspace's", async () => {
   const fetchMock = withRepositories();
   vi.stubGlobal("fetch", fetchMock);
   renderBoard("jrb_1", "owner");
 
-  // The workspace's one repository is offered as one click, said as what
-  // linking it buys.
-  const section = await screen.findByTestId("board-repository");
-  expect(section.textContent).toMatch(/size this board beside acme\/widgets/i);
-  await userEvent.click(
-    within(section).getByRole("button", { name: "Link repository" }),
-  );
-
-  await waitFor(() =>
-    expect(
-      within(screen.getByTestId("board-repository")).getByRole("combobox", {
-        name: "Repository",
-      }).textContent,
-    ).toBe("acme/widgets"),
-  );
-  const patch = fetchMock.mock.calls.find(
-    ([, init]) => (init as RequestInit | undefined)?.method === "PATCH",
-  );
-  expect(JSON.parse(String((patch?.[1] as RequestInit).body))).toEqual({
-    sourceRepoId: "ghr_1",
-  });
+  await screen.findByTestId("backlog-scan");
+  expect(screen.queryByTestId("board-repository")).toBeNull();
+  expect(screen.queryByRole("combobox", { name: "Repository" })).toBeNull();
   expect(
-    screen.getByText(/drafted with an outline of this repository/i),
-  ).toBeDefined();
-});
-
-test("an owner can unlink, and a refused link is said", async () => {
-  vi.stubGlobal(
-    "fetch",
-    withRepositories({ linked: "ghr_1", patchStatus: 404 }),
-  );
-  renderBoard("jrb_1", "owner");
-
-  const section = await screen.findByTestId("board-repository");
-  await chooseOption(
-    within(section).getByRole("combobox", { name: "Repository" }),
-    "No repository",
-  );
-
-  expect((await screen.findByRole("alert")).textContent).toMatch(
-    /no longer registered/,
-  );
-});
-
-test("a member sees the linked repository but cannot change it", async () => {
-  vi.stubGlobal("fetch", withRepositories({ linked: "ghr_1" }));
-  renderBoard("jrb_1", "member");
-
-  const section = await screen.findByTestId("board-repository");
-  expect(within(section).getByText("acme/widgets")).toBeDefined();
-  expect(within(section).queryByRole("button")).toBeNull();
-});
-
-test("a linked repository that was removed is still named as such", async () => {
-  vi.stubGlobal(
-    "fetch",
-    withRepositories({ linked: "ghr_removed", repositories: [] }),
-  );
-  renderBoard("jrb_1", "member");
-
-  expect(
-    await within(await screen.findByTestId("board-repository")).findByText(
-      /a removed repository/i,
+    fetchMock.mock.calls.some(
+      ([, init]) => (init as RequestInit | undefined)?.method === "PATCH",
     ),
-  ).toBeDefined();
-});
-
-test("a failed repository read does not claim the linked repository was removed", async () => {
-  vi.stubGlobal(
-    "fetch",
-    withRepositories({ linked: "ghr_1", repositoryStatus: 500 }),
-  );
-  renderBoard("jrb_1", "member");
-  const section = await screen.findByTestId("board-repository");
-  expect(within(section).getByText("Repository unavailable")).toBeDefined();
-  expect(within(section).queryByText(/a removed repository/i)).toBeNull();
-  expect(within(section).getByRole("alert").textContent).toMatch(
-    /could not load the registered repositories/i,
-  );
+  ).toBe(false);
 });

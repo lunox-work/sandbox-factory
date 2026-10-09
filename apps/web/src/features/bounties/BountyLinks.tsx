@@ -1,12 +1,14 @@
 /**
- * What a bounty is linked to, under its text on its page: the repository it
- * is about, and the Jira issue it follows. One framed group, a row each:
- * the source named on the left, with one line saying where the link stands,
- * and the picker that changes it on the right. Neither is required; each
- * saves as it is picked.
+ * What a bounty is linked to, under its text on its page: the workspace's
+ * repositories, and the Jira issue it follows. One framed group, a row
+ * each: the source named on the left, with one line saying where the link
+ * stands, and what changes it on the right. Neither is required.
  *
- * The repository is one of the workspace's, as on a new bounty. The issue
- * is searched for across every board the workspace has, as it is typed, in
+ * A bounty names no repository: its work may touch any the workspace has
+ * connected, and its sizing says which. So the repositories' row picks
+ * nothing; it says how many there are, and leads to the workspace's GitHub
+ * settings, where they are connected. The issue is picked, and saves as it
+ * is: it is searched for across every board the workspace has, as typed, in
  * the rows the board's own search uses: key, summary, board. Under the
  * results sits the way to the workspace's Jira settings, where accounts are
  * connected and managed. Linking an issue makes the bounty follow it, so a
@@ -16,7 +18,11 @@
  * to date, and the way to sync it into the overview (`ContextSync`).
  */
 
-import type { BountyDto, MembershipDto } from "@sandbox-factory/shared";
+import {
+  isWorkspaceSource,
+  type BountyDto,
+  type MembershipDto,
+} from "@sandbox-factory/shared";
 import { ApiError } from "@sandbox-factory/client";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -36,27 +42,30 @@ import {
   type ComboboxOption,
 } from "@/components/Combobox";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 import { clients, queryKeys, useUserId } from "../../data/query";
 import { JiraIcon, ProviderIcon } from "../../ProviderIcon";
-import { pathForScreen, type ConnectionTab } from "../../routes";
+import {
+  isPlainLeftClick,
+  pathForScreen,
+  type ConnectionTab,
+} from "../../routes";
 import type { Bounties } from "../../useBounties";
 import type { GithubRepos } from "../../useGithub";
 import { useJira } from "../../useJira";
 import { ContextSync, type BountyContextState } from "./BountyContext";
-import { repositoryOptions, type SaveField } from "./BountyFields";
 
 /** Opens a tab of the workspace's settings. */
 export type OpenSettings = (tab: ConnectionTab) => void;
 
-/** The links under a bounty's text: its repository, then its Jira issue. */
+/** The links under a bounty's text: the repositories, then its Jira issue. */
 export function BountyLinks({
   organization,
   bounty,
   bounties,
   repos,
-  onSave,
   onChange,
   onOpenSettings,
   context,
@@ -66,7 +75,6 @@ export function BountyLinks({
   bounty: BountyDto;
   bounties: Bounties;
   repos: GithubRepos;
-  onSave: SaveField;
   /** Holds the bounty as a link or its removal returned it. */
   onChange: (bounty: BountyDto) => void;
   onOpenSettings: OpenSettings;
@@ -82,13 +90,10 @@ export function BountyLinks({
         Links
       </h3>
       <div className="divide-y rounded-lg border">
-        <RepositoryLink
+        <RepositoriesLink
           organization={organization}
-          bounty={bounty}
           repos={repos}
-          onSave={onSave}
           onOpenSettings={onOpenSettings}
-          locked={locked}
           sync={
             context === undefined ? null : (
               <ContextSync source="github" context={context} canSync />
@@ -179,76 +184,58 @@ function settingsHref(organization: MembershipDto, tab: ConnectionTab) {
 }
 
 /**
- * The repository the bounty is about, picked from the workspace's. A
- * repository the list lacks is connected in its GitHub settings.
+ * The workspace's repositories, any of which the bounty's work may touch:
+ * how many, and the way to its GitHub settings, where one is connected.
  */
-function RepositoryLink({
+function RepositoriesLink({
   organization,
-  bounty,
   repos,
-  onSave,
   onOpenSettings,
-  locked,
   sync,
 }: {
   organization: MembershipDto;
-  bounty: BountyDto;
   repos: GithubRepos;
-  onSave: SaveField;
   onOpenSettings: OpenSettings;
-  locked: boolean;
   sync: ReactNode;
 }) {
   const titleId = useId();
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const value = bounty.repoId ?? "";
-  // A bounty from Jira with none is drafted beside its board's.
-  const none = bounty.jira === null ? "None" : "Its board's, if it has one";
+  const sources = repos.repos.filter(isWorkspaceSource);
+  const [only] = sources;
+  const description = repos.loading
+    ? "Loading repositories…"
+    : sources.length === 0
+      ? "No repository is connected to the workspace."
+      : sources.length === 1 && only !== undefined
+        ? `${only.fullName}: sizing says whether the work touches it.`
+        : `All ${sources.length} of the workspace's: sizing says which the work touches.`;
   return (
     <LinkRow
       icon={<ProviderIcon provider="github" />}
-      title="Repository"
+      title="Repositories"
       titleId={titleId}
-      description={
-        value === ""
-          ? "Repository to slice from."
-          : "Its spec is drafted beside an outline of the code."
-      }
-      busy={saving}
-      error={error}
+      description={description}
+      busy={false}
+      error={null}
       sync={sync}
       control={
-        <Combobox
-          label="Repository"
+        <a
+          href={settingsHref(organization, "github")}
           aria-describedby={titleId}
-          searchPlaceholder="Search repositories…"
-          emptyMessage={
-            repos.loading ? "Loading repositories…" : "No repository matches."
-          }
-          options={repositoryOptions(repos, value, none)}
-          actions={[
-            {
-              key: "new-repository",
-              label: "Connect a repository",
-              icon: <Plus />,
-              href: settingsHref(organization, "github"),
-              onSelect: () => onOpenSettings("github"),
-            },
-          ]}
-          value={value}
-          disabled={saving || locked}
-          onValueChange={(next) => {
-            setSaving(true);
-            setError(null);
-            void onSave({ repoId: next === "" ? null : next }).then(
-              (failure) => {
-                setSaving(false);
-                setError(failure?.message ?? null);
-              },
-            );
+          className={cn(
+            buttonVariants({ variant: "outline" }),
+            "w-full justify-start",
+          )}
+          onClick={(event) => {
+            if (!isPlainLeftClick(event)) return;
+            event.preventDefault();
+            onOpenSettings("github");
           }}
-        />
+        >
+          {sources.length === 0 ? <Plus /> : <Settings />}
+          {sources.length === 0
+            ? "Connect a repository"
+            : "Manage repositories"}
+        </a>
       }
     />
   );

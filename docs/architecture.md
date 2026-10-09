@@ -383,7 +383,7 @@ first run that reads an issue creates the bounty, and every read after —
 a run, or opening one of its proposals — writes Jira's text back onto it
 (`refreshFromJira`, only when it differs, so the revision does not move
 for nothing). While the issue is there its text is Jira's to change, and
-the API refuses an edit to it (`jira_owned`); its repository is the
+the API refuses an edit to it (`jira_owned`); its stack is the
 platform's to set. When Jira stops returning the issue, the pointer is
 marked `removed_at` and the bounty keeps the text it last had: it is then
 sized, reviewed and edited as stored, like a bounty written here. If a
@@ -410,10 +410,14 @@ adds context beyond its text, read only when a person asks: `POST
 releases, due date, story points found by the site's own field name,
 estimates, demand and links; never a person or a comment) and takes its
 text as a run's read does; `POST .../context/github/sync` reads the
-Markdown of its repository (its own, or its board's) at the newest
-snapshot, chosen by `contextDocuments` in `packages/core/src/sources.ts`
-(the README, guides and docs first, a path naming a word of the title
-earlier, vendored code and boilerplate never) and cut to its caps. Any
+Markdown of every repository the workspace has connected, at each one's
+newest snapshot, chosen across them by `contextDocumentsAcross` in
+`packages/core/src/sources.ts` (every README, then guides and docs, a path
+naming a word of the title earlier, vendored code and boilerplate never)
+and cut to one set of caps. A repository with no snapshot yet is named as
+unread. A version synced while a bounty named one repository keeps that
+shape (`githubRepositories` reads either) and reads as `unsynced` until the
+workspace's are synced. Any
 member may sync, and an approved overview does not hold a sync back, as it
 does not hold back Jira's text. Each sync that finds something new is the
 source's next version in `bounty_context` (migration 0056), kept with the
@@ -428,7 +432,7 @@ The overview holds the latest version of each source while it came from the
 source linked now (`heldContext` in `apps/api/src/bounties/held-context.ts`),
 and that is the context sizing and generation are given:
 `renderSourceContext` puts it after the bounty's text and outline under
-headings of its own (`draft-v5`, `jira-size-v4`, the starter agent's
+headings of its own (`draft-v6`, `jira-size-v5`, the starter agent's
 prompt). A proposal records the versions it was sized with
 (`bounty_proposal.jira_context_version` and `github_context_version`); a
 sandbox version freezes the context itself into its approved task (an
@@ -547,13 +551,19 @@ names, and only a frozen version takes a submission. No route takes a
 submission yet; the table and its store (`packages/db/src/submissions.ts`)
 are the shape the contributor flow will write.
 
-**The repository is enrichment for a sandbox too.** A sandbox is made with
-or without one (`POST .../sandboxes` with `bountyId` and an optional
-`sourceRepoId`); `sandbox_source` exists only when it has one. Cutting a
-version is a slice, so that alone needs it, and is refused `no_source`
-without. One made without a repository has it linked later, once
-(`PUT .../sandboxes/:id/source`): its versions are bound to the repository
-they were sliced from, so a different one is refused `source_linked`.
+**The repository is enrichment for a sandbox too, and nobody picks it.**
+`POST .../sandboxes` takes only `bountyId`; the sandbox is cut from the
+repository its bounty's live proposal says the work touches
+(`bounty_proposal.repositories`, below), while the workspace still has it.
+A proposal that touches none, or several, makes a sandbox with no source,
+whose versions are generated; cutting several repositories into one
+sandbox is not built yet. `sandbox_source` exists only when it has one.
+Cutting a version is a slice, so that alone needs it, and is refused
+`no_source` without. One made without a repository has it linked later,
+once (`PUT .../sandboxes/:id/source`, no body), when its sizing has since
+named one, refused `no_touched_repository` otherwise: its versions are
+bound to the repository they were sliced from, so a different one is
+refused `source_linked`.
 
 **Without a repository, a version is generated.** `POST
 .../sandboxes/:id/starter` snapshots the task from the bounty itself (its
@@ -561,8 +571,9 @@ title and description, with its live proposal's spec and price) and queues
 a `sandbox_starter` run. The proposal must be approved: a bounty with none,
 or with a draft one, is refused `task_not_ready`
 (`starterTaskReadiness`). The run: an agent writes a
-starter from the bounty's title, description and tech stack (its
-repository's detected stack, when it names one, and what it adds), and the
+starter from the bounty's title, description and tech stack (the stack
+detected in every repository the workspace has connected, and what the
+bounty adds), and the
 worker builds it and checks its baseline as a build would. A starter is
 source under `src/`, public tests that pass on it, hidden tests marked with
 their outcome on it (at least one fails until the bounty is done), the
@@ -586,7 +597,8 @@ its replay are refused (`generated_version`, or replay's
 reads no snapshot, so `analysis_run.organization_id` owns every run (added
 in migration 0049, backfilled through each run's snapshot). The bounty's
 panel generates a version for a sandbox with no repository and follows its
-run, and still offers to link the bounty's own repository to slice instead. A version's
+run, and offers to link the one repository its sizing says the work touches
+to slice instead. A version's
 frozen task names the bounty (`ApprovedTaskSnapshot.bountyId`, schema
 version 3), and its spec and price must be that bounty's proposal's
 (`proposal_mismatch` otherwise). Versions frozen earlier
@@ -660,11 +672,12 @@ workspace's name; a personal one's carries no tag. An opened bounty is read
 and changed through its own workspace's routes, as the role held there
 allows. A new one is written on its own page, `/bounties/new`, to the
 workspace in the rail unless the form names another; once saved, it opens on
-the Bounties page in the form's place in history. A bounty's tech stack is
-its repository's detected stack, shown locked and followed live rather than
-copied, plus what the bounty adds (`bounty.stack`), which is all a write
-sends. Like the repository, the stack can be set on a bounty whose text
-follows Jira. The page lists bounties as cards and has no list of
+the Bounties page in the form's place in history. A bounty names no
+repository, and nothing offers to pick one: its work may touch any the
+workspace has connected. Its tech stack is the stack detected in every one
+of them, shown locked and followed live rather than copied, plus what the
+bounty adds (`bounty.stack`), which is all a write sends. The stack can be
+set on a bounty whose text follows Jira. The page lists bounties as cards and has no list of
 proposals: a proposal is made from a bounty and opens inside it. A bounty
 opens in a panel over the list, `/bounties?peek=:workspace/:id`, or as a page
 of its own, `/bounties/:workspace/:id`, which the panel's Open as page leads
@@ -674,8 +687,10 @@ is read through. Its page splits it into its three steps, numbered tabs
 named by `?tab=`, each with its version and a warning when it is behind
 (or, for the overview, when a source has moved past its sync);
 the panel is a glance, read and not changed, in one column with no tabs: its
-description, its **Sandbox** under its price, its **Context** (its Jira issue
-and repository, each optional) and its workspace. Its proposal, and every
+description, its **Sandbox** under its price, its **Context** (its Jira
+issue, optional, and the repositories its sizing says the work touches) and
+its workspace. The page's links name the workspace's repositories and lead
+to its GitHub settings, with their sync under them. Its proposal, and every
 change, are on its page, which the panel's Open as page leads to. On the page,
 a bounty with no proposal offers to make one in the proposal's place; once it
 has one, that place holds the live proposal in its peek, where it is
@@ -713,10 +728,10 @@ Respec keeps the base, card, and step settings without another sizing call;
 reprice uses the current card and starts fresh.
 
 **The pricing rubric sizes a proposal once its code is measured**
-(`packages/core/src/pricing/rubric.ts`, `rubric-v1`). It scores three
+(`packages/core/src/pricing/rubric.ts`, `rubric-v2`). It scores three
 dimensions from countable evidence. Scenarios are scored by weight, with the
 step's points, plus open questions. Test cases are one per scenario, plus each
-outcome step after a test's first. Code comes from the complexity profile:
+outcome step after a test's first. Code comes from the complexity profiles:
 slice size, touched modules, services, seams, untested modules, migrations,
 stubs and blockers, minus a discount for an analogous pattern. The total falls
 in a band of the nine priced sizes, and the rate card prices it. Sizing stores
@@ -728,8 +743,19 @@ proposal. A reviewer-sized proposal only has the assessment recorded, and an
 approved one is not touched. A respec of a rubric-sized proposal is priced at
 the rubric's score of the changed spec, and the step still records what
 changed. `POST .../proposals/:id/rubric` puts the rubric's size back over a
-reviewer's resize. Without a repository the rubric has no size, and the model
-and step price the bounty as before. Provider wiring is in
+reviewer's resize. The code is scored over every repository the work
+touches: one profile each, counts summed and modules named by repository.
+`rubric-v2` adds four points per repository beyond the first for the
+integration across them, and charges modules beyond each repository's
+first, so crossing into another repository is charged once. The rubric has
+a size once every profile is ready, and one failed fails the code. The code
+is all of the repositories or none: when a touched repository's snapshot is
+gone by the time the proposal is written, none is profiled and the code is
+`unavailable`, rather than a size scored from part of the work. Without a
+repository the rubric has no size, and the model and step price the bounty
+as before. A profile's settle meets the others' writes to the same
+proposal, so `RubricPricer` tries again once per profile of the revision,
+and reports `bounty_rubric_contended` if it still cannot write. Provider wiring is in
 `apps/api/src/server.ts`: Anthropic first with DeepSeek as fallback when both
 are configured, or either provider alone. See `.env.example` for configuration.
 
@@ -861,15 +887,18 @@ picker and stores other spellings (`postgres`, `k8s`) under its own. The other i
 only Markdown documents, with the same narrowed token, and keeps them cut to
 their caps on `bounty_context` as the bounty's context (see Bounties).
 
-**A bounty can name the repository it is about** (`bounty.repo_id`), and
-**a board can name one for its bounties** (`jira_board.source_repo_id`);
-both same organization only, checked in the write. A bounty's own wins,
-and a Jira bounty that names none takes its board's. Sizing then drafts
-each spec beside an outline of that repository's current snapshot —
-module names with file counts and file types, capped at 60 lines
-(`apps/api/src/sizing/outline.ts`) — and records the snapshot on the
-proposal (`bounty_proposal.repo_snapshot_id`). The size call is never
-shown it.
+**A bounty names no repository, and neither does a board** (migration 0059
+dropped `bounty.repo_id` and `jira_board.source_repo_id`). Its work may
+touch any repository the workspace has connected, so sizing drafts each
+spec beside an outline of every one's current snapshot — module names with
+file counts and file types, under a neutral label each ("Repository 1"),
+sharing one cap of lines (`outlineLinesEach` in
+`apps/api/src/sizing/outline.ts`) — and the draft (`draft-v6`) names, by
+label, the repositories the work changes. Those are recorded on the
+proposal with the snapshot each was outlined at
+(`bounty_proposal.repositories`, which 0059 backfilled from the old
+`repo_snapshot_id`); a re-price says them again and a spec change keeps
+them. The size call is never shown the outlines.
 
 **A delivery is applied before it is answered.** GitHub does not retry a
 failed delivery on its own and records any 2xx as delivered, so the
@@ -946,14 +975,14 @@ stored, only the structured answer, its token usage and fixed log lines.
 Agent runs need `ANTHROPIC_API_KEY` and `AGENT_MODEL` on the worker; without
 a key they fail `agent_unavailable` and nothing else changes.
 
-**A sized bounty is profiled from the code it touches.** When a spec is
-drafted beside its bounty's surviving repository snapshot and profiling is
-configured, the proposal/spec transaction inserts the pending profile intent
-(`bounty_profile`, one row per revision), with the owner, spec hash and
-locked snapshot. An intent
+**A sized bounty is profiled from the code it touches.** When a spec's
+work touches repositories whose snapshots survive and profiling is
+configured, the proposal/spec transaction inserts a pending profile intent
+for each (`bounty_profile`, one row per revision and snapshot), with the
+owner, spec hash and locked snapshot. An intent
 insert failure rolls back the proposal and spec. The post-commit callback only
 wakes the profiler: a later sweep discovers committed intent without it. The
-unique proposal/revision constraint makes requests idempotent. Snapshot-less
+unique proposal/revision/snapshot constraint makes requests idempotent. Snapshot-less
 or disabled profiling retains the existing behavior; respec does not implicitly
 request profiles, and historical rows are not backfilled.
 `apps/api/src/pricing/profiler.ts` sweeps the rows in flight every 30

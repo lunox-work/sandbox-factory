@@ -209,16 +209,24 @@ test("a first bounty fits tested, contained product code", () => {
   expect(testShare({ ...facts, fileCount: 0 })).toBe(0);
 });
 
-test("a bounty started from the x-ray carries its repository and module in the address", () => {
+test("a bounty started from the x-ray carries its module and repository in the address", () => {
   expect(newBountyUrl()).toBe("/bounties/new");
-  const url = newBountyUrl({ repoId: "ghr_1", area: "packages/billing" });
-  expect(url).toBe("/bounties/new?repo=ghr_1&area=packages%2Fbilling");
-  expect(prefillFromSearch(url.slice(url.indexOf("?")))).toEqual({
-    repoId: "ghr_1",
+  const url = newBountyUrl({
     area: "packages/billing",
+    repository: "acme/app",
   });
-  expect(prefillFromSearch("?repo=ghr_1")).toEqual({ repoId: "ghr_1" });
-  expect(prefillFromSearch("?area=x")).toBeNull();
-  expect(areaDescription("packages/billing")).toBe("In `packages/billing`, ");
-  expect(areaDescription(undefined)).toBe("");
+  expect(url).toBe("/bounties/new?area=packages%2Fbilling&in=acme%2Fapp");
+  expect(prefillFromSearch(url.slice(url.indexOf("?")))).toEqual({
+    area: "packages/billing",
+    repository: "acme/app",
+  });
+  expect(prefillFromSearch("?area=x")).toEqual({ area: "x" });
+  // An address from when a bounty named its repository names none now.
+  expect(prefillFromSearch("?repo=ghr_1")).toBeNull();
+  expect(areaDescription({ area: "packages/billing" })).toBe(
+    "In `packages/billing`, ",
+  );
+  expect(
+    areaDescription({ area: "packages/billing", repository: "acme/app" }),
+  ).toBe("In `packages/billing` of `acme/app`, ");
 });

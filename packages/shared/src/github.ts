@@ -390,6 +390,38 @@ export const githubRepoDtoSchema = z.strictObject({
   createdAt: z.string(),
 });
 
+/** What tells whether a registered repository is one a bounty may touch. */
+interface RegisteredRepository {
+  readonly id: string;
+  readonly role: z.infer<typeof githubRepoRoleSchema>;
+  readonly syncStatus: z.infer<typeof githubSyncStatusSchema>;
+}
+
+/**
+ * Whether a bounty's work may touch the repository: one the workspace
+ * connected as a source and GitHub still answers for. The API and the page
+ * both ask this one question, so what one offers the other accepts.
+ */
+export function isWorkspaceSource(repo: RegisteredRepository): boolean {
+  return repo.role === "source" && repo.syncStatus !== "gone";
+}
+
+/**
+ * The workspace's repositories a bounty's work is done in: those its sizing
+ * said it touches, still among the workspace's; before it says, or when
+ * none of those is left, any of them. Its stack is inherited from these.
+ */
+export function workRepositories<Repo extends RegisteredRepository>(
+  repos: readonly Repo[],
+  touched: readonly { readonly repoId: string }[] = [],
+): Repo[] {
+  const sources = repos.filter(isWorkspaceSource);
+  const named = sources.filter(({ id }) =>
+    touched.some(({ repoId }) => repoId === id),
+  );
+  return named.length === 0 ? sources : named;
+}
+
 /**
  * One file of a stored tree. Blobs and submodules only: directories are
  * implied by the paths under them. `sha` is Git's object id, which is what

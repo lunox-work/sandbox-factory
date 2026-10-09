@@ -16,33 +16,48 @@ import type { JsonSchema, ParseResult, StructuredCall } from "../caller.js";
 import { describeProblem, oneLine, truncate } from "./parse.js";
 
 /**
- * What a spec is drafted from: the bounty, and — when the bounty or its
- * board names the repository it is about — an outline of that repository.
+ * What a spec is drafted from: the bounty, and an outline of each of the
+ * workspace's repositories its work could touch. A bounty names no
+ * repository, so the draft says which it touches.
  */
 export interface DraftInput {
   readonly summary: string;
   readonly descriptionText: string;
   readonly components: readonly string[];
-  /** From `repositoryOutline`: module names and counts, never code. */
+  /**
+   * From `repositoryOutline`, one per repository under its label
+   * (`repositoryLabel`): module names and counts, never code.
+   */
   readonly repositoryOutline?: string | undefined;
   /**
    * The bounty's synced context, from `renderSourceContext`: its Jira
-   * issue's fields and its repository's documents, each under a heading.
+   * issue's fields and its repositories' documents, each under a heading.
    */
   readonly sourceContext?: string | undefined;
 }
 
 /**
+ * A draft: the spec, and the labels of the outlined repositories the
+ * model said the work changes, as `repositoryLabel` wrote them. Labels
+ * the outline did not hold are the caller's to pass over.
+ */
+export interface DraftedSpec {
+  readonly spec: SpecDraft;
+  readonly repositories: readonly string[];
+}
+
+/**
  * `draft-v2` weighs every scenario. A spec stored under `draft-v1` has no
  * weights, and so no scenario step until its proposal is re-priced.
- * `draft-v3` may be shown a repository outline beside the bounty; the
- * proposal's `repoSnapshotId` says whether this one was. `draft-v4` sees
- * no issue type or labels, which a bounty no longer has. `draft-v5` may be
- * shown the context a person synced into the bounty: its Jira issue's
- * fields, type and labels among them, and its repository's documents; the
- * proposal's context versions say which.
+ * `draft-v3` may be shown a repository outline beside the bounty.
+ * `draft-v4` sees no issue type or labels, which a bounty no longer has.
+ * `draft-v5` may be shown the context a person synced into the bounty: its
+ * Jira issue's fields, type and labels among them, and its repositories'
+ * documents; the proposal's context versions say which. `draft-v6` is shown
+ * an outline of each of the workspace's repositories, under a label, and
+ * says which the work changes; the proposal's `repositories` are those.
  */
-export const DRAFT_SPEC_PROMPT_VERSION = "draft-v5";
+export const DRAFT_SPEC_PROMPT_VERSION = "draft-v6";
 
 /*
   The parts of the prompt a draft and a revision share, so the two tell
@@ -54,7 +69,7 @@ export const DRAFT_SPEC_PROMPT_VERSION = "draft-v5";
  * What the synced context is, and how far it may be trusted. Shared by the
  * draft and the size, which may both be shown it.
  */
-export const SOURCE_CONTEXT_SECTION = `The application may also supply the context a person synced into the ticket. Jira fields are what the ticket's tracker records beyond its text: its type, status, priority, labels, components, releases, due date, story points, time estimates, demand and the links to other tickets. Repository documents are the README, guides and docs of the repository the ticket is about. Use the fields to judge how the ticket's team classified and sized it, and the documents to understand the product's terms and the behaviour around the ticket. The ticket's own text decides what the work is: where the context disagrees with it, follow the ticket. Do not quote the documents, and do not name a file, path or document from them.`;
+export const SOURCE_CONTEXT_SECTION = `The application may also supply the context a person synced into the ticket. Jira fields are what the ticket's tracker records beyond its text: its type, status, priority, labels, components, releases, due date, story points, time estimates, demand and the links to other tickets. Repository documents are the README, guides and docs of the repositories the ticket's work could touch, each headed by its label when there are several. Use the fields to judge how the ticket's team classified and sized it, and the documents to understand the product's terms and the behaviour around the ticket. The ticket's own text decides what the work is: where the context disagrees with it, follow the ticket. Do not quote the documents, and do not name a file, path or document from them.`;
 
 /** What the model can and cannot see. */
 export const SEES_NO_CODE =
@@ -79,7 +94,7 @@ export const DRAFT_SPEC_SYSTEM_PROMPT = `You turn one Jira ticket into a behavio
 
 You see the ticket the application supplies: its summary, description and components. ${SEES_NO_CODE}
 
-The application may also supply an outline of the repository the ticket is about: its modules with their file counts and main file types, the languages it is written in, and whether it has lockfiles, migrations or infrastructure. It is not the code. Use it only to judge how much of the system a scenario reaches when you weigh it, such as a scenario that needs a schema change in a repository with migrations, or one that spans several modules. Do not name a module, directory or file from it in any scenario, question or assumption.
+The application may also supply an outline of each repository the ticket's work could touch, each headed by a label such as "Repository 1": its modules with their file counts and main file types, the languages it is written in, and whether it has lockfiles, migrations or infrastructure. It is not the code. Use it to judge how much of the system a scenario reaches when you weigh it, such as a scenario that needs a schema change in a repository with migrations, one that spans several modules, or one that has to change two repositories that must agree. In repositories, give the label of every outlined repository the work changes, and only those: none when there is no outline, or when the work changes none of them. Do not name a repository, module, directory or file from the outline in any scenario, question or assumption.
 
 ${SOURCE_CONTEXT_SECTION} Where the difference would change a scenario, ask it as an open question.
 
@@ -310,6 +325,9 @@ export function specToolSchema(maxScenarios: number): JsonSchema {
   };
 }
 
+/** The most repositories a draft may say its work changes. */
+export const DRAFT_REPOSITORIES_MAX = 20;
+
 /**
  * The first link of the pricing chain: the ticket's behaviour as scenarios,
  * each with the weight of the work it adds.
@@ -318,20 +336,65 @@ export function specToolSchema(maxScenarios: number): JsonSchema {
  * the stored spec, so they are assigned here: `s1` onwards in the order
  * drafted, every scenario a `draft`.
  */
-export const draftSpecTool: StructuredCall<DraftInput, SpecDraft> = {
+export const draftSpecTool: StructuredCall<DraftInput, DraftedSpec> = {
   name: "draft_spec",
   description:
     "Return the ticket's behaviour as Gherkin scenarios, with the questions it leaves open and the assumptions made.",
   promptVersion: DRAFT_SPEC_PROMPT_VERSION,
   system: DRAFT_SPEC_SYSTEM_PROMPT,
-  schema: specToolSchema(SPEC_LIMITS.draftScenarios),
+  schema: draftToolSchema(),
   // A full draft is a few thousand tokens of JSON, and takes the model
   // correspondingly longer to write than a size does.
   maxTokens: 8_000,
   attemptTimeoutMs: 120_000,
   render: renderDraftInput,
-  parse: (raw) => parseSpec(raw, SPEC_LIMITS.draftScenarios, "draft"),
+  parse: parseDraft,
 };
+
+/** The draft's schema: a spec, and the repositories its work changes. */
+function draftToolSchema(): JsonSchema {
+  const spec = specToolSchema(SPEC_LIMITS.draftScenarios) as {
+    properties: Record<string, JsonSchema>;
+    required: string[];
+  };
+  return {
+    ...spec,
+    properties: {
+      ...spec.properties,
+      repositories: {
+        type: "array",
+        description:
+          'The label of each outlined repository the work changes, such as "Repository 1"; empty when none.',
+        maxItems: DRAFT_REPOSITORIES_MAX,
+        items: line(40),
+      },
+    },
+    required: [...spec.required, "repositories"],
+  };
+}
+
+/**
+ * A draft out of the model's answer: its spec as `parseSpec` reads one,
+ * and its repositories read leniently, as notes are: trimmed, each once,
+ * and an answer without them changing none.
+ */
+export function parseDraft(raw: unknown): ParseResult<DraftedSpec> {
+  const spec = parseSpec(raw, SPEC_LIMITS.draftScenarios, "draft");
+  if (!spec.ok) return spec;
+  const named = z
+    .object({ repositories: z.array(z.string()).optional() })
+    .safeParse(raw);
+  const repositories = named.success
+    ? [
+        ...new Set(
+          (named.data.repositories ?? [])
+            .map((label) => oneLine(label))
+            .filter((label) => label !== ""),
+        ),
+      ].slice(0, DRAFT_REPOSITORIES_MAX)
+    : [];
+  return { ok: true, value: { spec: spec.value, repositories } };
+}
 
 /**
  * The bounty as JSON, under the heading the model has always seen, and

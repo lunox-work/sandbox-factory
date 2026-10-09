@@ -37,8 +37,7 @@ export const PROPOSE_POLL_MS = 1_000;
 export interface BountyDraft {
   title: string;
   description: string;
-  repoId: string | null;
-  /** What the bounty adds to its repository's detected stack. */
+  /** What the bounty adds to the workspace's repositories' detected stack. */
   stack: string[];
 }
 
@@ -101,21 +100,17 @@ export interface Bounties {
     expectedRevision: number,
   ) => Promise<BountyWrite>;
   /**
-   * Makes the bounty's sandbox, cut from `sourceRepoId` when one is given.
-   * Resolves to null, or to why there is none.
+   * Makes the bounty's sandbox, cut from the repository its sizing said
+   * the work touches, when it names one. Resolves to null, or to why there
+   * is none.
    */
-  createSandbox: (
-    bountyId: string,
-    sourceRepoId: string | null,
-  ) => Promise<string | null>;
+  createSandbox: (bountyId: string) => Promise<string | null>;
   /**
-   * Links the repository a sandbox made without one is cut from. Resolves
-   * to null, or to why it was not linked.
+   * Links a sandbox made without a repository to the one the bounty's
+   * sizing has since said the work touches. Resolves to null, or to why it
+   * was not linked.
    */
-  linkSandboxSource: (
-    sandboxId: string,
-    sourceRepoId: string,
-  ) => Promise<string | null>;
+  linkSandboxSource: (sandboxId: string) => Promise<string | null>;
   /**
    * Sizes the bounty and makes its proposal, following the run until the
    * proposal lands. Resolves to the proposal, or to why there is none. With
@@ -396,12 +391,9 @@ export function useBounties(organizationId: string): Bounties {
   );
 
   const createSandbox = useCallback(
-    async (bountyId: string, sourceRepoId: string | null) => {
+    async (bountyId: string) => {
       try {
-        await clients.sandbox.createSandbox(organizationId, {
-          bountyId,
-          sourceRepoId,
-        });
+        await clients.sandbox.createSandbox(organizationId, { bountyId });
         await load();
         return null;
       } catch (error) {
@@ -414,11 +406,9 @@ export function useBounties(organizationId: string): Bounties {
   );
 
   const linkSandboxSource = useCallback(
-    async (sandboxId: string, sourceRepoId: string) => {
+    async (sandboxId: string) => {
       try {
-        await clients.sandbox.linkSandboxSource(organizationId, sandboxId, {
-          sourceRepoId,
-        });
+        await clients.sandbox.linkSandboxSource(organizationId, sandboxId);
         await load();
         return null;
       } catch (error) {

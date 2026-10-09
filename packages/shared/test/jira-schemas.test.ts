@@ -433,27 +433,23 @@ test("an update is a selection, and an empty body is refused", () => {
   assert.equal(updateBoardSchema.safeParse({}).success, false);
 });
 
-test("an update may name the board's source repository, or clear it", () => {
+test("a board names no repository: a link left in an old body is refused", () => {
+  // Its tickets, as every bounty, may touch any repository the workspace
+  // has connected, so a body with only a link sets nothing.
+  const refused = updateBoardSchema.safeParse({ sourceRepoId: "ghr_1" });
+  assert.equal(refused.success, false);
   assert.equal(
-    updateBoardSchema.parse({ sourceRepoId: "ghr_1" }).sourceRepoId,
-    "ghr_1",
-  );
-  // Null unlinks; absent leaves the link as it is.
-  assert.equal(
-    updateBoardSchema.parse({ sourceRepoId: null }).sourceRepoId,
-    null,
-  );
-  assert.equal(
-    "sourceRepoId" in updateBoardSchema.parse({ pricing: {} }),
-    false,
+    refused.error?.issues[0]?.message,
+    "Provide selection or pricing settings.",
   );
   assert.equal(
-    updateBoardSchema.safeParse({ sourceRepoId: "" }).success,
+    "sourceRepoId" in
+      updateBoardSchema.parse({ pricing: {}, sourceRepoId: "ghr_1" }),
     false,
   );
 });
 
-test("a board listed before repository links reads as unlinked", () => {
+test("a board listed with a repository link reads without it", () => {
   const parsed = jiraBoardSummarySchema.parse({
     id: "jrb_1",
     connectionId: "jrc_1",
@@ -462,9 +458,10 @@ test("a board listed before repository links reads as unlinked", () => {
     boardType: "scrum",
     projectKey: null,
     selection: {},
+    sourceRepoId: "ghr_1",
     createdAt: "2026-10-01T00:00:00.000Z",
   });
-  assert.equal(parsed.sourceRepoId, null);
+  assert.equal("sourceRepoId" in parsed, false);
 });
 
 test("a partial selection update does not reimpose the defaults", () => {

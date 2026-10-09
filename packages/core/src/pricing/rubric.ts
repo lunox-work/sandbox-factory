@@ -8,7 +8,7 @@
  * | ---------- | ------------------------------------------------------- |
  * | Scenarios  | The spec: each scenario's weight, its open questions    |
  * | Test cases | The spec: one test per scenario, one check per outcome  |
- * | Code       | The complexity profile, measured from the code graph    |
+ * | Code       | A complexity profile per repository the work touches    |
  *
  * The total falls in one band, and the band is the size the rate card
  * prices. Nothing here is money: dollars still enter only through the card.
@@ -22,7 +22,10 @@
  * The code is what makes the rubric whole. Without a measured profile (no
  * repository, or one still being measured) the rubric has no size of its
  * own and the model's size stands; the scenarios and test cases are still
- * scored, so the reviewer sees what the size will be built from.
+ * scored, so the reviewer sees what the size will be built from. A bounty
+ * may touch several of the workspace's repositories: each is profiled, the
+ * code is scored over all of them together, and every repository beyond the
+ * first adds the integration across them.
  *
  * **This file is the rubric, and it is meant to be edited.** The points and
  * bands are at the top, the rules a reader sees are written from them, and
@@ -41,8 +44,11 @@ import {
   type ScenarioWeight,
 } from "./weight.js";
 
-/** Stored with every assessment. */
-export const RUBRIC_VERSION = "rubric-v1";
+/**
+ * Stored with every assessment. `rubric-v2` scores the code over every
+ * repository the work touches, and adds the integration across them.
+ */
+export const RUBRIC_VERSION = "rubric-v2";
 
 /** What each factor adds. Scenario weights are the step's (`weight.ts`). */
 export const RUBRIC_POINTS = {
@@ -52,8 +58,13 @@ export const RUBRIC_POINTS = {
   testCase: 1,
   /** Per outcome a test checks beyond its first. */
   extraCheck: 1,
-  /** Per touched module beyond the first. */
+  /**
+   * Per touched module beyond the first in its repository: the first in
+   * each further repository is the integration `extraRepository` charges.
+   */
   extraModule: 3,
+  /** Per touched repository beyond the first: the integration across them. */
+  extraRepository: 4,
   /** Per external service the sandbox mocks. */
   service: 2,
   /** Per cut module the scope agent judged safe to mock. */
@@ -123,7 +134,7 @@ export const RUBRIC_DIMENSIONS = [
     id: "code",
     label: "Code",
     covers:
-      "Where the change lands, measured from the repository's code graph.",
+      "Where the change lands, measured from the code graph of each repository it touches.",
   },
 ] as const;
 export type RubricDimensionId = (typeof RUBRIC_DIMENSIONS)[number]["id"];
@@ -193,10 +204,17 @@ export function rubricRules(
       why: "The slice is the context an agent must hold; more of it is more to get wrong.",
     },
     {
+      id: "repositories",
+      dimension: "code",
+      label: "Repositories touched",
+      scoring: `${P.extraRepository} per repository beyond the first`,
+      why: "Each repository is built, tested and shipped on its own, and the change has to agree across them.",
+    },
+    {
       id: "modules",
       dimension: "code",
       label: "Modules touched",
-      scoring: `${P.extraModule} per module beyond the first`,
+      scoring: `${P.extraModule} per module beyond the first in its repository`,
       why: "Changes across module boundaries are the strongest predictor of an agent failing.",
     },
     {
@@ -246,7 +264,7 @@ export function rubricRules(
       dimension: "code",
       label: "Analogous pattern",
       scoring: `${signed(P.pattern)} when one exists`,
-      why: "Following working code in the same repository is cheaper than inventing it.",
+      why: "Following working code in a repository it touches is cheaper than inventing it.",
     },
   ];
 }
@@ -272,11 +290,19 @@ export const RUBRIC_DIMENSION_IDS = RUBRIC_DIMENSIONS.map(
   ({ id }) => id,
 ) as unknown as readonly [RubricDimensionId, ...RubricDimensionId[]];
 
+/** One repository the work touches, and its code as profiled. */
+export interface MeasuredRepository {
+  /** What a reviewer knows it by: its full name. */
+  readonly repository: string;
+  readonly profile: ComplexityProfile;
+}
+
 export type RubricCode =
   | {
       readonly status: "measured";
-      readonly profile: ComplexityProfile;
-      /** The spec revision the profile was measured for. */
+      /** Every repository the work touches, at least one. */
+      readonly profiles: readonly MeasuredRepository[];
+      /** The spec revision the profiles were measured for. */
       readonly specRevision: number;
     }
   | { readonly status: Exclude<RubricCodeStatus, "measured"> };
@@ -446,71 +472,131 @@ const STUBS: Record<StubCoverage, string> = {
   "names-only": "Names only",
 };
 
-function codeFactors(profile: ComplexityProfile): RubricFactor[] {
+const STUB_ORDER: readonly StubCoverage[] = ["full", "partial", "names-only"];
+
+/**
+ * The code as one change: every repository's profile taken together, its
+ * modules named by repository when there are several, its counts summed,
+ * and its stubs as thin as the thinnest.
+ */
+function combined(measured: readonly MeasuredRepository[]) {
+  const several = measured.length > 1;
+  const qualify = (repository: string, names: readonly string[]) =>
+    several ? names.map((name) => `${repository}:${name}`) : [...names];
+  const each = <T>(read: (entry: MeasuredRepository) => T): T[] =>
+    measured.map(read);
+  const sum = (values: readonly number[]) =>
+    values.reduce((total, value) => total + value, 0);
+  const pattern = measured.find(({ profile }) => profile.pattern !== null);
+  return {
+    repositories: each(({ repository }) => repository),
+    files: sum(each(({ profile }) => profile.slice.files)),
+    bytes: sum(each(({ profile }) => profile.slice.bytes)),
+    touchedModules: measured.flatMap(({ repository, profile }) =>
+      qualify(repository, profile.touchedModules),
+    ),
+    // Each repository's modules beyond its first: crossing into another
+    // repository is charged once, as that repository.
+    extraModules: sum(
+      each(({ profile }) => Math.max(0, profile.touchedModules.length - 1)),
+    ),
+    services: [
+      ...new Set(measured.flatMap(({ profile }) => profile.externals.services)),
+    ].sort(),
+    seams: sum(each(({ profile }) => profile.externals.seams)),
+    untestedModules: measured.flatMap(({ repository, profile }) =>
+      qualify(repository, profile.tests.untestedModules),
+    ),
+    migrations: measured.some(
+      ({ profile }) => profile.nonFunctional.migrations,
+    ),
+    stubCoverage:
+      STUB_ORDER[
+        Math.max(
+          ...each(({ profile }) =>
+            STUB_ORDER.indexOf(profile.slice.stubCoverage),
+          ),
+        )
+      ] ?? "full",
+    blockers: sum(each(({ profile }) => profile.slice.blockers)),
+    pattern:
+      pattern?.profile.pattern == null
+        ? null
+        : several
+          ? `${pattern.repository}:${pattern.profile.pattern.path}`
+          : pattern.profile.pattern.path,
+  };
+}
+
+function codeFactors(measured: readonly MeasuredRepository[]): RubricFactor[] {
   const P = RUBRIC_POINTS;
-  const { slice, touchedModules, externals, tests, nonFunctional } = profile;
+  const code = combined(measured);
   return [
     {
       id: "context",
       label: "Code to read",
-      evidence: `${plural(slice.files, "file")}, ${kilobytes(slice.bytes)}`,
-      points: contextPoints(slice.bytes),
+      evidence: `${plural(code.files, "file")}, ${kilobytes(code.bytes)}`,
+      points: contextPoints(code.bytes),
+    },
+    {
+      id: "repositories",
+      label: "Repositories touched",
+      evidence: `${code.repositories.length}${named(code.repositories)}`,
+      points: Math.max(0, code.repositories.length - 1) * P.extraRepository,
     },
     {
       id: "modules",
       label: "Modules touched",
-      evidence: `${touchedModules.length}${named(touchedModules)}`,
-      points: Math.max(0, touchedModules.length - 1) * P.extraModule,
+      evidence: `${code.touchedModules.length}${named(code.touchedModules)}`,
+      points: code.extraModules * P.extraModule,
     },
     {
       id: "services",
       label: "External services",
       evidence:
-        externals.services.length === 0
+        code.services.length === 0
           ? "None"
-          : `${externals.services.length}${named(externals.services)}`,
-      points: externals.services.length * P.service,
+          : `${code.services.length}${named(code.services)}`,
+      points: code.services.length * P.service,
     },
     {
       id: "seams",
       label: "Mocked seams",
-      evidence:
-        externals.seams === 0 ? "None" : plural(externals.seams, "seam"),
-      points: externals.seams * P.seam,
+      evidence: code.seams === 0 ? "None" : plural(code.seams, "seam"),
+      points: code.seams * P.seam,
     },
     {
       id: "untested",
       label: "Untested modules",
       evidence:
-        tests.untestedModules.length === 0
+        code.untestedModules.length === 0
           ? "None"
-          : `${tests.untestedModules.length}${named(tests.untestedModules)}`,
-      points: tests.untestedModules.length * P.untestedModule,
+          : `${code.untestedModules.length}${named(code.untestedModules)}`,
+      points: code.untestedModules.length * P.untestedModule,
     },
     {
       id: "migrations",
       label: "Schema migrations",
-      evidence: nonFunctional.migrations ? "In a touched module" : "None",
-      points: nonFunctional.migrations ? P.migrations : 0,
+      evidence: code.migrations ? "In a touched module" : "None",
+      points: code.migrations ? P.migrations : 0,
     },
     {
       id: "stubs",
       label: "Stub coverage",
-      evidence: STUBS[slice.stubCoverage],
-      points: P.stubs[slice.stubCoverage],
+      evidence: STUBS[code.stubCoverage],
+      points: P.stubs[code.stubCoverage],
     },
     {
       id: "blockers",
       label: "Slice blockers",
-      evidence:
-        slice.blockers === 0 ? "None" : plural(slice.blockers, "blocker"),
-      points: slice.blockers * P.blocker,
+      evidence: code.blockers === 0 ? "None" : plural(code.blockers, "blocker"),
+      points: code.blockers * P.blocker,
     },
     {
       id: "pattern",
       label: "Analogous pattern",
-      evidence: profile.pattern === null ? "None found" : profile.pattern.path,
-      points: profile.pattern === null ? 0 : P.pattern,
+      evidence: code.pattern ?? "None found",
+      points: code.pattern === null ? 0 : P.pattern,
     },
   ];
 }
@@ -524,7 +610,12 @@ export function assessRubric(input: RubricInput): RubricAssessment {
     0,
   );
 
-  const measured = input.code.status === "measured";
+  // Measured code is at least one repository's; none is no code to score.
+  const code: RubricCode =
+    input.code.status === "measured" && input.code.profiles.length === 0
+      ? { status: "unavailable" }
+      : input.code;
+  const measured = code.status === "measured";
   const dimensions = [
     dimension(
       "scenarios",
@@ -544,8 +635,8 @@ export function assessRubric(input: RubricInput): RubricAssessment {
         points: extraChecks * RUBRIC_POINTS.extraCheck,
       },
     ]),
-    input.code.status === "measured"
-      ? dimension("code", codeFactors(input.code.profile))
+    code.status === "measured"
+      ? dimension("code", codeFactors(code.profiles))
       : dimension("code", [], false),
   ];
   const points = dimensions.reduce((sum, { points }) => sum + points, 0);
@@ -564,9 +655,8 @@ export function assessRubric(input: RubricInput): RubricAssessment {
       checks,
     },
     code: {
-      status: input.code.status,
-      specRevision:
-        input.code.status === "measured" ? input.code.specRevision : null,
+      status: code.status,
+      specRevision: code.status === "measured" ? code.specRevision : null,
     },
     size,
     nextSizeIn: next === undefined ? null : next.from - points,
@@ -580,7 +670,7 @@ const UNSIZED: Record<RubricCodeStatus, string> = {
   pending:
     "The code is still being measured, so the size is the model's until it is.",
   unavailable:
-    "There is no repository to measure the code in, so the size is the model's.",
+    "The code is not measured: the work touches no repository that can be, so the size is the model's.",
   failed:
     "The code could not be measured, so the size is the model's. Re-analyze to try again.",
 };

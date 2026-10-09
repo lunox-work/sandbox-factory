@@ -37,7 +37,6 @@ import {
   generateStarterResponseSchema,
   publishVersionResponseSchema,
   publishVersionSchema,
-  linkSandboxSourceSchema,
   replayResponseSchema,
   SANDBOX_FILE_TEXT_MAX_BYTES,
   sandboxFileContentSchema,
@@ -56,6 +55,7 @@ import {
   validateAliasRules,
 } from "sandbox-factory";
 import { isAtLeastAdmin } from "../access.js";
+import { connectedRepositories } from "../bounties/held-context.js";
 import type { AuthVariables } from "../http-context.js";
 import { textOf } from "../object-text.js";
 
@@ -102,6 +102,31 @@ const versionResponse = (
 /** A refusal the version service settled on, answered with its status. */
 const failed = (c: Context, refusal: Failure): Response =>
   c.json(refusal.body, FAILURE_STATUS[refusal.reason]);
+
+/**
+ * The repository a bounty's sandbox is cut from: the one its live
+ * proposal's sizing said the work touches, while the workspace still has
+ * it. Null when it touches none, which a generated version is for, or
+ * several, which are generated from until they can be cut together.
+ */
+async function touchedSource(
+  options: SandboxRouteOptions,
+  owner: string,
+  bountyId: string,
+): Promise<string | null> {
+  const proposalId = await options.proposals.liveForBounty(owner, bountyId);
+  const proposal =
+    proposalId === null ? null : await options.proposals.get(owner, proposalId);
+  if (proposal === null || proposal.repositories.length === 0) return null;
+  const connected = new Set(
+    (await connectedRepositories(options.repos, owner)).map(({ id }) => id),
+  );
+  const touched = proposal.repositories.filter(({ repoId }) =>
+    connected.has(repoId),
+  );
+  const [only] = touched;
+  return touched.length === 1 && only !== undefined ? only.repoId : null;
+}
 
 /** A store refusal to make a sandbox or link its repository. */
 function sandboxRefused(
@@ -210,32 +235,44 @@ export function mountSandboxRoutes(
     );
     if (!body.success)
       return c.json({ error: "Invalid sandbox request." }, 400);
-    const result = await options.sandboxes.create(
-      c.get("member").organizationId,
-      body.data,
-    );
+    const owner = c.get("member").organizationId;
+    const result = await options.sandboxes.create(owner, {
+      bountyId: body.data.bountyId,
+      sourceRepoId: await touchedSource(options, owner, body.data.bountyId),
+    });
     if (!result.ok) return sandboxRefused(c, result.reason);
     return c.json(
       sandboxResponseSchema.parse({ sandbox: sandboxDto(result.sandbox) }),
       201,
     );
   });
-  // A sandbox made without a repository gets one here, once.
+  /*
+    A sandbox made without a repository gets one here, once: the one its
+    bounty's sizing has since said the work touches.
+  */
   app.put(`${base}/:id/source`, async (c) => {
     if (!isAtLeastAdmin(c.get("member").role))
       return c.json(
         { error: "Only owners and admins can link a sandbox's repository." },
         403,
       );
-    const body = linkSandboxSourceSchema.safeParse(
-      await c.req.json().catch(() => null),
-    );
-    if (!body.success)
-      return c.json({ error: "Invalid sandbox request." }, 400);
+    const owner = c.get("member").organizationId;
+    const sandbox = await options.sandboxes.get(owner, c.req.param("id"));
+    if (sandbox === null) return c.json({ error: "Not found." }, 404);
+    const sourceRepoId = await touchedSource(options, owner, sandbox.bountyId);
+    if (sourceRepoId === null)
+      return c.json(
+        {
+          error:
+            "A sandbox is cut from the one connected repository the bounty's sizing says its work touches. It is not sized yet, or names none or several.",
+          code: "no_touched_repository",
+        },
+        409,
+      );
     const result = await options.sandboxes.linkSource(
-      c.get("member").organizationId,
-      c.req.param("id"),
-      body.data.sourceRepoId,
+      owner,
+      sandbox.id,
+      sourceRepoId,
     );
     if (!result.ok) return sandboxRefused(c, result.reason);
     return c.json(

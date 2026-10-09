@@ -612,10 +612,6 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
 
   /**
    * Edit a board's settings. The selection is merged; see the store.
-   *
-   * `sourceRepoId` links the repository the board's tickets are about, or
-   * unlinks it with null. One registered to another organization is a 404,
-   * as an unknown board is: the store checks the two share an owner.
    */
   app.patch("/api/v1/orgs/:orgId/jira/boards/:id", async (c) => {
     const { organizationId, role } = c.get("member");
@@ -625,13 +621,10 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
 
     const parsed = updateBoardSchema.safeParse(await c.req.json());
     if (!parsed.success) {
-      return c.json(
-        { error: "Provide selection, pricing or repository settings." },
-        400,
-      );
+      return c.json({ error: "Provide selection or pricing settings." }, 400);
     }
 
-    const { selection, pricing, sourceRepoId } = parsed.data;
+    const { selection, pricing } = parsed.data;
     const updated = await boards.update(organizationId, c.req.param("id"), {
       ...(selection === undefined
         ? {}
@@ -648,7 +641,6 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
       // Merged by the store, which skips what is absent and clears what is
       // null at every level, so it goes through as parsed.
       ...(pricing === undefined ? {} : { pricing }),
-      ...(sourceRepoId === undefined ? {} : { sourceRepoId }),
     });
 
     if (updated === null) {

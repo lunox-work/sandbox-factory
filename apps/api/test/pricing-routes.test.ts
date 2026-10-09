@@ -414,7 +414,7 @@ function reviewProposal(
     decidedAt: null,
     decidedBy: null,
     decisionDeliveryPolicy: null,
-    repoSnapshotId: null,
+    repositories: [],
     contextVersions: { jira: null, github: null },
     createdAt: run.createdAt,
     updatedAt: run.createdAt,
@@ -432,7 +432,6 @@ function jiraBounty(overrides: Partial<StoredBounty> = {}): StoredBounty {
     components: [],
     inputTruncated: false,
     origin: "jira",
-    repoId: null,
     stack: [],
     categories: [],
     createdBy: null,
@@ -696,7 +695,7 @@ function specHarness(
 
 const profilePath = "/api/v1/orgs/org_1/proposals/bpr_1/profile";
 
-function profileHarness(stored: unknown, withStore = true) {
+function profileHarness(stored: readonly unknown[], withStore = true) {
   const reads: unknown[][] = [];
   const proposal = reviewProposal({ specRevision: 2 });
   const app = createApp({
@@ -740,6 +739,7 @@ const storedProfile = {
   specRevision: 2,
   specHash: "a".repeat(64),
   snapshotId: "rsn_1",
+  repository: "acme/app",
   status: "scoping",
   errorCode: null,
   runErrorCode: null,
@@ -750,31 +750,50 @@ const storedProfile = {
   updatedAt: "2026-10-03T00:01:00.000Z",
 };
 
-test("a proposal's profile is read for any member, without its owner or hash", async () => {
-  const state = profileHarness(storedProfile);
+test("a proposal's profiles are read for any member, each with its repository, without its owner or hash", async () => {
+  const state = profileHarness([
+    storedProfile,
+    {
+      ...storedProfile,
+      id: "bpf_2",
+      snapshotId: null,
+      repository: null,
+      status: "ready",
+    },
+  ]);
   const response = await state.app.request(profilePath, { headers });
   assert.equal(response.status, 200);
-  const body = (await response.json()) as { profile: Record<string, unknown> };
-  assert.equal(body.profile["status"], "scoping");
-  assert.equal(body.profile["scopeRunId"], "arn_1");
-  assert.equal("organizationId" in body.profile, false);
-  assert.equal("specHash" in body.profile, false);
+  const body = (await response.json()) as {
+    profiles: Record<string, unknown>[];
+  };
+  assert.equal(body.profiles.length, 2);
+  const [first, second] = body.profiles;
+  assert.equal(first?.["status"], "scoping");
+  assert.equal(first?.["scopeRunId"], "arn_1");
+  assert.equal(first?.["repository"], "acme/app");
+  // A repository removed since is still a profile, named by nothing.
+  assert.equal(second?.["repository"], null);
+  assert.equal(second?.["status"], "ready");
+  for (const profile of body.profiles) {
+    assert.equal("organizationId" in profile, false);
+    assert.equal("specHash" in profile, false);
+  }
   assert.deepEqual(state.reads, [["org_1", "bpr_1"]]);
 });
 
-test("a proposal never profiled, or a deployment without profiles, answers null", async () => {
+test("a proposal never profiled, or a deployment without profiles, answers none", async () => {
   for (const state of [
-    profileHarness(null),
-    profileHarness(storedProfile, false),
+    profileHarness([]),
+    profileHarness([storedProfile], false),
   ]) {
     const response = await state.app.request(profilePath, { headers });
     assert.equal(response.status, 200);
-    assert.deepEqual(await response.json(), { profile: null });
+    assert.deepEqual(await response.json(), { profiles: [] });
   }
 });
 
 test("another organization's proposal has no profile to read", async () => {
-  const state = profileHarness(storedProfile);
+  const state = profileHarness([storedProfile]);
   const response = await state.app.request(
     "/api/v1/orgs/org_1/proposals/bpr_other/profile",
     { headers },
@@ -1565,37 +1584,42 @@ function rubricOf(status: "measured" | "pending") {
         : {
             status,
             specRevision: 1,
-            profile: {
-              version: COMPLEXITY_PROFILE_VERSION,
-              slice: {
-                files: 3,
-                bytes: 30_000,
-                modules: ["src/export"],
-                stubCoverage: "partial",
-                blockers: 0,
-                ready: true,
-              },
-              touchedModules: ["src/export", "src/ui"],
-              externals: { services: [], environment: 0, seams: 0 },
-              spec: {
-                scenarios: 2,
-                kinds: {
-                  happy: 1,
-                  boundary: 0,
-                  unhappy: 1,
-                  recovery: 0,
-                  permission: 0,
-                  concurrency: 0,
-                  "non-functional": 0,
+            profiles: [
+              {
+                repository: "acme/app",
+                profile: {
+                  version: COMPLEXITY_PROFILE_VERSION,
+                  slice: {
+                    files: 3,
+                    bytes: 30_000,
+                    modules: ["src/export"],
+                    stubCoverage: "partial",
+                    blockers: 0,
+                    ready: true,
+                  },
+                  touchedModules: ["src/export", "src/ui"],
+                  externals: { services: [], environment: 0, seams: 0 },
+                  spec: {
+                    scenarios: 2,
+                    kinds: {
+                      happy: 1,
+                      boundary: 0,
+                      unhappy: 1,
+                      recovery: 0,
+                      permission: 0,
+                      concurrency: 0,
+                      "non-functional": 0,
+                    },
+                    openQuestions: 0,
+                    assumptions: 0,
+                  },
+                  tests: { files: 2, untestedModules: [] },
+                  pattern: { path: "src/export/pdf.ts", reason: "same shape" },
+                  nonFunctional: { scenarios: 0, migrations: false, ci: true },
+                  risks: [],
                 },
-                openQuestions: 0,
-                assumptions: 0,
               },
-              tests: { files: 2, untestedModules: [] },
-              pattern: { path: "src/export/pdf.ts", reason: "same shape" },
-              nonFunctional: { scenarios: 0, migrations: false, ci: true },
-              risks: [],
-            },
+            ],
           },
   });
 }
