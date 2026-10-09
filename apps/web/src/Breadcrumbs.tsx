@@ -58,13 +58,7 @@ export interface TrailOrganization {
 function crumbHref(crumb: Crumb): string {
   return crumb.screen === undefined
     ? window.location.pathname
-    : pathForScreen(
-        crumb.screen,
-        crumb.slug,
-        undefined,
-        undefined,
-        crumb.connectionTab,
-      );
+    : pathForScreen(crumb.screen, crumb.slug, undefined, crumb.connectionTab);
 }
 
 const HOME: Crumb = { label: "Home", screen: "home" };
@@ -89,18 +83,12 @@ export function trailFor(
   screen: Screen,
   organization?: TrailOrganization | undefined,
   /**
-   * The board the last crumb names, on `org-jira-board`.
+   * The bounty the last crumb names, on `bounty`.
    *
    * Passed in rather than looked up, because the trail is rendered by the
-   * shell and the board's name lives in a list only the page below has. Until
-   * it arrives the crumb reads "Board" — the trail is one step deeper than
-   * Jira whether or not the name has loaded, and dropping the last crumb
-   * would mark Jira as the current page while a board is on screen.
-   */
-  boardName?: string | undefined,
-  /**
-   * The bounty the last crumb names, on `bounty`. Passed in for the same
-   * reason as the board's, and read "Bounty" until it arrives.
+   * shell and the bounty's title lives in a read only the page below has.
+   * Until it arrives the crumb reads "Bounty": dropping the last crumb would
+   * mark the list as the current page while a bounty is on screen.
    */
   bountyName?: string | undefined,
   /**
@@ -111,7 +99,7 @@ export function trailFor(
   bountyWorkspace?: TrailOrganization | undefined,
   /**
    * The repository the last crumb names, on `org-repository`. Passed in for
-   * the same reason as the board's, and read "Repository" until it arrives.
+   * the same reason as the bounty's, and read "Repository" until it arrives.
    */
   repositoryName?: string | undefined,
 ): Crumb[] {
@@ -160,35 +148,6 @@ export function trailFor(
             },
             { label: bountyName ?? "Bounty" },
           ];
-    case "org-jira-board": {
-      /*
-        No crumb for the site the board is on: a site has no page of its own.
-        Its boards are listed in the Jira tab of the organization's settings,
-        which is where the Jira crumb leads. Named "Jira" rather than
-        "Settings" because that is what it lists; the crumb before it is
-        already the settings page.
-      */
-      const jira: Crumb = {
-        label: "Jira",
-        screen: "org-settings",
-        slug: organization?.slug,
-        connectionTab: "jira",
-      };
-      const board: Crumb = { label: boardName ?? "Board" };
-      return organization === undefined
-        ? [HOME, ORGANIZATIONS, jira, board]
-        : [
-            HOME,
-            ORGANIZATIONS,
-            {
-              label: organization.name,
-              screen: "org-settings",
-              slug: organization.slug,
-            },
-            jira,
-            board,
-          ];
-    }
     case "org-repository": {
       /*
         The GitHub crumb leads to the GitHub tab of the organization's
@@ -222,7 +181,6 @@ export function trailFor(
 export function Breadcrumbs({
   screen,
   organization,
-  boardName,
   bountyName,
   bountyWorkspace,
   repositoryName,
@@ -230,8 +188,6 @@ export function Breadcrumbs({
 }: {
   screen: Screen;
   organization?: TrailOrganization | undefined;
-  /** The board `org-jira-board` is showing; see `trailFor`. */
-  boardName?: string | undefined;
   /** The bounty `bounty` is showing; see `trailFor`. */
   bountyName?: string | undefined;
   /** The workspace that bounty is in; see `trailFor`. */
@@ -241,15 +197,13 @@ export function Breadcrumbs({
   onNavigate: (
     screen: Screen,
     slug?: string,
-    connectionId?: string,
-    boardId?: string,
+    id?: string,
     connectionTab?: ConnectionTab,
   ) => void;
 }) {
   const crumbs = trailFor(
     screen,
     organization,
-    boardName,
     bountyName,
     bountyWorkspace,
     repositoryName,
@@ -291,8 +245,7 @@ export function Breadcrumbs({
         // right of the content. Read from the screen rather than taken as a
         // prop: which pages are wide is the trail's own business, and the
         // shell already tells it where it is.
-        screen === "org-jira-board" ||
-          screen === "org-repository" ||
+        screen === "org-repository" ||
           screen === "bounties" ||
           screen === "new-bounty" ||
           screen === "bounty"
@@ -347,7 +300,6 @@ export function Breadcrumbs({
                       onNavigate(
                         target,
                         crumb.slug,
-                        undefined,
                         undefined,
                         crumb.connectionTab,
                       );

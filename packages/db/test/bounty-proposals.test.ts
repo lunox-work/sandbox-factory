@@ -6,16 +6,27 @@ import {
   COMPLEXITY_PROFILE_VERSION,
   stepUp,
   type ComplexityProfile,
+  type RubricAssessment,
   type SpecDraft,
 } from "sandbox-factory";
 
 import { createBountyProposalStore } from "../src/bounty-proposals.js";
+import { insertProfileIntents } from "../src/profile-intent.js";
 import type {
   BountyProposalRow,
   BountyRunRow,
   BountyWritebackRow,
+  ProposalRepository,
 } from "../src/schema.js";
-import { createFakeDb, createSequencedFakeDb } from "./fake-db.js";
+import {
+  repositoriesForWrite,
+  snapshotForWrite,
+} from "../src/snapshot-write.js";
+import {
+  createFakeDb,
+  createSequencedFakeDb,
+  type FakeCall,
+} from "./fake-db.js";
 
 function row(overrides: Partial<BountyProposalRow> = {}): BountyProposalRow {
   return {
@@ -56,7 +67,7 @@ function row(overrides: Partial<BountyProposalRow> = {}): BountyProposalRow {
     step: null,
     stepVersion: null,
     rubric: null,
-    repoSnapshotId: null,
+    repositories: [],
     jiraContextVersion: null,
     githubContextVersion: null,
     decidedBy: null,
@@ -253,46 +264,152 @@ test("creates under a live lease and classifies fencing outcomes", async () => {
   );
 });
 
-test("proposal writes keep only surviving owner-scoped snapshots", async () => {
-  for (const available of [true, false]) {
-    const snapshot = available ? [{ id: "rsn_1" }] : [];
-    const snapshotId = available ? "rsn_1" : null;
+/** Two repositories a drafting said the work touches, each at a snapshot. */
+const REPOSITORIES: readonly ProposalRepository[] = [
+  { repoId: "ghr_1", snapshotId: "rsn_1" },
+  { repoId: "ghr_2", snapshotId: "rsn_2" },
+];
+/** Their snapshots as the owner-scoped read finds them. */
+const SNAPSHOTS = [
+  { id: "rsn_1", repoId: "ghr_1" },
+  { id: "rsn_2", repoId: "ghr_2" },
+];
+
+/** The profile rows a write asked for, however many one insert carried. */
+function profileIntents(calls: readonly FakeCall[]) {
+  return calls
+    .filter(({ kind }) => kind === "insert")
+    .flatMap(({ values }): readonly Record<string, unknown>[] =>
+      Array.isArray(values) ? values : values === undefined ? [] : [values],
+    )
+    .filter((values) => String(values["id"]).startsWith("bpf_"));
+}
+
+test("a write keeps a repository only at the owner's snapshot of it, in the order given", async () => {
+  const fake = createFakeDb([
+    // Read in no particular order.
+    { id: "rsn_2", repoId: "ghr_2" },
+    { id: "rsn_1", repoId: "ghr_1" },
+    // A snapshot of another repository than the one it is named with.
+    { id: "rsn_3", repoId: "ghr_9" },
+  ]);
+  const kept = await repositoriesForWrite(fake.tx, "org_1", [
+    { repoId: "ghr_1", snapshotId: "rsn_1" },
+    // Gone, or another organization's: the read does not find it.
+    { repoId: "ghr_4", snapshotId: "rsn_4" },
+    { repoId: "ghr_3", snapshotId: "rsn_3" },
+    { repoId: "ghr_2", snapshotId: "rsn_2" },
+  ]);
+  assert.deepEqual(kept, [
+    { repoId: "ghr_1", snapshotId: "rsn_1" },
+    { repoId: "ghr_2", snapshotId: "rsn_2" },
+  ]);
+  // One read for all of them, owner-scoped, held until the write commits.
+  assert.equal(fake.calls.length, 1);
+  assert.equal(fake.calls[0]?.filtered, true);
+  assert.equal(fake.calls[0]?.lock, "key share");
+
+  // None found keeps none.
+  assert.deepEqual(
+    await repositoriesForWrite(createFakeDb([]).tx, "org_1", REPOSITORIES),
+    [],
+  );
+  // None named reads nothing.
+  const none = createFakeDb(SNAPSHOTS);
+  assert.deepEqual(await repositoriesForWrite(none.tx, "org_1", undefined), []);
+  assert.deepEqual(await repositoriesForWrite(none.tx, "org_1", []), []);
+  // Nor does a write naming no single snapshot.
+  assert.equal(await snapshotForWrite(none.tx, "org_1", null), null);
+  assert.equal(none.calls.length, 0);
+});
+
+test("profile intents are one row per snapshot, and asking again is a no-op", async () => {
+  const fake = createFakeDb([]);
+  const intent = {
+    proposalId: "bpr_1",
+    specRevision: 2,
+    specHash: spec.specHash,
+    snapshotIds: ["rsn_1", "rsn_2"],
+  };
+  await insertProfileIntents(fake.tx, "org_1", intent);
+  await insertProfileIntents(fake.tx, "org_1", intent);
+  assert.equal(fake.calls.length, 2);
+  const [first, again] = fake.calls;
+  const rows = profileIntents([first as FakeCall]);
+  assert.deepEqual(
+    rows.map(({ id, ...rest }) => {
+      assert.match(String(id), /^bpf_/);
+      return rest;
+    }),
+    ["rsn_1", "rsn_2"].map((snapshotId) => ({
+      organizationId: "org_1",
+      proposalId: "bpr_1",
+      specRevision: 2,
+      specHash: spec.specHash,
+      snapshotId,
+    })),
+  );
+  // Each row its own id.
+  assert.notEqual(rows[0]?.["id"], rows[1]?.["id"]);
+  // One row per revision and snapshot: the second ask writes none.
+  for (const call of [first, again]) {
+    assert.equal(call?.ignoredConflict, true);
+    assert.deepEqual(call?.conflictTarget, [
+      "proposal_id",
+      "spec_revision",
+      "snapshot_id",
+    ]);
+  }
+
+  // No repository, no profile.
+  const none = createFakeDb([]);
+  await insertProfileIntents(none.tx, "org_1", { ...intent, snapshotIds: [] });
+  assert.equal(none.calls.length, 0);
+});
+
+test("proposal writes keep only the repositories at surviving owner-scoped snapshots", async () => {
+  for (const found of [SNAPSHOTS, []]) {
+    const repositories = found.length === 0 ? [] : REPOSITORIES;
     const created = createSequencedFakeDb([
-      snapshot,
+      found,
       [{ id: "brn_1", boardId: "jrb_1", bountyId: null } as BountyRunRow],
       [BOUNTY],
-      [row({ repoSnapshotId: snapshotId })],
+      [row({ repositories: [...repositories] })],
     ]);
     const result = await createBountyProposalStore(created.db).createForLease(
       "org_1",
       "lease",
-      { ...input, repoSnapshotId: "rsn_1" },
+      { ...input, repositories: REPOSITORIES },
     );
     assert.equal(result.status, "created");
+    if (result.status === "created") {
+      assert.deepEqual(result.proposal.repositories, repositories);
+    }
     assert.equal(created.calls[0]?.filtered, true);
     assert.equal(created.calls[0]?.lock, "key share");
-    assert.equal(created.calls[3]?.values?.["repoSnapshotId"], snapshotId);
+    assert.deepEqual(created.calls[3]?.values?.["repositories"], repositories);
 
     const direct = createSequencedFakeDb([
       [{ id: "brn_1", boardId: "jrb_1", bountyId: null }],
       [BOUNTY],
-      snapshot,
-      [row({ repoSnapshotId: snapshotId })],
+      found,
+      [row({ repositories: [...repositories] })],
     ]);
-    await createBountyProposalStore(direct.db).create("org_1", {
-      ...input,
-      repoSnapshotId: "rsn_1",
-    });
+    const proposal = await createBountyProposalStore(direct.db).create(
+      "org_1",
+      { ...input, repositories: REPOSITORIES },
+    );
+    assert.deepEqual(proposal?.repositories, repositories);
     assert.equal(direct.calls[2]?.lock, "key share");
-    assert.equal(direct.calls[3]?.values?.["repoSnapshotId"], snapshotId);
+    assert.deepEqual(direct.calls[3]?.values?.["repositories"], repositories);
 
     const repriced = row({
       revision: 2,
       runId: "brn_2",
-      repoSnapshotId: snapshotId,
+      repositories: [...repositories],
     });
     const reprice = createSequencedFakeDb([
-      snapshot,
+      found,
       [{ id: "brn_2", boardId: "jrb_1", bountyId: null } as BountyRunRow],
       [row()],
       [repriced],
@@ -303,12 +420,35 @@ test("proposal writes keep only surviving owner-scoped snapshots", async () => {
       "lease",
       "bpr_1",
       1,
-      { ...input, runId: "brn_2", repoSnapshotId: "rsn_1" },
+      { ...input, runId: "brn_2", repositories: REPOSITORIES },
     );
     assert.equal(revised.status, "repriced");
+    if (revised.status === "repriced") {
+      assert.deepEqual(revised.proposal.repositories, repositories);
+    }
     assert.equal(reprice.calls[0]?.lock, "key share");
-    assert.equal(reprice.calls[3]?.values?.["repoSnapshotId"], snapshotId);
+    assert.deepEqual(reprice.calls[3]?.values?.["repositories"], repositories);
   }
+  // A write that names none stores none, without reading snapshots.
+  const bare = createSequencedFakeDb([
+    [{ id: "brn_1", boardId: "jrb_1", bountyId: null } as BountyRunRow],
+    [BOUNTY],
+    [row()],
+  ]);
+  await createBountyProposalStore(bare.db).createForLease(
+    "org_1",
+    "lease",
+    input,
+  );
+  assert.equal(bare.calls[0]?.kind, "update");
+  assert.deepEqual(bare.calls[2]?.values?.["repositories"], []);
+  // A row from before the column reads as touching none.
+  const legacy: Record<string, unknown> = { ...row() };
+  delete legacy["repositories"];
+  const read = await createBountyProposalStore(
+    createFakeDb([{ row: legacy, ...NAME }]).db,
+  ).get("org_1", "bpr_1");
+  assert.deepEqual(read?.repositories, []);
 });
 
 test("a proposal created with a spec stores it as revision 1 in the same transaction", async () => {
@@ -509,23 +649,6 @@ test("a listed proposal has no reasons when its run planned none for it", async 
   }
 });
 
-test("a repository's proposals are those its bounties are about", async () => {
-  const fake = createFakeDb([
-    {
-      row: row(),
-      ...NAME,
-      externalId: "10001",
-      issueBoardId: "jrb_1",
-      planned: [],
-    },
-  ]);
-  const listed = await createBountyProposalStore(fake.db).list("org_1", {
-    repoId: "ghr_1",
-  });
-  assert.equal(listed[0]?.boardId, "jrb_1");
-  assert.equal(fake.calls[0]?.filtered, true);
-});
-
 test("a bounty written here is matched to its plan entry by its own id", async () => {
   const fake = createFakeDb([
     {
@@ -701,22 +824,6 @@ test("finds each live bounty's proposal id, for search results", async () => {
     ["10001", "10002"],
   );
   assert.deepEqual([...ids], [["10001", "bpr_1"]]);
-});
-
-test("finds each proposal's Jira issue, for reading live titles", async () => {
-  const fake = createFakeDb([
-    { proposalId: "bpr_1", jiraIssueId: "jri_1", externalId: "10001" },
-  ]);
-  const store = createBountyProposalStore(fake.db);
-  const issues = await store.issuesForProposals("org_1", "jrb_1", [
-    "bpr_1",
-    "bpr_2",
-  ]);
-  assert.deepEqual(
-    [...issues],
-    [["bpr_1", { jiraIssueId: "jri_1", externalId: "10001" }]],
-  );
-  assert.equal((await store.issuesForProposals("org_1", "jrb_1", [])).size, 0);
 });
 
 test("approves once and treats the exact replay as idempotent", async () => {
@@ -1317,7 +1424,11 @@ test("a spec change on a rubric-sized proposal is priced at the rubric's size", 
   assert.ok(sizedStep !== null && step !== null);
   const rubric = assessRubric({
     spec: grown,
-    code: { status: "measured", profile: PROFILE, specRevision: 2 },
+    code: {
+      status: "measured",
+      profiles: [{ repository: "acme/api", profile: PROFILE }],
+      specRevision: 2,
+    },
   });
   const source = row({
     revision: 4,
@@ -1375,7 +1486,11 @@ test("a spec change on a rubric-sized proposal is priced at the rubric's size", 
 test("the rubric's assessment is recorded, and with a price it sets the size", async () => {
   const rubric = assessRubric({
     spec: weighed,
-    code: { status: "measured", profile: PROFILE, specRevision: 1 },
+    code: {
+      status: "measured",
+      profiles: [{ repository: "acme/api", profile: PROFILE }],
+      specRevision: 1,
+    },
   });
   const recorded = row({ revision: 2, rubric });
   const recordFake = createSequencedFakeDb([
@@ -1503,23 +1618,22 @@ test("legacy snapshot reads add XS without changing historical rates", async () 
   assert.equal(record?.rateCard.revision, 1);
 });
 
-test("profile intent uses the surviving locked snapshot and frozen bounty metadata", async () => {
+test("profile intent asks for each repository when every snapshot survives, with frozen bounty metadata", async () => {
   const running = {
     id: "brn_1",
     boardId: "jrb_1",
     bountyId: null,
   } as BountyRunRow;
-  for (const snapshot of [[], [{ id: "rsn_1" }]]) {
+  const pending = assessRubric({
+    spec: spec.draft,
+    code: { status: "pending" },
+  });
+  for (const found of [[], SNAPSHOTS.slice(1), SNAPSHOTS]) {
     const fake = createSequencedFakeDb([
-      snapshot,
+      found,
       [running],
       [BOUNTY],
-      [
-        row({
-          specRevision: 1,
-          repoSnapshotId: snapshot.length ? "rsn_1" : null,
-        }),
-      ],
+      [row({ specRevision: 1 })],
       [],
       [],
     ]);
@@ -1529,26 +1643,49 @@ test("profile intent uses the surviving locked snapshot and frozen bounty metada
       {
         ...input,
         spec,
-        repoSnapshotId: "rsn_1",
+        rubric: pending,
+        repositories: REPOSITORIES,
         profileIntent: true,
       },
     );
     assert.equal(result.status, "created");
-    const intents = fake.calls.filter((call) =>
-      String(call.values?.["id"]).startsWith("bpf_"),
+    const intents = profileIntents(fake.calls);
+    // One per repository when all are kept. One whose snapshot is gone
+    // leaves the code unmeasurable: the survivors are recorded, none is
+    // profiled, and the rubric's code is unavailable, not pending forever
+    // or scored from part of the work.
+    const whole = found.length === REPOSITORIES.length;
+    assert.deepEqual(
+      intents.map((intent) => intent["snapshotId"]),
+      whole ? found.map(({ id }) => id) : [],
     );
-    assert.equal(intents.length, snapshot.length);
-    if (snapshot.length) {
-      assert.equal(intents[0]?.values?.["organizationId"], "org_1");
-      assert.equal(intents[0]?.values?.["proposalId"], "bpr_1");
-      assert.equal(intents[0]?.values?.["specRevision"], 1);
-      assert.equal(intents[0]?.values?.["specHash"], spec.specHash);
-      assert.equal(intents[0]?.values?.["snapshotId"], "rsn_1");
-      assert.equal(intents[0]?.ignoredConflict, true);
+    const proposal = fake.calls
+      .filter(({ kind }) => kind === "insert")
+      .map(({ values }) => values as Record<string, unknown>)
+      .find((values) => String(values["id"]).startsWith("bpr_"));
+    assert.deepEqual(
+      (proposal?.["repositories"] as { snapshotId: string }[]).map(
+        ({ snapshotId }) => snapshotId,
+      ),
+      found.map(({ id }) => id),
+    );
+    assert.deepEqual(
+      (proposal?.["rubric"] as RubricAssessment).code,
+      whole ? pending.code : { status: "unavailable", specRevision: null },
+    );
+    for (const intent of intents) {
+      assert.equal(intent["organizationId"], "org_1");
+      assert.equal(intent["proposalId"], "bpr_1");
+      assert.equal(intent["specRevision"], 1);
+      assert.equal(intent["specHash"], spec.specHash);
     }
+    // Every row in the one insert, after the spec it is for.
+    const inserts = fake.calls.filter(({ kind }) => kind === "insert");
+    assert.equal(inserts.length, whole ? 3 : 2);
+    if (whole) assert.equal(inserts[2]?.ignoredConflict, true);
   }
   const disabled = createSequencedFakeDb([
-    [{ id: "rsn_1" }],
+    SNAPSHOTS,
     [running],
     [BOUNTY],
     [row({ specRevision: 1 })],
@@ -1557,12 +1694,82 @@ test("profile intent uses the surviving locked snapshot and frozen bounty metada
   await createBountyProposalStore(disabled.db).createForLease(
     "org_1",
     "lease",
-    { ...input, spec, repoSnapshotId: "rsn_1" },
+    { ...input, spec, repositories: REPOSITORIES },
   );
-  assert.equal(
-    disabled.calls.filter((call) =>
-      String(call.values?.["id"]).startsWith("bpf_"),
-    ).length,
-    0,
+  assert.equal(profileIntents(disabled.calls).length, 0);
+});
+
+test("a re-price asks for a profile of each repository at its new spec revision", async () => {
+  const repriced = row({
+    revision: 2,
+    runId: "brn_2",
+    specRevision: 3,
+    repositories: [...REPOSITORIES],
+  });
+  const fake = createSequencedFakeDb([
+    SNAPSHOTS,
+    [{ id: "brn_2", boardId: "jrb_1", bountyId: null } as BountyRunRow],
+    [row({ specRevision: 2 })],
+    [{ revision: 2 }],
+    [repriced],
+    [],
+    [],
+    [{ row: repriced, ...NAME }],
+  ]);
+  const result = await createBountyProposalStore(fake.db).repriceForLease(
+    "org_1",
+    "lease_1",
+    "bpr_1",
+    1,
+    {
+      ...input,
+      runId: "brn_2",
+      spec,
+      repositories: REPOSITORIES,
+      profileIntent: true,
+    },
   );
+  assert.equal(result.status, "repriced");
+  if (result.status === "repriced") {
+    assert.deepEqual(result.proposal.repositories, REPOSITORIES);
+  }
+  assert.deepEqual(
+    profileIntents(fake.calls).map((intent) => [
+      intent["proposalId"],
+      intent["specRevision"],
+      intent["snapshotId"],
+    ]),
+    [
+      ["bpr_1", 3, "rsn_1"],
+      ["bpr_1", 3, "rsn_2"],
+    ],
+  );
+
+  // Without the ask, or with no spec to measure, it asks for none.
+  for (const ask of [{ spec }, { profileIntent: true as const }]) {
+    const quiet = createSequencedFakeDb([
+      SNAPSHOTS,
+      [{ id: "brn_2", boardId: "jrb_1", bountyId: null } as BountyRunRow],
+      [row({ specRevision: 2 })],
+      // The next spec revision and the spec, only with a spec.
+      ...("spec" in ask ? [[{ revision: 2 }]] : []),
+      [repriced],
+      ...("spec" in ask ? [[]] : []),
+      [{ row: repriced, ...NAME }],
+    ]);
+    const quietly = await createBountyProposalStore(quiet.db).repriceForLease(
+      "org_1",
+      "lease_1",
+      "bpr_1",
+      1,
+      {
+        ...input,
+        runId: "brn_2",
+        repositories: REPOSITORIES,
+        ...ask,
+      },
+    );
+    assert.equal(quietly.status, "repriced");
+    assert.equal(profileIntents(quiet.calls).length, 0);
+  }
 });

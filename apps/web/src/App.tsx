@@ -7,7 +7,6 @@ import {
 import { useEffect, useRef, useState } from "react";
 
 import { RefreshCw } from "lucide-react";
-import { rankAtLeast } from "sandbox-factory";
 
 import { ErrorBanner, LoadingLine } from "@/components/Message";
 import { Button } from "@/components/ui/button";
@@ -16,11 +15,9 @@ import { Account } from "./Account";
 import { signOut, useSession } from "./auth";
 import { Breadcrumbs } from "./Breadcrumbs";
 import { Home } from "./Home";
-import { writeHomeBoard } from "./HomeBoard";
 import { CreateOrganization, Organization } from "./Organization";
 import { workspaceLabel } from "./OrganizationSwitcher";
 import { Organizations } from "./Organizations";
-import { JiraBoard } from "./Jira";
 import { RepositoryPage } from "./Repository";
 import { SideNav, type Screen } from "./SideNav";
 import { SignIn } from "./SignIn";
@@ -28,10 +25,9 @@ import { Bounties, BountyPage, NewBountyPage } from "./Bounties";
 import { SandboxFilesPage } from "./features/sandbox/SandboxFiles";
 import { newBountyUrl } from "./features/onboarding/prefill";
 import {
-  boardForPath,
+  bountiesUrl,
   bountyForPath,
   canonicalUrl,
-  connectionForPath,
   isPlainLeftClick,
   NEW_ORG_PATH,
   ORGANIZATIONS_PATH,
@@ -106,8 +102,6 @@ function Signed({
   const scrollPositions = useRef(new Map<string, number>());
   const location = useLocation();
   const screen = screenForPath(location.pathname);
-  const connectionId = connectionForPath(location.pathname);
-  const boardId = boardForPath(location.pathname);
   const repositoryId = repositoryForPath(location.pathname);
 
   // An old `/organizations` or `/o/acme/jira` link opens the page, then the
@@ -141,13 +135,10 @@ function Signed({
         );
 
   /**
-   * The name of the board on screen, reported up by `JiraBoard` so the trail
-   * can name it. The shell renders the trail and the page owns the list the
+   * The bounty on its own page, reported up by `BountyPage` so the trail can
+   * name it. The shell renders the trail and the page owns the read the
    * name comes from, and this is the seam between the two.
    */
-  const [boardName, setBoardName] = useState<string | undefined>(undefined);
-
-  /** The bounty on its own page, reported up by `BountyPage` as the board's is. */
   const [bountyName, setBountyName] = useState<string | undefined>(undefined);
 
   /** The repository on its own page, reported up by `RepositoryPage` likewise. */
@@ -186,56 +177,19 @@ function Signed({
             ? "Workspaces"
             : screen === "create-org"
               ? "New workspace"
-              : screen === "org-jira-board"
-                ? (boardName ?? "Board")
-                : screen === "bounties"
-                  ? "Bounties"
-                  : screen === "new-bounty"
-                    ? "New bounty"
-                    : screen === "bounty"
-                      ? (bountyName ?? "Bounty")
-                      : screen === "org-repository"
-                        ? (repositoryName ?? "Repository")
-                        : screen === "not-found"
-                          ? "Page not found"
-                          : (organizations.active?.name ?? "Workspace");
+              : screen === "bounties"
+                ? "Bounties"
+                : screen === "new-bounty"
+                  ? "New bounty"
+                  : screen === "bounty"
+                    ? (bountyName ?? "Bounty")
+                    : screen === "org-repository"
+                      ? (repositoryName ?? "Repository")
+                      : screen === "not-found"
+                        ? "Page not found"
+                        : (organizations.active?.name ?? "Workspace");
     document.title = `${page} · Lunox`;
-  }, [
-    boardName,
-    bountyName,
-    organizations.active?.name,
-    repositoryName,
-    screen,
-  ]);
-
-  /*
-    The board on screen becomes the one home opens on, for this organization.
-    Written on arrival rather than on the click that led here, so a board
-    reached by URL or by Back counts the same as one opened from its site.
-  */
-  const activeOrganizationId = organizations.active?.id;
-  const activeSlug = organizations.active?.slug;
-  useEffect(() => {
-    /*
-      Only under the workspace the URL names. After Back, the board already
-      matches the new URL while the active workspace is still the previous
-      one — `useOrganizations` catches up in its own effect — and writing then
-      would file one workspace's board under another. This runs again once
-      they agree.
-    */
-    const named = slugForPath(window.location.pathname);
-    if (
-      screen === "org-jira-board" &&
-      activeOrganizationId !== undefined &&
-      activeSlug !== undefined &&
-      named !== undefined &&
-      named.toLowerCase() === activeSlug.toLowerCase() &&
-      connectionId !== undefined &&
-      boardId !== undefined
-    ) {
-      writeHomeBoard(userId, activeOrganizationId, { connectionId, boardId });
-    }
-  }, [activeOrganizationId, activeSlug, boardId, connectionId, screen, userId]);
+  }, [bountyName, organizations.active?.name, repositoryName, screen]);
 
   useEffect(() => {
     if (!shouldFocusPage.current) {
@@ -273,10 +227,9 @@ function Signed({
    * reading the active one here would write the *previous* organization's
    * handle into the URL.
    *
-   * `id` and `board` are the site and board `org-jira-board` names, and `id`
-   * alone the repository `org-repository` names. They are part of what a
+   * `id` is the repository `org-repository` names. It is part of what a
    * navigation is, not a detail the target screen looks up afterwards — two
-   * boards are the same screen at different URLs.
+   * repositories are the same screen at different URLs.
    *
    * `tab` is the Connections tab `org-settings` opens on. The settings page
    * owns that choice once it is showing; this only says where it starts.
@@ -285,26 +238,22 @@ function Signed({
     next: Screen,
     slug?: string,
     id?: string,
-    board?: string,
     tab?: ConnectionTab,
   ) {
     // The id the current screen names, for the comparison below.
-    const currentId = screen === "org-repository" ? repositoryId : connectionId;
+    const currentId = screen === "org-repository" ? repositoryId : undefined;
     // The same screen, but not the same page while its query holds more:
     // Bounties in the rail closes a bounty open over the list.
     if (
       next === screen &&
       slug === undefined &&
       id === currentId &&
-      board === boardId &&
       tab === undefined &&
       location.search === ""
     ) {
       return;
     }
-    visit(
-      pathForScreen(next, slug ?? organizations.active?.slug, id, board, tab),
-    );
+    visit(pathForScreen(next, slug ?? organizations.active?.slug, id, tab));
   }
 
   /**
@@ -373,30 +322,15 @@ function Signed({
           organizations.select(organization.id);
           // A screen inside an organization moves to the same screen in the
           // chosen one, so the URL and the page agree about which is shown. A
-          // site or a board belongs to the old organization, so those land
-          // on the new one's Jira list rather than on an id that is not its;
-          // a repository likewise lands on the new one's GitHub tab.
+          // repository belongs to the old organization, so it lands on the
+          // new one's GitHub tab rather than on an id that is not its.
           // Screens outside any organization, the bounties of every one
           // included, stay where they are. The slug is
           // passed because `select` has not re-rendered yet — see `navigate`.
           if (screen === "org-settings") {
             navigate("org-settings", organization.slug);
-          } else if (screen === "org-jira-board") {
-            navigate(
-              "org-settings",
-              organization.slug,
-              undefined,
-              undefined,
-              "jira",
-            );
           } else if (screen === "org-repository") {
-            navigate(
-              "org-settings",
-              organization.slug,
-              undefined,
-              undefined,
-              "github",
-            );
+            navigate("org-settings", organization.slug, undefined, "github");
           }
         }}
         onNavigate={navigate}
@@ -429,7 +363,6 @@ function Signed({
                   slug: organizations.active.slug,
                 }
           }
-          boardName={screen === "org-jira-board" ? boardName : undefined}
           bountyName={screen === "bounty" ? bountyName : undefined}
           bountyWorkspace={
             bountyOrganization === undefined
@@ -494,49 +427,6 @@ function Signed({
             // also names as its parent — not home, one level past it.
             onCancel={() => navigate("organizations")}
           />
-        ) : screen === "org-jira-board" ? (
-          organizations.active === null ||
-          connectionId === undefined ||
-          boardId === undefined ? (
-            <NoOrganization
-              loading={organizations.loading}
-              notFound={organizations.notFound}
-              error={organizations.error}
-              onRetry={organizations.retry}
-              onOpenOrganizations={() => navigate("organizations")}
-              onCreateWorkspace={() => navigate("create-org")}
-            />
-          ) : (
-            <JiraBoard
-              // Keyed by the board, so moving between two boards remounts
-              // rather than showing the previous board's tickets while the
-              // new ones load.
-              key={`${organizations.active.id}:${boardId}`}
-              organizationId={organizations.active.id}
-              connectionId={connectionId}
-              boardId={boardId}
-              boardName={boardName}
-              onBoardName={setBoardName}
-              role={organizations.active.role}
-              // A workspace with no repository gets one in its GitHub
-              // settings; one with a repository links it on the board.
-              repositoryAction={
-                rankAtLeast(organizations.active.role, "admin")
-                  ? {
-                      label: "add a repository",
-                      onSelect: () =>
-                        navigate(
-                          "org-settings",
-                          organizations.active?.slug,
-                          undefined,
-                          undefined,
-                          "github",
-                        ),
-                    }
-                  : undefined
-              }
-            />
-          )
         ) : screen === "org-repository" ? (
           organizations.active === null || repositoryId === undefined ? (
             <NoOrganization
@@ -564,7 +454,6 @@ function Signed({
                   "org-settings",
                   organizations.active?.slug,
                   undefined,
-                  undefined,
                   "github",
                 )
               }
@@ -590,13 +479,7 @@ function Signed({
             // accounts and repositories are connected.
             onOpenSettings={(organization, tab) => {
               organizations.select(organization.id);
-              navigate(
-                "org-settings",
-                organization.slug,
-                undefined,
-                undefined,
-                tab,
-              );
+              navigate("org-settings", organization.slug, undefined, tab);
             }}
           />
         ) : screen === "new-bounty" ? (
@@ -617,13 +500,7 @@ function Signed({
             // re-rendered yet — see `navigate`.
             onConnectRepository={(organization) => {
               organizations.select(organization.id);
-              navigate(
-                "org-settings",
-                organization.slug,
-                undefined,
-                undefined,
-                "github",
-              );
+              navigate("org-settings", organization.slug, undefined, "github");
             }}
           />
         ) : screen === "not-found" ? (
@@ -656,14 +533,16 @@ function Signed({
               // The switcher and the list read pictures from this list.
               onPictureChanged={() => void organizations.refresh()}
               onOpenBoard={(board) => {
-                // Carried across for the same reason as from the site page.
-                setBoardName(board.name);
-                navigate(
-                  "org-jira-board",
-                  organizations.active?.slug,
-                  board.connectionId,
-                  board.id,
-                );
+                // A board's tickets are bounties: its view is the list,
+                // narrowed to it.
+                const workspace = organizations.active?.slug;
+                if (workspace !== undefined) {
+                  visit(
+                    bountiesUrl(null, {
+                      board: { workspace, boardId: board.id },
+                    }),
+                  );
+                }
               }}
               onOpenRepository={(repo) => {
                 // The name is known already, so the trail and the title need
@@ -699,25 +578,19 @@ function Signed({
             userId={userId}
             name={name}
             organization={organizations.active}
-            onBoardName={setBoardName}
             onOpenBoard={(board) => {
-              setBoardName(board.name);
-              navigate(
-                "org-jira-board",
-                organizations.active?.slug,
-                board.connectionId,
-                board.id,
-              );
+              const workspace = organizations.active?.slug;
+              if (workspace !== undefined) {
+                visit(
+                  bountiesUrl(null, {
+                    board: { workspace, boardId: board.id },
+                  }),
+                );
+              }
             }}
             onOpenSettings={(organization, tab) => {
               organizations.select(organization.id);
-              navigate(
-                "org-settings",
-                organization.slug,
-                undefined,
-                undefined,
-                tab,
-              );
+              navigate("org-settings", organization.slug, undefined, tab);
             }}
             onOpenRepository={(repo) => {
               setRepositoryName(repo.fullName);

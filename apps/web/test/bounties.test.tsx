@@ -39,7 +39,6 @@ function summary(overrides: Record<string, unknown> = {}) {
     organizationId: "org_1",
     title: "Invitations are not sent",
     origin: "manual",
-    repoId: null,
     stack: [],
     revision: 1,
     version: 1,
@@ -124,7 +123,7 @@ function proposal(overrides: Record<string, unknown> = {}) {
     revision: 1,
     specRevision: null,
     step: null,
-    repoSnapshotId: null,
+    repositories: [],
     decidedAt: null,
     decidedBy: null,
     decisionDeliveryPolicy: null,
@@ -217,13 +216,7 @@ function Shell(props: Omit<ComponentProps<typeof Bounties>, "onCreate">) {
       onOpenBounties={() => pushLocation(BOUNTIES_PATH)}
       onOpenSettings={(organization, tab) =>
         pushLocation(
-          pathForScreen(
-            "org-settings",
-            organization.slug,
-            undefined,
-            undefined,
-            tab,
-          ),
+          pathForScreen("org-settings", organization.slug, undefined, tab),
         )
       }
     />
@@ -239,6 +232,32 @@ async function openNewBounty() {
     screen.getAllByRole("link", { name: "New bounty" })[0]!,
   );
   return screen.findByTestId("bounty-form");
+}
+
+/**
+ * One of the workspace's GitHub repositories, as its list answers it:
+ * `acme/app`, connected as a source, unless said.
+ */
+function githubRepo(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "ghr_1",
+    connectionId: "ghc_1",
+    externalId: "1",
+    defaultBranch: "main",
+    isPrivate: true,
+    sizeKb: null,
+    headSha: null,
+    pushedAt: null,
+    lastSyncedAt: null,
+    syncError: null,
+    stack: ["TypeScript", "PostgreSQL"],
+    contextSnapshotId: null,
+    createdAt: "2026-09-30T00:00:00.000Z",
+    fullName: "acme/app",
+    role: "source",
+    syncStatus: "ok",
+    ...overrides,
+  };
 }
 
 /**
@@ -260,27 +279,7 @@ function server(
       if (m === method && url.includes(part)) return answer(body);
     }
     if (url.includes("/github/repositories")) {
-      return json({
-        repositories: [
-          {
-            id: "ghr_1",
-            connectionId: "ghc_1",
-            externalId: "1",
-            defaultBranch: "main",
-            isPrivate: true,
-            sizeKb: null,
-            headSha: null,
-            pushedAt: null,
-            lastSyncedAt: null,
-            syncError: null,
-            stack: ["TypeScript", "PostgreSQL"],
-            createdAt: "2026-09-30T00:00:00.000Z",
-            fullName: "acme/app",
-            role: "source",
-            syncStatus: "ok",
-          },
-        ],
-      });
+      return json({ repositories: [githubRepo()] });
     }
     if (method === "GET" && url.includes("/bounties?")) {
       return json({ bounties, nextCursor: null });
@@ -309,7 +308,7 @@ function server(
       });
     }
     if (url.includes("/spec")) return json({ spec: null });
-    if (url.includes("/profile")) return json({ profile: null });
+    if (url.includes("/profile")) return json({ profiles: [] });
     if (method === "GET" && /\/sandboxes\/[^/]+\/versions$/.test(url))
       return json({ versions: [] });
     return json({ error: "Not found" }, 404);
@@ -330,6 +329,230 @@ test("the workspace's bounties list from any source, with their proposals", asyn
   expect(within(rows[1]!).getByText("From Jira")).toBeDefined();
   expect(within(rows[1]!).getByText("Approved")).toBeDefined();
   expect(within(rows[1]!).getByText(/105\.00/)).toBeDefined();
+});
+
+const leftBehind = {
+  id: "left-behind",
+  label: "Left behind",
+  reason: "Open 412 days, never in a sprint, unassigned",
+};
+
+/** How many bounties each category holds, as the API answers. */
+function categoryCounts(counts: Record<string, number> = {}) {
+  const six = [
+    ["left-behind", "Left behind"],
+    ["always-next-sprint", "Always next sprint"],
+    ["quietly-wanted", "Quietly wanted"],
+    ["holding-others-up", "Holding others up"],
+    ["paper-cuts", "Paper cuts"],
+    ["deadline-exposed", "Deadline exposed"],
+  ];
+  return {
+    total: 3,
+    uncategorized: 1,
+    categories: six.map(([id, label]) => ({
+      id,
+      label,
+      why: `Why ${label}.`,
+      count: counts[id!] ?? 0,
+    })),
+  };
+}
+
+test("the list filters by category, with how many each holds, and says why", async () => {
+  const { fetchMock, calls } = server(
+    [
+      [
+        "GET",
+        "/me/bounty-categories",
+        () => json(categoryCounts({ "left-behind": 2 })),
+      ],
+    ],
+    [summary({ categories: [leftBehind] })],
+  );
+  vi.stubGlobal("fetch", fetchMock);
+  window.history.replaceState(null, "", BOUNTIES_PATH);
+  render(<Bounties {...inAcme("member")} />);
+
+  const list = await screen.findByTestId("bounty-list");
+  // The card leads with why its board's scan put it there.
+  expect(within(list).getByTestId("category-line").textContent).toMatch(
+    /Left behind · Open 412 days/,
+  );
+  const filter = screen.getByRole("navigation", {
+    name: "Bounties by category",
+  });
+  const all = await within(filter).findByRole("button", { name: /All\s*3/ });
+  expect(all.getAttribute("aria-pressed")).toBe("true");
+  // A category with none is there, but not somewhere to go.
+  expect(
+    (
+      within(filter).getByRole("button", {
+        name: /Paper cuts/,
+      }) as HTMLButtonElement
+    ).disabled,
+  ).toBe(true);
+  expect(
+    within(filter).getByRole("button", { name: /Unassigned\s*1/ }),
+  ).toBeDefined();
+
+  await userEvent.click(
+    within(filter).getByRole("button", { name: /Left behind\s*2/ }),
+  );
+  expect(window.location.search).toBe("?category=left-behind");
+  await waitFor(() =>
+    expect(
+      calls.some(({ url }) =>
+        url.includes("/me/bounties?limit=50&category=left-behind"),
+      ),
+    ).toBe(true),
+  );
+  expect(screen.getByTestId("category-why").textContent).toBe(
+    "Left behind. Why Left behind.",
+  );
+
+  // Unassigned is the bounties in no category.
+  await userEvent.click(
+    within(filter).getByRole("button", { name: /Unassigned/ }),
+  );
+  expect(window.location.search).toBe("?category=uncategorized");
+  // Pressed again, the filter is let go.
+  await userEvent.click(
+    within(filter).getByRole("button", { name: /Unassigned/ }),
+  );
+  expect(window.location.search).toBe("");
+});
+
+test("a board's bounties: named, rescanned, and an issue found on it added", async () => {
+  const imports: unknown[] = [];
+  const { fetchMock, calls } = server(
+    [
+      [
+        "GET",
+        "/me/bounty-categories",
+        () => json(categoryCounts({ "left-behind": 1 })),
+      ],
+      [
+        "GET",
+        "/jira/boards/jrb_1/search",
+        () =>
+          json({
+            issues: [
+              {
+                id: "10007",
+                key: "APP-7",
+                summary: "Add login",
+                status: "To Do",
+                issueType: "Story",
+                subtaskCount: 0,
+                bountyId: null,
+              },
+              {
+                id: "10001",
+                key: "APP-1",
+                summary: "Export to CSV",
+                status: "To Do",
+                issueType: "Story",
+                subtaskCount: 0,
+                bountyId: "bty_1",
+              },
+            ],
+          }),
+      ],
+      [
+        "POST",
+        "/jira/boards/jrb_1/import",
+        (body) => {
+          imports.push(body);
+          return json(
+            body !== undefined &&
+              (body as { issueId?: string }).issueId !== undefined
+              ? { created: 1, refreshed: 0, failed: 0, bountyId: "bty_7" }
+              : { created: 2, refreshed: 1, failed: 0 },
+          );
+        },
+      ],
+      [
+        "GET",
+        "/jira/boards",
+        () =>
+          json({
+            boards: [
+              {
+                id: "jrb_1",
+                connectionId: "jrc_1",
+                externalId: "42",
+                name: "Delivery",
+                boardType: "scrum",
+                projectKey: "APP",
+                selection: {},
+                createdAt: stamp,
+              },
+            ],
+          }),
+      ],
+    ],
+    [fromJira],
+  );
+  vi.stubGlobal("fetch", fetchMock);
+  // Where an old link to the board's own page now leads.
+  window.history.replaceState(
+    null,
+    "",
+    bountiesUrl(null, { board: { workspace: "acme", boardId: "jrb_1" } }),
+  );
+  render(<Bounties {...inAcme("member")} />);
+
+  const scope = await screen.findByTestId("board-scope");
+  expect(await within(scope).findByText("Delivery")).toBeDefined();
+  await waitFor(() =>
+    expect(
+      calls.some(({ url }) =>
+        url.includes("/me/bounties?limit=50&board=jrb_1"),
+      ),
+    ).toBe(true),
+  );
+  expect(
+    calls.some(({ url }) => url.includes("/me/bounty-categories?board=jrb_1")),
+  ).toBe(true);
+
+  // Any member may import the scan again: it sizes nothing.
+  await userEvent.click(within(scope).getByRole("button", { name: /Rescan/ }));
+  expect(
+    await within(scope).findByText("2 bounties added, 1 bounty refreshed."),
+  ).toBeDefined();
+  expect(imports[0]).toEqual({});
+
+  // An issue already a bounty opens it; one that is not is added, then opened.
+  await userEvent.type(
+    within(scope).getByRole("combobox", {
+      name: "Find an issue on this board to add",
+    }),
+    "login",
+  );
+  const results = await screen.findByTestId("board-issue-results");
+  expect(await within(results).findByText("Open")).toBeDefined();
+  await userEvent.click(within(results).getByText("Add login"));
+  await waitFor(() => expect(imports[1]).toEqual({ issueId: "10007" }));
+  await waitFor(() =>
+    expect(window.location.search).toBe("?board=acme/jrb_1&peek=acme/bty_7"),
+  );
+
+  // Cleared, the list is every board's again; the open bounty stays open.
+  await userEvent.click(
+    within(scope).getByRole("button", { name: "Show every board's bounties" }),
+  );
+  expect(window.location.search).toBe("?peek=acme/bty_7");
+  expect(screen.queryByTestId("board-scope")).toBeNull();
+});
+
+test("a narrowed list with nothing in it says so, not that there are no bounties", async () => {
+  vi.stubGlobal("fetch", server([], []).fetchMock);
+  window.history.replaceState(null, "", `${BOUNTIES_PATH}?category=paper-cuts`);
+  render(<Bounties {...inAcme("member")} />);
+  expect(
+    await screen.findByText(/No bounties here\. Choose another category/),
+  ).toBeDefined();
 });
 
 test("each bounty is a card linking its own page, and a click opens it over the list", async () => {
@@ -674,6 +897,11 @@ test("a new bounty goes to the workspace in the rail unless another is chosen", 
   const state = server(
     [
       [
+        "GET",
+        "/orgs/org_2/github/repositories",
+        () => json({ repositories: [] }),
+      ],
+      [
         "POST",
         "/orgs/org_2/bounties",
         () =>
@@ -691,16 +919,14 @@ test("a new bounty goes to the workspace in the rail unless another is chosen", 
   const form = await openNewBounty();
   const workspace = within(form).getByRole("combobox", { name: "Workspace" });
   expect(workspace.textContent).toBe("Acme");
-  // A repository is the workspace's own, so choosing another clears it.
-  await chooseOption(
-    within(form).getByRole("combobox", { name: "Repository" }),
-    "acme/app",
-  );
+  // The stack it inherits is the workspace's repositories', so choosing
+  // another workspace takes Acme's away.
+  const chosen = within(form).getByRole("list", {
+    name: "Chosen technologies",
+  });
+  expect(await within(chosen).findByText("TypeScript")).toBeDefined();
   await chooseOption(workspace, "Beta");
   expect(workspace.textContent).toBe("Beta");
-  expect(
-    within(form).getByRole("combobox", { name: "Repository" }).textContent,
-  ).toBe("None");
   await waitFor(() =>
     expect(
       state.calls.some(({ url }) =>
@@ -708,8 +934,18 @@ test("a new bounty goes to the workspace in the rail unless another is chosen", 
       ),
     ).toBe(true),
   );
+  await waitFor(() =>
+    expect(within(form).queryByText("TypeScript")).toBeNull(),
+  );
 
   await userEvent.type(within(form).getByLabelText("Title"), "Export");
+  await userEvent.type(
+    within(form).getByRole("combobox", { name: "Tech stack" }),
+    "postgres",
+  );
+  await userEvent.click(
+    within(form).getByRole("option", { name: "PostgreSQL" }),
+  );
   await userEvent.click(
     within(form).getByRole("button", { name: "Create bounty" }),
   );
@@ -771,11 +1007,11 @@ test("the new bounty page waits for the workspace in the rail", async () => {
   expect(await screen.findByTestId("bounty-form")).toBeDefined();
 });
 
-test("a bounty started from home's x-ray opens on its repository and module", async () => {
+test("the x-ray's module and repository start the description", async () => {
   window.history.replaceState(
     null,
     "",
-    "/bounties/new?repo=ghr_1&area=packages%2Fbilling",
+    "/bounties/new?area=packages%2Fbilling&in=acme%2Fapp",
   );
   const { fetchMock, calls } = server([
     ["POST", "/orgs/org_1/bounties", () => json({ bounty: detail() }, 201)],
@@ -789,66 +1025,63 @@ test("a bounty started from home's x-ray opens on its repository and module", as
     />,
   );
   const form = await screen.findByTestId("bounty-form");
-  await waitFor(() =>
-    expect(
-      within(form).getByRole("combobox", { name: "Repository" }).textContent,
-    ).toBe("acme/app"),
-  );
+  // A bounty names no repository: where the work is, is a sentence of its
+  // description for the person to finish.
   const description = within(form).getByLabelText("Description", {
     exact: true,
   }) as HTMLTextAreaElement;
-  expect(description.value).toBe("In `packages/billing`, ");
+  expect(description.value).toBe("In `packages/billing` of `acme/app`, ");
+  expect(
+    within(form).queryByRole("combobox", { name: "Repository" }),
+  ).toBeNull();
 
   await userEvent.type(
     within(form).getByLabelText("Title", { exact: true }),
     "Refunds round twice",
   );
+  // The workspace's repositories' stack is there already, so it is sent.
+  await within(
+    within(form).getByRole("list", { name: "Chosen technologies" }),
+  ).findByText("TypeScript");
   await userEvent.click(
     within(form).getByRole("button", { name: "Create bounty" }),
   );
   await waitFor(() =>
-    expect(calls.find(({ method }) => method === "POST")?.body).toMatchObject({
+    expect(calls.find(({ method }) => method === "POST")?.body).toEqual({
       title: "Refunds round twice",
-      repoId: "ghr_1",
+      description: "In `packages/billing` of `acme/app`, ",
+      stack: [],
     }),
   );
   window.history.replaceState(null, "", "/");
 });
 
-test("a link naming a repository the workspace lacks starts with none", async () => {
-  // The address is anyone's to edit, or out of date: the form never submits
-  // a repository it cannot find in the workspace's own list.
-  window.history.replaceState(null, "", "/bounties/new?repo=ghr_gone");
-  const { fetchMock, calls } = server([
-    ["POST", "/orgs/org_1/bounties", () => json({ bounty: detail() }, 201)],
-  ]);
-  vi.stubGlobal("fetch", fetchMock);
-  render(
-    <NewBountyPage
-      {...inAcme("member")}
-      onCancel={() => {}}
-      onConnectRepository={() => {}}
-    />,
-  );
-  const form = await screen.findByTestId("bounty-form");
-  await waitFor(() =>
-    expect(
-      within(form).getByRole("combobox", { name: "Repository" }).textContent,
-    ).toBe("None"),
-  );
+test("a module named alone starts the description, and a repository named alone starts nothing", async () => {
+  vi.stubGlobal("fetch", server().fetchMock);
+  const open = async (address: string) => {
+    cleanup();
+    window.history.replaceState(null, "", address);
+    render(
+      <NewBountyPage
+        {...inAcme("member")}
+        onCancel={() => {}}
+        onConnectRepository={() => {}}
+      />,
+    );
+    const form = await screen.findByTestId("bounty-form");
+    return (
+      within(form).getByLabelText("Description", {
+        exact: true,
+      }) as HTMLTextAreaElement
+    ).value;
+  };
 
-  await userEvent.type(
-    within(form).getByLabelText("Title", { exact: true }),
-    "Refunds round twice",
+  expect(await open("/bounties/new?area=packages%2Fbilling")).toBe(
+    "In `packages/billing`, ",
   );
-  await userEvent.click(
-    within(form).getByRole("button", { name: "Create bounty" }),
-  );
-  await waitFor(() =>
-    expect(calls.find(({ method }) => method === "POST")?.body).toMatchObject({
-      repoId: null,
-    }),
-  );
+  // An address from when a bounty named its repository: the repository is
+  // no longer the form's to hold, and there is no module to name.
+  expect(await open("/bounties/new?repo=ghr_1")).toBe("");
   window.history.replaceState(null, "", "/");
 });
 
@@ -908,31 +1141,48 @@ test("workspaces are offered as the rail shows them, personal first and each wit
   ).toEqual(["Personal"]);
 });
 
-test("the repositories offered are the chosen workspace's, each marked as GitHub's", async () => {
-  const betaRepo = {
-    id: "ghr_2",
-    connectionId: "ghc_2",
-    externalId: "2",
-    defaultBranch: "main",
-    isPrivate: true,
-    sizeKb: null,
-    headSha: null,
-    pushedAt: null,
-    lastSyncedAt: null,
-    syncError: null,
-    stack: [],
-    createdAt: "2026-09-30T00:00:00.000Z",
-    fullName: "beta/api",
-    role: "source",
-    syncStatus: "ok",
-  };
+test("the stack inherits every connected repository's, locked", async () => {
   vi.stubGlobal(
     "fetch",
     server([
       [
         "GET",
+        "/orgs/org_1/github/repositories",
+        () =>
+          json({
+            repositories: [
+              githubRepo(),
+              githubRepo({
+                id: "ghr_2",
+                fullName: "acme/web",
+                stack: ["React", "TypeScript"],
+              }),
+              // Neither is one the work can touch: one gone from GitHub,
+              // one a sandbox's own.
+              githubRepo({
+                id: "ghr_3",
+                fullName: "acme/old",
+                stack: ["Perl"],
+                syncStatus: "gone",
+              }),
+              githubRepo({
+                id: "ghr_4",
+                fullName: "acme/sandbox",
+                stack: ["Rust"],
+                role: "sandbox",
+              }),
+            ],
+          }),
+      ],
+      [
+        "GET",
         "/orgs/org_2/github/repositories",
-        () => json({ repositories: [betaRepo] }),
+        () =>
+          json({
+            repositories: [
+              githubRepo({ id: "ghr_5", fullName: "beta/api", stack: ["Go"] }),
+            ],
+          }),
       ],
     ]).fetchMock,
   );
@@ -944,37 +1194,63 @@ test("the repositories offered are the chosen workspace's, each marked as GitHub
     />,
   );
   const form = await screen.findByTestId("bounty-form");
-  const repository = within(form).getByRole("combobox", {
-    name: "Repository",
-  });
-  const names = async () => {
-    const list = await openCombobox(repository);
-    await within(list).findByRole("option", { name: /\// });
-    const options = within(list).getAllByRole("option", { name: /\// });
-    // Each led by GitHub's mark; "None" is no repository, so it has none.
-    for (const option of options) {
-      expect(option.querySelector("svg")).not.toBeNull();
-    }
-    const shown = options.map((option) => option.textContent);
-    await userEvent.keyboard("{Escape}");
-    return shown;
-  };
+  // No repository is picked: the work may touch any of them.
+  expect(
+    within(form).queryByRole("combobox", { name: "Repository" }),
+  ).toBeNull();
+  const chosen = () =>
+    within(form).getByRole("list", { name: "Chosen technologies" });
+  await waitFor(() => expect(chosen().textContent).toContain("React"));
+  // Each once, whichever repositories it was detected in, and none of
+  // those the work cannot touch.
+  expect(
+    within(chosen())
+      .getAllByRole("listitem")
+      .map((item) => item.title),
+  ).toEqual([
+    "Detected in the workspace's repositories",
+    "Detected in the workspace's repositories",
+    "Detected in the workspace's repositories",
+  ]);
+  for (const name of ["TypeScript", "PostgreSQL", "React"]) {
+    expect(within(chosen()).getByText(name)).toBeDefined();
+    expect(
+      within(form).queryByRole("button", { name: `Remove ${name}` }),
+    ).toBeNull();
+  }
+  expect(within(chosen()).queryByText("Perl")).toBeNull();
+  expect(within(chosen()).queryByText("Rust")).toBeNull();
+  expect(
+    within(form).getByText(
+      "Detected in the workspace's repositories, any of which the work may touch. Add anything else it needs.",
+    ),
+  ).toBeDefined();
 
-  expect(await names()).toEqual(["acme/app"]);
+  // Another workspace's repositories are its own; one alone is named.
   await chooseOption(
     within(form).getByRole("combobox", { name: "Workspace" }),
     "Beta",
   );
-  expect(await names()).toEqual(["beta/api"]);
-
-  await chooseOption(repository, "beta/api");
-  // The chosen one carries the mark in the field too.
-  expect(repository.textContent).toBe("beta/api");
-  expect(repository.querySelector("svg path")).not.toBeNull();
+  await waitFor(() => expect(chosen().textContent).toContain("Go"));
+  expect(
+    within(chosen())
+      .getAllByRole("listitem")
+      .map((item) => item.title),
+  ).toEqual(["Detected in beta/api"]);
+  expect(within(chosen()).queryByText("React")).toBeNull();
 });
 
-test("a repository the workspace lacks is connected in its GitHub settings", async () => {
-  vi.stubGlobal("fetch", server().fetchMock);
+test("a workspace with no repository offers to connect one under the stack", async () => {
+  vi.stubGlobal(
+    "fetch",
+    server([
+      [
+        "GET",
+        "/orgs/org_2/github/repositories",
+        () => json({ repositories: [] }),
+      ],
+    ]).fetchMock,
+  );
   const onConnectRepository = vi.fn();
   render(
     <NewBountyPage
@@ -984,20 +1260,33 @@ test("a repository the workspace lacks is connected in its GitHub settings", asy
     />,
   );
   const form = await screen.findByTestId("bounty-form");
+  // Acme has one, so nothing is offered there.
+  await within(form).findByText("TypeScript");
+  expect(
+    within(form).queryByRole("link", { name: "Connect a repository" }),
+  ).toBeNull();
+
   await chooseOption(
     within(form).getByRole("combobox", { name: "Workspace" }),
     "Beta",
   );
-  const list = await openCombobox(
-    within(form).getByRole("combobox", { name: "Repository" }),
-  );
   // A link, so it can be opened in another tab; a plain click stays in the
   // app, in the workspace chosen rather than the one in the rail.
-  const link = within(list).getByRole("option", {
+  const link = await within(form).findByRole("link", {
     name: "Connect a repository",
   });
   expect(link.getAttribute("href")).toBe("/o/beta/settings?connection=github");
+  expect(within(form).getByText("What the work is done in.")).toBeDefined();
+
+  // What has been written is not left behind without asking.
+  await userEvent.type(within(form).getByLabelText("Title"), "Export");
   await userEvent.click(link);
+  const dialog = await screen.findByRole("alertdialog");
+  expect(within(dialog).getByText("Discard this bounty?")).toBeDefined();
+  expect(onConnectRepository).not.toHaveBeenCalled();
+  await userEvent.click(
+    within(dialog).getByRole("button", { name: "Discard" }),
+  );
   expect(onConnectRepository).toHaveBeenCalledWith(
     expect.objectContaining({ id: "org_2", slug: "beta" }),
   );
@@ -1022,10 +1311,6 @@ test("writing a bounty sends what the form holds and opens it", async () => {
     within(form).getByLabelText("Title"),
     "Invitations are not sent",
   );
-  await chooseOption(
-    within(form).getByRole("combobox", { name: "Repository" }),
-    "acme/app",
-  );
   await userEvent.type(
     within(form).getByLabelText("Description"),
     "One email per interview.",
@@ -1038,7 +1323,6 @@ test("writing a bounty sends what the form holds and opens it", async () => {
     expect(state.calls.find(({ method }) => method === "POST")?.body).toEqual({
       title: "Invitations are not sent",
       description: "One email per interview.",
-      repoId: "ghr_1",
       stack: [],
     }),
   );
@@ -1056,7 +1340,7 @@ test("writing a bounty sends what the form holds and opens it", async () => {
   expect(window.history.length).toBe(entries);
 });
 
-test("a repository's stack carries over locked, and the person adds to it", async () => {
+test("the repositories' stack carries over locked, and the person adds to it", async () => {
   const state = server([
     ["POST", "/bounties", () => json({ bounty: detail() }, 201)],
   ]);
@@ -1072,25 +1356,12 @@ test("a repository's stack carries over locked, and the person adds to it", asyn
   await userEvent.type(within(form).getByLabelText("Title"), "Export");
   const stack = within(form).getByRole("combobox", { name: "Tech stack" });
 
-  // Something added before a repository is chosen is the person's own.
-  await userEvent.type(stack, "postgres");
-  await userEvent.click(
-    within(form).getByRole("option", { name: "PostgreSQL" }),
-  );
-  expect(
-    within(form).getByRole("button", { name: "Remove PostgreSQL" }),
-  ).toBeDefined();
-
-  await chooseOption(
-    within(form).getByRole("combobox", { name: "Repository" }),
-    "acme/app",
-  );
-  // The repository's chips arrive locked: no way to remove them, and the
-  // PostgreSQL added earlier is now the repository's.
+  // The workspace's one repository's chips are there from the start,
+  // locked: no way to remove them, and named for where they were found.
   const chosen = within(form).getByRole("list", {
     name: "Chosen technologies",
   });
-  expect(within(chosen).getByText("TypeScript")).toBeDefined();
+  expect(await within(chosen).findByText("TypeScript")).toBeDefined();
   expect(within(chosen).getAllByText(/detected in acme\/app/)).toHaveLength(2);
   for (const name of ["TypeScript", "PostgreSQL"]) {
     expect(
@@ -1116,27 +1387,30 @@ test("a repository's stack carries over locked, and the person adds to it", asyn
   ).toBeNull();
   await userEvent.keyboard("{Backspace}{Backspace}");
   expect(within(chosen).getByText("TypeScript")).toBeDefined();
+  expect(within(chosen).getByText("PostgreSQL")).toBeDefined();
   await userEvent.type(stack, "redis{Enter}");
 
   await userEvent.click(
     within(form).getByRole("button", { name: "Create bounty" }),
   );
-  // Only what the bounty adds is sent: the repository's follow it.
+  // Only what the bounty adds is sent: the repositories' follow them.
   await waitFor(() =>
-    expect(
-      state.calls.find(({ method }) => method === "POST")?.body,
-    ).toMatchObject({ repoId: "ghr_1", stack: ["Redis"] }),
+    expect(state.calls.find(({ method }) => method === "POST")?.body).toEqual({
+      title: "Export",
+      description: "",
+      stack: ["Redis"],
+    }),
   );
 });
 
-test("a bounty is shown with its repository's stack and its own", async () => {
+test("a bounty is shown with its repositories' stack and its own", async () => {
   vi.stubGlobal(
     "fetch",
     server([
       [
         "GET",
         "/bounties/bty_7",
-        () => json({ bounty: detail({ repoId: "ghr_1", stack: ["Redis"] }) }),
+        () => json({ bounty: detail({ stack: ["Redis"] }) }),
       ],
     ]).fetchMock,
   );
@@ -1211,6 +1485,82 @@ test("a bounty with no title is not sent", async () => {
     await within(form).findByText("A bounty needs a title."),
   ).toBeDefined();
   expect(state.calls.some(({ method }) => method === "POST")).toBe(false);
+});
+
+test("a bounty with no tech stack is not sent", async () => {
+  // Its one repository was read, and nothing was detected in it.
+  const state = server([
+    [
+      "GET",
+      "/github/repositories",
+      () => json({ repositories: [githubRepo({ stack: [] })] }),
+    ],
+  ]);
+  vi.stubGlobal("fetch", state.fetchMock);
+  render(
+    <NewBountyPage
+      {...inAcme("member")}
+      onCancel={() => {}}
+      onConnectRepository={() => {}}
+    />,
+  );
+  const form = await screen.findByTestId("bounty-form");
+  await waitFor(() =>
+    expect(
+      state.calls.some(({ url }) => url.includes("/github/repositories")),
+    ).toBe(true),
+  );
+  expect(within(form).getByText("What the work is done in.")).toBeDefined();
+  await userEvent.type(within(form).getByLabelText("Title"), "Export");
+  await userEvent.click(
+    within(form).getByRole("button", { name: "Create bounty" }),
+  );
+  expect(
+    await within(form).findByText("A bounty needs a tech stack."),
+  ).toBeDefined();
+  expect(state.calls.some(({ method }) => method === "POST")).toBe(false);
+});
+
+test("a workspace whose repositories are still being read is stack enough", async () => {
+  const { fetchMock, calls } = server([
+    [
+      "GET",
+      "/github/repositories",
+      () =>
+        json({
+          repositories: [
+            githubRepo({ stack: [] }),
+            githubRepo({ id: "ghr_2", fullName: "acme/web", stack: null }),
+          ],
+        }),
+    ],
+    ["POST", "/orgs/org_1/bounties", () => json({ bounty: detail() }, 201)],
+  ]);
+  vi.stubGlobal("fetch", fetchMock);
+  render(
+    <NewBountyPage
+      {...inAcme("member")}
+      onCancel={() => {}}
+      onConnectRepository={() => {}}
+    />,
+  );
+  const form = await screen.findByTestId("bounty-form");
+  expect(
+    await within(form).findByText(
+      "The workspace's repositories are still being read; add what you know.",
+    ),
+  ).toBeDefined();
+  await userEvent.type(within(form).getByLabelText("Title"), "Export");
+  await userEvent.click(
+    within(form).getByRole("button", { name: "Create bounty" }),
+  );
+  await waitFor(() =>
+    expect(calls.find(({ method }) => method === "POST")?.body).toEqual({
+      title: "Export",
+      description: "",
+      stack: [],
+    }),
+  );
 });
 
 test("a bounty opened mid-sizing says so, and lands on its proposal without a second Propose", async () => {
@@ -1313,9 +1663,8 @@ test("an admin proposes a bounty from inside it, follows its sizing, and lands o
   const urls = state.calls.map(({ url }) => url);
   expect(urls.some((url) => url.endsWith("/proposals/bpr_9"))).toBe(true);
   expect(urls.some((url) => url.includes("/proposals?"))).toBe(false);
-  // No board: no board runs, and no live titles from Jira.
+  // No board: no board runs.
   expect(urls.some((url) => url.includes("/jira/boards/"))).toBe(false);
-  expect(urls.some((url) => url.includes("/proposal-titles"))).toBe(false);
 
   // The bounty's text is a tab of its page already, so the proposal has no
   // Spec tab to say it again; and there is no Jira to link. Its price and
@@ -1448,7 +1797,7 @@ test("a proposal that could not start, or ended without one, says why", async ()
   expect(await within(again).findByText(/needs reconnecting/)).toBeDefined();
 });
 
-test("a bounty following Jira is edited for its repository only", async () => {
+test("a bounty following Jira is edited for its stack only", async () => {
   const state = server([
     [
       "GET",
@@ -1466,7 +1815,7 @@ test("a bounty following Jira is edited for its repository only", async () => {
       "/bounties/bty_1",
       () =>
         json({
-          bounty: detail({ ...fromJira, repoId: "ghr_1", revision: 2 }),
+          bounty: detail({ ...fromJira, stack: ["Redis"], revision: 2 }),
         }),
     ],
   ]);
@@ -1488,19 +1837,101 @@ test("a bounty following Jira is edited for its repository only", async () => {
   expect(
     within(panel).queryByRole("button", { name: "Edit description" }),
   ).toBeNull();
-  // Its repository is picked from its card under the text, and saved on
-  // the pick.
-  await chooseOption(
-    within(links).getByRole("combobox", { name: "Repository" }),
-    "acme/app",
+  // No repository is picked for it, from Jira or here.
+  expect(
+    within(panel).queryByRole("combobox", { name: "Repository" }),
+  ).toBeNull();
+  // Its stack is the workspace's to add to, saved as it is added.
+  await userEvent.click(
+    within(panel).getByRole("button", { name: "Edit tech stack" }),
+  );
+  await userEvent.type(
+    within(panel).getByRole("combobox", { name: "Tech stack" }),
+    "redis{Enter}",
   );
   await waitFor(() =>
     expect(state.calls.find(({ method }) => method === "PATCH")?.body).toEqual({
       expectedRevision: 1,
-      repoId: "ghr_1",
+      stack: ["Redis"],
     }),
   );
   expect(await screen.findByTestId("bounty-detail")).toBeDefined();
+});
+
+test("the page's repositories row leads to GitHub settings", async () => {
+  const twoRepositories: [string, string, () => Promise<Response>] = [
+    "GET",
+    "/github/repositories",
+    () =>
+      json({
+        repositories: [
+          githubRepo(),
+          githubRepo({ id: "ghr_2", fullName: "acme/web" }),
+          // Gone from GitHub: not one the work can touch.
+          githubRepo({ id: "ghr_3", fullName: "acme/old", syncStatus: "gone" }),
+        ],
+      }),
+  ];
+  const noRepository: [string, string, () => Promise<Response>] = [
+    "GET",
+    "/github/repositories",
+    () => json({ repositories: [] }),
+  ];
+  const open = async (routes: [string, string, () => Promise<Response>][]) => {
+    cleanup();
+    vi.stubGlobal("fetch", server(routes).fetchMock);
+    window.history.replaceState(null, "", "/bounties/acme/bty_7");
+    render(<Shell {...inAcme("member")} />);
+    const page = await screen.findByTestId("bounty-detail");
+    return within(page).getByRole("region", { name: "Links" });
+  };
+
+  // One: named, and sizing says whether the work touches it.
+  let links = await open([]);
+  expect(within(links).getByText("Repositories")).toBeDefined();
+  expect(
+    await within(links).findByText(
+      "acme/app: sizing says whether the work touches it.",
+    ),
+  ).toBeDefined();
+  // Nothing to pick: the way to where they are connected instead.
+  expect(
+    within(links).queryByRole("combobox", { name: "Repository" }),
+  ).toBeNull();
+  const manage = within(links).getByRole("link", {
+    name: "Manage repositories",
+  });
+  expect(manage.getAttribute("href")).toBe(
+    "/o/acme/settings?connection=github",
+  );
+  await userEvent.click(manage);
+  expect(window.location.pathname + window.location.search).toBe(
+    "/o/acme/settings?connection=github",
+  );
+
+  // Several: counted, and sizing says which.
+  links = await open([twoRepositories]);
+  expect(
+    await within(links).findByText(
+      "All 2 of the workspace's: sizing says which the work touches.",
+    ),
+  ).toBeDefined();
+  expect(
+    within(links).getByRole("link", { name: "Manage repositories" }),
+  ).toBeDefined();
+
+  // None: said, and one is connected from the same place.
+  links = await open([noRepository]);
+  expect(
+    await within(links).findByText(
+      "No repository is connected to the workspace.",
+    ),
+  ).toBeDefined();
+  expect(
+    within(links)
+      .getByRole("link", { name: "Connect a repository" })
+      .getAttribute("href"),
+  ).toBe("/o/acme/settings?connection=github");
 });
 
 const jiraConnection = {
@@ -2023,7 +2454,11 @@ test("an address that names no page is not found, not home", () => {
   expect(screenForPath("/o/acme/settings/")).toBe("org-settings");
   expect(screenForPath("/o/acme/jira")).toBe("org-settings");
   expect(screenForPath("/o/acme/jira/site_1")).toBe("org-settings");
-  expect(screenForPath("/o/acme/jira/site_1/42")).toBe("org-jira-board");
+  // A board's old page shows the bounties while its address is rewritten.
+  expect(screenForPath("/o/acme/jira/site_1/42")).toBe("bounties");
+  expect(canonicalUrl("/o/acme/jira/site_1/jrb_42", "")).toBe(
+    "/bounties?board=acme/jrb_42",
+  );
   expect(screenForPath("/o/acme/repositories/repo_1")).toBe("org-repository");
   expect(pathForScreen("not-found")).toBe("/");
 });
@@ -2128,7 +2563,7 @@ test("a bounty is addressed the same in the panel and on its own page", () => {
   expect(pathForScreen("bounty")).toBe("/bounties");
   expect(canonicalUrl("/bounties/acme/bty_1", "")).toBeUndefined();
 
-  const trail = trailFor("bounty", undefined, undefined, "Export to CSV");
+  const trail = trailFor("bounty", undefined, "Export to CSV");
   expect(trail.map(({ label }) => label)).toEqual([
     "Home",
     "Bounties",
@@ -2136,16 +2571,10 @@ test("a bounty is addressed the same in the panel and on its own page", () => {
   ]);
   expect(trail[1]?.screen).toBe("bounties");
   // Then the workspace it is in, once known, leading to its page.
-  const inWorkspace = trailFor(
-    "bounty",
-    undefined,
-    undefined,
-    "Export to CSV",
-    {
-      name: "Personal",
-      slug: "lovelace-ada",
-    },
-  );
+  const inWorkspace = trailFor("bounty", undefined, "Export to CSV", {
+    name: "Personal",
+    slug: "lovelace-ada",
+  });
   expect(inWorkspace.map(({ label }) => label)).toEqual([
     "Home",
     "Bounties",
@@ -2175,7 +2604,12 @@ test("a new bounty's page sits under the bounties", () => {
 });
 
 test("a bounty's panel is read, its text over its sandbox, with context that is optional", async () => {
-  vi.stubGlobal("fetch", server().fetchMock);
+  // A workspace with no repository yet: every source is optional.
+  vi.stubGlobal(
+    "fetch",
+    server([["GET", "/github/repositories", () => json({ repositories: [] })]])
+      .fetchMock,
+  );
   window.history.replaceState(null, "", "/bounties?peek=acme/bty_7");
   // An admin, who could change all of it on its page.
   render(<Bounties {...inAcme("admin")} />);
@@ -2206,11 +2640,78 @@ test("a bounty's panel is read, its text over its sandbox, with context that is 
   // Said plainly: making one is offered on its page.
   expect(within(sandboxPart).getByText("No sandbox yet.")).toBeDefined();
   const context = within(panel).getByRole("region", { name: "Context" });
-  // No Jira issue, no repository and no stack, each read as none.
-  expect(within(context).getAllByText("None")).toHaveLength(3);
+  // No Jira issue and no stack, each read as none; no repository is picked,
+  // and until it is sized its work may touch any the workspace connects.
+  expect(within(context).getAllByText("None")).toHaveLength(2);
+  expect(within(context).getByText("Repositories")).toBeDefined();
+  expect(
+    within(context).getByText("Any of the workspace's, until it is sized"),
+  ).toBeDefined();
 });
 
-test("an admin makes a bounty's sandbox from its repository, and sees it after", async () => {
+test("the panel names the repositories its sizing touches", async () => {
+  const touching = (repositories: unknown[]) =>
+    detail({ proposal: liveProposal({ repositories }) });
+  let bounty = touching([
+    { repoId: "ghr_2", snapshotId: "rsn_2" },
+    // Gone from GitHub, and removed from the workspace, since it was sized.
+    { repoId: "ghr_3", snapshotId: "rsn_3" },
+    { repoId: "ghr_removed", snapshotId: "rsn_9" },
+  ]);
+  const open = async () => {
+    cleanup();
+    vi.stubGlobal(
+      "fetch",
+      server([
+        [
+          "GET",
+          "/github/repositories",
+          () =>
+            json({
+              repositories: [
+                githubRepo(),
+                githubRepo({ id: "ghr_2", fullName: "acme/web" }),
+                githubRepo({
+                  id: "ghr_3",
+                  fullName: "acme/old",
+                  syncStatus: "gone",
+                }),
+              ],
+            }),
+        ],
+        ["GET", "/bounties/bty_7", () => json({ bounty })],
+      ]).fetchMock,
+    );
+    window.history.replaceState(null, "", "/bounties?peek=acme/bty_7");
+    render(<Bounties {...inAcme("member")} />);
+    const panel = await screen.findByTestId("bounty-detail");
+    return within(panel).getByRole("region", { name: "Context" });
+  };
+
+  let context = await open();
+  const named = await within(context).findByText("acme/web");
+  // Marked as GitHub's, and only the one its sizing touches.
+  expect(named.parentElement?.querySelector("svg")).not.toBeNull();
+  expect(within(context).queryByText("acme/app")).toBeNull();
+  // Those no longer the workspace's are said to be, not left out.
+  expect(
+    within(context).getByText("acme/old (no longer connected)"),
+  ).toBeDefined();
+  expect(within(context).getByText("A removed repository")).toBeDefined();
+  expect(
+    within(context).queryByText("Any of the workspace's, until it is sized"),
+  ).toBeNull();
+  // Read, not picked.
+  expect(within(context).queryByRole("combobox")).toBeNull();
+
+  bounty = touching([]);
+  context = await open();
+  expect(
+    await within(context).findByText("Its sizing says the work touches none"),
+  ).toBeDefined();
+});
+
+test("a sandbox is made from the bounty alone, and seen after", async () => {
   let made = false;
   const state = server([
     [
@@ -2243,7 +2744,10 @@ test("an admin makes a bounty's sandbox from its repository, and sees it after",
       () =>
         json({
           bounty: detail({
-            repoId: "ghr_1",
+            proposal: {
+              ...approvedSummary,
+              repositories: [{ repoId: "ghr_1", snapshotId: "rsn_1" }],
+            },
             sandbox: made ? sandboxOf({ sourceRepoId: "ghr_1" }) : null,
           }),
         }),
@@ -2258,12 +2762,14 @@ test("an admin makes a bounty's sandbox from its repository, and sees it after",
   await userEvent.click(
     within(sandboxPart).getByRole("button", { name: "Create sandbox" }),
   );
+  // Nobody picks its repository: the server cuts it from the one the
+  // bounty's sizing said the work touches.
   await waitFor(() =>
     expect(
       state.calls.find(
         ({ method, url }) => method === "POST" && url.includes("/sandboxes"),
       )?.body,
-    ).toEqual({ bountyId: "bty_7", sourceRepoId: "ghr_1" }),
+    ).toEqual({ bountyId: "bty_7" }),
   );
   // Where it stands is in the page's summary, beside the tabs.
   const after = within(await screen.findByTestId("bounty-detail")).getByRole(
@@ -2301,10 +2807,9 @@ test("a sandbox that could not be made says why, and the bounty stays as it was"
   expect((await within(sandboxPart).findByRole("alert")).textContent).toContain(
     "This bounty already has a sandbox.",
   );
-  // Written here with no repository: the sandbox is asked for without one.
+  // Asked for by the bounty alone.
   expect(state.calls.find(({ method }) => method === "POST")?.body).toEqual({
     bountyId: "bty_7",
-    sourceRepoId: null,
   });
 });
 
@@ -2371,7 +2876,6 @@ test("a bounty with a sandbox is kept, and its panel says how far the sandbox go
         () =>
           json({
             bounty: detail({
-              repoId: "ghr_1",
               sandbox: sandboxOf({
                 status: "published",
                 currentVersionId: "sbv_1",
@@ -2402,7 +2906,18 @@ test("a bounty with a sandbox is kept, and its panel says how far the sandbox go
   ).toBeNull();
 });
 
-test("an admin links the bounty's repository to a sandbox made without one", async () => {
+/** Its proposal approved, its sizing touching `repoIds`. */
+function sizedTouching(...repoIds: string[]) {
+  return {
+    ...approvedSummary,
+    repositories: repoIds.map((repoId, index) => ({
+      repoId,
+      snapshotId: `rsn_${index + 1}`,
+    })),
+  };
+}
+
+test("a sandbox made without a repository links the one its sizing touches", async () => {
   let linked = false;
   const state = server([
     [
@@ -2432,7 +2947,7 @@ test("an admin links the bounty's repository to a sandbox made without one", asy
       () =>
         json({
           bounty: detail({
-            repoId: "ghr_1",
+            proposal: sizedTouching("ghr_1"),
             sandbox: sandboxOf({ sourceRepoId: linked ? "ghr_1" : null }),
           }),
         }),
@@ -2444,28 +2959,38 @@ test("an admin links the bounty's repository to a sandbox made without one", asy
 
   const panel = await screen.findByTestId("bounty-detail");
   const part = within(panel).getByRole("region", { name: "Sandbox" });
-  // It can be generated from the bounty, or sliced once the repository is linked.
+  // It can be generated from the bounty, or sliced once the repository its
+  // sizing touches is linked.
   expect(
     await within(part).findByRole("button", { name: "Generate" }),
   ).toBeDefined();
   expect(
-    within(part).getByText(/Or link the bounty's repository/),
+    await within(part).findByText(
+      "Its sizing says the work touches acme/app. Link it to slice versions from its code instead.",
+    ),
   ).toBeDefined();
   await userEvent.click(
-    await within(part).findByRole("button", { name: "Link acme/app" }),
+    within(part).getByRole("button", { name: "Link acme/app" }),
   );
+  // Which one is the server's to know: nothing is named.
   await waitFor(() =>
-    expect(state.calls.find(({ method }) => method === "PUT")?.body).toEqual({
-      sourceRepoId: "ghr_1",
-    }),
+    expect(
+      state.calls.some(
+        ({ method, url }) =>
+          method === "PUT" && url.endsWith("/sandboxes/sbx_1/source"),
+      ),
+    ).toBe(true),
   );
+  expect(
+    state.calls.find(({ method }) => method === "PUT")?.body,
+  ).toBeUndefined();
   await waitFor(() =>
     expect(
       within(
         within(screen.getByTestId("bounty-detail")).getByRole("region", {
           name: "Sandbox",
         }),
-      ).queryByText(/Or link the bounty's repository/),
+      ).queryByText(/Its sizing says the work touches/),
     ).toBeNull(),
   );
   // Its versions are sliced from the repository now, not generated.
@@ -2474,6 +2999,48 @@ test("an admin links the bounty's repository to a sandbox made without one", asy
       name: /Generate/,
     }),
   ).toBeNull();
+});
+
+test("a sandbox links the one repository its sizing touches that is still connected", async () => {
+  vi.stubGlobal(
+    "fetch",
+    server([
+      [
+        "GET",
+        "/github/repositories",
+        () =>
+          json({
+            repositories: [
+              githubRepo(),
+              githubRepo({
+                id: "ghr_3",
+                fullName: "acme/old",
+                syncStatus: "gone",
+              }),
+            ],
+          }),
+      ],
+      [
+        "GET",
+        "/bounties/bty_7",
+        () =>
+          json({
+            bounty: detail({
+              // As the API counts them: the gone one is not a source.
+              proposal: sizedTouching("ghr_1", "ghr_3"),
+              sandbox: sandboxOf({ sourceRepoId: null }),
+            }),
+          }),
+      ],
+    ]).fetchMock,
+  );
+  window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=sandbox");
+  render(<Shell {...inAcme("admin")} />);
+  const panel = await screen.findByTestId("bounty-detail");
+  const part = within(panel).getByRole("region", { name: "Sandbox" });
+  expect(
+    await within(part).findByRole("button", { name: "Link acme/app" }),
+  ).toBeDefined();
 });
 
 test("a sandbox without a repository says what links one, and a refused link says why", async () => {
@@ -2496,7 +3063,12 @@ test("a sandbox without a repository says what links one, and a refused link say
         "GET",
         "/bounties/bty_7",
         () =>
-          json({ bounty: detail({ repoId: "ghr_1", sandbox: sandboxOf() }) }),
+          json({
+            bounty: detail({
+              proposal: sizedTouching("ghr_1"),
+              sandbox: sandboxOf(),
+            }),
+          }),
       ],
     ]).fetchMock,
   );
@@ -2513,11 +3085,59 @@ test("a sandbox without a repository says what links one, and a refused link say
     "already cut from another repository",
   );
   expect(
-    within(part).getByText(/Or link the bounty's repository/),
+    within(part).getByText(/Its sizing says the work touches acme\/app/),
   ).toBeDefined();
 });
 
-test("a sandbox whose bounty names no repository generates its versions instead", async () => {
+test("several touched repositories offer no link", async () => {
+  vi.stubGlobal(
+    "fetch",
+    server([
+      [
+        "GET",
+        "/github/repositories",
+        () =>
+          json({
+            repositories: [
+              githubRepo(),
+              githubRepo({ id: "ghr_2", fullName: "acme/web" }),
+            ],
+          }),
+      ],
+      [
+        "GET",
+        "/bounties/bty_7",
+        () =>
+          json({
+            bounty: detail({
+              proposal: sizedTouching("ghr_1", "ghr_2"),
+              sandbox: sandboxOf(),
+            }),
+          }),
+      ],
+    ]).fetchMock,
+  );
+  window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=sandbox");
+  render(<Shell {...inAcme("admin")} />);
+  const part = within(await screen.findByTestId("bounty-detail")).getByRole(
+    "region",
+    { name: "Sandbox" },
+  );
+  expect(
+    await within(part).findByRole("button", { name: "Generate" }),
+  ).toBeDefined();
+  // No one of them is the one to slice from, so none is offered.
+  expect(
+    within(part)
+      .getAllByRole("button")
+      .map((button) => button.textContent),
+  ).toEqual(["Generate"]);
+  expect(
+    within(part).queryByText(/Its sizing says the work touches/),
+  ).toBeNull();
+});
+
+test("a sandbox whose sizing touches no repository generates its versions instead", async () => {
   vi.stubGlobal(
     "fetch",
     server([
@@ -2560,7 +3180,6 @@ test("a member is told who generates a sandbox's versions", async () => {
         () =>
           json({
             bounty: detail({
-              repoId: "ghr_1",
               sandbox: sandboxOf(),
               proposal: approvedSummary,
             }),
@@ -3211,7 +3830,11 @@ test("a proposal waiting on its code is read again once the code is measured, an
     amountMinor: 100,
     rubric: assessRubric({
       spec,
-      code: { status: "measured", profile: measured, specRevision: 1 },
+      code: {
+        status: "measured",
+        profiles: [{ repository: "acme/app", profile: measured }],
+        specRevision: 1,
+      },
     }),
   });
   let settled = false;
@@ -3234,20 +3857,23 @@ test("a proposal waiting on its code is read again once the code is measured, an
       () => {
         settled = true;
         return json({
-          profile: {
-            id: "bpf_1",
-            proposalId: "bpr_9",
-            specRevision: 1,
-            status: "ready",
-            errorCode: null,
-            runErrorCode: null,
-            snapshotId: "rsn_1",
-            scopeRunId: "arn_1",
-            sliceRunId: "arn_2",
-            profile: measured,
-            createdAt: stamp,
-            updatedAt: stamp,
-          },
+          profiles: [
+            {
+              id: "bpf_1",
+              proposalId: "bpr_9",
+              specRevision: 1,
+              repository: "acme/app",
+              status: "ready",
+              errorCode: null,
+              runErrorCode: null,
+              snapshotId: "rsn_1",
+              scopeRunId: "arn_1",
+              sliceRunId: "arn_2",
+              profile: measured,
+              createdAt: stamp,
+              updatedAt: stamp,
+            },
+          ],
         });
       },
     ],
@@ -4020,13 +4646,14 @@ test("an approved overview is held as it is until an admin unapproves it", async
   await userEvent.click(within(page).getByRole("button", { name: "Approve" }));
   await within(page).findByRole("button", { name: "Unapprove" });
   expect(decided).toEqual(["approve@1"]);
-  // Held: no way to edit its text, and its links are shown, not changed.
+  // Held: no way to edit its text or its stack, and its links are shown,
+  // not changed.
   expect(
     within(page).queryByRole("button", { name: "Edit description" }),
   ).toBeNull();
   expect(
-    within(page).getByRole("combobox", { name: "Repository" }),
-  ).toHaveProperty("disabled", true);
+    within(page).queryByRole("button", { name: "Edit tech stack" }),
+  ).toBeNull();
   expect(
     within(page).getByRole("button", { name: "Jira issue" }),
   ).toHaveProperty("disabled", true);
@@ -4146,7 +4773,7 @@ function githubContextVersion(version: number) {
     source: "github",
     version,
     ref: "acme/app",
-    revision: "abcdef1234567",
+    revision: "acme/app@abcdef1234567",
     syncedBy: "user_1",
     createdAt: stamp,
     checkedAt: stamp,
@@ -4170,7 +4797,6 @@ function githubContextVersion(version: number) {
 
 test("each link says whether its sync is in use, warns when its source is ahead, and syncs it", async () => {
   const linked = detail({
-    repoId: "ghr_1",
     jira: jiraLink,
     stages: {
       overview: { version: 1, context: { jira: 2, github: null } },
@@ -4196,7 +4822,7 @@ test("each link says whether its sync is in use, warns when its source is ahead,
             state: "unsynced",
             reason: null,
             linked: { ref: "acme/app", url: "https://github.com/acme/app" },
-            liveRevision: "abcdef1234567",
+            liveRevision: "acme/app@abcdef1234567",
             latest: null,
           },
         }),
@@ -4228,7 +4854,7 @@ test("each link says whether its sync is in use, warns when its source is ahead,
               state: "unsynced",
               reason: null,
               linked: { ref: "acme/app", url: "https://github.com/acme/app" },
-              liveRevision: "abcdef1234567",
+              liveRevision: "acme/app@abcdef1234567",
               latest: null,
             },
           },
@@ -4321,7 +4947,7 @@ test("a refused sync says why, and an unlinked source cannot be synced", async (
             state: "current",
             reason: null,
             linked: { ref: "acme/app", url: "https://github.com/acme/app" },
-            liveRevision: "abcdef1234567",
+            liveRevision: "acme/app@abcdef1234567",
             latest: githubContextVersion(1),
           },
         }),
@@ -4339,11 +4965,7 @@ test("a refused sync says why, and an unlinked source cannot be synced", async (
           409,
         ),
     ],
-    [
-      "GET",
-      "/bounties/bty_7",
-      () => json({ bounty: detail({ repoId: "ghr_1" }) }),
-    ],
+    ["GET", "/bounties/bty_7", () => json({ bounty: detail() })],
   ]);
   vi.stubGlobal("fetch", state.fetchMock);
   window.history.replaceState(null, "", "/bounties/acme/bty_7");
@@ -4378,6 +5000,155 @@ test("a refused sync says why, and an unlinked source cannot be synced", async (
   );
 });
 
+test("a GitHub context read from several repositories says so, and what it has not read", async () => {
+  const document = (path: string) => ({
+    path,
+    bytes: 120,
+    text: "# Doc",
+    truncated: false,
+  });
+  vi.stubGlobal(
+    "fetch",
+    server([
+      [
+        "GET",
+        "/bounties/bty_7/context",
+        () =>
+          json({
+            jira: {
+              state: "unlinked",
+              reason: null,
+              linked: null,
+              liveRevision: null,
+              latest: null,
+            },
+            github: {
+              state: "current",
+              reason: null,
+              // Several have no one page to open.
+              linked: { ref: "2 repositories", url: null },
+              liveRevision: "acme/app@abcdef1234567",
+              latest: {
+                ...githubContextVersion(1),
+                ref: "2 repositories",
+                content: {
+                  repositories: [
+                    {
+                      fullName: "acme/app",
+                      branch: "main",
+                      commitSha: "abcdef1234567",
+                      documents: [
+                        document("README.md"),
+                        document("docs/invites.md"),
+                      ],
+                      omitted: 1,
+                    },
+                    {
+                      fullName: "acme/web",
+                      branch: "main",
+                      commitSha: "1234567abcdef",
+                      documents: [document("README.md")],
+                      omitted: 0,
+                    },
+                  ],
+                  unread: ["acme/docs"],
+                },
+              },
+            },
+          }),
+      ],
+    ]).fetchMock,
+  );
+  window.history.replaceState(null, "", "/bounties/acme/bty_7");
+  render(<Shell {...inAcme("member")} />);
+  const page = await screen.findByTestId("bounty-detail");
+
+  const github = await within(page).findByTestId("github-context");
+  expect(await within(github).findByText("Synced v1")).toBeDefined();
+  // Counted across them, with no one commit to name.
+  expect(
+    within(github).getByText("3 documents from 2 repositories"),
+  ).toBeDefined();
+  await userEvent.click(
+    within(github).getByRole("button", { name: "What v1 adds" }),
+  );
+  // Each document named by the repository it is in.
+  for (const path of [
+    "acme/app: README.md",
+    "acme/app: docs/invites.md",
+    "acme/web: README.md",
+  ]) {
+    expect(within(github).getByText(path)).toBeDefined();
+  }
+  expect(
+    within(github).getByText("1 more document left out for length."),
+  ).toBeDefined();
+  expect(within(github).getByText("Not read yet: acme/docs.")).toBeDefined();
+});
+
+/** The GitHub context's warning, synced at `revision` with `live` now. */
+async function githubAheadWarning(revision: string, live: string | null) {
+  vi.stubGlobal(
+    "fetch",
+    server([
+      [
+        "GET",
+        "/bounties/bty_7/context",
+        () =>
+          json({
+            jira: {
+              state: "unlinked",
+              reason: null,
+              linked: null,
+              liveRevision: null,
+              latest: null,
+            },
+            github: {
+              state: "ahead",
+              reason: null,
+              linked: { ref: "2 repositories", url: null },
+              liveRevision: live,
+              latest: { ...githubContextVersion(1), revision },
+            },
+          }),
+      ],
+    ]).fetchMock,
+  );
+  window.history.replaceState(null, "", "/bounties/acme/bty_7");
+  render(<Shell {...inAcme("member")} />);
+  const page = await screen.findByTestId("bounty-detail");
+  const github = await within(page).findByTestId("github-context");
+  return (await within(github).findByRole("status")).textContent;
+}
+
+const SYNCED = "acme/app@abcdef1234567\nacme/web@1234567abcdef";
+
+test("a GitHub context ahead names the one repository with new commits, and its commits", async () => {
+  expect(
+    await githubAheadWarning(
+      SYNCED,
+      "acme/app@abcdef1234567\nacme/web@7654321fedcba",
+    ),
+  ).toContain(
+    "acme/web has new commits since v1 was synced (1234567 → 7654321).",
+  );
+});
+
+test("a GitHub context ahead counts the repositories with new commits", async () => {
+  expect(
+    await githubAheadWarning(
+      SYNCED,
+      "acme/app@0000000aaaaaa\nacme/web@7654321fedcba",
+    ),
+  ).toContain("2 repositories have new commits since v1 was synced.");
+});
+
+test("a GitHub context ahead because the repositories changed says so", async () => {
+  expect(await githubAheadWarning(SYNCED, "acme/app@abcdef1234567")).toContain(
+    "The workspace's repositories have changed since v1 was synced.",
+  );
+});
+
 test("a bounty sized and a sandbox generated with older context than the overview holds are behind on it", async () => {
   const state = server([
     [
@@ -4386,7 +5157,6 @@ test("a bounty sized and a sandbox generated with older context than the overvie
       () =>
         json({
           bounty: detail({
-            repoId: "ghr_1",
             jira: jiraLink,
             stages: {
               overview: { version: 1, context: { jira: 2, github: 1 } },

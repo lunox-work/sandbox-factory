@@ -83,12 +83,69 @@ export function bountyPagePath(address: BountyAddress): string {
   return `${BOUNTIES_PATH}/${bountyAddressText(address)}`;
 }
 
-/** The bounties, with `address` open over them, or none when null. */
-export function bountiesUrl(address: BountyAddress | null): string {
+/**
+ * A board whose bounties the list is narrowed to, as an address names it:
+ * the workspace it is read through, and its id. Written `acme/jrb_1` in
+ * `?board=`, as a bounty is in `?peek=`.
+ */
+export interface BoardScope {
+  workspace: string;
+  boardId: string;
+}
+
+/** What narrows the list: a category (or `uncategorized`), and a board. */
+export interface BountyListScope {
+  category?: string | undefined;
+  board?: BoardScope | undefined;
+}
+
+const CATEGORY_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+
+/** The list's narrowing as a query names it; anything malformed is none. */
+export function listScopeForSearch(search: string): BountyListScope {
+  const params = new URLSearchParams(search);
+  const category = params.get("category");
+  const board = params.get("board");
+  const [workspace, boardId, ...rest] = (board ?? "")
+    .replace(/\/+$/, "")
+    .split("/");
+  return {
+    ...(category !== null && CATEGORY_PATTERN.test(category)
+      ? { category }
+      : {}),
+    ...(workspace !== undefined &&
+    workspace !== "" &&
+    boardId !== undefined &&
+    boardId !== "" &&
+    rest.length === 0
+      ? { board: { workspace, boardId } }
+      : {}),
+  };
+}
+
+/**
+ * The bounties, with `address` open over them, or none when null, narrowed
+ * as `scope` says.
+ */
+export function bountiesUrl(
+  address: BountyAddress | null,
+  scope: BountyListScope = {},
+): string {
   // Built by hand: `URLSearchParams` would write the slashes as `%2F`.
-  return address === null
+  const parts = [
+    ...(scope.board === undefined
+      ? []
+      : [
+          `board=${encodeURIComponent(scope.board.workspace)}/${encodeURIComponent(scope.board.boardId)}`,
+        ]),
+    ...(scope.category === undefined
+      ? []
+      : [`category=${encodeURIComponent(scope.category)}`]),
+    ...(address === null ? [] : [`peek=${bountyAddressText(address)}`]),
+  ];
+  return parts.length === 0
     ? BOUNTIES_PATH
-    : `${BOUNTIES_PATH}?peek=${bountyAddressText(address)}`;
+    : `${BOUNTIES_PATH}?${parts.join("&")}`;
 }
 
 /** The bounty whose page a path is: `/bounties/:workspace/:id`. */
@@ -223,6 +280,8 @@ export function canonicalUrl(
   search: string,
 ): string | undefined {
   const path = pathname.replace(/\/+$/, "");
+  const board = legacyBoard(path);
+  if (board !== undefined) return bountiesUrl(null, { board });
   if (path === LEGACY_ORGANIZATIONS_PATH) return ORGANIZATIONS_PATH + search;
   if (path === LEGACY_NEW_ORG_PATH) return NEW_ORG_PATH + search;
   const slug = legacyJiraSlug(path);
@@ -308,20 +367,6 @@ export function slugForPath(pathname: string): string | undefined {
 }
 
 /**
- * The site a board URL names. Only a board's: `/o/:slug/jira/:site` alone is
- * no longer a page (it redirects to the Jira tab of settings), so a site id
- * with no board after it names nothing on screen.
- */
-export function connectionForPath(pathname: string): string | undefined {
-  const parts = pathname.replace(/\/+$/, "").split("/");
-  return boardForPath(pathname) !== undefined &&
-    parts[4] !== undefined &&
-    parts[4] !== ""
-    ? parts[4]
-    : undefined;
-}
-
-/**
  * The repository whose page a path is: `/o/:slug/repositories/:repoId`.
  * Undefined for any other path, a malformed escape included.
  */
@@ -348,14 +393,35 @@ export function repositoryForPath(pathname: string): string | undefined {
   }
 }
 
-export function boardForPath(pathname: string): string | undefined {
-  const parts = pathname.replace(/\/+$/, "").split("/");
-  return parts[1] === "o" &&
-    parts[3] === "jira" &&
-    parts[5] !== undefined &&
-    parts[5] !== ""
-    ? parts[5]
-    : undefined;
+/**
+ * A board's own page, `/o/:slug/jira/:site/:board`, from when a board had
+ * one: its proposals, listed. A board's tickets are bounties now, so the
+ * address opens the bounties narrowed to that board; never written.
+ */
+function legacyBoard(path: string): BoardScope | undefined {
+  const [root, section, slug, kind, site, boardId, ...rest] = path.split("/");
+  if (
+    root !== "" ||
+    section !== "o" ||
+    slug === undefined ||
+    slug === "" ||
+    kind !== "jira" ||
+    site === undefined ||
+    site === "" ||
+    boardId === undefined ||
+    boardId === "" ||
+    rest.length > 0
+  ) {
+    return undefined;
+  }
+  try {
+    return {
+      workspace: decodeURIComponent(slug),
+      boardId: decodeURIComponent(boardId),
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 export function screenForPath(pathname: string): Screen {
@@ -375,9 +441,8 @@ export function screenForPath(pathname: string): Screen {
     return "bounties";
   }
   if (slugForPath(pathname) !== undefined) {
-    if (connectionForPath(pathname) !== undefined) {
-      return "org-jira-board";
-    }
+    // An old board address shows the list while `canonicalUrl` rewrites it.
+    if (legacyBoard(path) !== undefined) return "bounties";
     if (repositoryForPath(pathname) !== undefined) {
       return "org-repository";
     }
@@ -405,12 +470,8 @@ function isWorkspaceSettingsPath(path: string): boolean {
 export function pathForScreen(
   screen: Screen,
   slug?: string,
-  /**
-   * The id the screen names: a connection id for `org-jira-board`, a
-   * repository id for `org-repository`. Nothing for the rest.
-   */
+  /** The id the screen names: a repository id for `org-repository`. */
   id?: string,
-  boardId?: string,
   /** The Connections tab `org-settings` opens on; see `CONNECTION_TABS`. */
   connectionTab?: ConnectionTab,
 ): string {
@@ -435,15 +496,11 @@ export function pathForScreen(
       return BOUNTIES_PATH;
     case "new-bounty":
       return NEW_BOUNTY_PATH;
-    case "org-jira-board":
-      return slug === undefined || id === undefined || boardId === undefined
-        ? pathForScreen("org-settings", slug, undefined, undefined, "jira")
-        : `/o/${slug}/jira/${encodeURIComponent(id)}/${encodeURIComponent(boardId)}`;
     // A repository's own page. With no repository named, the GitHub tab of
     // settings, where the registered ones are listed.
     case "org-repository":
       return slug === undefined || id === undefined
-        ? pathForScreen("org-settings", slug, undefined, undefined, "github")
+        ? pathForScreen("org-settings", slug, undefined, "github")
         : `/o/${slug}/repositories/${encodeURIComponent(id)}`;
     // Nothing links to a page that is not there; home is where it leads.
     case "home":

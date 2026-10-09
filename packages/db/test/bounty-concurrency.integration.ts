@@ -725,6 +725,9 @@ describe("bounty database concurrency", () => {
     await sql`insert into github_connection (id, organization_id, installation_id, account_login, account_type, repository_selection, permissions) values ('ghc_profile', 'org_bounty', '991', 'example', 'Organization', 'all', '{}')`;
     await sql`insert into github_repo (id, organization_id, connection_id, role, external_id, full_name, default_branch) values ('ghr_profile', 'org_bounty', 'ghc_profile', 'source', '992', 'example/source', 'main')`;
     await sql`insert into repo_snapshot (id, repo_id, commit_sha, ref, tree_sha, tree_key, file_count, total_bytes, languages, facts) values ('rsn_profile', 'ghr_profile', 'abc', 'refs/heads/main', 'tree', 'tree-key', 1, 1, '{}', '{}')`;
+    // A second repository the work touches, named before the first.
+    await sql`insert into github_repo (id, organization_id, connection_id, role, external_id, full_name, default_branch) values ('ghr_profile_api', 'org_bounty', 'ghc_profile', 'source', '993', 'example/api', 'main')`;
+    await sql`insert into repo_snapshot (id, repo_id, commit_sha, ref, tree_sha, tree_key, file_count, total_bytes, languages, facts) values ('rsn_profile_api', 'ghr_profile_api', 'def', 'refs/heads/main', 'tree', 'tree-key-api', 1, 1, '{}', '{}')`;
     const queueRun = (
       id: string,
       source: { proposalId: string; revision: number } | null,
@@ -767,7 +770,10 @@ describe("bounty database concurrency", () => {
     });
     const input = (runId: string, bountyId: string) => ({
       runId,
-      repoSnapshotId: "rsn_profile",
+      repositories: [
+        { repoId: "ghr_profile", snapshotId: "rsn_profile" },
+        { repoId: "ghr_profile_api", snapshotId: "rsn_profile_api" },
+      ],
       profileIntent: true,
       bountyId,
       specHash: "d".repeat(64),
@@ -852,35 +858,75 @@ describe("bounty database concurrency", () => {
       if (created.status !== "created") return;
       const proposalId = created.proposal.id;
       assert.equal(created.proposal.specRevision, 1);
+      assert.deepEqual(created.proposal.repositories, [
+        { repoId: "ghr_profile", snapshotId: "rsn_profile" },
+        { repoId: "ghr_profile_api", snapshotId: "rsn_profile_api" },
+      ]);
 
       // A new process can discover work without the post-commit wake-up.
       const profiles = createBountyProfileStore(connection.db);
       assert.ok(
         (await profiles.organizationsWithPending()).includes("org_bounty"),
       );
-      const pending = (await profiles.pending("org_bounty")).find(
+      // One profile for each repository the work touches.
+      const pending = (await profiles.pending("org_bounty")).filter(
         (row) => row.proposalId === proposalId,
       );
-      assert.equal(pending?.specRevision, 1);
-      assert.equal(pending?.specHash, first.specHash);
-      assert.equal(pending?.snapshotId, "rsn_profile");
-      await profiles.request("org_bounty", {
-        proposalId,
-        specRevision: 1,
-        specHash: first.specHash,
-        snapshotId: "rsn_profile",
-      });
+      assert.deepEqual(
+        pending
+          .map(({ specRevision, specHash, snapshotId, repository }) => ({
+            specRevision,
+            specHash,
+            snapshotId,
+            repository,
+          }))
+          .sort((a, b) =>
+            String(a.snapshotId).localeCompare(String(b.snapshotId)),
+          ),
+        [
+          {
+            specRevision: 1,
+            specHash: first.specHash,
+            snapshotId: "rsn_profile",
+            repository: "example/source",
+          },
+          {
+            specRevision: 1,
+            specHash: first.specHash,
+            snapshotId: "rsn_profile_api",
+            repository: "example/api",
+          },
+        ],
+      );
+      // Asked again for each snapshot, the revision keeps the rows the
+      // sizing made, and each ask reads back its own.
+      for (const snapshotId of ["rsn_profile", "rsn_profile_api"]) {
+        const asked = await profiles.request("org_bounty", {
+          proposalId,
+          specRevision: 1,
+          specHash: first.specHash,
+          snapshotId,
+        });
+        assert.equal(asked?.snapshotId, snapshotId);
+        assert.equal(
+          asked?.id,
+          pending.find((row) => row.snapshotId === snapshotId)?.id,
+        );
+      }
       assert.equal(
         (await profiles.pending("org_bounty")).filter(
           (row) => row.proposalId === proposalId,
         ).length,
-        1,
+        2,
       );
-      // Asked again, the revision keeps the row the sizing made.
-      assert.equal(
-        (await profiles.latest("org_bounty", proposalId))?.id,
-        pending?.id,
+      // The newest revision's, in name order.
+      assert.deepEqual(
+        (await profiles.latest("org_bounty", proposalId)).map(
+          ({ repository }) => repository,
+        ),
+        ["example/api", "example/source"],
       );
+      assert.deepEqual(await profiles.latest("org_other", proposalId), []);
       const stored = await specs.get("org_bounty", proposalId, 1);
       assert.match(stored?.id ?? "", /^bsp_/);
       assert.deepEqual(stored?.draft, first.draft);
@@ -925,15 +971,32 @@ describe("bounty database concurrency", () => {
         (await specs.get("org_bounty", proposalId, 2))?.draft,
         second.draft,
       );
-      assert.equal(
-        (await profiles.latest("org_bounty", proposalId))?.specRevision,
-        2,
+      assert.deepEqual(
+        (await profiles.latest("org_bounty", proposalId)).map(
+          ({ specRevision, repository }) => [specRevision, repository],
+        ),
+        [
+          [2, "example/api"],
+          [2, "example/source"],
+        ],
+      );
+      // The revision it replaced keeps its own.
+      assert.deepEqual(
+        (await profiles.forRevision("org_bounty", proposalId, 1)).map(
+          ({ id }) => id,
+        ),
+        pending
+          .slice()
+          .sort((a, b) =>
+            String(a.repository).localeCompare(String(b.repository)),
+          )
+          .map(({ id }) => id),
       );
       assert.equal(
         (await profiles.pending("org_bounty")).filter(
           (row) => row.proposalId === proposalId,
         ).length,
-        2,
+        4,
       );
       // The revision it replaced is still there to read.
       assert.deepEqual(
@@ -1496,12 +1559,11 @@ describe("bounty database concurrency", () => {
           bounties.create("org_numbers", "user_bounty", {
             title: `Bounty ${index}`,
             description: "",
-            repoId: null,
             stack: [],
           }),
         ),
       );
-      const ids = created.map((result) => (result.ok ? result.bounty.id : ""));
+      const ids = created.map(({ id }) => id);
       assert.equal(new Set(ids).size, 5);
       assert.ok(ids.every((id) => id.startsWith("bty_")));
     } finally {

@@ -60,13 +60,14 @@ import { GithubSnapshotter } from "./github/snapshot.js";
 import { resolveImageDigest } from "./image-digest.js";
 import { jiraClientFor, jiraClientsFor } from "./jira/credential.js";
 import { createApp } from "./routes.js";
-import { heldContext } from "./bounties/held-context.js";
+import { connectedRepositories, heldContext } from "./bounties/held-context.js";
 import { installationClient } from "./github/credential.js";
 import {
   AnthropicCaller,
   DeepSeekCaller,
   FallbackCaller,
   JIRA_SIZE_PROMPT_VERSION,
+  outlineLinesEach,
   repositoryOutline,
   type StructuredCaller,
 } from "./sizing/index.js";
@@ -100,12 +101,7 @@ const bountyContexts = createBountyContextStore(connection.db);
 const contextFor = (
   organizationId: string,
   bounty: Parameters<typeof heldContext>[2],
-) =>
-  heldContext(
-    { contexts: bountyContexts, boards: jiraBoards },
-    organizationId,
-    bounty,
-  );
+) => heldContext({ contexts: bountyContexts }, organizationId, bounty);
 const rateCards = createRateCardStore(connection.db);
 const bountyWritebacks = createBountyWritebackStore(connection.db);
 
@@ -248,16 +244,30 @@ const bountyExecutor =
         caller,
         clientFor: runClientFor,
         contextFor,
-        outlineFor: async (organizationId, repoId) => {
-          const snapshot = await repoSnapshots.current(organizationId, repoId);
-          return snapshot === null
-            ? null
-            : {
-                snapshotId: snapshot.id,
-                text: repositoryOutline(snapshot.facts, {
-                  languages: snapshot.languages,
-                }),
-              };
+        outlinesFor: async (organizationId) => {
+          const repos = await connectedRepositories(
+            githubRepos,
+            organizationId,
+          );
+          const read = await Promise.all(
+            repos.map(async (repo) => ({
+              repo,
+              snapshot: await repoSnapshots.current(organizationId, repo.id),
+            })),
+          );
+          const outlined = read.flatMap(({ repo, snapshot }) =>
+            snapshot === null ? [] : [{ repo, snapshot }],
+          );
+          const maxLines = outlineLinesEach(outlined.length);
+          return outlined.map(({ repo, snapshot }) => ({
+            repoId: repo.id,
+            fullName: repo.fullName,
+            snapshotId: snapshot.id,
+            text: repositoryOutline(snapshot.facts, {
+              languages: snapshot.languages,
+              maxLines,
+            }),
+          }));
         },
         ...(bountyDelivery === undefined
           ? {}
@@ -426,6 +436,7 @@ const sandbox =
  */
 const rubricPricer = new RubricPricer({
   proposals: bountyProposals,
+  profiles: bountyProfiles,
   specs: bountySpecs,
   onError: (code, error) => console.error(code, error),
 });

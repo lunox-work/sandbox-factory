@@ -15,26 +15,27 @@ import { terminalRun, useObservation } from "../../data/observe";
 import { clients } from "../../data/query";
 import { wholeMoney } from "../../lib/format";
 import { pushLocation } from "../../navigation/location";
+import { BOUNTIES_PATH } from "../../routes";
 
 type PreviewIssue = JiraBacklogPreviewDto["issues"][number];
 
-/** The repository a bounty on this board would be sized beside and cut from. */
+/**
+ * One of the workspace's repositories, any of which a bounty on this board
+ * may touch: sized beside, and cut from those its sizing says it does.
+ */
 export interface ScanRepository {
   fullName: string;
 }
 
 /**
- * How a board with no repository gets one, said inside a sentence: "connect
- * GitHub", "pick a repository", "link a repository". Absent where there is
- * no way, or the person may not take it.
+ * How a workspace with no repository gets one, said inside a sentence:
+ * "connect GitHub", "pick a repository". Absent where there is no way, or
+ * the person may not take it.
  */
 export interface RepositoryAction {
   label: string;
   onSelect: () => void;
 }
-
-/** The history entry a proposal opened over the list is pushed with. */
-const PROPOSAL_ENTRY = { proposalPeek: true } as const;
 
 /**
  * The ticket in focus, as the bounty it would become.
@@ -46,12 +47,13 @@ const PROPOSAL_ENTRY = { proposalPeek: true } as const;
  */
 export function TeaserBounty({
   organizationId,
+  organizationSlug,
   boardId,
   issue,
   canManage,
   sizingAvailable,
   boardBusy,
-  repository,
+  repositories,
   repositoryAction,
   range,
   onSized,
@@ -59,13 +61,16 @@ export function TeaserBounty({
   ref,
 }: {
   organizationId: string;
+  /** The workspace's handle, which the sized bounty's page is addressed by. */
+  organizationSlug: string;
   boardId: string;
   issue: PreviewIssue;
   canManage: boolean;
   sizingAvailable: boolean;
   /** The whole board is being sized: a single ticket would be refused. */
   boardBusy: boolean;
-  repository: ScanRepository | null;
+  /** The workspace's repositories; none when it has connected none. */
+  repositories: readonly ScanRepository[];
   repositoryAction?: RepositoryAction | undefined;
   /** The rate card to quote a range from; undefined while it loads. */
   range: { currency: string; sMinor: number; lMinor: number } | undefined;
@@ -74,6 +79,14 @@ export function TeaserBounty({
   onSizing?: ((issueId: string | null) => void) | undefined;
   ref?: Ref<HTMLElement> | undefined;
 }) {
+  // The one repository there is, named; several are counted.
+  const only = repositories.length === 1 ? repositories[0] : undefined;
+  const reading =
+    only !== undefined
+      ? `, reading ${only.fullName}`
+      : repositories.length > 1
+        ? `, reading ${repositories.length} repositories`
+        : "";
   const [runId, setRunId] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -97,9 +110,10 @@ export function TeaserBounty({
     if (proposalId === undefined && !terminalRun(run)) return;
     finished.current = run.id;
     setRunId(null);
-    if (proposalId !== undefined) void openProposal(proposalId, onSized);
+    if (proposalId !== undefined)
+      void openProposal(organizationSlug, proposalId, onSized);
     else setMessage(`Could not size ${issue.key}. Try again in a moment.`);
-  }, [following.data, runId, issue.key, onSized]);
+  }, [following.data, runId, issue.key, onSized, organizationSlug]);
 
   async function size() {
     setMessage(null);
@@ -112,7 +126,7 @@ export function TeaserBounty({
         crypto.randomUUID(),
       );
       if (body.proposalId !== undefined)
-        await openProposal(body.proposalId, onSized);
+        await openProposal(organizationSlug, body.proposalId, onSized);
       else if (body.run !== undefined) setRunId(body.run.id);
     } catch (error) {
       setMessage(
@@ -217,12 +231,20 @@ export function TeaserBounty({
         </dd>
         <dt className="text-muted-foreground">Sandbox</dt>
         <dd>
-          {repository !== null ? (
+          {only !== undefined ? (
             <span className="flex min-w-0 items-center gap-1">
               <FolderGit2 className="text-muted-foreground size-3 shrink-0" />
               <span className="truncate">
-                Cut from{" "}
-                <span className="font-medium">{repository.fullName}</span>
+                Cut from <span className="font-medium">{only.fullName}</span>,
+                if its work touches it
+              </span>
+            </span>
+          ) : repositories.length > 1 ? (
+            <span className="flex min-w-0 items-center gap-1">
+              <FolderGit2 className="text-muted-foreground size-3 shrink-0" />
+              <span className="truncate">
+                Cut from the repositories its work touches, of{" "}
+                {repositories.length}
               </span>
             </span>
           ) : repositoryAction !== undefined ? (
@@ -267,7 +289,7 @@ export function TeaserBounty({
                   ? "The whole board is being sized now."
                   : busy
                     ? "About a minute. It opens here when it is ready."
-                    : `About a minute · one model call${repository === null ? "" : `, reading ${repository.fullName}`}`}
+                    : `About a minute · one model call${reading}`}
             </p>
           </>
         )}
@@ -282,19 +304,17 @@ export function TeaserBounty({
 }
 
 /**
- * Opens a proposal over the list below, as a row's click would: the lists
- * are read again so it has its row, then `?proposal=` names it, which the
- * list follows.
+ * Opens the bounty a proposal was made for, on the tab its proposal is in:
+ * what is cached is read again first, then the bounties page is named the
+ * workspace and the proposal, which it opens as its bounty's page.
  */
 async function openProposal(
+  workspace: string,
   proposalId: string,
   refresh: () => Promise<void>,
 ): Promise<void> {
   await refresh();
-  const params = new URLSearchParams(window.location.search);
-  params.set("proposal", proposalId);
   pushLocation(
-    `${window.location.pathname}?${params.toString()}${window.location.hash}`,
-    PROPOSAL_ENTRY,
+    `${BOUNTIES_PATH}?${new URLSearchParams({ workspace, proposal: proposalId }).toString()}`,
   );
 }

@@ -82,6 +82,13 @@ export interface JiraRouteOptions {
   apiUrl: string;
   /** Public origin of the web app, where the browser is sent afterwards. */
   appUrl: string;
+  /**
+   * Called with the boards a sync registered or refreshed, and with a board
+   * just registered, so their backlog scans are imported as bounties. Not
+   * awaited: the sync answers without waiting for Jira to be read again.
+   * Absent, nothing is imported.
+   */
+  onBoardsSynced?: (organizationId: string, boardIds: string[]) => void;
   /** Injectable for tests. */
   fetch?: typeof globalThis.fetch;
   now?: () => number;
@@ -120,6 +127,7 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
     appUrl,
     fetch: fetchImpl,
     now,
+    onBoardsSynced,
   } = options;
 
   /** What `jiraClientFor` needs, assembled once rather than per route. */
@@ -152,6 +160,11 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
    * justify losing them. A board that reappears is listed again by `sync`.
    * Reached only once `boards()` has returned the whole list: a failed read
    * throws before anything is hidden.
+   *
+   * Every board it records is handed to `onBoardsSynced`, which imports
+   * the board's backlog scan as bounties in the background: the tickets in
+   * a category become bounties with their overview filled from Jira, and
+   * nothing is sized.
    *
    * The store's `sync` rather than its `register`: this runs against boards
    * somebody has already configured, so it refreshes what is Jira's to state
@@ -205,6 +218,10 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
       organizationId,
       connectionId,
       visible.map(({ id }) => String(id)),
+    );
+    onBoardsSynced?.(
+      organizationId,
+      recorded.map(({ id }) => id),
     );
     return {
       ok: true,
@@ -375,10 +392,11 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
           a connected site. The sync runs again whenever the site's page is
           opened, so a failure here costs a round trip rather than the boards.
 
-          Nothing is sized. A board's first view is its backlog scan — the
-          categories read from ticket metadata, which costs no model call —
-          and a ticket is sized when someone picks it. Sizing every board on
-          connect made the first minutes of a workspace its most expensive.
+          Nothing is sized. Each board's backlog scan — the categories read
+          from ticket metadata, which costs no model call — is imported as
+          bounties with their overview filled from Jira, and a bounty is
+          sized when someone asks. Sizing every board on connect made the
+          first minutes of a workspace its most expensive.
         */
         try {
           await syncBoards(organizationId, connection.id);
@@ -578,29 +596,22 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
       return c.json({ error: "That board is not on this Jira site." }, 404);
     }
 
-    return c.json(
-      {
-        board: await boards.register(organizationId, {
-          connectionId: parsed.data.connectionId,
-          externalId: String(board.id),
-          name: board.name,
-          boardType: board.type,
-          projectKey: board.projectKey,
-          // Defaults filled in here, so a row always holds a complete set and
-          // the preview does not have to re-derive them.
-          selection: boardSelectionSchema.parse(parsed.data.selection ?? {}),
-        }),
-      },
-      201,
-    );
+    const registeredBoard = await boards.register(organizationId, {
+      connectionId: parsed.data.connectionId,
+      externalId: String(board.id),
+      name: board.name,
+      boardType: board.type,
+      projectKey: board.projectKey,
+      // Defaults filled in here, so a row always holds a complete set and
+      // the preview does not have to re-derive them.
+      selection: boardSelectionSchema.parse(parsed.data.selection ?? {}),
+    });
+    onBoardsSynced?.(organizationId, [registeredBoard.id]);
+    return c.json({ board: registeredBoard }, 201);
   });
 
   /**
    * Edit a board's settings. The selection is merged; see the store.
-   *
-   * `sourceRepoId` links the repository the board's tickets are about, or
-   * unlinks it with null. One registered to another organization is a 404,
-   * as an unknown board is: the store checks the two share an owner.
    */
   app.patch("/api/v1/orgs/:orgId/jira/boards/:id", async (c) => {
     const { organizationId, role } = c.get("member");
@@ -610,13 +621,10 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
 
     const parsed = updateBoardSchema.safeParse(await c.req.json());
     if (!parsed.success) {
-      return c.json(
-        { error: "Provide selection, pricing or repository settings." },
-        400,
-      );
+      return c.json({ error: "Provide selection or pricing settings." }, 400);
     }
 
-    const { selection, pricing, sourceRepoId } = parsed.data;
+    const { selection, pricing } = parsed.data;
     const updated = await boards.update(organizationId, c.req.param("id"), {
       ...(selection === undefined
         ? {}
@@ -633,7 +641,6 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
       // Merged by the store, which skips what is absent and clears what is
       // null at every level, so it goes through as parsed.
       ...(pricing === undefined ? {} : { pricing }),
-      ...(sourceRepoId === undefined ? {} : { sourceRepoId }),
     });
 
     if (updated === null) {

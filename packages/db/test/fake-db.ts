@@ -34,6 +34,12 @@ export interface FakeCall {
   readonly filtered?: boolean;
   readonly limited?: number;
   readonly ignoredConflict?: boolean;
+  /**
+   * The columns an ignored conflict was named by, when it named any: a
+   * target that is not the table's unique key is an error in Postgres, and
+   * one narrower than it would drop rows the key tells apart.
+   */
+  readonly conflictTarget?: readonly string[];
   readonly lock?: string;
 }
 
@@ -53,7 +59,7 @@ function chain(
   onWhere?: () => void,
   onConflict?: (set: Record<string, unknown>, guarded: boolean) => void,
   onLimit?: (limit: number) => void,
-  onConflictNothing?: () => void,
+  onConflictNothing?: (target: readonly string[] | undefined) => void,
   onLock?: (mode: string) => void,
 ): unknown {
   const result: Record<string, unknown> = {
@@ -72,8 +78,15 @@ function chain(
       onConflict?.(config.set ?? {}, config.setWhere !== undefined);
       return result;
     },
-    onConflictDoNothing: () => {
-      onConflictNothing?.();
+    onConflictDoNothing: (config?: { target?: unknown }) => {
+      const target = config?.target;
+      onConflictNothing?.(
+        target === undefined
+          ? undefined
+          : (Array.isArray(target) ? target : [target]).map((column) =>
+              String((column as { name?: unknown }).name),
+            ),
+      );
       return result;
     },
     innerJoin: () => result,
@@ -87,6 +100,7 @@ function chain(
       return result;
     },
     offset: () => result,
+    groupBy: () => result,
     for: (mode: string) => {
       onLock?.(mode);
       return result;
@@ -149,7 +163,11 @@ function createFakeDbWith(rowsForQuery: RowsProvider): FakeDb {
               ...(guarded ? { conflictGuarded: true } : {}),
             }),
           undefined,
-          () => Object.assign(call, { ignoredConflict: true }),
+          (target) =>
+            Object.assign(call, {
+              ignoredConflict: true,
+              ...(target === undefined ? {} : { conflictTarget: target }),
+            }),
         );
       },
     }),

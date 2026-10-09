@@ -1,13 +1,12 @@
 /**
  * Sections that a button elsewhere on the page scrolls to: "pick a
- * repository" in the checklist, "link a repository" beside a ticket.
+ * repository" in the checklist.
  *
  * Found by element id rather than by test id, so what the page does never
  * hangs on markup that exists for the tests. Each is on screen at most once.
  */
 export const SECTION = {
   backlogScan: "backlog-scan",
-  boardRepository: "board-repository",
   repoPicker: "repo-picker",
 } as const;
 

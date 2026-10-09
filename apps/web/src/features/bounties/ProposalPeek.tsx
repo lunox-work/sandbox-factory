@@ -56,7 +56,7 @@ import { PricingRubricBlock } from "../../PricingRubric";
 import { JiraIcon, ModelIcon } from "../../ProviderIcon";
 import { RevisionMenu, useRespec, useSpecRevisions } from "../../SpecChanges";
 import { BountyText } from "../../BountyText";
-import { useRepoSnapshot } from "../../useGithub";
+import { useRepoSnapshots } from "../../useGithub";
 import type { JiraIssueDetail } from "../../useJira";
 
 /** What the bounty's freshness says; nothing while it is unchanged. */
@@ -216,9 +216,16 @@ export function ProposalPeek({
   const key = proposal.liveKey ?? proposal.issueKey;
   // Read when the peek opens, like the bounty, so the tab opens on it.
   const spec = useProposalSpec(base, proposal.id, proposal.specRevision);
-  // The commit the spec's repository outline came from, when it had one.
-  const outline = useRepoSnapshot(base, proposal.repoSnapshotId ?? null);
-  // What the size will point back to, measured from that repository.
+  // The repositories the work touches, at the commits it was sized beside.
+  const outlines = useRepoSnapshots(
+    base,
+    (proposal.repositories ?? []).map(({ snapshotId }) => snapshotId),
+  ).map((read) =>
+    read === null
+      ? null
+      : { repoFullName: read.repoFullName, commitSha: read.commitSha },
+  );
+  // What the size will point back to, measured in each of them.
   const profile = useProposalProfile(
     base,
     proposal.id,
@@ -234,9 +241,11 @@ export function ProposalPeek({
   */
   const settled =
     profile.state === "ready" &&
-    profile.profile !== null &&
-    (profile.profile.status === "ready" || profile.profile.status === "failed")
-      ? `${profile.profile.id}:${profile.profile.status}`
+    profile.profiles.length > 0 &&
+    profile.profiles.every(
+      ({ status }) => status === "ready" || status === "failed",
+    )
+      ? profile.profiles.map(({ id, status }) => `${id}:${status}`).join(",")
       : null;
   const awaitingCode = proposal.rubric?.code.status === "pending";
   const reread = useRef<string | null>(null);
@@ -329,13 +338,7 @@ export function ProposalPeek({
               // The size the reviewer chose: the step's base when the
               // spec's added weight has moved it on since.
               reviewerSize: proposal.sizedBy === "reviewer" ? sizeBase : null,
-              outline:
-                outline === null
-                  ? null
-                  : {
-                      repoFullName: outline.repoFullName,
-                      commitSha: outline.commitSha,
-                    },
+              outlines,
             }
       }
       history={history}
@@ -754,8 +757,8 @@ export function ProposalPeek({
                 </p>
               )}
               {/* What the scenarios' own head says where they have a tab. */}
-              {withinBounty && outline !== null && (
-                <OutlineSource outline={outline} className="mt-3" />
+              {withinBounty && outlines.length > 0 && (
+                <OutlineSource outlines={outlines} className="mt-3" />
               )}
             </ModelCard>
           </div>

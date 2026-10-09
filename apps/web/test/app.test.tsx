@@ -96,7 +96,6 @@ const fetchMock = vi.fn((input: RequestInfo | URL) => {
           boardType: "scrum",
           projectKey: "ACME",
           selection: {},
-          sourceRepoId: null,
           createdAt: "2026-09-16T00:00:00.000Z",
         })),
       }),

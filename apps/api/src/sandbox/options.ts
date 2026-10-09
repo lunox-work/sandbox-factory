@@ -35,8 +35,11 @@ export interface SandboxRouteOptions {
   readonly specs: Pick<BountySpecStore, "get">;
   /** The bounty a generated version is written from: its text and stack. */
   readonly bounties: Pick<BountyStore, "get">;
-  /** The repository a bounty names, for the stack detected in it. */
-  readonly repos: Pick<GithubRepoStore, "get">;
+  /**
+   * The workspace's repositories, any of which a bounty's work may touch,
+   * for the stack detected in them.
+   */
+  readonly repos: Pick<GithubRepoStore, "list">;
   /**
    * The context a bounty holds from its sources (`heldContext`), frozen
    * into each version's task. Absent, a version is taken with none.

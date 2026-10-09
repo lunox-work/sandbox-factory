@@ -81,21 +81,14 @@ export const versionFixturesSchema = fixturesInputSchema.extend({
 });
 
 /**
- * A bounty's sandbox. One per bounty. The repository it is cut from is
- * optional: a sandbox without one has its versions generated from the
- * bounty instead, until one is linked.
+ * A bounty's sandbox. One per bounty, however many repositories its work
+ * touches. It is cut from the one connected repository its bounty's sizing
+ * said the work touches, which nobody picks; a sandbox whose bounty touches
+ * none, or several, has its versions generated from the bounty instead,
+ * until its sizing names exactly one.
  */
 export const createSandboxSchema = z.strictObject({
   bountyId: z.string().min(1),
-  sourceRepoId: z.string().min(1).nullable().default(null),
-});
-
-/**
- * The repository a sandbox made without one is cut from. Linked once: the
- * versions sliced from it are bound to it.
- */
-export const linkSandboxSourceSchema = z.strictObject({
-  sourceRepoId: z.string().min(1),
 });
 
 /** A draft version from a succeeded slice run on the sandbox's source. */
@@ -384,7 +377,6 @@ export const replayResponseSchema = z.discriminatedUnion("ok", [
 
 export type AliasRuleInput = z.input<typeof aliasRuleSchema>;
 export type CreateSandboxInput = z.input<typeof createSandboxSchema>;
-export type LinkSandboxSourceInput = z.input<typeof linkSandboxSourceSchema>;
 export type CreateSandboxVersionInput = z.input<
   typeof createSandboxVersionSchema
 >;

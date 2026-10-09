@@ -1,6 +1,6 @@
 /**
- * A bounty's synced context on the wire: what its Jira issue and its
- * repository's documents said when a person last synced each, and where
+ * A bounty's synced context on the wire: what its Jira issue and the
+ * workspace's repositories' documents said when a person last synced each, and where
  * each source stands against that sync now.
  * `/api/v1/orgs/:orgId/bounties/:id/context`.
  */
@@ -49,7 +49,8 @@ export const jiraContextSchema = z.object({
   updated: z.string().nullable(),
 });
 
-export const githubContextSchema = z.object({
+/** One repository's documents, read at one commit. */
+export const githubRepositoryContextSchema = z.object({
   fullName: z.string(),
   branch: z.string(),
   commitSha: z.string(),
@@ -64,9 +65,24 @@ export const githubContextSchema = z.object({
   omitted: z.number().int().nonnegative(),
 });
 
+/**
+ * The workspace's repositories' documents, read together; or, for a
+ * version synced while a bounty named one repository, that one's alone.
+ */
+export const githubContextSchema = z.union([
+  z.object({
+    repositories: z.array(githubRepositoryContextSchema),
+    unread: z.array(z.string()),
+  }),
+  githubRepositoryContextSchema,
+]);
+
 const contextVersionBase = {
   version: z.number().int().positive(),
-  /** What the source is called: the issue's key, the repository's name. */
+  /**
+   * What the source is called: the issue's key; for GitHub, the one
+   * repository's name, or how many the workspace's sync read.
+   */
   ref: z.string(),
   /** Where the source stood when it was last read. */
   revision: z.string(),
@@ -128,6 +144,9 @@ export const bountyContextResponseSchema = z.object({
 export type ContextSourceDto = z.infer<typeof contextSourceSchema>;
 export type ContextVersionsDto = z.infer<typeof contextVersionsSchema>;
 export type JiraContextDto = z.infer<typeof jiraContextSchema>;
+export type GithubRepositoryContextDto = z.infer<
+  typeof githubRepositoryContextSchema
+>;
 export type GithubContextDto = z.infer<typeof githubContextSchema>;
 export type BountyContextVersionDto = z.infer<
   typeof bountyContextVersionDtoSchema

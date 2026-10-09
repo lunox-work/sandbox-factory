@@ -27,6 +27,7 @@ function repoRow(overrides: Partial<GithubRepoRow> = {}): GithubRepoRow {
     stack: null,
     stackCommitSha: null,
     stackVersion: null,
+    contextSnapshotId: null,
     createdAt: new Date("2026-10-01T00:00:00.000Z"),
     updatedAt: new Date("2026-10-01T00:00:00.000Z"),
     ...overrides,
@@ -64,6 +65,7 @@ test("a summary carries the pointer and no ETag", async () => {
     stack: null,
     stackCommitSha: null,
     stackVersion: null,
+    contextSnapshotId: null,
     createdAt: "2026-10-01T00:00:00.000Z",
   });
 });
@@ -332,4 +334,21 @@ test("a detected stack is recorded with the commit and version it was found at",
   const read = await store.get("org_1", "ghr_1");
   assert.deepEqual(read?.stack, ["TypeScript"]);
   assert.equal(read?.stackVersion, 1);
+});
+
+test("the context moves only on a repository and snapshot of the owner's", async () => {
+  const fake = createFakeDb([repoRow()]);
+  const store = createGithubRepoStore(fake.db);
+  assert.equal(await store.setContextSnapshot("org_1", "ghr_1", "rsn_1"), true);
+  const write = fake.calls.find((call) => call.kind === "update");
+  assert.equal(write?.values?.["contextSnapshotId"], "rsn_1");
+  assert.equal(write?.filtered, true);
+  assert.equal(
+    await createGithubRepoStore(createFakeDb([]).db).setContextSnapshot(
+      "org_1",
+      "ghr_1",
+      "rsn_1",
+    ),
+    false,
+  );
 });

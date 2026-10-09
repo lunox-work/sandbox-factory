@@ -20,7 +20,11 @@ export {
   draftSpecTool,
 } from "./tools/draft-spec.js";
 export type { DraftInput } from "./tools/draft-spec.js";
-export { OUTLINE_MAX_LINES, repositoryOutline } from "./outline.js";
+export {
+  OUTLINE_MAX_LINES,
+  outlineLinesEach,
+  repositoryOutline,
+} from "./outline.js";
 export type { OutlineOptions } from "./outline.js";
 export {
   JIRA_SIZE_PROMPT_VERSION,

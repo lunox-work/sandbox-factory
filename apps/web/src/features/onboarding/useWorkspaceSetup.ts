@@ -1,3 +1,4 @@
+import { isWorkspaceSource } from "@sandbox-factory/shared";
 import { useQuery } from "@tanstack/react-query";
 import { useRef } from "react";
 import { rankAtLeast } from "sandbox-factory";
@@ -72,9 +73,7 @@ export function useWorkspaceSetup(
         github: {
           available: !github.unconfigured,
           connected: github.connections.filter(({ healthy }) => healthy).length,
-          repositories: repos.repos.filter(
-            (repo) => repo.role === "source" && repo.syncStatus !== "gone",
-          ).length,
+          repositories: repos.repos.filter(isWorkspaceSource).length,
         },
         proposals: proposals.data?.total ?? 0,
         bounties: bounties.data?.bounties.length ?? 0,

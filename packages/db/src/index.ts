@@ -51,6 +51,8 @@ export type {
   StoredBounty,
   StoredBountyVersion,
   BountyApproval,
+  BountyCategoryCounts,
+  BountyListOptions,
   BountyChange,
   BountyJiraLink,
   BountyMutationResult,
@@ -88,6 +90,7 @@ export type {
   ProposalMutationResult,
   StoredBountyProposal,
 } from "./bounty-proposals.js";
+export type { ProposalRepository } from "./schema.js";
 export {
   createBountyProfileStore,
   PENDING_PROFILE_STATUSES,

@@ -33,7 +33,7 @@ const proposalDefaults = {
   status: "proposed",
   revision: 1,
   specRevision: null,
-  repoSnapshotId: null,
+  repositories: [],
   step: null,
   decidedAt: null,
   decidedBy: null,

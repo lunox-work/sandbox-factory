@@ -55,8 +55,8 @@ function fixtureApp(token) {
       organizationId,
       title: input.title,
       description: input.description,
-      repoId: input.repoId,
       stack: input.stack ?? [],
+      categories: [],
       components: [],
       inputTruncated: false,
       origin: "manual",
@@ -81,7 +81,6 @@ function fixtureApp(token) {
     addBounty(organization.id, user.id, {
       title: `${organization.name} private bounty`,
       description: `Work owned by ${organization.name}.`,
-      repoId: null,
     });
   }
 
@@ -116,10 +115,8 @@ function fixtureApp(token) {
     },
     pricing: {
       bounties: {
-        create: async (organizationId, createdBy, input) => ({
-          ok: true,
-          bounty: addBounty(organizationId, createdBy, input),
-        }),
+        create: async (organizationId, createdBy, input) =>
+          addBounty(organizationId, createdBy, input),
         list: async (organizationId) =>
           [...rows.values()]
             .filter((bounty) => bounty.organizationId === organizationId)
@@ -130,6 +127,13 @@ function fixtureApp(token) {
             .filter((bounty) => organizationIds.includes(bounty.organizationId))
             .reverse()
             .map((bounty) => ({ ...bounty, proposal: null })),
+        // Written here, so in no category.
+        categoryCounts: async (organizationIds) => {
+          const total = [...rows.values()].filter((bounty) =>
+            organizationIds.includes(bounty.organizationId),
+          ).length;
+          return { total, uncategorized: total, categories: {} };
+        },
         get: async (organizationId, bountyId) => {
           const bounty = rows.get(bountyId);
           return bounty?.organizationId === organizationId ? bounty : null;

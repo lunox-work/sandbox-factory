@@ -12,7 +12,6 @@ import {
   bountyListResponseSchema,
   BOUNTY_LIMITS,
   bountySpecHash,
-  linkSandboxSourceSchema,
   sandboxDtoSchema,
   updateBountySchema,
 } from "../src/index.js";
@@ -24,7 +23,6 @@ const summary = {
   organizationId: "org_1",
   title: "Invitations are not sent",
   origin: "manual",
-  repoId: null,
   stack: ["Zod"],
   revision: 1,
   version: 1,
@@ -40,7 +38,6 @@ test("a bounty written here needs only a title", () => {
   assert.deepEqual(createBountySchema.parse({ title: "  Fix login  " }), {
     title: "Fix login",
     description: "",
-    repoId: null,
     stack: [],
   });
   assert.equal(createBountySchema.safeParse({ title: " " }).success, false);
@@ -92,14 +89,36 @@ test("unknown fields are refused rather than dropped", () => {
   );
 });
 
+test("a bounty names no repository: its work may touch any the workspace has", () => {
+  for (const repoId of ["ghr_1", null]) {
+    assert.equal(
+      createBountySchema.safeParse({ title: "t", repoId }).success,
+      false,
+    );
+    assert.equal(
+      updateBountySchema.safeParse({ expectedRevision: 1, repoId }).success,
+      false,
+    );
+  }
+  // One listed before it named none reads without it.
+  assert.equal(
+    "repoId" in
+      (bountyListResponseSchema.parse({
+        bounties: [{ ...summary, repoId: "ghr_1" }],
+        nextCursor: null,
+      }).bounties[0] ?? {}),
+    false,
+  );
+});
+
 test("a change names its revision and at least one field", () => {
   assert.equal(
     updateBountySchema.safeParse({ expectedRevision: 1 }).success,
     false,
   );
   assert.deepEqual(
-    updateBountySchema.parse({ expectedRevision: 2, repoId: null }),
-    { expectedRevision: 2, repoId: null },
+    updateBountySchema.parse({ expectedRevision: 2, description: "" }),
+    { expectedRevision: 2, description: "" },
   );
   assert.equal(updateBountySchema.safeParse({ title: "t" }).success, false);
 });
@@ -112,7 +131,7 @@ test("a stack is stored under the catalog's names, each once, within bounds", ()
     }).stack,
     ["PostgreSQL", "Our billing API"],
   );
-  // A Jira bounty's stack is the workspace's to set, like its repository.
+  // A Jira bounty's stack is the workspace's to set.
   assert.deepEqual(
     updateBountySchema.parse({ expectedRevision: 1, stack: ["k8s"] }),
     { expectedRevision: 1, stack: ["Kubernetes"] },
@@ -271,14 +290,51 @@ test("a bounty reads with or without a Jira issue, a proposal and a sandbox", ()
   );
 });
 
-test("a sandbox belongs to one bounty, with or without a repository", () => {
+test("a bounty's proposal names the repositories its sizing said the work touches", () => {
+  const proposal = {
+    id: "bpr_1",
+    status: "proposed",
+    complexity: "M",
+    amountMinor: 10_500,
+    currency: "USD",
+  };
+  const touched = [
+    { repoId: "ghr_1", snapshotId: "rsn_1" },
+    { repoId: "ghr_2", snapshotId: "rsn_2" },
+  ];
+  const listed = (bounty: unknown) =>
+    bountyListResponseSchema.parse({ bounties: [bounty], nextCursor: null })
+      .bounties[0]?.proposal;
+  assert.deepEqual(
+    listed({ ...summary, proposal: { ...proposal, repositories: touched } })
+      ?.repositories,
+    touched,
+  );
+  // An older API's answer, without them, touches none.
+  assert.deepEqual(listed({ ...summary, proposal })?.repositories, []);
+  assert.equal(
+    bountyListResponseSchema.safeParse({
+      bounties: [
+        {
+          ...summary,
+          proposal: { ...proposal, repositories: [{ repoId: "ghr_1" }] },
+        },
+      ],
+      nextCursor: null,
+    }).success,
+    false,
+  );
+});
+
+test("a sandbox belongs to one bounty, and nobody picks its repository", () => {
   assert.deepEqual(createSandboxSchema.parse({ bountyId: "bty_1" }), {
     bountyId: "bty_1",
-    sourceRepoId: null,
   });
-  assert.deepEqual(
-    createSandboxSchema.parse({ bountyId: "bty_1", sourceRepoId: "ghr_1" }),
-    { bountyId: "bty_1", sourceRepoId: "ghr_1" },
+  // Its repository is the one its bounty's sizing says the work touches.
+  assert.equal(
+    createSandboxSchema.safeParse({ bountyId: "bty_1", sourceRepoId: "ghr_1" })
+      .success,
+    false,
   );
   // No sandbox without its bounty, and no list of them.
   assert.equal(
@@ -290,7 +346,7 @@ test("a sandbox belongs to one bounty, with or without a repository", () => {
       .success,
     false,
   );
-  // One made without a repository reads back as one, and links one later.
+  // One made without a repository reads back as one.
   assert.equal(
     sandboxDtoSchema.parse({
       id: "sbx_1",
@@ -306,11 +362,6 @@ test("a sandbox belongs to one bounty, with or without a repository", () => {
     }).sourceRepoId,
     null,
   );
-  assert.deepEqual(linkSandboxSourceSchema.parse({ sourceRepoId: "ghr_1" }), {
-    sourceRepoId: "ghr_1",
-  });
-  for (const body of [{}, { sourceRepoId: "" }, { sourceRepoId: null }])
-    assert.equal(linkSandboxSourceSchema.safeParse(body).success, false);
 });
 
 test("re-exports the one bounty hash and bounds, not copies", async () => {

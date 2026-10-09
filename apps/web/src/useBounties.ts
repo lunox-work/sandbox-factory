@@ -5,7 +5,11 @@ import {
   bountyResponseSchema,
   updateBountySchema,
 } from "@sandbox-factory/shared";
-import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  useInfiniteQuery,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { observeUntil, terminalRun } from "./data/observe";
 import { clients, queryKeys, useUserId } from "./data/query";
 /**
@@ -33,8 +37,7 @@ export const PROPOSE_POLL_MS = 1_000;
 export interface BountyDraft {
   title: string;
   description: string;
-  repoId: string | null;
-  /** What the bounty adds to its repository's detected stack. */
+  /** What the bounty adds to the workspace's repositories' detected stack. */
   stack: string[];
 }
 
@@ -97,21 +100,17 @@ export interface Bounties {
     expectedRevision: number,
   ) => Promise<BountyWrite>;
   /**
-   * Makes the bounty's sandbox, cut from `sourceRepoId` when one is given.
-   * Resolves to null, or to why there is none.
+   * Makes the bounty's sandbox, cut from the repository its sizing said
+   * the work touches, when it names one. Resolves to null, or to why there
+   * is none.
    */
-  createSandbox: (
-    bountyId: string,
-    sourceRepoId: string | null,
-  ) => Promise<string | null>;
+  createSandbox: (bountyId: string) => Promise<string | null>;
   /**
-   * Links the repository a sandbox made without one is cut from. Resolves
-   * to null, or to why it was not linked.
+   * Links a sandbox made without a repository to the one the bounty's
+   * sizing has since said the work touches. Resolves to null, or to why it
+   * was not linked.
    */
-  linkSandboxSource: (
-    sandboxId: string,
-    sourceRepoId: string,
-  ) => Promise<string | null>;
+  linkSandboxSource: (sandboxId: string) => Promise<string | null>;
   /**
    * Sizes the bounty and makes its proposal, following the run until the
    * proposal lands. Resolves to the proposal, or to why there is none. With
@@ -149,16 +148,30 @@ function runFailure(run: BountyRunDto): string {
  * The caller's bounties across every workspace they belong to, newest first.
  * Each carries its workspace's id, which is where anything done to it goes.
  */
-export function useAllBounties(): AllBounties {
+/**
+ * What the list is narrowed to: a category's id, `uncategorized` for the
+ * bounties in none, and a board's id. Absent, all of them.
+ */
+export interface BountyFilter {
+  category?: string | undefined;
+  board?: string | undefined;
+}
+
+export function useAllBounties(filter: BountyFilter = {}): AllBounties {
   const userId = useUserId();
+  const { category, board } = filter;
   const query = useInfiniteQuery({
-    queryKey: queryKeys.me(userId, "bounties"),
+    // Under the list's own key, so whatever reads the list again reads
+    // every filtered copy of it too.
+    queryKey: [...queryKeys.me(userId, "bounties"), { category, board }],
     initialPageParam: undefined as string | undefined,
     queryFn: ({ pageParam, signal }) =>
       clients.bounties.myBounties(
         {
           limit: PAGE,
           ...(pageParam === undefined ? {} : { cursor: pageParam }),
+          ...(category === undefined ? {} : { category }),
+          ...(board === undefined ? {} : { board }),
         },
         signal,
       ),
@@ -180,6 +193,19 @@ export function useAllBounties(): AllBounties {
   };
 }
 
+/** How many of the caller's bounties each category holds, on `board`'s. */
+export function useBountyCategories(board: string | undefined) {
+  const userId = useUserId();
+  return useQuery({
+    queryKey: [...queryKeys.me(userId, "bounty-categories"), { board }],
+    queryFn: ({ signal }) =>
+      clients.bounties.myBountyCategories(
+        board === undefined ? {} : { board },
+        signal,
+      ),
+  });
+}
+
 export function useBounties(organizationId: string): Bounties {
   const userId = useUserId();
   const queryClient = useQueryClient();
@@ -188,6 +214,9 @@ export function useBounties(organizationId: string): Bounties {
       // The list across workspaces holds this one's bounties too.
       queryClient.invalidateQueries({
         queryKey: queryKeys.me(userId, "bounties"),
+      }),
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.me(userId, "bounty-categories"),
       }),
       ...[
         "bounties",
@@ -362,12 +391,9 @@ export function useBounties(organizationId: string): Bounties {
   );
 
   const createSandbox = useCallback(
-    async (bountyId: string, sourceRepoId: string | null) => {
+    async (bountyId: string) => {
       try {
-        await clients.sandbox.createSandbox(organizationId, {
-          bountyId,
-          sourceRepoId,
-        });
+        await clients.sandbox.createSandbox(organizationId, { bountyId });
         await load();
         return null;
       } catch (error) {
@@ -380,11 +406,9 @@ export function useBounties(organizationId: string): Bounties {
   );
 
   const linkSandboxSource = useCallback(
-    async (sandboxId: string, sourceRepoId: string) => {
+    async (sandboxId: string) => {
       try {
-        await clients.sandbox.linkSandboxSource(organizationId, sandboxId, {
-          sourceRepoId,
-        });
+        await clients.sandbox.linkSandboxSource(organizationId, sandboxId);
         await load();
         return null;
       } catch (error) {

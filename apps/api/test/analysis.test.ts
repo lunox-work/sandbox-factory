@@ -50,6 +50,8 @@ function fixture(role = "owner", tool: StoredAnalysisRun["tool"] = run.tool) {
   const keys: string[] = [];
   let limit = false;
   const enqueued: { tool: string; params: unknown }[] = [];
+  /** Each move of a repository's context, as `owner/repo@snapshot`. */
+  const contexts: string[] = [];
   const options = {
     runs: {
       enqueue: async (
@@ -78,6 +80,14 @@ function fixture(role = "owner", tool: StoredAnalysisRun["tool"] = run.tool) {
     repos: {
       get: async (owner: string, id: string) =>
         owner === "org_1" && id === "ghr_1" ? { id } : null,
+      setContextSnapshot: async (
+        owner: string,
+        id: string,
+        snapshotId: string,
+      ) => {
+        contexts.push(`${owner}/${id}@${snapshotId}`);
+        return true;
+      },
     },
     snapshots: {
       current: async () => ({
@@ -216,6 +226,7 @@ function fixture(role = "owner", tool: StoredAnalysisRun["tool"] = run.tool) {
     options,
     keys,
     enqueued,
+    contexts,
     listed,
     setLimit: () => {
       limit = true;
@@ -586,13 +597,17 @@ test("Build all queues the whole set once the cap admits its first run", async (
   });
   assert.deepEqual(caps, [3, 8, 8, 8, 8]);
   assert.equal(f.launches(), 1);
-  // With no slot left, the first run is refused and nothing is queued.
+  // The set's snapshot is now the repository's context.
+  assert.deepEqual(f.contexts, ["org_1/ghr_1@rsn_1"]);
+  // With no slot left, the first run is refused and nothing is queued,
+  // and the context stays where it was.
   caps.length = 0;
   const full = await f.request("repositories/ghr_1/builds", {});
   assert.equal(full.status, 409);
   assert.equal(((await full.json()) as { code: string }).code, "run_limit");
   assert.deepEqual(caps, [3]);
   assert.equal(f.launches(), 1);
+  assert.deepEqual(f.contexts, ["org_1/ghr_1@rsn_1"]);
 });
 test("Build all answers built runs as is, with each builder's parameters", async () => {
   const f = fixture();
@@ -622,8 +637,10 @@ test("Build all answers built runs as is, with each builder's parameters", async
       },
     },
   ]);
-  // Nothing new was queued, so no worker is woken.
+  // Nothing new was queued, so no worker is woken; the built set still
+  // becomes the repository's context, as moving back to it does.
   assert.equal(f.launches(), 0);
+  assert.deepEqual(f.contexts, ["org_1/ghr_1@rsn_1"]);
 });
 test("Build all skips the map readers when the graph is out of retries", async () => {
   const f = fixture();
@@ -664,6 +681,7 @@ test("Build all is refused for members, bad input, and other repositories", asyn
     404,
   );
   assert.deepEqual(f.enqueued, []);
+  assert.deepEqual(f.contexts, []);
 });
 test("a set refused partway still wakes a worker for what it queued", async () => {
   for (const [reason, status] of [
@@ -678,6 +696,8 @@ test("a set refused partway still wakes a worker for what it queued", async () =
     const response = await f.request("repositories/ghr_1/builds", {});
     assert.equal(response.status, status);
     assert.equal(f.launches(), 1);
+    // What it queued stands on the snapshot, so the context follows it.
+    assert.deepEqual(f.contexts, ["org_1/ghr_1@rsn_1"]);
   }
 });
 test("launch errors keep the queued response for watchdog recovery", async () => {

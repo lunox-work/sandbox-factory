@@ -51,7 +51,6 @@ const board = {
   boardType: "scrum",
   projectKey: "ACME",
   selection: { unassignedOnly: false, categories: {} },
-  sourceRepoId: null as string | null,
   createdAt: stamp,
 };
 
@@ -83,6 +82,7 @@ const widgets = {
   syncStatus: "ok",
   syncError: null,
   stack: ["TypeScript", "React"],
+  contextSnapshotId: null,
   createdAt: stamp,
 };
 
@@ -269,13 +269,6 @@ beforeEach(() => {
             ],
           },
         });
-      if (method === "PATCH" && path === "/jira/boards/jrb_1") {
-        const { sourceRepoId } = JSON.parse(String(init?.body)) as {
-          sourceRepoId: string | null;
-        };
-        world.boards = world.boards.map((row) => ({ ...row, sourceRepoId }));
-        return json({ board: world.boards[0] });
-      }
       if (path === "/github/connections")
         return json({ connections: world.github });
       if (path === "/github/repositories")
@@ -309,7 +302,6 @@ beforeEach(() => {
             organizationId: "org_1",
             title: "Written by hand",
             origin: "manual",
-            repoId: null,
             stack: [],
             revision: 1,
             version: 1,
@@ -387,7 +379,8 @@ test("writing a bounty needs nothing connected", async () => {
   await userEvent.click(
     within(paths).getByRole("button", { name: /write a bounty/i }),
   );
-  expect(onWriteBounty).toHaveBeenCalledWith(undefined);
+  // A bounty names no repository, so none is carried to the form.
+  expect(onWriteBounty).toHaveBeenCalledWith();
 });
 
 test("bounties written and none sized point at sizing them, not at writing more", async () => {
@@ -676,8 +669,8 @@ test("the x-ray says where a first bounty fits, and writing one starts there", a
     }),
   );
   expect(onWriteBounty).toHaveBeenCalledWith({
-    repoId: "ghr_1",
     area: "packages/billing",
+    repository: "acme/widgets",
   });
 
   // Writing comes first here, Jira after it, with what it would find.
@@ -694,25 +687,21 @@ test("the x-ray says where a first bounty fits, and writing one starts there", a
 /* Both                                                                       */
 /* -------------------------------------------------------------------------- */
 
-test("with both, the board offers its one repository as a click, and the sandbox comes from it", async () => {
+test("with both, the board's tickets may touch the workspace's repository, with nothing to link", async () => {
   world.jira = [jiraSite];
   world.boards = [board];
   world.github = [githubAccount];
   world.repositories = [widgets];
   show();
 
-  const link = await screen.findByTestId("board-repository");
   const teaser = await screen.findByTestId("teaser-bounty");
-  expect(teaser.textContent).toMatch(/link a repository/);
-
-  await userEvent.click(
-    within(link).getByRole("button", { name: "Link repository" }),
-  );
   await waitFor(() =>
-    expect(screen.getByTestId("teaser-bounty").textContent).toMatch(
-      /Cut from acme\/widgets/,
+    expect(teaser.textContent).toMatch(
+      /Cut from acme\/widgets, if its work touches it/,
     ),
   );
+  expect(teaser.textContent).not.toMatch(/link a repository/);
+  expect(screen.queryByTestId("board-repository")).toBeNull();
 });
 
 /* -------------------------------------------------------------------------- */
@@ -737,7 +726,7 @@ test("the checklist can be hidden, and stays hidden for this workspace", async (
 
 test("a workspace with every step done has no checklist", async () => {
   world.jira = [jiraSite];
-  world.boards = [{ ...board, sourceRepoId: "ghr_1" }];
+  world.boards = [board];
   world.github = [githubAccount];
   world.repositories = [widgets];
   world.proposals = 2;

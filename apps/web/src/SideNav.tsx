@@ -53,8 +53,6 @@ export type Screen =
   | "account"
   | "organizations"
   | "org-settings"
-  /** One board, on a connected site. Carries a connection id and a board id. */
-  | "org-jira-board"
   /** One registered repository, as a page of its own. Carries a repository id. */
   | "org-repository"
   /** Every workspace's bounties, and the proposals made from them. */

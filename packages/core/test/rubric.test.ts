@@ -86,7 +86,15 @@ const profile: ComplexityProfile = {
   risks: [],
 };
 
-const measured = { status: "measured", profile, specRevision: 1 } as const;
+/** The code measured in one repository, as most bounties' is. */
+const measuredIn = (code: ComplexityProfile, specRevision = 1) =>
+  ({
+    status: "measured",
+    profiles: [{ repository: "acme/app", profile: code }],
+    specRevision,
+  }) as const;
+
+const measured = measuredIn(profile);
 
 const points = (
   assessment: ReturnType<typeof assessRubric>,
@@ -100,6 +108,7 @@ const points = (
 test("the worked example scores 19 points, which is M", () => {
   const assessment = assessRubric({ spec, code: measured });
   assert.equal(assessment.version, RUBRIC_VERSION);
+  assert.equal(RUBRIC_VERSION, "rubric-v2");
   assert.deepEqual(
     assessment.dimensions.map(({ id, points, measured }) => [
       id,
@@ -139,6 +148,7 @@ test("every code factor names its evidence and scores by its rule", () => {
     code?.factors.map(({ id, evidence, points }) => [id, evidence, points]),
     [
       ["context", "9 files, 52 KB", 2],
+      ["repositories", "1: acme/app", 0],
       ["modules", "2: src/mailer, src/scheduler", 3],
       ["services", "1: email", 2],
       ["seams", "1 seam", 1],
@@ -152,10 +162,8 @@ test("every code factor names its evidence and scores by its rule", () => {
 
   const heavy = assessRubric({
     spec,
-    code: {
-      status: "measured",
-      specRevision: 2,
-      profile: {
+    code: measuredIn(
+      {
         ...profile,
         slice: {
           ...profile.slice,
@@ -169,13 +177,15 @@ test("every code factor names its evidence and scores by its rule", () => {
         pattern: null,
         nonFunctional: { scenarios: 0, migrations: true, ci: false },
       },
-    },
+      2,
+    ),
   });
   const factors = heavy.dimensions.find(({ id }) => id === "code")?.factors;
   assert.deepEqual(
     factors?.map(({ id, evidence, points }) => [id, evidence, points]),
     [
       ["context", "9 files, 400 KB", CONTEXT_BANDS.beyond],
+      ["repositories", "1: acme/app", 0],
       ["modules", "3: a, b, c", 6],
       ["services", "None", 0],
       ["seams", "None", 0],
@@ -189,15 +199,112 @@ test("every code factor names its evidence and scores by its rule", () => {
   assert.equal(heavy.code.specRevision, 2);
 });
 
+test("code across two repositories is scored together, with the integration between them", () => {
+  const web: ComplexityProfile = {
+    ...profile,
+    slice: {
+      ...profile.slice,
+      files: 3,
+      bytes: 12_000,
+      stubCoverage: "partial",
+      blockers: 1,
+    },
+    touchedModules: ["src/ui"],
+    externals: { services: ["sms", "email"], environment: 0, seams: 2 },
+    tests: { files: 0, untestedModules: ["src/ui"] },
+    pattern: { path: "src/ui/form.tsx", reason: "same form" },
+    nonFunctional: { scenarios: 0, migrations: true, ci: true },
+  };
+  const assessment = assessRubric({
+    spec,
+    code: {
+      status: "measured",
+      profiles: [
+        { repository: "acme/app", profile },
+        { repository: "acme/web", profile: web },
+      ],
+      specRevision: 3,
+    },
+  });
+  const code = assessment.dimensions.find(({ id }) => id === "code");
+  // Names are qualified by repository, counts summed, services taken once,
+  // stubs as thin as the thinnest, and the first pattern found. Modules are
+  // charged beyond each repository's first: the step into acme/web is the
+  // repository's points, not a module's as well.
+  assert.deepEqual(
+    code?.factors.map(({ id, evidence, points }) => [id, evidence, points]),
+    [
+      ["context", "12 files, 63 KB", 2],
+      ["repositories", "2: acme/app, acme/web", 4],
+      [
+        "modules",
+        "3: acme/app:src/mailer, acme/app:src/scheduler, acme/web:src/ui",
+        3,
+      ],
+      ["services", "2: email, sms", 4],
+      ["seams", "3 seams", 3],
+      ["untested", "1: acme/web:src/ui", 2],
+      ["migrations", "In a touched module", 4],
+      ["stubs", "Partial", 1],
+      ["blockers", "1 blocker", 2],
+      ["pattern", "acme/app:src/mailer/offer.ts", -2],
+    ],
+  );
+  assert.equal(code?.points, 23);
+  assert.equal(assessment.points, 36);
+  assert.equal(assessment.code.specRevision, 3);
+
+  // A pattern only the second has is still found, and names-only is thinner
+  // than partial.
+  const second = assessRubric({
+    spec,
+    code: {
+      status: "measured",
+      profiles: [
+        {
+          repository: "acme/app",
+          profile: {
+            ...profile,
+            pattern: null,
+            slice: { ...profile.slice, stubCoverage: "names-only" },
+          },
+        },
+        { repository: "acme/web", profile: web },
+      ],
+      specRevision: 1,
+    },
+  });
+  const factors = second.dimensions.find(({ id }) => id === "code")?.factors;
+  assert.equal(
+    factors?.find(({ id }) => id === "pattern")?.evidence,
+    "acme/web:src/ui/form.tsx",
+  );
+  assert.equal(
+    factors?.find(({ id }) => id === "stubs")?.evidence,
+    "Names only",
+  );
+
+  // Each repository beyond the first adds its points.
+  const three = assessRubric({
+    spec,
+    code: {
+      status: "measured",
+      profiles: ["a/one", "a/two", "a/three"].map((repository) => ({
+        repository,
+        profile,
+      })),
+      specRevision: 1,
+    },
+  });
+  assert.equal(points(three, "code", "repositories"), 8);
+});
+
 test("the slice's size scores by the context bands", () => {
   const sized = (bytes: number) =>
     points(
       assessRubric({
         spec,
-        code: {
-          ...measured,
-          profile: { ...profile, slice: { ...profile.slice, bytes } },
-        },
+        code: measuredIn({ ...profile, slice: { ...profile.slice, bytes } }),
       }),
       "code",
       "context",
@@ -213,15 +320,12 @@ test("the slice's size scores by the context bands", () => {
 test("a discount can empty the code dimension but not take it below zero", () => {
   const small = assessRubric({
     spec,
-    code: {
-      ...measured,
-      profile: {
-        ...profile,
-        slice: { ...profile.slice, bytes: 1_000 },
-        touchedModules: ["src/mailer"],
-        externals: { services: [], environment: 0, seams: 0 },
-      },
-    },
+    code: measuredIn({
+      ...profile,
+      slice: { ...profile.slice, bytes: 1_000 },
+      touchedModules: ["src/mailer"],
+      externals: { services: [], environment: 0, seams: 0 },
+    }),
   });
   const code = small.dimensions.find(({ id }) => id === "code");
   assert.equal(points(small, "code", "pattern"), -2);
@@ -250,6 +354,14 @@ test("without measured code the rubric scores the spec but has no size", () => {
     );
     assert.match(describeRubric(assessment), /the model's/);
   }
+  // Measured in no repository is no code to score, not a size from the
+  // spec alone.
+  const none = assessRubric({
+    spec,
+    code: { status: "measured", profiles: [], specRevision: 1 },
+  });
+  assert.equal(none.size, null);
+  assert.deepEqual(none.code, { status: "unavailable", specRevision: null });
 });
 
 test("scenarios score by weight, unweighed ones as moderate, and open questions add", () => {
@@ -412,6 +524,16 @@ test("the rules name every factor an assessment can carry, written from the numb
   }
   const byId = new Map(rules.map((rule) => [rule.id, rule]));
   assert.equal(byId.get("weight-heavy")?.scoring, "4 each");
+  assert.equal(
+    byId.get("repositories")?.scoring,
+    "4 per repository beyond the first",
+  );
+  // Read beside the code to read, ahead of the modules within them.
+  const code = rules.filter(({ dimension }) => dimension === "code");
+  assert.deepEqual(
+    code.slice(0, 3).map(({ id }) => id),
+    ["context", "repositories", "modules"],
+  );
   assert.equal(
     rubricRules({ light: 1, moderate: 2, heavy: 9 })[2]?.scoring,
     "9 each",

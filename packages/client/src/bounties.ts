@@ -1,5 +1,6 @@
 import {
   proposalActionResponseSchema,
+  bountyCategoryCountsSchema,
   bountyListResponseSchema,
   bountySizingResponseSchema,
   bountyResponseSchema,
@@ -14,11 +15,24 @@ import {
 import { ApiClient } from "./transport.js";
 export const ownerPath = (owner: string) =>
   `/api/v1/orgs/${encodeURIComponent(owner)}`;
-/** A list page's query: its size, and where the page before it ended. */
-function pageParams(query: { limit?: number; cursor?: string }) {
+/**
+ * A list page's query: its size, where the page before it ended, and what
+ * it is narrowed to — a category's id (`uncategorized` for none) and a
+ * board's.
+ */
+export interface BountyListQuery {
+  limit?: number;
+  cursor?: string;
+  category?: string;
+  board?: string;
+}
+
+function pageParams(query: BountyListQuery) {
   const params = new URLSearchParams();
   if (query.limit !== undefined) params.set("limit", String(query.limit));
   if (query.cursor !== undefined) params.set("cursor", query.cursor);
+  if (query.category !== undefined) params.set("category", query.category);
+  if (query.board !== undefined) params.set("board", query.board);
   return params;
 }
 export class BountyClient extends ApiClient {
@@ -50,7 +64,7 @@ export class BountyClient extends ApiClient {
   }
   async bounties(
     owner: string,
-    query: { limit?: number; cursor?: string } = {},
+    query: BountyListQuery = {},
     signal?: AbortSignal,
   ) {
     return bountyListResponseSchema.parse(
@@ -60,12 +74,23 @@ export class BountyClient extends ApiClient {
     );
   }
   /** The caller's bounties across every organization they belong to. */
-  async myBounties(
-    query: { limit?: number; cursor?: string } = {},
-    signal?: AbortSignal,
-  ) {
+  async myBounties(query: BountyListQuery = {}, signal?: AbortSignal) {
     return bountyListResponseSchema.parse(
       await this.request(`/api/v1/me/bounties?${pageParams(query)}`, {
+        signal,
+      }),
+    );
+  }
+  /**
+   * How many of the caller's bounties each category holds, narrowed to
+   * one board's when `board` names it.
+   */
+  async myBountyCategories(
+    query: { board?: string } = {},
+    signal?: AbortSignal,
+  ) {
+    return bountyCategoryCountsSchema.parse(
+      await this.request(`/api/v1/me/bounty-categories?${pageParams(query)}`, {
         signal,
       }),
     );

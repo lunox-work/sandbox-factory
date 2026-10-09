@@ -37,8 +37,8 @@ function written(overrides: Partial<StoredBounty> = {}): StoredBounty {
     components: [],
     inputTruncated: false,
     origin: "manual",
-    repoId: null,
     stack: [],
+    categories: [],
     createdBy: "user_1",
     revision: 1,
     version: 1,
@@ -110,7 +110,7 @@ function proposalOf(
     specRevision: null,
     step: null,
     rubric: null,
-    repoSnapshotId: null,
+    repositories: [],
     contextVersions: { jira: null, github: null },
     decidedAt: null,
     decidedBy: null,
@@ -168,9 +168,7 @@ function harness(
     bounties?: StoredBounty[];
     live?: Record<string, StoredBountyProposal>;
     listed?: ListedBounty[];
-    create?:
-      | { ok: true; bounty: StoredBounty }
-      | { ok: false; reason: "repo-not-found" };
+    create?: StoredBounty;
     update?: BountyMutationResult;
     /** What approving or unapproving the overview answers. */
     decide?: BountyMutationResult;
@@ -199,10 +197,7 @@ function harness(
   const bounties = {
     get: record("get", (_org, id) => held.get(id as string) ?? null),
     list: record("list", () => options.listed ?? []),
-    create: record(
-      "create",
-      () => options.create ?? { ok: true, bounty: written() },
-    ),
+    create: record("create", () => options.create ?? written()),
     update: record(
       "update",
       (_org, _id, _revision, change) =>
@@ -422,6 +417,8 @@ test("the caller's bounties list across their own organizations only", async () 
           listedOf(written()),
         ]);
       },
+      categoryCounts: () =>
+        Promise.resolve({ total: 0, uncategorized: 0, categories: {} }),
     },
   });
 
@@ -456,6 +453,83 @@ test("the caller's bounties list across their own organizations only", async () 
   );
 });
 
+test("the caller's bounties narrow to a category, to none, and to a board", async () => {
+  const pages: unknown[] = [];
+  const counted: unknown[] = [];
+  const app = new Hono<{ Variables: AuthVariables }>();
+  app.use("*", async (c, next) => {
+    c.set("user", { id: "user_1" } as never);
+    await next();
+  });
+  mountCallerBountyRoutes(app, {
+    organizationsOf: () => Promise.resolve(["org_1"]),
+    bounties: {
+      listAcross: (_organizationIds, page) => {
+        pages.push(page);
+        return Promise.resolve([
+          listedOf(
+            imported({
+              categories: [
+                {
+                  id: "left-behind",
+                  label: "Left behind",
+                  reason: "Open 412 days",
+                },
+              ],
+            }),
+          ),
+        ]);
+      },
+      categoryCounts: (organizationIds, filter) => {
+        counted.push({ organizationIds, ...filter });
+        return Promise.resolve({
+          total: 3,
+          uncategorized: 1,
+          categories: { "left-behind": 2 },
+        });
+      },
+    },
+  });
+
+  const listed = (await (
+    await app.request("/api/v1/me/bounties?category=left-behind&board=jrb_1")
+  ).json()) as { bounties: { categories: { id: string }[] }[] };
+  assert.deepEqual(pages.at(-1), {
+    limit: 25,
+    category: "left-behind",
+    boardId: "jrb_1",
+  });
+  assert.deepEqual(
+    listed.bounties[0]?.categories.map(({ id }) => id),
+    ["left-behind"],
+  );
+
+  await app.request("/api/v1/me/bounties?category=uncategorized");
+  assert.deepEqual(pages.at(-1), { limit: 25, uncategorized: true });
+  assert.equal(
+    (await app.request("/api/v1/me/bounties?category=Not%20One")).status,
+    400,
+  );
+
+  const counts = (await (
+    await app.request("/api/v1/me/bounty-categories?board=jrb_1")
+  ).json()) as {
+    total: number;
+    uncategorized: number;
+    categories: { id: string; count: number }[];
+  };
+  assert.deepEqual(counted, [{ organizationIds: ["org_1"], boardId: "jrb_1" }]);
+  assert.equal(counts.total, 3);
+  assert.equal(counts.uncategorized, 1);
+  // Every category, in the registry's order, with a zero for the empty.
+  assert.equal(counts.categories.length, 6);
+  assert.deepEqual(counts.categories.map(({ id, count }) => [id, count])[0], [
+    "left-behind",
+    2,
+  ]);
+  assert.ok(counts.categories.slice(1).every(({ count }) => count === 0));
+});
+
 test("a listed Jira bounty links to its issue", async () => {
   const state = harness({ listed: [listedOf(imported())] });
   const body = (await (await state.request("GET", "bounties")).json()) as {
@@ -465,6 +539,32 @@ test("a listed Jira bounty links to its issue", async () => {
     body.bounties[0]?.jira.url,
     "https://acme.atlassian.net/browse/APP-1",
   );
+});
+
+test("a listed bounty's proposal names the repositories its sizing touches", async () => {
+  const repositories = [
+    { repoId: "ghr_1", snapshotId: "rsn_1" },
+    { repoId: "ghr_2", snapshotId: "rsn_2" },
+  ];
+  const state = harness({
+    listed: [
+      {
+        ...listedOf(written()),
+        proposal: {
+          id: "bpr_1",
+          status: "proposed",
+          complexity: "M",
+          repositories,
+          amountMinor: 200,
+          currency: "USD",
+        },
+      },
+    ],
+  });
+  const body = (await (await state.request("GET", "bounties")).json()) as {
+    bounties: { proposal: { repositories: unknown } | null }[];
+  };
+  assert.deepEqual(body.bounties[0]?.proposal?.repositories, repositories);
 });
 
 test("any member writes a bounty; only its title is needed", async () => {
@@ -485,19 +585,23 @@ test("any member writes a bounty; only its title is needed", async () => {
     {
       title: "Invitations are not sent",
       description: "",
-      repoId: null,
       stack: [],
     },
   ]);
 });
 
 test("a bounty's stack is stored under the catalog's names, each once", async () => {
-  const state = harness({ create: { ok: true, bounty: written() } });
+  const state = harness({ create: written({ title: "Stored as written" }) });
   const response = await state.request("POST", "bounties", {
     title: "Invitations are not sent",
     stack: ["postgres", "PostgreSQL", " Our mailer "],
   });
   assert.equal(response.status, 201);
+  // What the store kept is what answers, not what was sent.
+  assert.equal(
+    ((await response.json()) as { bounty: { title: string } }).bounty.title,
+    "Stored as written",
+  );
   assert.deepEqual((state.calls[0]?.args[2] as { stack: string[] }).stack, [
     "PostgreSQL",
     "Our mailer",
@@ -510,9 +614,7 @@ test("a bounty's stack is stored under the catalog's names, each once", async ()
 });
 
 test("a bounty that cannot be stored is refused with why", async () => {
-  const state = harness({
-    create: { ok: false, reason: "repo-not-found" },
-  });
+  const state = harness();
   const invalid = await state.request("POST", "bounties", { title: "" });
   assert.equal(invalid.status, 400);
   assert.equal(
@@ -523,22 +625,35 @@ test("a bounty that cannot be stored is refused with why", async () => {
     (await state.request("POST", "bounties", "not json")).status,
     400,
   );
-  const foreignRepo = await state.request("POST", "bounties", {
+  // A bounty names no repository: its work may touch any of the
+  // workspace's, so one named is a field the body does not have.
+  const naming = await state.request("POST", "bounties", {
     title: "t",
-    repoId: "ghr_other",
+    repoId: "ghr_1",
   });
-  assert.equal(foreignRepo.status, 404);
+  assert.equal(naming.status, 400);
   assert.equal(
-    ((await foreignRepo.json()) as { code: string }).code,
-    "repo_not_found",
+    ((await naming.json()) as { code: string }).code,
+    "invalid_bounty",
   );
+  const renaming = await state.request("PATCH", "bounties/bty_7", {
+    expectedRevision: 1,
+    repoId: "ghr_1",
+  });
+  assert.equal(renaming.status, 400);
+  assert.equal(state.calls.filter(({ method }) => method !== "get").length, 0);
 });
 
 test("a bounty reads with its live proposal, or 404", async () => {
   const bounty = written();
   const state = harness({
     bounties: [bounty],
-    live: { bty_7: proposalOf(bounty, { status: "approved" }) },
+    live: {
+      bty_7: proposalOf(bounty, {
+        status: "approved",
+        repositories: [{ repoId: "ghr_1", snapshotId: "rsn_1" }],
+      }),
+    },
   });
   const response = await state.request("GET", "bounties/bty_7");
   assert.equal(response.status, 200);
@@ -546,10 +661,12 @@ test("a bounty reads with its live proposal, or 404", async () => {
     bounty: { description: string; proposal: { id: string; status: string } };
   };
   assert.equal(body.bounty.description, bounty.description);
+  // With the repositories its sizing said the work touches.
   assert.deepEqual(body.bounty.proposal, {
     id: "bpr_1",
     status: "approved",
     complexity: "M",
+    repositories: [{ repoId: "ghr_1", snapshotId: "rsn_1" }],
     amountMinor: 200,
     currency: "USD",
   });
@@ -680,7 +797,6 @@ test("a change is saved against the revision the editor saw", async () => {
 test("a refused change says why", async () => {
   const cases: [BountyMutationResult, number, string | undefined][] = [
     [{ ok: false, reason: "not-found" }, 404, undefined],
-    [{ ok: false, reason: "repo-not-found" }, 404, "repo_not_found"],
     [{ ok: false, reason: "jira-owned" }, 409, "jira_owned"],
     [
       { ok: false, reason: "changed", current: written({ revision: 3 }) },

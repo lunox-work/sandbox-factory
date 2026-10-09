@@ -4,9 +4,9 @@
  *
  * Home opens straight on a board of the active organization — the one last
  * opened there, or failing that its first — so a reload lands where the
- * person left off. The board opens on its backlog scan until it has
- * proposals (see `JiraBoard`), under home's own greeting and checklist,
- * which `Home` hands in as `intro`.
+ * person left off. The board shows its backlog scan (see `JiraBoard`),
+ * under home's own greeting and checklist, which `Home` hands in as
+ * `intro`.
  *
  * Remembered per person and per organization, so switching organization in
  * the rail moves home to that organization's board rather than keeping one
@@ -22,7 +22,7 @@ import { Button } from "@/components/ui/button";
 
 import type { RepositoryAction } from "./features/onboarding/BacklogScan";
 import { BoardIcon, JiraBoard } from "./Jira";
-import { pathForScreen } from "./routes";
+import { bountiesUrl } from "./routes";
 import { useJiraBoards, type JiraBoard as Board } from "./useJira";
 
 export interface RememberedBoard {
@@ -76,8 +76,8 @@ export function writeHomeBoard(
 /**
  * Which board home is showing, and the way to another.
  *
- * Also the way out to the board's own page: home has no trail, and without
- * this the only route to it would be through the organization's settings.
+ * Also the way out to the board's bounties: the list narrowed to the
+ * board, which its scan's tickets were imported into.
  */
 function BoardPicker({
   boards,
@@ -115,14 +115,11 @@ function BoardPicker({
       actions={[
         {
           key: "open",
-          label: "Open board page",
+          label: "Open its bounties",
           icon: <LayoutList />,
-          href: pathForScreen(
-            "org-jira-board",
-            organizationSlug,
-            current.connectionId,
-            current.id,
-          ),
+          href: bountiesUrl(null, {
+            board: { workspace: organizationSlug, boardId: current.id },
+          }),
           onSelect: () => onOpenBoard(current),
         },
       ]}
@@ -151,7 +148,6 @@ export function HomeBoard({
   role,
   intro,
   repositoryAction,
-  onBoardName,
   onOpenBoard,
   fallback,
 }: {
@@ -163,8 +159,7 @@ export function HomeBoard({
   intro: ReactNode;
   /** How a workspace with no repository gets one; see `JiraBoard`. */
   repositoryAction?: RepositoryAction | undefined;
-  onBoardName: (name: string | undefined) => void;
-  /** Leaves home for the board's own page, with its trail. */
+  /** Leaves home for the board's bounties. */
   onOpenBoard: (board: Board) => void;
   /** Shown when the organization has no board to open. */
   fallback: ReactNode;
@@ -221,10 +216,8 @@ export function HomeBoard({
       // different page, not the same one with new tickets.
       key={`${organizationId}:${board.id}`}
       organizationId={organizationId}
-      connectionId={board.connectionId}
+      organizationSlug={organizationSlug}
       boardId={board.id}
-      boardName={board.name}
-      onBoardName={onBoardName}
       role={role}
       repositoryAction={repositoryAction}
       header={

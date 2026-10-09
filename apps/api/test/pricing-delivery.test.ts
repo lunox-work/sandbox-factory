@@ -92,7 +92,7 @@ function proposal(
     decidedAt: "2026-09-22T00:00:00.000Z",
     decidedBy: "usr_1",
     decisionDeliveryPolicy: "requested",
-    repoSnapshotId: null,
+    repositories: [],
     contextVersions: { jira: null, github: null },
     createdAt: "2026-09-22T00:00:00.000Z",
     updatedAt: "2026-09-22T00:00:00.000Z",

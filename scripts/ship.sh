@@ -1,5 +1,12 @@
 #!/usr/bin/env bash
 # ship.sh — verify, push, open a PR, return to main. GitHub handles the rest.
+#
+# AGENTS: exit 0 is not done. An agent that runs this owns the PR until it
+# merges into main: watch its checks (`gh pr checks <n> --watch`), and fix
+# whatever blocks it — a failing check, a review comment, a conflict, a branch
+# behind main — by committing to the PR's branch and pushing, until
+# `gh pr view <n> --json state` says MERGED. Only then report it shipped.
+# Never bypass a check: no --no-verify, no admin merge.
 
 set -euo pipefail
 
@@ -20,6 +27,10 @@ Usage: ./scripts/ship.sh --title "fix: ..." --yes
 
 Verifies, pushes, opens a PR and returns to main. GitHub handles CI and
 auto-merge. Exit 0 means the PR is open, not merged or deployed.
+
+An agent running this monitors the PR afterwards and resolves whatever
+blocks it (failing checks, review comments, conflicts) until it is merged
+into main; see the note at the top of this script.
 
 Flags:
   --branch <name>     Branch to create. Default: derived from the title.
@@ -355,6 +366,7 @@ finish_shipping() {
   else
     info "GitHub owns CI and auto-merge."
     info "A blocker leaves the PR open; inspect: gh pr view $PR_NUM"
+    info "Agents: monitor PR #$PR_NUM and resolve what blocks it until it merges into main."
   fi
   info "$PR_URL"
   exit 0

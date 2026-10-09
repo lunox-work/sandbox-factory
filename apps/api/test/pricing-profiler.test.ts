@@ -238,13 +238,15 @@ class FakeProfiles {
     const existing = [...this.rows.values()].find(
       (row) =>
         row.proposalId === input.proposalId &&
-        row.specRevision === input.specRevision,
+        row.specRevision === input.specRevision &&
+        row.snapshotId === input.snapshotId,
     );
     if (existing !== undefined) return existing;
     const row: StoredBountyProfile = {
       id: `bpf_${this.rows.size + 1}`,
       organizationId: owner,
       ...input,
+      repository: "acme/app",
       status: "queued",
       errorCode: null,
       runErrorCode: null,

@@ -24,7 +24,11 @@
  * screen beside the button, so there is no doubt whose it will be.
  */
 
-import type { GithubRepoDto, MembershipDto } from "@sandbox-factory/shared";
+import {
+  isWorkspaceSource,
+  type GithubRepoDto,
+  type MembershipDto,
+} from "@sandbox-factory/shared";
 import { PenLine, RefreshCw } from "lucide-react";
 import { useEffect, type ReactNode } from "react";
 
@@ -78,9 +82,7 @@ export interface HomeProps {
   name: string;
   /** The workspace in the rail: the one home is about. */
   organization: MembershipDto;
-  /** Reports the board on screen up to the shell, for the trail and title. */
-  onBoardName: (name: string | undefined) => void;
-  /** Leaves home for a board's own page. */
+  /** Leaves home for a board's bounties. */
   onOpenBoard: (board: JiraBoard) => void;
   /** Opens the workspace's settings on one tab. */
   onOpenSettings: (organization: MembershipDto, tab: ConnectionTab) => void;
@@ -101,7 +103,6 @@ function WorkspaceHome({
   userId,
   name,
   organization,
-  onBoardName,
   onOpenBoard,
   onOpenSettings,
   onOpenRepository,
@@ -128,7 +129,7 @@ function WorkspaceHome({
   useEffect(() => {
     if (picking)
       replaceLocation(
-        `${pathForScreen("org-settings", organization.slug, undefined, undefined, "github")}&github=pick`,
+        `${pathForScreen("org-settings", organization.slug, undefined, "github")}&github=pick`,
       );
   }, [picking, organization.slug]);
 
@@ -147,13 +148,9 @@ function WorkspaceHome({
     canManage && facts.github.available ? setup.github.connect : undefined;
   const needsRepository =
     facts.github.connected > 0 && facts.github.repositories === 0;
-  const firstRepo = setup.repos.repos.find(
-    (repo) => repo.role === "source" && repo.syncStatus !== "gone",
-  );
-  const writeBounty = () =>
-    onWriteBounty(
-      firstRepo === undefined ? undefined : { repoId: firstRepo.id },
-    );
+  const firstRepo = setup.repos.repos.find(isWorkspaceSource);
+  // A bounty names no repository: its work may touch any of them.
+  const writeBounty = () => onWriteBounty();
 
   const actions: SetupActions = {
     connectJira,
@@ -271,7 +268,6 @@ function WorkspaceHome({
         organizationSlug={organization.slug}
         role={organization.role}
         intro={intro}
-        onBoardName={onBoardName}
         onOpenBoard={onOpenBoard}
         repositoryAction={
           needsRepository

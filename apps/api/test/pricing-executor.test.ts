@@ -28,6 +28,7 @@ import {
 import {
   BountyExecutor,
   type BountyExecutorOptions,
+  type RepositoryOutlineRead,
 } from "../src/pricing/executor.js";
 import {
   FakeCaller,
@@ -36,6 +37,7 @@ import {
   type StructuredCall,
   type StructuredResult,
 } from "../src/sizing/caller.js";
+import type { DraftedSpec } from "../src/sizing/tools/draft-spec.js";
 
 /** What the harness's bounties are drafted as, unless a test says otherwise. */
 const draft: SpecDraft = {
@@ -56,9 +58,12 @@ const draft: SpecDraft = {
   assumptions: [],
 };
 
-function drafted(): StructuredResult<SpecDraft> {
+/** A draft of `draft`, naming the outlined repositories its work changes. */
+function drafted(
+  repositories: readonly string[] = [],
+): StructuredResult<DraftedSpec> {
   return {
-    result: draft,
+    result: { spec: draft, repositories },
     actualModel: "drafting-model",
     usage: { inputTokens: 100, outputTokens: 40 },
   };
@@ -73,7 +78,7 @@ type Answer<T> = StructuredResult<T> | Error;
  */
 function sizing(
   sizes: Answer<BountySizingResult>[],
-  drafts: Answer<SpecDraft>[] | (() => Answer<SpecDraft>) = drafted,
+  drafts: Answer<DraftedSpec>[] | (() => Answer<DraftedSpec>) = () => drafted(),
 ): FakeCaller {
   return new FakeCaller("fake", { size_bounty: sizes, draft_spec: drafts });
 }
@@ -180,8 +185,8 @@ function bounty(overrides: Partial<StoredBounty> = {}): StoredBounty {
     components: [],
     inputTruncated: false,
     origin: "jira",
-    repoId: null,
     stack: [],
+    categories: [],
     createdBy: null,
     revision: 1,
     version: 1,
@@ -251,16 +256,16 @@ function harness(options: {
   pickedSubtasks?: number;
   /** Keeping Jira's text on the bounty fails with this. */
   refreshError?: Error;
-  /** The repository the board names, if any. */
-  sourceRepoId?: string | null;
   /** The bounties the store holds, by id; a board's imports are added. */
   bounties?: StoredBounty[];
   /** What the Jira client answers for a run's client; absent, a client. */
   clientResult?: { ok: false; reason: "not-found" | "reconnect" };
   /** The import answers no pointer, as for a board not the organization's. */
   importFails?: boolean;
-  /** What the outline read answers; absent, the executor has no reader. */
-  outlineFor?: BountyExecutorOptions["outlineFor"];
+  /** What the outlines read answers; absent, the executor has no reader. */
+  outlinesFor?: BountyExecutorOptions["outlinesFor"];
+  /** The labels each draft names as the repositories its work changes. */
+  touched?: readonly string[];
   /** What the context read answers; absent, the executor has no reader. */
   contextFor?: BountyExecutorOptions["contextFor"];
   onBackgroundError?: BountyExecutorOptions["onBackgroundError"];
@@ -271,6 +276,7 @@ function harness(options: {
 }) {
   const current = run(options.runOverrides);
   const plans: unknown[] = [];
+  const categorized: { bountyId: string; categories: string[] }[] = [];
   const outcomes: unknown[] = [];
   const finishes: { status: string; details: unknown }[] = [];
   const proposalInputs: unknown[] = [];
@@ -350,7 +356,6 @@ function harness(options: {
     projectKey: "APP",
     selection: current.selection,
     pricing: options.pricing,
-    sourceRepoId: options.sourceRepoId ?? null,
     createdAt: "2026-01-01T00:00:00.000Z",
   };
   const boards = {
@@ -421,6 +426,17 @@ function harness(options: {
       refreshed.push({ bountyId, content });
       return Promise.resolve(true);
     },
+    categorize: (
+      _org: string,
+      bountyId: string,
+      categories: readonly { id: string }[],
+    ) => {
+      categorized.push({
+        bountyId,
+        categories: categories.map(({ id }) => id),
+      });
+      return Promise.resolve(true);
+    },
   } as unknown as BountyStore;
   const proposals = {
     get: () =>
@@ -445,6 +461,7 @@ function harness(options: {
               proposal: {
                 id: `bpr_${proposalInputs.length}`,
                 specRevision: "spec" in input ? 1 : null,
+                repositories: input["repositories"],
               },
             }
           : { status },
@@ -460,7 +477,11 @@ function harness(options: {
       proposalInputs.push(input);
       return Promise.resolve({
         status: "repriced" as const,
-        proposal: { id: source, specRevision: "spec" in input ? 2 : null },
+        proposal: {
+          id: source,
+          specRevision: "spec" in input ? 2 : null,
+          repositories: input["repositories"],
+        },
         ...(options.writebackOperationId === undefined
           ? {}
           : { writebackOperationId: options.writebackOperationId }),
@@ -492,17 +513,20 @@ function harness(options: {
   };
   const caller =
     options.caller ??
-    sizing([
-      {
-        result: {
-          complexity: "M",
-          confidence: "high",
-          rationale: "A few related files.",
+    sizing(
+      [
+        {
+          result: {
+            complexity: "M",
+            confidence: "high",
+            rationale: "A few related files.",
+          },
+          actualModel: "actual-model",
+          usage: { inputTokens: 10, outputTokens: 5 },
         },
-        actualModel: "actual-model",
-        usage: { inputTokens: 10, outputTokens: 5 },
-      },
-    ]);
+      ],
+      () => drafted(options.touched),
+    );
   const executor = new BountyExecutor({
     boards,
     runs,
@@ -514,9 +538,9 @@ function harness(options: {
     caller,
     clientFor: () =>
       Promise.resolve(options.clientResult ?? { ok: true, client }),
-    ...(options.outlineFor === undefined
+    ...(options.outlinesFor === undefined
       ? {}
-      : { outlineFor: options.outlineFor }),
+      : { outlinesFor: options.outlinesFor }),
     ...(options.contextFor === undefined
       ? {}
       : { contextFor: options.contextFor }),
@@ -538,6 +562,7 @@ function harness(options: {
   return {
     executor,
     plans,
+    categorized,
     outcomes,
     finishes,
     proposalInputs,
@@ -595,6 +620,11 @@ test("a backlog run plans each bounty with the reason it was picked", async () =
     ],
   ]);
   assert.equal(state.caller.inputsFor("size_bounty").length, 1);
+  // The bounty keeps the categories it was picked for, as an import's does.
+  assert.deepEqual(
+    state.categorized.map(({ categories }) => categories),
+    [["left-behind"]],
+  );
   assert.deepEqual(state.finishes[0]?.details, {
     candidatesScanned: 2,
     skippedLive: 0,
@@ -824,30 +854,49 @@ test("a run drafts the spec first and stores it with the proposal", async () => 
     draft,
     origin: "draft",
     actualModel: "drafting-model",
-    promptVersion: "draft-v5",
+    promptVersion: "draft-v6",
   });
 });
 
-test("a board with a source repository drafts beside its outline and records the snapshot", async () => {
+/** The workspace's repositories as the outline read answers them. */
+const outlines: RepositoryOutlineRead[] = [
+  {
+    repoId: "ghr_1",
+    fullName: "acme/app",
+    snapshotId: "rsn_1",
+    text: "- src: 3 files",
+  },
+  {
+    repoId: "ghr_2",
+    fullName: "acme/web",
+    snapshotId: "rsn_2",
+    text: "- web: 2 files",
+  },
+];
+
+test("the workspace's repositories are outlined once for the run, each under its label", async () => {
   const asked: string[] = [];
   const state = harness({
-    sourceRepoId: "ghr_1",
-    outlineFor: (_organizationId, repoId) => {
-      asked.push(repoId);
-      return Promise.resolve({ snapshotId: "rsn_1", text: "- src: 3 files" });
+    outlinesFor: (organizationId) => {
+      asked.push(organizationId);
+      return Promise.resolve(outlines);
     },
+    touched: ["Repository 2"],
     candidates: [issue("1"), issue("2")],
   });
   await state.executor.execute("org_1", "brn_1");
 
   // Read once for the run, however many bounties it sizes.
-  assert.deepEqual(asked, ["ghr_1"]);
+  assert.deepEqual(asked, ["org_1"]);
   const drafts = state.caller.calls.filter(
     ({ tool }) => tool === "draft_spec",
   ) as { input: { repositoryOutline?: string } }[];
   assert.equal(drafts.length, 2);
   for (const call of drafts) {
-    assert.equal(call.input.repositoryOutline, "- src: 3 files");
+    assert.equal(
+      call.input.repositoryOutline,
+      "=== Repository 1 ===\n- src: 3 files\n\n=== Repository 2 ===\n- web: 2 files",
+    );
   }
   // The size is asked exactly as before: it is never shown the outline.
   for (const call of state.caller.calls.filter(
@@ -855,12 +904,24 @@ test("a board with a source repository drafts beside its outline and records the
   )) {
     assert.equal("repositoryOutline" in (call.input as object), false);
   }
+  // Only the repository the draft named, at the snapshot it was outlined at.
   for (const input of state.proposalInputs) {
-    assert.equal(
-      (input as { repoSnapshotId: unknown }).repoSnapshotId,
-      "rsn_1",
-    );
+    assert.deepEqual((input as { repositories: unknown }).repositories, [
+      { repoId: "ghr_2", snapshotId: "rsn_2" },
+    ]);
   }
+});
+
+test("a label the outline did not hold names no repository", async () => {
+  const state = harness({
+    outlinesFor: () => Promise.resolve(outlines),
+    touched: ["Repository 3", "acme/web", "Repository 1"],
+  });
+  await state.executor.execute("org_1", "brn_1");
+  assert.deepEqual(
+    (state.proposalInputs[0] as { repositories: unknown }).repositories,
+    [{ repoId: "ghr_1", snapshotId: "rsn_1" }],
+  );
 });
 
 test("a bounty's synced context is shown to the draft and the size, and its versions recorded", async () => {
@@ -923,6 +984,70 @@ test("a bounty's synced context is shown to the draft and the size, and its vers
   );
 });
 
+test("the repositories' documents are shown under the labels their outlines have", async () => {
+  const documents = (text: string) => [
+    { path: "README.md", bytes: 10, text, truncated: false },
+  ];
+  const held = {
+    jira: null,
+    github: {
+      source: "github",
+      version: 2,
+      ref: "2 repositories",
+      refId: "workspace",
+      revision: "r",
+      contentHash: "h",
+      syncedBy: null,
+      createdAt: "2026-10-07T00:00:00.000Z",
+      checkedAt: "2026-10-07T00:00:00.000Z",
+      content: {
+        // Read in another order than the outlines are listed in.
+        repositories: [
+          {
+            fullName: "acme/web",
+            branch: "main",
+            commitSha: "w1",
+            documents: documents("The web app."),
+            omitted: 0,
+          },
+          {
+            fullName: "acme/app",
+            branch: "main",
+            commitSha: "c1",
+            documents: documents("The service."),
+            omitted: 0,
+          },
+        ],
+        unread: [],
+      },
+    },
+  } as const;
+  const state = harness({
+    outlinesFor: () => Promise.resolve(outlines),
+    contextFor: () => Promise.resolve(held as never),
+  });
+  await state.executor.execute("org_1", "brn_1");
+
+  const expected = [
+    "Repository documents:",
+    "=== Repository 2 ===",
+    "--- README.md ---\nThe web app.",
+    "=== Repository 1 ===",
+    "--- README.md ---\nThe service.",
+  ].join("\n\n");
+  for (const tool of ["draft_spec", "size_bounty"]) {
+    const call = state.caller.calls.find((called) => called.tool === tool) as
+      { input: { sourceContext?: string } } | undefined;
+    assert.equal(call?.input.sourceContext, expected, tool);
+    // A repository's name never reaches the model.
+    assert.doesNotMatch(call?.input.sourceContext ?? "", /acme/, tool);
+  }
+  assert.deepEqual(
+    (state.proposalInputs[0] as { contextVersions: unknown }).contextVersions,
+    { jira: null, github: 2 },
+  );
+});
+
 test("a bounty with no context, or one that cannot be read, is sized without", async () => {
   const reported: string[] = [];
   for (const contextFor of [
@@ -946,40 +1071,40 @@ test("a bounty with no context, or one that cannot be read, is sized without", a
   assert.deepEqual(reported, ["bounty_context_unavailable"]);
 });
 
-test("no repository, no snapshot yet, or no reader: drafts as before", async () => {
+test("no repository with a snapshot, or no reader: drafts as before", async () => {
   for (const options of [
-    { sourceRepoId: null, outlineFor: () => Promise.reject(new Error("no")) },
-    { sourceRepoId: "ghr_1", outlineFor: () => Promise.resolve(null) },
-    { sourceRepoId: "ghr_1" },
+    { outlinesFor: () => Promise.resolve([]) },
+    { outlinesFor: () => Promise.reject(new Error("no")) },
+    {},
   ]) {
-    const state = harness(options);
+    const state = harness({ ...options, touched: ["Repository 1"] });
     await state.executor.execute("org_1", "brn_1");
     const draft = state.caller.calls.find(({ tool }) => tool === "draft_spec");
     assert.equal("repositoryOutline" in (draft?.input as object), false);
-    assert.equal(
-      (state.proposalInputs[0] as { repoSnapshotId: unknown }).repoSnapshotId,
-      null,
+    assert.deepEqual(
+      (state.proposalInputs[0] as { repositories: unknown }).repositories,
+      [],
     );
   }
 });
 
-test("an outline that cannot be read is reported and the run drafts without it", async () => {
+test("outlines that cannot be read are reported and the run drafts without them", async () => {
   const reported: string[] = [];
   const state = harness({
-    sourceRepoId: "ghr_1",
-    outlineFor: () => Promise.reject(new Error("database down")),
+    outlinesFor: () => Promise.reject(new Error("database down")),
     onBackgroundError: (code) => void reported.push(code),
   });
   await state.executor.execute("org_1", "brn_1");
 
   assert.deepEqual(reported, ["bounty_outline_unavailable"]);
+  const draft = state.caller.calls.find(({ tool }) => tool === "draft_spec");
+  assert.equal("repositoryOutline" in (draft?.input as object), false);
   assert.equal(state.finishes[0]?.status, "succeeded");
 });
 
-test("a proposal whose draft failed records no snapshot, outline or not", async () => {
+test("a proposal whose draft failed records no repositories, outlines or not", async () => {
   const state = harness({
-    sourceRepoId: "ghr_1",
-    outlineFor: () => Promise.resolve({ snapshotId: "rsn_1", text: "outline" }),
+    outlinesFor: () => Promise.resolve(outlines),
     caller: sizing(
       [
         {
@@ -993,38 +1118,35 @@ test("a proposal whose draft failed records no snapshot, outline or not", async 
   });
   await state.executor.execute("org_1", "brn_1");
 
-  assert.equal(
-    (state.proposalInputs[0] as { repoSnapshotId: unknown }).repoSnapshotId,
-    null,
+  assert.deepEqual(
+    (state.proposalInputs[0] as { repositories: unknown }).repositories,
+    [],
   );
 });
 
-test("each spec drafted beside a snapshot asks for its complexity profile", async () => {
+test("each spec asks for a complexity profile in each repository its work touches", async () => {
   const asked: unknown[] = [];
   const state = harness({
-    sourceRepoId: "ghr_1",
-    outlineFor: () => Promise.resolve({ snapshotId: "rsn_1", text: "outline" }),
+    outlinesFor: () => Promise.resolve(outlines),
+    touched: ["Repository 1", "Repository 2"],
     candidates: [issue("1"), issue("2")],
     onProposalDrafted: (organizationId, input) =>
       void asked.push({ organizationId, ...input }),
   });
   await state.executor.execute("org_1", "brn_1");
 
+  const wakeup = (proposalId: string, id: string, snapshotId: string) => ({
+    organizationId: "org_1",
+    proposalId,
+    specRevision: 1,
+    specHash: spec(id).pricingSpecHash,
+    snapshotId,
+  });
   assert.deepEqual(asked, [
-    {
-      organizationId: "org_1",
-      proposalId: "bpr_1",
-      specRevision: 1,
-      specHash: spec("1").pricingSpecHash,
-      snapshotId: "rsn_1",
-    },
-    {
-      organizationId: "org_1",
-      proposalId: "bpr_2",
-      specRevision: 1,
-      specHash: spec("2").pricingSpecHash,
-      snapshotId: "rsn_1",
-    },
+    wakeup("bpr_1", "1", "rsn_1"),
+    wakeup("bpr_1", "1", "rsn_2"),
+    wakeup("bpr_2", "2", "rsn_1"),
+    wakeup("bpr_2", "2", "rsn_2"),
   ]);
 });
 
@@ -1037,30 +1159,42 @@ test("a re-price drafted beside a snapshot profiles its new spec revision", asyn
       sourceProposalId: "bpr_9",
       sourceRevision: 1,
     },
-    sourceRepoId: "ghr_1",
-    outlineFor: () => Promise.resolve({ snapshotId: "rsn_2", text: "outline" }),
+    outlinesFor: () => Promise.resolve(outlines),
+    touched: ["Repository 2"],
     onProposalDrafted: (_organizationId, input) => void asked.push(input),
   });
   await state.executor.execute("org_1", "brn_1");
-  assert.deepEqual(
-    asked.map(({ proposalId, specRevision }) => ({ proposalId, specRevision })),
-    [{ proposalId: "bpr_9", specRevision: 2 }],
-  );
+  assert.deepEqual(asked, [
+    {
+      proposalId: "bpr_9",
+      specRevision: 2,
+      specHash: spec("1").pricingSpecHash,
+      snapshotId: "rsn_2",
+    },
+  ]);
 });
 
-test("no profile is asked for without a snapshot, or without a spec", async () => {
+test("no profile is asked for without a snapshot, a touched repository, or a spec", async () => {
   const noOutline: unknown[] = [];
   await harness({
-    sourceRepoId: "ghr_1",
-    outlineFor: () => Promise.resolve(null),
+    outlinesFor: () => Promise.resolve([]),
+    touched: ["Repository 1"],
     onProposalDrafted: (_organizationId, input) => void noOutline.push(input),
   }).executor.execute("org_1", "brn_1");
   assert.deepEqual(noOutline, []);
 
+  // A draft that says its work changes none of them.
+  const untouched: unknown[] = [];
+  await harness({
+    outlinesFor: () => Promise.resolve(outlines),
+    touched: [],
+    onProposalDrafted: (_organizationId, input) => void untouched.push(input),
+  }).executor.execute("org_1", "brn_1");
+  assert.deepEqual(untouched, []);
+
   const noSpec: unknown[] = [];
   await harness({
-    sourceRepoId: "ghr_1",
-    outlineFor: () => Promise.resolve({ snapshotId: "rsn_1", text: "outline" }),
+    outlinesFor: () => Promise.resolve(outlines),
     caller: sizing(
       [
         {
@@ -1120,20 +1254,33 @@ test("a sized bounty records the rubric's score of its draft, which sizes nothin
   assert.equal(written.rubric.counts.scenarios, 1);
   assert.equal(written.amountMinor, 200);
 
-  // Beside a snapshot, with profiling on, the code is on its way.
+  // Touching a repository, with profiling on, the code is on its way.
   const profiled = harness({
-    sourceRepoId: "ghr_1",
-    outlineFor: () => Promise.resolve({ snapshotId: "rsn_1", text: "outline" }),
+    outlinesFor: () => Promise.resolve(outlines),
+    touched: ["Repository 1"],
     profilingEnabled: true,
   });
   await profiled.executor.execute("org_1", "brn_1");
   const pending = profiled.proposalInputs[0] as { rubric: RubricAssessment };
   assert.equal(pending.rubric.code.status, "pending");
 
-  // Beside a snapshot without profiling, it is not.
+  // Touching none, there is no code to measure.
+  const untouched = harness({
+    outlinesFor: () => Promise.resolve(outlines),
+    touched: [],
+    profilingEnabled: true,
+  });
+  await untouched.executor.execute("org_1", "brn_1");
+  assert.equal(
+    (untouched.proposalInputs[0] as { rubric: RubricAssessment }).rubric.code
+      .status,
+    "unavailable",
+  );
+
+  // Touching one without profiling, it is not measured either.
   const unprofiled = harness({
-    sourceRepoId: "ghr_1",
-    outlineFor: () => Promise.resolve({ snapshotId: "rsn_1", text: "outline" }),
+    outlinesFor: () => Promise.resolve(outlines),
+    touched: ["Repository 1"],
     profilingEnabled: false,
   });
   await unprofiled.executor.execute("org_1", "brn_1");
@@ -1198,10 +1345,14 @@ test("there is no step without a base or without weights to count", async () => 
     caller: sizing([sized], () => ({
       ...drafted(),
       result: {
-        ...draft,
-        scenarios: draft.scenarios.map(
-          ({ weight: _weight, weightReason: _reason, ...scenario }) => scenario,
-        ),
+        spec: {
+          ...draft,
+          scenarios: draft.scenarios.map(
+            ({ weight: _weight, weightReason: _reason, ...scenario }) =>
+              scenario,
+          ),
+        },
+        repositories: [],
       },
     })),
   });
@@ -1709,48 +1860,30 @@ test("a bounty written here is sized with no Jira at all", async () => {
   assert.deepEqual(state.refreshed, []);
 });
 
-test("a bounty is drafted beside its own repository", async () => {
-  const read: string[] = [];
+test("a bounty written here is drafted beside the workspace's repositories", async () => {
   const drafted: unknown[] = [];
   const state = harness({
-    bounties: [handWritten({ repoId: "ghr_9" })],
+    bounties: [handWritten()],
     runOverrides: oneBountyRun("bty_7"),
-    outlineFor: (_org, repoId) => {
-      read.push(repoId);
-      return Promise.resolve({ snapshotId: "rsn_9", text: "src/ (4 files)" });
-    },
+    outlinesFor: () => Promise.resolve(outlines.slice(0, 1)),
+    touched: ["Repository 1"],
     onProposalDrafted: (_org, input) => void drafted.push(input),
   });
   await state.executor.execute("org_1", "brn_1");
 
-  assert.deepEqual(read, ["ghr_9"]);
   const draft = state.caller.calls.find(({ tool }) => tool === "draft_spec");
   assert.equal(
     (draft?.input as { repositoryOutline?: string }).repositoryOutline,
-    "src/ (4 files)",
+    "=== Repository 1 ===\n- src: 3 files",
   );
-  assert.equal(
-    (state.proposalInputs[0] as { repoSnapshotId: unknown }).repoSnapshotId,
-    "rsn_9",
+  assert.deepEqual(
+    (state.proposalInputs[0] as { repositories: unknown }).repositories,
+    [{ repoId: "ghr_1", snapshotId: "rsn_1" }],
   );
   // Nothing about the bounty rides along: the profile is measured from the
   // spec and the code.
+  assert.equal(drafted.length, 1);
   assert.equal("bounty" in (drafted[0] as object), false);
-});
-
-test("a bounty's repository comes before its board's", async () => {
-  const read: string[] = [];
-  const state = harness({
-    bounties: [bounty({ repoId: "ghr_own" })],
-    runOverrides: oneBountyRun("bty_1"),
-    sourceRepoId: "ghr_board",
-    outlineFor: (_org, repoId) => {
-      read.push(repoId);
-      return Promise.resolve(null);
-    },
-  });
-  await state.executor.execute("org_1", "brn_1");
-  assert.deepEqual(read, ["ghr_own"]);
 });
 
 test("a bounty following its Jira issue is read from Jira, and takes what it says", async () => {

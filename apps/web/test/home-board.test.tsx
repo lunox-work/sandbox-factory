@@ -38,7 +38,6 @@ function show() {
       intro={<p>Home intro</p>}
       organizationSlug="acme"
       role="owner"
-      onBoardName={vi.fn()}
       onOpenBoard={vi.fn()}
       fallback={<p>No board yet</p>}
     />,
@@ -66,7 +65,6 @@ test("the intro sits over the board, with the board it is showing", async () => 
       boardType: "scrum",
       projectKey: "APP",
       selection: { unassignedOnly: false, categories: {} },
-      sourceRepoId: null,
       createdAt: "2026-01-01T00:00:00.000Z",
     },
   ];

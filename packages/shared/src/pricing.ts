@@ -375,11 +375,14 @@ export const bountyProposalDtoSchema = z.object({
    */
   specRevision: z.number().int().positive().nullable(),
   /**
-   * The repository snapshot whose outline the spec was drafted beside, or
-   * null when the bounty had no repository, its repository had no snapshot
-   * yet, or the snapshot has since been pruned.
+   * The workspace's repositories the sizing said the work touches, each at
+   * the snapshot whose outline the spec was drafted beside: what its code
+   * is profiled in and its sandbox is cut from. Empty when it touches
+   * none, or none had a snapshot; a repository removed since may remain.
    */
-  repoSnapshotId: z.string().nullable().default(null),
+  repositories: z
+    .array(z.object({ repoId: z.string(), snapshotId: z.string() }))
+    .default([]),
   /**
    * The scenario step `complexity` came from. Null when there is none to
    * take: an unsized bounty, a proposal with no spec, or one whose spec was

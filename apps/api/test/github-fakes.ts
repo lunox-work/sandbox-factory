@@ -321,6 +321,7 @@ export function memoryGithub(): MemoryGithub {
         stack: existing?.stack ?? null,
         stackCommitSha: existing?.stackCommitSha ?? null,
         stackVersion: existing?.stackVersion ?? null,
+        contextSnapshotId: existing?.contextSnapshotId ?? null,
         createdAt: existing?.createdAt ?? stamp(),
       };
       repoRows.set(row.id, row);
@@ -432,6 +433,12 @@ export function memoryGithub(): MemoryGithub {
         stackCommitSha: detected.commitSha,
         stackVersion: detected.version,
       });
+      return Promise.resolve(true);
+    },
+    setContextSnapshot: (organizationId, id, snapshotId) => {
+      const row = ownedRepo(organizationId, id);
+      if (row === undefined) return Promise.resolve(false);
+      setRepo(row, { contextSnapshotId: snapshotId });
       return Promise.resolve(true);
     },
     dueForSync: (staleBefore, limit) => {

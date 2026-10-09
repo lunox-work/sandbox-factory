@@ -1,7 +1,7 @@
 /**
  * One context builder, as a row of the repository page's list: what it
- * does, the figures its build counted, and where its run on the chosen
- * snapshot stands. One per `CONTEXT_BUILDERS` entry, in that order.
+ * does, the figures its build counted, and where its run on the
+ * repository's context snapshot stands, with the commit it was built at. One per `CONTEXT_BUILDERS` entry, in that order.
  *
  * Every row lays out on the same three columns, so names, figures and
  * statuses line up down the list whatever each one holds. The status is
@@ -97,13 +97,16 @@ export function needsBuild(
 export function BuilderRow({
   builder,
   run,
+  commit,
   pending,
   figures,
   onViewLog,
 }: {
   builder: ContextBuilder;
-  /** This builder's run on the chosen snapshot, when there is one. */
+  /** This builder's run on the context's snapshot, when there is one. */
   run: AnalysisRunDto | undefined;
+  /** The context's commit, short: the one every builder is built at. */
+  commit?: string | undefined;
   /** "Build all" was just asked for and the API has not answered yet. */
   pending: boolean;
   /** Up to three figures from the build's summary, once they are known. */
@@ -153,14 +156,26 @@ export function BuilderRow({
           >
             Outdated
           </span>
-        ) : run?.status === "succeeded" && run.finishedAt !== null ? (
-          <time
-            dateTime={run.finishedAt}
-            title={new Date(run.finishedAt).toLocaleString()}
-            className="text-muted-foreground text-xs"
-          >
-            {shortDate(run.finishedAt)}
-          </time>
+        ) : run?.status === "succeeded" &&
+          (commit !== undefined || run.finishedAt !== null) ? (
+          <span className="text-muted-foreground text-xs whitespace-nowrap">
+            {commit !== undefined && (
+              <span className="font-mono" title={`Built at ${commit}`}>
+                {commit}
+              </span>
+            )}
+            {commit !== undefined && run.finishedAt !== null && " · "}
+            {run.finishedAt !== null && (
+              <time
+                dateTime={run.finishedAt}
+                title={new Date(run.finishedAt).toLocaleString()}
+              >
+                {commit === undefined
+                  ? shortDate(run.finishedAt)
+                  : shortDay(run.finishedAt)}
+              </time>
+            )}
+          </span>
         ) : exhausted ? (
           // The same snapshot and builder would answer with this run again:
           // a newer snapshot is what can be built.
@@ -205,6 +220,14 @@ function Status({
       label={run.status === "succeeded" ? "Built" : undefined}
     />
   );
+}
+
+/** A finish time as a day, beside the commit: `Oct 6`. */
+function shortDay(iso: string): string {
+  return new Date(iso).toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+  });
 }
 
 /** A finish time as a short date: `Oct 6, 5:31 PM`. */

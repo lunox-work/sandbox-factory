@@ -3,7 +3,12 @@ import { test } from "node:test";
 
 import { treeFacts, type TreeEntry } from "sandbox-factory";
 
-import { OUTLINE_MAX_LINES, repositoryOutline } from "../src/sizing/outline.js";
+import {
+  OUTLINE_MAX_LINES,
+  outlineLinesEach,
+  repositoryOutline,
+  WORKSPACE_OUTLINE_MAX_LINES,
+} from "../src/sizing/outline.js";
 
 const files = (paths: readonly string[], size = 10): TreeEntry[] =>
   paths.map((path) => ({ path, size }));
@@ -103,4 +108,17 @@ test("filename extensions cannot add lines or unbounded names to an outline", ()
   assert.equal(outline.split("\n").length, OUTLINE_MAX_LINES);
   assert.ok(outline.split("\n").every((line) => line.length < 150));
   assert.match(outline, /…\)/);
+});
+
+test("a workspace's repositories share one cap, each cut no shorter than a floor", () => {
+  // A few are each outlined in full.
+  assert.equal(outlineLinesEach(1), OUTLINE_MAX_LINES);
+  assert.equal(outlineLinesEach(3), 60);
+  // More share the workspace's lines between them.
+  assert.equal(outlineLinesEach(4), 45);
+  assert.equal(outlineLinesEach(4) * 4, WORKSPACE_OUTLINE_MAX_LINES);
+  // Many are each cut to the floor, rather than to nothing.
+  assert.equal(outlineLinesEach(100), 12);
+  // None is read as one.
+  assert.equal(outlineLinesEach(0), 60);
 });

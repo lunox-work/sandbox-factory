@@ -4,12 +4,17 @@ import type {
   ProfileErrorCode,
   ProfileStatus,
 } from "sandbox-factory";
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, type SQL } from "drizzle-orm";
 
 import { snapshotForWrite } from "./snapshot-write.js";
 import type { Database } from "./errors.js";
 import { generateId } from "./mapping.js";
-import { bountyProfile, bountyProposal } from "./schema.js";
+import {
+  bountyProfile,
+  bountyProposal,
+  githubRepo,
+  repoSnapshot,
+} from "./schema.js";
 import type { BountyProfileRow } from "./schema.js";
 
 /** The statuses a sweep still has work for. */
@@ -26,6 +31,11 @@ export interface StoredBountyProfile {
   readonly specRevision: number;
   readonly specHash: string;
   readonly snapshotId: string | null;
+  /**
+   * The full name of the repository the snapshot is of, as it is called
+   * now; null once the snapshot is gone.
+   */
+  readonly repository: string | null;
   readonly status: ProfileStatus;
   readonly errorCode: ProfileErrorCode | null;
   readonly runErrorCode: AnalysisErrorCode | null;
@@ -36,7 +46,10 @@ export interface StoredBountyProfile {
   readonly updatedAt: string;
 }
 
-/** What a sizing asks to be profiled: one spec revision, beside one snapshot. */
+/**
+ * What a sizing asks to be profiled: one spec revision, beside one
+ * snapshot, of one of the repositories its work touches.
+ */
 export interface NewBountyProfile {
   readonly proposalId: string;
   readonly specRevision: number;
@@ -65,11 +78,20 @@ export interface BountyProfileStore {
     organizationId: string,
     input: NewBountyProfile,
   ): Promise<StoredBountyProfile | null>;
-  /** The profile of a proposal's newest profiled spec revision, or null. */
+  /**
+   * The profiles of a proposal's newest profiled spec revision, one per
+   * repository its work touches, in name order; empty for none.
+   */
   latest(
     organizationId: string,
     proposalId: string,
-  ): Promise<StoredBountyProfile | null>;
+  ): Promise<StoredBountyProfile[]>;
+  /** The profiles of one spec revision, one per repository, in name order. */
+  forRevision(
+    organizationId: string,
+    proposalId: string,
+    specRevision: number,
+  ): Promise<StoredBountyProfile[]>;
   /** Rows a sweep still has work for, least recently moved first. */
   pending(
     organizationId: string,
@@ -89,7 +111,10 @@ export interface BountyProfileStore {
   ): Promise<boolean>;
 }
 
-function toStored(row: BountyProfileRow): StoredBountyProfile {
+function toStored(
+  row: BountyProfileRow,
+  repository: string | null,
+): StoredBountyProfile {
   return {
     id: row.id,
     organizationId: row.organizationId,
@@ -97,6 +122,7 @@ function toStored(row: BountyProfileRow): StoredBountyProfile {
     specRevision: row.specRevision,
     specHash: row.specHash,
     snapshotId: row.snapshotId,
+    repository,
     status: row.status,
     errorCode: row.errorCode,
     runErrorCode: row.runErrorCode,
@@ -115,6 +141,20 @@ export function createBountyProfileStore(db: Database): BountyProfileStore {
       eq(bountyProfile.proposalId, proposalId),
       eq(bountyProfile.specRevision, revision),
     );
+  /** Rows with the repository each one's snapshot is of, in name order. */
+  const named = async (where: SQL | undefined) =>
+    (
+      (await db
+        .select({ row: bountyProfile, repository: githubRepo.fullName })
+        .from(bountyProfile)
+        .leftJoin(repoSnapshot, eq(repoSnapshot.id, bountyProfile.snapshotId))
+        .leftJoin(githubRepo, eq(githubRepo.id, repoSnapshot.repoId))
+        .where(where)
+        .orderBy(asc(githubRepo.fullName), asc(bountyProfile.id))) as {
+        row: BountyProfileRow;
+        repository: string | null;
+      }[]
+    ).map(({ row, repository }) => toStored(row, repository));
   return {
     async request(owner, input) {
       return db.transaction(async (transaction) => {
@@ -148,17 +188,29 @@ export function createBountyProfileStore(db: Database): BountyProfileStore {
           })
           .onConflictDoNothing();
         const rows = (await tx
-          .select()
+          .select({ row: bountyProfile, repository: githubRepo.fullName })
           .from(bountyProfile)
-          .where(revisionOf(owner, input.proposalId, input.specRevision))
-          .limit(1)) as BountyProfileRow[];
-        const row = rows[0];
-        return row === undefined ? null : toStored(row);
+          .leftJoin(repoSnapshot, eq(repoSnapshot.id, bountyProfile.snapshotId))
+          .leftJoin(githubRepo, eq(githubRepo.id, repoSnapshot.repoId))
+          .where(
+            and(
+              revisionOf(owner, input.proposalId, input.specRevision),
+              eq(bountyProfile.snapshotId, snapshotId),
+            ),
+          )
+          .limit(1)) as {
+          row: BountyProfileRow;
+          repository: string | null;
+        }[];
+        const found = rows[0];
+        return found === undefined
+          ? null
+          : toStored(found.row, found.repository);
       });
     },
     async latest(owner, proposalId) {
-      const rows = (await db
-        .select()
+      const newest = (await db
+        .select({ specRevision: bountyProfile.specRevision })
         .from(bountyProfile)
         .where(
           and(
@@ -167,14 +219,20 @@ export function createBountyProfileStore(db: Database): BountyProfileStore {
           ),
         )
         .orderBy(desc(bountyProfile.specRevision))
-        .limit(1)) as BountyProfileRow[];
-      const row = rows[0];
-      return row === undefined ? null : toStored(row);
+        .limit(1)) as { specRevision: number }[];
+      const revision = newest[0]?.specRevision;
+      return revision === undefined
+        ? []
+        : named(revisionOf(owner, proposalId, revision));
     },
+    forRevision: (owner, proposalId, specRevision) =>
+      named(revisionOf(owner, proposalId, specRevision)),
     async pending(owner, limit = 50) {
       const rows = (await db
-        .select()
+        .select({ row: bountyProfile, repository: githubRepo.fullName })
         .from(bountyProfile)
+        .leftJoin(repoSnapshot, eq(repoSnapshot.id, bountyProfile.snapshotId))
+        .leftJoin(githubRepo, eq(githubRepo.id, repoSnapshot.repoId))
         .where(
           and(
             eq(bountyProfile.organizationId, owner),
@@ -182,8 +240,11 @@ export function createBountyProfileStore(db: Database): BountyProfileStore {
           ),
         )
         .orderBy(asc(bountyProfile.updatedAt), asc(bountyProfile.id))
-        .limit(Math.min(200, Math.max(1, limit)))) as BountyProfileRow[];
-      return rows.map(toStored);
+        .limit(Math.min(200, Math.max(1, limit)))) as {
+        row: BountyProfileRow;
+        repository: string | null;
+      }[];
+      return rows.map(({ row, repository }) => toStored(row, repository));
     },
     async organizationsWithPending() {
       const rows = (await db

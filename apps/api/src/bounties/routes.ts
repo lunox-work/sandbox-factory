@@ -12,8 +12,8 @@
 
 import type {
   BountyContextStore,
+  BountyListOptions,
   BountyProposalStore,
-  JiraBoardStore,
   ListedBounty,
   StoredBounty,
   BountyMutationResult,
@@ -21,7 +21,9 @@ import type {
 } from "@sandbox-factory/db";
 import {
   createBountySchema,
+  bountyCategoryCountsSchema,
   bountyDtoSchema,
+  bountyListFilterSchema,
   bountyListResponseSchema,
   bountySpecHash,
   bountyVersionListSchema,
@@ -36,8 +38,10 @@ import {
 import type { Context, Hono } from "hono";
 import {
   BOUNTY_SPEC_HASH_VERSION,
+  CATEGORIES,
   NO_CONTEXT,
   overviewVersionOf,
+  UNCATEGORIZED,
 } from "sandbox-factory";
 
 import { isAtLeastAdmin } from "../access.js";
@@ -48,12 +52,10 @@ export interface BountyRouteOptions {
   readonly bounties: BountyStore;
   readonly proposals: Pick<BountyProposalStore, "get" | "liveForBounty">;
   /**
-   * The bounty's synced context, and the boards a Jira bounty's repository
-   * may come from. Absent, the overview holds no context, and nothing is
-   * behind on any.
+   * The bounty's synced context. Absent, the overview holds no context,
+   * and nothing is behind on any.
    */
   readonly contexts?: Pick<BountyContextStore, "latest">;
-  readonly boards?: Pick<JiraBoardStore, "forRun">;
 }
 
 interface BountyAppEnv {
@@ -94,8 +96,7 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
       c.get("user").id,
       parsed.data,
     );
-    if (!created.ok) return repoNotFound(c);
-    return c.json({ bounty: await detail(options, created.bounty) }, 201);
+    return c.json({ bounty: await detail(options, created) }, 201);
   });
 
   app.get(`${base}/:id`, async (c) => {
@@ -121,8 +122,8 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
 
   /**
    * A change, against the revision the editor saw. A bounty still following
-   * its Jira issue takes its text from Jira, so only its repository and
-   * stack can be set here; its title and description are changed in Jira.
+   * its Jira issue takes its text from Jira, so only its stack can be set
+   * here; its title and description are changed in Jira.
    */
   app.patch(`${base}/:id`, async (c) => {
     const { organizationId } = c.get("member");
@@ -235,8 +236,6 @@ async function mutated(
   switch (result.reason) {
     case "not-found":
       return c.json({ error: "Not found" }, 404);
-    case "repo-not-found":
-      return repoNotFound(c);
     case "jira-owned":
       return c.json(
         {
@@ -280,7 +279,7 @@ export const OVERVIEW_APPROVED = {
 export function mountCallerBountyRoutes<Env extends BountyAppEnv>(
   app: Hono<Env>,
   options: {
-    readonly bounties: Pick<BountyStore, "listAcross">;
+    readonly bounties: Pick<BountyStore, "listAcross" | "categoryCounts">;
     /** The ids of the organizations the user is a member of. */
     readonly organizationsOf: (userId: string) => Promise<readonly string[]>;
   },
@@ -291,24 +290,75 @@ export function mountCallerBountyRoutes<Env extends BountyAppEnv>(
       options.bounties.listAcross(organizationIds, page),
     );
   });
+
+  /**
+   * How many of the caller's bounties each category holds, for the list's
+   * filter: every category in the registry, in order, zero when none fit
+   * it. `?board=` narrows the counts to that board's, as it does the list.
+   */
+  app.get("/api/v1/me/bounty-categories", async (c) => {
+    const filter = listFilter(c);
+    if (filter === null) return c.json({ error: "Invalid filter." }, 400);
+    const organizationIds = await options.organizationsOf(c.get("user").id);
+    const counts = await options.bounties.categoryCounts(
+      organizationIds,
+      filter.boardId === undefined ? {} : { boardId: filter.boardId },
+    );
+    return c.json(
+      bountyCategoryCountsSchema.parse({
+        total: counts.total,
+        uncategorized: counts.uncategorized,
+        categories: CATEGORIES.map(({ id, label, why }) => ({
+          id,
+          label,
+          why,
+          count: counts.categories[id] ?? 0,
+        })),
+      }),
+    );
+  });
+}
+
+/**
+ * What the query narrows a list to: `?category=` a category's id, or
+ * `uncategorized` for the bounties in none, and `?board=` one board's.
+ * Null for a query that names neither as it should.
+ */
+function listFilter(
+  c: Context,
+): Pick<BountyListOptions, "category" | "uncategorized" | "boardId"> | null {
+  const parsed = bountyListFilterSchema.safeParse({
+    category: c.req.query("category"),
+    board: c.req.query("board"),
+  });
+  if (!parsed.success) return null;
+  const { category, board } = parsed.data;
+  return {
+    ...(category === undefined
+      ? {}
+      : category === UNCATEGORIZED
+        ? { uncategorized: true }
+        : { category }),
+    ...(board === undefined ? {} : { boardId: board }),
+  };
 }
 
 /**
  * One page of a newest-first bounty list, read by `read` from the query's
- * `limit` and `cursor`, and the cursor for the page after it.
+ * `limit`, `cursor` and filters, and the cursor for the page after it.
  */
 async function listPage(
   c: Context,
-  read: (page: {
-    limit: number;
-    cursor?: { createdAt: string; id: string };
-  }) => Promise<ListedBounty[]>,
+  read: (page: BountyListOptions) => Promise<ListedBounty[]>,
 ): Promise<Response> {
   const limit = boundedLimit(c.req.query("limit"));
   const cursor = rowCursor(c.req.query("cursor"));
   if (cursor === null) return c.json({ error: "Invalid cursor." }, 400);
+  const filter = listFilter(c);
+  if (filter === null) return c.json({ error: "Invalid filter." }, 400);
   const bounties = await read({
     limit,
+    ...filter,
     ...(cursor === undefined ? {} : { cursor }),
   });
   const last = bounties.at(-1);
@@ -362,11 +412,11 @@ export async function detail(
   const build = bounty.sandbox?.build ?? null;
   // The context the overview holds, from the sources linked now.
   const held =
-    options.contexts === undefined || options.boards === undefined
+    options.contexts === undefined
       ? NO_CONTEXT
       : contextVersionsOf(
           await heldContext(
-            { contexts: options.contexts, boards: options.boards },
+            { contexts: options.contexts },
             bounty.organizationId,
             bounty,
           ),
@@ -400,6 +450,9 @@ export async function detail(
             // Narrowed above: only a live proposal is kept.
             status: live.status === "approved" ? "approved" : "proposed",
             complexity: live.complexity,
+            repositories: live.repositories.map((repository) => ({
+              ...repository,
+            })),
             amountMinor: live.amountMinor,
             currency: live.currency,
           },
@@ -428,13 +481,21 @@ function summaryDto(bounty: ListedBounty): BountySummaryDto {
     organizationId: bounty.organizationId,
     title: bounty.title,
     origin: bounty.origin,
-    repoId: bounty.repoId,
     stack: [...bounty.stack],
     revision: bounty.revision,
     version: bounty.version,
     approval: bounty.approval,
     jira: linkDto(bounty),
-    proposal: bounty.proposal,
+    categories: bounty.categories.map((match) => ({ ...match })),
+    proposal:
+      bounty.proposal === null
+        ? null
+        : {
+            ...bounty.proposal,
+            repositories: bounty.proposal.repositories.map((repository) => ({
+              ...repository,
+            })),
+          },
     sandbox: bounty.sandbox,
     createdAt: bounty.createdAt,
     updatedAt: bounty.updatedAt,
@@ -454,14 +515,4 @@ function bountyDto(
     createdBy: bounty.createdBy,
     stages,
   };
-}
-
-function repoNotFound(c: { json: (body: unknown, status: 404) => Response }) {
-  return c.json(
-    {
-      code: "repo_not_found",
-      error: "That repository is not connected to this workspace.",
-    },
-    404,
-  );
 }

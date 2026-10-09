@@ -200,42 +200,12 @@ test("each screen's trail names every step above it", () => {
   ]);
 });
 
-test("a board sits under Jira, with no step for its site", () => {
-  // A site has no page of its own, so a crumb for it would lead nowhere new.
-  expect(
-    trailFor("org-jira-board", ACME, "Sprint Board").map((c) => c.label),
-  ).toEqual(["Home", "Workspaces", "Acme", "Jira", "Sprint Board"]);
-});
-
-test("a board whose name has not arrived keeps its place in the trail", () => {
-  // Dropping the last crumb would mark Jira as the current page while a board
-  // is on screen.
-  expect(trailFor("org-jira-board", ACME).map((c) => c.label)).toEqual([
-    "Home",
-    "Workspaces",
-    "Acme",
-    "Jira",
-    "Board",
-  ]);
-});
-
-test("the Jira crumb on a board leads to the Jira tab of settings", () => {
-  // That tab is where every site's boards are listed now.
-  const trail = trailFor("org-jira-board", ACME, "Sprint Board");
-  const jira = trail.find((crumb) => crumb.label === "Jira");
-
-  expect(jira?.screen).toBe("org-settings");
-  expect(jira?.slug).toBe("acme");
-  expect(jira?.connectionTab).toBe("jira");
-});
-
 test("a repository sits under its organization's GitHub tab", () => {
   // A repository has no list page of its own: the registered ones are on
   // the GitHub tab of settings, which is where the crumb before it leads.
   const trail = trailFor(
     "org-repository",
     ACME,
-    undefined,
     undefined,
     undefined,
     "acme/widgets",
@@ -275,16 +245,9 @@ test("an organization still loading is left out rather than guessed at", () => {
    * A crumb reading "Loading…" shifts the row under the cursor when the name
    * lands. The settings screen is the organization, so it has no trail to
    * show until the name arrives — ending it at "Organizations" would mark the
-   * list as the current page while an organization is on screen. A board
-   * names itself, so only its organization crumb goes missing.
+   * list as the current page while an organization is on screen.
    */
   expect(trailFor("org-settings")).toEqual([]);
-  expect(trailFor("org-jira-board").map((c) => c.label)).toEqual([
-    "Home",
-    "Workspaces",
-    "Jira",
-    "Board",
-  ]);
 });
 
 test("no trail ends in a step that goes nowhere", () => {
@@ -301,16 +264,7 @@ test("no trail ends in a step that goes nowhere", () => {
     trailFor("new-bounty"),
     trailFor("org-settings", ACME),
     trailFor("org-settings"),
-    trailFor("org-jira-board", ACME, "Sprint Board"),
-    trailFor("org-jira-board"),
-    trailFor(
-      "org-repository",
-      ACME,
-      undefined,
-      undefined,
-      undefined,
-      "acme/widgets",
-    ),
+    trailFor("org-repository", ACME, undefined, undefined, "acme/widgets"),
     trailFor("org-repository"),
   ];
 
@@ -373,60 +327,33 @@ test("an old link to one site opens the Jira tab of settings", async () => {
   ).toBeTruthy();
 });
 
-test("the Jira crumb on a board goes back to the list of sites", async () => {
-  window.history.replaceState(null, "", "/o/acme/jira/jrc_1/jrb_1");
-  render(<App />);
-
-  // Waited on the organization crumb, not the Jira one. The Jira crumb is in
-  // the trail before the organization list arrives — `trailFor` drops only
-  // the middle crumb while it loads — so clicking on its appearance races the
-  // load, and a crumb clicked without a slug falls back to /organizations.
-  await waitFor(() => {
-    expect(screen.getByRole("link", { name: "Acme" })).toBeTruthy();
-  });
-
-  fireEvent.click(screen.getByRole("link", { name: "Jira" }));
-
-  await waitFor(() => {
-    expect(window.location.pathname).toBe("/o/acme/settings");
-    expect(window.location.search).toBe("?connection=jira");
-    expect(labels()).toEqual(["Home", "Workspaces", "Acme"]);
-  });
-  expect(
-    await screen.findByRole("tab", { name: "Jira", selected: true }),
-  ).toBeTruthy();
-});
-
-test("a deep link to one board resolves, and the trail names every step", async () => {
+test("an old link to one board opens the bounties narrowed to it", async () => {
+  // A board has no page of its own any more: its tickets are bounties.
   window.history.replaceState(null, "", "/o/acme/jira/jrc_1/jrb_1");
   render(<App />);
 
   await waitFor(() => {
-    expect(labels()).toEqual([
-      "Home",
-      "Workspaces",
-      "Acme",
-      "Jira",
-      "Sprint Board",
-    ]);
+    expect(window.location.pathname).toBe("/bounties");
+    expect(window.location.search).toBe("?board=acme/jrb_1");
+    expect(labels()).toEqual(["Home", "Bounties"]);
   });
 });
 
 test("a crumb navigates up to the screen it names", async () => {
-  window.history.replaceState(null, "", "/o/acme/jira/jrc_1/jrb_1");
+  window.history.replaceState(null, "", "/o/acme/settings");
   render(<App />);
 
   await waitFor(() => {
-    expect(screen.getByRole("link", { name: "Acme" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Workspaces" })).toBeTruthy();
   });
 
-  // Up one level, to the organization the crumb names — not back through
-  // history, which a bookmarked arrival does not have.
-  fireEvent.click(screen.getByRole("link", { name: "Acme" }));
+  // Up one level, to the list the crumb names — not back through history,
+  // which a bookmarked arrival does not have.
+  fireEvent.click(screen.getByRole("link", { name: "Workspaces" }));
 
   await waitFor(() => {
-    expect(window.location.pathname).toBe("/o/acme/settings");
-    expect(labels()).toEqual(["Home", "Workspaces", "Acme"]);
+    expect(window.location.pathname).toBe("/workspaces");
+    expect(labels()).toEqual(["Home", "Workspaces"]);
   });
 });
 
@@ -464,25 +391,4 @@ test("the trail is capped and padded on the same element as the page", async () 
   // The list inside no longer carries a column of its own, or the two would
   // compound and the crumbs would sit inside the page's text.
   expect(nav.querySelector("ol")?.className).not.toContain("max-w-2xl");
-});
-
-test("a board's trail is as wide as the board page under it", async () => {
-  // The board is the one `max-w-5xl` page. A `max-w-2xl` trail above it is
-  // misaligned the other way — the crumbs sit ~150px right of the content.
-  window.history.replaceState(null, "", "/o/acme/jira/jrc_1/jrb_1");
-  render(<App />);
-
-  await waitFor(() => {
-    expect(labels()).toEqual([
-      "Home",
-      "Workspaces",
-      "Acme",
-      "Jira",
-      "Sprint Board",
-    ]);
-  });
-
-  const nav = screen.getByRole("navigation", { name: "Breadcrumb" });
-  expect(nav.className).toContain("max-w-5xl");
-  expect(nav.className).not.toContain("max-w-2xl");
 });

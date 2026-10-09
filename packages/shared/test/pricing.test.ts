@@ -249,6 +249,24 @@ test("a proposal carries its step, null when there is none", () => {
     bountyProposalDtoSchema.safeParse({ ...proposal, step: null }).success,
     true,
   );
+  // The repositories its work touches, none when an answer leaves them out.
+  assert.deepEqual(bountyProposalDtoSchema.parse(proposal).repositories, []);
+  const touched = [
+    { repoId: "ghr_1", snapshotId: "rsn_1" },
+    { repoId: "ghr_2", snapshotId: "rsn_2" },
+  ];
+  assert.deepEqual(
+    bountyProposalDtoSchema.parse({ ...proposal, repositories: touched })
+      .repositories,
+    touched,
+  );
+  assert.equal(
+    bountyProposalDtoSchema.safeParse({
+      ...proposal,
+      repositories: [{ repoId: "ghr_1" }],
+    }).success,
+    false,
+  );
   // The model's own size stays whole whatever the step made of it.
   assert.equal(
     bountyProposalDtoSchema.safeParse({ ...proposal, modelComplexity: "S+" })

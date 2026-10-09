@@ -1,8 +1,9 @@
 /**
  * A bounty's fields, changed where they are shown rather than in a form: its
  * title where it is the heading, its description where it is read, and its
- * repository and tech stack where its context names them. Each saves on its
- * own, sending that field alone.
+ * tech stack where its context names it. Each saves on its own, sending
+ * that field alone. A bounty names no repository: its work may touch any
+ * the workspace has connected, whose detected stacks it inherits.
  *
  * Each reads as what it holds until it is asked to change: hovering it, or
  * focusing it from the keyboard, brings up a pencil on its right, and the
@@ -10,12 +11,12 @@
  * back as it reads, as `EditableField` does for a name.
  *
  * A bounty following its Jira issue takes its text from Jira, so its title
- * and description are shown and not offered; its repository and stack are
- * the workspace's to set either way.
+ * and description are shown and not offered; its stack is the workspace's
+ * to set either way.
  */
 
-import type { BountyDto, GithubRepoDto } from "@sandbox-factory/shared";
-import { BOUNTY_LIMITS, sameStackName } from "sandbox-factory";
+import { workRepositories, type BountyDto } from "@sandbox-factory/shared";
+import { BOUNTY_LIMITS, normalizeStack, sameStackName } from "sandbox-factory";
 import { Loader2, Pencil } from "lucide-react";
 import {
   useEffect,
@@ -26,14 +27,12 @@ import {
   type Ref,
 } from "react";
 
-import { Combobox, type ComboboxOption } from "@/components/Combobox";
 import { StackChips, StackPicker } from "@/components/StackPicker";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 
 import { BountyText } from "../../BountyText";
-import { ProviderIcon } from "../../ProviderIcon";
 import type { BountyDraft } from "../../useBounties";
 import type { GithubRepos } from "../../useGithub";
 
@@ -48,41 +47,41 @@ export type SaveField = (
   change: Partial<BountyDraft>,
 ) => Promise<SaveFailure | null>;
 
+/** What a bounty's work inherits of its repositories' stacks. */
+export interface WorkspaceStack {
+  /** Each technology detected in any of them, once. */
+  readonly inherited: string[];
+  /** What the inherited names were detected in, for a reader. */
+  readonly inheritedFrom: string;
+  /** Whether a repository's stack is still being read. */
+  readonly reading: boolean;
+}
+
 /**
- * The repositories a bounty can be about: the workspace's sources still on
- * GitHub, and the one it names whatever its state. A repository the list has
- * not shown yet is offered as itself, or the picker would show "None" while
- * the bounty still names it.
+ * The stack a bounty's work inherits: what was detected in the repositories
+ * its sizing said it touches, or, before it says or when none of them is
+ * still connected, in each of the workspace's, any of which it may touch.
+ * What generating its sandbox follows too.
  */
-export function repositoryOptions(
+export function workspaceStack(
   repos: GithubRepos,
-  repoId: string,
-  none = "None",
-): ComboboxOption[] {
-  const choices: GithubRepoDto[] = repos.repos.filter(
-    (repo) =>
-      (repo.role === "source" && repo.syncStatus !== "gone") ||
-      repo.id === repoId,
+  touched: readonly { readonly repoId: string }[] = [],
+): WorkspaceStack {
+  const sources = workRepositories(repos.repos, touched);
+  const narrowed = sources.some(({ id }) =>
+    touched.some(({ repoId }) => repoId === id),
   );
-  const other =
-    repoId !== "" && !choices.some(({ id }) => id === repoId) ? repoId : null;
-  return [
-    { value: "", label: none },
-    ...choices.map((repo) => ({
-      value: repo.id,
-      label: repo.fullName,
-      icon: <ProviderIcon provider="github" />,
-    })),
-    ...(other === null
-      ? []
-      : [
-          {
-            value: other,
-            label: repos.loading ? "…" : "Unavailable",
-            icon: <ProviderIcon provider="github" />,
-          },
-        ]),
-  ];
+  const [only] = sources;
+  return {
+    inherited: normalizeStack(sources.flatMap((repo) => repo.stack ?? [])),
+    inheritedFrom:
+      sources.length === 1 && only !== undefined
+        ? only.fullName
+        : narrowed
+          ? "the repositories its work touches"
+          : "the workspace's repositories",
+    reading: sources.some((repo) => repo.stack === null),
+  };
 }
 
 /** What a field says under itself after a save that did not land. */
@@ -451,85 +450,8 @@ export function InlineDescription({
 }
 
 /**
- * The repository a bounty is about: named, with its pencil opening the
- * picker on its list. A pick saves; the list closing, picked from or not,
- * puts it back as it reads. A bounty from Jira with none uses its board's.
- */
-export function RepositoryField({
-  bounty,
-  repos,
-  readOnly = false,
-  onSave,
-}: {
-  bounty: BountyDto;
-  repos: GithubRepos;
-  /** Read, with no pencil, as in a panel. */
-  readOnly?: boolean;
-  onSave: SaveField;
-}) {
-  const id = useId();
-  const mode = useEditMode();
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const value = bounty.repoId ?? "";
-  const none = bounty.jira === null ? "None" : "Its board's, if it has one";
-  const options = repositoryOptions(repos, value, none);
-  const chosen = options.find((option) => option.value === value);
-  return (
-    <InlineField
-      id={id}
-      label="Repository"
-      mode={mode}
-      readOnly={readOnly}
-      saving={saving}
-      error={error}
-    >
-      {mode.editing ? (
-        <Combobox
-          id={id}
-          label="Repository"
-          searchPlaceholder="Search repositories…"
-          emptyMessage={
-            repos.loading ? "Loading repositories…" : "No repository matches."
-          }
-          options={options}
-          value={value}
-          disabled={saving}
-          defaultOpen
-          onOpenChange={(open) => {
-            if (!open) mode.close();
-          }}
-          onValueChange={(next) => {
-            setSaving(true);
-            setError(null);
-            void onSave({ repoId: next === "" ? null : next }).then(
-              (failure) => {
-                setSaving(false);
-                setError(failure?.message ?? null);
-              },
-            );
-          }}
-        />
-      ) : value === "" || chosen === undefined ? (
-        <p className="text-muted-foreground flex min-h-9 items-center">
-          {none}
-        </p>
-      ) : (
-        // As tall as the picker's trigger, so nothing under it moves.
-        <p className="flex min-h-9 min-w-0 items-center gap-2">
-          <span className="flex size-4 shrink-0 items-center">
-            {chosen.icon}
-          </span>
-          <span className="min-w-0 truncate">{chosen.label}</span>
-        </p>
-      )}
-    </InlineField>
-  );
-}
-
-/**
- * What the work is done in: the repository's detected stack, which stays,
- * and what the bounty adds. Read as its chips; its pencil opens the picker,
+ * What the work is done in: the stack detected in its repositories, which
+ * stays, and what the bounty adds. Read as its chips; its pencil opens the picker,
  * where each addition and removal saves at once, and Done or Escape puts it
  * back as it reads.
  */
@@ -549,9 +471,10 @@ export function StackField({
   const mode = useEditMode();
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const repo = repos.repos.find(({ id }) => id === bounty.repoId);
-  const inherited = repo?.stack ?? [];
-  const inheritedFrom = repo?.fullName ?? "the repository";
+  const { inherited, inheritedFrom } = workspaceStack(
+    repos,
+    bounty.proposal?.repositories,
+  );
   const added = bounty.stack.filter(
     (name) => !inherited.some((own) => sameStackName(own, name)),
   );
@@ -589,7 +512,7 @@ export function StackField({
             onChange={(next) => {
               setSaving(true);
               setError(null);
-              // Only what the bounty adds: the repository's own follow it.
+              // Only what the bounty adds: the repositories' own follow them.
               void onSave({ stack: next }).then((failure) => {
                 setSaving(false);
                 setError(failure?.message ?? null);

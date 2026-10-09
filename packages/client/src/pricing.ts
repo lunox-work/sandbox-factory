@@ -12,19 +12,6 @@ import {
 import { ownerPath } from "./bounties.js";
 import { ApiClient } from "./transport.js";
 export class PricingClient extends ApiClient {
-  async titles(
-    owner: string,
-    boardId: string,
-    ids: readonly string[],
-    onLine: (value: unknown) => void,
-    signal: AbortSignal,
-  ) {
-    await this.stream(
-      `${ownerPath(owner)}/jira/boards/${encodeURIComponent(boardId)}/proposal-titles?ids=${ids.map(encodeURIComponent).join(",")}`,
-      onLine,
-      signal,
-    );
-  }
   async action(owner: string, path: string, body: object) {
     return proposalActionResponseSchema.parse(
       await this.request(`${ownerPath(owner)}${path}`, {
@@ -90,13 +77,14 @@ export class PricingClient extends ApiClient {
       ),
     ).revisions;
   }
-  async profile(owner: string, id: string, signal?: AbortSignal) {
+  /** The newest profiled revision's profiles, one per repository touched. */
+  async profiles(owner: string, id: string, signal?: AbortSignal) {
     return proposalProfileResponseSchema.parse(
       await this.request(
         `${ownerPath(owner)}/proposals/${encodeURIComponent(id)}/profile`,
         { signal },
       ),
-    ).profile;
+    ).profiles;
   }
   async spec(
     owner: string,

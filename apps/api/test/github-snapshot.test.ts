@@ -664,6 +664,38 @@ test("a member lists a repository's snapshots and reads one with its facts", asy
   assert.equal(detail.facts.fileCount, 4);
 });
 
+test("the context's snapshot is listed however many are newer", async () => {
+  const { snapshotter, target, repoId, get, snapshots, stores } =
+    await appWith();
+  await snapshotter.snapshot(target);
+  const [first] = [...snapshots.rows.values()];
+  if (first === undefined) throw new Error("unreachable");
+  // Fifty newer commits push the first off the list's page.
+  for (let index = 0; index < 50; index++)
+    snapshots.rows.set(`rsn_newer_${index}`, {
+      ...first,
+      id: `rsn_newer_${index}`,
+      commitSha: `newer${index}`,
+      createdAt: new Date(
+        Date.parse(first.createdAt) + (index + 1) * 1000,
+      ).toISOString(),
+    });
+  const ids = async () =>
+    (
+      (await (await get(`/repositories/${repoId}/snapshots`)).json()) as {
+        snapshots: { id: string }[];
+      }
+    ).snapshots.map(({ id }) => id);
+  assert.equal((await ids()).includes(first.id), false);
+  await stores.repos.setContextSnapshot("org_1", repoId, first.id);
+  const listed = await ids();
+  assert.equal(listed.length, 51);
+  assert.equal(listed.at(-1), first.id);
+  // One already on the page is not listed twice.
+  await stores.repos.setContextSnapshot("org_1", repoId, "rsn_newer_49");
+  assert.equal((await ids()).length, 50);
+});
+
 test("a snapshot's tree is paged from the bucket", async () => {
   const { snapshotter, target, repoId, get } = await appWith();
   await snapshotter.snapshot(target);

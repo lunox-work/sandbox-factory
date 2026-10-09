@@ -14,7 +14,7 @@
  * - deleting an organization takes all three tables with it;
  * - a snapshot is one per commit, and a `gone` repository takes no new one;
  * - pruning keeps the newest and whatever a proposal was drafted beside;
- * - a board links only a repository of its own organization.
+ * - a proposal keeps a repository only at its organization's snapshot of it.
  *
  * Skips when no server is reachable, as `handle-registry.test.ts` does, and
  * refuses a server that is not local outside CI, since it drops and
@@ -34,13 +34,11 @@ import {
   createGithubConnectionStore,
   createGithubGrantStore,
   createGithubRepoStore,
-  createJiraBoardStore,
   createRepoSnapshotStore,
   createTokenCipher,
   type GithubConnectionStore,
   type GithubGrantStore,
   type GithubRepoStore,
-  type JiraBoardStore,
   type NewRepoSnapshot,
   type RepoSnapshotStore,
   createSandboxStore,
@@ -136,7 +134,6 @@ describe("GitHub pointers in Postgres", { skip }, () => {
   let grants: GithubGrantStore;
   let repos: GithubRepoStore;
   let snapshots: RepoSnapshotStore;
-  let boards: JiraBoardStore;
 
   before(async () => {
     await admin(`drop database if exists ${SCRATCH_DB}`);
@@ -151,7 +148,6 @@ describe("GitHub pointers in Postgres", { skip }, () => {
     );
     repos = createGithubRepoStore(connection.db);
     snapshots = createRepoSnapshotStore(connection.db);
-    boards = createJiraBoardStore(connection.db);
 
     for (const id of ["u_a", "u_b"]) {
       await sql`
@@ -435,7 +431,7 @@ describe("GitHub pointers in Postgres", { skip }, () => {
     assert.equal(await snapshots.current("o_b", repo.id), null);
   });
 
-  test("proposal persistence tolerates a snapshot deleted during drafting and checks its owner", async () => {
+  test("proposal persistence tolerates a snapshot deleted during drafting and checks its owner and repository", async () => {
     await sql`insert into jira_connection (id, organization_id, cloud_id, site_url, site_name) values ('jrc_sf', 'o_a', 'cloud-sf', 'https://acme.example', 'Acme')`;
     await sql`insert into jira_board (id, organization_id, connection_id, external_id, name, board_type) values ('jrb_sf', 'o_a', 'jrc_sf', '1', 'Board', 'scrum')`;
     const rateCard = {
@@ -451,8 +447,12 @@ describe("GitHub pointers in Postgres", { skip }, () => {
       ["live", "o_a", "911"],
       ["deleted", "o_a", "912"],
       ["foreign", "o_b", "913"],
+      ["misnamed", "o_a", "916"],
     ] as const) {
       const { repo } = await repoUnder(owner, installationId);
+      // The owner's snapshot, named with another of the owner's repositories.
+      const named =
+        kind === "misnamed" ? (await repoUnder("o_a", "917")).repo : repo;
       const captured = await snapshots.create(owner, snapshotOf(repo.id, kind));
       assert.equal(captured.status, "created");
       if (captured.status !== "created") throw new Error("not created");
@@ -468,7 +468,7 @@ describe("GitHub pointers in Postgres", { skip }, () => {
       ).createForLease("o_a", "lease", {
         runId,
         bountyId,
-        repoSnapshotId: captured.snapshot.id,
+        repositories: [{ repoId: named.id, snapshotId: captured.snapshot.id }],
         specHash: "a".repeat(64),
         specHashVersion: 1,
         rateCard,
@@ -481,12 +481,61 @@ describe("GitHub pointers in Postgres", { skip }, () => {
       });
       assert.equal(result.status, "created");
       if (result.status === "created") {
-        assert.equal(
-          result.proposal.repoSnapshotId,
-          kind === "live" ? captured.snapshot.id : null,
+        assert.deepEqual(
+          result.proposal.repositories,
+          kind === "live"
+            ? [{ repoId: repo.id, snapshotId: captured.snapshot.id }]
+            : [],
         );
       }
     }
+  });
+
+  test("a repository's context is one of its own snapshots, and is never pruned", async () => {
+    const { repo, connection: linked } = await repoUnder("o_a", "912");
+    const { repo: other } = await repoUnder("o_b", "913");
+    const mine = await snapshots.create("o_a", snapshotOf(repo.id, "ctx"));
+    const theirs = await snapshots.create("o_b", snapshotOf(other.id, "ctx"));
+    if (mine.status !== "created" || theirs.status !== "created")
+      throw new Error("unreachable");
+    assert.equal((await repos.get("o_a", repo.id))?.contextSnapshotId, null);
+    assert.equal(
+      await repos.setContextSnapshot("o_a", repo.id, mine.snapshot.id),
+      true,
+    );
+    assert.equal(
+      (await repos.get("o_a", repo.id))?.contextSnapshotId,
+      mine.snapshot.id,
+    );
+    // Another repository's snapshot, or another organization's repository,
+    // is not written.
+    assert.equal(
+      await repos.setContextSnapshot("o_a", repo.id, theirs.snapshot.id),
+      false,
+    );
+    assert.equal(
+      await repos.setContextSnapshot("o_b", repo.id, mine.snapshot.id),
+      false,
+    );
+    assert.equal(
+      (await repos.get("o_a", repo.id))?.contextSnapshotId,
+      mine.snapshot.id,
+    );
+    // Pruning keeps the context's snapshot, however old, and nothing else
+    // that nothing names.
+    await snapshots.create("o_a", snapshotOf(repo.id, "newer"));
+    assert.deepEqual(await snapshots.prune("o_a", repo.id, 0), [
+      `trees/${repo.id}/newer.json.gz`,
+    ]);
+    assert.deepEqual(
+      (await snapshots.list("o_a", repo.id, 10)).map((s) => s.commitSha),
+      ["ctx"],
+    );
+    assert.equal(
+      (await connections.removeWithTrees("o_a", linked.id)).removed,
+      true,
+    );
+    assert.equal(await repos.get("o_a", repo.id), null);
   });
 
   test("disconnect returns all snapshot tree keys before the cascade", async () => {
@@ -532,7 +581,7 @@ describe("GitHub pointers in Postgres", { skip }, () => {
       revision: 1,
     });
     await sql`insert into bounty_run (id, organization_id, board_id, request_id, selection, rate_card, requested_model, prompt_version) values ('brn_p', 'o_a', 'jrb_p', 'req', ${sql.json({})}, ${rateCard}, 'model', 'v')`;
-    await sql`insert into bounty_proposal (id, organization_id, run_id, bounty_id, spec_hash, rate_card, model_complexity, model_confidence, model_rationale, actual_model, prompt_version, complexity, amount_minor, currency, repo_snapshot_id) values ('bpr_p', 'o_a', 'brn_p', 'bty_p', ${"a".repeat(64)}, ${rateCard}, 'M', 'high', 'why', 'model', 'v', 'M', 100, 'USD', ${ids[0] ?? ""})`;
+    await sql`insert into bounty_proposal (id, organization_id, run_id, bounty_id, spec_hash, rate_card, model_complexity, model_confidence, model_rationale, actual_model, prompt_version, complexity, amount_minor, currency, repositories) values ('bpr_p', 'o_a', 'brn_p', 'bty_p', ${"a".repeat(64)}, ${rateCard}, 'M', 'high', 'why', 'model', 'v', 'M', 100, 'USD', ${sql.json([{ repoId: repo.id, snapshotId: ids[0] ?? "" }])})`;
 
     // Someone else's prune touches nothing.
     assert.deepEqual(await snapshots.prune("o_b", repo.id, 0), []);
@@ -546,49 +595,17 @@ describe("GitHub pointers in Postgres", { skip }, () => {
       ["s4", "s3", "s1"],
     );
 
-    // Removing the repository takes its snapshots and clears the pointer.
+    // Removing the repository takes its snapshots, referenced or not; the
+    // proposal's record of it is left for its readers to pass over.
     assert.equal(await repos.remove("o_a", repo.id), true);
+    assert.deepEqual(await snapshots.list("o_a", repo.id, 10), []);
     const [proposal] =
-      await sql`select repo_snapshot_id from bounty_proposal where id = 'bpr_p'`;
-    assert.equal(proposal?.["repo_snapshot_id"], null);
+      await sql`select repositories from bounty_proposal where id = 'bpr_p'`;
+    assert.deepEqual(proposal?.["repositories"], [
+      { repoId: repo.id, snapshotId: ids[0] },
+    ]);
   });
 
-  test("a board links only a repository of its own organization", async () => {
-    const own = await repoUnder("o_a", "930");
-    const foreign = await repoUnder("o_b", "940");
-    await sql`insert into jira_connection (id, organization_id, cloud_id, site_url, site_name) values ('jrc_l', 'o_a', 'cloud-l', 'https://acme.example', 'Acme')`;
-    await sql`insert into jira_board (id, organization_id, connection_id, external_id, name, board_type) values ('jrb_l', 'o_a', 'jrc_l', '1', 'Board', 'scrum')`;
-
-    assert.equal(
-      await boards.update("o_a", "jrb_l", { sourceRepoId: foreign.repo.id }),
-      null,
-    );
-    assert.equal(
-      await boards.update("o_a", "jrb_l", { sourceRepoId: "ghr_nonexistent" }),
-      null,
-    );
-    assert.equal((await boards.get("o_a", "jrb_l"))?.sourceRepoId, null);
-
-    const linked = await boards.update("o_a", "jrb_l", {
-      sourceRepoId: own.repo.id,
-    });
-    assert.equal(linked?.sourceRepoId, own.repo.id);
-    // An edit that does not name the repository leaves the link alone.
-    assert.equal(
-      (await boards.update("o_a", "jrb_l", { pricing: {} }))?.sourceRepoId,
-      own.repo.id,
-    );
-
-    // Removing the repository unlinks the board rather than failing.
-    assert.equal(await repos.remove("o_a", own.repo.id), true);
-    assert.equal((await boards.get("o_a", "jrb_l"))?.sourceRepoId, null);
-    // And null unlinks explicitly.
-    assert.equal(
-      (await boards.update("o_a", "jrb_l", { sourceRepoId: null }))
-        ?.sourceRepoId,
-      null,
-    );
-  });
   test("analysis claims are exclusive, writes are fenced, artifacts are private and runs prevent pruning", async () => {
     const { repo } = await repoUnder("o_a", "960");
     const snapshot = await snapshots.create("o_a", {

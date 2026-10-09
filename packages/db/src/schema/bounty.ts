@@ -27,13 +27,13 @@ import {
 } from "drizzle-orm/pg-core";
 import type {
   BountyOrigin,
+  CategoryMatch,
   ContextSource,
   GithubContext,
   JiraContext,
 } from "sandbox-factory";
 
 import { user } from "./auth.js";
-import { githubRepo } from "./github.js";
 import { organization } from "./organizations.js";
 
 const ts = (name: string) => timestamp(name, { withTimezone: true });
@@ -54,18 +54,23 @@ export const bounty = pgTable(
     /** `manual` or `jira`: where the text came from when it was made. */
     origin: text("origin").$type<BountyOrigin>().notNull().default("manual"),
     /**
-     * The repository the bounty is about, named for it. Null leaves a Jira
-     * bounty with its board's repository, and a bounty written here with
-     * none; removing the repository clears it.
-     */
-    repoId: text("repo_id").references(() => githubRepo.id, {
-      onDelete: "set null",
-    }),
-    /**
-     * Technologies the bounty adds to its repository's detected stack, by
-     * name. The repository's own are not copied here: they follow it.
+     * Technologies the bounty adds to the stack detected in the workspace's
+     * repositories, by name. A bounty names no repository: its work may
+     * touch any the workspace has connected, and their stacks are not
+     * copied here, as they follow the repositories.
      */
     stack: jsonb("stack").$type<string[]>().notNull().default([]),
+    /**
+     * The categories a board's backlog scan found the bounty in, each with
+     * the reason it fit, as the latest scan to reach it said. Empty for a
+     * bounty written here, or one no scan has put in a category: what the
+     * list's "unassigned" filter shows. Not part of the overview's text, so
+     * a change here is no new version.
+     */
+    categories: jsonb("categories")
+      .$type<CategoryMatch[]>()
+      .notNull()
+      .default([]),
     createdBy: text("created_by").references(() => user.id, {
       onDelete: "set null",
     }),
@@ -79,8 +84,8 @@ export const bounty = pgTable(
     version: integer("version").notNull().default(1),
     /**
      * The overview version an owner or admin approved, and who and when.
-     * While it is `version` the overview is approved, and its title, text,
-     * repository and stack are not changed until it is unapproved. A new
+     * While it is `version` the overview is approved, and its title, text
+     * and stack are not changed until it is unapproved. A new
      * version (from Jira, which no approval holds back) leaves it behind,
      * and the overview reads as unapproved again.
      */
@@ -97,8 +102,6 @@ export const bounty = pgTable(
       table.organizationId,
       table.createdAt,
     ),
-    // Removing a repository clears this column; without it that is a scan.
-    index("bounty_repo_id_idx").on(table.repoId),
     check(
       "bounty_title_check",
       sql`char_length(${table.title}) between 1 and 255`,

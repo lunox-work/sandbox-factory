@@ -52,7 +52,6 @@ const BOUNTY = {
   organizationId: "org_1",
   title: "Export to CSV",
   origin: "manual",
-  repoId: null,
   stack: [],
   revision: 1,
   version: 1,
@@ -85,6 +84,7 @@ const REPO = {
   syncStatus: "ok",
   syncError: null,
   stack: [],
+  contextSnapshotId: null,
   createdAt: "2026-10-01T00:00:00.000Z",
 };
 
@@ -898,20 +898,6 @@ test("home greets the person rather than titling the board", async () => {
   expect(screen.queryByRole("heading", { name: "Delivery" })).toBeNull();
 });
 
-test("home comes back to the board last opened", async () => {
-  boardsByOrganization = {
-    org_1: [board("jrb_1", "Delivery"), board("jrb_2", "Platform")],
-  };
-  window.history.replaceState(null, "", "/o/acme/jira/jrc_1/jrb_2");
-  render(<App />);
-  expect(await screen.findByRole("heading", { name: "Platform" })).toBeTruthy();
-
-  fireEvent.click(railHome());
-
-  await waitFor(() => expect(window.location.pathname).toBe("/"));
-  expect(await homeBoard("Platform")).toBeTruthy();
-});
-
 test("the picker switches home's board and remembers it", async () => {
   boardsByOrganization = {
     org_1: [board("jrb_1", "Delivery"), board("jrb_2", "Platform")],
@@ -934,9 +920,9 @@ test("the picker switches home's board and remembers it", async () => {
   expect(await homeBoard("Platform")).toBeTruthy();
 });
 
-test("the picker leads out to the board's own page", async () => {
-  // Home has no trail, so this is how the board's page and its site are
-  // reached from here.
+test("the picker leads out to the board's bounties", async () => {
+  // Home has no trail, and a board no page of its own: its tickets are
+  // bounties, so this opens the list narrowed to it.
   boardsByOrganization = { org_1: [board("jrb_1", "Delivery")] };
   render(<App />);
 
@@ -946,13 +932,13 @@ test("the picker leads out to the board's own page", async () => {
   });
   const menu = await screen.findByRole("listbox", { name: "Boards" });
   fireEvent.click(
-    within(menu).getByRole("option", { name: /Open board page/ }),
+    within(menu).getByRole("option", { name: /Open its bounties/ }),
   );
 
   await waitFor(() => {
-    expect(window.location.pathname).toBe("/o/acme/jira/jrc_1/jrb_1");
+    expect(window.location.pathname).toBe("/bounties");
+    expect(window.location.search).toBe("?board=acme/jrb_1");
   });
-  expect(await screen.findByRole("heading", { name: "Delivery" })).toBeTruthy();
 });
 
 test("a remembered board that is gone falls back to the first", async () => {
@@ -981,39 +967,6 @@ test("switching organization moves home to that organization's board", async () 
 
   expect(await homeBoard("Globex board")).toBeTruthy();
   expect(window.location.pathname).toBe("/");
-});
-
-test("Back onto another workspace's board does not file it under this one", async () => {
-  // Open a board in Acme, switch to Globex, then press Back. For a moment the
-  // URL names Acme's board while Globex is still active; remembering the board
-  // then would overwrite Globex's home board with Acme's.
-  boardsByOrganization = {
-    org_1: [board("jrb_1", "Delivery"), board("jrb_2", "Platform")],
-    org_2: [board("jrb_9", "Globex board")],
-  };
-  window.history.replaceState(null, "", "/o/acme/jira/jrc_1/jrb_2");
-  render(<App />);
-  expect(await screen.findByRole("heading", { name: "Platform" })).toBeTruthy();
-
-  const menu = await openSwitcher();
-  fireEvent.click(within(menu).getByRole("option", { name: /Globex/ }));
-  await screen.findByRole("button", { name: "Switch workspace — Globex" });
-  await waitFor(() =>
-    expect(window.location.pathname).not.toBe("/o/acme/jira/jrc_1/jrb_2"),
-  );
-
-  window.history.back();
-  window.dispatchEvent(new PopStateEvent("popstate"));
-  expect(await screen.findByRole("heading", { name: "Platform" })).toBeTruthy();
-
-  expect(
-    window.localStorage.getItem("lunox:home-board:user_1:org_2"),
-  ).toBeNull();
-  expect(
-    JSON.parse(
-      window.localStorage.getItem("lunox:home-board:user_1:org_1") ?? "null",
-    ),
-  ).toEqual({ connectionId: "jrc_1", boardId: "jrb_2" });
 });
 
 test("cancelling a new organization goes back to the list, not home", async () => {
@@ -1209,21 +1162,6 @@ test("choosing another organization keeps you on the same screen in it", async (
   expect(
     await screen.findByRole("button", { name: "Switch workspace — Globex" }),
   ).toBeTruthy();
-});
-
-test("switching away from a board lands on the new organization's Jira tab", async () => {
-  // The board belongs to the old organization, so its id cannot follow; the
-  // nearest screen the new one has is its own list of sites and boards.
-  window.history.replaceState(null, "", "/o/acme/jira/jrc_1/jrb_1");
-  render(<App />);
-
-  const menu = await openSwitcher();
-  fireEvent.click(within(menu).getByRole("option", { name: /Globex/ }));
-
-  await waitFor(() => {
-    expect(window.location.pathname).toBe("/o/globex/settings");
-    expect(window.location.search).toBe("?connection=jira");
-  });
 });
 
 test("/o/:slug/repositories/:id opens the repository's page, under the GitHub tab", async () => {

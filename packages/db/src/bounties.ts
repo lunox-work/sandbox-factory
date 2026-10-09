@@ -7,6 +7,7 @@
 import type {
   BountyComplexity,
   BountyContent,
+  CategoryMatch,
   ContextVersions,
   BountyOrigin,
   SandboxStatus,
@@ -14,18 +15,14 @@ import type {
 import { clampBountyTitle, overviewApproved } from "sandbox-factory";
 import { and, desc, eq, inArray, or, sql, type SQL } from "drizzle-orm";
 
-import {
-  isForeignKeyViolation,
-  type Database,
-  type QueryExecutor,
-} from "./errors.js";
+import type { Database, QueryExecutor } from "./errors.js";
+import type { ProposalRepository } from "./schema.js";
 import { generateId } from "./mapping.js";
 import {
   bounty,
   bountyProposal,
   bountyRun,
   bountyVersion,
-  githubRepo,
   jiraBoard,
   jiraConnection,
   jiraIssue,
@@ -55,9 +52,16 @@ export interface StoredBounty extends BountyContent {
   readonly id: string;
   readonly organizationId: string;
   readonly origin: BountyOrigin;
-  readonly repoId: string | null;
-  /** What the bounty adds to its repository's detected stack. */
+  /**
+   * What the bounty adds to the stack detected in the workspace's
+   * repositories, any of which its work may touch.
+   */
   readonly stack: readonly string[];
+  /**
+   * The categories a board's backlog scan found it in; empty for one no
+   * scan has categorized.
+   */
+  readonly categories: readonly CategoryMatch[];
   readonly createdBy: string | null;
   readonly revision: number;
   /** The overview's version: moved by each change to its title or text. */
@@ -119,6 +123,8 @@ export interface BountyProposalSummary {
   readonly id: string;
   readonly status: "proposed" | "approved";
   readonly complexity: BountyComplexity;
+  /** The repositories its sizing said the work touches. */
+  readonly repositories: readonly ProposalRepository[];
   readonly amountMinor: number | null;
   readonly currency: string | null;
 }
@@ -133,7 +139,6 @@ export type ListedBounty = Omit<
 export interface NewBounty {
   readonly title: string;
   readonly description: string;
-  readonly repoId: string | null;
   readonly stack: readonly string[];
 }
 
@@ -141,7 +146,6 @@ export interface NewBounty {
 export interface BountyChange {
   readonly title?: string | undefined;
   readonly description?: string | undefined;
-  readonly repoId?: string | null | undefined;
   readonly stack?: readonly string[] | undefined;
 }
 
@@ -151,17 +155,12 @@ export type BountyMutationResult =
       readonly ok: false;
       /**
        * `jira-owned`: a change to the text of a bounty whose Jira issue is
-       * still there, which is Jira's to change. `repo-not-found`: a
-       * repository the organization does not have. `overview-approved`: a
+       * still there, which is Jira's to change. `overview-approved`: a
        * change to an overview that stands approved, which is unapproved
        * first.
        */
       readonly reason:
-        | "not-found"
-        | "changed"
-        | "jira-owned"
-        | "repo-not-found"
-        | "overview-approved";
+        "not-found" | "changed" | "jira-owned" | "overview-approved";
       readonly current?: StoredBounty;
     };
 
@@ -170,18 +169,12 @@ export interface BountyStore {
     organizationId: string,
     createdBy: string,
     input: NewBounty,
-  ): Promise<
-    | { readonly ok: true; readonly bounty: StoredBounty }
-    | { readonly ok: false; readonly reason: "repo-not-found" }
-  >;
+  ): Promise<StoredBounty>;
   get(organizationId: string, bountyId: string): Promise<StoredBounty | null>;
-  /** Newest first, a page at a time. */
+  /** Newest first, a page at a time, narrowed by `options`' filters. */
   list(
     organizationId: string,
-    options?: {
-      cursor?: { readonly createdAt: string; readonly id: string };
-      limit?: number;
-    },
+    options?: BountyListOptions,
   ): Promise<ListedBounty[]>;
   /**
    * The same list across several organizations at once, interleaved by age:
@@ -190,8 +183,28 @@ export interface BountyStore {
    */
   listAcross(
     organizationIds: readonly string[],
-    options?: Parameters<BountyStore["list"]>[1],
+    options?: BountyListOptions,
   ): Promise<ListedBounty[]>;
+  /**
+   * How many bounties each category holds across the organizations named,
+   * narrowed to one board's when `boardId` is given: the counts the list's
+   * filter shows. A bounty in two categories counts in both, so they can
+   * sum past `total`; `uncategorized` is the bounties in none.
+   */
+  categoryCounts(
+    organizationIds: readonly string[],
+    filter?: Pick<BountyListOptions, "boardId">,
+  ): Promise<BountyCategoryCounts>;
+  /**
+   * Records the categories a scan found the bounty in, in place of those it
+   * had. Not a change to the overview, so neither its version nor its
+   * revision moves. False when the bounty is not the organization's.
+   */
+  categorize(
+    organizationId: string,
+    bountyId: string,
+    categories: readonly CategoryMatch[],
+  ): Promise<boolean>;
   /**
    * A change, against the revision the editor saw. A change to the title
    * or the description is a new version of the overview, by `editedBy`.
@@ -244,6 +257,25 @@ export interface BountyStore {
     bountyId: string,
     content: BountyContent,
   ): Promise<boolean>;
+}
+
+/** What a bounty list may be narrowed to, and which page of it. */
+export interface BountyListOptions {
+  readonly cursor?: { readonly createdAt: string; readonly id: string };
+  readonly limit?: number;
+  /** Only bounties a scan put in this category. */
+  readonly category?: string;
+  /** Only bounties in no category at all. */
+  readonly uncategorized?: boolean;
+  /** Only bounties imported from, or linked to, an issue on this board. */
+  readonly boardId?: string;
+}
+
+export interface BountyCategoryCounts {
+  readonly total: number;
+  readonly uncategorized: number;
+  /** By category id; a category with none is absent. */
+  readonly categories: Readonly<Record<string, number>>;
 }
 
 /** The link's columns, flat: a left join that misses leaves them all null. */
@@ -396,8 +428,8 @@ function toBounty(
     components: row.components,
     inputTruncated: row.inputTruncated,
     origin: row.origin,
-    repoId: row.repoId,
     stack: row.stack,
+    categories: row.categories,
     createdBy: row.createdBy,
     revision: row.revision,
     version: row.version,
@@ -536,23 +568,6 @@ export async function refreshBounty(
   return true;
 }
 
-async function ownsRepo(
-  db: Database,
-  organizationId: string,
-  repoId: string,
-): Promise<boolean> {
-  const rows = await db
-    .select({ id: githubRepo.id })
-    .from(githubRepo)
-    .where(
-      and(
-        eq(githubRepo.organizationId, organizationId),
-        eq(githubRepo.id, repoId),
-      ),
-    );
-  return rows[0] !== undefined;
-}
-
 async function readBounty(
   db: Database,
   organizationId: string,
@@ -586,7 +601,7 @@ async function readBounty(
 async function listBounties(
   db: Database,
   owner: SQL,
-  options: Parameters<BountyStore["list"]>[1] = {},
+  options: BountyListOptions = {},
 ): Promise<ListedBounty[]> {
   const limit = Math.min(Math.max(options.limit ?? 25, 1), 50);
   const rows = (await db
@@ -595,8 +610,8 @@ async function listBounties(
       organizationId: bounty.organizationId,
       title: bounty.title,
       origin: bounty.origin,
-      repoId: bounty.repoId,
       stack: bounty.stack,
+      categories: bounty.categories,
       revision: bounty.revision,
       version: bounty.version,
       approvedVersion: bounty.approvedVersion,
@@ -609,6 +624,7 @@ async function listBounties(
       proposalId: bountyProposal.id,
       proposalStatus: bountyProposal.status,
       proposalComplexity: bountyProposal.complexity,
+      proposalRepositories: bountyProposal.repositories,
       proposalAmountMinor: bountyProposal.amountMinor,
       proposalCurrency: bountyProposal.currency,
     })
@@ -637,6 +653,7 @@ async function listBounties(
     .where(
       and(
         owner,
+        ...listFilters(options),
         options.cursor === undefined
           ? undefined
           : sql`(${createdMs}, ${bounty.id}) < (${options.cursor.createdAt}::timestamptz, ${options.cursor.id})`,
@@ -645,6 +662,27 @@ async function listBounties(
     .orderBy(desc(createdMs), desc(bounty.id))
     .limit(limit)) as ListedRow[];
   return rows.map(toListed);
+}
+
+/**
+ * The conditions a list's filters add. The board's is on the joined Jira
+ * link; a category's is jsonb containment, which matches an element with
+ * that id whatever else it says.
+ */
+export function listFilters(options: BountyListOptions): SQL[] {
+  const filters: SQL[] = [];
+  if (options.boardId !== undefined) {
+    filters.push(eq(jiraIssue.boardId, options.boardId));
+  }
+  if (options.category !== undefined) {
+    filters.push(
+      sql`${bounty.categories} @> ${JSON.stringify([{ id: options.category }])}::jsonb`,
+    );
+  }
+  if (options.uncategorized === true) {
+    filters.push(sql`${bounty.categories} = '[]'::jsonb`);
+  }
+  return filters;
 }
 
 /**
@@ -705,32 +743,16 @@ async function decide(
 export function createBountyStore(db: Database): BountyStore {
   return {
     async create(organizationId, createdBy, input) {
-      if (
-        input.repoId !== null &&
-        !(await ownsRepo(db, organizationId, input.repoId))
-      ) {
-        return { ok: false, reason: "repo-not-found" };
-      }
-      let row: BountyRow;
-      try {
-        row = await db.transaction((tx) =>
-          insertBounty(tx, organizationId, {
-            title: input.title,
-            description: input.description,
-            origin: "manual",
-            repoId: input.repoId,
-            stack: [...input.stack],
-            createdBy,
-          }),
-        );
-      } catch (error) {
-        // The repository was removed between the check and the insert.
-        if (input.repoId !== null && isForeignKeyViolation(error)) {
-          return { ok: false, reason: "repo-not-found" };
-        }
-        throw error;
-      }
-      return { ok: true, bounty: toBounty(row, NO_LINK) };
+      const row = await db.transaction((tx) =>
+        insertBounty(tx, organizationId, {
+          title: input.title,
+          description: input.description,
+          origin: "manual",
+          stack: [...input.stack],
+          createdBy,
+        }),
+      );
+      return toBounty(row, NO_LINK);
     },
 
     get: (organizationId, bountyId) => readBounty(db, organizationId, bountyId),
@@ -748,6 +770,58 @@ export function createBountyStore(db: Database): BountyStore {
             options,
           ),
 
+    async categoryCounts(organizationIds, filter = {}) {
+      if (organizationIds.length === 0) {
+        return { total: 0, uncategorized: 0, categories: {} };
+      }
+      const where = and(
+        inArray(bounty.organizationId, [...organizationIds]),
+        ...listFilters(filter),
+      );
+      const [totals] = (await db
+        .select({
+          total: sql<number>`count(*)::int`,
+          uncategorized: sql<number>`count(*) filter (where ${bounty.categories} = '[]'::jsonb)::int`,
+        })
+        .from(bounty)
+        .leftJoin(jiraIssue, eq(jiraIssue.bountyId, bounty.id))
+        .where(where)) as { total: number; uncategorized: number }[];
+      // One row per category a bounty is in, so one in two counts in both.
+      const matched = sql`jsonb_array_elements(${bounty.categories}) ->> 'id'`;
+      const rows = (await db
+        .select({
+          id: sql<string>`${matched}`,
+          count: sql<number>`count(*)::int`,
+        })
+        .from(bounty)
+        .leftJoin(jiraIssue, eq(jiraIssue.bountyId, bounty.id))
+        .where(where)
+        .groupBy(matched)) as { id: string | null; count: number }[];
+      const categories: Record<string, number> = {};
+      for (const row of rows) {
+        if (row.id !== null) categories[row.id] = row.count;
+      }
+      return {
+        total: totals?.total ?? 0,
+        uncategorized: totals?.uncategorized ?? 0,
+        categories,
+      };
+    },
+
+    async categorize(organizationId, bountyId, categories) {
+      const rows = await db
+        .update(bounty)
+        .set({ categories: categories.map((match) => ({ ...match })) })
+        .where(
+          and(
+            eq(bounty.organizationId, organizationId),
+            eq(bounty.id, bountyId),
+          ),
+        )
+        .returning({ id: bounty.id });
+      return rows.length > 0;
+    },
+
     async update(
       organizationId,
       bountyId,
@@ -760,9 +834,9 @@ export function createBountyStore(db: Database): BountyStore {
       if (current.revision !== expectedRevision) {
         return { ok: false, reason: "changed", current };
       }
-      // The repository and the stack are the workspace's to set, even on
-      // a bounty whose text is Jira's.
-      const { repoId, stack, ...text } = change;
+      // The stack is the workspace's to set, even on a bounty whose text
+      // is Jira's.
+      const { stack, ...text } = change;
       if (
         Object.values(text).some((value) => value !== undefined) &&
         followsJira(current)
@@ -774,7 +848,6 @@ export function createBountyStore(db: Database): BountyStore {
         (change.title === undefined || change.title === current.title) &&
         (change.description === undefined ||
           change.description === current.description) &&
-        (repoId === undefined || repoId === current.repoId) &&
         (stack === undefined ||
           JSON.stringify(stack) === JSON.stringify(current.stack));
       if (same) return { ok: true, bounty: current };
@@ -782,53 +855,35 @@ export function createBountyStore(db: Database): BountyStore {
       if (overviewApproved(current)) {
         return { ok: false, reason: "overview-approved", current };
       }
-      if (
-        repoId !== undefined &&
-        repoId !== null &&
-        repoId !== current.repoId &&
-        !(await ownsRepo(db, organizationId, repoId))
-      ) {
-        return { ok: false, reason: "repo-not-found" };
-      }
-      // New words are the overview's next version; a repository or a
-      // stack is not what a proposal is sized from, so moves none.
+      // New words are the overview's next version; a stack is not what a
+      // proposal is sized from, so moves none.
       const versioned = changesText(current, change);
-      let rows: BountyRow[];
-      try {
-        rows = await db.transaction(async (tx) => {
-          const written = (await tx
-            .update(bounty)
-            .set({
-              ...(change.title === undefined ? {} : { title: change.title }),
-              ...(change.description === undefined
-                ? {}
-                : { description: change.description }),
-              ...(repoId === undefined ? {} : { repoId }),
-              ...(stack === undefined ? {} : { stack: [...stack] }),
-              revision: expectedRevision + 1,
-              ...(versioned ? { version: current.version + 1 } : {}),
-              updatedAt: new Date(),
-            })
-            .where(
-              and(
-                eq(bounty.organizationId, organizationId),
-                eq(bounty.id, bountyId),
-                eq(bounty.revision, expectedRevision),
-              ),
-            )
-            .returning()) as BountyRow[];
-          const updated = written[0];
-          if (updated !== undefined && versioned)
-            await keepVersion(tx, updated, editedBy);
-          return written;
-        });
-      } catch (error) {
-        // The repository was removed between the check and the write.
-        if (repoId != null && isForeignKeyViolation(error)) {
-          return { ok: false, reason: "repo-not-found" };
-        }
-        throw error;
-      }
+      const rows = await db.transaction(async (tx) => {
+        const written = (await tx
+          .update(bounty)
+          .set({
+            ...(change.title === undefined ? {} : { title: change.title }),
+            ...(change.description === undefined
+              ? {}
+              : { description: change.description }),
+            ...(stack === undefined ? {} : { stack: [...stack] }),
+            revision: expectedRevision + 1,
+            ...(versioned ? { version: current.version + 1 } : {}),
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(bounty.organizationId, organizationId),
+              eq(bounty.id, bountyId),
+              eq(bounty.revision, expectedRevision),
+            ),
+          )
+          .returning()) as BountyRow[];
+        const updated = written[0];
+        if (updated !== undefined && versioned)
+          await keepVersion(tx, updated, editedBy);
+        return written;
+      });
       const updated = rows[0];
       if (updated === undefined) {
         const latest = await readBounty(db, organizationId, bountyId);
@@ -943,8 +998,8 @@ type ListedRow = Pick<
   | "organizationId"
   | "title"
   | "origin"
-  | "repoId"
   | "stack"
+  | "categories"
   | "revision"
   | "version"
   | "approvedVersion"
@@ -958,6 +1013,7 @@ type ListedRow = Pick<
     readonly proposalId: string | null;
     readonly proposalStatus: string | null;
     readonly proposalComplexity: string | null;
+    readonly proposalRepositories: ProposalRepository[] | null;
     readonly proposalAmountMinor: number | null;
     readonly proposalCurrency: string | null;
   };
@@ -969,8 +1025,8 @@ function toListed(row: ListedRow): ListedBounty {
     organizationId: row.organizationId,
     title: row.title,
     origin: row.origin,
-    repoId: row.repoId,
     stack: row.stack,
+    categories: row.categories,
     revision: row.revision,
     version: row.version,
     approval: toApproval(row),
@@ -985,6 +1041,7 @@ function toListed(row: ListedRow): ListedBounty {
             id: row.proposalId,
             status: row.proposalStatus as BountyProposalSummary["status"],
             complexity: row.proposalComplexity as BountyComplexity,
+            repositories: row.proposalRepositories ?? [],
             amountMinor: row.proposalAmountMinor,
             currency: row.proposalCurrency,
           },

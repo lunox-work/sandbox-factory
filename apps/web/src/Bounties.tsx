@@ -32,11 +32,12 @@ import {
  * saved.
  */
 
-import type {
-  BountyDto,
-  MembershipDto,
-  BountySandboxSummaryDto,
-  BountySummaryDto,
+import {
+  isWorkspaceSource,
+  type BountyDto,
+  type MembershipDto,
+  type BountySandboxSummaryDto,
+  type BountySummaryDto,
 } from "@sandbox-factory/shared";
 import {
   BOUNTY_LIMITS,
@@ -91,7 +92,7 @@ import { LunoxMark } from "@/components/LunoxMark";
 import { BountyText } from "./BountyText";
 import { dateTime } from "./lib/format";
 import { money } from "./Proposals";
-import { JiraIcon } from "./ProviderIcon";
+import { JiraIcon, ProviderIcon } from "./ProviderIcon";
 import {
   BOUNTIES_PATH,
   bountiesUrl,
@@ -100,19 +101,20 @@ import {
   bountyPagePath,
   bountyProposalPath,
   isPlainLeftClick,
+  listScopeForSearch,
   NEW_BOUNTY_PATH,
   NEW_ORG_PATH,
   pathForScreen,
   sandboxFilesPath,
   type BountyAddress,
+  type BountyListScope,
 } from "./routes";
 import { clients, queryKeys, useUserId } from "./data/query";
 import {
   InlineDescription,
   InlineTitle,
-  RepositoryField,
-  repositoryOptions,
   StackField,
+  workspaceStack,
   type SaveField,
 } from "./features/bounties/BountyFields";
 import {
@@ -126,6 +128,8 @@ import {
   useBountyContext,
 } from "./features/bounties/BountyContext";
 import { BountyProposal } from "./features/bounties/BountyProposal";
+import { BoardScope } from "./features/bounties/BoardScope";
+import { CategoryFilter, CategoryLine } from "./features/bounties/Categories";
 import {
   OverviewVersion,
   StepLineage,
@@ -144,6 +148,7 @@ import { useGithubRepos, type GithubRepos } from "./useGithub";
 import {
   useAllBounties,
   useBounties,
+  useBountyCategories,
   type AllBounties,
   type BountyDraft,
   type Bounties,
@@ -244,13 +249,26 @@ export function Bounties({
   /** Opens a bounty's own page, with the list behind it in history. */
   onOpenPage: (path: string) => void;
 }) {
-  const bounties = useAllBounties();
   /*
-    The bounty open over the list. In the query, so a reload or a link lands
-    on it and Back steps out of it.
+    The bounty open over the list, and what the list is narrowed to: a
+    category and a board. In the query, so a reload or a link lands on them
+    and Back steps out of the bounty.
   */
   const { search } = useLocation();
   const peek = bountyForSearch(search) ?? null;
+  const scope = listScopeForSearch(search);
+  const boardOwner =
+    scope.board === undefined
+      ? undefined
+      : workspaceNamed(organizations, scope.board.workspace);
+  const bounties = useAllBounties({
+    category: scope.category,
+    board: scope.board?.boardId,
+  });
+  const counts = useBountyCategories(scope.board?.boardId);
+  /** The list narrowed otherwise; a bounty open over it stays open. */
+  const narrow = (next: BountyListScope) =>
+    replaceLocation(bountiesUrl(peek, next));
   /*
     The bounty the open peek last read. It names the panel when the bounty
     is not among the rows loaded, as for a link to an older one.
@@ -278,14 +296,14 @@ export function Bounties({
     if (address === null) {
       if (peek === null) return;
       if (isPeekEntry(window.history.state)) window.history.back();
-      else replaceLocation(bountiesUrl(null));
+      else replaceLocation(bountiesUrl(null, scope));
     } else if (peek !== null) {
       if (address.workspace === peek.workspace && address.id === peek.id) {
         return;
       }
-      replaceLocation(bountiesUrl(address));
+      replaceLocation(bountiesUrl(address, scope));
     } else {
-      pushLocation(bountiesUrl(address), PEEK_ENTRY);
+      pushLocation(bountiesUrl(address, scope), PEEK_ENTRY);
     }
   };
 
@@ -307,18 +325,48 @@ export function Bounties({
             <h1 className="text-2xl font-semibold tracking-tight">Bounties</h1>
             <p className="text-muted-foreground mt-1.5 max-w-prose text-sm">
               The work your workspaces want done, created in Lunox or imported
-              from Jira. Each bounty is a proposal, which sizes and prices it,
-              and a sandbox that contributors work in.
+              from a Jira board&rsquo;s backlog scan. Each bounty is a proposal,
+              which sizes and prices it, and a sandbox that contributors work
+              in.
             </p>
           </div>
           <NewBountyLink disabled={target === null} onCreate={onCreate} />
         </header>
+
+        {/*
+          Controls on the list beside the panel, as a card is: using them
+          narrows the list and leaves the open bounty open.
+        */}
+        <div {...{ [PEEK_ROW_ATTRIBUTE]: "" }} className="flex flex-col gap-3">
+          <CategoryFilter
+            counts={counts.data}
+            selected={scope.category ?? null}
+            onSelect={(category) =>
+              narrow({ ...scope, category: category ?? undefined })
+            }
+          />
+          {scope.board !== undefined && (
+            <BoardScope
+              // Keyed by the board: another board's search and note are not
+              // this one's.
+              key={`${scope.board.workspace}/${scope.board.boardId}`}
+              organizationId={boardOwner?.id}
+              boardId={scope.board.boardId}
+              onClear={() => narrow({ ...scope, board: undefined })}
+              onOpenBounty={(id) => {
+                const workspace = scope.board?.workspace;
+                if (workspace !== undefined) open({ workspace, id });
+              }}
+            />
+          )}
+        </div>
 
         <BountyList
           bounties={bounties}
           organizations={organizations}
           organizationsLoading={organizationsLoading}
           peek={peek}
+          narrowed={scope.category !== undefined || scope.board !== undefined}
           onOpen={open}
           onCreate={onCreate}
         />
@@ -656,9 +704,9 @@ export function NewBountyPage({
 }
 
 /**
- * A new bounty, in the workspace chosen for it. The repositories offered are
- * that workspace's, so they follow the choice, and a repository it lacks is
- * connected in its settings.
+ * A new bounty, in the workspace chosen for it. It names no repository: the
+ * stack it inherits is that workspace's repositories', so it follows the
+ * choice, and a workspace with none connects one in its settings.
  */
 function NewBounty({
   organizations,
@@ -673,7 +721,7 @@ function NewBounty({
   viewer: Viewer;
   /** The workspace chosen until another is. */
   initial: string;
-  /** A repository, and perhaps a module, the bounty starts about. */
+  /** A module, and the repository it is in, the description starts about. */
   prefill?: BountyPrefill | null | undefined;
   onCancel: () => void;
   onConnectRepository: (organization: MembershipDto) => void;
@@ -701,7 +749,6 @@ function NewBounty({
                 "org-settings",
                 chosen.slug,
                 undefined,
-                undefined,
                 "github",
               ),
               onOpen: () => onConnectRepository(chosen),
@@ -710,10 +757,7 @@ function NewBounty({
       initialDraft={
         prefill === null || prefill === undefined
           ? undefined
-          : {
-              repoId: prefill.repoId,
-              description: areaDescription(prefill.area),
-            }
+          : { description: areaDescription(prefill) }
       }
       submitLabel="Create bounty"
       onCancel={onCancel}
@@ -900,6 +944,7 @@ function BountyList({
   organizations,
   organizationsLoading,
   peek,
+  narrowed,
   onOpen,
   onCreate,
 }: {
@@ -908,6 +953,8 @@ function BountyList({
   organizationsLoading: boolean;
   /** The bounty open in the panel, whose card is marked; null for none. */
   peek: BountyAddress | null;
+  /** A category or a board narrows the list, so empty says less. */
+  narrowed: boolean;
   onOpen: (address: BountyAddress) => void;
   onCreate: () => void;
 }) {
@@ -934,15 +981,23 @@ function BountyList({
       )}
       {bounties.bounties.length === 0 ? (
         // A list that failed to load is not known to be empty.
-        bounties.error === null && (
+        bounties.error === null &&
+        (narrowed ? (
+          <div className="rounded-lg border border-dashed px-4 py-10 text-center">
+            <p className="text-muted-foreground text-sm">
+              No bounties here. Choose another category, or add one of the
+              board&rsquo;s issues above.
+            </p>
+          </div>
+        ) : (
           <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed px-4 py-10 text-center">
             <p className="text-muted-foreground text-sm">
-              No bounties yet. Write one, or connect Jira and its boards&rsquo;
-              bounties arrive here as they are sized.
+              No bounties yet. Write one, or connect Jira and the tickets its
+              boards&rsquo; scans put in a category arrive here.
             </p>
             <NewBountyLink variant="outline" onCreate={onCreate} />
           </div>
-        )
+        ))
       ) : (
         <>
           <ul className="flex flex-col gap-2" data-testid="bounty-list">
@@ -1133,6 +1188,7 @@ function BountyCard({
           {workspace !== undefined && <WorkspaceTag name={workspace} />}
           <Source bounty={bounty} />
         </div>
+        <CategoryLine categories={bounty.categories} wrapOnPhone />
       </div>
       <div className="shrink-0 border-t pt-3 sm:w-56 sm:border-t-0 sm:pt-0">
         {proposal === null ? (
@@ -1339,17 +1395,36 @@ function BountyDetail({
         }
       });
   };
-  const repo = repos.repos.find(({ id }) => id === bounty.repoId) ?? null;
   // What each source is called on the steps' context lines.
   const contextNames = {
     jira: bounty.jira?.key ?? null,
-    github: context.status?.github.linked?.ref ?? repo?.fullName ?? null,
+    github: context.status?.github.linked?.ref ?? null,
   };
   const heldContext = bounty.stages.overview.context;
   const { sandbox } = bounty;
-  // A sandbox made before its bounty named a repository links that one.
+  /*
+    The repository a sandbox is cut from is the one the bounty's sizing
+    said its work touches, still among the workspace's: nobody picks it. A
+    sandbox made before its sizing named one links it once it does.
+  */
+  const touched = (bounty.proposal?.repositories ?? []).map(({ repoId }) => {
+    const repo = repos.repos.find(({ id }) => id === repoId) ?? null;
+    return {
+      repoId,
+      repo,
+      connected: repo !== null && isWorkspaceSource(repo),
+    };
+  });
+  // Those still connected, as the API counts them when it links one.
+  const connectedTouched = touched.flatMap(({ repo, connected }) =>
+    connected && repo !== null ? [repo] : [],
+  );
   const unlinked = sandbox !== null && sandbox.sourceRepoId === null;
-  const repoToLink = unlinked ? bounty.repoId : null;
+  const [touchedRepo] = connectedTouched;
+  const repoToLink =
+    unlinked && connectedTouched.length === 1 && touchedRepo !== undefined
+      ? touchedRepo
+      : null;
   // Either part is kept with the bounty, so either one keeps it.
   const removable = proposal === null && sandbox === null;
 
@@ -1553,8 +1628,8 @@ function BountyDetail({
         <div className="flex flex-col gap-3">
           {/*
             With no repository, its versions are generated from the bounty;
-            a repository the bounty names can still be linked to slice them
-            from it instead.
+            once its sizing says the work touches one, that one can still be
+            linked to slice them from it instead.
           */}
           <SandboxGeneration
             organizationId={bounty.organizationId}
@@ -1581,8 +1656,8 @@ function BountyDetail({
             {unlinked && managesSandbox && repoToLink !== null && (
               <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-4">
                 <p className="text-muted-foreground text-sm">
-                  Or link the bounty's repository, to slice versions from its
-                  code.
+                  Its sizing says the work touches {repoToLink.fullName}. Link
+                  it to slice versions from its code instead.
                 </p>
                 <Button
                   type="button"
@@ -1593,7 +1668,7 @@ function BountyDetail({
                     setSandboxPending(true);
                     setSandboxError(null);
                     void bounties
-                      .linkSandboxSource(sandbox.id, repoToLink)
+                      .linkSandboxSource(sandbox.id)
                       .then((failure) => {
                         setSandboxPending(false);
                         if (failure === null) onReload();
@@ -1606,7 +1681,7 @@ function BountyDetail({
                   ) : (
                     <Link2 />
                   )}
-                  Link {repo?.fullName ?? "its repository"}
+                  Link {repoToLink.fullName}
                 </Button>
               </div>
             )}
@@ -1639,15 +1714,13 @@ function BountyDetail({
               onClick={() => {
                 setSandboxPending(true);
                 setSandboxError(null);
-                // Cut from the bounty's own repository when it names one;
-                // without one, the sandbox waits for a repository.
-                void bounties
-                  .createSandbox(bounty.id, bounty.repoId)
-                  .then((failure) => {
-                    setSandboxPending(false);
-                    if (failure === null) onReload();
-                    else setSandboxError(failure);
-                  });
+                // Cut from the repository the bounty's sizing said its work
+                // touches; with none, its versions are generated.
+                void bounties.createSandbox(bounty.id).then((failure) => {
+                  setSandboxPending(false);
+                  if (failure === null) onReload();
+                  else setSandboxError(failure);
+                });
               }}
             >
               {sandboxPending ? <Loader2 className="animate-spin" /> : <Box />}
@@ -1700,14 +1773,47 @@ function BountyDetail({
     </div>
   );
 
+  /*
+    The repositories its work touches, as its sizing said: nobody picks
+    them. Until it is sized, any of the workspace's may be.
+  */
+  const touchedContext = (
+    <div className="flex min-w-0 flex-col gap-0.5 text-sm">
+      <span className="font-medium">Repositories</span>
+      {bounty.proposal === null ? (
+        <span className="text-muted-foreground">
+          Any of the workspace's, until it is sized
+        </span>
+      ) : touched.length === 0 ? (
+        <span className="text-muted-foreground">
+          Its sizing says the work touches none
+        </span>
+      ) : repos.loading ? (
+        <span className="text-muted-foreground">Reading…</span>
+      ) : (
+        touched.map(({ repoId, repo, connected }) => (
+          <span key={repoId} className="inline-flex items-center gap-1.5">
+            <span className="size-3.5 shrink-0">
+              <ProviderIcon provider="github" />
+            </span>
+            <span
+              className={cn(
+                "min-w-0 truncate",
+                !connected && "text-muted-foreground",
+              )}
+            >
+              {repo?.fullName ?? "A removed repository"}
+              {repo !== null && !connected && " (no longer connected)"}
+            </span>
+          </span>
+        ))
+      )}
+    </div>
+  );
+
   const codeContext = (
     <>
-      <RepositoryField
-        bounty={bounty}
-        repos={repos}
-        readOnly={readOnly || approvedOverview}
-        onSave={save}
-      />
+      {touchedContext}
       <StackField
         bounty={bounty}
         repos={repos}
@@ -1899,7 +2005,6 @@ function BountyDetail({
                 bounty={bounty}
                 bounties={bounties}
                 repos={repos}
-                onSave={save}
                 onChange={onChange}
                 onOpenSettings={onOpenSettings ?? (() => undefined)}
                 context={context}
@@ -2082,12 +2187,12 @@ function BountyForm({
     onChange: (organizationId: string) => void;
   };
   /**
-   * Where a repository the list lacks is connected, offered under the
-   * repositories: the workspace's GitHub settings.
+   * Where a repository is connected, offered under the stack while the
+   * workspace has none: the workspace's GitHub settings.
    */
   newRepository?: { href: string; onOpen: () => void } | undefined;
   /** What the form starts with, when it was opened about something. */
-  initialDraft?: { repoId: string; description: string } | undefined;
+  initialDraft?: { description: string } | undefined;
   submitLabel: string;
   /** Resolves to null when saved, or to what to say. */
   onSubmit: (draft: BountyDraft) => Promise<string | null>;
@@ -2097,40 +2202,21 @@ function BountyForm({
   const [description, setDescription] = useState(
     initialDraft?.description ?? "",
   );
-  const [repoId, setRepoId] = useState(initialDraft?.repoId ?? "");
   /*
-    Everything the person has added, kept across a change of repository: a
-    name the repository chosen also has shows as the repository's while it
-    is chosen, and comes back as theirs if another is.
+    Everything the person has added, kept across a change of workspace: a
+    name the workspace's repositories also have shows as theirs while that
+    workspace is chosen, and comes back as the person's if another is.
   */
   const [stack, setStack] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const chosenRepo = repos.repos.find(({ id }) => id === repoId);
   /*
-    A repository the form was opened about comes from the address, so it may
-    be stale or belong to no workspace of this person's. Once the list has
-    answered, one this workspace cannot cut a sandbox from is dropped rather
-    than submitted; a list that failed to load leaves it for the server.
+    A bounty names no repository: its work may touch any the workspace has
+    connected, so it inherits what was detected in every one of them.
   */
-  const prefilledRepo = initialDraft?.repoId;
-  useEffect(() => {
-    if (
-      prefilledRepo === undefined ||
-      repoId !== prefilledRepo ||
-      repos.loading ||
-      repos.error !== null
-    )
-      return;
-    const usable = repos.repos.some(
-      (repo) =>
-        repo.id === prefilledRepo &&
-        repo.role === "source" &&
-        repo.syncStatus !== "gone",
-    );
-    if (!usable) setRepoId("");
-  }, [prefilledRepo, repoId, repos.loading, repos.error, repos.repos]);
-  const inherited = chosenRepo?.stack ?? [];
+  const detected = workspaceStack(repos);
+  const { inherited } = detected;
+  const connected = repos.repos.some(isWorkspaceSource);
   const added = stack.filter(
     (name) => !inherited.some((repo) => sameStackName(repo, name)),
   );
@@ -2175,11 +2261,7 @@ function BountyForm({
             }),
           )}
           value={workspace.value}
-          onValueChange={(organizationId) => {
-            workspace.onChange(organizationId);
-            // The repositories offered are the chosen workspace's.
-            setRepoId("");
-          }}
+          onValueChange={workspace.onChange}
         />
       )}
     </Labelled>
@@ -2198,72 +2280,53 @@ function BountyForm({
       )}
     </Labelled>
   );
-  const repoField = (
-    <Labelled
-      label="Repository"
-      hint="The code the bounty is about. Its spec is drafted beside an outline of it."
-    >
-      {(field) => (
-        <Combobox
-          id={field.id}
-          aria-describedby={field.describedBy}
-          label="Repository"
-          searchPlaceholder="Search repositories…"
-          emptyMessage={
-            repos.loading ? "Loading repositories…" : "No repository matches."
-          }
-          options={repositoryOptions(repos, repoId)}
-          actions={
-            newRepository === undefined
-              ? []
-              : [
-                  {
-                    key: "new-repository",
-                    // As a bounty's links name it, once the bounty exists.
-                    label: "Connect a repository",
-                    icon: <Plus />,
-                    href: newRepository.href,
-                    onSelect: () => leave(newRepository.onOpen),
-                  },
-                ]
-          }
-          value={repoId}
-          onValueChange={setRepoId}
-        />
-      )}
-    </Labelled>
-  );
   const stackField = (
     <Labelled
       label="Tech stack"
       hint={
-        chosenRepo !== undefined && chosenRepo.stack === null
-          ? "The repository's stack is still being read; add what you know."
-          : chosenRepo !== undefined
-            ? "Detected in the repository, which stays. Add anything else the work needs."
+        detected.reading
+          ? "The workspace's repositories are still being read; add what you know."
+          : inherited.length > 0
+            ? "Detected in the workspace's repositories, any of which the work may touch. Add anything else it needs."
             : "What the work is done in."
       }
     >
       {(field) => (
-        <StackPicker
-          id={field.id}
-          describedBy={field.describedBy}
-          inherited={inherited}
-          inheritedFrom={chosenRepo?.fullName ?? "the repository"}
-          value={added}
-          onChange={(next) =>
-            // The ones hidden behind the repository's are kept, so they
-            // return if it changes.
-            setStack([
-              ...stack.filter(
-                (name) =>
-                  !added.includes(name) &&
-                  inherited.some((repo) => sameStackName(repo, name)),
-              ),
-              ...next,
-            ])
-          }
-        />
+        <div className="flex flex-col items-start gap-2">
+          <StackPicker
+            id={field.id}
+            describedBy={field.describedBy}
+            inherited={inherited}
+            inheritedFrom={detected.inheritedFrom}
+            value={added}
+            onChange={(next) =>
+              // The ones hidden behind the repositories' are kept, so they
+              // return if the workspace changes.
+              setStack([
+                ...stack.filter(
+                  (name) =>
+                    !added.includes(name) &&
+                    inherited.some((repo) => sameStackName(repo, name)),
+                ),
+                ...next,
+              ])
+            }
+          />
+          {!connected && !repos.loading && newRepository !== undefined && (
+            <a
+              href={newRepository.href}
+              className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-xs underline-offset-2 hover:underline"
+              onClick={(event) => {
+                if (!isPlainLeftClick(event)) return;
+                event.preventDefault();
+                leave(newRepository.onOpen);
+              }}
+            >
+              <Plus className="size-3" />
+              Connect a repository
+            </a>
+          )}
+        </div>
       )}
     </Labelled>
   );
@@ -2309,13 +2372,18 @@ function BountyForm({
           setError("A bounty needs a title.");
           return;
         }
+        // Its sandbox is written in it, so there must be something: the
+        // repositories', still being read or detected, or the person's.
+        if (added.length === 0 && inherited.length === 0 && !detected.reading) {
+          setError("A bounty needs a tech stack.");
+          return;
+        }
         setSaving(true);
         setError(null);
         void onSubmit({
           title: title.trim(),
           description,
-          repoId: repoId === "" ? null : repoId,
-          // Only what the bounty adds: the repository's own follow it.
+          // Only what the bounty adds: the repositories' own follow them.
           stack: added,
         }).then((failure) => {
           setSaving(false);
@@ -2333,7 +2401,6 @@ function BountyForm({
       */}
       <div className="grid content-start gap-4 sm:grid-cols-2 lg:row-span-2 lg:grid-cols-1">
         {workspaceField}
-        {repoField}
         {stackField}
       </div>
       <div className="flex flex-col gap-4">{footer}</div>

@@ -123,7 +123,7 @@ function proposal(
     specRevision: 2,
     step,
     rubric: null,
-    repoSnapshotId: "rsn_1",
+    repositories: [],
     contextVersions: { jira: null, github: null },
     decidedAt: null,
     decidedBy: null,
@@ -144,6 +144,7 @@ function profile(
     specRevision: 2,
     specHash: "a".repeat(64),
     snapshotId: "rsn_1",
+    repository: "acme/app",
     status: "ready",
     errorCode: null,
     runErrorCode: null,
@@ -158,9 +159,17 @@ function profile(
 
 function harness(
   stored: StoredBountyProposal | null = proposal(),
-  options: { conflicts?: number; specs?: boolean; throws?: boolean } = {},
+  options: {
+    conflicts?: number;
+    specs?: boolean;
+    throws?: boolean;
+    /** Every profile of the proposal; its revision's are read. */
+    profiles?: StoredBountyProfile[];
+  } = {},
 ) {
   let current = stored;
+  const profiles = options.profiles ?? [profile()];
+  const revisions: number[] = [];
   let conflicts = options.conflicts ?? 0;
   const writes: { revision: number; input: ApplyRubricInput }[] = [];
   const errors: string[] = [];
@@ -188,6 +197,16 @@ function harness(
         return { ok: true, proposal: current };
       },
     },
+    profiles: {
+      forRevision: async (_owner, proposalId, revision) => {
+        revisions.push(revision);
+        return profiles.filter(
+          (stored) =>
+            stored.proposalId === proposalId &&
+            stored.specRevision === revision,
+        );
+      },
+    },
     specs: {
       get: async (_owner, proposalId, revision) =>
         options.specs === false
@@ -196,7 +215,7 @@ function harness(
     },
     onError: (code) => errors.push(code),
   });
-  return { pricer, writes, errors };
+  return { pricer, writes, errors, revisions };
 }
 
 test("a measured profile sizes a model-sized proposal by the rubric", async () => {
@@ -207,7 +226,11 @@ test("a measured profile sizes a model-sized proposal by the rubric", async () =
   assert.equal(write?.revision, 3);
   const expected = assessRubric({
     spec: draft,
-    code: { status: "measured", profile: measured, specRevision: 2 },
+    code: {
+      status: "measured",
+      profiles: [{ repository: "acme/app", profile: measured }],
+      specRevision: 2,
+    },
   });
   assert.deepEqual(write?.input.rubric, expected);
   // 2 + 4 scenario points, 2 + 1 for tests, 1 + 3 + 2 + 2 for code = 17: M.
@@ -229,11 +252,13 @@ test("a reviewer's size stands; the rubric is recorded beside it", async () => {
 });
 
 test("a failed profile is recorded as failed, and sizes nothing", async () => {
-  const h = harness();
-  await h.pricer.settled(
-    OWNER,
-    profile({ status: "failed", profile: null, errorCode: "scope_failed" }),
-  );
+  const failed = profile({
+    status: "failed",
+    profile: null,
+    errorCode: "scope_failed",
+  });
+  const h = harness(proposal(), { profiles: [failed] });
+  await h.pricer.settled(OWNER, failed);
   assert.equal(h.writes[0]?.input.price, null);
   assert.equal(h.writes[0]?.input.rubric.code.status, "failed");
   assert.equal(h.writes[0]?.input.rubric.size, null);
@@ -261,6 +286,45 @@ test("a profile measured for an earlier spec scores the proposal's current one",
   await h.pricer.settled(OWNER, profile({ specRevision: 2 }));
   assert.equal(h.writes[0]?.input.rubric.code.specRevision, 2);
   assert.equal(h.writes[0]?.input.price?.complexity, "M");
+  // Its own revision's profiles, not the proposal's.
+  assert.deepEqual(h.revisions, [2]);
+});
+
+test("the code is scored over every repository the work touches, once each has settled", async () => {
+  const app = profile();
+  const web = profile({
+    id: "bpf_2",
+    snapshotId: "rsn_2",
+    repository: "acme/web",
+    status: "slicing",
+    profile: null,
+  });
+  // Another revision's profile is not this one's.
+  const older = profile({ id: "bpf_0", specRevision: 1, status: "failed" });
+
+  const waiting = harness(proposal(), { profiles: [app, web, older] });
+  await waiting.pricer.settled(OWNER, app);
+  assert.equal(waiting.writes[0]?.input.rubric.code.status, "pending");
+  assert.equal(waiting.writes[0]?.input.rubric.size, null);
+  assert.equal(waiting.writes[0]?.input.price, null);
+
+  const settled = { ...web, status: "ready" as const, profile: measured };
+  const both = harness(proposal(), { profiles: [app, settled, older] });
+  await both.pricer.settled(OWNER, settled);
+  const rubric = both.writes[0]?.input.rubric;
+  assert.ok(rubric !== undefined);
+  assert.equal(rubric.code.status, "measured");
+  const code = rubric.dimensions.find(({ id }) => id === "code");
+  const repositories = code?.factors.find(({ id }) => id === "repositories");
+  // The second repository adds the integration across the two.
+  assert.equal(repositories?.points, 4);
+  assert.match(repositories?.evidence ?? "", /acme\/app/);
+  assert.match(repositories?.evidence ?? "", /acme\/web/);
+  assert.ok(rubric.points > (waiting.writes[0]?.input.rubric.points ?? 0));
+  assert.deepEqual(
+    both.writes[0]?.input.price,
+    rubricPrice(rubric, proposal()),
+  );
 });
 
 test("a write that meets a concurrent change is tried again, a few times", async () => {
@@ -270,11 +334,22 @@ test("a write that meets a concurrent change is tried again, a few times", async
     once.writes.map(({ revision }) => revision),
     [3, 4],
   );
+  assert.deepEqual(once.errors, []);
 
-  const always = harness(proposal(), { conflicts: 10 });
+  // Three, and once more for the one profile whose settle could have
+  // written first; then it is reported, as nothing comes to correct it.
+  const always = harness(proposal(), { conflicts: 20 });
   await always.pricer.settled(OWNER, profile());
-  assert.equal(always.writes.length, 3);
-  assert.deepEqual(always.errors, []);
+  assert.equal(always.writes.length, 4);
+  assert.deepEqual(always.errors, ["bounty_rubric_contended"]);
+});
+
+test("a revision with several profiles is tried again once for each", async () => {
+  const profiles = ["bpf_1", "bpf_2", "bpf_3"].map((id) => profile({ id }));
+  const h = harness(proposal(), { conflicts: 20, profiles });
+  await h.pricer.settled(OWNER, profile());
+  assert.equal(h.writes.length, 6);
+  assert.deepEqual(h.errors, ["bounty_rubric_contended"]);
 });
 
 test("a failure is reported, never thrown", async () => {
@@ -283,23 +358,54 @@ test("a failure is reported, never thrown", async () => {
   assert.deepEqual(h.errors, ["bounty_rubric_failed"]);
 });
 
-test("the code the rubric reads follows the profile's status", () => {
-  assert.deepEqual(rubricCode(null, "pending"), { status: "pending" });
-  assert.deepEqual(rubricCode(null, "unavailable"), { status: "unavailable" });
-  assert.deepEqual(rubricCode(profile(), "unavailable"), {
+test("the code the rubric reads follows its profiles' statuses", () => {
+  assert.deepEqual(rubricCode([], "pending"), { status: "pending" });
+  assert.deepEqual(rubricCode([], "unavailable"), { status: "unavailable" });
+  assert.deepEqual(rubricCode([profile()], "unavailable"), {
     status: "measured",
-    profile: measured,
+    profiles: [{ repository: "acme/app", profile: measured }],
     specRevision: 2,
   });
   assert.deepEqual(
-    rubricCode(profile({ status: "failed", profile: null }), "pending"),
+    rubricCode([profile({ status: "failed", profile: null })], "pending"),
     { status: "failed" },
   );
   for (const status of ["queued", "scoping", "slicing"] as const)
     assert.deepEqual(
-      rubricCode(profile({ status, profile: null }), "unavailable"),
+      rubricCode([profile({ status, profile: null })], "unavailable"),
       { status: "pending" },
     );
+
+  const web = profile({ id: "bpf_2", repository: "acme/web" });
+  // One failed fails the code, whatever the rest say.
+  assert.deepEqual(
+    rubricCode(
+      [profile(), web, profile({ status: "failed", profile: null })],
+      "pending",
+    ),
+    { status: "failed" },
+  );
+  // One still in flight leaves it pending.
+  assert.deepEqual(
+    rubricCode(
+      [profile(), profile({ status: "slicing", profile: null })],
+      "unavailable",
+    ),
+    { status: "pending" },
+  );
+  // Every one ready is measured, a repository removed since among them.
+  assert.deepEqual(
+    rubricCode([profile(), web, profile({ repository: null })], "pending"),
+    {
+      status: "measured",
+      profiles: [
+        { repository: "acme/app", profile: measured },
+        { repository: "acme/web", profile: measured },
+        { repository: "a removed repository", profile: measured },
+      ],
+      specRevision: 2,
+    },
+  );
 });
 
 test("weights come from the step, then the last assessment, then the defaults", () => {
@@ -337,7 +443,11 @@ test("an assessment prices on the proposal's card only once it has a size", () =
     rubricPrice(
       assessRubric({
         spec: draft,
-        code: { status: "measured", profile: measured, specRevision: 2 },
+        code: {
+          status: "measured",
+          profiles: [{ repository: "acme/app", profile: measured }],
+          specRevision: 2,
+        },
       }),
       card,
     ),
