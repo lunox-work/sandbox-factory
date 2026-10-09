@@ -184,6 +184,25 @@ export function mountGithubRoutes<Env extends GithubAppEnv>(
   }
 
   /**
+   * The App's install page, carrying a fresh state: GitHub returns from it
+   * with a new `code`, and the callback runs again from the top.
+   */
+  function installUrl(
+    organizationId: string,
+    userId: string,
+    returnTo: string,
+  ) {
+    const install = new URL(
+      `https://github.com/apps/${encodeURIComponent(appSlug)}/installations/new`,
+    );
+    install.searchParams.set(
+      "state",
+      stateFor(organizationId, userId, returnTo),
+    );
+    return install.toString();
+  }
+
+  /**
    * Links one of the installations the person was shown by GitHub.
    * `claimed` when another organization holds it, which the store decides
    * in the same statement that would have written it.
@@ -213,6 +232,10 @@ export function mountGithubRoutes<Env extends GithubAppEnv>(
   /**
    * Start the flow. Owners and admins only: a connection lets the platform
    * read a client's repositories for as long as it lives.
+   *
+   * `install=1` goes to the install page directly. The picker asks for it
+   * when nothing it lists can be linked here: through the authorize URL the
+   * callback would find the same list and open the picker again.
    */
   app.get("/api/v1/orgs/:orgId/github/connect", (c) => {
     const { organizationId, role } = c.get("member");
@@ -223,6 +246,9 @@ export function mountGithubRoutes<Env extends GithubAppEnv>(
       );
     }
     const returnTo = safePath(c.req.query("returnTo") ?? "", DEFAULT_RETURN);
+    if (c.req.query("install") === "1") {
+      return c.redirect(installUrl(organizationId, c.get("user").id, returnTo));
+    }
     return c.redirect(
       authorizeUrl({
         clientId,
@@ -386,17 +412,17 @@ export function mountGithubRoutes<Env extends GithubAppEnv>(
         return c.redirect(back(returnTo, relinked ? "connected" : "pick"));
       }
 
-      // Nothing to link: install the App somewhere. A fresh state, because
-      // GitHub returns from the install page with a new `code` and this
-      // callback runs again from the top.
-      const install = new URL(
-        `https://github.com/apps/${encodeURIComponent(appSlug)}/installations/new`,
-      );
-      install.searchParams.set(
-        "state",
-        stateFor(organizationId, userId, returnTo),
-      );
-      return c.redirect(install.toString());
+      // Every one is another organization's: a second workspace connecting
+      // a GitHub account the first already has. The install page would only
+      // show GitHub's settings for that account, stranding the person there
+      // with no word of why; the picker marks each as another workspace's
+      // and still offers the install page for an account they manage.
+      if (listed.length > 0) {
+        return c.redirect(back(returnTo, "pick"));
+      }
+
+      // Nothing to link: install the App somewhere.
+      return c.redirect(installUrl(organizationId, userId, returnTo));
     } catch (error) {
       if (error instanceof GithubOAuthError) {
         // GitHub not answering is not GitHub refusing the person.

@@ -194,6 +194,13 @@ beforeEach(() => {
             ? { ...(entry as object), status: "linked" }
             : entry,
         );
+        if (
+          !server.connections.some(
+            (entry) => (entry as { id: string }).id === connection.id,
+          )
+        ) {
+          server.connections = [...server.connections, connection];
+        }
         return json({ connection }, 201);
       }
       if (
@@ -353,6 +360,7 @@ test("connect navigates to the API, carrying where to come back to", async () =>
   expect(url.searchParams.get("returnTo")).toBe(
     "/o/acme/settings?connection=github",
   );
+  expect(url.searchParams.has("install")).toBe(false);
   // Never fetched: `/connections` is a different route.
   expect(calls.some((call) => /\/connect(\?|$)/.test(call))).toBe(false);
 });
@@ -439,6 +447,7 @@ test("a cancelled consent is not presented as an error, and can be dismissed", a
 });
 
 test("pick opens the picker, which links only a free installation", async () => {
+  server.connections = [];
   withOutcome("pick");
   renderTab();
 
@@ -458,13 +467,86 @@ test("pick opens the picker, which links only a free installation", async () => 
       screen.queryByRole("region", { name: "Choose an account" }),
     ).toBeNull();
   });
-  expect(calls).toContain("POST /api/v1/orgs/org_1/github/connections");
-  // The list is read again after linking.
+  // The picker gives way only once the connection is listed: never to the
+  // empty list in between, and with the outcome said.
+  expect(screen.queryByText("No GitHub accounts connected yet.")).toBeNull();
+  expect(screen.getByText("acme")).toBeDefined();
   expect(
-    calls.filter(
-      (call) => call === "GET /api/v1/orgs/org_1/github/connections",
-    ),
-  ).toHaveLength(2);
+    within(screen.getByTestId("github-outcome")).getByText("GitHub connected"),
+  ).toBeDefined();
+  expect(calls).toContain("POST /api/v1/orgs/org_1/github/connections");
+  // The list is still read again after linking, without being waited on.
+  await waitFor(() => {
+    expect(
+      calls.filter(
+        (call) => call === "GET /api/v1/orgs/org_1/github/connections",
+      ),
+    ).toHaveLength(2);
+  });
+});
+
+test("when every account is another workspace's, the picker installs rather than connecting again", async () => {
+  // Connecting again would find the same list and open this picker again.
+  server.available = server.available.map((entry) => ({
+    ...(entry as object),
+    status: "claimed",
+  }));
+  withOutcome("pick");
+  renderTab();
+
+  const picker = await screen.findByRole("region", {
+    name: "Choose an account",
+  });
+  expect(await within(picker).findAllByText("Another workspace")).toHaveLength(
+    2,
+  );
+  expect(within(picker).queryByRole("button", { name: "Connect" })).toBeNull();
+
+  fireEvent.click(
+    within(picker).getByRole("button", {
+      name: "Install the App on an account you manage",
+    }),
+  );
+
+  const url = new URL(window.location.href, "http://localhost");
+  expect(url.pathname).toBe("/api/v1/orgs/org_1/github/connect");
+  expect(url.searchParams.get("install")).toBe("1");
+  // The wait for GitHub is said where it was asked for, and nothing else
+  // can start a second trip meanwhile.
+  const pending = within(picker).getByRole("button", {
+    name: /^Opening GitHub:\s*Install the App on an account you manage$/,
+  });
+  expect(pending.hasAttribute("disabled")).toBe(true);
+  expect(
+    screen
+      .getByRole("button", { name: "Connect another account" })
+      .hasAttribute("disabled"),
+  ).toBe(true);
+});
+
+test("connecting says it is on its way, until the page comes back from the cache", async () => {
+  renderTab();
+
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Connect another account" }),
+  );
+
+  const pending = screen.getByRole("button", {
+    name: "Redirecting to GitHub…",
+  });
+  expect(pending.hasAttribute("disabled")).toBe(true);
+
+  // Back from GitHub, restored as it was left.
+  act(() => {
+    window.dispatchEvent(
+      Object.assign(new Event("pageshow"), { persisted: true }),
+    );
+  });
+  expect(
+    screen
+      .getByRole("button", { name: "Connect another account" })
+      .hasAttribute("disabled"),
+  ).toBe(false);
 });
 
 test("a repository is registered from what the installation can see", async () => {
@@ -719,14 +801,15 @@ test("a failed registered list is said once, not as an empty one per card", asyn
   ).toBeNull();
 });
 
-test("the pick notice goes once the picker is answered or closed", async () => {
+test("the picker stands in for the pick notice, and closing it ends both", async () => {
+  // The notice would say "pick one" over a picker that may offer none.
   withOutcome("pick");
   renderTab();
 
   const picker = await screen.findByRole("region", {
     name: "Choose an account",
   });
-  expect(screen.getByTestId("github-outcome")).toBeDefined();
+  expect(screen.queryByTestId("github-outcome")).toBeNull();
   fireEvent.click(within(picker).getByRole("button", { name: "Close" }));
 
   expect(screen.queryByTestId("github-outcome")).toBeNull();
