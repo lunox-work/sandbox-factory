@@ -85,6 +85,7 @@ export function PreviewPrice({ run }: { run: Following }) {
         </>
       )}
       <ThinkingLine
+        state="solving"
         className="sm:col-span-2"
         since={run?.startedAt ?? run?.createdAt}
       >

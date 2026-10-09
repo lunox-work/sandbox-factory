@@ -9,6 +9,16 @@
 import { act, cleanup } from "@testing-library/react";
 import { afterEach } from "vitest";
 
+/*
+ * jsdom has no canvas: `getContext` answers null after logging that it is not
+ * implemented, once for every loading orb drawn. The orbs already draw
+ * nothing without a context, so let it answer null quietly.
+ */
+if (typeof HTMLCanvasElement !== "undefined")
+  Object.defineProperty(HTMLCanvasElement.prototype, "getContext", {
+    value: () => null,
+  });
+
 afterEach(async () => {
   /*
    * Radix keeps a focus scope alive while a menu or popover is open, and

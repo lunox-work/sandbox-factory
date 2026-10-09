@@ -284,7 +284,7 @@ export function RespecStatus({
   if (state.phase === "working") {
     return (
       <div data-testid="respec-status">
-        <ThinkingLine>{state.label}</ThinkingLine>
+        <ThinkingLine state="composing">{state.label}</ThinkingLine>
       </div>
     );
   }

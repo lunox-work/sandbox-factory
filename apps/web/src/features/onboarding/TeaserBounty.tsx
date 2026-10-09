@@ -362,6 +362,7 @@ export function TeaserBounty({
             </Button>
             {busy ? (
               <ThinkingLine
+                state="solving"
                 className="text-xs"
                 since={made?.startedAt ?? made?.createdAt}
               >

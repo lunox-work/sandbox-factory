@@ -15,6 +15,7 @@ import { useObservation } from "@/data/observe";
 import { clients } from "@/data/query";
 import { cn } from "@/lib/utils";
 
+import type { OrbState } from "./Orb";
 import { ThinkingLine } from "./Thinking";
 
 /** How often a run in flight is read again for its steps. */
@@ -41,6 +42,7 @@ export function useRunActivity(owner: string, runId: string | null) {
 
 export function RunActivity({
   children,
+  state,
   progress,
   since,
   expected,
@@ -48,6 +50,8 @@ export function RunActivity({
 }: {
   /** What the run is doing, in one line. */
   children: React.ReactNode;
+  /** What the orb does; see `ThinkingLine`. */
+  state?: OrbState;
   progress: AnalysisProgressDto | null | undefined;
   /** When it started, for the clock; absent, no clock. */
   since?: string | null | undefined;
@@ -58,12 +62,12 @@ export function RunActivity({
   const earlier = (progress?.count ?? 0) - steps.length;
   return (
     <div className={cn("flex flex-col gap-2", className)}>
-      <ThinkingLine since={since} expected={expected}>
+      <ThinkingLine state={state} since={since} expected={expected}>
         {children}
       </ThinkingLine>
       {steps.length > 0 && (
         <ol
-          className="border-muted ml-[0.4375rem] flex flex-col gap-1 border-l pl-4 text-xs"
+          className="border-muted ml-2.5 flex flex-col gap-1 border-l pl-4 text-xs"
           aria-label="What it has done so far"
           data-testid="run-activity"
         >
