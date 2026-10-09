@@ -172,7 +172,9 @@ export function BoardScan({
         siteName={site?.siteName}
         organizationId={organizationId}
         canManage={canManage}
-        needsCode={githubAvailable && repositories.length === 0}
+        // The server sizes a whole board only beside a repository, whether
+        // or not it offers GitHub to connect one.
+        needsCode={repositories.length === 0}
         onChoose={(next) => {
           setChosenId(next.id);
           writeScanBoard(userId, organizationId, {
@@ -224,7 +226,7 @@ function BoardBar({
   siteName: string | undefined;
   organizationId: string;
   canManage: boolean;
-  /** No repository to size beside yet: GitHub comes first. */
+  /** No repository to size the whole board beside yet. */
   needsCode: boolean;
   onChoose: (board: Board) => void;
 }) {

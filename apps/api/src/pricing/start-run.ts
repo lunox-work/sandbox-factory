@@ -13,6 +13,7 @@ import type {
 import { boardSelectionSchema } from "@sandbox-factory/shared";
 import { DEFAULT_RATE_CARD } from "sandbox-factory";
 
+import { connectedRepositories } from "../bounties/held-context.js";
 import type { RunJiraClient } from "./executor.js";
 
 import type { PricingRouteOptions } from "./options.js";
@@ -38,6 +39,7 @@ export type StartRunResult =
         | "not-found"
         | "reconnect"
         | "rate-card-required"
+        | "repository-required"
         | "request-conflict";
     };
 
@@ -166,6 +168,20 @@ export async function startRun(
       // Picked by a person, not by a category.
       categories: [],
     };
+  }
+
+  /*
+    Sizing a whole board waits for a repository. Without one there is no
+    code to draft beside or measure, so every size would be the model's
+    guess from the ticket's text alone, paid for a ticket at a time. One
+    ticket a person picks may still be sized that way.
+  */
+  if (
+    planned === undefined &&
+    (options.repos === undefined ||
+      (await connectedRepositories(options.repos, organizationId)).length === 0)
+  ) {
+    return { ok: false, reason: "repository-required" };
   }
 
   const card = await rateCardFor(options.rateCards, organizationId, input);

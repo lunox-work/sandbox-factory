@@ -139,6 +139,7 @@ function runOf(input: Record<string, unknown>): StoredBountyRun {
     promptVersion: "jira-size-v1",
     planned: [],
     outcomes: [],
+    progress: null,
     candidatesScanned: 0,
     skippedLive: 0,
     scanLimitReached: false,

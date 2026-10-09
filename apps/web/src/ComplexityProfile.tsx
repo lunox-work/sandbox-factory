@@ -13,7 +13,7 @@ import { clients } from "./data/query";
 
 import type { BountyProfileDto } from "@sandbox-factory/shared";
 
-import { LoadingLine } from "@/components/Message";
+import { RunActivity, useRunActivity } from "@/components/RunActivity";
 
 import { plural } from "./lib/format";
 
@@ -29,6 +29,8 @@ export type ProfileRead =
       readonly state: "ready";
       /** One per repository touched, in name order; none when unprofiled. */
       readonly profiles: readonly BountyProfileDto[];
+      /** The workspace, whose runs a profile in flight is followed through. */
+      readonly owner?: string;
     };
 
 export function useProposalProfile(
@@ -54,7 +56,7 @@ export function useProposalProfile(
       profiles.every((profile) => !IN_FLIGHT.has(profile.status)),
     interval: PROFILE_POLL_MS,
   });
-  if (!drafted) return { state: "ready", profiles: [] };
+  if (!drafted) return { state: "ready", profiles: [], owner };
   if (query.isError)
     return {
       state: "failed",
@@ -63,13 +65,18 @@ export function useProposalProfile(
       },
     };
   if (query.data === undefined) return { state: "loading" };
-  return { state: "ready", profiles: query.data };
+  return { state: "ready", profiles: query.data, owner };
 }
 
 const STAGE: Record<string, string> = {
-  queued: "Waiting for room in the workspace's analysis queue.",
-  scoping: "The scope agent is choosing the code this spec needs.",
-  slicing: "Cutting the slice the scope agent chose.",
+  queued: "Waiting for room in the workspace's analysis queue",
+  scoping: "The scope agent is choosing the code this spec needs",
+  slicing: "Cutting the slice the scope agent chose",
+};
+
+/** What each stage usually takes, said beside its clock. */
+const EXPECTED: Record<string, string> = {
+  scoping: "usually 1–2 min",
 };
 
 const FAILURE: Record<string, string> = {
@@ -129,10 +136,14 @@ export function ComplexityProfileBlock({
             <p className="mb-1 font-mono text-xs">
               {stored.repository ?? "A removed repository"}
             </p>
-            <RepositoryProfile stored={stored} />
+            <RepositoryProfile stored={stored} owner={read.owner} />
           </div>
         ) : (
-          <RepositoryProfile key={stored.id} stored={stored} />
+          <RepositoryProfile
+            key={stored.id}
+            stored={stored}
+            owner={read.owner}
+          />
         ),
       )}
       {specRevision != null && specRevision !== first.specRevision && (
@@ -146,9 +157,36 @@ export function ComplexityProfileBlock({
 }
 
 /** One repository's profile: where it stands, or what it measured. */
-function RepositoryProfile({ stored }: { stored: BountyProfileDto }) {
+function RepositoryProfile({
+  stored,
+  owner,
+}: {
+  stored: BountyProfileDto;
+  owner?: string | undefined;
+}) {
   const stage = STAGE[stored.status];
-  if (stage !== undefined) return <LoadingLine>{stage}</LoadingLine>;
+  // The run at work, followed for its steps: the scope agent's, then the
+  // slice's. None while the profile waits for room.
+  const runId =
+    stored.status === "scoping"
+      ? stored.scopeRunId
+      : stored.status === "slicing"
+        ? stored.sliceRunId
+        : null;
+  const run = useRunActivity(owner ?? "", owner === undefined ? null : runId);
+  if (stage !== undefined)
+    return (
+      <RunActivity
+        progress={run?.progress}
+        since={
+          run?.startedAt ??
+          (stored.status === "queued" ? null : stored.updatedAt)
+        }
+        expected={EXPECTED[stored.status]}
+      >
+        {stage}
+      </RunActivity>
+    );
   if (stored.status === "failed" || stored.profile === null)
     return (
       <>

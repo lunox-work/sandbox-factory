@@ -13,7 +13,12 @@ import { terminalRun, useObservation } from "../../data/observe";
  */
 export type ReanalyzeState =
   | { phase: "idle" }
-  | { phase: "working"; queued: boolean }
+  | {
+      phase: "working";
+      queued: boolean;
+      /** The run as last read, with what it has made so far. */
+      run: BountyRunDto | undefined;
+    }
   | { phase: "ended"; line: string };
 
 /** Why a re-price ended with the proposal as it was. */
@@ -166,7 +171,7 @@ export function useReanalyze(
         : undefined;
   const state: ReanalyzeState =
     requesting || following !== null
-      ? { phase: "working", queued: run?.status === "queued" }
+      ? { phase: "working", queued: run?.status === "queued", run }
       : ended !== null
         ? { phase: "ended", line: ended }
         : { phase: "idle" };

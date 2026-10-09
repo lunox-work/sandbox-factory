@@ -516,6 +516,7 @@ const app = createApp({
     issues: jiraIssues,
     bounties,
     contexts: bountyContexts,
+    repos: githubRepos,
     ...(githubContext === undefined ? {} : { githubContext }),
     profiles: bountyProfiles,
     connections: jiraConnections,

@@ -2,6 +2,7 @@ import type {
   BountyRunKind,
   BountyRunOutcome,
   BountyRunPlannedIssue,
+  BountyRunProgress,
   BountySelection,
   RateCardSnapshot,
   RespecRequest,
@@ -135,6 +136,17 @@ export interface BountyRunStore {
     leaseToken: string,
     outcome: BountyRunOutcome,
   ): Promise<boolean>;
+  /**
+   * Adds what a run sizing one bounty has just made to what it had: the
+   * spec, or the size, as its model call returns. Guarded by the lease like
+   * an outcome. False when the lease is gone.
+   */
+  recordProgress(
+    organizationId: string,
+    runId: string,
+    leaseToken: string,
+    progress: BountyRunProgress,
+  ): Promise<boolean>;
   finish(
     organizationId: string,
     runId: string,
@@ -197,6 +209,8 @@ export interface StoredBountyRun {
   readonly promptVersion: string;
   readonly planned: BountyRunPlannedIssue[];
   readonly outcomes: BountyRunOutcome[];
+  /** What a run sizing one bounty has made so far; null before anything. */
+  readonly progress: BountyRunProgress | null;
   readonly candidatesScanned: number;
   readonly skippedLive: number;
   readonly scanLimitReached: boolean;
@@ -228,6 +242,7 @@ function toDto(row: BountyRunRow): StoredBountyRun {
     promptVersion: row.promptVersion,
     planned: row.planned,
     outcomes: row.outcomes,
+    progress: row.progress ?? null,
     candidatesScanned: row.candidatesScanned,
     skippedLive: row.skippedLive,
     scanLimitReached: row.scanLimitReached,
@@ -598,6 +613,27 @@ export function createBountyRunStore(db: Database): BountyRunStore {
           ),
         )
         .returning()) as BountyRunRow[];
+      return rows.length > 0;
+    },
+
+    async recordProgress(organizationId, runId, leaseToken, progress) {
+      const now = new Date();
+      const rows = (await db
+        .update(bountyRun)
+        .set({
+          progress: sql`coalesce(${bountyRun.progress}, '{}'::jsonb) || ${JSON.stringify(progress)}::jsonb`,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(bountyRun.organizationId, organizationId),
+            eq(bountyRun.id, runId),
+            eq(bountyRun.status, "running"),
+            eq(bountyRun.leaseToken, leaseToken),
+            gt(bountyRun.leaseExpiresAt, now),
+          ),
+        )
+        .returning({ id: bountyRun.id })) as { id: string }[];
       return rows.length > 0;
     },
 

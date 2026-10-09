@@ -155,9 +155,66 @@ test("a sparse profile says so plainly, and names an older spec revision", async
   ).toBeTruthy();
 });
 
+/** A scope run at work, as the run read answers it. */
+const scopeRun = {
+  id: "arn_1",
+  snapshotId: "rsn_1",
+  repoId: "ghr_1",
+  tool: "scope",
+  toolVersion: "scope-v1",
+  params: {
+    deadlineMinutes: 30,
+    proposalId: "bpr_1",
+    specRevision: 2,
+    specHash: "a".repeat(64),
+    agent: "scope",
+    graphRunId: "arn_0",
+  },
+  status: "running",
+  attempt: 1,
+  maxAttempts: 2,
+  errorCode: null,
+  errorDetail: null,
+  progress: {
+    count: 7,
+    steps: [
+      { at: "2026-10-09T00:00:01.000Z", text: "Read src/mailer.ts" },
+      {
+        at: "2026-10-09T00:00:02.000Z",
+        text: "Tried a slice: 14 files, 3 modules stubbed",
+      },
+    ],
+  },
+  startedAt: "2026-10-09T00:00:00.000Z",
+  finishedAt: null,
+  deadlineAt: "2026-10-09T00:30:00.000Z",
+  createdAt: "2026-10-09T00:00:00.000Z",
+};
+
+/** Answers the profile read from a queue, and the scope run with `run`. */
+function route(run: unknown, ...profiles: unknown[]) {
+  const fetch = vi.fn((url: string) =>
+    Promise.resolve(
+      new Response(
+        JSON.stringify(
+          url.includes("/runs/")
+            ? { run }
+            : profiles.length > 1
+              ? profiles.shift()
+              : profiles[0],
+        ),
+        { status: 200 },
+      ),
+    ),
+  );
+  vi.stubGlobal("fetch", fetch);
+  return fetch;
+}
+
 test("a profile in flight says where it stands and is read again until it lands", async () => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
-  const fetch = answer(
+  const fetch = route(
+    scopeRun,
     { profiles: [stored({ status: "queued", profile: null })] },
     { profiles: [stored({ status: "slicing", profile: null })] },
     { profiles: [stored()] },
@@ -171,9 +228,35 @@ test("a profile in flight says where it stands and is read again until it lands"
   expect(await screen.findByText(/Cutting the slice/)).toBeTruthy();
   await act(() => vi.advanceTimersByTimeAsync(PROFILE_POLL_MS));
   expect(await screen.findByTestId("profile-rows")).toBeTruthy();
-  // Ready is final: nothing more is asked for.
+  // Ready is final: the profile is asked for no more.
+  const profileReads = () =>
+    fetch.mock.calls.filter(([url]) => url.endsWith("/profile")).length;
+  const settled = profileReads();
   await act(() => vi.advanceTimersByTimeAsync(PROFILE_POLL_MS * 2));
-  expect(fetch).toHaveBeenCalledTimes(3);
+  expect(profileReads()).toBe(settled);
+  expect(settled).toBe(3);
+});
+
+test("while the scope agent works, its latest steps show under the line", async () => {
+  route(scopeRun, {
+    profiles: [stored({ status: "scoping", profile: null })],
+  });
+  render(<Wired />);
+
+  expect(
+    await screen.findByText(/The scope agent is choosing the code/),
+  ).toBeTruthy();
+  const steps = await screen.findByTestId("run-activity");
+  expect(within(steps).getByText("5 earlier steps")).toBeTruthy();
+  expect(within(steps).getByText("Read src/mailer.ts")).toBeTruthy();
+  expect(
+    within(steps).getByText("Tried a slice: 14 files, 3 modules stubbed"),
+  ).toBeTruthy();
+  // How long it has taken, beside what it usually takes.
+  const clock = screen.getByTestId("thinking-elapsed");
+  expect(clock.textContent).toMatch(/usually 1–2 min/);
+  // Kept out of the live region, which would read each tick aloud.
+  expect(clock.getAttribute("aria-hidden")).toBe("true");
 });
 
 test("a failed profile gives its reason and the run's own code", async () => {

@@ -67,6 +67,7 @@ const run: StoredBountyRun = {
   promptVersion: "jira-size-v1",
   planned: [],
   outcomes: [],
+  progress: null,
   candidatesScanned: 0,
   skippedLive: 0,
   scanLimitReached: false,
@@ -108,6 +109,8 @@ function harness(
     bounties?: Record<string, StoredBounty>;
     /** Each bounty's live proposal, by bounty id. */
     liveBounties?: Record<string, string>;
+    /** The workspace's repositories; absent, one connected. */
+    repos?: readonly { role: string; syncStatus: string }[];
   } = {},
 ) {
   const starts: string[] = [];
@@ -204,6 +207,12 @@ function harness(
     bounties: {
       get: (_org: string, id: string) =>
         Promise.resolve(options.bounties?.[id] ?? null),
+    } as never,
+    repos: {
+      list: () =>
+        Promise.resolve(
+          options.repos ?? [{ role: "source", syncStatus: "synced" }],
+        ),
     } as never,
     ...(sizing
       ? {
@@ -321,6 +330,45 @@ test("run creation requires sizing and a rate card, then starts after create", a
   );
   assert.equal(response.status, 202);
   assert.deepEqual(ready.starts, ["brn_1"]);
+});
+
+test("sizing a whole board waits for a connected repository", async () => {
+  for (const repos of [
+    [],
+    // Gone from GitHub, or only a sandbox's: neither is the workspace's code.
+    [{ role: "source", syncStatus: "gone" }],
+    [{ role: "sandbox", syncStatus: "synced" }],
+  ]) {
+    const state = harness({ repos });
+    const response = await state.app.request(
+      "/api/v1/orgs/org_1/jira/boards/jrb_1/runs",
+      { method: "POST", headers, body: JSON.stringify({ requestId }) },
+    );
+    assert.equal(response.status, 409);
+    assert.equal(
+      ((await response.json()) as { code: string }).code,
+      "repository_required",
+    );
+    assert.deepEqual(state.starts, []);
+    assert.deepEqual(state.created, []);
+  }
+});
+
+test("one ticket a person picks is sized without a repository", async () => {
+  const state = harness({
+    repos: [],
+    boardIssues: [bounty("7", "Add login")],
+  });
+  const response = await state.app.request(
+    "/api/v1/orgs/org_1/jira/boards/jrb_1/issues",
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ requestId, issueId: "7" }),
+    },
+  );
+  assert.equal(response.status, 202);
+  assert.deepEqual(state.starts, ["brn_1"]);
 });
 
 test("a first run saves the default rate card rather than refusing", async () => {

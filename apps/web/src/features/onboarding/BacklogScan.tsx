@@ -24,12 +24,13 @@
 import { ApiError } from "@sandbox-factory/client";
 import type { JiraBacklogPreviewDto } from "@sandbox-factory/shared";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronDown, Loader2, ScanSearch } from "lucide-react";
+import { ChevronDown, ScanSearch } from "lucide-react";
 import { useId, useRef, useState, type ReactNode } from "react";
 import { DEFAULT_RATE_CARD, UNCATEGORIZED } from "sandbox-factory";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { ErrorBanner } from "@/components/Message";
+import { ThinkingLine } from "@/components/Thinking";
 import { Button } from "@/components/ui/button";
 
 import { CategoryIcon } from "../../CategoryIcon";
@@ -297,11 +298,10 @@ export function BacklogScan({
             </div>
           )}
           {boardRun !== undefined && (
-            <p className="text-muted-foreground flex items-center gap-2 text-xs">
-              <Loader2 className="size-3.5 animate-spin" />
+            <ThinkingLine className="text-xs">
               Sizing this board&rsquo;s candidates. Each opens as a bounty as it
               lands.
-            </p>
+            </ThinkingLine>
           )}
         </>
       )}

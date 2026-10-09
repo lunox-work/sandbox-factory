@@ -39,6 +39,27 @@ export interface AgentToolResult {
 }
 export interface AgentTool extends AgentToolDefinition {
   run(input: unknown, signal: AbortSignal): Promise<AgentToolResult>;
+  /**
+   * What a call did, in one line for the page following the run: "Read
+   * src/mailer.ts". Null for a call not worth a line, as most failed calls
+   * are: the agent corrects them on its next turn. Asked of every call, so
+   * one whose failure is news, a baseline that does not pass, can say so.
+   */
+  describe?(input: unknown, result: AgentToolResult): string | null;
+}
+
+/** How many items one array field of a call's input holds; 0 for none. */
+export function inputCount(input: unknown, key: string): number {
+  if (typeof input !== "object" || input === null) return 0;
+  const value = (input as Record<string, unknown>)[key];
+  return Array.isArray(value) ? value.length : 0;
+}
+
+/** One string field of a call's input, or null when it has none. */
+export function inputText(input: unknown, key: string): string | null {
+  if (typeof input !== "object" || input === null) return null;
+  const value = (input as Record<string, unknown>)[key];
+  return typeof value === "string" && value.trim() !== "" ? value : null;
 }
 export interface AgentTurn {
   readonly content: readonly ContentBlock[];
@@ -98,6 +119,8 @@ export async function runAgent(input: {
   readonly limits: AgentLimits;
   readonly signal: AbortSignal;
   readonly log: (line: string) => void;
+  /** Told what each call did, for the page following the run. */
+  readonly step?: ((text: string) => void) | undefined;
 }): Promise<AgentOutcome> {
   const { limits, signal, submitTool } = input;
   const byName = new Map(input.tools.map((tool) => [tool.name, tool]));
@@ -205,6 +228,11 @@ export async function runAgent(input: {
           input.log(`Tool ${call.name} failed.`);
           result = { content: "The tool failed on that input.", isError: true };
         }
+      // A call cut off or to no tool is not the tool's to describe.
+      if (tool?.describe !== undefined && reply.stopReason !== "max_tokens") {
+        const line = tool.describe(call.input, result);
+        if (line !== null) input.step?.(line);
+      }
       if (result.accepted === true && call.name === submitTool) accepted = true;
       results.push({
         type: "tool_result",

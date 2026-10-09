@@ -421,6 +421,20 @@
       "when": 1791468063444,
       "tag": "0059_bounty_all_repositories",
       "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1791511675865,
+      "tag": "0060_bounty_run_progress",
+      "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1791513825215,
+      "tag": "0061_analysis_run_progress",
+      "breakpoints": true
     }
   ]
 }

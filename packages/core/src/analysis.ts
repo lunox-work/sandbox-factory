@@ -24,6 +24,25 @@ export const ANALYSIS_ERROR_CODES = [
   "context_unavailable",
 ] as const;
 export type AnalysisErrorCode = (typeof ANALYSIS_ERROR_CODES)[number];
+/**
+ * What an agent run has done so far, written as it works, so a page
+ * following the run shows its steps rather than a spinner. Each step is a
+ * line the worker writes about one tool call, never the model's prose. Only
+ * the newest `ANALYSIS_PROGRESS_STEPS_MAX` are kept; `count` is how many
+ * there have been.
+ */
+export interface AnalysisProgress {
+  readonly count: number;
+  readonly steps: readonly AnalysisProgressStep[];
+}
+export interface AnalysisProgressStep {
+  /** When it was done, as an ISO timestamp. */
+  readonly at: string;
+  readonly text: string;
+}
+export const ANALYSIS_PROGRESS_STEPS_MAX = 20;
+/** The longest a step's line may be; a longer one is cut with an ellipsis. */
+export const ANALYSIS_PROGRESS_TEXT_MAX = 160;
 export const ARTIFACT_KINDS = [
   "graph_json",
   "graph_html",

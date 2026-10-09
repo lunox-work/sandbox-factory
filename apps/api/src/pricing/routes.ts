@@ -176,6 +176,14 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
           },
           409,
         );
+      case "repository-required":
+        return c.json(
+          {
+            code: "repository_required",
+            error: "Connect a GitHub repository before sizing a whole board.",
+          },
+          409,
+        );
       case "active":
         return c.json(
           {

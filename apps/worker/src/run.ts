@@ -10,6 +10,7 @@ import type {
 } from "@sandbox-factory/db";
 import { downloadsSource, readsSource } from "sandbox-factory";
 import { fetchSource } from "./fetch-source.js";
+import { progressRecorder } from "./progress.js";
 import { AnalysisError } from "./errors.js";
 import { uploadArtifacts } from "./upload.js";
 import type {
@@ -149,6 +150,17 @@ export async function executeRun(
       await mkdir(source);
     }
     stage = "tool";
+    const progress = progressRecorder(
+      (value) =>
+        options.runs.recordProgress(
+          run.organizationId,
+          run.id,
+          run.leaseToken,
+          value,
+          now(),
+        ),
+      now,
+    );
     const files = await options.tool.run({
       sourceDir: source,
       outDir: join(directory, "out"),
@@ -159,7 +171,10 @@ export async function executeRun(
       log: (line) => {
         if (lines.length < 100) lines.push(line);
       },
+      step: progress.step,
     });
+    // The last steps land before the run says it is done.
+    await progress.settled();
     let artifacts;
     try {
       artifacts = await uploadArtifacts(

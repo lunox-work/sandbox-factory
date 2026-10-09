@@ -7,7 +7,7 @@
 
 import type { AbstractionIndex, DataModel } from "sandbox-factory";
 import { z } from "zod";
-import type { AgentTool, AgentToolResult } from "./loop.js";
+import { inputText, type AgentTool, type AgentToolResult } from "./loop.js";
 import { REPO_TOOL_LIMITS, invalidInput } from "./repo-tools.js";
 
 /** Accessors and entities an overview lists before it says how many more. */
@@ -47,6 +47,11 @@ export function moduleSurfaceTool(index: AbstractionIndex): AgentTool {
       },
       required: ["path"],
       additionalProperties: false,
+    },
+    describe: (input, result) => {
+      if (result.isError === true) return null;
+      const path = inputText(input, "path");
+      return path === null ? null : `Read the surface of ${path}`;
     },
     async run(raw) {
       const parsed = pathInput.safeParse(raw);
@@ -95,6 +100,13 @@ export function dataModelTool(model: DataModel): AgentTool {
       },
       required: ["entity"],
       additionalProperties: false,
+    },
+    describe: (input, result) => {
+      if (result.isError === true) return null;
+      const entity = inputText(input, "entity");
+      return entity === null
+        ? "Read the data model"
+        : `Read the data model of ${entity}`;
     },
     async run(raw) {
       const parsed = entityInput.safeParse(raw);

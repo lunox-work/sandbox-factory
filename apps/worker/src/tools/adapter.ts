@@ -71,6 +71,11 @@ export interface ToolRunInput {
   readonly inputs: ToolInputs;
   readonly signal: AbortSignal;
   readonly log: (line: string) => void;
+  /**
+   * Says what the tool just did, in one line, for the page following the
+   * run (`progress.ts`). Absent where nothing follows it.
+   */
+  readonly step?: (text: string) => void;
 }
 export interface ToolCommittedInput {
   readonly runId: string;

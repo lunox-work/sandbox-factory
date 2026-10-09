@@ -19,7 +19,8 @@ import type {
   BountySpecRevisionDto,
   RespecRequestDto,
 } from "@sandbox-factory/shared";
-import { ChevronDown, Loader2, Plus, Sparkles } from "lucide-react";
+import { ChevronDown, Plus, Sparkles } from "lucide-react";
+import { ThinkingLine } from "@/components/Thinking";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import {
   RESPEC_LIMITS,
@@ -282,14 +283,9 @@ export function RespecStatus({
   if (state.phase === "idle") return null;
   if (state.phase === "working") {
     return (
-      <p
-        role="status"
-        data-testid="respec-status"
-        className="text-muted-foreground flex items-center gap-2 text-sm"
-      >
-        <Loader2 className="size-3.5 shrink-0 animate-spin motion-reduce:animate-none" />
-        {state.label}
-      </p>
+      <div data-testid="respec-status">
+        <ThinkingLine>{state.label}</ThinkingLine>
+      </div>
     );
   }
   if (state.phase === "landed") {

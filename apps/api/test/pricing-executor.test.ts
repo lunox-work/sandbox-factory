@@ -117,6 +117,7 @@ function run(overrides: Partial<StoredBountyRun> = {}): StoredBountyRun {
     promptVersion: "jira-size-v1",
     planned: [],
     outcomes: [],
+    progress: null,
     candidatesScanned: 0,
     skippedLive: 0,
     scanLimitReached: false,
@@ -273,11 +274,14 @@ function harness(options: {
   profilingEnabled?: boolean;
   /** Recording an outcome fails with this, as a database fault would. */
   outcomeError?: Error;
+  /** Recording a preview fails with this, as a database fault would. */
+  progressError?: Error;
 }) {
   const current = run(options.runOverrides);
   const plans: unknown[] = [];
   const categorized: { bountyId: string; categories: string[] }[] = [];
   const outcomes: unknown[] = [];
+  const progresses: unknown[] = [];
   const finishes: { status: string; details: unknown }[] = [];
   const proposalInputs: unknown[] = [];
   const removed: string[] = [];
@@ -332,6 +336,17 @@ function harness(options: {
       if (options.outcomeError !== undefined)
         return Promise.reject(options.outcomeError);
       outcomes.push(outcome);
+      return Promise.resolve(true);
+    },
+    recordProgress: (
+      _org: string,
+      _id: string,
+      _lease: string,
+      progress: unknown,
+    ) => {
+      if (options.progressError !== undefined)
+        return Promise.reject(options.progressError);
+      progresses.push(progress);
       return Promise.resolve(true);
     },
     finish: (
@@ -564,6 +579,7 @@ function harness(options: {
     plans,
     categorized,
     outcomes,
+    progresses,
     finishes,
     proposalInputs,
     removed,
@@ -1433,23 +1449,156 @@ test("a bounty that fails both calls is a sizing failure", async () => {
   );
 });
 
-test("a draft that stops the run stops it before the size is asked for", async () => {
+/**
+ * A caller whose size waits until it is cancelled, as a slow model call
+ * would, so a test can see the call beside it stop it.
+ */
+class HeldSize extends FakeCaller {
+  sizeSignal: AbortSignal | undefined;
+  /** What the held size rejects with once cancelled. */
+  cancelledWith: Error = new SizerError("sizing_cancelled", false);
+
+  override call<I, O>(
+    tool: StructuredCall<I, O>,
+    input: I,
+    options?: SizingRequestOptions,
+  ): Promise<StructuredResult<O>> {
+    if (tool.name !== "size_bounty") return super.call(tool, input);
+    this.calls.push({ tool: tool.name, input });
+    this.sizeSignal = options?.signal;
+    return new Promise((_, reject) => {
+      options?.signal?.addEventListener(
+        "abort",
+        () => reject(this.cancelledWith),
+        { once: true },
+      );
+    });
+  }
+}
+
+test("a draft that stops the run cancels the size beside it, and is the cause", async () => {
   for (const [failure, fatalErrorCode] of [
     [new SizerError("sizing_configuration", true), "sizing_configuration"],
     [new SizerError("sizing_cancelled", false), "worker_lost"],
   ] as const) {
-    const state = harness({ caller: sizing([], [failure]) });
+    const caller = new HeldSize("fake", { draft_spec: [failure] });
+    const state = harness({ caller });
     await state.executor.execute("org_1", "brn_1");
 
     assert.equal(state.finishes[0]?.status, "failed");
+    // The draft's code, not the cancelled size's.
     assert.equal(
       (state.finishes[0]?.details as { fatalErrorCode: string }).fatalErrorCode,
       fatalErrorCode,
     );
-    assert.deepEqual(state.caller.inputsFor("size_bounty"), []);
+    assert.equal(caller.sizeSignal?.aborted, true);
     assert.equal(state.proposalInputs.length, 0);
     assert.deepEqual(state.outcomes, []);
   }
+});
+
+test("a call failing under a stopped run is not previewed as missing", async () => {
+  // A cancelled call that fails as an ordinary error is the stop, not news:
+  // the page is not told the size is missing for a run about to fail.
+  const caller = new HeldSize("fake", {
+    draft_spec: [new SizerError("sizing_configuration", true)],
+  });
+  caller.cancelledWith = new Error("aborted");
+  const state = harness({ caller });
+  await state.executor.execute("org_1", "brn_1");
+
+  assert.equal(
+    (state.finishes[0]?.details as { fatalErrorCode: string }).fatalErrorCode,
+    "sizing_configuration",
+  );
+  assert.deepEqual(state.progresses, []);
+});
+
+test("the spec and the size are asked for side by side", async () => {
+  // The draft answers a turn later; by then the size has been asked for,
+  // as it would not be if it waited on the draft.
+  const caller = sizing([
+    {
+      result: { complexity: "S", confidence: "high", rationale: "Small." },
+      actualModel: "actual-model",
+      usage: { inputTokens: 1, outputTokens: 1 },
+    },
+  ]);
+  const call = caller.call.bind(caller);
+  let sizesAskedBeforeDraft: number | undefined;
+  caller.call = (<I, O>(tool: StructuredCall<I, O>, input: I) => {
+    const answer = call(tool, input);
+    if (tool.name !== "draft_spec") return answer;
+    return new Promise((resolve) => setImmediate(resolve)).then(() => {
+      sizesAskedBeforeDraft = caller.inputsFor("size_bounty").length;
+      return answer;
+    });
+  }) as typeof caller.call;
+  const state = harness({ caller });
+  await state.executor.execute("org_1", "brn_1");
+
+  assert.equal(sizesAskedBeforeDraft, 1);
+  assert.equal(state.finishes[0]?.status, "succeeded");
+});
+
+test("a run sizing one bounty previews the spec and the size as each returns", async () => {
+  const state = harness({
+    runOverrides: {
+      kind: "issue",
+      planned: [{ externalIssueId: "7", issueKey: "APP-7", summary: "Old" }],
+    },
+  });
+  await state.executor.execute("org_1", "brn_1");
+
+  assert.equal(state.finishes[0]?.status, "succeeded");
+  assert.equal(state.progresses.length, 2);
+  assert.deepEqual(
+    state.progresses.find((part) => "spec" in (part as object)),
+    { spec: draft },
+  );
+  assert.deepEqual(
+    state.progresses.find((part) => "sizing" in (part as object)),
+    {
+      sizing: {
+        complexity: "M",
+        confidence: "high",
+        rationale: "A few related files.",
+      },
+    },
+  );
+});
+
+test("a call that fails is previewed as missing, so the page stops waiting on it", async () => {
+  const state = harness({
+    caller: sizing([new Error("private")], [new Error("private")]),
+  });
+  await state.executor.execute("org_1", "brn_1");
+
+  assert.deepEqual(
+    [...state.progresses].sort((a, b) =>
+      JSON.stringify(a).localeCompare(JSON.stringify(b)),
+    ),
+    [{ sizing: null }, { spec: null }],
+  );
+});
+
+test("a board's run sizing several bounties previews none of them", async () => {
+  const state = harness({ candidates: [issue("1"), issue("2")] });
+  await state.executor.execute("org_1", "brn_1");
+
+  assert.equal(state.outcomes.length, 2);
+  assert.deepEqual(state.progresses, []);
+});
+
+test("a preview that cannot be written does not cost the bounty its proposal", async () => {
+  const state = harness({ progressError: new Error("database down") });
+  await state.executor.execute("org_1", "brn_1");
+
+  assert.equal(state.finishes[0]?.status, "succeeded");
+  assert.equal(
+    (state.outcomes[0] as { proposalId?: string }).proposalId,
+    "bpr_1",
+  );
 });
 
 test("a size cancelled under the run ends it as a lost worker", async () => {

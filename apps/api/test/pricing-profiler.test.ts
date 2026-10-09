@@ -190,6 +190,7 @@ class FakeRuns {
       maxAttempts: 2,
       errorCode: this.startAs.get(tool) === "failed" ? "tool_failed" : null,
       errorDetail: null,
+      progress: null,
       startedAt: null,
       finishedAt: null,
       deadlineAt: null,

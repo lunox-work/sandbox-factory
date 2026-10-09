@@ -19,6 +19,7 @@ import {
 import type {
   AnalysisErrorCode,
   BountyRunOutcome,
+  BountyRunProgress,
   BountyRunPlannedIssue,
   BountySelection,
   ComplexityProfile,
@@ -119,6 +120,13 @@ export const bountyRun = pgTable(
       .$type<BountyRunOutcome[]>()
       .notNull()
       .default([]),
+    /**
+     * What a run sizing one bounty has made so far: the spec and the size,
+     * each written as its model call returns, so a page following the run
+     * shows them before the proposal is written. Null until the first
+     * returns, and on a board's runs, which write none.
+     */
+    progress: jsonb("progress").$type<BountyRunProgress>(),
     candidatesScanned: integer("candidates_scanned").notNull().default(0),
     skippedLive: integer("skipped_live").notNull().default(0),
     scanLimitReached: boolean("scan_limit_reached").notNull().default(false),

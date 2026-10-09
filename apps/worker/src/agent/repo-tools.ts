@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { fileOf, isTraversed } from "sandbox-factory";
 import type { SliceGraph } from "sandbox-factory";
 import { z } from "zod";
-import type { AgentTool, AgentToolResult } from "./loop.js";
+import { inputText, type AgentTool, type AgentToolResult } from "./loop.js";
 
 export const REPO_TOOL_LIMITS = {
   listPage: 400,
@@ -142,6 +142,13 @@ export function repositoryTools(index: RepositoryIndex): AgentTool[] {
         required: ["prefix", "cursor"],
         additionalProperties: false,
       },
+      describe: (input, result) => {
+        if (result.isError === true) return null;
+        const prefix = inputText(input, "prefix");
+        return prefix === null
+          ? "Listed the repository's files"
+          : `Listed ${prefix}`;
+      },
       async run(raw) {
         const parsed = listInput.safeParse(raw);
         if (!parsed.success) return invalidInput(parsed.error.issues);
@@ -175,6 +182,11 @@ export function repositoryTools(index: RepositoryIndex): AgentTool[] {
         },
         required: ["path", "startLine", "endLine"],
         additionalProperties: false,
+      },
+      describe: (input, result) => {
+        if (result.isError === true) return null;
+        const path = inputText(input, "path");
+        return path === null ? null : `Read ${path}`;
       },
       async run(raw) {
         const parsed = readInput.safeParse(raw);
@@ -212,6 +224,11 @@ export function repositoryTools(index: RepositoryIndex): AgentTool[] {
         properties: { text: { type: "string" }, prefix: nullableString },
         required: ["text", "prefix"],
         additionalProperties: false,
+      },
+      describe: (input, result) => {
+        if (result.isError === true) return null;
+        const text = inputText(input, "text");
+        return text === null ? null : `Searched for “${text}”`;
       },
       async run(raw, signal) {
         const parsed = searchInput.safeParse(raw);
@@ -270,6 +287,11 @@ export function graphNeighboursTool(graph: SliceGraph): AgentTool {
       properties: { path: { type: "string" } },
       required: ["path"],
       additionalProperties: false,
+    },
+    describe: (input, result) => {
+      if (result.isError === true) return null;
+      const path = inputText(input, "path");
+      return path === null ? null : `Followed the imports of ${path}`;
     },
     async run(raw) {
       const parsed = pathInput.safeParse(raw);

@@ -19,6 +19,7 @@ import type {
 } from "@sandbox-factory/shared";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronDown, RefreshCw, Sparkles } from "lucide-react";
+import { RunActivity } from "@/components/RunActivity";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { isPublicationLive } from "sandbox-factory";
@@ -98,6 +99,8 @@ type Standing = {
   label: string;
   tone: "ok" | "bad" | "busy" | "muted";
   note: string | null;
+  /** The agent is at work: its steps are shown in place of a note. */
+  working?: boolean;
 };
 
 const TONE_DOT: Record<Standing["tone"], string> = {
@@ -383,7 +386,8 @@ export function SandboxGeneration({
       standing = {
         label: "Generating",
         tone: "busy",
-        note: "An agent is writing the starter and its tests, then it is built and checked. This takes a few minutes.",
+        note: null,
+        working: true,
       };
     else if (run.data.status === "failed")
       standing = { label: "Failed", tone: "bad", note: failureOf(run.data) };
@@ -487,6 +491,17 @@ export function SandboxGeneration({
               </div>
             ))}
           </dl>
+        )}
+        {standing?.working === true && (
+          <RunActivity
+            progress={run.data?.progress}
+            since={run.data?.startedAt}
+            expected="usually 2–4 min"
+          >
+            {run.data?.status === "queued"
+              ? "Waiting for room to start the agent"
+              : "The agent is writing the starter and its tests, then building and checking it"}
+          </RunActivity>
         )}
         {standing?.note != null && (
           <p

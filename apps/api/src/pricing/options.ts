@@ -10,6 +10,7 @@ import {
   type JiraIssueStore,
   type RateCardStore,
   type BountyStore,
+  type GithubRepoSummary,
 } from "@sandbox-factory/db";
 
 import type { GithubContextSource } from "../bounties/context.js";
@@ -30,6 +31,13 @@ export interface PricingRouteOptions {
    * and every bounty holds none.
    */
   readonly contexts?: BountyContextStore;
+  /**
+   * The workspace's repositories. A whole board is sized only once one is
+   * connected; absent, none is.
+   */
+  readonly repos?: {
+    list(organizationId: string): Promise<readonly GithubRepoSummary[]>;
+  };
   /** Reads a repository's documents; absent without GitHub and storage. */
   readonly githubContext?: GithubContextSource;
   /** Complexity profiles; absent, a proposal reads as never profiled. */
