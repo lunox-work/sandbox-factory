@@ -199,11 +199,13 @@ test("connect sends an owner to the App's OAuth authorize URL, not the install p
 test("a plain member may not start the flow", async () => {
   const { app } = appWith({ role: "member" });
 
-  const response = await app.request("/api/v1/orgs/org_1/github/connect", {
-    headers: signedIn,
-  });
-
-  assert.equal(response.status, 403);
+  for (const path of [
+    "/api/v1/orgs/org_1/github/connect",
+    "/api/v1/orgs/org_1/github/connect?install=1",
+  ]) {
+    const response = await app.request(path, { headers: signedIn });
+    assert.equal(response.status, 403);
+  }
 });
 
 test("an off-site returnTo is reduced to the app's root", async () => {
@@ -333,6 +335,50 @@ test("nothing to link goes to the install page with a fresh state", async () => 
   assert.notEqual(fresh, original);
   const verified = verifyState(SECRET, "github", fresh, dana.id, NOW);
   assert.equal(verified.ok && verified.state.organizationId, "org_1");
+});
+
+test("a second workspace connecting an account another has already linked opens the picker", async () => {
+  // GitHub allows one installation per account, so the install page would
+  // only show that installation's settings: a dead end with no word of why.
+  const stores = memoryGithub();
+  await seedConnection(stores, "org_2", "9");
+  const { app } = appWith({ stores });
+
+  const target = await callback(app, { code: "c", state: stateFor() });
+
+  assert.equal(target.searchParams.get("github"), "pick");
+  assert.deepEqual(await stores.connections.list("org_1"), []);
+  assert.equal(
+    (await stores.connections.ownerOf("9"))?.organizationId,
+    "org_2",
+  );
+});
+
+test("connect with install goes straight to the install page with a state", async () => {
+  // The picker's way out when nothing it lists can be linked: through the
+  // authorize URL the callback would only open the picker again.
+  const { app } = appWith();
+
+  const response = await app.request(
+    "/api/v1/orgs/org_1/github/connect?install=1&returnTo=/o/acme/settings",
+    { headers: signedIn },
+  );
+
+  assert.equal(response.status, 302);
+  const location = new URL(response.headers.get("location") ?? "");
+  assert.equal(
+    location.origin + location.pathname,
+    "https://github.com/apps/sandbox-factory/installations/new",
+  );
+  const verified = verifyState(
+    SECRET,
+    "github",
+    location.searchParams.get("state") ?? "",
+    dana.id,
+    NOW,
+  );
+  assert.equal(verified.ok && verified.state.organizationId, "org_1");
+  assert.equal(verified.ok && verified.state.returnTo, "/o/acme/settings");
 });
 
 test("reconnecting after deleting the connection links again without the install page", async () => {

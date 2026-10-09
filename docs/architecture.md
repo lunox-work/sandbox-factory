@@ -818,7 +818,9 @@ organization without a second check.
 install page returns to the callback only for a fresh install, so
 reconnecting an installation that already exists would strand the person on
 GitHub's settings page. The callback sends them to the install page only when
-their list holds nothing to link.
+their list is empty; a list holding only installations linked to other
+organizations opens the picker, which marks them so and reaches the install
+page through `connect?install=1`.
 
 **Repositories are pointers.** A `github_repo` row is GitHub's numeric id
 (which survives renames), a name, and the commit its default branch points at.

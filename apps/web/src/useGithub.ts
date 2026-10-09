@@ -60,10 +60,19 @@ export interface GithubConnections {
    * simply not offered here, and the page says so instead of failing.
    */
   unconfigured: boolean;
-  /** Sends the browser to GitHub. Does not return. */
-  connect: () => void;
+  /**
+   * Sends the browser to GitHub. Does not return. `install` goes to the
+   * App's install page rather than the authorize URL, for when the person
+   * has seen that nothing GitHub lists them can be linked here.
+   */
+  connect: (options?: { install?: boolean }) => void;
   disconnect: (connectionId: string) => Promise<Result>;
   refresh: () => Promise<void>;
+  /**
+   * Lists a connection the API has just answered with, ahead of reading the
+   * list again, so the page never shows it missing in between.
+   */
+  listed: (connection: GithubConnectionDto) => void;
 }
 
 export function useGithub(
@@ -87,29 +96,35 @@ export function useGithub(
         : null,
     unconfigured,
   };
-  // A connection linked or dropped changes which are left to link.
+  // A connection linked or dropped changes which are left to link. That list
+  // is not waited for: only an open picker shows it, it is the one read that
+  // goes to GitHub, and the page is waiting on its own list, not the picker's.
   const refresh = useCallback(async () => {
-    await Promise.all([
-      query.refresh(),
-      cache.invalidateQueries({
-        queryKey: queryKeys.resource(
-          userId,
-          organizationId ?? "",
-          "github-available",
-        ),
-      }),
-    ]);
+    void cache.invalidateQueries({
+      queryKey: queryKeys.resource(
+        userId,
+        organizationId ?? "",
+        "github-available",
+      ),
+    });
+    await query.refresh();
   }, [query.refresh, cache, userId, organizationId]);
 
-  const connect = useCallback(() => {
-    if (organizationId === undefined) return;
-    // A full-page navigation: the browser has to reach GitHub, and an XHR
-    // would fail CORS following the redirect there.
-    const returnTo = window.location.pathname + window.location.search;
-    window.location.href = `${base(organizationId)}/connect?${new URLSearchParams(
-      { returnTo },
-    ).toString()}`;
-  }, [organizationId]);
+  const connect = useCallback(
+    (options?: { install?: boolean }) => {
+      if (organizationId === undefined) return;
+      // A full-page navigation: the browser has to reach GitHub, and an XHR
+      // would fail CORS following the redirect there.
+      const returnTo = window.location.pathname + window.location.search;
+      window.location.href = `${base(organizationId)}/connect?${new URLSearchParams(
+        {
+          returnTo,
+          ...(options?.install === true ? { install: "1" } : {}),
+        },
+      ).toString()}`;
+    },
+    [organizationId],
+  );
 
   const disconnect = useCallback(
     async (connectionId: string): Promise<Result> => {
@@ -139,7 +154,18 @@ export function useGithub(
     [organizationId, refresh, cache, userId],
   );
 
-  return { ...state, connect, disconnect, refresh };
+  const { setData } = query;
+  const listed = useCallback(
+    (connection: GithubConnectionDto) => {
+      setData((current) => [
+        ...(current ?? []).filter((entry) => entry.id !== connection.id),
+        connection,
+      ]);
+    },
+    [setData],
+  );
+
+  return { ...state, connect, disconnect, refresh, listed };
 }
 
 /**
@@ -149,6 +175,8 @@ export function useGithub(
 export function useGithubOutcome(): {
   outcome: GithubConnectOutcome | null;
   dismiss: () => void;
+  /** Shows an outcome reached here rather than on the way back from GitHub. */
+  announce: (outcome: GithubConnectOutcome) => void;
 } {
   const [outcome, setOutcome] = useState<GithubConnectOutcome | null>(null);
 
@@ -173,16 +201,19 @@ export function useGithubOutcome(): {
   return {
     outcome,
     dismiss: useCallback(() => setOutcome(null), []),
+    announce: setOutcome,
   };
 }
 
 export async function linkInstallation(
   organizationId: string,
   installationId: string,
-): Promise<Result> {
+): Promise<Result<GithubConnectionDto>> {
   try {
-    await clients.github.link(organizationId, installationId);
-    return { ok: true, value: undefined };
+    return {
+      ok: true,
+      value: await clients.github.link(organizationId, installationId),
+    };
   } catch (error) {
     return failureOf(error, "Could not connect that installation.");
   }

@@ -86,6 +86,12 @@ function canManage(role: string): boolean {
 }
 
 /**
+ * Which control sent the browser to GitHub. Not a boolean: every control
+ * waits, but only the one pressed says why.
+ */
+type Redirect = "connect" | "reconnect" | "install";
+
+/**
  * What each outcome means, in the words the person needs. `place` is where
  * it is shown: a flow that could not be tied to a workspace lands on Home,
  * where there is no Connect button to point at.
@@ -203,16 +209,32 @@ export function GithubConnections({
     connect,
     disconnect,
     refresh,
+    listed,
   } = useGithub(organizationId);
   const repos = useGithubRepos(organizationId);
-  const { outcome, dismiss } = useGithubOutcome();
-  const [picking, setPicking] = useState(false);
+  const { outcome, dismiss, announce } = useGithubOutcome();
   const manageable = canManage(role);
+  // `pick` is a question, not just news: the picker asks it, in place of its
+  // notice. Read from the outcome rather than copied into state by an effect,
+  // so the notice never shows alone for a frame first.
+  const picking = outcome === "pick" && manageable;
+  const [redirecting, setRedirecting] = useState<Redirect | null>(null);
 
-  // `pick` is a question, not just news: open the picker for it.
+  // Back from GitHub can restore this page from the browser's cache exactly
+  // as it was left: mid-redirect, every control waiting.
   useEffect(() => {
-    if (outcome === "pick") setPicking(true);
-  }, [outcome]);
+    const restored = (event: PageTransitionEvent) => {
+      if (event.persisted) setRedirecting(null);
+    };
+    window.addEventListener("pageshow", restored);
+    return () => window.removeEventListener("pageshow", restored);
+  }, []);
+
+  /** Leaves for GitHub, saying so on the control that was pressed. */
+  function redirect(control: Redirect) {
+    setRedirecting(control);
+    connect(control === "install" ? { install: true } : undefined);
+  }
 
   const header = (
     <header>
@@ -242,7 +264,7 @@ export function GithubConnections({
     <div className="flex flex-col gap-5">
       {header}
 
-      {outcome !== null && (
+      {outcome !== null && !picking && (
         <OutcomeNotice
           {...describeGithubOutcome(outcome)}
           onDismiss={dismiss}
@@ -250,20 +272,21 @@ export function GithubConnections({
         />
       )}
 
-      {picking && manageable && (
+      {picking && (
         <InstallationPicker
           organizationId={organizationId}
-          onConnect={connect}
-          onLinked={async () => {
-            // The question is answered: its notice goes with the picker.
-            setPicking(false);
-            dismiss();
-            await Promise.all([refresh(), repos.refresh()]);
+          redirecting={redirecting}
+          onConnect={() => redirect("reconnect")}
+          onInstall={() => redirect("install")}
+          onLinked={(connection) => {
+            // Listed from the API's answer, in the same render the picker
+            // gives way to the outcome: never "none connected" in between,
+            // and no wait on reading the lists again, which follows.
+            listed(connection);
+            announce("connected");
+            void Promise.all([refresh(), repos.refresh()]);
           }}
-          onClose={() => {
-            setPicking(false);
-            dismiss();
-          }}
+          onClose={dismiss}
         />
       )}
 
@@ -313,11 +336,21 @@ export function GithubConnections({
 
       {manageable ? (
         <div className="flex justify-end">
-          <Button className="gap-2" onClick={() => connect()}>
-            <Link2 className="size-4" />
-            {connections.length === 0
-              ? "Connect GitHub"
-              : "Connect another account"}
+          <Button
+            className="gap-2"
+            disabled={redirecting !== null}
+            onClick={() => redirect("connect")}
+          >
+            {redirecting === "connect" ? (
+              <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+            ) : (
+              <Link2 className="size-4" />
+            )}
+            {redirecting === "connect"
+              ? "Redirecting to GitHub…"
+              : connections.length === 0
+                ? "Connect GitHub"
+                : "Connect another account"}
           </Button>
         </div>
       ) : (
@@ -333,16 +366,24 @@ export function GithubConnections({
  * The accounts the signed-in person can see the App on, each marked for this
  * workspace. Only a free one can be chosen; one linked elsewhere says so
  * without saying where.
+ *
+ * `onConnect` authorizes again, for a lapsed grant. `onInstall` goes to the
+ * install page itself: connecting again would find the same list and bring
+ * the person straight back here.
  */
 function InstallationPicker({
   organizationId,
+  redirecting,
   onConnect,
+  onInstall,
   onLinked,
   onClose,
 }: {
   organizationId: string;
+  redirecting: Redirect | null;
   onConnect: () => void;
-  onLinked: () => Promise<void>;
+  onInstall: () => void;
+  onLinked: (connection: GithubConnectionDto) => void;
   onClose: () => void;
 }) {
   const userId = useUserId();
@@ -380,23 +421,60 @@ function InstallationPicker({
     setLinking(installationId);
     setLinkError(null);
     const result = await linkInstallation(organizationId, installationId);
-    setLinking(null);
     if (result.ok) {
-      await onLinked();
-    } else {
-      setLinkError({
-        error: result.error,
-        ...(result.code === undefined ? {} : { code: result.code }),
-      });
+      // The spinner stays to the end: the picker goes with this call.
+      onLinked(result.value);
+      return;
     }
+    setLinking(null);
+    setLinkError({
+      error: result.error,
+      ...(result.code === undefined ? {} : { code: result.code }),
+    });
   }
 
   /** The person's own authorization lapsed: only a fresh round trip helps. */
   const reconnect = (
-    <Button size="sm" className="gap-2 self-start" onClick={onConnect}>
-      <Link2 className="size-4" />
-      Connect GitHub again
+    <Button
+      size="sm"
+      className="gap-2 self-start"
+      disabled={redirecting !== null}
+      onClick={onConnect}
+    >
+      {redirecting === "reconnect" ? (
+        <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+      ) : (
+        <Link2 className="size-4" />
+      )}
+      {redirecting === "reconnect"
+        ? "Redirecting to GitHub…"
+        : "Connect GitHub again"}
     </Button>
+  );
+
+  /**
+   * The way to GitHub's install page, inside a sentence. Pending, it keeps
+   * its words and gains a spinner at their end, so the sentence does not
+   * reflow under the pointer.
+   */
+  const install = (label: string) => (
+    <button
+      type="button"
+      className="underline underline-offset-2 disabled:opacity-70"
+      disabled={redirecting !== null || linking !== null}
+      onClick={onInstall}
+    >
+      {redirecting === "install" && (
+        <span className="sr-only">Opening GitHub: </span>
+      )}
+      {label}
+      {redirecting === "install" && (
+        <Loader2
+          className="ml-1.5 inline size-3.5 animate-spin align-[-2px]"
+          aria-hidden="true"
+        />
+      )}
+    </button>
   );
 
   return (
@@ -409,20 +487,24 @@ function InstallationPicker({
           <h4 id="github-picker-heading" className="text-sm font-medium">
             Choose an account
           </h4>
-          {state.status === "ready" && (
+          {/* One line for both, so the heading does not move when GitHub
+              answers: only the list grows beneath it. */}
+          {state.status === "loading" ? (
+            <LoadingLine className="mt-1">
+              Asking GitHub where the App is installed…
+            </LoadingLine>
+          ) : state.status === "ready" ? (
             <p className="text-muted-foreground mt-1 text-sm">
               Where the App is installed and @{state.login} can see it.
             </p>
-          )}
+          ) : null}
         </div>
         <Button variant="ghost" size="sm" onClick={onClose}>
           Close
         </Button>
       </div>
 
-      {state.status === "loading" ? (
-        <LoadingLine />
-      ) : state.status === "error" ? (
+      {state.status === "loading" ? null : state.status === "error" ? (
         <>
           <ErrorBanner className="mt-0">{state.error}</ErrorBanner>
           {state.code === "reconnect" && reconnect}
@@ -430,14 +512,7 @@ function InstallationPicker({
       ) : state.installations.length === 0 ? (
         <p className="text-muted-foreground text-sm">
           The App is not installed on any account you can see.{" "}
-          <button
-            type="button"
-            className="underline underline-offset-2"
-            onClick={onConnect}
-          >
-            Install it
-          </button>
-          .
+          {install("Install it")}.
         </p>
       ) : (
         <ul className="divide-y">
@@ -463,7 +538,7 @@ function InstallationPicker({
               {installation.status === "free" ? (
                 <Button
                   size="sm"
-                  disabled={linking !== null}
+                  disabled={linking !== null || redirecting !== null}
                   onClick={() => void choose(installation.installationId)}
                 >
                   {linking === installation.installationId && (
@@ -490,14 +565,7 @@ function InstallationPicker({
         !state.installations.some((entry) => entry.status === "free") && (
           <p className="text-muted-foreground text-sm">
             None of these can be connected here.{" "}
-            <button
-              type="button"
-              className="underline underline-offset-2"
-              onClick={onConnect}
-            >
-              Install the App on an account you manage
-            </button>
-            .
+            {install("Install the App on an account you manage")}.
           </p>
         )}
       {linkError !== null && (
