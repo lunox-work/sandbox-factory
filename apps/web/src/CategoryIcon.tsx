@@ -3,7 +3,7 @@
  *
  * Drawn here rather than picked from Lucide: a stock icon gives "an
  * hourglass" or "a pair of scissors", where these say the category — the
- * bounty fading at one corner, the card carrying a blocker mark. They are
+ * bounty fading at one corner, the blocker in front of a card. They are
  * solid: each is a filled shape with its detail cut out of it, so the
  * detail shows whatever is behind the icon — a tile's wash, a pressed
  * chip — rather than a colour guessed for it. They keep Lucide's grid
@@ -27,91 +27,113 @@ import { useId, type ReactElement } from "react";
 /**
  * A category's drawing: `solid` is filled and stroked at 2, so a filled
  * shape keeps the footprint its outline had; `cut` is stroked out of it.
- * A line that is only a line (a calendar's ring) says `fill="none"`, or
- * the fill would close it into a sliver.
+ * A line that is only a line (a calendar's ring) says
+ * `fill="none"`, or the fill would close it into a sliver. What is
+ * secondary — the pieces drifting off a card, the card a blocker stands
+ * in front of — is drawn at a lower `opacity`, so each icon has one shape
+ * to read first.
  */
 type Drawing = { solid: ReactElement; cut?: ReactElement };
 
 /** Keyed by category id. */
 const DRAWINGS: Record<string, Drawing> = {
-  // A bounty fading away from its top right corner: the corner is gone,
-  // and what is left of it drifts off as a dash, a dot and a dash.
+  // A bounty fading away from its top right corner: half of it is gone,
+  // crumbled into pieces that fade the further they drift.
   "left-behind": {
     solid: (
       <>
-        <path d="M10 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8Z" />
-        <path strokeWidth="2.5" d="M15 2h1.5" />
-        <path strokeWidth="2.5" d="M19.5 2.5h.01" />
-        <path strokeWidth="2.5" d="M20 6v1" />
+        <path d="M5.5 2.5A2.5 2.5 0 0 0 3 5v14.5A2.5 2.5 0 0 0 5.5 22h12a2.5 2.5 0 0 0 2.5-2.5V17Z" />
+        <g stroke="none">
+          <rect x="11" y="0.3" width="5" height="5" rx="1.25" opacity="0.85" />
+          <rect x="17" y="6.3" width="5" height="5" rx="1.25" opacity="0.85" />
+          <rect
+            x="19.8"
+            y="0.3"
+            width="3.5"
+            height="3.5"
+            rx="1"
+            opacity="0.45"
+          />
+        </g>
       </>
     ),
     cut: (
       <>
-        <path d="M8 13h5" />
-        <path d="M8 17h8" />
+        <path d="M7 13.5h4" />
+        <path d="M7 17.5h8" />
       </>
     ),
   },
-  // Repeat, with "+1" on a plate inside it: one more sprint, again. The
-  // arrowheads are short, to leave the plate room, and the "+1" is cut at
-  // 1.5 so its two glyphs stay apart at a tile's 16px.
+  // Repeat, with "+1" cut out of it: one more sprint, again. The loop is
+  // one solid shape, its two corners drawn out into arrowheads that stand
+  // clear of it, a notch under the one and over the other.
   "always-next-sprint": {
     solid: (
-      <>
-        <path fill="none" d="M3 10V9a4 4 0 0 1 4-4h11" />
-        <path d="M18.5 2.5l2.5 2.5-2.5 2.5z" />
-        <path fill="none" d="M21 14v1a4 4 0 0 1-4 4H6" />
-        <path d="M5.5 21.5L3 19l2.5-2.5z" />
-        <rect x="7" y="8" width="10" height="8" rx="2" stroke="none" />
-      </>
+      <path d="M7 5h11V1l4.5 4L18 9v4h3v2a4 4 0 0 1-4 4H6v4l-4.5-4L6 15v-4H3V9a4 4 0 0 1 4-4Z" />
     ),
     cut: (
-      <>
-        <path strokeWidth="1.5" d="M8.75 12h3" />
-        <path strokeWidth="1.5" d="M10.25 10.5v3" />
-        <path strokeWidth="1.5" d="M14 10.5l1.5-1v5" />
-      </>
+      <g strokeWidth="1.75">
+        <path d="M8 12h3" />
+        <path d="M9.5 10.5v3" />
+        <path d="M13 10l2-1.5v7" />
+      </g>
     ),
   },
   // An upvote inside a comment: the demand is in the thread, not in the
   // priority field.
   "quietly-wanted": {
     solid: (
-      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+      <path d="M7 4h10a4 4 0 0 1 4 4v5a4 4 0 0 1-4 4h-6l-4 3.5V17a4 4 0 0 1-4-4V8a4 4 0 0 1 4-4Z" />
     ),
-    cut: <path d="M9 11.5l3-3 3 3" />,
+    cut: <path d="M9 12l3-3 3 3" />,
   },
-  // A bounty card carrying the blocker mark, a circle with a dash in it.
+  // The blocker mark standing in front of the bounty it holds up, the
+  // card faded behind it and a gap cut between the two.
   "holding-others-up": {
-    solid: <rect x="3" y="3" width="18" height="18" rx="2" />,
+    solid: (
+      <>
+        <rect x="3" y="3" width="13" height="13" rx="2.5" opacity="0.5" />
+        <circle cx="15" cy="15" r="6.5" />
+      </>
+    ),
     cut: (
       <>
-        <circle cx="12" cy="12" r="5" />
-        <path d="M10 12h4" />
+        <circle strokeWidth="1.5" cx="15" cy="15" r="8.5" />
+        <path d="M12 15h6" />
       </>
     ),
   },
-  // A sheet of paper with a nick in its edge.
+  // A sheet of paper with a nick in its edge, cut rather than drawn so
+  // its point stays sharp.
   "paper-cuts": {
     solid: (
-      <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2l-5-2.5 5-2.5V7Z" />
+      <path d="M15 2.5H6.5A2.5 2.5 0 0 0 4 5v14.5A2.5 2.5 0 0 0 6.5 22h11a2.5 2.5 0 0 0 2.5-2.5V7.5Z" />
     ),
-    cut: <path d="M14 2v4a2 2 0 0 0 2 2h4" />,
+    cut: (
+      <>
+        <path d="M14 2.5V6a2 2 0 0 0 2 2h4" />
+        <path fill="black" strokeWidth="1" d="M22 12 12 14.75 22 17.5Z" />
+      </>
+    ),
   },
-  // A calendar page with nothing on it but a warning.
+  // A calendar with a warning badge on its corner: the date is coming,
+  // and nothing on the page is ready for it. A gap is cut around the badge
+  // so the two stay apart.
   "deadline-exposed": {
     solid: (
       <>
-        <path fill="none" d="M8 2v4" />
-        <path fill="none" d="M16 2v4" />
-        <rect x="3" y="4" width="18" height="18" rx="2" />
+        <path fill="none" d="M7 2v3" />
+        <path fill="none" d="M14 2v3" />
+        <rect x="3" y="4.5" width="15" height="15" rx="3" />
+        <circle cx="17" cy="17" r="5.5" />
       </>
     ),
     cut: (
       <>
-        <path d="M3 10h18" />
-        <path d="M12 13v3" />
-        <path d="M12 19h.01" />
+        <path d="M2 9.5h17" />
+        <circle strokeWidth="1.5" cx="17" cy="17" r="7.75" />
+        <path d="M17 14.5V17" />
+        <path d="M17 19.75h.01" />
       </>
     ),
   },
