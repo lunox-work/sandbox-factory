@@ -5,6 +5,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import {
   ComplexityProfileBlock,
   PROFILE_POLL_MS,
+  profileWorking,
   useProposalProfile,
 } from "../src/ComplexityProfile";
 
@@ -326,4 +327,27 @@ test("a bounty touching several repositories lists each one's profile under its 
   expect(screen.getByText("acme/web")).toBeTruthy();
   expect(screen.getAllByTestId("profile-rows")).toHaveLength(1);
   expect(screen.getByText(/Cutting the slice/)).toBeTruthy();
+});
+
+test("the proposal's head says a profile is at work until every one settles", () => {
+  expect(profileWorking({ state: "loading" })).toBeNull();
+  expect(profileWorking({ state: "ready", profiles: [] })).toBeNull();
+  expect(
+    profileWorking({
+      state: "ready",
+      profiles: [
+        stored(),
+        stored({ id: "bpf_2", status: "scoping", profile: null }),
+      ],
+    }),
+  ).toBe("searching");
+  expect(
+    profileWorking({
+      state: "ready",
+      profiles: [
+        stored(),
+        stored({ id: "bpf_2", status: "failed", profile: null }),
+      ],
+    }),
+  ).toBeNull();
 });

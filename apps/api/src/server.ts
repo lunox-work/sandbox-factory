@@ -60,6 +60,7 @@ import { GithubSnapshotter } from "./github/snapshot.js";
 import { resolveImageDigest } from "./image-digest.js";
 import { jiraClientFor, jiraClientsFor } from "./jira/credential.js";
 import { createApp } from "./routes.js";
+import { syncGithub } from "./bounties/context.js";
 import { connectedRepositories, heldContext } from "./bounties/held-context.js";
 import { installationClient } from "./github/credential.js";
 import {
@@ -244,6 +245,23 @@ const bountyExecutor =
         caller,
         clientFor: runClientFor,
         contextFor,
+        // Declared below, with the GitHub App it reads through; called only
+        // once a run is under way, by which time it is set or known absent.
+        syncContextFor: async (organizationId, bounty, userId) => {
+          const synced = await syncGithub(
+            {
+              contexts: bountyContexts,
+              ...(githubContext === undefined ? {} : { githubContext }),
+            },
+            organizationId,
+            bounty,
+            userId,
+          );
+          // No repository, none read yet or no GitHub here: the ticket is
+          // sized alone. GitHub failing to answer is worth a line.
+          if (!synced.ok && synced.status === 502)
+            console.error("bounty_context_sync_failed", synced.code);
+        },
         outlinesFor: async (organizationId) => {
           const repos = await connectedRepositories(
             githubRepos,

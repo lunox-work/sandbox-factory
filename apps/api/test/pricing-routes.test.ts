@@ -50,6 +50,7 @@ const run: StoredBountyRun = {
   boardId: "jrb_1",
   bountyId: null,
   kind: "backlog",
+  startedBy: "usr_1",
   sourceProposalId: null,
   sourceRevision: null,
   respec: null,
@@ -1493,6 +1494,22 @@ test("adding a bounty starts a one-bounty run for it", async () => {
   ]);
   // Read through the board, so a bounty from elsewhere cannot be sized here.
   assert.deepEqual(state.jql, ["issue = 7"]);
+});
+
+test("a bounty added on onboarding is planned as such", async () => {
+  const state = harness({ boardIssues: [bounty("7", "Add login")] });
+  const response = await state.app.request(
+    "/api/v1/orgs/org_1/jira/boards/jrb_1/issues",
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ requestId, issueId: "7", onboarding: true }),
+    },
+  );
+  assert.equal(response.status, 202);
+  const [input] = state.created as { planned: { onboarding?: boolean }[] }[];
+  // The run syncs its scope first and approves it once sized.
+  assert.equal(input?.planned[0]?.onboarding, true);
 });
 
 test("an issue split into sub-tasks is listed but cannot be added", async () => {

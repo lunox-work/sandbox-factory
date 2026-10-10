@@ -459,6 +459,27 @@ test("counts each category across the organizations given, and none of none", as
   );
 });
 
+test("counts each status across the organizations given, in one read, and none of none", async () => {
+  const fake = createSequencedFakeDb([
+    [{ total: 6, new: 3, scoped: 1, priced: 2, live: 0 }],
+  ]);
+  assert.deepEqual(
+    await createBountyStore(fake.db).statusCounts(["org_1"], {
+      category: "left-behind",
+    }),
+    { total: 6, statuses: { new: 3, scoped: 1, priced: 2, live: 0 } },
+  );
+  assert.equal(fake.calls.length, 1);
+  assert.ok(fake.calls.every(({ filtered }) => filtered === true));
+
+  const none = createFakeDb([]);
+  assert.deepEqual(await createBountyStore(none.db).statusCounts([]), {
+    total: 0,
+    statuses: { new: 0, scoped: 0, priced: 0, live: 0 },
+  });
+  assert.equal(none.calls.length, 0);
+});
+
 test("a scan's categories replace the bounty's, through its owner", async () => {
   const match = { id: "left-behind", label: "Left behind", reason: "Old" };
   const fake = createFakeDb([{ id: "bty_1" }]);

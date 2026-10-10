@@ -69,6 +69,17 @@ export function useProposalProfile(
   return { state: "ready", profiles: query.data, owner };
 }
 
+/**
+ * What the orb at the proposal's head does while a profile is measured, so
+ * the top of the page says the work below is under way; null once every
+ * profile has settled, or before they are read.
+ */
+export function profileWorking(read: ProfileRead): OrbState | null {
+  if (read.state !== "ready") return null;
+  const working = read.profiles.find(({ status }) => IN_FLIGHT.has(status));
+  return working === undefined ? null : (STAGE_ORB[working.status] ?? null);
+}
+
 const STAGE: Record<string, string> = {
   queued: "Waiting for room in the workspace's analysis queue",
   scoping: "The scope agent is choosing the code this spec needs",

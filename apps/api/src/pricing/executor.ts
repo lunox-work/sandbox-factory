@@ -191,6 +191,16 @@ export interface BountyExecutorOptions {
     bounty: StoredBounty,
   ) => Promise<LatestBountyContext>;
   /**
+   * Syncs the workspace's repositories into a bounty's scope, as a person's
+   * GitHub sync does, for a ticket picked on onboarding. Absent, or failing,
+   * the ticket is sized with whatever its scope already holds.
+   */
+  readonly syncContextFor?: (
+    organizationId: string,
+    bounty: StoredBounty,
+    userId: string,
+  ) => Promise<void>;
+  /**
    * The outline of each of the workspace's repositories a bounty's work
    * could touch, from its current snapshot, in name order; a repository
    * with no snapshot yet has none. Absent, no draft is shown any.
@@ -535,11 +545,17 @@ export class BountyExecutor {
       run continues as the row the store hands back: sizing against the
       deadline it claimed with would cut a long run short.
     */
+    // A ticket picked on onboarding stays so in the plan written over it.
+    const onboarding = run.kind === "issue" && onboardingRun(run);
     const planned = await runs.recordPlan(
       organizationId,
       run.id,
       leaseToken,
-      candidates.map(planEntry),
+      candidates.map((candidate) =>
+        onboarding
+          ? { ...planEntry(candidate), onboarding: true }
+          : planEntry(candidate),
+      ),
     );
     if (planned === null) return;
 
@@ -666,6 +682,48 @@ export class BountyExecutor {
     } catch (error) {
       this.#options.onBackgroundError?.("bounty_context_unavailable", error);
       return { jira: null, github: null };
+    }
+  }
+
+  /**
+   * The workspace's repositories, synced into a bounty's scope. One that
+   * cannot be synced leaves it as it was: sizing goes on without it.
+   */
+  async #syncContext(
+    organizationId: string,
+    bounty: StoredBounty,
+    userId: string,
+  ): Promise<void> {
+    const sync = this.#options.syncContextFor;
+    if (sync === undefined) return;
+    try {
+      await sync(organizationId, bounty, userId);
+    } catch (error) {
+      this.#options.onBackgroundError?.("bounty_context_sync_failed", error);
+    }
+  }
+
+  /**
+   * Approves a bounty's scope at the version it is at now. One that cannot
+   * be approved stays open, for a person to approve.
+   */
+  async #approveScope(
+    organizationId: string,
+    bountyId: string,
+    approvedBy: string,
+  ): Promise<void> {
+    const { bounties } = this.#options;
+    try {
+      const current = await bounties.get(organizationId, bountyId);
+      if (current === null) return;
+      await bounties.approve(
+        organizationId,
+        bountyId,
+        current.revision,
+        approvedBy,
+      );
+    } catch (error) {
+      this.#options.onBackgroundError?.("bounty_scope_approval_failed", error);
     }
   }
 
@@ -1131,6 +1189,16 @@ export class BountyExecutor {
     const repositoryOutline = outlines
       .map(({ text }, index) => `=== ${repositoryLabel(index)} ===\n${text}`)
       .join("\n\n");
+    /*
+      A ticket picked on onboarding is sized beside the code without the
+      person syncing it first: its scope takes the repositories' documents
+      now, so the draft and the size read them and the price is not behind
+      its scope's context the moment it lands.
+    */
+    const onboardedBy =
+      run.kind === "issue" && onboardingRun(run) ? run.startedBy : null;
+    if (onboardedBy !== null)
+      await this.#syncContext(organizationId, bounty, onboardedBy);
     // What its sources add, as synced: the draft and the size see it, and
     // the proposal records which versions they saw.
     const held = await this.#context(organizationId, bounty);
@@ -1397,6 +1465,15 @@ export class BountyExecutor {
       }
     }
 
+    // Sized on onboarding: its scope is approved, as the step the person
+    // would take next. One left unsized needs more said, so stays open.
+    if (
+      onboardedBy !== null &&
+      !technicalFailure &&
+      sizing.complexity !== "unsized"
+    )
+      await this.#approveScope(organizationId, bounty.id, onboardedBy);
+
     return {
       value: {
         ...base,
@@ -1440,6 +1517,11 @@ function baseOf(bounty: StoredBounty): OutcomeBase {
     issueKey: bounty.jira?.key ?? null,
     bountyId: bounty.id,
   };
+}
+
+/** A run sizing a ticket picked on onboarding. */
+function onboardingRun(run: StoredBountyRun): boolean {
+  return run.planned[0]?.onboarding === true;
 }
 
 function planEntry(candidate: Candidate): BountyRunPlannedIssue {

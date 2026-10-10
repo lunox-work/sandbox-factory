@@ -22,6 +22,7 @@ import type {
 import {
   createBountySchema,
   bountyCategoryCountsSchema,
+  bountyStatusCountsSchema,
   bountyDtoSchema,
   bountyListFilterSchema,
   bountyListResponseSchema,
@@ -271,7 +272,10 @@ export const SCOPE_APPROVED = {
 export function mountCallerBountyRoutes<Env extends BountyAppEnv>(
   app: Hono<Env>,
   options: {
-    readonly bounties: Pick<BountyStore, "listAcross" | "categoryCounts">;
+    readonly bounties: Pick<
+      BountyStore,
+      "listAcross" | "categoryCounts" | "statusCounts"
+    >;
     /** The ids of the organizations the user is a member of. */
     readonly organizationsOf: (userId: string) => Promise<readonly string[]>;
   },
@@ -311,6 +315,27 @@ export function mountCallerBountyRoutes<Env extends BountyAppEnv>(
         })),
       }),
     );
+  });
+
+  /**
+   * How many of the caller's bounties stand at each status, for the list's
+   * status bar: narrowed by `?category=`, `?board=` and `?source=` as the
+   * list is, but not by `?status=`, so every status keeps its count while
+   * one is chosen.
+   */
+  app.get("/api/v1/me/bounty-statuses", async (c) => {
+    const filter = listFilter(c);
+    if (filter === null) return c.json({ error: "Invalid filter." }, 400);
+    const organizationIds = await options.organizationsOf(c.get("user").id);
+    const counts = await options.bounties.statusCounts(organizationIds, {
+      ...(filter.category === undefined ? {} : { category: filter.category }),
+      ...(filter.uncategorized === undefined
+        ? {}
+        : { uncategorized: filter.uncategorized }),
+      ...(filter.boardId === undefined ? {} : { boardId: filter.boardId }),
+      ...(filter.unlinked === undefined ? {} : { unlinked: filter.unlinked }),
+    });
+    return c.json(bountyStatusCountsSchema.parse(counts));
   });
 }
 

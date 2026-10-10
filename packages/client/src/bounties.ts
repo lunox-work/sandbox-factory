@@ -1,6 +1,7 @@
 import {
   proposalActionResponseSchema,
   bountyCategoryCountsSchema,
+  bountyStatusCountsSchema,
   bountyListResponseSchema,
   bountySizingResponseSchema,
   bountyResponseSchema,
@@ -97,6 +98,20 @@ export class BountyClient extends ApiClient {
   ) {
     return bountyCategoryCountsSchema.parse(
       await this.request(`/api/v1/me/bounty-categories?${pageParams(query)}`, {
+        signal,
+      }),
+    );
+  }
+  /**
+   * How many of the caller's bounties stand at each status, narrowed as
+   * the list is by everything but status.
+   */
+  async myBountyStatuses(
+    query: Pick<BountyListQuery, "category" | "board" | "source"> = {},
+    signal?: AbortSignal,
+  ) {
+    return bountyStatusCountsSchema.parse(
+      await this.request(`/api/v1/me/bounty-statuses?${pageParams(query)}`, {
         signal,
       }),
     );

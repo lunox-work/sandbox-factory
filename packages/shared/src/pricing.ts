@@ -187,6 +187,11 @@ export const bountyRunPlannedIssueSchema = z.object({
   bountyId: z.string().min(1).optional(),
   /** Absent on plans recorded before categories existed. */
   categories: z.array(bountyCategoryMatchSchema).optional(),
+  /**
+   * Picked on onboarding: the workspace's repositories are synced into the
+   * bounty's scope before it is sized, and the scope is approved once it is.
+   */
+  onboarding: z.boolean().optional(),
 });
 
 /**
@@ -246,6 +251,8 @@ export const createRunSchema = z.object({ requestId: z.uuid() });
 export const addIssueSchema = z.object({
   requestId: z.uuid(),
   issueId: z.string().regex(/^\d{1,18}$/),
+  /** Picked on onboarding; see `bountyRunPlannedIssueSchema`. */
+  onboarding: z.boolean().optional(),
 });
 
 const stepPointsSchema = z

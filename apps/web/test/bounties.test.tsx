@@ -424,7 +424,17 @@ test("the list filters by category, with how many each holds, and says why", asy
 });
 
 test("the list filters by how far its bounties have got, as its Status column says", async () => {
-  const { fetchMock, calls } = server();
+  const { fetchMock, calls } = server([
+    [
+      "GET",
+      "/me/bounty-statuses",
+      () =>
+        json({
+          total: 2,
+          statuses: { new: 1, scoped: 0, priced: 1, live: 0 },
+        }),
+    ],
+  ]);
   vi.stubGlobal("fetch", fetchMock);
   window.history.replaceState(null, "", BOUNTIES_PATH);
   render(<Bounties {...inAcme("member")} />);
@@ -435,19 +445,19 @@ test("the list filters by how far its bounties have got, as its Status column sa
     rows.map((row) => row.querySelector("[data-status]")?.textContent),
   ).toEqual(["New", "Priced"]);
 
-  const trigger = within(screen.getByTestId("status-filter")).getByRole(
-    "combobox",
-    { name: "Status" },
+  // All four at once, in the order a bounty goes through them.
+  // Each with how many stand there.
+  const bar = screen.getByTestId("status-filter");
+  await waitFor(() =>
+    expect(
+      within(bar)
+        .getAllByRole("button")
+        .map((segment) => segment.textContent),
+    ).toEqual(["New1", "Scoped0", "Priced1", "Live0"]),
   );
-  const options = await openCombobox(trigger);
-  expect(
-    within(options)
-      .getAllByRole("option")
-      .map((option) => option.textContent),
-  ).toEqual(["All statuses", "New", "Scoped", "Priced", "Live"]);
-  await userEvent.click(
-    within(options).getByRole("option", { name: /Priced/ }),
-  );
+  const priced = within(bar).getByRole("button", { name: /^Priced/ });
+  expect(priced.getAttribute("aria-pressed")).toBe("false");
+  await userEvent.click(priced);
   expect(window.location.search).toBe("?status=priced");
   await waitFor(() =>
     expect(
@@ -464,12 +474,33 @@ test("the list filters by how far its bounties have got, as its Status column sa
       ),
     ).toBe(true),
   );
-  expect(trigger.textContent).toContain("Priced");
-  // Cleared, the list is every bounty again.
-  await userEvent.click(
-    screen.getByRole("button", { name: "Show every status" }),
-  );
+  expect(priced.getAttribute("aria-pressed")).toBe("true");
+  // Its own counts are never narrowed by the status chosen.
+  expect(
+    calls.some(({ url }) => url.includes("/me/bounty-statuses?status")),
+  ).toBe(false);
+  // Pressed again, the list is every bounty again.
+  await userEvent.click(priced);
   expect(window.location.search).toBe("");
+  expect(priced.getAttribute("aria-pressed")).toBe("false");
+
+  // Clear all lets every filter go at once, and has nothing to do without.
+  const clear = screen.getByRole("button", { name: "Clear all" });
+  expect(clear).toHaveProperty("disabled", true);
+  await userEvent.click(within(bar).getByRole("button", { name: /^Live/ }));
+  await chooseOption(
+    within(screen.getByTestId("category-filter")).getByRole("combobox", {
+      name: "Category",
+    }),
+    /Unassigned/,
+  );
+  expect(new URLSearchParams(window.location.search).get("status")).toBe(
+    "live",
+  );
+  expect(clear).toHaveProperty("disabled", false);
+  await userEvent.click(clear);
+  expect(window.location.search).toBe("");
+  expect(clear).toHaveProperty("disabled", true);
 });
 
 test("a board's bounties: named, rescanned, and an issue found on it added", async () => {
@@ -937,7 +968,7 @@ const fromEach = [
   }),
 ];
 
-test("every workspace's bounties list together, a team's tagged with its name", async () => {
+test("every workspace's bounties list together, with no workspace column", async () => {
   const state = server([], fromEach);
   vi.stubGlobal("fetch", state.fetchMock);
   render(<Bounties {...inThree()} />);
@@ -949,10 +980,10 @@ test("every workspace's bounties list together, a team's tagged with its name", 
   );
   const rows = within(list).getAllByRole("listitem");
   expect(rows).toHaveLength(3);
-  // The person's own workspace is not named: the bounty is simply theirs.
-  expect(within(rows[0]!).queryByText("Ada Lovelace")).toBeNull();
-  expect(within(rows[1]!).getByText("Acme")).toBeDefined();
-  expect(within(rows[2]!).getByText("Beta")).toBeDefined();
+  // No row names its workspace; the panel does, once one is open.
+  expect(within(list).queryByText("Ada Lovelace")).toBeNull();
+  expect(within(list).queryByText("Acme")).toBeNull();
+  expect(within(list).queryByText("Beta")).toBeNull();
 });
 
 test("a bounty opens through its own workspace, as the role held there allows", async () => {
@@ -1557,10 +1588,12 @@ test("a bounty is shown with its repositories' stack and its own", async () => {
   expect(
     within(stack).getByRole("button", { name: "Remove Redis" }),
   ).toBeDefined();
-  // Opened on its list; Escape closes that, then the picker, back to the
-  // pencil, and the panel stays.
+  // Focused with its list closed until it is clicked; Escape closes that,
+  // then the picker, back to the pencil, and the panel stays.
   const field = within(panel).getByRole("combobox", { name: "Tech stack" });
   expect(document.activeElement).toBe(field);
+  expect(field.getAttribute("aria-expanded")).toBe("false");
+  await userEvent.click(field);
   expect(field.getAttribute("aria-expanded")).toBe("true");
   await userEvent.keyboard("{Escape}");
   expect(field.getAttribute("aria-expanded")).toBe("false");
@@ -2756,21 +2789,6 @@ test("a bounty is addressed the same in the panel and on its own page", () => {
     "Export to CSV",
   ]);
   expect(trail[1]?.screen).toBe("bounties");
-  // Then the workspace it is in, once known, leading to its page.
-  const inWorkspace = trailFor("bounty", undefined, "Export to CSV", {
-    name: "Personal",
-    slug: "lovelace-ada",
-  });
-  expect(inWorkspace.map(({ label }) => label)).toEqual([
-    "Home",
-    "Bounties",
-    "Personal",
-    "Export to CSV",
-  ]);
-  expect(inWorkspace[2]).toMatchObject({
-    screen: "org-settings",
-    slug: "lovelace-ada",
-  });
   // Until the bounty is read, the crumb says what it will be.
   expect(trailFor("bounty").at(-1)?.label).toBe("Bounty");
 });

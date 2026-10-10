@@ -151,6 +151,11 @@ export interface BountyRunPlannedIssue {
    * existed, and empty for a bounty a person picked by hand.
    */
   readonly categories?: readonly CategoryMatch[] | undefined;
+  /**
+   * Picked on onboarding: the workspace's repositories are synced into the
+   * bounty's scope before it is sized, and the scope is approved once it is.
+   */
+  readonly onboarding?: boolean | undefined;
 }
 
 export interface BountyRunOutcome {

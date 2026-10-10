@@ -329,6 +329,7 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
         startedBy: c.get("user").id,
         requestId: parsed.data.requestId,
         issueId: parsed.data.issueId,
+        ...(parsed.data.onboarding === true ? { onboarding: true } : {}),
       });
     } catch (error) {
       if (error instanceof InvalidBoardIdError) {

@@ -294,7 +294,7 @@ async function contextStatus(
   return bountyContextResponseSchema.parse({ jira, github });
 }
 
-type SyncResult =
+export type SyncResult =
   | {
       readonly ok: true;
       readonly changed: boolean;
@@ -412,9 +412,10 @@ type Readable =
  * Reads the documents at each connected repository's newest snapshot, and
  * keeps them as one version. A repository with no snapshot yet, or one its
  * connection cannot read, is named as unread; a sync reads at least one.
+ * Also what sizing a ticket picked on onboarding syncs first.
  */
-async function syncGithub(
-  options: BountyContextOptions,
+export async function syncGithub(
+  options: Pick<BountyContextOptions, "contexts" | "githubContext">,
   organizationId: string,
   bounty: StoredBounty,
   userId: string,

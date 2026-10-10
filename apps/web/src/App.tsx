@@ -15,7 +15,6 @@ import { Breadcrumbs } from "./Breadcrumbs";
 import { Home } from "./Home";
 import { Onboarding } from "./Onboarding";
 import { CreateOrganization, Organization } from "./Organization";
-import { workspaceLabel } from "./OrganizationSwitcher";
 import { Organizations } from "./Organizations";
 import { RepositoryPage } from "./Repository";
 import { SideNav, type Screen } from "./SideNav";
@@ -27,7 +26,6 @@ import { setupComplete } from "./features/onboarding/setup";
 import { useWorkspaceSetup } from "./features/onboarding/useWorkspaceSetup";
 import {
   bountiesUrl,
-  bountyForPath,
   canonicalUrl,
   isPlainLeftClick,
   NEW_ORG_PATH,
@@ -124,16 +122,6 @@ function Signed({
    * active last.
    */
   const organizations = useOrganizations(slugForPath(location.pathname));
-  // The workspace a bounty's own page is in, which its address names.
-  const bountyAddress =
-    screen === "bounty" ? bountyForPath(location.pathname) : undefined;
-  const bountyOrganization =
-    bountyAddress === undefined
-      ? undefined
-      : organizations.organizations.find(
-          ({ slug }) =>
-            slug.toLowerCase() === bountyAddress.workspace.toLowerCase(),
-        );
 
   /**
    * The bounty on its own page, reported up by `BountyPage` so the trail can
@@ -406,14 +394,6 @@ function Signed({
                   }
             }
             bountyName={screen === "bounty" ? bountyName : undefined}
-            bountyWorkspace={
-              bountyOrganization === undefined
-                ? undefined
-                : {
-                    name: workspaceLabel(bountyOrganization),
-                    slug: bountyOrganization.slug,
-                  }
-            }
             repositoryName={
               screen === "org-repository" ? repositoryName : undefined
             }

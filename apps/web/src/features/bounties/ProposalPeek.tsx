@@ -33,6 +33,7 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { DisabledReason } from "@/components/DisabledReason";
 import { ErrorBanner, RetryButton } from "@/components/Message";
 import { ModelCard, SectionHeading } from "@/components/ReadSection";
+import { ThinkingLine } from "@/components/Thinking";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
@@ -41,6 +42,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { CategoryIcon } from "../../CategoryIcon";
 import {
   ComplexityProfileBlock,
+  profileWorking,
   useProposalProfile,
 } from "../../ComplexityProfile";
 import { IssueSpec, IssueSpecSkeleton } from "../../IssueSpec";
@@ -253,6 +255,8 @@ export function ProposalPeek({
       ? profile.profiles.map(({ id, status }) => `${id}:${status}`).join(",")
       : null;
   const awaitingCode = proposal.rubric?.code.status === "pending";
+  // The profile at work below, said at the top too.
+  const measuring = profileWorking(profile);
   const reread = useRef<string | null>(null);
   // The latest callback, so a parent's new function does not cancel the read.
   const changed = useRef(onChanged);
@@ -514,9 +518,25 @@ export function ProposalPeek({
       <div className="flex flex-col gap-4 rounded-lg border p-4 sm:p-5">
         {/* The state, and the way to have the model look again. */}
         <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
-          <Badge variant="secondary" className="w-fit">
-            {capitalize(proposal.status)}
-          </Badge>
+          <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+            <Badge variant="secondary" className="w-fit">
+              {capitalize(proposal.status)}
+            </Badge>
+            {/*
+              The complexity profile at work below, where the page is
+              read from: the price waits on it while the rubric does.
+            */}
+            {measuring !== null && !reanalyzing && (
+              <ThinkingLine
+                state={measuring}
+                className="text-muted-foreground text-xs"
+              >
+                {awaitingCode
+                  ? "Measuring the code; the price may change"
+                  : "Measuring the code"}
+              </ThinkingLine>
+            )}
+          </div>
           {/* Sized again only while it is not approved: unapproved first. */}
           {canDecide && (open || reanalyzing) && (
             <button

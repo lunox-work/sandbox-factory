@@ -169,6 +169,7 @@ function respecRun(
     boardId: "jrb_1",
     bountyId: "bty_1",
     kind: "respec",
+    startedBy: "usr_1",
     sourceProposalId: "bpr_1",
     sourceRevision: 4,
     respec,

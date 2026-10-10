@@ -65,6 +65,7 @@ import {
   useId,
   useRef,
   useState,
+  type CSSProperties,
   type ReactElement,
   type ReactNode,
 } from "react";
@@ -172,6 +173,7 @@ import {
   useAllBounties,
   useBounties,
   useBountyCategories,
+  useBountyStatuses,
   type AllBounties,
   type BountyDraft,
   type Bounties,
@@ -298,6 +300,16 @@ export function Bounties({
     scope.source,
     scope.status,
   );
+  const statusCounts = useBountyStatuses(
+    scope.category,
+    scope.board?.boardId,
+    scope.source,
+  );
+  const narrowed =
+    scope.category !== undefined ||
+    scope.board !== undefined ||
+    scope.source !== undefined ||
+    scope.status !== undefined;
   /** The list narrowed otherwise; a bounty open over it stays open. */
   const narrow = (next: BountyListScope) =>
     replaceLocation(bountiesUrl(peek, next));
@@ -370,17 +382,28 @@ export function Bounties({
           aria-label="Filter bounties"
           className="flex flex-wrap items-center gap-2"
         >
+          <StatusFilter
+            counts={statusCounts.data}
+            selected={scope.status ?? null}
+            onSelect={(status) =>
+              narrow({ ...scope, status: status ?? undefined })
+            }
+          />
+          <button
+            type="button"
+            disabled={!narrowed}
+            onClick={() => narrow({})}
+            className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 h-8 rounded-md px-1.5 text-sm font-medium transition-[color,opacity] outline-none focus-visible:ring-[3px] disabled:pointer-events-none disabled:opacity-40"
+          >
+            Clear all
+          </button>
+          {/* The rest at the row's end: what kind of work, and from where. */}
           <CategoryFilter
+            className="ml-auto"
             counts={counts.data}
             selected={scope.category ?? null}
             onSelect={(category) =>
               narrow({ ...scope, category: category ?? undefined })
-            }
-          />
-          <StatusFilter
-            selected={scope.status ?? null}
-            onSelect={(status) =>
-              narrow({ ...scope, status: status ?? undefined })
             }
           />
           <BoardFilter
@@ -409,14 +432,8 @@ export function Bounties({
           bounties={bounties}
           organizations={organizations}
           organizationsLoading={organizationsLoading}
-          viewer={viewer}
           peek={peek}
-          narrowed={
-            scope.category !== undefined ||
-            scope.board !== undefined ||
-            scope.source !== undefined ||
-            scope.status !== undefined
-          }
+          narrowed={narrowed}
           onOpen={open}
           onCreate={onCreate}
         />
@@ -986,7 +1003,6 @@ function BountyList({
   bounties,
   organizations,
   organizationsLoading,
-  viewer,
   peek,
   narrowed,
   onOpen,
@@ -995,8 +1011,6 @@ function BountyList({
   bounties: AllBounties;
   organizations: MembershipDto[];
   organizationsLoading: boolean;
-  /** Whoever is looking: the face their personal workspace wears. */
-  viewer: Viewer;
   /** The bounty open in the panel, whose card is marked; null for none. */
   peek: BountyAddress | null;
   /** A category or a board narrows the list, so empty says less. */
@@ -1010,7 +1024,16 @@ function BountyList({
     return <LoadingLine>Loading bounties…</LoadingLine>;
   }
   return (
-    <div className="flex flex-col gap-4">
+    // Narrowed otherwise, the rows shown step back until the new ones land,
+    // and those come in under a new key, so they rise in rather than swap.
+    <div
+      key={bounties.view}
+      aria-busy={bounties.switching}
+      className={cn(
+        "bounty-list-in flex flex-col gap-4 transition-opacity duration-200 motion-reduce:transition-none",
+        bounties.switching && "opacity-50",
+      )}
+    >
       {bounties.error !== null && (
         <RetryableError onRetry={bounties.retry}>
           {bounties.error}
@@ -1054,21 +1077,17 @@ function BountyList({
                 {bounties.more && "+"}{" "}
                 {bounties.bounties.length === 1 ? "bounty" : "bounties"}
               </span>
-              <span className={cn("hidden", WORKSPACE_CELL)}>Workspace</span>
               <span>Status</span>
               <span className="text-right">Price</span>
             </div>
             <ul className="divide-y" data-testid="bounty-list">
-              {bounties.bounties.map((bounty) => {
+              {bounties.bounties.map((bounty, index) => {
                 const address = addressOf(bounty, organizations);
                 return (
                   <BountyCard
                     key={bounty.id}
+                    index={index}
                     bounty={bounty}
-                    workspace={organizations.find(
-                      ({ id }) => id === bounty.organizationId,
-                    )}
-                    viewer={viewer}
                     address={address}
                     selected={
                       address !== undefined &&
@@ -1107,15 +1126,11 @@ function BountyList({
 
 /**
  * The list's columns, shared by its head and every row, set by how wide the
- * list itself is rather than the screen: beside an open panel it is
- * narrower, and the workspace, which the panel names, gives its column up
- * to the titles. Narrower still, as on a phone, each row stacks.
+ * list itself is rather than the screen. Narrow, as on a phone, each row
+ * stacks.
  */
 const ROW_GRID =
-  "gap-x-6 @xl:items-center @xl:grid-cols-[minmax(0,1fr)_10rem_5.5rem] @4xl:grid-cols-[minmax(0,1fr)_9rem_10rem_5.5rem]";
-
-/** The workspace column: under the title when stacked, and when wide. */
-const WORKSPACE_CELL = "@xl:hidden @4xl:flex";
+  "gap-x-6 @xl:items-center @xl:grid-cols-[minmax(0,1fr)_10rem_5.5rem]";
 
 /**
  * Under a bounty's title, in a few quiet words: its Jira issue's key, or
@@ -1180,8 +1195,8 @@ function ProposalPrice({
 
 /**
  * One bounty in the list, as a row of its table: why a scan picked it, as
- * its category's tile; its title over its Jira key and the reason; the
- * workspace it is in; where its proposal stands; and what it pays. On a
+ * its category's tile; its title over its Jira key and the reason; where
+ * its proposal stands; and what it pays. On a
  * phone the title takes the width and the rest goes under it.
  *
  * A click anywhere on it opens the bounty in the panel beside the list, a
@@ -1191,17 +1206,15 @@ function ProposalPrice({
  * from its page, never from its row.
  */
 function BountyCard({
+  index,
   bounty,
-  workspace,
-  viewer,
   address,
   selected,
   onOpen,
 }: {
+  /** Its place in the list, which staggers its rows coming in. */
+  index: number;
   bounty: BountySummaryDto;
-  /** The workspace it belongs to, once the workspaces are known. */
-  workspace: MembershipDto | undefined;
-  viewer: Viewer;
   /** Where it opens; undefined while its workspace is not known. */
   address: BountyAddress | undefined;
   /** It is the bounty open in the panel. */
@@ -1219,14 +1232,13 @@ function BountyCard({
     </span>
   );
   const headingClass = "flex min-w-0";
-  const workspaceName =
-    workspace === undefined ? null : workspaceLabel(workspace);
   return (
     // `relative` for the link's overlay, which makes the whole row its target.
     <li
       {...{ [PEEK_ROW_ATTRIBUTE]: "" }}
+      style={{ "--row": index } as CSSProperties}
       className={cn(
-        "hover:bg-muted/40 relative flex flex-col gap-3 px-4 py-3.5 transition-colors @xl:grid",
+        "bounty-row-in hover:bg-muted/40 relative flex flex-col gap-3 px-4 py-3.5 transition-colors @xl:grid",
         ROW_GRID,
         selected &&
           "bg-muted/70 hover:bg-muted/70 shadow-[inset_2px_0_0_var(--foreground)]",
@@ -1272,24 +1284,6 @@ function BountyCard({
       {/* Under the title when the list is narrow, on the tile's edge;
           columns beside it when it is wide enough. */}
       <div className="flex items-center gap-4 pl-11 @xl:contents">
-        <span
-          className={cn(
-            "flex min-w-0 items-center gap-2 text-xs",
-            WORKSPACE_CELL,
-          )}
-        >
-          {workspace !== undefined && (
-            <WorkspaceFace
-              organization={workspace}
-              viewer={viewer}
-              className="size-4 shrink-0"
-              squareRadius="rounded-[4px]"
-            />
-          )}
-          <span className="truncate" title={workspaceName ?? undefined}>
-            {workspaceName}
-          </span>
-        </span>
         <span
           className="min-w-0"
           data-testid={proposal === null ? undefined : "proposal-brief"}

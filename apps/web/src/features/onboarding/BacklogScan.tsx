@@ -14,10 +14,13 @@
  * fill left as placeholders, and one button that fills them. Sizing is the
  * slow, paid step, so it is the person's choice and it is one call; the
  * whole board can still be sized on request, from the board's menu, with
- * the cost said first.
+ * the cost said first. While a ticket is sized nothing else on the scan can
+ * be picked — no other ticket, category or board — and that holds across a
+ * reload, read from the board's runs.
  *
- * A sized ticket opens as its bounty, on the Bounty tab of its page, where
- * its proposal is. A page that shows the scan over a list of its own may
+ * A ticket sized here has the workspace's repositories synced into its
+ * scope first, and its scope approved once it is sized. It opens as its
+ * bounty, on the Bounty tab of its page, where its proposal is. A page that shows the scan over a list of its own may
  * fold it to one line (`foldable`), opened again on demand.
  */
 
@@ -25,7 +28,7 @@ import { ApiError } from "@sandbox-factory/client";
 import type { JiraBacklogPreviewDto } from "@sandbox-factory/shared";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronDown, ScanSearch } from "lucide-react";
-import { useId, useRef, useState, type ReactNode } from "react";
+import { useCallback, useId, useRef, useState, type ReactNode } from "react";
 import { DEFAULT_RATE_CARD, UNCATEGORIZED } from "sandbox-factory";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
@@ -102,8 +105,17 @@ export function BacklogScan({
 }) {
   const headingId = useId();
   const [open, setOpen] = useState(!foldable);
-  const { preview, rateCard, data, summary, sizingAvailable, boardRun, sized } =
-    useBacklogScan(organizationId, boardId);
+  const {
+    preview,
+    rateCard,
+    data,
+    summary,
+    sizingAvailable,
+    boardRun,
+    ticketRun,
+    sized,
+    readRuns,
+  } = useBacklogScan(organizationId, boardId);
 
   const [category, setCategory] = useState<string | null>(null);
   const [focusId, setFocusId] = useState<string | null>(null);
@@ -113,7 +125,19 @@ export function BacklogScan({
     the proposal when it lands, so it stays on screen until then: the list
     is held, and changing category leaves it in place.
   */
-  const [sizingId, setSizingId] = useState<string | null>(null);
+  const [startedId, setStartedId] = useState<string | null>(null);
+  // Or the one the board's runs say is being sized, after a reload.
+  const resumedId = ticketRun?.planned[0]?.externalIssueId ?? null;
+  const sizingId = startedId ?? resumedId;
+  // The board's runs read again as sizing starts and ends, so the board's
+  // menu and picker hold while it runs and let go once it is done.
+  const onSizing = useCallback(
+    (issueId: string | null) => {
+      setStartedId(issueId);
+      void readRuns();
+    },
+    [readRuns],
+  );
   const teaser = useRef<HTMLElement>(null);
 
   // The category on screen: the one chosen, or the one the scan opens on.
@@ -209,6 +233,7 @@ export function BacklogScan({
             <CategoryTiles
               preview={data}
               selected={shown}
+              held={sizingId !== null}
               onSelect={(id) => {
                 setCategory(id);
                 setFocusId(null);
@@ -283,6 +308,13 @@ export function BacklogScan({
                   canManage={canManage}
                   sizingAvailable={sizingAvailable}
                   boardBusy={boardRun !== undefined}
+                  // Being sized, though not in the list: this one waits.
+                  otherBusy={sizingId !== null && sizingId !== focus.id}
+                  resumeRunId={
+                    ticketRun !== undefined && resumedId === focus.id
+                      ? ticketRun.id
+                      : undefined
+                  }
                   repositories={repositories}
                   repositoryAction={repositoryAction}
                   githubRequired={githubAvailable}
@@ -292,7 +324,7 @@ export function BacklogScan({
                       : (rateCard.data ?? DEFAULT_RATE_CARD)
                   }
                   onSized={sized}
-                  onSizing={setSizingId}
+                  onSizing={onSizing}
                 />
               )}
             </div>
@@ -399,10 +431,13 @@ function ScanSkeleton() {
 function CategoryTiles({
   preview,
   selected,
+  held,
   onSelect,
 }: {
   preview: JiraBacklogPreviewDto;
   selected: string | null;
+  /** A ticket is being sized, and the category it is in stays on screen. */
+  held: boolean;
   onSelect: (id: string) => void;
 }) {
   const enabled = preview.categories.filter(({ enabled }) => enabled);
@@ -427,7 +462,7 @@ function CategoryTiles({
               aria-pressed={pressed}
               aria-label={`${category.label}, ${plural(count, "ticket")}`}
               title={category.why}
-              disabled={count === 0}
+              disabled={count === 0 || (held && !pressed)}
               onClick={() => onSelect(category.id)}
               className="category-tile focus-visible:ring-ring/50 flex h-full w-full flex-col items-start gap-2.5 rounded-xl border p-3 text-left focus-visible:ring-[3px] focus-visible:outline-none disabled:pointer-events-none disabled:opacity-45"
             >
@@ -525,11 +560,24 @@ export function useBacklogScan(organizationId: string, boardId: string) {
     staleTime: SCAN_STALE_MS,
   });
   // The board's runs, as the proposal list reads them: whether sizing is
-  // configured here, and whether the board is being sized already.
+  // configured here, and whether the board, or one of its tickets, is being
+  // sized already.
   const runs = useQuery({
     queryKey: queryKeys.resource(userId, organizationId, "board-runs", boardId),
     queryFn: ({ signal }) => clients.runs.runs(organizationId, boardId, signal),
   });
+  const readRuns = useCallback(
+    () =>
+      cache.invalidateQueries({
+        queryKey: queryKeys.resource(
+          userId,
+          organizationId,
+          "board-runs",
+          boardId,
+        ),
+      }),
+    [cache, userId, organizationId, boardId],
+  );
   const rateCard = useQuery({
     queryKey: queryKeys.resource(userId, organizationId, "rate-card"),
     queryFn: ({ signal }) => clients.pricing.rateCard(organizationId, signal),
@@ -564,7 +612,15 @@ export function useBacklogScan(organizationId: string, boardId: string) {
         run.kind === "backlog" &&
         (run.status === "queued" || run.status === "running"),
     ),
+    /** The one ticket being sized, until its proposal lands. */
+    ticketRun: runs.data?.runs.find(
+      (run) =>
+        run.kind === "issue" &&
+        (run.status === "queued" || run.status === "running") &&
+        run.outcomes[0]?.proposalId === undefined,
+    ),
     sized,
+    readRuns,
   };
 }
 

@@ -135,6 +135,16 @@ function fixtureApp(token) {
           ).length;
           return { total, uncategorized: total, categories: {} };
         },
+        // Written here and never approved, so every one is new.
+        statusCounts: async (organizationIds) => {
+          const total = [...rows.values()].filter((bounty) =>
+            organizationIds.includes(bounty.organizationId),
+          ).length;
+          return {
+            total,
+            statuses: { new: total, scoped: 0, priced: 0, live: 0 },
+          };
+        },
         get: async (organizationId, bountyId) => {
           const bounty = rows.get(bountyId);
           return bounty?.organizationId === organizationId ? bounty : null;

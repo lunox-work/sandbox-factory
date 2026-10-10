@@ -129,6 +129,7 @@ function runOf(input: Record<string, unknown>): StoredBountyRun {
     boardId: (input["boardId"] as string | null) ?? null,
     bountyId: (input["bountyId"] as string | null) ?? null,
     kind: input["kind"] as StoredBountyRun["kind"],
+    startedBy: "usr_1",
     sourceProposalId: null,
     sourceRevision: null,
     respec: null,
@@ -421,6 +422,11 @@ test("the caller's bounties list across their own organizations only", async () 
       },
       categoryCounts: () =>
         Promise.resolve({ total: 0, uncategorized: 0, categories: {} }),
+      statusCounts: () =>
+        Promise.resolve({
+          total: 0,
+          statuses: { new: 0, scoped: 0, priced: 0, live: 0 },
+        }),
     },
   });
 
@@ -490,6 +496,11 @@ test("the caller's bounties narrow to a category, to none, and to a board", asyn
           categories: { "left-behind": 2 },
         });
       },
+      statusCounts: () =>
+        Promise.resolve({
+          total: 0,
+          statuses: { new: 0, scoped: 0, priced: 0, live: 0 },
+        }),
     },
   });
 
@@ -549,6 +560,61 @@ test("the caller's bounties narrow to a category, to none, and to a board", asyn
     2,
   ]);
   assert.ok(counts.categories.slice(1).every(({ count }) => count === 0));
+});
+
+test("the caller's bounties count by status, narrowed as the list is but never by status", async () => {
+  const counted: unknown[] = [];
+  const app = new Hono<{ Variables: AuthVariables }>();
+  app.use("*", async (c, next) => {
+    c.set("user", { id: "user_1" } as never);
+    await next();
+  });
+  mountCallerBountyRoutes(app, {
+    organizationsOf: () => Promise.resolve(["org_1", "org_2"]),
+    bounties: {
+      listAcross: () => Promise.resolve([]),
+      categoryCounts: () =>
+        Promise.resolve({ total: 0, uncategorized: 0, categories: {} }),
+      statusCounts: (organizationIds, filter) => {
+        counted.push({ organizationIds, ...filter });
+        return Promise.resolve({
+          total: 5,
+          statuses: { new: 2, scoped: 1, priced: 1, live: 1 },
+        });
+      },
+    },
+  });
+
+  const response = await app.request(
+    "/api/v1/me/bounty-statuses?category=left-behind&board=jrb_1",
+  );
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    total: 5,
+    statuses: { new: 2, scoped: 1, priced: 1, live: 1 },
+  });
+  assert.deepEqual(counted.at(-1), {
+    organizationIds: ["org_1", "org_2"],
+    category: "left-behind",
+    boardId: "jrb_1",
+  });
+  await app.request("/api/v1/me/bounty-statuses?category=uncategorized");
+  assert.deepEqual(counted.at(-1), {
+    organizationIds: ["org_1", "org_2"],
+    uncategorized: true,
+  });
+  await app.request("/api/v1/me/bounty-statuses?source=lunox");
+  assert.deepEqual(counted.at(-1), {
+    organizationIds: ["org_1", "org_2"],
+    unlinked: true,
+  });
+  // A status chosen does not narrow its own counts.
+  await app.request("/api/v1/me/bounty-statuses?status=priced");
+  assert.deepEqual(counted.at(-1), { organizationIds: ["org_1", "org_2"] });
+  assert.equal(
+    (await app.request("/api/v1/me/bounty-statuses?source=github")).status,
+    400,
+  );
 });
 
 test("a listed Jira bounty links to its issue", async () => {

@@ -35,7 +35,8 @@ import {
   type MembershipDto,
 } from "@sandbox-factory/shared";
 import { SquarePen } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
+import { rankAtLeast } from "sandbox-factory";
 
 import { LoadingLine } from "@/components/Message";
 import { Page, PageHeader } from "@/components/Page";
@@ -94,19 +95,50 @@ function WorkspaceOnboarding({
   const { facts } = setup;
   // The account whose repositories dialog is open. Held here rather than in
   // the picker, which is gone the moment the first repository registers.
-  const [managing, setManaging] = useState<string | null>(null);
-  // Back from linking an account: its dialog opens straight away, since
-  // picking a repository from it is the step that follows.
-  const linkedConnectionId = consent.github.linkedConnectionId;
-  useEffect(() => {
-    if (linkedConnectionId !== null) setManaging(linkedConnectionId);
-  }, [linkedConnectionId]);
+  // Back from linking an account, it is that one's, open from the first
+  // frame: picking a repository from it is the step that follows.
+  const [managing, setManaging] = useState<string | null>(
+    consent.github.linkedConnectionId,
+  );
+  const managed =
+    managing === null
+      ? undefined
+      : setup.github.connections.find(({ id }) => id === managing);
+  /*
+    Over the page's loading line as much as over the page, in the same
+    place in both, so it is the first thing drawn and stays open as the
+    page arrives under it: open while its account is read, and for as
+    long as it can be managed.
+  */
+  const dialog = rankAtLeast(organization.role, "admin") &&
+    managing !== null &&
+    (managed === undefined ? setup.github.loading : managed.healthy) && (
+      <RepositoryDialog
+        organizationId={organization.id}
+        connectionId={managing}
+        connection={managed}
+        registered={setup.repos.repos.filter(
+          (repo) => repo.connectionId === managing,
+        )}
+        registeredLoading={setup.repos.loading}
+        onRegister={(externalId) => setup.repos.register(managing, externalId)}
+        onRemove={(repoId) => setup.repos.remove(repoId)}
+        onUnhealthy={() => {
+          setManaging(null);
+          void setup.github.refresh();
+        }}
+        onClose={() => setManaging(null)}
+      />
+    );
 
   if (facts === null || consent.picking) {
     return (
-      <Page>
-        <LoadingLine />
-      </Page>
+      <>
+        {dialog}
+        <Page>
+          <LoadingLine />
+        </Page>
+      </>
     );
   }
 
@@ -118,11 +150,6 @@ function WorkspaceOnboarding({
   const needsRepository =
     facts.github.connected > 0 && facts.github.repositories === 0;
   const firstRepo = setup.repos.repos.find(isWorkspaceSource);
-  const managed = canManage
-    ? setup.github.connections.find(
-        ({ id, healthy }) => id === managing && healthy,
-      )
-    : undefined;
   const withJira = stage === "jira" || stage === "both";
   // A bounty names no repository: its work may touch any of them.
   const writeBounty = () => onWriteBounty();
@@ -207,110 +234,94 @@ function WorkspaceOnboarding({
     : "Here're list of items that product and engineering manager typically outsource";
 
   return (
-    <Page className="flex flex-col gap-10">
-      <div className="flex flex-col gap-6">
-        <PageHeader
-          title="Onboarding"
-          description={promise(
-            stage,
-            needsRepository,
-            firstRepo?.fullName,
-            setupComplete(facts),
-          )}
-          descriptionTestId="onboarding-promise"
-          // The six kinds of work at the far end of the heading: reference
-          // for every stage, opened when wanted rather than standing in the
-          // way of the steps.
-          actions={<CategoryShowcase description={showcaseDescription} />}
-        />
-        <WorkspaceNotices
-          consent={consent}
-          setup={setup}
-          onOpenJiraSettings={() => onOpenSettings(organization, "jira")}
-        />
-        {/* At every stage, never hidden: where setup stands is what this
+    <>
+      {dialog}
+      <Page className="flex flex-col gap-10">
+        <div className="flex flex-col gap-6">
+          <PageHeader
+            title="Onboarding"
+            description={promise(
+              stage,
+              needsRepository,
+              firstRepo?.fullName,
+              setupComplete(facts),
+            )}
+            descriptionTestId="onboarding-promise"
+            // The six kinds of work at the far end of the heading: reference
+            // for every stage, opened when wanted rather than standing in the
+            // way of the steps.
+            actions={<CategoryShowcase description={showcaseDescription} />}
+          />
+          <WorkspaceNotices
+            consent={consent}
+            setup={setup}
+            onOpenJiraSettings={() => onOpenSettings(organization, "jira")}
+          />
+          {/* At every stage, never hidden: where setup stands is what this
             page is for, before the first step as much as after the last. */}
-        <SetupChecklist facts={facts} actions={actions} />
-        {needsRepository && (
-          <RepoPicker
-            connections={setup.github.connections.filter(
-              ({ healthy }) => healthy,
-            )}
-            canManage={canManage}
-            onManage={setManaging}
-          />
-        )}
-        {managed !== undefined && (
-          <RepositoryDialog
-            organizationId={organization.id}
-            connection={managed}
-            registered={setup.repos.repos.filter(
-              (repo) => repo.connectionId === managed.id,
-            )}
-            registeredLoading={setup.repos.loading}
-            onRegister={(externalId) =>
-              setup.repos.register(managed.id, externalId)
-            }
-            onRemove={(repoId) => setup.repos.remove(repoId)}
-            onUnhealthy={() => {
-              setManaging(null);
-              void setup.github.refresh();
-            }}
-            onClose={() => setManaging(null)}
-          />
-        )}
-      </div>
-
-      {stage === "barebone" ? (
-        <>
-          <PathCards
-            paths={[jiraPath, githubPath, writePath].filter(
-              (path): path is PathCard => path !== null,
-            )}
-          />
-        </>
-      ) : stage === "github" ? (
-        <>
-          {firstRepo !== undefined && (
-            <RepoXray
-              organizationId={organization.id}
-              organizationSlug={organization.slug}
-              repo={firstRepo}
-              onOpenRepository={onOpenRepository}
-              onWriteBounty={onWriteBounty}
+          <SetupChecklist facts={facts} actions={actions} />
+          {needsRepository && (
+            <RepoPicker
+              connections={setup.github.connections.filter(
+                ({ healthy }) => healthy,
+              )}
+              canManage={canManage}
+              onManage={setManaging}
             />
           )}
-          <PathCards
-            paths={[writePath, ...(jiraPath === null ? [] : [jiraPath])]}
-          />
-        </>
-      ) : (
-        <BoardScan
-          userId={userId}
-          organizationId={organization.id}
-          organizationSlug={organization.slug}
-          canManage={canManage}
-          githubAvailable={facts.github.available}
-          repositoryAction={
-            needsRepository
-              ? canManage
-                ? {
-                    label: "pick a repository",
-                    onSelect: () => reveal(SECTION.repoPicker),
-                  }
-                : undefined
-              : connectGithub !== undefined && facts.github.connected === 0
-                ? { label: "connect GitHub", onSelect: connectGithub }
-                : undefined
-          }
-          fallback={
-            <NoBoards
-              onOpenSettings={() => onOpenSettings(organization, "jira")}
+        </div>
+
+        {stage === "barebone" ? (
+          <>
+            <PathCards
+              paths={[jiraPath, githubPath, writePath].filter(
+                (path): path is PathCard => path !== null,
+              )}
             />
-          }
-        />
-      )}
-    </Page>
+          </>
+        ) : stage === "github" ? (
+          <>
+            {firstRepo !== undefined && (
+              <RepoXray
+                organizationId={organization.id}
+                organizationSlug={organization.slug}
+                repo={firstRepo}
+                onOpenRepository={onOpenRepository}
+                onWriteBounty={onWriteBounty}
+              />
+            )}
+            <PathCards
+              paths={[writePath, ...(jiraPath === null ? [] : [jiraPath])]}
+            />
+          </>
+        ) : (
+          <BoardScan
+            userId={userId}
+            organizationId={organization.id}
+            organizationSlug={organization.slug}
+            canManage={canManage}
+            githubAvailable={facts.github.available}
+            repositoryAction={
+              needsRepository
+                ? canManage
+                  ? {
+                      label: "pick a repository",
+                      onSelect: () => reveal(SECTION.repoPicker),
+                    }
+                  : undefined
+                : connectGithub !== undefined && facts.github.connected === 0
+                  ? { label: "connect GitHub", onSelect: connectGithub }
+                  : undefined
+            }
+            fallback={
+              <NoBoards
+                onOpenSettings={() => onOpenSettings(organization, "jira")}
+              />
+            }
+          />
+        )}
+      </Page>
+    </>
   );
 }
 

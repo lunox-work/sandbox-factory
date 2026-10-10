@@ -81,7 +81,7 @@ function useImported() {
   const cache = useQueryClient();
   return () =>
     Promise.all(
-      ["bounties", "bounty-categories"].map((resource) =>
+      ["bounties", "bounty-categories", "bounty-statuses"].map((resource) =>
         cache.invalidateQueries({ queryKey: queryKeys.me(userId, resource) }),
       ),
     );
@@ -201,8 +201,8 @@ export function BoardFilter({
     <>
       {selected !== undefined && organizationId !== undefined && (
         // Its parts are the filter row's own items: the field just before the
-        // box, pushing the two to the row's end, and the note on a line of its
-        // own under the row.
+        // box, at the row's end after the category filter, and the note on a
+        // line of its own under the row.
         <div className="contents" data-testid="board-scope">
           <div
             inert={!tools.searching}
@@ -212,7 +212,7 @@ export function BoardFilter({
                 tools.setSettled(tools.searching);
             }}
             className={cn(
-              "ml-auto transition-[width,opacity] duration-300 ease-out motion-reduce:transition-none",
+              "transition-[width,opacity] duration-300 ease-out motion-reduce:transition-none",
               tools.searching
                 ? "w-72 max-w-[calc(100vw-6rem)] opacity-100"
                 : "-mr-2 w-0 opacity-0",
@@ -246,9 +246,6 @@ export function BoardFilter({
       )}
       <FilterSelect
         data-testid="board-filter"
-        // At the row's end; the search field, while there is one, puts it
-        // there instead.
-        className={tools.searchable ? undefined : "ml-auto"}
         label="Source"
         align="end"
         searchPlaceholder="Search boards…"

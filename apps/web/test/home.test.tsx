@@ -197,6 +197,58 @@ interface World {
   scan?: ReturnType<typeof preview> & { fallback?: boolean };
   /** The sizing run as it reads, when not already landed. */
   sizingRun?: unknown;
+  /** The board's runs, when it has any. */
+  boardRuns?: unknown[];
+  /** Holds the board's runs back until it settles. */
+  boardRunsGate?: Promise<void>;
+  /** The ticket has a proposal already, which sizing answers with. */
+  liveProposal?: { id: string; bountyId: string; issueKey: string };
+}
+
+/** ACME-7's sizing run, under way and with nothing written yet. */
+function ticketRun() {
+  return {
+    id: "brn_9",
+    organizationId: "org_1",
+    boardId: "jrb_1",
+    bountyId: null,
+    kind: "issue",
+    sourceProposalId: null,
+    sourceRevision: null,
+    respec: null,
+    requestId: "8f0b4a1e-9a77-4c35-9a52-3f0f5b2d3c11",
+    status: "running",
+    selection: {},
+    rateCard: {
+      currency: "USD",
+      xsMinor: 1_000,
+      sMinor: 5_800,
+      mMinor: 10_500,
+      lMinor: 15_300,
+      xlMinor: 20_000,
+      revision: 1,
+    },
+    requestedModel: "model",
+    promptVersion: "v1",
+    planned: [
+      {
+        externalIssueId: "1007",
+        issueKey: "ACME-7",
+        summary: "Ticket 7",
+        onboarding: true,
+      },
+    ],
+    outcomes: [],
+    candidatesScanned: 1,
+    skippedLive: 0,
+    scanLimitReached: false,
+    fatalErrorCode: null,
+    startedAt: "2026-10-09T00:00:00.000Z",
+    deadlineAt: null,
+    finishedAt: null,
+    createdAt: "2026-10-09T00:00:00.000Z",
+    progress: null,
+  };
 }
 
 let world: World;
@@ -256,9 +308,21 @@ beforeEach(() => {
       if (path === "/jira/boards/jrb_1/backlog-preview")
         return json(world.scan ?? preview());
       if (path === "/jira/boards/jrb_1/runs")
-        return json({ runs: [], sizingAvailable: true });
+        return (world.boardRunsGate ?? Promise.resolve()).then(() =>
+          json({ runs: world.boardRuns ?? [], sizingAvailable: true }),
+        );
       if (method === "POST" && path === "/jira/boards/jrb_1/issues")
-        return json({ run: { id: "brn_9", kind: "issue" } }, 202);
+        return world.liveProposal === undefined
+          ? json({ run: { id: "brn_9", kind: "issue" } }, 202)
+          : json({ proposalId: world.liveProposal.id });
+      if (
+        world.liveProposal !== undefined &&
+        path === `/proposals/${world.liveProposal.id}`
+      )
+        return json({
+          proposal: world.liveProposal,
+          freshness: { freshness: "current", checkedAt: stamp },
+        });
       if (path === "/runs/brn_9" && world.sizingRun !== undefined)
         return json({ run: world.sizingRun });
       if (path === "/runs/brn_9")
@@ -271,6 +335,7 @@ beforeEach(() => {
               {
                 externalIssueId: "1007",
                 issueKey: "ACME-7",
+                bountyId: "bty_7",
                 status: "proposed",
                 proposalId: "bpr_1",
               },
@@ -665,15 +730,38 @@ test("sizing from the scan is one call for that ticket, and opens its proposal",
   const posts = requests.filter(({ method }) => method === "POST");
   expect(posts).toHaveLength(1);
   expect(posts[0]?.url).toBe("/api/v1/orgs/org_1/jira/boards/jrb_1/issues");
-  expect(posts[0]?.body).toMatchObject({ issueId: "1007" });
+  // On onboarding: its scope takes the repositories, and is approved once
+  // it is sized.
+  expect(posts[0]?.body).toMatchObject({ issueId: "1007", onboarding: true });
 
-  // Followed until the proposal lands, then opened over the list.
+  // Followed until the proposal lands, then its bounty's own page opened
+  // straight away, on the step its proposal is in: not the list first.
   await waitFor(
     () =>
-      expect(new URLSearchParams(window.location.search).get("proposal")).toBe(
-        "bpr_1",
+      expect(window.location.pathname + window.location.search).toBe(
+        "/bounties/acme/bty_7?tab=price",
       ),
     { timeout: 4_000 },
+  );
+});
+
+test("a ticket with a proposal already opens its bounty's page, read for it first", async () => {
+  world.jira = [jiraSite];
+  world.boards = [board];
+  world.github = [githubAccount];
+  world.repositories = [widgets];
+  world.liveProposal = { id: "bpr_2", bountyId: "bty_2", issueKey: "ACME-7" };
+  showOnboarding();
+
+  const teaser = await screen.findByTestId("teaser-bounty");
+  await userEvent.click(
+    await within(teaser).findByRole("button", { name: "Size ACME-7" }),
+  );
+
+  await waitFor(() =>
+    expect(window.location.pathname + window.location.search).toBe(
+      "/bounties/acme/bty_2?tab=price",
+    ),
   );
 });
 
@@ -782,6 +870,74 @@ test("while a ticket is being sized, the list holds it in focus", async () => {
   expect(within(scan).getByTestId("teaser-bounty").textContent).toMatch(
     /ACME-7/,
   );
+  // One ticket at a time: no other category can be opened meanwhile.
+  const tiles = within(
+    within(scan).getByTestId("scan-categories"),
+  ).getAllByRole("button");
+  for (const tile of tiles)
+    expect(
+      tile.getAttribute("aria-pressed") === "true" ||
+        tile.hasAttribute("disabled"),
+    ).toBe(true);
+});
+
+test("a ticket still being sized after a reload holds the scan and the board", async () => {
+  world.jira = [jiraSite];
+  world.boards = [board];
+  world.github = [githubAccount];
+  world.repositories = [widgets];
+  // Started before the page was opened, and not landed yet.
+  world.boardRuns = [ticketRun()];
+  world.sizingRun = ticketRun();
+  showOnboarding();
+
+  const scan = await screen.findByTestId("backlog-scan");
+  const teaser = await within(scan).findByTestId("teaser-bounty");
+  // Followed, not offered again.
+  expect(
+    await within(teaser).findByRole("button", { name: "Sizing ACME-7…" }),
+  ).toHaveProperty("disabled", true);
+  const other = within(within(scan).getByTestId("scan-candidates"))
+    .getByText("Ticket 8")
+    .closest("button");
+  expect(other?.disabled).toBe(true);
+
+  const bar = screen.getByTestId("board-bar");
+  expect(
+    within(bar).getByRole("button", { name: "Switch board — Mobile" }),
+  ).toHaveProperty("disabled", true);
+  await userEvent.click(
+    within(bar).getByRole("button", { name: "Board actions" }),
+  );
+  const sizeAll = await screen.findByRole("menuitem", { name: /size all/i });
+  expect(sizeAll.getAttribute("aria-disabled")).toBe("true");
+  expect(sizeAll.textContent).toMatch(/Sizing ACME-7 now/);
+  expect(requests.filter(({ method }) => method === "POST")).toEqual([]);
+});
+
+test("a ticket's run read after its teaser is drawn is followed, not offered again", async () => {
+  world.jira = [jiraSite];
+  world.boards = [board];
+  world.github = [githubAccount];
+  world.repositories = [widgets];
+  world.boardRuns = [ticketRun()];
+  world.sizingRun = ticketRun();
+  let release = () => {};
+  world.boardRunsGate = new Promise((resolve) => {
+    release = resolve;
+  });
+  showOnboarding();
+
+  const scan = await screen.findByTestId("backlog-scan");
+  const teaser = await within(scan).findByTestId("teaser-bounty");
+  // The teaser is up for ACME-7 before the board's runs say it is sized.
+  await within(teaser).findByRole("button", { name: "Size ACME-7" });
+  release();
+
+  expect(
+    await within(teaser).findByRole("button", { name: "Sizing ACME-7…" }),
+  ).toHaveProperty("disabled", true);
+  expect(requests.filter(({ method }) => method === "POST")).toEqual([]);
 });
 
 test("a board whose fitting tickets are all sized says so, not that nothing fits", async () => {
@@ -994,11 +1150,18 @@ test("coming back from linking a GitHub account opens its repositories dialog", 
   );
   showOnboarding();
 
+  // Over the loading line, before the page has drawn: not the page, then
+  // the dialog over it.
+  expect(screen.getByRole("dialog")).toBeTruthy();
+  expect(screen.queryByTestId("setup-checklist")).toBeNull();
   expect(
     await screen.findByRole("dialog", {
       name: `Repositories on ${githubAccount.accountLogin}`,
     }),
   ).toBeTruthy();
+  // The page arrives under it, and it stays open.
+  expect(await screen.findByTestId("setup-checklist")).toBeTruthy();
+  expect(screen.getByRole("dialog")).toBeTruthy();
   expect(window.location.pathname + window.location.search).toBe("/onboarding");
   window.history.replaceState(null, "", "/");
 });

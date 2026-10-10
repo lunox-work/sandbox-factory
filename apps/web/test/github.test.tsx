@@ -401,6 +401,9 @@ test("coming back from linking an account opens its repositories dialog", async 
   withOutcome("connected&githubConnection=ghc_1");
   renderTab();
 
+  // From the first frame, not once the tab has drawn and read its list:
+  // the account's name fills in when it is read.
+  expect(screen.getByRole("dialog")).toBeDefined();
   expect(
     await screen.findByRole("dialog", { name: "Repositories on acme" }),
   ).toBeDefined();

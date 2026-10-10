@@ -34,10 +34,11 @@ function useBountiesStale(owner: string) {
       void cache.invalidateQueries({
         queryKey: queryKeys.resource(userId, owner, resource),
       });
-    // The list across workspaces shows the same rows.
-    void cache.invalidateQueries({
-      queryKey: queryKeys.me(userId, "bounties"),
-    });
+    // The list across workspaces shows the same rows, and their statuses.
+    for (const resource of ["bounties", "bounty-statuses"])
+      void cache.invalidateQueries({
+        queryKey: queryKeys.me(userId, resource),
+      });
   }, [cache, userId, owner]);
 }
 
@@ -51,8 +52,11 @@ function useProposalRefresh(owner: string) {
   const cache = useQueryClient();
   return useCallback(async () => {
     await Promise.all([
-      // The list across workspaces shows the same rows.
+      // The list across workspaces shows the same rows, and their statuses.
       cache.invalidateQueries({ queryKey: queryKeys.me(userId, "bounties") }),
+      cache.invalidateQueries({
+        queryKey: queryKeys.me(userId, "bounty-statuses"),
+      }),
       ...[
         "proposals",
         "proposal-detail",

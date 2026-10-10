@@ -215,12 +215,19 @@ export function GithubConnections({
   const { outcome, linkedConnectionId, dismiss, announce } = useGithubOutcome();
   const manageable = canManage(role);
   // The account whose repositories dialog is open. Held here, not in its
-  // card, so coming back from linking one opens its dialog directly:
-  // registering a repository is the next step, not a menu away.
-  const [managing, setManaging] = useState<string | null>(null);
-  useEffect(() => {
-    if (linkedConnectionId !== null) setManaging(linkedConnectionId);
-  }, [linkedConnectionId]);
+  // card, so coming back from linking one opens its dialog directly —
+  // before its card, or the list it is in, has been read: registering a
+  // repository is the next step, not a menu away.
+  const [managing, setManaging] = useState<string | null>(linkedConnectionId);
+  const managed =
+    managing === null
+      ? undefined
+      : connections.find(({ id }) => id === managing);
+  // Open while its account is read, and for as long as it can be managed.
+  const dialogOpen =
+    manageable &&
+    managing !== null &&
+    (managed === undefined ? loading : managed.healthy);
   // `pick` is a question, not just news: the picker asks it, in place of its
   // notice. Read from the outcome rather than copied into state by an effect,
   // so the notice never shows alone for a frame first.
@@ -271,6 +278,25 @@ export function GithubConnections({
     <div className="flex flex-col gap-5">
       {header}
 
+      {dialogOpen && (
+        <RepositoryDialog
+          organizationId={organizationId}
+          connectionId={managing}
+          connection={managed}
+          registered={repos.repos.filter(
+            (repo) => repo.connectionId === managing,
+          )}
+          registeredLoading={repos.loading}
+          onRegister={(externalId) => repos.register(managing, externalId)}
+          onRemove={(repoId) => repos.remove(repoId)}
+          onUnhealthy={() => {
+            setManaging(null);
+            void refresh();
+          }}
+          onClose={() => setManaging(null)}
+        />
+      )}
+
       {outcome !== null && !picking && (
         <OutcomeNotice
           {...describeGithubOutcome(outcome)}
@@ -310,7 +336,6 @@ export function GithubConnections({
         connections.map((connection) => (
           <InstallationCard
             key={connection.id}
-            organizationId={organizationId}
             connection={connection}
             repos={repos.repos.filter(
               (repo) => repo.connectionId === connection.id,
@@ -318,15 +343,7 @@ export function GithubConnections({
             reposLoading={repos.loading}
             reposFailed={repos.error !== null}
             manageable={manageable}
-            managing={managing === connection.id}
-            onManagingChange={(open) =>
-              setManaging(open ? connection.id : null)
-            }
-            onUnhealthy={() => void refresh()}
-            onRegister={(externalId) =>
-              repos.register(connection.id, externalId)
-            }
-            onRemove={(repoId) => repos.remove(repoId)}
+            onManage={() => setManaging(connection.id)}
             repositoryHref={(repo) =>
               pathForScreen("org-repository", organizationSlug, repo.id)
             }
@@ -638,39 +655,24 @@ function unhealthyCopy(connection: GithubConnectionDto): {
 
 /** One linked account: its state, its menu, and its registered repositories. */
 function InstallationCard({
-  organizationId,
   connection,
   repos,
   reposLoading,
   reposFailed,
   manageable,
-  managing,
-  onManagingChange,
-  onUnhealthy,
-  onRegister,
-  onRemove,
+  onManage,
   repositoryHref,
   onOpenRepo,
   onDisconnect,
 }: {
-  organizationId: string;
   connection: GithubConnectionDto;
   repos: GithubRepoDto[];
   /** The registered list is still loading, or failed; see `RegisteredRepos`. */
   reposLoading: boolean;
   reposFailed: boolean;
   manageable: boolean;
-  /** Its repositories dialog is open; the panel holds which one is. */
-  managing: boolean;
-  onManagingChange: (open: boolean) => void;
-  /** GitHub turned the installation down mid-use; re-read the connections. */
-  onUnhealthy: () => void;
-  onRegister: (
-    externalId: string,
-  ) => Promise<{ ok: true } | { ok: false; error: string; code?: string }>;
-  onRemove: (
-    repoId: string,
-  ) => Promise<{ ok: true } | { ok: false; error: string }>;
+  /** Opens its repositories dialog, which the panel holds. */
+  onManage: () => void;
   /** Where a repository's page is, for its row's link. */
   repositoryHref: (repo: GithubRepoDto) => string;
   onOpenRepo: ((repo: GithubRepoDto) => void) | undefined;
@@ -732,7 +734,7 @@ function InstallationCard({
             <DropdownMenuContent align="end" className="w-52">
               {connection.healthy && (
                 <>
-                  <DropdownMenuItem onSelect={() => onManagingChange(true)}>
+                  <DropdownMenuItem onSelect={onManage}>
                     <FolderGit2 />
                     Manage repositories
                   </DropdownMenuItem>
@@ -797,28 +799,8 @@ function InstallationCard({
           failed={reposFailed}
           href={repositoryHref}
           onOpen={onOpenRepo}
-          onManage={
-            manageable && connection.healthy
-              ? () => onManagingChange(true)
-              : undefined
-          }
+          onManage={manageable && connection.healthy ? onManage : undefined}
         />
-
-        {manageable && connection.healthy && managing && (
-          <RepositoryDialog
-            organizationId={organizationId}
-            connection={connection}
-            registered={repos}
-            registeredLoading={reposLoading}
-            onRegister={onRegister}
-            onRemove={onRemove}
-            onUnhealthy={() => {
-              onManagingChange(false);
-              onUnhealthy();
-            }}
-            onClose={() => onManagingChange(false)}
-          />
-        )}
       </CardContent>
     </Card>
   );
@@ -958,9 +940,14 @@ function RepositoryName({
  * removable, and a search over the rest of what the installation can see,
  * live from GitHub, to register more. Each change is made as it is pressed;
  * Done only closes.
+ *
+ * Opened by the account's id, so on the way back from linking it the dialog
+ * is the first thing drawn, reading what the installation can see while the
+ * account itself is still read; its name fills in once it is.
  */
 export function RepositoryDialog({
   organizationId,
+  connectionId,
   connection,
   registered,
   registeredLoading,
@@ -970,7 +957,9 @@ export function RepositoryDialog({
   onClose,
 }: {
   organizationId: string;
-  connection: GithubConnectionDto;
+  connectionId: string;
+  /** The account; undefined while the list it is in is still read. */
+  connection: GithubConnectionDto | undefined;
   /** The repositories registered from this account. */
   registered: GithubRepoDto[];
   registeredLoading: boolean;
@@ -993,12 +982,12 @@ export function RepositoryDialog({
       userId,
       organizationId,
       "github-installation-repositories",
-      connection.id,
+      connectionId,
     ),
     queryFn: ({ signal }) =>
       clients.github.installationRepositories(
         organizationId,
-        connection.id,
+        connectionId,
         signal,
       ),
   });
@@ -1007,6 +996,7 @@ export function RepositoryDialog({
   const [registerError, setRegisterError] = useState<string | null>(null);
   const [removing, setRemoving] = useState<GithubRepoDto | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
+  const account = connection?.accountLogin ?? "GitHub";
   // Read through a ref: the card passes a fresh function on every render,
   // and an effect depending on it would run on every render too.
   const unhealthyRef = useRef(onUnhealthy);
@@ -1068,7 +1058,14 @@ export function RepositoryDialog({
         }}
       >
         <DialogHeader className="pr-8">
-          <DialogTitle>Repositories on {connection.accountLogin}</DialogTitle>
+          <DialogTitle>
+            Repositories on{" "}
+            {connection === undefined ? (
+              <span className="skeleton inline-block h-4 w-24 rounded align-middle" />
+            ) : (
+              connection.accountLogin
+            )}
+          </DialogTitle>
           <DialogDescription>
             Registering records the repository, where its default branch points
             and that commit&rsquo;s file list. Code is read only by the builders
@@ -1094,7 +1091,7 @@ export function RepositoryDialog({
             </p>
           ) : (
             <ul
-              aria-label={`Registered from ${connection.accountLogin}`}
+              aria-label={`Registered from ${account}`}
               // Room for the remove buttons pulled out to the edge below, so a
               // scrolling list does not also scroll sideways.
               className="-mr-2 flex max-h-44 flex-col overflow-y-auto pr-2"
@@ -1139,7 +1136,7 @@ export function RepositoryDialog({
             <Input
               ref={searchRef}
               type="search"
-              aria-label={`Search repositories on ${connection.accountLogin}`}
+              aria-label={`Search repositories on ${account}`}
               placeholder="Search by name"
               className="pl-9"
               value={search}
@@ -1158,14 +1155,18 @@ export function RepositoryDialog({
             <p className="text-muted-foreground text-sm">
               The App cannot see any repositories on this account. Choose some
               in{" "}
-              <a
-                href={connection.settingsUrl}
-                target="_blank"
-                rel="noreferrer noopener"
-                className="underline underline-offset-2"
-              >
-                the installation&rsquo;s settings
-              </a>{" "}
+              {connection === undefined ? (
+                "the installation\u2019s settings"
+              ) : (
+                <a
+                  href={connection.settingsUrl}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  className="underline underline-offset-2"
+                >
+                  the installation&rsquo;s settings
+                </a>
+              )}{" "}
               on GitHub.
             </p>
           ) : addable.length === 0 ? (

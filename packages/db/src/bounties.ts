@@ -13,7 +13,11 @@ import type {
   BountyStatus,
   SandboxStatus,
 } from "sandbox-factory";
-import { clampBountyTitle, scopeApproved } from "sandbox-factory";
+import {
+  BOUNTY_STATUSES,
+  clampBountyTitle,
+  scopeApproved,
+} from "sandbox-factory";
 import { and, desc, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 
 import type { Database, QueryExecutor } from "./errors.js";
@@ -200,6 +204,19 @@ export interface BountyStore {
     filter?: Pick<BountyListOptions, "boardId" | "unlinked" | "status">,
   ): Promise<BountyCategoryCounts>;
   /**
+   * How many bounties stand at each status across the organizations named,
+   * narrowed as the list is by everything but status: the counts the
+   * list's status bar shows. Each bounty is at one status, so they sum to
+   * `total`.
+   */
+  statusCounts(
+    organizationIds: readonly string[],
+    filter?: Pick<
+      BountyListOptions,
+      "category" | "uncategorized" | "boardId" | "unlinked"
+    >,
+  ): Promise<BountyStatusCounts>;
+  /**
    * Records the categories a scan found the bounty in, in place of those it
    * had. Not a change to the scope, so neither its version nor its
    * revision moves. False when the bounty is not the organization's.
@@ -284,6 +301,11 @@ export interface BountyCategoryCounts {
   readonly uncategorized: number;
   /** By category id; a category with none is absent. */
   readonly categories: Readonly<Record<string, number>>;
+}
+
+export interface BountyStatusCounts {
+  readonly total: number;
+  readonly statuses: Readonly<Record<BountyStatus, number>>;
 }
 
 /** The link's columns, flat: a left join that misses leaves them all null. */
@@ -871,6 +893,32 @@ export function createBountyStore(db: Database): BountyStore {
         uncategorized: totals?.uncategorized ?? 0,
         categories,
       };
+    },
+
+    async statusCounts(organizationIds, filter = {}) {
+      const statuses = { new: 0, scoped: 0, priced: 0, live: 0 };
+      if (organizationIds.length === 0) return { total: 0, statuses };
+      const [row] = (await db
+        .select({
+          total: sql<number>`count(*)::int`,
+          ...Object.fromEntries(
+            BOUNTY_STATUSES.map((status) => [
+              status,
+              sql<number>`count(*) filter (where ${statusFilter(status)})::int`,
+            ]),
+          ),
+        })
+        .from(bounty)
+        .leftJoin(jiraIssue, eq(jiraIssue.bountyId, bounty.id))
+        .where(
+          and(
+            inArray(bounty.organizationId, [...organizationIds]),
+            ...listFilters(filter),
+          ),
+        )) as ({ total: number } & Record<BountyStatus, number>)[];
+      if (row === undefined) return { total: 0, statuses };
+      for (const status of BOUNTY_STATUSES) statuses[status] = row[status];
+      return { total: row.total, statuses };
     },
 
     async categorize(organizationId, bountyId, categories) {

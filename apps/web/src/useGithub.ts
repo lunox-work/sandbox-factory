@@ -183,25 +183,18 @@ export function useGithubOutcome(): {
   /** Shows an outcome reached here rather than on the way back from GitHub. */
   announce: (outcome: GithubConnectOutcome) => void;
 } {
-  const [outcome, setOutcome] = useState<GithubConnectOutcome | null>(null);
-  const [linkedConnectionId, setLinkedConnectionId] = useState<string | null>(
-    null,
+  // Read in the first render, not after it: the page draws what the round
+  // trip came back to — the linked account's dialog — from its first frame,
+  // rather than drawing itself and then opening it.
+  const [returned] = useState(readGithubReturn);
+  const [outcome, setOutcome] = useState<GithubConnectOutcome | null>(
+    returned?.outcome ?? null,
   );
+  const linkedConnectionId = returned?.linkedConnectionId ?? null;
 
   useEffect(() => {
+    if (returned === null) return;
     const params = new URLSearchParams(window.location.search);
-    const value = params.get("github");
-    if (value === null) return;
-    // An unknown value reads as a failure rather than as nothing: something
-    // came back, and the person should hear that it did not work.
-    const known =
-      GITHUB_CONNECT_OUTCOMES.find((candidate) => candidate === value) ??
-      "error";
-    setOutcome(known);
-    const linked = params.get("githubConnection");
-    if (known === "connected" && linked !== null && linked !== "") {
-      setLinkedConnectionId(linked);
-    }
     params.delete("github");
     params.delete("githubConnection");
     const query = params.toString();
@@ -210,13 +203,35 @@ export function useGithubOutcome(): {
         (query === "" ? "" : `?${query}`) +
         (window.location.hash ?? ""),
     );
-  }, []);
+  }, [returned]);
 
   return {
     outcome,
     linkedConnectionId,
     dismiss: useCallback(() => setOutcome(null), []),
     announce: setOutcome,
+  };
+}
+
+/** What the callback appended to the address, if it appended anything. */
+function readGithubReturn(): {
+  outcome: GithubConnectOutcome;
+  linkedConnectionId: string | null;
+} | null {
+  const params = new URLSearchParams(window.location.search);
+  const value = params.get("github");
+  if (value === null) return null;
+  // An unknown value reads as a failure rather than as nothing: something
+  // came back, and the person should hear that it did not work.
+  const outcome =
+    GITHUB_CONNECT_OUTCOMES.find((candidate) => candidate === value) ?? "error";
+  const linked = params.get("githubConnection");
+  return {
+    outcome,
+    linkedConnectionId:
+      outcome === "connected" && linked !== null && linked !== ""
+        ? linked
+        : null,
   };
 }
 
