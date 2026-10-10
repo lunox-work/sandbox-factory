@@ -397,6 +397,16 @@ test("a successful connection is announced, and the outcome stripped from the UR
   expect(replaced).toEqual(["/o/acme/settings?connection=github"]);
 });
 
+test("coming back from linking an account opens its repositories dialog", async () => {
+  withOutcome("connected&githubConnection=ghc_1");
+  renderTab();
+
+  expect(
+    await screen.findByRole("dialog", { name: "Repositories on acme" }),
+  ).toBeDefined();
+  expect(replaced).toEqual(["/o/acme/settings?connection=github"]);
+});
+
 test("a claimed installation is a warning that names nobody", async () => {
   withOutcome("claimed");
   renderTab();
@@ -475,6 +485,10 @@ test("pick opens the picker, which links only a free installation", async () => 
     within(screen.getByTestId("github-outcome")).getByText("GitHub connected"),
   ).toBeDefined();
   expect(calls).toContain("POST /api/v1/orgs/org_1/github/connections");
+  // Registering a repository is the next step: its dialog opens unasked.
+  expect(
+    await screen.findByRole("dialog", { name: "Repositories on acme" }),
+  ).toBeDefined();
   // The list is still read again after linking, without being waited on.
   await waitFor(() => {
     expect(

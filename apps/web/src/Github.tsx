@@ -212,8 +212,15 @@ export function GithubConnections({
     listed,
   } = useGithub(organizationId);
   const repos = useGithubRepos(organizationId);
-  const { outcome, dismiss, announce } = useGithubOutcome();
+  const { outcome, linkedConnectionId, dismiss, announce } = useGithubOutcome();
   const manageable = canManage(role);
+  // The account whose repositories dialog is open. Held here, not in its
+  // card, so coming back from linking one opens its dialog directly:
+  // registering a repository is the next step, not a menu away.
+  const [managing, setManaging] = useState<string | null>(null);
+  useEffect(() => {
+    if (linkedConnectionId !== null) setManaging(linkedConnectionId);
+  }, [linkedConnectionId]);
   // `pick` is a question, not just news: the picker asks it, in place of its
   // notice. Read from the outcome rather than copied into state by an effect,
   // so the notice never shows alone for a frame first.
@@ -284,6 +291,7 @@ export function GithubConnections({
             // and no wait on reading the lists again, which follows.
             listed(connection);
             announce("connected");
+            setManaging(connection.id);
             void Promise.all([refresh(), repos.refresh()]);
           }}
           onClose={dismiss}
@@ -310,6 +318,10 @@ export function GithubConnections({
             reposLoading={repos.loading}
             reposFailed={repos.error !== null}
             manageable={manageable}
+            managing={managing === connection.id}
+            onManagingChange={(open) =>
+              setManaging(open ? connection.id : null)
+            }
             onUnhealthy={() => void refresh()}
             onRegister={(externalId) =>
               repos.register(connection.id, externalId)
@@ -632,6 +644,8 @@ function InstallationCard({
   reposLoading,
   reposFailed,
   manageable,
+  managing,
+  onManagingChange,
   onUnhealthy,
   onRegister,
   onRemove,
@@ -646,6 +660,9 @@ function InstallationCard({
   reposLoading: boolean;
   reposFailed: boolean;
   manageable: boolean;
+  /** Its repositories dialog is open; the panel holds which one is. */
+  managing: boolean;
+  onManagingChange: (open: boolean) => void;
   /** GitHub turned the installation down mid-use; re-read the connections. */
   onUnhealthy: () => void;
   onRegister: (
@@ -662,7 +679,6 @@ function InstallationCard({
 }) {
   const [confirming, setConfirming] = useState(false);
   const [disconnecting, setDisconnecting] = useState(false);
-  const [managing, setManaging] = useState(false);
   const unhealthy = connection.healthy ? null : unhealthyCopy(connection);
 
   return (
@@ -716,7 +732,7 @@ function InstallationCard({
             <DropdownMenuContent align="end" className="w-52">
               {connection.healthy && (
                 <>
-                  <DropdownMenuItem onSelect={() => setManaging(true)}>
+                  <DropdownMenuItem onSelect={() => onManagingChange(true)}>
                     <FolderGit2 />
                     Manage repositories
                   </DropdownMenuItem>
@@ -783,7 +799,7 @@ function InstallationCard({
           onOpen={onOpenRepo}
           onManage={
             manageable && connection.healthy
-              ? () => setManaging(true)
+              ? () => onManagingChange(true)
               : undefined
           }
         />
@@ -797,10 +813,10 @@ function InstallationCard({
             onRegister={onRegister}
             onRemove={onRemove}
             onUnhealthy={() => {
-              setManaging(false);
+              onManagingChange(false);
               onUnhealthy();
             }}
-            onClose={() => setManaging(false)}
+            onClose={() => onManagingChange(false)}
           />
         )}
       </CardContent>

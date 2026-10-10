@@ -174,11 +174,19 @@ export function useGithub(
  */
 export function useGithubOutcome(): {
   outcome: GithubConnectOutcome | null;
+  /**
+   * The connection the round trip just linked, when the callback named one:
+   * its repositories dialog is the next step, opened without a click.
+   */
+  linkedConnectionId: string | null;
   dismiss: () => void;
   /** Shows an outcome reached here rather than on the way back from GitHub. */
   announce: (outcome: GithubConnectOutcome) => void;
 } {
   const [outcome, setOutcome] = useState<GithubConnectOutcome | null>(null);
+  const [linkedConnectionId, setLinkedConnectionId] = useState<string | null>(
+    null,
+  );
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -186,10 +194,16 @@ export function useGithubOutcome(): {
     if (value === null) return;
     // An unknown value reads as a failure rather than as nothing: something
     // came back, and the person should hear that it did not work.
-    setOutcome(
-      GITHUB_CONNECT_OUTCOMES.find((known) => known === value) ?? "error",
-    );
+    const known =
+      GITHUB_CONNECT_OUTCOMES.find((candidate) => candidate === value) ??
+      "error";
+    setOutcome(known);
+    const linked = params.get("githubConnection");
+    if (known === "connected" && linked !== null && linked !== "") {
+      setLinkedConnectionId(linked);
+    }
     params.delete("github");
+    params.delete("githubConnection");
     const query = params.toString();
     replaceLocation(
       window.location.pathname +
@@ -200,6 +214,7 @@ export function useGithubOutcome(): {
 
   return {
     outcome,
+    linkedConnectionId,
     dismiss: useCallback(() => setOutcome(null), []),
     announce: setOutcome,
   };

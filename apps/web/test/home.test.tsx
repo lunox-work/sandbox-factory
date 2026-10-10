@@ -985,6 +985,24 @@ test("a linked GitHub account opens its repositories dialog in place, and regist
   });
 });
 
+test("coming back from linking a GitHub account opens its repositories dialog", async () => {
+  world.github = [githubAccount];
+  window.history.replaceState(
+    null,
+    "",
+    "/onboarding?github=connected&githubConnection=ghc_1",
+  );
+  showOnboarding();
+
+  expect(
+    await screen.findByRole("dialog", {
+      name: `Repositories on ${githubAccount.accountLogin}`,
+    }),
+  ).toBeTruthy();
+  expect(window.location.pathname + window.location.search).toBe("/onboarding");
+  window.history.replaceState(null, "", "/");
+});
+
 test("the x-ray says where a first bounty fits, and writing one starts there", async () => {
   world.github = [githubAccount];
   world.repositories = [widgets];

@@ -35,7 +35,7 @@ import {
   type MembershipDto,
 } from "@sandbox-factory/shared";
 import { SquarePen } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 import { LoadingLine } from "@/components/Message";
 import { Page, PageHeader } from "@/components/Page";
@@ -95,6 +95,12 @@ function WorkspaceOnboarding({
   // The account whose repositories dialog is open. Held here rather than in
   // the picker, which is gone the moment the first repository registers.
   const [managing, setManaging] = useState<string | null>(null);
+  // Back from linking an account: its dialog opens straight away, since
+  // picking a repository from it is the step that follows.
+  const linkedConnectionId = consent.github.linkedConnectionId;
+  useEffect(() => {
+    if (linkedConnectionId !== null) setManaging(linkedConnectionId);
+  }, [linkedConnectionId]);
 
   if (facts === null || consent.picking) {
     return (
