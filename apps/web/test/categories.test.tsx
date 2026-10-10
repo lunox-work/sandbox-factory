@@ -1,5 +1,5 @@
 /**
- * The bounty list's category filter and a bounty's category line wear the
+ * The bounty list's category filter and a bounty's category mark wear the
  * colour each category has in "What task do teams outsource?": they say
  * which category they are with `data-category`, which the stylesheet turns
  * into its accent.
@@ -12,7 +12,7 @@ import { expect, test, vi } from "vitest";
 
 import {
   CategoryFilter,
-  CategoryLine,
+  CategoryMark,
   CategoryNote,
 } from "../src/features/bounties/Categories";
 
@@ -56,15 +56,23 @@ test("the chosen category is shown on the trigger, with what it is for", () => {
   );
 });
 
-test("a bounty's category line is in its category's colour", () => {
+test("a bounty's categories are marked by the first's icon on a tile in its colour, and all named for a reader", () => {
   render(
-    <CategoryLine
+    <CategoryMark
       categories={[
         { id: "paper-cuts", label: "Paper cuts", reason: "Small and old" },
+        { id: "left-behind", label: "Left behind", reason: "Open a year" },
       ]}
     />,
   );
-  const label = screen.getByText("Paper cuts");
-  expect(label.getAttribute("data-category")).toBe("paper-cuts");
-  expect(label.classList.contains("category-label")).toBe(true);
+  const mark = screen.getByTestId("category-mark");
+  expect(mark.getAttribute("data-category")).toBe("paper-cuts");
+  expect(mark.classList.contains("category-badge")).toBe(true);
+  expect(mark.querySelector("svg")).not.toBeNull();
+  expect(mark.textContent).toBe(
+    "Paper cuts: Small and old. Left behind: Open a year",
+  );
+  expect(mark.title).toBe(
+    "Paper cuts: Small and old\nLeft behind: Open a year",
+  );
 });

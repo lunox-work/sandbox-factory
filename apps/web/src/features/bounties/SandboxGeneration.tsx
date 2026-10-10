@@ -126,6 +126,7 @@ export function SandboxGeneration({
   canGenerate = true,
   generationBlocked = null,
   readOnly = false,
+  flat = false,
   onChanged,
   children,
 }: {
@@ -153,6 +154,11 @@ export function SandboxGeneration({
   onChanged?: () => void;
   /** Its versions alone, with no way to generate, as in a panel. */
   readOnly?: boolean;
+  /**
+   * Its version and what it holds, with no card around them: a panel lays
+   * them out in its own section, which names what a slice is.
+   */
+  flat?: boolean;
   /** Under its versions, such as the way to link a repository. */
   children?: ReactNode;
 }) {
@@ -458,14 +464,30 @@ export function SandboxGeneration({
 
     body = (
       <div className="flex flex-col gap-4">
-        <dl className="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-4">
-          {facts.map(({ term, value }) => (
-            <div key={term} className="flex min-w-0 flex-col gap-0.5">
-              <dt className="text-muted-foreground text-xs">{term}</dt>
-              <dd className="text-sm font-medium tabular-nums">{value}</dd>
-            </div>
-          ))}
-        </dl>
+        {flat ? (
+          // A row each, on the columns of the panel's details above.
+          <dl className="grid grid-cols-[7rem_minmax(0,1fr)] gap-x-4 gap-y-0.5 text-sm">
+            {facts.map(({ term, value }) => (
+              <div key={term} className="contents">
+                <dt className="text-muted-foreground flex h-8 items-center">
+                  {term}
+                </dt>
+                <dd className="flex min-h-8 min-w-0 items-center tabular-nums">
+                  {value}
+                </dd>
+              </div>
+            ))}
+          </dl>
+        ) : (
+          <dl className="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-4">
+            {facts.map(({ term, value }) => (
+              <div key={term} className="flex min-w-0 flex-col gap-0.5">
+                <dt className="text-muted-foreground text-xs">{term}</dt>
+                <dd className="text-sm font-medium tabular-nums">{value}</dd>
+              </div>
+            ))}
+          </dl>
+        )}
         {standing?.note != null && (
           <p
             className={cn(
@@ -624,39 +646,47 @@ export function SandboxGeneration({
     </Button>
   );
 
+  const content = (
+    <div className="flex flex-col gap-4" data-testid="sandbox-generation">
+      {body}
+      {generates && selected !== null && generationBlocked !== null && (
+        <p className="text-muted-foreground text-sm">{generationBlocked}</p>
+      )}
+      {(openButton || generateButton) && (
+        <div className="flex flex-wrap items-center gap-2">
+          {openButton}
+          {generateButton}
+        </div>
+      )}
+      {children}
+      {error !== null && (
+        <p role="alert" className="text-destructive text-xs">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+
   return (
     <div className="flex flex-col gap-3">
       {versionHeader}
-      <SandboxCard
-        icon={LunoxMark}
-        // The mark in the foreground's ink: white on the dark theme.
-        iconClassName="text-foreground"
-        title="Slice"
-        description={
-          canGenerate
-            ? "The task as a runnable project, written from the bounty. Only your workspace can see it; each generation is kept as a version."
-            : "Sliced from your repository, down to the task. Only your workspace can see it; each generation is kept as a version."
-        }
-      >
-        <div className="flex flex-col gap-4" data-testid="sandbox-generation">
-          {body}
-          {generates && selected !== null && generationBlocked !== null && (
-            <p className="text-muted-foreground text-sm">{generationBlocked}</p>
-          )}
-          {(openButton || generateButton) && (
-            <div className="flex flex-wrap items-center gap-2">
-              {openButton}
-              {generateButton}
-            </div>
-          )}
-          {children}
-          {error !== null && (
-            <p role="alert" className="text-destructive text-xs">
-              {error}
-            </p>
-          )}
-        </div>
-      </SandboxCard>
+      {flat ? (
+        content
+      ) : (
+        <SandboxCard
+          icon={LunoxMark}
+          // The mark in the foreground's ink: white on the dark theme.
+          iconClassName="text-foreground"
+          title="Slice"
+          description={
+            canGenerate
+              ? "The task as a runnable project, written from the bounty. Only your workspace can see it; each generation is kept as a version."
+              : "Sliced from your repository, down to the task. Only your workspace can see it; each generation is kept as a version."
+          }
+        >
+          {content}
+        </SandboxCard>
+      )}
     </div>
   );
 }

@@ -323,6 +323,7 @@ test("the workspace's bounties list from any source, with their proposals", asyn
 
   const rows = within(list).getAllByRole("listitem");
   expect(within(rows[0]!).getByText("Invitations are not sent")).toBeDefined();
+  // Where each came from, under its title, and where its proposal stands.
   expect(within(rows[0]!).getByText("Created in Lunox")).toBeDefined();
   // A member may not propose: the row says there is none instead.
   expect(within(rows[0]!).getByText("No proposal")).toBeDefined();
@@ -375,9 +376,10 @@ test("the list filters by category, with how many each holds, and says why", asy
   render(<Bounties {...inAcme("member")} />);
 
   const list = await screen.findByTestId("bounty-list");
-  // The card leads with why its board's scan put it there.
-  expect(within(list).getByTestId("category-line").textContent).toMatch(
-    /Left behind Open 412 days/,
+  // The row leads with why its board's scan put it there: its mark,
+  // named on hover and for a reader.
+  expect(within(list).getByTestId("category-mark").textContent).toBe(
+    "Left behind: Open 412 days, never in a sprint, unassigned",
   );
   const trigger = within(screen.getByTestId("category-filter")).getByRole(
     "combobox",
@@ -658,7 +660,7 @@ test("with a bounty open, the list stays live and another card shows in the same
   expect(screen.getByTestId("bounty-panel")).toBe(panel);
   expect(window.history.length).toBe(entries);
   await waitFor(() => {
-    expect(within(panel).getByText("APP-1")).toBeDefined();
+    expect(within(panel).getAllByText("APP-1").length).toBeGreaterThan(0);
   });
   expect(first.getAttribute("aria-current")).toBeNull();
   expect(
@@ -674,11 +676,13 @@ test("a bounty in the panel is a glance, and opens as a page of its own for its 
   render(<Shell {...inAcme("member")} />);
   const panel = await screen.findByTestId("bounty-panel");
   const detail = await within(panel).findByTestId("bounty-detail");
-  // Its text, sandbox, context and workspace, with no tabs between them;
-  // its proposal is on its page.
-  for (const part of ["Description", "Sandbox", "Context", "Workspace"]) {
+  // Its details and its text, with no tabs between them, and no card
+  // inside another; its proposal is on its page.
+  for (const part of ["Details", "Description"]) {
     expect(within(detail).getByRole("region", { name: part })).toBeDefined();
   }
+  // With no sandbox, there is no section for one: its details say so.
+  expect(within(detail).queryByRole("region", { name: "Sandbox" })).toBeNull();
   expect(within(detail).queryByRole("region", { name: "Proposal" })).toBeNull();
   expect(within(detail).queryByTestId("proposal-detail")).toBeNull();
   expect(within(panel).queryByRole("tab")).toBeNull();
@@ -2403,9 +2407,10 @@ test("a bounty from Jira is named by its issue's key, and one written here by it
   window.history.replaceState(null, "", "/bounties?peek=acme/bty_1");
   const { unmount } = render(<Bounties {...inAcme("member")} />);
   await screen.findByTestId("bounty-detail");
+  // In the panel's header, and as its Jira detail.
   expect(
-    within(screen.getByTestId("bounty-panel")).getByText("APP-1"),
-  ).toBeDefined();
+    within(screen.getByTestId("bounty-panel")).getAllByText("APP-1"),
+  ).toHaveLength(2);
   unmount();
 
   window.history.replaceState(null, "", "/bounties/acme/bty_7");
@@ -2447,10 +2452,9 @@ test("the page lists bounties alone; a bounty opens over them without its propos
   expect(screen.queryByRole("tab", { name: "Proposals" })).toBeNull();
   // Not proposable from the row: a proposal is made inside its bounty.
   expect(within(list).queryByRole("button", { name: "Propose" })).toBeNull();
-  // Not approved, so its price is not settled: a dash, not $105.
+  // Not approved, so its price is not settled: proposed, not $105.
   const brief = within(list).getByTestId("proposal-brief");
-  expect(brief.textContent).toContain("—");
-  expect(brief.textContent).not.toContain("105");
+  expect(brief.textContent).toBe("Proposed");
 
   await userEvent.click(
     within(list).getByRole("link", { name: "Invitations are not sent" }),
@@ -2670,27 +2674,25 @@ test("a bounty's panel is read, its text over its sandbox, with context that is 
   expect(within(panel).queryByRole("combobox")).toBeNull();
   // Its proposal is on its page.
   expect(within(panel).queryByRole("region", { name: "Proposal" })).toBeNull();
-  // Named where it lives, with no way to move it.
-  const workspacePart = within(panel).getByRole("region", {
-    name: "Workspace",
-  });
-  expect(within(workspacePart).getByText("Acme")).toBeDefined();
-  expect(within(workspacePart).queryByRole("combobox")).toBeNull();
   expect(within(panel).queryByRole("region", { name: "Bounty" })).toBeNull();
-  // Its price heads its sandbox, where the work it pays for is done.
-  const sandboxPart = within(panel).getByRole("region", { name: "Sandbox" });
-  // With no approved proposal, neither its price nor its size is settled.
-  expect(within(sandboxPart).getAllByText("—")).toHaveLength(2);
+  // A property a row, each its name over its value.
+  const details = within(panel).getByRole("region", { name: "Details" });
+  const value = (term: string) =>
+    within(details).getByText(term).nextElementSibling?.textContent;
+  // Named where it lives, with no way to move it.
+  expect(value("Workspace")).toBe("Acme");
+  // With no proposal, nothing is priced yet.
+  expect(value("Price")).toBe("Not sized yet");
   // Said plainly: making one is offered on its page.
-  expect(within(sandboxPart).getByText("No sandbox yet.")).toBeDefined();
-  const context = within(panel).getByRole("region", { name: "Context" });
+  expect(value("Sandbox")).toBe("None yet");
+  expect(within(panel).queryByRole("region", { name: "Sandbox" })).toBeNull();
   // No Jira issue and no stack, each read as none; no repository is picked,
   // and until it is sized its work may touch any the workspace connects.
-  expect(within(context).getAllByText("None")).toHaveLength(2);
-  expect(within(context).getByText("Repositories")).toBeDefined();
-  expect(
-    within(context).getByText("Any of the workspace's, until it is sized"),
-  ).toBeDefined();
+  expect(value("Jira")).toBe("None");
+  expect(value("Tech stack")).toBe("None");
+  expect(value("Repositories")).toBe(
+    "Any of the workspace's, until it is sized",
+  );
 });
 
 test("the panel names the repositories its sizing touches", async () => {
@@ -2729,7 +2731,7 @@ test("the panel names the repositories its sizing touches", async () => {
     window.history.replaceState(null, "", "/bounties?peek=acme/bty_7");
     render(<Bounties {...inAcme("member")} />);
     const panel = await screen.findByTestId("bounty-detail");
-    return within(panel).getByRole("region", { name: "Context" });
+    return within(panel).getByRole("region", { name: "Details" });
   };
 
   let context = await open();
@@ -2933,7 +2935,9 @@ test("a bounty with a sandbox is kept, and its panel says how far the sandbox go
   window.history.replaceState(null, "", "/bounties?peek=acme/bty_7");
   render(<Bounties {...inAcme("admin")} />);
   const panel = await screen.findByTestId("bounty-detail");
-  const part = within(panel).getByRole("region", { name: "Sandbox" });
+  // Where it stands is among its details; its version, in a section below.
+  const part = within(panel).getByRole("region", { name: "Details" });
+  expect(within(panel).getByRole("region", { name: "Sandbox" })).toBeDefined();
   // The pill opens the published sandbox, in a tab of its own.
   const pill = within(part).getByRole("link", { name: /Published/ });
   expect(pill.getAttribute("href")).toBe("/sandboxes/acme/sbv_1");
@@ -2943,7 +2947,7 @@ test("a bounty with a sandbox is kept, and its panel says how far the sandbox go
     within(part).getByText("Contributors can work in its published version."),
   ).toBeDefined();
   // Cut from its repository: nothing is generated for it.
-  expect(within(part).queryByRole("button", { name: /Generate/ })).toBeNull();
+  expect(within(panel).queryByRole("button", { name: /Generate/ })).toBeNull();
   // Deleting it would only be refused: a sandbox keeps its bounty.
   expect(
     within(panel).queryByRole("button", { name: "Delete bounty" }),
@@ -3742,28 +3746,26 @@ const approved: [string, string, () => Promise<Response>] = [
     }),
 ];
 
-test("a bounty's sandbox in the panel says what it pays and its size, at its head", async () => {
+test("a bounty's panel says what it pays and its size, first among its details", async () => {
   vi.stubGlobal("fetch", server([approved]).fetchMock);
   window.history.replaceState(null, "", "/bounties?peek=acme/bty_7");
   render(<Shell {...inAcme("member")} />);
   const page = await screen.findByTestId("bounty-detail");
-  const sandboxPart = await within(page).findByRole("region", {
-    name: "Sandbox",
-  });
+  const details = within(page).getByRole("region", { name: "Details" });
   const price = money(200, "USD");
-  await waitFor(() => expect(sandboxPart.textContent).toContain(price));
-  expect(within(sandboxPart).getByText("M")).toBeDefined();
-  // Above what the sandbox itself is.
-  const said = sandboxPart.textContent ?? "";
-  expect(said.indexOf(price)).toBeLessThan(said.indexOf("No sandbox yet"));
-  // The workspace the bounty is in comes last, under its context.
-  const workspacePart = within(page).getByRole("region", {
-    name: "Workspace",
-  });
-  const contextPart = within(page).getByRole("region", { name: "Context" });
+  await waitFor(() => expect(details.textContent).toContain(price));
+  expect(within(details).getByLabelText("Size M")).toBeDefined();
+  // Above where its sandbox stands, and the workspace it is in last.
+  const terms = within(details)
+    .getAllByRole("term")
+    .map((term) => term.textContent);
+  expect(terms[0]).toBe("Price");
+  expect(terms.indexOf("Price")).toBeLessThan(terms.indexOf("Sandbox"));
+  expect(terms.at(-1)).toBe("Workspace");
+  // Its details come before its text.
+  const text = within(page).getByRole("region", { name: "Description" });
   expect(
-    contextPart.compareDocumentPosition(workspacePart) &
-      Node.DOCUMENT_POSITION_FOLLOWING,
+    details.compareDocumentPosition(text) & Node.DOCUMENT_POSITION_FOLLOWING,
   ).toBeTruthy();
 });
 

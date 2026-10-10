@@ -7,55 +7,30 @@ import { CATEGORIES, UNCATEGORIZED } from "sandbox-factory";
 import { ALL_CATEGORIES, CategoryIcon } from "../../CategoryIcon";
 import { FilterSelect } from "./FilterSelect";
 
-export function CategoryLine({
+/**
+ * Why a backlog scan picked a bounty, as its row in the list leads with it:
+ * the first category's icon, lit in its colour on a dark tile. What each category is
+ * and why it fit is said on hover and to a screen reader; the row says the
+ * reason itself under its title, where it differs from row to row.
+ */
+export function CategoryMark({
   categories,
-  lead,
-  wrapOnPhone = false,
 }: {
   categories: readonly BountyCategoryMatch[] | undefined;
-  lead?: string | null;
-  /**
-   * Let the line wrap below the `sm` breakpoint. A proposal row stacks on a
-   * phone and its title wraps, so a reason cut to "Deadline exposed ·…"
-   * beside it would drop the one part worth reading.
-   */
-  wrapOnPhone?: boolean;
 }) {
   const all = categories ?? [];
-  const first = all.find(({ id }) => id === lead) ?? all[0];
+  const [first] = all;
   if (first === undefined) return null;
-  const rest = all.filter((category) => category !== first);
+  const said = all.map(({ label, reason }) => `${label}: ${reason}`);
   return (
     <span
-      className={`text-muted-foreground block text-xs ${wrapOnPhone ? "sm:truncate" : "truncate"}`}
-      data-testid="category-line"
-      title={(categories ?? [])
-        .map(({ label, reason }) => `${label}: ${reason}`)
-        .join("\n")}
+      data-testid="category-mark"
+      data-category={first.id}
+      className="category-badge grid size-8 shrink-0 place-items-center rounded-lg"
+      title={said.join("\n")}
     >
-      {/* Its icon and label in the category's colour, bare: the line sits
-          in a row, and a pill would be a box inside it. */}
-      <span className="category-label mr-0.5" data-category={first.id}>
-        <CategoryIcon category={first.id} className="size-3 shrink-0" />
-        {first.label}
-      </span>{" "}
-      {first.reason}
-      {/* The others by their icons, each in its own colour; the title says
-          what they are. */}
-      {rest.length > 0 && (
-        <span className="ml-1.5 inline-flex items-center gap-1 align-middle">
-          {rest.map((category) => (
-            <span
-              key={category.id}
-              data-category={category.id}
-              className="category-ink inline-flex"
-            >
-              <CategoryIcon category={category.id} className="size-3" />
-            </span>
-          ))}
-          <span>+{rest.length} more</span>
-        </span>
-      )}
+      <CategoryIcon category={first.id} className="size-4" />
+      <span className="sr-only">{said.join(". ")}</span>
     </span>
   );
 }

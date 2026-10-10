@@ -47,7 +47,11 @@ import {
 } from "sandbox-factory";
 import {
   Box,
+  CircleCheck,
+  CircleDashed,
+  CircleDot,
   ExternalLink,
+  FileText,
   Inbox,
   Link2,
   Loader2,
@@ -80,7 +84,7 @@ import {
   PEEK_ROW_ATTRIBUTE,
   PeekPanel,
 } from "@/components/PeekPanel";
-import { StackPicker } from "@/components/StackPicker";
+import { StackChips, StackPicker } from "@/components/StackPicker";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -95,6 +99,7 @@ import {
 } from "./OrganizationSwitcher";
 import { LunoxMark } from "@/components/LunoxMark";
 import { BountyText } from "./BountyText";
+import { CategoryIcon } from "./CategoryIcon";
 import { dateTime } from "./lib/format";
 import { money } from "./Proposals";
 import { JiraIcon, ProviderIcon } from "./ProviderIcon";
@@ -136,7 +141,7 @@ import { BountyProposal } from "./features/bounties/BountyProposal";
 import { BoardFilter } from "./features/bounties/BoardScope";
 import {
   CategoryFilter,
-  CategoryLine,
+  CategoryMark,
   CategoryNote,
 } from "./features/bounties/Categories";
 import {
@@ -332,14 +337,7 @@ export function Bounties({
       <Page className="flex flex-col gap-6">
         <PageHeader
           title="Bounties"
-          description={
-            <>
-              The work your workspaces want done, created in Lunox or imported
-              from a Jira board&rsquo;s backlog scan. Each bounty is a proposal,
-              which sizes and prices it, and a sandbox that contributors work
-              in.
-            </>
-          }
+          description="Work your workspaces want done, written here or found in Jira."
           actions={
             <NewBountyLink disabled={target === null} onCreate={onCreate} />
           }
@@ -388,6 +386,7 @@ export function Bounties({
           bounties={bounties}
           organizations={organizations}
           organizationsLoading={organizationsLoading}
+          viewer={viewer}
           peek={peek}
           narrowed={
             scope.category !== undefined ||
@@ -963,6 +962,7 @@ function BountyList({
   bounties,
   organizations,
   organizationsLoading,
+  viewer,
   peek,
   narrowed,
   onOpen,
@@ -971,6 +971,8 @@ function BountyList({
   bounties: AllBounties;
   organizations: MembershipDto[];
   organizationsLoading: boolean;
+  /** Whoever is looking: the face their personal workspace wears. */
+  viewer: Viewer;
   /** The bounty open in the panel, whose card is marked; null for none. */
   peek: BountyAddress | null;
   /** A category or a board narrows the list, so empty says less. */
@@ -1011,29 +1013,51 @@ function BountyList({
         ))
       ) : (
         <>
-          <ul
-            className="bg-card divide-y overflow-hidden rounded-lg border"
-            data-testid="bounty-list"
-          >
-            {bounties.bounties.map((bounty) => {
-              const address = addressOf(bounty, organizations);
-              return (
-                <BountyCard
-                  key={bounty.id}
-                  bounty={bounty}
-                  workspace={teamName(organizations, bounty.organizationId)}
-                  address={address}
-                  selected={
-                    address !== undefined &&
-                    peek !== null &&
-                    address.workspace === peek.workspace &&
-                    address.id === peek.id
-                  }
-                  onOpen={onOpen}
-                />
-              );
-            })}
-          </ul>
+          {/*
+            A table in a card: a head naming its columns, then a row each.
+            On a phone the head goes and each row stacks.
+          */}
+          <div className="bg-card @container overflow-hidden rounded-xl border">
+            <div
+              aria-hidden
+              className={cn(
+                ROW_GRID,
+                "bg-muted/40 text-muted-foreground hidden border-b px-4 py-2.5 text-xs font-medium @xl:grid",
+              )}
+            >
+              <span>
+                {bounties.bounties.length}
+                {bounties.more && "+"}{" "}
+                {bounties.bounties.length === 1 ? "bounty" : "bounties"}
+              </span>
+              <span className={cn("hidden", WORKSPACE_CELL)}>Workspace</span>
+              <span>Status</span>
+              <span className="text-right">Price</span>
+            </div>
+            <ul className="divide-y" data-testid="bounty-list">
+              {bounties.bounties.map((bounty) => {
+                const address = addressOf(bounty, organizations);
+                return (
+                  <BountyCard
+                    key={bounty.id}
+                    bounty={bounty}
+                    workspace={organizations.find(
+                      ({ id }) => id === bounty.organizationId,
+                    )}
+                    viewer={viewer}
+                    address={address}
+                    selected={
+                      address !== undefined &&
+                      peek !== null &&
+                      address.workspace === peek.workspace &&
+                      address.id === peek.id
+                    }
+                    onOpen={onOpen}
+                  />
+                );
+              })}
+            </ul>
+          </div>
           {bounties.more && (
             <div className="flex justify-center">
               <Button
@@ -1057,32 +1081,7 @@ function BountyList({
   );
 }
 
-/**
- * The tag a bounty carries: its workspace's name when that is a team, and
- * none when it is the person's own.
- */
-function teamName(
-  organizations: MembershipDto[],
-  organizationId: string,
-): string | undefined {
-  const organization = organizations.find(({ id }) => id === organizationId);
-  return organization?.kind === "team" ? organization.name : undefined;
-}
-
-/** A team workspace's name, as a bounty's row carries it: plain text. */
-function WorkspaceTag({ name }: { name: string }) {
-  return (
-    <span
-      className="text-foreground/80 max-w-40 shrink-0 truncate font-medium"
-      // Cut short; the whole name on hover.
-      title={name}
-    >
-      {name}
-    </span>
-  );
-}
-
-/** Where a bounty came from, said in a few words. */
+/** Where a bounty came from, said in a few words, as its page names it. */
 function Source({ bounty }: { bounty: BountySummaryDto }) {
   if (bounty.jira === null) {
     return <span className="shrink-0">Created in Lunox</span>;
@@ -1098,84 +1097,139 @@ function Source({ bounty }: { bounty: BountySummaryDto }) {
 }
 
 /**
- * A proposal in brief: whether it is decided, and its price. Its size is
- * in the bounty, not on its row. Until it is approved the price is not
- * settled, so it reads as a dash, as the bounty itself has it. The status
- * is a dot and a word rather than a badge: the row is the box.
+ * The list's columns, shared by its head and every row, set by how wide the
+ * list itself is rather than the screen: beside an open panel it is
+ * narrower, and the workspace, which the panel names, gives its column up
+ * to the titles. Narrower still, as on a phone, each row stacks.
  */
-function ProposalBrief({
-  proposal,
-}: {
-  proposal: BountySummaryDto["proposal"];
-}) {
-  const status =
-    proposal === null
-      ? "none"
-      : proposal.status === "approved"
-        ? "approved"
-        : "proposed";
+const ROW_GRID =
+  "gap-x-6 @xl:items-center @xl:grid-cols-[minmax(0,1fr)_7.5rem_5.5rem] @4xl:grid-cols-[minmax(0,1fr)_9rem_7.5rem_5.5rem]";
+
+/** The workspace column: under the title when stacked, and when wide. */
+const WORKSPACE_CELL = "@xl:hidden @4xl:flex";
+
+/**
+ * Under a bounty's title, in a few quiet words: its Jira issue's key, or
+ * that it was written here, and why its board's scan picked it.
+ */
+function Subtitle({ bounty }: { bounty: BountySummaryDto }) {
+  const [category] = bounty.categories;
   return (
-    <>
-      <span
-        className={cn(
-          "inline-flex items-center gap-1.5 text-xs",
-          status === "approved"
-            ? "text-foreground font-medium"
-            : "text-muted-foreground",
-        )}
-      >
-        <span
-          aria-hidden
-          className={cn(
-            "size-1.5 shrink-0 rounded-full",
-            status === "approved" && "bg-foreground",
-            status === "proposed" && "border-muted-foreground border",
-            status === "none" &&
-              "border-muted-foreground/60 border border-dashed",
-          )}
-        />
-        {status === "approved"
-          ? "Approved"
-          : status === "proposed"
-            ? "Proposed"
-            : "No proposal"}
-      </span>
-      {proposal !== null && status === "approved" ? (
-        <span className="ml-auto text-sm font-medium tabular-nums">
-          {money(proposal.amountMinor, proposal.currency)}
-        </span>
+    <span className="text-muted-foreground flex min-w-0 items-center gap-1.5 text-xs">
+      {bounty.jira === null ? (
+        <span className="shrink-0">Created in Lunox</span>
       ) : (
         <span
-          aria-hidden
-          className="text-muted-foreground/50 ml-auto text-sm tabular-nums"
+          className={cn(
+            "inline-flex shrink-0 items-center gap-1 font-mono",
+            bounty.jira.removedAt !== null && "line-through",
+          )}
+          title={
+            bounty.jira.removedAt === null ? "From Jira" : "Gone from Jira"
+          }
         >
-          —
+          <span className="size-3 shrink-0">
+            <JiraIcon />
+          </span>
+          {bounty.jira.key}
+          <span className="sr-only">
+            {bounty.jira.removedAt === null ? "From Jira" : "Gone from Jira"}
+          </span>
         </span>
       )}
-    </>
+      {category !== undefined && (
+        <>
+          <span aria-hidden>·</span>
+          <span className="truncate" aria-hidden>
+            {category.reason}
+          </span>
+        </>
+      )}
+    </span>
   );
 }
 
 /**
- * One bounty in the list, as a row of it: its title, with one line under it
- * of whose it is, where it came from and why its board's scan picked it, and
- * its proposal in brief at the far end. A
- * click anywhere on it opens the bounty in the panel beside the list, a
+ * Where a bounty's proposal stands, as a mark and a word: not sized yet, a
+ * proposal waiting on a decision, or approved.
+ */
+function ProposalStatus({
+  proposal,
+}: {
+  proposal: BountySummaryDto["proposal"];
+}) {
+  if (proposal === null)
+    return (
+      <span className="text-muted-foreground inline-flex items-center gap-1.5 text-xs">
+        <CircleDashed className="size-3.5 shrink-0" aria-hidden />
+        No proposal
+      </span>
+    );
+  const approved = proposal.status === "approved";
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1.5 text-xs font-medium",
+        !approved && "text-foreground/80",
+      )}
+    >
+      {approved ? (
+        <CircleCheck
+          className="size-3.5 shrink-0 text-emerald-600 dark:text-emerald-400"
+          aria-hidden
+        />
+      ) : (
+        <CircleDot className="size-3.5 shrink-0 text-amber-500" aria-hidden />
+      )}
+      {approved ? "Approved" : "Proposed"}
+    </span>
+  );
+}
+
+/**
+ * What it pays, once its proposal is approved; until then the price is not
+ * settled, and the column holds a faint dash.
+ */
+function ProposalPrice({
+  proposal,
+}: {
+  proposal: BountySummaryDto["proposal"];
+}) {
+  return proposal !== null && proposal.status === "approved" ? (
+    <span className="text-sm font-semibold tabular-nums">
+      {money(proposal.amountMinor, proposal.currency)}
+    </span>
+  ) : (
+    <span aria-hidden className="text-muted-foreground/50 text-sm">
+      —
+    </span>
+  );
+}
+
+/**
+ * One bounty in the list, as a row of its table: why a scan picked it, as
+ * its category's tile; its title over its Jira key and the reason; the
+ * workspace it is in; where its proposal stands; and what it pays. On a
+ * phone the title takes the width and the rest goes under it.
+ *
+ * A click anywhere on it opens the bounty in the panel beside the list, a
  * glance whose proposal is on the bounty's own page; it is a link to that
  * page, so it can be opened in another tab. While the panel is open, a
- * click on another card shows that one in it instead. A bounty is proposed
- * from its page, never from its card.
+ * click on another row shows that one in it instead. A bounty is proposed
+ * from its page, never from its row.
  */
 function BountyCard({
   bounty,
   workspace,
+  viewer,
   address,
   selected,
   onOpen,
 }: {
   bounty: BountySummaryDto;
-  /** The team workspace it belongs to; absent for the person's own. */
-  workspace: string | undefined;
+  /** The workspace it belongs to, once the workspaces are known. */
+  workspace: MembershipDto | undefined;
+  viewer: Viewer;
   /** Where it opens; undefined while its workspace is not known. */
   address: BountyAddress | undefined;
   /** It is the bounty open in the panel. */
@@ -1185,7 +1239,7 @@ function BountyCard({
   const { proposal } = bounty;
   const heading = (
     <span
-      className="line-clamp-2 text-sm font-medium sm:line-clamp-1"
+      className="line-clamp-2 text-sm font-medium @xl:line-clamp-1"
       // Clamped to a line or two; the whole title on hover.
       title={bounty.title}
     >
@@ -1193,62 +1247,83 @@ function BountyCard({
     </span>
   );
   const headingClass = "flex min-w-0";
+  const workspaceName =
+    workspace === undefined ? null : workspaceLabel(workspace);
   return (
-    // `relative` for the link's overlay, which makes the whole card its target.
+    // `relative` for the link's overlay, which makes the whole row its target.
     <li
       {...{ [PEEK_ROW_ATTRIBUTE]: "" }}
       className={cn(
-        "hover:bg-muted/50 relative flex flex-col gap-2 px-4 py-3 transition-colors sm:flex-row sm:items-center sm:gap-6",
+        "hover:bg-muted/40 relative flex flex-col gap-3 px-4 py-3.5 transition-colors @xl:grid",
+        ROW_GRID,
         selected &&
-          "bg-muted hover:bg-muted shadow-[inset_2px_0_0_var(--foreground)]",
+          "bg-muted/70 hover:bg-muted/70 shadow-[inset_2px_0_0_var(--foreground)]",
       )}
     >
-      <div className="flex min-w-0 flex-1 flex-col gap-1">
-        {address === undefined ? (
-          <div className={headingClass}>{heading}</div>
+      <div className="flex min-w-0 items-center gap-3">
+        {bounty.categories.length > 0 ? (
+          <CategoryMark categories={bounty.categories} />
         ) : (
-          <a
-            href={bountyPagePath(address)}
-            aria-current={selected ? "true" : undefined}
-            className={cn(
-              headingClass,
-              "focus-visible:after:ring-ring/50 outline-none after:absolute after:inset-0 focus-visible:after:ring-[3px] focus-visible:after:ring-inset",
-            )}
-            onClick={(event) => {
-              if (isPlainLeftClick(event)) {
-                event.preventDefault();
-                onOpen(address);
-              }
-            }}
+          // The same dark tile, in no category's colour, so every title
+          // starts on one edge.
+          <span
+            data-category="uncategorized"
+            className="category-badge grid size-8 shrink-0 place-items-center rounded-lg"
           >
-            {heading}
-          </a>
+            <FileText className="size-4" aria-hidden />
+          </span>
         )}
-        {/* One line of facts, parted by dots; the reason is what gives
-            way when it runs long. */}
-        <div className="text-muted-foreground flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs sm:flex-nowrap">
-          {workspace !== undefined && (
-            <>
-              <WorkspaceTag name={workspace} />
-              <span aria-hidden>·</span>
-            </>
+        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+          {address === undefined ? (
+            <div className={headingClass}>{heading}</div>
+          ) : (
+            <a
+              href={bountyPagePath(address)}
+              aria-current={selected ? "true" : undefined}
+              className={cn(
+                headingClass,
+                "focus-visible:after:ring-ring/50 outline-none after:absolute after:inset-0 focus-visible:after:ring-[3px] focus-visible:after:ring-inset",
+              )}
+              onClick={(event) => {
+                if (isPlainLeftClick(event)) {
+                  event.preventDefault();
+                  onOpen(address);
+                }
+              }}
+            >
+              {heading}
+            </a>
           )}
-          <Source bounty={bounty} />
-          {bounty.categories.length > 0 && (
-            <>
-              <span aria-hidden>·</span>
-              <span className="min-w-0 flex-1">
-                <CategoryLine categories={bounty.categories} wrapOnPhone />
-              </span>
-            </>
-          )}
+          <Subtitle bounty={bounty} />
         </div>
       </div>
-      <div
-        className="flex shrink-0 items-center gap-2 sm:w-48"
-        data-testid={proposal === null ? undefined : "proposal-brief"}
-      >
-        <ProposalBrief proposal={proposal} />
+      {/* Under the title when the list is narrow, on the tile's edge;
+          columns beside it when it is wide enough. */}
+      <div className="flex items-center gap-4 pl-11 @xl:contents">
+        <span
+          className={cn(
+            "flex min-w-0 items-center gap-2 text-xs",
+            WORKSPACE_CELL,
+          )}
+        >
+          {workspace !== undefined && (
+            <WorkspaceFace
+              organization={workspace}
+              viewer={viewer}
+              className="size-4 shrink-0"
+              squareRadius="rounded-[4px]"
+            />
+          )}
+          <span className="truncate" title={workspaceName ?? undefined}>
+            {workspaceName}
+          </span>
+        </span>
+        <span data-testid={proposal === null ? undefined : "proposal-brief"}>
+          <ProposalStatus proposal={proposal} />
+        </span>
+        <span className="ml-auto @xl:ml-0 @xl:text-right">
+          <ProposalPrice proposal={proposal} />
+        </span>
       </div>
     </li>
   );
@@ -1548,12 +1623,10 @@ function BountyDetail({
   );
 
   /*
-    What the bounty pays and the size that sets it, from its proposal, at
-    the head of the sandbox the paid work is done in. The bounty names a
-    removed proposal until it is read again, so only one the caller still
-    knows of is shown. A page has the proposal in a tab of its own, which
-    says the price already, so only a panel shows it here. Until the bounty
-    is approved neither is settled, so both read as a dash.
+    What the bounty pays and the size that sets it, from its proposal, in
+    a page's summary and a panel's details. The bounty names a removed
+    proposal until it is read again, so only one the caller still knows of
+    is shown. Until the bounty is approved neither is settled.
   */
   const priced = proposal !== null ? bounty.proposal : null;
   const settled = priced?.status === "approved" ? priced : null;
@@ -1651,16 +1724,10 @@ function BountyDetail({
     </Part>
   );
 
+  // A page's sandbox is its cards alone, not a card around them; a panel
+  // lays its version out in a section of its own.
   const sandboxPart = (
-    <Part
-      title="Sandbox"
-      titleHidden={layout === "page"}
-      // A page's sandbox is its cards alone, not a card around them.
-      framed={layout === "panel"}
-    >
-      {layout === "panel" && price}
-      {/* Where it stands, under the price, as the page's summary has it. */}
-      {layout === "panel" && sandboxStatus}
+    <Part title="Sandbox" titleHidden framed={false}>
       {sandbox !== null ? (
         <div className="flex flex-col gap-3">
           {/*
@@ -1775,61 +1842,27 @@ function BountyDetail({
   );
 
   /*
-    Enrichment: each source adds context the proposal and the sandbox are
-    built from, and none of them is required.
-  */
-  const jiraContext = (
-    <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
-      <div className="flex min-w-0 flex-col gap-0.5">
-        {/*
-            Each source named in the foreground, over what it holds; what
-            is not there is said quietly.
-          */}
-        <span className="font-medium">Jira</span>
-        {bounty.jira === null ? (
-          <span className="text-muted-foreground">None</span>
-        ) : (
-          <span className="inline-flex items-center gap-1.5">
-            <span className="size-3.5 shrink-0">
-              <JiraIcon />
-            </span>
-            {followsJira
-              ? "Follows its Jira issue"
-              : "Gone from Jira; keeps its last text"}
-          </span>
-        )}
-      </div>
-      {bounty.jira?.url != null && (
-        <Button variant="outline" size="sm" className="gap-1.5" asChild>
-          <a href={bounty.jira.url} target="_blank" rel="noreferrer noopener">
-            Open in Jira
-            <ExternalLink className="size-3" />
-          </a>
-        </Button>
-      )}
-    </div>
-  );
-
-  /*
     The repositories its work touches, as its sizing said: nobody picks
     them. Until it is sized, any of the workspace's may be.
   */
-  const touchedContext = (
-    <div className="flex min-w-0 flex-col gap-0.5 text-sm">
-      <span className="font-medium">Repositories</span>
-      {bounty.proposal === null ? (
-        <span className="text-muted-foreground">
-          Any of the workspace's, until it is sized
-        </span>
-      ) : touched.length === 0 ? (
-        <span className="text-muted-foreground">
-          Its sizing says the work touches none
-        </span>
-      ) : repos.loading ? (
-        <span className="text-muted-foreground">Reading…</span>
-      ) : (
-        touched.map(({ repoId, repo, connected }) => (
-          <span key={repoId} className="inline-flex items-center gap-1.5">
+  const touchedValue =
+    bounty.proposal === null ? (
+      <span className="text-muted-foreground">
+        Any of the workspace's, until it is sized
+      </span>
+    ) : touched.length === 0 ? (
+      <span className="text-muted-foreground">
+        Its sizing says the work touches none
+      </span>
+    ) : repos.loading ? (
+      <span className="text-muted-foreground">Reading…</span>
+    ) : (
+      <span className="flex min-w-0 flex-col gap-1">
+        {touched.map(({ repoId, repo, connected }) => (
+          <span
+            key={repoId}
+            className="inline-flex min-w-0 items-center gap-1.5"
+          >
             <span className="size-3.5 shrink-0">
               <ProviderIcon provider="github" />
             </span>
@@ -1843,42 +1876,19 @@ function BountyDetail({
               {repo !== null && !connected && " (no longer connected)"}
             </span>
           </span>
-        ))
-      )}
-    </div>
-  );
+        ))}
+      </span>
+    );
 
-  const codeContext = (
-    <>
-      {touchedContext}
+  // A page links its sources under its text, so only the stack is beside it.
+  const contextPart = (
+    <Part title="Context">
       <StackField
         bounty={bounty}
         repos={repos}
         readOnly={readOnly || approvedOverview}
         onSave={save}
       />
-    </>
-  );
-
-  /*
-    A panel names its sources here. A page links them under its text, so
-    only the stack is left beside it.
-  */
-  const contextPart = (
-    <Part title="Context">
-      {layout === "page" ? (
-        <StackField
-          bounty={bounty}
-          repos={repos}
-          readOnly={readOnly || approvedOverview}
-          onSave={save}
-        />
-      ) : (
-        <>
-          {jiraContext}
-          {codeContext}
-        </>
-      )}
     </Part>
   );
 
@@ -2132,23 +2142,230 @@ function BountyDetail({
   }
 
   /*
-    A panel is a glance, read and not changed, in one column: its text, its
-    sandbox under its price, its context and its workspace. Its proposal,
-    and every change, are on its page, which the panel's header opens.
+    A panel is a glance, read and not changed, in one column: its title
+    over what it is at a glance, a property a row, as an issue tracker's
+    side panel reads; then its text, and its sandbox's version when it has
+    one. No card holds another: the sections are set apart by rules, so
+    the eye runs down one edge. Its proposal, and every change, are on its
+    page, which the panel's header opens.
   */
+  const { inherited, inheritedFrom } = workspaceStack(
+    repos,
+    bounty.proposal?.repositories,
+  );
   return (
-    <div className="flex flex-col gap-5" data-testid="bounty-detail">
-      <InlineTitle
-        as="h2"
-        size="panel"
-        value={bounty.title}
-        locked
-        onSave={save}
-      />
-      {description}
-      {sandboxPart}
-      {contextPart}
-      {workspacePart}
+    <div className="flex flex-col gap-6" data-testid="bounty-detail">
+      <div className="flex flex-col gap-4">
+        <InlineTitle
+          as="h2"
+          size="panel"
+          value={bounty.title}
+          locked
+          onSave={save}
+        />
+        <PanelSection title="Details" titleHidden ruled={false}>
+          <dl className="grid grid-cols-[7rem_minmax(0,1fr)] gap-x-4 gap-y-0.5 text-sm">
+            {/* What it pays, settled only once its proposal is approved. */}
+            <Property label="Price">
+              {settled === null ? (
+                <span className="text-muted-foreground">
+                  {priced === null ? "Not sized yet" : "Awaiting approval"}
+                </span>
+              ) : (
+                <span className="flex items-center gap-2">
+                  <span
+                    className={cn(
+                      "font-semibold",
+                      settled.amountMinor === null
+                        ? "text-muted-foreground"
+                        : "tabular-nums",
+                    )}
+                  >
+                    {money(settled.amountMinor, settled.currency)}
+                  </span>
+                  <Badge
+                    variant="outline"
+                    className="font-mono"
+                    title="Size"
+                    aria-label={`Size ${settled.complexity}`}
+                  >
+                    {settled.complexity}
+                  </Badge>
+                </span>
+              )}
+            </Property>
+            {bounty.categories.length > 0 && (
+              // Why a backlog scan offered it, each reason after its name.
+              <Property label="Why">
+                <span className="flex min-w-0 flex-col gap-1">
+                  {bounty.categories.map((category) => (
+                    <span key={category.id} data-category={category.id}>
+                      <span className="category-label">
+                        <CategoryIcon
+                          category={category.id}
+                          className="size-3.5 shrink-0"
+                        />
+                        {category.label}
+                      </span>
+                      <span className="text-muted-foreground">
+                        {" "}
+                        · {category.reason}
+                      </span>
+                    </span>
+                  ))}
+                </span>
+              </Property>
+            )}
+            <Property label="Sandbox">
+              {sandboxStatus === false ? (
+                <span className="text-muted-foreground">None yet</span>
+              ) : (
+                sandboxStatus
+              )}
+            </Property>
+            {sandbox !== null && (
+              <Property label="Submissions">
+                <span className="text-muted-foreground">None accepted yet</span>
+              </Property>
+            )}
+            {/* Each source named plainly, and what is not there quietly. */}
+            <Property label="Jira">
+              {bounty.jira === null ? (
+                <span className="text-muted-foreground">None</span>
+              ) : (
+                <span className="flex min-w-0 flex-wrap items-center gap-x-2">
+                  {bounty.jira.url === null ? (
+                    <span className="inline-flex items-center gap-1.5 font-medium">
+                      <span className="size-3.5 shrink-0">
+                        <JiraIcon />
+                      </span>
+                      {bounty.jira.key}
+                    </span>
+                  ) : (
+                    <a
+                      href={bounty.jira.url}
+                      target="_blank"
+                      rel="noreferrer noopener"
+                      title={
+                        followsJira
+                          ? "Follows its Jira issue. Open in Jira"
+                          : "Open in Jira"
+                      }
+                      className="focus-visible:ring-ring/50 inline-flex items-center gap-1.5 rounded-sm font-medium underline-offset-4 hover:underline focus-visible:ring-[3px] focus-visible:outline-none"
+                    >
+                      <span className="size-3.5 shrink-0">
+                        <JiraIcon />
+                      </span>
+                      {bounty.jira.key}
+                      <ExternalLink className="text-muted-foreground size-3" />
+                    </a>
+                  )}
+                  {!followsJira && (
+                    <span className="text-muted-foreground">
+                      Gone from Jira; keeps its last text
+                    </span>
+                  )}
+                </span>
+              )}
+            </Property>
+            <Property label="Repositories">{touchedValue}</Property>
+            <Property label="Tech stack">
+              {inherited.length === 0 && bounty.stack.length === 0 ? (
+                <span className="text-muted-foreground">None</span>
+              ) : (
+                <StackChips
+                  inherited={inherited}
+                  inheritedFrom={inheritedFrom}
+                  own={bounty.stack}
+                />
+              )}
+            </Property>
+            <Property label="Workspace">
+              <span className="flex min-w-0 items-center gap-2 font-medium">
+                <WorkspaceFace
+                  organization={organization}
+                  viewer={viewer}
+                  className="size-4 shrink-0"
+                  squareRadius="rounded-[4px]"
+                />
+                <span className="truncate">{workspaceLabel(organization)}</span>
+              </span>
+            </Property>
+          </dl>
+        </PanelSection>
+      </div>
+      <PanelSection title="Description">
+        <BountyText
+          description={bounty.description}
+          inputTruncated={bounty.inputTruncated}
+          framed={false}
+        />
+      </PanelSection>
+      {sandbox !== null && (
+        <PanelSection title="Sandbox">
+          <SandboxGeneration
+            organizationId={bounty.organizationId}
+            workspace={organization.slug}
+            sandbox={sandbox}
+            canManage={canManage}
+            canGenerate={unlinked}
+            readOnly
+            flat
+            onChanged={() => {
+              void bounties.refresh();
+              onReload();
+            }}
+          />
+        </PanelSection>
+      )}
+    </div>
+  );
+}
+
+/**
+ * A section of a bounty's panel: a heading over its content, set off from
+ * the one before by a rule across the panel's full width, as its header is.
+ */
+function PanelSection({
+  title,
+  titleHidden = false,
+  ruled = true,
+  children,
+}: {
+  title: string;
+  titleHidden?: boolean;
+  ruled?: boolean;
+  children: ReactNode;
+}) {
+  const id = useId();
+  return (
+    <section
+      aria-labelledby={id}
+      className={cn(
+        "flex flex-col gap-3",
+        ruled && "-mx-5 border-t px-5 pt-5 sm:-mx-6 sm:px-6",
+      )}
+    >
+      <h3
+        id={id}
+        className={cn("text-sm font-semibold", titleHidden && "sr-only")}
+      >
+        {title}
+      </h3>
+      {children}
+    </section>
+  );
+}
+
+/**
+ * One row of a panel's details: its name in a column of its own, its value
+ * beside it. A value that runs to more lines keeps its name on its first.
+ */
+function Property({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="contents">
+      <dt className="text-muted-foreground flex h-8 items-center">{label}</dt>
+      <dd className="flex min-h-8 min-w-0 items-center py-1">{children}</dd>
     </div>
   );
 }
