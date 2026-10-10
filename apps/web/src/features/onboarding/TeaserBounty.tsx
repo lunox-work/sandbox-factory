@@ -172,7 +172,7 @@ export function TeaserBounty({
       // Its category's colour glows in from the corner, as the row it was
       // picked from is marked in it.
       data-category={match?.id}
-      className={`bg-card flex flex-col gap-4 rounded-lg border p-4 lg:sticky lg:top-4 ${match === undefined ? "" : "category-glow"}`}
+      className={`bg-card flex flex-col gap-5 rounded-lg border p-5 lg:sticky lg:top-4 ${match === undefined ? "" : "category-glow"}`}
     >
       <div className="flex flex-col gap-1">
         <span className="text-muted-foreground flex items-center justify-between gap-2 text-xs">
@@ -189,14 +189,9 @@ export function TeaserBounty({
             </a>
           )}
         </span>
+        {/* No reason under it: the row it was picked from, or the line
+            above the list, already says why. */}
         <p className="text-sm leading-snug font-medium">{issue.summary}</p>
-        {/* Why it was picked, without a pill naming its category: the
-            scan's category tiles already say that. */}
-        {match !== undefined && (
-          <span className="text-muted-foreground mt-1.5 text-xs leading-snug">
-            {match.reason}
-          </span>
-        )}
       </div>
 
       <dl
@@ -213,10 +208,7 @@ export function TeaserBounty({
                 {wholeMoney(range.sMinor, range.currency)}–
                 {wholeMoney(range.lMinor, range.currency)}
               </span>
-              <span className="text-muted-foreground">
-                {" "}
-                typical, sizes S to L on your rate card
-              </span>
+              <span className="text-muted-foreground"> · S to L</span>
             </>
           )}
         </dd>
@@ -225,51 +217,32 @@ export function TeaserBounty({
           {only !== undefined ? (
             <span className="flex min-w-0 items-center gap-1">
               <FolderGit2 className="text-muted-foreground size-3 shrink-0" />
-              <span className="truncate">
-                Sliced from <span className="font-medium">{only.fullName}</span>
-                , if its work touches it
-              </span>
+              <span className="truncate font-medium">{only.fullName}</span>
             </span>
           ) : repositories.length > 1 ? (
             <span className="flex min-w-0 items-center gap-1">
               <FolderGit2 className="text-muted-foreground size-3 shrink-0" />
               <span className="truncate">
-                Sliced from the repositories its work touches, of{" "}
-                {repositories.length}
+                Your {repositories.length} repositories
               </span>
             </span>
           ) : needsCode ? (
             // Sizing waits for the code, so there is no "from the ticket".
-            <span className="text-muted-foreground">
-              Sliced from your code, once{" "}
-              {repositoryAction === undefined ? (
-                "a repository is added"
-              ) : (
-                <button
-                  type="button"
-                  onClick={repositoryAction.onSelect}
-                  className="text-foreground rounded-sm font-medium underline underline-offset-2"
-                >
-                  you {repositoryAction.label}
-                </button>
-              )}
-            </span>
+            // What to do about it is said once, under the button.
+            <span className="text-muted-foreground">From your code</span>
           ) : repositoryAction !== undefined ? (
             <span className="text-muted-foreground">
-              Generated from the ticket, or{" "}
+              From the ticket, or{" "}
               <button
                 type="button"
                 onClick={repositoryAction.onSelect}
                 className="text-foreground rounded-sm font-medium underline underline-offset-2"
               >
                 {repositoryAction.label}
-              </button>{" "}
-              to slice it from your code
+              </button>
             </span>
           ) : (
-            <span className="text-muted-foreground">
-              Generated from the ticket
-            </span>
+            <span className="text-muted-foreground">From the ticket</span>
           )}
         </dd>
       </dl>

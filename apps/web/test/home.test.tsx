@@ -567,9 +567,8 @@ test("with Jira connected, onboarding shows the board's backlog scan under getti
       name: /3 tickets worth outsourcing/,
     }),
   ).toBeTruthy();
-  expect(
-    within(scan).getByText(/fit a\s+pattern teams outsource\.$/),
-  ).toBeTruthy();
+  // Of how many, on the headline's own line rather than said again below.
+  expect(within(scan).getByText("of 43 open")).toBeTruthy();
   // The six, always: an empty one is shown, not pressable.
   const tiles = within(scan).getByTestId("scan-categories");
   expect(within(tiles).getAllByRole("button")).toHaveLength(6);
@@ -611,11 +610,38 @@ test("a category shows its own tickets, and the teaser follows the one chosen", 
   const list = within(scan).getByTestId("scan-candidates");
   expect(within(list).getAllByRole("button")).toHaveLength(1);
   expect(within(list).getByText("Ticket 9")).toBeTruthy();
+  // Why it pays, not its name again: the pressed tile says that.
   expect(within(scan).getByTestId("scan-why").textContent).toMatch(
-    /Paper cuts\./,
+    /^Small, self-contained bugs/,
   );
   expect(within(scan).getByTestId("teaser-bounty").textContent).toMatch(
     /ACME-9/,
+  );
+});
+
+test("a reason every ticket in a category shares is said once, not on each row", async () => {
+  world.jira = [jiraSite];
+  world.boards = [board];
+  world.scan = {
+    ...preview(),
+    issues: [7, 8].map((n) => ({
+      ...ticket(n, leftBehind),
+      categories: [{ ...leftBehind, reason: "Carried over 3 sprints" }],
+    })),
+  };
+  showOnboarding();
+
+  const scan = await screen.findByTestId("backlog-scan");
+  expect((await within(scan).findByTestId("scan-why")).textContent).toMatch(
+    /All carried over 3 sprints\.$/,
+  );
+  expect(
+    within(within(scan).getByTestId("scan-candidates")).queryByText(
+      "Carried over 3 sprints",
+    ),
+  ).toBeNull();
+  expect(within(scan).getByTestId("teaser-bounty").textContent).not.toMatch(
+    /Carried over/,
   );
 });
 
@@ -689,9 +715,7 @@ test("a board whose fitting tickets are all sized says so, not that nothing fits
       name: /every ticket that fits is sized/i,
     }),
   ).toBeDefined();
-  expect(scan.textContent).toMatch(
-    /3 of 43 open tickets fit a pattern teams outsource, and all of them are sized\. The oldest of the rest are below/,
-  );
+  expect(scan.textContent).toMatch(/3 of 43 open\. Oldest of the rest below/);
   expect(scan.textContent).not.toMatch(/matched the six patterns/);
   expect(within(scan).queryByTestId("scan-categories")).toBeNull();
 });
@@ -706,7 +730,7 @@ test("a server without GitHub still shows the board, sizes from the ticket, and 
   showOnboarding();
 
   const teaser = await screen.findByTestId("teaser-bounty");
-  expect(teaser.textContent).toMatch(/Generated from the ticket/);
+  expect(teaser.textContent).toMatch(/From the ticket/);
   expect(teaser.textContent).not.toMatch(/GitHub/);
   expect(screen.queryByText(/could not be read/i)).toBeNull();
   const reads = requests.filter(({ url }) =>
@@ -955,9 +979,11 @@ test("with both, the board's tickets may touch the workspace's repository, with 
 
   const teaser = await screen.findByTestId("teaser-bounty");
   await waitFor(() =>
-    expect(teaser.textContent).toMatch(
-      /Sliced from acme\/widgets, if its work touches it/,
-    ),
+    expect(
+      within(within(teaser).getByTestId("teaser-facts")).getByText(
+        "acme/widgets",
+      ),
+    ).toBeTruthy(),
   );
   expect(teaser.textContent).not.toMatch(/link a repository/);
   expect(screen.queryByTestId("board-repository")).toBeNull();

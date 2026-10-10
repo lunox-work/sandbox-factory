@@ -291,22 +291,18 @@ function BoardBar({
               <JiraIcon />
             </span>
             <span className="flex min-w-0 flex-col">
-              <span className="text-muted-foreground truncate text-[11px] leading-4 font-medium tracking-wide uppercase">
-                Board
-                {siteName !== undefined && (
-                  <span className="normal-case tracking-normal">
-                    {" "}
-                    · {siteName}
-                  </span>
-                )}
+              {/* Jira's mark already says it is a board: the site is enough. */}
+              <span className="text-muted-foreground truncate text-xs leading-4">
+                {siteName ?? "Board"}
               </span>
               <span className="truncate text-[0.9375rem] leading-5 font-semibold tracking-tight">
                 {current.name}
-                {current.projectKey !== null && (
-                  <span className="text-muted-foreground ml-1.5 font-mono text-xs font-normal">
-                    {current.projectKey}
-                  </span>
-                )}
+                {current.projectKey !== null &&
+                  !namesKey(current.name, current.projectKey) && (
+                    <span className="text-muted-foreground ml-1.5 font-mono text-xs font-normal">
+                      {current.projectKey}
+                    </span>
+                  )}
               </span>
             </span>
             <ChevronsUpDown className="text-muted-foreground ml-auto size-4 shrink-0" />
@@ -370,6 +366,11 @@ function BoardBar({
       )}
     </div>
   );
+}
+
+/** Jira's default board name, "BOX board", already says its key. */
+function namesKey(name: string, key: string): boolean {
+  return name.split(/\s+/).some((word) => word.toUpperCase() === key);
 }
 
 /** Said in place of the scan when the account that connected sees no board. */

@@ -9,7 +9,8 @@
  *
  * Drawn as a progress bar of chevrons, each step an arrow pointing at the
  * next: done ones in green, the current one in the brand blue with its
- * button, the rest muted. The chevrons are `index.css`'s, under "getting
+ * button, the rest muted and named only: what they involve is said when
+ * they are the step to take. The chevrons are `index.css`'s, under "getting
  * started"; they turn to point down when the steps stack on a phone.
  *
  * Never hidden: not with a button, not before the first step, not after the
@@ -94,18 +95,6 @@ export function SetupChecklist({
     }
   }
 
-  /** The line under a step that is neither done nor current. */
-  function waiting(id: SetupStepId): string {
-    switch (id) {
-      case "jira":
-        return "Scan the backlog for work to outsource";
-      case "github":
-        return "Size beside the code, and slice sandboxes from it";
-      case "size":
-        return "One ticket, about a minute";
-    }
-  }
-
   return (
     <section
       aria-label="Getting started"
@@ -148,12 +137,8 @@ export function SetupChecklist({
                 <span className="setup-chevron-done text-xs font-medium">
                   {COPY[step.id].done}
                 </span>
-              ) : step.current ? (
-                actionFor(step.id)
               ) : (
-                <span className="text-muted-foreground text-xs">
-                  {waiting(step.id)}
-                </span>
+                step.current && actionFor(step.id)
               )}
             </span>
           </li>

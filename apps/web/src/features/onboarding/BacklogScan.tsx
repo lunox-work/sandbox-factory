@@ -137,6 +137,10 @@ export function BacklogScan({
     listed[0] ??
     undefined;
   const headline = scanHeadline(data, summary);
+  // Said once above the list when every ticket in it is there for the same
+  // reason, rather than on each row.
+  const sharedReason =
+    noneToSize || shown === null ? undefined : commonReason(listed, shown);
 
   if (foldable && !open) {
     return (
@@ -170,7 +174,7 @@ export function BacklogScan({
       className="flex flex-col gap-4"
     >
       <header className="flex items-start justify-between gap-4">
-        <div className="min-w-0">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1">
           <h2
             id={headingId}
             className="flex items-center gap-2 text-base font-semibold tracking-tight"
@@ -178,9 +182,7 @@ export function BacklogScan({
             <ScanSearch className="text-muted-foreground size-4 shrink-0" />
             {headline.title}
           </h2>
-          <p className="text-muted-foreground mt-1 text-sm">
-            {headline.detail}
-          </p>
+          <p className="text-muted-foreground text-sm">{headline.detail}</p>
         </div>
         {foldable && (
           <Button
@@ -218,28 +220,23 @@ export function BacklogScan({
           )}
           {!noneToSize &&
             (() => {
+              // The tile above names the category; this says why it pays,
+              // and what its tickets have in common when they all do.
               const active = data.categories.find(({ id }) => id === shown);
               return active === undefined ? null : (
-                <div
-                  className="category-callout text-muted-foreground flex items-start gap-3 rounded-lg py-2.5 pr-3 pl-4 text-xs"
+                <p
+                  className="text-muted-foreground -mt-1 text-sm"
                   data-testid="scan-why"
                   data-category={active.id}
                 >
-                  <span className="category-chip grid size-7 shrink-0 place-items-center rounded-md">
-                    <CategoryIcon category={active.id} className="size-4" />
-                  </span>
-                  <p className="leading-snug">
-                    <span className="font-semibold text-[var(--category-text)]">
-                      {active.label}.
-                    </span>{" "}
-                    {active.why}
-                    {active.looksFor !== undefined && (
-                      <span className="text-muted-foreground/80 mt-0.5 block">
-                        Looks for: {active.looksFor.toLowerCase()}.
-                      </span>
-                    )}
-                  </p>
-                </div>
+                  {active.why}
+                  {sharedReason !== undefined && (
+                    <span className="text-foreground/80">
+                      {" "}
+                      All {lowerFirst(sharedReason)}.
+                    </span>
+                  )}
+                </p>
               );
             })()}
           {listed.length > 0 && (
@@ -252,6 +249,7 @@ export function BacklogScan({
                         key={issue.id}
                         issue={issue}
                         category={noneToSize ? null : shown}
+                        showReason={sharedReason === undefined}
                         focused={issue.id === focus?.id}
                         held={sizingId !== null && issue.id !== sizingId}
                         onFocus={() => {
@@ -326,20 +324,15 @@ function scanHeadline(
   if (data === undefined || summary === null)
     return {
       title: "Scanning the backlog…",
-      detail: "Reading ticket metadata from Jira. No AI, nothing stored.",
+      detail: "No AI, nothing stored.",
     };
   const atLeast = summary.partial ? "At least " : "";
+  // "+": the read stopped before the board did, so the board has more.
+  const open = `${summary.scanned}${summary.partial ? "+" : ""} open`;
   if (summary.candidates > 0)
     return {
       title: `${plural(summary.candidates, "ticket")} worth outsourcing`,
-      detail: (
-        <>
-          {atLeast}
-          {summary.fitting} of {plural(summary.scanned, "open ticket")} fit a
-          pattern teams outsource
-          {summary.proposed > 0 && `, ${summary.proposed} already sized`}.
-        </>
-      ),
+      detail: `of ${open}${summary.proposed > 0 ? ` · ${summary.proposed} sized` : ""}`,
     };
   if (summary.scanned === 0)
     return {
@@ -348,18 +341,43 @@ function scanHeadline(
     };
   // An API from before `fallback` lists the oldest only when it fell back.
   const oldest = data.fallback ?? data.issues.length > 0;
-  const rest = oldest
-    ? " The oldest of the rest are below — still worth a look."
-    : "";
+  const rest = oldest ? " Oldest of the rest below." : "";
   return summary.proposed > 0
     ? {
         title: "Every ticket that fits is sized",
-        detail: `${atLeast}${summary.proposed} of ${plural(summary.scanned, "open ticket")} fit a pattern teams outsource, and all of them are sized.${rest}`,
+        detail: `${atLeast}${summary.proposed} of ${open}.${rest}`,
       }
     : {
         title: "Nothing fits a pattern yet",
-        detail: `None of ${plural(summary.scanned, "open ticket")} matched the six patterns.${oldest ? " The oldest are below — still worth a look." : ""}`,
+        detail: `None of ${open} matched.${oldest ? " Oldest below." : ""}`,
       };
+}
+
+/**
+ * The reason every listed ticket shares for `category`, if they all share
+ * one: a sprint board's "carried over 3 sprints" six times over says no more
+ * than once.
+ */
+function commonReason(
+  issues: readonly PreviewIssue[],
+  category: string,
+): string | undefined {
+  if (issues.length < 2) return undefined;
+  const reasons = new Set(
+    issues.map(
+      (issue) =>
+        (issue.categories ?? []).find(({ id }) => id === category)?.reason,
+    ),
+  );
+  const [only] = reasons;
+  return reasons.size === 1 ? only : undefined;
+}
+
+/** "Carried over…" to "carried over…", leaving "P1 bug…" as it is. */
+function lowerFirst(text: string): string {
+  return /^[A-Z][a-z]/.test(text)
+    ? text.charAt(0).toLowerCase() + text.slice(1)
+    : text;
 }
 
 function ScanSkeleton() {
@@ -441,6 +459,7 @@ function CategoryTiles({
 function CandidateRow({
   issue,
   category,
+  showReason,
   focused,
   held,
   onFocus,
@@ -448,6 +467,8 @@ function CandidateRow({
   issue: PreviewIssue;
   /** The category the list is showing, whose reason the row gives. */
   category: string | null;
+  /** False when every row's reason is the same, and said once above. */
+  showReason: boolean;
   focused: boolean;
   /** Another ticket is being sized, and stays in focus until it lands. */
   held: boolean;
@@ -467,16 +488,18 @@ function CandidateRow({
         onClick={onFocus}
         // In focus, marked in its category's colour, as the teaser beside it.
         data-category={match?.id ?? UNCATEGORIZED}
-        className={`hover:bg-muted/50 focus-visible:bg-muted/50 flex w-full flex-col gap-0.5 px-3 py-2.5 text-left transition-colors focus-visible:outline-none disabled:pointer-events-none disabled:opacity-60 sm:flex-row sm:items-start sm:gap-3 ${focused ? "category-row-focus" : ""}`}
+        className={`hover:bg-muted/50 focus-visible:bg-muted/50 flex w-full flex-col gap-0.5 px-4 py-3 text-left transition-colors focus-visible:outline-none disabled:pointer-events-none disabled:opacity-60 sm:flex-row sm:items-start sm:gap-3 ${focused ? "category-row-focus" : ""}`}
       >
         <span className="text-muted-foreground shrink-0 pt-px font-mono text-xs sm:w-20">
           {issue.key}
         </span>
         <span className="flex min-w-0 flex-1 flex-col gap-0.5">
           <span className="text-sm sm:truncate">{issue.summary}</span>
-          <span className="text-muted-foreground text-xs sm:truncate">
-            {match?.reason ?? issue.issueType}
-          </span>
+          {showReason && (
+            <span className="text-muted-foreground text-xs sm:truncate">
+              {match?.reason ?? issue.issueType}
+            </span>
+          )}
         </span>
       </button>
     </li>
