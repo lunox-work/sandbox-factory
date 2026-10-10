@@ -13,10 +13,11 @@
  * - Paper cuts: a scan passes down a small window and each bug it reaches
  *   turns into a check.
  * - Deadline exposed: today slides along a timeline toward a flag, the days
- *   left counting down as the bar warms from blue to red.
+ *   left counting down as the bar warms from grey to the accent.
  *
- * Drawn in markup and animated in CSS (`index.css`, "category scenes"),
- * each on its own loop length so the six never pulse in step. Every part
+ * Drawn in two inks, the card's accent and the theme's greys, in markup,
+ * and animated in CSS (`index.css`, "category scenes"), each on its own
+ * loop length so the six never pulse in step. Every part
  * moves by transform and opacity. Under reduced motion each one stands
  * still on a frame that tells the same story.
  *
@@ -79,7 +80,7 @@ const SCENES: Record<string, ReactElement> = {
       <span className="lb-lane">
         <span className="lb-track">
           {Array.from({ length: 10 }, (_, i) => (
-            <Ticket key={i} className={i % 5 === 1 ? "lb-done" : ""} />
+            <Ticket key={i} />
           ))}
         </span>
       </span>

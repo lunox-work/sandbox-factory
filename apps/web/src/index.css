@@ -1272,8 +1272,11 @@
  * The cards in "What task do teams outsource?", each headed by a small scene that
  * acts out its category (`CategoryScene.tsx` says what each one shows).
  *
- * Each card takes its category's accent (see "category accents" above),
- * which tints the stage, the scene's key parts and the icon tile.
+ * Each card is drawn in two inks only: its category's accent (see
+ * "category accents" above), for the stage, the icon tile and whatever the
+ * scene is about, and the muted greys of the theme for everything else. A
+ * fix, a flow of work or a deadline closing in is told in the accent, not
+ * in a green or a red of its own.
  *
  * Every scene is drawn on a fixed 200×88 canvas, centred in the stage, so
  * its parts can be placed in pixels and still sit in the middle of a card at
@@ -1282,8 +1285,6 @@
  */
 .scene-card {
   --scene-accent: var(--category-accent, var(--primary));
-  /* What a check, a done ticket or the flow of work is drawn in. */
-  --scene-ok: oklch(0.63 0.15 152);
   /* Hairlines inside a scene: a ticket's edge, an empty sprint. */
   --scene-ink: color-mix(in oklab, var(--foreground) 15%, transparent);
   --scene-ticket: var(--card);
@@ -1292,7 +1293,6 @@
 }
 
 .dark .scene-card {
-  --scene-ok: oklch(0.77 0.15 152);
   --scene-ink: color-mix(in oklab, var(--foreground) 17%, transparent);
   /* A step up from the card, as the card is from the page. */
   --scene-ticket: color-mix(in oklab, var(--foreground) 9%, var(--card));
@@ -1489,11 +1489,6 @@
   flex: none;
 }
 
-/* Done: its title line in the colour of done. */
-.lb-track .lb-done::before {
-  background: color-mix(in oklab, var(--scene-ok) 75%, transparent);
-}
-
 @keyframes lb-stream {
   from {
     transform: translateX(-240px);
@@ -1663,8 +1658,8 @@
   position: relative;
   height: 10px;
   border-radius: 3px;
-  background: color-mix(in oklab, var(--scene-ok) 16%, transparent);
-  border: 1px solid color-mix(in oklab, var(--scene-ok) 38%, transparent);
+  background: color-mix(in oklab, var(--foreground) 6%, transparent);
+  border: 1px solid var(--scene-ink);
 }
 
 .ns-done::after {
@@ -1675,7 +1670,7 @@
   width: 4px;
   height: 4px;
   border-radius: 50%;
-  background: var(--scene-ok);
+  background: color-mix(in oklab, var(--foreground) 25%, transparent);
 }
 
 .ns-done + .ns-done {
@@ -1819,7 +1814,7 @@
   width: 12px;
   height: 12px;
   border-radius: 50%;
-  background: oklch(0.72 0.11 calc(var(--i) * 110 + 30));
+  background: color-mix(in oklab, var(--foreground) 22%, transparent);
 }
 
 .qw-line {
@@ -2077,11 +2072,10 @@
   stroke-width: 1.25;
 }
 
-/* Laid over the blocker's edge when it clears, rather than the edge's own
-   colour animated: red to green passes through olive on the way. */
+/* Laid over the blocker's edge when it clears: the same ink, filled in. */
 .ho-blocker-lit {
-  fill: none;
-  stroke: var(--scene-ok);
+  fill: color-mix(in oklab, var(--scene-accent) 12%, transparent);
+  stroke: var(--scene-accent);
   stroke-width: 1.25;
   opacity: 0;
   animation: ho-blocker-lit 6s infinite;
@@ -2123,7 +2117,7 @@
 
 /* Unblocked: the same line, drawn solid out to each in turn. */
 .ho-flow {
-  stroke: var(--scene-ok);
+  stroke: var(--scene-accent);
   stroke-width: 2;
   stroke-dasharray: 1 1;
   stroke-dashoffset: 1;
@@ -2172,8 +2166,8 @@
 }
 
 .ho-card-lit {
-  fill: color-mix(in oklab, var(--scene-ok) 14%, var(--scene-ticket));
-  stroke: color-mix(in oklab, var(--scene-ok) 75%, transparent);
+  fill: color-mix(in oklab, var(--scene-accent) 12%, var(--scene-ticket));
+  stroke: color-mix(in oklab, var(--scene-accent) 75%, transparent);
   stroke-width: 1.25;
   opacity: 0;
   animation: ho-lit 6s infinite both;
@@ -2233,7 +2227,7 @@
 
 .ho-tick circle,
 .ho-free circle {
-  fill: var(--scene-ok);
+  fill: var(--scene-accent);
   stroke: none;
 }
 
@@ -2426,11 +2420,11 @@
     background: transparent;
   }
   22% {
-    background: color-mix(in oklab, var(--scene-ok) 22%, transparent);
+    background: color-mix(in oklab, var(--scene-accent) 18%, transparent);
   }
   32%,
   82% {
-    background: color-mix(in oklab, var(--scene-ok) 8%, transparent);
+    background: color-mix(in oklab, var(--scene-accent) 8%, transparent);
   }
   88%,
   100% {
@@ -2455,19 +2449,19 @@
 .pc-bug svg {
   width: 100%;
   height: 100%;
-  stroke: var(--destructive);
+  stroke: var(--muted-foreground);
   stroke-width: 1;
   animation: pc-scuttle 0.45s ease-in-out infinite alternate;
   animation-delay: calc(var(--i) * -0.2s);
 }
 
 .pc-bug ellipse {
-  fill: var(--destructive);
+  fill: var(--muted-foreground);
   stroke: none;
 }
 
 .pc-bug circle {
-  fill: color-mix(in oklab, var(--destructive) 55%, var(--foreground));
+  fill: color-mix(in oklab, var(--muted-foreground) 55%, var(--foreground));
   stroke: none;
 }
 
@@ -2504,7 +2498,7 @@
 
 .pc-check {
   border-radius: 50%;
-  background: var(--scene-ok);
+  background: var(--scene-accent);
   opacity: 0;
   transform: scale(0);
   animation: pc-check 6s infinite both;
@@ -2582,10 +2576,14 @@
 /* -- Deadline exposed: today runs at the flag; the bar warms as it goes. -- */
 
 .scene-card[data-category="deadline-exposed"] {
-  /* The bar's three temperatures: on track, close, late. */
-  --heat-1: oklch(0.6 0.15 152);
-  --heat-2: oklch(0.69 0.16 58);
-  --heat-3: oklch(0.6 0.21 25);
+  /* The bar's three temperatures, grey to the accent: on track, close, late. */
+  --heat-1: var(--muted-foreground);
+  --heat-2: color-mix(
+    in oklab,
+    var(--scene-accent) 55%,
+    var(--muted-foreground)
+  );
+  --heat-3: var(--scene-accent);
 }
 
 .de-track {
@@ -2690,7 +2688,7 @@
   line-height: 15px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: oklch(0.28 0.06 60);
+  color: color-mix(in oklab, var(--scene-accent) 30%, black);
   background: var(--scene-accent);
   clip-path: polygon(0 0, 100% 0, 82% 50%, 100% 100%, 0 100%);
   transform-origin: left center;
@@ -2823,7 +2821,7 @@
   font-weight: 650;
   line-height: 16px;
   text-align: center;
-  color: oklch(0.99 0 0);
+  color: var(--background);
 }
 
 @keyframes de-days {
@@ -2883,7 +2881,7 @@
   }
 
   .scene-card .pc-row:nth-child(2) {
-    background: color-mix(in oklab, var(--scene-ok) 8%, transparent);
+    background: color-mix(in oklab, var(--scene-accent) 8%, transparent);
   }
 }
 

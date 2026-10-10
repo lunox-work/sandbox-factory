@@ -432,10 +432,12 @@ function CategoryTiles({
               className="category-tile focus-visible:ring-ring/50 flex h-full w-full flex-col items-start gap-2.5 rounded-xl border p-3 text-left focus-visible:ring-[3px] focus-visible:outline-none disabled:pointer-events-none disabled:opacity-45"
             >
               <span className="flex w-full items-start justify-between gap-2">
-                {/* The tile the category's card in the dialog has. */}
-                <span className="category-chip grid size-8 shrink-0 place-items-center rounded-lg">
-                  <CategoryIcon category={category.id} className="size-4" />
-                </span>
+                {/* The bare icon in the accent: a tile around it would be a
+                    card inside the card. */}
+                <CategoryIcon
+                  category={category.id}
+                  className="category-ink size-6 shrink-0"
+                />
                 <span className="text-2xl leading-none font-semibold tracking-tight tabular-nums">
                   {count}
                 </span>
