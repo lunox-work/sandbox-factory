@@ -25,6 +25,8 @@ import {
 import { dateTime, modelLabel, money } from "../../lib/format";
 import { capitalize, unweighed } from "./presentation";
 import { type EnrichedProposal } from "./types";
+import { SizeCard } from "./SizeCard";
+import { PreviewPrice, PreviewReason, PreviewScenarios } from "./SizingPreview";
 import { useReanalyze } from "./useReanalyze";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
@@ -212,6 +214,9 @@ export function ProposalPeek({
     onChanged,
   );
   const reanalyzing = reanalyze.state.phase === "working";
+  // The run making the new analysis, whose parts show as they land.
+  const making =
+    reanalyze.state.phase === "working" ? reanalyze.state.run : undefined;
   const locked = busy || reanalyzing;
   const key = proposal.liveKey ?? proposal.issueKey;
   // Read when the peek opens, like the bounty, so the tab opens on it.
@@ -322,7 +327,7 @@ export function ProposalPeek({
     scenarios do not say it again.
   */
   const scenarioView = reanalyzing ? (
-    <AnalysisPlaceholder />
+    <PreviewScenarios run={making} />
   ) : (
     <ProposalSpec
       read={spec.read}
@@ -548,11 +553,7 @@ export function ProposalPeek({
           </p>
         )}
         {reanalyzing ? (
-          <ReanalyzingPrice
-            queued={
-              reanalyze.state.phase === "working" && reanalyze.state.queued
-            }
-          />
+          <PreviewPrice run={making} />
         ) : (
           <div className="grid grid-cols-1 items-center gap-x-6 gap-y-2.5 sm:grid-cols-[1fr_auto]">
             <span
@@ -716,7 +717,11 @@ export function ProposalPeek({
         the model's opinion, which it replaces once the code is measured.
       */}
       {reanalyzing ? (
-        <AnalysisPlaceholder />
+        <>
+          <PreviewReason run={making} />
+          {/* Where the rubric would carry them, the scenarios come here. */}
+          {scenariosInRubric && <PreviewScenarios run={making} />}
+        </>
       ) : (
         <>
           <PricingRubricBlock
@@ -909,119 +914,6 @@ export function ProposalPeek({
         </TabsContent>
       </Tabs>
     </div>
-  );
-}
-
-/**
- * The price card while the model analyzes the bounty again: what it is
- * doing in place of the amount and size it will replace, so the old ones
- * are not read as the answer.
- */
-function ReanalyzingPrice({ queued }: { queued: boolean }) {
-  return (
-    <div
-      className="grid grid-cols-1 items-center gap-x-6 gap-y-2.5 sm:grid-cols-[1fr_auto]"
-      data-testid="proposal-reanalyzing"
-    >
-      <div aria-hidden="true" className="skeleton h-8 w-36 rounded" />
-      <div
-        aria-hidden="true"
-        className="skeleton h-12 w-12 rounded-md sm:col-start-2 sm:row-start-1 sm:justify-self-end"
-      />
-      <p
-        role="status"
-        className="text-muted-foreground flex items-center gap-2 text-sm sm:col-span-2"
-      >
-        <Loader2 className="size-3.5 shrink-0 animate-spin motion-reduce:animate-none" />
-        {queued
-          ? "Waiting for room to start the analysis…"
-          : "Reading the bounty, drafting its scenarios and sizing them…"}
-      </p>
-    </div>
-  );
-}
-
-/** Where the reasoning goes while it is drafted again. */
-function AnalysisPlaceholder() {
-  return (
-    <div
-      aria-hidden="true"
-      className="flex flex-col gap-2.5 rounded-lg border p-4"
-      data-testid="analysis-placeholder"
-    >
-      <div className="skeleton h-4 w-32 rounded" />
-      <div className="skeleton h-3 w-full rounded" />
-      <div className="skeleton h-3 w-11/12 rounded" />
-      <div className="skeleton h-3 w-4/5 rounded" />
-      <div className="skeleton mt-2 h-3 w-2/3 rounded" />
-      <div className="skeleton h-3 w-3/4 rounded" />
-    </div>
-  );
-}
-
-/**
- * One size as a card. The current size is the larger card, drawn solid; the
- * others are small and quiet, and become buttons when `onClick` is given.
- * Without it the card is a plain label, which is what a member or an
- * approved proposal sees: the size, without the offer to change it.
- *
- * A resize does not swap elements, it swaps classes on the same cards
- * once the server answers, so the change is animated rather than snapped:
- * the old size shrinks and fades to quiet while the new one grows and
- * fills, on one eased curve. Everything that differs between the two
- * shapes is in the transition list, so nothing jumps while the rest glides.
- * Off under reduced motion.
- *
- * Three things would make that bumpy, and each is kept out on purpose:
- *
- * - The width is never set, only the minimum. A set width lands on its new
- *   value at once while the minimum is still easing, so a growing card
- *   would pop wide and then finish growing. With only the minimum in play
- *   the box follows the ease in both directions, and "unsized" is free to
- *   be wider than it is tall.
- * - The other cards keep their look while the request is in flight. They
- *   are disabled, so a second click cannot race the first, but they are not
- *   dimmed and still answer the pointer: a dim would flash across the row
- *   on every click, and dropping the hover would make the pressed card
- *   fall back to quiet before it fills.
- * - The row is as tall as the large card whatever is mid-flight. Halfway
- *   through, the old card has shrunk and the new one has not yet grown,
- *   and without a floor the row would dip and lift the amount beside it.
- */
-function SizeCard({
-  size,
-  current,
-  pressed = current,
-  disabled,
-  onClick,
-}: {
-  size: string;
-  current: boolean;
-  /** Whether the button stands for the size in force; the current one by default. */
-  pressed?: boolean;
-  disabled?: boolean;
-  onClick?: () => void;
-}) {
-  // Square: the minimum width is the height, and the padding is small
-  // enough that "XS" and "XL" fit inside it. "unsized" and a half size
-  // such as "XS+" grow wider.
-  const shape = current
-    ? "bg-cta text-cta-foreground border-transparent h-12 min-w-12 px-2 text-lg font-bold shadow-xs"
-    : "bg-card text-muted-foreground hover:text-foreground hover:border-foreground/30 h-7 min-w-7 px-1 text-xs";
-  const className = `inline-flex items-center justify-center rounded-md border font-mono font-medium transition-[height,min-width,padding,font-size,font-weight,color,background-color,border-color,box-shadow,transform] duration-300 ease-[cubic-bezier(0.2,0,0,1)] motion-reduce:transition-none ${shape}`;
-  if (onClick === undefined) {
-    return <span className={className}>{size}</span>;
-  }
-  return (
-    <button
-      type="button"
-      className={`${className} outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 active:scale-[0.98] motion-reduce:active:scale-100`}
-      disabled={disabled}
-      aria-pressed={pressed}
-      onClick={onClick}
-    >
-      {size}
-    </button>
   );
 }
 

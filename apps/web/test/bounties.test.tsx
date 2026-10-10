@@ -1709,7 +1709,7 @@ test("a bounty opened mid-sizing says so, and lands on its proposal without a se
   const detail = await screen.findByTestId("bounty-detail");
   const part = within(detail).getByRole("region", { name: "Price" });
   // Nothing pressed: the bounty's own read named the run at work.
-  expect(await within(part).findByText("Pricing…")).toBeDefined();
+  expect(await within(part).findByTestId("proposal-preview")).toBeDefined();
   expect(
     await within(detail).findByTestId(
       "proposal-detail",
@@ -1756,7 +1756,7 @@ test("an admin proposes a bounty from inside it, follows its sizing, and lands o
   const detail = await screen.findByTestId("bounty-detail");
   const part = within(detail).getByRole("region", { name: "Price" });
   await userEvent.click(within(part).getByRole("button", { name: "Price it" }));
-  expect(await within(part).findByText("Pricing…")).toBeDefined();
+  expect(await within(part).findByTestId("proposal-preview")).toBeDefined();
 
   // The proposal takes the part's place inside the bounty, read by id, with
   // no list around it.
@@ -3578,7 +3578,9 @@ test("an admin generates a version for a sandbox with no repository, and follows
   );
   expect(await within(part).findByText("Generating")).toBeDefined();
   expect(
-    within(part).getByText(/An agent is writing the starter and its tests/),
+    within(part).getByText(
+      /The agent is writing the starter and its tests|Waiting for room to start the agent/,
+    ),
   ).toBeDefined();
   // Nothing to browse until its build has written it.
   expect(within(part).queryByRole("link", { name: "Open Sandbox" })).toBeNull();
@@ -5331,4 +5333,211 @@ test("a bounty sized and a sandbox generated with older context than the scope h
       )
     ).length,
   ).toBeGreaterThan(0);
+});
+
+/** A drafted spec, as a run's progress carries it. */
+const previewSpec = {
+  feature: "Invitations",
+  background: [],
+  scenarios: [
+    {
+      id: "s1",
+      kind: "happy",
+      title: "One invitation is sent",
+      steps: [{ keyword: "Then", text: "one email" }],
+      origin: "draft",
+      weight: "heavy",
+    },
+  ],
+  openQuestions: [],
+  assumptions: [],
+};
+
+test("a bounty being sized shows its scenarios, then its size and price, as each lands", async () => {
+  let polls = 0;
+  const state = server([
+    ["POST", "/bounties/bty_7/propose", () => json({ run: run() }, 202)],
+    [
+      "GET",
+      "/runs/brn_1",
+      () => {
+        polls += 1;
+        // The draft returns first; the size a read later. It never lands
+        // here: what is shown before it does is the point.
+        return json({
+          run: {
+            ...run([], "running"),
+            progress:
+              polls === 1
+                ? { spec: previewSpec }
+                : {
+                    spec: previewSpec,
+                    sizing: {
+                      complexity: "L",
+                      confidence: "high",
+                      rationale: "Three services change together.",
+                    },
+                  },
+          },
+        });
+      },
+    ],
+  ]);
+  vi.stubGlobal("fetch", state.fetchMock);
+  window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=bounty");
+  render(<Shell {...inAcme("admin")} />);
+  const detail = await screen.findByTestId("bounty-detail");
+  const part = within(detail).getByRole("region", { name: "Price" });
+  await userEvent.click(within(part).getByRole("button", { name: "Price it" }));
+  const preview = await within(part).findByTestId("proposal-preview");
+
+  // The scenarios first, while the size is still being made.
+  expect(
+    await within(preview).findByText(
+      "One invitation is sent",
+      {},
+      { timeout: 3_000 },
+    ),
+  ).toBeDefined();
+  expect(within(preview).getByRole("status").textContent).toContain(
+    "Sizing the bounty…",
+  );
+  expect(within(preview).queryByTestId("preview-amount")).toBeNull();
+
+  // Then the size, its price on the run's card, and why.
+  expect(
+    await within(preview).findByText(
+      "Three services change together.",
+      {},
+      { timeout: 3_000 },
+    ),
+  ).toBeDefined();
+  expect(within(preview).getByTestId("preview-amount").textContent).toContain(
+    "3.00",
+  );
+  expect(within(preview).getByText("L")).toBeDefined();
+  expect(within(preview).getByRole("status").textContent).toContain(
+    "Writing the proposal…",
+  );
+});
+
+test("a size the model could not give previews as unsized, as the proposal will land", async () => {
+  const state = server([
+    ["POST", "/bounties/bty_7/propose", () => json({ run: run() }, 202)],
+    [
+      "GET",
+      "/runs/brn_1",
+      () =>
+        json({
+          run: {
+            ...run([], "running"),
+            progress: { spec: previewSpec, sizing: null },
+          },
+        }),
+    ],
+  ]);
+  vi.stubGlobal("fetch", state.fetchMock);
+  window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=bounty");
+  render(<Shell {...inAcme("admin")} />);
+  const detail = await screen.findByTestId("bounty-detail");
+  const part = within(detail).getByRole("region", { name: "Price" });
+  await userEvent.click(within(part).getByRole("button", { name: "Price it" }));
+  const preview = await within(part).findByTestId("proposal-preview");
+
+  expect(
+    (
+      await within(preview).findByTestId(
+        "preview-amount",
+        {},
+        { timeout: 3_000 },
+      )
+    ).textContent,
+  ).toBe("Unpriced");
+  expect(within(preview).getByText("unsized")).toBeDefined();
+  expect(
+    within(preview).getByText("The model could not size this bounty."),
+  ).toBeDefined();
+});
+
+test("re-analyzing a proposal shows the new parts in place of the old as they land", async () => {
+  const state = server([
+    [
+      "GET",
+      "/bounties/bty_7",
+      () => json({ bounty: detail({ proposal: liveProposal() }) }),
+    ],
+    [
+      "GET",
+      "/proposals/bpr_9",
+      () =>
+        json({
+          proposal: proposal(),
+          freshness: { freshness: "current", checkedAt: stamp },
+          liveSpec: null,
+          writebackOperations: [],
+        }),
+    ],
+    ["GET", "/spec", () => json({ spec: null })],
+    ["GET", "/profile", () => json({ profiles: [] })],
+    [
+      "POST",
+      "/proposals/bpr_9/reprice",
+      () =>
+        json(
+          {
+            run: {
+              ...run(),
+              kind: "reprice",
+              sourceProposalId: "bpr_9",
+              sourceRevision: 1,
+            },
+          },
+          202,
+        ),
+    ],
+    [
+      "GET",
+      "/runs/brn_1",
+      () =>
+        json({
+          run: {
+            ...run([], "running"),
+            kind: "reprice",
+            sourceProposalId: "bpr_9",
+            sourceRevision: 1,
+            progress: {
+              sizing: {
+                complexity: "XS",
+                confidence: "low",
+                rationale: "One label.",
+              },
+            },
+          },
+        }),
+    ],
+  ]);
+  vi.stubGlobal("fetch", state.fetchMock);
+  window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=bounty");
+  render(<Shell {...inAcme("admin")} />);
+  const page = await screen.findByTestId("bounty-detail");
+  const proposalDetail = await within(page).findByTestId("proposal-detail");
+  await userEvent.click(
+    within(proposalDetail).getByRole("button", { name: "Re-analyze" }),
+  );
+
+  // The size has landed and the scenarios have not: the new size and
+  // reason show, and the scenarios wait in their place.
+  expect(
+    await within(proposalDetail).findByText(
+      "One label.",
+      {},
+      { timeout: 3_000 },
+    ),
+  ).toBeDefined();
+  expect(
+    within(proposalDetail).getByTestId("preview-amount").textContent,
+  ).toContain("1.00");
+  expect(
+    within(proposalDetail).getByTestId("proposal-reanalyzing").textContent,
+  ).toContain("Drafting its scenarios…");
 });

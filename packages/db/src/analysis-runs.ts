@@ -15,6 +15,7 @@ import {
 } from "sandbox-factory";
 import type {
   AnalysisParams,
+  AnalysisProgress,
   AnalysisStatus,
   AnalysisErrorCode,
   AnalysisTool,
@@ -45,6 +46,8 @@ export interface StoredAnalysisRun {
   readonly maxAttempts: number;
   readonly errorCode: AnalysisErrorCode | null;
   readonly errorDetail: string | null;
+  /** What an agent run has done so far; null for runs that write none. */
+  readonly progress: AnalysisProgress | null;
   readonly startedAt: string | null;
   readonly finishedAt: string | null;
   readonly deadlineAt: string | null;
@@ -133,6 +136,17 @@ export interface AnalysisRunStore {
     leaseToken: string,
     now: Date,
   ): Promise<boolean>;
+  /**
+   * Writes what a running agent has done so far, in place of what it had.
+   * Guarded by the lease like a heartbeat. False when the lease is gone.
+   */
+  recordProgress(
+    organizationId: string,
+    runId: string,
+    leaseToken: string,
+    progress: AnalysisProgress,
+    now: Date,
+  ): Promise<boolean>;
   finish(
     organizationId: string,
     runId: string,
@@ -193,6 +207,7 @@ function toRun(row: AnalysisRunRow, repoId: string | null): StoredAnalysisRun {
     maxAttempts: row.maxAttempts,
     errorCode: row.errorCode,
     errorDetail: row.errorDetail,
+    progress: row.progress ?? null,
     startedAt: row.startedAt?.toISOString() ?? null,
     finishedAt: row.finishedAt?.toISOString() ?? null,
     deadlineAt: row.deadlineAt?.toISOString() ?? null,
@@ -432,6 +447,8 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
           startedAt: now,
           deadlineAt: sql`${now.toISOString()}::timestamptz + ((${analysisRun.params}->>'deadlineMinutes')::int * interval '1 minute')`,
           finishedAt: null,
+          // A retry starts its steps again.
+          progress: null,
         })
         .where(
           // A graph reader (a slice, a scope or a builder that reads the
@@ -483,6 +500,16 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
           heartbeatAt: now,
           leaseExpiresAt: new Date(now.getTime() + 60_000),
         })
+        .where(
+          and(fence(owner, id, token, now), gt(analysisRun.deadlineAt, now)),
+        )
+        .returning({ id: analysisRun.id });
+      return rows.length > 0;
+    },
+    async recordProgress(owner, id, token, progress, now) {
+      const rows = await db
+        .update(analysisRun)
+        .set({ progress })
         .where(
           and(fence(owner, id, token, now), gt(analysisRun.deadlineAt, now)),
         )

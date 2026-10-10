@@ -35,6 +35,7 @@ import {
 import {
   isWorkspaceSource,
   type BountyDto,
+  type BountyRunDto,
   type MembershipDto,
   type BountySandboxSummaryDto,
   type BountySummaryDto,
@@ -155,6 +156,11 @@ import {
   statusOf,
 } from "./features/bounties/BountyStatus";
 import { SandboxCard } from "./features/bounties/SandboxCard";
+import {
+  PreviewPrice,
+  PreviewReason,
+  PreviewScenarios,
+} from "./features/bounties/SizingPreview";
 import { SandboxGeneration } from "./features/bounties/SandboxGeneration";
 import {
   areaDescription,
@@ -1334,6 +1340,8 @@ function usePropose(
 ) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The run sizing it, as last read: what it has made so far shows.
+  const [run, setRun] = useState<BountyRunDto | undefined>(undefined);
   const controller = useRef<AbortController | null>(null);
   useEffect(() => () => controller.current?.abort(), []);
   const start = async (following?: string) => {
@@ -1342,7 +1350,15 @@ function usePropose(
     controller.current = current;
     setPending(true);
     setError(null);
-    const result = await bounties.propose(bountyId, current.signal, following);
+    setRun(undefined);
+    const result = await bounties.propose(
+      bountyId,
+      current.signal,
+      following,
+      (read) => {
+        if (!current.signal.aborted) setRun(read);
+      },
+    );
     if (current.signal.aborted) return;
     setPending(false);
     if (result.ok) onOpenProposal(result.proposalId);
@@ -1374,7 +1390,7 @@ function usePropose(
     void start(inFlight);
     // `start` is remade each render; the run's id is what matters here.
   }, [inFlight, pending]);
-  return { pending, error, start: () => start() };
+  return { pending, error, run, start: () => start() };
 }
 
 /** Said when a save lost to someone else's, and the field now shows theirs. */
@@ -1553,6 +1569,20 @@ function BountyDetail({
     proposal !== null ? (
       <Part title="Price" framed={false} titleHidden={layout === "page"}>
         {proposal}
+      </Part>
+    ) : propose.pending ? (
+      /*
+        Being sized: each part of the proposal as the model returns it,
+        in the places the proposal will put them.
+      */
+      <Part title="Proposal" framed={false} titleHidden={layout === "page"}>
+        <div className="flex flex-col gap-6" data-testid="proposal-preview">
+          <div className="rounded-lg border p-4 sm:p-5">
+            <PreviewPrice run={propose.run} />
+          </div>
+          <PreviewReason run={propose.run} />
+          <PreviewScenarios run={propose.run} />
+        </div>
       </Part>
     ) : (
       <Part title="Price" titleHidden={layout === "page"}>

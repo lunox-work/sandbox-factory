@@ -7,7 +7,9 @@ import { ApiError } from "@sandbox-factory/client";
 import type { JiraBacklogPreviewDto } from "@sandbox-factory/shared";
 import { ArrowUpRight, FolderGit2, Loader2, Sparkles } from "lucide-react";
 import { useEffect, useRef, useState, type Ref } from "react";
+import { priceFor } from "sandbox-factory";
 
+import { ThinkingLine } from "@/components/Thinking";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -21,7 +23,9 @@ import {
 import { ProviderIcon } from "../../ProviderIcon";
 import { terminalRun, useObservation } from "../../data/observe";
 import { clients } from "../../data/query";
-import { wholeMoney } from "../../lib/format";
+import { money, wholeMoney } from "../../lib/format";
+import { KindDot } from "../../RubricScenarios";
+import { previewLine } from "../bounties/SizingPreview";
 import { pushLocation } from "../../navigation/location";
 import { BOUNTIES_PATH } from "../../routes";
 
@@ -50,7 +54,8 @@ export interface RepositoryAction {
  *
  * What is known before sizing is laid out — the ticket, why it was picked,
  * the range the rate card prices in, where its sandbox would come from — and
- * the button sizes it.
+ * the button sizes it. While it is sized, the size, the price and the spec
+ * fill in as each part lands.
  *
  * Where the server offers GitHub, a ticket is sized beside the code, so a
  * workspace with no repository yet is told to add one when it presses the
@@ -115,6 +120,11 @@ export function TeaserBounty({
     startDelay: 1000,
   });
   const finished = useRef<string | null>(null);
+  // What the run has made so far, filled into the placeholders below as
+  // each part lands; nothing until it is asked for.
+  const made = runId === null ? undefined : following.data;
+  const sized = made?.progress?.sizing ?? null;
+  const drafted = made?.progress?.spec ?? null;
 
   useEffect(() => {
     const run = following.data;
@@ -198,9 +208,59 @@ export function TeaserBounty({
         className="grid grid-cols-[4.5rem_minmax(0,1fr)] items-baseline gap-x-3 gap-y-3 border-t pt-4 text-xs"
         data-testid="teaser-facts"
       >
+        {/* Size and spec are the model's to say, so they are laid out only
+            once it is asked, and fill in as each part lands. */}
+        {made !== undefined && (
+          <>
+            <dt className="text-muted-foreground">Size</dt>
+            <dd
+              className="flex flex-wrap gap-1"
+              aria-label={
+                sized === null ? "Not sized yet" : `Sized ${sized.complexity}`
+              }
+              data-testid="teaser-size"
+            >
+              {["XS", "S", "M", "L", "XL"].map((size) => (
+                <span
+                  key={size}
+                  aria-hidden="true"
+                  className={
+                    sized?.complexity === size
+                      ? "activity-step-enter bg-cta text-cta-foreground rounded-[4px] border border-transparent px-1.5 py-px font-mono text-[11px] font-semibold"
+                      : `rounded-[4px] border border-dashed px-1.5 py-px font-mono text-[11px] ${
+                          sized === null
+                            ? "text-muted-foreground/70"
+                            : "text-muted-foreground/40"
+                        }`
+                  }
+                >
+                  {size}
+                </span>
+              ))}
+            </dd>
+          </>
+        )}
         <dt className="text-muted-foreground">Bounty</dt>
         <dd>
-          {range === undefined ? (
+          {sized !== null &&
+          sized.complexity !== "unsized" &&
+          made !== undefined ? (
+            <>
+              <span
+                className="activity-step-enter font-medium tabular-nums"
+                data-testid="teaser-price"
+              >
+                {money(
+                  priceFor(sized.complexity, made.rateCard),
+                  made.rateCard.currency,
+                )}
+              </span>
+              <span className="text-muted-foreground">
+                {" "}
+                · {sized.complexity} on your rate card
+              </span>
+            </>
+          ) : range === undefined ? (
             <span className="skeleton inline-block h-3 w-24 rounded align-middle" />
           ) : (
             <>
@@ -212,6 +272,41 @@ export function TeaserBounty({
             </>
           )}
         </dd>
+        {made !== undefined && (
+          <>
+            <dt className="text-muted-foreground">Spec</dt>
+            <dd className="flex flex-col gap-1.5" data-testid="teaser-spec">
+              {drafted !== null && drafted.scenarios.length > 0 ? (
+                <ul className="activity-step-enter flex flex-col gap-1">
+                  {drafted.scenarios.slice(0, 3).map((scenario) => (
+                    <li
+                      key={scenario.id}
+                      className="flex min-w-0 items-center gap-1.5"
+                    >
+                      <KindDot kind={scenario.kind} />
+                      <span className="truncate">{scenario.title}</span>
+                    </li>
+                  ))}
+                  {drafted.scenarios.length > 3 && (
+                    <li className="text-muted-foreground">
+                      and {drafted.scenarios.length - 3} more
+                    </li>
+                  )}
+                </ul>
+              ) : (
+                <>
+                  <span aria-hidden="true" className="flex flex-col gap-1">
+                    <span className="skeleton block h-1.5 w-11/12 rounded-full" />
+                    <span className="skeleton block h-1.5 w-8/12 rounded-full" />
+                  </span>
+                  <span className="text-muted-foreground">
+                    Acceptance scenarios a reviewer can weigh
+                  </span>
+                </>
+              )}
+            </dd>
+          </>
+        )}
         <dt className="text-muted-foreground">Sandbox</dt>
         <dd>
           {only !== undefined ? (
@@ -265,17 +360,24 @@ export function TeaserBounty({
               {busy ? <Loader2 className="animate-spin" /> : <Sparkles />}
               {busy ? `Sizing ${issue.key}…` : `Size ${issue.key}`}
             </Button>
-            <p className="text-muted-foreground text-center text-xs">
-              {!sizingAvailable
-                ? "Sizing is not configured on this server."
-                : needsCode
-                  ? "Needs GitHub connected first"
-                  : boardBusy
-                    ? "The whole board is being sized now."
-                    : busy
-                      ? "About a minute. It opens here when it is ready."
+            {busy ? (
+              <ThinkingLine
+                className="text-xs"
+                since={made?.startedAt ?? made?.createdAt}
+              >
+                {previewLine(made)}
+              </ThinkingLine>
+            ) : (
+              <p className="text-muted-foreground text-center text-xs">
+                {!sizingAvailable
+                  ? "Sizing is not configured on this server."
+                  : needsCode
+                    ? "Needs GitHub connected first"
+                    : boardBusy
+                      ? "The whole board is being sized now."
                       : `About a minute · one model call${reading}`}
-            </p>
+              </p>
+            )}
           </>
         )}
         {message !== null && (

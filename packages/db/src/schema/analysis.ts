@@ -27,6 +27,7 @@ import {
 import type { TreeFacts } from "sandbox-factory";
 import type {
   AnalysisParams,
+  AnalysisProgress,
   AnalysisStatus,
   AnalysisErrorCode,
   ArtifactKind,
@@ -117,6 +118,11 @@ export const analysisRun = pgTable(
     deadlineAt: ts("deadline_at"),
     errorCode: text("error_code").$type<AnalysisErrorCode>(),
     errorDetail: text("error_detail"),
+    /**
+     * What an agent run has done so far, written by the worker as it works.
+     * Cleared when a run is claimed again; null for runs that write none.
+     */
+    progress: jsonb("progress").$type<AnalysisProgress>(),
     logKey: text("log_key"),
     startedAt: ts("started_at"),
     finishedAt: ts("finished_at"),

@@ -116,12 +116,14 @@ export interface Bounties {
    * Sizes the bounty and makes its proposal, following the run until the
    * proposal lands. Resolves to the proposal, or to why there is none. With
    * `following`, the run already sizing it is waited on instead, and nothing
-   * new is asked for.
+   * new is asked for. `onRun` is told each read of the run, with what it
+   * has made so far, so the page can show the parts as they land.
    */
   propose: (
     bountyId: string,
     signal?: AbortSignal,
     following?: string,
+    onRun?: (run: BountyRunDto) => void,
   ) => Promise<ProposeResult>;
 }
 
@@ -448,9 +450,10 @@ export function useBounties(organizationId: string): Bounties {
       bountyId: string,
       signal?: AbortSignal,
       following?: string,
+      onRun?: (run: BountyRunDto) => void,
     ): Promise<ProposeResult> => {
       const readRun = async (runId: string) => {
-        return queryClient.fetchQuery({
+        const run = await queryClient.fetchQuery({
           queryKey: queryKeys.resource(
             userId,
             organizationId,
@@ -467,6 +470,8 @@ export function useBounties(organizationId: string): Bounties {
             ),
           staleTime: 0,
         });
+        onRun?.(run);
+        return run;
       };
       try {
         let started: Awaited<
@@ -499,6 +504,7 @@ export function useBounties(organizationId: string): Bounties {
         const initial = active === null ? started?.run : await readRun(active);
         if (initial === undefined)
           return { ok: false, error: "The bounty could not be proposed." };
+        if (active === null) onRun?.(initial);
         const run = await observeUntil({
           initial,
           read: readRun,

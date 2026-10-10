@@ -44,6 +44,7 @@ import {
 } from "sandbox-factory";
 
 import { LoadingLine } from "@/components/Message";
+import { ThinkingLine } from "@/components/Thinking";
 import { SectionHeading } from "@/components/ReadSection";
 import { Button } from "@/components/ui/button";
 import {
@@ -560,9 +561,9 @@ function DimensionRow({
         )}
         {!dimension.measured ? (
           rubric.code.status === "pending" ? (
-            <LoadingLine className="mt-2 text-xs">
+            <ThinkingLine className="mt-2 text-xs">
               {UNMEASURED["pending"]}
-            </LoadingLine>
+            </ThinkingLine>
           ) : (
             <p className="text-muted-foreground mt-2 text-xs">
               {UNMEASURED[rubric.code.status] ?? UNMEASURED["unavailable"]}

@@ -22,6 +22,7 @@ const graphRun: StoredAnalysisRun = {
   maxAttempts: 2,
   errorCode: null,
   errorDetail: null,
+  progress: null,
   startedAt: stamp,
   finishedAt: stamp,
   deadlineAt: stamp,

@@ -1,5 +1,6 @@
 /** Pure commercial rules. This module stays dependency-free. */
 
+import type { SpecDraft } from "./pricing/spec.js";
 import type { CategoryConfig, CategoryMatch } from "./selection/categories.js";
 
 /**
@@ -176,6 +177,19 @@ export interface BountyRunOutcome {
    */
   readonly previousComplexity?: BountyComplexity;
   readonly pointsDelta?: number;
+}
+
+/**
+ * What a run sizing one bounty has made so far, before its proposal is
+ * written: each part as its model call returns, so a page following the
+ * run shows the scenarios and the size as they land instead of a wait for
+ * both. A field is absent until its call returns.
+ */
+export interface BountyRunProgress {
+  /** The drafted spec, or null when the draft failed. */
+  readonly spec?: SpecDraft | null;
+  /** The model's size, or null when the call failed. */
+  readonly sizing?: BountySizingResult | null;
 }
 
 export type RateCardValidation =

@@ -38,6 +38,7 @@ function row(overrides: Partial<BountyRunRow> = {}): BountyRunRow {
     promptVersion: "jira-size-v1",
     planned: [],
     outcomes: [],
+    progress: null,
     candidatesScanned: 0,
     skippedLive: 0,
     scanLimitReached: false,
@@ -413,6 +414,10 @@ test("run reads and lease writes report misses", async () => {
     false,
   );
   assert.equal(
+    await store.recordProgress("org_1", "brn_x", "lease", { spec: null }),
+    false,
+  );
+  assert.equal(
     await store.finish("org_1", "brn_x", "lease", "failed", {
       fatalErrorCode: "test",
     }),
@@ -482,7 +487,29 @@ test("claims, heartbeats, records and finishes only under the lease", async () =
     )?.status,
     "running",
   );
-  assert.ok(fake.calls.slice(0, 5).every(({ filtered }) => filtered));
+  assert.equal(
+    await store.recordProgress("org_1", "brn_1", "lease", {
+      sizing: { complexity: "S", confidence: "high", rationale: "Small." },
+    }),
+    true,
+  );
+  assert.ok(fake.calls.slice(0, 6).every(({ filtered }) => filtered));
+});
+
+test("a run's preview reads back as written, and a run without one as null", async () => {
+  const progress = {
+    sizing: {
+      complexity: "S" as const,
+      confidence: "high" as const,
+      rationale: "Small.",
+    },
+  };
+  const fake = createFakeDb([row({ progress })]);
+  const store = createBountyRunStore(fake.db);
+  assert.deepEqual((await store.get("org_1", "brn_1"))?.progress, progress);
+
+  const bare = createBountyRunStore(createFakeDb([row()]).db);
+  assert.equal((await bare.get("org_1", "brn_1"))?.progress, null);
 });
 
 test("a run's deadline grows with the number of bounties it planned", () => {

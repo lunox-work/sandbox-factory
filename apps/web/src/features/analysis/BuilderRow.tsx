@@ -21,6 +21,7 @@ import {
   Waypoints,
   type LucideIcon,
 } from "lucide-react";
+import { ThinkingLine } from "@/components/Thinking";
 
 import type { AnalysisRunDto } from "@sandbox-factory/shared";
 import { toolVersionOf, type ContextBuilder } from "sandbox-factory";
@@ -148,7 +149,7 @@ export function BuilderRow({
         ))}
       </dl>
       <div className="flex items-center justify-between gap-2 max-sm:pl-[1.625rem] sm:flex-col sm:items-end sm:justify-center sm:gap-1">
-        <Status run={run} pending={pending} />
+        <Status builder={builder} run={run} pending={pending} />
         {run !== undefined && isOutdated(builder, run) ? (
           <span
             className="text-muted-foreground text-xs"
@@ -200,14 +201,41 @@ export function BuilderRow({
   );
 }
 
-/** Where the run stands, in a word and a dot. */
+/**
+ * A running builder, and how long it has run. DeepWiki's model writes for
+ * minutes, so it also says how long that usually is; the rest are done in
+ * seconds.
+ */
+const RUNNING: Record<ContextBuilder, { line: string; expected?: string }> = {
+  graphify: { line: "Building" },
+  dependency_cruiser: { line: "Building" },
+  deepwiki: { line: "Writing the wiki", expected: "usually ~8 min" },
+  abstractions: { line: "Building" },
+  data_model: { line: "Building" },
+};
+
+/** Where the run stands, in a word and a dot; while it runs, the orb. */
 function Status({
+  builder,
   run,
   pending,
 }: {
+  builder: ContextBuilder;
   run: AnalysisRunDto | undefined;
   pending: boolean;
 }) {
+  if (run?.status === "running") {
+    const { line, expected } = RUNNING[builder];
+    return (
+      <ThinkingLine
+        className="text-xs"
+        since={run.startedAt}
+        expected={expected}
+      >
+        {line}
+      </ThinkingLine>
+    );
+  }
   if (run === undefined)
     return pending ? (
       <StatusDot status="queued" />

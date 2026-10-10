@@ -48,6 +48,7 @@ import {
   trimSpec,
   type BountyRunOutcome,
   type BountyRunPlannedIssue,
+  type BountyRunProgress,
   type BountySizingResult,
   type CategoryMatch,
   type RespecRequest,
@@ -631,6 +632,25 @@ export class BountyExecutor {
   }
 
   /**
+   * What a run sizing one bounty has just made, for the page following it.
+   * A board's run sizes many at once and writes none: its page lists the
+   * proposals as they land. A preview that cannot be written is left out;
+   * the proposal is what counts, and a lost lease is caught when it is
+   * written.
+   */
+  async #preview(
+    organizationId: string,
+    run: StoredBountyRun,
+    leaseToken: string,
+    progress: BountyRunProgress,
+  ): Promise<void> {
+    if (run.planned.length !== 1) return;
+    await this.#options.runs
+      .recordProgress(organizationId, run.id, leaseToken, progress)
+      .catch(() => false);
+  }
+
+  /**
    * The context a bounty holds, or none when it cannot be read: like the
    * outline, it informs a size and is not what one stands on.
    */
@@ -1143,74 +1163,107 @@ export class BountyExecutor {
         "The bounty does not contain enough detail to size.",
       );
     } else {
+      /*
+        The spec and the size are asked for side by side, from the same
+        read: neither reads the other, and a page following the run shows
+        each as it returns. Nothing prices from the spec yet, so a draft
+        that fails costs the bounty its spec and not its proposal: the size
+        still stands, and the outcome says the spec is missing. What stops
+        a run for one call stops the other too, since it would meet the
+        same refusal; the first such code is the cause.
+      */
+      // Joined rather than forwarded: a run already aborted is aborted here
+      // too, which a listener added now would never hear.
+      const calls = new AbortController();
+      const callSignal = AbortSignal.any([signal, calls.signal]);
+      let fatalCode: string | undefined;
+      const stop = (code: string) => {
+        fatalCode ??= code;
+        calls.abort();
+      };
       const request: SizingRequestOptions = {
-        signal,
+        signal: callSignal,
         ...(run.deadlineAt === null
           ? {}
           : { deadlineAt: new Date(run.deadlineAt) }),
       };
+      // Once the run is stopping, the other call's failure is that stop and
+      // not news: the page waits for the run's own end instead.
+      const preview = async (progress: BountyRunProgress) => {
+        if (callSignal.aborted) return;
+        await this.#preview(organizationId, run, leaseToken, progress);
+      };
 
-      /*
-        The spec first, from the same read the size is made from. Nothing
-        prices from it yet, so a draft that fails costs the bounty its spec
-        and not its proposal: the size is still asked for, and the outcome
-        says the spec is missing. What stops a run for the size stops it
-        here too, since the next call would meet the same refusal.
-      */
-      try {
-        const draft = await this.#options.caller.call(
-          draftSpecTool,
-          {
-            summary: content.title,
-            descriptionText: content.description,
-            components: content.components,
-            ...(repositoryOutline === "" ? {} : { repositoryOutline }),
-            ...(sourceContext === "" ? {} : { sourceContext }),
-          },
-          request,
-        );
-        spent.push(draft.usage);
-        touched = outlines.flatMap(({ repoId, snapshotId }, index) =>
-          draft.result.repositories.includes(repositoryLabel(index))
-            ? [{ repoId, snapshotId }]
-            : [],
-        );
-        drafted = {
-          specHash,
-          specHashVersion: BOUNTY_SPEC_HASH_VERSION,
-          draft: draft.result.spec,
-          origin: "draft",
-          actualModel: draft.actualModel,
-          promptVersion: draftSpecTool.promptVersion,
-        };
-      } catch (error) {
-        const fatalCode = fatalCodeOf(error);
-        if (fatalCode !== undefined) return { fatalCode };
-        draftFailure = true;
-      }
+      const draftCall = (async () => {
+        try {
+          const draft = await this.#options.caller.call(
+            draftSpecTool,
+            {
+              summary: content.title,
+              descriptionText: content.description,
+              components: content.components,
+              ...(repositoryOutline === "" ? {} : { repositoryOutline }),
+              ...(sourceContext === "" ? {} : { sourceContext }),
+            },
+            request,
+          );
+          spent.push(draft.usage);
+          touched = outlines.flatMap(({ repoId, snapshotId }, index) =>
+            draft.result.repositories.includes(repositoryLabel(index))
+              ? [{ repoId, snapshotId }]
+              : [],
+          );
+          drafted = {
+            specHash,
+            specHashVersion: BOUNTY_SPEC_HASH_VERSION,
+            draft: draft.result.spec,
+            origin: "draft",
+            actualModel: draft.actualModel,
+            promptVersion: draftSpecTool.promptVersion,
+          };
+          await preview({ spec: draft.result.spec });
+        } catch (error) {
+          const code = fatalCodeOf(error);
+          if (code !== undefined) return stop(code);
+          draftFailure = true;
+          await preview({ spec: null });
+        }
+      })();
 
-      try {
-        const sized = await this.#options.caller.call(
-          sizeBountyTool,
-          {
-            summary: content.title,
-            descriptionText: content.description,
-            ...(sourceContext === "" ? {} : { sourceContext }),
-          },
-          request,
-        );
-        sizing = sized.result;
-        actualModel = sized.actualModel;
-        spent.push(sized.usage);
-      } catch (error) {
-        const fatalCode = fatalCodeOf(error);
-        if (fatalCode !== undefined) return { fatalCode };
-        technicalFailure = true;
-        sizing = fixedUnsized(
-          "sizing_failed",
-          "Sizing could not be completed for this bounty.",
-        );
-      }
+      const sizeCall = (async (): Promise<BountySizingResult | undefined> => {
+        try {
+          const sized = await this.#options.caller.call(
+            sizeBountyTool,
+            {
+              summary: content.title,
+              descriptionText: content.description,
+              ...(sourceContext === "" ? {} : { sourceContext }),
+            },
+            request,
+          );
+          actualModel = sized.actualModel;
+          spent.push(sized.usage);
+          await preview({ sizing: sized.result });
+          return sized.result;
+        } catch (error) {
+          const code = fatalCodeOf(error);
+          if (code !== undefined) {
+            stop(code);
+            return undefined;
+          }
+          technicalFailure = true;
+          await preview({ sizing: null });
+          return fixedUnsized(
+            "sizing_failed",
+            "Sizing could not be completed for this bounty.",
+          );
+        }
+      })();
+
+      const [, sized] = await Promise.all([draftCall, sizeCall]);
+      if (fatalCode !== undefined) return { fatalCode };
+      if (sized === undefined) return { fatalCode: "worker_lost" };
+      sizing = sized;
     }
 
     /*

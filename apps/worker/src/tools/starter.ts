@@ -52,7 +52,7 @@ import type {
   AgentTool,
   AgentToolResult,
 } from "../agent/loop.js";
-import { runAgent } from "../agent/loop.js";
+import { inputCount, runAgent } from "../agent/loop.js";
 import {
   STARTER_SYSTEM_PROMPT,
   starterBountySection,
@@ -172,6 +172,31 @@ function tail(text: string): string {
   return text.length <= STEP_OUTPUT_CHARS
     ? text
     : `…${text.slice(-STEP_OUTPUT_CHARS)}`;
+}
+
+/** A candidate's files, as a step says them: "12 files". */
+function starterFiles(input: unknown): string {
+  const files =
+    inputCount(input, "files") +
+    inputCount(input, "publicTests") +
+    inputCount(input, "hiddenTests");
+  return `${files} ${files === 1 ? "file" : "files"}`;
+}
+
+/** A run of a candidate, as a step: whether it built, and its baseline. */
+function ranStarter(
+  verb: string,
+  input: unknown,
+  result: AgentToolResult,
+): string | null {
+  if (result.content.startsWith("No runs are left")) return null;
+  if (result.content.startsWith("The baseline passes."))
+    return `${verb} the starter's ${starterFiles(input)}: the baseline passes`;
+  if (result.content.startsWith("The baseline does not pass."))
+    return `${verb} the starter's ${starterFiles(input)}: the baseline does not pass yet`;
+  return result.isError === true
+    ? `${verb} the starter: it does not build yet`
+    : null;
 }
 
 /** One baseline, built and run for a candidate. */
@@ -300,6 +325,10 @@ export function createStarterAdapter(options: {
       let pseudonyms: StarterSubmission["aliases"] = [];
       const pseudonymsTool: AgentTool = {
         name: "set_pseudonyms",
+        describe: (_input, result) =>
+          result.isError === true
+            ? null
+            : "Set the names the starter is renamed by",
         description:
           "Set the pseudonyms check_starter, run_starter and submit_starter rename the starter by, replacing any set before. Set them before the first check.",
         inputSchema: {
@@ -322,6 +351,10 @@ export function createStarterAdapter(options: {
       };
       const checkTool: AgentTool = {
         name: "check_starter",
+        describe: (input, result) =>
+          result.isError === true
+            ? "Checked the starter: it does not compile yet"
+            : `Checked the starter: ${starterFiles(input)} compile`,
         description: `Type-check the starter as \`npm run build\` would, and check where each file lives. At most ${STARTER_CHECKS_MAX} checks per run.`,
         inputSchema: {
           properties: candidateProperties,
@@ -349,6 +382,7 @@ export function createStarterAdapter(options: {
       };
       const runTool: AgentTool = {
         name: "run_starter",
+        describe: (input, result) => ranStarter("Ran", input, result),
         description: `Build and run the starter in a fresh job: install, build, the walkthrough, the public tests and each hidden test. Shows each step, and the output of those that failed. Runs are shared with submit_starter: ${STARTER_RUNS_MAX} per run in all.`,
         inputSchema: {
           properties: candidateProperties,
@@ -380,6 +414,10 @@ export function createStarterAdapter(options: {
       } | null = null;
       const submitTool: AgentTool = {
         name: "submit_starter",
+        describe: (input, result) =>
+          result.accepted === true
+            ? `Submitted the starter: ${starterFiles(input)}`
+            : ranStarter("Submitted", input, result),
         description:
           "Submit the starter. It is checked and run once more, and accepted when the baseline passes.",
         inputSchema: {
@@ -411,6 +449,7 @@ export function createStarterAdapter(options: {
       };
       const outcome = await runAgent({
         model,
+        step: input.step,
         system: STARTER_SYSTEM_PROMPT,
         prompt: starterBountySection({
           title: task.title,

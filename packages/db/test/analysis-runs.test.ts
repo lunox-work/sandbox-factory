@@ -34,6 +34,7 @@ const row = (overrides: Partial<AnalysisRunRow> = {}): AnalysisRunRow => ({
   deadlineAt: null,
   errorCode: null,
   errorDetail: null,
+  progress: null,
   logKey: null,
   startedAt: null,
   finishedAt: null,
@@ -497,6 +498,19 @@ test("lease mutations refuse stale writes; finish inserts artifacts only after a
     const fake = createFakeDb(present ? [{ id: "run" }] : []);
     const store = createAnalysisRunStore(fake.db);
     assert.equal(await store.heartbeat("owner", "run", "lease", now), present);
+    const progress = {
+      count: 1,
+      steps: [{ at: now.toISOString(), text: "Read src/a.ts" }],
+    };
+    assert.equal(
+      await store.recordProgress("owner", "run", "lease", progress, now),
+      present,
+    );
+    assert.deepEqual(
+      fake.calls.find(({ values }) => values?.["progress"] !== undefined)
+        ?.values?.["progress"],
+      progress,
+    );
     assert.equal(
       await store.finish(
         "owner",

@@ -15,6 +15,7 @@ export const run: ClaimedAnalysisRun = {
   maxAttempts: 2,
   errorCode: null,
   errorDetail: null,
+  progress: null,
   startedAt: new Date().toISOString(),
   finishedAt: null,
   deadlineAt: new Date(Date.now() + 60_000).toISOString(),

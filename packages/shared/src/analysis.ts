@@ -2,6 +2,8 @@ import {
   ABSTRACTION_OMISSION_CODES,
   ANALYSIS_STATUSES,
   ANALYSIS_ERROR_CODES,
+  ANALYSIS_PROGRESS_STEPS_MAX,
+  ANALYSIS_PROGRESS_TEXT_MAX,
   ARTIFACT_KINDS,
   CONTEXT_BUILDERS,
   DATA_MODEL_OMISSION_CODES,
@@ -193,6 +195,18 @@ export const enqueueFixturesSchema = z.strictObject({
     .default(AGENT_DEADLINE_MINUTES),
 });
 
+/** What an agent run has done so far: `AnalysisProgress` in core. */
+export const analysisProgressSchema = z.object({
+  count: z.number().int().nonnegative(),
+  steps: z
+    .array(
+      z.object({
+        at: z.iso.datetime(),
+        text: z.string().min(1).max(ANALYSIS_PROGRESS_TEXT_MAX),
+      }),
+    )
+    .max(ANALYSIS_PROGRESS_STEPS_MAX),
+});
 const runCommon = {
   id: z.string(),
   /** Null for a run with no repository: a starter's. */
@@ -204,6 +218,11 @@ const runCommon = {
   maxAttempts: z.number().int().nonnegative(),
   errorCode: z.enum(ANALYSIS_ERROR_CODES).nullable(),
   errorDetail: z.string().nullable(),
+  /**
+   * What an agent run has done so far. Steps that cannot be read are
+   * dropped rather than failing the run's read: they are a preview.
+   */
+  progress: analysisProgressSchema.nullable().catch(null),
   startedAt: z.iso.datetime().nullable(),
   finishedAt: z.iso.datetime().nullable(),
   deadlineAt: z.iso.datetime().nullable(),
@@ -857,3 +876,4 @@ export type DependencyCruiserSummaryDto = z.infer<
 export type DeepwikiSummaryDto = z.infer<typeof deepwikiSummarySchema>;
 export type AbstractionsSummaryDto = z.infer<typeof abstractionsSummarySchema>;
 export type DataModelSummaryDto = z.infer<typeof dataModelSummarySchema>;
+export type AnalysisProgressDto = z.infer<typeof analysisProgressSchema>;

@@ -195,6 +195,8 @@ interface World {
   bounties: number;
   /** The board's backlog scan, when not the usual three candidates. */
   scan?: ReturnType<typeof preview> & { fallback?: boolean };
+  /** The sizing run as it reads, when not already landed. */
+  sizingRun?: unknown;
 }
 
 let world: World;
@@ -257,6 +259,8 @@ beforeEach(() => {
         return json({ runs: [], sizingAvailable: true });
       if (method === "POST" && path === "/jira/boards/jrb_1/issues")
         return json({ run: { id: "brn_9", kind: "issue" } }, 202);
+      if (path === "/runs/brn_9" && world.sizingRun !== undefined)
+        return json({ run: world.sizingRun });
       if (path === "/runs/brn_9")
         return json({
           run: {
@@ -673,6 +677,90 @@ test("sizing from the scan is one call for that ticket, and opens its proposal",
   );
 });
 
+test("a ticket being sized fills in its preview as each part lands", async () => {
+  world.jira = [jiraSite];
+  world.boards = [board];
+  // Beside code, so the button sizes rather than asks for GitHub.
+  world.github = [githubAccount];
+  world.repositories = [widgets];
+  // Drafted and sized, and the proposal not yet written.
+  world.sizingRun = {
+    id: "brn_9",
+    organizationId: "org_1",
+    boardId: "jrb_1",
+    bountyId: null,
+    kind: "issue",
+    sourceProposalId: null,
+    sourceRevision: null,
+    respec: null,
+    requestId: "8f0b4a1e-9a77-4c35-9a52-3f0f5b2d3c11",
+    status: "running",
+    selection: {},
+    rateCard: {
+      currency: "USD",
+      xsMinor: 1_000,
+      sMinor: 5_800,
+      mMinor: 10_500,
+      lMinor: 15_300,
+      xlMinor: 20_000,
+      revision: 1,
+    },
+    requestedModel: "model",
+    promptVersion: "v1",
+    planned: [],
+    outcomes: [],
+    candidatesScanned: 0,
+    skippedLive: 0,
+    scanLimitReached: false,
+    fatalErrorCode: null,
+    startedAt: "2026-10-09T00:00:00.000Z",
+    deadlineAt: null,
+    finishedAt: null,
+    createdAt: "2026-10-09T00:00:00.000Z",
+    progress: {
+      spec: {
+        feature: "Invitations",
+        background: [],
+        scenarios: [
+          {
+            id: "s1",
+            kind: "happy",
+            title: "One invitation is sent",
+            steps: [{ keyword: "Then", text: "one email" }],
+            origin: "draft",
+            weight: "heavy",
+          },
+        ],
+        openQuestions: [],
+        assumptions: [],
+      },
+      sizing: { complexity: "M", confidence: "high", rationale: "Some." },
+    },
+  };
+  showOnboarding();
+
+  const teaser = await screen.findByTestId("teaser-bounty");
+  await userEvent.click(
+    await within(teaser).findByRole("button", { name: "Size ACME-7" }),
+  );
+
+  // The placeholders take what the model has said so far.
+  await waitFor(
+    () =>
+      expect(
+        within(teaser).getByTestId("teaser-size").getAttribute("aria-label"),
+      ).toBe("Sized M"),
+    { timeout: 4_000 },
+  );
+  expect(within(teaser).getByTestId("teaser-price").textContent).toContain(
+    "105",
+  );
+  expect(within(teaser).getByText("One invitation is sent")).toBeTruthy();
+  expect(within(teaser).getByRole("status").textContent).toContain(
+    "Writing the proposal…",
+  );
+});
+
 test("while a ticket is being sized, the list holds it in focus", async () => {
   // Its teaser follows the run and opens the proposal when it lands; a row
   // tapped meanwhile would take it off screen and lose that.
@@ -987,6 +1075,17 @@ test("with both, the board's tickets may touch the workspace's repository, with 
   );
   expect(teaser.textContent).not.toMatch(/link a repository/);
   expect(screen.queryByTestId("board-repository")).toBeNull();
+  // With code to size beside, the whole board may be sized.
+  await screen.findByTestId("scan-categories");
+  await userEvent.click(
+    within(screen.getByTestId("board-bar")).getByRole("button", {
+      name: "Board actions",
+    }),
+  );
+  const sizeAll = await screen.findByRole("menuitem", {
+    name: /size all 3 tickets/i,
+  });
+  expect(sizeAll.getAttribute("aria-disabled")).toBeNull();
 });
 
 /* -------------------------------------------------------------------------- */

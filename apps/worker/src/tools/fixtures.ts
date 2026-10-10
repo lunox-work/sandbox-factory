@@ -27,7 +27,7 @@ import {
 import { z } from "zod";
 import { AnalysisError } from "../errors.js";
 import type { AgentSettings, AgentTool } from "../agent/loop.js";
-import { runAgent } from "../agent/loop.js";
+import { inputCount, runAgent } from "../agent/loop.js";
 import { FIXTURES_SYSTEM_PROMPT, bountySection } from "../agent/prompts.js";
 import { dataModelTool } from "../agent/context-tools.js";
 import {
@@ -152,6 +152,12 @@ export function createFixturesAdapter(settings: AgentSettings): ToolAdapter {
       let accepted: FixtureSubmission | null = null;
       const checkTool: AgentTool = {
         name: "check_fixtures",
+        describe: (input, result) =>
+          result.content.startsWith("No checks are left")
+            ? null
+            : result.isError === true
+              ? "Checked the fixtures: they do not compile yet"
+              : `Checked ${fixtureCount(input)}: they compile`,
         description: `Type-check fixtures against the slice's declaration stubs and the walkthrough against the slice, as the generated project would. At most ${FIXTURE_CHECKS_MAX} checks per run.`,
         inputSchema: {
           properties: { fixtures: fixtureItems, scenario: scenarioProperty },
@@ -175,6 +181,10 @@ export function createFixturesAdapter(settings: AgentSettings): ToolAdapter {
       };
       const submitTool: AgentTool = {
         name: "submit_fixtures",
+        describe: (input, result) =>
+          result.accepted === true
+            ? `Submitted ${fixtureCount(input)} and the walkthrough`
+            : null,
         description:
           "Submit the fixtures and the walkthrough. They are type-checked once more and must compile.",
         inputSchema: {
@@ -212,6 +222,7 @@ export function createFixturesAdapter(settings: AgentSettings): ToolAdapter {
       }
       const outcome = await runAgent({
         model: settings.model,
+        step: input.step,
         system: FIXTURES_SYSTEM_PROMPT,
         prompt: [
           bountySection(task.issueKey, task.draft),
@@ -267,4 +278,10 @@ export function createFixturesAdapter(settings: AgentSettings): ToolAdapter {
       ];
     },
   };
+}
+
+/** A call's fixtures, as a step says them: "4 fixtures". */
+function fixtureCount(input: unknown): string {
+  const count = inputCount(input, "fixtures");
+  return `${count} ${count === 1 ? "fixture" : "fixtures"}`;
 }

@@ -16,6 +16,7 @@ import {
   respecRequestSchema,
   scenarioKindSchema,
   scenarioWeightSchema,
+  specDraftSchema,
 } from "./spec.js";
 
 /** Any size a proposal can hold, half sizes included, or `unsized`. */
@@ -188,6 +189,18 @@ export const bountyRunPlannedIssueSchema = z.object({
   categories: z.array(bountyCategoryMatchSchema).optional(),
 });
 
+/**
+ * What a run sizing one bounty has made so far: the spec and the size, each
+ * as its model call returns. Null on a run with nothing yet, and on runs of
+ * a whole board, which write none.
+ */
+export const bountyRunProgressSchema = z.object({
+  /** The drafted spec, or null when the draft failed. */
+  spec: specDraftSchema.nullable().optional(),
+  /** The model's size, or null when the call failed. */
+  sizing: sizingResultSchema.nullable().optional(),
+});
+
 export const bountyRunDtoSchema = z.object({
   id: z.string().min(1),
   organizationId: z.string().min(1),
@@ -219,6 +232,12 @@ export const bountyRunDtoSchema = z.object({
   deadlineAt: z.iso.datetime().nullable(),
   finishedAt: z.iso.datetime().nullable(),
   createdAt: z.iso.datetime(),
+  /**
+   * What the run has made so far. A part that cannot be read is dropped
+   * rather than failing the run's read: it is a preview, and the run's
+   * outcome is what counts.
+   */
+  progress: bountyRunProgressSchema.nullable().catch(null),
 });
 
 export const createRunSchema = z.object({ requestId: z.uuid() });
@@ -489,6 +508,7 @@ export type BountyCategoryMatch = z.infer<typeof bountyCategoryMatchSchema>;
 export type ProposalCategoriesDto = z.infer<typeof proposalCategoriesDtoSchema>;
 export type BountyRunPlannedIssue = z.infer<typeof bountyRunPlannedIssueSchema>;
 export type BountyRunDto = z.infer<typeof bountyRunDtoSchema>;
+export type BountyRunProgressDto = z.infer<typeof bountyRunProgressSchema>;
 export type BountyProposalDto = z.infer<typeof bountyProposalDtoSchema>;
 export type RubricAssessmentDto = z.infer<typeof rubricAssessmentSchema>;
 export type ProposalFreshnessDto = z.infer<typeof proposalFreshnessDtoSchema>;

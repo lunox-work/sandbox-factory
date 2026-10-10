@@ -116,6 +116,36 @@ const failureDetail = (error: unknown): string =>
       ? "That request includes nothing: no entry point names a file in the structure analysis."
       : "That request could not be sliced.";
 
+/**
+ * A check, as a step: the slice it tried, by its counts. Read back from the
+ * report the agent was given, which this worker wrote.
+ */
+export function describeCheck(report: string): string | null {
+  let counts: Partial<SliceAnalysisCounts> | undefined;
+  try {
+    counts = (JSON.parse(report) as { counts?: Partial<SliceAnalysisCounts> })
+      .counts;
+  } catch {
+    return null;
+  }
+  if (counts?.includedFiles === undefined) return null;
+  const parts = [
+    `${counts.includedFiles} ${counts.includedFiles === 1 ? "file" : "files"}`,
+    ...(counts.outboundModules === undefined || counts.outboundModules === 0
+      ? []
+      : [
+          `${counts.outboundModules} ${counts.outboundModules === 1 ? "module" : "modules"} stubbed`,
+        ]),
+    ...(counts.blockers === undefined || counts.blockers === 0
+      ? []
+      : [
+          `${counts.blockers} ${counts.blockers === 1 ? "blocker" : "blockers"}`,
+        ]),
+  ];
+  return `Tried a slice: ${parts.join(", ")}`;
+}
+type SliceAnalysisCounts = ReturnType<typeof boundarySummary>["counts"];
+
 /** What a check tells the agent: the console's bounded summary of the slice. */
 function checkReport(analysis: SliceAnalysis): string {
   return JSON.stringify(boundarySummary(analysis.contract, analysis.manifest));
@@ -190,6 +220,8 @@ export function createScopeAdapter(settings: AgentSettings): ToolAdapter {
         null;
       const checkScope: AgentTool = {
         name: "check_scope",
+        describe: (_input, result) =>
+          result.isError === true ? null : describeCheck(result.content),
         description: `Slice a candidate request exactly as the slice tool would, and report the included files, the cut modules and the symbols used from each, the public surface, the services and environment variables touched, and the blockers. At most ${SCOPE_CHECKS_MAX} checks per run.`,
         inputSchema: {
           properties: {
@@ -222,6 +254,8 @@ export function createScopeAdapter(settings: AgentSettings): ToolAdapter {
       };
       const submitScope: AgentTool = {
         name: "submit_scope",
+        describe: (_input, result) =>
+          result.accepted === true ? "Chose the slice" : null,
         description:
           "Submit the slice for the ticket. It is sliced once more to check it; every seam must be a module the request cuts.",
         inputSchema: {
@@ -357,6 +391,7 @@ export function createScopeAdapter(settings: AgentSettings): ToolAdapter {
       };
       const outcome = await runAgent({
         model: settings.model,
+        step: input.step,
         system: SCOPE_SYSTEM_PROMPT,
         prompt: [
           bountySection(task.issueKey, task.draft),
