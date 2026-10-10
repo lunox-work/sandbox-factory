@@ -43,6 +43,7 @@ function written(overrides: Partial<StoredBounty> = {}): StoredBounty {
     revision: 1,
     version: 1,
     approval: null,
+    textEditedAt: null,
     jira: null,
     sandbox: null,
     createdAt: stamp,
@@ -817,7 +818,6 @@ test("a change is saved against the revision the editor saw", async () => {
 test("a refused change says why", async () => {
   const cases: [BountyMutationResult, number, string | undefined][] = [
     [{ ok: false, reason: "not-found" }, 404, undefined],
-    [{ ok: false, reason: "jira-owned" }, 409, "jira_owned"],
     [
       { ok: false, reason: "changed", current: written({ revision: 3 }) },
       409,

@@ -75,6 +75,7 @@ function bounty(overrides: Partial<StoredBounty> = {}): StoredBounty {
     revision: 1,
     version: 1,
     approval: null,
+    textEditedAt: null,
     jira: {
       issueId: "jri_1",
       boardId: "jrb_1",
@@ -247,6 +248,18 @@ test("a bounty written here is reviewed as stored, with no Jira", async () => {
   );
   assert.equal(truncated.freshness, "current");
   assert.equal(truncated.code, "spec_too_large");
+});
+
+test("a Jira bounty whose text was changed here is reviewed as stored", async () => {
+  const edited = bounty({ textEditedAt: "2026-10-02T00:00:00.000Z" });
+  const state = options(new Error("never read"), edited);
+  const fresh = await freshProposal(
+    state.value,
+    "org_1",
+    proposal({ specHash: await bountySpecHash("Title", "Spec") }),
+  );
+  assert.equal(fresh.freshness, "current");
+  assert.deepEqual(state.refreshed, []);
 });
 
 test("a Jira bounty cannot be checked without its site", async () => {

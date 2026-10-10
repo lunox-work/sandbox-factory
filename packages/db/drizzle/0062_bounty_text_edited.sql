@@ -1,0 +1,1 @@
+ALTER TABLE "bounty" ADD COLUMN "text_edited_at" timestamp with time zone;

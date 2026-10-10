@@ -64,6 +64,7 @@ function fixtureApp(token) {
       revision: 1,
       version: 1,
       approval: null,
+      textEditedAt: null,
       stages: { scope: { version: 1 }, price: null, sandbox: null },
       jira: null,
       sandbox: null,

@@ -1909,7 +1909,7 @@ test("a proposal that could not start, or ended without one, says why", async ()
   expect(await within(again).findByText(/needs reconnecting/)).toBeDefined();
 });
 
-test("a bounty following Jira is edited for its stack only", async () => {
+test("a bounty following Jira is edited here, its stack and its text", async () => {
   const state = server([
     [
       "GET",
@@ -1944,11 +1944,10 @@ test("a bounty following Jira is edited for its stack only", async () => {
     within(links).getByRole("link", { name: /APP-1/ }).getAttribute("href"),
   ).toBe("https://acme.atlassian.net/browse/APP-1");
 
-  // Its text is Jira's: shown, and not offered.
-  expect(within(panel).queryByRole("button", { name: "Rename" })).toBeNull();
+  // Its text is Jira's until it is changed here, which is offered.
   expect(
-    within(panel).queryByRole("button", { name: "Edit description" }),
-  ).toBeNull();
+    within(panel).getByRole("button", { name: "Edit description" }),
+  ).toBeDefined();
   // No repository is picked for it, from Jira or here.
   expect(
     within(panel).queryByRole("combobox", { name: "Repository" }),
@@ -1968,6 +1967,65 @@ test("a bounty following Jira is edited for its stack only", async () => {
     }),
   );
   expect(await screen.findByTestId("bounty-detail")).toBeDefined();
+});
+
+test("saving a Jira bounty's text says Jira no longer updates it", async () => {
+  const state = server([
+    [
+      "GET",
+      "/bounties/bty_1",
+      () =>
+        json({
+          bounty: detail({
+            ...fromJira,
+            description: "Export the filtered table.",
+          }),
+        }),
+    ],
+    [
+      "PATCH",
+      "/bounties/bty_1",
+      () =>
+        json({
+          bounty: detail({
+            ...fromJira,
+            description: "Export the filtered rows as CSV.",
+            textEdited: true,
+            revision: 2,
+          }),
+        }),
+    ],
+  ]);
+  vi.stubGlobal("fetch", state.fetchMock);
+  window.history.replaceState(null, "", "/bounties/acme/bty_1");
+  render(<Shell {...inAcme("member")} />);
+
+  const panel = await screen.findByTestId("bounty-detail");
+  await userEvent.click(
+    within(panel).getByRole("button", { name: "Edit description" }),
+  );
+  // Said before it is saved, not after.
+  expect(
+    within(panel).getByText(/Saving stops Jira updating this text\./),
+  ).toBeDefined();
+  const box = within(panel).getByRole("textbox", { name: "Describe task" });
+  await userEvent.clear(box);
+  await userEvent.type(box, "Export the filtered rows as CSV.");
+  await userEvent.click(within(panel).getByRole("button", { name: "Save" }));
+
+  await waitFor(() =>
+    expect(state.calls.find(({ method }) => method === "PATCH")?.body).toEqual({
+      expectedRevision: 1,
+      description: "Export the filtered rows as CSV.",
+    }),
+  );
+  const links = within(panel).getByRole("region", { name: "Links" });
+  expect(
+    await within(links).findByText(/Jira no longer updates it/),
+  ).toBeDefined();
+  expect(
+    within(links).queryByText(/Its title and description follow/),
+  ).toBeNull();
 });
 
 test("the page's repositories row leads to GitHub settings", async () => {
@@ -2183,8 +2241,20 @@ test("a bounty's Jira issue is let go from the same list, keeping its text", asy
   render(<Shell {...inAcme("member")} />);
   const page = await screen.findByTestId("bounty-detail");
   const links = within(page).getByRole("region", { name: "Links" });
-  await chooseOption(
+  // Opened, the list starts on the issue linked now, chosen and highlighted,
+  // with removing the link last: never what a stray Enter lands on.
+  await userEvent.click(
     await within(links).findByRole("button", { name: "Jira issue" }),
+  );
+  const list = await screen.findByRole("listbox", { name: "Jira issue" });
+  const items = within(list).getAllByRole("option");
+  expect(items[0]?.textContent).toContain("APP-1");
+  expect(items[0]?.getAttribute("aria-selected")).toBe("true");
+  expect(items[0]?.hasAttribute("data-active")).toBe(true);
+  expect(items.at(-1)?.textContent).toBe("Remove the link");
+  await userEvent.keyboard("{Escape}");
+  await chooseOption(
+    within(links).getByRole("button", { name: "Jira issue" }),
     "Remove the link",
   );
   await waitFor(() =>
@@ -5023,8 +5093,12 @@ test("each link says whether its sync is in use, warns when its source is ahead,
     "none",
   );
 
+  // Syncing is in the row's menu, beside its picker.
   await userEvent.click(
-    within(jira).getByRole("button", { name: "Sync Jira context" }),
+    within(page).getByRole("button", { name: "Jira options" }),
+  );
+  await userEvent.click(
+    await screen.findByRole("menuitem", { name: "Sync context" }),
   );
   expect(await within(jira).findByText("Synced v3")).toBeDefined();
   expect(
@@ -5093,11 +5167,15 @@ test("a refused sync says why, and an unlinked source cannot be synced", async (
 
   const jira = await within(page).findByTestId("jira-context");
   expect(await within(jira).findByText("Not in use")).toBeDefined();
+  await userEvent.click(
+    within(page).getByRole("button", { name: "Jira options" }),
+  );
   expect(
-    within(jira)
-      .getByRole("button", { name: "Sync Jira context" })
-      .hasAttribute("disabled"),
-  ).toBe(true);
+    (
+      await screen.findByRole("menuitem", { name: "Sync context" })
+    ).getAttribute("aria-disabled"),
+  ).toBe("true");
+  await userEvent.keyboard("{Escape}");
 
   const github = within(page).getByTestId("github-context");
   expect(await within(github).findByText("Synced v1")).toBeDefined();
@@ -5112,7 +5190,10 @@ test("a refused sync says why, and an unlinked source cannot be synced", async (
   ).toBeDefined();
 
   await userEvent.click(
-    within(github).getByRole("button", { name: "Sync GitHub context" }),
+    within(page).getByRole("button", { name: "GitHub options" }),
+  );
+  await userEvent.click(
+    await screen.findByRole("menuitem", { name: "Sync context" }),
   );
   expect((await within(github).findByRole("alert")).textContent).toContain(
     "no snapshot yet",

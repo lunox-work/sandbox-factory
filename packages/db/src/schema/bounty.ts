@@ -51,6 +51,13 @@ export const bounty = pgTable(
     components: jsonb("components").$type<string[]>().notNull().default([]),
     /** Jira's description was longer than a bounty keeps. */
     inputTruncated: boolean("input_truncated").notNull().default(false),
+    /**
+     * When someone here last changed the title or description of a bounty
+     * linked to a Jira issue. From then on the text is the workspace's: Jira's
+     * no longer overwrites it, and a run sizes from it rather than from the
+     * issue. Linking an issue again takes Jira's text back, and clears it.
+     */
+    textEditedAt: ts("text_edited_at"),
     /** `manual` or `jira`: where the text came from when it was made. */
     origin: text("origin").$type<BountyOrigin>().notNull().default("manual"),
     /**

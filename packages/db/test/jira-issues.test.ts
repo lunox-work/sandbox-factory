@@ -37,6 +37,7 @@ function bountyRow(overrides: Partial<BountyRow> = {}): BountyRow {
     approvedVersion: null,
     approvedBy: null,
     approvedAt: null,
+    textEditedAt: null,
     createdAt: new Date("2026-09-22T00:00:00Z"),
     updatedAt: new Date("2026-09-22T00:00:00Z"),
     ...overrides,

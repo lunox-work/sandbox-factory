@@ -1,5 +1,5 @@
 import {
-  followsJira,
+  textFollowsJira,
   type BountyProposalStore,
   type JiraBoardStore,
   type JiraIssueStore,
@@ -57,7 +57,8 @@ export async function freshProposal(
   if (bounty === null) {
     return { proposal, freshness: "missing", checkedAt, code: "not_found" };
   }
-  if (bounty.jira !== null && followsJira(bounty)) {
+  // Compared with Jira's text only while that is the bounty's.
+  if (bounty.jira !== null && textFollowsJira(bounty)) {
     const registered = await options.boards.forRun(
       organizationId,
       bounty.jira.boardId,

@@ -121,9 +121,9 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
   });
 
   /**
-   * A change, against the revision the editor saw. A bounty still following
-   * its Jira issue takes its text from Jira, so only its stack can be set
-   * here; its title and description are changed in Jira.
+   * A change, against the revision the editor saw. New words on a bounty
+   * linked to Jira make its text the workspace's: Jira's no longer
+   * overwrites it, and a run sizes from it.
    */
   app.patch(`${base}/:id`, async (c) => {
     const { organizationId } = c.get("member");
@@ -236,14 +236,6 @@ async function mutated(
   switch (result.reason) {
     case "not-found":
       return c.json({ error: "Not found" }, 404);
-    case "jira-owned":
-      return c.json(
-        {
-          code: "jira_owned",
-          error: "This bounty follows its Jira issue. Change its text in Jira.",
-        },
-        409,
-      );
     case "scope-approved":
       return c.json(SCOPE_APPROVED, 409);
     case "changed":
@@ -524,6 +516,7 @@ function bountyDto(
     description: bounty.description,
     components: [...bounty.components],
     inputTruncated: bounty.inputTruncated,
+    textEdited: bounty.textEditedAt !== null,
     createdBy: bounty.createdBy,
     stages,
   };

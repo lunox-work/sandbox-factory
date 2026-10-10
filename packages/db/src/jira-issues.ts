@@ -288,7 +288,10 @@ export function createJiraIssueStore(db: Database): JiraIssueStore {
             }
           }
           if (linked === undefined) return { ok: false, reason: "not-found" };
-          await refreshBounty(tx, organizationId, current, content);
+          // Linked on purpose: its text is the issue's again.
+          await refreshBounty(tx, organizationId, current, content, {
+            adopt: true,
+          });
           return { ok: true, pointer: toPointer(linked) };
         });
       try {

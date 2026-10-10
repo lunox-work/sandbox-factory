@@ -192,6 +192,7 @@ function bounty(overrides: Partial<StoredBounty> = {}): StoredBounty {
     revision: 1,
     version: 1,
     approval: null,
+    textEditedAt: null,
     jira: {
       issueId: "jri_1",
       boardId: "jrb_1",
@@ -2081,6 +2082,24 @@ test("a bounty whose Jira issue has gone keeps its text and is sized from it", a
 
   assert.deepEqual(state.removed, ["jri_1"]);
   assert.equal(state.finishes[0]?.status, "succeeded");
+  assert.equal(
+    (state.caller.calls[0]?.input as { descriptionText: string })
+      .descriptionText,
+    "Clear acceptance criteria.",
+  );
+});
+
+test("a Jira bounty whose text was changed here is sized from that text", async () => {
+  const state = harness({
+    bounties: [bounty({ textEditedAt: "2026-10-02T00:00:00.000Z" })],
+    runOverrides: oneBountyRun("bty_1"),
+    specs: { "1": spec("1", { descriptionText: "Jira's older text." }) },
+  });
+  await state.executor.execute("org_1", "brn_1");
+
+  assert.equal(state.finishes[0]?.status, "succeeded");
+  // Jira's text is neither read for it nor written over it.
+  assert.deepEqual(state.refreshed, []);
   assert.equal(
     (state.caller.calls[0]?.input as { descriptionText: string })
       .descriptionText,

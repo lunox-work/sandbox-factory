@@ -73,6 +73,11 @@ export interface StoredBounty extends BountyContent {
    */
   readonly approval: BountyApproval | null;
   readonly jira: BountyJiraLink | null;
+  /**
+   * When someone here last changed the text of a bounty linked to Jira;
+   * from then on its text is the workspace's (`textFollowsJira`).
+   */
+  readonly textEditedAt: string | null;
   /** The bounty's sandbox, in brief, once it has one. */
   readonly sandbox: BountySandboxSummary | null;
   readonly createdAt: string;
@@ -133,7 +138,7 @@ export interface BountyProposalSummary {
 /** A bounty as a list shows it: without its longer text, with its proposal. */
 export type ListedBounty = Omit<
   StoredBounty,
-  "description" | "components" | "inputTruncated" | "createdBy"
+  "description" | "components" | "inputTruncated" | "createdBy" | "textEditedAt"
 > & { readonly proposal: BountyProposalSummary | null };
 
 /** A bounty written here. */
@@ -155,13 +160,10 @@ export type BountyMutationResult =
   | {
       readonly ok: false;
       /**
-       * `jira-owned`: a change to the text of a bounty whose Jira issue is
-       * still there, which is Jira's to change. `scope-approved`: a
-       * change to a scope that stands approved, which is unapproved
-       * first.
+       * `scope-approved`: a change to a scope that stands approved, which
+       * is unapproved first.
        */
-      readonly reason:
-        "not-found" | "changed" | "jira-owned" | "scope-approved";
+      readonly reason: "not-found" | "changed" | "scope-approved";
       readonly current?: StoredBounty;
     };
 
@@ -441,6 +443,7 @@ function toBounty(
     version: row.version,
     approval: toApproval(row),
     jira,
+    textEditedAt: row.textEditedAt?.toISOString() ?? null,
     sandbox: toSandboxSummary(joined),
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
@@ -455,9 +458,19 @@ function toBounty(
  */
 const createdMs = sql`date_trunc('milliseconds', ${bounty.createdAt})`;
 
-/** Whether the bounty's text is its Jira issue's to change. */
+/** Whether the bounty is linked to a Jira issue that is still there. */
 export function followsJira(stored: Pick<StoredBounty, "jira">): boolean {
   return stored.jira !== null && stored.jira.removedAt === null;
+}
+
+/**
+ * Whether the bounty's text is its Jira issue's: linked to one still there,
+ * and not changed here since. A run sizes such a bounty from the issue.
+ */
+export function textFollowsJira(
+  stored: Pick<StoredBounty, "jira" | "textEditedAt">,
+): boolean {
+  return followsJira(stored) && stored.textEditedAt === null;
 }
 
 /**
@@ -501,11 +514,21 @@ export async function insertBounty(
   return created;
 }
 
-/** The columns Jira's text writes, or null when the bounty already says it. */
+/**
+ * The columns Jira's text writes, or null when the bounty already says it.
+ * Only its components on a bounty whose text was changed here, which is the
+ * workspace's to keep.
+ */
 export function jiraContentChange(
   current: BountyRow,
   content: BountyContent,
 ): Partial<typeof bounty.$inferInsert> | null {
+  if (current.textEditedAt !== null) {
+    return JSON.stringify(content.components) ===
+      JSON.stringify(current.components)
+      ? null
+      : { components: [...content.components] };
+  }
   const values = {
     // An issue with no summary keeps the title it has: a bounty has one.
     title:
@@ -542,20 +565,27 @@ function changesText(
  * read, which compares again. New words are a new scope version, which
  * nobody here wrote; a change of components alone is not. Called inside a
  * transaction, so the version is kept with the change.
+ *
+ * A bounty whose text was changed here keeps it, unless `adopt`: an issue
+ * linked to it on purpose, whose text it takes, and follows again.
  */
 export async function refreshBounty(
   db: QueryExecutor,
   organizationId: string,
   current: BountyRow,
   content: BountyContent,
+  { adopt = false }: { readonly adopt?: boolean } = {},
 ): Promise<boolean> {
-  const change = jiraContentChange(current, content);
-  if (change === null) return false;
-  const versioned = changesText(current, change);
+  const adopted = adopt && current.textEditedAt !== null;
+  const read = adopted ? { ...current, textEditedAt: null } : current;
+  const change = jiraContentChange(read, content);
+  if (change === null && !adopted) return false;
+  const versioned = change !== null && changesText(current, change);
   const rows = (await db
     .update(bounty)
     .set({
       ...change,
+      ...(adopted ? { textEditedAt: null } : {}),
       revision: current.revision + 1,
       ...(versioned ? { version: current.version + 1 } : {}),
       updatedAt: new Date(),
@@ -869,15 +899,7 @@ export function createBountyStore(db: Database): BountyStore {
       if (current.revision !== expectedRevision) {
         return { ok: false, reason: "changed", current };
       }
-      // The stack is the workspace's to set, even on a bounty whose text
-      // is Jira's.
-      const { stack, ...text } = change;
-      if (
-        Object.values(text).some((value) => value !== undefined) &&
-        followsJira(current)
-      ) {
-        return { ok: false, reason: "jira-owned", current };
-      }
+      const { stack } = change;
       // A change to what it already says is no change, and keeps the revision.
       const same =
         (change.title === undefined || change.title === current.title) &&
@@ -893,6 +915,7 @@ export function createBountyStore(db: Database): BountyStore {
       // New words are the scope's next version; a stack is not what a
       // proposal is sized from, so moves none.
       const versioned = changesText(current, change);
+      const now = new Date();
       const rows = await db.transaction(async (tx) => {
         const written = (await tx
           .update(bounty)
@@ -900,11 +923,17 @@ export function createBountyStore(db: Database): BountyStore {
             ...(change.title === undefined ? {} : { title: change.title }),
             ...(change.description === undefined
               ? {}
-              : { description: change.description }),
+              : // Written here, so no longer Jira's text cut short.
+                { description: change.description, inputTruncated: false }),
             ...(stack === undefined ? {} : { stack: [...stack] }),
             revision: expectedRevision + 1,
             ...(versioned ? { version: current.version + 1 } : {}),
-            updatedAt: new Date(),
+            // New words on a bounty linked to Jira make its text the
+            // workspace's: the issue's no longer overwrites them.
+            ...(versioned && current.jira !== null
+              ? { textEditedAt: now }
+              : {}),
+            updatedAt: now,
           })
           .where(
             and(

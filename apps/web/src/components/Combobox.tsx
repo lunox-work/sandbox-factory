@@ -70,6 +70,8 @@ export interface ComboboxAction {
    * call `onSelect` instead.
    */
   href?: string | undefined;
+  /** Undoes something, as removing a link does: drawn in red. */
+  destructive?: boolean | undefined;
   onSelect: () => void;
 }
 
@@ -129,6 +131,7 @@ export function Combobox({
   trigger,
   contentClassName,
   align = "start",
+  alignOffset = 0,
   sideOffset = 4,
   collisionPadding,
   defaultOpen = false,
@@ -164,6 +167,11 @@ export function Combobox({
   trigger?: ReactElement;
   contentClassName?: string;
   align?: "start" | "center" | "end";
+  /**
+   * Moves the list along its edge: for a trigger that is half of a split
+   * button, so the list lines up with the whole button.
+   */
+  alignOffset?: number;
   sideOffset?: number;
   collisionPadding?: number;
   /** Open as it mounts: a picker put up only to be picked from. */
@@ -328,6 +336,7 @@ export function Combobox({
         <Popover.Content
           aria-label={label}
           align={align}
+          alignOffset={alignOffset}
           sideOffset={sideOffset}
           collisionPadding={collisionPadding}
           className={cn(
@@ -429,10 +438,18 @@ export function Combobox({
                       </span>
                     </>
                   );
+                  const tone =
+                    action.destructive === true
+                      ? cn(
+                          itemClass,
+                          "text-destructive data-[active]:bg-destructive/10 data-[active]:text-destructive [&_svg]:text-destructive",
+                        )
+                      : itemClass;
                   return action.href === undefined ? (
                     <div
                       key={action.key}
                       {...itemProps(index)}
+                      className={tone}
                       onClick={() => choose(index)}
                     >
                       {content}
@@ -441,6 +458,7 @@ export function Combobox({
                     <a
                       key={action.key}
                       {...itemProps(index)}
+                      className={tone}
                       href={action.href}
                       tabIndex={-1}
                       onClick={(event) => {

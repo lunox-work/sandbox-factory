@@ -37,7 +37,7 @@ export type {
   SyncBoardInput,
   UpdateBoardInput,
 } from "./jira-boards.js";
-export { createBountyStore, followsJira } from "./bounties.js";
+export { createBountyStore, followsJira, textFollowsJira } from "./bounties.js";
 export { createBountyContextStore } from "./bounty-contexts.js";
 export type {
   BountyContextStore,

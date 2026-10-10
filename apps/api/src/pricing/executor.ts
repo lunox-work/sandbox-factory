@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import {
   followsJira,
+  textFollowsJira,
   type BountyProposalStore,
   type BountyRunStore,
   type BountySpecStore,
@@ -802,7 +803,8 @@ export class BountyExecutor {
       | { readonly code: string }
     >
   > {
-    if (bounty.jira === null || client === null || !followsJira(bounty)) {
+    // Its text changed here is what it asks for, not the issue's.
+    if (bounty.jira === null || client === null || !textFollowsJira(bounty)) {
       return { value: await stored(bounty) };
     }
     let spec: JiraIssueSpec;

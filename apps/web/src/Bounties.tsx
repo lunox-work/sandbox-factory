@@ -1105,21 +1105,6 @@ function BountyList({
   );
 }
 
-/** Where a bounty came from, said in a few words, as its page names it. */
-function Source({ bounty }: { bounty: BountySummaryDto }) {
-  if (bounty.jira === null) {
-    return <span className="shrink-0">Created in Lunox</span>;
-  }
-  return (
-    <span className="inline-flex shrink-0 items-center gap-1">
-      <span className="size-3 shrink-0">
-        <JiraIcon />
-      </span>
-      {bounty.jira.removedAt === null ? "From Jira" : "Gone from Jira"}
-    </span>
-  );
-}
-
 /**
  * The list's columns, shared by its head and every row, set by how wide the
  * list itself is rather than the screen: beside an open panel it is
@@ -1487,8 +1472,11 @@ function BountyDetail({
   // Whether its sandbox is offered to be made, linked or generated here.
   const managesSandbox = canManage && !readOnly;
 
-  // A bounty following its Jira issue takes its text from Jira.
+  // Linked to a Jira issue that is still there.
   const followsJira = bounty.jira !== null && bounty.jira.removedAt === null;
+  // Its text is still Jira's: not changed here since it was linked. Saving
+  // new words makes it the workspace's, which Jira no longer overwrites.
+  const textFollowsJira = followsJira && !bounty.textEdited;
   /*
     An approved scope is held as it is: its title, text, links and stack
     are shown, not changed, until an owner or admin unapproves it.
@@ -1619,23 +1607,19 @@ function BountyDetail({
 
   /*
     The workspace the bounty belongs to, and so whose routes change it. It
-    is not moved between workspaces, so it is named, not offered. On a page,
-    where the bounty came from is said under it.
+    is not moved between workspaces, so it is named, not offered.
   */
   const workspacePart = (
     <Part title="Workspace" framed={false}>
-      <div className="flex flex-col gap-1.5">
-        <span className="flex min-w-0 items-center gap-2 text-sm font-medium">
-          <WorkspaceFace
-            organization={organization}
-            viewer={viewer}
-            className="size-5 shrink-0"
-            squareRadius="rounded-[5px]"
-          />
-          <span className="truncate">{workspaceLabel(organization)}</span>
-        </span>
-        {layout === "page" && <Source bounty={bounty} />}
-      </div>
+      <span className="flex min-w-0 items-center gap-2 text-sm font-medium">
+        <WorkspaceFace
+          organization={organization}
+          viewer={viewer}
+          className="size-5 shrink-0"
+          squareRadius="rounded-[5px]"
+        />
+        <span className="truncate">{workspaceLabel(organization)}</span>
+      </span>
     </Part>
   );
 
@@ -1647,12 +1631,15 @@ function BountyDetail({
   */
   const priced = proposal !== null ? bounty.proposal : null;
   const settled = priced?.status === "approved" ? priced : null;
+  // Two figures side by side, each labelled over its value, as a
+  // dashboard's stats read: what it pays, and the size that sets it.
   const price = (
-    <div className="mb-1 border-b pb-3">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <span
+    <dl className="-mx-4 -mt-4 grid grid-cols-[minmax(0,1fr)_6rem] border-b">
+      <div className="flex min-w-0 flex-col gap-1.5 px-4 py-3.5">
+        <dt className="text-muted-foreground text-xs">Price</dt>
+        <dd
           className={cn(
-            "text-2xl leading-none font-semibold tracking-tight",
+            "text-2xl leading-7 font-semibold tracking-tight wrap-anywhere",
             settled === null || settled.amountMinor === null
               ? "text-muted-foreground"
               : "tabular-nums",
@@ -1661,15 +1648,20 @@ function BountyDetail({
           {settled === null
             ? "—"
             : money(settled.amountMinor, settled.currency)}
-        </span>
-        <span className="flex items-center gap-1.5 text-sm">
-          <span className="text-muted-foreground">Size</span>
-          <Badge variant="outline" className="font-mono">
-            {settled?.complexity ?? "—"}
-          </Badge>
-        </span>
+        </dd>
       </div>
-    </div>
+      <div className="flex min-w-0 flex-col gap-1.5 border-l px-4 py-3.5">
+        <dt className="text-muted-foreground text-xs">Size</dt>
+        <dd
+          className={cn(
+            "font-mono text-2xl leading-7 font-semibold",
+            settled === null && "text-muted-foreground",
+          )}
+        >
+          {settled?.complexity ?? "—"}
+        </dd>
+      </div>
+    </dl>
   );
 
   // Where the sandbox stands: its status and whether it can be worked in.
@@ -1733,11 +1725,22 @@ function BountyDetail({
   const summaryPart = (
     <Part title="Summary">
       {price}
-      {sandboxStatus === false ? (
-        <p className="text-muted-foreground text-sm">No sandbox yet.</p>
-      ) : (
-        sandboxStatus
-      )}
+      <div className="flex items-start gap-3 pt-1">
+        <span
+          aria-hidden="true"
+          className="bg-muted text-muted-foreground flex size-8 shrink-0 items-center justify-center rounded-md [&>svg]:size-4"
+        >
+          <Box />
+        </span>
+        <div className="flex min-w-0 flex-col gap-1">
+          <span className="text-subheading">Sandbox</span>
+          {sandboxStatus === false ? (
+            <p className="text-muted-foreground text-sm">No sandbox yet.</p>
+          ) : (
+            sandboxStatus
+          )}
+        </div>
+      </div>
     </Part>
   );
 
@@ -1937,10 +1940,13 @@ function BountyDetail({
   const description = (
     <InlineDescription
       bounty={bounty}
-      locked={followsJira || readOnly || approvedScope}
+      locked={readOnly || approvedScope}
       // A page's scope tab heads it, so it reads as a field there.
       labelled={layout !== "page"}
       {...(layout === "page" ? { label: "Describe task" } : {})}
+      {...(textFollowsJira
+        ? { editNote: "Saving stops Jira updating this text." }
+        : {})}
       onSave={save}
     />
   );
@@ -1966,7 +1972,7 @@ function BountyDetail({
               as="h1"
               size="page"
               value={bounty.title}
-              locked={followsJira || approvedScope}
+              locked={approvedScope}
               onSave={save}
             />
             {/* Its workspace and source are named beside, not here too. */}
@@ -1997,26 +2003,49 @@ function BountyDetail({
                 }}
               />
             </TabsList>
-            <TabsContent value="scope" className="flex flex-col gap-8">
-              <div className="flex flex-col gap-3">
+            <TabsContent value="scope" className="flex flex-col gap-6">
+              {/*
+                The version, the decision on it and the context it holds:
+                the one card on the tab, as the side column's parts are.
+                The text and links under it read on the page itself.
+              */}
+              <section
+                aria-label="Version"
+                className="bg-card relative overflow-hidden rounded-lg border shadow-xs before:absolute before:inset-x-0 before:top-0 before:h-0.5 before:bg-(image:--brand-gradient)"
+              >
                 {/*
                   Which version, and the decision on it, level with each
                   other as a proposal's are. Only the latest is decided.
+                  Its number on the brand's tile once it stands approved;
+                  grey until then, and for an earlier one, only read.
                 */}
-                <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-                  <ScopeVersion
-                    versions={versions.data ?? []}
-                    current={bounty.version}
-                    viewing={earlier?.version ?? bounty.version}
-                    approvedAt={
-                      earlier === null && approvedScope
-                        ? (bounty.approval?.approvedAt ?? null)
-                        : null
-                    }
-                    onView={(version) =>
-                      setViewing(version === bounty.version ? null : version)
-                    }
-                  />
+                <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3 p-4">
+                  <div className="flex min-w-0 items-center gap-3">
+                    <span
+                      aria-hidden="true"
+                      className={cn(
+                        "flex size-9 shrink-0 items-center justify-center rounded-lg font-mono text-xs font-semibold",
+                        earlier === null && approvedScope
+                          ? "bg-(image:--brand-gradient) text-white shadow-sm shadow-blue-500/20"
+                          : "bg-muted text-muted-foreground",
+                      )}
+                    >
+                      v{earlier?.version ?? bounty.version}
+                    </span>
+                    <ScopeVersion
+                      versions={versions.data ?? []}
+                      current={bounty.version}
+                      viewing={earlier?.version ?? bounty.version}
+                      approvedAt={
+                        earlier === null && approvedScope
+                          ? (bounty.approval?.approvedAt ?? null)
+                          : null
+                      }
+                      onView={(version) =>
+                        setViewing(version === bounty.version ? null : version)
+                      }
+                    />
+                  </div>
                   {canManage && earlier === null && (
                     <Button
                       variant={approvedScope ? "outline" : "default"}
@@ -2038,30 +2067,38 @@ function BountyDetail({
                   )}
                 </div>
                 {decisionError !== null && (
-                  <p role="alert" className="text-destructive text-xs">
+                  <p
+                    role="alert"
+                    className="text-destructive -mt-1 px-4 pb-3 text-xs"
+                  >
                     {decisionError}
                   </p>
                 )}
                 {/* The context the scope holds, as its links synced it. */}
-                <StepContext
-                  label="Holds"
-                  versions={heldContext}
-                  names={contextNames}
-                />
-                {earlier === null ? (
-                  description
-                ) : (
-                  // An earlier version is read as it was, title and all.
-                  <section
-                    aria-label={`Version ${earlier.version}`}
-                    className="flex flex-col gap-2"
-                    data-testid="scope-earlier"
-                  >
-                    <h3 className="text-sm font-medium">{earlier.title}</h3>
-                    <BountyText description={earlier.description} />
-                  </section>
-                )}
-              </div>
+                <div className="bg-muted/40 border-t px-4 py-2.5">
+                  <StepContext
+                    label="Holds"
+                    versions={heldContext}
+                    names={contextNames}
+                  />
+                </div>
+              </section>
+              {earlier === null ? (
+                description
+              ) : (
+                // An earlier version is read as it was, title and all.
+                <section
+                  aria-label={`Version ${earlier.version}`}
+                  className="flex flex-col gap-2"
+                  data-testid="scope-earlier"
+                >
+                  <h3 className="text-sm font-medium">{earlier.title}</h3>
+                  <BountyText
+                    description={earlier.description}
+                    framed={false}
+                  />
+                </section>
+              )}
               <BountyLinks
                 organization={organization}
                 bounty={bounty}
@@ -2269,8 +2306,8 @@ function BountyDetail({
                       target="_blank"
                       rel="noreferrer noopener"
                       title={
-                        followsJira
-                          ? "Follows its Jira issue. Open in Jira"
+                        textFollowsJira
+                          ? "Its text follows this Jira issue. Open in Jira"
                           : "Open in Jira"
                       }
                       className="focus-visible:ring-ring/50 inline-flex items-center gap-1.5 rounded-sm font-medium underline-offset-4 hover:underline focus-visible:ring-[3px] focus-visible:outline-none"
@@ -2282,10 +2319,16 @@ function BountyDetail({
                       <ExternalLink className="text-muted-foreground size-3" />
                     </a>
                   )}
-                  {!followsJira && (
+                  {!followsJira ? (
                     <span className="text-muted-foreground">
                       Gone from Jira; keeps its last text
                     </span>
+                  ) : (
+                    !textFollowsJira && (
+                      <span className="text-muted-foreground">
+                        Text edited here; Jira no longer updates it
+                      </span>
+                    )
                   )}
                 </span>
               )}
@@ -2417,7 +2460,7 @@ function Part({
         {title}
       </h3>
       {framed ? (
-        <div className="flex flex-col gap-2 rounded-lg border p-4">
+        <div className="bg-card flex flex-col gap-2 rounded-lg border p-4 shadow-xs">
           {children}
         </div>
       ) : (

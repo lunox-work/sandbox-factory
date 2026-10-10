@@ -34,6 +34,7 @@ function bountyOf(overrides: Partial<StoredBounty> = {}): StoredBounty {
     revision: 1,
     version: 1,
     approval: null,
+    textEditedAt: null,
     jira: null,
     sandbox: null,
     createdAt: stamp,

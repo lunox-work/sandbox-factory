@@ -177,6 +177,11 @@ export const bountyDtoSchema = bountySummaryDtoSchema.extend({
   components: z.array(z.string()),
   /** True when Jira's description was longer than a bounty keeps. */
   inputTruncated: z.boolean(),
+  /**
+   * Its title or text was changed here since it was linked to Jira, so
+   * Jira's no longer overwrites it. Defaulted, so an older API still parses.
+   */
+  textEdited: z.boolean().default(false),
   createdBy: z.string().nullable(),
   stages: bountyStagesSchema,
 });

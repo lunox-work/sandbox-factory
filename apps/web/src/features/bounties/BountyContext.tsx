@@ -22,7 +22,13 @@ import type {
   ContextVersionsDto,
 } from "@sandbox-factory/shared";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronDown, Loader2, RefreshCw, TriangleAlert } from "lucide-react";
+import {
+  ChevronDown,
+  EllipsisVertical,
+  Loader2,
+  RefreshCw,
+  TriangleAlert,
+} from "lucide-react";
 import { useState, type ReactNode } from "react";
 import {
   contextDrift,
@@ -31,6 +37,12 @@ import {
 } from "sandbox-factory";
 
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 
 import { clients, queryKeys, useUserId } from "../../data/query";
@@ -253,11 +265,11 @@ function commitsOf(revision: string): Map<string, string> {
 }
 
 /**
- * Under a link's row: whether its sync is in use and up to date, what its
- * latest version holds, and the way to sync it. An ahead source says so,
- * and what syncing does about it.
+ * A link's menu, the other half of a split button with its control:
+ * syncing its context into the scope, which is not the row's main action,
+ * so it is a click further away.
  */
-export function ContextSync({
+export function ContextSyncMenu({
   source,
   context,
   canSync,
@@ -266,6 +278,47 @@ export function ContextSync({
   context: BountyContextState;
   /** False while the source cannot be synced, such as with no link. */
   canSync: boolean;
+}) {
+  const status = context.status?.[source] ?? null;
+  const busy = context.syncing === source;
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          size="icon"
+          // Overlaps the control's right border, so the two share one line.
+          className="border-input text-muted-foreground hover:text-foreground -ml-px shrink-0 rounded-l-none focus-visible:z-10"
+          aria-label={`${SOURCE_NAME[source]} options`}
+        >
+          <EllipsisVertical className="size-4" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-48">
+        <DropdownMenuItem
+          disabled={!canSync || busy || status?.state === "unlinked"}
+          onSelect={() => void context.sync(source)}
+        >
+          <RefreshCw />
+          Sync context
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+/**
+ * Under a link's row: whether its sync is in use and up to date, and what
+ * its latest version holds. An ahead source says so, and what syncing does
+ * about it. Syncing itself is in the row's menu (`ContextSyncMenu`).
+ */
+export function ContextSync({
+  source,
+  context,
+}: {
+  source: ContextSourceDto;
+  context: BountyContextState;
 }) {
   const status = context.status?.[source] ?? null;
   const [open, setOpen] = useState(false);
@@ -285,17 +338,15 @@ export function ContextSync({
       : status.state === "unavailable"
         ? (REASONS[status.reason ?? ""] ?? "It cannot be read just now.")
         : status.state === "unlinked"
-          ? source === "jira"
+          ? // The repositories' row already says none is connected.
+            source === "jira"
             ? "Link an issue to sync its fields into the bounty."
-            : "Connect a repository to the workspace to sync its documents into the bounty."
+            : null
           : (unsyncedNote ?? holds(status));
   const warning = status === null ? null : aheadText(source, status);
   return (
-    <div
-      className="flex flex-col gap-2 border-t border-dashed pt-3"
-      data-testid={`${source}-context`}
-    >
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+    <div className="flex flex-col gap-2" data-testid={`${source}-context`}>
+      <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
         <span
           className={cn(
             "rounded-[4px] px-1.5 py-px text-2xs leading-4 font-medium whitespace-nowrap",
@@ -304,8 +355,16 @@ export function ContextSync({
         >
           {status === null ? "Context" : statePill(status)}
         </span>
-        <span className="text-muted-foreground min-w-0 flex-1 truncate text-xs">
-          {line}
+        <span className="text-muted-foreground flex min-w-0 flex-1 items-center gap-1.5 truncate text-xs">
+          {/* Said here, as the menu that started it has closed. */}
+          {busy ? (
+            <>
+              <Loader2 className="size-3 shrink-0 animate-spin" />
+              Syncing…
+            </>
+          ) : (
+            line
+          )}
         </span>
         {status?.latest != null &&
           (status.state === "current" || status.state === "ahead") && (
@@ -318,22 +377,6 @@ export function ContextSync({
               </time>
             </span>
           )}
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          className="h-7 gap-1.5 px-2.5 text-xs"
-          disabled={!canSync || busy || status?.state === "unlinked"}
-          aria-label={`Sync ${SOURCE_NAME[source]} context`}
-          onClick={() => void context.sync(source)}
-        >
-          {busy ? (
-            <Loader2 className="size-3.5 animate-spin" />
-          ) : (
-            <RefreshCw className="size-3.5" />
-          )}
-          {busy ? "Syncing…" : "Sync"}
-        </Button>
       </div>
       {warning !== null && (
         <p
@@ -504,7 +547,7 @@ function SourceVersion({
 }) {
   return (
     <span
-      className="inline-flex min-w-0 items-center gap-1.5"
+      className="bg-background inline-flex h-6 min-w-0 items-center gap-1.5 rounded-md border pr-0.5 pl-1.5"
       data-testid={`context-${source}`}
     >
       <SourceIcon source={source} />
@@ -555,10 +598,10 @@ export function StepContext({
       : contextDrift(held, versions);
   return (
     <div
-      className="text-muted-foreground flex flex-wrap items-center gap-x-4 gap-y-1 text-xs"
+      className="text-muted-foreground flex flex-wrap items-center gap-x-2 gap-y-1.5 text-xs"
       data-testid="step-context"
     >
-      <span>{label} context</span>
+      <span className="eyebrow mr-1">{label} context</span>
       {(["jira", "github"] as const).map((source) => (
         <SourceVersion
           key={source}

@@ -486,6 +486,7 @@ function jiraBounty(overrides: Partial<StoredBounty> = {}): StoredBounty {
     revision: 1,
     version: 1,
     approval: null,
+    textEditedAt: null,
     jira: {
       issueId: "jri_1",
       boardId: "jrb_1",

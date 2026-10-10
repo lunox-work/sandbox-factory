@@ -270,7 +270,7 @@ export function ScopeVersion({
   onView: (version: number) => void;
 }) {
   const shown = versions.find(({ version }) => version === viewing);
-  const name = <span className="font-semibold">Version {viewing}</span>;
+  const name = <span className="text-subheading">Version {viewing}</span>;
   return (
     <span
       className="flex min-h-9 flex-col justify-center text-xs"
