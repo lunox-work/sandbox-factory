@@ -781,6 +781,11 @@ function InstallationCard({
           failed={reposFailed}
           href={repositoryHref}
           onOpen={onOpenRepo}
+          onManage={
+            manageable && connection.healthy
+              ? () => setManaging(true)
+              : undefined
+          }
         />
 
         {manageable && connection.healthy && managing && (
@@ -810,6 +815,7 @@ function RegisteredRepos({
   failed,
   href,
   onOpen,
+  onManage,
 }: {
   repos: GithubRepoDto[];
   loading: boolean;
@@ -817,11 +823,18 @@ function RegisteredRepos({
   failed: boolean;
   href: (repo: GithubRepoDto) => string;
   onOpen: ((repo: GithubRepoDto) => void) | undefined;
+  /** Opens the repositories dialog; absent where nobody here can register. */
+  onManage: (() => void) | undefined;
 }) {
   // Never "none registered" before the list is known: that is a zero
   // nobody counted.
   if (repos.length === 0 && loading) return <LoadingLine />;
   if (repos.length === 0 && failed) return null;
+  // With none registered, the way to register one is the next step, not a
+  // menu away.
+  if (repos.length === 0 && onManage !== undefined) {
+    return <ManageRepositoriesButton onClick={onManage} />;
+  }
   if (repos.length === 0) {
     return (
       <p className="text-muted-foreground text-sm">
@@ -869,6 +882,29 @@ function RegisteredRepos({
   );
 }
 
+/** Opens an account's repositories dialog, where none is registered yet. */
+export function ManageRepositoriesButton({
+  onClick,
+  label = "Manage repositories",
+}: {
+  onClick: () => void;
+  /** The accessible name, where one page offers it for several accounts. */
+  label?: string;
+}) {
+  return (
+    <Button
+      variant="outline"
+      size="sm"
+      className="w-fit gap-1.5"
+      aria-label={label}
+      onClick={onClick}
+    >
+      <FolderGit2 className="size-4" />
+      Manage repositories
+    </Button>
+  );
+}
+
 /**
  * What removing a repository destroys, said wherever it can be removed. The
  * delete cascades: every snapshot, analysis run and artifact read from it
@@ -907,7 +943,7 @@ function RepositoryName({
  * live from GitHub, to register more. Each change is made as it is pressed;
  * Done only closes.
  */
-function RepositoryDialog({
+export function RepositoryDialog({
   organizationId,
   connection,
   registered,

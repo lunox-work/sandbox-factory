@@ -35,10 +35,11 @@ import {
   type MembershipDto,
 } from "@sandbox-factory/shared";
 import { SquarePen } from "lucide-react";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 
 import { LoadingLine } from "@/components/Message";
 
+import { RepositoryDialog } from "./Github";
 import { JiraIcon, ProviderIcon } from "./ProviderIcon";
 import { WorkspaceNotices, useConsentReturn } from "./WorkspaceNotices";
 import { BoardScan, NoBoards } from "./features/onboarding/BoardScan";
@@ -90,6 +91,9 @@ function WorkspaceOnboarding({
   const setup = useWorkspaceSetup(organization);
   const consent = useConsentReturn(organization.slug);
   const { facts } = setup;
+  // The account whose repositories dialog is open. Held here rather than in
+  // the picker, which is gone the moment the first repository registers.
+  const [managing, setManaging] = useState<string | null>(null);
 
   if (facts === null || consent.picking) {
     return (
@@ -107,6 +111,11 @@ function WorkspaceOnboarding({
   const needsRepository =
     facts.github.connected > 0 && facts.github.repositories === 0;
   const firstRepo = setup.repos.repos.find(isWorkspaceSource);
+  const managed = canManage
+    ? setup.github.connections.find(
+        ({ id, healthy }) => id === managing && healthy,
+      )
+    : undefined;
   const withJira = stage === "jira" || stage === "both";
   // A bounty names no repository: its work may touch any of them.
   const writeBounty = () => onWriteBounty();
@@ -225,18 +234,30 @@ function WorkspaceOnboarding({
         <SetupChecklist facts={facts} actions={actions} />
         {needsRepository && (
           <RepoPicker
-            organizationId={organization.id}
             connections={setup.github.connections.filter(
               ({ healthy }) => healthy,
             )}
             canManage={canManage}
-            register={async (connectionId, externalId) => {
-              const result = await setup.repos.register(
-                connectionId,
-                externalId,
-              );
-              return result.ok ? null : result.error;
+            onManage={setManaging}
+          />
+        )}
+        {managed !== undefined && (
+          <RepositoryDialog
+            organizationId={organization.id}
+            connection={managed}
+            registered={setup.repos.repos.filter(
+              (repo) => repo.connectionId === managed.id,
+            )}
+            registeredLoading={setup.repos.loading}
+            onRegister={(externalId) =>
+              setup.repos.register(managed.id, externalId)
+            }
+            onRemove={(repoId) => setup.repos.remove(repoId)}
+            onUnhealthy={() => {
+              setManaging(null);
+              void setup.github.refresh();
             }}
+            onClose={() => setManaging(null)}
           />
         )}
       </div>
@@ -312,7 +333,7 @@ function promise(
     case "both":
       return (
         <>
-          {complete ? "This workspace is set up. " : "Jira is connected. "}
+          {complete && "This workspace is set up. "}
           Your board&rsquo;s tickets worth outsourcing are{" "}
           <button
             type="button"
@@ -321,7 +342,7 @@ function promise(
           >
             under getting started
           </button>
-          , found from ticket metadata for free.
+          .
         </>
       );
   }

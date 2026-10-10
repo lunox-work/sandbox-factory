@@ -567,7 +567,9 @@ test("with Jira connected, onboarding shows the board's backlog scan under getti
       name: /3 tickets worth outsourcing/,
     }),
   ).toBeTruthy();
-  expect(within(scan).getByText(/no AI, nothing stored/)).toBeTruthy();
+  expect(
+    within(scan).getByText(/fit a\s+pattern teams outsource\.$/),
+  ).toBeTruthy();
   // The six, always: an empty one is shown, not pressable.
   const tiles = within(scan).getByTestId("scan-categories");
   expect(within(tiles).getAllByRole("button")).toHaveLength(6);
@@ -828,7 +830,7 @@ test("sizing the whole board waits for GitHub, as sizing one ticket does", async
 /* GitHub                                                                     */
 /* -------------------------------------------------------------------------- */
 
-test("a linked GitHub account offers its repositories in place, and one click maps it", async () => {
+test("a linked GitHub account opens its repositories dialog in place, and registering one maps it", async () => {
   world.github = [githubAccount];
   world.installationRepositories = [
     {
@@ -843,7 +845,15 @@ test("a linked GitHub account offers its repositories in place, and one click ma
 
   const picker = await screen.findByTestId("repo-picker");
   await userEvent.click(
-    await within(picker).findByRole("button", { name: "Use acme/widgets" }),
+    await within(picker).findByRole("button", { name: "Manage repositories" }),
+  );
+  const dialog = await screen.findByRole("dialog", {
+    name: `Repositories on ${githubAccount.accountLogin}`,
+  });
+  await userEvent.click(
+    await within(dialog).findByRole("button", {
+      name: "Register acme/widgets",
+    }),
   );
   expect(
     requests.find(
@@ -856,6 +866,11 @@ test("a linked GitHub account offers its repositories in place, and one click ma
   const xray = await screen.findByTestId("repo-xray");
   expect(within(xray).getByText("acme/widgets")).toBeTruthy();
   expect(screen.queryByTestId("repo-picker")).toBeNull();
+  // The dialog outlives the step it was opened from, until Done.
+  await userEvent.click(within(dialog).getByRole("button", { name: "Done" }));
+  await waitFor(() => {
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
 });
 
 test("the x-ray says where a first bounty fits, and writing one starts there", async () => {

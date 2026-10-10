@@ -2784,8 +2784,8 @@
  * point down instead.
  *
  * Shapes by `clip-path`, which cannot draw a border, so the states are told
- * apart by fill alone: green when done, the brand blue's tint when current,
- * muted when still to come. The first and last keep rounded outer corners:
+ * apart by fill: green when done, the brand blue's tint when current — with
+ * an outline drawn another way, below — muted when still to come. The first and last keep rounded outer corners:
  * `border-radius` clips as well, and the two intersect.
  */
 .setup-chevrons {
@@ -2851,8 +2851,51 @@
   background: color-mix(in oklab, var(--chevron-ok) 13%, var(--card));
 }
 
+/*
+ * The current step, outlined in the brand blue with a highlight running
+ * round it. `clip-path` cannot draw a border, so the step's own background is
+ * the outline — a conic gradient turned by `--setup-shine` — and its tint is
+ * a layer over it, cut to the same shape a ring's width in. On the slanted
+ * edges that ring comes out a hair thinner than on the straight ones, which
+ * at this width does not show.
+ */
+@property --setup-shine {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+
 .setup-chevron[data-state="current"] {
+  --chevron-ring: 1.5px;
+  isolation: isolate;
+  background: conic-gradient(
+    from var(--setup-shine),
+    #0864ed 0%,
+    #4d7bff 18%,
+    #dcecff 27%,
+    #1b90fb 36%,
+    #0864ed 55%,
+    #4d7bff 75%,
+    #0864ed 100%
+  );
+  animation: setup-shine 4s linear infinite;
+}
+
+.setup-chevron[data-state="current"]::before {
+  content: "";
+  position: absolute;
+  inset: var(--chevron-ring);
+  z-index: -1;
+  /* Opaque, so the gradient shows only in the ring around it. */
   background: color-mix(in oklab, var(--primary) 11%, var(--card));
+  border-radius: inherit;
+  clip-path: inherit;
+}
+
+@keyframes setup-shine {
+  to {
+    --setup-shine: 360deg;
+  }
 }
 
 .setup-chevron-mark {
@@ -2896,11 +2939,6 @@
 
 .setup-chevron-done {
   color: color-mix(in oklab, var(--chevron-ok) 70%, var(--foreground));
-}
-
-.setup-meter {
-  background: var(--brand-fill);
-  transition: width 0.5s cubic-bezier(0.2, 0.7, 0.2, 1);
 }
 
 /* Side by side from `sm`: the arrows point right. */
@@ -2955,11 +2993,11 @@
 
 @media (prefers-reduced-motion: reduce) {
   .setup-chevron-mark,
+  .setup-chevron[data-state="current"],
   .setup-chevron[data-state="current"] .setup-chevron-mark {
     animation: none;
   }
 
-  .setup-meter,
   .setup-chevron {
     transition: none;
   }

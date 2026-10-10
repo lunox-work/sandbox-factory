@@ -112,23 +112,12 @@ export function SetupChecklist({
       data-testid="setup-checklist"
       className="flex flex-col gap-3"
     >
-      <header className="flex items-center justify-between gap-4">
-        <h2 className="text-sm font-semibold tracking-tight">
-          Getting started
-          <span className="text-muted-foreground ml-2 font-normal tabular-nums">
-            {done} of {steps.length}
-          </span>
-        </h2>
-        <span
-          aria-hidden="true"
-          className="bg-muted h-1.5 w-24 overflow-hidden rounded-full sm:w-32"
-        >
-          <span
-            className="setup-meter block h-full rounded-full"
-            style={{ width: `${(done / steps.length) * 100}%` }}
-          />
+      <h2 className="text-sm font-semibold tracking-tight">
+        Getting started
+        <span className="text-muted-foreground ml-2 font-normal tabular-nums">
+          {done} of {steps.length}
         </span>
-      </header>
+      </h2>
       <ol className="setup-chevrons">
         {steps.map((step, index) => (
           <li

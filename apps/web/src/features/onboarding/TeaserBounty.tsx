@@ -18,7 +18,6 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 
-import { CategoryIcon } from "../../CategoryIcon";
 import { ProviderIcon } from "../../ProviderIcon";
 import { terminalRun, useObservation } from "../../data/observe";
 import { clients } from "../../data/query";
@@ -191,13 +190,11 @@ export function TeaserBounty({
           )}
         </span>
         <p className="text-sm leading-snug font-medium">{issue.summary}</p>
+        {/* Why it was picked, without a pill naming its category: the
+            scan's category tiles already say that. */}
         {match !== undefined && (
-          <span className="text-muted-foreground mt-1.5 flex flex-col items-start gap-1.5 text-xs">
-            <span className="category-pill">
-              <CategoryIcon category={match.id} className="size-3 shrink-0" />
-              {match.label}
-            </span>
-            <span className="leading-snug">{match.reason}</span>
+          <span className="text-muted-foreground mt-1.5 text-xs leading-snug">
+            {match.reason}
           </span>
         )}
       </div>

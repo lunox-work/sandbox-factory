@@ -337,8 +337,7 @@ function scanHeadline(
           {atLeast}
           {summary.fitting} of {plural(summary.scanned, "open ticket")} fit a
           pattern teams outsource
-          {summary.proposed > 0 && `, ${summary.proposed} already sized`}. Read
-          from ticket metadata — no AI, nothing stored.
+          {summary.proposed > 0 && `, ${summary.proposed} already sized`}.
         </>
       ),
     };
