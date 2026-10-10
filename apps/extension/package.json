@@ -79,7 +79,7 @@
   "devDependencies": {
     "@sandbox-factory/coverage": "*",
     "@sandbox-factory/tsconfig": "*",
-    "@types/node": "^26.6.3",
+    "@types/node": "^26.6.4",
     "@types/vscode": "^1.85.0",
     "esbuild": "^0.28.2",
     "typescript": "^7.0.2"
