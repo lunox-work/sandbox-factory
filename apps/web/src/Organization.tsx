@@ -176,6 +176,15 @@ export function Organization({
     return subscribeLocation(syncTab);
   }, [organization.kind]);
 
+  /**
+   * A panel that stays mounted while another tab is chosen, hidden by the
+   * attribute rather than removed. Unmounted, the rate card fetched again
+   * behind a loading line on every visit to Settings, and the card grew
+   * under the pointer when the answer landed.
+   */
+  const keptPanel = (value: OrganizationTab) =>
+    ({ forceMount: true, hidden: tab !== value }) as const;
+
   const refresh = useCallback(async () => {
     await memberQuery.refresh();
   }, [memberQuery.refresh]);
@@ -232,6 +241,9 @@ export function Organization({
         same place whichever workspace is open. On a rule, as the bounty
         page's own sections are: a page's sections are one kind of tab
         wherever they appear.
+
+        Every panel stays mounted, so the rate card and the connections load
+        once with the page instead of again behind each switch.
       */}
       <Tabs value={tab} onValueChange={selectTab} className="mt-6 gap-8">
         <TabsList variant="line">
@@ -242,7 +254,11 @@ export function Organization({
           ))}
         </TabsList>
 
-        <TabsContent value="overview" className="flex flex-col gap-6">
+        <TabsContent
+          value="overview"
+          {...keptPanel("overview")}
+          className="flex flex-col gap-6"
+        >
           {personal ? (
             <HandleForm
               organization={organization}
@@ -280,7 +296,7 @@ export function Organization({
         </TabsContent>
 
         {!personal && (
-          <TabsContent value="members">
+          <TabsContent value="members" {...keptPanel("members")}>
             <Card>
               <CardHeader>
                 <CardTitle role="heading" aria-level={2}>
@@ -423,7 +439,7 @@ export function Organization({
           </TabsContent>
         )}
 
-        <TabsContent value="settings">
+        <TabsContent value="settings" {...keptPanel("settings")}>
           <RateCardEditor
             organizationId={organization.id}
             role={organization.role}

@@ -198,8 +198,12 @@ function TabsContent({
     <TabsPrimitive.Content
       data-slot="tabs-content"
       className={cn(
-        // Radix mounts only the chosen panel, so this plays on every switch.
-        "animate-in fade-in-0 slide-in-from-bottom-1 flex-1 duration-300 ease-out outline-none motion-reduce:animate-none",
+        // Plays on every switch: a new panel is mounted, a `forceMount`ed one
+        // comes back from `hidden`, and either restarts the animation. From
+        // half opacity, not zero, and short: the old panel is gone the same
+        // frame, so a fade from nothing left the space under the tabs blank
+        // for a beat and the switch read as a flicker.
+        "animate-in fade-in-50 flex-1 duration-150 ease-out outline-none motion-reduce:animate-none",
         className,
       )}
       {...props}

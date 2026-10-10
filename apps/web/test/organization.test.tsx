@@ -751,14 +751,16 @@ const USER_1_D =
 /**
  * The faces in the member list, in order.
  *
- * Every avatar in the tree, which is exactly the member rows: the handle
- * form's own avatar sits in the Overview tab, and only the open tab is
- * mounted, so with Members open nothing else can match.
+ * Every avatar in the open panel, which is exactly the member rows: the
+ * handle form's own avatar sits in the Overview tab, which stays mounted but
+ * hidden while Members is open.
  */
 function memberFaces(container: HTMLElement): Array<string | null | undefined> {
-  return [...container.querySelectorAll('[data-slot="avatar"]')].map((avatar) =>
-    avatar.querySelector("path")?.getAttribute("d"),
-  );
+  return [
+    ...container.querySelectorAll(
+      '[role="tabpanel"]:not([hidden]) [data-slot="avatar"]',
+    ),
+  ].map((avatar) => avatar.querySelector("path")?.getAttribute("d"));
 }
 
 test("a member row carries the face generated for that person", async () => {
@@ -1219,7 +1221,12 @@ test("a personal organization has Overview and Settings, but no Members", async 
   ).toEqual(["Overview", "Settings"]);
   // The handle and the connections share the overview, as on a team.
   expect(screen.getByRole("heading", { name: "Connections" })).toBeDefined();
-  expect(screen.queryByText("Bounty rate card")).toBeNull();
+  // Mounted, so it has loaded by the time Settings opens, but not shown.
+  expect(
+    screen
+      .getByText("Bounty rate card")
+      .closest<HTMLElement>('[role="tabpanel"]')?.hidden,
+  ).toBe(true);
 });
 
 test("a personal organization's rate card is under Settings, as on a team", async () => {
