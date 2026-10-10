@@ -4,8 +4,10 @@
  * Kept simple: each card is the tool's mark, drawn large, at most one short
  * line under it — what it reads — and one button. A row of them,
  * centred, each one step smaller than the one before: the first given is the
- * one onboarding recommends, so it is the largest and the only filled
- * button, and the eye goes there first.
+ * one onboarding recommends, so it is the largest, and the eye goes there
+ * first. Its button is outlined like the rest: the setup checklist above
+ * already offers the step to take now as the page's one filled button, and
+ * two filled buttons for one step left neither reading as the way on.
  *
  * A path that needs no tool at all — writing a bounty by hand — is drawn
  * with a dashed card and a bare button: it is there, but it is the way round
@@ -105,13 +107,7 @@ export function PathCards({ paths }: { paths: PathCard[] }) {
             {path.action !== undefined ? (
               <Button
                 size="sm"
-                variant={
-                  recommended
-                    ? "default"
-                    : path.dashed === true
-                      ? "ghost"
-                      : "outline"
-                }
+                variant={path.dashed === true ? "ghost" : "outline"}
                 type="button"
                 aria-label={path.action.name}
               >

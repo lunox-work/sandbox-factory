@@ -30,7 +30,12 @@ import {
 import { useEffect, useState } from "react";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { ErrorBanner, LoadingLine, RetryableError } from "@/components/Message";
+import {
+  ErrorBanner,
+  LoadingLine,
+  RetryableError,
+  RetryButton,
+} from "@/components/Message";
 import { OutcomeNotice } from "@/components/OutcomeNotice";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -303,13 +308,14 @@ export function BoardsError({
   }
   return (
     <div className="flex flex-col items-start gap-2">
-      <ErrorBanner className="mt-0">{error.message}</ErrorBanner>
-      {onRetry !== undefined && (
-        <Button type="button" variant="outline" size="sm" onClick={onRetry}>
-          <RefreshCw />
-          Try again
-        </Button>
-      )}
+      <ErrorBanner
+        className="mt-0"
+        action={
+          onRetry !== undefined ? <RetryButton onRetry={onRetry} /> : undefined
+        }
+      >
+        {error.message}
+      </ErrorBanner>
     </div>
   );
 }
@@ -682,7 +688,7 @@ export function JiraConnections({
         carries it, joined to this card.
       */}
       <header>
-        <h3 className="leading-none font-semibold">Jira</h3>
+        <h3 className="text-heading">Jira</h3>
         <p className="text-muted-foreground mt-1.5 text-sm">
           Every board on a connected site is registered when it is connected.
         </p>

@@ -21,6 +21,7 @@
 
 import { ChevronRight } from "lucide-react";
 
+import { PAGE_COLUMN } from "@/components/Page";
 import { cn } from "@/lib/utils";
 
 import type { Screen } from "./SideNav";
@@ -228,34 +229,18 @@ export function Breadcrumbs({
       announce the position in it. The separators sit outside the links and are
       hidden, or every crumb would be read with a chevron glued to it.
 
-      The column is capped and padded on this one element, exactly as each page
-      caps and pads its own `main`. Splitting the two — padding here, the cap
-      on the `ol` inside — is what used to misalign the trail: the padding
-      applied outside the capped box, so the crumbs began 24px left of every
-      heading below them.
+      The column is capped and padded on this one element with the same
+      `PAGE_COLUMN` every page's `main` uses. Splitting the two — padding here,
+      the cap on the `ol` inside — is what used to misalign the trail: the
+      padding applied outside the capped box, so the crumbs began 24px left of
+      every heading below them. Every page shares the one column now, wide or
+      narrow, so the trail no longer asks which screen it is on.
 
       Only top padding, because the page shell gives routed pages a smaller
       first-block offset when a breadcrumb is present. That keeps one stable
       gap between the trail and heading without compensating margins.
     */
-    <nav
-      aria-label="Breadcrumb"
-      className={cn(
-        "mx-auto w-full px-4 pt-5 sm:px-6 sm:pt-7",
-        // The board is the one wide page, so a trail capped at the narrow
-        // column would be misaligned the other way — the crumbs sitting well
-        // right of the content. Read from the screen rather than taken as a
-        // prop: which pages are wide is the trail's own business, and the
-        // shell already tells it where it is.
-        screen === "org-repository" ||
-          screen === "onboarding" ||
-          screen === "bounties" ||
-          screen === "new-bounty" ||
-          screen === "bounty"
-          ? "max-w-5xl"
-          : "max-w-2xl",
-      )}
-    >
+    <nav aria-label="Breadcrumb" className={cn(PAGE_COLUMN, "pt-5 sm:pt-7")}>
       <ol className="text-muted-foreground flex flex-wrap items-center gap-1.5 text-sm">
         {crumbs.map((crumb, index) => {
           /*

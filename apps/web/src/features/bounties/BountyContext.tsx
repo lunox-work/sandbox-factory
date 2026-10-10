@@ -298,7 +298,7 @@ export function ContextSync({
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <span
           className={cn(
-            "rounded-[4px] px-1.5 py-px text-[11px] leading-4 font-medium whitespace-nowrap",
+            "rounded-[4px] px-1.5 py-px text-2xs leading-4 font-medium whitespace-nowrap",
             status === null ? STATE_STYLE.unsynced : STATE_STYLE[status.state],
           )}
         >
@@ -511,7 +511,7 @@ function SourceVersion({
       <span className="truncate">{name ?? SOURCE_NAME[source]}</span>
       <span
         className={cn(
-          "rounded-[4px] px-1.5 py-px font-mono text-[11px] leading-4 font-medium",
+          "rounded-[4px] px-1.5 py-px font-mono text-2xs leading-4 font-medium",
           drift !== null
             ? "bg-amber-500/15 text-amber-800 dark:text-amber-300"
             : version === null

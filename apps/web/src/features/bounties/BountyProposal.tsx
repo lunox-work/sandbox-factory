@@ -1,11 +1,9 @@
 import { ApiError } from "@sandbox-factory/client";
-import { RefreshCw } from "lucide-react";
 import { useProposalMutations } from "./mutations";
 import { ProposalPeek } from "./ProposalPeek";
 import { useProposalDetail } from "./queries";
 import type { EnrichedProposal } from "./types";
-import { ErrorBanner, LoadingLine } from "@/components/Message";
-import { Button } from "@/components/ui/button";
+import { ErrorBanner, LoadingLine, RetryableError } from "@/components/Message";
 
 /**
  * A bounty's own proposal, inside the bounty: its spec, its size and the
@@ -63,18 +61,9 @@ export function BountyProposal({
         This proposal no longer exists.
       </p>
     ) : (
-      <div className="flex flex-col items-start gap-3">
-        <ErrorBanner className="mt-0">Could not load the proposal.</ErrorBanner>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={() => void detail.refetch()}
-        >
-          <RefreshCw />
-          Try again
-        </Button>
-      </div>
+      <RetryableError onRetry={() => void detail.refetch()}>
+        Could not load the proposal.
+      </RetryableError>
     );
   }
   if (detail.data === undefined)

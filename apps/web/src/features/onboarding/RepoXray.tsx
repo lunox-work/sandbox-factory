@@ -89,7 +89,7 @@ export function RepoXray({
         <div className="min-w-0">
           <h2
             id={headingId}
-            className="flex min-w-0 items-center gap-2 text-base font-semibold tracking-tight"
+            className="text-heading flex min-w-0 items-center gap-2"
           >
             <FolderGit2 className="text-muted-foreground size-4 shrink-0" />
             <span className="truncate">{repo.fullName}</span>

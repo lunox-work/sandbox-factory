@@ -26,7 +26,7 @@ import {
 import { useState, type ReactNode } from "react";
 
 import { Combobox } from "@/components/Combobox";
-import { ErrorBanner, LoadingLine } from "@/components/Message";
+import { LoadingLine, RetryableError } from "@/components/Message";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -143,20 +143,9 @@ export function BoardScan({
     // rather than passed off as a workspace with no board yet.
     if (error !== null && boards.length === 0)
       return (
-        <div className="flex flex-col items-start gap-3">
-          <ErrorBanner className="mt-0">
-            Could not load this workspace&rsquo;s boards.
-          </ErrorBanner>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => void refresh()}
-          >
-            <RefreshCw />
-            Try again
-          </Button>
-        </div>
+        <RetryableError onRetry={() => void refresh()}>
+          Could not load this workspace&rsquo;s boards.
+        </RetryableError>
       );
     return <>{fallback}</>;
   }
@@ -295,7 +284,7 @@ function BoardBar({
               <span className="text-muted-foreground truncate text-xs leading-4">
                 {siteName ?? "Board"}
               </span>
-              <span className="truncate text-[0.9375rem] leading-5 font-semibold tracking-tight">
+              <span className="text-subheading truncate">
                 {current.name}
                 {current.projectKey !== null &&
                   !namesKey(current.name, current.projectKey) && (

@@ -255,6 +255,9 @@ export function TeaserBounty({
         ) : (
           <>
             <Button
+              // Until GitHub is connected, pressing it only asks for that, so
+              // it is not the screen's call to action and is drawn neutral.
+              variant={needsCode ? "secondary" : "default"}
               className="w-full gap-2"
               disabled={busy || !sizingAvailable || boardBusy}
               onClick={() => (needsCode ? setAsking(true) : void size())}

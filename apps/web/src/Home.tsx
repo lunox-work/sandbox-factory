@@ -17,6 +17,7 @@ import { PenLine } from "lucide-react";
 import type { ReactNode } from "react";
 
 import { LoadingLine } from "@/components/Message";
+import { Page, PageHeader } from "@/components/Page";
 import { Button } from "@/components/ui/button";
 
 import { WorkspaceNotices, useConsentReturn } from "./WorkspaceNotices";
@@ -78,9 +79,9 @@ function WorkspaceHome({
 
   if (facts === null || consent.picking) {
     return (
-      <main className="mx-auto w-full max-w-5xl px-4 py-10 sm:px-6 sm:py-14">
+      <Page>
         <LoadingLine />
-      </main>
+      </Page>
     );
   }
 
@@ -92,25 +93,16 @@ function WorkspaceHome({
   const today = new Date();
   const intro = (
     <div className="flex flex-col gap-6">
-      <div>
-        <p className="text-muted-foreground text-sm">
-          {today.toLocaleDateString(undefined, {
-            weekday: "long",
-            month: "long",
-            day: "numeric",
-          })}
-        </p>
-        <h1 className="mt-1 text-2xl font-semibold tracking-tight">
-          {greeting(today)}
-          {who === undefined ? "" : `, ${who}`}
-        </h1>
-        <p
-          className="text-muted-foreground mt-2 max-w-prose text-sm"
-          data-testid="home-promise"
-        >
-          {promise(stage, firstRepo?.fullName, canManage)}
-        </p>
-      </div>
+      <PageHeader
+        kicker={today.toLocaleDateString(undefined, {
+          weekday: "long",
+          month: "long",
+          day: "numeric",
+        })}
+        title={`${greeting(today)}${who === undefined ? "" : `, ${who}`}`}
+        description={promise(stage, firstRepo?.fullName, canManage)}
+        descriptionTestId="home-promise"
+      />
       <WorkspaceNotices
         consent={consent}
         setup={setup}
@@ -120,7 +112,7 @@ function WorkspaceHome({
   );
 
   return (
-    <main className="mx-auto flex w-full max-w-5xl flex-col gap-8 px-4 py-10 sm:px-6 sm:py-14">
+    <Page className="flex flex-col gap-8">
       {intro}
       <div>
         {/* A bounty names no repository: its work may touch any of them. */}
@@ -129,7 +121,7 @@ function WorkspaceHome({
           Write a bounty
         </Button>
       </div>
-    </main>
+    </Page>
   );
 }
 

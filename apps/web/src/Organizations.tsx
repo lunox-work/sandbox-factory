@@ -18,10 +18,11 @@
  */
 
 import type { MembershipDto } from "@sandbox-factory/shared";
-import { ChevronRight, Plus, RefreshCw } from "lucide-react";
+import { ChevronRight, Plus } from "lucide-react";
 
 import { EntityAvatar } from "@/components/Avatar";
-import { ErrorBanner, LoadingLine } from "@/components/Message";
+import { ErrorBanner, LoadingLine, RetryButton } from "@/components/Message";
+import { Page, PageHeader } from "@/components/Page";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -71,42 +72,41 @@ export function Organizations({
   onCreate: () => void;
 }) {
   return (
-    <main className="mx-auto w-full max-w-2xl px-4 py-10 sm:px-6 sm:py-14">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Workspaces</h1>
-          <p className="text-muted-foreground mt-1.5 text-sm">
-            Workspaces you belong to.
-          </p>
-        </div>
-        {/* Beside the heading rather than under the list: creating is not the
-            last item of the list, and it stays reachable when the list is
-            long. */}
-        <Button asChild>
-          <a
-            href={pathForScreen("create-org")}
-            onClick={(event) => {
-              if (isPlainLeftClick(event)) {
-                event.preventDefault();
-                onCreate();
-              }
-            }}
-          >
-            <Plus />
-            New workspace
-          </a>
-        </Button>
-      </div>
+    <Page width="narrow">
+      <PageHeader
+        title="Workspaces"
+        description="Workspaces you belong to."
+        // Beside the heading rather than under the list: creating is not the
+        // last item of the list, and it stays reachable when the list is long.
+        actions={
+          <Button asChild>
+            <a
+              href={pathForScreen("create-org")}
+              onClick={(event) => {
+                if (isPlainLeftClick(event)) {
+                  event.preventDefault();
+                  onCreate();
+                }
+              }}
+            >
+              <Plus />
+              New workspace
+            </a>
+          </Button>
+        }
+      />
 
       {error !== null && (
         <div className="flex flex-col items-start gap-3">
-          <ErrorBanner>{error}</ErrorBanner>
-          {onRetry !== undefined && (
-            <Button type="button" variant="outline" size="sm" onClick={onRetry}>
-              <RefreshCw />
-              Try again
-            </Button>
-          )}
+          <ErrorBanner
+            action={
+              onRetry !== undefined ? (
+                <RetryButton onRetry={onRetry} />
+              ) : undefined
+            }
+          >
+            {error}
+          </ErrorBanner>
         </div>
       )}
 
@@ -224,6 +224,6 @@ export function Organizations({
           </ul>
         )}
       </div>
-    </main>
+    </Page>
   );
 }

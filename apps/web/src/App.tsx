@@ -6,10 +6,8 @@ import {
 } from "./navigation/location";
 import { useEffect, useRef, useState } from "react";
 
-import { RefreshCw } from "lucide-react";
-
-import { ErrorBanner, LoadingLine } from "@/components/Message";
-import { Button } from "@/components/ui/button";
+import { LoadingLine, RetryableError } from "@/components/Message";
+import { Page } from "@/components/Page";
 
 import { Account } from "./Account";
 import { signOut, useSession } from "./auth";
@@ -379,8 +377,8 @@ function Signed({
       />
       <div
         ref={contentRef}
-        className={`relative min-w-0 flex-1 pb-[calc(4rem+env(safe-area-inset-bottom))] sm:bg-background sm:my-2 sm:mr-2 sm:overflow-y-auto sm:scrollbar-none sm:[&::-webkit-scrollbar]:hidden sm:rounded-[6px] sm:border sm:pb-0 ${
-          landing ? "" : "[&>main]:!pt-4 sm:[&>main]:!pt-6"
+        className={`relative min-w-0 flex-1 pb-[calc(4rem+env(safe-area-inset-bottom))] sm:bg-background sm:my-2 sm:mr-2 sm:overflow-y-auto sm:scrollbar-none sm:[&::-webkit-scrollbar]:hidden sm:rounded-xl sm:border sm:shadow-sm sm:pb-0 ${
+          landing ? "" : "[&_[data-page]]:!pt-4 sm:[&_[data-page]]:!pt-6"
         }`}
       >
         {/*
@@ -392,7 +390,9 @@ function Signed({
           The pages open with their own top padding, sized for a page that
           starts at the top of the column. The shell gives routed pages one
           smaller first-block offset when a trail is present, keeping the
-          spacing contract in one place.
+          spacing contract in one place. Matched by `Page`'s marker rather than
+          as a direct child, so a page wrapped for a side panel (the bounty
+          list) sits as close under its trail as every other.
         */}
         {!landing && (
           <Breadcrumbs
@@ -604,9 +604,9 @@ function Signed({
           )
         ) : organizations.active === null ? (
           organizations.loading || organizations.settling ? (
-            <main className="mx-auto w-full max-w-5xl px-4 py-10 sm:px-6 sm:py-14">
+            <Page>
               <LoadingLine />
-            </main>
+            </Page>
           ) : (
             // A list that failed is not one with no workspace in it; both
             // say so, and the second offers to make one.
@@ -641,9 +641,9 @@ function Signed({
             one mounts first matters — it reads a consent's outcome from the
             address and strips it, so the other would never hear of it.
           */
-          <main className="mx-auto w-full max-w-5xl px-4 py-10 sm:px-6 sm:py-14">
+          <Page>
             <LoadingLine />
-          </main>
+          </Page>
         ) : (
           <Home
             name={name}
@@ -689,21 +689,15 @@ function NoOrganization({
   onCreateWorkspace: () => void;
 }) {
   return (
-    <main className="mx-auto w-full max-w-2xl px-4 py-10 sm:px-6 sm:py-14">
+    <Page width="narrow">
       {loading ? (
         <LoadingLine />
       ) : error !== null ? (
-        <div className="flex flex-col items-start gap-3">
-          <ErrorBanner className="mt-0">{error}</ErrorBanner>
-          <Button type="button" variant="outline" size="sm" onClick={onRetry}>
-            <RefreshCw />
-            Try again
-          </Button>
-        </div>
+        <RetryableError onRetry={onRetry}>{error}</RetryableError>
       ) : notFound ? (
         <div className="flex flex-col items-start gap-3">
           <div>
-            <h1 className="text-xl font-semibold">Workspace unavailable</h1>
+            <h1 className="text-title">Workspace unavailable</h1>
             <p className="text-muted-foreground mt-1 text-sm">
               It may have been renamed, removed, or no longer shared with you.
             </p>
@@ -740,17 +734,17 @@ function NoOrganization({
           </a>
         </div>
       )}
-    </main>
+    </Page>
   );
 }
 
 /** What an address that names no page shows, in place of guessing one. */
 function NotFound({ onOpenHome }: { onOpenHome: () => void }) {
   return (
-    <main className="mx-auto w-full max-w-2xl px-4 py-10 sm:px-6 sm:py-14">
+    <Page width="narrow">
       <div className="flex flex-col items-start gap-3">
         <div>
-          <h1 className="text-xl font-semibold">Page not found</h1>
+          <h1 className="text-title">Page not found</h1>
           <p className="text-muted-foreground mt-1 text-sm">
             Nothing is at this address. The link may be mistyped, or the page
             may have moved.
@@ -769,6 +763,6 @@ function NotFound({ onOpenHome }: { onOpenHome: () => void }) {
           Go home
         </a>
       </div>
-    </main>
+    </Page>
   );
 }

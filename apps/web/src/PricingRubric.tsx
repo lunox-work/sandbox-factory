@@ -992,13 +992,13 @@ function Ladder({
                   >
                     {size}
                   </span>
-                  <span className="text-[11px] tabular-nums opacity-80">
+                  <span className="text-2xs tabular-nums opacity-80">
                     {band.to === null
                       ? `${band.from}+`
                       : `${band.from}–${band.to}`}
                   </span>
                   <span
-                    className={`text-[11px] tabular-nums ${
+                    className={`text-2xs tabular-nums ${
                       inForce ? "text-foreground font-medium" : ""
                     }`}
                   >

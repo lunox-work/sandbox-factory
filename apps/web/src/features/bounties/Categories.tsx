@@ -142,7 +142,7 @@ export function CategoryFilter({
                 </span>
                 <span>{chip.label}</span>
                 {chip.count !== undefined && (
-                  <span className="category-count min-w-5 rounded-full px-1.5 py-px text-center text-[11px] font-medium tabular-nums">
+                  <span className="category-count min-w-5 rounded-full px-1.5 py-px text-center text-2xs font-medium tabular-nums">
                     {chip.count}
                   </span>
                 )}

@@ -267,7 +267,7 @@ function Log({
     >
       {/* The panel's tab strip, as the editor's terminal has it. */}
       <div className="flex h-[35px] shrink-0 items-center gap-3 border-b border-(--wb-border) pr-2 pl-3">
-        <span className="flex h-full items-center border-b border-(--wb-foreground) text-[11px] tracking-wide text-(--wb-strong) uppercase">
+        <span className="flex h-full items-center border-b border-(--wb-foreground) text-2xs tracking-wide text-(--wb-strong) uppercase">
           Terminal
         </span>
         <span className="min-w-0 flex-1 truncate text-xs text-(--wb-muted)">

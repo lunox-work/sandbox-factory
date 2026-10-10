@@ -8,12 +8,10 @@
  * from either.
  */
 
-import { RefreshCw } from "lucide-react";
 import { useEffect } from "react";
 
-import { ErrorBanner } from "@/components/Message";
+import { RetryableError } from "@/components/Message";
 import { OutcomeNotice } from "@/components/OutcomeNotice";
-import { Button } from "@/components/ui/button";
 
 import { describeGithubOutcome } from "./Github";
 import { OutcomeBanner } from "./Jira";
@@ -81,20 +79,9 @@ export function WorkspaceNotices({
       {setup.failed && (
         // One read failing must not take the page with it: what did load is
         // still shown, and this says the rest may be missing.
-        <div className="flex flex-col items-start gap-3">
-          <ErrorBanner className="mt-0">
-            Some of this workspace&rsquo;s connections could not be read.
-          </ErrorBanner>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => void setup.refresh()}
-          >
-            <RefreshCw />
-            Try again
-          </Button>
-        </div>
+        <RetryableError onRetry={() => void setup.refresh()}>
+          Some of this workspace&rsquo;s connections could not be read.
+        </RetryableError>
       )}
       {broken > 0 && <BrokenSites count={broken} onOpen={onOpenJiraSettings} />}
     </>

@@ -1,7 +1,8 @@
 @import "tailwindcss";
 @import "tw-animate-css";
-/* The diagram skin's faces, self-hosted. Declared for every page but
-   fetched only by one that draws a diagram. */
+/* The app's faces, self-hosted: Geist for everything set in words, Geist Mono
+   for code, hashes and figures read digit by digit. The diagram skin draws in
+   the same two, so a diagram reads as part of the page. */
 @import "@fontsource-variable/geist";
 @import "@fontsource-variable/geist-mono";
 
@@ -15,7 +16,10 @@
  * picked by eye.
  */
 :root {
-  --radius: 0.75rem;
+  /* 12px for cards, 8px for panels, 6px for controls, 4px for chips (see
+     `@theme`). Tighter than the 12px this started at, which made every input
+     read as a pill: a control is drawn crisp, a card only softened. */
+  --radius: 0.5rem;
 
   --background: oklch(1 0 0);
   --foreground: oklch(0.141 0.005 285.823);
@@ -58,6 +62,14 @@
   --brand-fill: linear-gradient(135deg, #1b90fb 0%, #0864ed 50%, #4d7bff 100%);
   --brand-fill-foreground: oklch(0.985 0 0);
 
+  /*
+   * The one control on a screen that asks to be pressed (`Button`'s default).
+   * Ink on the light theme. On the dark one, where ink would be a white slab,
+   * the brand's blue instead: deep enough to carry a white label.
+   */
+  --cta: oklch(0.21 0.006 285.885);
+  --cta-foreground: oklch(0.985 0 0);
+
   --secondary: oklch(0.967 0.001 286.375);
   --secondary-foreground: oklch(0.21 0.006 285.885);
   --muted: oklch(0.967 0.001 286.375);
@@ -92,15 +104,15 @@
   --danger: oklch(0.689 0.2 22.4);
   --danger-foreground: oklch(0.985 0 0);
 
-  --border: oklch(0.92 0.004 286.32);
-  --input: oklch(0.92 0.004 286.32);
+  --border: oklch(0.925 0.004 286.32);
+  --input: oklch(0.9 0.004 286.32);
   --ring: oklch(0.546 0.215 262.881);
 
   /* The rail and the frame around the content panel, from `sm` up. It reads
      as chrome rather than as page by sitting behind it: a step darker than the
      background in both themes, near-black on dark, so the panel is what comes
      forward. */
-  --sidebar: oklch(0.985 0 0);
+  --sidebar: oklch(0.967 0.002 286.375);
 }
 
 .dark {
@@ -134,6 +146,9 @@
     #718fff 75%,
     #b0a0ff 100%
   );
+
+  --cta: oklch(0.58 0.2 259);
+  --cta-foreground: oklch(0.985 0 0);
 
   --secondary: oklch(0.274 0.006 286.033);
   --secondary-foreground: oklch(0.985 0 0);
@@ -180,6 +195,8 @@
   --color-destructive: var(--destructive);
   --color-destructive-foreground: var(--destructive-foreground);
   --color-danger: var(--danger);
+  --color-cta: var(--cta);
+  --color-cta-foreground: var(--cta-foreground);
   --color-danger-foreground: var(--danger-foreground);
   --color-border: var(--border);
   --color-input: var(--input);
@@ -193,8 +210,101 @@
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
 
-  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-sans:
+    "Geist Variable", Geist, ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", sans-serif;
+  --font-mono:
+    "Geist Mono Variable", "Geist Mono", ui-monospace, SFMono-Regular, Menlo,
+    monospace;
+}
+
+/*
+ * The type scale. Every piece of text in the app's chrome is one of these
+ * steps; a size picked by eye for one component (`text-[13px]`) is what made
+ * neighbouring screens disagree.
+ *
+ * Sizes, smallest first. Tailwind's own `xs` to `2xl` stay as they are; `2xs`
+ * is the one step added below them, for counts, chips and keyboard hints.
+ *
+ * Roles, as one class each, carry size, line height, weight and tracking
+ * together, so a heading cannot come out at the right size but the wrong
+ * weight. Geist is drawn wide; large sizes are tracked in to sit tight, small
+ * ones left alone.
+ *
+ *   text-display   32px  the one line a signed-out or empty screen leads with
+ *   text-title     28px  a page's h1
+ *   text-heading   15px  a section or card heading
+ *   text-subheading 13px a heading inside a card or a checklist
+ *   eyebrow        11px  the uppercase label over a group (a utility below,
+ *                        since it also sets case and colour)
+ *
+ * Body copy is `text-sm` (13px here, not Tailwind's 14px), secondary copy
+ * `text-xs` (12px). The page itself is set in body copy, so text that names
+ * no size reads the same as text that does.
+ *
+ * `inline` so the role classes resolve to these values in place; they are
+ * also registered with `cn` (`lib/utils.ts`), or tailwind-merge would read
+ * `text-title` as a colour and drop it beside `text-muted-foreground`.
+ */
+@theme inline {
+  --text-2xs: 0.6875rem;
+  --text-2xs--line-height: 1rem;
+
+  /* Body copy, a step denser than Tailwind's 14px: the size tools built for
+     reading lists all day settle on, and what makes a screen read as a
+     product rather than a form. `xs` stays 12px, so the two still differ. */
+  --text-sm: 0.8125rem;
+  --text-sm--line-height: 1.25rem;
+
+  --text-display: 2rem;
+  --text-display--line-height: 2.5rem;
+  --text-display--letter-spacing: -0.035em;
+  --text-display--font-weight: 600;
+
+  --text-title: 1.75rem;
+  --text-title--line-height: 2.25rem;
+  --text-title--letter-spacing: -0.03em;
+  --text-title--font-weight: 600;
+
+  --text-heading: 0.9375rem;
+  --text-heading--line-height: 1.375rem;
+  --text-heading--letter-spacing: -0.012em;
+  --text-heading--font-weight: 600;
+
+  --text-subheading: 0.8125rem;
+  --text-subheading--line-height: 1.25rem;
+  --text-subheading--letter-spacing: -0.006em;
+  --text-subheading--font-weight: 600;
+
+  /*
+   * Shadows, drawn soft and low: a hairline of contact and a wide, faint
+   * spread, rather than Tailwind's single grey smudge. Neutral rather than
+   * blue-tinted so they work under any surface. Dark mode barely shows a
+   * shadow at all; there the card's lighter fill does the lifting.
+   */
+  --shadow-xs: 0 1px 2px 0 rgb(24 24 27 / 0.04);
+  --shadow-sm:
+    0 1px 2px 0 rgb(24 24 27 / 0.04), 0 1px 3px 0 rgb(24 24 27 / 0.03);
+  --shadow-md:
+    0 2px 4px -1px rgb(24 24 27 / 0.05), 0 6px 16px -4px rgb(24 24 27 / 0.08);
+  --shadow-lg:
+    0 4px 8px -2px rgb(24 24 27 / 0.05), 0 16px 32px -8px rgb(24 24 27 / 0.12);
+  --shadow-xl:
+    0 8px 16px -4px rgb(24 24 27 / 0.06), 0 24px 48px -12px rgb(24 24 27 / 0.16);
+}
+
+/*
+ * The small uppercase label that heads a group: the bounty page's sidebar
+ * sections, a list's columns, a panel's title. One treatment everywhere it
+ * appears, where there were three (wide-tracked 11px, bold 11px, 12px caps).
+ */
+@utility eyebrow {
+  font-size: var(--text-2xs);
+  line-height: var(--text-2xs--line-height);
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
 }
 
 /*
@@ -260,6 +370,8 @@
       #718fff 75%,
       #b0a0ff 100%
     );
+    --cta: oklch(0.58 0.2 259);
+    --cta-foreground: oklch(0.985 0 0);
     --secondary: oklch(0.274 0.006 286.033);
     --secondary-foreground: oklch(0.985 0 0);
     --muted: oklch(0.274 0.006 286.033);
@@ -281,7 +393,7 @@
   }
 
   body {
-    @apply bg-background text-foreground font-sans antialiased;
+    @apply bg-background text-foreground font-sans text-sm antialiased;
     /* Was set by hand before Tailwind's preflight took over the reset. */
     margin: 0;
   }
@@ -440,7 +552,7 @@
 
 .signin-tagline {
   margin: 0.75rem 0 0;
-  font-size: 1.05rem;
+  font-size: var(--text-base);
   color: var(--muted-foreground);
   letter-spacing: -0.005em;
 }
@@ -448,7 +560,7 @@
 .signin-context {
   margin: 0.45rem 0 0;
   max-width: 19rem;
-  font-size: 0.8125rem;
+  font-size: var(--text-sm);
   line-height: 1.45;
   color: var(--muted-foreground);
 }
@@ -458,12 +570,12 @@
   box-sizing: border-box;
   margin: 1.75rem 0 0;
   padding: 0.6rem 0.75rem;
-  font-size: 0.875rem;
+  font-size: var(--text-sm);
   line-height: 1.45;
   text-align: left;
   color: var(--destructive);
   border: 1px solid color-mix(in srgb, var(--destructive) 35%, transparent);
-  border-radius: 0.75rem;
+  border-radius: var(--radius-lg);
   background: color-mix(in srgb, var(--destructive) 7%, transparent);
 }
 
@@ -490,11 +602,11 @@
   padding: 0.75rem 1rem;
   font: inherit;
   font-weight: 500;
-  font-size: 0.95rem;
+  font-size: var(--text-sm);
   color: var(--foreground);
   cursor: pointer;
   border: 1px solid var(--border);
-  border-radius: 0.75rem;
+  border-radius: var(--radius-lg);
   background: color-mix(in srgb, var(--background) 70%, transparent);
   backdrop-filter: blur(8px);
   transition:

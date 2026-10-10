@@ -42,10 +42,7 @@ export function RepoPicker({
       className="flex flex-col gap-3 rounded-lg border p-4"
     >
       <header>
-        <h2
-          id={headingId}
-          className="flex items-center gap-2 text-base font-semibold tracking-tight"
-        >
+        <h2 id={headingId} className="text-heading flex items-center gap-2">
           {/* The mark has no size of its own; its box gives it one. */}
           <span className="grid size-4 shrink-0 place-items-center [&_svg]:size-4">
             <ProviderIcon provider="github" />

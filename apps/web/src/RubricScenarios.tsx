@@ -389,7 +389,7 @@ function PreviewTitles({
 /** What a preview says it opens. */
 function PreviewHint({ children }: { children: ReactNode }) {
   return (
-    <p className="text-muted-foreground mt-2.5 border-t pt-2 text-[11px]">
+    <p className="text-muted-foreground mt-2.5 border-t pt-2 text-2xs">
       {children}
     </p>
   );
@@ -709,7 +709,7 @@ function ScenarioIndex({
         )}
         {groups.map((group) => (
           <section key={group.id} aria-label={group.label}>
-            <h3 className="bg-muted/30 text-muted-foreground flex items-center gap-2 px-5 py-1.5 text-[11px] font-semibold tracking-wider uppercase sm:px-6">
+            <h3 className="eyebrow bg-muted/30 flex items-center gap-2 px-5 py-1.5 sm:px-6">
               <KindDot kind={group.id} />
               {group.label}
               <span className="ml-auto font-normal tracking-normal tabular-nums">

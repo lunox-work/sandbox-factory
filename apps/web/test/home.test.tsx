@@ -944,8 +944,8 @@ test("the six kinds of work open in a dialog from the heading, at every stage", 
       name: "Onboarding",
       level: 1,
     });
-    // At the far end of the heading's own row.
-    const open = within(heading.parentElement as HTMLElement).getByRole(
+    // At the far end of the heading's own row: the page header's actions.
+    const open = within(heading.closest("header") as HTMLElement).getByRole(
       "button",
       { name: "What task do teams outsource?" },
     );

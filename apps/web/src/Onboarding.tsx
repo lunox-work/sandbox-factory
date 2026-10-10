@@ -38,6 +38,7 @@ import { SquarePen } from "lucide-react";
 import { useState, type ReactNode } from "react";
 
 import { LoadingLine } from "@/components/Message";
+import { Page, PageHeader } from "@/components/Page";
 
 import { RepositoryDialog } from "./Github";
 import { JiraIcon, ProviderIcon } from "./ProviderIcon";
@@ -97,9 +98,9 @@ function WorkspaceOnboarding({
 
   if (facts === null || consent.picking) {
     return (
-      <main className="mx-auto w-full max-w-5xl px-4 py-10 sm:px-6 sm:py-14">
+      <Page>
         <LoadingLine />
-      </main>
+      </Page>
     );
   }
 
@@ -200,30 +201,22 @@ function WorkspaceOnboarding({
     : "Here're list of items that product and engineering manager typically outsource";
 
   return (
-    <main className="mx-auto flex w-full max-w-5xl flex-col gap-10 px-4 py-10 sm:px-6 sm:py-14">
+    <Page className="flex flex-col gap-10">
       <div className="flex flex-col gap-6">
-        <div>
-          {/* The six kinds of work at the far end of the heading: reference
-              for every stage, opened when wanted rather than standing in the
-              way of the steps. */}
-          <div className="flex items-center justify-between gap-4">
-            <h1 className="text-2xl font-semibold tracking-tight">
-              Onboarding
-            </h1>
-            <CategoryShowcase description={showcaseDescription} />
-          </div>
-          <p
-            className="text-muted-foreground mt-2 max-w-prose text-sm"
-            data-testid="onboarding-promise"
-          >
-            {promise(
-              stage,
-              needsRepository,
-              firstRepo?.fullName,
-              setupComplete(facts),
-            )}
-          </p>
-        </div>
+        <PageHeader
+          title="Onboarding"
+          description={promise(
+            stage,
+            needsRepository,
+            firstRepo?.fullName,
+            setupComplete(facts),
+          )}
+          descriptionTestId="onboarding-promise"
+          // The six kinds of work at the far end of the heading: reference
+          // for every stage, opened when wanted rather than standing in the
+          // way of the steps.
+          actions={<CategoryShowcase description={showcaseDescription} />}
+        />
         <WorkspaceNotices
           consent={consent}
           setup={setup}
@@ -311,7 +304,7 @@ function WorkspaceOnboarding({
           }
         />
       )}
-    </main>
+    </Page>
   );
 }
 

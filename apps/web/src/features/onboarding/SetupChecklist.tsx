@@ -101,7 +101,7 @@ export function SetupChecklist({
       data-testid="setup-checklist"
       className="flex flex-col gap-3"
     >
-      <h2 className="text-sm font-semibold tracking-tight">
+      <h2 className="text-subheading">
         Getting started
         <span className="text-muted-foreground ml-2 font-normal tabular-nums">
           {done} of {steps.length}
@@ -126,7 +126,7 @@ export function SetupChecklist({
             </span>
             <span className="flex min-w-0 flex-col items-start gap-1.5">
               <span
-                className={`text-sm leading-5 ${step.done ? "text-muted-foreground" : "font-semibold tracking-tight"}`}
+                className={`text-sm leading-5 ${step.done ? "text-muted-foreground" : "font-semibold"}`}
               >
                 {COPY[step.id].title}
                 <span className="sr-only">

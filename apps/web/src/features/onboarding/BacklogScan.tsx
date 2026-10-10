@@ -175,10 +175,7 @@ export function BacklogScan({
     >
       <header className="flex items-start justify-between gap-4">
         <div className="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1">
-          <h2
-            id={headingId}
-            className="flex items-center gap-2 text-base font-semibold tracking-tight"
-          >
+          <h2 id={headingId} className="text-heading flex items-center gap-2">
             <ScanSearch className="text-muted-foreground size-4 shrink-0" />
             {headline.title}
           </h2>

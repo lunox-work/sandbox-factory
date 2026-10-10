@@ -29,7 +29,7 @@ import { useReanalyze } from "./useReanalyze";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { DisabledReason } from "@/components/DisabledReason";
-import { ErrorBanner } from "@/components/Message";
+import { ErrorBanner, RetryButton } from "@/components/Message";
 import { ModelCard, SectionHeading } from "@/components/ReadSection";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -751,7 +751,7 @@ export function ProposalPeek({
                 : `The model's read: ${proposal.modelComplexity}`}
             </SectionHeading>
             <ModelCard>
-              <p className="text-[15px] leading-relaxed">
+              <p className="text-sm leading-relaxed">
                 {proposal.modelRationale}
               </p>
               {canDecide && unweighed(proposal) && (
@@ -894,16 +894,12 @@ export function ProposalPeek({
             />
           ) : bountyError !== null ? (
             <div className="flex min-h-48 flex-col items-start justify-center gap-3">
-              <ErrorBanner className="mt-0">{bountyError}</ErrorBanner>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={onRetryBounty}
+              <ErrorBanner
+                className="mt-0"
+                action={<RetryButton onRetry={onRetryBounty} />}
               >
-                <RefreshCw />
-                Try again
-              </Button>
+                {bountyError}
+              </ErrorBanner>
             </div>
           ) : bounty === null ? (
             <IssueSpecSkeleton />
@@ -1010,7 +1006,7 @@ function SizeCard({
   // enough that "XS" and "XL" fit inside it. "unsized" and a half size
   // such as "XS+" grow wider.
   const shape = current
-    ? "bg-(image:--brand-fill) text-brand-foreground border-transparent h-12 min-w-12 px-2 text-lg font-extrabold shadow-sm shadow-blue-600/20"
+    ? "bg-cta text-cta-foreground border-transparent h-12 min-w-12 px-2 text-lg font-bold shadow-xs"
     : "bg-card text-muted-foreground hover:text-foreground hover:border-foreground/30 h-7 min-w-7 px-1 text-xs";
   const className = `inline-flex items-center justify-center rounded-md border font-mono font-medium transition-[height,min-width,padding,font-size,font-weight,color,background-color,border-color,box-shadow,transform] duration-300 ease-[cubic-bezier(0.2,0,0,1)] motion-reduce:transition-none ${shape}`;
   if (onClick === undefined) {

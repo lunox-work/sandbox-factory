@@ -126,7 +126,7 @@ function TabsList({
       className={cn(
         "group/tabs",
         variant === "default" &&
-          "text-muted-foreground relative inline-flex h-9 w-fit items-center justify-center gap-1",
+          "text-muted-foreground bg-muted relative inline-flex h-8 w-fit items-center justify-center gap-0.5 rounded-lg p-[3px]",
         // The rule is an inset shadow, not a border, so the bar can sit on
         // it inside the list's box. Hung a pixel below onto a border, the bar
         // overflowed the list, and a list that scrolls sideways (overflow-x
@@ -144,11 +144,12 @@ function TabsList({
           data-slot="tabs-thumb"
           className={cn(
             "pointer-events-none absolute left-0",
-            // The bar is the brand's ramp: a page's sections are headed in
-            // Lunox's colour, where a pill is a neutral control.
+            // The bar is ink, as the active label is: the one choice on the
+            // rule reads as chosen by weight, not by colour. The pill is a
+            // raised face on a sunken track, as a segmented control is drawn.
             line
-              ? "bg-(image:--brand-gradient) bottom-0 h-0.5 rounded-full"
-              : "bg-muted ring-border/60 top-0 rounded-lg ring-1 ring-inset",
+              ? "bg-foreground bottom-0 h-0.5 rounded-full"
+              : "bg-background ring-border/60 dark:bg-input/40 top-0 rounded-md shadow-xs ring-1",
             settled &&
               "transition-[transform,width,height,opacity] duration-380 ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none",
           )}
@@ -176,7 +177,7 @@ function TabsTrigger({
       className={cn(
         // Above the thumb, which comes first in the list. No background of
         // its own: the thumb is what says which one is chosen.
-        "text-muted-foreground hover:text-foreground data-[state=active]:text-foreground relative z-10 inline-flex h-full flex-1 items-center justify-center gap-1.5 rounded-lg border border-transparent px-3 text-sm font-medium whitespace-nowrap select-none",
+        "text-muted-foreground hover:text-foreground data-[state=active]:text-foreground relative z-10 inline-flex h-full flex-1 items-center justify-center gap-1.5 rounded-md border border-transparent px-3 text-sm font-medium whitespace-nowrap select-none",
         "transition-[color,scale] duration-200 ease-out active:scale-[0.97] motion-reduce:transition-none",
         "focus-visible:ring-ring/40 focus-visible:ring-[3px] focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50",
         "[&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",

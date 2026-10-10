@@ -53,7 +53,6 @@ import {
   Loader2,
   Maximize2,
   Plus,
-  RefreshCw,
   Sparkles,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
@@ -69,7 +68,13 @@ import {
 
 import { Combobox } from "@/components/Combobox";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { ErrorBanner, LoadingLine } from "@/components/Message";
+import {
+  ErrorBanner,
+  LoadingLine,
+  RetryableError,
+  RetryButton,
+} from "@/components/Message";
+import { Page, PageHeader } from "@/components/Page";
 import {
   PEEK_ACTION_CLASS,
   PEEK_ROW_ATTRIBUTE,
@@ -319,19 +324,21 @@ export function Bounties({
         peek !== null && "xl:pr-[42rem]",
       )}
     >
-      <main className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-4 py-10 sm:px-6 sm:py-14">
-        <header className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight">Bounties</h1>
-            <p className="text-muted-foreground mt-1.5 max-w-prose text-sm">
+      <Page className="flex flex-col gap-6">
+        <PageHeader
+          title="Bounties"
+          description={
+            <>
               The work your workspaces want done, created in Lunox or imported
               from a Jira board&rsquo;s backlog scan. Each bounty is a proposal,
               which sizes and prices it, and a sandbox that contributors work
               in.
-            </p>
-          </div>
-          <NewBountyLink disabled={target === null} onCreate={onCreate} />
-        </header>
+            </>
+          }
+          actions={
+            <NewBountyLink disabled={target === null} onCreate={onCreate} />
+          }
+        />
 
         {/*
           Controls on the list beside the panel, as a card is: using them
@@ -412,7 +419,7 @@ export function Bounties({
               />
             ))}
         </PeekPanel>
-      </main>
+      </Page>
     </div>
   );
 }
@@ -602,7 +609,7 @@ export function BountyPage({
     return () => onTitle(undefined);
   }, [onTitle, title]);
   return (
-    <main className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-4 py-10 sm:px-6 sm:py-14">
+    <Page className="flex flex-col gap-6">
       {/* Once its workspace is known, the open bounty heads its own page. */}
       {(address === undefined || owner === undefined) && <PageHeading />}
       {address !== undefined &&
@@ -624,7 +631,7 @@ export function BountyPage({
             onOpenSettings={(tab) => onOpenSettings(owner, tab)}
           />
         ))}
-    </main>
+    </Page>
   );
 }
 
@@ -632,7 +639,7 @@ export function BountyPage({
  * A bounty page's heading until the bounty is read, and while it cannot be.
  */
 function PageHeading() {
-  return <h1 className="text-2xl font-semibold tracking-tight">Bounty</h1>;
+  return <PageHeader title="Bounty" />;
 }
 
 /**
@@ -666,14 +673,11 @@ export function NewBountyPage({
   // perhaps one module of it. Read once, as the page opens.
   const [prefill] = useState(() => prefillFromSearch(window.location.search));
   return (
-    <main className="mx-auto flex w-full max-w-5xl flex-col gap-8 px-4 py-10 sm:px-6 sm:py-14">
-      <header>
-        <h1 className="text-2xl font-semibold tracking-tight">New bounty</h1>
-        <p className="text-muted-foreground mt-1.5 max-w-prose text-sm">
-          Only the title is required. The more the description says, the better
-          the proposal.
-        </p>
-      </header>
+    <Page className="flex flex-col gap-8">
+      <PageHeader
+        title="New bounty"
+        description="Only the title is required. The more the description says, the better the proposal."
+      />
       {organizationsLoading ? (
         <LoadingLine />
       ) : target === null ? (
@@ -699,7 +703,7 @@ export function NewBountyPage({
           }}
         />
       )}
-    </main>
+    </Page>
   );
 }
 
@@ -881,16 +885,12 @@ function OpenBounty({
     ) : (
       <div className="flex flex-col items-start gap-3">
         {heading}
-        <ErrorBanner className="mt-0">Could not load the bounty.</ErrorBanner>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={opened.retry}
+        <ErrorBanner
+          className="mt-0"
+          action={<RetryButton onRetry={opened.retry} />}
         >
-          <RefreshCw />
-          Try again
-        </Button>
+          Could not load the bounty.
+        </ErrorBanner>
       </div>
     );
   }
@@ -966,18 +966,9 @@ function BountyList({
   return (
     <div className="flex flex-col gap-4">
       {bounties.error !== null && (
-        <div className="flex flex-col items-start gap-3">
-          <ErrorBanner className="mt-0">{bounties.error}</ErrorBanner>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={bounties.retry}
-          >
-            <RefreshCw />
-            Try again
-          </Button>
-        </div>
+        <RetryableError onRetry={bounties.retry}>
+          {bounties.error}
+        </RetryableError>
       )}
       {bounties.bounties.length === 0 ? (
         // A list that failed to load is not known to be empty.
@@ -2137,13 +2128,7 @@ function Part({
   const id = useId();
   return (
     <section aria-labelledby={id} className="flex flex-col gap-2">
-      <h3
-        id={id}
-        className={cn(
-          "text-muted-foreground text-xs font-medium tracking-wide uppercase",
-          titleHidden && "sr-only",
-        )}
-      >
+      <h3 id={id} className={cn("eyebrow", titleHidden && "sr-only")}>
         {title}
       </h3>
       {framed ? (

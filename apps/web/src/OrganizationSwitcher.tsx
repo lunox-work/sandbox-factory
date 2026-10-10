@@ -203,7 +203,7 @@ export function OrganizationSwitcher({
               </span>
             )
           ) : (
-            <span className="truncate text-[15px] font-semibold tracking-tight">
+            <span className="text-subheading truncate">
               {workspaceLabel(active)}
             </span>
           )}

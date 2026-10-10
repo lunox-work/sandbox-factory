@@ -83,11 +83,9 @@ export function CategoryShowcase({
                   <span className="category-chip grid size-7 shrink-0 place-items-center rounded-md">
                     <CategoryIcon category={category.id} className="size-4" />
                   </span>
-                  <span className="text-sm font-semibold tracking-tight">
-                    {category.label}
-                  </span>
+                  <span className="text-subheading">{category.label}</span>
                 </span>
-                <span className="text-muted-foreground text-[0.8125rem] leading-snug">
+                <span className="text-muted-foreground text-xs leading-snug">
                   {category.why}
                 </span>
               </span>

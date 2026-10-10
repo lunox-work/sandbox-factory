@@ -238,7 +238,7 @@ export function GithubConnections({
 
   const header = (
     <header>
-      <h3 className="leading-none font-semibold">GitHub</h3>
+      <h3 className="text-heading">GitHub</h3>
       <p className="text-muted-foreground mt-1.5 text-sm">
         Registered repositories are tracked by commit, with each commit&rsquo;s
         file list and package manifests, which name its stack. Code is read only

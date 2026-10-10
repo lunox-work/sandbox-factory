@@ -122,7 +122,7 @@ export function StepTriggers({
       <span className="flex h-full items-center gap-2">
         <span
           aria-hidden
-          className="border-border text-muted-foreground group-data-[state=active]/step:border-foreground group-data-[state=active]/step:bg-foreground group-data-[state=active]/step:text-background flex size-5 items-center justify-center rounded-full border text-[11px] font-semibold tabular-nums transition-colors"
+          className="border-border text-muted-foreground group-data-[state=active]/step:border-foreground group-data-[state=active]/step:bg-foreground group-data-[state=active]/step:text-background flex size-5 items-center justify-center rounded-full border text-2xs font-semibold tabular-nums transition-colors"
         >
           {index + 1}
         </span>
@@ -131,7 +131,7 @@ export function StepTriggers({
           <span
             data-approved={signed && behind === null ? true : undefined}
             className={cn(
-              "rounded-[4px] px-1.5 py-px font-mono text-[11px] leading-4 font-medium",
+              "rounded-[4px] px-1.5 py-px font-mono text-2xs leading-4 font-medium",
               behind !== null
                 ? "bg-amber-500/15 text-amber-800 dark:text-amber-300"
                 : signed
