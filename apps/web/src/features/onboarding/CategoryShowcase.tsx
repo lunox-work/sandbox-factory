@@ -80,7 +80,7 @@ export function CategoryShowcase({
               <CategoryScene category={category.id} />
               <span className="flex flex-1 flex-col items-center gap-2.5 p-4 text-center">
                 <span className="flex items-center gap-2.5">
-                  <span className="category-chip grid size-7 shrink-0 place-items-center rounded-md">
+                  <span className="category-badge grid size-8 shrink-0 place-items-center rounded-lg">
                     <CategoryIcon category={category.id} className="size-4" />
                   </span>
                   <span className="text-subheading">{category.label}</span>
