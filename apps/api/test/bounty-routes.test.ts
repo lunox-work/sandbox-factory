@@ -170,9 +170,9 @@ function harness(
     listed?: ListedBounty[];
     create?: StoredBounty;
     update?: BountyMutationResult;
-    /** What approving or unapproving the overview answers. */
+    /** What approving or unapproving the scope answers. */
     decide?: BountyMutationResult;
-    /** Each bounty's overview versions; absent, its text as version 1. */
+    /** Each bounty's scope versions; absent, its text as version 1. */
     versions?: Record<string, StoredBountyVersion[]>;
     remove?: "removed" | "not-found" | "in-use";
     runCreate?: Record<string, unknown>;
@@ -210,7 +210,7 @@ function harness(
         },
     ),
     approve: record(
-      "approve-overview",
+      "approve-scope",
       (_org, id, revision, by) =>
         options.decide ?? {
           ok: true,
@@ -226,7 +226,7 @@ function harness(
         },
     ),
     unapprove: record(
-      "unapprove-overview",
+      "unapprove-scope",
       (_org, id, revision) =>
         options.decide ?? {
           ok: true,
@@ -506,8 +506,21 @@ test("the caller's bounties narrow to a category, to none, and to a board", asyn
 
   await app.request("/api/v1/me/bounties?category=uncategorized");
   assert.deepEqual(pages.at(-1), { limit: 25, uncategorized: true });
+  await app.request("/api/v1/me/bounties?source=lunox");
+  assert.deepEqual(pages.at(-1), { limit: 25, unlinked: true });
+  assert.equal(
+    (await app.request("/api/v1/me/bounties?source=github")).status,
+    400,
+  );
   assert.equal(
     (await app.request("/api/v1/me/bounties?category=Not%20One")).status,
+    400,
+  );
+  // How far they have got: the last step done.
+  await app.request("/api/v1/me/bounties?status=priced");
+  assert.deepEqual(pages.at(-1), { limit: 25, status: "priced" });
+  assert.equal(
+    (await app.request("/api/v1/me/bounties?status=approved")).status,
     400,
   );
 
@@ -519,6 +532,12 @@ test("the caller's bounties narrow to a category, to none, and to a board", asyn
     categories: { id: string; count: number }[];
   };
   assert.deepEqual(counted, [{ organizationIds: ["org_1"], boardId: "jrb_1" }]);
+  // Counted within a status as the list is narrowed to it.
+  await app.request("/api/v1/me/bounty-categories?status=live");
+  assert.deepEqual(counted.at(-1), {
+    organizationIds: ["org_1"],
+    status: "live",
+  });
   assert.equal(counts.total, 3);
   assert.equal(counts.uncategorized, 1);
   // Every category, in the registry's order, with a zero for the empty.
@@ -686,7 +705,7 @@ test("a bounty reads with each step's version, and the one before it each was bu
       build: {
         versionId: "sbv_2",
         version: 2,
-        bountyVersion: 1,
+        priceVersion: 1,
         context: { jira: null, github: null },
       },
     },
@@ -717,11 +736,11 @@ test("a bounty reads with each step's version, and the one before it each was bu
   const response = await state.request("GET", "bounties/bty_7");
   assert.equal(response.status, 200);
   const body = (await response.json()) as { bounty: { stages: unknown } };
-  // With no context store, the overview holds none and nothing is behind.
+  // With no context store, the scope holds none and nothing is behind.
   assert.deepEqual(body.bounty.stages, {
-    overview: { version: 3, context: NONE },
-    bounty: { version: 2, overviewVersion: 2, context: NONE },
-    sandbox: { version: 2, bountyVersion: 1, context: NONE },
+    scope: { version: 3, context: NONE },
+    price: { version: 2, scopeVersion: 2, context: NONE },
+    sandbox: { version: 2, priceVersion: 1, context: NONE },
   });
 
   // A proposal hashed by an older function matches no version; a bounty
@@ -736,8 +755,8 @@ test("a bounty reads with each step's version, and the one before it each was bu
     await legacy.request("GET", "bounties/bty_7")
   ).json()) as { bounty: { stages: unknown } };
   assert.deepEqual(read.bounty.stages, {
-    overview: { version: 1, context: NONE },
-    bounty: { version: 0, overviewVersion: null, context: NONE },
+    scope: { version: 1, context: NONE },
+    price: { version: 0, scopeVersion: null, context: NONE },
     sandbox: null,
   });
   const bare = harness({ bounties: [written()] });
@@ -745,13 +764,13 @@ test("a bounty reads with each step's version, and the one before it each was bu
     bounty: { stages: unknown };
   };
   assert.deepEqual(none.bounty.stages, {
-    overview: { version: 1, context: NONE },
-    bounty: null,
+    scope: { version: 1, context: NONE },
+    price: null,
     sandbox: null,
   });
 });
 
-test("a bounty's overview versions are listed, or 404", async () => {
+test("a bounty's scope versions are listed, or 404", async () => {
   const state = harness({ role: "member", bounties: [written()] });
   const response = await state.request("GET", "bounties/bty_7/versions");
   assert.equal(response.status, 200);
@@ -784,7 +803,7 @@ test("a change is saved against the revision the editor saw", async () => {
     "bty_7",
     1,
     { title: "Invitations go out twice" },
-    // Who wrote the overview's next version.
+    // Who wrote the scope's next version.
     "user_1",
   ]);
   assert.equal(
@@ -1027,7 +1046,7 @@ test("an approval a published sandbox stands on is re-priced, the sandbox left a
       build: {
         versionId: "sbv_1",
         version: 1,
-        bountyVersion: 1,
+        priceVersion: 1,
         context: { jira: null, github: null },
       },
     },
@@ -1112,7 +1131,7 @@ test("a re-price refused for a run in the way names that run", async () => {
   assert.equal(body.runId, "brn_9");
 });
 
-test("an owner or admin approves the overview, and takes that back", async () => {
+test("an owner or admin approves the scope, and takes that back", async () => {
   const state = harness({ bounties: [written()] });
   const approved = await state.request("POST", "bounties/bty_7/approve", {
     expectedRevision: 1,
@@ -1123,7 +1142,7 @@ test("an owner or admin approves the overview, and takes that back", async () =>
   };
   assert.equal(body.bounty.approval?.version, 1);
   assert.deepEqual(state.calls.at(-1), {
-    method: "approve-overview",
+    method: "approve-scope",
     args: ["org_1", "bty_7", 1, "user_1"],
   });
 
@@ -1155,13 +1174,13 @@ test("an owner or admin approves the overview, and takes that back", async () =>
   );
 });
 
-test("an approved overview is not changed until it is unapproved", async () => {
+test("an approved scope is not changed until it is unapproved", async () => {
   const approved = written({
     approval: { version: 1, approvedBy: "user_1", approvedAt: stamp },
   });
   const state = harness({
     bounties: [approved],
-    update: { ok: false, reason: "overview-approved", current: approved },
+    update: { ok: false, reason: "scope-approved", current: approved },
   });
   const response = await state.request("PATCH", "bounties/bty_7", {
     expectedRevision: 1,
@@ -1169,7 +1188,7 @@ test("an approved overview is not changed until it is unapproved", async () => {
   });
   assert.equal(response.status, 409);
   assert.deepEqual(await response.json(), {
-    code: "overview_approved",
-    error: "The overview is approved. Unapprove it before changing it.",
+    code: "scope_approved",
+    error: "The scope is approved. Unapprove it before changing it.",
   });
 });

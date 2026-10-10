@@ -201,7 +201,7 @@ export function InlineTitle({
   const pending = useRef(false);
   const text =
     size === "page"
-      ? "text-2xl font-semibold tracking-tight md:text-2xl"
+      ? "text-title md:text-title"
       : "text-xl font-semibold tracking-tight md:text-xl";
 
   const close = (returnFocus = true) => {
@@ -368,10 +368,7 @@ export function InlineDescription({
     >
       {labelled ? (
         <div className="flex min-h-8 items-center justify-between gap-3">
-          <h3
-            id={headingId}
-            className="text-muted-foreground text-xs font-medium tracking-wide uppercase"
-          >
+          <h3 id={headingId} className="eyebrow">
             {label}
           </h3>
           {pencil}

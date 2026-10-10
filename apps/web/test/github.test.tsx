@@ -739,6 +739,35 @@ test("an uninstalled account is flagged, and offers no registering", async () =>
   ).toBeNull();
 });
 
+test("an account with nothing registered offers Manage repositories in place", async () => {
+  server.repositories = [];
+  renderTab();
+
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Manage repositories" }),
+  );
+  expect(
+    await screen.findByRole("dialog", { name: "Repositories on acme" }),
+  ).toBeDefined();
+  expect(
+    screen.queryByText("No repositories registered from this account yet."),
+  ).toBeNull();
+});
+
+test("a member sees why an empty account has no Manage repositories", async () => {
+  server.repositories = [];
+  renderTab("member");
+
+  expect(
+    await screen.findByText(
+      "No repositories registered from this account yet.",
+    ),
+  ).toBeDefined();
+  expect(
+    screen.queryByRole("button", { name: "Manage repositories" }),
+  ).toBeNull();
+});
+
 test("a failed load says so rather than rendering an empty list", async () => {
   server.failConnections = true;
   renderTab();

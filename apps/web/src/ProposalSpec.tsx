@@ -231,7 +231,7 @@ export interface SizeReason {
 /** A size as it reads inside a sentence. */
 function SizeName({ size }: { size: string }) {
   return (
-    <span className="border-primary/30 bg-primary/10 text-primary mx-0.5 rounded-[4px] border px-1 py-px font-mono text-[11px] font-semibold">
+    <span className="border-primary/30 bg-primary/10 text-primary mx-0.5 rounded-[4px] border px-1 py-px font-mono text-2xs font-semibold">
       {size}
     </span>
   );
@@ -259,7 +259,7 @@ function SizeReasonBlock({ reason }: { reason: SizeReason }) {
         </span>
         <div className="flex min-h-6 min-w-0 flex-col justify-center gap-0.5">
           {reason.reviewerSize === null ? (
-            <p className="text-sm font-semibold tracking-tight">
+            <p className="text-subheading">
               {unsized ? (
                 "Left unsized by the model"
               ) : (
@@ -270,7 +270,7 @@ function SizeReasonBlock({ reason }: { reason: SizeReason }) {
             </p>
           ) : (
             <>
-              <p className="text-sm font-semibold tracking-tight">
+              <p className="text-subheading">
                 Overridden to <SizeName size={reason.reviewerSize} /> by a
                 reviewer
               </p>
@@ -287,7 +287,7 @@ function SizeReasonBlock({ reason }: { reason: SizeReason }) {
           )}
         </div>
       </div>
-      <p className="mt-3 text-[15px] leading-relaxed">{reason.rationale}</p>
+      <p className="mt-3 text-sm leading-relaxed">{reason.rationale}</p>
       {reason.outlines !== undefined && reason.outlines.length > 0 && (
         <OutlineSource outlines={reason.outlines} className="mt-3" />
       )}
@@ -661,9 +661,7 @@ function SpecBody({
       {/* What the bounty is about, and which revision of the spec this is. */}
       <div className="flex flex-col gap-1">
         <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-          <p className="text-[15px] leading-snug font-semibold tracking-tight">
-            {draft.feature}
-          </p>
+          <p className="text-heading">{draft.feature}</p>
           <p className="text-muted-foreground text-xs tabular-nums">
             {plural(countScenarios(draft).total, "scenario")}
             {points !== null &&
@@ -1056,7 +1054,7 @@ const ROW =
 
 /** A kind's band at the head of its rows, its name in the rows' column. */
 const GROUP_HEAD =
-  "bg-muted/30 text-muted-foreground flex items-center justify-between gap-3 px-5 py-2 text-[11px] font-semibold tracking-wider uppercase";
+  "eyebrow bg-muted/30 flex items-center justify-between gap-3 px-5 py-2";
 
 /** Under a row, in the title's column: past the inset, the chevron and the gap. */
 const STEPS_INSET = "pr-5 pl-[calc(1.25rem+0.875rem+0.5rem)]";
@@ -1139,7 +1137,7 @@ export function Steps({
     <ol className="flex flex-col gap-1 text-sm leading-relaxed">
       {steps.map((step, index) => (
         <li key={index} className="flex items-baseline gap-2.5">
-          <span className="text-primary/80 w-11 shrink-0 text-right font-mono text-[11px] font-semibold tracking-wide uppercase">
+          <span className="text-primary/80 w-11 shrink-0 text-right font-mono text-2xs font-semibold tracking-wide uppercase">
             {step.keyword}
           </span>
           <span className="min-w-0">{step.text}</span>
@@ -1168,10 +1166,10 @@ function Notes({
       aria-label={heading}
       className="bg-card overflow-hidden rounded-xl border"
     >
-      <h4 className="flex items-center gap-2 border-b px-5 py-2.5 text-sm font-semibold tracking-tight">
+      <h4 className="text-subheading flex items-center gap-2 border-b px-5 py-2.5">
         <Icon aria-hidden="true" className={cn("size-4 shrink-0", tone)} />
         {heading}
-        <span className="bg-muted text-muted-foreground rounded-full px-1.5 text-[11px] leading-[18px] font-medium tabular-nums">
+        <span className="bg-muted text-muted-foreground rounded-full px-1.5 text-2xs leading-[18px] font-medium tabular-nums">
           {notes.length}
         </span>
       </h4>

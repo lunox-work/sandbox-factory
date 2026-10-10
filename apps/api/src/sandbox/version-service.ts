@@ -494,7 +494,7 @@ export function versionService(options: SandboxRouteOptions) {
       return failure(
         {
           error:
-            "This sandbox is cut from its repository; slice a version instead.",
+            "This sandbox is sliced from its repository; slice a version instead.",
           code: "source_linked",
         },
         "conflict",
@@ -659,7 +659,7 @@ export function versionService(options: SandboxRouteOptions) {
         ? failure(
             {
               error:
-                "This sandbox is cut from its repository; slice a version instead.",
+                "This sandbox is sliced from its repository; slice a version instead.",
               code: "source_linked",
             },
             "conflict",

@@ -129,7 +129,7 @@ function featureOf(draft: SpecDraftDto): {
 /** A word beside a title: a weight, where a scenario came from. Square, as
     the editor's own badges are; a pill is a web page's. */
 const chip =
-  "rounded-[4px] border border-(--wb-input-border) px-1.5 text-[11px] leading-[18px] text-(--wb-muted)";
+  "rounded-[4px] border border-(--wb-input-border) px-1.5 text-2xs leading-[18px] text-(--wb-muted)";
 
 /**
  * The spec's open questions or its assumptions, laid out as a scenario is:

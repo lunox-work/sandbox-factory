@@ -26,7 +26,7 @@ import {
   bountyListFilterSchema,
   bountyListResponseSchema,
   bountySpecHash,
-  bountyVersionListSchema,
+  scopeVersionListSchema,
   decideBountySchema,
   updateBountySchema,
   type BountyDto,
@@ -40,7 +40,7 @@ import {
   BOUNTY_SPEC_HASH_VERSION,
   CATEGORIES,
   NO_CONTEXT,
-  overviewVersionOf,
+  scopeVersionOf,
   UNCATEGORIZED,
 } from "sandbox-factory";
 
@@ -52,7 +52,7 @@ export interface BountyRouteOptions {
   readonly bounties: BountyStore;
   readonly proposals: Pick<BountyProposalStore, "get" | "liveForBounty">;
   /**
-   * The bounty's synced context. Absent, the overview holds no context,
+   * The bounty's synced context. Absent, the scope holds no context,
    * and nothing is behind on any.
    */
   readonly contexts?: Pick<BountyContextStore, "latest">;
@@ -109,7 +109,7 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
     return c.json({ bounty: await detail(options, bounty) });
   });
 
-  /** Its overview's versions, newest first: what it said, by whom, when. */
+  /** Its scope's versions, newest first: what it said, by whom, when. */
   app.get(`${base}/:id/versions`, async (c) => {
     const { organizationId } = c.get("member");
     const versions = await options.bounties.versions(
@@ -117,7 +117,7 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
       c.req.param("id"),
     );
     if (versions === null) return c.json({ error: "Not found" }, 404);
-    return c.json(bountyVersionListSchema.parse({ versions }));
+    return c.json(scopeVersionListSchema.parse({ versions }));
   });
 
   /**
@@ -154,7 +154,7 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
   });
 
   /**
-   * Approves the overview at the version it is at, which holds it as it is
+   * Approves the scope at the version it is at, which holds it as it is
    * until it is unapproved; or takes that back. Owners and admins, as with a
    * proposal's approval.
    */
@@ -163,7 +163,7 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
       const { organizationId, role } = c.get("member");
       if (!isAtLeastAdmin(role)) {
         return c.json(
-          { error: "Only an owner or admin may approve an overview." },
+          { error: "Only an owner or admin may approve a scope." },
           403,
         );
       }
@@ -244,8 +244,8 @@ async function mutated(
         },
         409,
       );
-    case "overview-approved":
-      return c.json(OVERVIEW_APPROVED, 409);
+    case "scope-approved":
+      return c.json(SCOPE_APPROVED, 409);
     case "changed":
       return c.json(
         {
@@ -260,10 +260,10 @@ async function mutated(
   }
 }
 
-/** An approved overview is held as it is: unapproved first. */
-export const OVERVIEW_APPROVED = {
-  code: "overview_approved",
-  error: "The overview is approved. Unapprove it before changing it.",
+/** An approved scope is held as it is: unapproved first. */
+export const SCOPE_APPROVED = {
+  code: "scope_approved",
+  error: "The scope is approved. Unapprove it before changing it.",
 } as const;
 
 /**
@@ -294,16 +294,19 @@ export function mountCallerBountyRoutes<Env extends BountyAppEnv>(
   /**
    * How many of the caller's bounties each category holds, for the list's
    * filter: every category in the registry, in order, zero when none fit
-   * it. `?board=` narrows the counts to that board's, as it does the list.
+   * it. `?board=` narrows the counts to that board's, `?source=lunox` to
+   * the bounties written in Lunox, and `?status=` to those that far along,
+   * as they do the list.
    */
   app.get("/api/v1/me/bounty-categories", async (c) => {
     const filter = listFilter(c);
     if (filter === null) return c.json({ error: "Invalid filter." }, 400);
     const organizationIds = await options.organizationsOf(c.get("user").id);
-    const counts = await options.bounties.categoryCounts(
-      organizationIds,
-      filter.boardId === undefined ? {} : { boardId: filter.boardId },
-    );
+    const counts = await options.bounties.categoryCounts(organizationIds, {
+      ...(filter.boardId === undefined ? {} : { boardId: filter.boardId }),
+      ...(filter.unlinked === undefined ? {} : { unlinked: filter.unlinked }),
+      ...(filter.status === undefined ? {} : { status: filter.status }),
+    });
     return c.json(
       bountyCategoryCountsSchema.parse({
         total: counts.total,
@@ -321,18 +324,25 @@ export function mountCallerBountyRoutes<Env extends BountyAppEnv>(
 
 /**
  * What the query narrows a list to: `?category=` a category's id, or
- * `uncategorized` for the bounties in none, and `?board=` one board's.
- * Null for a query that names neither as it should.
+ * `uncategorized` for the bounties in none, `?board=` one board's,
+ * `?source=lunox` those written in Lunox, with no Jira issue, and
+ * `?status=` those whose last step done is that one. Null for a query
+ * that names any of them as it should not.
  */
 function listFilter(
   c: Context,
-): Pick<BountyListOptions, "category" | "uncategorized" | "boardId"> | null {
+): Pick<
+  BountyListOptions,
+  "category" | "uncategorized" | "boardId" | "unlinked" | "status"
+> | null {
   const parsed = bountyListFilterSchema.safeParse({
     category: c.req.query("category"),
     board: c.req.query("board"),
+    source: c.req.query("source"),
+    status: c.req.query("status"),
   });
   if (!parsed.success) return null;
-  const { category, board } = parsed.data;
+  const { category, board, source, status } = parsed.data;
   return {
     ...(category === undefined
       ? {}
@@ -340,6 +350,8 @@ function listFilter(
         ? { uncategorized: true }
         : { category }),
     ...(board === undefined ? {} : { boardId: board }),
+    ...(source === "lunox" ? { unlinked: true } : {}),
+    ...(status === undefined ? {} : { status }),
   };
 }
 
@@ -391,15 +403,15 @@ export async function detail(
       ? null
       : found;
   /*
-    The overview version the proposal was sized from: the latest whose text
+    The scope version the proposal was sized from: the latest whose text
     hashes to what it was priced against. A hash of another version of the
     function says nothing about these, so matches none.
   */
-  let overviewVersion: number | null = null;
+  let scopeVersion: number | null = null;
   if (live !== null && live.specHashVersion === BOUNTY_SPEC_HASH_VERSION) {
     const versions =
       (await options.bounties.versions(bounty.organizationId, bounty.id)) ?? [];
-    overviewVersion = overviewVersionOf(
+    scopeVersion = scopeVersionOf(
       live.specHash,
       await Promise.all(
         versions.map(async ({ version, title, description }) => ({
@@ -410,7 +422,7 @@ export async function detail(
     );
   }
   const build = bounty.sandbox?.build ?? null;
-  // The context the overview holds, from the sources linked now.
+  // The context the scope holds, from the sources linked now.
   const held =
     options.contexts === undefined
       ? NO_CONTEXT
@@ -422,13 +434,13 @@ export async function detail(
           ),
         );
   const stages: BountyStagesDto = {
-    overview: { version: bounty.version, context: { ...held } },
-    bounty:
+    scope: { version: bounty.version, context: { ...held } },
+    price:
       live === null
         ? null
         : {
             version: live.version,
-            overviewVersion,
+            scopeVersion,
             context: { ...live.contextVersions },
           },
     sandbox:
@@ -436,7 +448,7 @@ export async function detail(
         ? null
         : {
             version: build.version,
-            bountyVersion: build.bountyVersion,
+            priceVersion: build.priceVersion,
             context: { ...build.context },
           },
   };

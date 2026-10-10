@@ -49,6 +49,7 @@ import { useEffect, useRef, useState } from "react";
 import { Combobox } from "@/components/Combobox";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { ErrorBanner, LoadingLine, RetryableError } from "@/components/Message";
+import { Page } from "@/components/Page";
 import { StackChips } from "@/components/StackPicker";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -87,8 +88,7 @@ const SYNC_POLL_MS = 5_000;
 /** How long "Up to date" stands in for the pull button's label. */
 const UP_TO_DATE_MS = 2_500;
 
-const PAGE_CLASS =
-  "mx-auto flex w-full max-w-5xl flex-col gap-6 px-4 py-10 sm:px-6 sm:py-14";
+const PAGE_CLASS = "flex flex-col gap-6";
 
 export function RepositoryPage({
   organizationId,
@@ -121,7 +121,7 @@ export function RepositoryPage({
 
   if (repo === undefined) {
     return (
-      <main className={PAGE_CLASS}>
+      <Page className={PAGE_CLASS}>
         {repos.loading ? (
           <LoadingLine />
         ) : repos.error !== null ? (
@@ -131,7 +131,7 @@ export function RepositoryPage({
         ) : (
           <div className="flex flex-col items-start gap-3">
             <div>
-              <h1 className="text-xl font-semibold">Repository unavailable</h1>
+              <h1 className="text-title">Repository unavailable</h1>
               <p className="text-muted-foreground mt-1 text-sm">
                 It may have been removed from this workspace.
               </p>
@@ -155,7 +155,7 @@ export function RepositoryPage({
             </a>
           </div>
         )}
-      </main>
+      </Page>
     );
   }
 
@@ -473,16 +473,14 @@ function RepositoryView({
   }
 
   return (
-    <main className={PAGE_CLASS}>
+    <Page className={PAGE_CLASS}>
       <header className="flex flex-col gap-3">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="flex min-w-0 items-center gap-3">
             <span className="text-muted-foreground size-5 shrink-0">
               <FolderGit2 className="size-full" />
             </span>
-            <h1 className="min-w-0 truncate text-2xl font-semibold tracking-tight">
-              {repo.fullName}
-            </h1>
+            <h1 className="text-title min-w-0 truncate">{repo.fullName}</h1>
             {repo.isPrivate && (
               <Badge variant="outline" className="gap-1 rounded-[4px]">
                 <Lock aria-hidden="true" />
@@ -741,7 +739,7 @@ function RepositoryView({
                         {shortSha(current.commitSha)}
                       </span>
                       {current.commitSha === branchHead && (
-                        <span className="bg-background/60 rounded-[4px] px-1 py-px text-[10px] leading-none">
+                        <span className="bg-background/60 rounded-[4px] px-1 py-px text-2xs leading-none">
                           Latest
                         </span>
                       )}
@@ -922,7 +920,7 @@ function RepositoryView({
           }}
         />
       )}
-    </main>
+    </Page>
   );
 }
 

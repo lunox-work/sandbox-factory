@@ -13,14 +13,15 @@ import {
  * a provider vouched for it, and linking is the only way to add one.
  */
 
-import { Building2, Check, Link2, RefreshCw, Unlink } from "lucide-react";
+import { Building2, Check, Link2, Unlink } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { normalizeHandle } from "sandbox-factory";
 
 import { AvatarField } from "@/components/AvatarField";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { EditableField } from "@/components/EditableField";
-import { ErrorBanner } from "@/components/Message";
+import { ErrorBanner, RetryableError } from "@/components/Message";
+import { Page, PageHeader } from "@/components/Page";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -247,30 +248,21 @@ export function Account({
     : [];
 
   return (
-    <main className="mx-auto w-full max-w-2xl px-4 py-10 sm:px-6 sm:py-14">
+    <Page width="narrow">
       {/* No "back" button: Home in the left rail is the way out, and two
           affordances for one destination invite the wrong one. */}
-      <h1 className="text-2xl font-semibold tracking-tight">Account</h1>
-      <p className="text-muted-foreground mt-1.5 text-sm">
-        Your handle, and the accounts you sign in with.
-      </p>
+      <PageHeader
+        title="Account"
+        description="Your handle, and the accounts you sign in with."
+      />
 
       {error !== null ? (
         <ErrorBanner>{error}</ErrorBanner>
       ) : (
         loadError !== null && (
-          <div className="flex flex-col items-start gap-3">
-            <ErrorBanner>{loadError}</ErrorBanner>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => void refresh()}
-            >
-              <RefreshCw />
-              Try again
-            </Button>
-          </div>
+          <RetryableError className="mt-6" onRetry={() => void refresh()}>
+            {loadError}
+          </RetryableError>
         )
       )}
 
@@ -498,7 +490,7 @@ export function Account({
           </CardContent>
         </Card>
       </div>
-    </main>
+    </Page>
   );
 }
 

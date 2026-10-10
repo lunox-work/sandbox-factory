@@ -185,7 +185,7 @@ export function Connections({
       className="flex flex-col gap-4"
     >
       <div>
-        <h2 id="connections-heading" className="leading-none font-semibold">
+        <h2 id="connections-heading" className="text-heading">
           Connections
         </h2>
         <p className="text-muted-foreground mt-1.5 text-sm">
@@ -469,7 +469,7 @@ function Overview({
   return (
     <div className="flex flex-col gap-5">
       <header>
-        <h3 className="leading-none font-semibold">Overview</h3>
+        <h3 className="text-heading">Overview</h3>
         {/*
           A non-breaking space while the answer is unknown: the line does not
           claim none and then correct itself, and still holds its height.
@@ -611,7 +611,7 @@ function ComingSoon({ tool }: { tool: Tool }) {
     <div className="flex flex-col gap-5">
       {/* No mark: the square this was opened from carries it. */}
       <header className="flex items-center gap-2">
-        <h3 className="leading-none font-semibold">{tool.label}</h3>
+        <h3 className="text-heading">{tool.label}</h3>
         <Badge variant="secondary">Coming soon</Badge>
       </header>
       <p className="text-muted-foreground rounded-lg border border-dashed px-4 py-6 text-center text-sm">

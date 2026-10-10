@@ -29,7 +29,7 @@ import { useReanalyze } from "./useReanalyze";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { DisabledReason } from "@/components/DisabledReason";
-import { ErrorBanner } from "@/components/Message";
+import { ErrorBanner, RetryButton } from "@/components/Message";
 import { ModelCard, SectionHeading } from "@/components/ReadSection";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -107,7 +107,7 @@ export function ProposalPeek({
   onChanged,
   onRemoved,
   withinBounty = false,
-  overviewVersion = null,
+  scopeVersion = null,
 }: {
   /** The organization's API root, for the reads the peek makes itself. */
   base: string;
@@ -138,10 +138,10 @@ export function ProposalPeek({
    */
   withinBounty?: boolean;
   /**
-   * Inside its bounty, the overview version it was sized from, named under
+   * Inside its bounty, the scope version it was sized from, named under
    * its version; null when no version says what it was sized from.
    */
-  overviewVersion?: number | null;
+  scopeVersion?: number | null;
 }) {
   const url = withinBounty ? null : (bounty?.url ?? proposal.liveUrl ?? null);
   const label = modelLabel(proposal.actualModel);
@@ -385,13 +385,13 @@ export function ProposalPeek({
         {versionedAt !== null && (
           <span className="text-muted-foreground">
             Approved <time dateTime={versionedAt}>{dateTime(versionedAt)}</time>
-            {(overviewVersion !== null || freshness !== null) && " ·"}
+            {(scopeVersion !== null || freshness !== null) && " ·"}
           </span>
         )}
         {/* What it stands on: the step before it, by version. */}
-        {overviewVersion !== null && (
+        {scopeVersion !== null && (
           <span className="text-muted-foreground">
-            Overview v{overviewVersion}
+            Scope v{scopeVersion}
             {freshness !== null && " ·"}
           </span>
         )}
@@ -473,8 +473,8 @@ export function ProposalPeek({
           Remove
         </button>
       }
-      title={`Remove the proposal for ${key ?? "this bounty"}?`}
-      description="The bounty will have no proposal, and the next sizing run may propose it again. Nothing is posted to Jira."
+      title={`Remove the price for ${key ?? "this bounty"}?`}
+      description="The bounty will have no price, and the next sizing run may price it again. Nothing is posted to Jira."
       confirmLabel="Remove"
       tone="destructive"
       busy={locked}
@@ -687,17 +687,24 @@ export function ProposalPeek({
       {proposal.categories !== undefined && proposal.categories.length > 0 && (
         <div data-testid="proposal-categories">
           <SectionHeading icon={<Target />}>Why this bounty</SectionHeading>
-          <ul className="flex flex-col gap-1.5">
+          <ul className="flex flex-col gap-2">
             {proposal.categories.map((category) => (
               <li
                 key={category.id}
-                className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-sm"
+                data-category={category.id}
+                className="category-callout flex items-start gap-3 rounded-lg py-2.5 pr-3 pl-4"
               >
-                <Badge variant="outline" className="shrink-0">
-                  <CategoryIcon category={category.id} />
-                  {category.label}
-                </Badge>
-                <span className="leading-relaxed">{category.reason}</span>
+                <span className="category-chip grid size-7 shrink-0 place-items-center rounded-md">
+                  <CategoryIcon category={category.id} className="size-4" />
+                </span>
+                <span className="flex min-w-0 flex-col gap-0.5">
+                  <span className="text-sm font-semibold text-[var(--category-text)]">
+                    {category.label}
+                  </span>
+                  <span className="text-muted-foreground text-sm leading-relaxed">
+                    {category.reason}
+                  </span>
+                </span>
               </li>
             ))}
           </ul>
@@ -744,7 +751,7 @@ export function ProposalPeek({
                 : `The model's read: ${proposal.modelComplexity}`}
             </SectionHeading>
             <ModelCard>
-              <p className="text-[15px] leading-relaxed">
+              <p className="text-sm leading-relaxed">
                 {proposal.modelRationale}
               </p>
               {canDecide && unweighed(proposal) && (
@@ -887,16 +894,12 @@ export function ProposalPeek({
             />
           ) : bountyError !== null ? (
             <div className="flex min-h-48 flex-col items-start justify-center gap-3">
-              <ErrorBanner className="mt-0">{bountyError}</ErrorBanner>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={onRetryBounty}
+              <ErrorBanner
+                className="mt-0"
+                action={<RetryButton onRetry={onRetryBounty} />}
               >
-                <RefreshCw />
-                Try again
-              </Button>
+                {bountyError}
+              </ErrorBanner>
             </div>
           ) : bounty === null ? (
             <IssueSpecSkeleton />
@@ -1003,7 +1006,7 @@ function SizeCard({
   // enough that "XS" and "XL" fit inside it. "unsized" and a half size
   // such as "XS+" grow wider.
   const shape = current
-    ? "bg-(image:--brand-fill) text-brand-foreground border-transparent h-12 min-w-12 px-2 text-lg font-extrabold shadow-sm shadow-blue-600/20"
+    ? "bg-cta text-cta-foreground border-transparent h-12 min-w-12 px-2 text-lg font-bold shadow-xs"
     : "bg-card text-muted-foreground hover:text-foreground hover:border-foreground/30 h-7 min-w-7 px-1 text-xs";
   const className = `inline-flex items-center justify-center rounded-md border font-mono font-medium transition-[height,min-width,padding,font-size,font-weight,color,background-color,border-color,box-shadow,transform] duration-300 ease-[cubic-bezier(0.2,0,0,1)] motion-reduce:transition-none ${shape}`;
   if (onClick === undefined) {

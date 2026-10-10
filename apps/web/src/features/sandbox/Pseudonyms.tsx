@@ -77,7 +77,7 @@ export function PseudonymDocument({
                 <caption className="sr-only">
                   Private names and the public names they become
                 </caption>
-                <thead className="bg-(--wb-chrome) text-[11px] tracking-wide text-(--wb-muted) uppercase">
+                <thead className="bg-(--wb-chrome) text-2xs tracking-wide text-(--wb-muted) uppercase">
                   <tr>
                     <th scope="col" className="w-10 px-3 py-1.5 font-normal">
                       #

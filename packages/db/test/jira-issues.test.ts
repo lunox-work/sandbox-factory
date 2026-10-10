@@ -81,7 +81,7 @@ test("a first read imports the issue as a new ticket", async () => {
     // Not seen before.
     [],
     [bountyRow({ id: "bty_new" })],
-    // Its overview's first version.
+    // Its scope's first version.
     [],
     [row({ bountyId: "bty_new" })],
   ]);
@@ -98,7 +98,7 @@ test("a first read imports the issue as a new ticket", async () => {
   assert.equal(created?.values?.["origin"], "jira");
   assert.equal(created?.values?.["title"], "Invitations are not sent");
   assert.deepEqual(created?.values?.["components"], ["Mailer"]);
-  // Jira's text is its overview's version 1, which nobody here wrote.
+  // Jira's text is its scope's version 1, which nobody here wrote.
   assert.equal(fake.calls[3]?.values?.["version"], 1);
   assert.equal(fake.calls[3]?.values?.["bountyId"], "bty_new");
   // The pointer names the ticket as it was stored.
@@ -144,7 +144,7 @@ test("a later read refreshes the pointer and the ticket's text", async () => {
   assert.equal(fake.calls[2]?.lock, "update");
   assert.equal(fake.calls[3]?.values?.["description"], "Steps");
   assert.equal(fake.calls[3]?.values?.["revision"], 4);
-  // New words: the overview's next version, and nothing else made.
+  // New words: the scope's next version, and nothing else made.
   assert.equal(fake.calls[3]?.values?.["version"], 2);
   const inserts = fake.calls.filter(({ kind }) => kind === "insert");
   assert.equal(inserts.length, 1);

@@ -26,7 +26,6 @@ import {
   Globe,
   Loader2,
   Lock,
-  RefreshCw,
   Search,
   X,
   type LucideIcon,
@@ -38,15 +37,20 @@ import {
   rankAtLeast,
 } from "sandbox-factory";
 
-import { ErrorBanner, LoadingLine, RetryableError } from "@/components/Message";
-import { Button } from "@/components/ui/button";
+import {
+  ErrorBanner,
+  LoadingLine,
+  RetryableError,
+  RetryButton,
+} from "@/components/Message";
+import { Page } from "@/components/Page";
 import { cn } from "@/lib/utils";
 
 import { clients, queryKeys, useUserId } from "../../data/query";
 import { replaceLocation, useLocation } from "../../navigation/location";
 import { workspaceLabel } from "../../OrganizationSwitcher";
 import {
-  bountyProposalPath,
+  bountyPricePath,
   isPlainLeftClick,
   sandboxFilesPath,
   type SandboxFilesAddress,
@@ -137,11 +141,7 @@ export function SandboxFilesPage({
         workspace={address.workspace}
       />
     );
-  return (
-    <main className="mx-auto w-full max-w-2xl px-4 py-10 sm:px-6 sm:py-14">
-      {body}
-    </main>
-  );
+  return <Page width="narrow">{body}</Page>;
 }
 
 function Notice({
@@ -153,7 +153,7 @@ function Notice({
 }) {
   return (
     <div>
-      <h1 className="text-xl font-semibold">{title}</h1>
+      <h1 className="text-title">{title}</h1>
       <p className="text-muted-foreground mt-1 text-sm">{children}</p>
     </div>
   );
@@ -264,7 +264,7 @@ function SandboxFiles({
   const draft = version.isPending ? undefined : (approved?.spec?.draft ?? null);
   const bountyHref =
     approved?.schemaVersion === 3
-      ? bountyProposalPath({ workspace, id: approved.bountyId })
+      ? bountyPricePath({ workspace, id: approved.bountyId })
       : undefined;
   const [view, setView] = useState<View | null>("explorer");
   const [width, setWidth] = useState(SIDEBAR_WIDTH);
@@ -353,18 +353,12 @@ function SandboxFiles({
   else if (listing.isError)
     content = (
       <Centered>
-        <ErrorBanner className="mt-0">
+        <ErrorBanner
+          className="mt-0"
+          action={<RetryButton onRetry={() => void listing.refetch()} />}
+        >
           The version's files could not be listed.
         </ErrorBanner>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={() => void listing.refetch()}
-        >
-          <RefreshCw />
-          Try again
-        </Button>
       </Centered>
     );
   else if (listing.isPending)
@@ -980,7 +974,7 @@ function Explorer({
           type="button"
           aria-expanded={sectionOpen}
           onClick={() => setSectionOpen((value) => !value)}
-          className="flex h-full min-w-0 flex-1 items-center pl-1 text-[11px] font-bold tracking-wide uppercase focus-visible:outline-1 focus-visible:-outline-offset-1 focus-visible:outline-(--wb-accent)"
+          className="flex h-full min-w-0 flex-1 items-center pl-1 text-2xs font-bold tracking-wide uppercase focus-visible:outline-1 focus-visible:-outline-offset-1 focus-visible:outline-(--wb-accent)"
         >
           <ChevronRight
             aria-hidden="true"
@@ -1098,7 +1092,7 @@ function SideBar({
       )}
       style={{ width }}
     >
-      <h2 className="flex h-[35px] shrink-0 items-center px-5 text-[11px] font-normal tracking-wide uppercase">
+      <h2 className="flex h-[35px] shrink-0 items-center px-5 text-2xs font-normal tracking-wide uppercase">
         {title}
       </h2>
       {children}
@@ -1359,16 +1353,12 @@ function Viewer({
   else if (content.isError)
     body = (
       <Centered>
-        <ErrorBanner className="mt-0">This file could not be read.</ErrorBanner>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={() => void content.refetch()}
+        <ErrorBanner
+          className="mt-0"
+          action={<RetryButton onRetry={() => void content.refetch()} />}
         >
-          <RefreshCw />
-          Try again
-        </Button>
+          This file could not be read.
+        </ErrorBanner>
       </Centered>
     );
   else if (content.data.text === null)

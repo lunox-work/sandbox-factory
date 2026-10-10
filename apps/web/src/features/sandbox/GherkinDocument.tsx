@@ -139,7 +139,7 @@ function Tags({ tags }: { tags: readonly string[] }) {
   return tags.map((tag) => (
     <span
       key={tag}
-      className="rounded-[4px] border border-(--wb-input-border) px-1.5 text-[11px] leading-[18px] text-[#9cdcfe]"
+      className="rounded-[4px] border border-(--wb-input-border) px-1.5 text-2xs leading-[18px] text-[#9cdcfe]"
     >
       {tag}
     </span>
@@ -188,7 +188,7 @@ export function ScenarioCard({
             {title}
           </h2>
           {scenario.kind === "outline" && (
-            <span className="rounded-[4px] border border-[#c586c0]/40 px-1.5 text-[11px] text-[#c586c0]">
+            <span className="rounded-[4px] border border-[#c586c0]/40 px-1.5 text-2xs text-[#c586c0]">
               Outline
             </span>
           )}

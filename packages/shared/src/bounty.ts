@@ -1,13 +1,15 @@
 /**
  * Bounties on the wire: the organization's own record of a piece of work,
- * written here or imported from Jira. A bounty is two things at least, its
- * proposal and its sandbox, and each answer carries both in brief.
+ * written here or imported from Jira. A bounty is made in three steps, its
+ * scope, its price (held by its proposal) and its sandbox, and each answer
+ * carries where they stand in brief.
  * `/api/v1/orgs/:orgId/bounties`.
  */
 
 import {
   BOUNTY_LIMITS,
   BOUNTY_ORIGINS,
+  BOUNTY_STATUSES,
   bountySpecHash,
   SANDBOX_STATUSES,
 } from "sandbox-factory";
@@ -77,14 +79,14 @@ export const bountySandboxSummarySchema = z.object({
   sourceRepoId: z.string().nullable(),
   /**
    * The version contributors get, or the latest while none is published,
-   * and the bounty version it was built on: null for one built before that
+   * and the price version it was built on: null for one built before that
    * was kept. Null while it has no version.
    */
   build: z
     .object({
       versionId: z.string().min(1),
       version: z.number().int().positive(),
-      bountyVersion: z.number().int().positive().nullable(),
+      priceVersion: z.number().int().positive().nullable(),
       /** The bounty's synced context versions it was generated with. */
       context: contextVersionsDefault,
     })
@@ -104,12 +106,11 @@ export const bountySummaryDtoSchema = z.object({
    */
   stack: stackDtoSchema,
   revision: z.number().int().positive(),
-  /** The overview's version: moved by each change to its title or text. */
+  /** The scope's version: moved by each change to its title or text. */
   version: z.number().int().positive(),
   /**
-   * The overview version an owner or admin approved; null until one is.
-   * While it is `version`, the overview is held as it is
-   * (`overviewApproved`).
+   * The scope version an owner or admin approved; null until one is. While
+   * it is `version`, the scope is held as it is (`scopeApproved`).
    */
   approval: z
     .object({
@@ -132,39 +133,39 @@ export const bountySummaryDtoSchema = z.object({
 });
 
 /**
- * A bounty's three steps, each built on the one before: the overview, the
- * bounty (its live proposal) and the sandbox, with the version each is at
+ * A bounty's three steps, each built on the one before: its scope, its
+ * price (its live proposal) and its sandbox, with the version each is at
  * and the version of the step before that it was built on. A step built on
- * an older version than the one before it is at is behind
- * (`stageDrift`); nothing locks one step to another.
+ * an older version than the one before it is at is behind (`stageDrift`);
+ * nothing locks one step to another.
  */
 export const bountyStagesSchema = z.object({
   /**
-   * The overview's version, and the latest context synced from each
-   * source, which the steps after it are made with (`contextDrift`).
+   * The scope's version, and the latest context synced from each source,
+   * which the steps after it are made with (`contextDrift`).
    */
-  overview: z.object({
+  scope: z.object({
     version: z.number().int().positive(),
     context: contextVersionsDefault,
   }),
   /**
-   * The live proposal's version, 0 until first approved, and the overview
+   * The live price's version, 0 until first approved, and the scope
    * version it was sized from: null when no version says what it was
    * sized from.
    */
-  bounty: z
+  price: z
     .object({
       version: z.number().int().nonnegative(),
-      overviewVersion: z.number().int().positive().nullable(),
+      scopeVersion: z.number().int().positive().nullable(),
       /** The context versions it was sized with. */
       context: contextVersionsDefault,
     })
     .nullable(),
-  /** The sandbox's `build`, and the bounty version it was built on. */
+  /** The sandbox's `build`, and the price version it was built on. */
   sandbox: z
     .object({
       version: z.number().int().positive(),
-      bountyVersion: z.number().int().positive().nullable(),
+      priceVersion: z.number().int().positive().nullable(),
       /** The context versions it was generated with. */
       context: contextVersionsDefault,
     })
@@ -180,8 +181,8 @@ export const bountyDtoSchema = bountySummaryDtoSchema.extend({
   stages: bountyStagesSchema,
 });
 
-/** One version of a bounty's overview: its text from then until the next. */
-export const bountyVersionDtoSchema = z.object({
+/** One version of a bounty's scope: its text from then until the next. */
+export const scopeVersionDtoSchema = z.object({
   version: z.number().int().positive(),
   title: z.string(),
   description: z.string(),
@@ -190,8 +191,8 @@ export const bountyVersionDtoSchema = z.object({
   createdAt: z.iso.datetime(),
 });
 
-export const bountyVersionListSchema = z.object({
-  versions: z.array(bountyVersionDtoSchema),
+export const scopeVersionListSchema = z.object({
+  versions: z.array(scopeVersionDtoSchema),
 });
 
 export const bountyListResponseSchema = z.object({
@@ -203,7 +204,8 @@ export const bountyResponseSchema = z.object({ bounty: bountyDtoSchema });
 
 /**
  * What a bounty list may be narrowed to, as its query says it: one
- * category, `uncategorized` for the bounties in none, and one board's.
+ * category, `uncategorized` for the bounties in none, one board's, and how
+ * far the bounties have got (`bountyStatus`).
  */
 export const bountyListFilterSchema = z.object({
   category: z
@@ -211,6 +213,10 @@ export const bountyListFilterSchema = z.object({
     .regex(/^[a-z0-9]+(-[a-z0-9]+)*$/)
     .optional(),
   board: z.string().min(1).optional(),
+  /** `lunox`: only the bounties written in Lunox, with no Jira issue. */
+  source: z.enum(["lunox"]).optional(),
+  /** The last step done: `new`, `scoped`, `priced` or `live`. */
+  status: z.enum(BOUNTY_STATUSES).optional(),
 });
 
 /**
@@ -302,7 +308,7 @@ export const linkBountyJiraSchema = z.strictObject({
   issueId: z.string().min(1),
 });
 
-/** Approves the overview, or takes that back, against the revision seen. */
+/** Approves the scope, or takes that back, against the revision seen. */
 export const decideBountySchema = z.strictObject({
   expectedRevision: z.number().int().positive(),
 });
@@ -321,8 +327,8 @@ export type BountySandboxSummaryDto = z.infer<
 export type BountySummaryDto = z.infer<typeof bountySummaryDtoSchema>;
 export type BountyDto = z.infer<typeof bountyDtoSchema>;
 export type BountyStagesDto = z.infer<typeof bountyStagesSchema>;
-export type BountyVersionDto = z.infer<typeof bountyVersionDtoSchema>;
-export type BountyVersionList = z.infer<typeof bountyVersionListSchema>;
+export type ScopeVersionDto = z.infer<typeof scopeVersionDtoSchema>;
+export type ScopeVersionList = z.infer<typeof scopeVersionListSchema>;
 export type BountyListResponse = z.infer<typeof bountyListResponseSchema>;
 export type BountyListFilter = z.infer<typeof bountyListFilterSchema>;
 export type BountyCategoryCountsDto = z.infer<

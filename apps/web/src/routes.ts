@@ -1,3 +1,5 @@
+import { BOUNTY_STATUSES, type BountyStatus } from "sandbox-factory";
+
 import type { Screen } from "./SideNav";
 
 export const ACCOUNT_PATH = "/account";
@@ -6,6 +8,8 @@ export const NEW_ORG_PATH = "/workspaces/new";
 /** Every workspace's bounties at once, so not under any one's path. */
 export const BOUNTIES_PATH = "/bounties";
 export const NEW_BOUNTY_PATH = "/bounties/new";
+/** Getting the workspace in the rail set up: its own page, beside home. */
+export const ONBOARDING_PATH = "/onboarding";
 
 /**
  * An open bounty as an address names it: the workspace it is read and changed
@@ -49,7 +53,7 @@ function bountyAddressFrom(parts: string[]): BountyAddress | undefined {
 /**
  * The bounty's own address for one written with `/proposal` after it, in the
  * path or in `?peek=`. Undefined for any other. Either opens its page on the
- * Bounty tab, where the proposal now is: a panel does not show it.
+ * Price tab, where the proposal now is: a panel does not show it.
  */
 function legacyProposalViewUrl(
   path: string,
@@ -60,7 +64,7 @@ function legacyProposalViewUrl(
     const bounty = bountyForPath(path);
     if (bounty === undefined) return undefined;
     const params = new URLSearchParams(search);
-    params.set("tab", "bounty");
+    params.set("tab", "price");
     return `${bountyPagePath(bounty)}?${params.toString()}`;
   }
   const peek = new URLSearchParams(search).get("peek");
@@ -70,12 +74,12 @@ function legacyProposalViewUrl(
     return undefined;
   }
   const bounty = bountyForSearch(search);
-  return bounty === undefined ? undefined : bountyProposalPath(bounty);
+  return bounty === undefined ? undefined : bountyPricePath(bounty);
 }
 
-/** A bounty's own page, open on the tab its proposal is in. */
-export function bountyProposalPath(address: BountyAddress): string {
-  return `${bountyPagePath(address)}?tab=bounty`;
+/** A bounty's own page, open on its Price step, which its proposal holds. */
+export function bountyPricePath(address: BountyAddress): string {
+  return `${bountyPagePath(address)}?tab=price`;
 }
 
 /** A bounty's own page. */
@@ -93,10 +97,16 @@ export interface BoardScope {
   boardId: string;
 }
 
-/** What narrows the list: a category (or `uncategorized`), and a board. */
+/**
+ * What narrows the list: a category (or `uncategorized`), where the
+ * bounties came from — one board, or `lunox` for those written in Lunox —
+ * and how far they have got.
+ */
 export interface BountyListScope {
   category?: string | undefined;
   board?: BoardScope | undefined;
+  source?: "lunox" | undefined;
+  status?: BountyStatus | undefined;
 }
 
 const CATEGORY_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/;
@@ -106,6 +116,8 @@ export function listScopeForSearch(search: string): BountyListScope {
   const params = new URLSearchParams(search);
   const category = params.get("category");
   const board = params.get("board");
+  const source = params.get("source");
+  const status = BOUNTY_STATUSES.find((name) => name === params.get("status"));
   const [workspace, boardId, ...rest] = (board ?? "")
     .replace(/\/+$/, "")
     .split("/");
@@ -120,6 +132,8 @@ export function listScopeForSearch(search: string): BountyListScope {
     rest.length === 0
       ? { board: { workspace, boardId } }
       : {}),
+    ...(source === "lunox" ? { source } : {}),
+    ...(status === undefined ? {} : { status }),
   };
 }
 
@@ -138,9 +152,11 @@ export function bountiesUrl(
       : [
           `board=${encodeURIComponent(scope.board.workspace)}/${encodeURIComponent(scope.board.boardId)}`,
         ]),
+    ...(scope.source === undefined ? [] : [`source=${scope.source}`]),
     ...(scope.category === undefined
       ? []
       : [`category=${encodeURIComponent(scope.category)}`]),
+    ...(scope.status === undefined ? [] : [`status=${scope.status}`]),
     ...(address === null ? [] : [`peek=${bountyAddressText(address)}`]),
   ];
   return parts.length === 0
@@ -333,7 +349,7 @@ function legacyBountiesUrl(
   const url =
     workspace !== null && id !== null
       ? proposal !== null
-        ? bountyProposalPath({ workspace, id })
+        ? bountyPricePath({ workspace, id })
         : bountiesUrl({ workspace, id })
       : workspace !== null && proposal !== null
         ? `${BOUNTIES_PATH}?${new URLSearchParams({ workspace, proposal }).toString()}`
@@ -433,6 +449,7 @@ export function screenForPath(pathname: string): Screen {
   if (path === ORGANIZATIONS_PATH || path === LEGACY_ORGANIZATIONS_PATH) {
     return "organizations";
   }
+  if (path === ONBOARDING_PATH) return "onboarding";
   if (path === NEW_BOUNTY_PATH) return "new-bounty";
   if (bountyForPath(path) !== undefined) return "bounty";
   // The old per-workspace addresses show the page while `canonicalUrl`
@@ -488,6 +505,8 @@ export function pathForScreen(
         : connectionTab === undefined || connectionTab === "home"
           ? `/o/${slug}/settings`
           : `/o/${slug}/settings?connection=${connectionTab}`;
+    case "onboarding":
+      return ONBOARDING_PATH;
     case "bounties":
       return BOUNTIES_PATH;
     // A bounty's page is addressed by `bountyPagePath`; with none named here,

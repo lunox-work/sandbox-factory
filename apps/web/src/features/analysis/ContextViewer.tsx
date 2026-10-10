@@ -22,14 +22,13 @@ import {
   ExternalLink,
   Files,
   Image,
-  RefreshCw,
   Workflow,
   type LucideIcon,
 } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { ContextBuilder } from "sandbox-factory";
 
-import { ErrorBanner, LoadingLine } from "@/components/Message";
+import { ErrorBanner, LoadingLine, RetryButton } from "@/components/Message";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -402,18 +401,12 @@ function WebPage({
   if (text === null && url.isError)
     return (
       <Centered>
-        <ErrorBanner className="mt-0">
+        <ErrorBanner
+          className="mt-0"
+          action={<RetryButton onRetry={() => void url.refetch()} />}
+        >
           This page could not be opened.
         </ErrorBanner>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={() => void url.refetch()}
-        >
-          <RefreshCw />
-          Try again
-        </Button>
       </Centered>
     );
   return (
@@ -551,16 +544,12 @@ function Viewer({
   else if (content.isError)
     body = (
       <Centered>
-        <ErrorBanner className="mt-0">This file could not be read.</ErrorBanner>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={() => void content.refetch()}
+        <ErrorBanner
+          className="mt-0"
+          action={<RetryButton onRetry={() => void content.refetch()} />}
         >
-          <RefreshCw />
-          Try again
-        </Button>
+          This file could not be read.
+        </ErrorBanner>
       </Centered>
     );
   else if (showRendered) body = rendering.view;

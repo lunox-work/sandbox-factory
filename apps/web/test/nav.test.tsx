@@ -25,6 +25,11 @@ let pendingInvitations: unknown[] = [];
 let extraOrganizations: unknown[] = [];
 /** What each organization's `/jira/boards` answers with; set per test. */
 let boardsByOrganization: Record<string, unknown[]> = {};
+/**
+ * Acme has a proposal, so with its site and repository every onboarding step
+ * is done and the rail offers home and bounties. Off, it is mid-onboarding.
+ */
+let acmeSetUp = true;
 const setActive = vi.fn((_input: unknown) =>
   Promise.resolve({ data: {}, error: null }),
 );
@@ -65,7 +70,7 @@ const BOUNTY = {
   components: [],
   inputTruncated: false,
   createdBy: "user_1",
-  stages: { overview: { version: 1 }, bounty: null, sandbox: null },
+  stages: { scope: { version: 1 }, price: null, sandbox: null },
 };
 
 /** The one registered repository, in Acme, for its page. */
@@ -96,6 +101,15 @@ vi.stubGlobal(
     if (url.endsWith("/github/repositories")) {
       return Promise.resolve(
         Response.json({ repositories: url.includes("org_1") ? [REPO] : [] }),
+      );
+    }
+    if (url.endsWith("/orgs/org_1/proposal-categories")) {
+      return Promise.resolve(
+        Response.json({
+          total: acmeSetUp ? 1 : 0,
+          uncategorized: acmeSetUp ? 1 : 0,
+          categories: [],
+        }),
       );
     }
     if (url.endsWith("/snapshots")) {
@@ -332,6 +346,7 @@ beforeEach(() => {
   pendingInvitations = [];
   extraOrganizations = [];
   boardsByOrganization = {};
+  acmeSetUp = true;
   // Each test owns the path it renders under; `Signed` reads it once on mount
   // to decide the starting screen.
   window.history.replaceState(null, "", "/");
@@ -839,10 +854,11 @@ test("the switcher answers the cursor too", async () => {
   expect(switcher.className).toContain("hover:bg-accent");
 });
 
-test("a site whose account sees no boards sends home's reader to its Jira settings", async () => {
+test("a site whose account sees no boards sends onboarding's reader to its Jira settings", async () => {
   // End to end through the shell: the boards a site shows are managed in
   // the workspace's Jira tab, which is where a new board is picked up.
-  window.history.replaceState(null, "", "/");
+  acmeSetUp = false;
+  window.history.replaceState(null, "", "/onboarding");
   render(<App />);
 
   const settings = await screen.findByRole("button", { name: "Jira settings" });
@@ -867,22 +883,23 @@ function board(id: string, name: string) {
   };
 }
 
-/** The home screen's board picker, named for the board it is showing. */
-async function homeBoard(name: string) {
+/** Onboarding's board picker, named for the board it is scanning. */
+async function scanBoard(name: string) {
   return screen.findByRole("button", { name: `Switch board — ${name}` });
 }
 
-test("home opens on the organization's board, not the connections list", async () => {
-  // The proposals are the work; the list of sites is one step removed from
-  // them. With no board opened yet, the first one is where home lands.
+test("onboarding scans the organization's board, not the connections list", async () => {
+  // With no board picked yet, the first one is the one scanned.
   boardsByOrganization = {
     org_1: [board("jrb_1", "Delivery"), board("jrb_2", "Platform")],
   };
+  acmeSetUp = false;
+  window.history.replaceState(null, "", "/onboarding");
   render(<App />);
 
-  expect(await homeBoard("Delivery")).toBeTruthy();
+  expect(await scanBoard("Delivery")).toBeTruthy();
   expect(screen.queryByRole("heading", { name: "Connections" })).toBeNull();
-  expect(window.location.pathname).toBe("/");
+  expect(window.location.pathname).toBe("/onboarding");
 });
 
 test("home greets the person rather than titling the board", async () => {
@@ -898,47 +915,28 @@ test("home greets the person rather than titling the board", async () => {
   expect(screen.queryByRole("heading", { name: "Delivery" })).toBeNull();
 });
 
-test("the picker switches home's board and remembers it", async () => {
+test("the picker switches the scanned board and remembers it", async () => {
   boardsByOrganization = {
     org_1: [board("jrb_1", "Delivery"), board("jrb_2", "Platform")],
   };
+  acmeSetUp = false;
+  window.history.replaceState(null, "", "/onboarding");
   const { unmount } = render(<App />);
 
-  const trigger = await homeBoard("Delivery");
+  const trigger = await scanBoard("Delivery");
   await act(async () => {
     fireEvent.click(trigger);
   });
   const menu = await screen.findByRole("listbox", { name: "Boards" });
   fireEvent.click(within(menu).getByRole("option", { name: /Platform/ }));
 
-  expect(await homeBoard("Platform")).toBeTruthy();
-  expect(window.location.pathname).toBe("/");
+  expect(await scanBoard("Platform")).toBeTruthy();
+  expect(window.location.pathname).toBe("/onboarding");
 
   // A reload lands on the one chosen, not back on the first.
   unmount();
   render(<App />);
-  expect(await homeBoard("Platform")).toBeTruthy();
-});
-
-test("the picker leads out to the board's bounties", async () => {
-  // Home has no trail, and a board no page of its own: its tickets are
-  // bounties, so this opens the list narrowed to it.
-  boardsByOrganization = { org_1: [board("jrb_1", "Delivery")] };
-  render(<App />);
-
-  const trigger = await homeBoard("Delivery");
-  await act(async () => {
-    fireEvent.click(trigger);
-  });
-  const menu = await screen.findByRole("listbox", { name: "Boards" });
-  fireEvent.click(
-    within(menu).getByRole("option", { name: /Open its bounties/ }),
-  );
-
-  await waitFor(() => {
-    expect(window.location.pathname).toBe("/bounties");
-    expect(window.location.search).toBe("?board=acme/jrb_1");
-  });
+  expect(await scanBoard("Platform")).toBeTruthy();
 });
 
 test("a remembered board that is gone falls back to the first", async () => {
@@ -949,24 +947,28 @@ test("a remembered board that is gone falls back to the first", async () => {
     JSON.stringify({ connectionId: "jrc_1", boardId: "jrb_gone" }),
   );
   boardsByOrganization = { org_1: [board("jrb_1", "Delivery")] };
+  acmeSetUp = false;
+  window.history.replaceState(null, "", "/onboarding");
   render(<App />);
 
-  expect(await homeBoard("Delivery")).toBeTruthy();
+  expect(await scanBoard("Delivery")).toBeTruthy();
 });
 
-test("switching organization moves home to that organization's board", async () => {
+test("switching organization moves the scan to that organization's board", async () => {
   boardsByOrganization = {
     org_1: [board("jrb_1", "Delivery")],
     org_2: [board("jrb_9", "Globex board")],
   };
+  acmeSetUp = false;
+  window.history.replaceState(null, "", "/onboarding");
   render(<App />);
-  expect(await homeBoard("Delivery")).toBeTruthy();
+  expect(await scanBoard("Delivery")).toBeTruthy();
 
   const menu = await openSwitcher();
   fireEvent.click(within(menu).getByRole("option", { name: /Globex/ }));
 
-  expect(await homeBoard("Globex board")).toBeTruthy();
-  expect(window.location.pathname).toBe("/");
+  expect(await scanBoard("Globex board")).toBeTruthy();
+  expect(window.location.pathname).toBe("/onboarding");
 });
 
 test("cancelling a new organization goes back to the list, not home", async () => {

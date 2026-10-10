@@ -9,7 +9,7 @@
  * `account.test.tsx`.
  */
 
-import { render, screen, waitFor } from "./render";
+import { render, screen, waitFor, within } from "./render";
 import { beforeEach, expect, test, vi } from "vitest";
 
 const useSession = vi.fn();
@@ -35,6 +35,13 @@ vi.mock("../src/auth", () => ({
 let sitesByCall: string[][] = [];
 let callCount = 0;
 let unauthorized = false;
+/** Jira not connected, so the workspace has nothing in it. */
+let empty = false;
+/**
+ * A repository and a proposal beside the Jira site: every onboarding step is
+ * done.
+ */
+let setUp = false;
 
 /** One organization, so there is a group for the connections to hang off. */
 const organizations = [
@@ -66,20 +73,57 @@ const fetchMock = vi.fn((input: RequestInfo | URL) => {
 
   if (url.includes("/jira/connections")) {
     return Promise.resolve(
+      Response.json(
+        empty
+          ? { connections: [] }
+          : {
+              connections: [
+                {
+                  id: "jrc_1",
+                  cloudId: "cloud_1",
+                  siteName: "Acme",
+                  siteUrl: "https://acme.atlassian.net",
+                  email: null,
+                  healthy: true,
+                  scopes: [],
+                  createdAt: "2026-09-16T00:00:00.000Z",
+                },
+              ],
+            },
+      ),
+    );
+  }
+
+  if (setUp && url.endsWith("/github/repositories")) {
+    return Promise.resolve(
       Response.json({
-        connections: [
+        repositories: [
           {
-            id: "jrc_1",
-            cloudId: "cloud_1",
-            siteName: "Acme",
-            siteUrl: "https://acme.atlassian.net",
-            email: null,
-            healthy: true,
-            scopes: [],
-            createdAt: "2026-09-16T00:00:00.000Z",
+            id: "ghr_1",
+            connectionId: "ghc_1",
+            role: "source",
+            externalId: "1",
+            fullName: "acme/widgets",
+            defaultBranch: "main",
+            isPrivate: false,
+            sizeKb: 1,
+            headSha: "a".repeat(40),
+            pushedAt: "2026-10-01T00:00:00.000Z",
+            lastSyncedAt: "2026-10-01T00:00:00.000Z",
+            syncStatus: "ok",
+            syncError: null,
+            stack: [],
+            contextSnapshotId: null,
+            createdAt: "2026-10-01T00:00:00.000Z",
           },
         ],
       }),
+    );
+  }
+
+  if (setUp && url.endsWith("/proposal-categories")) {
+    return Promise.resolve(
+      Response.json({ total: 1, uncategorized: 1, categories: [] }),
     );
   }
 
@@ -114,9 +158,12 @@ function session(user: { id: string; name: string } | null) {
 }
 
 beforeEach(() => {
+  window.history.replaceState(null, "", "/");
   callCount = 0;
   sitesByCall = [];
   unauthorized = false;
+  empty = false;
+  setUp = false;
   fetchMock.mockClear();
 });
 
@@ -132,7 +179,9 @@ test("a signed-out visitor sees the sign-in screen, not a list", () => {
   ).toBeNull();
 });
 
-test("a signed-in user's home opens on their own board", async () => {
+test("a signed-in user's onboarding scans their own board", async () => {
+  // The board is on onboarding, under getting started.
+  window.history.replaceState(null, "", "/onboarding");
   sitesByCall = [["alice-site"]];
   session({ id: "user_1", name: "Alice" });
   render(<App />);
@@ -145,6 +194,7 @@ test("a signed-in user's home opens on their own board", async () => {
 test("switching account does not leave the previous user's board on screen", async () => {
   // The regression: without the user-id key React reuses the mounted tree, so
   // the first user's rows stay visible until a refetch replaces them.
+  window.history.replaceState(null, "", "/onboarding");
   sitesByCall = [["alice-site"], ["bob-site"]];
 
   session({ id: "user_1", name: "Alice" });
@@ -166,6 +216,7 @@ test("switching account does not leave the previous user's board on screen", asy
 test("a 401 clears the list rather than leaving it on screen", async () => {
   // A session can end while the tab is open. Rows fetched for it must not
   // survive the failure.
+  window.history.replaceState(null, "", "/onboarding");
   sitesByCall = [["alice-site"]];
   session({ id: "user_1", name: "Alice" });
   const { rerender } = render(<App />);
@@ -183,6 +234,56 @@ test("a 401 clears the list rather than leaving it on screen", async () => {
   await waitFor(() => {
     expect(screen.queryByText("alice-site")).toBeNull();
   });
+});
+
+test("a workspace not set up yet is offered onboarding alone, and home lands on it", async () => {
+  // Jira connected, but no repository and nothing sized: still onboarding.
+  sitesByCall = [["alice-site"]];
+  session({ id: "user_1", name: "Alice" });
+  render(<App />);
+
+  expect(
+    await screen.findByRole("heading", { name: "Onboarding", level: 1 }),
+  ).toBeTruthy();
+  await waitFor(() => expect(window.location.pathname).toBe("/onboarding"));
+  const rail = screen.getByRole("navigation", { name: "Main" });
+  expect(within(rail).getByRole("link", { name: "Onboarding" })).toBeTruthy();
+  expect(within(rail).queryByRole("link", { name: "Home" })).toBeNull();
+  expect(within(rail).queryByRole("link", { name: "Bounties" })).toBeNull();
+  // It is the landing page here, so there is nothing above it to go back to.
+  expect(screen.queryByRole("navigation", { name: "Breadcrumb" })).toBeNull();
+  window.history.replaceState(null, "", "/");
+});
+
+test("an empty workspace is offered onboarding alone too", async () => {
+  empty = true;
+  session({ id: "user_1", name: "Alice" });
+  render(<App />);
+
+  await waitFor(() => expect(window.location.pathname).toBe("/onboarding"));
+  const rail = screen.getByRole("navigation", { name: "Main" });
+  expect(within(rail).queryByRole("link", { name: "Home" })).toBeNull();
+  window.history.replaceState(null, "", "/");
+});
+
+test("a set-up workspace is offered home and bounties, and onboarding no more", async () => {
+  setUp = true;
+  sitesByCall = [["alice-site"]];
+  // Where a consent or an old link might still lead.
+  window.history.replaceState(null, "", "/onboarding");
+  session({ id: "user_1", name: "Alice" });
+  render(<App />);
+
+  await waitFor(() => expect(window.location.pathname).toBe("/"));
+  expect(
+    await screen.findByRole("heading", {
+      name: /^Good (morning|afternoon|evening)/,
+    }),
+  ).toBeTruthy();
+  const rail = screen.getByRole("navigation", { name: "Main" });
+  for (const name of ["Home", "Bounties"])
+    expect(within(rail).getByRole("link", { name })).toBeTruthy();
+  expect(within(rail).queryByRole("link", { name: "Onboarding" })).toBeNull();
 });
 
 test("a version's files open on their own, outside the shell", async () => {

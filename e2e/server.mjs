@@ -64,7 +64,7 @@ function fixtureApp(token) {
       revision: 1,
       version: 1,
       approval: null,
-      stages: { overview: { version: 1 }, bounty: null, sandbox: null },
+      stages: { scope: { version: 1 }, price: null, sandbox: null },
       jira: null,
       sandbox: null,
       createdAt: stamp,
@@ -138,7 +138,7 @@ function fixtureApp(token) {
           const bounty = rows.get(bountyId);
           return bounty?.organizationId === organizationId ? bounty : null;
         },
-        // Each bounty is at its first overview version, as written.
+        // Each bounty is at its first scope version, as written.
         versions: async (organizationId, bountyId) => {
           const bounty = rows.get(bountyId);
           return bounty?.organizationId === organizationId

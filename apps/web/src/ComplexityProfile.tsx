@@ -76,7 +76,8 @@ const FAILURE: Record<string, string> = {
   source_unavailable:
     "The repository snapshot or the spec it was sized from is no longer there.",
   scope_failed: "The scope agent could not choose a slice.",
-  slice_failed: "The slice the scope agent chose could not be cut.",
+  slice_failed:
+    "The slice the scope agent chose could not be sliced from the code.",
   output_invalid: "An analysis finished, but its result could not be read.",
 };
 

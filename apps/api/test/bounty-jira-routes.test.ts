@@ -370,7 +370,7 @@ test("removing the link returns the bounty without one", async () => {
   assert.deepEqual(unlinks, ["bty_7"]);
 });
 
-test("an approved overview's Jira link is neither changed nor removed", async () => {
+test("an approved scope's Jira link is neither changed nor removed", async () => {
   const { request, links, unlinks } = harness({
     bounty: {
       approval: { version: 1, approvedBy: "user_1", approvedAt: stamp },
@@ -384,7 +384,7 @@ test("an approved overview's Jira link is neither changed nor removed", async ()
     assert.equal(response.status, 409);
     assert.equal(
       ((await response.json()) as { code: string }).code,
-      "overview_approved",
+      "scope_approved",
     );
   }
   assert.deepEqual(links, []);

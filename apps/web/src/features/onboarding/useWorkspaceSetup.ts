@@ -86,12 +86,19 @@ export function useWorkspaceSetup(
     and a component mounting again reads a failed query again, so the two
     would chase each other for as long as the read kept failing.
   */
-  const known = useRef<SetupFacts | null>(null);
-  if (current !== null) known.current = current;
-  const facts = current ?? known.current;
+  const known = useRef<{ owner: string; facts: SetupFacts } | null>(null);
+  if (current !== null && owner !== undefined)
+    known.current = { owner, facts: current };
+  const facts = current ?? known.current?.facts ?? null;
 
   return {
     facts,
+    /**
+     * `facts` are this workspace's: read for it, now or before its reads
+     * went again. False while they are still another's — the one switched
+     * away from — or nobody's yet.
+     */
+    ownFacts: owner !== undefined && known.current?.owner === owner,
     failed:
       jira.error !== null ||
       github.error !== null ||

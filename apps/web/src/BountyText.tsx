@@ -13,9 +13,12 @@ import { Markdown } from "./IssueSpec";
 export function BountyText({
   description,
   inputTruncated = false,
+  framed = true,
 }: {
   description: string;
   inputTruncated?: boolean | undefined;
+  /** In a box of its own; off where the page around it sets it apart. */
+  framed?: boolean;
 }) {
   return (
     <div className="flex flex-col gap-4" data-testid="bounty-text">
@@ -25,7 +28,7 @@ export function BountyText({
           cannot safely be priced against.
         </p>
       ) : (
-        <div className="rounded-md border p-4">
+        <div className={framed ? "rounded-md border p-4" : undefined}>
           <Markdown>{description}</Markdown>
         </div>
       )}

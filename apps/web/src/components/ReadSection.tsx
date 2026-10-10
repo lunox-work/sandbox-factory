@@ -43,7 +43,7 @@ export function SectionHeading({
       >
         {icon}
       </span>
-      <p id={id} className="text-sm font-semibold tracking-tight">
+      <p id={id} className="text-subheading">
         {children}
       </p>
       {aside !== undefined && (

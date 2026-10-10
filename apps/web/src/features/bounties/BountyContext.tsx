@@ -2,14 +2,14 @@
  * What a bounty's sources add to it, synced on request: its Jira issue's
  * fields (type, priority, story points, estimates, links) and its
  * repository's documents. Each sync that finds something new is a version
- * of that source's context. The overview holds the latest of each; the
+ * of that source's context. The scope holds the latest of each; the
  * bounty is sized with them and the sandbox generated with them, and each
  * of those says which versions it was made with.
  *
- * Two warnings, each where it is acted on. On the overview's links, a source
+ * Two warnings, each where it is acted on. On the scope's links, a source
  * that has moved past its last sync is ahead, and syncing it brings the
- * overview up to date. On the bounty and the sandbox, a step made with an
- * older context version than the overview holds is behind on that source,
+ * scope up to date. On the price and the sandbox, a step made with an
+ * older context version than the scope holds is behind on that source,
  * and making the step again brings it up to date.
  */
 
@@ -219,7 +219,7 @@ function aheadText(
   if (status.state !== "ahead" || latest === null) return null;
   const name = status.linked?.ref ?? SOURCE_NAME[source];
   if (source === "jira") {
-    return `${name} has changed in Jira since ${short(latest.version)} was synced. Sync to bring the change into the overview.`;
+    return `${name} has changed in Jira since ${short(latest.version)} was synced. Sync to bring the change into the scope.`;
   }
   const since = `since ${short(latest.version)} was synced`;
   const was = commitsOf(latest.revision);
@@ -298,7 +298,7 @@ export function ContextSync({
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <span
           className={cn(
-            "rounded-[4px] px-1.5 py-px text-[11px] leading-4 font-medium whitespace-nowrap",
+            "rounded-[4px] px-1.5 py-px text-2xs leading-4 font-medium whitespace-nowrap",
             status === null ? STATE_STYLE.unsynced : STATE_STYLE[status.state],
           )}
         >
@@ -499,7 +499,7 @@ function SourceVersion({
   /** What the source is called, when known. */
   name: string | null;
   version: number | null;
-  /** Set when the step is behind the overview on this source. */
+  /** Set when the step is behind the scope on this source. */
   drift: StageDrift | null;
 }) {
   return (
@@ -511,7 +511,7 @@ function SourceVersion({
       <span className="truncate">{name ?? SOURCE_NAME[source]}</span>
       <span
         className={cn(
-          "rounded-[4px] px-1.5 py-px font-mono text-[11px] leading-4 font-medium",
+          "rounded-[4px] px-1.5 py-px font-mono text-2xs leading-4 font-medium",
           drift !== null
             ? "bg-amber-500/15 text-amber-800 dark:text-amber-300"
             : version === null
@@ -532,9 +532,9 @@ function SourceVersion({
 }
 
 /**
- * Which context versions a step stands on, in a line: the overview's held
+ * Which context versions a step stands on, in a line: the scope's held
  * versions, or those the bounty was sized and the sandbox generated with.
- * A source the step is behind the overview on is marked.
+ * A source the step is behind the scope on is marked.
  */
 export function StepContext({
   label,
@@ -545,7 +545,7 @@ export function StepContext({
   /** What the step did with them: "Holds", "Sized with", "Generated with". */
   label: string;
   versions: ContextVersionsDto;
-  /** The overview's; absent for the overview itself. */
+  /** The scope's; absent for the scope itself. */
   held?: ContextVersionsDto;
   names: { readonly jira: string | null; readonly github: string | null };
 }) {
@@ -574,7 +574,7 @@ export function StepContext({
 
 /**
  * A warning at the top of the bounty's or the sandbox's page once the
- * overview holds newer context than the step was made with, with what to do.
+ * scope holds newer context than the step was made with, with what to do.
  */
 export function ContextLineage({
   step,
@@ -582,7 +582,7 @@ export function ContextLineage({
   held,
   remedy,
 }: {
-  step: "bounty" | "sandbox";
+  step: "price" | "sandbox";
   versions: ContextVersionsDto;
   held: ContextVersionsDto;
   remedy: string;
@@ -592,7 +592,7 @@ export function ContextLineage({
     (source) => drift[source] !== null,
   );
   if (behind.length === 0) return null;
-  const made = step === "bounty" ? "Sized with" : "Generated with";
+  const made = step === "price" ? "Sized with" : "Generated with";
   const parts: ReactNode[] = behind.map((source) => {
     const found = drift[source];
     if (found === null) return null;
@@ -615,7 +615,7 @@ export function ContextLineage({
       />
       <p>
         <span className="font-medium">
-          The overview's context has moved ahead.
+          The scope's context has moved ahead.
         </span>{" "}
         {made} older context than it holds:{" "}
         {parts.map((part, index) => (
@@ -630,7 +630,7 @@ export function ContextLineage({
   );
 }
 
-/** Whether a step is behind the overview's context on any source. */
+/** Whether a step is behind the scope's context on any source. */
 export function contextBehind(
   held: ContextVersionsDto,
   versions: ContextVersionsDto | undefined,

@@ -104,7 +104,7 @@ export function Panes({
         aria-label={sidebarTitle}
         className="flex w-[40%] max-w-64 min-w-36 shrink-0 flex-col border-r border-(--wb-border) bg-(--wb-chrome)"
       >
-        <h2 className="flex h-[35px] shrink-0 items-center px-5 text-[11px] font-normal tracking-wide uppercase">
+        <h2 className="flex h-[35px] shrink-0 items-center px-5 text-2xs font-normal tracking-wide uppercase">
           {sidebarTitle}
         </h2>
         {sidebar}

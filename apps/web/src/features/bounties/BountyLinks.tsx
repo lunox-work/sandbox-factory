@@ -15,7 +15,7 @@
  * bounty with text of its own asks first: Jira's replaces it.
  *
  * Under each row, the source's sync: whether its context is in use and up
- * to date, and the way to sync it into the overview (`ContextSync`).
+ * to date, and the way to sync it into the scope (`ContextSync`).
  */
 
 import {
@@ -80,7 +80,7 @@ export function BountyLinks({
   onOpenSettings: OpenSettings;
   /** Where each source's sync stands, and the way to sync it. */
   context?: BountyContextState | undefined;
-  /** Its overview is approved: the links are shown, not changed. */
+  /** Its scope is approved: the links are shown, not changed. */
   locked?: boolean;
 }) {
   const headingId = useId();

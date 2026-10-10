@@ -155,7 +155,7 @@ function sandboxRefused(
   if (reason === "source_linked")
     return c.json(
       {
-        error: "This sandbox is already cut from another repository.",
+        error: "This sandbox is already sliced from another repository.",
         code: reason,
       },
       409,
@@ -543,12 +543,12 @@ export function mountSandboxRoutes(
             },
             409,
           )
-        : result.reason === "bounty_not_approved"
+        : result.reason === "price_not_approved"
           ? c.json(
               {
                 error:
-                  "This version was not built from an approved bounty, so it cannot be published.",
-                code: "bounty_not_approved",
+                  "This version was not built from an approved price, so it cannot be published.",
+                code: "price_not_approved",
               },
               409,
             )

@@ -1,8 +1,8 @@
 /**
- * A bounty's page is three steps, in order: its overview, the bounty (its
- * proposal) and its sandbox. Each is versioned, and each is built on a
+ * A bounty's page is three steps, in order: its scope, its price (held by
+ * its proposal) and its sandbox. Each is versioned, and each is built on a
  * version of the step before it. Nothing locks one step to another: the
- * overview can change under an approved proposal, and the proposal under a
+ * scope can change under an approved price, and the price under a
  * published sandbox. A step built on an older version of the one before it
  * than that step is at now is behind, and says so on its tab and at the top
  * of its page, with the way back to the step it is behind.
@@ -10,7 +10,7 @@
 
 import type {
   BountyStagesDto,
-  BountyVersionDto,
+  ScopeVersionDto,
   ContextSourceDto,
 } from "@sandbox-factory/shared";
 import { ChevronDown, ChevronRight, TriangleAlert } from "lucide-react";
@@ -36,8 +36,8 @@ import { contextBehind } from "./BountyContext";
 
 /** The steps, in the order each is built on the one before. */
 export const STEPS = [
-  { value: "overview", label: "Overview" },
-  { value: "bounty", label: "Bounty" },
+  { value: "scope", label: "Scope" },
+  { value: "price", label: "Price" },
   { value: "sandbox", label: "Sandbox" },
 ] as const;
 export type Step = (typeof STEPS)[number]["value"];
@@ -47,20 +47,20 @@ const short = (version: number) => `v${version}`;
 
 /** The version a step is at, as its tab shows it; null for none yet. */
 function stepVersion(stages: BountyStagesDto, step: Step): string | null {
-  if (step === "overview") return short(stages.overview.version);
-  if (step === "bounty")
-    return stages.bounty === null
+  if (step === "scope") return short(stages.scope.version);
+  if (step === "price")
+    return stages.price === null
       ? null
-      : stages.bounty.version === 0
-        ? "Draft"
-        : short(stages.bounty.version);
+      : stages.price.version === 0
+        ? "Pending"
+        : short(stages.price.version);
   return stages.sandbox === null ? null : short(stages.sandbox.version);
 }
 
 /** What a step behind the one before it is behind, in a sentence. */
-function driftText(step: "bounty" | "sandbox", drift: StageDrift): string {
+function driftText(step: "price" | "sandbox", drift: StageDrift): string {
   const [built, before] =
-    step === "bounty" ? ["Sized from", "overview"] : ["Built on", "bounty"];
+    step === "price" ? ["Sized from", "scope"] : ["Built on", "price"];
   const from =
     drift.uses === null
       ? `an earlier ${before}`
@@ -68,7 +68,7 @@ function driftText(step: "bounty" | "sandbox", drift: StageDrift): string {
   return `${built} ${from}; the ${before} is now at ${short(drift.current)}.`;
 }
 
-/** What a source ahead of its sync means for the overview, in a sentence. */
+/** What a source ahead of its sync means for the scope, in a sentence. */
 function aheadText(sources: readonly ContextSourceDto[]): string {
   const names = sources.map((source) =>
     source === "jira" ? "Jira" : "GitHub",
@@ -76,17 +76,17 @@ function aheadText(sources: readonly ContextSourceDto[]): string {
   return `${names.join(" and ")} ${names.length === 1 ? "has" : "have"} moved past ${names.length === 1 ? "its" : "their"} last sync.`;
 }
 
-/** What a step made with older context than the overview holds is, in a sentence. */
-function contextText(step: "bounty" | "sandbox"): string {
-  return `${step === "bounty" ? "Sized" : "Generated"} with older context than the overview holds.`;
+/** What a step made with older context than the scope holds is, in a sentence. */
+function contextText(step: "price" | "sandbox"): string {
+  return `${step === "price" ? "Sized" : "Generated"} with older context than the scope holds.`;
 }
 
 /**
  * The step tabs, numbered and in order, each with the version it is at. An
- * approved version wears Lunox's gradient: an overview or a bounty
+ * approved version wears Lunox's gradient: a scope or a price
  * approved, a sandbox version published. A step behind the one before it,
- * or behind the overview's context, wears a warning instead, and its
- * tooltip says what it was made with. The overview wears one while a
+ * or behind the scope's context, wears a warning instead, and its
+ * tooltip says what it was made with. The scope wears one while a
  * source it syncs from has moved past its last sync.
  */
 export function StepTriggers({
@@ -101,20 +101,18 @@ export function StepTriggers({
   ahead?: readonly ContextSourceDto[];
 }) {
   const drift = stageDrift(stages);
-  const held = stages.overview.context;
+  const held = stages.scope.context;
   return STEPS.map(({ value, label }, index) => {
     const version = stepVersion(stages, value);
-    const versionBehind = value === "overview" ? null : drift[value];
+    const versionBehind = value === "scope" ? null : drift[value];
     const contextStale =
-      value === "overview"
-        ? false
-        : contextBehind(held, stages[value]?.context);
+      value === "scope" ? false : contextBehind(held, stages[value]?.context);
     const warnings = [
       versionBehind === null
         ? null
-        : driftText(value as "bounty" | "sandbox", versionBehind),
-      contextStale ? contextText(value as "bounty" | "sandbox") : null,
-      value === "overview" && ahead.length > 0 ? aheadText(ahead) : null,
+        : driftText(value as "price" | "sandbox", versionBehind),
+      contextStale ? contextText(value as "price" | "sandbox") : null,
+      value === "scope" && ahead.length > 0 ? aheadText(ahead) : null,
     ].filter((text): text is string => text !== null);
     const behind = warnings.length === 0 ? null : warnings.join(" ");
     const signed = approved[value];
@@ -122,7 +120,7 @@ export function StepTriggers({
       <span className="flex h-full items-center gap-2">
         <span
           aria-hidden
-          className="border-border text-muted-foreground group-data-[state=active]/step:border-foreground group-data-[state=active]/step:bg-foreground group-data-[state=active]/step:text-background flex size-5 items-center justify-center rounded-full border text-[11px] font-semibold tabular-nums transition-colors"
+          className="border-border text-muted-foreground group-data-[state=active]/step:border-foreground group-data-[state=active]/step:bg-foreground group-data-[state=active]/step:text-background flex size-5 items-center justify-center rounded-full border text-2xs font-semibold tabular-nums transition-colors"
         >
           {index + 1}
         </span>
@@ -131,7 +129,7 @@ export function StepTriggers({
           <span
             data-approved={signed && behind === null ? true : undefined}
             className={cn(
-              "rounded-[4px] px-1.5 py-px font-mono text-[11px] leading-4 font-medium",
+              "rounded-[4px] px-1.5 py-px font-mono text-2xs leading-4 font-medium",
               behind !== null
                 ? "bg-amber-500/15 text-amber-800 dark:text-amber-300"
                 : signed
@@ -168,7 +166,7 @@ export function StepTriggers({
             version,
             behind === null
               ? null
-              : value === "overview"
+              : value === "scope"
                 ? "(source ahead)"
                 : "(behind)",
           ]
@@ -207,7 +205,7 @@ export function StepLineage({
   remedy,
   onOpen,
 }: {
-  step: "bounty" | "sandbox";
+  step: "price" | "sandbox";
   stages: BountyStagesDto;
   /** What brings the step up to date, said after the warning. */
   remedy: string;
@@ -216,8 +214,8 @@ export function StepLineage({
 }) {
   const drift = stageDrift(stages)[step];
   if (drift === null) return null;
-  const before: Step = step === "bounty" ? "overview" : "bounty";
-  const name = before === "overview" ? "Overview" : "Bounty";
+  const before: Step = step === "price" ? "scope" : "price";
+  const name = before === "scope" ? "Scope" : "Price";
   const link = (children: ReactNode) => (
     <button
       type="button"
@@ -227,7 +225,7 @@ export function StepLineage({
       {children}
     </button>
   );
-  const built = step === "bounty" ? "Sized from" : "Built on";
+  const built = step === "price" ? "Sized from" : "Built on";
   return (
     <div
       role="status"
@@ -252,11 +250,11 @@ export function StepLineage({
 }
 
 /**
- * The overview's version over its text, as a proposal and a sandbox have
+ * The scope's version over its text, as a price and a sandbox have
  * theirs: the version, chosen from the others when there are several, and
  * under it when it was written. An earlier one is read, not changed.
  */
-export function OverviewVersion({
+export function ScopeVersion({
   versions,
   current,
   viewing,
@@ -264,7 +262,7 @@ export function OverviewVersion({
   onView,
 }: {
   /** Newest first; empty while they are read. */
-  versions: readonly BountyVersionDto[];
+  versions: readonly ScopeVersionDto[];
   current: number;
   viewing: number;
   /** When the version being read was approved, while it stands approved. */
@@ -276,7 +274,7 @@ export function OverviewVersion({
   return (
     <span
       className="flex min-h-9 flex-col justify-center text-xs"
-      data-testid="overview-version"
+      data-testid="scope-version"
     >
       {versions.length > 1 ? (
         <DropdownMenu>

@@ -8,10 +8,10 @@
  */
 
 import { render } from "./render";
-import { CATEGORIES } from "sandbox-factory";
+import { CATEGORIES, UNCATEGORIZED } from "sandbox-factory";
 import { expect, test } from "vitest";
 
-import { CategoryIcon } from "../src/CategoryIcon";
+import { ALL_CATEGORIES, CategoryIcon } from "../src/CategoryIcon";
 
 function drawn(category: string) {
   const { container } = render(<CategoryIcon category={category} />);
@@ -52,4 +52,13 @@ test("the icons are decoration, sized by whoever places them", () => {
     expect(svg?.getAttribute("aria-hidden")).toBe("true");
     expect(svg?.classList.contains("size-4")).toBe(true);
   }
+});
+
+test("All and uncategorized have icons of their own, not the fallback", () => {
+  // They stand beside the six in a filter, so each needs a mark that is
+  // neither a category's nor the tag a lost category falls back to.
+  const fallback = drawn("no-such-category").innerHTML;
+  const all = drawn(ALL_CATEGORIES).innerHTML;
+  const none = drawn(UNCATEGORIZED).innerHTML;
+  expect(new Set([fallback, all, none]).size).toBe(3);
 });

@@ -119,7 +119,7 @@ test("bounty transport retains conflicts and cancels without dispatch", async ()
   assert.match(paths[2] ?? "", /^\/api\/v1\/me\/bounties\?cursor=page/);
   await client.myBounties();
   // An answer with no versions is not a list of them.
-  await assert.rejects(client.bountyVersions("owner", "1"));
+  await assert.rejects(client.scopeVersions("owner", "1"));
   assert.match(paths.at(-1) ?? "", /\/bounties\/1\/versions$/);
   // Nor is an empty answer a source's context, or a sync's.
   await assert.rejects(client.bountyContext("owner", "1"));

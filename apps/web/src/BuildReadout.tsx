@@ -106,7 +106,7 @@ export function BuildReadout({
             build is in. Said plainly, and only ever seen in development. */}
         {webBuild.dirty && (
           <span
-            className="bg-foreground/8 rounded px-1.5 py-0.5 text-[0.68rem] leading-tight"
+            className="bg-foreground/8 rounded px-1.5 py-0.5 text-2xs"
             title="Built from a working tree with uncommitted changes."
           >
             uncommitted
@@ -133,7 +133,7 @@ export function BuildReadout({
           // Amber, not red: a rolling deploy is not a failure and it resolves
           // itself on the next reload. The one thing here that reports
           // something in flight, so the one thing given a colour.
-          className="mt-1.5 rounded bg-amber-500/12 px-1.5 py-1 font-mono text-[0.68rem] text-amber-700 dark:text-amber-400"
+          className="mt-1.5 rounded bg-amber-500/12 px-1.5 py-1 font-mono text-2xs text-amber-700 dark:text-amber-400"
           title={mismatchTitle(apiBuild)}
         >
           API on {apiBuild.gitShortSha}

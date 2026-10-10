@@ -219,7 +219,7 @@ export type PublishVersionResult =
     }
   | {
       readonly ok: false;
-      readonly reason: "not-found" | "not_ready" | "bounty_not_approved";
+      readonly reason: "not-found" | "not_ready" | "price_not_approved";
     };
 export type UpdateVersionResult =
   | ({ readonly ok: true } & StoredVersionWithSource)
@@ -335,7 +335,7 @@ export interface SandboxStore {
    * Publishes a version: records who approved it and when, freezes it, and
    * makes it the sandbox's published version. Refused with `not_ready`
    * unless a passing build is recorded on it, and with
-   * `bounty_not_approved` unless its task was taken from an approved
+   * `price_not_approved` unless its task was taken from an approved
    * bounty. That is the bounty version it is built on, and it stays so
    * whatever the bounty does after: a later version only puts the sandbox
    * behind, and does not take it down. It stands until `expiresAt`, and
@@ -1046,7 +1046,7 @@ export function createSandboxStore(db: Database): SandboxStore {
         // Built over an approved bounty: that approval is what it stands
         // on, not the bounty's approval now.
         if (current.source.approvedTask.pricing?.status !== "approved")
-          return { ok: false, reason: "bounty_not_approved" } as const;
+          return { ok: false, reason: "price_not_approved" } as const;
         let versionRow = current.version;
         let sourceRow = current.source;
         if (versionRow.frozenAt === null) {

@@ -1028,7 +1028,7 @@ test("publishing freezes and approves a version with a passing build, and points
         "user_1",
         expiresAt,
       ),
-      { ok: false, reason: "bounty_not_approved" },
+      { ok: false, reason: "price_not_approved" },
     );
     assert.equal(unapproved.calls.length, 1);
   }

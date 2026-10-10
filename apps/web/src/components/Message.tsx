@@ -11,7 +11,7 @@
  * like.
  */
 
-import { Loader2, RefreshCw } from "lucide-react";
+import { CircleAlert, Loader2, RefreshCw } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -27,26 +27,56 @@ import { cn } from "@/lib/utils";
 export function ErrorBanner({
   children,
   className,
+  action,
   ...rest
 }: {
   children: React.ReactNode;
   className?: string;
   /**
-   * The rest reaches the element, so a caller can keep the `data-testid` its
+   * What to do about it, at the banner's right: "Try again", mostly. Inside
+   * the banner rather than under it, so the remedy reads as part of the
+   * failure instead of as the page's next control. Outside the `alert`, or a
+   * screen reader would read the button's label as part of the message.
+   */
+  action?: React.ReactNode;
+  /**
+   * The rest reaches the message, so a caller can keep the `data-testid` its
    * own tests already look it up by.
    */
-} & React.ComponentProps<"p">) {
+} & Omit<React.ComponentProps<"p">, "className" | "children">) {
   return (
-    <p
-      role="alert"
+    <div
       className={cn(
-        "text-destructive border-destructive/35 bg-destructive/7 mt-6 rounded-lg border px-3 py-2.5 text-sm",
+        "border-destructive/20 bg-destructive/5 text-destructive dark:bg-destructive/10 mt-6 flex items-start gap-2.5 rounded-lg border px-3.5 py-2.5 text-sm",
         className,
       )}
-      {...rest}
     >
-      {children}
-    </p>
+      <CircleAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+      <p role="alert" className="min-w-0 flex-1 text-pretty" {...rest}>
+        {children}
+      </p>
+      {action !== undefined && (
+        <div className="-my-1 flex shrink-0 items-center">{action}</div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The "Try again" every failed read offers, sized to sit inside a banner.
+ */
+export function RetryButton({ onRetry }: { onRetry: () => void }) {
+  return (
+    <Button
+      type="button"
+      variant="outline"
+      size="sm"
+      className="text-foreground h-7"
+      onClick={onRetry}
+    >
+      <RefreshCw />
+      Try again
+    </Button>
   );
 }
 
@@ -64,13 +94,12 @@ export function RetryableError({
   className?: string;
 }) {
   return (
-    <div className={cn("flex flex-col items-start gap-3", className)}>
-      <ErrorBanner className="mt-0">{children}</ErrorBanner>
-      <Button type="button" variant="outline" size="sm" onClick={onRetry}>
-        <RefreshCw />
-        Try again
-      </Button>
-    </div>
+    <ErrorBanner
+      className={cn("mt-0", className)}
+      action={<RetryButton onRetry={onRetry} />}
+    >
+      {children}
+    </ErrorBanner>
   );
 }
 

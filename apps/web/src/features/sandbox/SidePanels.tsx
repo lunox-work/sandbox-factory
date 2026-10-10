@@ -115,7 +115,7 @@ function Hint({ children }: { children: React.ReactNode }) {
  */
 export function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
-    <h3 className="flex h-[22px] shrink-0 items-center truncate pr-3 pl-5 text-[11px] font-bold tracking-wide text-(--wb-muted) uppercase">
+    <h3 className="flex h-[22px] shrink-0 items-center truncate pr-3 pl-5 text-2xs font-bold tracking-wide text-(--wb-muted) uppercase">
       {children}
     </h3>
   );
@@ -134,7 +134,7 @@ export const currentRow =
 
 /** A count at a row's right edge, in the gutter's quiet figures. */
 export const rowCount =
-  "ml-auto shrink-0 pl-2 text-[11px] text-(--wb-muted) tabular-nums";
+  "ml-auto shrink-0 pl-2 text-2xs text-(--wb-muted) tabular-nums";
 
 export function SearchPanel({
   active,
@@ -243,7 +243,7 @@ export function SearchPanel({
                 <span className="min-w-0 truncate text-xs text-(--wb-muted)">
                   {folder}
                 </span>
-                <span className="ml-auto shrink-0 rounded-full bg-(--wb-selected) px-1.5 text-[11px] leading-4 tabular-nums">
+                <span className="ml-auto shrink-0 rounded-full bg-(--wb-selected) px-1.5 text-2xs leading-4 tabular-nums">
                   {matches.length}
                 </span>
               </button>

@@ -4,80 +4,60 @@ import type {
 } from "@sandbox-factory/shared";
 import { CATEGORIES, UNCATEGORIZED } from "sandbox-factory";
 
-import { cn } from "@/lib/utils";
+import { ALL_CATEGORIES, CategoryIcon } from "../../CategoryIcon";
+import { FilterSelect } from "./FilterSelect";
 
-import { CategoryIcon } from "../../CategoryIcon";
-
-export function CategoryLine({
+/**
+ * Why a backlog scan picked a bounty, as its row in the list leads with it:
+ * the first category's icon, lit in its colour on a dark tile. What each category is
+ * and why it fit is said on hover and to a screen reader; the row says the
+ * reason itself under its title, where it differs from row to row.
+ */
+export function CategoryMark({
   categories,
-  lead,
-  wrapOnPhone = false,
 }: {
   categories: readonly BountyCategoryMatch[] | undefined;
-  lead?: string | null;
-  /**
-   * Let the line wrap below the `sm` breakpoint. A proposal row stacks on a
-   * phone and its title wraps, so a reason cut to "Deadline exposed ·…"
-   * beside it would drop the one part worth reading.
-   */
-  wrapOnPhone?: boolean;
 }) {
   const all = categories ?? [];
-  const first = all.find(({ id }) => id === lead) ?? all[0];
+  const [first] = all;
   if (first === undefined) return null;
-  const rest = all.filter((category) => category !== first);
+  const said = all.map(({ label, reason }) => `${label}: ${reason}`);
   return (
     <span
-      className={`text-muted-foreground block text-xs ${wrapOnPhone ? "sm:truncate" : "truncate"}`}
-      data-testid="category-line"
-      title={(categories ?? [])
-        .map(({ label, reason }) => `${label}: ${reason}`)
-        .join("\n")}
+      data-testid="category-mark"
+      data-category={first.id}
+      className="category-badge grid size-8 shrink-0 place-items-center rounded-lg"
+      title={said.join("\n")}
     >
-      <span className="text-foreground/80 font-medium">
-        {/* At the text's own size, and dropped a hair to sit on its line. */}
-        <CategoryIcon
-          category={first.id}
-          className="mr-1 inline-block size-3 align-[-0.125em]"
-        />
-        {first.label}
-      </span>
-      {" · "}
-      {first.reason}
-      {rest.length > 0 && ` · +${rest.length} more`}
+      <CategoryIcon category={first.id} className="size-4" />
+      <span className="sr-only">{said.join(". ")}</span>
     </span>
   );
 }
 
+interface CategoryEntry {
+  id: string;
+  label: string;
+  why: string;
+  count: number | undefined;
+}
+
 /**
- * The bounties by the category their board's scan found them in, as one
- * row of plain chips above the list: All, the six in registry order, and
- * the bounties in none, called "Unassigned". No icons: each card's category
- * line carries its category's, and without them the row fits on one line. Each says how many it holds, and
- * pressed narrows the list to them. A chip with none is still there, dimmed,
- * so no chip moves when a count reaches zero; it is pressable only while it
- * is the one shown, to be left.
- *
- * A bounty in two categories counts in both, which is why the chips can sum
- * past "All". Until the counts arrive the chips are drawn without them.
+ * What the list can be narrowed to: All, the six in registry order, and the
+ * bounties in none, called "Unassigned". Each with how many it holds, once
+ * the counts arrive. A bounty in two categories counts in both, which is why
+ * the counts can sum past "All".
  */
-export function CategoryFilter({
-  counts,
-  selected,
-  onSelect,
-}: {
-  counts: BountyCategoryCountsDto | undefined;
-  /** A category's id, `UNCATEGORIZED`, or null for all of them. */
-  selected: string | null;
-  onSelect: (category: string | null) => void;
-}) {
-  const chips: {
-    id: string | null;
-    label: string;
-    why: string;
-    count: number | undefined;
-  }[] = [
-    { id: null, label: "All", why: "", count: counts?.total },
+function categoryEntries(
+  counts: BountyCategoryCountsDto | undefined,
+): CategoryEntry[] {
+  return [
+    {
+      id: ALL_CATEGORIES,
+      label: "All categories",
+      why: "",
+      count: counts?.total,
+    },
     ...(counts?.categories ??
       CATEGORIES.map(({ id, label, why }) => ({
         id,
@@ -92,59 +72,98 @@ export function CategoryFilter({
       count: counts?.uncategorized,
     },
   ];
-  const active = chips.find(({ id }) => id === selected);
+}
+
+function chosenEntry(
+  counts: BountyCategoryCountsDto | undefined,
+  selected: string | null,
+): CategoryEntry {
+  const entries = categoryEntries(counts);
   return (
-    <nav
-      aria-label="Bounties by category"
-      className="flex flex-col gap-2"
+    entries.find(({ id }) => id === (selected ?? ALL_CATEGORIES)) ?? entries[0]!
+  );
+}
+
+/**
+ * The list's category filter. Each option wears its category's icon in its
+ * colour, as its card in "What task do teams outsource?" does — All and
+ * Unassigned in neutrals — and says how many it holds. One with none is
+ * still listed, so the list keeps its order, but cannot be picked unless it
+ * is the one shown.
+ */
+export function CategoryFilter({
+  counts,
+  selected,
+  onSelect,
+}: {
+  counts: BountyCategoryCountsDto | undefined;
+  /** A category's id, `UNCATEGORIZED`, or null for all of them. */
+  selected: string | null;
+  onSelect: (category: string | null) => void;
+}) {
+  const value = selected ?? ALL_CATEGORIES;
+  const active = chosenEntry(counts, selected);
+  return (
+    <FilterSelect
       data-testid="category-filter"
+      label="Category"
+      searchPlaceholder="Search categories…"
+      value={value}
+      onValueChange={(next) => onSelect(next === ALL_CATEGORIES ? null : next)}
+      options={categoryEntries(counts).map((entry) => ({
+        value: entry.id,
+        label: entry.label,
+        icon: <CategoryGlyph category={entry.id} />,
+        detail: entry.count === undefined ? undefined : String(entry.count),
+        disabled: entry.count === 0 && entry.id !== value,
+      }))}
+      icon={<CategoryGlyph category={active.id} />}
+      text={active.label}
+      count={active.count}
+      clearLabel="Show every category"
+      onClear={selected === null ? undefined : () => onSelect(null)}
+    />
+  );
+}
+
+/** What the chosen category is for, where a tooltip would hide it. */
+export function CategoryNote({
+  counts,
+  selected,
+}: {
+  counts: BountyCategoryCountsDto | undefined;
+  selected: string | null;
+}) {
+  const active = chosenEntry(counts, selected);
+  if (active.why === "") return null;
+  return (
+    <p
+      className="text-muted-foreground flex items-start gap-2 text-xs"
+      data-testid="category-why"
+      data-category={active.id}
     >
-      <ul className="-mx-4 flex gap-1.5 overflow-x-auto px-4 pb-1 sm:mx-0 sm:flex-wrap sm:overflow-visible sm:px-0 sm:pb-0">
-        {chips.map((chip) => {
-          const pressed = chip.id === selected;
-          const empty = chip.count === 0;
-          return (
-            <li key={chip.id ?? "all"} className="shrink-0">
-              <button
-                type="button"
-                aria-pressed={pressed}
-                disabled={empty && !pressed}
-                title={chip.why === "" ? undefined : chip.why}
-                onClick={() => onSelect(pressed ? null : chip.id)}
-                className={cn(
-                  "focus-visible:ring-ring/50 inline-flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-xs transition-colors focus-visible:ring-[3px] focus-visible:outline-none disabled:pointer-events-none disabled:opacity-45",
-                  pressed
-                    ? "bg-foreground text-background border-foreground"
-                    : "text-muted-foreground hover:bg-muted hover:text-foreground",
-                )}
-              >
-                <span className={pressed ? "font-medium" : undefined}>
-                  {chip.label}
-                </span>
-                {chip.count !== undefined && (
-                  <span
-                    className={cn(
-                      "tabular-nums",
-                      pressed
-                        ? "text-background/70"
-                        : "text-muted-foreground/70",
-                    )}
-                  >
-                    {chip.count}
-                  </span>
-                )}
-              </button>
-            </li>
-          );
-        })}
-      </ul>
-      {/* What the chosen category is for, where a tooltip would hide it. */}
-      {active !== undefined && active.why !== "" && (
-        <p className="text-muted-foreground text-xs" data-testid="category-why">
-          <span className="text-foreground font-medium">{active.label}.</span>{" "}
-          {active.why}
-        </p>
-      )}
-    </nav>
+      <CategoryGlyph category={active.id} />
+      <span className="leading-snug">
+        <span className="font-semibold text-[var(--category-text)]">
+          {active.label}.
+        </span>{" "}
+        {active.why}
+      </span>
+    </p>
+  );
+}
+
+/**
+ * A category's icon in its colour. The colour is named on the icon itself,
+ * since a list's items grey any icon that does not.
+ */
+function CategoryGlyph({ category }: { category: string }) {
+  return (
+    <span data-category={category} className="inline-flex shrink-0">
+      <CategoryIcon
+        category={category}
+        className="size-3.5 text-[var(--category-accent)]"
+      />
+    </span>
   );
 }

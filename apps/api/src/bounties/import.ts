@@ -1,13 +1,13 @@
 /**
  * A board's backlog scan, imported as bounties: each ticket the scan puts in
- * a category becomes a bounty whose overview is the ticket's text, with its
- * Jira fields kept as the overview's Jira context, and nothing else. No
+ * a category becomes a bounty whose scope is the ticket's text, with its
+ * Jira fields kept as the scope's Jira context, and nothing else. No
  * proposal is made and no sandbox: those are the bounty's next steps, taken
  * on its page when someone asks. Nothing here calls a model, so a connected
  * board fills the bounty list for free.
  *
- * An issue already imported is read again: its text refreshes the overview
- * as any read of it does (a new overview version only when the words
+ * An issue already imported is read again: its text refreshes the scope
+ * as any read of it does (a new scope version only when the words
  * changed), its fields are a new context version only when they changed,
  * and its categories are what this scan says. One issue can be imported
  * alone too, as a person picks it from a search of the board.
@@ -105,8 +105,8 @@ function needsReconnect(error: unknown): boolean {
 }
 
 /**
- * Imports one issue: its text as the bounty's overview, its fields as the
- * overview's Jira context, its categories on the bounty. Null when Jira
+ * Imports one issue: its text as the bounty's scope, its fields as the
+ * scope's Jira context, its categories on the bounty. Null when Jira
  * could not be read for it, or the board has gone.
  */
 async function importIssue(

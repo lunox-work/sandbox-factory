@@ -12,13 +12,21 @@ product proposals and historical explainers are optional design context.
   repositories are synced into it on request as versioned context: the
   issue's fields and the repositories' documents. Sizing
   and sandbox generation are given it, and each step says which versions it used.
-- Home adapts to what a workspace has connected. Jira gives a free backlog
-  scan for the six kinds of outsourceable work; GitHub a repository x-ray.
-  Nothing is sized until someone sizes a ticket, or asks for a whole board.
-- A connected board's scan is imported as bounties with their overview and
+- Until a workspace has done every onboarding step, onboarding is the only
+  page the rail offers; after, home and bounties are, and onboarding is not.
+  Onboarding has the ways in, the getting-started checklist, a GitHub
+  repository's x-ray and, once Jira is connected, a board's free backlog scan
+  for the six kinds of outsourceable work. Nothing is sized until someone
+  sizes a ticket, or asks for a whole board; where GitHub is offered, neither
+  is allowed until a repository is connected.
+- A bounty is made in three steps, **Scope**, **Price** and **Sandbox**,
+  and its status is the last one done: **New**, **Scoped**, **Priced** or
+  **Live**. The words are defined once, in
+  [architecture.md](./architecture.md#vocabulary).
+- A connected board's scan is imported as bounties with their scope and
   Jira context filled, and nothing sized. The bounty list filters by
-  category and by board; a board's view is that list, where its issues are
-  searched and added.
+  category, by status and by board; a board's view is that list, where its
+  issues are searched and added.
 - GitHub supplies private repository snapshots. Five context builders describe a
   snapshot from a repository's own page: Graphify, dependency-cruiser,
   DeepWiki-Open, abstractions (every module's surface) and data model (the

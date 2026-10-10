@@ -184,6 +184,10 @@ test("home has no trail", () => {
 
 test("each screen's trail names every step above it", () => {
   expect(trailFor("account").map((c) => c.label)).toEqual(["Home", "Account"]);
+  expect(trailFor("onboarding").map((c) => c.label)).toEqual([
+    "Home",
+    "Onboarding",
+  ]);
   expect(trailFor("organizations").map((c) => c.label)).toEqual([
     "Home",
     "Workspaces",
@@ -371,10 +375,11 @@ test("the trail is a second landmark, named apart from the rail", async () => {
 
 // ---- the trail shares the page's column -----------------------------------
 //
-// The pages cap a padded `main` at `max-w-2xl`; the trail used to cap an `ol`
-// inside a padded `nav`, which made its column 48px wider — the crumbs began
-// where the padding did, one step left of every heading below them. Capping
-// the same element as the pages is what aligns the two.
+// The pages cap a padded `main` at the shared column; the trail used to cap an
+// `ol` inside a padded `nav`, which made its column 48px wider — the crumbs
+// began where the padding did, one step left of every heading below them.
+// Capping the same element as the pages is what aligns the two, and a narrow
+// page shares the column too, so the trail starts in one place everywhere.
 
 test("the trail is capped and padded on the same element as the page", async () => {
   window.history.replaceState(null, "", "/o/acme/settings");
@@ -385,10 +390,12 @@ test("the trail is capped and padded on the same element as the page", async () 
   });
 
   const nav = screen.getByRole("navigation", { name: "Breadcrumb" });
-  expect(nav.className).toContain("max-w-2xl");
-  expect(nav.className).toContain("px-4");
-  expect(nav.className).toContain("sm:px-6");
+  const page = screen.getByRole("main");
+  for (const token of ["max-w-5xl", "px-4", "sm:px-6"]) {
+    expect(nav.className).toContain(token);
+    expect(page.className).toContain(token);
+  }
   // The list inside no longer carries a column of its own, or the two would
   // compound and the crumbs would sit inside the page's text.
-  expect(nav.querySelector("ol")?.className).not.toContain("max-w-2xl");
+  expect(nav.querySelector("ol")?.className).not.toContain("max-w-");
 });

@@ -163,7 +163,7 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
    *
    * Every board it records is handed to `onBoardsSynced`, which imports
    * the board's backlog scan as bounties in the background: the tickets in
-   * a category become bounties with their overview filled from Jira, and
+   * a category become bounties with their scope filled from Jira, and
    * nothing is sized.
    *
    * The store's `sync` rather than its `register`: this runs against boards
@@ -394,7 +394,7 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
 
           Nothing is sized. Each board's backlog scan — the categories read
           from ticket metadata, which costs no model call — is imported as
-          bounties with their overview filled from Jira, and a bounty is
+          bounties with their scope filled from Jira, and a bounty is
           sized when someone asks. Sizing every board on connect made the
           first minutes of a workspace its most expensive.
         */

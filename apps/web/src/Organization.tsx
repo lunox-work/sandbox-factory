@@ -36,7 +36,8 @@ import { EntityAvatar } from "@/components/Avatar";
 import { AvatarField } from "@/components/AvatarField";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { EditableField } from "@/components/EditableField";
-import { ErrorBanner, LoadingLine } from "@/components/Message";
+import { ErrorBanner, LoadingLine, RetryButton } from "@/components/Message";
+import { Page, PageHeader } from "@/components/Page";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -175,6 +176,15 @@ export function Organization({
     return subscribeLocation(syncTab);
   }, [organization.kind]);
 
+  /**
+   * A panel that stays mounted while another tab is chosen, hidden by the
+   * attribute rather than removed. Unmounted, the rate card fetched again
+   * behind a loading line on every visit to Settings, and the card grew
+   * under the pointer when the answer landed.
+   */
+  const keptPanel = (value: OrganizationTab) =>
+    ({ forceMount: true, hidden: tab !== value }) as const;
+
   const refresh = useCallback(async () => {
     await memberQuery.refresh();
   }, [memberQuery.refresh]);
@@ -212,15 +222,15 @@ export function Organization({
   }
 
   return (
-    <main className="mx-auto w-full max-w-2xl px-4 py-10 sm:px-6 sm:py-14">
-      <h1 className="text-2xl font-semibold tracking-tight">
-        {organization.name}
-      </h1>
-      <p className="text-muted-foreground mt-1.5 text-sm">
-        {personal
-          ? "Your personal account\u2019s handle and connections."
-          : "Your workspace\u2019s handle, and who belongs to it."}
-      </p>
+    <Page width="narrow">
+      <PageHeader
+        title={organization.name}
+        description={
+          personal
+            ? "Your personal account\u2019s handle and connections."
+            : "Your workspace\u2019s handle, and who belongs to it."
+        }
+      />
 
       {error !== null && <ErrorBanner>{error}</ErrorBanner>}
 
@@ -228,10 +238,15 @@ export function Organization({
         Tabs rather than one long column. A personal organization has no
         members and cannot be left, so it gets Overview and Settings only —
         the rate card is in Settings for both kinds, so it is found in the
-        same place whichever workspace is open.
+        same place whichever workspace is open. On a rule, as the bounty
+        page's own sections are: a page's sections are one kind of tab
+        wherever they appear.
+
+        Every panel stays mounted, so the rate card and the connections load
+        once with the page instead of again behind each switch.
       */}
-      <Tabs value={tab} onValueChange={selectTab} className="mt-8 gap-6">
-        <TabsList className="w-full">
+      <Tabs value={tab} onValueChange={selectTab} className="mt-6 gap-8">
+        <TabsList variant="line">
           {tabsFor(personal).map((tab) => (
             <TabsTrigger key={tab.value} value={tab.value}>
               {tab.label}
@@ -239,7 +254,11 @@ export function Organization({
           ))}
         </TabsList>
 
-        <TabsContent value="overview" className="flex flex-col gap-6">
+        <TabsContent
+          value="overview"
+          {...keptPanel("overview")}
+          className="flex flex-col gap-6"
+        >
           {personal ? (
             <HandleForm
               organization={organization}
@@ -277,7 +296,7 @@ export function Organization({
         </TabsContent>
 
         {!personal && (
-          <TabsContent value="members">
+          <TabsContent value="members" {...keptPanel("members")}>
             <Card>
               <CardHeader>
                 <CardTitle role="heading" aria-level={2}>
@@ -297,15 +316,12 @@ export function Organization({
                 {!loaded && <LoadingLine />}
                 {loaded && memberError !== null && (
                   <div className="flex flex-col items-start gap-2">
-                    <ErrorBanner className="mt-0">{memberError}</ErrorBanner>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() => void refresh()}
+                    <ErrorBanner
+                      className="mt-0"
+                      action={<RetryButton onRetry={() => void refresh()} />}
                     >
-                      Try again
-                    </Button>
+                      {memberError}
+                    </ErrorBanner>
                   </div>
                 )}
 
@@ -423,7 +439,7 @@ export function Organization({
           </TabsContent>
         )}
 
-        <TabsContent value="settings">
+        <TabsContent value="settings" {...keptPanel("settings")}>
           <RateCardEditor
             organizationId={organization.id}
             role={organization.role}
@@ -529,7 +545,7 @@ export function Organization({
           )}
         </TabsContent>
       </Tabs>
-    </main>
+    </Page>
   );
 }
 
@@ -997,11 +1013,11 @@ export function CreateOrganization({
   }
 
   return (
-    <main className="mx-auto w-full max-w-2xl px-4 py-10 sm:px-6 sm:py-14">
-      <h1 className="text-2xl font-semibold tracking-tight">New workspace</h1>
-      <p className="text-muted-foreground mt-1.5 text-sm">
-        Shared with the people you invite. You will be its owner.
-      </p>
+    <Page width="narrow">
+      <PageHeader
+        title="New workspace"
+        description="Shared with the people you invite. You will be its owner."
+      />
 
       {error !== null && <ErrorBanner>{error}</ErrorBanner>}
 
@@ -1058,6 +1074,6 @@ export function CreateOrganization({
           </form>
         </CardContent>
       </Card>
-    </main>
+    </Page>
   );
 }

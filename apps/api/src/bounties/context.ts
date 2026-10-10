@@ -16,7 +16,7 @@
  *   each connected repository's newest snapshot, under one set of caps.
  *
  * Any member may read and sync, as any member may link a source. A sync is
- * not held back by an approved overview, as Jira's text is not: the steps
+ * not held back by an approved scope, as Jira's text is not: the steps
  * after it show what they were made with instead.
  */
 

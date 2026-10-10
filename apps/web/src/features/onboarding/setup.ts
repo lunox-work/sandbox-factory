@@ -108,7 +108,11 @@ export function setupSteps(facts: SetupFacts): SetupStep[] {
   return offered.map((id) => ({ id, done: done[id], current: id === current }));
 }
 
-/** Every step is done: the checklist has nothing left to say. */
+/**
+ * Every step is done: the checklist has nothing left to say. Until then
+ * onboarding is the only destination the rail offers, and where home lands;
+ * after, it gives way to home and the bounties.
+ */
 export function setupComplete(facts: SetupFacts): boolean {
   return setupSteps(facts).every(({ done }) => done);
 }

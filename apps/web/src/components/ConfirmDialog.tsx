@@ -155,7 +155,7 @@ export function ConfirmDialog({
           }}
         >
           <div className="flex flex-col gap-2 text-center sm:text-left">
-            <AlertDialogPrimitive.Title className="text-lg leading-none font-semibold">
+            <AlertDialogPrimitive.Title className="text-heading">
               {title}
             </AlertDialogPrimitive.Title>
             <AlertDialogPrimitive.Description className="text-muted-foreground text-sm">

@@ -1,5 +1,8 @@
 /**
- * Home: one page that changes with what a workspace has connected.
+ * Home and onboarding: two pages that change with what a workspace has
+ * connected. Home says where setup stands and points at onboarding, which
+ * has the rest: the ways in, the checklist, a repository's x-ray and, once
+ * Jira is connected, the board's backlog scan.
  *
  * The properties that matter. Each stage shows something of value with no
  * model call — the six kinds of work, a board's backlog scan, a repository's
@@ -19,6 +22,7 @@ import { completeBountyFixture } from "./api-fixtures";
 import { render, screen, waitFor, within } from "./render";
 
 import { Home, firstName, greeting } from "../src/Home";
+import { Onboarding } from "../src/Onboarding";
 
 const owner = {
   id: "org_1",
@@ -328,17 +332,25 @@ afterEach(() => {
 
 function show(role: "owner" | "member" = "owner") {
   const handlers = {
-    onBoardName: vi.fn(),
-    onOpenBoard: vi.fn(),
+    onOpenSettings: vi.fn(),
+    onWriteBounty: vi.fn(),
+  };
+  const view = render(
+    <Home name="Ada Example" organization={{ ...owner, role }} {...handlers} />,
+  );
+  return { ...view, ...handlers };
+}
+
+function showOnboarding(role: "owner" | "member" = "owner") {
+  const handlers = {
     onOpenSettings: vi.fn(),
     onOpenRepository: vi.fn(),
     onWriteBounty: vi.fn(),
     onOpenBounties: vi.fn(),
   };
   const view = render(
-    <Home
+    <Onboarding
       userId="user_1"
-      name="Ada Example"
       organization={{ ...owner, role }}
       {...handlers}
     />,
@@ -350,8 +362,23 @@ function show(role: "owner" | "member" = "owner") {
 /* Nothing connected                                                          */
 /* -------------------------------------------------------------------------- */
 
-test("with nothing connected, home offers three ways in, Jira first, over the six kinds of work", async () => {
-  show();
+test("home does not point back to onboarding, and offers writing a bounty", async () => {
+  // Home is offered once setup is done: onboarding is not offered beside it.
+  const { onWriteBounty } = show();
+  await screen.findByTestId("home-promise");
+  expect(screen.queryByRole("button", { name: /onboarding/i })).toBeNull();
+  await userEvent.click(
+    screen.getByRole("button", { name: /write a bounty/i }),
+  );
+  expect(onWriteBounty).toHaveBeenCalledWith();
+  // The ways in are onboarding's, not home's.
+  expect(screen.queryByTestId("path-cards")).toBeNull();
+  expect(screen.queryByTestId("category-showcase")).toBeNull();
+  expect(screen.queryByTestId("setup-checklist")).toBeNull();
+});
+
+test("with nothing connected, onboarding offers three ways in, Jira first", async () => {
+  showOnboarding();
 
   const paths = await screen.findByTestId("path-cards");
   expect(
@@ -362,19 +389,35 @@ test("with nothing connected, home offers three ways in, Jira first, over the si
   expect(
     within(paths).getByRole("button", { name: /connect jira/i }),
   ).toBeTruthy();
-  // Trying it is said to cost nothing, before anyone is asked to connect.
-  expect(within(paths).getByText(/runs no AI/)).toBeTruthy();
+  // One word on each button; the card's mark says which tool it is.
+  expect(
+    within(paths)
+      .getAllByRole("button")
+      .map((button) => button.textContent),
+  ).toEqual(["Connect", "Connect", "Manual"]);
+  // What a tool reads is said before anyone is asked to connect it.
+  expect(within(paths).getAllByText("Read-only")).toHaveLength(2);
+  // Each card is named for a screen reader, which cannot see the mark.
+  expect(
+    within(paths).getByRole("listitem", { name: "Find work in Jira" }),
+  ).toBeTruthy();
+  expect(screen.getByTestId("onboarding-promise").textContent).toBe(
+    "Integrate your projects and start tapping into the Lunox network",
+  );
 
-  const showcase = screen.getByTestId("category-showcase");
-  expect(within(showcase).getAllByRole("listitem")).toHaveLength(6);
-  expect(within(showcase).getByText("Left behind")).toBeTruthy();
+  // The six kinds of work are a click away, not a section of the page.
+  expect(screen.queryByTestId("category-showcase")).toBeNull();
 
-  // The cards are the steps here; a checklist over them would repeat them.
-  expect(screen.queryByTestId("setup-checklist")).toBeNull();
+  // Getting started is never hidden, not even before the first step.
+  const checklist = screen.getByTestId("setup-checklist");
+  expect(checklist.textContent).toMatch(/0 of 3/);
+  expect(
+    checklist.querySelector("[aria-current='step']")?.getAttribute("data-step"),
+  ).toBe("jira");
 });
 
 test("writing a bounty needs nothing connected", async () => {
-  const { onWriteBounty } = show();
+  const { onWriteBounty } = showOnboarding();
   const paths = await screen.findByTestId("path-cards");
   await userEvent.click(
     within(paths).getByRole("button", { name: /write a bounty/i }),
@@ -383,9 +426,37 @@ test("writing a bounty needs nothing connected", async () => {
   expect(onWriteBounty).toHaveBeenCalledWith();
 });
 
-test("bounties written and none sized point at sizing them, not at writing more", async () => {
+test("a whole card is pressable, and a press fires once wherever it lands", async () => {
+  const { onWriteBounty } = showOnboarding();
+  const paths = await screen.findByTestId("path-cards");
+  const card = within(paths).getByRole("listitem", {
+    name: "Start from a task",
+  });
+  // Off the button: on the card itself.
+  await userEvent.click(card);
+  expect(onWriteBounty).toHaveBeenCalledTimes(1);
+  // On the button: its click reaches the card, and is not handled twice.
+  await userEvent.click(
+    within(card).getByRole("button", { name: /write a bounty/i }),
+  );
+  expect(onWriteBounty).toHaveBeenCalledTimes(2);
+});
+
+test("a card a member may not act on does nothing when pressed", async () => {
+  showOnboarding("member");
+  const paths = await screen.findByTestId("path-cards");
+  const card = within(paths).getByRole("listitem", {
+    name: "Find work in Jira",
+  });
+  await userEvent.click(card);
+  expect(window.location.pathname).toBe("/");
+});
+
+test("bounties written and none sized point at sizing them once there is code to size beside", async () => {
   world.bounties = 1;
-  const { onOpenBounties } = show();
+  world.github = [githubAccount];
+  world.repositories = [widgets];
+  const { onOpenBounties } = showOnboarding();
   const paths = await screen.findByTestId("path-cards");
   await userEvent.click(
     within(paths).getByRole("button", { name: /open bounties/i }),
@@ -396,8 +467,20 @@ test("bounties written and none sized point at sizing them, not at writing more"
   ).toBeNull();
 });
 
+test("bounties written with no GitHub yet are not offered for sizing", async () => {
+  world.bounties = 1;
+  showOnboarding();
+  const paths = await screen.findByTestId("path-cards");
+  expect(
+    within(paths).queryByRole("button", { name: /open bounties/i }),
+  ).toBeNull();
+  expect(
+    within(paths).getByRole("button", { name: /write a bounty/i }),
+  ).toBeTruthy();
+});
+
 test("a member is told who can connect, not shown buttons that would be refused", async () => {
-  show("member");
+  showOnboarding("member");
   const paths = await screen.findByTestId("path-cards");
   expect(within(paths).queryByRole("button", { name: /connect/i })).toBeNull();
   expect(within(paths).getAllByText(/owner or admin/i)).toHaveLength(2);
@@ -407,9 +490,9 @@ test("a member is told who can connect, not shown buttons that would be refused"
   ).toBeTruthy();
 });
 
-test("a server without Jira leaves Jira out of home, not as a failure", async () => {
+test("a server without Jira leaves Jira out of onboarding, not as a failure", async () => {
   world.jira = null;
-  show();
+  showOnboarding();
   const paths = await screen.findByTestId("path-cards");
   expect(
     within(paths)
@@ -427,6 +510,17 @@ test("a cancelled Jira consent is reported where it started", async () => {
   );
   // Read once: a reload must not announce it again.
   expect(window.location.search).toBe("");
+});
+
+test("a consent started on onboarding is reported there", async () => {
+  // Its `returnTo` is the page it started from.
+  window.history.replaceState(null, "", "/onboarding?jira=cancelled");
+  showOnboarding();
+  expect((await screen.findByTestId("jira-outcome")).textContent).toMatch(
+    /cancelled/i,
+  );
+  expect(window.location.pathname + window.location.search).toBe("/onboarding");
+  window.history.replaceState(null, "", "/");
 });
 
 test("a GitHub flow that could not be tied to a workspace still says so here", async () => {
@@ -450,10 +544,22 @@ test("a GitHub flow that needs an account picked carries on where the picker is"
 /* Jira                                                                       */
 /* -------------------------------------------------------------------------- */
 
-test("with Jira connected, home opens on the board's backlog scan, sizing nothing", async () => {
+test("with Jira connected, home's line does not send anyone to onboarding", async () => {
   world.jira = [jiraSite];
   world.boards = [board];
   show();
+
+  const promise = await screen.findByTestId("home-promise");
+  expect(promise.textContent).toMatch(/bounties already/);
+  expect(promise.textContent).not.toMatch(/onboarding/);
+  expect(screen.queryByTestId("backlog-scan")).toBeNull();
+  expect(screen.queryByRole("button", { name: /switch board/i })).toBeNull();
+});
+
+test("with Jira connected, onboarding shows the board's backlog scan under getting started, sizing nothing", async () => {
+  world.jira = [jiraSite];
+  world.boards = [board];
+  showOnboarding();
 
   const scan = await screen.findByTestId("backlog-scan");
   expect(
@@ -461,7 +567,8 @@ test("with Jira connected, home opens on the board's backlog scan, sizing nothin
       name: /3 tickets worth outsourcing/,
     }),
   ).toBeTruthy();
-  expect(within(scan).getByText(/no AI, nothing stored/)).toBeTruthy();
+  // Of how many, on the headline's own line rather than said again below.
+  expect(within(scan).getByText("of 43 open")).toBeTruthy();
   // The six, always: an empty one is shown, not pressable.
   const tiles = within(scan).getByTestId("scan-categories");
   expect(within(tiles).getAllByRole("button")).toHaveLength(6);
@@ -470,19 +577,22 @@ test("with Jira connected, home opens on the board's backlog scan, sizing nothin
   ).toHaveProperty("disabled", true);
 
   // The ticket in focus, as the bounty it would become: the range from the
-  // rate card in force, the size and spec left for sizing to fill.
+  // rate card in force. No size or spec placeholders: sizing writes those.
   const teaser = await within(scan).findByTestId("teaser-bounty");
   expect(teaser.textContent).toMatch(/ACME-7/);
   expect(await within(teaser).findByText(/\$58.\$153/)).toBeTruthy();
+  const facts = within(teaser).getByTestId("teaser-facts");
+  expect(within(facts).queryByText("Size")).toBeNull();
+  expect(within(facts).queryByText("Spec")).toBeNull();
   expect(
     within(teaser).getByRole("button", { name: "Size ACME-7" }),
   ).toBeTruthy();
 
-  // The checklist has moved on to GitHub.
+  // Under getting started, which comes first on the page.
   const checklist = screen.getByTestId("setup-checklist");
   expect(
-    checklist.querySelector("[aria-current='step']")?.getAttribute("data-step"),
-  ).toBe("github");
+    checklist.compareDocumentPosition(scan) & Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
 
   // Looking is free: nothing asked for sizing.
   expect(requests.filter(({ method }) => method === "POST")).toEqual([]);
@@ -491,7 +601,7 @@ test("with Jira connected, home opens on the board's backlog scan, sizing nothin
 test("a category shows its own tickets, and the teaser follows the one chosen", async () => {
   world.jira = [jiraSite];
   world.boards = [board];
-  show();
+  showOnboarding();
 
   const scan = await screen.findByTestId("backlog-scan");
   await userEvent.click(
@@ -500,18 +610,48 @@ test("a category shows its own tickets, and the teaser follows the one chosen", 
   const list = within(scan).getByTestId("scan-candidates");
   expect(within(list).getAllByRole("button")).toHaveLength(1);
   expect(within(list).getByText("Ticket 9")).toBeTruthy();
+  // Why it pays, not its name again: the pressed tile says that.
   expect(within(scan).getByTestId("scan-why").textContent).toMatch(
-    /Paper cuts\./,
+    /^Small, self-contained bugs/,
   );
   expect(within(scan).getByTestId("teaser-bounty").textContent).toMatch(
     /ACME-9/,
   );
 });
 
+test("a reason every ticket in a category shares is said once, not on each row", async () => {
+  world.jira = [jiraSite];
+  world.boards = [board];
+  world.scan = {
+    ...preview(),
+    issues: [7, 8].map((n) => ({
+      ...ticket(n, leftBehind),
+      categories: [{ ...leftBehind, reason: "Carried over 3 sprints" }],
+    })),
+  };
+  showOnboarding();
+
+  const scan = await screen.findByTestId("backlog-scan");
+  expect((await within(scan).findByTestId("scan-why")).textContent).toMatch(
+    /All carried over 3 sprints\.$/,
+  );
+  expect(
+    within(within(scan).getByTestId("scan-candidates")).queryByText(
+      "Carried over 3 sprints",
+    ),
+  ).toBeNull();
+  expect(within(scan).getByTestId("teaser-bounty").textContent).not.toMatch(
+    /Carried over/,
+  );
+});
+
 test("sizing from the scan is one call for that ticket, and opens its proposal", async () => {
   world.jira = [jiraSite];
   world.boards = [board];
-  show();
+  // Sized beside the code: a workspace without it is asked to add it.
+  world.github = [githubAccount];
+  world.repositories = [widgets];
+  showOnboarding();
 
   const teaser = await screen.findByTestId("teaser-bounty");
   await userEvent.click(
@@ -538,7 +678,10 @@ test("while a ticket is being sized, the list holds it in focus", async () => {
   // tapped meanwhile would take it off screen and lose that.
   world.jira = [jiraSite];
   world.boards = [board];
-  show();
+  // Sized beside the code: a workspace without it is asked to add it.
+  world.github = [githubAccount];
+  world.repositories = [widgets];
+  showOnboarding();
 
   const scan = await screen.findByTestId("backlog-scan");
   await userEvent.click(
@@ -564,7 +707,7 @@ test("a board whose fitting tickets are all sized says so, not that nothing fits
     skippedLive: 3,
     fallback: true,
   };
-  show();
+  showOnboarding();
 
   const scan = await screen.findByTestId("backlog-scan");
   expect(
@@ -572,26 +715,23 @@ test("a board whose fitting tickets are all sized says so, not that nothing fits
       name: /every ticket that fits is sized/i,
     }),
   ).toBeDefined();
-  expect(scan.textContent).toMatch(
-    /3 of 43 open tickets fit a pattern teams outsource, and all of them are sized\. The oldest of the rest are below/,
-  );
+  expect(scan.textContent).toMatch(/3 of 43 open\. Oldest of the rest below/);
   expect(scan.textContent).not.toMatch(/matched the six patterns/);
   expect(within(scan).queryByTestId("scan-categories")).toBeNull();
 });
 
-test("a server without GitHub still opens on the board, and says nothing about GitHub", async () => {
+test("a server without GitHub still shows the board, sizes from the ticket, and says nothing about GitHub", async () => {
   // Its repository list answers 503. A failed read is read again whenever a
   // component asking for it mounts, which used to put home back to loading,
   // unmount the board, and mount it again, for as long as it kept failing.
   world.jira = [jiraSite];
   world.boards = [board];
   world.github = null;
-  show();
+  showOnboarding();
 
   const teaser = await screen.findByTestId("teaser-bounty");
-  expect(teaser.textContent).toMatch(/Generated from the ticket/);
+  expect(teaser.textContent).toMatch(/From the ticket/);
   expect(teaser.textContent).not.toMatch(/GitHub/);
-  expect(screen.getByTestId("setup-checklist").textContent).toMatch(/1 of 2/);
   expect(screen.queryByText(/could not be read/i)).toBeNull();
   const reads = requests.filter(({ url }) =>
     url.endsWith("/github/repositories"),
@@ -605,17 +745,116 @@ test("a server without GitHub still opens on the board, and says nothing about G
 test("a member reads the scan but is not offered sizing", async () => {
   world.jira = [jiraSite];
   world.boards = [board];
-  show("member");
+  showOnboarding("member");
   const teaser = await screen.findByTestId("teaser-bounty");
   expect(within(teaser).queryByRole("button", { name: /size/i })).toBeNull();
   expect(teaser.textContent).toMatch(/owner or admin/i);
+});
+
+test("sizing with no repository asks for GitHub first, and sizes nothing", async () => {
+  world.jira = [jiraSite];
+  world.boards = [board];
+  showOnboarding();
+
+  const teaser = await screen.findByTestId("teaser-bounty");
+  expect(teaser.textContent).toMatch(/Needs GitHub connected first/);
+  await userEvent.click(
+    await within(teaser).findByRole("button", { name: "Size ACME-7" }),
+  );
+  const dialog = await screen.findByRole("dialog", {
+    name: "Connect GitHub to size ACME-7",
+  });
+  expect(
+    within(dialog).getByRole("button", { name: "Connect GitHub" }),
+  ).toBeTruthy();
+  expect(requests.filter(({ method }) => method === "POST")).toEqual([]);
+
+  await userEvent.click(
+    within(dialog).getByRole("button", { name: "Not now" }),
+  );
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+});
+
+test("the board bar names the board under Jira's mark, and holds the board-wide actions in its menu", async () => {
+  world.jira = [jiraSite];
+  world.boards = [board];
+  world.github = [githubAccount];
+  world.repositories = [widgets];
+  showOnboarding();
+
+  const bar = await screen.findByTestId("board-bar");
+  expect(
+    within(bar).getByRole("button", { name: "Switch board — Mobile" }),
+  ).toBeTruthy();
+  // Jira's mark says where the board is from; there is no way out to it.
+  expect(within(bar).queryByRole("link")).toBeNull();
+
+  // Not on the scan itself any more: sizing all and scanning again are the
+  // board's, in its menu.
+  const scan = await screen.findByTestId("backlog-scan");
+  await within(scan).findByTestId("scan-categories");
+  expect(within(scan).queryByRole("button", { name: /size all/i })).toBeNull();
+  expect(
+    within(scan).queryByRole("button", { name: /scan again/i }),
+  ).toBeNull();
+
+  await userEvent.click(
+    within(bar).getByRole("button", { name: "Board actions" }),
+  );
+  const reads = requests.filter(({ url }) =>
+    url.endsWith("/backlog-preview"),
+  ).length;
+  expect(
+    screen.queryByRole("menuitem", { name: /open its bounties/i }),
+  ).toBeNull();
+  await userEvent.click(
+    await screen.findByRole("menuitem", { name: /scan again/i }),
+  );
+  await waitFor(() =>
+    expect(
+      requests.filter(({ url }) => url.endsWith("/backlog-preview")).length,
+    ).toBe(reads + 1),
+  );
+
+  await userEvent.click(
+    within(bar).getByRole("button", { name: "Board actions" }),
+  );
+  await userEvent.click(
+    await screen.findByRole("menuitem", { name: /size all 3 tickets/i }),
+  );
+  // What it costs is said before anything starts.
+  expect(
+    await screen.findByRole("alertdialog", { name: "Size 3 tickets?" }),
+  ).toBeTruthy();
+  expect(requests.filter(({ method }) => method === "POST")).toEqual([]);
+});
+
+test("sizing the whole board waits for GitHub, as sizing one ticket does", async () => {
+  world.jira = [jiraSite];
+  world.boards = [board];
+  showOnboarding();
+
+  const bar = await screen.findByTestId("board-bar");
+  // The scan's count is in before the menu is read.
+  await screen.findByTestId("scan-categories");
+  await userEvent.click(
+    within(bar).getByRole("button", { name: "Board actions" }),
+  );
+  const sizeAll = await screen.findByRole("menuitem", {
+    name: /size all 3 tickets/i,
+  });
+  expect(sizeAll.getAttribute("aria-disabled")).toBe("true");
+  expect(sizeAll.textContent).toMatch(/Needs GitHub connected first/);
+  await userEvent.click(sizeAll);
+  expect(screen.queryByRole("alertdialog")).toBeNull();
+  expect(requests.filter(({ method }) => method === "POST")).toEqual([]);
 });
 
 /* -------------------------------------------------------------------------- */
 /* GitHub                                                                     */
 /* -------------------------------------------------------------------------- */
 
-test("a linked GitHub account offers its repositories in place, and one click maps it", async () => {
+test("a linked GitHub account opens its repositories dialog in place, and registering one maps it", async () => {
   world.github = [githubAccount];
   world.installationRepositories = [
     {
@@ -626,11 +865,19 @@ test("a linked GitHub account offers its repositories in place, and one click ma
       registeredId: null,
     },
   ];
-  show();
+  showOnboarding();
 
   const picker = await screen.findByTestId("repo-picker");
   await userEvent.click(
-    await within(picker).findByRole("button", { name: "Use acme/widgets" }),
+    await within(picker).findByRole("button", { name: "Manage repositories" }),
+  );
+  const dialog = await screen.findByRole("dialog", {
+    name: `Repositories on ${githubAccount.accountLogin}`,
+  });
+  await userEvent.click(
+    await within(dialog).findByRole("button", {
+      name: "Register acme/widgets",
+    }),
   );
   expect(
     requests.find(
@@ -643,12 +890,17 @@ test("a linked GitHub account offers its repositories in place, and one click ma
   const xray = await screen.findByTestId("repo-xray");
   expect(within(xray).getByText("acme/widgets")).toBeTruthy();
   expect(screen.queryByTestId("repo-picker")).toBeNull();
+  // The dialog outlives the step it was opened from, until Done.
+  await userEvent.click(within(dialog).getByRole("button", { name: "Done" }));
+  await waitFor(() => {
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
 });
 
 test("the x-ray says where a first bounty fits, and writing one starts there", async () => {
   world.github = [githubAccount];
   world.repositories = [widgets];
-  const { onWriteBounty } = show();
+  const { onWriteBounty } = showOnboarding();
 
   const xray = await screen.findByTestId("repo-xray");
   const facts = await within(xray).findByTestId("repo-facts");
@@ -680,7 +932,38 @@ test("the x-ray says where a first bounty fits, and writing one starts there", a
       .getAllByRole("listitem")
       .map((item) => item.getAttribute("data-path")),
   ).toEqual(["write", "jira"]);
-  expect(screen.getByTestId("category-showcase")).toBeTruthy();
+});
+
+test("the six kinds of work open in a dialog from the heading, at every stage", async () => {
+  for (const connected of [false, true]) {
+    world.jira = connected ? [jiraSite] : [];
+    world.boards = connected ? [board] : [];
+    const view = showOnboarding();
+
+    const heading = await screen.findByRole("heading", {
+      name: "Onboarding",
+      level: 1,
+    });
+    // At the far end of the heading's own row: the page header's actions.
+    const open = within(heading.closest("header") as HTMLElement).getByRole(
+      "button",
+      { name: "What task do teams outsource?" },
+    );
+    await userEvent.click(open);
+
+    const dialog = await screen.findByRole("dialog", {
+      name: "What task do teams outsource?",
+    });
+    expect(within(dialog).getAllByRole("listitem")).toHaveLength(6);
+    expect(within(dialog).getByText("Left behind")).toBeTruthy();
+    expect(dialog.textContent).toMatch(
+      connected ? /below/ : /typically outsource/,
+    );
+
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    view.unmount();
+  }
 });
 
 /* -------------------------------------------------------------------------- */
@@ -692,13 +975,15 @@ test("with both, the board's tickets may touch the workspace's repository, with 
   world.boards = [board];
   world.github = [githubAccount];
   world.repositories = [widgets];
-  show();
+  showOnboarding();
 
   const teaser = await screen.findByTestId("teaser-bounty");
   await waitFor(() =>
-    expect(teaser.textContent).toMatch(
-      /Cut from acme\/widgets, if its work touches it/,
-    ),
+    expect(
+      within(within(teaser).getByTestId("teaser-facts")).getByText(
+        "acme/widgets",
+      ),
+    ).toBeTruthy(),
   );
   expect(teaser.textContent).not.toMatch(/link a repository/);
   expect(screen.queryByTestId("board-repository")).toBeNull();
@@ -708,31 +993,48 @@ test("with both, the board's tickets may touch the workspace's repository, with 
 /* The checklist                                                              */
 /* -------------------------------------------------------------------------- */
 
-test("the checklist can be hidden, and stays hidden for this workspace", async () => {
-  world.github = [githubAccount];
-  world.repositories = [widgets];
-  const first = show();
-  const checklist = await screen.findByTestId("setup-checklist");
-  await userEvent.click(
-    within(checklist).getByRole("button", { name: "Hide" }),
-  );
-  expect(screen.queryByTestId("setup-checklist")).toBeNull();
-  first.unmount();
+test("with Jira connected, onboarding's checklist has moved on to GitHub, with the scan under it", async () => {
+  world.jira = [jiraSite];
+  world.boards = [board];
+  showOnboarding();
 
-  show();
-  await screen.findByTestId("repo-xray");
-  expect(screen.queryByTestId("setup-checklist")).toBeNull();
+  const checklist = await screen.findByTestId("setup-checklist");
+  expect(
+    checklist.querySelector("[aria-current='step']")?.getAttribute("data-step"),
+  ).toBe("github");
+  expect(checklist.textContent).toMatch(/1 of 3/);
+  expect(await screen.findByTestId("backlog-scan")).toBeTruthy();
+  expect(
+    within(screen.getByTestId("onboarding-promise")).getByRole("button", {
+      name: "under getting started",
+    }),
+  ).toBeTruthy();
 });
 
-test("a workspace with every step done has no checklist", async () => {
+test("a server without GitHub counts two steps, not three", async () => {
+  world.jira = [jiraSite];
+  world.boards = [board];
+  world.github = null;
+  showOnboarding();
+  expect((await screen.findByTestId("setup-checklist")).textContent).toMatch(
+    /1 of 2/,
+  );
+  expect(screen.queryByText(/could not be read/i)).toBeNull();
+});
+
+test("with every step done, onboarding says so and keeps the steps ticked off", async () => {
   world.jira = [jiraSite];
   world.boards = [board];
   world.github = [githubAccount];
   world.repositories = [widgets];
   world.proposals = 2;
-  show();
-  await screen.findByTestId("backlog-scan");
-  expect(screen.queryByTestId("setup-checklist")).toBeNull();
+  showOnboarding();
+  const checklist = await screen.findByTestId("setup-checklist");
+  expect(checklist.textContent).toMatch(/3 of 3/);
+  expect(checklist.querySelector("[aria-current='step']")).toBeNull();
+  expect(screen.getByTestId("onboarding-promise").textContent).toMatch(
+    /set up/,
+  );
 });
 
 /* -------------------------------------------------------------------------- */

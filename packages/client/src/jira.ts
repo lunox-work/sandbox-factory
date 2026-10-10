@@ -75,7 +75,7 @@ export class JiraManagementClient extends ApiClient {
   }
   /**
    * Imports the board's backlog scan as bounties, or one issue on it when
-   * `issueId` names one: overviews filled from Jira, nothing sized.
+   * `issueId` names one: scopes filled from Jira, nothing sized.
    */
   async importBoard(owner: string, boardId: string, issueId?: string) {
     return jiraImportResponseSchema.parse(
