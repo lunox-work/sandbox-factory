@@ -150,20 +150,25 @@ function runFailure(run: BountyRunDto): string {
  */
 /**
  * What the list is narrowed to: a category's id, `uncategorized` for the
- * bounties in none, and a board's id. Absent, all of them.
+ * bounties in none, a board's id, and `lunox` for those written in Lunox.
+ * Absent, all of them.
  */
 export interface BountyFilter {
   category?: string | undefined;
   board?: string | undefined;
+  source?: "lunox" | undefined;
 }
 
 export function useAllBounties(filter: BountyFilter = {}): AllBounties {
   const userId = useUserId();
-  const { category, board } = filter;
+  const { category, board, source } = filter;
   const query = useInfiniteQuery({
     // Under the list's own key, so whatever reads the list again reads
     // every filtered copy of it too.
-    queryKey: [...queryKeys.me(userId, "bounties"), { category, board }],
+    queryKey: [
+      ...queryKeys.me(userId, "bounties"),
+      { category, board, source },
+    ],
     initialPageParam: undefined as string | undefined,
     queryFn: ({ pageParam, signal }) =>
       clients.bounties.myBounties(
@@ -172,6 +177,7 @@ export function useAllBounties(filter: BountyFilter = {}): AllBounties {
           ...(pageParam === undefined ? {} : { cursor: pageParam }),
           ...(category === undefined ? {} : { category }),
           ...(board === undefined ? {} : { board }),
+          ...(source === undefined ? {} : { source }),
         },
         signal,
       ),
@@ -193,14 +199,23 @@ export function useAllBounties(filter: BountyFilter = {}): AllBounties {
   };
 }
 
-/** How many of the caller's bounties each category holds, on `board`'s. */
-export function useBountyCategories(board: string | undefined) {
+/**
+ * How many of the caller's bounties each category holds, on `board`'s, or
+ * on Lunox's own by `source`.
+ */
+export function useBountyCategories(
+  board: string | undefined,
+  source?: "lunox",
+) {
   const userId = useUserId();
   return useQuery({
-    queryKey: [...queryKeys.me(userId, "bounty-categories"), { board }],
+    queryKey: [...queryKeys.me(userId, "bounty-categories"), { board, source }],
     queryFn: ({ signal }) =>
       clients.bounties.myBountyCategories(
-        board === undefined ? {} : { board },
+        {
+          ...(board === undefined ? {} : { board }),
+          ...(source === undefined ? {} : { source }),
+        },
         signal,
       ),
   });

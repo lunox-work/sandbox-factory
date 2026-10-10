@@ -294,16 +294,17 @@ export function mountCallerBountyRoutes<Env extends BountyAppEnv>(
   /**
    * How many of the caller's bounties each category holds, for the list's
    * filter: every category in the registry, in order, zero when none fit
-   * it. `?board=` narrows the counts to that board's, as it does the list.
+   * it. `?board=` narrows the counts to that board's, and `?source=lunox`
+   * to the bounties written in Lunox, as they do the list.
    */
   app.get("/api/v1/me/bounty-categories", async (c) => {
     const filter = listFilter(c);
     if (filter === null) return c.json({ error: "Invalid filter." }, 400);
     const organizationIds = await options.organizationsOf(c.get("user").id);
-    const counts = await options.bounties.categoryCounts(
-      organizationIds,
-      filter.boardId === undefined ? {} : { boardId: filter.boardId },
-    );
+    const counts = await options.bounties.categoryCounts(organizationIds, {
+      ...(filter.boardId === undefined ? {} : { boardId: filter.boardId }),
+      ...(filter.unlinked === undefined ? {} : { unlinked: filter.unlinked }),
+    });
     return c.json(
       bountyCategoryCountsSchema.parse({
         total: counts.total,
@@ -321,18 +322,23 @@ export function mountCallerBountyRoutes<Env extends BountyAppEnv>(
 
 /**
  * What the query narrows a list to: `?category=` a category's id, or
- * `uncategorized` for the bounties in none, and `?board=` one board's.
- * Null for a query that names neither as it should.
+ * `uncategorized` for the bounties in none, `?board=` one board's, and
+ * `?source=lunox` those written in Lunox, with no Jira issue. Null for a
+ * query that names any of them as it should not.
  */
 function listFilter(
   c: Context,
-): Pick<BountyListOptions, "category" | "uncategorized" | "boardId"> | null {
+): Pick<
+  BountyListOptions,
+  "category" | "uncategorized" | "boardId" | "unlinked"
+> | null {
   const parsed = bountyListFilterSchema.safeParse({
     category: c.req.query("category"),
     board: c.req.query("board"),
+    source: c.req.query("source"),
   });
   if (!parsed.success) return null;
-  const { category, board } = parsed.data;
+  const { category, board, source } = parsed.data;
   return {
     ...(category === undefined
       ? {}
@@ -340,6 +346,7 @@ function listFilter(
         ? { uncategorized: true }
         : { category }),
     ...(board === undefined ? {} : { boardId: board }),
+    ...(source === "lunox" ? { unlinked: true } : {}),
   };
 }
 

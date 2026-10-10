@@ -211,6 +211,8 @@ export const bountyListFilterSchema = z.object({
     .regex(/^[a-z0-9]+(-[a-z0-9]+)*$/)
     .optional(),
   board: z.string().min(1).optional(),
+  /** `lunox`: only the bounties written in Lunox, with no Jira issue. */
+  source: z.enum(["lunox"]).optional(),
 });
 
 /**

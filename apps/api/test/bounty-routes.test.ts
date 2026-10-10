@@ -506,6 +506,12 @@ test("the caller's bounties narrow to a category, to none, and to a board", asyn
 
   await app.request("/api/v1/me/bounties?category=uncategorized");
   assert.deepEqual(pages.at(-1), { limit: 25, uncategorized: true });
+  await app.request("/api/v1/me/bounties?source=lunox");
+  assert.deepEqual(pages.at(-1), { limit: 25, unlinked: true });
+  assert.equal(
+    (await app.request("/api/v1/me/bounties?source=github")).status,
+    400,
+  );
   assert.equal(
     (await app.request("/api/v1/me/bounties?category=Not%20One")).status,
     400,

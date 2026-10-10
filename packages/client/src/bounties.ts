@@ -17,14 +17,15 @@ export const ownerPath = (owner: string) =>
   `/api/v1/orgs/${encodeURIComponent(owner)}`;
 /**
  * A list page's query: its size, where the page before it ended, and what
- * it is narrowed to — a category's id (`uncategorized` for none) and a
- * board's.
+ * it is narrowed to — a category's id (`uncategorized` for none), a
+ * board's, and `lunox` for the bounties written there.
  */
 export interface BountyListQuery {
   limit?: number;
   cursor?: string;
   category?: string;
   board?: string;
+  source?: "lunox";
 }
 
 function pageParams(query: BountyListQuery) {
@@ -33,6 +34,7 @@ function pageParams(query: BountyListQuery) {
   if (query.cursor !== undefined) params.set("cursor", query.cursor);
   if (query.category !== undefined) params.set("category", query.category);
   if (query.board !== undefined) params.set("board", query.board);
+  if (query.source !== undefined) params.set("source", query.source);
   return params;
 }
 export class BountyClient extends ApiClient {
@@ -83,10 +85,10 @@ export class BountyClient extends ApiClient {
   }
   /**
    * How many of the caller's bounties each category holds, narrowed to
-   * one board's when `board` names it.
+   * one board's when `board` names it, or to Lunox's own by `source`.
    */
   async myBountyCategories(
-    query: { board?: string } = {},
+    query: Pick<BountyListQuery, "board" | "source"> = {},
     signal?: AbortSignal,
   ) {
     return bountyCategoryCountsSchema.parse(

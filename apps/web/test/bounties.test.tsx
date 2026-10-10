@@ -379,25 +379,26 @@ test("the list filters by category, with how many each holds, and says why", asy
   expect(within(list).getByTestId("category-line").textContent).toMatch(
     /Left behind Open 412 days/,
   );
-  const filter = screen.getByRole("navigation", {
-    name: "Bounties by category",
-  });
-  const all = await within(filter).findByRole("button", { name: /All\s*3/ });
-  expect(all.getAttribute("aria-pressed")).toBe("true");
-  // A category with none is there, but not somewhere to go.
+  const trigger = within(screen.getByTestId("category-filter")).getByRole(
+    "combobox",
+    { name: "Category" },
+  );
+  await waitFor(() =>
+    expect(trigger.textContent).toMatch(/All categories\s*3/),
+  );
+  const options = await openCombobox(trigger);
+  // A category with none is listed, but not somewhere to go.
   expect(
-    (
-      within(filter).getByRole("button", {
-        name: /Paper cuts/,
-      }) as HTMLButtonElement
-    ).disabled,
-  ).toBe(true);
+    within(options)
+      .getByRole("option", { name: /Paper cuts/ })
+      .getAttribute("aria-disabled"),
+  ).toBe("true");
   expect(
-    within(filter).getByRole("button", { name: /Unassigned\s*1/ }),
+    within(options).getByRole("option", { name: /Unassigned\s*1/ }),
   ).toBeDefined();
 
   await userEvent.click(
-    within(filter).getByRole("button", { name: /Left behind\s*2/ }),
+    within(options).getByRole("option", { name: /Left behind\s*2/ }),
   );
   expect(window.location.search).toBe("?category=left-behind");
   await waitFor(() =>
@@ -412,14 +413,10 @@ test("the list filters by category, with how many each holds, and says why", asy
   );
 
   // Unassigned is the bounties in no category.
-  await userEvent.click(
-    within(filter).getByRole("button", { name: /Unassigned/ }),
-  );
+  await chooseOption(trigger, /Unassigned/);
   expect(window.location.search).toBe("?category=uncategorized");
-  // Pressed again, the filter is let go.
-  await userEvent.click(
-    within(filter).getByRole("button", { name: /Unassigned/ }),
-  );
+  // All lets the filter go.
+  await chooseOption(trigger, /^All/);
   expect(window.location.search).toBe("");
 });
 
@@ -504,7 +501,8 @@ test("a board's bounties: named, rescanned, and an issue found on it added", asy
   render(<Bounties {...inAcme("member")} />);
 
   const scope = await screen.findByTestId("board-scope");
-  expect(await within(scope).findByText("Delivery")).toBeDefined();
+  const boardFilter = screen.getByTestId("board-filter");
+  expect(await within(boardFilter).findByText("Delivery")).toBeDefined();
   await waitFor(() =>
     expect(
       calls.some(({ url }) =>
@@ -517,19 +515,41 @@ test("a board's bounties: named, rescanned, and an issue found on it added", asy
   ).toBe(true);
 
   // Any member may import the scan again: it sizes nothing.
-  await userEvent.click(within(scope).getByRole("button", { name: /Rescan/ }));
+  await userEvent.click(
+    within(boardFilter).getByRole("button", { name: "Board actions" }),
+  );
+  await userEvent.click(
+    await screen.findByRole("menuitem", { name: /Rescan board/ }),
+  );
   expect(
     await within(scope).findByText("2 bounties added, 1 bounty refreshed."),
   ).toBeDefined();
   expect(imports[0]).toEqual({});
 
-  // An issue already a bounty opens it; one that is not is added, then opened.
-  await userEvent.type(
-    within(scope).getByRole("combobox", {
+  // Put away until asked for: the field slides open from the same menu,
+  // focused.
+  expect(
+    within(scope).queryByRole("combobox", {
       name: "Find an issue on this board to add",
     }),
-    "login",
+  ).toBeNull();
+  await userEvent.click(
+    within(boardFilter).getByRole("button", { name: "Board actions" }),
   );
+  // Search opens the same field as Add an issue.
+  expect(
+    await screen.findByRole("menuitem", { name: /^Search$/ }),
+  ).toBeDefined();
+  await userEvent.click(
+    await screen.findByRole("menuitem", { name: /Add an issue/ }),
+  );
+  const field = await within(scope).findByRole("combobox", {
+    name: "Find an issue on this board to add",
+  });
+  await waitFor(() => expect(document.activeElement).toBe(field));
+
+  // An issue already a bounty opens it; one that is not is added, then opened.
+  await userEvent.type(field, "login");
   const results = await screen.findByTestId("board-issue-results");
   expect(await within(results).findByText("Open")).toBeDefined();
   await userEvent.click(within(results).getByText("Add login"));
@@ -538,12 +558,32 @@ test("a board's bounties: named, rescanned, and an issue found on it added", asy
     expect(window.location.search).toBe("?board=acme/jrb_1&peek=acme/bty_7"),
   );
 
-  // Cleared, the list is every board's again; the open bounty stays open.
-  await userEvent.click(
-    within(scope).getByRole("button", { name: "Show every board's bounties" }),
-  );
+  // Let go, the list is every board's again; the open bounty stays open.
+  const boardPicker = within(boardFilter).getByRole("combobox", {
+    name: "Source",
+  });
+  await chooseOption(boardPicker, /Show all/);
   expect(window.location.search).toBe("?peek=acme/bty_7");
   expect(screen.queryByTestId("board-scope")).toBeNull();
+
+  // Lunox's own: the bounties written there, with no Jira issue.
+  await chooseOption(boardPicker, /^Created in Lunox/);
+  expect(window.location.search).toBe("?source=lunox&peek=acme/bty_7");
+  await waitFor(() =>
+    expect(
+      calls.some(({ url }) =>
+        url.includes("/me/bounties?limit=50&source=lunox"),
+      ),
+    ).toBe(true),
+  );
+  expect(
+    calls.some(({ url }) => url.includes("/me/bounty-categories?source=lunox")),
+  ).toBe(true);
+
+  // The board picker is always there, and picks the board back.
+  await chooseOption(boardPicker, /Delivery/);
+  expect(window.location.search).toBe("?board=acme/jrb_1&peek=acme/bty_7");
+  expect(await screen.findByTestId("board-scope")).toBeDefined();
 });
 
 test("a narrowed list with nothing in it says so, not that there are no bounties", async () => {

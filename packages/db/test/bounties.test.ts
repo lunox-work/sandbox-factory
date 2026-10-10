@@ -385,6 +385,11 @@ test("a list narrows to a board, a category, or the bounties in none", () => {
     render({ uncategorized: true })?.sql ?? "",
     /"bounty"\."categories" = '\[\]'::jsonb/,
   );
+  // Written in Lunox: no Jira issue joined.
+  assert.match(
+    render({ unlinked: true })?.sql ?? "",
+    /"jira_issue"\."id" is null/,
+  );
 });
 
 test("counts each category across the organizations given, and none of none", async () => {

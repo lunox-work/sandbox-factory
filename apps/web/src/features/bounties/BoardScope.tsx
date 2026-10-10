@@ -2,6 +2,12 @@
  * The bounties list narrowed to one Jira board, and what can be done there:
  * import the board's scan again, and find one of its issues to add.
  *
+ * The board is picked beside the category, from every board in every
+ * workspace the person is in, beside Lunox's own, and let go by picking
+ * "Show all". While a board is picked, a ⋮ in the picker's own box holds what can be done with it:
+ * adding one of its issues, which slides a search field open beside the
+ * box, and reading its scan again.
+ *
  * A board has no page of its own. Its backlog scan is imported as bounties
  * when its site is connected or synced, each with its overview filled from
  * Jira and nothing sized, so the board's view is the bounty list with
@@ -10,18 +16,34 @@
  */
 
 import { ApiError } from "@sandbox-factory/client";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2, Plus, RefreshCw, Search, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import type { MembershipDto } from "@sandbox-factory/shared";
+import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  EllipsisVertical,
+  Layers,
+  Loader2,
+  Plus,
+  RefreshCw,
+  Search,
+} from "lucide-react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 
 import { RetryableError } from "@/components/Message";
-import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
 
 import { clients, queryKeys, useUserId } from "../../data/query";
 import { plural } from "../../lib/format";
-import { BoardIcon } from "../../Jira";
-import { useJiraBoards } from "../../useJira";
+import { JiraIcon } from "../../ProviderIcon";
+import type { BoardScope } from "../../routes";
+import { withoutJira, type JiraBoard } from "../../useJira";
+import { FilterSelect } from "./FilterSelect";
 
 interface IssueResult {
   id: string;
@@ -65,30 +87,274 @@ function useImported() {
     );
 }
 
-export function BoardScope({
+/** The values "Show all" and "Created in Lunox" have in the picker. */
+const SHOW_ALL = "";
+const LUNOX = "lunox";
+
+/**
+ * A board as the picker names it: its workspace's handle and its id. The
+ * slash keeps it apart from `LUNOX`, which no board's value can be.
+ */
+function boardValue(workspace: string, boardId: string): string {
+  return `${workspace}/${boardId}`;
+}
+
+/** Where bounties came from, by its mark, at the size a filter's text is. */
+function SourceGlyph({ source }: { source: "all" | "lunox" | "jira" }) {
+  return (
+    <span className="text-muted-foreground inline-flex size-3.5 shrink-0 items-center justify-center [&_svg]:size-3.5!">
+      {source === "all" ? (
+        <Layers />
+      ) : source === "lunox" ? (
+        // The brand's gradient mark, one file a theme, as Connections has it.
+        <>
+          <img
+            src="/brand/svg/logo-gradient.svg"
+            alt=""
+            draggable={false}
+            className="size-3.5 dark:hidden"
+          />
+          <img
+            src="/brand/svg/logo-gradient-dark.svg"
+            alt=""
+            draggable={false}
+            className="hidden size-3.5 dark:block"
+          />
+        </>
+      ) : (
+        <JiraIcon />
+      )}
+    </span>
+  );
+}
+
+/**
+ * The list's source filter: everything, the bounties written in Lunox, or
+ * one Jira board's — every board of every workspace the person is in, each
+ * by Jira's mark, read as each workspace's Jira page reads them, so the two
+ * share a cache. A workspace without Jira has none. The workspace is named
+ * beside each board when boards come from more than one.
+ *
+ * While a board is picked, its box gains a ⋮, holding what can be done
+ * with that board: search its issues or add one, which open the same field,
+ * or read its scan again. The field slides open just before the box,
+ * focused, and slides shut again when left empty. The box sits at the end
+ * of the filter row. What a rescan did is said on a line of its own under
+ * the row.
+ */
+export function BoardFilter({
+  organizations,
+  selected,
+  source,
+  onSelect,
   organizationId,
-  boardId,
-  onClear,
   onOpenBounty,
 }: {
-  /** The workspace the board is in; undefined while it is not known. */
+  organizations: MembershipDto[];
+  /** The board the list is narrowed to; undefined for every board's. */
+  selected: BoardScope | undefined;
+  /** `lunox` while the list is narrowed to the bounties written there. */
+  source: "lunox" | undefined;
+  onSelect: (next: {
+    board?: BoardScope | undefined;
+    source?: "lunox" | undefined;
+  }) => void;
+  /** The picked board's workspace; undefined while it is not known. */
   organizationId: string | undefined;
-  boardId: string;
-  /** Widens the list back to every board's bounties, and the rest. */
-  onClear: () => void;
-  /** Opens one of the board's bounties over the list. */
+  /** Opens one of the picked board's bounties over the list. */
   onOpenBounty: (bountyId: string) => void;
 }) {
-  const { boards, loading } = useJiraBoards(organizationId);
-  const board = boards.find(({ id }) => id === boardId);
+  const userId = useUserId();
+  const reads = useQueries({
+    queries: organizations.map((organization) => ({
+      queryKey: queryKeys.resource(userId, organization.id, "jira-boards"),
+      queryFn: ({ signal }: { signal: AbortSignal }) =>
+        withoutJira(clients.jira.boards(organization.id, signal)),
+    })),
+  });
+  const loading = reads.some((read) => read.isPending);
+  const boards: { workspace: MembershipDto; board: JiraBoard }[] =
+    organizations.flatMap((workspace, index) =>
+      ((reads[index]?.data ?? []) as JiraBoard[]).map((board) => ({
+        workspace,
+        board,
+      })),
+    );
+  const severalWorkspaces =
+    new Set(boards.map(({ workspace }) => workspace.id)).size > 1;
+  const value =
+    selected !== undefined
+      ? boardValue(selected.workspace.toLowerCase(), selected.boardId)
+      : source === "lunox"
+        ? LUNOX
+        : SHOW_ALL;
+  const chosen = boards.find(
+    ({ workspace, board }) =>
+      boardValue(workspace.slug.toLowerCase(), board.id) === value,
+  );
+  const tools = {
+    ...useBoardTools(organizationId, selected?.boardId, value),
+    searchable: selected !== undefined && organizationId !== undefined,
+  };
+
+  return (
+    <>
+      {selected !== undefined && organizationId !== undefined && (
+        // Its parts are the filter row's own items: the field just before the
+        // box, pushing the two to the row's end, and the note on a line of its
+        // own under the row.
+        <div className="contents" data-testid="board-scope">
+          <div
+            inert={!tools.searching}
+            aria-hidden={!tools.searching}
+            onTransitionEnd={(event) => {
+              if (event.target === event.currentTarget)
+                tools.setSettled(tools.searching);
+            }}
+            className={cn(
+              "ml-auto transition-[width,opacity] duration-300 ease-out motion-reduce:transition-none",
+              tools.searching
+                ? "w-72 max-w-[calc(100vw-6rem)] opacity-100"
+                : "-mr-2 w-0 opacity-0",
+              !(tools.searching && tools.settled) && "overflow-hidden",
+            )}
+          >
+            <IssueSearch
+              // Another board's query is not this one's.
+              key={value}
+              organizationId={organizationId}
+              boardId={selected.boardId}
+              inputRef={tools.input}
+              onAdded={tools.imported}
+              onOpenBounty={onOpenBounty}
+              onDismiss={tools.closeSearch}
+            />
+          </div>
+          {tools.note !== null && (
+            <p
+              role={tools.note.error ? "alert" : "status"}
+              className={
+                tools.note.error
+                  ? "order-last basis-full text-xs text-red-600 dark:text-red-400"
+                  : "text-muted-foreground order-last basis-full text-xs"
+              }
+            >
+              {tools.note.text}
+            </p>
+          )}
+        </div>
+      )}
+      <FilterSelect
+        data-testid="board-filter"
+        // At the row's end; the search field, while there is one, puts it
+        // there instead.
+        className={tools.searchable ? undefined : "ml-auto"}
+        label="Source"
+        align="end"
+        searchPlaceholder="Search boards…"
+        value={value}
+        onValueChange={(next) => {
+          if (next === SHOW_ALL) return onSelect({});
+          if (next === LUNOX) return onSelect({ source: "lunox" });
+          const [workspace = "", boardId = ""] = next.split("/");
+          onSelect({ board: { workspace, boardId } });
+        }}
+        options={[
+          {
+            value: SHOW_ALL,
+            label: "Show all",
+            icon: <SourceGlyph source="all" />,
+          },
+          {
+            value: LUNOX,
+            label: "Created in Lunox",
+            keywords: ["created", "written"],
+            icon: <SourceGlyph source="lunox" />,
+          },
+          ...boards.map(({ workspace, board }) => ({
+            value: boardValue(workspace.slug.toLowerCase(), board.id),
+            label: board.name,
+            keywords: ["jira", board.projectKey ?? "", workspace.name],
+            icon: <SourceGlyph source="jira" />,
+            detail: severalWorkspaces
+              ? workspace.name
+              : (board.projectKey ?? undefined),
+          })),
+          ...(boards.length === 0 && !loading
+            ? [
+                {
+                  value: "none",
+                  label: "No Jira boards yet",
+                  icon: <SourceGlyph source="jira" />,
+                  detail: "Connect Jira in a workspace",
+                  disabled: true,
+                },
+              ]
+            : []),
+        ]}
+        icon={
+          <SourceGlyph
+            source={
+              selected !== undefined
+                ? "jira"
+                : source === "lunox"
+                  ? "lunox"
+                  : "all"
+            }
+          />
+        }
+        text={
+          selected !== undefined
+            ? (chosen?.board.name ?? (loading ? "Loading…" : "Not found"))
+            : source === "lunox"
+              ? "Created in Lunox"
+              : "Show all"
+        }
+        // No ×: it is let go by picking "Show all".
+        end={
+          selected === undefined ? undefined : (
+            <BoardMenu tools={tools} disabled={organizationId === undefined} />
+          )
+        }
+      />
+    </>
+  );
+}
+
+/**
+ * What the board's ⋮ and its search field share: whether the field is
+ * open, and what a rescan is doing or did. Put back when the board changes:
+ * another board's note and open field are not this one's.
+ */
+function useBoardTools(
+  organizationId: string | undefined,
+  boardId: string | undefined,
+  key: string,
+) {
   const imported = useImported();
   const [importing, setImporting] = useState(false);
   const [note, setNote] = useState<{ text: string; error: boolean } | null>(
     null,
   );
+  const [searching, setSearching] = useState(false);
+  /*
+    Whether the field has finished sliding open. Until it has, it clips what
+    is in it, so it can grow from nothing; once it has, its results may hang
+    below it.
+  */
+  const [settled, setSettled] = useState(false);
+  const input = useRef<HTMLInputElement>(null);
+  // Set by "Add an issue", so the menu hands focus to the field on closing.
+  const focusSearch = useRef(false);
+
+  useEffect(() => {
+    setNote(null);
+    setSearching(false);
+    setSettled(false);
+  }, [key]);
 
   async function rescan() {
-    if (organizationId === undefined) return;
+    if (organizationId === undefined || boardId === undefined) return;
     setImporting(true);
     setNote(null);
     try {
@@ -118,64 +384,84 @@ export function BoardScope({
     }
   }
 
+  return {
+    imported,
+    importing,
+    note,
+    rescan,
+    searching,
+    settled,
+    setSettled,
+    input,
+    focusSearch,
+    openSearch: () => {
+      focusSearch.current = true;
+      setSettled(false);
+      setSearching(true);
+    },
+    closeSearch: () => {
+      setSettled(false);
+      setSearching(false);
+    },
+  };
+}
+
+/** The ⋮ in the board's box, and what it offers. */
+function BoardMenu({
+  tools,
+  disabled,
+}: {
+  tools: ReturnType<typeof useBoardTools>;
+  disabled: boolean;
+}) {
   return (
-    <section
-      aria-label="Board"
-      className="flex flex-col gap-3 rounded-lg border px-4 py-3"
-      data-testid="board-scope"
-    >
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <span className="text-muted-foreground shrink-0 [&_svg]:size-4">
-          <BoardIcon boardType={board?.boardType ?? ""} />
-        </span>
-        <span className="min-w-0 flex-1 truncate text-sm font-medium">
-          {board?.name ?? (loading ? "Board" : "A board not found")}
-        </span>
-        <Button
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
           type="button"
-          variant="ghost"
-          size="sm"
-          className="text-muted-foreground"
-          disabled={importing || organizationId === undefined}
+          aria-label="Board actions"
+          title="Board actions"
+          disabled={disabled}
+          className="text-muted-foreground hover:text-foreground hover:bg-muted/50 data-[state=open]:bg-muted/50 data-[state=open]:text-foreground grid w-7 shrink-0 place-items-center border-l outline-none last:rounded-r-[inherit] disabled:pointer-events-none"
+        >
+          {tools.importing ? (
+            <Loader2 aria-hidden="true" className="size-3.5 animate-spin" />
+          ) : (
+            <EllipsisVertical aria-hidden="true" className="size-3.5" />
+          )}
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        align="end"
+        className="w-48"
+        onCloseAutoFocus={(event) => {
+          if (!tools.focusSearch.current) return;
+          tools.focusSearch.current = false;
+          event.preventDefault();
+          // A frame on, once the field is no longer inert.
+          requestAnimationFrame(() => tools.input.current?.focus());
+        }}
+      >
+        {/* Two ways in to the same field: finding an issue that is a bounty
+            already opens it, and one that is not is added. */}
+        <DropdownMenuItem onSelect={tools.openSearch}>
+          <Search />
+          Search
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={tools.openSearch}>
+          <Plus />
+          Add an issue
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          disabled={tools.importing}
           title="Read the board's backlog scan again, and import what is in a category"
-          onClick={() => void rescan()}
+          onSelect={() => void tools.rescan()}
         >
-          <RefreshCw className={importing ? "animate-spin" : undefined} />
-          Rescan
-        </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className="text-muted-foreground size-8"
-          aria-label="Show every board's bounties"
-          title="Show every board's bounties"
-          onClick={onClear}
-        >
-          <X />
-        </Button>
-      </div>
-      {note !== null && (
-        <p
-          role={note.error ? "alert" : "status"}
-          className={
-            note.error
-              ? "text-sm text-red-600 dark:text-red-400"
-              : "text-muted-foreground text-sm"
-          }
-        >
-          {note.text}
-        </p>
-      )}
-      {organizationId !== undefined && (
-        <IssueSearch
-          organizationId={organizationId}
-          boardId={boardId}
-          onAdded={imported}
-          onOpenBounty={onOpenBounty}
-        />
-      )}
-    </section>
+          <RefreshCw />
+          Rescan board
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -191,13 +477,18 @@ export function BoardScope({
 function IssueSearch({
   organizationId,
   boardId,
+  inputRef,
   onAdded,
   onOpenBounty,
+  onDismiss,
 }: {
   organizationId: string;
   boardId: string;
+  inputRef: RefObject<HTMLInputElement | null>;
   onAdded: () => Promise<unknown>;
   onOpenBounty: (bountyId: string) => void;
+  /** Put away: Escape on an empty field, or leaving it empty. */
+  onDismiss: () => void;
 }) {
   const userId = useUserId();
   const [query, setQuery] = useState("");
@@ -272,14 +563,15 @@ function IssueSearch({
   }
 
   return (
-    <div ref={container} className="relative flex flex-col gap-2">
+    <div ref={container} className="relative flex w-full flex-col gap-2">
       <div className="relative">
-        <Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2" />
+        <Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2" />
         <Input
           type="search"
           aria-label="Find an issue on this board to add"
-          placeholder="Add an issue — its key or title"
-          className="pl-9"
+          placeholder="Find or add an issue by key or title"
+          ref={inputRef}
+          className="bg-card h-8 pl-8"
           role="combobox"
           aria-expanded={showing}
           aria-controls="board-issue-results"
@@ -292,6 +584,9 @@ function IssueSearch({
           value={query}
           disabled={adding !== null}
           onFocus={() => setOpen(true)}
+          onBlur={() => {
+            if (query.trim() === "" && adding === null) onDismiss();
+          }}
           onChange={(event) => {
             setQuery(event.target.value);
             setOpen(true);
@@ -301,7 +596,8 @@ function IssueSearch({
           onKeyDown={(event) => {
             if (event.key === "Escape") {
               if (showing) setOpen(false);
-              else setQuery("");
+              else if (query !== "") setQuery("");
+              else onDismiss();
               return;
             }
             if (event.key === "ArrowDown" || event.key === "ArrowUp") {
@@ -328,7 +624,7 @@ function IssueSearch({
 
       {showing && (
         <div
-          className="bg-popover absolute top-full right-0 left-0 z-20 mt-1 overflow-hidden rounded-md border shadow-md"
+          className="bg-popover absolute top-full right-0 z-20 mt-1 w-[min(32rem,calc(100vw-2rem))] overflow-hidden rounded-md border shadow-md"
           data-testid="board-issue-results"
         >
           {searched.isError ? (

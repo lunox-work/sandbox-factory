@@ -95,10 +95,14 @@ export interface BoardScope {
   boardId: string;
 }
 
-/** What narrows the list: a category (or `uncategorized`), and a board. */
+/**
+ * What narrows the list: a category (or `uncategorized`), and where the
+ * bounties came from — one board, or `lunox` for those written in Lunox.
+ */
 export interface BountyListScope {
   category?: string | undefined;
   board?: BoardScope | undefined;
+  source?: "lunox" | undefined;
 }
 
 const CATEGORY_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/;
@@ -108,6 +112,7 @@ export function listScopeForSearch(search: string): BountyListScope {
   const params = new URLSearchParams(search);
   const category = params.get("category");
   const board = params.get("board");
+  const source = params.get("source");
   const [workspace, boardId, ...rest] = (board ?? "")
     .replace(/\/+$/, "")
     .split("/");
@@ -122,6 +127,7 @@ export function listScopeForSearch(search: string): BountyListScope {
     rest.length === 0
       ? { board: { workspace, boardId } }
       : {}),
+    ...(source === "lunox" ? { source } : {}),
   };
 }
 
@@ -140,6 +146,7 @@ export function bountiesUrl(
       : [
           `board=${encodeURIComponent(scope.board.workspace)}/${encodeURIComponent(scope.board.boardId)}`,
         ]),
+    ...(scope.source === undefined ? [] : [`source=${scope.source}`]),
     ...(scope.category === undefined
       ? []
       : [`category=${encodeURIComponent(scope.category)}`]),

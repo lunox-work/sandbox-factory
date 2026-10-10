@@ -133,8 +133,12 @@ import {
   useBountyContext,
 } from "./features/bounties/BountyContext";
 import { BountyProposal } from "./features/bounties/BountyProposal";
-import { BoardScope } from "./features/bounties/BoardScope";
-import { CategoryFilter, CategoryLine } from "./features/bounties/Categories";
+import { BoardFilter } from "./features/bounties/BoardScope";
+import {
+  CategoryFilter,
+  CategoryLine,
+  CategoryNote,
+} from "./features/bounties/Categories";
 import {
   OverviewVersion,
   StepLineage,
@@ -269,8 +273,9 @@ export function Bounties({
   const bounties = useAllBounties({
     category: scope.category,
     board: scope.board?.boardId,
+    source: scope.source,
   });
-  const counts = useBountyCategories(scope.board?.boardId);
+  const counts = useBountyCategories(scope.board?.boardId, scope.source);
   /** The list narrowed otherwise; a bounty open over it stays open. */
   const narrow = (next: BountyListScope) =>
     replaceLocation(bountiesUrl(peek, next));
@@ -344,7 +349,12 @@ export function Bounties({
           Controls on the list beside the panel, as a card is: using them
           narrows the list and leaves the open bounty open.
         */}
-        <div {...{ [PEEK_ROW_ATTRIBUTE]: "" }} className="flex flex-col gap-3">
+        <div
+          {...{ [PEEK_ROW_ATTRIBUTE]: "" }}
+          role="group"
+          aria-label="Filter bounties"
+          className="flex flex-wrap items-center gap-2"
+        >
           <CategoryFilter
             counts={counts.data}
             selected={scope.category ?? null}
@@ -352,20 +362,26 @@ export function Bounties({
               narrow({ ...scope, category: category ?? undefined })
             }
           />
-          {scope.board !== undefined && (
-            <BoardScope
-              // Keyed by the board: another board's search and note are not
-              // this one's.
-              key={`${scope.board.workspace}/${scope.board.boardId}`}
-              organizationId={boardOwner?.id}
-              boardId={scope.board.boardId}
-              onClear={() => narrow({ ...scope, board: undefined })}
-              onOpenBounty={(id) => {
-                const workspace = scope.board?.workspace;
-                if (workspace !== undefined) open({ workspace, id });
-              }}
+          <BoardFilter
+            organizations={organizations}
+            selected={scope.board}
+            source={scope.source}
+            // A board or Lunox: one place the bounties came from, not both.
+            onSelect={({ board, source }) =>
+              narrow({ ...scope, board, source })
+            }
+            organizationId={boardOwner?.id}
+            onOpenBounty={(id) => {
+              const workspace = scope.board?.workspace;
+              if (workspace !== undefined) open({ workspace, id });
+            }}
+          />
+          <div className="order-last basis-full empty:hidden">
+            <CategoryNote
+              counts={counts.data}
+              selected={scope.category ?? null}
             />
-          )}
+          </div>
         </div>
 
         <BountyList
@@ -373,7 +389,11 @@ export function Bounties({
           organizations={organizations}
           organizationsLoading={organizationsLoading}
           peek={peek}
-          narrowed={scope.category !== undefined || scope.board !== undefined}
+          narrowed={
+            scope.category !== undefined ||
+            scope.board !== undefined ||
+            scope.source !== undefined
+          }
           onOpen={open}
           onCreate={onCreate}
         />
@@ -976,8 +996,8 @@ function BountyList({
         (narrowed ? (
           <div className="rounded-lg border border-dashed px-4 py-10 text-center">
             <p className="text-muted-foreground text-sm">
-              No bounties here. Choose another category, or add one of the
-              board&rsquo;s issues above.
+              No bounties here. Choose another category or source, or add one of
+              the board&rsquo;s issues from its &#8942; menu.
             </p>
           </div>
         ) : (
@@ -991,7 +1011,10 @@ function BountyList({
         ))
       ) : (
         <>
-          <ul className="flex flex-col gap-2" data-testid="bounty-list">
+          <ul
+            className="bg-card divide-y overflow-hidden rounded-lg border"
+            data-testid="bounty-list"
+          >
             {bounties.bounties.map((bounty) => {
               const address = addressOf(bounty, organizations);
               return (
@@ -1046,29 +1069,26 @@ function teamName(
   return organization?.kind === "team" ? organization.name : undefined;
 }
 
-/** A team workspace's name, as a bounty's card carries it. */
+/** A team workspace's name, as a bounty's row carries it: plain text. */
 function WorkspaceTag({ name }: { name: string }) {
   return (
-    <Badge
-      variant="outline"
-      className="text-muted-foreground max-w-40 px-1.5 py-0 font-normal"
-      // Cut short at the badge's width; the whole name on hover.
+    <span
+      className="text-foreground/80 max-w-40 shrink-0 truncate font-medium"
+      // Cut short; the whole name on hover.
       title={name}
     >
-      <span className="truncate">{name}</span>
-    </Badge>
+      {name}
+    </span>
   );
 }
 
 /** Where a bounty came from, said in a few words. */
 function Source({ bounty }: { bounty: BountySummaryDto }) {
   if (bounty.jira === null) {
-    return (
-      <span className="text-muted-foreground text-xs">Created in Lunox</span>
-    );
+    return <span className="shrink-0">Created in Lunox</span>;
   }
   return (
-    <span className="text-muted-foreground inline-flex items-center gap-1 text-xs">
+    <span className="inline-flex shrink-0 items-center gap-1">
       <span className="size-3 shrink-0">
         <JiraIcon />
       </span>
@@ -1079,28 +1099,55 @@ function Source({ bounty }: { bounty: BountySummaryDto }) {
 
 /**
  * A proposal in brief: whether it is decided, and its price. Its size is
- * in the bounty, not on its card. Until it is approved the price is not
- * settled, so it reads as a dash, as the bounty itself has it.
+ * in the bounty, not on its row. Until it is approved the price is not
+ * settled, so it reads as a dash, as the bounty itself has it. The status
+ * is a dot and a word rather than a badge: the row is the box.
  */
 function ProposalBrief({
   proposal,
 }: {
-  proposal: NonNullable<BountySummaryDto["proposal"]>;
+  proposal: BountySummaryDto["proposal"];
 }) {
-  const approved = proposal.status === "approved";
+  const status =
+    proposal === null
+      ? "none"
+      : proposal.status === "approved"
+        ? "approved"
+        : "proposed";
   return (
     <>
-      <Badge variant={approved ? "default" : "secondary"}>
-        {approved ? "Approved" : "Proposed"}
-      </Badge>
-      {approved ? (
+      <span
+        className={cn(
+          "inline-flex items-center gap-1.5 text-xs",
+          status === "approved"
+            ? "text-foreground font-medium"
+            : "text-muted-foreground",
+        )}
+      >
+        <span
+          aria-hidden
+          className={cn(
+            "size-1.5 shrink-0 rounded-full",
+            status === "approved" && "bg-foreground",
+            status === "proposed" && "border-muted-foreground border",
+            status === "none" &&
+              "border-muted-foreground/60 border border-dashed",
+          )}
+        />
+        {status === "approved"
+          ? "Approved"
+          : status === "proposed"
+            ? "Proposed"
+            : "No proposal"}
+      </span>
+      {proposal !== null && status === "approved" ? (
         <span className="ml-auto text-sm font-medium tabular-nums">
           {money(proposal.amountMinor, proposal.currency)}
         </span>
       ) : (
         <span
           aria-hidden
-          className="text-muted-foreground/60 ml-auto text-sm tabular-nums"
+          className="text-muted-foreground/50 ml-auto text-sm tabular-nums"
         >
           —
         </span>
@@ -1110,8 +1157,9 @@ function ProposalBrief({
 }
 
 /**
- * One bounty in the list, as a card the width of the list: its title with
- * where it came from under it, and its proposal in brief at the far end. A
+ * One bounty in the list, as a row of it: its title, with one line under it
+ * of whose it is, where it came from and why its board's scan picked it, and
+ * its proposal in brief at the far end. A
  * click anywhere on it opens the bounty in the panel beside the list, a
  * glance whose proposal is on the bounty's own page; it is a link to that
  * page, so it can be opened in another tab. While the panel is open, a
@@ -1150,11 +1198,12 @@ function BountyCard({
     <li
       {...{ [PEEK_ROW_ATTRIBUTE]: "" }}
       className={cn(
-        "bg-card hover:bg-muted/40 relative flex flex-col gap-3 rounded-lg border px-4 py-3 transition-colors sm:flex-row sm:items-center sm:gap-6",
-        selected && "bg-muted/60 hover:bg-muted/60 border-foreground/20",
+        "hover:bg-muted/50 relative flex flex-col gap-2 px-4 py-3 transition-colors sm:flex-row sm:items-center sm:gap-6",
+        selected &&
+          "bg-muted hover:bg-muted shadow-[inset_2px_0_0_var(--foreground)]",
       )}
     >
-      <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+      <div className="flex min-w-0 flex-1 flex-col gap-1">
         {address === undefined ? (
           <div className={headingClass}>{heading}</div>
         ) : (
@@ -1163,7 +1212,7 @@ function BountyCard({
             aria-current={selected ? "true" : undefined}
             className={cn(
               headingClass,
-              "focus-visible:after:ring-ring/50 outline-none after:absolute after:inset-0 after:rounded-lg focus-visible:after:ring-[3px]",
+              "focus-visible:after:ring-ring/50 outline-none after:absolute after:inset-0 focus-visible:after:ring-[3px] focus-visible:after:ring-inset",
             )}
             onClick={(event) => {
               if (isPlainLeftClick(event)) {
@@ -1175,34 +1224,31 @@ function BountyCard({
             {heading}
           </a>
         )}
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-          {workspace !== undefined && <WorkspaceTag name={workspace} />}
+        {/* One line of facts, parted by dots; the reason is what gives
+            way when it runs long. */}
+        <div className="text-muted-foreground flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs sm:flex-nowrap">
+          {workspace !== undefined && (
+            <>
+              <WorkspaceTag name={workspace} />
+              <span aria-hidden>·</span>
+            </>
+          )}
           <Source bounty={bounty} />
+          {bounty.categories.length > 0 && (
+            <>
+              <span aria-hidden>·</span>
+              <span className="min-w-0 flex-1">
+                <CategoryLine categories={bounty.categories} wrapOnPhone />
+              </span>
+            </>
+          )}
         </div>
-        <CategoryLine categories={bounty.categories} wrapOnPhone />
       </div>
-      <div className="shrink-0 border-t pt-3 sm:w-56 sm:border-t-0 sm:pt-0">
-        {proposal === null ? (
-          // Shaped like a proposal's brief, so its status and price line up.
-          <div className="flex items-center gap-2">
-            <Badge
-              variant="outline"
-              className="text-muted-foreground border-dashed font-normal"
-            >
-              No proposal
-            </Badge>
-            <span
-              aria-hidden
-              className="text-muted-foreground/60 ml-auto text-sm tabular-nums"
-            >
-              —
-            </span>
-          </div>
-        ) : (
-          <div className="flex items-center gap-2" data-testid="proposal-brief">
-            <ProposalBrief proposal={proposal} />
-          </div>
-        )}
+      <div
+        className="flex shrink-0 items-center gap-2 sm:w-48"
+        data-testid={proposal === null ? undefined : "proposal-brief"}
+      >
+        <ProposalBrief proposal={proposal} />
       </div>
     </li>
   );

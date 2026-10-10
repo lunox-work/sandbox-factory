@@ -13,7 +13,7 @@ import type {
   SandboxStatus,
 } from "sandbox-factory";
 import { clampBountyTitle, overviewApproved } from "sandbox-factory";
-import { and, desc, eq, inArray, or, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 
 import type { Database, QueryExecutor } from "./errors.js";
 import type { ProposalRepository } from "./schema.js";
@@ -187,13 +187,14 @@ export interface BountyStore {
   ): Promise<ListedBounty[]>;
   /**
    * How many bounties each category holds across the organizations named,
-   * narrowed to one board's when `boardId` is given: the counts the list's
+   * narrowed to one board's when `boardId` is given, or to those with no
+   * Jira issue when `unlinked` is: the counts the list's
    * filter shows. A bounty in two categories counts in both, so they can
    * sum past `total`; `uncategorized` is the bounties in none.
    */
   categoryCounts(
     organizationIds: readonly string[],
-    filter?: Pick<BountyListOptions, "boardId">,
+    filter?: Pick<BountyListOptions, "boardId" | "unlinked">,
   ): Promise<BountyCategoryCounts>;
   /**
    * Records the categories a scan found the bounty in, in place of those it
@@ -269,6 +270,8 @@ export interface BountyListOptions {
   readonly uncategorized?: boolean;
   /** Only bounties imported from, or linked to, an issue on this board. */
   readonly boardId?: string;
+  /** Only bounties with no Jira issue: those written in Lunox. */
+  readonly unlinked?: boolean;
 }
 
 export interface BountyCategoryCounts {
@@ -665,14 +668,17 @@ async function listBounties(
 }
 
 /**
- * The conditions a list's filters add. The board's is on the joined Jira
- * link; a category's is jsonb containment, which matches an element with
+ * The conditions a list's filters add. The board's, and having none, are on
+ * the joined Jira link; a category's is jsonb containment, which matches an element with
  * that id whatever else it says.
  */
 export function listFilters(options: BountyListOptions): SQL[] {
   const filters: SQL[] = [];
   if (options.boardId !== undefined) {
     filters.push(eq(jiraIssue.boardId, options.boardId));
+  }
+  if (options.unlinked === true) {
+    filters.push(isNull(jiraIssue.id));
   }
   if (options.category !== undefined) {
     filters.push(
