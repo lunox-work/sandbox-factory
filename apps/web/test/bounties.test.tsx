@@ -377,7 +377,7 @@ test("the list filters by category, with how many each holds, and says why", asy
   const list = await screen.findByTestId("bounty-list");
   // The card leads with why its board's scan put it there.
   expect(within(list).getByTestId("category-line").textContent).toMatch(
-    /Left behind · Open 412 days/,
+    /Left behind Open 412 days/,
   );
   const filter = screen.getByRole("navigation", {
     name: "Bounties by category",
@@ -2461,6 +2461,10 @@ test("an address that names no page is not found, not home", () => {
   );
   expect(screenForPath("/o/acme/repositories/repo_1")).toBe("org-repository");
   expect(pathForScreen("not-found")).toBe("/");
+  // Onboarding is the workspace in the rail's, so under none of them.
+  expect(screenForPath("/onboarding")).toBe("onboarding");
+  expect(screenForPath("/onboarding/")).toBe("onboarding");
+  expect(pathForScreen("onboarding", "acme")).toBe("/onboarding");
 });
 
 test("the bounties page has a path and a trail of its own", () => {
@@ -3053,7 +3057,7 @@ test("a sandbox without a repository says what links one, and a refused link say
         () =>
           json(
             {
-              error: "This sandbox is already cut from another repository.",
+              error: "This sandbox is already sliced from another repository.",
               code: "source_linked",
             },
             409,
@@ -3082,7 +3086,7 @@ test("a sandbox without a repository says what links one, and a refused link say
     await within(part).findByRole("button", { name: "Link acme/app" }),
   );
   expect((await within(part).findByRole("alert")).textContent).toContain(
-    "already cut from another repository",
+    "already sliced from another repository",
   );
   expect(
     within(part).getByText(/Its sizing says the work touches acme\/app/),

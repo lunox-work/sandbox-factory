@@ -30,6 +30,7 @@ function facts(overrides: {
   jira?: Partial<SetupFacts["jira"]>;
   github?: Partial<SetupFacts["github"]>;
   proposals?: number;
+  bounties?: number;
 }): SetupFacts {
   return {
     jira: {
@@ -46,7 +47,7 @@ function facts(overrides: {
       ...overrides.github,
     },
     proposals: overrides.proposals ?? 0,
-    bounties: 0,
+    bounties: overrides.bounties ?? 0,
     canManage: true,
   };
 }

@@ -119,7 +119,7 @@ export function RepoPicker({
         </h2>
         <p className="text-muted-foreground mt-1 text-sm">
           Its file list and stack are read to map it — no AI, and its code is
-          not copied in. Bounties are then sized beside it, and sandboxes cut
+          not copied in. Bounties are then sized beside it, and sandboxes sliced
           from it.
         </p>
       </header>

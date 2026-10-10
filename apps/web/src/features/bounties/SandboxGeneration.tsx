@@ -635,7 +635,7 @@ export function SandboxGeneration({
         description={
           canGenerate
             ? "The task as a runnable project, written from the bounty. Only your workspace can see it; each generation is kept as a version."
-            : "A slice of your repository, cut down to the task. Only your workspace can see it; each generation is kept as a version."
+            : "Sliced from your repository, down to the task. Only your workspace can see it; each generation is kept as a version."
         }
       >
         <div className="flex flex-col gap-4" data-testid="sandbox-generation">

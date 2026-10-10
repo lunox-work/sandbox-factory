@@ -18,7 +18,8 @@
  * shipping with the fallback.
  */
 
-import { Tag } from "lucide-react";
+import { CircleDashed, LayoutGrid, Tag } from "lucide-react";
+import { UNCATEGORIZED } from "sandbox-factory";
 import type { ReactElement } from "react";
 
 /** Keyed by category id. What is here is the inside of the `<svg>`. */
@@ -87,6 +88,12 @@ const DRAWINGS: Record<string, ReactElement> = {
 };
 
 /**
+ * Where categories are filtered, every one of them at once. Not a category:
+ * a chip of its own beside them, styled by `data-category` as they are.
+ */
+export const ALL_CATEGORIES = "all";
+
+/**
  * One category's icon. It has no size of its own: whoever places it says
  * how big, as with a Lucide icon.
  *
@@ -94,6 +101,10 @@ const DRAWINGS: Record<string, ReactElement> = {
  * retired from the registry but still stored on an old run, or one a
  * deploy added after this bundle was built — so a tile or a badge keeps
  * its shape whatever the API names.
+ *
+ * "All" and uncategorized are not in the registry but stand beside the six
+ * in a filter, so they have stock icons: a grid of everything, and an empty
+ * dashed outline for what is in none.
  */
 export function CategoryIcon({
   category,
@@ -104,6 +115,18 @@ export function CategoryIcon({
 }) {
   // `Object.hasOwn`, not a bare lookup: the id arrives from stored JSON,
   // and a lookup would find `constructor` on any object.
+  if (category === ALL_CATEGORIES)
+    return (
+      <LayoutGrid aria-hidden="true" focusable="false" className={className} />
+    );
+  if (category === UNCATEGORIZED)
+    return (
+      <CircleDashed
+        aria-hidden="true"
+        focusable="false"
+        className={className}
+      />
+    );
   if (!Object.hasOwn(DRAWINGS, category)) {
     return <Tag aria-hidden="true" focusable="false" className={className} />;
   }

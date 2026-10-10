@@ -18,7 +18,8 @@ import { act, fireEvent, render, screen, waitFor, within } from "./render";
 
 import { fromToday } from "../src/IssueSpec";
 import { resolveCategories } from "sandbox-factory";
-import { JiraBoard, JiraConnections } from "../src/Jira";
+import { JiraConnections } from "../src/Jira";
+import { BoardScan } from "../src/features/onboarding/BoardScan";
 
 const connection = {
   id: "jrc_1",
@@ -751,14 +752,16 @@ function routedFetch(
 let openedBoards: string[] = [];
 
 /** A board as home shows it: its scan, and the way to its bounties. */
-function renderBoard(boardId = "jrb_1", role?: string) {
+/** A board's scan, as onboarding shows it: the workspace's first board. */
+function renderBoard(role?: string) {
   return render(
-    <JiraBoard
+    <BoardScan
+      userId="user_1"
       organizationId="org_1"
       organizationSlug="acme"
-      boardId={boardId}
-      role={role}
-      header={<h1>Home</h1>}
+      canManage={role === "owner" || role === "admin"}
+      githubAvailable
+      fallback={<p>No board yet</p>}
     />,
   );
 }
@@ -837,13 +840,14 @@ test("a board row opens the board rather than previewing it in place", async () 
   expect(openedBoards).toEqual(["jrb_1"]);
 });
 
-test("a board on home leads to its bounties", async () => {
+test("a board's scan is the tickets alone, with no way out to its bounties", async () => {
   vi.stubGlobal("fetch", routedFetch());
   renderBoard();
-  const link = await screen.findByRole("link", {
-    name: "See this board’s bounties",
-  });
-  expect(link.getAttribute("href")).toBe("/bounties?board=acme/jrb_1");
+  await screen.findByTestId("board-bar");
+  expect(
+    screen.queryByRole("link", { name: /this board’s bounties/ }),
+  ).toBeNull();
+  expect(screen.queryByText(/bounties already/)).toBeNull();
   expect(screen.queryByTestId("proposal-list")).toBeNull();
 });
 
@@ -1074,7 +1078,7 @@ function withRepositories(repositories: unknown[] = [widgets]) {
 test("a board names no repository: its tickets may touch any of the workspace's", async () => {
   const fetchMock = withRepositories();
   vi.stubGlobal("fetch", fetchMock);
-  renderBoard("jrb_1", "owner");
+  renderBoard("owner");
 
   await screen.findByTestId("backlog-scan");
   expect(screen.queryByTestId("board-repository")).toBeNull();

@@ -822,3 +822,2145 @@
 .workbench ::-webkit-scrollbar-corner {
   background: transparent;
 }
+
+/* ---- onboarding path cards ----------------------------------------------- */
+
+/*
+ * The ways in on onboarding answer the cursor in the brand's colours: the
+ * hairline turns into the logo's gradient, a glow in its cyan, blue and
+ * lilac gathers underneath, and the card lifts a little with its mark. Only
+ * on a card that does something when pressed (`data-actionable`); keyboard
+ * focus on its button draws the same, so the card says where Enter goes.
+ *
+ * The gradient hairline is a masked pseudo-element over the border rather
+ * than `border-image`, which cannot follow a rounded corner. The glow is a
+ * stack of tinted shadows rather than a blurred gradient layer: a layer
+ * behind the card would need the card to be its stacking context, and a
+ * stacking context paints its own background under its children — the glow
+ * would show through the card. Shadows paint outside the box, under nothing.
+ */
+.path-card {
+  position: relative;
+  transition:
+    transform 0.2s ease,
+    box-shadow 0.25s ease;
+}
+
+.path-card::before {
+  content: "";
+  position: absolute;
+  /* Over the 1px border, so a dashed one is covered too. */
+  inset: -1px;
+  padding: 1.5px;
+  border-radius: inherit;
+  background: var(--brand-gradient);
+  /* Everything but the padding ring is cut away. */
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box exclude,
+    linear-gradient(#000 0 0);
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  pointer-events: none;
+}
+
+.path-card-mark {
+  transition: transform 0.25s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+.path-card[data-actionable]:hover,
+.path-card[data-actionable]:has(:focus-visible) {
+  transform: translateY(-2px);
+  box-shadow:
+    -14px 10px 30px -16px rgb(71 198 245 / 0.55),
+    0 14px 34px -16px rgb(22 132 252 / 0.5),
+    14px 10px 30px -16px rgb(153 133 255 / 0.55);
+}
+
+.path-card[data-actionable]:hover::before,
+.path-card[data-actionable]:has(:focus-visible)::before {
+  opacity: 1;
+}
+
+.path-card[data-actionable]:hover .path-card-mark,
+.path-card[data-actionable]:has(:focus-visible) .path-card-mark {
+  transform: scale(1.06);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .path-card,
+  .path-card-mark {
+    transition: none;
+  }
+  /* The colour still answers; nothing moves. */
+  .path-card[data-actionable]:hover,
+  .path-card[data-actionable]:has(:focus-visible),
+  .path-card[data-actionable]:hover .path-card-mark,
+  .path-card[data-actionable]:has(:focus-visible) .path-card-mark {
+    transform: none;
+  }
+}
+
+/* ---- category accents ---------------------------------------------------- */
+
+/*
+ * Each category's colour, wherever the category is shown: the cards in "What
+ * task do teams outsource?", the scan's tiles, the bounty list's chips, a
+ * bounty's category line and a proposal's badges. Set on any element by
+ * `data-category="<id>"`, which gives it and everything inside it
+ * `--category-accent`; the classes below draw with it.
+ *
+ * The six are at one lightness and chroma in oklch, with hues spread round
+ * the wheel, so they read as one set: three cool ones, three warm ones. Each
+ * theme has its own six, lifted on the dark one, as `--primary` is. "All"
+ * and "uncategorized" are not categories, so they are neutrals: the ink
+ * itself, and a grey.
+ */
+[data-category] {
+  --category-accent: var(--muted-foreground);
+}
+[data-category="all"] {
+  --category-accent: var(--foreground);
+}
+[data-category="uncategorized"] {
+  --category-accent: oklch(0.55 0.015 260);
+}
+[data-category="left-behind"] {
+  --category-accent: oklch(0.62 0.12 225);
+}
+[data-category="always-next-sprint"] {
+  --category-accent: oklch(0.57 0.19 262);
+}
+[data-category="quietly-wanted"] {
+  --category-accent: oklch(0.57 0.2 298);
+}
+[data-category="holding-others-up"] {
+  --category-accent: oklch(0.61 0.2 14);
+}
+[data-category="paper-cuts"] {
+  --category-accent: oklch(0.6 0.11 185);
+}
+[data-category="deadline-exposed"] {
+  --category-accent: oklch(0.72 0.16 65);
+}
+
+.dark [data-category="uncategorized"] {
+  --category-accent: oklch(0.72 0.015 260);
+}
+.dark [data-category="left-behind"] {
+  --category-accent: oklch(0.79 0.11 220);
+}
+.dark [data-category="always-next-sprint"] {
+  --category-accent: oklch(0.72 0.15 258);
+}
+.dark [data-category="quietly-wanted"] {
+  --category-accent: oklch(0.74 0.15 298);
+}
+.dark [data-category="holding-others-up"] {
+  --category-accent: oklch(0.73 0.16 14);
+}
+.dark [data-category="paper-cuts"] {
+  --category-accent: oklch(0.79 0.11 185);
+}
+.dark [data-category="deadline-exposed"] {
+  --category-accent: oklch(0.81 0.15 72);
+}
+
+/* The icon tile, as on the cards: the icon in the accent, on a wash of it. */
+.category-chip {
+  color: var(--category-accent);
+  background: color-mix(in oklab, var(--category-accent) 14%, transparent);
+  box-shadow: inset 0 0 0 1px
+    color-mix(in oklab, var(--category-accent) 22%, transparent);
+}
+
+/* An icon, or a label, drawn in the accent. */
+.category-ink {
+  color: var(--category-accent);
+}
+
+/* A badge or a pressed chip: a wash of the accent, edged in it. */
+.category-tint {
+  background: color-mix(in oklab, var(--category-accent) 12%, transparent);
+  border-color: color-mix(in oklab, var(--category-accent) 40%, transparent);
+}
+
+/*
+ * Text in the accent, pulled toward the ink so the lighter accents — a
+ * yellow, a teal — still read as text on the page.
+ */
+[data-category] {
+  --category-text: color-mix(
+    in oklab,
+    var(--category-accent) 78%,
+    var(--foreground)
+  );
+}
+
+/* A category named inline: its icon and label on a wash of its colour. */
+.category-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  border-radius: 999px;
+  padding: 0.0625rem 0.5rem 0.0625rem 0.375rem;
+  font-weight: 500;
+  color: var(--category-text);
+  background: color-mix(in oklab, var(--category-accent) 11%, transparent);
+  box-shadow: inset 0 0 0 1px
+    color-mix(in oklab, var(--category-accent) 24%, transparent);
+}
+
+/* -- A filter chip: quiet until hovered, washed and ringed when pressed. -- */
+.category-filter-chip {
+  transition:
+    background-color 0.15s,
+    border-color 0.15s,
+    box-shadow 0.15s,
+    color 0.15s;
+}
+.category-filter-chip:not([aria-pressed="true"]):hover {
+  color: var(--foreground);
+  border-color: color-mix(in oklab, var(--category-accent) 40%, transparent);
+  background: color-mix(in oklab, var(--category-accent) 6%, transparent);
+}
+.category-filter-chip[aria-pressed="true"] {
+  color: var(--foreground);
+  border-color: color-mix(in oklab, var(--category-accent) 55%, transparent);
+  background: linear-gradient(
+    180deg,
+    color-mix(in oklab, var(--category-accent) 18%, transparent),
+    color-mix(in oklab, var(--category-accent) 8%, transparent)
+  );
+  box-shadow:
+    0 0 0 3px color-mix(in oklab, var(--category-accent) 12%, transparent),
+    0 4px 12px -6px color-mix(in oklab, var(--category-accent) 60%, transparent);
+}
+.category-filter-chip .category-count {
+  color: var(--muted-foreground);
+  background: color-mix(in oklab, var(--foreground) 6%, transparent);
+}
+.category-filter-chip[aria-pressed="true"] .category-count {
+  color: var(--background);
+  background: var(--category-accent);
+}
+
+/*
+ * -- A scan tile: a small card of the category, as its card in the dialog
+ *    is — a wash of the accent from one corner, under a dot grid that fades
+ *    out — lifted on hover and ringed in the accent when chosen. --
+ */
+.category-tile {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  background:
+    radial-gradient(
+      130% 100% at 100% 0%,
+      color-mix(in oklab, var(--category-accent) 13%, transparent),
+      transparent 62%
+    ),
+    var(--card);
+  transition:
+    border-color 0.15s,
+    box-shadow 0.2s,
+    transform 0.2s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+.category-tile::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background-image: radial-gradient(
+    circle at 1px 1px,
+    color-mix(in oklab, var(--category-accent) 30%, transparent) 1px,
+    transparent 1.5px
+  );
+  background-size: 10px 10px;
+  -webkit-mask-image: radial-gradient(
+    80% 90% at 100% 0%,
+    #000 0%,
+    transparent 70%
+  );
+  mask-image: radial-gradient(80% 90% at 100% 0%, #000 0%, transparent 70%);
+}
+.category-tile:not(:disabled):not([aria-pressed="true"]):hover {
+  border-color: color-mix(in oklab, var(--category-accent) 40%, transparent);
+  box-shadow: 0 8px 18px -12px
+    color-mix(in oklab, var(--category-accent) 70%, transparent);
+  transform: translateY(-1px);
+}
+.category-tile[aria-pressed="true"] {
+  border-color: color-mix(in oklab, var(--category-accent) 60%, transparent);
+  background:
+    radial-gradient(
+      130% 100% at 100% 0%,
+      color-mix(in oklab, var(--category-accent) 22%, transparent),
+      transparent 70%
+    ),
+    color-mix(in oklab, var(--category-accent) 5%, var(--card));
+  box-shadow:
+    0 0 0 3px color-mix(in oklab, var(--category-accent) 14%, transparent),
+    0 10px 22px -12px
+      color-mix(in oklab, var(--category-accent) 75%, transparent);
+}
+.category-tile:disabled {
+  filter: saturate(0.25);
+}
+
+/* What a category is for, set apart: edged in the accent, on a wash of it. */
+.category-callout {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid color-mix(in oklab, var(--category-accent) 22%, transparent);
+  background: linear-gradient(
+    90deg,
+    color-mix(in oklab, var(--category-accent) 9%, transparent),
+    color-mix(in oklab, var(--category-accent) 2%, transparent) 60%
+  );
+}
+.category-callout::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: var(--category-accent);
+}
+
+/* A card about one category's ticket: the accent glows in from a corner. */
+.category-glow {
+  background-image: radial-gradient(
+    110% 55% at 0% 0%,
+    color-mix(in oklab, var(--category-accent) 11%, transparent),
+    transparent 70%
+  );
+}
+
+/* The row in focus, marked in its category's colour rather than grey. */
+.category-row-focus {
+  background: color-mix(in oklab, var(--category-accent) 7%, transparent);
+  box-shadow: inset 3px 0 0 var(--category-accent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .category-tile {
+    transition: none;
+  }
+  .category-tile:not(:disabled):not([aria-pressed="true"]):hover {
+    transform: none;
+  }
+}
+
+/* ---- category scenes ----------------------------------------------------- */
+
+/*
+ * The cards in "What task do teams outsource?", each headed by a small scene that
+ * acts out its category (`CategoryScene.tsx` says what each one shows).
+ *
+ * Each card takes its category's accent (see "category accents" above),
+ * which tints the stage, the scene's key parts and the icon tile.
+ *
+ * Every scene is drawn on a fixed 200×88 canvas, centred in the stage, so
+ * its parts can be placed in pixels and still sit in the middle of a card at
+ * any width. Each loop has its own length, so the six never pulse together.
+ * Where several parts share one loop, they stagger by `--i`, set in markup.
+ */
+.scene-card {
+  --scene-accent: var(--category-accent, var(--primary));
+  /* What a check, a done ticket or the flow of work is drawn in. */
+  --scene-ok: oklch(0.63 0.15 152);
+  /* Hairlines inside a scene: a ticket's edge, an empty sprint. */
+  --scene-ink: color-mix(in oklab, var(--foreground) 15%, transparent);
+  --scene-ticket: var(--card);
+  animation: scene-card-in 0.5s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  animation-delay: calc(var(--n, 0) * 60ms + 90ms);
+}
+
+.dark .scene-card {
+  --scene-ok: oklch(0.77 0.15 152);
+  --scene-ink: color-mix(in oklab, var(--foreground) 17%, transparent);
+  /* A step up from the card, as the card is from the page. */
+  --scene-ticket: color-mix(in oklab, var(--foreground) 9%, var(--card));
+}
+
+@keyframes scene-card-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+}
+
+/* The stage: a wash of the accent from the top, under a dot grid that fades
+   out toward the edges so the scene sits in a pool of it. */
+.scene {
+  position: relative;
+  display: block;
+  height: 7rem;
+  overflow: hidden;
+  border-bottom: 1px solid var(--border);
+  background:
+    radial-gradient(
+      120% 90% at 50% 0%,
+      color-mix(in oklab, var(--scene-accent) 16%, transparent),
+      transparent 70%
+    ),
+    color-mix(in oklab, var(--scene-accent) 4%, var(--card));
+}
+
+.scene::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(
+    circle at 1px 1px,
+    color-mix(in oklab, var(--scene-accent) 32%, transparent) 1px,
+    transparent 1.5px
+  );
+  background-size: 12px 12px;
+  background-position: 6px 6px;
+  -webkit-mask-image: radial-gradient(
+    ellipse 70% 80% at center,
+    #000 20%,
+    transparent 75%
+  );
+  mask-image: radial-gradient(
+    ellipse 70% 80% at center,
+    #000 20%,
+    transparent 75%
+  );
+}
+
+.scene-canvas {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 200px;
+  height: 88px;
+  margin: -44px 0 0 -100px;
+}
+
+.scene-canvas span {
+  display: block;
+  box-sizing: border-box;
+}
+
+.scene-canvas svg {
+  display: block;
+  overflow: visible;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* A ticket, as a card with two lines of title on it. */
+.scene-ticket {
+  position: absolute;
+  width: 38px;
+  height: 24px;
+  border-radius: 4px;
+  background: var(--scene-ticket);
+  border: 1px solid var(--scene-ink);
+  box-shadow:
+    0 1px 1px rgb(0 0 0 / 0.04),
+    0 4px 10px -5px rgb(0 0 0 / 0.2);
+}
+
+.scene-ticket::before,
+.scene-ticket::after {
+  content: "";
+  position: absolute;
+  left: 5px;
+  height: 3px;
+  border-radius: 2px;
+  background: color-mix(in oklab, var(--foreground) 22%, transparent);
+}
+
+.scene-ticket::before {
+  top: 6px;
+  width: 58%;
+}
+
+.scene-ticket::after {
+  top: 12px;
+  width: 34%;
+  background: color-mix(in oklab, var(--foreground) 12%, transparent);
+}
+
+/* The ticket the scene is about. */
+.scene-hero {
+  border-color: color-mix(in oklab, var(--scene-accent) 75%, transparent);
+  box-shadow:
+    0 0 0 3px color-mix(in oklab, var(--scene-accent) 16%, transparent),
+    0 6px 14px -8px color-mix(in oklab, var(--scene-accent) 80%, transparent);
+}
+
+.scene-hero::before {
+  background: var(--scene-accent);
+}
+
+.scene-fallback {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 2.25rem;
+  height: 2.25rem;
+  margin: -1.125rem 0 0 -1.125rem;
+  color: var(--scene-accent);
+  animation: scene-float 3s ease-in-out infinite alternate;
+}
+
+@keyframes scene-float {
+  from {
+    transform: translateY(3px);
+  }
+  to {
+    transform: translateY(-3px);
+  }
+}
+
+/* -- Left behind: the work streams past; one ticket stays, and fades. ---- */
+
+.lb-lane {
+  position: absolute;
+  left: -12px;
+  right: -12px;
+  top: 0;
+  height: 34px;
+  -webkit-mask-image: linear-gradient(
+    90deg,
+    transparent,
+    #000 18%,
+    #000 82%,
+    transparent
+  );
+  mask-image: linear-gradient(
+    90deg,
+    transparent,
+    #000 18%,
+    #000 82%,
+    transparent
+  );
+}
+
+/* The lane's rail, dashed in the accent. */
+.lb-lane::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 1px;
+  height: 1px;
+  background: repeating-linear-gradient(
+    90deg,
+    color-mix(in oklab, var(--scene-accent) 55%, transparent) 0 4px,
+    transparent 4px 8px
+  );
+}
+
+/* Two runs of five, so sliding one run's width brings the second exactly
+   where the first began. */
+.lb-track {
+  position: absolute;
+  left: 0;
+  top: 3px;
+  display: flex !important;
+  gap: 10px;
+  animation: lb-stream 7s linear infinite;
+}
+
+.lb-track .scene-ticket {
+  position: relative;
+  flex: none;
+}
+
+/* Done: its title line in the colour of done. */
+.lb-track .lb-done::before {
+  background: color-mix(in oklab, var(--scene-ok) 75%, transparent);
+}
+
+@keyframes lb-stream {
+  from {
+    transform: translateX(-240px);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+.lb-stuck {
+  left: 28px;
+  top: 47px;
+  width: 58px;
+  height: 34px;
+  opacity: 0.6;
+  filter: grayscale(0.6);
+  animation: lb-fade 6s ease-in-out infinite;
+}
+
+.lb-stuck::before {
+  top: 8px;
+}
+
+.lb-stuck::after {
+  top: 15px;
+}
+
+@keyframes lb-fade {
+  0%,
+  100% {
+    opacity: 1;
+    filter: none;
+    transform: translateY(0);
+  }
+  55% {
+    opacity: 0.35;
+    filter: grayscale(1);
+    transform: translateY(1.5px);
+  }
+}
+
+/* Flecks coming away from its top right corner, as in its icon. */
+.lb-dust {
+  position: absolute;
+  left: 82px;
+  top: 45px;
+  width: 3px;
+  height: 3px;
+  border-radius: 1px;
+  background: var(--scene-accent);
+  opacity: 0;
+  animation: lb-drift 4.5s ease-out infinite;
+  animation-delay: calc(var(--i) * -1.5s);
+}
+
+@keyframes lb-drift {
+  0% {
+    opacity: 0;
+    transform: translate(0, 0) rotate(0);
+  }
+  15% {
+    opacity: 0.9;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(
+        calc(12px + var(--i) * 6px),
+        calc(-10px - var(--i) * 4px)
+      )
+      rotate(120deg);
+  }
+}
+
+.lb-age {
+  position: absolute;
+  left: 98px;
+  top: 58px;
+  display: flex !important;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  line-height: 1;
+  color: var(--muted-foreground);
+}
+
+.lb-age svg {
+  width: 11px;
+  height: 11px;
+  stroke-width: 1.3;
+}
+
+.lb-hand {
+  transform-box: view-box;
+  transform-origin: 6px 6px;
+  animation: scene-spin 2.4s linear infinite;
+}
+
+@keyframes scene-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* -- Always next sprint: sprints slide by; the ticket hops to stay next. -- */
+
+.ns-label {
+  position: absolute;
+  top: 0;
+  left: calc(8px + var(--i) * 64px);
+  width: 56px;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 10px;
+  letter-spacing: 0.08em;
+  text-align: center;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+
+.ns-label-next {
+  color: color-mix(in oklab, var(--scene-accent) 80%, var(--foreground));
+}
+
+/* Six sprints from 64px left of the canvas, so the one that slides in from
+   the right is already drawn and the one leaving fades out. */
+.ns-strip {
+  position: absolute;
+  left: -56px;
+  top: 14px;
+  width: 320px;
+  height: 74px;
+  display: flex !important;
+  gap: 8px;
+  -webkit-mask-image: linear-gradient(
+    90deg,
+    transparent 30px,
+    #000 64px,
+    #000 236px,
+    transparent 280px
+  );
+  mask-image: linear-gradient(
+    90deg,
+    transparent 30px,
+    #000 64px,
+    #000 236px,
+    transparent 280px
+  );
+}
+
+.ns-sprint {
+  flex: none;
+  width: 56px;
+  height: 72px;
+  padding: 5px;
+  display: flex !important;
+  flex-direction: column;
+  gap: 4px;
+  border-radius: 6px;
+  border: 1px dashed var(--scene-ink);
+  background: color-mix(in oklab, var(--foreground) 3%, transparent);
+  animation: ns-shift 3.4s infinite;
+}
+
+/* The work that did get done in each sprint. */
+.ns-done {
+  position: relative;
+  height: 10px;
+  border-radius: 3px;
+  background: color-mix(in oklab, var(--scene-ok) 16%, transparent);
+  border: 1px solid color-mix(in oklab, var(--scene-ok) 38%, transparent);
+}
+
+.ns-done::after {
+  content: "";
+  position: absolute;
+  right: 3px;
+  top: 2px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--scene-ok);
+}
+
+.ns-done + .ns-done {
+  width: 70%;
+}
+
+@keyframes ns-shift {
+  0%,
+  50% {
+    transform: translateX(0);
+    animation-timing-function: cubic-bezier(0.6, 0, 0.3, 1);
+  }
+  80%,
+  100% {
+    transform: translateX(-64px);
+  }
+}
+
+.ns-hero {
+  position: absolute;
+  left: 77px;
+  top: 47px;
+  width: 46px;
+  height: 26px;
+  animation: ns-hop 3.4s infinite;
+}
+
+.ns-hero .scene-ticket {
+  width: 100%;
+  height: 100%;
+}
+
+@keyframes ns-hop {
+  0%,
+  48% {
+    transform: translateY(0) rotate(0);
+    animation-timing-function: cubic-bezier(0.3, 0, 0.3, 1);
+  }
+  58% {
+    transform: translateY(-15px) rotate(-5deg);
+  }
+  74% {
+    transform: translateY(-15px) rotate(4deg);
+    animation-timing-function: cubic-bezier(0.5, 0, 0.8, 0.4);
+  }
+  84% {
+    transform: translateY(0) rotate(0);
+  }
+  88% {
+    transform: scale(1.06, 0.9);
+  }
+  94%,
+  100% {
+    transform: none;
+  }
+}
+
+.ns-repeat {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  width: 10px;
+  height: 10px;
+  color: var(--scene-accent);
+  stroke-width: 2.6;
+  animation: ns-spin 3.4s infinite;
+}
+
+@keyframes ns-spin {
+  0%,
+  50% {
+    transform: rotate(0);
+    animation-timing-function: cubic-bezier(0.5, 0, 0.3, 1);
+  }
+  82%,
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+.ns-plus {
+  position: absolute;
+  left: 116px;
+  top: 38px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--scene-accent);
+  opacity: 0;
+  animation: ns-plus 3.4s ease-out infinite;
+}
+
+@keyframes ns-plus {
+  0%,
+  82% {
+    opacity: 0;
+    transform: translateY(2px) scale(0.6);
+  }
+  86% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-12px);
+  }
+}
+
+/* -- Quietly wanted: comments send their votes up; priority stays Low. --- */
+
+.qw-comment {
+  position: absolute;
+  left: 0;
+  top: calc(4px + var(--i) * 29px);
+  width: 104px;
+  height: 22px;
+  padding: 0 8px 0 5px;
+  display: flex !important;
+  align-items: center;
+  gap: 6px;
+  border-radius: 9px 9px 9px 3px;
+  background: var(--scene-ticket);
+  border: 1px solid var(--scene-ink);
+  box-shadow: 0 4px 10px -6px rgb(0 0 0 / 0.25);
+  animation: 6s ease-out infinite;
+}
+
+/* One loop each, so they arrive one after another and leave together. */
+.qw-0 {
+  animation-name: qw-in-0;
+}
+.qw-1 {
+  animation-name: qw-in-1;
+}
+.qw-2 {
+  animation-name: qw-in-2;
+}
+
+.qw-avatar {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: oklch(0.72 0.11 calc(var(--i) * 110 + 30));
+}
+
+.qw-line {
+  flex: 1;
+  height: 3px;
+  border-radius: 2px;
+  background: color-mix(in oklab, var(--foreground) 20%, transparent);
+}
+
+.qw-1 .qw-line {
+  margin-right: 14px;
+}
+
+@keyframes qw-in-0 {
+  0% {
+    opacity: 0;
+    transform: translateY(6px) scale(0.96);
+  }
+  5%,
+  84% {
+    opacity: 1;
+    transform: none;
+  }
+  90%,
+  100% {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+}
+
+@keyframes qw-in-1 {
+  0%,
+  10% {
+    opacity: 0;
+    transform: translateY(6px) scale(0.96);
+  }
+  15%,
+  84% {
+    opacity: 1;
+    transform: none;
+  }
+  90%,
+  100% {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+}
+
+@keyframes qw-in-2 {
+  0%,
+  20% {
+    opacity: 0;
+    transform: translateY(6px) scale(0.96);
+  }
+  25%,
+  84% {
+    opacity: 1;
+    transform: none;
+  }
+  90%,
+  100% {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+}
+
+/* Each comment's upvote, flown from its end to the counter. One loop,
+   staggered: an upvote is only on screen while it flies. */
+.qw-fly {
+  --dx: 44px;
+  --dy: calc(10px - var(--i) * 29px);
+  position: absolute;
+  left: 94px;
+  top: calc(9px + var(--i) * 29px);
+  width: 12px;
+  height: 12px;
+  color: var(--scene-accent);
+  opacity: 0;
+  animation: qw-fly 6s cubic-bezier(0.4, 0, 0.3, 1) infinite both;
+  animation-delay: calc(var(--i) * 0.6s);
+}
+
+.qw-fly svg {
+  width: 100%;
+  height: 100%;
+  stroke-width: 2.4;
+}
+
+@keyframes qw-fly {
+  0%,
+  6% {
+    opacity: 0;
+    transform: translate(0, 0) scale(0.6);
+  }
+  8% {
+    opacity: 1;
+    transform: translate(0, -2px) scale(1);
+  }
+  15% {
+    opacity: 1;
+    transform: translate(var(--dx), var(--dy)) scale(0.8);
+  }
+  17%,
+  100% {
+    opacity: 0;
+    transform: translate(var(--dx), var(--dy)) scale(0.5);
+  }
+}
+
+.qw-votes {
+  position: absolute;
+  left: 118px;
+  top: 4px;
+  width: 80px;
+  height: 42px;
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  border-radius: 9px;
+  background: var(--scene-ticket);
+  border: 1px solid color-mix(in oklab, var(--scene-accent) 55%, transparent);
+  box-shadow: 0 0 0 3px
+    color-mix(in oklab, var(--scene-accent) 14%, transparent);
+}
+
+.qw-arrow {
+  width: 16px;
+  height: 16px;
+  color: var(--scene-accent);
+  animation: qw-pop 6s infinite;
+}
+
+.qw-arrow svg {
+  width: 100%;
+  height: 100%;
+  stroke-width: 2.2;
+}
+
+@keyframes qw-pop {
+  0%,
+  15%,
+  20%,
+  25%,
+  30%,
+  35%,
+  40%,
+  100% {
+    transform: none;
+  }
+  17%,
+  27%,
+  37% {
+    transform: translateY(-2px) scale(1.35);
+  }
+}
+
+/* An odometer: the four counts stacked, slid up one at a time. */
+.qw-count {
+  height: 16px;
+  overflow: hidden;
+}
+
+.qw-digits {
+  transform: translateY(-48px);
+  animation: qw-tick 6s infinite;
+}
+
+.qw-digits span {
+  height: 16px;
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 16px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+@keyframes qw-tick {
+  0%,
+  15% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  17%,
+  25% {
+    transform: translateY(-16px);
+  }
+  27%,
+  35% {
+    transform: translateY(-32px);
+  }
+  37%,
+  86% {
+    opacity: 1;
+    transform: translateY(-48px);
+  }
+  90% {
+    opacity: 0;
+    transform: translateY(-48px);
+  }
+  91% {
+    opacity: 0;
+    transform: translateY(0);
+  }
+  96%,
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* What the priority field says throughout. */
+.qw-priority {
+  position: absolute;
+  left: 118px;
+  top: 58px;
+  width: 80px;
+  height: 22px;
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border-radius: 11px;
+  border: 1px dashed var(--scene-ink);
+  font-size: 9.5px;
+  font-weight: 500;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+
+.qw-priority-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: color-mix(in oklab, var(--foreground) 25%, transparent);
+}
+
+/* -- Holding others up: one blocker, three waiting; it clears, all flow. -- */
+
+.ho-graph {
+  position: absolute;
+  inset: 0;
+  width: 200px;
+  height: 88px;
+}
+
+.ho-card {
+  fill: var(--scene-ticket);
+  stroke: var(--scene-ink);
+  stroke-width: 1;
+}
+
+.ho-blocker {
+  stroke: var(--scene-accent);
+  stroke-width: 1.25;
+}
+
+/* Laid over the blocker's edge when it clears, rather than the edge's own
+   colour animated: red to green passes through olive on the way. */
+.ho-blocker-lit {
+  fill: none;
+  stroke: var(--scene-ok);
+  stroke-width: 1.25;
+  opacity: 0;
+  animation: ho-blocker-lit 6s infinite;
+}
+
+@keyframes ho-blocker-lit {
+  0%,
+  46% {
+    opacity: 0;
+  }
+  51%,
+  90% {
+    opacity: 1;
+  }
+  96%,
+  100% {
+    opacity: 0;
+  }
+}
+
+.ho-text {
+  stroke: color-mix(in oklab, var(--foreground) 20%, transparent);
+  stroke-width: 3;
+}
+
+/* Waiting: a dotted line, marching toward the blocker. */
+.ho-edge {
+  stroke: color-mix(in oklab, var(--foreground) 24%, transparent);
+  stroke-width: 1.5;
+  stroke-dasharray: 2 4;
+  animation: ho-march 0.9s linear infinite;
+}
+
+@keyframes ho-march {
+  to {
+    stroke-dashoffset: 6;
+  }
+}
+
+/* Unblocked: the same line, drawn solid out to each in turn. */
+.ho-flow {
+  stroke: var(--scene-ok);
+  stroke-width: 2;
+  stroke-dasharray: 1 1;
+  stroke-dashoffset: 1;
+  animation: ho-flow 6s ease-out infinite both;
+  animation-delay: calc(var(--i) * 0.15s);
+}
+
+@keyframes ho-flow {
+  0%,
+  50% {
+    stroke-dashoffset: 1;
+    opacity: 1;
+  }
+  60%,
+  88% {
+    stroke-dashoffset: 0;
+    opacity: 1;
+  }
+  95% {
+    stroke-dashoffset: 0;
+    opacity: 0;
+  }
+  100% {
+    stroke-dashoffset: 1;
+    opacity: 0;
+  }
+}
+
+/* The waiting cards strain toward the blocker with each ripple. */
+.ho-waiting {
+  animation: ho-strain 6s ease-in-out infinite both;
+  animation-delay: calc(var(--i) * 0.12s);
+}
+
+@keyframes ho-strain {
+  0%,
+  10%,
+  26%,
+  100% {
+    transform: translateX(0);
+  }
+  5%,
+  21% {
+    transform: translateX(-2.5px);
+  }
+}
+
+.ho-card-lit {
+  fill: color-mix(in oklab, var(--scene-ok) 14%, var(--scene-ticket));
+  stroke: color-mix(in oklab, var(--scene-ok) 75%, transparent);
+  stroke-width: 1.25;
+  opacity: 0;
+  animation: ho-lit 6s infinite both;
+  animation-delay: calc(var(--i) * 0.15s);
+}
+
+@keyframes ho-lit {
+  0%,
+  57% {
+    opacity: 0;
+  }
+  62%,
+  88% {
+    opacity: 1;
+  }
+  95%,
+  100% {
+    opacity: 0;
+  }
+}
+
+/* A dashed ring turning: still waiting. */
+.ho-wait {
+  stroke: color-mix(in oklab, var(--foreground) 35%, transparent);
+  stroke-width: 1.4;
+  stroke-dasharray: 3 2.5;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation:
+    scene-spin 2s linear infinite,
+    ho-wait 6s infinite both;
+  animation-delay: 0s, calc(var(--i) * 0.15s);
+}
+
+@keyframes ho-wait {
+  0%,
+  57% {
+    opacity: 1;
+  }
+  60%,
+  92% {
+    opacity: 0;
+  }
+  97%,
+  100% {
+    opacity: 1;
+  }
+}
+
+.ho-tick {
+  transform-box: fill-box;
+  transform-origin: center;
+  opacity: 0;
+  animation: ho-tick 6s infinite both;
+  animation-delay: calc(var(--i) * 0.15s);
+}
+
+.ho-tick circle,
+.ho-free circle {
+  fill: var(--scene-ok);
+  stroke: none;
+}
+
+.ho-tick path,
+.ho-free path,
+.ho-block path {
+  stroke: var(--background);
+  stroke-width: 1.6;
+}
+
+.ho-free path,
+.ho-block path {
+  stroke-width: 2;
+}
+
+@keyframes ho-tick {
+  0%,
+  59% {
+    opacity: 0;
+    transform: scale(0.4);
+  }
+  63% {
+    opacity: 1;
+    transform: scale(1.25);
+  }
+  66%,
+  88% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  94%,
+  100% {
+    opacity: 0;
+    transform: scale(1);
+  }
+}
+
+.ho-block circle {
+  fill: var(--scene-accent);
+  stroke: none;
+}
+
+.ho-block,
+.ho-free,
+.ho-ripple {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.ho-block {
+  animation: ho-block 6s infinite;
+}
+
+@keyframes ho-block {
+  0%,
+  40% {
+    opacity: 1;
+    transform: none;
+  }
+  /* A last shove before it gives. */
+  42% {
+    transform: rotate(-12deg);
+  }
+  44% {
+    transform: rotate(10deg) scale(1.1);
+  }
+  46% {
+    opacity: 1;
+    transform: scale(1.15);
+  }
+  50%,
+  94% {
+    opacity: 0;
+    transform: scale(0);
+  }
+  98% {
+    opacity: 1;
+    transform: scale(1.1);
+  }
+  100% {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.ho-free {
+  opacity: 0;
+  animation: ho-free 6s infinite;
+}
+
+@keyframes ho-free {
+  0%,
+  47% {
+    opacity: 0;
+    transform: scale(0);
+  }
+  52% {
+    opacity: 1;
+    transform: scale(1.25);
+  }
+  55%,
+  89% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  94%,
+  100% {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+}
+
+.ho-ripple {
+  stroke: var(--scene-accent);
+  stroke-width: 1.5;
+  opacity: 0;
+  animation: ho-ripple 6s ease-out infinite both;
+  animation-delay: calc(var(--i, 0) * 1s);
+}
+
+@keyframes ho-ripple {
+  0% {
+    opacity: 0.8;
+    transform: scale(1);
+  }
+  22%,
+  100% {
+    opacity: 0;
+    transform: scale(2.8);
+  }
+}
+
+/* -- Paper cuts: a scan passes down the window, fixing each bug it meets. -- */
+
+.pc-window {
+  position: absolute;
+  left: 22px;
+  top: 1px;
+  width: 156px;
+  height: 86px;
+  overflow: hidden;
+  border-radius: 7px;
+  background: var(--scene-ticket);
+  border: 1px solid var(--scene-ink);
+  box-shadow:
+    0 1px 1px rgb(0 0 0 / 0.04),
+    0 10px 22px -14px rgb(0 0 0 / 0.4);
+}
+
+.pc-bar {
+  height: 14px;
+  padding-left: 6px;
+  display: flex !important;
+  align-items: center;
+  gap: 3px;
+  border-bottom: 1px solid var(--scene-ink);
+}
+
+.pc-bar span {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: color-mix(in oklab, var(--foreground) 18%, transparent);
+}
+
+.pc-row {
+  position: absolute;
+  left: 7px;
+  right: 7px;
+  top: calc(19px + var(--i) * 21px);
+  height: 17px;
+  padding-left: 6px;
+  display: flex !important;
+  align-items: center;
+  border-radius: 4px;
+  animation: pc-row 6s infinite both;
+  animation-delay: calc(var(--i) * 0.96s);
+}
+
+.pc-text {
+  width: calc(84px - var(--i) * 16px);
+  height: 3px;
+  border-radius: 2px;
+  background: color-mix(in oklab, var(--foreground) 20%, transparent);
+}
+
+@keyframes pc-row {
+  0%,
+  19% {
+    background: transparent;
+  }
+  22% {
+    background: color-mix(in oklab, var(--scene-ok) 22%, transparent);
+  }
+  32%,
+  82% {
+    background: color-mix(in oklab, var(--scene-ok) 8%, transparent);
+  }
+  88%,
+  100% {
+    background: transparent;
+  }
+}
+
+.pc-bug,
+.pc-check {
+  position: absolute;
+  right: 4px;
+  top: 2.5px;
+  width: 12px;
+  height: 12px;
+}
+
+.pc-bug {
+  animation: pc-bug 6s infinite both;
+  animation-delay: calc(var(--i) * 0.96s);
+}
+
+.pc-bug svg {
+  width: 100%;
+  height: 100%;
+  stroke: var(--destructive);
+  stroke-width: 1;
+  animation: pc-scuttle 0.45s ease-in-out infinite alternate;
+  animation-delay: calc(var(--i) * -0.2s);
+}
+
+.pc-bug ellipse {
+  fill: var(--destructive);
+  stroke: none;
+}
+
+.pc-bug circle {
+  fill: color-mix(in oklab, var(--destructive) 55%, var(--foreground));
+  stroke: none;
+}
+
+@keyframes pc-scuttle {
+  from {
+    transform: translateX(-1px) rotate(-12deg);
+  }
+  to {
+    transform: translateX(1px) rotate(12deg);
+  }
+}
+
+@keyframes pc-bug {
+  0%,
+  18% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  20% {
+    opacity: 1;
+    transform: scale(1.35);
+  }
+  23%,
+  84% {
+    opacity: 0;
+    transform: scale(0);
+  }
+  90%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.pc-check {
+  border-radius: 50%;
+  background: var(--scene-ok);
+  opacity: 0;
+  transform: scale(0);
+  animation: pc-check 6s infinite both;
+  animation-delay: calc(var(--i) * 0.96s);
+}
+
+.pc-check svg {
+  width: 100%;
+  height: 100%;
+  stroke: var(--background);
+  stroke-width: 1.8;
+}
+
+@keyframes pc-check {
+  0%,
+  20% {
+    opacity: 0;
+    transform: scale(0);
+  }
+  24% {
+    opacity: 1;
+    transform: scale(1.3);
+  }
+  27%,
+  82% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  86%,
+  100% {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+}
+
+/* A soft band with a hard leading edge: its bottom border is the scan line,
+   at a row's middle when that row's bug goes. */
+.pc-scan {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 14px;
+  background: linear-gradient(
+    180deg,
+    transparent,
+    color-mix(in oklab, var(--scene-accent) 22%, transparent)
+  );
+  border-bottom: 1.5px solid var(--scene-accent);
+  opacity: 0;
+  animation: pc-scan 6s linear infinite;
+}
+
+@keyframes pc-scan {
+  0%,
+  8% {
+    opacity: 0;
+    transform: translateY(0);
+  }
+  10% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  62% {
+    opacity: 1;
+    transform: translateY(67.5px);
+  }
+  66%,
+  100% {
+    opacity: 0;
+    transform: translateY(72px);
+  }
+}
+
+/* -- Deadline exposed: today runs at the flag; the bar warms as it goes. -- */
+
+.scene-card[data-category="deadline-exposed"] {
+  /* The bar's three temperatures: on track, close, late. */
+  --heat-1: oklch(0.6 0.15 152);
+  --heat-2: oklch(0.69 0.16 58);
+  --heat-3: oklch(0.6 0.21 25);
+}
+
+.de-track {
+  position: absolute;
+  left: 10px;
+  top: 62px;
+  width: 180px;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: color-mix(in oklab, var(--foreground) 10%, transparent);
+}
+
+.de-fill {
+  /* To where today stops: its label clear of the pole. */
+  width: 138px;
+  height: 100%;
+  border-radius: 2px;
+  transform-origin: left;
+  transform: scaleX(0.79);
+  background: var(--heat-2);
+  animation:
+    de-fill 6s infinite,
+    de-heat 6s linear infinite;
+}
+
+@keyframes de-fill {
+  0% {
+    opacity: 0;
+    transform: scaleX(0.03);
+  }
+  5% {
+    opacity: 1;
+    transform: scaleX(0.03);
+    animation-timing-function: cubic-bezier(0.35, 0, 0.8, 0.55);
+  }
+  84%,
+  92% {
+    opacity: 1;
+    transform: scaleX(1);
+  }
+  97%,
+  100% {
+    opacity: 0;
+    transform: scaleX(1);
+  }
+}
+
+@keyframes de-heat {
+  0%,
+  10% {
+    background-color: var(--heat-1);
+  }
+  50% {
+    background-color: var(--heat-2);
+  }
+  80%,
+  100% {
+    background-color: var(--heat-3);
+  }
+}
+
+/* A day a tick. */
+.de-ticks {
+  position: absolute;
+  left: 10px;
+  top: 70px;
+  width: 180px;
+  height: 4px;
+  background: repeating-linear-gradient(
+    90deg,
+    color-mix(in oklab, var(--foreground) 20%, transparent) 0 1px,
+    transparent 1px 12px
+  );
+}
+
+.de-flag {
+  position: absolute;
+  left: 166px;
+  top: 22px;
+}
+
+.de-pole {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1.5px;
+  height: 42px;
+  border-radius: 1px;
+  background: color-mix(in oklab, var(--foreground) 50%, transparent);
+}
+
+.de-cloth {
+  position: absolute;
+  left: 1.5px;
+  top: 0;
+  width: 32px;
+  height: 15px;
+  padding-left: 4px;
+  font-size: 8px;
+  font-weight: 750;
+  line-height: 15px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: oklch(0.28 0.06 60);
+  background: var(--scene-accent);
+  clip-path: polygon(0 0, 100% 0, 82% 50%, 100% 100%, 0 100%);
+  transform-origin: left center;
+  animation: de-wave 1.4s ease-in-out infinite alternate;
+}
+
+@keyframes de-wave {
+  from {
+    transform: skewY(0) scaleX(1);
+  }
+  to {
+    transform: skewY(-7deg) scaleX(0.92);
+  }
+}
+
+/* Rings from the foot of the pole while today is up against it. */
+.de-pulse {
+  position: absolute;
+  left: -7.25px;
+  top: 34px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid var(--heat-3);
+  opacity: 0;
+  animation: de-pulse 6s ease-out infinite;
+}
+
+@keyframes de-pulse {
+  0%,
+  78% {
+    opacity: 0;
+    transform: scale(0.4);
+  }
+  80% {
+    opacity: 0.9;
+    transform: scale(0.5);
+  }
+  87% {
+    opacity: 0;
+    transform: scale(1.9);
+  }
+  88% {
+    opacity: 0.9;
+    transform: scale(0.5);
+  }
+  95%,
+  100% {
+    opacity: 0;
+    transform: scale(1.9);
+  }
+}
+
+.de-today {
+  position: absolute;
+  left: 14px;
+  top: 0;
+  width: 0;
+  height: 88px;
+  transform: translateX(105px);
+  animation: de-move 6s infinite;
+}
+
+@keyframes de-move {
+  0% {
+    opacity: 0;
+    transform: translateX(0);
+  }
+  5% {
+    opacity: 1;
+    transform: translateX(0);
+    animation-timing-function: cubic-bezier(0.35, 0, 0.8, 0.55);
+  }
+  84% {
+    transform: translateX(134px);
+  }
+  /* Pressed up against it. */
+  86% {
+    transform: translateX(131.5px);
+  }
+  88% {
+    transform: translateX(134px);
+  }
+  90% {
+    transform: translateX(132.5px);
+  }
+  92% {
+    opacity: 1;
+    transform: translateX(134px);
+  }
+  97%,
+  100% {
+    opacity: 0;
+    transform: translateX(134px);
+  }
+}
+
+/* From the label down to the dot on the bar. */
+.de-today::before {
+  content: "";
+  position: absolute;
+  left: -0.5px;
+  top: 50px;
+  width: 1px;
+  height: 10px;
+  background: color-mix(in oklab, var(--foreground) 30%, transparent);
+}
+
+.de-left {
+  position: absolute;
+  left: -14px;
+  top: 34px;
+  width: 28px;
+  height: 16px;
+  overflow: hidden;
+  border-radius: 5px;
+  background: var(--heat-2);
+  animation: de-heat 6s linear infinite;
+}
+
+.de-days {
+  transform: translateY(-32px);
+  animation: de-days 6s infinite;
+}
+
+.de-days span {
+  height: 16px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  font-weight: 650;
+  line-height: 16px;
+  text-align: center;
+  color: oklch(0.99 0 0);
+}
+
+@keyframes de-days {
+  0%,
+  22% {
+    transform: translateY(0);
+  }
+  25%,
+  46% {
+    transform: translateY(-16px);
+  }
+  49%,
+  66% {
+    transform: translateY(-32px);
+  }
+  69%,
+  100% {
+    transform: translateY(-48px);
+  }
+}
+
+.de-dot {
+  position: absolute;
+  left: -6px;
+  top: 58px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2.5px solid var(--card);
+  background: var(--heat-2);
+  box-shadow: 0 0 0 1px color-mix(in oklab, var(--foreground) 15%, transparent);
+  animation: de-heat 6s linear infinite;
+}
+
+/*
+ * Still, each scene stands on a frame that tells the same story: the ticket
+ * half faded under the lane, three comments and fifteen votes against a Low,
+ * the blocker with its three waiting, one bug fixed of three, and today two
+ * thirds of the way to the flag. Everything those frames need is in the
+ * rules above, outside the keyframes; only the first row's fix is not.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .scene-card,
+  .scene-card .scene *,
+  .scene-card .scene *::before,
+  .scene-card .scene *::after {
+    animation: none;
+  }
+
+  .scene-card .pc-row:nth-child(2) .pc-bug {
+    opacity: 0;
+  }
+
+  .scene-card .pc-row:nth-child(2) .pc-check {
+    opacity: 1;
+    transform: none;
+  }
+
+  .scene-card .pc-row:nth-child(2) {
+    background: color-mix(in oklab, var(--scene-ok) 8%, transparent);
+  }
+}
+
+/* ---- getting started ----------------------------------------------------- */
+
+/*
+ * The getting-started steps as a progress bar of chevrons: each step an arrow
+ * whose point sits in the notch of the next, a few pixels apart, so the row
+ * reads left to right as one track. On a phone the steps stack and the arrows
+ * point down instead.
+ *
+ * Shapes by `clip-path`, which cannot draw a border, so the states are told
+ * apart by fill alone: green when done, the brand blue's tint when current,
+ * muted when still to come. The first and last keep rounded outer corners:
+ * `border-radius` clips as well, and the two intersect.
+ */
+.setup-chevrons {
+  --chevron-tip: 16px;
+  --chevron-gap: 4px;
+  --chevron-ok: oklch(0.63 0.15 152);
+  display: flex;
+  flex-direction: column;
+  filter: drop-shadow(0 1px 1px rgb(0 0 0 / 0.05));
+}
+
+.dark .setup-chevrons {
+  --chevron-ok: oklch(0.77 0.15 152);
+}
+
+.setup-chevron {
+  position: relative;
+  display: flex;
+  gap: 0.75rem;
+  min-width: 0;
+  padding: 0.875rem 1rem;
+  background: color-mix(in oklab, var(--muted) 85%, transparent);
+  /* Pointing down: a point at the foot, a notch at the head. */
+  clip-path: polygon(
+    0 0,
+    50% var(--chevron-tip),
+    100% 0,
+    100% calc(100% - var(--chevron-tip)),
+    50% 100%,
+    0 calc(100% - var(--chevron-tip))
+  );
+  padding-top: calc(0.875rem + var(--chevron-tip));
+  padding-bottom: calc(0.875rem + var(--chevron-tip));
+  margin-top: calc(var(--chevron-gap) - var(--chevron-tip));
+  transition: background-color 0.2s ease;
+}
+
+.setup-chevron:first-child {
+  margin-top: 0;
+  padding-top: 0.875rem;
+  border-radius: 0.75rem 0.75rem 0 0;
+  clip-path: polygon(
+    0 0,
+    100% 0,
+    100% calc(100% - var(--chevron-tip)),
+    50% 100%,
+    0 calc(100% - var(--chevron-tip))
+  );
+}
+
+.setup-chevron:last-child {
+  padding-bottom: 0.875rem;
+  border-radius: 0 0 0.75rem 0.75rem;
+  clip-path: polygon(0 0, 50% var(--chevron-tip), 100% 0, 100% 100%, 0 100%);
+}
+
+.setup-chevron:only-child {
+  border-radius: 0.75rem;
+  clip-path: none;
+}
+
+.setup-chevron[data-state="done"] {
+  background: color-mix(in oklab, var(--chevron-ok) 13%, var(--card));
+}
+
+.setup-chevron[data-state="current"] {
+  background: color-mix(in oklab, var(--primary) 11%, var(--card));
+}
+
+.setup-chevron-mark {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 1.5rem;
+  height: 1.5rem;
+  margin-top: -0.125rem;
+  border-radius: 50%;
+  border: 1.5px solid color-mix(in oklab, var(--foreground) 22%, transparent);
+  font-size: 0.75rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted-foreground);
+}
+
+.setup-chevron[data-state="done"] .setup-chevron-mark {
+  border-color: transparent;
+  background: var(--chevron-ok);
+  color: var(--background);
+}
+
+.setup-chevron[data-state="current"] .setup-chevron-mark {
+  border-color: transparent;
+  background: var(--brand-fill);
+  color: var(--brand-fill-foreground);
+  animation: setup-beacon 2.4s ease-out infinite;
+}
+
+/* The current step's mark sends out a ring now and then: this one is next. */
+@keyframes setup-beacon {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in oklab, var(--primary) 45%, transparent);
+  }
+  60%,
+  100% {
+    box-shadow: 0 0 0 7px color-mix(in oklab, var(--primary) 0%, transparent);
+  }
+}
+
+.setup-chevron-done {
+  color: color-mix(in oklab, var(--chevron-ok) 70%, var(--foreground));
+}
+
+.setup-meter {
+  background: var(--brand-fill);
+  transition: width 0.5s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+/* Side by side from `sm`: the arrows point right. */
+@media (min-width: 640px) {
+  .setup-chevrons {
+    flex-direction: row;
+  }
+
+  .setup-chevron {
+    flex: 1 1 0;
+    padding: 1rem calc(1rem + var(--chevron-tip)) 1rem
+      calc(1rem + var(--chevron-tip));
+    margin-top: 0;
+    margin-left: calc(var(--chevron-gap) - var(--chevron-tip));
+    clip-path: polygon(
+      0 0,
+      calc(100% - var(--chevron-tip)) 0,
+      100% 50%,
+      calc(100% - var(--chevron-tip)) 100%,
+      0 100%,
+      var(--chevron-tip) 50%
+    );
+  }
+
+  .setup-chevron:first-child {
+    margin-left: 0;
+    padding-left: 1.125rem;
+    padding-top: 1rem;
+    border-radius: 0.75rem 0 0 0.75rem;
+    clip-path: polygon(
+      0 0,
+      calc(100% - var(--chevron-tip)) 0,
+      100% 50%,
+      calc(100% - var(--chevron-tip)) 100%,
+      0 100%
+    );
+  }
+
+  .setup-chevron:last-child {
+    padding-right: 1.125rem;
+    padding-bottom: 1rem;
+    border-radius: 0 0.75rem 0.75rem 0;
+    clip-path: polygon(0 0, 100% 0, 100% 100%, 0 100%, var(--chevron-tip) 50%);
+  }
+
+  .setup-chevron:only-child {
+    padding: 1rem 1.125rem;
+    border-radius: 0.75rem;
+    clip-path: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .setup-chevron-mark,
+  .setup-chevron[data-state="current"] .setup-chevron-mark {
+    animation: none;
+  }
+
+  .setup-meter,
+  .setup-chevron {
+    transition: none;
+  }
+}

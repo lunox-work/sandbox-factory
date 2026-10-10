@@ -1702,7 +1702,7 @@ function BountyDetail({
             No sandbox yet.
             {!readOnly &&
               (canManage
-                ? " Create one to cut the task contributors work in."
+                ? " Create one to slice the task contributors work in."
                 : " An owner or admin can create one.")}
           </p>
           {managesSandbox && (

@@ -1,4 +1,3 @@
-import { isWorkspaceSource } from "@sandbox-factory/shared";
 import { rankAtLeast } from "sandbox-factory";
 /**
  * Connected Jira sites, for one organization.
@@ -28,7 +27,7 @@ import {
   Trash2,
   TriangleAlert,
 } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { ErrorBanner, LoadingLine, RetryableError } from "@/components/Message";
@@ -54,12 +53,6 @@ import { cn } from "@/lib/utils";
 
 import { JiraIcon } from "./ProviderIcon";
 import { bountiesUrl, isPlainLeftClick } from "./routes";
-import {
-  BacklogScan,
-  type RepositoryAction,
-} from "./features/onboarding/BacklogScan";
-import { pushLocation } from "./navigation/location";
-import { useGithubRepos } from "./useGithub";
 
 import {
   useJira,
@@ -269,7 +262,7 @@ export function ConnectionRow({
 }
 
 /** A Jira read that failed, in the words the person can act on. */
-function BoardsError({
+export function BoardsError({
   error,
   onReconnect,
   onRetry,
@@ -650,97 +643,6 @@ function SiteBoardsCard({
         )}
       </CardContent>
     </Card>
-  );
-}
-
-/**
- * One board on home: its backlog scan, under home's own greeting.
- *
- * The scan is what on the board is worth outsourcing, read for free. Its
- * tickets in a category are imported as bounties when the site is connected
- * or synced, so the board's own list is the bounties page narrowed to it,
- * which the link below the scan opens; there is no board page of its own.
- */
-export function JiraBoard({
-  organizationId,
-  organizationSlug,
-  boardId,
-  role,
-  header,
-  repositoryAction,
-}: {
-  organizationId: string;
-  /** The workspace's handle, which the board's bounties are addressed by. */
-  organizationSlug: string;
-  boardId: string;
-  role?: string | undefined;
-  /** Home's greeting and the board picker, above the scan. */
-  header: ReactNode;
-  /**
-   * How a workspace with no repository to link gets one: connecting GitHub,
-   * or picking one from an account already connected. A workspace that has
-   * one links it here, above the scan, which this works out for itself.
-   */
-  repositoryAction?: RepositoryAction | undefined;
-}) {
-  const { error, refresh } = useJiraBoards(organizationId);
-  const { connect } = useJira(organizationId);
-  const { repos } = useGithubRepos(organizationId);
-  // Any of them may be what a ticket's work touches: the board names none.
-  const sources = repos.filter(isWorkspaceSource);
-  const { outcome, missingScopes, dismiss } = useJiraOutcome();
-  const bountiesHref = bountiesUrl(null, {
-    board: { workspace: organizationSlug, boardId },
-  });
-
-  return (
-    <main className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-4 py-10 sm:px-6 sm:py-14">
-      {header}
-
-      {outcome !== null && (
-        <OutcomeBanner
-          outcome={outcome}
-          missingScopes={missingScopes}
-          onDismiss={dismiss}
-        />
-      )}
-
-      {error !== null && (
-        <BoardsError
-          error={error}
-          onReconnect={canManage(role ?? "") ? () => connect() : undefined}
-          onRetry={() => void refresh()}
-        />
-      )}
-
-      <BacklogScan
-        // Folded or not is decided once per board.
-        key={boardId}
-        organizationId={organizationId}
-        organizationSlug={organizationSlug}
-        boardId={boardId}
-        canManage={canManage(role ?? "")}
-        repositories={sources}
-        repositoryAction={repositoryAction}
-      />
-
-      <p className="text-muted-foreground text-sm">
-        Its tickets in a category are bounties already, with their overview from
-        Jira.{" "}
-        <a
-          href={bountiesHref}
-          className="text-foreground font-medium underline-offset-4 hover:underline"
-          onClick={(event) => {
-            if (isPlainLeftClick(event)) {
-              event.preventDefault();
-              pushLocation(bountiesHref);
-            }
-          }}
-        >
-          See this board&rsquo;s bounties
-        </a>
-      </p>
-    </main>
   );
 }
 

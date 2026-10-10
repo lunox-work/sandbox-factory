@@ -12,9 +12,13 @@ product proposals and historical explainers are optional design context.
   repositories are synced into it on request as versioned context: the
   issue's fields and the repositories' documents. Sizing
   and sandbox generation are given it, and each step says which versions it used.
-- Home adapts to what a workspace has connected. Jira gives a free backlog
-  scan for the six kinds of outsourceable work; GitHub a repository x-ray.
-  Nothing is sized until someone sizes a ticket, or asks for a whole board.
+- Until a workspace has done every onboarding step, onboarding is the only
+  page the rail offers; after, home and bounties are, and onboarding is not.
+  Onboarding has the ways in, the getting-started checklist, a GitHub
+  repository's x-ray and, once Jira is connected, a board's free backlog scan
+  for the six kinds of outsourceable work. Nothing is sized until someone
+  sizes a ticket, or asks for a whole board; where GitHub is offered, neither
+  is allowed until a repository is connected.
 - A connected board's scan is imported as bounties with their overview and
   Jira context filled, and nothing sized. The bounty list filters by
   category and by board; a board's view is that list, where its issues are

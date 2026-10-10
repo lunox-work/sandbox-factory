@@ -2,49 +2,27 @@
  * Getting started: the three steps from an empty workspace to a first
  * bounty, with where the workspace is on them.
  *
- * A strip at the head of home rather than a page of its own. The steps are
- * not a wizard to finish before anything works — every stage of home is
- * useful on its own — so they sit above the work, say what is done, and
- * give the one step to take now a button. The rest are named so a person can
- * see what comes after, not offered all at once.
+ * The spine of the onboarding page. The steps are not a wizard to finish
+ * before anything works — home is useful at every stage — so they say what
+ * is done and give the one step to take now a button. The rest are named so
+ * a person can see what comes after, not offered all at once.
  *
- * Gone once every step is done, and hideable before that, per person and per
- * workspace: someone who means to write bounties by hand has no use for a
- * standing reminder to connect Jira.
+ * Drawn as a progress bar of chevrons, each step an arrow pointing at the
+ * next: done ones in green, the current one in the brand blue with its
+ * button, the rest muted. The chevrons are `index.css`'s, under "getting
+ * started"; they turn to point down when the steps stack on a phone.
+ *
+ * Never hidden: not with a button, not before the first step, not after the
+ * last. On a page someone opened to see where setup stands, "all done" is the
+ * answer, not an empty space.
  */
 
-import { Check, X } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { Check } from "lucide-react";
+import type { ReactNode } from "react";
 
 import { Button } from "@/components/ui/button";
 
 import { setupSteps, type SetupFacts, type SetupStepId } from "./setup";
-
-function hiddenKey(userId: string, organizationId: string): string {
-  return `lunox:setup-hidden:${userId}:${organizationId}`;
-}
-
-/** Storage can be missing or throw; a miss reads as not hidden. */
-export function readSetupHidden(
-  userId: string,
-  organizationId: string,
-): boolean {
-  try {
-    return (
-      window.localStorage.getItem(hiddenKey(userId, organizationId)) === "1"
-    );
-  } catch {
-    return false;
-  }
-}
-
-function writeSetupHidden(userId: string, organizationId: string): void {
-  try {
-    window.localStorage.setItem(hiddenKey(userId, organizationId), "1");
-  } catch {
-    // Hidden for this visit only.
-  }
-}
 
 /** What each step is called, and what it says in each of its states. */
 const COPY: Record<SetupStepId, { title: string; done: string }> = {
@@ -65,22 +43,15 @@ export interface SetupActions {
 }
 
 export function SetupChecklist({
-  userId,
-  organizationId,
   facts,
   actions,
 }: {
-  userId: string;
-  organizationId: string;
   facts: SetupFacts;
   actions: SetupActions;
 }) {
-  const [hidden, setHidden] = useState(() =>
-    readSetupHidden(userId, organizationId),
-  );
   const steps = setupSteps(facts);
   const done = steps.filter((step) => step.done).length;
-  if (hidden || steps.length === 0 || done === steps.length) return null;
+  if (steps.length === 0) return null;
 
   /** The control for a step that is the one to take now. */
   function actionFor(id: SetupStepId): ReactNode {
@@ -129,7 +100,7 @@ export function SetupChecklist({
       case "jira":
         return "Scan the backlog for work to outsource";
       case "github":
-        return "Size beside the code, and cut sandboxes from it";
+        return "Size beside the code, and slice sandboxes from it";
       case "size":
         return "One ticket, about a minute";
     }
@@ -139,52 +110,45 @@ export function SetupChecklist({
     <section
       aria-label="Getting started"
       data-testid="setup-checklist"
-      className="bg-muted/30 rounded-lg border px-4 py-3"
+      className="flex flex-col gap-3"
     >
-      <header className="flex items-center justify-between gap-3">
-        <h2 className="text-sm font-medium">
+      <header className="flex items-center justify-between gap-4">
+        <h2 className="text-sm font-semibold tracking-tight">
           Getting started
           <span className="text-muted-foreground ml-2 font-normal tabular-nums">
             {done} of {steps.length}
           </span>
         </h2>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="text-muted-foreground -mr-2 h-7 gap-1 px-2 text-xs"
-          onClick={() => {
-            writeSetupHidden(userId, organizationId);
-            setHidden(true);
-          }}
+        <span
+          aria-hidden="true"
+          className="bg-muted h-1.5 w-24 overflow-hidden rounded-full sm:w-32"
         >
-          <X className="size-3.5" />
-          Hide
-        </Button>
+          <span
+            className="setup-meter block h-full rounded-full"
+            style={{ width: `${(done / steps.length) * 100}%` }}
+          />
+        </span>
       </header>
-      <ol className="mt-3 grid gap-3 sm:grid-cols-3 sm:gap-4">
+      <ol className="setup-chevrons">
         {steps.map((step, index) => (
           <li
             key={step.id}
             aria-current={step.current ? "step" : undefined}
             data-step={step.id}
             data-done={step.done ? "" : undefined}
-            className="flex min-w-0 gap-3"
+            data-state={step.done ? "done" : step.current ? "current" : "todo"}
+            className="setup-chevron"
           >
-            <span
-              aria-hidden="true"
-              className={`mt-0.5 grid size-5 shrink-0 place-items-center rounded-full border text-[11px] font-medium tabular-nums ${
-                step.done
-                  ? "bg-foreground text-background border-foreground"
-                  : step.current
-                    ? "border-foreground text-foreground"
-                    : "text-muted-foreground"
-              }`}
-            >
-              {step.done ? <Check className="size-3" /> : index + 1}
+            <span aria-hidden="true" className="setup-chevron-mark">
+              {step.done ? (
+                <Check className="size-3.5" strokeWidth={3} />
+              ) : (
+                index + 1
+              )}
             </span>
             <span className="flex min-w-0 flex-col items-start gap-1.5">
               <span
-                className={`text-sm leading-5 ${step.done ? "text-muted-foreground line-through decoration-1" : "font-medium"}`}
+                className={`text-sm leading-5 ${step.done ? "text-muted-foreground" : "font-semibold tracking-tight"}`}
               >
                 {COPY[step.id].title}
                 <span className="sr-only">
@@ -192,7 +156,7 @@ export function SetupChecklist({
                 </span>
               </span>
               {step.done ? (
-                <span className="text-muted-foreground text-xs">
+                <span className="setup-chevron-done text-xs font-medium">
                   {COPY[step.id].done}
                 </span>
               ) : step.current ? (

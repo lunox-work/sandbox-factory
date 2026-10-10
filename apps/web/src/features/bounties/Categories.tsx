@@ -6,7 +6,7 @@ import { CATEGORIES, UNCATEGORIZED } from "sandbox-factory";
 
 import { cn } from "@/lib/utils";
 
-import { CategoryIcon } from "../../CategoryIcon";
+import { ALL_CATEGORIES, CategoryIcon } from "../../CategoryIcon";
 
 export function CategoryLine({
   categories,
@@ -34,27 +34,39 @@ export function CategoryLine({
         .map(({ label, reason }) => `${label}: ${reason}`)
         .join("\n")}
     >
-      <span className="text-foreground/80 font-medium">
-        {/* At the text's own size, and dropped a hair to sit on its line. */}
-        <CategoryIcon
-          category={first.id}
-          className="mr-1 inline-block size-3 align-[-0.125em]"
-        />
+      {/* A pill in the category's colour, as its card and its chip are. */}
+      <span className="category-pill mr-0.5" data-category={first.id}>
+        <CategoryIcon category={first.id} className="size-3 shrink-0" />
         {first.label}
-      </span>
-      {" · "}
+      </span>{" "}
       {first.reason}
-      {rest.length > 0 && ` · +${rest.length} more`}
+      {/* The others by their icons, each in its own colour; the title says
+          what they are. */}
+      {rest.length > 0 && (
+        <span className="ml-1.5 inline-flex items-center gap-0.5 align-middle">
+          {rest.map((category) => (
+            <span
+              key={category.id}
+              data-category={category.id}
+              className="category-chip inline-grid size-4 place-items-center rounded-[4px]"
+            >
+              <CategoryIcon category={category.id} className="size-2.5" />
+            </span>
+          ))}
+          <span className="ml-0.5">+{rest.length} more</span>
+        </span>
+      )}
     </span>
   );
 }
 
 /**
  * The bounties by the category their board's scan found them in, as one
- * row of plain chips above the list: All, the six in registry order, and
- * the bounties in none, called "Unassigned". No icons: each card's category
- * line carries its category's, and without them the row fits on one line. Each says how many it holds, and
- * pressed narrows the list to them. A chip with none is still there, dimmed,
+ * row of chips above the list: All, the six in registry order, and the
+ * bounties in none, called "Unassigned". Each wears its category's icon and
+ * colour, as its card in "What task do teams outsource?" does — All and
+ * Unassigned in neutrals — and pressed is washed in that colour. Each says
+ * how many it holds, and pressed narrows the list to them. A chip with none is still there, dimmed,
  * so no chip moves when a count reaches zero; it is pressable only while it
  * is the one shown, to be left.
  *
@@ -104,7 +116,11 @@ export function CategoryFilter({
           const pressed = chip.id === selected;
           const empty = chip.count === 0;
           return (
-            <li key={chip.id ?? "all"} className="shrink-0">
+            <li
+              key={chip.id ?? ALL_CATEGORIES}
+              className="shrink-0"
+              data-category={chip.id ?? ALL_CATEGORIES}
+            >
               <button
                 type="button"
                 aria-pressed={pressed}
@@ -112,24 +128,21 @@ export function CategoryFilter({
                 title={chip.why === "" ? undefined : chip.why}
                 onClick={() => onSelect(pressed ? null : chip.id)}
                 className={cn(
-                  "focus-visible:ring-ring/50 inline-flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-xs transition-colors focus-visible:ring-[3px] focus-visible:outline-none disabled:pointer-events-none disabled:opacity-45",
-                  pressed
-                    ? "bg-foreground text-background border-foreground"
-                    : "text-muted-foreground hover:bg-muted hover:text-foreground",
+                  "category-filter-chip bg-card focus-visible:ring-ring/50 inline-flex h-8 items-center gap-1.5 rounded-full border pr-1.5 pl-1 text-xs focus-visible:ring-[3px] focus-visible:outline-none disabled:pointer-events-none disabled:opacity-45",
+                  pressed ? "font-medium" : "text-muted-foreground",
+                  chip.count === undefined && "pr-3",
                 )}
               >
-                <span className={pressed ? "font-medium" : undefined}>
-                  {chip.label}
+                {/* The tile its card in the dialog has, made round. */}
+                <span className="category-chip grid size-6 shrink-0 place-items-center rounded-full">
+                  <CategoryIcon
+                    category={chip.id ?? ALL_CATEGORIES}
+                    className="size-3.5"
+                  />
                 </span>
+                <span>{chip.label}</span>
                 {chip.count !== undefined && (
-                  <span
-                    className={cn(
-                      "tabular-nums",
-                      pressed
-                        ? "text-background/70"
-                        : "text-muted-foreground/70",
-                    )}
-                  >
+                  <span className="category-count min-w-5 rounded-full px-1.5 py-px text-center text-[11px] font-medium tabular-nums">
                     {chip.count}
                   </span>
                 )}
@@ -140,9 +153,23 @@ export function CategoryFilter({
       </ul>
       {/* What the chosen category is for, where a tooltip would hide it. */}
       {active !== undefined && active.why !== "" && (
-        <p className="text-muted-foreground text-xs" data-testid="category-why">
-          <span className="text-foreground font-medium">{active.label}.</span>{" "}
-          {active.why}
+        <p
+          className="category-callout text-muted-foreground flex items-start gap-2.5 rounded-lg py-2 pr-3 pl-3.5 text-xs"
+          data-testid="category-why"
+          data-category={active.id ?? ALL_CATEGORIES}
+        >
+          <span className="category-chip grid size-6 shrink-0 place-items-center rounded-md">
+            <CategoryIcon
+              category={active.id ?? ALL_CATEGORIES}
+              className="size-3.5"
+            />
+          </span>
+          <span className="pt-1 leading-snug">
+            <span className="font-semibold text-[var(--category-text)]">
+              {active.label}.
+            </span>{" "}
+            {active.why}
+          </span>
         </p>
       )}
     </nav>

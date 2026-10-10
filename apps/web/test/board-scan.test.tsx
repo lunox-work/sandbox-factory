@@ -1,13 +1,13 @@
 /**
- * Home over a workspace's board: what it shows when the boards cannot be
- * read, and that home's own intro stays above whichever it shows.
+ * A workspace's board scan on onboarding: what it shows when the boards
+ * cannot be read, and the board bar over the board it is showing.
  */
 
 import { render, screen } from "./render";
 import { userEvent } from "@testing-library/user-event";
 import { beforeEach, expect, test, vi } from "vitest";
 
-import { HomeBoard } from "../src/HomeBoard";
+import { BoardScan } from "../src/features/onboarding/BoardScan";
 
 /** What the boards list answers; null is a server error. */
 let boards: unknown[] | null = null;
@@ -32,13 +32,12 @@ beforeEach(() => {
 
 function show() {
   return render(
-    <HomeBoard
+    <BoardScan
       userId="user_1"
       organizationId="org_1"
-      intro={<p>Home intro</p>}
       organizationSlug="acme"
-      role="owner"
-      onOpenBoard={vi.fn()}
+      canManage
+      githubAvailable
       fallback={<p>No board yet</p>}
     />,
   );
@@ -55,7 +54,7 @@ test("boards that cannot be read say so, with a retry, not that there are none",
   expect(await screen.findByText("No board yet")).toBeTruthy();
 });
 
-test("the intro sits over the board, with the board it is showing", async () => {
+test("the bar names the board it is showing", async () => {
   boards = [
     {
       id: "jrb_1",
@@ -69,16 +68,8 @@ test("the intro sits over the board, with the board it is showing", async () => 
     },
   ];
   show();
-  expect(await screen.findByText("Home intro")).toBeTruthy();
   expect(
     await screen.findByRole("button", { name: "Switch board — Backlog" }),
   ).toBeTruthy();
-});
-
-test("a failed board list keeps the intro above the error", async () => {
-  show();
-  expect(
-    await screen.findByText("Could not load this workspace’s boards."),
-  ).toBeTruthy();
-  expect(screen.getByText("Home intro")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Board actions" })).toBeTruthy();
 });

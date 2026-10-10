@@ -199,7 +199,7 @@ export function RepoXray({
                 </h3>
                 <p className="text-muted-foreground text-xs">
                   Modules with their own tests and a contained size are the
-                  easiest to cut into a sandbox and check.
+                  easiest to slice into a sandbox and check.
                 </p>
               </div>
               <ul

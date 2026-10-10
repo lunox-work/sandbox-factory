@@ -9,8 +9,17 @@ import { ArrowUpRight, FolderGit2, Loader2, Sparkles } from "lucide-react";
 import { useEffect, useRef, useState, type Ref } from "react";
 
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 import { CategoryIcon } from "../../CategoryIcon";
+import { ProviderIcon } from "../../ProviderIcon";
 import { terminalRun, useObservation } from "../../data/observe";
 import { clients } from "../../data/query";
 import { wholeMoney } from "../../lib/format";
@@ -40,10 +49,13 @@ export interface RepositoryAction {
 /**
  * The ticket in focus, as the bounty it would become.
  *
- * What sizing writes is laid out with what is known now filled in — the
- * ticket, why it was picked, the range the rate card prices in, where its
- * sandbox would come from — and what only a model can say left as
- * placeholders: the size and the acceptance scenarios. The button fills them.
+ * What is known before sizing is laid out — the ticket, why it was picked,
+ * the range the rate card prices in, where its sandbox would come from — and
+ * the button sizes it.
+ *
+ * Where the server offers GitHub, a ticket is sized beside the code, so a
+ * workspace with no repository yet is told to add one when it presses the
+ * button, rather than sized from the ticket alone without being asked.
  */
 export function TeaserBounty({
   organizationId,
@@ -55,6 +67,7 @@ export function TeaserBounty({
   boardBusy,
   repositories,
   repositoryAction,
+  githubRequired = false,
   range,
   onSized,
   onSizing,
@@ -72,6 +85,8 @@ export function TeaserBounty({
   /** The workspace's repositories; none when it has connected none. */
   repositories: readonly ScanRepository[];
   repositoryAction?: RepositoryAction | undefined;
+  /** Sizing needs a repository, and the workspace must add one first. */
+  githubRequired?: boolean | undefined;
   /** The rate card to quote a range from; undefined while it loads. */
   range: { currency: string; sMinor: number; lMinor: number } | undefined;
   onSized: () => Promise<void>;
@@ -146,13 +161,19 @@ export function TeaserBounty({
     return () => onSizing?.(null);
   }, [busy, issue.id, onSizing]);
   const match = issue.categories?.[0];
+  // Nothing to size beside: the button asks for GitHub instead of sizing.
+  const needsCode = githubRequired && repositories.length === 0;
+  const [asking, setAsking] = useState(false);
 
   return (
     <aside
       ref={ref}
       aria-label={`Bounty preview for ${issue.key}`}
       data-testid="teaser-bounty"
-      className="bg-card flex flex-col gap-4 rounded-lg border p-4 lg:sticky lg:top-4"
+      // Its category's colour glows in from the corner, as the row it was
+      // picked from is marked in it.
+      data-category={match?.id}
+      className={`bg-card flex flex-col gap-4 rounded-lg border p-4 lg:sticky lg:top-4 ${match === undefined ? "" : "category-glow"}`}
     >
       <div className="flex flex-col gap-1">
         <span className="text-muted-foreground flex items-center justify-between gap-2 text-xs">
@@ -171,17 +192,12 @@ export function TeaserBounty({
         </span>
         <p className="text-sm leading-snug font-medium">{issue.summary}</p>
         {match !== undefined && (
-          <span className="text-muted-foreground mt-1 flex items-start gap-1.5 text-xs">
-            <CategoryIcon
-              category={match.id}
-              className="mt-px size-3 shrink-0"
-            />
-            <span>
-              <span className="text-foreground/80 font-medium">
-                {match.label}
-              </span>{" "}
-              · {match.reason}
+          <span className="text-muted-foreground mt-1.5 flex flex-col items-start gap-1.5 text-xs">
+            <span className="category-pill">
+              <CategoryIcon category={match.id} className="size-3 shrink-0" />
+              {match.label}
             </span>
+            <span className="leading-snug">{match.reason}</span>
           </span>
         )}
       </div>
@@ -190,18 +206,6 @@ export function TeaserBounty({
         className="grid grid-cols-[4.5rem_minmax(0,1fr)] items-baseline gap-x-3 gap-y-3 border-t pt-4 text-xs"
         data-testid="teaser-facts"
       >
-        <dt className="text-muted-foreground">Size</dt>
-        <dd className="flex flex-wrap gap-1" aria-label="Not sized yet">
-          {["XS", "S", "M", "L", "XL"].map((size) => (
-            <span
-              key={size}
-              aria-hidden="true"
-              className="text-muted-foreground/70 rounded-[4px] border border-dashed px-1.5 py-px font-mono text-[11px]"
-            >
-              {size}
-            </span>
-          ))}
-        </dd>
         <dt className="text-muted-foreground">Bounty</dt>
         <dd>
           {range === undefined ? (
@@ -219,33 +223,39 @@ export function TeaserBounty({
             </>
           )}
         </dd>
-        <dt className="text-muted-foreground">Spec</dt>
-        <dd className="flex flex-col gap-1.5">
-          <span aria-hidden="true" className="flex flex-col gap-1">
-            <span className="bg-muted block h-1.5 w-11/12 rounded-full" />
-            <span className="bg-muted block h-1.5 w-8/12 rounded-full" />
-          </span>
-          <span className="text-muted-foreground">
-            Acceptance scenarios a reviewer can weigh
-          </span>
-        </dd>
         <dt className="text-muted-foreground">Sandbox</dt>
         <dd>
           {only !== undefined ? (
             <span className="flex min-w-0 items-center gap-1">
               <FolderGit2 className="text-muted-foreground size-3 shrink-0" />
               <span className="truncate">
-                Cut from <span className="font-medium">{only.fullName}</span>,
-                if its work touches it
+                Sliced from <span className="font-medium">{only.fullName}</span>
+                , if its work touches it
               </span>
             </span>
           ) : repositories.length > 1 ? (
             <span className="flex min-w-0 items-center gap-1">
               <FolderGit2 className="text-muted-foreground size-3 shrink-0" />
               <span className="truncate">
-                Cut from the repositories its work touches, of{" "}
+                Sliced from the repositories its work touches, of{" "}
                 {repositories.length}
               </span>
+            </span>
+          ) : needsCode ? (
+            // Sizing waits for the code, so there is no "from the ticket".
+            <span className="text-muted-foreground">
+              Sliced from your code, once{" "}
+              {repositoryAction === undefined ? (
+                "a repository is added"
+              ) : (
+                <button
+                  type="button"
+                  onClick={repositoryAction.onSelect}
+                  className="text-foreground rounded-sm font-medium underline underline-offset-2"
+                >
+                  you {repositoryAction.label}
+                </button>
+              )}
             </span>
           ) : repositoryAction !== undefined ? (
             <span className="text-muted-foreground">
@@ -257,7 +267,7 @@ export function TeaserBounty({
               >
                 {repositoryAction.label}
               </button>{" "}
-              to cut it from your code
+              to slice it from your code
             </span>
           ) : (
             <span className="text-muted-foreground">
@@ -277,7 +287,7 @@ export function TeaserBounty({
             <Button
               className="w-full gap-2"
               disabled={busy || !sizingAvailable || boardBusy}
-              onClick={() => void size()}
+              onClick={() => (needsCode ? setAsking(true) : void size())}
             >
               {busy ? <Loader2 className="animate-spin" /> : <Sparkles />}
               {busy ? `Sizing ${issue.key}…` : `Size ${issue.key}`}
@@ -285,11 +295,13 @@ export function TeaserBounty({
             <p className="text-muted-foreground text-center text-xs">
               {!sizingAvailable
                 ? "Sizing is not configured on this server."
-                : boardBusy
-                  ? "The whole board is being sized now."
-                  : busy
-                    ? "About a minute. It opens here when it is ready."
-                    : `About a minute · one model call${reading}`}
+                : needsCode
+                  ? "Needs GitHub connected first"
+                  : boardBusy
+                    ? "The whole board is being sized now."
+                    : busy
+                      ? "About a minute. It opens here when it is ready."
+                      : `About a minute · one model call${reading}`}
             </p>
           </>
         )}
@@ -299,7 +311,68 @@ export function TeaserBounty({
           </p>
         )}
       </div>
+      <ConnectGithubDialog
+        issueKey={issue.key}
+        open={asking}
+        onOpenChange={setAsking}
+        action={repositoryAction}
+      />
     </aside>
+  );
+}
+
+/**
+ * Said when a ticket is sized in a workspace with no code to size it
+ * beside: what is missing, why it matters, and the way to add it.
+ */
+function ConnectGithubDialog({
+  issueKey,
+  open,
+  onOpenChange,
+  action,
+}: {
+  issueKey: string;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  /** "connect GitHub" or "pick a repository"; absent for a member. */
+  action: RepositoryAction | undefined;
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader className="pr-8">
+          <span className="mb-1 grid size-10 place-items-center rounded-lg border [&_svg]:size-5">
+            <ProviderIcon provider="github" />
+          </span>
+          <DialogTitle>Connect GitHub to size {issueKey}</DialogTitle>
+          <DialogDescription>
+            A ticket is sized beside the code its work touches: the size, the
+            price and the acceptance scenarios are read against your repository,
+            and its sandbox is sliced from it. Add a repository, then size{" "}
+            {issueKey}.
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Not now
+          </Button>
+          {action === undefined ? (
+            <p className="text-muted-foreground self-center text-xs">
+              An owner or admin of this workspace can connect it.
+            </p>
+          ) : (
+            <Button
+              onClick={() => {
+                onOpenChange(false);
+                action.onSelect();
+              }}
+            >
+              {action.label.charAt(0).toUpperCase() + action.label.slice(1)}
+            </Button>
+          )}
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

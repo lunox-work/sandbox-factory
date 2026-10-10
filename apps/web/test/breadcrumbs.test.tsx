@@ -184,6 +184,10 @@ test("home has no trail", () => {
 
 test("each screen's trail names every step above it", () => {
   expect(trailFor("account").map((c) => c.label)).toEqual(["Home", "Account"]);
+  expect(trailFor("onboarding").map((c) => c.label)).toEqual([
+    "Home",
+    "Onboarding",
+  ]);
   expect(trailFor("organizations").map((c) => c.label)).toEqual([
     "Home",
     "Workspaces",

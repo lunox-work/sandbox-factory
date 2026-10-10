@@ -15,6 +15,7 @@ import { Account } from "./Account";
 import { signOut, useSession } from "./auth";
 import { Breadcrumbs } from "./Breadcrumbs";
 import { Home } from "./Home";
+import { Onboarding } from "./Onboarding";
 import { CreateOrganization, Organization } from "./Organization";
 import { workspaceLabel } from "./OrganizationSwitcher";
 import { Organizations } from "./Organizations";
@@ -24,6 +25,8 @@ import { SignIn } from "./SignIn";
 import { Bounties, BountyPage, NewBountyPage } from "./Bounties";
 import { SandboxFilesPage } from "./features/sandbox/SandboxFiles";
 import { newBountyUrl } from "./features/onboarding/prefill";
+import { setupComplete } from "./features/onboarding/setup";
+import { useWorkspaceSetup } from "./features/onboarding/useWorkspaceSetup";
 import {
   bountiesUrl,
   bountyForPath,
@@ -154,6 +157,41 @@ function Signed({
   const invitations = useInvitations();
 
   /*
+    Whether the workspace in the rail is set up yet. Read here because the
+    rail and home's address both turn on it: until every onboarding step is
+    done, onboarding is the one destination offered; after, home and the
+    bounties are, and onboarding is not — never both. The same reads home
+    and onboarding make, under the same cache keys, so the pages cost
+    nothing more for it.
+
+    Not known is not unfinished: home and bounties stay offered until this
+    workspace's reads say otherwise — never on the strength of the one
+    switched away from — so a set-up workspace never loses them for a
+    moment.
+  */
+  const setup = useWorkspaceSetup(organizations.active);
+  const known = setup.ownFacts && setup.facts !== null;
+  const onboardingOnly =
+    known && setup.facts !== null && !setupComplete(setup.facts);
+  // Home is onboarding for a workspace not set up yet, and onboarding is
+  // home for one that is, so the address says which. Replaced, not pushed:
+  // it is the same page. The query is kept, since a consent may have come
+  // back with its outcome in it.
+  const landsOnOnboarding = onboardingOnly && screen === "home";
+  const leavesOnboarding = known && !onboardingOnly && screen === "onboarding";
+  useEffect(() => {
+    if (landsOnOnboarding || leavesOnboarding)
+      replaceLocation(
+        (landsOnOnboarding ? pathForScreen("onboarding") : "/") +
+          window.location.search +
+          window.location.hash,
+      );
+  }, [landsOnOnboarding, leavesOnboarding]);
+  // Onboarding is a landing page too: there is nothing above it to lead
+  // back to.
+  const landing = screen === "home" || screen === "onboarding";
+
+  /*
    * The Back button. `pushState` below adds an entry per navigation, so the
    * browser offers to go back — and this is what makes it do something:
    * without it the URL would change while the screen stayed put.
@@ -171,23 +209,25 @@ function Signed({
     const page =
       screen === "home"
         ? "Home"
-        : screen === "account"
-          ? "Account"
-          : screen === "organizations"
-            ? "Workspaces"
-            : screen === "create-org"
-              ? "New workspace"
-              : screen === "bounties"
-                ? "Bounties"
-                : screen === "new-bounty"
-                  ? "New bounty"
-                  : screen === "bounty"
-                    ? (bountyName ?? "Bounty")
-                    : screen === "org-repository"
-                      ? (repositoryName ?? "Repository")
-                      : screen === "not-found"
-                        ? "Page not found"
-                        : (organizations.active?.name ?? "Workspace");
+        : screen === "onboarding"
+          ? "Onboarding"
+          : screen === "account"
+            ? "Account"
+            : screen === "organizations"
+              ? "Workspaces"
+              : screen === "create-org"
+                ? "New workspace"
+                : screen === "bounties"
+                  ? "Bounties"
+                  : screen === "new-bounty"
+                    ? "New bounty"
+                    : screen === "bounty"
+                      ? (bountyName ?? "Bounty")
+                      : screen === "org-repository"
+                        ? (repositoryName ?? "Repository")
+                        : screen === "not-found"
+                          ? "Page not found"
+                          : (organizations.active?.name ?? "Workspace");
     document.title = `${page} · Lunox`;
   }, [bountyName, organizations.active?.name, repositoryName, screen]);
 
@@ -313,6 +353,7 @@ function Signed({
         email={email}
         image={image}
         invitationCount={invitations.count}
+        onboardingOnly={onboardingOnly}
         organizations={organizations}
         onSelectOrganization={(organization) => {
           // Choosing the one already shown is a no-op, not a history entry.
@@ -339,7 +380,7 @@ function Signed({
       <div
         ref={contentRef}
         className={`relative min-w-0 flex-1 pb-[calc(4rem+env(safe-area-inset-bottom))] sm:bg-background sm:my-2 sm:mr-2 sm:overflow-y-auto sm:scrollbar-none sm:[&::-webkit-scrollbar]:hidden sm:rounded-[6px] sm:border sm:pb-0 ${
-          screen === "home" ? "" : "[&>main]:!pt-4 sm:[&>main]:!pt-6"
+          landing ? "" : "[&>main]:!pt-4 sm:[&>main]:!pt-6"
         }`}
       >
         {/*
@@ -353,30 +394,32 @@ function Signed({
           smaller first-block offset when a trail is present, keeping the
           spacing contract in one place.
         */}
-        <Breadcrumbs
-          screen={screen}
-          organization={
-            organizations.active === null
-              ? undefined
-              : {
-                  name: organizations.active.name,
-                  slug: organizations.active.slug,
-                }
-          }
-          bountyName={screen === "bounty" ? bountyName : undefined}
-          bountyWorkspace={
-            bountyOrganization === undefined
-              ? undefined
-              : {
-                  name: workspaceLabel(bountyOrganization),
-                  slug: bountyOrganization.slug,
-                }
-          }
-          repositoryName={
-            screen === "org-repository" ? repositoryName : undefined
-          }
-          onNavigate={navigate}
-        />
+        {!landing && (
+          <Breadcrumbs
+            screen={screen}
+            organization={
+              organizations.active === null
+                ? undefined
+                : {
+                    name: organizations.active.name,
+                    slug: organizations.active.slug,
+                  }
+            }
+            bountyName={screen === "bounty" ? bountyName : undefined}
+            bountyWorkspace={
+              bountyOrganization === undefined
+                ? undefined
+                : {
+                    name: workspaceLabel(bountyOrganization),
+                    slug: bountyOrganization.slug,
+                  }
+            }
+            repositoryName={
+              screen === "org-repository" ? repositoryName : undefined
+            }
+            onNavigate={navigate}
+          />
+        )}
         {screen === "account" ? (
           <Account
             onJoined={() => {
@@ -493,8 +536,11 @@ function Signed({
             }
             viewer={{ id: userId, image }}
             // Back to the list this form was opened from, which the trail
-            // also names as its parent.
-            onCancel={() => navigate("bounties")}
+            // also names as its parent — or to onboarding, for a workspace
+            // with no list yet.
+            onCancel={() =>
+              navigate(onboardingOnly ? "onboarding" : "bounties")
+            }
             // Into the chosen workspace's GitHub tab, where its repositories
             // are connected. The slug is passed because `select` has not
             // re-rendered yet — see `navigate`.
@@ -573,21 +619,11 @@ function Signed({
               onCreateWorkspace={() => navigate("create-org")}
             />
           )
-        ) : (
-          <Home
+        ) : (screen === "onboarding" && !leavesOnboarding) ||
+          landsOnOnboarding ? (
+          <Onboarding
             userId={userId}
-            name={name}
             organization={organizations.active}
-            onOpenBoard={(board) => {
-              const workspace = organizations.active?.slug;
-              if (workspace !== undefined) {
-                visit(
-                  bountiesUrl(null, {
-                    board: { workspace, boardId: board.id },
-                  }),
-                );
-              }
-            }}
             onOpenSettings={(organization, tab) => {
               organizations.select(organization.id);
               navigate("org-settings", organization.slug, undefined, tab);
@@ -598,6 +634,25 @@ function Signed({
             }}
             onWriteBounty={(prefill) => visit(newBountyUrl(prefill))}
             onOpenBounties={() => navigate("bounties")}
+          />
+        ) : !setup.ownFacts ? (
+          /*
+            Not home yet: an unfinished workspace's home is onboarding, and which
+            one mounts first matters — it reads a consent's outcome from the
+            address and strips it, so the other would never hear of it.
+          */
+          <main className="mx-auto w-full max-w-5xl px-4 py-10 sm:px-6 sm:py-14">
+            <LoadingLine />
+          </main>
+        ) : (
+          <Home
+            name={name}
+            organization={organizations.active}
+            onOpenSettings={(organization, tab) => {
+              organizations.select(organization.id);
+              navigate("org-settings", organization.slug, undefined, tab);
+            }}
+            onWriteBounty={(prefill) => visit(newBountyUrl(prefill))}
           />
         )}
       </div>

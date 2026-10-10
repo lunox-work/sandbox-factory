@@ -687,17 +687,24 @@ export function ProposalPeek({
       {proposal.categories !== undefined && proposal.categories.length > 0 && (
         <div data-testid="proposal-categories">
           <SectionHeading icon={<Target />}>Why this bounty</SectionHeading>
-          <ul className="flex flex-col gap-1.5">
+          <ul className="flex flex-col gap-2">
             {proposal.categories.map((category) => (
               <li
                 key={category.id}
-                className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-sm"
+                data-category={category.id}
+                className="category-callout flex items-start gap-3 rounded-lg py-2.5 pr-3 pl-4"
               >
-                <Badge variant="outline" className="shrink-0">
-                  <CategoryIcon category={category.id} />
-                  {category.label}
-                </Badge>
-                <span className="leading-relaxed">{category.reason}</span>
+                <span className="category-chip grid size-7 shrink-0 place-items-center rounded-md">
+                  <CategoryIcon category={category.id} className="size-4" />
+                </span>
+                <span className="flex min-w-0 flex-col gap-0.5">
+                  <span className="text-sm font-semibold text-[var(--category-text)]">
+                    {category.label}
+                  </span>
+                  <span className="text-muted-foreground text-sm leading-relaxed">
+                    {category.reason}
+                  </span>
+                </span>
               </li>
             ))}
           </ul>

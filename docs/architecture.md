@@ -101,14 +101,24 @@ writes and retains the latest queued draft, revision conflicts and failed edits.
 Its controller is in `features/pricing/useRateCardAutosave.ts`; proposal lists,
 categories, peeks, search, titles and sizing progress are in `features/bounties`.
 
-Home is `apps/web/src/Home.tsx`, one page that changes with what a workspace
-has connected. `features/onboarding/setup.ts` decides the stage (nothing,
-Jira, GitHub, both) and the getting-started checklist from facts that
+Home is `apps/web/src/Home.tsx` and onboarding, at `/onboarding`, is
+`apps/web/src/Onboarding.tsx`; both change with what a workspace has
+connected. `features/onboarding/setup.ts` decides the stage (nothing, Jira,
+GitHub, both) and the getting-started checklist from facts that
 `useWorkspaceSetup.ts` reads through the same cache keys as the pages they
-summarise. Each stage shows something no model call paid for: the six
-categories as a showcase, a board's backlog scan (`BacklogScan.tsx`, also on
-the board's own page until it has proposals), or a repository's x-ray from its
-snapshot (`RepoXray.tsx`). The arithmetic behind the last two is
+summarise. Onboarding holds
+the checklist, always shown, and under it what no model call paid for: a
+board's backlog scan once Jira is connected (`BoardScan.tsx`, with the board
+picker and its menu of board-wide actions over `BacklogScan.tsx`), or a
+repository's x-ray from its snapshot (`RepoXray.tsx`), and the six categories
+in a dialog opened from its heading. Consent round
+trips return to whichever page started them, and `WorkspaceNotices.tsx` reports
+them on both. Until every checklist step is done (`setupComplete` in
+`setup.ts`) a workspace is offered onboarding alone: the shell reads the same
+facts, drops Home and Bounties from the rail, and lands `/` on `/onboarding`.
+Once they are, the rail drops Onboarding instead and `/onboarding` lands on
+`/`. Sizing on onboarding, a ticket or the whole board, waits for a
+repository where GitHub is offered. The arithmetic behind the last two is
 `features/onboarding/insights.ts`.
 
 API context and access rules live in `http-context.ts` and `access.ts`.

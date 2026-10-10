@@ -6,6 +6,8 @@ export const NEW_ORG_PATH = "/workspaces/new";
 /** Every workspace's bounties at once, so not under any one's path. */
 export const BOUNTIES_PATH = "/bounties";
 export const NEW_BOUNTY_PATH = "/bounties/new";
+/** Getting the workspace in the rail set up: its own page, beside home. */
+export const ONBOARDING_PATH = "/onboarding";
 
 /**
  * An open bounty as an address names it: the workspace it is read and changed
@@ -433,6 +435,7 @@ export function screenForPath(pathname: string): Screen {
   if (path === ORGANIZATIONS_PATH || path === LEGACY_ORGANIZATIONS_PATH) {
     return "organizations";
   }
+  if (path === ONBOARDING_PATH) return "onboarding";
   if (path === NEW_BOUNTY_PATH) return "new-bounty";
   if (bountyForPath(path) !== undefined) return "bounty";
   // The old per-workspace addresses show the page while `canonicalUrl`
@@ -488,6 +491,8 @@ export function pathForScreen(
         : connectionTab === undefined || connectionTab === "home"
           ? `/o/${slug}/settings`
           : `/o/${slug}/settings?connection=${connectionTab}`;
+    case "onboarding":
+      return ONBOARDING_PATH;
     case "bounties":
       return BOUNTIES_PATH;
     // A bounty's page is addressed by `bountyPagePath`; with none named here,

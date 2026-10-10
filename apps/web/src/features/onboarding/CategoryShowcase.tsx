@@ -2,106 +2,99 @@
  * The six kinds of work a backlog scan looks for, before there is a backlog
  * to scan.
  *
- * What a workspace with no Jira sees in place of the scan, so the scan is
- * not a promise in the abstract: each kind says why it is worth outsourcing,
- * what the rule checks, and the sort of ticket it turns up. Read from the
- * category registry in `packages/core`, with its default thresholds, so it
- * is the same six a board will be scanned for and cannot drift from them.
+ * Each kind says why it is worth outsourcing, so the scan is not a promise
+ * in the abstract.
+ * Read from the category registry in `packages/core`, with its default
+ * thresholds, so it is the same six a board will be scanned for and cannot
+ * drift from them.
  *
- * `compact` is the same list as two short columns, for a page where the scan
- * is a secondary offer under something the workspace already has.
+ * A dialog behind an icon at the head of onboarding rather than a section of
+ * it: it is reference — what the scan is about — not a step, and the steps
+ * are what the page is for.
  */
 
+import { CircleHelp } from "lucide-react";
 import { resolveCategories } from "sandbox-factory";
-import { useId, type ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
+
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 
 import { CategoryIcon } from "../../CategoryIcon";
+import { CategoryScene } from "./CategoryScene";
+
+const TITLE = "What task do teams outsource?";
 
 export function CategoryShowcase({
-  compact = false,
-  title = "What teams outsource",
   description,
-  action,
 }: {
-  compact?: boolean;
-  title?: string;
-  description?: ReactNode;
-  /** The way to find these in a real backlog: connecting Jira, usually. */
-  action?: ReactNode;
+  /** What the six mean for this workspace: what a scan of it would do. */
+  description: ReactNode;
 }) {
   const categories = resolveCategories();
-  const titleId = useId();
   return (
-    <section
-      aria-labelledby={titleId}
-      className="flex flex-col gap-4"
-      data-testid="category-showcase"
-    >
-      <header className="flex flex-wrap items-end justify-between gap-x-4 gap-y-2">
-        <div className="min-w-0">
-          <h2 id={titleId} className="text-base font-semibold tracking-tight">
-            {title}
-          </h2>
-          {description !== undefined && (
-            <p className="text-muted-foreground mt-1 max-w-prose text-sm">
-              {description}
-            </p>
-          )}
-        </div>
-        {action}
-      </header>
-      {compact ? (
-        <ul className="grid gap-x-6 gap-y-3 sm:grid-cols-2">
-          {categories.map((category) => (
-            <li key={category.id} className="flex min-w-0 gap-2.5">
-              <CategoryIcon
-                category={category.id}
-                className="text-muted-foreground mt-0.5 size-4 shrink-0"
-              />
-              <span className="min-w-0">
-                <span className="block text-sm font-medium">
-                  {category.label}
-                </span>
-                <span className="text-muted-foreground block text-xs">
-                  {category.looksFor}
-                </span>
-              </span>
-            </li>
-          ))}
-        </ul>
-      ) : (
+    <Dialog>
+      <DialogTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          aria-label={TITLE}
+          title={TITLE}
+          className="text-muted-foreground hover:text-foreground shrink-0 [&_svg]:size-5"
+        >
+          <CircleHelp strokeWidth={1.6} />
+        </Button>
+      </DialogTrigger>
+      <DialogContent
+        data-testid="category-showcase"
+        // Lighter than the default: reference opened over the page, not a
+        // decision that has to hold it back. The blur still lifts it off a
+        // dark theme.
+        overlayClassName="bg-black/25"
+        className="flex max-h-[min(48rem,calc(100dvh-4rem))] flex-col gap-5 overflow-y-auto sm:max-w-3xl"
+      >
+        {/* Room on the right for the close button, which sits over it. */}
+        <DialogHeader className="pr-8">
+          <DialogTitle>{TITLE}</DialogTitle>
+          <DialogDescription className="max-w-prose">
+            {description}
+          </DialogDescription>
+        </DialogHeader>
         <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {categories.map((category) => (
+          {categories.map((category, i) => (
             <li
               key={category.id}
-              className="flex flex-col gap-3 rounded-lg border p-4"
+              data-category={category.id}
+              // The order the cards rise in when the dialog opens.
+              style={{ "--n": i } as CSSProperties}
+              className="scene-card bg-card flex flex-col overflow-hidden rounded-xl border"
             >
-              <span className="flex items-center gap-2">
-                <span className="bg-muted text-foreground grid size-7 shrink-0 place-items-center rounded-md">
-                  <CategoryIcon category={category.id} className="size-4" />
+              <CategoryScene category={category.id} />
+              <span className="flex flex-1 flex-col items-center gap-2.5 p-4 text-center">
+                <span className="flex items-center gap-2.5">
+                  <span className="category-chip grid size-7 shrink-0 place-items-center rounded-md">
+                    <CategoryIcon category={category.id} className="size-4" />
+                  </span>
+                  <span className="text-sm font-semibold tracking-tight">
+                    {category.label}
+                  </span>
                 </span>
-                <span className="text-sm font-medium">{category.label}</span>
-              </span>
-              <span className="text-muted-foreground text-sm leading-snug">
-                {category.why}
-              </span>
-              <span className="mt-auto flex flex-col gap-1 border-t pt-3 text-xs">
-                <span className="text-muted-foreground">
-                  <span className="text-foreground/80 font-medium">
-                    Looks for
-                  </span>{" "}
-                  {category.looksFor.charAt(0).toLowerCase() +
-                    category.looksFor.slice(1)}
-                </span>
-                {/* A made-up title, so it is quoted and never a link. */}
-                <span className="text-muted-foreground/80 italic">
-                  e.g. &ldquo;{category.example}&rdquo;
+                <span className="text-muted-foreground text-[0.8125rem] leading-snug">
+                  {category.why}
                 </span>
               </span>
             </li>
           ))}
         </ul>
-      )}
-    </section>
+      </DialogContent>
+    </Dialog>
   );
 }

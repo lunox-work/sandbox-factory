@@ -155,7 +155,7 @@ function sandboxRefused(
   if (reason === "source_linked")
     return c.json(
       {
-        error: "This sandbox is already cut from another repository.",
+        error: "This sandbox is already sliced from another repository.",
         code: reason,
       },
       409,

@@ -108,6 +108,8 @@ export function trailFor(
       return [];
     case "not-found":
       return [HOME, { label: "Page not found" }];
+    case "onboarding":
+      return [HOME, { label: "Onboarding" }];
     case "account":
       return [HOME, { label: "Account" }];
     case "organizations":
@@ -246,6 +248,7 @@ export function Breadcrumbs({
         // prop: which pages are wide is the trail's own business, and the
         // shell already tells it where it is.
         screen === "org-repository" ||
+          screen === "onboarding" ||
           screen === "bounties" ||
           screen === "new-bounty" ||
           screen === "bounty"

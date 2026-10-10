@@ -25,6 +25,10 @@
  * horizontal room is what is scarce, and the pages say which organization they
  * belong to.
  *
+ * A workspace not set up yet is offered onboarding alone, and onboarding is
+ * where home lands for it; once every step is done, onboarding gives way to
+ * home and the bounty list. Never both.
+ *
  * The avatar carries a mark when an invitation is waiting. Nothing is emailed,
  * and the invitation itself lives on the account page, so without it there is
  * no way to learn that one arrived.
@@ -36,7 +40,7 @@
  * toggling only moves the edge: nothing the eye was tracking jumps.
  */
 
-import { Box, Building2, House } from "lucide-react";
+import { Box, Building2, House, Rocket } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import type { MembershipDto } from "@sandbox-factory/shared";
@@ -50,6 +54,8 @@ import { isPlainLeftClick, pathForScreen } from "./routes";
 
 export type Screen =
   | "home"
+  /** Getting the workspace in the rail set up, step by step. */
+  | "onboarding"
   | "account"
   | "organizations"
   | "org-settings"
@@ -72,6 +78,7 @@ export function SideNav({
   email,
   image,
   invitationCount = 0,
+  onboardingOnly = false,
   organizations,
   onSelectOrganization,
   onNavigate,
@@ -89,6 +96,11 @@ export function SideNav({
    * else in the app says an invitation is waiting.
    */
   invitationCount?: number | undefined;
+  /**
+   * The workspace in the rail is not set up yet, so onboarding is the one
+   * destination offered; otherwise it is not offered at all.
+   */
+  onboardingOnly?: boolean | undefined;
   /** For the switcher at the head of the rail. */
   organizations: Pick<Organizations, "organizations" | "active" | "loading">;
   onSelectOrganization: (organization: MembershipDto) => void;
@@ -175,40 +187,61 @@ export function SideNav({
       </div>
 
       {/* The same gap inside each group as between them, so the phone bar's
-          four items are evenly spaced. */}
+          items are evenly spaced. */}
       <div className="flex gap-6 sm:mt-5 sm:w-full sm:flex-col sm:gap-0">
-        <RailButton
-          label="Home"
-          href="/"
-          expanded={expanded}
-          current={screen === "home"}
-          onClick={() => onNavigate("home")}
-        >
-          {/* Sized by CSS, not by lucide's `size` prop, so the rail's tiles
-              stay the same size from one place. Lucide's default `stroke` is
-              `currentColor`, which is what lets the icon follow its button
-              through hover and the current-screen state. */}
-          <House strokeWidth={1.6} />
-        </RailButton>
+        {!onboardingOnly && (
+          <RailButton
+            label="Home"
+            href="/"
+            expanded={expanded}
+            current={screen === "home"}
+            onClick={() => onNavigate("home")}
+          >
+            {/* Sized by CSS, not by lucide's `size` prop, so the rail's tiles
+                stay the same size from one place. Lucide's default `stroke`
+                is `currentColor`, which is what lets the icon follow its
+                button through hover and the current-screen state. */}
+            <House strokeWidth={1.6} />
+          </RailButton>
+        )}
+
+        {/*
+          Getting the workspace in the rail set up: the ways in, the
+          checklist, and what each tool would show. A page of its own rather
+          than the head of home, so home is the work once there is some.
+        */}
+        {onboardingOnly && (
+          <RailButton
+            label="Onboarding"
+            href={pathForScreen("onboarding")}
+            expanded={expanded}
+            current={screen === "onboarding"}
+            onClick={() => onNavigate("onboarding")}
+          >
+            <Rocket strokeWidth={1.6} />
+          </RailButton>
+        )}
 
         {/*
           The bounties of every workspace: what a proposal is made from,
           whichever tool the bounty came from. Not the active workspace's
           alone, so it stays put when the switcher changes.
         */}
-        <RailButton
-          label="Bounties"
-          href={pathForScreen("bounties")}
-          expanded={expanded}
-          current={
-            screen === "bounties" ||
-            screen === "new-bounty" ||
-            screen === "bounty"
-          }
-          onClick={() => onNavigate("bounties")}
-        >
-          <Box strokeWidth={1.6} />
-        </RailButton>
+        {!onboardingOnly && (
+          <RailButton
+            label="Bounties"
+            href={pathForScreen("bounties")}
+            expanded={expanded}
+            current={
+              screen === "bounties" ||
+              screen === "new-bounty" ||
+              screen === "bounty"
+            }
+            onClick={() => onNavigate("bounties")}
+          >
+            <Box strokeWidth={1.6} />
+          </RailButton>
+        )}
 
         {children !== undefined && (
           <div className="hidden sm:mt-2 sm:flex sm:w-full sm:flex-col sm:border-t sm:pt-2">
