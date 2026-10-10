@@ -72,6 +72,7 @@ import {
 
 import { Combobox } from "@/components/Combobox";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { DisabledReason } from "@/components/DisabledReason";
 import {
   ErrorBanner,
   LoadingLine,
@@ -145,7 +146,9 @@ import {
   CategoryNote,
 } from "./features/bounties/Categories";
 import {
+  heldReason,
   ScopeVersion,
+  StepHeld,
   StepLineage,
   StepTriggers,
   STEPS,
@@ -974,6 +977,7 @@ function OpenBounty({
             bountyTitle={bounty.title}
             canDecide={manages}
             scopeVersion={bounty.stages.price?.scopeVersion ?? null}
+            held={heldReason("price", bounty)}
             onChanged={() => {
               void bounties.refresh();
               opened.reload();
@@ -1476,6 +1480,13 @@ function BountyDetail({
     are shown, not changed, until an owner or admin unapproves it.
   */
   const approvedScope = scopeApproved(bounty);
+  /*
+    Each step is changed only once the steps before it stand approved: the
+    price once the scope is, the sandbox once the price is too. Why, while
+    one is held; its actions say so on hover, its tab with a lock.
+  */
+  const priceHeld = heldReason("price", bounty);
+  const sandboxHeld = heldReason("sandbox", bounty);
   const [deciding, setDeciding] = useState(false);
   const [decisionError, setDecisionError] = useState<string | null>(null);
   const decideOverview = (decision: "approve" | "unapprove") => {
@@ -1576,19 +1587,21 @@ function BountyDetail({
               : "An owner or admin can price it."}
           </p>
           {canManage && (
-            <Button
-              type="button"
-              size="sm"
-              disabled={propose.pending}
-              onClick={() => void propose.start()}
-            >
-              {propose.pending ? (
-                <Loader2 className="animate-spin" />
-              ) : (
-                <Sparkles />
-              )}
-              {propose.pending ? "Pricing…" : "Price it"}
-            </Button>
+            <DisabledReason reason={propose.pending ? null : priceHeld}>
+              <Button
+                type="button"
+                size="sm"
+                disabled={propose.pending || priceHeld !== null}
+                onClick={() => void propose.start()}
+              >
+                {propose.pending ? (
+                  <Loader2 className="animate-spin" />
+                ) : (
+                  <Sparkles />
+                )}
+                {propose.pending ? "Pricing…" : "Price it"}
+              </Button>
+            </DisabledReason>
           )}
         </div>
         {propose.error !== null && (
@@ -1755,15 +1768,9 @@ function BountyDetail({
             sandbox={sandbox}
             canManage={canManage}
             canGenerate={unlinked}
-            // A slice is generated from an approved bounty only: one with
-            // no proposal, or a draft one, is refused.
-            generationBlocked={
-              bounty.proposal === null
-                ? "Price the bounty and approve its price before generating its slice."
-                : bounty.proposal.status !== "approved"
-                  ? "Its price is pending. Approve it before generating its slice."
-                  : null
-            }
+            // A slice is generated, and published, from an approved scope
+            // and price only.
+            generationBlocked={sandboxHeld}
             readOnly={readOnly}
             onChanged={() => {
               // The lists hold the bounty as last read too.
@@ -1777,30 +1784,32 @@ function BountyDetail({
                   Its sizing says the work touches {repoToLink.fullName}. Link
                   it to slice versions from its code instead.
                 </p>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  disabled={sandboxPending}
-                  onClick={() => {
-                    setSandboxPending(true);
-                    setSandboxError(null);
-                    void bounties
-                      .linkSandboxSource(sandbox.id)
-                      .then((failure) => {
-                        setSandboxPending(false);
-                        if (failure === null) onReload();
-                        else setSandboxError(failure);
-                      });
-                  }}
-                >
-                  {sandboxPending ? (
-                    <Loader2 className="animate-spin" />
-                  ) : (
-                    <Link2 />
-                  )}
-                  Link {repoToLink.fullName}
-                </Button>
+                <DisabledReason reason={sandboxPending ? null : sandboxHeld}>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={sandboxPending || sandboxHeld !== null}
+                    onClick={() => {
+                      setSandboxPending(true);
+                      setSandboxError(null);
+                      void bounties
+                        .linkSandboxSource(sandbox.id)
+                        .then((failure) => {
+                          setSandboxPending(false);
+                          if (failure === null) onReload();
+                          else setSandboxError(failure);
+                        });
+                    }}
+                  >
+                    {sandboxPending ? (
+                      <Loader2 className="animate-spin" />
+                    ) : (
+                      <Link2 />
+                    )}
+                    Link {repoToLink.fullName}
+                  </Button>
+                </DisabledReason>
               </div>
             )}
           </SandboxGeneration>
@@ -1824,26 +1833,32 @@ function BountyDetail({
                 : " An owner or admin can create one.")}
           </p>
           {managesSandbox && (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={sandboxPending}
-              onClick={() => {
-                setSandboxPending(true);
-                setSandboxError(null);
-                // Cut from the repository the bounty's sizing said its work
-                // touches; with none, its versions are generated.
-                void bounties.createSandbox(bounty.id).then((failure) => {
-                  setSandboxPending(false);
-                  if (failure === null) onReload();
-                  else setSandboxError(failure);
-                });
-              }}
-            >
-              {sandboxPending ? <Loader2 className="animate-spin" /> : <Box />}
-              Create sandbox
-            </Button>
+            <DisabledReason reason={sandboxPending ? null : sandboxHeld}>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={sandboxPending || sandboxHeld !== null}
+                onClick={() => {
+                  setSandboxPending(true);
+                  setSandboxError(null);
+                  // Cut from the repository the bounty's sizing said its work
+                  // touches; with none, its versions are generated.
+                  void bounties.createSandbox(bounty.id).then((failure) => {
+                    setSandboxPending(false);
+                    if (failure === null) onReload();
+                    else setSandboxError(failure);
+                  });
+                }}
+              >
+                {sandboxPending ? (
+                  <Loader2 className="animate-spin" />
+                ) : (
+                  <Box />
+                )}
+                Create sandbox
+              </Button>
+            </DisabledReason>
           )}
         </div>
       )}
@@ -1986,6 +2001,7 @@ function BountyDetail({
               <StepTriggers
                 stages={bounty.stages}
                 ahead={sourcesAhead(context.status)}
+                locks={{ price: priceHeld, sandbox: sandboxHeld }}
                 approved={{
                   scope: approvedScope,
                   price: bounty.proposal?.status === "approved",
@@ -2105,6 +2121,9 @@ function BountyDetail({
               />
             </TabsContent>
             <TabsContent value="price" className="flex flex-col gap-4">
+              {canManage && (
+                <StepHeld step="price" bounty={bounty} onOpen={selectPageTab} />
+              )}
               {/*
                 Named as its tab is, the Price step, as the sandbox's
                 lineage and the way to generate it name it too: the
@@ -2143,6 +2162,13 @@ function BountyDetail({
               {proposalPart}
             </TabsContent>
             <TabsContent value="sandbox" className="flex flex-col gap-4">
+              {canManage && (
+                <StepHeld
+                  step="sandbox"
+                  bounty={bounty}
+                  onOpen={selectPageTab}
+                />
+              )}
               <StepLineage
                 step="sandbox"
                 stages={bounty.stages}

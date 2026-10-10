@@ -52,6 +52,8 @@ import {
   approvedTaskReadiness,
   replayOf,
   resolveScope,
+  stepHeldBy,
+  stepHeldReason,
   validateAliasRules,
 } from "sandbox-factory";
 import { isAtLeastAdmin } from "../access.js";
@@ -224,6 +226,34 @@ export function mountSandboxRoutes(
   const service = versionService(options);
   const { sliceInputs, fixturesFromRun } = service;
 
+  /*
+    A sandbox is changed only while its bounty's scope and price stand
+    approved: the refusal, or null when they do. Unpublishing is the way
+    back, and is never held. A bounty gone is answered by the route.
+  */
+  const held = async (owner: string, bountyId: string) => {
+    const bounty = await options.bounties.get(owner, bountyId);
+    if (bounty === null) return null;
+    const proposalId = await options.proposals.liveForBounty(owner, bountyId);
+    const proposal =
+      proposalId === null
+        ? null
+        : await options.proposals.get(owner, proposalId);
+    const heldBy = stepHeldBy("sandbox", bounty, proposal);
+    return heldBy === null
+      ? null
+      : {
+          code: "step_held",
+          heldBy,
+          error: stepHeldReason("sandbox", heldBy),
+        };
+  };
+  // The same, for a version, by the sandbox it belongs to.
+  const versionHeld = async (owner: string, sandboxId: string) => {
+    const sandbox = await options.sandboxes.get(owner, sandboxId);
+    return sandbox === null ? null : held(owner, sandbox.bountyId);
+  };
+
   app.post(base, async (c) => {
     if (!isAtLeastAdmin(c.get("member").role))
       return c.json(
@@ -236,6 +266,8 @@ export function mountSandboxRoutes(
     if (!body.success)
       return c.json({ error: "Invalid sandbox request." }, 400);
     const owner = c.get("member").organizationId;
+    const refusal = await held(owner, body.data.bountyId);
+    if (refusal !== null) return c.json(refusal, 409);
     const result = await options.sandboxes.create(owner, {
       bountyId: body.data.bountyId,
       sourceRepoId: await touchedSource(options, owner, body.data.bountyId),
@@ -259,6 +291,8 @@ export function mountSandboxRoutes(
     const owner = c.get("member").organizationId;
     const sandbox = await options.sandboxes.get(owner, c.req.param("id"));
     if (sandbox === null) return c.json({ error: "Not found." }, 404);
+    const refusal = await held(owner, sandbox.bountyId);
+    if (refusal !== null) return c.json(refusal, 409);
     const sourceRepoId = await touchedSource(options, owner, sandbox.bountyId);
     if (sourceRepoId === null)
       return c.json(
@@ -293,6 +327,8 @@ export function mountSandboxRoutes(
     const owner = c.get("member").organizationId;
     const sandbox = await options.sandboxes.get(owner, c.req.param("id"));
     if (sandbox === null) return c.json({ error: "Not found." }, 404);
+    const refusal = await held(owner, sandbox.bountyId);
+    if (refusal !== null) return c.json(refusal, 409);
     const generated = await service.generate(
       owner,
       c.get("user").id,
@@ -362,6 +398,8 @@ export function mountSandboxRoutes(
     const owner = c.get("member").organizationId;
     const sandbox = await options.sandboxes.get(owner, c.req.param("id"));
     if (sandbox === null) return c.json({ error: "Not found." }, 404);
+    const refusal = await held(owner, sandbox.bountyId);
+    if (refusal !== null) return c.json(refusal, 409);
     const body = createSandboxVersionSchema.safeParse(
       await c.req.json().catch(() => null),
     );
@@ -397,6 +435,8 @@ export function mountSandboxRoutes(
     if (!body.success) return c.json({ error: "Invalid version change." }, 400);
     const current = await options.sandboxes.getVersion(owner, versionId);
     if (current === null) return c.json({ error: "Not found." }, 404);
+    const refusal = await versionHeld(owner, current.version.sandboxId);
+    if (refusal !== null) return c.json(refusal, 409);
     const sliceRunId = current.source.sliceRunId;
     const aliasRules = body.data.aliasRules ?? current.source.aliasRules;
     const dependencyChoices =
@@ -527,8 +567,18 @@ export function mountSandboxRoutes(
         },
         400,
       );
+    const owner = c.get("member").organizationId;
+    const publishing = await options.sandboxes.getVersion(
+      owner,
+      c.req.param("vid"),
+    );
+    const refusal =
+      publishing === null
+        ? null
+        : await versionHeld(owner, publishing.version.sandboxId);
+    if (refusal !== null) return c.json(refusal, 409);
     const result = await options.sandboxes.publishVersion(
-      c.get("member").organizationId,
+      owner,
       c.req.param("vid"),
       c.get("user").id,
       expiresAt,
@@ -598,6 +648,8 @@ export function mountSandboxRoutes(
       c.req.param("vid"),
     );
     if (stored === null) return c.json({ error: "Not found." }, 404);
+    const refusal = await versionHeld(owner, stored.version.sandboxId);
+    if (refusal !== null) return c.json(refusal, 409);
     if (stored.version.frozenAt !== null)
       return c.json(
         { error: "A frozen version is not rebuilt.", code: "frozen" },

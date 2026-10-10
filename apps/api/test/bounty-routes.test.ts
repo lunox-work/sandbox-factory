@@ -52,6 +52,11 @@ function written(overrides: Partial<StoredBounty> = {}): StoredBounty {
   };
 }
 
+/** Its scope approved where it stands, as a price is changed only on one. */
+const SCOPED = {
+  approval: { version: 1, approvedBy: "user_1", approvedAt: stamp },
+} satisfies Partial<StoredBounty>;
+
 function imported(overrides: Partial<StoredBounty> = {}): StoredBounty {
   return written({
     id: "bty_1",
@@ -936,7 +941,7 @@ test("only an owner or admin deletes a bounty, and only an unused one", async ()
 });
 
 test("proposing a bounty written here starts a bounty run, with no board", async () => {
-  const state = harness({ bounties: [written()] });
+  const state = harness({ bounties: [written(SCOPED)] });
   const response = await state.request("POST", "bounties/bty_7/propose", {
     requestId,
   });
@@ -964,7 +969,7 @@ test("proposing a bounty written here starts a bounty run, with no board", async
 });
 
 test("proposing a Jira bounty sizes it with its board's settings", async () => {
-  const state = harness({ bounties: [imported()], siteReady: true });
+  const state = harness({ bounties: [imported(SCOPED)], siteReady: true });
   const response = await state.request("POST", "bounties/bty_1/propose", {
     requestId,
   });
@@ -982,7 +987,7 @@ test("proposing a Jira bounty sizes it with its board's settings", async () => {
 });
 
 test("a bounty with a live proposal gets that proposal, not a run", async () => {
-  const bounty = written();
+  const bounty = written(SCOPED);
   const state = harness({
     bounties: [bounty],
     live: { bty_7: proposalOf(bounty) },
@@ -997,16 +1002,22 @@ test("a bounty with a live proposal gets that proposal, not a run", async () => 
 
 test("proposing is refused when it could not start", async () => {
   const cases: [Parameters<typeof harness>[0], number, string | undefined][] = [
-    [{ role: "member", bounties: [written()] }, 403, undefined],
+    [{ role: "member", bounties: [written(SCOPED)] }, 403, undefined],
     [{ bounties: [] }, 404, undefined],
-    [{ sizing: false, bounties: [written()] }, 503, "sizing_unavailable"],
+    [{ sizing: false, bounties: [written(SCOPED)] }, 503, "sizing_unavailable"],
+    // A price is made only on an approved scope.
+    [{ bounties: [written()] }, 409, "step_held"],
     // A Jira bounty with no Jira configured cannot be read to size, nor
     // one whose site needs reconnecting: said now, not by a failed run.
-    [{ jira: false, bounties: [imported({ id: "bty_7" })] }, 409, "reconnect"],
-    [{ bounties: [imported({ id: "bty_7" })] }, 409, "reconnect"],
+    [
+      { jira: false, bounties: [imported({ id: "bty_7", ...SCOPED })] },
+      409,
+      "reconnect",
+    ],
+    [{ bounties: [imported({ id: "bty_7", ...SCOPED })] }, 409, "reconnect"],
     [
       {
-        bounties: [written()],
+        bounties: [written(SCOPED)],
         runCreate: { ok: false, reason: "active", runId: "brn_9" },
       },
       409,
@@ -1014,14 +1025,17 @@ test("proposing is refused when it could not start", async () => {
     ],
     [
       {
-        bounties: [written()],
+        bounties: [written(SCOPED)],
         runCreate: { ok: false, reason: "request-conflict" },
       },
       409,
       "request_conflict",
     ],
     [
-      { bounties: [written()], runCreate: { ok: false, reason: "not-found" } },
+      {
+        bounties: [written(SCOPED)],
+        runCreate: { ok: false, reason: "not-found" },
+      },
       404,
       undefined,
     ],
@@ -1037,7 +1051,7 @@ test("proposing is refused when it could not start", async () => {
   }
   assert.equal(
     (
-      await harness({ bounties: [written()] }).request(
+      await harness({ bounties: [written(SCOPED)] }).request(
         "POST",
         "bounties/bty_7/propose",
         { requestId: "x" },
@@ -1049,7 +1063,7 @@ test("proposing is refused when it could not start", async () => {
 
 test("a bounty written here is proposed when Jira is not configured at all", async () => {
   // Nothing here needs Jira: the deployment has none.
-  const state = harness({ jira: false, bounties: [written()] });
+  const state = harness({ jira: false, bounties: [written(SCOPED)] });
   const response = await state.request("POST", "bounties/bty_7/propose", {
     requestId,
   });
@@ -1067,7 +1081,7 @@ test("the organization's proposals list from every source, and count by category
 });
 
 test("a bounty written here is reviewed and approved with no Jira", async () => {
-  const bounty = written();
+  const bounty = written(SCOPED);
   const priced = await bountySpecHash(bounty.title, bounty.description);
   const proposal = proposalOf(bounty, { specHash: priced });
   const approved: unknown[] = [];
@@ -1104,6 +1118,7 @@ test("a bounty written here is reviewed and approved with no Jira", async () => 
 
 test("an approval a published sandbox stands on is re-priced, the sandbox left as it is", async () => {
   const bounty = written({
+    ...SCOPED,
     sandbox: {
       id: "sbx_1",
       status: "published",
@@ -1132,7 +1147,7 @@ test("an approval a published sandbox stands on is re-priced, the sandbox left a
 });
 
 test("a bounty written here is re-priced with no board", async () => {
-  const bounty = written();
+  const bounty = written(SCOPED);
   const state = harness({
     bounties: [bounty],
     live: { bty_7: proposalOf(bounty) },
@@ -1149,7 +1164,7 @@ test("a bounty written here is re-priced with no board", async () => {
 });
 
 test("a proposal's page names the re-price in flight on it", async () => {
-  const bounty = written();
+  const bounty = written(SCOPED);
   const run = runOf({ bountyId: "bty_7", kind: "reprice" });
   const state = harness({
     jira: false,
@@ -1165,7 +1180,7 @@ test("a proposal's page names the re-price in flight on it", async () => {
 
 test("a bounty's page reads the sizing in flight on it, and only its own", async () => {
   const run = runOf({ bountyId: "bty_7", kind: "bounty" });
-  const state = harness({ bounties: [written()], activeRun: run });
+  const state = harness({ bounties: [written(SCOPED)], activeRun: run });
   const sizing = await state.request("GET", "bounties/bty_7/sizing");
   assert.equal(sizing.status, 200);
   assert.equal(
@@ -1176,13 +1191,13 @@ test("a bounty's page reads the sizing in flight on it, and only its own", async
     (await state.request("GET", "bounties/bty_missing/sizing")).status,
     404,
   );
-  const idle = harness({ bounties: [written()] });
+  const idle = harness({ bounties: [written(SCOPED)] });
   const none = await idle.request("GET", "bounties/bty_7/sizing");
   assert.deepEqual(await none.json(), { run: null });
 });
 
 test("a re-price refused for a run in the way names that run", async () => {
-  const bounty = written();
+  const bounty = written(SCOPED);
   const state = harness({
     bounties: [bounty],
     live: { bty_7: proposalOf(bounty) },

@@ -145,8 +145,9 @@ export function SandboxGeneration({
   /** Whether its versions are generated; a linked one's are sliced. */
   canGenerate?: boolean;
   /**
-   * Why generating is refused for now, such as a bounty whose proposal is
-   * still a draft; null when it is not.
+   * Why generating and publishing are refused for now, such as a bounty
+   * whose scope or price is not approved; null when they are not.
+   * Unpublishing is the way back, and is never refused.
    */
   generationBlocked?: string | null;
   /**
@@ -635,11 +636,13 @@ export function SandboxGeneration({
         ) : (
           <PublishMenu
             disabledReason={
-              !publishable
-                ? "Only a version whose build passed can be published."
-                : !fromApproved
-                  ? "This version was not built from an approved price."
-                  : null
+              generationBlocked !== null
+                ? generationBlocked
+                : !publishable
+                  ? "Only a version whose build passed can be published."
+                  : !fromApproved
+                    ? "This version was not built from an approved price."
+                    : null
             }
             busy={publishing}
             onPublish={(until) => void publish(until)}
@@ -665,9 +668,6 @@ export function SandboxGeneration({
   const content = (
     <div className="flex flex-col gap-4" data-testid="sandbox-generation">
       {body}
-      {generates && selected !== null && generationBlocked !== null && (
-        <p className="text-muted-foreground text-sm">{generationBlocked}</p>
-      )}
       {(openButton || generateButton) && (
         <div className="flex flex-wrap items-center gap-2">
           {openButton}

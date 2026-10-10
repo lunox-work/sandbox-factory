@@ -6,6 +6,8 @@ import {
   scopeApproved,
   scopeVersionOf,
   stageDrift,
+  stepHeldBy,
+  stepHeldReason,
 } from "../src/stages.js";
 
 test("nothing is behind while each step stands on the latest before it", () => {
@@ -93,6 +95,36 @@ test("a scope is approved only at the version that was approved", () => {
   assert.equal(scopeApproved({ version: 2, approval: { version: 2 } }), true);
   // Jira wrote a new version since: no longer the one approved.
   assert.equal(scopeApproved({ version: 3, approval: { version: 2 } }), false);
+});
+
+test("a step is held until every step before it stands approved", () => {
+  const scoped = { version: 2, approval: { version: 2 } };
+  const unscoped = { version: 3, approval: { version: 2 } };
+  const approved = { status: "approved" };
+  const proposed = { status: "proposed" };
+  // The price waits on the scope alone.
+  assert.equal(stepHeldBy("price", unscoped, approved), "scope");
+  assert.equal(stepHeldBy("price", scoped, null), null);
+  // The sandbox on the scope first, then on the price.
+  assert.equal(stepHeldBy("sandbox", unscoped, approved), "scope");
+  assert.equal(stepHeldBy("sandbox", scoped, null), "price");
+  assert.equal(stepHeldBy("sandbox", scoped, proposed), "price");
+  assert.equal(stepHeldBy("sandbox", scoped, approved), null);
+});
+
+test("a held step says what to approve first", () => {
+  assert.equal(
+    stepHeldReason("price", "scope"),
+    "Approve the scope before changing the price.",
+  );
+  assert.equal(
+    stepHeldReason("sandbox", "scope"),
+    "Approve the scope and the price before changing the sandbox.",
+  );
+  assert.equal(
+    stepHeldReason("sandbox", "price"),
+    "Approve the price before changing the sandbox.",
+  );
 });
 
 test("a bounty's status is the last step it has done", () => {

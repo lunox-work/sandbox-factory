@@ -225,6 +225,13 @@ const storedBounty = {
   stack: [],
   createdBy: null,
   revision: 1,
+  // Its scope approved, as a price is changed only on one.
+  version: 1,
+  approval: {
+    version: 1,
+    approvedBy: "user_1",
+    approvedAt: "2026-10-01T00:00:00.000Z",
+  },
   jira: {
     issueId: "jri_1",
     boardId: "jrb_1",

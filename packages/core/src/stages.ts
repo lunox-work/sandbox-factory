@@ -9,12 +9,14 @@
  * it that it was built on. A step is done when it is approved; a sandbox,
  * when it is published and its publication has not lapsed.
  *
- * The steps are not locked to each other. The scope can be edited while a
+ * A step is changed only once every step before it stands approved
+ * (`stepHeldBy`): the price waits on the scope, the sandbox on both. The
+ * way back is never held: a scope can be unapproved and edited while a
  * price stands on it, and a price unapproved and changed while a sandbox is
  * published over it: a later step keeps the version it was built on, and
  * reads as behind until it is built again. What is decided here is when a
- * step is behind, and how far a bounty has got, so every surface says so
- * alike.
+ * step is held or behind, and how far a bounty has got, so every surface
+ * says so alike.
  */
 
 import { isPublicationLive, type SandboxStatus } from "./sandbox/provenance.js";
@@ -124,6 +126,38 @@ export function scopeApproved(bounty: {
   readonly approval: { readonly version: number } | null;
 }): boolean {
   return bounty.approval !== null && bounty.approval.version === bounty.version;
+}
+
+/**
+ * The step before that holds a step back: each step is changed only once
+ * every step before it stands approved. The price waits on the scope; the
+ * sandbox on the scope, then the price. Null when nothing holds it.
+ *
+ * Only changes and additions wait: unapproving, removing or unpublishing
+ * what is there is the way back, and is never held.
+ */
+export function stepHeldBy(
+  step: "price" | "sandbox",
+  bounty: {
+    readonly version: number;
+    readonly approval: { readonly version: number } | null;
+  },
+  proposal: { readonly status: string } | null,
+): "scope" | "price" | null {
+  if (!scopeApproved(bounty)) return "scope";
+  if (step === "sandbox" && proposal?.status !== "approved") return "price";
+  return null;
+}
+
+/** Why a step is held, in a sentence, as the API and the page say it. */
+export function stepHeldReason(
+  step: "price" | "sandbox",
+  heldBy: "scope" | "price",
+): string {
+  if (step === "price") return "Approve the scope before changing the price.";
+  return heldBy === "scope"
+    ? "Approve the scope and the price before changing the sandbox."
+    : "Approve the price before changing the sandbox.";
 }
 
 /**

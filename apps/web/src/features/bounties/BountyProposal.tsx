@@ -22,6 +22,7 @@ export function BountyProposal({
   bountyTitle,
   canDecide,
   scopeVersion = null,
+  held = null,
   onChanged,
   onRemoved,
 }: {
@@ -32,6 +33,8 @@ export function BountyProposal({
   canDecide: boolean;
   /** The scope version it was sized from, when one says what it did. */
   scopeVersion?: number | null;
+  /** Why its price cannot be changed yet; null when it can. */
+  held?: string | null;
   /** After a change has landed, for whatever shows the bounty's proposal. */
   onChanged: () => void;
   onRemoved: () => void;
@@ -95,6 +98,7 @@ export function BountyProposal({
         onRemoved={onRemoved}
         withinBounty
         scopeVersion={scopeVersion}
+        held={held}
       />
     </div>
   );

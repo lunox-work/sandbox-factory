@@ -64,6 +64,14 @@ function detail(overrides: Record<string, unknown> = {}) {
   };
 }
 
+/**
+ * A bounty whose scope stands approved at its version, 1: its price, and
+ * once that is approved its sandbox, can be changed only then.
+ */
+const SCOPED = {
+  approval: { version: 1, approvedBy: "user_1", approvedAt: stamp },
+};
+
 const jiraLink = {
   issueId: "jri_1",
   boardId: "jrb_1",
@@ -315,6 +323,13 @@ function server(
   });
   return { fetchMock, calls };
 }
+
+/** The bounty read with its scope approved, so it can be priced. */
+const scopedBounty: [string, string, () => Promise<Response>] = [
+  "GET",
+  "/bounties/bty_7",
+  () => json({ bounty: detail(SCOPED) }),
+];
 
 test("the workspace's bounties list from any source, with their proposals", async () => {
   vi.stubGlobal("fetch", server().fetchMock);
@@ -1782,6 +1797,7 @@ test("an admin proposes a bounty from inside it, follows its sizing, and lands o
         });
       },
     ],
+    scopedBounty,
   ]);
   vi.stubGlobal("fetch", state.fetchMock);
   window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=price");
@@ -1830,6 +1846,7 @@ test("an admin proposes a bounty from inside it, follows its sizing, and lands o
 test("a bounty that already has a proposal opens it without sizing", async () => {
   const state = server([
     ["POST", "/bounties/bty_7/propose", () => json({ proposalId: "bpr_9" })],
+    scopedBounty,
   ]);
   vi.stubGlobal("fetch", state.fetchMock);
   window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=price");
@@ -1876,6 +1893,7 @@ test("a bounty already being sized follows the run under way", async () => {
           ),
         }),
     ],
+    scopedBounty,
   ]);
   vi.stubGlobal("fetch", state.fetchMock);
   window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=price");
@@ -1904,6 +1922,7 @@ test("a proposal that could not start, or ended without one, says why", async ()
           409,
         ),
     ],
+    scopedBounty,
   ]);
   vi.stubGlobal("fetch", refused.fetchMock);
   window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=price");
@@ -1932,6 +1951,7 @@ test("a proposal that could not start, or ended without one, says why", async ()
           202,
         ),
     ],
+    scopedBounty,
   ]);
   vi.stubGlobal("fetch", failed.fetchMock);
   render(<Shell {...inAcme("owner")} />);
@@ -2946,6 +2966,7 @@ test("a sandbox is made from the bounty alone, and seen after", async () => {
       () =>
         json({
           bounty: detail({
+            ...SCOPED,
             proposal: {
               ...approvedSummary,
               repositories: [{ repoId: "ghr_1", snapshotId: "rsn_1" }],
@@ -2995,6 +3016,11 @@ test("a sandbox that could not be made says why, and the bounty stays as it was"
           },
           409,
         ),
+    ],
+    [
+      "GET",
+      "/bounties/bty_7",
+      () => json({ bounty: detail({ ...SCOPED, proposal: approvedSummary }) }),
     ],
   ]);
   vi.stubGlobal("fetch", state.fetchMock);
@@ -3151,6 +3177,7 @@ test("a sandbox made without a repository links the one its sizing touches", asy
       () =>
         json({
           bounty: detail({
+            ...SCOPED,
             proposal: sizedTouching("ghr_1"),
             sandbox: sandboxOf({ sourceRepoId: linked ? "ghr_1" : null }),
           }),
@@ -3230,6 +3257,7 @@ test("a sandbox links the one repository its sizing touches that is still connec
         () =>
           json({
             bounty: detail({
+              ...SCOPED,
               // As the API counts them: the gone one is not a source.
               proposal: sizedTouching("ghr_1", "ghr_3"),
               sandbox: sandboxOf({ sourceRepoId: null }),
@@ -3269,6 +3297,7 @@ test("a sandbox without a repository says what links one, and a refused link say
         () =>
           json({
             bounty: detail({
+              ...SCOPED,
               proposal: sizedTouching("ghr_1"),
               sandbox: sandboxOf(),
             }),
@@ -3314,6 +3343,7 @@ test("several touched repositories offer no link", async () => {
         () =>
           json({
             bounty: detail({
+              ...SCOPED,
               proposal: sizedTouching("ghr_1", "ghr_2"),
               sandbox: sandboxOf(),
             }),
@@ -3350,7 +3380,11 @@ test("a sandbox whose sizing touches no repository generates its versions instea
         "/bounties/bty_7",
         () =>
           json({
-            bounty: detail({ sandbox: sandboxOf(), proposal: approvedSummary }),
+            bounty: detail({
+              ...SCOPED,
+              sandbox: sandboxOf(),
+              proposal: approvedSummary,
+            }),
           }),
       ],
     ]).fetchMock,
@@ -3384,6 +3418,7 @@ test("a member is told who generates a sandbox's versions", async () => {
         () =>
           json({
             bounty: detail({
+              ...SCOPED,
               sandbox: sandboxOf(),
               proposal: approvedSummary,
             }),
@@ -3520,6 +3555,8 @@ function generatingServer(input: {
   generate?: () => Promise<Response>;
   /** Its proposal; approved by default, since a draft is not generated from. */
   proposal?: Record<string, unknown> | null;
+  /** Its scope's approval; approved by default, as its price waits on it. */
+  approval?: Record<string, unknown> | null;
   sandbox?: () => Record<string, unknown>;
   publish?: () => Promise<Response>;
   unpublish?: () => Promise<Response>;
@@ -3537,6 +3574,8 @@ function generatingServer(input: {
       () =>
         json({
           bounty: detail({
+            approval:
+              input.approval === undefined ? SCOPED.approval : input.approval,
             sandbox: sandboxOf(input.sandbox?.()),
             proposal:
               input.proposal === undefined ? approvedSummary : input.proposal,
@@ -4177,7 +4216,7 @@ test("a bounty not yet approved shows no price at a glance, however it is resize
     [
       "GET",
       "/bounties/bty_7",
-      () => json({ bounty: detail({ proposal: live() }) }),
+      () => json({ bounty: detail({ ...SCOPED, proposal: live() }) }),
     ],
   ]);
   vi.stubGlobal("fetch", state.fetchMock);
@@ -4578,7 +4617,7 @@ test("a version taken from a bounty not approved cannot be published, and says w
   ).toBeGreaterThan(0);
 });
 
-test("a version built from an approved bounty publishes while the bounty is a draft again", async () => {
+test("a version built from an approved price is not published while the price is a draft again, and says why", async () => {
   vi.stubGlobal(
     "fetch",
     generatingServer({
@@ -4595,10 +4634,20 @@ test("a version built from an approved bounty publishes while the bounty is a dr
   );
   const part = await sandboxPart();
   // Its header names the bounty version it was built on, once its
-  // provenance is read; then it can be published.
+  // provenance is read.
   expect(await within(part).findByText("· Price v1")).toBeDefined();
+  // Built from an approved price, but the sandbox waits on the price as it
+  // is now: approved again first.
   const publish = await within(part).findByRole("button", { name: "Publish" });
-  await waitFor(() => expect(publish.hasAttribute("disabled")).toBe(false));
+  expect(publish.hasAttribute("disabled")).toBe(true);
+  await userEvent.hover(publish.parentElement!);
+  expect(
+    (
+      await screen.findAllByText(
+        "Approve the price before changing the sandbox.",
+      )
+    ).length,
+  ).toBeGreaterThan(0);
 });
 
 test("an approval a published sandbox stands on is taken back, and the sandbox reads as behind", async () => {
@@ -4695,7 +4744,7 @@ test("an approval a published sandbox stands on is taken back, and the sandbox r
   expect(screen.queryByTestId("price-lineage")).toBeNull();
 });
 
-test("a bounty that is a draft, or has no proposal, generates no slice", async () => {
+test("a bounty whose price is a draft, or that has none, or whose scope is not approved, generates no slice, and says what holds it", async () => {
   vi.stubGlobal(
     "fetch",
     generatingServer({
@@ -4706,7 +4755,7 @@ test("a bounty that is a draft, or has no proposal, generates no slice", async (
   let part = await sandboxPart();
   expect(
     await within(part).findByText(
-      /No version yet\. Its price is pending\. Approve it before generating its slice\./,
+      /No version yet\. Approve the price before changing the sandbox\./,
     ),
   ).toBeDefined();
   expect(
@@ -4716,6 +4765,7 @@ test("a bounty that is a draft, or has no proposal, generates no slice", async (
   ).toBe(true);
   cleanup();
 
+  // No price is held by the price alike.
   vi.stubGlobal(
     "fetch",
     generatingServer({ versions: () => [], proposal: null }).fetchMock,
@@ -4723,9 +4773,180 @@ test("a bounty that is a draft, or has no proposal, generates no slice", async (
   part = await sandboxPart();
   expect(
     await within(part).findByText(
-      /Price the bounty and approve its price before generating its slice\./,
+      /No version yet\. Approve the price before changing the sandbox\./,
     ),
   ).toBeDefined();
+  cleanup();
+
+  // An approved price over a scope since unapproved waits on the scope first.
+  vi.stubGlobal(
+    "fetch",
+    generatingServer({ versions: () => [], approval: null }).fetchMock,
+  );
+  part = await sandboxPart();
+  expect(
+    await within(part).findByText(
+      /No version yet\. Approve the scope and the price before changing the sandbox\./,
+    ),
+  ).toBeDefined();
+  expect(
+    within(part)
+      .getByRole("button", { name: "Generate" })
+      .hasAttribute("disabled"),
+  ).toBe(true);
+});
+
+/** What a held control's tooltip says, once the span around it is hovered. */
+async function reasonOn(control: HTMLElement) {
+  await userEvent.hover(control.parentElement!);
+  return (await screen.findByRole("tooltip")).textContent;
+}
+
+test("a price waits on an approved scope: its notice says why, and only unapproving and removing stay open", async () => {
+  // Not priced yet: it cannot be priced.
+  vi.stubGlobal("fetch", server().fetchMock);
+  window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=price");
+  render(<Shell {...inAcme("admin")} />);
+  let page = await screen.findByTestId("bounty-detail");
+  const held = within(page).getByTestId("price-held");
+  expect(held.getAttribute("role")).toBe("status");
+  expect(held.textContent).toContain(
+    "Locked. Approve the scope before changing the price.",
+  );
+  const priceIt = within(page).getByRole("button", { name: "Price it" });
+  expect(priceIt.hasAttribute("disabled")).toBe(true);
+  expect(await reasonOn(priceIt)).toBe(
+    "Approve the scope before changing the price.",
+  );
+  // Its tab wears the lock.
+  expect(
+    within(page)
+      .getByRole("tab", { name: /^Price/ })
+      .hasAttribute("data-held"),
+  ).toBe(true);
+  cleanup();
+
+  // A proposed price is not approved, sized again or resized.
+  vi.stubGlobal("fetch", server([proposed]).fetchMock);
+  render(<Shell {...inAcme("admin")} />);
+  let peek = await screen.findByTestId("proposal-detail");
+  const approve = await within(peek).findByRole("button", { name: "Approve" });
+  expect(approve.hasAttribute("disabled")).toBe(true);
+  expect(await reasonOn(approve)).toBe(
+    "Approve the scope before changing the price.",
+  );
+  expect(
+    within(peek)
+      .getByRole("button", { name: "Re-analyze" })
+      .hasAttribute("disabled"),
+  ).toBe(true);
+  for (const size of within(
+    within(peek).getByRole("group", { name: "Resize" }),
+  ).getAllByRole("button"))
+    expect(size.hasAttribute("disabled")).toBe(true);
+  // Removing it is the way back, and is never held.
+  expect(
+    within(peek)
+      .getByRole("button", { name: "Remove" })
+      .hasAttribute("disabled"),
+  ).toBe(false);
+  cleanup();
+
+  // An approved price over a scope since unapproved can still be unapproved.
+  const state = server([approved]);
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: string, init?: RequestInit) =>
+      /\/proposals\/bpr_9$/.test(String(input))
+        ? json({
+            proposal: proposal({ status: "approved" }),
+            freshness: { freshness: "current", checkedAt: stamp },
+            liveSpec: null,
+            writebackOperations: [],
+          })
+        : state.fetchMock(input, init),
+    ),
+  );
+  render(<Shell {...inAcme("admin")} />);
+  page = await screen.findByTestId("bounty-detail");
+  peek = await within(page).findByTestId("proposal-detail");
+  expect(within(page).getByTestId("price-held")).toBeDefined();
+  expect(
+    (
+      await within(peek).findByRole("button", { name: "Unapprove" })
+    ).hasAttribute("disabled"),
+  ).toBe(false);
+});
+
+test("a sandbox waits on an approved price: its notice says why, and nothing is created", async () => {
+  vi.stubGlobal(
+    "fetch",
+    server([
+      [
+        "GET",
+        "/bounties/bty_7",
+        () =>
+          json({
+            bounty: detail({
+              ...SCOPED,
+              proposal: { ...approvedSummary, status: "proposed" },
+            }),
+          }),
+      ],
+    ]).fetchMock,
+  );
+  window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=sandbox");
+  render(<Shell {...inAcme("owner")} />);
+  const page = await screen.findByTestId("bounty-detail");
+  const held = within(page).getByTestId("sandbox-held");
+  expect(held.getAttribute("role")).toBe("status");
+  expect(held.textContent).toContain(
+    "Locked. Approve the price before changing the sandbox.",
+  );
+  const part = within(page).getByRole("region", { name: "Sandbox" });
+  const create = within(part).getByRole("button", { name: "Create sandbox" });
+  expect(create.hasAttribute("disabled")).toBe(true);
+  expect(await reasonOn(create)).toBe(
+    "Approve the price before changing the sandbox.",
+  );
+  // The step that holds it is a click away.
+  await userEvent.click(
+    within(held).getByRole("button", { name: "Open Price" }),
+  );
+  await waitFor(() =>
+    expect(new URLSearchParams(window.location.search).get("tab")).toBe(
+      "price",
+    ),
+  );
+  // Its price is not held: the scope is approved.
+  expect(within(page).queryByTestId("price-held")).toBeNull();
+});
+
+test("a held step's notice opens the step that holds it, and is an owner's or admin's alone", async () => {
+  vi.stubGlobal("fetch", server().fetchMock);
+  window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=sandbox");
+  render(<Shell {...inAcme("admin")} />);
+  let page = await screen.findByTestId("bounty-detail");
+  // Neither scope nor price approved: the scope holds it first.
+  const held = within(page).getByTestId("sandbox-held");
+  expect(held.textContent).toContain(
+    "Approve the scope and the price before changing the sandbox.",
+  );
+  await userEvent.click(
+    within(held).getByRole("button", { name: "Open Scope" }),
+  );
+  expect(
+    await within(page).findByRole("tab", { name: /^Scope/, selected: true }),
+  ).toBeDefined();
+  expect(new URLSearchParams(window.location.search).get("tab")).toBeNull();
+  cleanup();
+
+  // A member changes nothing here, so is told nothing of what holds it.
+  vi.stubGlobal("fetch", server().fetchMock);
+  window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=price");
+  render(<Shell {...inAcme("member")} />);
+  page = await screen.findByTestId("bounty-detail");
+  expect(within(page).queryByTestId("price-held")).toBeNull();
 });
 
 test("the scope is versioned: an earlier one is read as it was, and the bounty sized from it warns", async () => {
@@ -5375,6 +5596,8 @@ test("a bounty sized and a sandbox generated with older context than the scope h
       () =>
         json({
           bounty: detail({
+            // Approved, so its tab's tooltip says what it is behind alone.
+            ...SCOPED,
             jira: jiraLink,
             stages: {
               scope: { version: 1, context: { jira: 2, github: 1 } },
@@ -5481,6 +5704,7 @@ test("a bounty being sized shows its scenarios, then its size and price, as each
         });
       },
     ],
+    scopedBounty,
   ]);
   vi.stubGlobal("fetch", state.fetchMock);
   window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=bounty");
@@ -5534,6 +5758,7 @@ test("a size the model could not give previews as unsized, as the proposal will 
           },
         }),
     ],
+    scopedBounty,
   ]);
   vi.stubGlobal("fetch", state.fetchMock);
   window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=bounty");
@@ -5563,7 +5788,7 @@ test("re-analyzing a proposal shows the new parts in place of the old as they la
     [
       "GET",
       "/bounties/bty_7",
-      () => json({ bounty: detail({ proposal: liveProposal() }) }),
+      () => json({ bounty: detail({ ...SCOPED, proposal: liveProposal() }) }),
     ],
     [
       "GET",

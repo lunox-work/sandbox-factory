@@ -112,6 +112,7 @@ export function ProposalPeek({
   onRemoved,
   withinBounty = false,
   scopeVersion = null,
+  held = null,
 }: {
   /** The organization's API root, for the reads the peek makes itself. */
   base: string;
@@ -146,6 +147,12 @@ export function ProposalPeek({
    * its version; null when no version says what it was sized from.
    */
   scopeVersion?: number | null;
+  /**
+   * Why the price cannot be changed yet, while the step before it is not
+   * approved; null when it can. Unapproving and removing are the way back,
+   * and are never held.
+   */
+  held?: string | null;
 }) {
   const url = withinBounty ? null : (bounty?.url ?? proposal.liveUrl ?? null);
   const label = modelLabel(proposal.actualModel);
@@ -288,6 +295,7 @@ export function ProposalPeek({
   // to change; an approved one is unapproved first.
   const canChange =
     canDecide &&
+    held === null &&
     open &&
     !reanalyzing &&
     step !== null &&
@@ -336,7 +344,7 @@ export function ProposalPeek({
     <ProposalSpec
       read={spec.read}
       onRetry={spec.retry}
-      canAnalyze={canDecide}
+      canAnalyze={canDecide && held === null}
       weightPoints={step?.settings.weightPoints ?? WEIGHT_POINTS}
       sizeReason={
         withinBounty
@@ -436,9 +444,9 @@ export function ProposalPeek({
   // approved one.
   const decision = !canDecide ? null : open ? (
     decidable && (
-      <DisabledReason reason={approveBlocked}>
+      <DisabledReason reason={held ?? approveBlocked}>
         <Button
-          disabled={locked || approveBlocked !== null}
+          disabled={locked || held !== null || approveBlocked !== null}
           aria-busy={acting === "approve"}
           onClick={() =>
             void act("approve", `/proposals/${proposal.id}/approve`, {
@@ -539,20 +547,22 @@ export function ProposalPeek({
           </div>
           {/* Sized again only while it is not approved: unapproved first. */}
           {canDecide && (open || reanalyzing) && (
-            <button
-              type="button"
-              className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 flex cursor-pointer items-center gap-1.5 rounded-sm text-sm underline-offset-4 transition-colors hover:underline focus-visible:ring-[3px] focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50 aria-busy:opacity-100"
-              disabled={locked}
-              aria-busy={reanalyzing}
-              onClick={reanalyze.start}
-            >
-              <RefreshCw
-                className={`size-3.5 ${
-                  reanalyzing ? "animate-spin motion-reduce:animate-none" : ""
-                }`}
-              />
-              {reanalyzing ? "Re-analyzing…" : "Re-analyze"}
-            </button>
+            <DisabledReason reason={reanalyzing ? null : held}>
+              <button
+                type="button"
+                className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 flex cursor-pointer items-center gap-1.5 rounded-sm text-sm underline-offset-4 transition-colors hover:underline focus-visible:ring-[3px] focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50 aria-busy:opacity-100"
+                disabled={locked || (held !== null && !reanalyzing)}
+                aria-busy={reanalyzing}
+                onClick={reanalyze.start}
+              >
+                <RefreshCw
+                  className={`size-3.5 ${
+                    reanalyzing ? "animate-spin motion-reduce:animate-none" : ""
+                  }`}
+                />
+                {reanalyzing ? "Re-analyzing…" : "Re-analyze"}
+              </button>
+            </DisabledReason>
           )}
         </div>
 
@@ -627,28 +637,32 @@ export function ProposalPeek({
                       size below it, which reads "S+" while it is the size
                       in force, and a click there sets the whole size.
                     */
-                <div
-                  role="group"
-                  aria-label="Resize"
-                  className="flex min-h-12 flex-wrap items-center gap-1.5 sm:justify-end"
-                >
-                  {complexity === "unsized" && (
-                    <SizeCard size="unsized" current />
-                  )}
-                  {WHOLE_BOUNTY_COMPLEXITIES.map((size) => {
-                    const current =
-                      complexity === size || complexity === `${size}+`;
-                    return (
-                      <SizeCard
-                        key={size}
-                        size={current ? complexity : size}
-                        current={current}
-                        disabled={locked || complexity === size}
-                        onClick={() => void resizeTo(size)}
-                      />
-                    );
-                  })}
-                </div>
+                <DisabledReason reason={held}>
+                  <div
+                    role="group"
+                    aria-label="Resize"
+                    className="flex min-h-12 flex-wrap items-center gap-1.5 sm:justify-end"
+                  >
+                    {complexity === "unsized" && (
+                      <SizeCard size="unsized" current />
+                    )}
+                    {WHOLE_BOUNTY_COMPLEXITIES.map((size) => {
+                      const current =
+                        complexity === size || complexity === `${size}+`;
+                      return (
+                        <SizeCard
+                          key={size}
+                          size={current ? complexity : size}
+                          current={current}
+                          disabled={
+                            locked || held !== null || complexity === size
+                          }
+                          onClick={() => void resizeTo(size)}
+                        />
+                      );
+                    })}
+                  </div>
+                </DisabledReason>
               ) : (
                 <SizeCard size={proposal.complexity} current />
               )}
@@ -746,7 +760,7 @@ export function ProposalPeek({
         <>
           <PricingRubricBlock
             proposal={proposal}
-            canUse={canDecide && open}
+            canUse={canDecide && open && held === null}
             busy={locked}
             scenarios={{
               shown: rubricSpec,
