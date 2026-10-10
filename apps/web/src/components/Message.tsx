@@ -11,10 +11,12 @@
  * like.
  */
 
-import { CircleAlert, Loader2, RefreshCw } from "lucide-react";
+import { CircleAlert, RefreshCw } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+
+import { Orb } from "./Orb";
 
 /**
  * A failure at the top of a screen — the load that did not return, the save
@@ -108,12 +110,15 @@ export function RetryableError({
  *
  * One shape everywhere, because the app had three: a bare "Loading…", a
  * spinner beside the word, and — on the members list — nothing at all, so an
- * organization looked briefly as though it had no members. A moving spinner is
+ * organization looked briefly as though it had no members. A moving orb is
  * what distinguishes "still working" from "finished, and this is the answer".
+ * Its plain, breathing one: the library's own ink and its calmest state,
+ * because a read is the app waiting, not making anything. The brand's ramp
+ * is kept for that, in `ThinkingLine`.
  *
  * `role="status"` rather than `alert`: a screen reader should mention it when
  * the reader is idle, not interrupt to say a list is still arriving. The
- * spinner is `aria-hidden`, or it would be announced as an image beside the
+ * orb is `aria-hidden`, or it would be announced as an image beside the
  * word it illustrates.
  */
 export function LoadingLine({
@@ -131,7 +136,7 @@ export function LoadingLine({
         className,
       )}
     >
-      <Loader2 className="size-4 shrink-0 animate-spin" aria-hidden="true" />
+      <Orb tone="plain" state="breathing" />
       {children}
     </p>
   );

@@ -298,7 +298,7 @@ export function BacklogScan({
             </div>
           )}
           {boardRun !== undefined && (
-            <ThinkingLine className="text-xs">
+            <ThinkingLine state="searching" className="text-xs">
               Sizing this board&rsquo;s candidates. Each opens as a bounty as it
               lands.
             </ThinkingLine>

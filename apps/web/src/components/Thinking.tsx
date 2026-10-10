@@ -1,13 +1,15 @@
 /**
- * A model or an agent at work: the brand's orb beside a line a light sweeps
- * across, and how long it has been at it. Kept apart from `LoadingLine`,
- * whose plain spinner is a page reading what it already has; this one is a
- * wait on something being made.
+ * A model or an agent at work: the orb in the brand's ramp beside a line a
+ * light sweeps across, and how long it has been at it. Kept apart from
+ * `LoadingLine`, whose orb is plain because it is a page reading what it
+ * already has; this one is a wait on something being made.
  */
 
 import { useEffect, useState, type ReactNode } from "react";
 
 import { cn } from "@/lib/utils";
+
+import { Orb, type OrbState } from "./Orb";
 
 /** Seconds since `since`, read again each second while mounted. */
 export function useElapsed(since: string | number | null | undefined) {
@@ -34,22 +36,22 @@ export function clock(seconds: number): string {
   return `${minutes}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
-export function ThinkingOrb({ className }: { className?: string }) {
-  return <span aria-hidden="true" className={cn("thinking-orb", className)} />;
-}
-
 /**
  * What is being made, said in one line with the orb before it. With
  * `since`, how long it has taken so far sits at the line's end; with
- * `expected`, what it usually takes is said beside it.
+ * `expected`, what it usually takes is said beside it. `state` is what the
+ * orb does, matched to the work: `working` for an agent at large,
+ * `searching` for a scan, `solving` for a size being worked out.
  */
 export function ThinkingLine({
   children,
+  state = "working",
   since,
   expected,
   className,
 }: {
   children: ReactNode;
+  state?: OrbState;
   since?: string | number | null | undefined;
   /** What it usually takes, as said after the clock: "usually ~8 min". */
   expected?: string | undefined;
@@ -61,7 +63,7 @@ export function ThinkingLine({
       role="status"
       className={cn("flex min-w-0 items-center gap-2 text-sm", className)}
     >
-      <ThinkingOrb />
+      <Orb tone="brand" state={state} />
       <span className="thinking-text min-w-0">{children}</span>
       {elapsed !== null && (
         // Out of the live region: a clock that ticks would be read aloud

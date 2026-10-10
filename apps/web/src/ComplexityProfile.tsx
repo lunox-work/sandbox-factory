@@ -13,6 +13,7 @@ import { clients } from "./data/query";
 
 import type { BountyProfileDto } from "@sandbox-factory/shared";
 
+import type { OrbState } from "@/components/Orb";
 import { RunActivity, useRunActivity } from "@/components/RunActivity";
 
 import { plural } from "./lib/format";
@@ -72,6 +73,16 @@ const STAGE: Record<string, string> = {
   queued: "Waiting for room in the workspace's analysis queue",
   scoping: "The scope agent is choosing the code this spec needs",
   slicing: "Cutting the slice the scope agent chose",
+};
+
+/**
+ * The orb for each stage: still breathing while it waits for room, sweeping
+ * while the scope agent searches the code, morphing while the slice is cut.
+ */
+const STAGE_ORB: Record<string, OrbState> = {
+  queued: "breathing",
+  scoping: "searching",
+  slicing: "shaping",
 };
 
 /** What each stage usually takes, said beside its clock. */
@@ -177,6 +188,7 @@ function RepositoryProfile({
   if (stage !== undefined)
     return (
       <RunActivity
+        state={STAGE_ORB[stored.status]}
         progress={run?.progress}
         since={
           run?.startedAt ??

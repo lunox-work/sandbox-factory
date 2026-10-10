@@ -494,6 +494,7 @@ export function SandboxGeneration({
         )}
         {standing?.working === true && (
           <RunActivity
+            state={run.data?.status === "queued" ? "breathing" : "working"}
             progress={run.data?.progress}
             since={run.data?.startedAt}
             expected="usually 2–4 min"

@@ -561,7 +561,7 @@ function DimensionRow({
         )}
         {!dimension.measured ? (
           rubric.code.status === "pending" ? (
-            <ThinkingLine className="mt-2 text-xs">
+            <ThinkingLine state="connecting" className="mt-2 text-xs">
               {UNMEASURED["pending"]}
             </ThinkingLine>
           ) : (

@@ -21,6 +21,7 @@ import {
   Waypoints,
   type LucideIcon,
 } from "lucide-react";
+import type { OrbState } from "@/components/Orb";
 import { ThinkingLine } from "@/components/Thinking";
 
 import type { AnalysisRunDto } from "@sandbox-factory/shared";
@@ -206,12 +207,23 @@ export function BuilderRow({
  * minutes, so it also says how long that usually is; the rest are done in
  * seconds.
  */
-const RUNNING: Record<ContextBuilder, { line: string; expected?: string }> = {
-  graphify: { line: "Building" },
-  dependency_cruiser: { line: "Building" },
-  deepwiki: { line: "Writing the wiki", expected: "usually ~8 min" },
-  abstractions: { line: "Building" },
-  data_model: { line: "Building" },
+/**
+ * The orb follows what each builds: a graph wires itself, the wiki is
+ * written, abstractions take shape, the data model's relations are plaited.
+ */
+const RUNNING: Record<
+  ContextBuilder,
+  { line: string; expected?: string; orb: OrbState }
+> = {
+  graphify: { line: "Building", orb: "connecting" },
+  dependency_cruiser: { line: "Building", orb: "connecting" },
+  deepwiki: {
+    line: "Writing the wiki",
+    expected: "usually ~8 min",
+    orb: "composing",
+  },
+  abstractions: { line: "Building", orb: "shaping" },
+  data_model: { line: "Building", orb: "weaving" },
 };
 
 /** Where the run stands, in a word and a dot; while it runs, the orb. */
@@ -225,9 +237,10 @@ function Status({
   pending: boolean;
 }) {
   if (run?.status === "running") {
-    const { line, expected } = RUNNING[builder];
+    const { line, expected, orb } = RUNNING[builder];
     return (
       <ThinkingLine
+        state={orb}
         className="text-xs"
         since={run.startedAt}
         expected={expected}
