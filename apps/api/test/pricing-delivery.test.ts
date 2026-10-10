@@ -286,7 +286,7 @@ test("approval posts one fixed comment then adds the label", async () => {
   assert.ok(!commentText(operation()).includes("private model text"));
   assert.match(
     commentText(operation({ kind: "withdrawn" })),
-    /The approved bounty was withdrawn\. Review: https:\/\/app\.test\/p\/1\./,
+    /The approved price was withdrawn\. Review: https:\/\/app\.test\/p\/1\./,
   );
 });
 

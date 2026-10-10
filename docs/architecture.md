@@ -376,6 +376,36 @@ by a failed delete, and more than one avatar size (see [Avatars](#avatars)).
 
 ## Bounties
 
+### Vocabulary
+
+One set of words for a bounty's lifecycle, used in the UI, the code and
+these docs alike.
+
+| Term                 | What it is                                                                                   | Done when                                                  | Code                                                       |
+| -------------------- | -------------------------------------------------------------------------------------------- | ---------------------------------------------------------- | ---------------------------------------------------------- |
+| **Bounty**           | The whole record of one piece of work. Never the name of a step.                             |                                                            | `bounty`                                                   |
+| **Scope** (step 1)   | Its title and description: what the work is. Versioned.                                      | An owner or admin approves the version it is at.           | `stages.scope`, `scopeApproved`, `bounty.approved_version` |
+| **Price** (step 2)   | Its size and the amount that size pays, with the reasoning. Held by its **proposal** record. | Its proposal is approved.                                  | `stages.price`, `bounty_proposal.status = 'approved'`      |
+| **Sandbox** (step 3) | The task cut for contributors, as versions.                                                  | A version is published and the publication has not lapsed. | `stages.sandbox`, `isPublicationLive`                      |
+
+A bounty's **status** is the last step done, and is what the list's Status
+column shows and `?status=` filters by (`bountyStatus` in
+`packages/core/src/stages.ts`):
+
+| Status     | Means                                     |
+| ---------- | ----------------------------------------- |
+| **New**    | No step approved yet.                     |
+| **Scoped** | Its scope is approved.                    |
+| **Priced** | Its price is approved.                    |
+| **Live**   | Its sandbox is published to contributors. |
+
+The furthest step decides: a live sandbox stays **Live** while its scope is
+edited. A price proposed and not yet approved is **pending**, said beside
+the status ("New · price pending"), not as a status of its own. **Draft**
+is only a sandbox's unpublished state. **Proposal** names the record and
+its API (`/proposals/...`), not a step; the button that makes one reads
+"Price it".
+
 **A bounty is the platform's own record of a piece of work, and it is two
 parts at least: its proposal and its sandbox.** The proposal specifies and
 prices it (`bounty_proposal.bounty_id`, one live at a time); the sandbox is
@@ -428,7 +458,7 @@ and cut to one set of caps. A repository with no snapshot yet is named as
 unread. A version synced while a bounty named one repository keeps that
 shape (`githubRepositories` reads either) and reads as `unsynced` until the
 workspace's are synced. Any
-member may sync, and an approved overview does not hold a sync back, as it
+member may sync, and an approved scope does not hold a sync back, as it
 does not hold back Jira's text. Each sync that finds something new is the
 source's next version in `bounty_context` (migration 0056), kept with the
 revision it was read at (Jira's `updated`, the commit); one that finds the
@@ -438,7 +468,7 @@ document makes no version. `GET .../context` says where each source stands:
 `unlinked`, `unsynced` (including a latest version from an issue or
 repository since replaced), `current`, `ahead` (Jira's `updated`, or the
 newest snapshot's commit, is past the sync) or `unavailable` with a reason.
-The overview holds the latest version of each source while it came from the
+The scope holds the latest version of each source while it came from the
 source linked now (`heldContext` in `apps/api/src/bounties/held-context.ts`),
 and that is the context sizing and generation are given:
 `renderSourceContext` puts it after the bounty's text and outline under
@@ -449,8 +479,8 @@ sandbox version freezes the context itself into its approved task (an
 optional `context` on schema version 3, so a task frozen before keeps its
 hash) and records its versions on `sandbox_version_source`. The bounty's
 `stages` carry all three, and a step made with an older version than the
-overview holds is behind on that source (`contextDrift`), as a step built
-on an older overview is behind on it.
+scope holds is behind on that source (`contextDrift`), as a step built
+on an older scope is behind on it.
 
 **A bounty is identified by its id and shown by its title.** One from Jira
 also carries its issue's key (`bounty.jira.key`, a proposal's `issueKey`);
@@ -483,12 +513,12 @@ registration, hands the boards it recorded to `importBoards`
 .../jira/boards/:id/import` does the same for one board on request. Each
 ticket the scan puts in a category, up to `IMPORT_LIMIT` per import,
 becomes a bounty as a run's read would make it (`JiraIssueStore.upsert`):
-its overview is the issue's text, its Jira fields are recorded as the
-overview's next Jira context version with no one as `synced_by`, and its
+its scope is the issue's text, its Jira fields are recorded as the
+scope's next Jira context version with no one as `synced_by`, and its
 categories are written to `bounty.categories` (migration 0057). No
 proposal and no sandbox are made, and no model is called. The scan's
 fallback, the oldest tickets when none fit a category, is not imported.
-An issue already imported is read again: new words are a new overview
+An issue already imported is read again: new words are a new scope
 version, new fields a new context version, and the categories are what
 this scan says. The same route with `issueId` imports one issue a person
 found through the board's search (`GET .../jira/boards/:id/search`, which
@@ -499,12 +529,17 @@ in the same way. Any member may import: it costs Jira reads only.
 **A board has no page of its own.** Its view is the bounty list narrowed
 to it, `/bounties?board=acme/jrb_1`, where the board can be rescanned and
 its issues searched and added; the old `/o/:slug/jira/:site/:board`
-address is rewritten to it. The list's filter narrows by category
+address is rewritten to it. The list's filters narrow by category
 (`?category=`, or `uncategorized` for the bounties in none, shown as
-"Unassigned"): `GET /api/v1/me/bounties` and `.../bounties` take
-`category` and `board`, and `GET /api/v1/me/bounty-categories` counts each
-category across the caller's workspaces, narrowed to a board's with
-`board`.
+"Unassigned"), by where the bounties came from (`?board=`, or
+`?source=lunox` for those written here) and by status (`?status=new`,
+`scoped`, `priced` or `live`): `GET /api/v1/me/bounties` and
+`.../bounties` take `category`, `board`, `source` and `status`, and
+`GET /api/v1/me/bounty-categories` counts each category across the
+caller's workspaces, narrowed alike by `board`, `source` and `status`. A
+status is decided in SQL as `bountyStatus` decides it, from the bounty's
+own columns and `exists` over its proposal and sandbox, so the counts need
+no other join (`statusFilter` in `packages/db/src/bounties.ts`).
 
 **A proposal's revision and version.** `bounty_proposal.revision` moves on
 every write and is what each change is checked against (`expectedRevision`),
@@ -518,32 +553,32 @@ it, so the next approval is a new version (`packages/db/src/proposal-version.ts`
 migration 0050).
 
 **Three steps, each versioned, none locked.** A bounty is made in order:
-its overview (title and description), the bounty (its proposal's
-`version`) and its sandbox (`sandbox_version.version`). The overview's
+its scope (title and description), its price (its proposal's
+`version`) and its sandbox (`sandbox_version.version`). The scope's
 version is `bounty.version`, moved by a change to the title or the
 description, whether written here or refreshed from Jira; each one is kept
 in `bounty_version` (migration 0053, which backfilled every bounty's text
 as its version 1). Each step records the version of the step before it
-that it was built on. A proposal's overview version is the latest
-`bounty_version` whose text hashes to its `spec_hash` (`overviewVersionOf`
+that it was built on. A proposal's scope version is the latest
+`bounty_version` whose text hashes to its `spec_hash` (`scopeVersionOf`
 in `packages/core/src/stages.ts`), so nothing is stored for it. A sandbox
-version's bounty version is `sandbox_version_source.proposal_version`, the
+version's price version is `sandbox_version_source.proposal_version`, the
 proposal's version when its task was taken while approved, and null
 otherwise and for versions taken before it was kept. No step holds another:
-the overview is edited under an approved proposal, and a proposal is
+the scope is edited under an approved proposal, and a proposal is
 unapproved or re-priced while its sandbox is published. A step built on an
 earlier version than the step before is now at is behind (`stageDrift`),
 which the bounty's detail answers as `stages` and the page shows on the
 step's tab and at the top of its page. `GET .../bounties/:id/versions`
-lists the overview's versions.
+lists the scope's versions.
 
-**An overview is approved as a proposal is.** `POST .../bounties/:id/approve`
+**A scope is approved as a proposal is.** `POST .../bounties/:id/approve`
 and `/unapprove` (owners and admins, against `expectedRevision`) record or
 clear `bounty.approved_version` with who and when (migration 0054). While
-that is the overview's version (`overviewApproved`) its title, description,
+that is the scope's version (`scopeApproved`) its title, description,
 repository, stack and Jira link are held: a change is refused
-`overview_approved` until it is unapproved. Jira is not held back: a refresh
-that makes a new version leaves the approval behind, and the overview reads
+`scope_approved` until it is unapproved. Jira is not held back: a refresh
+that makes a new version leaves the approval behind, and the scope reads
 as unapproved again. A proposal is re-analyzed only while it is not
 approved.
 
@@ -622,7 +657,7 @@ and makes it the sandbox's `current_version_id` with status `published`.
 Only a version with a passing build is published: one with no recorded
 harness and toolchain is refused `not_ready`. It stands on the approval its
 task was taken from, not on the bounty's now: one whose task's proposal was
-not approved is refused `bounty_not_approved`, and one that was publishes
+not approved is refused `price_not_approved`, and one that was publishes
 whatever the bounty has done since. A version published before
 keeps its first approval and is only pointed at again. `POST
 .../sandboxes/:id/unpublish` takes the sandbox back to `draft` with no
@@ -694,22 +729,23 @@ of its own, `/bounties/:workspace/:id`, which the panel's Open as page leads
 to and whose trail leads back; a card links the page, and a plain click
 opens the panel. The workspace is its handle, naming the routes the bounty
 is read through. Its page splits it into its three steps, numbered tabs
-named by `?tab=`, each with its version and a warning when it is behind
-(or, for the overview, when a source has moved past its sync);
+named by `?tab=scope`, `price` or `sandbox` (the old `overview` and
+`bounty` still open theirs), each with its version and a warning when it
+is behind (or, for the scope, when a source has moved past its sync);
 the panel is a glance, read and not changed, in one column with no tabs: its
-description, its **Sandbox** under its price, its **Context** (its Jira
-issue, optional, and the repositories its sizing says the work touches) and
-its workspace. The page's links name the workspace's repositories and lead
+details, a row each (status, price, why its scan picked it, sandbox, Jira
+issue, the repositories its sizing says the work touches, stack and
+workspace), its description, and its sandbox's version once it has one. The page's links name the workspace's repositories and lead
 to its GitHub settings, with their sync under them. Its proposal, and every
 change, are on its page, which the panel's Open as page leads to. On the page,
-a bounty with no proposal offers to make one in the proposal's place; once it
-has one, that place holds the live proposal in its peek, where it is
+a bounty with no price offers to make one on its Price tab; once it has
+one, that tab holds the live proposal in its peek, where it is
 reviewed and decided, without the peek's Spec tab or Jira link,
-since the bounty shows both. Each link on the overview has its sync under
+since the bounty shows both. Each link on the scope has its sync under
 it: its state, what its latest version adds, a Sync button and, while its
 source is ahead, a warning. Each step names the context versions it holds
-or was made with, and the bounty and sandbox steps warn at the top of their
-page when the overview holds newer context. The old `?bounty=…&workspace=…&proposal=…` query,
+or was made with, and the price and sandbox steps warn at the top of their
+page when the scope holds newer context. The old `?bounty=…&workspace=…&proposal=…` query,
 the per-workspace `/o/:slug/bounties` and `/o/:slug/tickets?ticket=…`
 addresses, the old `?tab=proposals&proposal=…` and `/proposal` after either
 address, from when the proposal was a tab, all still land on the right

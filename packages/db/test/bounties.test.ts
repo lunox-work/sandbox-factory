@@ -102,7 +102,7 @@ test("inserts a bounty once, and passes a failure on", async () => {
     origin: "manual",
   });
   assert.equal(created.id, "bty_1");
-  // The bounty, then its overview as version 1, by whoever wrote it.
+  // The bounty, then its scope as version 1, by whoever wrote it.
   assert.equal(fake.calls.length, 2);
   assert.deepEqual(fake.calls[1]?.values, {
     bountyId: "bty_1",
@@ -392,6 +392,33 @@ test("a list narrows to a board, a category, or the bounties in none", () => {
   );
 });
 
+test("a list narrows to how far its bounties have got, the furthest step deciding", () => {
+  const render = (status: "new" | "scoped" | "priced" | "live") => {
+    const where = and(...listFilters({ status }));
+    return where === undefined ? "" : new PgDialect().sqlToQuery(where).sql;
+  };
+  const live =
+    /exists \(select 1 from "sandbox" as status_sandbox .*status_sandbox\.status = 'published' and \(status_sandbox\.expires_at is null or status_sandbox\.expires_at > now\(\)\)\)/;
+  const priced =
+    /exists \(select 1 from "bounty_proposal" as status_price .*status_price\.status = 'approved'\)/;
+  const scoped =
+    /coalesce\("bounty"\."approved_version" = "bounty"\."version", false\)/;
+  assert.match(render("live"), live);
+  assert.doesNotMatch(render("live"), /not /);
+  // Priced: an approved price, and no live sandbox past it.
+  assert.match(render("priced"), /^\(not exists .* and exists /);
+  assert.match(render("priced"), priced);
+  // Scoped: an approved scope, and nothing done past it.
+  assert.match(render("scoped"), /and not exists .* and coalesce/);
+  // New: none of the three.
+  assert.match(render("new"), /and not coalesce/);
+  for (const status of ["new", "scoped", "priced", "live"] as const)
+    assert.match(
+      render(status),
+      status === "scoped" || status === "new" ? scoped : /./,
+    );
+});
+
 test("counts each category across the organizations given, and none of none", async () => {
   const fake = createSequencedFakeDb([
     [{ total: 4, uncategorized: 1 }],
@@ -475,7 +502,7 @@ test("a change is made against the revision the editor saw", async () => {
   assert.equal(values?.["revision"], 3);
   assert.equal(values?.["description"], "More");
   assert.equal("repoId" in (values ?? {}), false);
-  // New words are the overview's next version, kept by whoever wrote them.
+  // New words are the scope's next version, kept by whoever wrote them.
   assert.equal(values?.["version"], 2);
   assert.deepEqual(fake.calls[2]?.values, {
     bountyId: "bty_1",
@@ -682,7 +709,7 @@ test("a refresh writes Jira's text only when it differs", async () => {
   );
   assert.equal(moved.calls[1]?.values?.["revision"], 6);
   assert.equal(moved.calls[1]?.values?.["description"], "New steps");
-  // New words are the overview's next version, which nobody here wrote.
+  // New words are the scope's next version, which nobody here wrote.
   assert.equal(moved.calls[1]?.values?.["version"], 3);
   assert.equal(moved.calls[2]?.values?.["version"], 3);
   assert.equal(moved.calls[2]?.values?.["description"], "New steps");
@@ -739,7 +766,7 @@ test("a bounty is named by its id alone, and its columns are checked", () => {
     "bounty_title_check",
     "bounty_version_check",
   ]);
-  // One row per version of a bounty's overview, which goes with it.
+  // One row per version of a bounty's scope, which goes with it.
   const versions = getTableConfig(bountyVersion);
   assert.deepEqual(
     versions.primaryKeys[0]?.columns.map(({ name }) => name),
@@ -761,7 +788,7 @@ test("a bounty is named by its id alone, and its columns are checked", () => {
   );
 });
 
-test("an overview's versions are listed newest first, through its owner", async () => {
+test("a scope's versions are listed newest first, through its owner", async () => {
   const at = new Date("2026-10-02T00:00:00Z");
   const fake = createFakeDb([
     {
@@ -809,7 +836,7 @@ test("a sandbox reads with the version it is built as, and the bounty and contex
         sandboxSourceRepoId: null,
         buildVersionId: "sbv_2",
         buildVersion: 2,
-        buildBountyVersion: 4,
+        buildPriceVersion: 4,
         buildJiraContextVersion: 2,
         buildGithubContextVersion: null,
       },
@@ -818,13 +845,13 @@ test("a sandbox reads with the version it is built as, and the bounty and contex
   assert.deepEqual(read?.sandbox?.build, {
     versionId: "sbv_2",
     version: 2,
-    bountyVersion: 4,
+    priceVersion: 4,
     // And the context it was generated with.
     context: { jira: 2, github: null },
   });
 });
 
-test("an approved overview is held until it is unapproved", async () => {
+test("an approved scope is held until it is unapproved", async () => {
   const at = new Date("2026-10-06T00:00:00Z");
   const approvedRow = bountyRow({
     revision: 3,
@@ -867,7 +894,7 @@ test("an approved overview is held until it is unapproved", async () => {
       change,
     );
     assert.equal(refused.ok, false);
-    if (!refused.ok) assert.equal(refused.reason, "overview-approved");
+    if (!refused.ok) assert.equal(refused.reason, "scope-approved");
     assert.equal(held.calls.length, 1);
   }
   // Asked again, it already stands: no change, no write.
@@ -920,7 +947,7 @@ test("an approved overview is held until it is unapproved", async () => {
   );
 });
 
-test("a decision on the overview is made against the revision seen", async () => {
+test("a decision on the scope is made against the revision seen", async () => {
   const missing = createSequencedFakeDb([[]]);
   assert.deepEqual(
     await createBountyStore(missing.db).approve("org_1", "bty_x", 1, "user_1"),

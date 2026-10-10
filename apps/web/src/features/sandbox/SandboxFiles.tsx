@@ -50,7 +50,7 @@ import { clients, queryKeys, useUserId } from "../../data/query";
 import { replaceLocation, useLocation } from "../../navigation/location";
 import { workspaceLabel } from "../../OrganizationSwitcher";
 import {
-  bountyProposalPath,
+  bountyPricePath,
   isPlainLeftClick,
   sandboxFilesPath,
   type SandboxFilesAddress,
@@ -264,7 +264,7 @@ function SandboxFiles({
   const draft = version.isPending ? undefined : (approved?.spec?.draft ?? null);
   const bountyHref =
     approved?.schemaVersion === 3
-      ? bountyProposalPath({ workspace, id: approved.bountyId })
+      ? bountyPricePath({ workspace, id: approved.bountyId })
       : undefined;
   const [view, setView] = useState<View | null>("explorer");
   const [width, setWidth] = useState(SIDEBAR_WIDTH);

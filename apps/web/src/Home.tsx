@@ -141,7 +141,7 @@ function promise(
     case "jira":
     case "both":
       return canManage
-        ? "Your board's tickets worth outsourcing are bounties already. Open one and propose it to have it sized and priced."
+        ? "Your board's tickets worth outsourcing are bounties already. Open one and price it to have its scope sized and priced."
         : "Your board's tickets worth outsourcing are bounties already. An owner or admin proposes the ones worth doing.";
   }
 }

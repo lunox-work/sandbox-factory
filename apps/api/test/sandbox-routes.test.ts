@@ -568,7 +568,7 @@ function fixture(
         if (overrides.unready === true)
           return { ok: false, reason: "not_ready" };
         if (overrides.unapproved === true)
-          return { ok: false, reason: "bounty_not_approved" };
+          return { ok: false, reason: "price_not_approved" };
         published.push({
           versionId: id,
           actor,
@@ -828,7 +828,7 @@ test("an admin publishes a version whose build passed, and unpublishes the sandb
   assert.equal(unapproved.status, 409);
   assert.equal(
     ((await unapproved.json()) as { code: string }).code,
-    "bounty_not_approved",
+    "price_not_approved",
   );
   assert.equal(
     (await fixture("member").request("POST", "/versions/sbv_1/publish", until))

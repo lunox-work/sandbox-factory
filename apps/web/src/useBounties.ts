@@ -26,6 +26,7 @@ import type {
   BountySummaryDto,
 } from "@sandbox-factory/shared";
 import { useCallback } from "react";
+import type { BountyStatus } from "sandbox-factory";
 
 /** How many bounties a page reads; the route's largest. */
 const PAGE = 50;
@@ -91,7 +92,7 @@ export interface Bounties {
   /** Takes its Jira issue from the bounty, which keeps its text. */
   unlinkJira: (bountyId: string) => Promise<BountyWrite>;
   /**
-   * Approves the bounty's overview at its version, which holds it as it is
+   * Approves the bounty's scope at its version, which holds it as it is
    * until it is unapproved, or takes that back.
    */
   decide: (
@@ -150,24 +151,25 @@ function runFailure(run: BountyRunDto): string {
  */
 /**
  * What the list is narrowed to: a category's id, `uncategorized` for the
- * bounties in none, a board's id, and `lunox` for those written in Lunox.
- * Absent, all of them.
+ * bounties in none, a board's id, `lunox` for those written in Lunox, and
+ * how far the bounties have got. Absent, all of them.
  */
 export interface BountyFilter {
   category?: string | undefined;
   board?: string | undefined;
   source?: "lunox" | undefined;
+  status?: BountyStatus | undefined;
 }
 
 export function useAllBounties(filter: BountyFilter = {}): AllBounties {
   const userId = useUserId();
-  const { category, board, source } = filter;
+  const { category, board, source, status } = filter;
   const query = useInfiniteQuery({
     // Under the list's own key, so whatever reads the list again reads
     // every filtered copy of it too.
     queryKey: [
       ...queryKeys.me(userId, "bounties"),
-      { category, board, source },
+      { category, board, source, status },
     ],
     initialPageParam: undefined as string | undefined,
     queryFn: ({ pageParam, signal }) =>
@@ -178,6 +180,7 @@ export function useAllBounties(filter: BountyFilter = {}): AllBounties {
           ...(category === undefined ? {} : { category }),
           ...(board === undefined ? {} : { board }),
           ...(source === undefined ? {} : { source }),
+          ...(status === undefined ? {} : { status }),
         },
         signal,
       ),
@@ -206,15 +209,20 @@ export function useAllBounties(filter: BountyFilter = {}): AllBounties {
 export function useBountyCategories(
   board: string | undefined,
   source?: "lunox",
+  status?: BountyStatus,
 ) {
   const userId = useUserId();
   return useQuery({
-    queryKey: [...queryKeys.me(userId, "bounty-categories"), { board, source }],
+    queryKey: [
+      ...queryKeys.me(userId, "bounty-categories"),
+      { board, source, status },
+    ],
     queryFn: ({ signal }) =>
       clients.bounties.myBountyCategories(
         {
           ...(board === undefined ? {} : { board }),
           ...(source === undefined ? {} : { source }),
+          ...(status === undefined ? {} : { status }),
         },
         signal,
       ),

@@ -853,7 +853,7 @@ test("the docs view lists the version's frozen scenarios after its documents and
     within(screen.getByRole("banner"))
       .getByRole("link", { name: "Open the bounty" })
       .getAttribute("href"),
-  ).toBe("/bounties/acme/bty_7?tab=bounty");
+  ).toBe("/bounties/acme/bty_7?tab=price");
   // No view of their own: the scenarios are the first of the docs.
   expect(screen.queryByRole("button", { name: "Scenarios" })).toBeNull();
   await userEvent.click(screen.getByRole("button", { name: "Docs" }));
@@ -865,7 +865,7 @@ test("the docs view lists the version's frozen scenarios after its documents and
   // What it pays and its size; this version froze no price.
   expect(bounty.textContent).toBe("BountyUnpricedSizeM");
   expect(within(bounty).getByRole("link").getAttribute("href")).toBe(
-    "/bounties/acme/bty_7?tab=bounty",
+    "/bounties/acme/bty_7?tab=price",
   );
   // Documents first, then the scenarios, beside the features.
   expect(
@@ -951,7 +951,7 @@ test("the docs view lists the version's frozen scenarios after its documents and
     within(document)
       .getByRole("link", { name: /Open bounty/ })
       .getAttribute("href"),
-  ).toBe("/bounties/acme/bty_7?tab=bounty");
+  ).toBe("/bounties/acme/bty_7?tab=price");
   expect(
     within(document)
       .getAllByRole("link")

@@ -41,15 +41,13 @@ import {
 } from "@sandbox-factory/shared";
 import {
   BOUNTY_LIMITS,
+  bountyStatus,
   isPublicationLive,
-  overviewApproved,
+  scopeApproved,
   sameStackName,
 } from "sandbox-factory";
 import {
   Box,
-  CircleCheck,
-  CircleDashed,
-  CircleDot,
   ExternalLink,
   FileText,
   Inbox,
@@ -109,7 +107,7 @@ import {
   bountyForPath,
   bountyForSearch,
   bountyPagePath,
-  bountyProposalPath,
+  bountyPricePath,
   isPlainLeftClick,
   listScopeForSearch,
   NEW_BOUNTY_PATH,
@@ -145,12 +143,17 @@ import {
   CategoryNote,
 } from "./features/bounties/Categories";
 import {
-  OverviewVersion,
+  ScopeVersion,
   StepLineage,
   StepTriggers,
   STEPS,
   type Step,
 } from "./features/bounties/BountySteps";
+import {
+  StatusFilter,
+  StatusLabel,
+  statusOf,
+} from "./features/bounties/BountyStatus";
 import { SandboxCard } from "./features/bounties/SandboxCard";
 import { SandboxGeneration } from "./features/bounties/SandboxGeneration";
 import {
@@ -182,17 +185,20 @@ function sandboxLabel(sandbox: BountySandboxSummaryDto): string {
 /**
  * The steps a bounty's own page splits it into, in the order each is built
  * on the one before: what it is, what it pays and why, and where the work
- * is done. `?tab=` names the one open, or the overview when it names none.
+ * is done. `?tab=` names the one open, or the scope when it names none.
  */
 function pageTabFrom(search: string): Step {
   const value = new URLSearchParams(search).get("tab");
-  return STEPS.find((tab) => tab.value === value)?.value ?? "overview";
+  // The names the steps had before, so a link kept from then still opens.
+  const named =
+    value === "overview" ? "scope" : value === "bounty" ? "price" : value;
+  return STEPS.find((tab) => tab.value === named)?.value ?? "scope";
 }
 
 /** Opens a tab in the address, so Back returns to the one before. */
 function selectPageTab(next: string) {
   updateSearch((params) => {
-    if (next === "overview") params.delete("tab");
+    if (next === "scope") params.delete("tab");
     else params.set("tab", next);
   });
 }
@@ -279,8 +285,13 @@ export function Bounties({
     category: scope.category,
     board: scope.board?.boardId,
     source: scope.source,
+    status: scope.status,
   });
-  const counts = useBountyCategories(scope.board?.boardId, scope.source);
+  const counts = useBountyCategories(
+    scope.board?.boardId,
+    scope.source,
+    scope.status,
+  );
   /** The list narrowed otherwise; a bounty open over it stays open. */
   const narrow = (next: BountyListScope) =>
     replaceLocation(bountiesUrl(peek, next));
@@ -360,6 +371,12 @@ export function Bounties({
               narrow({ ...scope, category: category ?? undefined })
             }
           />
+          <StatusFilter
+            selected={scope.status ?? null}
+            onSelect={(status) =>
+              narrow({ ...scope, status: status ?? undefined })
+            }
+          />
           <BoardFilter
             organizations={organizations}
             selected={scope.board}
@@ -391,7 +408,8 @@ export function Bounties({
           narrowed={
             scope.category !== undefined ||
             scope.board !== undefined ||
-            scope.source !== undefined
+            scope.source !== undefined ||
+            scope.status !== undefined
           }
           onOpen={open}
           onCreate={onCreate}
@@ -472,7 +490,7 @@ function useLegacyProposal(
       ({ proposal }) => {
         if (live)
           replaceLocation(
-            bountyProposalPath({ workspace: slug, id: proposal.bountyId }),
+            bountyPricePath({ workspace: slug, id: proposal.bountyId }),
           );
       },
       () => {
@@ -695,7 +713,7 @@ export function NewBountyPage({
     <Page className="flex flex-col gap-8">
       <PageHeader
         title="New bounty"
-        description="Only the title is required. The more the description says, the better the proposal."
+        description="Only the title is required. The more the description says, the better the price."
       />
       {organizationsLoading ? (
         <LoadingLine />
@@ -932,7 +950,7 @@ function OpenBounty({
             bountyKey={bounty.jira?.key}
             bountyTitle={bounty.title}
             canDecide={manages}
-            overviewVersion={bounty.stages.bounty?.overviewVersion ?? null}
+            scopeVersion={bounty.stages.price?.scopeVersion ?? null}
             onChanged={() => {
               void bounties.refresh();
               opened.reload();
@@ -998,8 +1016,8 @@ function BountyList({
         (narrowed ? (
           <div className="rounded-lg border border-dashed px-4 py-10 text-center">
             <p className="text-muted-foreground text-sm">
-              No bounties here. Choose another category or source, or add one of
-              the board&rsquo;s issues from its &#8942; menu.
+              No bounties here. Choose another category, status or source, or
+              add one of the board&rsquo;s issues from its &#8942; menu.
             </p>
           </div>
         ) : (
@@ -1103,7 +1121,7 @@ function Source({ bounty }: { bounty: BountySummaryDto }) {
  * to the titles. Narrower still, as on a phone, each row stacks.
  */
 const ROW_GRID =
-  "gap-x-6 @xl:items-center @xl:grid-cols-[minmax(0,1fr)_7.5rem_5.5rem] @4xl:grid-cols-[minmax(0,1fr)_9rem_7.5rem_5.5rem]";
+  "gap-x-6 @xl:items-center @xl:grid-cols-[minmax(0,1fr)_10rem_5.5rem] @4xl:grid-cols-[minmax(0,1fr)_9rem_10rem_5.5rem]";
 
 /** The workspace column: under the title when stacked, and when wide. */
 const WORKSPACE_CELL = "@xl:hidden @4xl:flex";
@@ -1145,43 +1163,6 @@ function Subtitle({ bounty }: { bounty: BountySummaryDto }) {
           </span>
         </>
       )}
-    </span>
-  );
-}
-
-/**
- * Where a bounty's proposal stands, as a mark and a word: not sized yet, a
- * proposal waiting on a decision, or approved.
- */
-function ProposalStatus({
-  proposal,
-}: {
-  proposal: BountySummaryDto["proposal"];
-}) {
-  if (proposal === null)
-    return (
-      <span className="text-muted-foreground inline-flex items-center gap-1.5 text-xs">
-        <CircleDashed className="size-3.5 shrink-0" aria-hidden />
-        No proposal
-      </span>
-    );
-  const approved = proposal.status === "approved";
-  return (
-    <span
-      className={cn(
-        "inline-flex items-center gap-1.5 text-xs font-medium",
-        !approved && "text-foreground/80",
-      )}
-    >
-      {approved ? (
-        <CircleCheck
-          className="size-3.5 shrink-0 text-emerald-600 dark:text-emerald-400"
-          aria-hidden
-        />
-      ) : (
-        <CircleDot className="size-3.5 shrink-0 text-amber-500" aria-hidden />
-      )}
-      {approved ? "Approved" : "Proposed"}
     </span>
   );
 }
@@ -1318,8 +1299,14 @@ function BountyCard({
             {workspaceName}
           </span>
         </span>
-        <span data-testid={proposal === null ? undefined : "proposal-brief"}>
-          <ProposalStatus proposal={proposal} />
+        <span
+          className="min-w-0"
+          data-testid={proposal === null ? undefined : "proposal-brief"}
+        >
+          <StatusLabel
+            status={statusOf(bounty)}
+            pricePending={proposal?.status === "proposed"}
+          />
         </span>
         <span className="ml-auto @xl:ml-0 @xl:text-right">
           <ProposalPrice proposal={proposal} />
@@ -1452,7 +1439,7 @@ function BountyDetail({
   const { search } = useLocation();
   const tab = pageTabFrom(search);
   /*
-    The overview's versions, read on a page only, where its version is
+    The scope's versions, read on a page only, where its version is
     chosen; read again whenever it moves. The one being read, null for the
     latest: an earlier one is shown, not changed.
   */
@@ -1467,7 +1454,7 @@ function BountyDetail({
     ),
     enabled: layout === "page",
     queryFn: ({ signal }) =>
-      clients.bounties.bountyVersions(bounty.organizationId, bounty.id, signal),
+      clients.bounties.scopeVersions(bounty.organizationId, bounty.id, signal),
   });
   const [viewing, setViewing] = useState<number | null>(null);
   /*
@@ -1487,10 +1474,10 @@ function BountyDetail({
   // A bounty following its Jira issue takes its text from Jira.
   const followsJira = bounty.jira !== null && bounty.jira.removedAt === null;
   /*
-    An approved overview is held as it is: its title, text, links and stack
+    An approved scope is held as it is: its title, text, links and stack
     are shown, not changed, until an owner or admin unapproves it.
   */
-  const approvedOverview = overviewApproved(bounty);
+  const approvedScope = scopeApproved(bounty);
   const [deciding, setDeciding] = useState(false);
   const [decisionError, setDecisionError] = useState<string | null>(null);
   const decideOverview = (decision: "approve" | "unapprove") => {
@@ -1512,7 +1499,7 @@ function BountyDetail({
     jira: bounty.jira?.key ?? null,
     github: context.status?.github.linked?.ref ?? null,
   };
-  const heldContext = bounty.stages.overview.context;
+  const heldContext = bounty.stages.scope.context;
   const { sandbox } = bounty;
   /*
     The repository a sandbox is cut from is the one the bounty's sizing
@@ -1558,23 +1545,23 @@ function BountyDetail({
   };
 
   /*
-    The proposal in full, under the text it was sized from, since that is
-    what it is reviewed against. It brings its own cards, so it is not set
-    in the part's.
+    The price in full, as its proposal holds it, under the text it was
+    sized from, since that is what it is reviewed against. It brings its
+    own cards, so it is not set in the part's.
   */
   const proposalPart =
     proposal !== null ? (
-      <Part title="Proposal" framed={false} titleHidden={layout === "page"}>
+      <Part title="Price" framed={false} titleHidden={layout === "page"}>
         {proposal}
       </Part>
     ) : (
-      <Part title="Proposal" titleHidden={layout === "page"}>
+      <Part title="Price" titleHidden={layout === "page"}>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <p className="text-muted-foreground text-sm">
-            No proposal yet.{" "}
+            Not priced yet.{" "}
             {canManage
-              ? "Propose it to have it sized and priced."
-              : "An owner or admin can propose it."}
+              ? "Price it to have its scope sized and priced."
+              : "An owner or admin can price it."}
           </p>
           {canManage && (
             <Button
@@ -1588,7 +1575,7 @@ function BountyDetail({
               ) : (
                 <Sparkles />
               )}
-              {propose.pending ? "Sizing…" : "Propose"}
+              {propose.pending ? "Pricing…" : "Price it"}
             </Button>
           )}
         </div>
@@ -1714,7 +1701,7 @@ function BountyDetail({
     each in full.
   */
   const summaryPart = (
-    <Part title="Bounty">
+    <Part title="Summary">
       {price}
       {sandboxStatus === false ? (
         <p className="text-muted-foreground text-sm">No sandbox yet.</p>
@@ -1745,9 +1732,9 @@ function BountyDetail({
             // no proposal, or a draft one, is refused.
             generationBlocked={
               bounty.proposal === null
-                ? "Size and approve the bounty before generating its slice."
+                ? "Price the bounty and approve its price before generating its slice."
                 : bounty.proposal.status !== "approved"
-                  ? "The bounty is a draft. Approve it before generating its slice."
+                  ? "Its price is pending. Approve it before generating its slice."
                   : null
             }
             readOnly={readOnly}
@@ -1886,7 +1873,7 @@ function BountyDetail({
       <StackField
         bounty={bounty}
         repos={repos}
-        readOnly={readOnly || approvedOverview}
+        readOnly={readOnly || approvedScope}
         onSave={save}
       />
     </Part>
@@ -1904,7 +1891,7 @@ function BountyDetail({
           </button>
         }
         title="Delete this bounty?"
-        description="The bounty is removed from this workspace. A bounty with a proposal or a sandbox, or one being sized, cannot be deleted."
+        description="The bounty is removed from this workspace. A bounty with a price or a sandbox, or one being priced, cannot be deleted."
         confirmLabel="Delete bounty"
         pendingLabel="Deleting…"
         onConfirm={async () => {
@@ -1920,8 +1907,8 @@ function BountyDetail({
   const description = (
     <InlineDescription
       bounty={bounty}
-      locked={followsJira || readOnly || approvedOverview}
-      // A page's overview tab heads it, so it reads as a field there.
+      locked={followsJira || readOnly || approvedScope}
+      // A page's scope tab heads it, so it reads as a field there.
       labelled={layout !== "page"}
       {...(layout === "page" ? { label: "Describe task" } : {})}
       onSave={save}
@@ -1929,7 +1916,7 @@ function BountyDetail({
   );
 
   /*
-    A page splits the bounty into tabs: its overview, its text; the bounty,
+    A page splits the bounty into tabs: its scope, its text; the bounty,
     what it pays and the reasoning behind the price; and its sandbox. The
     title, the tabs on their rule and the tab's part make a wide column, so
     the tabs head only what they switch; beside it, from the top and
@@ -1949,7 +1936,7 @@ function BountyDetail({
               as="h1"
               size="page"
               value={bounty.title}
-              locked={followsJira || approvedOverview}
+              locked={followsJira || approvedScope}
               onSave={save}
             />
             {/* Its workspace and source are named beside, not here too. */}
@@ -1970,8 +1957,8 @@ function BountyDetail({
                 stages={bounty.stages}
                 ahead={sourcesAhead(context.status)}
                 approved={{
-                  overview: approvedOverview,
-                  bounty: bounty.proposal?.status === "approved",
+                  scope: approvedScope,
+                  price: bounty.proposal?.status === "approved",
                   // A sandbox version is approved as it is published.
                   sandbox:
                     sandbox !== null &&
@@ -1980,19 +1967,19 @@ function BountyDetail({
                 }}
               />
             </TabsList>
-            <TabsContent value="overview" className="flex flex-col gap-8">
+            <TabsContent value="scope" className="flex flex-col gap-8">
               <div className="flex flex-col gap-3">
                 {/*
                   Which version, and the decision on it, level with each
                   other as a proposal's are. Only the latest is decided.
                 */}
                 <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-                  <OverviewVersion
+                  <ScopeVersion
                     versions={versions.data ?? []}
                     current={bounty.version}
                     viewing={earlier?.version ?? bounty.version}
                     approvedAt={
-                      earlier === null && approvedOverview
+                      earlier === null && approvedScope
                         ? (bounty.approval?.approvedAt ?? null)
                         : null
                     }
@@ -2002,17 +1989,15 @@ function BountyDetail({
                   />
                   {canManage && earlier === null && (
                     <Button
-                      variant={approvedOverview ? "outline" : "default"}
+                      variant={approvedScope ? "outline" : "default"}
                       disabled={deciding}
                       aria-busy={deciding}
                       onClick={() =>
-                        decideOverview(
-                          approvedOverview ? "unapprove" : "approve",
-                        )
+                        decideOverview(approvedScope ? "unapprove" : "approve")
                       }
                     >
                       {deciding && <Loader2 className="animate-spin" />}
-                      {approvedOverview
+                      {approvedScope
                         ? deciding
                           ? "Unapproving…"
                           : "Unapprove"
@@ -2027,7 +2012,7 @@ function BountyDetail({
                     {decisionError}
                   </p>
                 )}
-                {/* The context the overview holds, as its links synced it. */}
+                {/* The context the scope holds, as its links synced it. */}
                 <StepContext
                   label="Holds"
                   versions={heldContext}
@@ -2040,7 +2025,7 @@ function BountyDetail({
                   <section
                     aria-label={`Version ${earlier.version}`}
                     className="flex flex-col gap-2"
-                    data-testid="overview-earlier"
+                    data-testid="scope-earlier"
                   >
                     <h3 className="text-sm font-medium">{earlier.title}</h3>
                     <BountyText description={earlier.description} />
@@ -2055,40 +2040,40 @@ function BountyDetail({
                 onChange={onChange}
                 onOpenSettings={onOpenSettings ?? (() => undefined)}
                 context={context}
-                locked={approvedOverview}
+                locked={approvedScope}
               />
             </TabsContent>
-            <TabsContent value="bounty" className="flex flex-col gap-4">
+            <TabsContent value="price" className="flex flex-col gap-4">
               {/*
-                Named as its tab is, the Bounty step, as the sandbox's
+                Named as its tab is, the Price step, as the sandbox's
                 lineage and the way to generate it name it too: the
-                proposal is what the step holds, not what it is called.
+                proposal is the record that holds the price.
               */}
               <StepLineage
-                step="bounty"
+                step="price"
                 stages={bounty.stages}
                 remedy={
                   bounty.proposal?.status === "approved"
-                    ? "Unapprove the bounty, then re-analyze it to size it from the latest overview."
-                    : "Re-analyze the bounty to size it from the latest overview."
+                    ? "Unapprove the price, then re-analyze it to size it from the latest scope."
+                    : "Re-analyze the price to size it from the latest scope."
                 }
                 onOpen={selectPageTab}
               />
-              {bounty.stages.bounty !== null && (
+              {bounty.stages.price !== null && (
                 <>
                   <ContextLineage
-                    step="bounty"
-                    versions={bounty.stages.bounty.context}
+                    step="price"
+                    versions={bounty.stages.price.context}
                     held={heldContext}
                     remedy={
                       bounty.proposal?.status === "approved"
-                        ? "Unapprove the bounty, then re-analyze it to size it with the latest context."
-                        : "Re-analyze the bounty to size it with the latest context."
+                        ? "Unapprove the price, then re-analyze it to size it with the latest context."
+                        : "Re-analyze the price to size it with the latest context."
                     }
                   />
                   <StepContext
                     label="Sized with"
-                    versions={bounty.stages.bounty.context}
+                    versions={bounty.stages.price.context}
                     held={heldContext}
                     names={contextNames}
                   />
@@ -2102,8 +2087,8 @@ function BountyDetail({
                 stages={bounty.stages}
                 remedy={
                   unlinked
-                    ? "Generate a new version to build from the latest bounty."
-                    : "A new version sliced from its repository would build from the latest bounty; slicing is not available from this page yet."
+                    ? "Generate a new version to build from the latest price."
+                    : "A new version sliced from its repository would build from the latest price; slicing is not available from this page yet."
                 }
                 onOpen={selectPageTab}
               />
@@ -2165,11 +2150,18 @@ function BountyDetail({
         />
         <PanelSection title="Details" titleHidden ruled={false}>
           <dl className="grid grid-cols-[7rem_minmax(0,1fr)] gap-x-4 gap-y-0.5 text-sm">
+            {/* How far it has got: the last of its steps done. */}
+            <Property label="Status">
+              <StatusLabel
+                status={bountyStatus(bounty)}
+                pricePending={bounty.proposal?.status === "proposed"}
+              />
+            </Property>
             {/* What it pays, settled only once its proposal is approved. */}
             <Property label="Price">
               {settled === null ? (
                 <span className="text-muted-foreground">
-                  {priced === null ? "Not sized yet" : "Awaiting approval"}
+                  {priced === null ? "Not priced yet" : "Awaiting approval"}
                 </span>
               ) : (
                 <span className="flex items-center gap-2">

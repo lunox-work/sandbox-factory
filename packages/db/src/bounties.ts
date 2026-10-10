@@ -10,9 +10,10 @@ import type {
   CategoryMatch,
   ContextVersions,
   BountyOrigin,
+  BountyStatus,
   SandboxStatus,
 } from "sandbox-factory";
-import { clampBountyTitle, overviewApproved } from "sandbox-factory";
+import { clampBountyTitle, scopeApproved } from "sandbox-factory";
 import { and, desc, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 
 import type { Database, QueryExecutor } from "./errors.js";
@@ -64,11 +65,11 @@ export interface StoredBounty extends BountyContent {
   readonly categories: readonly CategoryMatch[];
   readonly createdBy: string | null;
   readonly revision: number;
-  /** The overview's version: moved by each change to its title or text. */
+  /** The scope's version: moved by each change to its title or text. */
   readonly version: number;
   /**
-   * The overview version approved, by whom and when; null until one is.
-   * The overview is approved while this is its version (`overviewApproved`).
+   * The scope version approved, by whom and when; null until one is. The
+   * scope is approved while this is its version (`scopeApproved`).
    */
   readonly approval: BountyApproval | null;
   readonly jira: BountyJiraLink | null;
@@ -89,19 +90,19 @@ export interface BountySandboxSummary {
   readonly sourceRepoId: string | null;
   /**
    * The version contributors get, or the latest while none is published,
-   * and the bounty version it was built on (null for one built before that
+   * and the price version it was built on (null for one built before that
    * was kept). Null while it has no version.
    */
   readonly build: {
     readonly versionId: string;
     readonly version: number;
-    readonly bountyVersion: number | null;
+    readonly priceVersion: number | null;
     /** The bounty's synced context versions it was taken with. */
     readonly context: ContextVersions;
   } | null;
 }
 
-/** An overview version an owner or admin approved. */
+/** A scope version an owner or admin approved. */
 export interface BountyApproval {
   readonly version: number;
   /** Null for a person since removed. */
@@ -109,7 +110,7 @@ export interface BountyApproval {
   readonly approvedAt: string;
 }
 
-/** One version of a bounty's overview: its text from then until the next. */
+/** One version of a bounty's scope: its text from then until the next. */
 export interface StoredBountyVersion {
   readonly version: number;
   readonly title: string;
@@ -155,12 +156,12 @@ export type BountyMutationResult =
       readonly ok: false;
       /**
        * `jira-owned`: a change to the text of a bounty whose Jira issue is
-       * still there, which is Jira's to change. `overview-approved`: a
-       * change to an overview that stands approved, which is unapproved
+       * still there, which is Jira's to change. `scope-approved`: a
+       * change to a scope that stands approved, which is unapproved
        * first.
        */
       readonly reason:
-        "not-found" | "changed" | "jira-owned" | "overview-approved";
+        "not-found" | "changed" | "jira-owned" | "scope-approved";
       readonly current?: StoredBounty;
     };
 
@@ -194,11 +195,11 @@ export interface BountyStore {
    */
   categoryCounts(
     organizationIds: readonly string[],
-    filter?: Pick<BountyListOptions, "boardId" | "unlinked">,
+    filter?: Pick<BountyListOptions, "boardId" | "unlinked" | "status">,
   ): Promise<BountyCategoryCounts>;
   /**
    * Records the categories a scan found the bounty in, in place of those it
-   * had. Not a change to the overview, so neither its version nor its
+   * had. Not a change to the scope, so neither its version nor its
    * revision moves. False when the bounty is not the organization's.
    */
   categorize(
@@ -208,7 +209,7 @@ export interface BountyStore {
   ): Promise<boolean>;
   /**
    * A change, against the revision the editor saw. A change to the title
-   * or the description is a new version of the overview, by `editedBy`.
+   * or the description is a new version of the scope, by `editedBy`.
    */
   update(
     organizationId: string,
@@ -218,7 +219,7 @@ export interface BountyStore {
     editedBy?: string | null,
   ): Promise<BountyMutationResult>;
   /**
-   * Approves the overview at the version it is at, against the revision
+   * Approves the scope at the version it is at, against the revision
    * the approver saw, which locks it until it is unapproved. Approving one
    * already approved at its version is no change.
    */
@@ -228,13 +229,13 @@ export interface BountyStore {
     expectedRevision: number,
     approvedBy: string,
   ): Promise<BountyMutationResult>;
-  /** Takes the overview's approval back, against the revision seen. */
+  /** Takes the scope's approval back, against the revision seen. */
   unapprove(
     organizationId: string,
     bountyId: string,
     expectedRevision: number,
   ): Promise<BountyMutationResult>;
-  /** Its overview's versions, newest first; null for a bounty not found. */
+  /** Its scope's versions, newest first; null for a bounty not found. */
   versions(
     organizationId: string,
     bountyId: string,
@@ -272,6 +273,8 @@ export interface BountyListOptions {
   readonly boardId?: string;
   /** Only bounties with no Jira issue: those written in Lunox. */
   readonly unlinked?: boolean;
+  /** Only bounties whose last step done is this (`bountyStatus`). */
+  readonly status?: BountyStatus;
 }
 
 export interface BountyCategoryCounts {
@@ -325,7 +328,7 @@ const sandboxColumns = {
   sandboxSourceRepoId: sandboxSource.sourceRepoId,
   buildVersionId: sandboxVersion.id,
   buildVersion: sandboxVersion.version,
-  buildBountyVersion: sandboxVersionSource.proposalVersion,
+  buildPriceVersion: sandboxVersionSource.proposalVersion,
   buildJiraContextVersion: sandboxVersionSource.jiraContextVersion,
   buildGithubContextVersion: sandboxVersionSource.githubContextVersion,
 };
@@ -338,7 +341,7 @@ interface SandboxFields {
   readonly sandboxSourceRepoId: string | null;
   readonly buildVersionId: string | null;
   readonly buildVersion: number | null;
-  readonly buildBountyVersion: number | null;
+  readonly buildPriceVersion: number | null;
   readonly buildJiraContextVersion: number | null;
   readonly buildGithubContextVersion: number | null;
 }
@@ -351,7 +354,7 @@ const NO_SANDBOX: SandboxFields = {
   sandboxSourceRepoId: null,
   buildVersionId: null,
   buildVersion: null,
-  buildBountyVersion: null,
+  buildPriceVersion: null,
   buildJiraContextVersion: null,
   buildGithubContextVersion: null,
 };
@@ -374,7 +377,7 @@ function toSandboxSummary(fields: SandboxFields): BountySandboxSummary | null {
             : {
                 versionId: fields.buildVersionId,
                 version: fields.buildVersion,
-                bountyVersion: fields.buildBountyVersion ?? null,
+                priceVersion: fields.buildPriceVersion ?? null,
                 context: {
                   jira: fields.buildJiraContextVersion ?? null,
                   github: fields.buildGithubContextVersion ?? null,
@@ -458,7 +461,7 @@ export function followsJira(stored: Pick<StoredBounty, "jira">): boolean {
 }
 
 /**
- * Keeps the overview as the row now says it, as the row's version. Written
+ * Keeps the scope as the row now says it, as the row's version. Written
  * beside the change that made the version, by whoever made it.
  */
 async function keepVersion(
@@ -477,7 +480,7 @@ async function keepVersion(
 }
 
 /**
- * Inserts a bounty in the organization, under a new id, as its overview's
+ * Inserts a bounty in the organization, under a new id, as its scope's
  * version 1. Called inside a transaction, so the two land together.
  */
 export async function insertBounty(
@@ -521,7 +524,7 @@ export function jiraContentChange(
   return same ? null : values;
 }
 
-/** Whether a change says something new in the overview's title or text. */
+/** Whether a change says something new in the scope's title or text. */
 function changesText(
   current: Pick<BountyRow, "title" | "description">,
   change: { readonly title?: unknown; readonly description?: unknown },
@@ -536,7 +539,7 @@ function changesText(
 /**
  * Writes Jira's text over the bounty's, when it differs, against the
  * revision it was read at. A bounty changed in between is left for the next
- * read, which compares again. New words are a new overview version, which
+ * read, which compares again. New words are a new scope version, which
  * nobody here wrote; a change of components alone is not. Called inside a
  * transaction, so the version is kept with the change.
  */
@@ -688,11 +691,37 @@ export function listFilters(options: BountyListOptions): SQL[] {
   if (options.uncategorized === true) {
     filters.push(sql`${bounty.categories} = '[]'::jsonb`);
   }
+  if (options.status !== undefined) {
+    filters.push(statusFilter(options.status));
+  }
   return filters;
 }
 
+/*
+  Each step done, as `bountyStatus` decides it, asked of the bounty alone so
+  the condition holds whatever a query joins: its sandbox published and not
+  lapsed, its live proposal approved, its scope approved at its version.
+*/
+const liveSandbox = sql`exists (select 1 from ${sandbox} as status_sandbox where status_sandbox.bounty_id = ${bounty.id} and status_sandbox.status = 'published' and (status_sandbox.expires_at is null or status_sandbox.expires_at > now()))`;
+const approvedPrice = sql`exists (select 1 from ${bountyProposal} as status_price where status_price.bounty_id = ${bounty.id} and status_price.status = 'approved')`;
+const approvedScope = sql`coalesce(${bounty.approvedVersion} = ${bounty.version}, false)`;
+
+/** Bounties whose last step done is `status`: the furthest step decides. */
+function statusFilter(status: BountyStatus): SQL {
+  switch (status) {
+    case "live":
+      return liveSandbox;
+    case "priced":
+      return sql`(not ${liveSandbox} and ${approvedPrice})`;
+    case "scoped":
+      return sql`(not ${liveSandbox} and not ${approvedPrice} and ${approvedScope})`;
+    case "new":
+      return sql`(not ${liveSandbox} and not ${approvedPrice} and not ${approvedScope})`;
+  }
+}
+
 /**
- * Approves the overview at its version (`approvedBy` given) or takes the
+ * Approves the scope at its version (`approvedBy` given) or takes the
  * approval back (null), against the revision the decider saw. Asking for
  * what already stands is no change, and keeps the revision.
  */
@@ -708,7 +737,7 @@ async function decide(
   if (current.revision !== expectedRevision) {
     return { ok: false, reason: "changed", current };
   }
-  if (overviewApproved(current) === (approvedBy !== null)) {
+  if (scopeApproved(current) === (approvedBy !== null)) {
     return { ok: true, bounty: current };
   }
   const now = new Date();
@@ -857,11 +886,11 @@ export function createBountyStore(db: Database): BountyStore {
         (stack === undefined ||
           JSON.stringify(stack) === JSON.stringify(current.stack));
       if (same) return { ok: true, bounty: current };
-      // Approved, the overview is held as it is until it is unapproved.
-      if (overviewApproved(current)) {
-        return { ok: false, reason: "overview-approved", current };
+      // Approved, the scope is held as it is until it is unapproved.
+      if (scopeApproved(current)) {
+        return { ok: false, reason: "scope-approved", current };
       }
-      // New words are the overview's next version; a stack is not what a
+      // New words are the scope's next version; a stack is not what a
       // proposal is sized from, so moves none.
       const versioned = changesText(current, change);
       const rows = await db.transaction(async (tx) => {

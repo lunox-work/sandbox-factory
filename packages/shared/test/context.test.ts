@@ -72,14 +72,14 @@ test("stages from an answer without context read as having none", () => {
   const parsed = bountyDtoSchema.parse({
     ...detail,
     stages: {
-      overview: { version: 1 },
-      bounty: { version: 0, overviewVersion: 1 },
-      sandbox: { version: 1, bountyVersion: null },
+      scope: { version: 1 },
+      price: { version: 0, scopeVersion: 1 },
+      sandbox: { version: 1, priceVersion: null },
     },
   });
   const none = { jira: null, github: null };
-  assert.deepEqual(parsed.stages.overview.context, none);
-  assert.deepEqual(parsed.stages.bounty?.context, none);
+  assert.deepEqual(parsed.stages.scope.context, none);
+  assert.deepEqual(parsed.stages.price?.context, none);
   assert.deepEqual(parsed.stages.sandbox?.context, none);
 });
 
@@ -87,22 +87,22 @@ test("each step carries the context versions it was made with", () => {
   const parsed = bountyDtoSchema.parse({
     ...detail,
     stages: {
-      overview: { version: 1, context: { jira: 2, github: 1 } },
-      bounty: {
+      scope: { version: 1, context: { jira: 2, github: 1 } },
+      price: {
         version: 1,
-        overviewVersion: 1,
+        scopeVersion: 1,
         context: { jira: 1, github: null },
       },
       sandbox: null,
     },
   });
-  assert.deepEqual(parsed.stages.bounty?.context, { jira: 1, github: null });
+  assert.deepEqual(parsed.stages.price?.context, { jira: 1, github: null });
   assert.equal(
     bountyDtoSchema.safeParse({
       ...detail,
       stages: {
-        overview: { version: 1, context: { jira: 0, github: null } },
-        bounty: null,
+        scope: { version: 1, context: { jira: 0, github: null } },
+        price: null,
         sandbox: null,
       },
     }).success,
@@ -201,7 +201,7 @@ test("a sync answers with the bounty, both sources and whether it changed", () =
     syncBountyContextResponseSchema.safeParse({
       bounty: {
         ...detail,
-        stages: { overview: { version: 1 }, bounty: null, sandbox: null },
+        stages: { scope: { version: 1 }, price: null, sandbox: null },
       },
       context: { jira: unlinked, github: unlinked },
       changed: true,

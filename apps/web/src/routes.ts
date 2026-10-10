@@ -1,3 +1,5 @@
+import { BOUNTY_STATUSES, type BountyStatus } from "sandbox-factory";
+
 import type { Screen } from "./SideNav";
 
 export const ACCOUNT_PATH = "/account";
@@ -51,7 +53,7 @@ function bountyAddressFrom(parts: string[]): BountyAddress | undefined {
 /**
  * The bounty's own address for one written with `/proposal` after it, in the
  * path or in `?peek=`. Undefined for any other. Either opens its page on the
- * Bounty tab, where the proposal now is: a panel does not show it.
+ * Price tab, where the proposal now is: a panel does not show it.
  */
 function legacyProposalViewUrl(
   path: string,
@@ -62,7 +64,7 @@ function legacyProposalViewUrl(
     const bounty = bountyForPath(path);
     if (bounty === undefined) return undefined;
     const params = new URLSearchParams(search);
-    params.set("tab", "bounty");
+    params.set("tab", "price");
     return `${bountyPagePath(bounty)}?${params.toString()}`;
   }
   const peek = new URLSearchParams(search).get("peek");
@@ -72,12 +74,12 @@ function legacyProposalViewUrl(
     return undefined;
   }
   const bounty = bountyForSearch(search);
-  return bounty === undefined ? undefined : bountyProposalPath(bounty);
+  return bounty === undefined ? undefined : bountyPricePath(bounty);
 }
 
-/** A bounty's own page, open on the tab its proposal is in. */
-export function bountyProposalPath(address: BountyAddress): string {
-  return `${bountyPagePath(address)}?tab=bounty`;
+/** A bounty's own page, open on its Price step, which its proposal holds. */
+export function bountyPricePath(address: BountyAddress): string {
+  return `${bountyPagePath(address)}?tab=price`;
 }
 
 /** A bounty's own page. */
@@ -96,13 +98,15 @@ export interface BoardScope {
 }
 
 /**
- * What narrows the list: a category (or `uncategorized`), and where the
- * bounties came from — one board, or `lunox` for those written in Lunox.
+ * What narrows the list: a category (or `uncategorized`), where the
+ * bounties came from — one board, or `lunox` for those written in Lunox —
+ * and how far they have got.
  */
 export interface BountyListScope {
   category?: string | undefined;
   board?: BoardScope | undefined;
   source?: "lunox" | undefined;
+  status?: BountyStatus | undefined;
 }
 
 const CATEGORY_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/;
@@ -113,6 +117,7 @@ export function listScopeForSearch(search: string): BountyListScope {
   const category = params.get("category");
   const board = params.get("board");
   const source = params.get("source");
+  const status = BOUNTY_STATUSES.find((name) => name === params.get("status"));
   const [workspace, boardId, ...rest] = (board ?? "")
     .replace(/\/+$/, "")
     .split("/");
@@ -128,6 +133,7 @@ export function listScopeForSearch(search: string): BountyListScope {
       ? { board: { workspace, boardId } }
       : {}),
     ...(source === "lunox" ? { source } : {}),
+    ...(status === undefined ? {} : { status }),
   };
 }
 
@@ -150,6 +156,7 @@ export function bountiesUrl(
     ...(scope.category === undefined
       ? []
       : [`category=${encodeURIComponent(scope.category)}`]),
+    ...(scope.status === undefined ? [] : [`status=${scope.status}`]),
     ...(address === null ? [] : [`peek=${bountyAddressText(address)}`]),
   ];
   return parts.length === 0
@@ -342,7 +349,7 @@ function legacyBountiesUrl(
   const url =
     workspace !== null && id !== null
       ? proposal !== null
-        ? bountyProposalPath({ workspace, id })
+        ? bountyPricePath({ workspace, id })
         : bountiesUrl({ workspace, id })
       : workspace !== null && proposal !== null
         ? `${BOUNTIES_PATH}?${new URLSearchParams({ workspace, proposal }).toString()}`

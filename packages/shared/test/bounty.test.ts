@@ -9,6 +9,7 @@ import {
   createBountySchema,
   proposeBountySchema,
   bountyDtoSchema,
+  bountyListFilterSchema,
   bountyListResponseSchema,
   BOUNTY_LIMITS,
   bountySpecHash,
@@ -167,7 +168,7 @@ test("a bounty reads with or without a Jira issue, a proposal and a sandbox", ()
     components: [],
     inputTruncated: false,
     createdBy: "user_1",
-    stages: { overview: { version: 1 }, bounty: null, sandbox: null },
+    stages: { scope: { version: 1 }, price: null, sandbox: null },
   };
   assert.equal(bountyDtoSchema.safeParse(detail).success, true);
   // Each step names the version of the one before it was built on, or
@@ -176,9 +177,9 @@ test("a bounty reads with or without a Jira issue, a proposal and a sandbox", ()
     bountyDtoSchema.safeParse({
       ...detail,
       stages: {
-        overview: { version: 4 },
-        bounty: { version: 0, overviewVersion: null },
-        sandbox: { version: 2, bountyVersion: null },
+        scope: { version: 4 },
+        price: { version: 0, scopeVersion: null },
+        sandbox: { version: 2, priceVersion: null },
       },
     }).success,
     true,
@@ -186,11 +187,11 @@ test("a bounty reads with or without a Jira issue, a proposal and a sandbox", ()
   assert.equal(
     bountyDtoSchema.safeParse({
       ...detail,
-      stages: { overview: { version: 0 }, bounty: null, sandbox: null },
+      stages: { scope: { version: 0 }, price: null, sandbox: null },
     }).success,
     false,
   );
-  // An approved overview names the version approved, by whom and when.
+  // An approved scope names the version approved, by whom and when.
   assert.equal(
     bountyDtoSchema.safeParse({
       ...detail,
@@ -241,7 +242,7 @@ test("a bounty reads with or without a Jira issue, a proposal and a sandbox", ()
         currentVersionId: "sbv_1",
         expiresAt: null,
         sourceRepoId: "ghr_1",
-        build: { versionId: "sbv_1", version: 1, bountyVersion: 3 },
+        build: { versionId: "sbv_1", version: 1, priceVersion: 3 },
       },
     }).success,
     true,
@@ -368,4 +369,14 @@ test("re-exports the one bounty hash and bounds, not copies", async () => {
   assert.equal(bountySpecHash, core.bountySpecHash);
   assert.equal(BOUNTY_LIMITS, core.BOUNTY_LIMITS);
   assert.equal((await bountySpecHash("a", "b")).length, 64);
+});
+
+test("a bounty list is narrowed by how far its bounties have got", () => {
+  for (const status of ["new", "scoped", "priced", "live"])
+    assert.equal(bountyListFilterSchema.parse({ status }).status, status);
+  assert.equal(
+    bountyListFilterSchema.safeParse({ status: "approved" }).success,
+    false,
+  );
+  assert.equal(bountyListFilterSchema.parse({}).status, undefined);
 });

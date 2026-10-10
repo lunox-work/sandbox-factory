@@ -403,13 +403,13 @@ test("a linked source never synced says so, and syncing Jira takes its fields an
     changed: boolean;
     bounty: {
       title: string;
-      stages: { overview: { context: unknown } };
+      stages: { scope: { context: unknown } };
     };
     context: BountyContextResponse;
   };
   assert.equal(body.changed, true);
-  // The overview now holds it, as the steps after it will read.
-  assert.deepEqual(body.bounty.stages.overview.context, {
+  // The scope now holds it, as the steps after it will read.
+  assert.deepEqual(body.bounty.stages.scope.context, {
     jira: 1,
     github: null,
   });

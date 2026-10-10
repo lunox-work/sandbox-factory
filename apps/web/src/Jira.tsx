@@ -570,7 +570,7 @@ function SiteBoardsCard({
             open={confirming}
             onOpenChange={setConfirming}
             title={`Disconnect ${connection.siteName}?`}
-            description="Removes our access, every registered board, and local proposal history. Comments already posted to Jira remain. Atlassian keeps its own grant until you revoke it in your account settings."
+            description="Removes our access, every registered board, and local pricing history. Comments already posted to Jira remain. Atlassian keeps its own grant until you revoke it in your account settings."
             confirmLabel="Disconnect"
             busy={disconnecting}
             onConfirm={async () => {

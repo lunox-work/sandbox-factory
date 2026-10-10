@@ -9,7 +9,7 @@
  * box, and reading its scan again.
  *
  * A board has no page of its own. Its backlog scan is imported as bounties
- * when its site is connected or synced, each with its overview filled from
+ * when its site is connected or synced, each with its scope filled from
  * Jira and nothing sized, so the board's view is the bounty list with
  * `?board=` naming it. Everything here costs Jira reads, never a model
  * call, so any member may do it.
@@ -471,7 +471,7 @@ function BoardMenu({
  * For the issue the scan did not put in a category, or one added on the
  * board since. Read live from Jira as the person types. An issue that is a
  * bounty already opens it rather than adding it twice; picking one that is
- * not imports it, with its overview filled from Jira and nothing sized, and
+ * not imports it, with its scope filled from Jira and nothing sized, and
  * opens it.
  */
 function IssueSearch({

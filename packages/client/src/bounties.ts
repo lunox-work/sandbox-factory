@@ -4,9 +4,10 @@ import {
   bountyListResponseSchema,
   bountySizingResponseSchema,
   bountyResponseSchema,
-  bountyVersionListSchema,
+  scopeVersionListSchema,
   bountyContextResponseSchema,
   syncBountyContextResponseSchema,
+  type BountyListFilter,
   type ContextSourceDto,
   type CreateBountyInput,
   type LinkBountyJiraInput,
@@ -18,7 +19,8 @@ export const ownerPath = (owner: string) =>
 /**
  * A list page's query: its size, where the page before it ended, and what
  * it is narrowed to — a category's id (`uncategorized` for none), a
- * board's, and `lunox` for the bounties written there.
+ * board's, `lunox` for the bounties written there, and how far the
+ * bounties have got.
  */
 export interface BountyListQuery {
   limit?: number;
@@ -26,6 +28,7 @@ export interface BountyListQuery {
   category?: string;
   board?: string;
   source?: "lunox";
+  status?: BountyListFilter["status"];
 }
 
 function pageParams(query: BountyListQuery) {
@@ -35,6 +38,7 @@ function pageParams(query: BountyListQuery) {
   if (query.category !== undefined) params.set("category", query.category);
   if (query.board !== undefined) params.set("board", query.board);
   if (query.source !== undefined) params.set("source", query.source);
+  if (query.status !== undefined) params.set("status", query.status);
   return params;
 }
 export class BountyClient extends ApiClient {
@@ -88,7 +92,7 @@ export class BountyClient extends ApiClient {
    * one board's when `board` names it, or to Lunox's own by `source`.
    */
   async myBountyCategories(
-    query: Pick<BountyListQuery, "board" | "source"> = {},
+    query: Pick<BountyListQuery, "board" | "source" | "status"> = {},
     signal?: AbortSignal,
   ) {
     return bountyCategoryCountsSchema.parse(
@@ -105,9 +109,9 @@ export class BountyClient extends ApiClient {
       ),
     ).bounty;
   }
-  /** Its overview's versions, newest first. */
-  async bountyVersions(owner: string, id: string, signal?: AbortSignal) {
-    return bountyVersionListSchema.parse(
+  /** Its scope's versions, newest first. */
+  async scopeVersions(owner: string, id: string, signal?: AbortSignal) {
+    return scopeVersionListSchema.parse(
       await this.request(
         `${ownerPath(owner)}/bounties/${encodeURIComponent(id)}/versions`,
         { signal },
@@ -152,7 +156,7 @@ export class BountyClient extends ApiClient {
     ).bounty;
   }
   /**
-   * Approves the bounty's overview at its version, which holds it as it is,
+   * Approves the bounty's scope at its version, which holds it as it is,
    * or takes that back, against the revision seen.
    */
   async decideBounty(

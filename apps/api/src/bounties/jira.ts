@@ -25,12 +25,12 @@ import {
   type JiraIssueDto,
 } from "@sandbox-factory/shared";
 import type { Context, Hono } from "hono";
-import { overviewApproved } from "sandbox-factory";
+import { scopeApproved } from "sandbox-factory";
 
 import type { RunClientResult } from "../pricing/executor.js";
 import { mapConcurrent } from "../pricing/review.js";
 import { issueSearchJql } from "../pricing/routes.js";
-import { detail, OVERVIEW_APPROVED } from "./routes.js";
+import { detail, SCOPE_APPROVED } from "./routes.js";
 
 export interface BountyJiraRouteOptions {
   readonly bounties: BountyStore;
@@ -198,8 +198,8 @@ export function mountBountyJiraRoutes<Env extends BountyJiraAppEnv>(
     const bountyId = c.req.param("id");
     const current = await options.bounties.get(organizationId, bountyId);
     if (current === null) return c.json({ error: "Not found" }, 404);
-    // Linking takes Jira's text, which an approved overview is held from.
-    if (overviewApproved(current)) return c.json(OVERVIEW_APPROVED, 409);
+    // Linking takes Jira's text, which an approved scope is held from.
+    if (scopeApproved(current)) return c.json(SCOPE_APPROVED, 409);
     const board = await options.boards.forRun(organizationId, boardId);
     if (board === null) return c.json({ error: "Not found" }, 404);
     if (options.clientFor === undefined) return reconnect(c);
@@ -277,7 +277,7 @@ export function mountBountyJiraRoutes<Env extends BountyJiraAppEnv>(
     const bountyId = c.req.param("id");
     const current = await options.bounties.get(organizationId, bountyId);
     if (current === null) return c.json({ error: "Not found" }, 404);
-    if (overviewApproved(current)) return c.json(OVERVIEW_APPROVED, 409);
+    if (scopeApproved(current)) return c.json(SCOPE_APPROVED, 409);
     await options.issues.unlink(organizationId, bountyId);
     const bounty = await options.bounties.get(organizationId, bountyId);
     if (bounty === null) return c.json({ error: "Not found" }, 404);

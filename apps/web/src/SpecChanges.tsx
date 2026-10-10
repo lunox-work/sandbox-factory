@@ -66,7 +66,7 @@ const RUN_FAILURES: Readonly<Record<string, string>> = {
   reconnect: "Reconnect Jira, then try again.",
   scope: "Jira refused the read. Connect the site again to grant it.",
   proposal_changed:
-    "The proposal changed before the change could start. Try again.",
+    "The price changed before the change could start. Try again.",
   board_unavailable: "The board is no longer connected.",
   worker_lost: "The change was interrupted. Try again.",
   internal_error: "Something went wrong on our side. Try again.",
@@ -78,7 +78,7 @@ const OUTCOME_LINES: Readonly<Record<string, string>> = {
   proposal_stale:
     "The bounty changed since it was sized. Re-analyze it before changing its scenarios.",
   proposal_changed:
-    "The proposal changed while this ran, so nothing was saved. Try again.",
+    "The price changed while this ran, so nothing was saved. Try again.",
   spec_failed: "The model's answer could not be used. Try again.",
   issue_unavailable: "Jira no longer has this bounty.",
   jira_rate_limited: "Jira is busy. Try again in a minute.",

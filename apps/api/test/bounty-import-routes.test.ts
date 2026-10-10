@@ -219,7 +219,7 @@ function harness(setup: Setup = {}) {
   };
 }
 
-test("a board's scan is imported as bounties with their overview, context and categories, and nothing sized", async () => {
+test("a board's scan is imported as bounties with their scope, context and categories, and nothing sized", async () => {
   const state = harness({
     backlog: [leftBehind("1"), issue("2"), leftBehind("3")],
     known: { "3": "bty_old" },
@@ -245,7 +245,7 @@ test("a board's scan is imported as bounties with their overview, context and ca
       ["3", "From Jira 3"],
     ],
   );
-  // Its Jira fields, as the overview's next context version, synced by no one.
+  // Its Jira fields, as the scope's next context version, synced by no one.
   assert.deepEqual(
     state.recorded.map(({ bountyId, input, by }) => [
       bountyId,

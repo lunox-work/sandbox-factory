@@ -107,7 +107,7 @@ export function ProposalPeek({
   onChanged,
   onRemoved,
   withinBounty = false,
-  overviewVersion = null,
+  scopeVersion = null,
 }: {
   /** The organization's API root, for the reads the peek makes itself. */
   base: string;
@@ -138,10 +138,10 @@ export function ProposalPeek({
    */
   withinBounty?: boolean;
   /**
-   * Inside its bounty, the overview version it was sized from, named under
+   * Inside its bounty, the scope version it was sized from, named under
    * its version; null when no version says what it was sized from.
    */
-  overviewVersion?: number | null;
+  scopeVersion?: number | null;
 }) {
   const url = withinBounty ? null : (bounty?.url ?? proposal.liveUrl ?? null);
   const label = modelLabel(proposal.actualModel);
@@ -385,13 +385,13 @@ export function ProposalPeek({
         {versionedAt !== null && (
           <span className="text-muted-foreground">
             Approved <time dateTime={versionedAt}>{dateTime(versionedAt)}</time>
-            {(overviewVersion !== null || freshness !== null) && " ·"}
+            {(scopeVersion !== null || freshness !== null) && " ·"}
           </span>
         )}
         {/* What it stands on: the step before it, by version. */}
-        {overviewVersion !== null && (
+        {scopeVersion !== null && (
           <span className="text-muted-foreground">
-            Overview v{overviewVersion}
+            Scope v{scopeVersion}
             {freshness !== null && " ·"}
           </span>
         )}
@@ -473,8 +473,8 @@ export function ProposalPeek({
           Remove
         </button>
       }
-      title={`Remove the proposal for ${key ?? "this bounty"}?`}
-      description="The bounty will have no proposal, and the next sizing run may propose it again. Nothing is posted to Jira."
+      title={`Remove the price for ${key ?? "this bounty"}?`}
+      description="The bounty will have no price, and the next sizing run may price it again. Nothing is posted to Jira."
       confirmLabel="Remove"
       tone="destructive"
       busy={locked}

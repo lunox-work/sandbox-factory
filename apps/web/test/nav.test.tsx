@@ -70,7 +70,7 @@ const BOUNTY = {
   components: [],
   inputTruncated: false,
   createdBy: "user_1",
-  stages: { overview: { version: 1 }, bounty: null, sandbox: null },
+  stages: { scope: { version: 1 }, price: null, sandbox: null },
 };
 
 /** The one registered repository, in Acme, for its page. */
